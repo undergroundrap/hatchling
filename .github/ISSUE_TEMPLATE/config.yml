@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Ask a question
+    url: https://github.com/undergroundrap/hatchling/discussions
+    about: Setup help, ideas and questions. Issues are for bugs and proposals.
   - name: Report a security vulnerability
     url: https://github.com/undergroundrap/hatchling/security/advisories/new
     about: Privately, never in a public issue. See SECURITY.md.
