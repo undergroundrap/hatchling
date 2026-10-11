@@ -49,7 +49,8 @@ test('slide save clamps layer geometry and rebuilds escaped offline HTML', async
     const download = getDownload(structuredClone(item));
     assert.match(download.filename, /\.html$/);
     assert.match(download.text, /&lt;script&gt;/);
-    assert.doesNotMatch(download.text, /<script>/);
+    // No script element in any spelling: `<SCRIPT`, `< script`, `<script src=…>`.
+    assert.doesNotMatch(download.text, /<\s*script/i);
 });
 test('imported data assets download with a correct extension, not a base64 filename', async () => {
     const app = make();
