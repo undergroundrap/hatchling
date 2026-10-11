@@ -343,7 +343,95 @@ fn check_or_regen(attack: &str, actual: &serde_json::Value) -> Result<(), String
     })?;
     let expected: serde_json::Value = serde_json::from_str(&expected_json)
         .map_err(|e| format!("parse committed inventory {}: {e}", path.display()))?;
+    if attack == "mount-escape" {
+        return check_inventory(
+            attack,
+            &fold_merged_usr(actual),
+            &fold_merged_usr(&expected),
+        );
+    }
     check_inventory(attack, actual, &expected)
+}
+
+/// The mount-escape inventory with merged-`/usr` spellings folded together.
+///
+/// A cell's library view is what the host's `ldd` reports, and merged-`/usr`
+/// hosts spell the same file two ways: Ubuntu 24.04 says
+/// `/lib/x86_64-linux-gnu/libc.so.6`, 26.04 `/usr/lib/x86_64-linux-gnu/libc.so.6`.
+/// So one host's cell has `/lib` and no `/usr`, and the other's the reverse.
+/// Which root the cell shows is the host's choice, not the boundary's: a path
+/// under `/usr/lib/`, or a probe directly in `/usr`, is read as its `/lib`
+/// spelling, and the attempts are compared as a sorted multiset. Each write
+/// is still held to [`is_refused_write`] on its own, unfolded.
+fn fold_merged_usr(writes: &serde_json::Value) -> serde_json::Value {
+    let mut folded: Vec<serde_json::Value> = writes
+        .as_array()
+        .map(|all| {
+            all.iter()
+                .map(|write| {
+                    let lib = write
+                        .get("path")
+                        .and_then(serde_json::Value::as_str)
+                        .and_then(|path| {
+                            path.strip_prefix("/usr/lib/")
+                                .or_else(|| {
+                                    path.strip_prefix("/usr/")
+                                        .filter(|rest| !rest.contains('/'))
+                                })
+                                .map(|rest| format!("/lib/{rest}"))
+                        });
+                    let mut write = write.clone();
+                    if let (Some(lib), Some(object)) = (lib, write.as_object_mut()) {
+                        object.insert(String::from("path"), serde_json::Value::String(lib));
+                    }
+                    write
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    folded.sort_by_cached_key(ToString::to_string);
+    serde_json::Value::Array(folded)
+}
+
+/// The fold is exact: the committed inventory and the one an Ubuntu 24.04
+/// host produced for the same cell (`tests/inventory/mount-escape.lib-layout.json`,
+/// its `/lib` spellings) fold to the same document, and one changed outcome
+/// still shows. Needs no cell.
+fn mount_escape_inventory_folds_only_the_lib_spelling() -> Result<(), String> {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("inventory");
+    let read = |name: &str| -> Result<serde_json::Value, String> {
+        let text =
+            std::fs::read_to_string(dir.join(name)).map_err(|e| format!("read {name}: {e}"))?;
+        serde_json::from_str(&text).map_err(|e| format!("parse {name}: {e}"))
+    };
+    let committed = read("mount-escape.json")?;
+    let other_host = read("mount-escape.lib-layout.json")?;
+    if committed == other_host {
+        return Err(String::from(
+            "the two hosts' inventories should differ before folding",
+        ));
+    }
+    if fold_merged_usr(&committed) != fold_merged_usr(&other_host) {
+        return Err(String::from(
+            "the same cell on another merged-/usr host must fold to the committed inventory",
+        ));
+    }
+    let mut changed = other_host;
+    if let Some(first) = changed
+        .as_array_mut()
+        .and_then(|all| all.first_mut())
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        first.insert(String::from("errno"), serde_json::Value::from(0));
+    }
+    if fold_merged_usr(&committed) == fold_merged_usr(&changed) {
+        return Err(String::from(
+            "a write that succeeds must still change the folded inventory",
+        ));
+    }
+    Ok(())
 }
 
 /// Spawn one probe cell for a report attack against a bound-but-unserved
@@ -905,6 +993,10 @@ const CHECKS: &[Check] = &[
     (
         "mount_escape_all_writes_denied",
         mount_escape_all_writes_denied,
+    ),
+    (
+        "mount_escape_inventory_folds_only_the_lib_spelling",
+        mount_escape_inventory_folds_only_the_lib_spelling,
     ),
     ("denied_syscalls_each_sigsys", denied_syscalls_each_sigsys),
     (

@@ -217,8 +217,10 @@ class ApprovalTests(unittest.TestCase):
         self.capture('13-phone-320')
         self.page.set_viewport_size({'width': 600, 'height': 400})
         expect(self.page.locator('#message-input')).to_be_visible()
-        box = self.page.locator('#message-input').bounding_box()
-        self.assertLessEqual(box['y'] + box['height'], 401)
+        # Measured where the element is resolved: after a resize the layout can
+        # re-render it between the visibility check and a separate measurement.
+        bottom = self.page.locator('#message-input').evaluate('(el) => el.getBoundingClientRect().bottom')
+        self.assertLessEqual(bottom, 401)
         self.assert_no_overflow()
         self.capture('14-short-window')
 
@@ -250,7 +252,7 @@ class ApprovalTests(unittest.TestCase):
         self.page.locator('.artifact-preview').first.click()
         video = self.page.locator('video.media-player')
         expect(video).to_be_visible()
-        self.page.wait_for_function('document.querySelector("video.media-player").readyState >= 2')
+        self.page.wait_for_function('() => document.querySelector("video.media-player").readyState >= 2')
         self.assertEqual(video.evaluate('(el) => [el.videoWidth,el.videoHeight,Math.round(el.duration)]'), [360,640,4])
         video.evaluate('(el) => { el.muted = true; return el.play(); }')
         self.page.wait_for_timeout(700)

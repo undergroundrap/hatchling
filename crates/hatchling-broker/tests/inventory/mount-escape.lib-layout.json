@@ -1,0 +1,147 @@
+[
+  {
+    "errno": 30,
+    "op": "create",
+    "path": "//hatchling-probe-1"
+  },
+  {
+    "errno": 30,
+    "op": "create",
+    "path": "/sock/hatchling-probe-1"
+  },
+  {
+    "errno": 30,
+    "op": "create",
+    "path": "/old/hatchling-probe-1"
+  },
+  {
+    "errno": 2,
+    "op": "create",
+    "path": "/tmp/hatchling-probe-1"
+  },
+  {
+    "errno": 2,
+    "op": "create",
+    "path": "/etc/hatchling-probe-1"
+  },
+  {
+    "errno": 2,
+    "op": "create",
+    "path": "/var/hatchling-probe-1"
+  },
+  {
+    "errno": 30,
+    "op": "create",
+    "path": "/lib/hatchling-probe-1"
+  },
+  {
+    "errno": 30,
+    "op": "create",
+    "path": "/lib64/hatchling-probe-1"
+  },
+  {
+    "errno": 2,
+    "op": "create",
+    "path": "/usr/hatchling-probe-1"
+  },
+  {
+    "errno": 2,
+    "op": "create",
+    "path": "/dev/hatchling-probe-1"
+  },
+  {
+    "errno": 2,
+    "op": "create",
+    "path": "/proc/hatchling-probe-1"
+  },
+  {
+    "errno": 2,
+    "op": "create",
+    "path": "/sys/hatchling-probe-1"
+  },
+  {
+    "errno": 26,
+    "op": "open_write",
+    "path": "/agent"
+  },
+  {
+    "errno": 6,
+    "op": "open_write",
+    "path": "/sock/broker.sock"
+  },
+  {
+    "errno": 2,
+    "op": "open_write",
+    "path": "/sock/decoy.sock"
+  },
+  {
+    "errno": 13,
+    "op": "open_write",
+    "path": "/lib64/ld-linux-x86-64.so.2"
+  },
+  {
+    "errno": 13,
+    "op": "open_write",
+    "path": "/lib/x86_64-linux-gnu/libc.so.6"
+  },
+  {
+    "errno": 2,
+    "op": "open_write",
+    "path": "/lib/x86_64-linux-gnu/libm.so.6"
+  },
+  {
+    "errno": 13,
+    "op": "open_write",
+    "path": "/lib/x86_64-linux-gnu/libgcc_s.so.1"
+  },
+  {
+    "errno": 2,
+    "op": "open_write",
+    "path": "/lib/x86_64-linux-gnu/libpthread.so.0"
+  },
+  {
+    "errno": 2,
+    "op": "open_write",
+    "path": "/lib/x86_64-linux-gnu/libdl.so.2"
+  },
+  {
+    "errno": 2,
+    "op": "open_write",
+    "path": "/lib/x86_64-linux-gnu/librt.so.1"
+  },
+  {
+    "errno": 2,
+    "op": "open_write",
+    "path": "/usr/lib/x86_64-linux-gnu/libc.so.6"
+  },
+  {
+    "errno": 2,
+    "op": "open_write",
+    "path": "/usr/lib/x86_64-linux-gnu/libm.so.6"
+  },
+  {
+    "errno": 2,
+    "op": "open_write",
+    "path": "/usr/lib/x86_64-linux-gnu/libgcc_s.so.1"
+  },
+  {
+    "errno": 2,
+    "op": "open_write",
+    "path": "/usr/lib/x86_64-linux-gnu/libpthread.so.0"
+  },
+  {
+    "errno": 2,
+    "op": "open_write",
+    "path": "/usr/lib/x86_64-linux-gnu/libdl.so.2"
+  },
+  {
+    "errno": 2,
+    "op": "open_write",
+    "path": "/usr/lib/x86_64-linux-gnu/librt.so.1"
+  },
+  {
+    "errno": 2,
+    "op": "open_write",
+    "path": "/usr/lib64/ld-linux-x86-64.so.2"
+  }
+]
