@@ -83,3 +83,47 @@ fn run_task(task_args: &[String]) -> Result<(), Error> {
     let _ = writeln!(stdout, "{answer}");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|arg| (*arg).to_owned()).collect()
+    }
+
+    #[test]
+    fn main_fails_closed_on_misuse() {
+        assert_eq!(
+            main("hatchling-agent", &args(&["frobnicate"])),
+            ExitCode::FAILURE
+        );
+        assert_eq!(main("hatchling-agent", &args(&["run"])), ExitCode::FAILURE);
+        assert_eq!(
+            main("hatchling-agent", &args(&["run", "   "])),
+            ExitCode::FAILURE
+        );
+    }
+
+    #[test]
+    fn an_unknown_subcommand_names_the_program_in_its_usage() {
+        let result = run("hatchling agent", &args(&["frobnicate"]));
+        assert!(
+            matches!(&result, Err(Error::Usage(text)) if text.contains("usage: hatchling agent run")),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn run_task_refuses_an_empty_task() {
+        assert!(run_task(&[]).is_err());
+        assert!(run_task(&args(&["  "])).is_err());
+    }
+
+    #[test]
+    fn run_lifecycle_refuses_without_configuration() {
+        // No HATCHLING_* configuration in a test process: the cell never
+        // starts, rather than running unconfigured.
+        assert!(run_lifecycle().is_err());
+    }
+}

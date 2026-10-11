@@ -79,3 +79,24 @@ fn run(program: &str, args: &[String]) -> Result<(), Error> {
         None => run_serve(&config),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|arg| (*arg).to_owned()).collect()
+    }
+
+    #[test]
+    fn the_spawner_helpers_refuse_without_a_spec() {
+        // Each helper is reached before any configuration is read, and
+        // fails closed when the broker didn't hand it a cell spec.
+        for helper in [SKILL_CELL_SUBCOMMAND, AGENT_RUN_SUBCOMMAND] {
+            assert_eq!(
+                main("hatchling-broker", &args(&[helper])),
+                ExitCode::FAILURE
+            );
+        }
+    }
+}
