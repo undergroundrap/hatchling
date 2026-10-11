@@ -34,7 +34,7 @@ If the workflow fails partway, the crates it already published stay published (c
 
 ## Trusted publishing setup
 
-Each published crate trusts the release workflow, once, on crates.io: the crate's page → **Settings → Trusted Publishing → Add**, with:
+Each published crate trusts the release workflow, once, on crates.io:
 
 | Field | Value |
 | --- | --- |
@@ -43,7 +43,19 @@ Each published crate trusts the release workflow, once, on crates.io: the crate'
 | Workflow filename | `release.yml` |
 | Environment | `release` |
 
-A crate without it fails the release workflow's publish step for that crate.
+[`scripts/setup-trusted-publishing.sh`](../scripts/setup-trusted-publishing.sh) sets it for every crate through crates.io's API, in any order (the settings don't depend on each other):
+
+1. On crates.io, make a token: Account Settings → API Tokens → New Token, expiring in a day, with **only** the `trusted-publishing` scope.
+2. From the repository root, on Linux or WSL:
+
+   ```bash
+   bash scripts/setup-trusted-publishing.sh
+   ```
+
+   It asks for the token without echoing it, skips crates that already trust the workflow, and is safe to re-run.
+3. Revoke the token.
+
+By hand instead: the crate's page → **Settings → Trusted Publishing → Add**, with the values above. A crate without it is skipped by the release workflow, with a warning.
 
 ## Adding a crate
 
@@ -72,6 +84,6 @@ A development or test crate sets `publish = false` and stops there. A published 
 
    It skips every crate already on crates.io at that version, and publishes the rest in dependency order: the new crate, then whatever was waiting on it. crates.io limits how fast an account can create new crates (on 2026-10-11: a burst of 5, then about one per 10 minutes); the script waits that out and is safe to re-run.
 3. **Revoke the token** on crates.io, then run `cargo logout`. Logging out only deletes the local copy; revoking kills it.
-4. **Trusted publishing** for the new crate, as above. From then on, releases publish it with the rest.
+4. **Trusted publishing** for the new crate: run `scripts/setup-trusted-publishing.sh` again, as above (it skips the crates already set up). From then on, releases publish it with the rest.
 
 The first publish of all 21 crates (0.1.1, 2026-10-11) went this way, and took about two and a half hours because of that rate limit.
