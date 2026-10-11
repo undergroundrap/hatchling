@@ -154,7 +154,7 @@ From here: **[the local API](docs/local-api.md)** for every action and event, an
 
 ## Contributing
 
-PRs are welcome. Read **[CONTRIBUTING.md](CONTRIBUTING.md)** first: the bar is mutation evidence and a green gate, and it's written down so you can meet it.
+PRs are welcome. Read **[CONTRIBUTING.md](CONTRIBUTING.md)** first: the bar is mutation evidence and a green gate, and it's written down so you can meet it. On your first PR, a bot asks you to sign the [CLA](CLA.md) with a one-line comment.
 
 Core work is planned as **work orders**, specs in **[docs/workorders/](docs/workorders/)** that say exactly what done means. Eleven are queued, most of them security hardening from the pre-launch review. Pick one up, or open an issue to propose one. Frontend changes follow `frontend/STYLE_GUIDE.md`.
 
@@ -162,4 +162,9 @@ Everyone here follows the **[code of conduct](CODE_OF_CONDUCT.md)**. Found a sec
 
 ## License
 
-AGPL-3.0-or-later. See [LICENSE](LICENSE).
+Hatchling is dual-licensed.
+
+- **Open source: [AGPL-3.0-or-later](LICENSE).** Use it, study it, change it, run it. If you offer a modified Hatchling to others over a network, you share your changes under the same license.
+- **Commercial license**, for organizations that need terms the AGPL doesn't give them: private modifications and closed integrations, custom builds for your environment, seat or site licensing, and support. See [oceanbennett.com/hatchling](https://oceanbennett.com/hatchling/#licensing), or contact Ocean Bennett on [LinkedIn](https://www.linkedin.com/in/oceanbennett/) or [X](https://x.com/oceanbennett).
+
+Contributions are accepted under the [Contributor License Agreement](CLA.md), which lets both licenses cover them. You keep your copyright, and your work stays available under the AGPL.

@@ -154,7 +154,17 @@ To report a vulnerability, don't open a PR or an issue: see
 - One logical change per commit.
 - Reference the tracking issue if there is one.
 
-## License
+## License and CLA
 
-Hatchling is licensed under AGPL-3.0-or-later. By contributing,
-you agree your contributions will be licensed the same way.
+Hatchling is dual-licensed: AGPL-3.0-or-later, and a commercial license
+for organizations that need other terms (see the README). So that both
+can cover your work, contributions are accepted under the
+[Contributor License Agreement](CLA.md).
+
+- On your first pull request, the CLA bot comments with a sentence to
+  reply with. Reply with it exactly and the check passes. You sign
+  once, for all your future contributions.
+- You keep the copyright in your work, and every contribution in a
+  public release stays available under the AGPL.
+- If your employer may own your work, get its permission first, or
+  sign for the organization (section 8 of the CLA).
