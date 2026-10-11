@@ -100,6 +100,8 @@ use hatchling_vault::MasterKey;
 /// `128 + SIGSYS`: what [`spawn_cell`]'s reaper reports when the
 /// seccomp filter kills the probe (`SECCOMP_RET_KILL_PROCESS`).
 const SIGSYS_EXIT_CODE: i32 = 128 + 31;
+/// A process killed by `SIGILL`, in the same encoding.
+const SIGILL_EXIT_CODE: i32 = 128 + 4;
 
 /// How long the driver waits for one probe cell. Every probe exits in
 /// milliseconds (the slowest, the peer decoy, reads for at most 5 s);
@@ -311,6 +313,67 @@ fn assert_sigsys(result: &AttackResult) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// [`assert_sigsys`] for a catalog entry, with the one syscall the kernel
+/// exempts from seccomp.
+///
+/// `uretprobe` (Linux 6.11+) exists for the kernel's own uretprobe
+/// trampolines, and newer kernels pass it through seccomp unfiltered so that
+/// probes work in sandboxed processes. Called from anywhere but a trampoline,
+/// the kernel kills the caller with `SIGILL`. So on such a kernel the probe
+/// dies of `SIGILL` instead of `SIGSYS`: still dead on the attack itself (the
+/// `READY` marker and nothing after it), with nothing gained. Older kernels
+/// filter it like any other number, and the probe dies of `SIGSYS`.
+fn assert_denied_kills(name: &str, result: &AttackResult) -> Result<(), String> {
+    if name == "uretprobe" && result.exit_code == SIGILL_EXIT_CODE {
+        let expected_marker = format!("READY {}\n", result.slug);
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        if stdout.as_ref() == expected_marker {
+            return Ok(());
+        }
+        return Err(format!(
+            "{}: SIGILL but stdout was {stdout:?}, expected exactly {expected_marker:?}",
+            result.slug
+        ));
+    }
+    assert_sigsys(result)
+}
+
+/// The `uretprobe` exception is exact: `SIGILL` passes for `uretprobe` alone,
+/// and only with the bare `READY` marker; any other syscall still needs
+/// `SIGSYS`, and a probe that reported after the call fails. Needs no cell.
+fn only_uretprobe_may_die_of_sigill() -> Result<(), String> {
+    let result = |slug: &str, exit_code: i32, stdout: &str| AttackResult {
+        slug: slug.to_owned(),
+        exit_code,
+        stdout: stdout.as_bytes().to_vec(),
+    };
+    assert_denied_kills(
+        "uretprobe",
+        &result("seccomp-335", SIGILL_EXIT_CODE, "READY seccomp-335\n"),
+    )?;
+    let other = result("seccomp-425", SIGILL_EXIT_CODE, "READY seccomp-425\n");
+    if assert_denied_kills("io_uring_setup", &other).is_ok() {
+        return Err(String::from(
+            "SIGILL must not pass for any syscall but uretprobe",
+        ));
+    }
+    let reported = result(
+        "seccomp-335",
+        SIGILL_EXIT_CODE,
+        "READY seccomp-335\nSURVIVED\n",
+    );
+    if assert_denied_kills("uretprobe", &reported).is_ok() {
+        return Err(String::from(
+            "a probe that reported after uretprobe must fail",
+        ));
+    }
+    assert_denied_kills(
+        "uretprobe",
+        &result("seccomp-335", SIGSYS_EXIT_CODE, "READY seccomp-335\n"),
+    )
+    .map_err(|e| format!("SIGSYS must still pass for uretprobe where it is filtered: {e}"))
 }
 
 /// Compare the observed outcome against the committed living
@@ -635,7 +698,7 @@ fn denied_syscalls_each_sigsys() -> Result<(), String> {
             let _listener =
                 bind_listener(&config).map_err(|e| format!("bind broker socket: {e}"))?;
             let result = spawn_attack(attack, &socket_dir, agent_uid)?;
-            assert_sigsys(&result)
+            assert_denied_kills(entry.name, &result)
         })();
         if let Err(e) = outcome {
             return Err(format!(
@@ -662,8 +725,8 @@ fn cli_denied_syscalls_each_sigsys() -> Result<(), String> {
         ));
     }
     for entry in &catalog {
-        let outcome =
-            spawn_cli_attack(Attack::Seccomp(entry.nr)).and_then(|result| assert_sigsys(&result));
+        let outcome = spawn_cli_attack(Attack::Seccomp(entry.nr))
+            .and_then(|result| assert_denied_kills(entry.name, &result));
         if let Err(e) = outcome {
             return Err(format!(
                 "CLI-denied syscall {} (nr {}) did not SIGSYS (stopping at the first survivor): {e}",
@@ -999,6 +1062,10 @@ const CHECKS: &[Check] = &[
         mount_escape_inventory_folds_only_the_lib_spelling,
     ),
     ("denied_syscalls_each_sigsys", denied_syscalls_each_sigsys),
+    (
+        "only_uretprobe_may_die_of_sigill",
+        only_uretprobe_may_die_of_sigill,
+    ),
     (
         "cli_denied_syscalls_each_sigsys",
         cli_denied_syscalls_each_sigsys,
