@@ -39,6 +39,7 @@ Work order: <!-- WO-NNN, or "none" -->
 ## Checklist
 
 - [ ] One logical change per commit, as a Conventional Commit with a scope (`feat(vault):`, `fix(broker):`, `docs(api):`)
+- [ ] A line under **Unreleased** in `CHANGELOG.md`, or no user-visible change
 - [ ] No secrets, keys, or credentials committed
 - [ ] I've signed the [CLA](https://github.com/undergroundrap/hatchling/blob/main/CLA.md) (on your first PR, the CLA bot asks you to)
 - [ ] No `unwrap()`/`expect()` in production paths

@@ -11,7 +11,9 @@ expect and why.
 3. Every UI PR carries screenshots.
 4. Docs must match code. The wire-format docs are checked by the build;
    the rest is on you and the reviewer.
-5. Be kind. Be precise. No drive-by criticism without evidence. See the
+5. A user-visible change adds its line to [`CHANGELOG.md`](CHANGELOG.md)
+   under **Unreleased**, in the same PR.
+6. Be kind. Be precise. No drive-by criticism without evidence. See the
    [code of conduct](CODE_OF_CONDUCT.md).
 
 ## Work orders and pull requests

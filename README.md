@@ -158,6 +158,8 @@ PRs are welcome. Read **[CONTRIBUTING.md](CONTRIBUTING.md)** first: the bar is m
 
 Core work is planned as **work orders**, specs in **[docs/workorders/](docs/workorders/)** that say exactly what done means. Twelve are queued, most of them security hardening from the pre-launch review. Pick one up, or open an issue to propose one. Frontend changes follow `frontend/STYLE_GUIDE.md`.
 
+**What's next:** each planned version is a [milestone](https://github.com/undergroundrap/hatchling/milestones), ordered by threat in [Order of work](docs/workorders/README.md#order-of-work); what changed is in the [changelog](CHANGELOG.md).
+
 Everyone here follows the **[code of conduct](CODE_OF_CONDUCT.md)**. Found a security problem? Please don't open a public issue — see **[SECURITY.md](SECURITY.md)**.
 
 ## License

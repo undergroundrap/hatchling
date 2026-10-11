@@ -19,7 +19,7 @@ A work order (WO) is how core work on Hatchling is planned and closed: a short s
 
 ## Order of work
 
-The goal is a runtime a security team can approve, for one person or a whole company. Work is ordered by what it protects:
+The goal is a runtime a security team can approve, for one person or a whole company. Work is ordered by what it protects, and each step is a version [milestone](https://github.com/undergroundrap/hatchling/milestones):
 
 1. **What a hostile cell can do.** The cell is the adversary the design exists for, so these come first: WO-009 (a key an upstream echoes back reaches the cell; numeric IP forms pass the allowlist), WO-008 (data leaves through a vendor's URL fetching), WO-010 (a cell can cancel the owner's schedules; an API grant check passes vacuously), WO-005 (`socketpair` families and inherited groups), WO-004 (resource limits).
 2. **What another local user, or someone with disk access, can do:** WO-006 (a root broker follows symlinks), WO-007 (any process with the agent's uid can open a session), WO-002 (swapped vault files), WO-003 (key rotation at the keyring tiers), WO-011 (secret copies in memory and core dumps), WO-012 (crash leftovers and safe cleanup).
