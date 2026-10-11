@@ -17,6 +17,16 @@ A work order (WO) is how core work on Hatchling is planned and closed: a short s
 - **A closed WO keeps its evidence inline:** the exact commands, the environment, and the counts.
 - **Trivial changes** (a typo, a one-line fix) don't need a WO. They still need the gates.
 
+## Order of work
+
+The goal is a runtime a security team can approve, for one person or a whole company. Work is ordered by what it protects:
+
+1. **What a hostile cell can do.** The cell is the adversary the design exists for, so these come first: WO-009 (a key an upstream echoes back reaches the cell; numeric IP forms pass the allowlist), WO-008 (data leaves through a vendor's URL fetching), WO-010 (a cell can cancel the owner's schedules; an API grant check passes vacuously), WO-005 (`socketpair` families and inherited groups), WO-004 (resource limits).
+2. **What another local user, or someone with disk access, can do:** WO-006 (a root broker follows symlinks), WO-007 (any process with the agent's uid can open a session), WO-002 (swapped vault files), WO-003 (key rotation at the keyring tiers), WO-011 (secret copies in memory and core dumps), WO-012 (crash leftovers and safe cleanup).
+3. **In parallel, the first five minutes:** WO-001 (`--help`, and a quickstart CI runs). It isn't trust-boundary work, so it doesn't wait on security review.
+4. **Then what a security review asks for next:** running without root, the release process (signed binaries, an SBOM, reproducible builds), and root cell tests in CI.
+5. **Then integrations** for larger deployments: audit export, external secret backends, fleet configuration, and the macOS backend.
+
 ## Queue
 
 WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Known limitations](../arch/trust-boundary.md#known-limitations). The trust-boundary ones get extra review.
@@ -46,5 +56,8 @@ Not yet WOs. Each gets a full file, with a scope and acceptance criteria, before
 - **Live frontend.** Wire the frontend's live adapter (already built and tested) to the local API, so the UI drives a real broker.
 - **macOS backend.** An implementation of the isolation trait for macOS.
 - **FIDO2 on real hardware.** The FIDO2 hmac-secret vault factor is tested against a software authenticator. Validate it on physical security keys, and record which ones.
-- **Release process.** Version numbers, a changelog, and reproducible binaries.
+- **Release process.** Version numbers, a changelog, signed and reproducible binaries, and a software bill of materials (SBOM) for each release.
+- **Audit export.** Stream the broker's audit and vault-access records to an operator's log pipeline (syslog, or JSON lines for a SIEM) through an audit-sink interface. Exporting adds no read path for a cell or an API caller.
+- **External secret backends.** A secret-backend interface, so an operator's secret manager (HashiCorp Vault, a cloud KMS) can hold the real credentials. The egress swap is unchanged: a cell still only ever holds a surrogate.
+- **Fleet configuration.** A configuration file, alongside the environment variables, that provisioning tools (Terraform, Kubernetes, Ansible) can manage across many machines; and identity for local API callers beyond a socket's uid.
 - **Issue triage.** How outside reports and proposals are labeled, accepted or declined.
