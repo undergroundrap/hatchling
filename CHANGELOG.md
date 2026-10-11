@@ -6,6 +6,21 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-11
+
+Publishing and metadata only. No change to the broker, the agent or the wire protocol.
+
+### Added
+
+- Releases publish to crates.io from CI when a GitHub release is published, through trusted publishing: no crates.io token is stored anywhere. The workflow refuses a release whose tag, workspace version and changelog disagree.
+- `cargo semver-checks` runs on every pull request against the crates on crates.io.
+- crates.io and docs.rs badges, and `cargo install hatchling-runtime` as an install option in the quickstart.
+- CONTRIBUTING says when new code earns its own crate, and what each published crate costs.
+
+### Changed
+
+- Keywords and categories are per crate: `hatchling-runtime` carries the headline terms, the crates useful on their own (`hatchling-isolation`, `hatchling-sys`, `hatchling-fido2`, `hatchling-vault`, `hatchling-egress`) carry accurate ones, and the internal crates carry none, so they don't crowd searches.
+
 ## [0.1.1] - 2026-10-11
 
 The first release on crates.io. No change to the broker, the agent or the wire protocol.
@@ -41,6 +56,7 @@ The first public release. [Release notes](https://github.com/undergroundrap/hatc
 
 Published in [the trust boundary](docs/arch/trust-boundary.md#known-limitations), each with a work order and an issue.
 
-[Unreleased]: https://github.com/undergroundrap/hatchling/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/undergroundrap/hatchling/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/undergroundrap/hatchling/releases/tag/v0.1.2
 [0.1.1]: https://github.com/undergroundrap/hatchling/releases/tag/v0.1.1
 [0.1.0]: https://github.com/undergroundrap/hatchling/releases/tag/v0.1.0

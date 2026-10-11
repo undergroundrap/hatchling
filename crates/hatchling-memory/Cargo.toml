@@ -8,8 +8,6 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
-keywords.workspace = true
-categories.workspace = true
 description = "Broker-owned durable memory: scoped user/project/session items with explicit retention, durable session records, and an append-only context log. Memory is recalled data, never instructions."
 
 [lints]

@@ -8,8 +8,6 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
-keywords.workspace = true
-categories.workspace = true
 description = "Shared foundation for hatchling binaries: identity types, protocol framing, and kernel peer credentials"
 
 [lints]

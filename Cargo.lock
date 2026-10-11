@@ -349,7 +349,7 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "hatchling-adversarial"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "hatchling-core",
  "hatchling-sys",
@@ -360,7 +360,7 @@ dependencies = [
 
 [[package]]
 name = "hatchling-agent"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "hatchling-broker",
  "hatchling-channel",
@@ -381,7 +381,7 @@ dependencies = [
 
 [[package]]
 name = "hatchling-artifact"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "base64",
  "hatchling-core",
@@ -392,7 +392,7 @@ dependencies = [
 
 [[package]]
 name = "hatchling-broker"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -428,7 +428,7 @@ dependencies = [
 
 [[package]]
 name = "hatchling-builders"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "hatchling-core",
  "serde",
@@ -437,7 +437,7 @@ dependencies = [
 
 [[package]]
 name = "hatchling-channel"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "hatchling-core",
  "rustix",
@@ -448,7 +448,7 @@ dependencies = [
 
 [[package]]
 name = "hatchling-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "base64",
  "hatchling-sys",
@@ -461,7 +461,7 @@ dependencies = [
 
 [[package]]
 name = "hatchling-dev"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "hatchling-core",
  "hatchling-sys",
@@ -475,7 +475,7 @@ dependencies = [
 
 [[package]]
 name = "hatchling-egress"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "base64",
  "getrandom 0.4.3",
@@ -493,7 +493,7 @@ dependencies = [
 
 [[package]]
 name = "hatchling-feed"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "hatchling-core",
  "hatchling-goals",
@@ -503,7 +503,7 @@ dependencies = [
 
 [[package]]
 name = "hatchling-fido2"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "aes",
  "cbc",
@@ -519,7 +519,7 @@ dependencies = [
 
 [[package]]
 name = "hatchling-goals"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "hatchling-memory",
  "rustix",
@@ -531,7 +531,7 @@ dependencies = [
 
 [[package]]
 name = "hatchling-isolation"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "hatchling-sys",
  "rustix",
@@ -540,7 +540,7 @@ dependencies = [
 
 [[package]]
 name = "hatchling-loop"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "hatchling-memory",
  "hatchling-prompt",
@@ -552,7 +552,7 @@ dependencies = [
 
 [[package]]
 name = "hatchling-memory"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "rustix",
  "serde",
@@ -563,7 +563,7 @@ dependencies = [
 
 [[package]]
 name = "hatchling-model"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "hatchling-loop",
  "hatchling-prompt",
@@ -574,14 +574,14 @@ dependencies = [
 
 [[package]]
 name = "hatchling-prompt"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "hatchling-research"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "hatchling-loop",
  "hatchling-prompt",
@@ -594,7 +594,7 @@ dependencies = [
 
 [[package]]
 name = "hatchling-runtime"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "hatchling-agent",
  "hatchling-broker",
@@ -603,7 +603,7 @@ dependencies = [
 
 [[package]]
 name = "hatchling-scheduler"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "hatchling-core",
  "jiff",
@@ -614,7 +614,7 @@ dependencies = [
 
 [[package]]
 name = "hatchling-skill"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -627,7 +627,7 @@ dependencies = [
 
 [[package]]
 name = "hatchling-space"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -640,7 +640,7 @@ dependencies = [
 
 [[package]]
 name = "hatchling-sys"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "hatchling-core",
  "libc",
@@ -651,7 +651,7 @@ dependencies = [
 
 [[package]]
 name = "hatchling-vault"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "argon2",
  "chacha20poly1305",

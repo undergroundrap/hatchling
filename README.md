@@ -9,6 +9,8 @@
 <p align="center">
   <a href="LICENSE"><img alt="License: AGPL-3.0-or-later" src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg"></a>
   <a href="https://github.com/undergroundrap/hatchling/actions/workflows/ci.yml"><img alt="Gate" src="https://img.shields.io/github/actions/workflow/status/undergroundrap/hatchling/ci.yml?branch=main&amp;label=gate"></a>
+  <a href="https://crates.io/crates/hatchling-runtime"><img alt="crates.io: hatchling-runtime" src="https://img.shields.io/crates/v/hatchling-runtime.svg"></a>
+  <a href="https://docs.rs/hatchling-runtime"><img alt="docs.rs" src="https://img.shields.io/docsrs/hatchling-runtime"></a>
   <a href="rust-toolchain.toml"><img alt="Rust 1.85+" src="https://img.shields.io/badge/rust-1.85%2B-orange.svg"></a>
   <a href="docs/arch/trust-boundary.md#requirements"><img alt="Platform: Linux 5.11+ or WSL2" src="https://img.shields.io/badge/platform-Linux%205.11%2B%20%7C%20WSL2-lightgrey.svg"></a>
   <a href="CONTRIBUTING.md"><img alt="PRs welcome" src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg"></a>
@@ -90,6 +92,8 @@ cargo build --release
 sudo install -m 755 target/release/hatchling-broker target/release/hatchling-agent /usr/local/bin/
 sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin hatchling-cell
 ```
+
+Or install from crates.io: `cargo install hatchling-runtime` builds one `hatchling` binary that is both. Copy it where the cell's user can run it (`sudo install -m 755 ~/.cargo/bin/hatchling /usr/local/bin/`), then below use `hatchling broker` for `hatchling-broker`, and set `HATCHLING_AGENT_BIN=/usr/local/bin/hatchling`. Keep the clone either way: the examples run from it.
 
 Give cells a uid of their own, never `nobody` or any uid another process uses: the broker admits an agent by its uid, so any process with that uid could act as the agent.
 

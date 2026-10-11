@@ -141,6 +141,30 @@ jobs:
       - name: Package and verify every published crate
         run: cargo publish --workspace --dry-run --locked
 
+  semver:
+    # The published crates' public APIs against their latest release on
+    # crates.io. A breaking change needs a version bump: before 1.0, the
+    # minor version (the first breaking pull request after a release bumps
+    # the workspace version).
+    name: semver checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+
+      - name: Install cargo-semver-checks
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks@0.51.0
+
+      - name: Public APIs against crates.io
+        run: cargo semver-checks --workspace
+
   protocol:
  # the frontend/backend contract has one source, hatchling-core's
     # wire types. Both generated sides must match it: the schema (Rust) and

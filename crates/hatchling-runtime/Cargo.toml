@@ -7,10 +7,10 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
+keywords = ["agent", "sandbox", "llm", "self-hosted", "security"]
+categories = ["command-line-utilities", "artificial-intelligence", "security", "virtualization", "os::linux-apis"]
 description = "Personal AI agents you actually own, in kernel-isolated cells that never hold your keys: installs the `hatchling` command"
 readme = "README.md"
-keywords = ["agent", "sandbox", "seccomp", "llm", "security"]
-categories = ["command-line-utilities", "os::linux-apis"]
 
 [lints]
 workspace = true

@@ -8,8 +8,6 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
-keywords.workspace = true
-categories.workspace = true
 description = "The agent tool-calling loop: LLM-agnostic model trait, validated tool registry, bounded iteration. The model proposes; the host validates and bounds."
 
 [lints]

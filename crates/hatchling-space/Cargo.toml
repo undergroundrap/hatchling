@@ -8,8 +8,6 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
-keywords.workspace = true
-categories.workspace = true
 description = "Spaces: broker-asserted membership, admission factors, and space tasks."
 
 [lints]

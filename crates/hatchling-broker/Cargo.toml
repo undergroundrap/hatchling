@@ -7,9 +7,9 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
+keywords = ["agent", "sandbox", "broker"]
+categories = ["security"]
 readme.workspace = true
-keywords.workspace = true
-categories.workspace = true
 description = "The broker daemon agents connect to: socket lifecycle, peer authorization, handshake"
 
 [lints]

@@ -8,8 +8,6 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
-keywords.workspace = true
-categories.workspace = true
 description = "The artifact pipeline core: pinned build requests, broker-asserted provenance, the share-review gate, and the single delivery function."
 
 [lints]

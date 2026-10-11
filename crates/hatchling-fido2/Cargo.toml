@@ -7,9 +7,9 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
+keywords = ["fido2", "ctap2", "webauthn", "security-key", "hmac-secret"]
+categories = ["authentication", "hardware-support", "cryptography"]
 readme.workspace = true
-keywords.workspace = true
-categories.workspace = true
 description = "The FIDO2 transport: CTAP2 over USB HID (hidraw on Linux), as the vault's Authenticator"
 
 [lints]

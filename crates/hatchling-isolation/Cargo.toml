@@ -7,9 +7,9 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
+keywords = ["sandbox", "namespaces", "seccomp", "container", "linux"]
+categories = ["os::linux-apis", "security", "virtualization"]
 readme.workspace = true
-keywords.workspace = true
-categories.workspace = true
 description = "The isolation seam: one platform-neutral trait between broker policy and a platform's cell mechanism, and its Linux backend"
 
 [lints]

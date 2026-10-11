@@ -8,8 +8,6 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
-keywords.workspace = true
-categories.workspace = true
 description = "Signed skills: manifest format, Ed25519 verification, admission-time grant checks, and call-time capability enforcement"
 
 [lints]

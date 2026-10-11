@@ -95,6 +95,25 @@ All of them.
 - An `#[allow]` or `#[expect]` names its lint and gives a
   `reason = "..."`. There are no file-wide allows.
 
+### Adding a crate
+
+Most new code is a module in an existing crate, behind a feature if
+it's optional. A new crate is for code that brings heavy dependencies
+most users don't need (a cloud or secret-manager client, say) or that
+ships its own program. Each published crate costs:
+
+- a `[workspace.dependencies]` entry in the root `Cargo.toml`, and
+  `version.workspace = true` in its own manifest;
+- an `exceptions` entry in `deny.toml`, so our own AGPL license passes
+  while a third-party AGPL dependency still fails;
+- a manual first publish by the maintainer (crates.io only lets the
+  owner create a crate), then trusted-publishing setup for it on
+  crates.io, after which releases publish it automatically.
+
+A development or test crate sets `publish = false` instead, and needs
+none of that. The required "crates.io dry run" check fails a pull
+request that leaves a published crate unpublishable.
+
 ## Frontend (TypeScript)
 
 ### Strictness is non-negotiable

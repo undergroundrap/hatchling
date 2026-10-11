@@ -9,8 +9,6 @@ repository.workspace = true
 description = "Messaging channels for hatchling: the Channel trait and broker-stamped messages; the broker owns the endpoints"
 homepage.workspace = true
 readme.workspace = true
-keywords.workspace = true
-categories.workspace = true
 
 [lints]
 workspace = true

@@ -8,8 +8,6 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
-keywords.workspace = true
-categories.workspace = true
 description = "A real model provider for the agent loop: OpenAI-compatible chat-completions translation behind an injected transport. The crate never opens a socket; the host supplies HTTP through the broker-mediated egress path."
 
 [lints]

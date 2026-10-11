@@ -7,9 +7,9 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
+keywords = ["proxy", "egress", "tls", "allowlist"]
+categories = ["network-programming", "security"]
 readme.workspace = true
-keywords.workspace = true
-categories.workspace = true
 description = "Egress proxy: surrogate-validated, allowlisted outbound network access. The agent never touches the network or holds real credentials."
 
 [lints]

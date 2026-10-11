@@ -7,9 +7,9 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
+keywords = ["agent", "llm"]
+categories = ["artificial-intelligence"]
 readme.workspace = true
-keywords.workspace = true
-categories.workspace = true
 description = "The agent binary that runs inside a hatchling cell"
 
 [lints]

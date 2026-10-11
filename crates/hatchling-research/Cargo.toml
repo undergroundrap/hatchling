@@ -8,8 +8,6 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
-keywords.workspace = true
-categories.workspace = true
 description = "Deep research runs: a phased mode of the agent loop (plan, gather, synthesize, report) with source discipline, citation depth, and bounds."
 
 [lints]

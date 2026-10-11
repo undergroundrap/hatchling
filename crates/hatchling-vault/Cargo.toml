@@ -7,9 +7,9 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
+keywords = ["secrets", "encryption", "vault", "keyring", "totp"]
+categories = ["cryptography", "authentication"]
 readme.workspace = true
-keywords.workspace = true
-categories.workspace = true
 description = "Broker-owned credential store: validated secret names, zeroizing secrets, atomic 0600 storage under a 0700 root"
 
 [lints]

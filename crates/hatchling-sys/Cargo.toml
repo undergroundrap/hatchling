@@ -7,9 +7,9 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
+keywords = ["seccomp", "namespaces", "syscalls", "linux", "sandbox"]
+categories = ["os::linux-apis", "security"]
 readme.workspace = true
-keywords.workspace = true
-categories.workspace = true
 description = "The single crate allowed unsafe code: thin safe wrappers for Linux namespaces, mounts, and seccomp-bpf"
 
 [lints]
