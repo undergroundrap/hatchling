@@ -81,6 +81,16 @@ jobs:
       - name: Allow unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
+      # A seccomp kill is SIGSYS, which dumps core, and Ubuntu pipes every core
+      # dump to apport. The denied-syscall catalogs kill hundreds of probes in
+      # minutes; the apport processes that spawned exhausted the runner's memory
+      # (OOM, swap, 30 s stalls). Write core files instead: the core size limit
+      # is 0, and a cell's root is read-only, so nothing is written.
+      - name: Don't hand core dumps to apport
+        run: |
+          echo "core size limit: $(ulimit -c)"
+          sudo sysctl -w kernel.core_pattern=core
+
       # A sample every 5 s while the gate runs, to show what the runner is
       # doing if a probe cell or `ldd` stalls (blocked tasks, I/O wait, steal).
       - name: Start a runner sampler

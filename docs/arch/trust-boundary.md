@@ -81,7 +81,7 @@ Hatchling is pre-1.0. Before launch we reviewed our own trust boundary: who may 
 | Egress | An allowlisted model vendor that fetches URLs on request (image or document URLs, server-side tools) can carry data to hosts outside the allowlist. The proxy checks destinations, not request bodies. | [WO-008](../workorders/workorder-008-model-request-policy.md) |
 | Egress | Smaller gaps: two allowlist entries can map to the same vault secret name; credentials an upstream echoes back aren't scrubbed; the harness relay buffers whole request bodies; a model response over about 48 KiB fails. | [WO-009](../workorders/workorder-009-egress-correctness.md) |
 | Grants | A cell can list and cancel every schedule, not only its own. | [WO-010](../workorders/workorder-010-schedule-ownership.md) |
-| Hygiene | Some copies of secrets in memory aren't wiped; the redaction audit log stores unsalted hashes; concurrent keyring edits aren't locked; the hardware-key factor doesn't ask for a PIN. | [WO-011](../workorders/workorder-011-secret-hygiene.md) |
+| Hygiene | Some copies of secrets in memory aren't wiped; the redaction audit log stores unsalted hashes; concurrent keyring edits aren't locked; the hardware-key factor doesn't ask for a PIN. A cell killed by seccomp dumps core, so the host's crash handler (apport, on Ubuntu) receives that cell's memory, including any secret it fetched. | [WO-011](../workorders/workorder-011-secret-hygiene.md) |
 
 Found something that isn't here? Report it privately: [SECURITY.md](../../SECURITY.md).
 
