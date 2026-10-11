@@ -18,6 +18,7 @@ Publishing and metadata only. No change to the broker, the agent or the wire pro
 - CONTRIBUTING says when new code earns its own crate, and what each published crate costs.
 - `docs/releasing.md`: how a version is cut and published, the trusted-publishing settings, and a new crate's first publish. `scripts/publish-crates.sh` publishes in dependency order for both CI and the maintainer, skips crates already on crates.io at the version (so a failed run is simply re-run), and in CI skips and names crates new to crates.io.
 - `scripts/setup-trusted-publishing.sh` makes every published crate trust the release workflow through crates.io's API, with a token scoped to `trusted-publishing` only, read without echoing; it skips crates already set up.
+- crates.io pages: `hatchling-runtime` gets a README written for crates.io (the logo, why Hatchling is different, install, the security model in brief, links), and every other crate's page links to it and to the repository.
 
 ### Changed
 
