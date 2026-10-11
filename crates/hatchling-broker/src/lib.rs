@@ -1,5 +1,9 @@
 //! `hatchling-broker`: the daemon agents connect to.
 //!
+//! Part of [Hatchling](https://github.com/undergroundrap/hatchling), published so
+//! [`hatchling-runtime`](https://crates.io/crates/hatchling-runtime) can be
+//! installed. It carries no stability promise on its own.
+//!
 //! The broker owns the host side of the trust boundary. It binds the
 //! Unix socket, authorizes every connecting peer against kernel-reported
 //! credentials before reading a single byte of its traffic, and completes
@@ -23,6 +27,7 @@ pub use artifact_ops::{SealedArtifactStore, handle_artifact_op, held_secrets, is
 pub mod cell;
 pub use cell::{CellConfig, CellHandle, ScheduledRun, spawn_cell};
 pub mod channel;
+pub mod cli;
 pub use approval::{ApprovalLedger, ApprovalToken, MintError, Verdict};
 pub use channel::{ChannelRegistry, handle_channel_op};
 pub mod config;

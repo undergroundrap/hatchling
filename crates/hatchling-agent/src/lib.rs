@@ -1,5 +1,9 @@
 //! `hatchling-agent`: the binary that runs inside a cell.
 //!
+//! Part of [Hatchling](https://github.com/undergroundrap/hatchling), published so
+//! [`hatchling-runtime`](https://crates.io/crates/hatchling-runtime) can be
+//! installed. It carries no stability promise on its own.
+//!
 //! Every piece of agent logic lives in this library so it can be tested
 //! without spawning the binary. `main.rs` is a thin edge: parse config,
 //! install logging, run the cell lifecycle, and translate the outcome to a
@@ -11,6 +15,7 @@
 
 pub mod cell;
 pub mod channel;
+pub mod cli;
 pub mod config;
 pub mod egress;
 pub mod error;

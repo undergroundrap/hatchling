@@ -1,12 +1,15 @@
 [package]
 name = "hatchling-vault"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "Broker-owned credential store: validated secret names, zeroizing secrets, atomic 0600 storage under a 0700 root"
 
 [lints]
@@ -17,7 +20,7 @@ thiserror = "2"
 tracing = "0.1"
 # The shared contract: SecretName, MAX_SECRET_BYTES. The vault enforces
 # the contract's rules; it does not invent its own.
-hatchling-core = { version = "0.1.0", path = "../hatchling-core" }
+hatchling-core.workspace = true
 # Memory hygiene for secret bytes: zeroized on drop.
 # The `derive` feature gives `MasterKey` the declarative
 # `Zeroize`/`ZeroizeOnDrop` derives instead of a hand-written `Drop`.

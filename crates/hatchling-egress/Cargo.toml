@@ -1,12 +1,15 @@
 [package]
 name = "hatchling-egress"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "Egress proxy: surrogate-validated, allowlisted outbound network access. The agent never touches the network or holds real credentials."
 
 [lints]
@@ -16,10 +19,10 @@ workspace = true
 thiserror = "2"
 tracing = "0.1"
 # The shared contract: protocol types, peer credentials.
-hatchling-core = { version = "0.1.0", path = "../hatchling-core" }
+hatchling-core.workspace = true
 # The vault: surrogate minting reads grant metadata; the proxy swaps
 # surrogates for real credentials at request time.
-hatchling-vault = { version = "0.1.0", path = "../hatchling-vault" }
+hatchling-vault.workspace = true
 # Memory hygiene for surrogate HMAC keys and swapped credentials.
 zeroize = "1"
 # CSPRNG for surrogate HMAC key generation.

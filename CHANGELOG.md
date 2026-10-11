@@ -6,9 +6,21 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-11
+
+The first release on crates.io. No change to the broker, the agent or the wire protocol.
+
 ### Added
 
+- `hatchling-runtime`, the crate that installs one `hatchling` command: `hatchling broker` and `hatchling agent` run the broker and the agent with their existing command lines. Started as a cell's `/agent`, it is the agent, so `HATCHLING_AGENT_BIN` can point at it too ([WO-016](docs/workorders/workorder-016-publish-to-crates-io.md)).
+- The shipped crates are published to crates.io; development and test crates are not.
+- CI packages and verifies every published crate on each pull request, and runs the real-cell suites for the broker's spawner helpers through `hatchling` as well as `hatchling-broker`.
 - This changelog, and a milestone per planned version: v0.2.0 (what a hostile cell can do), v0.3.0 (what a local attacker can do), v0.4.0 (what a security review asks for next).
+
+### Changed
+
+- Every crate shares the workspace version, and depends on the others through `[workspace.dependencies]`, so a release bumps one line.
+- `cargo deny` exempts our own published crates from the license allowlist by name; a third-party AGPL dependency still fails it.
 
 ## [0.1.0] - 2026-10-11
 
@@ -29,5 +41,6 @@ The first public release. [Release notes](https://github.com/undergroundrap/hatc
 
 Published in [the trust boundary](docs/arch/trust-boundary.md#known-limitations), each with a work order and an issue.
 
-[Unreleased]: https://github.com/undergroundrap/hatchling/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/undergroundrap/hatchling/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/undergroundrap/hatchling/releases/tag/v0.1.1
 [0.1.0]: https://github.com/undergroundrap/hatchling/releases/tag/v0.1.0

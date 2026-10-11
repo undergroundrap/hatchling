@@ -1,10 +1,10 @@
 [package]
 name = "hatchling-builders"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+publish = false
 authors.workspace = true
 repository.workspace = true
 description = "Hatchling's document and page artifact builders: skills the broker runs in skill cells."
@@ -22,7 +22,7 @@ path = "src/bin/page.rs"
 
 [dependencies]
 # The skill output bound a builder result must fit in.
-hatchling-core = { version = "0.1.0", path = "../hatchling-core" }
+hatchling-core.workspace = true
 # The pinned build request in, the builder result out.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

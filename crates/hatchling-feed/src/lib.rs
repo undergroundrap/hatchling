@@ -1,5 +1,9 @@
 //! `hatchling-feed`: the feed, the user's personal newspaper.
 //!
+//! Part of [Hatchling](https://github.com/undergroundrap/hatchling), published so
+//! [`hatchling-runtime`](https://crates.io/crates/hatchling-runtime) can be
+//! installed. It carries no stability promise on its own.
+//!
 //! A feed is a schedule whose run is a **digest** of the user's own
 //! records: what changed in their goals, tracking, and tagged memory over
 //! a window, delivered to a channel. Three rules shape it:

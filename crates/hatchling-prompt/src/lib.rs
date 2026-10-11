@@ -1,5 +1,9 @@
 //! Hatchling's authored prompt pack.
 //!
+//! Part of [Hatchling](https://github.com/undergroundrap/hatchling), published so
+//! [`hatchling-runtime`](https://crates.io/crates/hatchling-runtime) can be
+//! installed. It carries no stability promise on its own.
+//!
 //! What lives here, and nowhere else:
 //!
 //! 1. The system prompt, assembled from named [`Section`]s. Every

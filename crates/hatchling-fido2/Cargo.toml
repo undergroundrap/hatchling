@@ -1,12 +1,15 @@
 [package]
 name = "hatchling-fido2"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "The FIDO2 transport: CTAP2 over USB HID (hidraw on Linux), as the vault's Authenticator"
 
 [lints]
@@ -14,7 +17,7 @@ workspace = true
 
 [dependencies]
 # The Authenticator contract this transport implements.
-hatchling-vault = { version = "0.1.0", path = "../hatchling-vault" }
+hatchling-vault.workspace = true
 # P-256 key agreement for the PIN/UV auth protocols, ES256 signature
 # checks, and randomness; already in the tree through rustls.
 ring = "0.17"

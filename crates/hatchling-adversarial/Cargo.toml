@@ -1,10 +1,10 @@
 [package]
 name = "hatchling-adversarial"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+publish = false
 authors.workspace = true
 repository.workspace = true
 description = " cell adversarial suite: probe binary plus harness assertion helpers. Dev-only; never linked into the runtime."
@@ -45,10 +45,10 @@ path = "src/harness_fixture.rs"
 # The probe performs the real broker handshake and session protocol,
 # so the peer-gate and uniform-deny attacks exercise production code
 # paths, not a reimplementation.
-hatchling-core = { version = "0.1.0", path = "../hatchling-core" }
+hatchling-core.workspace = true
 # The denied-syscall catalog is computed as the kernel-header table
 # minus SeccompProfile::agent()'s allowlist: structurally 1:1, cannot drift.
-hatchling-sys = { version = "0.1.0", path = "../hatchling-sys" }
+hatchling-sys.workspace = true
 # Safe syscall wrappers (socket, poll): the probe's only raw
 # syscall is the seccomp probe itself, via hatchling-sys.
 rustix = { version = "0.38", features = ["event", "net", "process"] }

@@ -1,5 +1,9 @@
 //! `hatchling-vault`: the broker-owned credential store.
 //!
+//! Part of [Hatchling](https://github.com/undergroundrap/hatchling), published so
+//! [`hatchling-runtime`](https://crates.io/crates/hatchling-runtime) can be
+//! installed. It carries no stability promise on its own.
+//!
 //! One file per secret under a `0700` root directory. Names are validated
 //! [`SecretName`](hatchling_core::SecretName)s, so path traversal is
 //! unrepresentable; values are zeroized on drop ([`Secret`]) and never

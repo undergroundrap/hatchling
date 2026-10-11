@@ -518,6 +518,21 @@ pub(crate) fn fixture_skill_config(root: &Path) -> Result<hatchling_broker::Skil
     })
 }
 
+/// The broker executable the tests start spawner helpers with: the
+/// compiled `hatchling-broker`, or `HATCHLING_TEST_SPAWNER` when set (CI
+/// points it at `hatchling`, to prove the helpers run through the
+/// `hatchling-runtime` front door too).
+#[allow(
+    dead_code,
+    reason = "shared test helper: used by only some test targets"
+)]
+pub(crate) fn spawner() -> PathBuf {
+    std::env::var_os("HATCHLING_TEST_SPAWNER").map_or_else(
+        || PathBuf::from(env!("CARGO_BIN_EXE_hatchling-broker")),
+        PathBuf::from,
+    )
+}
+
 /// The fixture skill loaded exactly as broker startup loads it, with the
 /// real runtime: the compiled broker binary as the spawner helper.
 #[allow(
@@ -529,9 +544,7 @@ pub(crate) fn fixture_skills(
     timeout: Duration,
 ) -> Result<hatchling_broker::Skills, String> {
     let config = fixture_skill_config(root)?;
-    let runtime =
-        hatchling_broker::SkillRuntime::new(PathBuf::from(env!("CARGO_BIN_EXE_hatchling-broker")))
-            .with_timeout(timeout);
+    let runtime = hatchling_broker::SkillRuntime::new(spawner()).with_timeout(timeout);
     let skills = hatchling_broker::Skills::load(&config)
         .map_err(|e| format!("load: {e}"))?
         .with_runtime(runtime);
@@ -652,9 +665,7 @@ pub(crate) fn artifact_skills(
         trust_roots_file,
         grants,
     };
-    let runtime =
-        hatchling_broker::SkillRuntime::new(PathBuf::from(env!("CARGO_BIN_EXE_hatchling-broker")))
-            .with_timeout(timeout);
+    let runtime = hatchling_broker::SkillRuntime::new(spawner()).with_timeout(timeout);
     let skills = hatchling_broker::Skills::load(&config)
         .map_err(|e| format!("load: {e}"))?
         .with_runtime(runtime);

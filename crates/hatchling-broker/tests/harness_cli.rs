@@ -444,7 +444,7 @@ impl Deployment {
     fn skills(&self) -> Result<Skills, String> {
         let harnesses = Harnesses::parse(&self.config, |key| self.vars.get(key).cloned())
             .map_err(|e| format!("harnesses: {e}"))?;
-        let runtime = SkillRuntime::new(PathBuf::from(env!("CARGO_BIN_EXE_hatchling-broker")));
+        let runtime = SkillRuntime::new(common::spawner());
         Ok(Skills::default()
             .with_runtime(runtime)
             .with_harnesses(harnesses))

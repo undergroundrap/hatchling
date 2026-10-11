@@ -1,5 +1,9 @@
 //! `hatchling-loop`: the agent tool-calling loop.
 //!
+//! Part of [Hatchling](https://github.com/undergroundrap/hatchling), published so
+//! [`hatchling-runtime`](https://crates.io/crates/hatchling-runtime) can be
+//! installed. It carries no stability promise on its own.
+//!
 //! The model proposes; the host validates and bounds. Three things
 //! stay separate because they change for different reasons:
 //!

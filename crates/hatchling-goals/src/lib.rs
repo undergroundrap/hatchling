@@ -1,6 +1,10 @@
 //! `hatchling-goals`: the broker-owned goals and tracking store, and
 //! the read-only query interface the feed reads from.
 //!
+//! Part of [Hatchling](https://github.com/undergroundrap/hatchling), published so
+//! [`hatchling-runtime`](https://crates.io/crates/hatchling-runtime) can be
+//! installed. It carries no stability promise on its own.
+//!
 //! - **Goals** the user is working toward: create, list, update, close.
 //!   User-explicit only — no inferred goals, no auto-close, no delete.
 //! - **Tracking**: an append-only, timestamped log of what happened,

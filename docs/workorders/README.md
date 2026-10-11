@@ -48,7 +48,7 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | [013](workorder-013-release-process.md) | A release process: signed, reproducible binaries and an SBOM | yes | QUEUED |
 | [014](workorder-014-running-without-root.md) | Run the full broker without root | yes | QUEUED |
 | [015](workorder-015-root-cell-tests-in-ci.md) | Run the cell test suites as root in CI | yes | QUEUED |
-| [016](workorder-016-publish-to-crates-io.md) | Publish to crates.io, with `hatchling-runtime` as the front door | yes | QUEUED |
+| [016](workorder-016-publish-to-crates-io.md) | Publish to crates.io, with `hatchling-runtime` as the front door | yes | IN-PROGRESS |
 
 ## Candidates
 

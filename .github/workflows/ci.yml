@@ -95,6 +95,17 @@ jobs:
       - name: Run gate
         run: bash scripts/check.sh
 
+      # The broker starts its spawner helpers (skill cells, scheduled runs,
+      # subagents, harnesses) by re-running its own executable. Run the suites
+      # that use them again with `hatchling` (crate hatchling-runtime) as that
+      # executable, so the front door's routing is proven with real cells.
+      - name: Spawner helpers through hatchling
+        run: >-
+          HATCHLING_TEST_SPAWNER="$PWD/target/debug/hatchling"
+          cargo test -p hatchling-broker --locked
+          --test skill_run --test schedule_run --test subagents
+          --test harness --test harness_cli --test skill_cell_spawn
+
       # The denied-syscall catalogs kill hundreds of probes in minutes, and
       # each seccomp kill is audited. Report how many audit records this job
       # produced and whether the kernel's audit backlog overflowed, which
@@ -111,6 +122,24 @@ jobs:
           awk 'NR <= 2 || $2 > 0 || $16 > 10 || $17 > 10' "$RUNNER_TEMP/vmstat.log" | head -60 || true
           echo 'kernel log tail:'
           sudo dmesg -T | tail -40 || true
+
+  publish:
+    # Every crate the hatchling-runtime front door needs is published to
+    # crates.io. Each must stay publishable: metadata, versioned dependencies,
+    # and a build of each packaged crate on its own, in dependency order.
+    name: crates.io dry run
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+
+      - name: Package and verify every published crate
+        run: cargo publish --workspace --dry-run --locked
 
   protocol:
  # the frontend/backend contract has one source, hatchling-core's

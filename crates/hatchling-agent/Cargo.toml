@@ -1,28 +1,31 @@
 [package]
 name = "hatchling-agent"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "The agent binary that runs inside a hatchling cell"
 
 [lints]
 workspace = true
 
 [dependencies]
-hatchling-core = { version = "0.1.0", path = "../hatchling-core" }
-hatchling-loop = { version = "0.1.0", path = "../hatchling-loop" }
-hatchling-memory = { version = "0.1.0", path = "../hatchling-memory" }
-hatchling-model = { version = "0.1.0", path = "../hatchling-model" }
+hatchling-core.workspace = true
+hatchling-loop.workspace = true
+hatchling-memory.workspace = true
+hatchling-model.workspace = true
 # Research runs: the run is a mode of the loop; the agent
 # supplies the fetcher, through egress.
-hatchling-research = { version = "0.1.0", path = "../hatchling-research" }
+hatchling-research.workspace = true
 # The agent reaches channels only through the broker session; the channel
 # types (Message, ChannelId) are the session's vocabulary.
-hatchling-channel = { version = "0.1.0", path = "../hatchling-channel" }
+hatchling-channel.workspace = true
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = "0.3"
@@ -34,14 +37,14 @@ rustix = { version = "0.38", features = ["process"] }
 # Component tests run the real broker pipeline (peer gate + grant
 # mediation) as the agent's counterpart. Dev-only: never linked into
 # the runtime.
-hatchling-broker = { version = "0.1.0", path = "../hatchling-broker" }
+hatchling-broker = { path = "../hatchling-broker" }
 # Goals component tests parse the broker's feed items and check their
 # provenance. Dev-only: the agent speaks goals only through the session.
-hatchling-goals = { version = "0.1.0", path = "../hatchling-goals" }
+hatchling-goals = { path = "../hatchling-goals" }
 # The channel hierarchy test compares the loop's system message against
 # the authored prompt pack. Dev-only: the runtime reaches the pack only
 # through hatchling-loop.
-hatchling-prompt = { version = "0.1.0", path = "../hatchling-prompt" }
+hatchling-prompt = { path = "../hatchling-prompt" }
 # Sealed-vault tests generate the broker's master key directly.
 # Dev-only: never linked into the runtime.
-hatchling-vault = { version = "0.1.0", path = "../hatchling-vault" }
+hatchling-vault = { path = "../hatchling-vault" }

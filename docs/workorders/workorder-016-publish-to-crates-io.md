@@ -1,6 +1,6 @@
 # WO-016: Publish to crates.io, with `hatchling-runtime` as the front door
 
-**Status:** QUEUED
+**Status:** IN-PROGRESS
 **Area:** `crates/hatchling-runtime` (new), `Cargo.toml` (workspace), `crates/*/Cargo.toml`, `deny.toml`, `.github/workflows/ci.yml`, `README.md`, `docs/`
 **Issue:** [#26](https://github.com/undergroundrap/hatchling/issues/26)
 **Trust boundary:** yes

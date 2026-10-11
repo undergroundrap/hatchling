@@ -1,19 +1,22 @@
 [package]
 name = "hatchling-goals"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "Broker-owned goals and tracking store: user-explicit goals, an append-only tracking log, and the read-only feed query interface whose every item carries its provenance."
 
 [lints]
 workspace = true
 
 [dependencies]
-hatchling-memory = { version = "0.1.0", path = "../hatchling-memory" }
+hatchling-memory.workspace = true
 thiserror = "2"
 tracing = "0.1"
 serde = { version = "1", features = ["derive"] }

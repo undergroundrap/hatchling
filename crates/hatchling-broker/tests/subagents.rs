@@ -127,7 +127,7 @@ fn seed(config: &Config, key: &MasterKey, with_secret: bool) {
 
 fn env(config: &Config, timeout: Duration) -> RunEnv {
     RunEnv {
-        spawner: PathBuf::from(env!("CARGO_BIN_EXE_hatchling-broker")),
+        spawner: common::spawner(),
         agent_bin: run_fixture_binary().unwrap(),
         run_root: config.scheduler.run_root(),
         timeout,

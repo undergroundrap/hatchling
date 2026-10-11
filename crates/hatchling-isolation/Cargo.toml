@@ -1,12 +1,15 @@
 [package]
 name = "hatchling-isolation"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "The isolation seam: one platform-neutral trait between broker policy and a platform's cell mechanism, and its Linux backend"
 
 [lints]
@@ -16,7 +19,7 @@ workspace = true
 # The Linux backend's every OS call goes through the sanctioned unsafe
 # crate; this crate has no unsafe of its own. Reviewed in
 # docs/dependency-review.md.
-hatchling-sys = { version = "0.1.0", path = "../hatchling-sys" }
+hatchling-sys.workspace = true
 thiserror = "2"
 
 [dev-dependencies]

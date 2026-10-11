@@ -1,6 +1,10 @@
 //! The FIDO2 transport: CTAP2 over USB HID, as the vault's
 //! `Authenticator`.
 //!
+//! Part of [Hatchling](https://github.com/undergroundrap/hatchling), published so
+//! [`hatchling-runtime`](https://crates.io/crates/hatchling-runtime) can be
+//! installed. It carries no stability promise on its own.
+//!
 //! A security key is reached in layers, each strict about what it accepts
 //! from the device:
 //!

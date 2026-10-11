@@ -1,12 +1,15 @@
 [package]
 name = "hatchling-prompt"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "Hatchling's authored prompt pack: the system prompt assembled from an explicit ordered section list, and the untrusted-data envelope for tool results. Prompt text lives here and nowhere else; the wording is hatchling's own."
 
 [lints]

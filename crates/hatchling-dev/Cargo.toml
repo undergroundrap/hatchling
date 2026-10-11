@@ -1,10 +1,10 @@
 [package]
 name = "hatchling-dev"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+publish = false
 authors.workspace = true
 repository.workspace = true
 description = "Development-only audit and conformance tooling. Never linked into runtime crates."
@@ -32,7 +32,7 @@ serde_json = "1"
 # waits, process-group kill, validated pids. Workspace crate, not an
 # external dependency; dev-only direction (dev -> sys) is allowed by
 # the dep_direction guard.
-hatchling-sys = { version = "0.1.0", path = "../hatchling-sys" }
+hatchling-sys.workspace = true
 # Parsing Rust sources for the mutation pre-flight gate:
 # functions, their lines, and the calls in their bodies. Already in
 # the lockfile (proc-macro dependencies use it); dev-only here.
@@ -43,6 +43,6 @@ syn = { version = "2", default-features = false, features = ["full", "parsing", 
 proc-macro2 = { version = "1", default-features = false, features = ["span-locations"] }
 # The wire types the frontend protocol schema is generated from,
 # with their `schema` feature on: dev-only, so no runtime binary builds it.
-hatchling-core = { version = "0.1.0", path = "../hatchling-core", features = ["schema"] }
+hatchling-core = { workspace = true, features = ["schema"] }
 # The generator for that schema. Reviewed: docs/dependency-review.md
 schemars = { version = "1", default-features = false, features = ["std"] }

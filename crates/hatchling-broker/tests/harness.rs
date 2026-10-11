@@ -93,7 +93,7 @@ impl Deployment {
         let vars = self.vars(timeout);
         let harnesses = Harnesses::parse(&self.config, |key| vars.get(key).cloned())
             .map_err(|e| e.to_string())?;
-        let runtime = SkillRuntime::new(PathBuf::from(env!("CARGO_BIN_EXE_hatchling-broker")));
+        let runtime = SkillRuntime::new(common::spawner());
         Ok(Skills::default()
             .with_runtime(runtime)
             .with_harnesses(harnesses))

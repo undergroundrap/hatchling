@@ -1,12 +1,15 @@
 [package]
 name = "hatchling-broker"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "The broker daemon agents connect to: socket lifecycle, peer authorization, handshake"
 
 [lints]
@@ -16,50 +19,50 @@ workspace = true
 # The artifact pipeline core: pinned build requests,
 # broker-asserted provenance, the share-review gate, and the one
 # delivery function the broker's artifact ops go through.
-hatchling-artifact = { version = "0.1.0", path = "../hatchling-artifact" }
-hatchling-core = { version = "0.1.0", path = "../hatchling-core" }
+hatchling-artifact.workspace = true
+hatchling-core.workspace = true
 # Spaces: broker-asserted membership, the admission factors,
 # and space tasks. The broker owns the space store and the session
 # admission table; the cell never touches either.
-hatchling-space = { version = "0.1.0", path = "../hatchling-space" }
+hatchling-space.workspace = true
 # The device endpoint's own key: the broker signs each device's
 # nonce, so a device knows it reached the broker it paired with.
 ed25519-dalek = "2"
 # The broker owns the only path to the credential store: every vault op
 # is mediated through the peer-authorized session, never direct.
-hatchling-vault = { version = "0.1.0", path = "../hatchling-vault" }
+hatchling-vault.workspace = true
 # Security keys over USB: the CLI and start-up reach a FIDO2 key
 # through this transport; the vault still decides.
-hatchling-fido2 = { version = "0.1.0", path = "../hatchling-fido2" }
+hatchling-fido2.workspace = true
 # The broker owns the only path to durable memory: every memory op is
 # mediated through the peer-authorized session, never direct.
-hatchling-memory = { version = "0.1.0", path = "../hatchling-memory" }
+hatchling-memory.workspace = true
 # The broker owns the only path to goals and tracking: writes go
 # through its grant-checked goals ops, and the feed's queries through a
 # read-only reader, never direct.
-hatchling-goals = { version = "0.1.0", path = "../hatchling-goals" }
+hatchling-goals.workspace = true
 # The broker owns scheduled work: the sealed schedule store,
 # the schedule session ops, and the dispatcher's real store and delivery
 # path. The cell never sees any of it.
-hatchling-scheduler = { version = "0.1.0", path = "../hatchling-scheduler" }
+hatchling-scheduler.workspace = true
 # The broker owns the only path to the network: every egress request is
 # mediated through the peer-authorized session with surrogate validation
 # and allowlist checking.
-hatchling-egress = { version = "0.1.0", path = "../hatchling-egress" }
+hatchling-egress.workspace = true
 # The broker owns the channel endpoints: the cell never touches a channel
 # socket directly; it reaches channels only through the peer-authorized
 # session.
-hatchling-channel = { version = "0.1.0", path = "../hatchling-channel" }
+hatchling-channel.workspace = true
 # The broker owns cell policy; the isolation seam builds and
 # supervises the cells it decides on. The broker's cell code speaks only
 # to the seam's platform-neutral trait.
-hatchling-isolation = { version = "0.1.0", path = "../hatchling-isolation" }
+hatchling-isolation.workspace = true
 # The broker's own process: its uid for the local API's owner, socket
 # umasks, and test fixtures. No cell mechanism goes through it any more.
-hatchling-sys = { version = "0.1.0", path = "../hatchling-sys" }
+hatchling-sys.workspace = true
 # The broker owns skill admission: signature verification, code identity
 # pinning, and call-time capability enforcement. The cell never self-attests.
-hatchling-skill = { version = "0.1.0", path = "../hatchling-skill" }
+hatchling-skill.workspace = true
 # Memory hygiene for credential bytes in the egress credential fetcher.
 zeroize = "1"
 # Constant-time comparison of a harness relay's surrogate key.
@@ -73,7 +76,7 @@ serde = { version = "1", features = ["derive"] }
 base64 = "0.22"
 # The feed: a feed schedule's digest is generated here, from
 # the read-only query path.
-hatchling-feed = { version = "0.1.0", path = "../hatchling-feed" }
+hatchling-feed.workspace = true
 
 # The adversarial suite runs its own sequential runner (see the module
 # docs in tests/adversarial.rs): the probe reports through the test
@@ -89,23 +92,23 @@ harness = false
 rustix = { version = "0.38", features = ["fs", "process", "pipe", "stdio"] }
 # Operator CLI tests verify sealed envelopes through the vault API; the
 # keyring tests unlock with the vault's software FIDO2 key.
-hatchling-vault = { version = "0.1.0", path = "../hatchling-vault", features = ["virtual-authenticator"] }
+hatchling-vault = { path = "../hatchling-vault", features = ["virtual-authenticator"] }
 # Memory component tests exercise the broker's memory ops through the store API.
-hatchling-memory = { version = "0.1.0", path = "../hatchling-memory" }
+hatchling-memory = { path = "../hatchling-memory" }
 # Cell boundary tests spawn the real agent binary (built by
 # `cargo build --workspace` in scripts/check.sh); the path dependency
 # keeps broker and agent versions in lockstep.
-hatchling-agent = { version = "0.1.0", path = "../hatchling-agent" }
+hatchling-agent = { path = "../hatchling-agent" }
 # The adversarial suite spawns the real probe binary and interprets
 # its reports; the path dependency keeps driver and probe in lockstep.
-hatchling-adversarial = { version = "0.1.0", path = "../hatchling-adversarial" }
+hatchling-adversarial = { path = "../hatchling-adversarial" }
 # Skill invocation tests build signed manifests via the real ed25519 path.
 ed25519-dalek = "2"
 # The envelope proof drives a real agent loop through the real
 # provider, and checks its request against the real envelope.
-hatchling-loop = { version = "0.1.0", path = "../hatchling-loop" }
-hatchling-model = { version = "0.1.0", path = "../hatchling-model" }
-hatchling-prompt = { version = "0.1.0", path = "../hatchling-prompt" }
+hatchling-loop = { path = "../hatchling-loop" }
+hatchling-model = { path = "../hatchling-model" }
+hatchling-prompt = { path = "../hatchling-prompt" }
 # The delivery test builds a research run's report through the
 # artifact pipeline.
-hatchling-research = { version = "0.1.0", path = "../hatchling-research" }
+hatchling-research = { path = "../hatchling-research" }

@@ -1,19 +1,22 @@
 [package]
 name = "hatchling-scheduler"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "Scheduled work: cron timing in explicit IANA timezones, subset-closed schedule grants, and the dispatcher that fires, delivers, and parks."
 
 [lints]
 workspace = true
 
 [dependencies]
-hatchling-core = { version = "0.1.0", path = "../hatchling-core" }
+hatchling-core.workspace = true
 # Timestamps, civil time, and the system IANA timezone database
 # (/usr/share/zoneinfo): cron is evaluated in each schedule's own zone,
 # across daylight-saving gaps and folds. No bundled database, no

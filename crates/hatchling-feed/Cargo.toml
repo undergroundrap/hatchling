@@ -1,12 +1,15 @@
 [package]
 name = "hatchling-feed"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "The feed: a scheduled digest of the user's own records, read-only, every item an observation with its transitive provenance label."
 
 [lints]
@@ -14,10 +17,10 @@ workspace = true
 
 [dependencies]
 # The wire spec and the schedule grant vocabulary the feed's reads map to.
-hatchling-core = { version = "0.1.0", path = "../hatchling-core" }
+hatchling-core.workspace = true
 # The read-only query path and the provenance every item carries.
-hatchling-goals = { version = "0.1.0", path = "../hatchling-goals" }
+hatchling-goals.workspace = true
 # Memory tags, for memory sections.
-hatchling-memory = { version = "0.1.0", path = "../hatchling-memory" }
+hatchling-memory.workspace = true
 # Times in the digest, stated in UTC.
 jiff = { version = "0.2.24", default-features = false, features = ["std"] }

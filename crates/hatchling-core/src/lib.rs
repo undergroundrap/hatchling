@@ -1,5 +1,9 @@
 //! `hatchling-core`: the shared foundation every hatchling binary builds on.
 //!
+//! Part of [Hatchling](https://github.com/undergroundrap/hatchling), published so
+//! [`hatchling-runtime`](https://crates.io/crates/hatchling-runtime) can be
+//! installed. It carries no stability promise on its own.
+//!
 //! This crate owns the cross-binary contract: identity newtypes, the
 //! protocol framing and message types, kernel peer credentials, and the
 //! small error type the contract can produce. It has no binaries, no

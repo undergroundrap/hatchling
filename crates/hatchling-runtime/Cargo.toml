@@ -1,0 +1,28 @@
+[package]
+name = "hatchling-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Personal AI agents you actually own, in kernel-isolated cells that never hold your keys: installs the `hatchling` command"
+readme = "README.md"
+keywords = ["agent", "sandbox", "seccomp", "llm", "security"]
+categories = ["command-line-utilities", "os::linux-apis"]
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "hatchling"
+path = "src/main.rs"
+
+[dependencies]
+# The two command lines `hatchling` routes to: the broker's and the
+# agent's, through their shared `cli` modules.
+hatchling-broker.workspace = true
+hatchling-agent.workspace = true
+# The cell program's name (`/agent`), which marks an in-cell start.
+hatchling-isolation.workspace = true

@@ -1,12 +1,15 @@
 [package]
 name = "hatchling-sys"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "The single crate allowed unsafe code: thin safe wrappers for Linux namespaces, mounts, and seccomp-bpf"
 
 [lints]
@@ -27,5 +30,5 @@ thiserror = "2"
 # message types) so it tests the filter, not a hand-rolled byte
 # string. Test-only edge back to hatchling-core; both are reviewed in
 # docs/dependency-review.md.
-hatchling-core = { version = "0.1.0", path = "../hatchling-core" }
+hatchling-core = { path = "../hatchling-core" }
 serde_json = "1"

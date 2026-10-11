@@ -1,5 +1,9 @@
 //! `hatchling-model`: a real model provider for the agent loop.
 //!
+//! Part of [Hatchling](https://github.com/undergroundrap/hatchling), published so
+//! [`hatchling-runtime`](https://crates.io/crates/hatchling-runtime) can be
+//! installed. It carries no stability promise on its own.
+//!
 //! The loop (`hatchling-loop`) is LLM-agnostic: a [`Model`][loop_model]
 //! is anything that turns history plus tools into the next action.
 //! This crate is the first real implementation of that seam — a

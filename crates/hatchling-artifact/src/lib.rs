@@ -1,6 +1,10 @@
 //! `hatchling-artifact`: the artifact pipeline core, its build
 //! kinds and inspector, and the ideas path.
 //!
+//! Part of [Hatchling](https://github.com/undergroundrap/hatchling), published so
+//! [`hatchling-runtime`](https://crates.io/crates/hatchling-runtime) can be
+//! installed. It carries no stability promise on its own.
+//!
 //! An artifact is what a builder makes from inputs the agent supplies.
 //! The pipeline treats a build as the place untrusted output becomes
 //! user-facing content, so the pipeline itself is the boundary:

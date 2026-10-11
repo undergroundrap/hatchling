@@ -1,5 +1,9 @@
 //! `hatchling-egress`: the egress proxy.
 //!
+//! Part of [Hatchling](https://github.com/undergroundrap/hatchling), published so
+//! [`hatchling-runtime`](https://crates.io/crates/hatchling-runtime) can be
+//! installed. It carries no stability promise on its own.
+//!
 //! The only component that touches the network on the agent's behalf.
 //! The agent never sees the network and never holds a real credential:
 //! it presents a surrogate token ([`surrogate`]), the proxy validates

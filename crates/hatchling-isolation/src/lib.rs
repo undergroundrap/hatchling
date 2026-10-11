@@ -1,6 +1,10 @@
 //! The isolation seam: one trait between the broker's policy
 //! and a platform's mechanism.
 //!
+//! Part of [Hatchling](https://github.com/undergroundrap/hatchling), published so
+//! [`hatchling-runtime`](https://crates.io/crates/hatchling-runtime) can be
+//! installed. It carries no stability promise on its own.
+//!
 //! The broker decides **who** is isolated and **with what**: which host
 //! directories a cell sees and whether it may write them, which filter
 //! class it runs under, its program, arguments and environment, and the

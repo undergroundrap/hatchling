@@ -1,16 +1,22 @@
 [package]
 name = "hatchling-channel"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.85.0"
-license = "AGPL-3.0-or-later"
-publish.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Messaging channels for hatchling: the Channel trait and broker-stamped messages; the broker owns the endpoints"
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-hatchling-core = { version = "0.1.0", path = "../hatchling-core" }
+hatchling-core.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

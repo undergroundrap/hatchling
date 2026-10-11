@@ -1,5 +1,9 @@
 //! `hatchling-sys`: the one crate that may contain `unsafe`.
 //!
+//! Part of [Hatchling](https://github.com/undergroundrap/hatchling), published so
+//! [`hatchling-runtime`](https://crates.io/crates/hatchling-runtime) can be
+//! installed. It carries no stability promise on its own.
+//!
 //! Every other crate in the workspace denies `unsafe_code`. This crate
 //! owns the entire unsafe surface of the cell boundary: process forking,
 //! Linux namespaces, mount-table construction, and seccomp-bpf filter

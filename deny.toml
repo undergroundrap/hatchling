@@ -18,6 +18,11 @@ ignore = []
 # entry with a reason if a duplicate is ever genuinely required.
 multiple-versions = "deny"
 wildcards = "deny"
+# Dev-dependencies on workspace crates are bare paths, so they never block
+# publishing; cargo strips them from the published manifest. This allows
+# exactly those: a path dependency of a published crate's normal or build
+# dependencies is still a wildcard error.
+allow-wildcard-paths = true
 highlight = "all"
 deny = [
  # TLS is rustls, on ring, with the bundled roots and the
@@ -56,9 +61,9 @@ reason = "ring 0.17 (via rustls in hatchling-egress) requires windows-sys 0.52 w
 
 [licenses]
 # Permissive licenses only. The workspace crates' own AGPL-3.0-or-later is
-# deliberately NOT on this list: it is exempted by [licenses.private]
-# ignore = true below, so our own crates pass while a third-party AGPL
-# dependency fails this check.
+# deliberately NOT on this list: the published crates are exempted by name
+# in `exceptions`, and the unpublished ones by [licenses.private], so our
+# own crates pass while a third-party AGPL dependency fails this check.
 allow = [
     "MIT",
     "Apache-2.0",
@@ -72,12 +77,35 @@ allow = [
     "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.8
-exceptions = []
+# Our own crates, by name. A new published crate must be added here, or
+# `cargo deny check licenses` fails on its AGPL license.
+exceptions = [
+    { allow = ["AGPL-3.0-or-later"], crate = "hatchling-agent" },
+    { allow = ["AGPL-3.0-or-later"], crate = "hatchling-artifact" },
+    { allow = ["AGPL-3.0-or-later"], crate = "hatchling-broker" },
+    { allow = ["AGPL-3.0-or-later"], crate = "hatchling-channel" },
+    { allow = ["AGPL-3.0-or-later"], crate = "hatchling-core" },
+    { allow = ["AGPL-3.0-or-later"], crate = "hatchling-egress" },
+    { allow = ["AGPL-3.0-or-later"], crate = "hatchling-feed" },
+    { allow = ["AGPL-3.0-or-later"], crate = "hatchling-fido2" },
+    { allow = ["AGPL-3.0-or-later"], crate = "hatchling-goals" },
+    { allow = ["AGPL-3.0-or-later"], crate = "hatchling-isolation" },
+    { allow = ["AGPL-3.0-or-later"], crate = "hatchling-loop" },
+    { allow = ["AGPL-3.0-or-later"], crate = "hatchling-memory" },
+    { allow = ["AGPL-3.0-or-later"], crate = "hatchling-model" },
+    { allow = ["AGPL-3.0-or-later"], crate = "hatchling-prompt" },
+    { allow = ["AGPL-3.0-or-later"], crate = "hatchling-research" },
+    { allow = ["AGPL-3.0-or-later"], crate = "hatchling-runtime" },
+    { allow = ["AGPL-3.0-or-later"], crate = "hatchling-scheduler" },
+    { allow = ["AGPL-3.0-or-later"], crate = "hatchling-skill" },
+    { allow = ["AGPL-3.0-or-later"], crate = "hatchling-space" },
+    { allow = ["AGPL-3.0-or-later"], crate = "hatchling-sys" },
+    { allow = ["AGPL-3.0-or-later"], crate = "hatchling-vault" },
+]
 
 [licenses.private]
-# Workspace crates carry `publish = false` (see [workspace.package]), so
-# cargo-deny treats them as private and skips them here. Net effect: our
-# own AGPL-3.0-or-later passes, but any third-party AGPL dependency fails.
+# The unpublished workspace crates (development and test only) carry
+# `publish = false`, so cargo-deny treats them as private and skips them.
 ignore = true
 
 [sources]

@@ -1,6 +1,10 @@
 //! `hatchling-space`: spaces, and their sync, devices, and media
 //! .
 //!
+//! Part of [Hatchling](https://github.com/undergroundrap/hatchling), published so
+//! [`hatchling-runtime`](https://crates.io/crates/hatchling-runtime) can be
+//! installed. It carries no stability promise on its own.
+//!
 //! A space is a named, persistent scope with members: a project room, a
 //! device pair, a shared context. Everything about who may use one is
 //! the broker's to say:

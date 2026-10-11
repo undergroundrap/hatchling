@@ -1,5 +1,9 @@
 //! `hatchling-memory`: the broker-owned durable memory store.
 //!
+//! Part of [Hatchling](https://github.com/undergroundrap/hatchling), published so
+//! [`hatchling-runtime`](https://crates.io/crates/hatchling-runtime) can be
+//! installed. It carries no stability promise on its own.
+//!
 //! User memory (preferences, facts, standing context) and project memory
 //! (per-project notes, decisions) that survive across sessions. The store
 //! lives on the host side, behind the peer-authorized broker session —
