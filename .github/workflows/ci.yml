@@ -15,14 +15,9 @@ on:
       - '!assets/**'
       - 'docs/local-api.md'
       - 'docs/dependency-review.md'
+  # Every pull request, with no path filter: main requires these checks,
+  # and a required check that never starts blocks the merge.
   pull_request:
-    paths:
-      - '**'
-      - '!docs/**'
-      - '!**.md'
-      - '!assets/**'
-      - 'docs/local-api.md'
-      - 'docs/dependency-review.md'
 
 # Read-only: the gate needs nothing more, and pull requests from forks run it.
 permissions:

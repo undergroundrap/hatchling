@@ -4,10 +4,9 @@ on:
     paths:
       - 'frontend/**'
       - '.github/workflows/frontend.yml'
+  # Every pull request, with no path filter: main requires this check,
+  # and a required check that never starts blocks the merge.
   pull_request:
-    paths:
-      - 'frontend/**'
-      - '.github/workflows/frontend.yml'
 permissions:
   contents: read
 defaults:
