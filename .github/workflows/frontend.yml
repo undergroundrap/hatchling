@@ -1,6 +1,9 @@
 name: Frontend checks
 on:
+  # Pushes to main only: a branch with a pull request runs the
+  # pull_request trigger, and a second push run would duplicate it.
   push:
+    branches: [main]
     paths:
       - 'frontend/**'
       - '.github/workflows/frontend.yml'
