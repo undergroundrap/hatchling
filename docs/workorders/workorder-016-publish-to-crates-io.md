@@ -1,6 +1,6 @@
 # WO-016: Publish to crates.io, with `hatchling-runtime` as the front door
 
-**Status:** IN-PROGRESS
+**Status:** CLOSED
 **Area:** `crates/hatchling-runtime` (new), `Cargo.toml` (workspace), `crates/*/Cargo.toml`, `deny.toml`, `.github/workflows/ci.yml`, `README.md`, `docs/`
 **Issue:** [#26](https://github.com/undergroundrap/hatchling/issues/26)
 **Trust boundary:** yes
@@ -37,13 +37,13 @@ Holding the names with empty placeholder crates would be name-squatting, which c
 
 ## Acceptance criteria
 
-- [ ] `cargo install hatchling-runtime` on a fresh machine installs `hatchling`. The README's quickstart, with `hatchling broker` in place of `hatchling-broker`, gets the agent's answer; run as written.
-- [ ] A scheduled run and a skill run both work under a broker started as `hatchling broker`, with real cells, since both re-run the broker's executable; tested.
-- [ ] `hatchling --help` and `hatchling --version` exit 0 with nothing configured; an unknown subcommand exits 64 with usage on stderr; tested.
-- [ ] `cargo publish --workspace --dry-run` passes in CI, and a pull request that makes a published crate unpublishable fails it.
-- [ ] `cargo deny check` passes for the workspace, and fails when a third-party AGPL crate is added; shown by a positive control.
-- [ ] Every crate in the publish set is on crates.io at the workspace version, owned by the maintainer, and its docs build on docs.rs.
-- [ ] No crates.io token is stored in the repository or its secrets.
+- [x] `cargo install hatchling-runtime` on a fresh machine installs `hatchling`. The README's quickstart, with `hatchling broker` in place of `hatchling-broker`, gets the agent's answer; run as written.
+- [x] A scheduled run and a skill run both work under a broker started as `hatchling broker`, with real cells, since both re-run the broker's executable; tested.
+- [x] `hatchling --help` and `hatchling --version` exit 0 with nothing configured; an unknown subcommand exits 64 with usage on stderr; tested.
+- [x] `cargo publish --workspace --dry-run` passes in CI, and a pull request that makes a published crate unpublishable fails it.
+- [x] `cargo deny check` passes for the workspace, and fails when a third-party AGPL crate is added; shown by a positive control.
+- [x] Every crate in the publish set is on crates.io at the workspace version, owned by the maintainer, and its docs build on docs.rs.
+- [x] No crates.io token is stored in the repository or its secrets.
 
 ## Gates
 
@@ -51,7 +51,27 @@ See [TEMPLATE.md](TEMPLATE.md#gates).
 
 ## Evidence
 
-Filled in at close.
+Environment: WSL2, Ubuntu 26.04.1 LTS, kernel 6.6.87.2-microsoft-standard-WSL2; Rust 1.98.1 (pinned) and 1.85.0 (MSRV); cargo-deny 0.20.2; cargo-mutants 27.1.0. CI: GitHub's Ubuntu 24.04 runners.
+
+- **Gate:** `HATCHLING_REQUIRE_CELL=1 bash scripts/check.sh`, green on 1.98.1 and on 1.85.0: 1995 passed, 0 failed, each (#27).
+- **Front door, real cells:** the broker's spawner suites (`skill_run`, `schedule_run`, `subagents`, `harness`, `harness_cli`, `skill_cell_spawn`), with `HATCHLING_REQUIRE_CELL=1`: 45 passed with `hatchling-broker` as the spawner, and 45 passed with `HATCHLING_TEST_SPAWNER` set to `hatchling`. CI runs both. A hand mutant that drops the front door's helper route fails 8 of them.
+- **CLI:** `crates/hatchling-runtime/tests/cli.rs` runs the real binary: `--help`/`-h`/`help` and `--version`/`-V` exit 0 on stdout with nothing configured; no subcommand, or an unknown one, exits 64 with usage on stderr; `broker`, `agent`, the cell name `/agent` and both spawner helpers each reach their own command line.
+- **Mutation:** `scripts/mutant-run.sh --base origin/main` over the six changed source files: 11 tested, 10 caught, 0 missed, 0 timed out, 1 unviable (`route` -> `Default::default()`; `Route` has no default). The first launch was refused by the pre-flight's delegation check until unit tests called the moved `cli` functions by name.
+- **Publishing:** `cargo publish --workspace --dry-run --locked` packages and verifies 21 crates, locally and in the required "crates.io dry run" CI job.
+- **Positive controls**, each on a throwaway copy:
+  - a third-party AGPL crate added as a dependency fails `cargo deny check licenses`;
+  - a path-only normal dependency fails the publish dry run, and fails `cargo deny`'s wildcard check.
+- **First publish (2026-10-11):** the maintainer published `v0.1.1` (`758fdb4`) from a fresh clone of the tag, with a short-lived token. crates.io allowed a burst of 5 new crates, then about one per 10 minutes; all 21 were live by 18:49 Eastern.
+  - Every crate's docs built on docs.rs (21 of 21, from docs.rs's status endpoint).
+  - The repository has no secrets, and no crates.io token appears in its tree.
+- **From crates.io, end to end:**
+  - `cargo install hatchling-runtime --version 0.1.1 --locked`, into a clean root with a clean target directory, installed `hatchling` 0.1.1.
+  - The README's quickstart, run as root with that binary as both `hatchling broker` and the agent (`HATCHLING_AGENT_BIN` set to it), got the agent's answer from inside a cell running as `hatchling-cell` (uid 999).
+- **Follow-up (0.1.2):**
+  - publishing moves to the release workflow, through trusted publishing;
+  - `cargo semver-checks` runs on every pull request;
+  - per-crate keywords and categories;
+  - the README badges, and the `cargo install` path in the quickstart.
 
 ## Notes
 
