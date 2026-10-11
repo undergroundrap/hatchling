@@ -140,7 +140,7 @@ That answer took the whole path: the scheduler started a fresh cell as `hatchlin
 
 ### Running without root
 
-The broker runs as root so that each cell can get a uid of its own. Without privilege, Linux lets a process map only its own uid into a user namespace, so an unprivileged broker's cells run as you: still in their own namespaces, under seccomp, with no capabilities and no network. In that mode, the local API and the chat ingress refuse to start, because a cell with your uid could otherwise drive them. Making both work without root is a [work-order candidate](docs/workorders/README.md#candidates).
+The broker runs as root so that each cell can get a uid of its own. Without privilege, Linux lets a process map only its own uid into a user namespace, so an unprivileged broker's cells run as you: still in their own namespaces, under seccomp, with no capabilities and no network. In that mode, the local API and the chat ingress refuse to start, because a cell with your uid could otherwise drive them. Making both work without root is [WO-014](docs/workorders/workorder-014-running-without-root.md).
 
 From here: **[the local API](docs/local-api.md)** for every action and event, and **[testing on WSL2](docs/testing-on-wsl2.md)** for a Windows setup.
 
@@ -156,7 +156,7 @@ From here: **[the local API](docs/local-api.md)** for every action and event, an
 
 PRs are welcome. Read **[CONTRIBUTING.md](CONTRIBUTING.md)** first: the bar is mutation evidence and a green gate, and it's written down so you can meet it. On your first PR, a bot asks you to sign the [CLA](CLA.md) with a one-line comment.
 
-Core work is planned as **work orders**, specs in **[docs/workorders/](docs/workorders/)** that say exactly what done means. Twelve are queued, most of them security hardening from the pre-launch review. Pick one up, or open an issue to propose one. Frontend changes follow `frontend/STYLE_GUIDE.md`.
+Core work is planned as **work orders**, specs in **[docs/workorders/](docs/workorders/)** that say exactly what done means. Fifteen are queued, most of them security hardening from the pre-launch review. Pick one up, or open an issue to propose one. Frontend changes follow `frontend/STYLE_GUIDE.md`.
 
 **What's next:** each planned version is a [milestone](https://github.com/undergroundrap/hatchling/milestones), ordered by threat in [Order of work](docs/workorders/README.md#order-of-work); what changed is in the [changelog](CHANGELOG.md).
 

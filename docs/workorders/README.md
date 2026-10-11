@@ -24,7 +24,7 @@ The goal is a runtime a security team can approve, for one person or a whole com
 1. **What a hostile cell can do.** The cell is the adversary the design exists for, so these come first: WO-009 (a key an upstream echoes back reaches the cell; numeric IP forms pass the allowlist), WO-008 (data leaves through a vendor's URL fetching), WO-010 (a cell can cancel the owner's schedules; an API grant check passes vacuously), WO-005 (`socketpair` families and inherited groups), WO-004 (resource limits).
 2. **What another local user, or someone with disk access, can do:** WO-006 (a root broker follows symlinks), WO-007 (any process with the agent's uid can open a session), WO-002 (swapped vault files), WO-003 (key rotation at the keyring tiers), WO-011 (secret copies in memory and core dumps), WO-012 (crash leftovers and safe cleanup).
 3. **In parallel, the first five minutes:** WO-001 (`--help`, and a quickstart CI runs). It isn't trust-boundary work, so it doesn't wait on security review.
-4. **Then what a security review asks for next:** running without root, the release process (signed binaries, an SBOM, reproducible builds), and root cell tests in CI.
+4. **Then what a security review asks for next:** WO-014 (running without root), WO-013 (the release process: signed and reproducible binaries, an SBOM, crates.io), and WO-015 (root cell tests in CI).
 5. **Then integrations** for larger deployments: audit export, external secret backends, fleet configuration, and the macOS backend.
 
 ## Queue
@@ -45,18 +45,18 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | [010](workorder-010-schedule-ownership.md) | Schedule ownership and API grant edges | yes | QUEUED |
 | [011](workorder-011-secret-hygiene.md) | Secret hygiene in memory and logs | yes | QUEUED |
 | [012](workorder-012-disposable-state-and-cleanup.md) | Separate disposable files from your data, and clean them up safely | yes | QUEUED |
+| [013](workorder-013-release-process.md) | A release process: signed binaries, an SBOM, and crates.io | yes | QUEUED |
+| [014](workorder-014-running-without-root.md) | Run the full broker without root | yes | QUEUED |
+| [015](workorder-015-root-cell-tests-in-ci.md) | Run the cell test suites as root in CI | yes | QUEUED |
 
 ## Candidates
 
 Not yet WOs. Each gets a full file, with a scope and acceptance criteria, before work starts:
 
-- **Root cell tests in CI.** CI runs the cell suites as an ordinary user, where a cell's uid is the runner's own. A root broker's cells get another uid, and a bug only that path hits went unseen until the quickstart ran as root. Run the cell suites under `sudo` in CI too.
-- **Running without root.** An unprivileged broker can map only its own uid, so its cells run as the owner, and the local API then refuses to start. Give an unprivileged broker a distinct uid for its cells (for example from a subordinate uid range through `newuidmap`), so it can serve both.
 - **Explain failed runs.** When a scheduled run fails, the broker logs only "the run failed": the reason is sealed in the parked result, which nothing reads yet. Log the reason (with redaction), and let the owner list and read parked results through the API.
 - **Live frontend.** Wire the frontend's live adapter (already built and tested) to the local API, so the UI drives a real broker.
 - **macOS backend.** An implementation of the isolation trait for macOS.
 - **FIDO2 on real hardware.** The FIDO2 hmac-secret vault factor is tested against a software authenticator. Validate it on physical security keys, and record which ones.
-- **Release process.** Version numbers, a changelog, signed and reproducible binaries, and a software bill of materials (SBOM) for each release.
 - **Audit export.** Stream the broker's audit and vault-access records to an operator's log pipeline (syslog, or JSON lines for a SIEM) through an audit-sink interface. Exporting adds no read path for a cell or an API caller.
 - **External secret backends.** A secret-backend interface, so an operator's secret manager (HashiCorp Vault, a cloud KMS) can hold the real credentials. The egress swap is unchanged: a cell still only ever holds a surrogate.
 - **Fleet configuration.** A configuration file, alongside the environment variables, that provisioning tools (Terraform, Kubernetes, Ansible) can manage across many machines; and identity for local API callers beyond a socket's uid.
