@@ -33,7 +33,7 @@ jobs:
       - run: python -m playwright install --with-deps chromium
       # The browser suites use a system `chromium` on PATH when there is one,
       # and Playwright's own build otherwise: say which this runner has.
-      - run: command -v chromium chromium-browser || echo "no system chromium: Playwright's build is used"
+      - run: command -v chromium chromium-browser || echo "no system chromium, so Playwright's build is used"
       - run: npm run test:e2e
       - run: npm run test:smoke
       - run: npm run test:agent
