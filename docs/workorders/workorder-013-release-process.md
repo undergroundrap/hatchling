@@ -1,7 +1,7 @@
-# WO-013: A release process: signed binaries, an SBOM, and crates.io
+# WO-013: A release process: signed, reproducible binaries and an SBOM
 
 **Status:** QUEUED
-**Area:** `Cargo.toml` (workspace), `crates/*/Cargo.toml`, `deny.toml`, `.github/workflows/`, `docs/`, `README.md`, `CHANGELOG.md`
+**Area:** `.github/workflows/`, `Cargo.toml` (release profile), `docs/`, `README.md`, `CHANGELOG.md`
 **Issue:** [#22](https://github.com/undergroundrap/hatchling/issues/22)
 **Trust boundary:** yes
 
@@ -19,15 +19,9 @@ A release today is also a manual job: someone tags a commit and writes notes. As
 - **Provenance and signatures:** each binary gets a build-provenance attestation (`actions/attest-build-provenance`), so anyone can run `gh attestation verify` against this repository. A `SHA256SUMS` file is attached to the release and attested the same way.
 - **An SBOM per release:** a CycloneDX SBOM of the shipped binaries' dependencies, attached to the release. The binaries are built with `cargo auditable`, so the dependency list is also embedded in each binary.
 - **Reproducible builds:** two builds of the same tag on separate runners produce byte-identical binaries, and CI checks that they do. That covers path remapping, `SOURCE_DATE_EPOCH` and anything else the comparison turns up.
-- **crates.io:**
-  - The installable front door is a new crate, `hatchling-runtime`, which installs a single `hatchling` command. (`hatchling` itself is taken on crates.io by an unrelated project.)
-  - The crates it depends on are published under their `hatchling-*` names.
-  - Development and test crates (`hatchling-dev`, `hatchling-adversarial`) stay `publish = false`.
-  - Publishing runs through crates.io trusted publishing from the release workflow, with no API token stored anywhere.
-  - Every published crate shares the workspace version, and each internal crate's docs say it carries no stability promise on its own.
-- **Semver checks:** `cargo semver-checks` in CI on the published crates, so an API break without a version bump fails the pull request.
+- **crates.io from the release workflow:** the publishing WO-016 sets up by hand moves into the release workflow, through crates.io trusted publishing, so no API token is stored anywhere and crates are published only from a tagged commit.
 - **Release notes from the changelog:** the release workflow takes the version's section of `CHANGELOG.md` as the release notes, and refuses to release if that section is missing or still says Unreleased.
-- **Docs:** `docs/releasing.md` (how to cut a release, how to verify one), and the crates.io and docs.rs badges in the README.
+- **Docs:** `docs/releasing.md`: how to cut a release, and how to verify one.
 
 **Not in scope:** packages for Linux distributions (deb, rpm), container images, macOS or Windows binaries, and automatic version bumping from commit messages.
 
@@ -36,10 +30,7 @@ A release today is also a manual job: someone tags a commit and writes notes. As
 - [ ] Pushing a `v*` tag produces a GitHub release with binaries for both targets, `SHA256SUMS`, and a CycloneDX SBOM, with the version's changelog section as its notes.
 - [ ] `gh attestation verify <binary> --repo undergroundrap/hatchling` succeeds for each released binary, and fails for a binary built anywhere else.
 - [ ] Two independent builds of the same tag are byte-identical; a CI job compares them and fails on any difference.
-- [ ] On a fresh machine, `cargo install hatchling-runtime` installs a `hatchling` command, and the README's quickstart works with it.
-- [ ] No crates.io token exists in the repository's secrets; publishing uses trusted publishing.
-- [ ] `cargo deny check` still fails on a third-party AGPL dependency once the workspace crates are publishable (see the notes).
-- [ ] A pull request that breaks a published crate's public API without a version bump fails CI; shown by a test PR.
+- [ ] Pushing a `v*` tag publishes the crates to crates.io through trusted publishing, and no crates.io token exists in the repository's secrets.
 - [ ] `docs/releasing.md` lets a maintainer who has never cut a release do it, and lets a user verify a binary, each step tested on a real release.
 
 ## Gates
@@ -52,7 +43,6 @@ Filled in at close.
 
 ## Notes
 
-- **The license check depends on `publish = false` today.** `deny.toml`'s `[licenses.private] ignore = true` is what exempts our own AGPL crates from the license allowlist, and it applies only to unpublished crates. Once the crates are publishable, exempt them by name instead (`[[licenses.exceptions]]` per `hatchling-*` crate), so a third-party AGPL dependency still fails the gate.
-- The workspace comment on `publish = false` says why it exists: an accidental publish would muddy the dual license. This WO makes publishing deliberate, from one workflow, so that reason is met another way.
-- Trusted publishing ties a crate to this repository and workflow. Set it up per crate on crates.io before the first release; the first publish of a brand-new crate may need a one-time manual step.
-- The front-door `hatchling` command and the existing `hatchling-broker` and `hatchling-agent` binaries need a decision: whether `hatchling` dispatches to them as subcommands, or ships alongside them. Make it here, in the design, before work starts.
+- Publishing to crates.io itself (the `hatchling-runtime` front door, the license-check change, the first publish) is WO-016, which comes first. This WO automates it.
+- Trusted publishing ties a crate to this repository and workflow, and is set up per crate on crates.io; WO-016's first, manual publish creates the crates it's configured on.
+- Reproducibility will likely need `--remap-path-prefix` for the cargo registry and the checkout path, `SOURCE_DATE_EPOCH`, and `codegen-units = 1` in the release profile. Let the byte comparison decide; don't add settings it doesn't need.

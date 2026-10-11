@@ -23,8 +23,8 @@ The goal is a runtime a security team can approve, for one person or a whole com
 
 1. **What a hostile cell can do.** The cell is the adversary the design exists for, so these come first: WO-009 (a key an upstream echoes back reaches the cell; numeric IP forms pass the allowlist), WO-008 (data leaves through a vendor's URL fetching), WO-010 (a cell can cancel the owner's schedules; an API grant check passes vacuously), WO-005 (`socketpair` families and inherited groups), WO-004 (resource limits).
 2. **What another local user, or someone with disk access, can do:** WO-006 (a root broker follows symlinks), WO-007 (any process with the agent's uid can open a session), WO-002 (swapped vault files), WO-003 (key rotation at the keyring tiers), WO-011 (secret copies in memory and core dumps), WO-012 (crash leftovers and safe cleanup).
-3. **In parallel, the first five minutes:** WO-001 (`--help`, and a quickstart CI runs). It isn't trust-boundary work, so it doesn't wait on security review.
-4. **Then what a security review asks for next:** WO-014 (running without root), WO-013 (the release process: signed and reproducible binaries, an SBOM, crates.io), and WO-015 (root cell tests in CI).
+3. **In parallel, the first five minutes:** WO-001 (`--help`, and a quickstart CI runs) and WO-016 (`cargo install hatchling-runtime`, which also holds the crates.io names with real releases).
+4. **Then what a security review asks for next:** WO-014 (running without root), WO-013 (the release process: signed and reproducible binaries, an SBOM, publishing from CI), and WO-015 (root cell tests in CI).
 5. **Then integrations** for larger deployments: audit export, external secret backends, fleet configuration, and the macOS backend.
 
 ## Queue
@@ -45,9 +45,10 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | [010](workorder-010-schedule-ownership.md) | Schedule ownership and API grant edges | yes | QUEUED |
 | [011](workorder-011-secret-hygiene.md) | Secret hygiene in memory and logs | yes | QUEUED |
 | [012](workorder-012-disposable-state-and-cleanup.md) | Separate disposable files from your data, and clean them up safely | yes | QUEUED |
-| [013](workorder-013-release-process.md) | A release process: signed binaries, an SBOM, and crates.io | yes | QUEUED |
+| [013](workorder-013-release-process.md) | A release process: signed, reproducible binaries and an SBOM | yes | QUEUED |
 | [014](workorder-014-running-without-root.md) | Run the full broker without root | yes | QUEUED |
 | [015](workorder-015-root-cell-tests-in-ci.md) | Run the cell test suites as root in CI | yes | QUEUED |
+| [016](workorder-016-publish-to-crates-io.md) | Publish to crates.io, with `hatchling-runtime` as the front door | yes | QUEUED |
 
 ## Candidates
 
