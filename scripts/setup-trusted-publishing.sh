@@ -25,13 +25,38 @@ print(" ".join(sorted(p["name"] for p in meta["packages"] if p.get("publish") !=
 ') || exit 1
 echo "$(echo "$CRATES" | wc -w) crates will trust $OWNER/$REPO, workflow $WORKFLOW, environment $ENVIRONMENT."
 
-read -rsp "crates.io token (trusted-publishing scope; hidden): " TOKEN
-echo
-[ -n "$TOKEN" ] || { echo "no token given"; exit 1; }
+# A crates.io token is "cio" and 32 letters and digits. Check the shape of
+# what arrived (a paste into a hidden prompt can fail silently), and say
+# what came through without ever showing the token.
+for attempt in 1 2 3; do
+  read -rsp "crates.io token (trusted-publishing scope; hidden, paste then Enter): " TOKEN
+  echo
+  TOKEN=$(printf '%s' "$TOKEN" | tr -d '[:space:]')
+  if [[ "$TOKEN" =~ ^cio[A-Za-z0-9]{32}$ ]]; then
+    echo "got a crates.io token (35 characters)"
+    break
+  fi
+  if [ -z "$TOKEN" ]; then
+    echo "nothing came through. Paste with right-click or Ctrl+Shift+V, then press Enter."
+  else
+    echo "that doesn't look like a crates.io token: ${#TOKEN} characters, $( [[ "$TOKEN" == cio* ]] && echo 'starting with cio' || echo 'not starting with cio')."
+  fi
+  TOKEN=""
+done
+[ -n "$TOKEN" ] || { echo "no token; nothing was changed"; exit 1; }
 
 # curl reads the token from a header file on a pipe, never from its arguments,
 # so it doesn't show in the process list.
 api() { curl -sS -A "$UA" -H @<(printf 'Authorization: %s\n' "$TOKEN") "$@"; }
+
+# One call first, so a token crates.io rejects stops here, not 21 times.
+first=$(echo "$CRATES" | cut -d' ' -f1)
+check=$(api "$API?crate=$first")
+if echo "$check" | grep -q '"errors"'; then
+  echo "crates.io rejected the token: $(echo "$check" | head -c 200)"
+  echo "Check it has the trusted-publishing scope and hasn't been revoked or expired, then run this again."
+  exit 1
+fi
 
 failed=0
 for crate in $CRATES; do
