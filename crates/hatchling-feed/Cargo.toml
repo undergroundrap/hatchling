@@ -7,6 +7,8 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
+keywords = ["digest", "feed", "provenance", "agent", "llm"]
+categories = ["artificial-intelligence"]
 readme.workspace = true
 description = "The feed: a scheduled digest of the user's own records, read-only, every item an observation with its transitive provenance label."
 

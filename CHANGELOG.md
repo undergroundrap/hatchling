@@ -19,7 +19,7 @@ Publishing and metadata only. No change to the broker, the agent or the wire pro
 
 ### Changed
 
-- Keywords and categories are per crate: `hatchling-runtime` carries the headline terms, the crates useful on their own (`hatchling-isolation`, `hatchling-sys`, `hatchling-fido2`, `hatchling-vault`, `hatchling-egress`) carry accurate ones, and the internal crates carry none, so they don't crowd searches.
+- Keywords and categories are per crate, each describing what that crate does: `hatchling-runtime` carries the headline terms, and every other crate its own (model providers, tool-calling, cron, signed skills, seccomp, FIDO2 and so on), so each reaches a different search and leads back to Hatchling.
 
 ## [0.1.1] - 2026-10-11
 

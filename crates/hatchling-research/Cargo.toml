@@ -7,6 +7,8 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
+keywords = ["deep-research", "research", "citations", "agent", "llm"]
+categories = ["artificial-intelligence"]
 readme.workspace = true
 description = "Deep research runs: a phased mode of the agent loop (plan, gather, synthesize, report) with source discipline, citation depth, and bounds."
 

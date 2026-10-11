@@ -7,6 +7,8 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
+keywords = ["ipc", "unix-socket", "peer-credentials", "protocol", "agent"]
+categories = ["os::unix-apis", "network-programming"]
 readme.workspace = true
 description = "Shared foundation for hatchling binaries: identity types, protocol framing, and kernel peer credentials"
 

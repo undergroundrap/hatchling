@@ -7,6 +7,8 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
+keywords = ["skills", "plugins", "ed25519", "signing", "agent"]
+categories = ["security", "artificial-intelligence"]
 readme.workspace = true
 description = "Signed skills: manifest format, Ed25519 verification, admission-time grant checks, and call-time capability enforcement"
 

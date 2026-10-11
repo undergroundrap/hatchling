@@ -7,6 +7,8 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
+keywords = ["prompt", "system-prompt", "prompt-injection", "agent", "llm"]
+categories = ["artificial-intelligence"]
 readme.workspace = true
 description = "Hatchling's authored prompt pack: the system prompt assembled from an explicit ordered section list, and the untrusted-data envelope for tool results. Prompt text lives here and nowhere else; the wording is hatchling's own."
 

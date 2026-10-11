@@ -7,6 +7,8 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
+keywords = ["artifacts", "provenance", "agent", "llm", "security"]
+categories = ["artificial-intelligence", "security"]
 readme.workspace = true
 description = "The artifact pipeline core: pinned build requests, broker-asserted provenance, the share-review gate, and the single delivery function."
 

@@ -7,6 +7,8 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
+keywords = ["sync", "pairing", "devices", "collaboration", "agent"]
+categories = ["artificial-intelligence"]
 readme.workspace = true
 description = "Spaces: broker-asserted membership, admission factors, and space tasks."
 

@@ -7,6 +7,8 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
+keywords = ["cron", "scheduler", "timezone", "agent", "llm"]
+categories = ["date-and-time", "artificial-intelligence"]
 readme.workspace = true
 description = "Scheduled work: cron timing in explicit IANA timezones, subset-closed schedule grants, and the dispatcher that fires, delivers, and parks."
 

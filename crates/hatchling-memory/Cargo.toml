@@ -7,6 +7,8 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
+keywords = ["agent-memory", "memory", "context", "agent", "llm"]
+categories = ["artificial-intelligence"]
 readme.workspace = true
 description = "Broker-owned durable memory: scoped user/project/session items with explicit retention, durable session records, and an append-only context log. Memory is recalled data, never instructions."
 

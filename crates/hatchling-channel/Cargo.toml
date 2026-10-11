@@ -8,6 +8,8 @@ authors.workspace = true
 repository.workspace = true
 description = "Messaging channels for hatchling: the Channel trait and broker-stamped messages; the broker owns the endpoints"
 homepage.workspace = true
+keywords = ["chat", "messaging", "agent", "llm"]
+categories = ["artificial-intelligence"]
 readme.workspace = true
 
 [lints]
