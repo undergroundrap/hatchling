@@ -81,6 +81,11 @@ jobs:
       - name: Allow unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
+      # A sample every 5 s while the gate runs, to show what the runner is
+      # doing if a probe cell or `ldd` stalls (blocked tasks, I/O wait, steal).
+      - name: Start a runner sampler
+        run: nohup vmstat -t -w 5 > "$RUNNER_TEMP/vmstat.log" 2>&1 &
+
       - name: Run gate
         run: bash scripts/check.sh
 
@@ -96,6 +101,10 @@ jobs:
           sudo dmesg | grep -E 'backlog limit exceeded|audit: rate limit|audit_lost' | tail -5 || true
           echo "seccomp actions logged: $(cat /proc/sys/kernel/seccomp/actions_logged)"
           systemctl is-active auditd systemd-journald 2>/dev/null || true
+          echo 'vmstat samples with blocked tasks, I/O wait over 10% or steal over 10%:'
+          awk 'NR <= 2 || $2 > 0 || $16 > 10 || $17 > 10' "$RUNNER_TEMP/vmstat.log" | head -60 || true
+          echo 'kernel log tail:'
+          sudo dmesg -T | tail -40 || true
 
   protocol:
  # the frontend/backend contract has one source, hatchling-core's
