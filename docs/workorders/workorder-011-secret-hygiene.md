@@ -2,7 +2,7 @@
 
 **Status:** QUEUED
 **Area:** `crates/hatchling-vault`, `crates/hatchling-broker` (output gate, redactions, artifact ops, serve), `crates/hatchling-artifact`, `crates/hatchling-fido2`
-**Issue:** none yet
+**Issue:** [#14](https://github.com/undergroundrap/hatchling/issues/14)
 **Trust boundary:** yes
 
 ## Problem

@@ -2,7 +2,7 @@
 
 **Status:** QUEUED
 **Area:** `crates/hatchling-isolation`, `crates/hatchling-sys`, `crates/hatchling-broker` (cell, run launcher, harness)
-**Issue:** none yet
+**Issue:** [#7](https://github.com/undergroundrap/hatchling/issues/7)
 **Trust boundary:** yes
 
 ## Problem

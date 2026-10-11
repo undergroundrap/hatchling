@@ -2,7 +2,7 @@
 
 **Status:** QUEUED
 **Area:** `crates/hatchling-egress`, `crates/hatchling-broker` (harness relay)
-**Issue:** none yet
+**Issue:** [#11](https://github.com/undergroundrap/hatchling/issues/11)
 **Trust boundary:** yes
 
 ## Problem

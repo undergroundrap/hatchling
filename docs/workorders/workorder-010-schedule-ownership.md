@@ -2,7 +2,7 @@
 
 **Status:** QUEUED
 **Area:** `crates/hatchling-broker` (schedule ops, API ops, API auth)
-**Issue:** none yet
+**Issue:** [#13](https://github.com/undergroundrap/hatchling/issues/13)
 **Trust boundary:** yes
 
 ## Problem

@@ -2,7 +2,7 @@
 
 **Status:** QUEUED
 **Area:** `crates/hatchling-broker`, `crates/hatchling-agent`, `crates/hatchling-dev`, `docs/`, `README.md`, `.github/workflows/`
-**Issue:** none yet
+**Issue:** [#4](https://github.com/undergroundrap/hatchling/issues/4)
 **Trust boundary:** no
 
 ## Problem

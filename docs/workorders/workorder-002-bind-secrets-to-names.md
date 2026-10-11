@@ -2,7 +2,7 @@
 
 **Status:** QUEUED
 **Area:** `crates/hatchling-vault`, `crates/hatchling-broker` (`migrate-vault`, `rekey-vault`)
-**Issue:** none yet
+**Issue:** [#5](https://github.com/undergroundrap/hatchling/issues/5)
 **Trust boundary:** yes
 
 ## Problem

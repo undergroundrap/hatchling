@@ -2,7 +2,7 @@
 
 **Status:** QUEUED
 **Area:** `crates/hatchling-isolation` (spawn), `crates/hatchling-sys` (ownership), `crates/hatchling-broker` (listener, ingress, device), `crates/hatchling-vault`
-**Issue:** none yet
+**Issue:** [#9](https://github.com/undergroundrap/hatchling/issues/9)
 **Trust boundary:** yes
 
 ## Problem

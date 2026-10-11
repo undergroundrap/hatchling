@@ -2,7 +2,7 @@
 
 **Status:** QUEUED
 **Area:** `crates/hatchling-sys` (seccomp, process, idmap), `crates/hatchling-isolation`
-**Issue:** none yet
+**Issue:** [#8](https://github.com/undergroundrap/hatchling/issues/8)
 **Trust boundary:** yes
 
 ## Problem

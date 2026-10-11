@@ -2,7 +2,7 @@
 
 **Status:** QUEUED
 **Area:** `crates/hatchling-vault` (keyring, TOTP, FIDO2), `crates/hatchling-broker` (`vault_ops`, `vault_keyring`)
-**Issue:** none yet
+**Issue:** [#6](https://github.com/undergroundrap/hatchling/issues/6)
 **Trust boundary:** yes
 
 ## Problem

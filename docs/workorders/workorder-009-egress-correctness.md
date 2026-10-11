@@ -2,7 +2,7 @@
 
 **Status:** QUEUED
 **Area:** `crates/hatchling-egress`, `crates/hatchling-broker` (serve, config, harness relay), `crates/hatchling-core` (framing)
-**Issue:** none yet
+**Issue:** [#12](https://github.com/undergroundrap/hatchling/issues/12)
 **Trust boundary:** yes
 
 ## Problem
