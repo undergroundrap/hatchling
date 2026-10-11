@@ -1,0 +1,27 @@
+[
+  {
+    "path": "/agent",
+    "setgid": false,
+    "setuid": false
+  },
+  {
+    "path": "/sock/broker.sock",
+    "setgid": false,
+    "setuid": false
+  },
+  {
+    "path": "/lib64/ld-linux-x86-64.so.2",
+    "setgid": false,
+    "setuid": false
+  },
+  {
+    "path": "/lib/x86_64-linux-gnu/libc.so.6",
+    "setgid": false,
+    "setuid": false
+  },
+  {
+    "path": "/lib/x86_64-linux-gnu/libgcc_s.so.1",
+    "setgid": false,
+    "setuid": false
+  }
+]

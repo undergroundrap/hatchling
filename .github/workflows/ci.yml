@@ -84,12 +84,13 @@ jobs:
       # A seccomp kill is SIGSYS, which dumps core, and Ubuntu pipes every core
       # dump to apport. The denied-syscall catalogs kill hundreds of probes in
       # minutes; the apport processes that spawned exhausted the runner's memory
-      # (OOM, swap, 30 s stalls). Write core files instead: the core size limit
+      # (OOM, swap, 30 s stalls). Write core files instead, to an absolute path
+      # (the kernel requires one with fs.suid_dumpable=2): the core size limit
       # is 0, and a cell's root is read-only, so nothing is written.
       - name: Don't hand core dumps to apport
         run: |
           echo "core size limit: $(ulimit -c)"
-          sudo sysctl -w kernel.core_pattern=core
+          sudo sysctl -w kernel.core_pattern=/var/tmp/core
 
       # A sample every 5 s while the gate runs, to show what the runner is
       # doing if a probe cell or `ldd` stalls (blocked tasks, I/O wait, steal).

@@ -406,7 +406,7 @@ fn check_or_regen(attack: &str, actual: &serde_json::Value) -> Result<(), String
     })?;
     let expected: serde_json::Value = serde_json::from_str(&expected_json)
         .map_err(|e| format!("parse committed inventory {}: {e}", path.display()))?;
-    if attack == "mount-escape" {
+    if attack == "mount-escape" || attack == "setuid-scan" {
         return check_inventory(
             attack,
             &fold_merged_usr(actual),
@@ -416,7 +416,8 @@ fn check_or_regen(attack: &str, actual: &serde_json::Value) -> Result<(), String
     check_inventory(attack, actual, &expected)
 }
 
-/// The mount-escape inventory with merged-`/usr` spellings folded together.
+/// A path inventory (mount-escape, setuid-scan) with merged-`/usr` spellings
+/// folded together.
 ///
 /// A cell's library view is what the host's `ldd` reports, and merged-`/usr`
 /// hosts spell the same file two ways: Ubuntu 24.04 says
@@ -424,8 +425,8 @@ fn check_or_regen(attack: &str, actual: &serde_json::Value) -> Result<(), String
 /// So one host's cell has `/lib` and no `/usr`, and the other's the reverse.
 /// Which root the cell shows is the host's choice, not the boundary's: a path
 /// under `/usr/lib/`, or a probe directly in `/usr`, is read as its `/lib`
-/// spelling, and the attempts are compared as a sorted multiset. Each write
-/// is still held to [`is_refused_write`] on its own, unfolded.
+/// spelling, and the entries are compared as a sorted multiset. Each entry
+/// is still checked on its own, unfolded (a write refused, no setuid bit).
 fn fold_merged_usr(writes: &serde_json::Value) -> serde_json::Value {
     let mut folded: Vec<serde_json::Value> = writes
         .as_array()
@@ -456,11 +457,11 @@ fn fold_merged_usr(writes: &serde_json::Value) -> serde_json::Value {
     serde_json::Value::Array(folded)
 }
 
-/// The fold is exact: the committed inventory and the one an Ubuntu 24.04
-/// host produced for the same cell (`tests/inventory/mount-escape.lib-layout.json`,
+/// The fold is exact: each committed inventory and the one an Ubuntu 24.04
+/// host produced for the same cell (`tests/inventory/<name>.lib-layout.json`,
 /// its `/lib` spellings) fold to the same document, and one changed outcome
-/// still shows. Needs no cell.
-fn mount_escape_inventory_folds_only_the_lib_spelling() -> Result<(), String> {
+/// (a write that succeeds, a setuid bit) still shows. Needs no cell.
+fn inventories_fold_only_the_lib_spelling() -> Result<(), String> {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("inventory");
@@ -469,30 +470,35 @@ fn mount_escape_inventory_folds_only_the_lib_spelling() -> Result<(), String> {
             std::fs::read_to_string(dir.join(name)).map_err(|e| format!("read {name}: {e}"))?;
         serde_json::from_str(&text).map_err(|e| format!("parse {name}: {e}"))
     };
-    let committed = read("mount-escape.json")?;
-    let other_host = read("mount-escape.lib-layout.json")?;
-    if committed == other_host {
-        return Err(String::from(
-            "the two hosts' inventories should differ before folding",
-        ));
-    }
-    if fold_merged_usr(&committed) != fold_merged_usr(&other_host) {
-        return Err(String::from(
-            "the same cell on another merged-/usr host must fold to the committed inventory",
-        ));
-    }
-    let mut changed = other_host;
-    if let Some(first) = changed
-        .as_array_mut()
-        .and_then(|all| all.first_mut())
-        .and_then(serde_json::Value::as_object_mut)
-    {
-        first.insert(String::from("errno"), serde_json::Value::from(0));
-    }
-    if fold_merged_usr(&committed) == fold_merged_usr(&changed) {
-        return Err(String::from(
-            "a write that succeeds must still change the folded inventory",
-        ));
+    for (inventory, field, value) in [
+        ("mount-escape", "errno", serde_json::Value::from(0)),
+        ("setuid-scan", "setuid", serde_json::Value::from(true)),
+    ] {
+        let committed = read(&format!("{inventory}.json"))?;
+        let other_host = read(&format!("{inventory}.lib-layout.json"))?;
+        if committed == other_host {
+            return Err(format!(
+                "{inventory}: the two hosts' inventories should differ before folding"
+            ));
+        }
+        if fold_merged_usr(&committed) != fold_merged_usr(&other_host) {
+            return Err(format!(
+                "{inventory}: the same cell on another merged-/usr host must fold to the committed inventory"
+            ));
+        }
+        let mut changed = other_host;
+        if let Some(first) = changed
+            .as_array_mut()
+            .and_then(|all| all.first_mut())
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            first.insert(String::from(field), value);
+        }
+        if fold_merged_usr(&committed) == fold_merged_usr(&changed) {
+            return Err(format!(
+                "{inventory}: a changed outcome must still change the folded inventory"
+            ));
+        }
     }
     Ok(())
 }
@@ -1058,8 +1064,8 @@ const CHECKS: &[Check] = &[
         mount_escape_all_writes_denied,
     ),
     (
-        "mount_escape_inventory_folds_only_the_lib_spelling",
-        mount_escape_inventory_folds_only_the_lib_spelling,
+        "inventories_fold_only_the_lib_spelling",
+        inventories_fold_only_the_lib_spelling,
     ),
     ("denied_syscalls_each_sigsys", denied_syscalls_each_sigsys),
     (
