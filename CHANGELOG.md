@@ -16,6 +16,7 @@ Publishing and metadata only. No change to the broker, the agent or the wire pro
 - `cargo semver-checks` runs on every pull request against the crates on crates.io.
 - crates.io and docs.rs badges, and `cargo install hatchling-runtime` as an install option in the quickstart.
 - CONTRIBUTING says when new code earns its own crate, and what each published crate costs.
+- `docs/releasing.md`: how a version is cut and published, the trusted-publishing settings, and a new crate's first publish. `scripts/publish-crates.sh` publishes in dependency order for both CI and the maintainer, skips crates already on crates.io at the version (so a failed run is simply re-run), and in CI skips and names crates new to crates.io.
 
 ### Changed
 

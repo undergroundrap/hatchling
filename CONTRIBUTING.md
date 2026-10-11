@@ -114,6 +114,9 @@ A development or test crate sets `publish = false` instead, and needs
 none of that. The required "crates.io dry run" check fails a pull
 request that leaves a published crate unpublishable.
 
+How releases and first publishes work, step by step:
+[docs/releasing.md](docs/releasing.md).
+
 ## Frontend (TypeScript)
 
 ### Strictness is non-negotiable
