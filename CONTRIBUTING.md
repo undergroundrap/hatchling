@@ -40,7 +40,11 @@ MSRV with `rustup toolchain install 1.85.0`. Isolation tests need Linux
 5.11+ with unprivileged user namespaces (or WSL2:
 [docs/testing-on-wsl2.md](docs/testing-on-wsl2.md)). Set
 `HATCHLING_REQUIRE_CELL=1` so they fail instead of skipping when the
-kernel can't build a cell.
+kernel can't build a cell. On Ubuntu 23.10 and later, AppArmor restricts
+unprivileged user namespaces, and the cell tests skip (or, with that
+variable set, fail) until you lift it:
+`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`. CI
+does the same.
 
 ## Backend (Rust)
 

@@ -147,10 +147,16 @@ echo "$!" >"$WATCHDOG_PIDFILE"
 echo "mutant-run: $RUN_ID: run $RUN_PID launched: ${ARGS[*]} (log: $LOG)"
 
 # Signal a process group by the leader's PID file.
+# The PID file is written right after the fork, before the child has run
+# setsid: until it does, there is no group with that id, and a signal sent
+# to the group is lost (the run would then outlive an interrupt until the
+# KILL below). So fall back to the process itself, which has not started
+# anything yet.
 signal_group() { # SIGNAL PIDFILE
   local pid
   pid="$(cat "$2" 2>/dev/null)" || return 0
-  [ -n "$pid" ] && kill "-$1" -- "-$pid" 2>/dev/null || true
+  [ -n "$pid" ] || return 0
+  kill "-$1" -- "-$pid" 2>/dev/null || kill "-$1" "$pid" 2>/dev/null || true
 }
 
 INTERRUPTED=""

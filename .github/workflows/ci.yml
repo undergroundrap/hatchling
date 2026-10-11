@@ -35,11 +35,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        toolchain: [stable, 1.85.0]
+        toolchain: [1.98.1, 1.85.0]
+    # The pinned toolchain (rust-toolchain.toml) and the MSRV, never a floating
+    # `stable`: a newer compiler adds lints that `-D warnings` turns into errors
+    # nobody changed code for. Bump the pin and this together.
     # RUSTUP_TOOLCHAIN overrides rust-toolchain.toml, so the MSRV job really
-    # runs the gate at 1.85.0 instead of the pinned stable.
+    # runs the gate at 1.85.0.
     env:
       RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
+      # The real-kernel cell tests must run here, never skip.
+      HATCHLING_REQUIRE_CELL: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -70,6 +75,12 @@ jobs:
         with:
           tool: cargo-mutants@27.1.0
 
+      # Ubuntu runners restrict unprivileged user namespaces through
+      # AppArmor: unshare succeeds but grants no capabilities, so every cell
+      # test would skip. Lift the restriction for this job.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - name: Run gate
         run: bash scripts/check.sh
 
@@ -86,7 +97,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: stable
+          toolchain: 1.98.1
 
       - name: Install Node
         uses: actions/setup-node@v4

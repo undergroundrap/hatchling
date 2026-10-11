@@ -1073,8 +1073,11 @@ mod tests {
                 }
                 let [effective, ..] = capabilities();
                 let cap_sys_admin = u64::from(1_u32 << 21);
+                // A user namespace that grants no capabilities (Ubuntu's
+                // AppArmor restriction lets unshare succeed and withholds
+                // them) can't host a cell: skip, as the other cell tests do.
                 if effective & cap_sys_admin == 0 || !in_bounding_set(21) {
-                    exit_child(10);
+                    exit_child(SKIP);
                 }
                 if drop_capabilities().is_err() {
                     exit_child(11);
