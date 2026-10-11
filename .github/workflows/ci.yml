@@ -84,6 +84,19 @@ jobs:
       - name: Run gate
         run: bash scripts/check.sh
 
+      # The denied-syscall catalogs kill hundreds of probes in minutes, and
+      # each seccomp kill is audited. Report how many audit records this job
+      # produced and whether the kernel's audit backlog overflowed, which
+      # stalls any process that audits.
+      - name: Kernel audit report
+        if: always()
+        run: |
+          echo "seccomp audit records: $(sudo dmesg | grep -c 'type=1326' || true)"
+          echo "backlog or rate-limit lines: $(sudo dmesg | grep -cE 'backlog limit exceeded|audit: rate limit|audit_lost' || true)"
+          sudo dmesg | grep -E 'backlog limit exceeded|audit: rate limit|audit_lost' | tail -5 || true
+          echo "seccomp actions logged: $(cat /proc/sys/kernel/seccomp/actions_logged)"
+          systemctl is-active auditd systemd-journald 2>/dev/null || true
+
   protocol:
  # the frontend/backend contract has one source, hatchling-core's
     # wire types. Both generated sides must match it: the schema (Rust) and

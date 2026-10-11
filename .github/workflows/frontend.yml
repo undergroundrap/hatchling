@@ -31,9 +31,15 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install -r tests/e2e/requirements.txt
       - run: python -m playwright install --with-deps chromium
-      # The browser suites use a system `chromium` on PATH when there is one,
-      # and Playwright's own build otherwise: say which this runner has.
-      - run: command -v chromium chromium-browser || echo "no system chromium, so Playwright's build is used"
+      # Every browser suite runs on Playwright's own pinned Chromium. The
+      # suites honour CHROMIUM_PATH first; without it they would pick up the
+      # runner's system chromium, a different build that closed during the
+      # sandboxed-preview tests.
+      - name: Use Playwright's Chromium
+        run: |
+          path="$(python -c 'from playwright.sync_api import sync_playwright as s; p = s().start(); print(p.chromium.executable_path); p.stop()')"
+          echo "browser suites use $path"
+          echo "CHROMIUM_PATH=$path" >> "$GITHUB_ENV"
       - run: npm run test:e2e
       - run: npm run test:smoke
       - run: npm run test:agent
