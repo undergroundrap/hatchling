@@ -1,0 +1,51 @@
+name: CLA
+
+# Asks each new contributor to sign CLA.md once, by commenting on their
+# pull request, and records the signature on the cla-signatures branch.
+#
+# pull_request_target runs this file as it is on main, with a token that
+# can write: it never checks out or runs the pull request's code, and the
+# action is pinned to a commit.
+on:
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    types: [opened, closed, synchronize]
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+  statuses: write
+
+jobs:
+  cla:
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'pull_request_target' ||
+      (github.event.issue.pull_request &&
+        (github.event.comment.body == 'recheck' ||
+         github.event.comment.body == 'I have read the Hatchling CLA and I hereby sign it.'))
+    steps:
+      - name: Check signatures
+        # contributor-assistant/github-action v2.6.1
+        uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          path-to-document: https://github.com/undergroundrap/hatchling/blob/main/CLA.md
+          path-to-signatures: signatures/v1/cla.json
+          # The branch must exist; the action creates the file on it.
+          branch: cla-signatures
+          create-file-commit-message: "chore(cla): start the signatures file"
+          signed-commit-message: "chore(cla): $contributorName signed the CLA"
+          allowlist: undergroundrap,dependabot[bot],github-actions[bot]
+          custom-pr-sign-comment: I have read the Hatchling CLA and I hereby sign it.
+          custom-notsigned-prcomment: >-
+            Thanks for the pull request! Hatchling is dual-licensed (AGPL-3.0-or-later
+            and commercial), so before it can merge, each contributor signs the
+            [Contributor License Agreement](https://github.com/undergroundrap/hatchling/blob/main/CLA.md)
+            once. You keep your copyright, and your work stays available under the AGPL.
+            To sign, reply with this exact sentence:
+          custom-allsigned-prcomment: Every contributor on this pull request has signed the CLA. Thank you!
+          lock-pullrequest-aftermerge: false
