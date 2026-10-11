@@ -34,6 +34,7 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | [009](workorder-009-egress-correctness.md) | Egress correctness fixes | yes | QUEUED |
 | [010](workorder-010-schedule-ownership.md) | Schedule ownership and API grant edges | yes | QUEUED |
 | [011](workorder-011-secret-hygiene.md) | Secret hygiene in memory and logs | yes | QUEUED |
+| [012](workorder-012-disposable-state-and-cleanup.md) | Separate disposable files from your data, and clean them up safely | yes | QUEUED |
 
 ## Candidates
 
