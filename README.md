@@ -59,25 +59,32 @@ The full model, what it deliberately doesn't cover, and the gaps our own pre-lau
 
 ## How it works
 
-```
-            you ──► local API (Unix socket, JSON) ──┐
-                                                    ▼
- ┌─────────────────── broker (on your machine, as root) ────────────────────┐
- │  peer-credential gate · grants · scheduler · memory · goals · audit log  │
- │                                                                          │
- │   vault (sealed at rest)          egress proxy (allowlist, key swap)     │
- │        ▲  keys stay here               ▲  the only way out               │
- └────────┼───────────────────────────────┼─────────────────────────────────┘
-          │ grants, checked per request   │ surrogate tokens, never real keys
- ┌────────┴───────────────────────────────┴─────────┐
- │  cell: namespaces · seccomp · no capabilities    │
- │        empty network · read-only view            │
- │                                                  │
- │   agent loop · skills · harness CLIs · your code │
- └──────────────────────────────────────────────────┘
+```text
+  outside: your model endpoint · the APIs you grant · harness vendors
+ ─────────────────────────▲────────────────────────────────▲──────────────────
+                          │ real key swapped in            │ vendor key added,
+                          │ TLS · pinned addresses         │ echoes scrubbed
+ ┌────────────────────────┼─── broker: the trusted side ───┼─────────────────┐
+ │                   ┌────┴─────────┐  scheduler     ┌─────┴─────────┐       │
+ │   vault ─────────►│ egress proxy │  memory, goals │ harness relay │       │
+ │   sealed at rest; │ exact-match  │  spaces        │ Claude Code,  │       │
+ │   keys go only to │ allowlist    │  skills        │ Codex         │       │
+ │   the proxy and   └────▲─────────┘  audit log     └─────▲─────────┘       │
+ │   the relay            │                                │                 │
+ └───────▲────────────────┼────────────────────────────────┼─────────────────┘
+         │ local API      │ one session per cell, admitted │
+         │ (Unix socket)  │ by kernel peer credentials;    │
+         │                │ grants checked per request;    │
+         │                │ surrogate tokens, never keys   │
+         │          ┌─────┴────────────────────────────────┴─────┐
+        you         │ cell: namespaces · seccomp · no caps       │
+     every reply    │ empty network · read-only view             │
+     passes the     │                                            │
+     output gate    │ agent loop · skills · harness CLIs         │
+                    └────────────────────────────────────────────┘
 ```
 
-The **broker** is the trusted side: it owns the vault, the proxy, the schedules and the API, and it never executes untrusted code. Everything the model drives runs in a **cell**. Where each piece lives: **[module map](docs/arch/module-map.md)** · **[protocol](docs/arch/protocol.md)** · **[session protocol](docs/session-protocol.md)**.
+The **broker** is the trusted side: it owns the vault, the proxy, the schedules and the API, and it never executes untrusted code. Everything the model drives runs in a **cell**. Today the broker is one process running as root; [WO-017](docs/workorders/workorder-017-privilege-separate-the-trusted-side.md) splits it into a credential keeper, an egress authority and a privileged spawner, each under its own user, so a bug in a busy part of the broker can't reach your keys. Where each piece lives: **[module map](docs/arch/module-map.md)** · **[protocol](docs/arch/protocol.md)** · **[session protocol](docs/session-protocol.md)**.
 
 ## Quickstart
 

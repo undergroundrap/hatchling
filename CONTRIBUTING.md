@@ -157,6 +157,11 @@ your change makes the docs lie, `check.sh` fails.
 When you change behavior, update the docs in the same PR. A PR
 that changes behavior without updating docs is incomplete.
 
+The diagram in the README's "How it works" is part of the docs. A
+PR that changes what crosses the boundary (a new way out of a cell,
+a new place a key goes, a component moving between sides) updates
+it in the same PR.
+
 ## Security
 
 If your change touches anything in the trust boundary
