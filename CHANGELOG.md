@@ -6,17 +6,14 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-11
+
+Publishing, documentation and metadata. No change to the broker's or the agent's behavior, or to the wire protocol.
+
 ### Added
 
 - The module map shows how the crates connect: `hatchling-runtime` at the front, the trusted side (broker, vault, egress, isolation) and the cell side (agent, loop, model), and which crates are published. Every crate's crates.io page links to it.
 - `hatchling-dev audit` fails the gate if a crate has no row in the module map, if the map names a crate that doesn't exist, or if `hatchling-agent` depends on the trusted side, directly or through another crate.
-
-## [0.1.2] - 2026-10-11
-
-Publishing and metadata only. No change to the broker, the agent or the wire protocol.
-
-### Added
-
 - Releases publish to crates.io from CI when a GitHub release is published, through trusted publishing: no crates.io token is stored anywhere. The workflow refuses a release whose tag, workspace version and changelog disagree.
 - `cargo semver-checks` runs on every pull request against the crates on crates.io.
 - crates.io and docs.rs badges, and `cargo install hatchling-runtime` as an install option in the quickstart.

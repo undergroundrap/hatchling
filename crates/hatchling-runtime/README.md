@@ -33,7 +33,7 @@ Most agent frameworks start with a powerful agent and add guardrails around it. 
 
 ## Running it
 
-`hatchling broker` runs the broker, which holds the vault, the network and the schedules. `hatchling agent` is the agent, which the broker starts inside each cell: point `HATCHLING_AGENT_BIN` at the `hatchling` binary, and one binary serves both sides. That puts the broker's code inside each cell too, with no keys or network to use it on; for the smallest in-cell program, `cargo install hatchling-agent` and point `HATCHLING_AGENT_BIN` at that instead.
+`hatchling broker` runs the broker, which holds the vault, the network and the schedules. `hatchling agent` is the agent, which the broker starts inside each cell: point `HATCHLING_AGENT_BIN` at the `hatchling` binary, and one binary serves both sides, the way Chrome and OpenSSH run their sandboxed processes. The cell is what keeps the agent away from your keys: no keys or vault files, no network, a seccomp allowlist, no capabilities.
 
 Linux 5.11+ with unprivileged user namespaces, or WSL2. The broker runs as root so each cell gets a uid of its own. The [quickstart](https://github.com/undergroundrap/hatchling#quickstart) takes you from here to an agent answering from inside a cell, with a stand-in model, so no API key is needed.
 
