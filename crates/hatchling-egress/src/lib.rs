@@ -33,6 +33,7 @@ pub mod https;
 pub mod local;
 pub mod proxy;
 pub mod relay;
+pub mod scrub;
 pub mod surrogate;
 
 pub use allowlist::{

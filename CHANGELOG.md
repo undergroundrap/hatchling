@@ -8,6 +8,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Fixed
 
+- A credential an upstream echoes back (an error quoting the request, a debugging endpoint) no longer reaches the cell. The egress proxy and the harness relay overwrite the real key with `*` wherever it appears in a response's headers or body, keeping its length; the relay does it as the answer streams, through chunked framing, so a key split across reads or chunks is still found. Responses are requested uncompressed, the cell's own `Accept-Encoding` and `TE` are dropped, and a compressed answer is refused, since compression would hide an echo (WO-009).
 - Egress destinations written as numbers the system resolver reads as IPv4 addresses (`2130706433`, `0x7f000001`, `0177.0.0.1`, `127.1`), or with an all-digit last label, are refused like IP literals: they named no host the allowlist could vouch for ([WO-009](docs/workorders/workorder-009-egress-correctness.md)).
 - Two different egress destinations that would share a vault secret name (`api.example.com:443` and `api-example.com:443`) are refused at startup: one would have been sent the other's credential (WO-009).
 - The startup check that keeps vault grants off egress credentials now maps `public:`, `local:` and `local-keyless:` allowlist entries without their prefix, as the credential lookup does; before, a vault grant could name the credential of a prefixed entry that wasn't also an egress grant.

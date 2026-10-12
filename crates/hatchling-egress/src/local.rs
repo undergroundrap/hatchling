@@ -43,6 +43,11 @@ pub const MAX_HEAD_BYTES: usize = 32 * 1024;
 /// the request.
 const FRAMING_HEADERS: [&str; 3] = ["content-length", "transfer-encoding", "connection"];
 
+/// Request headers that would let the response be compressed. The proxy
+/// drops them and asks for `identity` itself, so the response can be
+/// scrubbed (see [`crate::scrub`]).
+const UNCOMPRESSED_ONLY: [&str; 2] = ["accept-encoding", "te"];
+
 /// Forwards `request` to the local endpoint pinned at `pinned`, with
 /// `credential` as the bearer if it has one.
 ///
@@ -124,7 +129,7 @@ pub(crate) fn request_bytes(request: &EgressRequest, credential: Option<&[u8]>) 
     let mut head = String::new();
     let _ = write!(
         head,
-        "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nContent-Length: {}\r\n",
+        "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nAccept-Encoding: identity\r\nContent-Length: {}\r\n",
         request.method,
         request.path,
         request.destination,
@@ -141,6 +146,12 @@ pub(crate) fn request_bytes(request: &EgressRequest, credential: Option<&[u8]>) 
         let _ = write!(head, "Authorization: Bearer {credential}\r\n");
     }
     for (name, value) in &request.headers {
+        if UNCOMPRESSED_ONLY
+            .iter()
+            .any(|chosen| name.eq_ignore_ascii_case(chosen))
+        {
+            continue;
+        }
         if !is_token(name)
             || !is_field_value(value)
             || FRAMING_HEADERS
@@ -198,6 +209,13 @@ pub(crate) fn read_response(reader: impl Read) -> Result<EgressResponse> {
             return Err(Error::UpstreamFailed);
         }
         headers.push(parse_header(&line)?);
+    }
+    // A compressed body would hide an echoed credential from the scrub.
+    if headers.iter().any(|(name, value)| {
+        name.eq_ignore_ascii_case("content-encoding") && !crate::scrub::is_identity(value)
+    }) {
+        tracing::warn!("the upstream sent a compressed response, which can't be scrubbed");
+        return Err(Error::UpstreamFailed);
     }
     let body = match framing(&headers)? {
         Framing::Length(length) => read_length(&mut reader, length)?,
@@ -428,12 +446,12 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(
             String::from_utf8(bytes).unwrap(),
-            "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost:11434\r\nConnection: close\r\nContent-Length: 2\r\nAuthorization: Bearer local-key\r\ncontent-type: application/json\r\n\r\n{}"
+            "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost:11434\r\nConnection: close\r\nAccept-Encoding: identity\r\nContent-Length: 2\r\nAuthorization: Bearer local-key\r\ncontent-type: application/json\r\n\r\n{}"
         );
         let keyless = request_bytes(&request("GET", &[], b""), None).unwrap();
         assert_eq!(
             String::from_utf8(keyless).unwrap(),
-            "GET /v1/chat/completions HTTP/1.1\r\nHost: localhost:11434\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+            "GET /v1/chat/completions HTTP/1.1\r\nHost: localhost:11434\r\nConnection: close\r\nAccept-Encoding: identity\r\nContent-Length: 0\r\n\r\n"
         );
     }
 
@@ -731,7 +749,7 @@ pub(crate) mod tests {
         assert_eq!((reply.status, reply.body.as_slice()), (200, &b"ok"[..]));
         assert_eq!(
             String::from_utf8(server.join().unwrap()).unwrap(),
-            "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost:11434\r\nConnection: close\r\nContent-Length: 7\r\nAuthorization: Bearer k\r\ncontent-type: application/json\r\n\r\n{\"a\":1}"
+            "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost:11434\r\nConnection: close\r\nAccept-Encoding: identity\r\nContent-Length: 7\r\nAuthorization: Bearer k\r\ncontent-type: application/json\r\n\r\n{\"a\":1}"
         );
     }
 

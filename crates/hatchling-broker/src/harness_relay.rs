@@ -27,6 +27,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use hatchling_egress::scrub::{Scrubber, is_identity, scrub_text};
 use hatchling_egress::{Allowlist, TlsClient};
 use subtle::ConstantTimeEq as _;
 use zeroize::Zeroizing;
@@ -338,7 +339,12 @@ fn relay_one(client: &TcpStream, context: &Context) -> bool {
         let _ = answer(client, 502, "the vendor could not be reached");
         return false;
     }
-    let _ = stream_back(&mut upstream, client);
+    if matches!(
+        stream_back(&mut upstream, client, context.key.as_bytes()),
+        Ok(true)
+    ) {
+        tracing::warn!("the vendor echoed its key; it was scrubbed from the answer");
+    }
     true
 }
 
@@ -509,7 +515,7 @@ fn read_chunked(reader: &mut impl std::io::BufRead) -> Result<Vec<u8>, Refusal> 
 
 /// Headers never passed on: the hop's own, the host, and either key
 /// header (the relay adds its own).
-const DROPPED: [&str; 13] = [
+const DROPPED: [&str; 14] = [
     "host",
     "authorization",
     "x-api-key",
@@ -523,6 +529,9 @@ const DROPPED: [&str; 13] = [
     "upgrade",
     "content-length",
     "expect",
+    // The relay asks for an uncompressed answer itself, so it can be
+    // scrubbed for the vendor key.
+    "accept-encoding",
 ];
 
 /// The request the vendor receives: the cell's, with the vendor key in
@@ -558,7 +567,7 @@ fn upstream_bytes(
         wire.key_header(),
         ": ",
         wire.key_value(key).as_str(),
-        "\r\nContent-Length: ",
+        "\r\nAccept-Encoding: identity\r\nContent-Length: ",
         length.as_str(),
         "\r\nConnection: close\r\n\r\n",
     ] {
@@ -571,33 +580,143 @@ fn upstream_bytes(
 
 /// Passes the vendor's answer back as it arrives: its head with the
 /// connection marked closed, then its body, within [`MAX_RESPONSE_BYTES`].
-fn stream_back(upstream: &mut impl Read, client: &TcpStream) -> std::io::Result<()> {
+///
+/// The vendor key is scrubbed from all of it (see
+/// [`hatchling_egress::scrub`]): from each header line, and from the body
+/// as it streams, through any chunked framing, so a vendor that echoes
+/// the key never hands it to the cell. An answer the scrub can't read,
+/// compressed or in another transfer coding, is refused with a 502.
+/// Whether the key was anywhere in the answer.
+fn stream_back(upstream: &mut impl Read, client: &TcpStream, key: &[u8]) -> std::io::Result<bool> {
     let mut reader = BufReader::new(upstream);
     let mut head = Vec::new();
-    let status = read_line(&mut reader).map_err(|_| std::io::Error::other("no status line"))?;
+    let mut status = read_line(&mut reader).map_err(|_| std::io::Error::other("no status line"))?;
+    let mut found = scrub_text(&mut status, key);
     head.extend_from_slice(status.as_bytes());
     head.extend_from_slice(b"\r\n");
+    let mut chunked = false;
     for _ in 0..=MAX_HEADERS {
-        let line = read_line(&mut reader).map_err(|_| std::io::Error::other("no header line"))?;
+        let mut line =
+            read_line(&mut reader).map_err(|_| std::io::Error::other("no header line"))?;
         if line.is_empty() {
             head.extend_from_slice(b"Connection: close\r\n\r\n");
             let mut client = client;
             client.write_all(&head)?;
-            let copied = std::io::copy(&mut reader.take(MAX_RESPONSE_BYTES), &mut client)?;
+            let mut body = reader.take(MAX_RESPONSE_BYTES);
+            let echoed = if chunked {
+                stream_chunked(&mut body, client, key)?
+            } else {
+                stream_raw(&mut body, client, key)?
+            };
             client.flush()?;
-            let _ = copied;
-            return Ok(());
+            return Ok(found || echoed);
         }
-        let name = line.split(':').next().unwrap_or_default();
-        if !["connection", "keep-alive"]
-            .iter()
-            .any(|dropped| name.eq_ignore_ascii_case(dropped))
-        {
+        let (name, value) = line
+            .split_once(':')
+            .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned()))
+            .unwrap_or_default();
+        let unreadable = (name == "content-encoding" && !is_identity(&value))
+            || (name == "transfer-encoding" && !value.eq_ignore_ascii_case("chunked"));
+        if unreadable {
+            let _ = answer(
+                client,
+                502,
+                "the vendor's answer is encoded so it can't be checked for its key",
+            );
+            return Err(std::io::Error::other("an answer the scrub can't read"));
+        }
+        chunked |= name == "transfer-encoding";
+        if !["connection", "keep-alive"].contains(&name.as_str()) {
+            found |= scrub_text(&mut line, key);
             head.extend_from_slice(line.as_bytes());
             head.extend_from_slice(b"\r\n");
         }
     }
     Err(std::io::Error::other("too many header lines"))
+}
+
+/// The size of each read of an answer's body.
+const PIECE: usize = 8192;
+
+/// Passes on a body read to its end, scrubbed for `key` as it goes.
+/// Whether the key was in it.
+fn stream_raw(body: &mut impl Read, mut client: &TcpStream, key: &[u8]) -> std::io::Result<bool> {
+    let mut scrubber = Scrubber::new(key);
+    let mut piece = [0_u8; PIECE];
+    loop {
+        let read = match body.read(&mut piece) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        client.write_all(&scrubber.push(piece.get(..read).unwrap_or_default()))?;
+    }
+    let found = scrubber.found();
+    client.write_all(&scrubber.finish())?;
+    Ok(found)
+}
+
+/// Passes on a chunked body: decoded as it arrives, scrubbed for `key`,
+/// and chunked again. A key the vendor split across chunks is put back
+/// together before the scrub, as the client would put it together.
+/// Trailers are dropped. Whether the key was in it.
+fn stream_chunked(
+    body: &mut impl Read,
+    mut client: &TcpStream,
+    key: &[u8],
+) -> std::io::Result<bool> {
+    fn chunk(client: &mut &TcpStream, data: &[u8]) -> std::io::Result<()> {
+        if data.is_empty() {
+            return Ok(());
+        }
+        write!(client, "{:x}\r\n", data.len())?;
+        client.write_all(data)?;
+        client.write_all(b"\r\n")
+    }
+    let framing = |_| std::io::Error::other("the answer's chunked framing is broken");
+    let mut reader = BufReader::new(body);
+    let mut scrubber = Scrubber::new(key);
+    let mut piece = [0_u8; PIECE];
+    loop {
+        let line = read_line(&mut reader).map_err(framing)?;
+        let size = line.split(';').next().unwrap_or_default().trim();
+        let size = u64::from_str_radix(size, 16)
+            .map_err(|_| std::io::Error::other("a chunk size is not hexadecimal"))?;
+        if size == 0 {
+            break;
+        }
+        let mut data = (&mut reader).take(size);
+        let mut left = size;
+        while left > 0 {
+            let read = match data.read(&mut piece) {
+                Ok(0) => return Err(std::io::Error::other("the answer ended inside a chunk")),
+                Ok(read) => read,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            };
+            left = left.saturating_sub(u64::try_from(read).unwrap_or(u64::MAX));
+            chunk(
+                &mut client,
+                &scrubber.push(piece.get(..read).unwrap_or_default()),
+            )?;
+        }
+        if !read_line(&mut reader).map_err(framing)?.is_empty() {
+            return Err(std::io::Error::other(
+                "a chunk doesn't end where its size says",
+            ));
+        }
+    }
+    // Trailers could carry anything; they aren't passed on.
+    for _ in 0..=MAX_HEADERS {
+        if read_line(&mut reader).map_err(framing)?.is_empty() {
+            let found = scrubber.found();
+            chunk(&mut client, &scrubber.finish())?;
+            client.write_all(b"0\r\n\r\n")?;
+            return Ok(found);
+        }
+    }
+    Err(std::io::Error::other("too many trailer lines"))
 }
 
 /// Answers locally with `status` and a JSON error naming `reason`.
@@ -958,14 +1077,14 @@ mod tests {
             String::from_utf8(bytes.to_vec()).unwrap(),
             "POST /v1/messages?beta=true HTTP/1.1\r\nHost: api.anthropic.com\r\n\
              Content-Type: application/json\r\nanthropic-version: 1\r\n\
-             x-api-key: real\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
+             x-api-key: real\r\nAccept-Encoding: identity\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
         );
         let openai = vendor(Wire::OpenAi, 8443);
         let bytes = upstream_bytes(&request("GET", "/v1/models", &[]), b"", &openai, "real");
         assert_eq!(
             String::from_utf8(bytes.to_vec()).unwrap(),
             "GET /v1/models HTTP/1.1\r\nHost: localhost:8443\r\n\
-             authorization: Bearer real\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+             authorization: Bearer real\r\nAccept-Encoding: identity\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
         );
     }
 
@@ -976,7 +1095,7 @@ mod tests {
             b"HTTP/1.1 200 OK\r\nConnection: keep-alive\r\nKeep-Alive: 5\r\nX-A: 1\r\n\r\nbody"
                 .to_vec(),
         );
-        stream_back(&mut upstream, &server).unwrap();
+        stream_back(&mut upstream, &server, b"real-vendor-key").unwrap();
         drop(server);
         let mut got = String::new();
         client.read_to_string(&mut got).unwrap();
@@ -985,13 +1104,277 @@ mod tests {
             "HTTP/1.1 200 OK\r\nX-A: 1\r\nConnection: close\r\n\r\nbody"
         );
         let (_client, server) = pair();
-        assert!(stream_back(&mut Cursor::new(b"".to_vec()), &server).is_err());
+        assert!(stream_back(&mut Cursor::new(b"".to_vec()), &server, b"k").is_err());
         assert!(
             stream_back(
                 &mut Cursor::new(b"HTTP/1.1 200 OK\r\nX: 1".to_vec()),
-                &server
+                &server,
+                b"k"
             )
             .is_err()
+        );
+    }
+
+    /// A body that reads as `steps`, in order, then ends. A step longer
+    /// than the reader's buffer is read in parts.
+    struct Scripted(std::collections::VecDeque<std::io::Result<Vec<u8>>>);
+
+    impl Read for Scripted {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let Some(step) = self.0.pop_front() else {
+                return Ok(0);
+            };
+            let bytes = step?;
+            let (now, later) = bytes.split_at(bytes.len().min(buf.len()));
+            buf.get_mut(..now.len()).unwrap().copy_from_slice(now);
+            if !later.is_empty() {
+                self.0.push_front(Ok(later.to_vec()));
+            }
+            Ok(now.len())
+        }
+    }
+
+    fn interrupted() -> std::io::Result<Vec<u8>> {
+        Err(std::io::Error::from(std::io::ErrorKind::Interrupted))
+    }
+
+    fn failed() -> std::io::Result<Vec<u8>> {
+        Err(std::io::Error::other("the vendor hung up"))
+    }
+
+    /// The answer a client receives from `stream_back`, for an upstream
+    /// that sends `bytes`, with `key` as the vendor key.
+    fn streamed(bytes: &[u8], key: &[u8]) -> (std::io::Result<bool>, Vec<u8>) {
+        let (mut client, server) = pair();
+        let result = stream_back(&mut Cursor::new(bytes.to_vec()), &server, key);
+        drop(server);
+        let mut got = Vec::new();
+        client.read_to_end(&mut got).unwrap();
+        (result, got)
+    }
+
+    /// A chunked body, decoded: what the client would put together.
+    fn unchunked(mut body: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        loop {
+            let line_end = body.windows(2).position(|pair| pair == b"\r\n").unwrap();
+            let (size, rest) = body.split_at(line_end);
+            let size = usize::from_str_radix(std::str::from_utf8(size).unwrap(), 16).unwrap();
+            let rest = rest.get(2..).unwrap();
+            if size == 0 {
+                assert_eq!(rest, b"\r\n", "the last chunk ends the body");
+                return out;
+            }
+            let (data, rest) = rest.split_at(size);
+            out.extend_from_slice(data);
+            assert!(
+                rest.starts_with(b"\r\n"),
+                "each chunk ends where its size says"
+            );
+            body = rest.get(2..).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_body_streams_scrubbed_and_says_whether_the_key_was_in_it() {
+        let raw = |steps: Vec<std::io::Result<Vec<u8>>>| {
+            let (mut client, server) = pair();
+            let found = stream_raw(&mut Scripted(steps.into()), &server, b"key");
+            drop(server);
+            let mut got = Vec::new();
+            client.read_to_end(&mut got).unwrap();
+            (found.ok(), got)
+        };
+        // An interrupted read is retried, and a key split around it is found.
+        assert_eq!(
+            raw(vec![
+                Ok(b"a k".to_vec()),
+                interrupted(),
+                Ok(b"ey b".to_vec())
+            ]),
+            (Some(true), b"a *** b".to_vec())
+        );
+        assert_eq!(
+            raw(vec![Ok(b"clean".to_vec())]),
+            (Some(false), b"clean".to_vec())
+        );
+        // A failed read ends the stream, even if the vendor sends more.
+        assert_eq!(
+            raw(vec![Ok(b"a".to_vec()), failed(), Ok(b"b".to_vec())]).0,
+            None
+        );
+
+        let chunked = |steps: Vec<std::io::Result<Vec<u8>>>| {
+            let (mut client, server) = pair();
+            let found = stream_chunked(&mut Scripted(steps.into()), &server, b"key");
+            drop(server);
+            let mut got = Vec::new();
+            client.read_to_end(&mut got).unwrap();
+            (found.ok(), got)
+        };
+        let (found, got) = chunked(vec![
+            Ok(b"3\r\na ".to_vec()),
+            interrupted(),
+            Ok(b"k\r\n2\r\ney\r\n0\r\n\r\n".to_vec()),
+        ]);
+        assert_eq!(found, Some(true));
+        assert_eq!(unchunked(&got), b"a ***".to_vec());
+        let (found, got) = chunked(vec![Ok(b"3\r\nabc\r\n0\r\n\r\n".to_vec())]);
+        assert_eq!(found, Some(false));
+        assert_eq!(unchunked(&got), b"abc".to_vec());
+        assert_eq!(
+            chunked(vec![
+                Ok(b"3\r\na".to_vec()),
+                failed(),
+                Ok(b"bc\r\n0\r\n\r\n".to_vec())
+            ])
+            .0,
+            None
+        );
+    }
+
+    #[test]
+    fn stream_back_says_whether_the_key_was_anywhere_in_the_answer() {
+        for (answer, echoed) in [
+            (
+                &b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"[..],
+                false,
+            ),
+            (
+                &b"HTTP/1.1 401 real-vendor-key\r\nContent-Length: 2\r\n\r\nok"[..],
+                true,
+            ),
+            (
+                &b"HTTP/1.1 200 OK\r\nX-Echo: real-vendor-key\r\nContent-Length: 2\r\n\r\nok"[..],
+                true,
+            ),
+            (
+                &b"HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\r\nreal-vendor-key"[..],
+                true,
+            ),
+        ] {
+            let (result, _) = streamed(answer, b"real-vendor-key");
+            assert_eq!(
+                result.unwrap(),
+                echoed,
+                "{}",
+                String::from_utf8_lossy(answer)
+            );
+        }
+    }
+
+    #[test]
+    fn the_vendor_key_is_scrubbed_from_the_head_and_a_plain_body() {
+        let (result, got) = streamed(
+            b"HTTP/1.1 401 real-vendor-key\r\nX-Echo: key=real-vendor-key\r\nContent-Length: 30\r\n\r\nreal-vendor-keyreal-vendor-key",
+            b"real-vendor-key",
+        );
+        result.unwrap();
+        assert_eq!(
+            String::from_utf8(got).unwrap(),
+            "HTTP/1.1 401 ***************\r\nX-Echo: key=***************\r\nContent-Length: 30\r\n\
+             Connection: close\r\n\r\n******************************"
+        );
+    }
+
+    #[test]
+    fn a_key_split_across_chunks_is_put_together_and_scrubbed() {
+        // "real-" and "vendor-key" in two chunks, a chunk extension, and a
+        // trailer that is dropped.
+        let (result, got) = streamed(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n\
+              6;x=1\r\nkey: \"\r\n5\r\nreal-\r\na\r\nvendor-key\r\n2\r\n\"!\r\n0\r\nX-Trailer: real-vendor-key\r\n\r\n",
+            b"real-vendor-key",
+        );
+        result.unwrap();
+        let text = String::from_utf8_lossy(&got).into_owned();
+        assert!(!text.contains("real-"), "{text}");
+        assert!(!text.contains("vendor-key"), "{text}");
+        assert!(!text.contains("X-Trailer"), "trailers are dropped: {text}");
+        let (head, body) = text.split_once("\r\n\r\n").unwrap();
+        assert_eq!(
+            head,
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close"
+        );
+        assert_eq!(
+            unchunked(body.as_bytes()),
+            b"key: \"***************\"!".to_vec()
+        );
+        // A clean chunked body comes through whole.
+        let (result, got) = streamed(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n2\r\nde\r\n0\r\n\r\n",
+            b"real-vendor-key",
+        );
+        result.unwrap();
+        let text = String::from_utf8(got).unwrap();
+        let (_, body) = text.split_once("\r\n\r\n").unwrap();
+        assert_eq!(unchunked(body.as_bytes()), b"abcde".to_vec());
+    }
+
+    #[test]
+    fn broken_chunked_framing_is_cut_off() {
+        for broken in [
+            &b"zz\r\nabc\r\n0\r\n\r\n"[..], // a size that isn't hex
+            &b"5\r\nabc"[..],               // the answer ends inside a chunk
+            &b"3\r\nabcX\r\n0\r\n\r\n"[..], // a chunk longer than its size
+            &b"3\r\nabc\r\n"[..],           // no last chunk
+        ] {
+            let mut bytes = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec();
+            bytes.extend_from_slice(broken);
+            let (result, got) = streamed(&bytes, b"real-vendor-key");
+            assert!(result.is_err(), "{}", String::from_utf8_lossy(broken));
+            assert!(
+                !got.ends_with(b"0\r\n\r\n"),
+                "a broken body is never ended cleanly"
+            );
+        }
+    }
+
+    #[test]
+    fn an_answer_the_scrub_cannot_read_is_refused() {
+        for encoding in [
+            "Content-Encoding: gzip",
+            "Content-Encoding: br",
+            "Transfer-Encoding: gzip, chunked",
+        ] {
+            let (result, got) = streamed(
+                format!("HTTP/1.1 200 OK\r\n{encoding}\r\n\r\nsecret").as_bytes(),
+                b"real-vendor-key",
+            );
+            assert!(result.is_err(), "{encoding}");
+            let text = String::from_utf8(got).unwrap();
+            assert!(text.starts_with("HTTP/1.1 502 "), "{encoding}: {text}");
+            assert!(!text.contains("secret"), "{encoding}: {text}");
+        }
+        let (result, _) = streamed(
+            b"HTTP/1.1 200 OK\r\nContent-Encoding: identity\r\nContent-Length: 2\r\n\r\nok",
+            b"real-vendor-key",
+        );
+        result.unwrap();
+    }
+
+    #[test]
+    fn a_vendor_that_echoes_its_key_never_hands_it_to_the_cell() {
+        let (port, requests) = mock_vendor(
+            b"HTTP/1.1 400 Bad Request\r\nContent-Length: 34\r\n\r\n{\"bad key\":\"Bearer real-vendor-key\"}",
+        );
+        let context = context(vendor(Wire::OpenAi, port));
+        let (forwarded, answer) = relay_once(
+            &context,
+            b"POST /v1/responses HTTP/1.1\r\nAuthorization: Bearer sk-ant-hatchling-cell\r\n\
+              Accept-Encoding: gzip\r\nContent-Length: 2\r\n\r\n{}",
+        );
+        assert!(forwarded);
+        assert!(!answer.contains("real-vendor-key"), "{answer}");
+        assert!(
+            answer.ends_with("{\"bad key\":\"Bearer ***************\"}"),
+            "{answer}"
+        );
+        let sent = String::from_utf8(requests.recv_timeout(SOON).unwrap()).unwrap();
+        assert!(sent.contains("\r\nAccept-Encoding: identity\r\n"), "{sent}");
+        assert!(
+            !sent.contains("gzip"),
+            "the cell's encodings are dropped: {sent}"
         );
     }
 
@@ -1004,7 +1387,7 @@ mod tests {
             }
             bytes.extend_from_slice(b"\r\n");
             let (_client, server) = pair();
-            stream_back(&mut Cursor::new(bytes), &server)
+            stream_back(&mut Cursor::new(bytes), &server, b"k")
         };
         assert!(answer(MAX_HEADERS).is_ok());
         assert!(answer(MAX_HEADERS + 1).is_err());
@@ -1020,7 +1403,7 @@ mod tests {
             sink.len()
         });
         let mut endless = (&b"HTTP/1.1 200 OK\r\n\r\n"[..]).chain(std::io::repeat(b'x'));
-        stream_back(&mut endless, &server).unwrap();
+        stream_back(&mut endless, &server, b"real-vendor-key").unwrap();
         drop(server);
         let sent = b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".len();
         assert_eq!(

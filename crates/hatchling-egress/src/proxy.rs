@@ -219,7 +219,7 @@ where
         // a local model endpoint over its verified loopback connection,
         // anything else over HTTPS.
         let credential = credential.as_deref().map(Vec::as_slice);
-        let response = if let Some(local) = self.allowlist.local(&request.destination) {
+        let mut response = if let Some(local) = self.allowlist.local(&request.destination) {
             crate::local::forward(local.addrs(), request, credential)?
         } else {
             let pinned = self
@@ -228,6 +228,15 @@ where
                 .ok_or(Error::DestinationDenied)?;
             crate::https::forward(&self.tls, pinned, request, credential)?
         };
+
+        // 8. Scrub: an upstream that echoes the credential must not hand
+        // it to the cell.
+        if credential.is_some_and(|credential| scrub_response(&mut response, credential)) {
+            tracing::warn!(
+                destination = %request.destination,
+                "the upstream echoed the credential; it was scrubbed from the response"
+            );
+        }
 
         tracing::info!(
             peer_uid = peer_uid,
@@ -291,6 +300,17 @@ fn check_read_only(request: &EgressRequest) -> Result<()> {
 /// and contain no scheme, host, or userinfo. The `Authorization` header
 /// is forbidden (it comes from the swap). The body must be within
 /// bounds.
+/// Overwrites the credential wherever it appears in a response: its
+/// header names and values, and its body. Whether it was there.
+fn scrub_response(response: &mut EgressResponse, credential: &[u8]) -> bool {
+    let mut found = crate::scrub::scrub(&mut response.body, credential);
+    for (name, value) in &mut response.headers {
+        found |= crate::scrub::scrub_text(name, credential);
+        found |= crate::scrub::scrub_text(value, credential);
+    }
+    found
+}
+
 fn validate_request(request: &EgressRequest) -> Result<()> {
     // Method: allowlist of safe methods.
     if !matches!(
@@ -447,9 +467,116 @@ mod tests {
         assert_eq!(lookups.load(std::sync::atomic::Ordering::SeqCst), 0);
         let seen = String::from_utf8(server.join().unwrap()).unwrap();
         let expected = format!(
-            "GET / HTTP/1.1\r\nHost: {destination}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+            "GET / HTTP/1.1\r\nHost: {destination}\r\nConnection: close\r\nAccept-Encoding: identity\r\nContent-Length: 0\r\n\r\n"
         );
         assert_eq!(seen, expected);
+    }
+
+    #[test]
+    fn a_credential_the_upstream_echoes_never_reaches_the_cell() {
+        // The body is "echo: Bearer test-credential", 28 bytes.
+        const ECHO: &[u8] = b"HTTP/1.1 400 Bad Request\r\nX-Echo: test-credential\r\nContent-Length: 28\r\n\r\necho: Bearer test-credential";
+        let (live, server) = crate::local::tests::serve_once(ECHO);
+        let destination = format!("localhost:{}", live.port());
+        let lookups = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let proxy = local_proxy(
+            &format!("local:{destination}"),
+            b"test-credential",
+            &lookups,
+        );
+        // The cell asks for a compressed answer, which would hide an echo.
+        let mut request = get(&proxy, &destination);
+        request
+            .headers
+            .push((String::from("Accept-Encoding"), String::from("gzip")));
+        request
+            .headers
+            .push((String::from("TE"), String::from("gzip")));
+        let reply = proxy.forward(1000, &request).unwrap();
+        assert_eq!(reply.status, 400);
+        assert_eq!(reply.body, b"echo: Bearer ***************".to_vec());
+        assert!(
+            reply
+                .headers
+                .contains(&(String::from("X-Echo"), String::from("***************"))),
+            "{:?}",
+            reply.headers
+        );
+        let seen = String::from_utf8(server.join().unwrap()).unwrap();
+        assert!(seen.contains("\r\nAccept-Encoding: identity\r\n"), "{seen}");
+        assert!(
+            !seen.contains("gzip"),
+            "the cell's encodings are dropped: {seen}"
+        );
+    }
+
+    #[test]
+    fn a_compressed_answer_is_refused_since_it_cannot_be_scrubbed() {
+        const GZIP: &[u8] =
+            b"HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: 2\r\n\r\nok";
+        const IDENTITY: &[u8] =
+            b"HTTP/1.1 200 OK\r\nContent-Encoding: identity\r\nContent-Length: 2\r\n\r\nok";
+        let (live, server) = crate::local::tests::serve_once(GZIP);
+        let destination = format!("localhost:{}", live.port());
+        let lookups = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let proxy = local_proxy(
+            &format!("local:{destination}"),
+            b"test-credential",
+            &lookups,
+        );
+        assert!(matches!(
+            proxy.forward(1000, &get(&proxy, &destination)),
+            Err(Error::UpstreamFailed)
+        ));
+        server.join().unwrap();
+        // An explicit identity encoding is fine.
+        let (live, server) = crate::local::tests::serve_once(IDENTITY);
+        let destination = format!("localhost:{}", live.port());
+        let proxy = local_proxy(
+            &format!("local:{destination}"),
+            b"test-credential",
+            &lookups,
+        );
+        let reply = proxy.forward(1000, &get(&proxy, &destination)).unwrap();
+        assert_eq!(reply.body, b"ok");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn scrub_response_masks_the_body_and_every_header_name_and_value() {
+        let mut response = EgressResponse {
+            status: 200,
+            headers: vec![
+                (String::from("X-test-credential"), String::from("a")),
+                (
+                    String::from("X-B"),
+                    String::from("pre test-credential post"),
+                ),
+                (String::from("X-C"), String::from("clean")),
+            ],
+            body: b"test-credentialtest-credential".to_vec(),
+        };
+        assert!(scrub_response(&mut response, b"test-credential"));
+        assert_eq!(
+            response.headers,
+            [
+                (String::from("X-***************"), String::from("a")),
+                (
+                    String::from("X-B"),
+                    String::from("pre *************** post")
+                ),
+                (String::from("X-C"), String::from("clean")),
+            ]
+        );
+        assert_eq!(response.body, b"******************************".to_vec());
+        // Nothing to scrub: nothing changes, and it says so.
+        let mut clean = EgressResponse {
+            status: 200,
+            headers: vec![(String::from("X"), String::from("y"))],
+            body: b"fine".to_vec(),
+        };
+        assert!(!scrub_response(&mut clean, b"test-credential"));
+        assert_eq!(clean.body, b"fine".to_vec());
     }
 
     #[test]
