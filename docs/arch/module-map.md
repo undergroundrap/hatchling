@@ -37,7 +37,7 @@ Every crate has a row below: `hatchling-dev audit` fails the gate if one doesn't
 | Crate | Role |
 | --- | --- |
 | `hatchling-broker` | Central coordinator. Spawns cells, routes messages, enforces grants, serves the local API. Never executes untrusted code. |
-| `hatchling-agent` | The binary that runs inside a cell. It reaches the broker over its one peer-authorized session; all its logic is library code, tested without spawning it. |
+| `hatchling-agent` | The binary that runs inside a cell. It reaches the broker over its one peer-authorized session; all its logic is library code, tested without spawning it. `hatchling-cell`, which `hatchling-runtime` installs, is this crate's command line under another name: same code, same behavior. |
 | `hatchling-core` | The shared foundation: identity newtypes, protocol framing and message types, grants, kernel peer credentials. The vocabulary everything else speaks. |
 | `hatchling-loop` | The agent's tool-calling loop. The model proposes; the host validates and bounds. LLM-agnostic. |
 

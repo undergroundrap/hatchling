@@ -33,7 +33,7 @@ Most agent frameworks start with a powerful agent and add guardrails around it. 
 
 ## Running it
 
-`cargo install hatchling-runtime` installs two programs. `hatchling broker` runs the broker, which holds the vault, the network and the schedules. `hatchling-cell` is the program the broker runs inside each cell: the agent alone, carrying none of the broker's code (a test checks the built binary). Point `HATCHLING_AGENT_BIN` at it.
+`cargo install hatchling-runtime` installs two programs. `hatchling broker` runs the broker, which holds the vault, the network and the schedules. `hatchling-cell` is the program the broker runs inside each cell: the agent alone, carrying none of the broker's code (a test checks the built binary). Point `HATCHLING_AGENT_BIN` at it. It is the [`hatchling-agent`](https://crates.io/crates/hatchling-agent) crate's command line under another name: the same agent, the same code.
 
 Linux 5.11+ with unprivileged user namespaces, or WSL2. The broker runs as root so each cell gets a uid of its own. The [quickstart](https://github.com/undergroundrap/hatchling#quickstart) takes you from here to an agent answering from inside a cell, with a stand-in model, so no API key is needed.
 
