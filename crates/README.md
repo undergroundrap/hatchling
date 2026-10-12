@@ -14,6 +14,8 @@ cargo install hatchling-runtime
 
 This crate is published so that one can be installed. It carries no stability promise on its own: its API changes whenever Hatchling needs it to, and a 0.x minor version may break it. Depend on it directly only if you're prepared to follow Hatchling's releases.
 
+How this crate fits with the others: the [module map](https://github.com/undergroundrap/hatchling/blob/main/docs/arch/module-map.md).
+
 [GitHub](https://github.com/undergroundrap/hatchling) · [Quickstart](https://github.com/undergroundrap/hatchling#quickstart) · [Threat model](https://github.com/undergroundrap/hatchling/blob/main/docs/arch/trust-boundary.md) · [Website](https://oceanbennett.com/hatchling/)
 
 Licensed AGPL-3.0-or-later, with a [commercial license](https://oceanbennett.com/hatchling/#licensing) for organizations that need other terms.

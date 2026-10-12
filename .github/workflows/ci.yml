@@ -8,13 +8,14 @@ on:
       # but always run when a machine-checked doc changes:
       # crates/hatchling-core/tests/local_api_doc.rs reads
       # docs/local-api.md, and hatchling-dev's arch check reads
-      # docs/dependency-review.md.
+      # docs/dependency-review.md and docs/arch/module-map.md.
       - '**'
       - '!docs/**'
       - '!**.md'
       - '!assets/**'
       - 'docs/local-api.md'
       - 'docs/dependency-review.md'
+      - 'docs/arch/module-map.md'
   # Every pull request, with no path filter: main requires these checks,
   # and a required check that never starts blocks the merge.
   pull_request:

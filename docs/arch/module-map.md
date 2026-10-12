@@ -1,8 +1,36 @@
 # Module Map
 
-Hatchling is a Rust workspace. This is what each crate does and
-how they fit together. If you're looking for where something
-lives, start here.
+Hatchling is a Rust workspace. This is what each crate does and how they fit together. If you're looking for where something lives, start here.
+
+Every crate has a row below: `hatchling-dev audit` fails the gate if one doesn't, or if a row names a crate that no longer exists.
+
+## How they connect
+
+```text
+                      hatchling-runtime   the `hatchling` command: one binary, both sides
+                     /                 \
+   ┌─ trusted side ──────────────┐   ┌─ cell side ─────────────────┐
+   │ hatchling-broker            │   │ hatchling-agent             │
+   │   keys, network, schedules, │   │   runs inside a cell; talks │
+   │   the local API             │   │   to the broker only        │
+   │ vault  egress  fido2        │   │ loop  model  research       │
+   │ isolation  scheduler  skill │   │ prompt                      │
+   │ space  goals  feed artifact │   │                             │
+   └─────────────────────────────┘   └─────────────────────────────┘
+          channel   memory   core   sys    shared by both: wire types, records, syscalls
+```
+
+- **The broker is the trusted side.** It holds the vault, owns the network (the egress proxy), builds cells (isolation), and runs the schedules and the local API. It never executes untrusted code.
+- **The agent is the cell side.** It runs inside a cell and reaches the outside only through its one peer-authorized session with the broker.
+- **The cell side never links the trusted side.** `hatchling-agent`'s dependencies, followed all the way down, never reach `hatchling-broker`, `hatchling-vault`, `hatchling-egress`, `hatchling-isolation`, `hatchling-fido2` or `hatchling-runtime`. The code that runs in a cell is built without the code that holds your keys or the network, and `hatchling-dev audit` fails the gate if that ever changes.
+- **The one binary bundles both sides.** `hatchling-runtime` installs one `hatchling` command that is both the broker and the agent. Pointing `HATCHLING_AGENT_BIN` at it is convenient, but the program inside each cell then contains the broker's code too (with no keys and no network to use it on). For the smallest in-cell program, point `HATCHLING_AGENT_BIN` at the `hatchling-agent` binary instead (`cargo install hatchling-agent`, or the one `cargo build` makes).
+- **What's published:** every crate here is on crates.io at the workspace version, except the three marked *not published*.
+
+## The front door
+
+| Crate | Role |
+| --- | --- |
+| `hatchling-runtime` | The `hatchling` command: `hatchling broker` and `hatchling agent` run the two sides' command lines, and it also answers the broker's spawner helpers and starts as the agent when a cell runs it as `/agent`. Install it with `cargo install hatchling-runtime`. |
 
 ## Core runtime
 
@@ -21,7 +49,7 @@ lives, start here.
 | `hatchling-sys` | Low-level syscall wrappers (seccomp, namespaces, mounts, process and fd handling). The only crate allowed `unsafe`. |
 | `hatchling-vault` | Secret storage. Credentials never leave this crate's boundary except via the egress proxy. |
 | `hatchling-egress` | The egress proxy: the only component that touches the network for a cell. Allowlist with pinned DNS, surrogate tokens, credential substitution. |
-| `hatchling-adversarial` | Attack simulations used in testing. Proves the isolation holds. |
+| `hatchling-adversarial` | *Not published.* Attack simulations used in testing. Proves the isolation holds. |
 
 ## Capabilities
 
@@ -38,25 +66,27 @@ lives, start here.
 | `hatchling-artifact` | The artifact pipeline: where untrusted build output becomes user-facing content, with an inspector at the boundary. |
 | `hatchling-fido2` | The FIDO2 transport (CTAP2 over USB HID), one of the vault's unlock factors. |
 | `hatchling-channel` | Messaging channels: how the user reaches the agent. The broker owns the endpoints. |
-| `hatchling-builders` | The document and page builders, each a signed skill. |
+| `hatchling-builders` | *Not published.* The document and page builders, each a signed skill. |
 | `hatchling-research` | Deep research runs: plan, gather, synthesize, and deliver a cited report as an artifact. |
 
 ## Developer tooling (never shipped)
 
 | Crate | Role |
 | --- | --- |
-| `hatchling-dev` | **Dev-only.** Test harness, mutation-testing support, conformance checks, delegation verification. Never linked into the runtime. |
+| `hatchling-dev` | *Not published.* **Dev-only.** Test harness, mutation-testing support, conformance checks, delegation verification. Never linked into the runtime. |
 
 ## Dependency rules
 
 - `hatchling-core` depends only on `hatchling-sys`. It's the foundation.
 - The broker depends on almost everything but never on `hatchling-dev`.
+- `hatchling-agent` never depends on the trusted side, directly or through another crate. A test enforces this.
 - `hatchling-dev` is never a dependency of any shipped crate. A test enforces this.
-- New cross-crate dependencies need justification in the PR.
+- New cross-crate dependencies need justification in the PR. A new crate needs a row here; see [CONTRIBUTING](../../CONTRIBUTING.md#adding-a-crate) for when code earns its own crate.
 
 ## Where to start reading
 
-1. `hatchling-core` — the types. Understand the vocabulary first.
-2. `hatchling-broker` — the coordinator. Understand the flow.
-3. `hatchling-isolation` — the security model. Understand the boundaries.
-4. Then follow your interest.
+1. `hatchling-runtime` — the front door. See how the two sides are started.
+2. `hatchling-core` — the types. Understand the vocabulary first.
+3. `hatchling-broker` — the coordinator. Understand the flow.
+4. `hatchling-isolation` — the security model. Understand the boundaries.
+5. Then follow your interest.

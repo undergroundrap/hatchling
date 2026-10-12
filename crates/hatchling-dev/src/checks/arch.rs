@@ -10,7 +10,13 @@
 //!   one auditable place);
 //! - the frontend host, `hatchling-host`, stays a thin transport
 //!   adapter: no dependencies beyond the wire contract and no
-//!   authorization logic. The broker owns every authorization decision.
+//!   authorization logic. The broker owns every authorization decision;
+//! - every crate has a row in the module map
+//!   (`docs/arch/module-map.md`), and the map names no crate that
+//!   doesn't exist;
+//! - the crate that runs in a cell, `hatchling-agent`, never depends on
+//!   a crate that holds keys, the network or the cell machinery, not
+//!   even through another crate.
 
 use std::path::Path;
 
@@ -49,6 +55,113 @@ pub fn run(root: &Path) -> Result<Vec<Finding>, crate::Error> {
     findings.extend(check_prompt_placement(root)?);
     findings.extend(check_adapter_thin(root)?);
     findings.extend(check_api_adapter(root)?);
+    findings.extend(check_module_map(root)?);
+    findings.extend(check_cell_side(root)?);
+    Ok(findings)
+}
+
+/// The architecture map: every workspace crate has a row in it.
+pub const MODULE_MAP: &str = "docs/arch/module-map.md";
+
+/// The crate that runs inside a cell.
+pub const CELL_CRATE: &str = "hatchling-agent";
+
+/// Crates that hold keys, the network or the cell machinery. The cell
+/// crate must never depend on one, directly or through another crate.
+pub const TRUSTED_SIDE: [&str; 6] = [
+    "hatchling-broker",
+    "hatchling-vault",
+    "hatchling-egress",
+    "hatchling-isolation",
+    "hatchling-fido2",
+    "hatchling-runtime",
+];
+
+/// Every member crate has a row in the module map, and every row names
+/// a member crate: a new crate can't go undocumented, and a removed
+/// one can't linger in the map.
+fn check_module_map(root: &Path) -> Result<Vec<Finding>, crate::Error> {
+    let path = root.join(MODULE_MAP);
+    if !path.is_file() {
+        return Ok(vec![Finding::new(
+            "arch",
+            format!("{MODULE_MAP} is missing"),
+        )]);
+    }
+    let map = std::fs::read_to_string(&path).map_err(crate::Error::Io)?;
+    let rows = map_rows(&map);
+    let members = members(root)?;
+    let mut findings = Vec::new();
+    for member in &members {
+        if !rows.contains(&member.name.as_str()) {
+            findings.push(Finding::new(
+                "arch",
+                format!("crate `{}` has no row in {MODULE_MAP}", member.name),
+            ));
+        }
+    }
+    for row in rows {
+        if !members.iter().any(|member| member.name == row) {
+            findings.push(Finding::new(
+                "arch",
+                format!("{MODULE_MAP} has a row for `{row}`, which is not a workspace crate"),
+            ));
+        }
+    }
+    Ok(findings)
+}
+
+/// The crate names the module map's table rows start with: lines of the
+/// form ``| `name` | role |``.
+fn map_rows(map: &str) -> Vec<&str> {
+    map.lines()
+        .filter_map(|line| line.strip_prefix("| `"))
+        .filter_map(|rest| rest.split_once('`'))
+        .map(|(name, _)| name)
+        .collect()
+}
+
+/// The cell crate's dependencies, followed through every member crate,
+/// never reach the trusted side. Dev-dependencies don't count: a test may
+/// stand up a broker.
+fn check_cell_side(root: &Path) -> Result<Vec<Finding>, crate::Error> {
+    let mut graph = std::collections::BTreeMap::new();
+    for member in members(root)? {
+        let table = read_toml(&member.dir.join("Cargo.toml"))?;
+        let deps: Vec<String> = ["dependencies", "build-dependencies"]
+            .iter()
+            .filter_map(|section| table.get(*section).and_then(|deps| deps.as_table()))
+            .flat_map(|deps| deps.keys().cloned())
+            .collect();
+        graph.insert(member.name, deps);
+    }
+    let mut findings = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    // Each entry: a crate, and the chain of dependencies that reached it.
+    let mut stack = vec![vec![CELL_CRATE.to_owned()]];
+    while let Some(chain) = stack.pop() {
+        let Some(name) = chain.last() else {
+            continue;
+        };
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        if TRUSTED_SIDE.contains(&name.as_str()) {
+            findings.push(Finding::new(
+                "arch",
+                format!(
+                    "`{CELL_CRATE}` depends on `{name}`, which holds keys, the network or the cell machinery: {}",
+                    chain.join(" -> ")
+                ),
+            ));
+            continue;
+        }
+        for dep in graph.get(name).into_iter().flatten() {
+            let mut next = chain.clone();
+            next.push(dep.clone());
+            stack.push(next);
+        }
+    }
     Ok(findings)
 }
 
@@ -389,7 +502,138 @@ mod tests {
              [dependencies]\nserde = \"1\"\n",
         )
         .unwrap();
+        std::fs::create_dir_all(root.join("docs/arch")).unwrap();
+        std::fs::write(
+            root.join(MODULE_MAP),
+            "# Module map\n\n| Crate | Role |\n| --- | --- |\n| `foo` | The only crate. |\n",
+        )
+        .unwrap();
         root
+    }
+
+    /// Adds a member crate with these `[dependencies]`,
+    /// `[build-dependencies]` and `[dev-dependencies]` lines.
+    fn add_crate(root: &Path, name: &str, deps: &str, build: &str, dev: &str) {
+        let dir = root.join("crates").join(name);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            format!(
+                "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\
+                 [dependencies]\n{deps}[build-dependencies]\n{build}[dev-dependencies]\n{dev}"
+            ),
+        )
+        .unwrap();
+    }
+
+    fn messages(findings: &[Finding]) -> Vec<String> {
+        findings.iter().map(|f| f.message.clone()).collect()
+    }
+
+    #[test]
+    fn map_rows_reads_the_first_cell_of_each_table_row() {
+        let map = "# Map\n\nText naming `not-a-row`.\n| Crate | Role |\n| --- | --- |\n\
+                   | `alpha` | First. |\n| `beta-gamma` | Second, see `alpha`. |\n";
+        assert_eq!(map_rows(map), ["alpha", "beta-gamma"]);
+    }
+
+    #[test]
+    fn the_module_map_lists_every_crate_and_only_real_ones() {
+        let root = synthetic_root("module-map");
+        assert!(check_module_map(&root).unwrap().is_empty());
+
+        add_crate(&root, "bar", "", "", "");
+        let found = messages(&check_module_map(&root).unwrap());
+        assert_eq!(found, [format!("crate `bar` has no row in {MODULE_MAP}")]);
+
+        std::fs::write(
+            root.join(MODULE_MAP),
+            "| `foo` | One. |\n| `bar` | Two. |\n| `ghost` | Gone. |\n",
+        )
+        .unwrap();
+        let found = messages(&check_module_map(&root).unwrap());
+        assert_eq!(
+            found,
+            [format!(
+                "{MODULE_MAP} has a row for `ghost`, which is not a workspace crate"
+            )]
+        );
+
+        std::fs::remove_file(root.join(MODULE_MAP)).unwrap();
+        let found = messages(&check_module_map(&root).unwrap());
+        assert_eq!(found, [format!("{MODULE_MAP} is missing")]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_cell_crate_reaching_the_trusted_side_is_caught_with_its_path() {
+        let root = synthetic_root("cell-side-indirect");
+        add_crate(&root, CELL_CRATE, "middle = \"1\"\n", "", "");
+        add_crate(&root, "middle", "hatchling-vault = \"1\"\n", "", "");
+        add_crate(&root, "hatchling-vault", "", "", "");
+        let found = messages(&check_cell_side(&root).unwrap());
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(
+            found
+                .iter()
+                .all(|m| m.ends_with("hatchling-agent -> middle -> hatchling-vault")),
+            "{found:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn every_trusted_crate_is_caught_directly_and_through_build_dependencies() {
+        for trusted in TRUSTED_SIDE {
+            let root = synthetic_root(&format!("cell-side-{trusted}"));
+            add_crate(&root, CELL_CRATE, &format!("{trusted} = \"1\"\n"), "", "");
+            let found = messages(&check_cell_side(&root).unwrap());
+            assert_eq!(found.len(), 1, "{trusted}: {found:?}");
+            let _ = std::fs::remove_dir_all(&root);
+
+            let root = synthetic_root(&format!("cell-side-build-{trusted}"));
+            add_crate(&root, CELL_CRATE, "", &format!("{trusted} = \"1\"\n"), "");
+            let found = messages(&check_cell_side(&root).unwrap());
+            assert_eq!(found.len(), 1, "build-dependency {trusted}: {found:?}");
+            let _ = std::fs::remove_dir_all(&root);
+        }
+    }
+
+    #[test]
+    fn dev_dependencies_and_unrelated_crates_are_allowed() {
+        let root = synthetic_root("cell-side-allowed");
+        add_crate(
+            &root,
+            CELL_CRATE,
+            "middle = \"1\"\nserde = \"1\"\n",
+            "",
+            "hatchling-broker = \"1\"\n",
+        );
+        add_crate(&root, "middle", "hatchling-core = \"1\"\n", "", "");
+        add_crate(&root, "hatchling-core", "", "", "");
+        // The broker may depend on anything; only the cell crate is held.
+        add_crate(
+            &root,
+            "hatchling-broker",
+            "hatchling-vault = \"1\"\n",
+            "",
+            "",
+        );
+        assert!(check_cell_side(&root).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_shared_dependency_is_reported_once() {
+        // Two paths to the same trusted crate: one finding, for the
+        // first path the walk takes.
+        let root = synthetic_root("cell-side-once");
+        add_crate(&root, CELL_CRATE, "left = \"1\"\nright = \"1\"\n", "", "");
+        add_crate(&root, "left", "hatchling-egress = \"1\"\n", "", "");
+        add_crate(&root, "right", "hatchling-egress = \"1\"\n", "", "");
+        let found = messages(&check_cell_side(&root).unwrap());
+        assert_eq!(found.len(), 1, "{found:?}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
