@@ -584,17 +584,29 @@ mod tests {
 
     #[test]
     fn every_trusted_crate_is_caught_directly_and_through_build_dependencies() {
-        for trusted in TRUSTED_SIDE {
-            let root = synthetic_root(&format!("cell-side-{trusted}"));
-            add_crate(&root, CELL_CRATE, &format!("{trusted} = \"1\"\n"), "", "");
+        for side_crate in TRUSTED_SIDE {
+            let root = synthetic_root(&format!("cell-side-{side_crate}"));
+            add_crate(
+                &root,
+                CELL_CRATE,
+                &format!("{side_crate} = \"1\"\n"),
+                "",
+                "",
+            );
             let found = messages(&check_cell_side(&root).unwrap());
-            assert_eq!(found.len(), 1, "{trusted}: {found:?}");
+            assert_eq!(found.len(), 1, "{side_crate}: {found:?}");
             let _ = std::fs::remove_dir_all(&root);
 
-            let root = synthetic_root(&format!("cell-side-build-{trusted}"));
-            add_crate(&root, CELL_CRATE, "", &format!("{trusted} = \"1\"\n"), "");
+            let root = synthetic_root(&format!("cell-side-build-{side_crate}"));
+            add_crate(
+                &root,
+                CELL_CRATE,
+                "",
+                &format!("{side_crate} = \"1\"\n"),
+                "",
+            );
             let found = messages(&check_cell_side(&root).unwrap());
-            assert_eq!(found.len(), 1, "build-dependency {trusted}: {found:?}");
+            assert_eq!(found.len(), 1, "build-dependency {side_crate}: {found:?}");
             let _ = std::fs::remove_dir_all(&root);
         }
     }
