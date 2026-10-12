@@ -41,7 +41,7 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | [006](workorder-006-symlink-safe-ownership.md) | Symlink-safe ownership and staging | yes | QUEUED |
 | [007](workorder-007-bind-sessions-to-cells.md) | Bind agent sessions to the cells the broker spawned | yes | QUEUED |
 | [008](workorder-008-model-request-policy.md) | A request-body policy for model vendors | yes | QUEUED |
-| [009](workorder-009-egress-correctness.md) | Egress correctness fixes | yes | QUEUED |
+| [009](workorder-009-egress-correctness.md) | Egress correctness fixes | yes | IN-PROGRESS |
 | [010](workorder-010-schedule-ownership.md) | Schedule ownership and API grant edges | yes | QUEUED |
 | [011](workorder-011-secret-hygiene.md) | Secret hygiene in memory and logs | yes | QUEUED |
 | [012](workorder-012-disposable-state-and-cleanup.md) | Separate disposable files from your data, and clean them up safely | yes | QUEUED |

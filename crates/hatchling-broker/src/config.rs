@@ -591,8 +591,8 @@ impl Config {
         let egress_allowlist = get("HATCHLING_EGRESS_ALLOWLIST").unwrap_or_default();
         let egress_grants = parse_egress_grants(get("HATCHLING_EGRESS_GRANTS"))?;
         // The broker reads each egress destination's credential from the
-        // vault; a vault grant naming one would hand it to the cell.
-        refuse_egress_secret_grants(&vault_grants, &egress_grants, &egress_allowlist)?;
+        // vault: no grant may name one, and no two may share one.
+        refuse_egress_secret_conflicts(&vault_grants, &egress_grants, &egress_allowlist)?;
         // Channels: comma-separated ids. The local channel is always
         // available; an empty list means only local. Unknown ids fail
         // at registry construction, not here — the error needs the
@@ -1409,13 +1409,7 @@ fn refuse_egress_secret_grants(
     egress_grants: &[String],
     allowlist_raw: &str,
 ) -> Result<(), Error> {
-    let destinations = egress_grants.iter().map(String::as_str).chain(
-        allowlist_raw
-            .split(',')
-            .map(str::trim)
-            .filter(|entry| !entry.is_empty()),
-    );
-    for destination in destinations {
+    for destination in configured_destinations(egress_grants, allowlist_raw) {
         let secret = crate::serve::destination_to_secret_name(destination);
         if let Some(grant) = vault_grants
             .iter()
@@ -1429,6 +1423,79 @@ fn refuse_egress_secret_grants(
                     grant.name.as_str()
                 ),
             });
+        }
+    }
+    Ok(())
+}
+
+/// The checks on the vault secrets that hold egress credentials: no vault
+/// grant may name one, and no two destinations may share one.
+fn refuse_egress_secret_conflicts(
+    vault_grants: &[VaultGrant],
+    egress_grants: &[String],
+    allowlist_raw: &str,
+) -> Result<(), Error> {
+    refuse_egress_secret_grants(vault_grants, egress_grants, allowlist_raw)?;
+    refuse_shared_egress_secrets(egress_grants, allowlist_raw)
+}
+
+/// Every egress destination the operator named: each egress grant, and
+/// each allowlist entry without its `public:`, `local:` or
+/// `local-keyless:` prefix. The credential lookup maps the bare
+/// destination (`localhost:11434` reads `egress-localhost-11434`), so the
+/// checks on secret names must map it bare too.
+fn configured_destinations<'a>(
+    egress_grants: &'a [String],
+    allowlist_raw: &'a str,
+) -> Vec<&'a str> {
+    let unprefixed = |entry: &'a str| {
+        [
+            hatchling_egress::PUBLIC_PREFIX,
+            hatchling_egress::LOCAL_KEYLESS_PREFIX,
+            hatchling_egress::LOCAL_PREFIX,
+        ]
+        .iter()
+        .find_map(|prefix| entry.strip_prefix(prefix))
+        .unwrap_or(entry)
+    };
+    egress_grants
+        .iter()
+        .map(String::as_str)
+        .chain(
+            allowlist_raw
+                .split(',')
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .map(unprefixed),
+        )
+        .collect()
+}
+
+/// Refuses two different egress destinations that would share a vault
+/// secret: the lookup mapping is lossy (`api.example.com:443` and
+/// `api-example.com:443` both read `egress-api-example-com-443`), so
+/// one host would be sent the other's credential. The same destination
+/// named twice (as a grant and on the allowlist) is fine.
+fn refuse_shared_egress_secrets(
+    egress_grants: &[String],
+    allowlist_raw: &str,
+) -> Result<(), Error> {
+    let mut owners = std::collections::BTreeMap::new();
+    for destination in configured_destinations(egress_grants, allowlist_raw) {
+        let secret = crate::serve::destination_to_secret_name(destination);
+        match owners.get(&secret) {
+            Some(&owner) if owner != destination => {
+                return Err(Error::InvalidConfig {
+                    key: "HATCHLING_EGRESS_ALLOWLIST",
+                    reason: format!(
+                        "egress destinations {owner:?} and {destination:?} would share the credential {secret}, so one would be sent the other's key; rename one or drop one"
+                    ),
+                });
+            }
+            Some(_) => {}
+            None => {
+                owners.insert(secret, destination);
+            }
         }
     }
     Ok(())
@@ -1979,6 +2046,126 @@ mod tests {
             refuses(reason.as_deref(), "remove:egress-api-example-com-443"),
             "{reason:?}"
         );
+    }
+
+    #[test]
+    fn a_prefixed_allowlist_entry_protects_the_name_the_lookup_reads() {
+        // `local:localhost:11434` is looked up as `egress-localhost-11434`;
+        // mapping it with its prefix would protect a name nothing reads.
+        assert!(
+            egress_overlap("fetch:egress-localhost-11434", "", "local:localhost:11434").is_some()
+        );
+        assert!(
+            egress_overlap(
+                "fetch:egress-api-example-com-443",
+                "",
+                "public:api.example.com:443"
+            )
+            .is_some()
+        );
+        assert!(
+            egress_overlap(
+                "fetch:egress-localhost-11434",
+                "",
+                "local-keyless:localhost:11434"
+            )
+            .is_some()
+        );
+    }
+
+    /// The reason a config is refused for its egress destinations, if it is.
+    fn egress_conflict(egress_grants: &str, allowlist: &str) -> Option<String> {
+        let mut vars = valid_vars();
+        vars.insert("HATCHLING_EGRESS_GRANTS", egress_grants);
+        vars.insert("HATCHLING_EGRESS_ALLOWLIST", allowlist);
+        match Config::parse(lookup(&vars)) {
+            Err(Error::InvalidConfig {
+                key: "HATCHLING_EGRESS_ALLOWLIST",
+                reason,
+            }) => Some(reason),
+            Ok(_) | Err(_) => None,
+        }
+    }
+
+    #[test]
+    fn two_destinations_that_would_share_a_credential_are_refused() {
+        let reason = egress_conflict("", "api.example.com:443, api-example.com:443")
+            .expect("a shared credential name is refused");
+        assert!(
+            reason.contains("\"api.example.com:443\"")
+                && reason.contains("\"api-example.com:443\"")
+                && reason.contains("egress-api-example-com-443"),
+            "{reason}"
+        );
+        // Across a grant and the allowlist, and through a prefix.
+        assert!(egress_conflict("api.example:443", "public:api-example:443").is_some());
+        assert!(egress_conflict("a.b:443,a-b:443", "").is_some());
+        // The same destination named more than once is one destination.
+        assert!(
+            egress_conflict(
+                "api.example.com:443",
+                "public:api.example.com:443, api.example.com:443"
+            )
+            .is_none()
+        );
+        // Distinct names configure.
+        let mut vars = valid_vars();
+        vars.insert("HATCHLING_EGRESS_GRANTS", "api.example.com:443");
+        vars.insert(
+            "HATCHLING_EGRESS_ALLOWLIST",
+            "api.example.com:443, api.example.org:443",
+        );
+        assert!(Config::parse(lookup(&vars)).is_ok());
+    }
+
+    #[test]
+    fn configured_destinations_lists_grants_then_bare_allowlist_entries() {
+        let grants = vec![String::from("api.example.com:443")];
+        assert_eq!(
+            configured_destinations(
+                &grants,
+                " public:a.example:443, local:localhost:11434,local-keyless:localhost:8080 , b.example:80,"
+            ),
+            [
+                "api.example.com:443",
+                "a.example:443",
+                "localhost:11434",
+                "localhost:8080",
+                "b.example:80"
+            ]
+        );
+        assert!(configured_destinations(&[], "").is_empty());
+    }
+
+    #[test]
+    fn refuse_shared_egress_secrets_names_both_destinations_once_per_pair() {
+        assert!(refuse_shared_egress_secrets(&[], "a.example:443, b.example:443").is_ok());
+        assert!(
+            refuse_shared_egress_secrets(&[String::from("a.example:443")], "a.example:443").is_ok()
+        );
+        let refused = refuse_shared_egress_secrets(&[], "x.y:1, z:2, x-y:1");
+        assert!(
+            matches!(
+                &refused,
+                Err(Error::InvalidConfig { key: "HATCHLING_EGRESS_ALLOWLIST", reason })
+                    if reason.contains("\"x.y:1\" and \"x-y:1\"")
+            ),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
+    fn refuse_egress_secret_conflicts_runs_both_checks() {
+        let fetch = |name: &str| VaultGrant {
+            action: VaultAction::Fetch,
+            name: name.parse().unwrap(),
+        };
+        assert!(refuse_egress_secret_conflicts(&[], &[], "a.example:443").is_ok());
+        assert!(
+            refuse_egress_secret_conflicts(&[fetch("egress-a-example-443")], &[], "a.example:443")
+                .is_err()
+        );
+        assert!(refuse_egress_secret_conflicts(&[], &[], "a.example:443, a-example:443").is_err());
     }
 
     #[test]

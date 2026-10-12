@@ -1,6 +1,6 @@
 # WO-009: Egress correctness fixes
 
-**Status:** QUEUED
+**Status:** IN-PROGRESS
 **Area:** `crates/hatchling-egress`, `crates/hatchling-broker` (serve, config, harness relay), `crates/hatchling-core` (framing)
 **Issue:** [#12](https://github.com/undergroundrap/hatchling/issues/12)
 **Trust boundary:** yes

@@ -266,13 +266,35 @@ pub(crate) fn is_valid_destination(dest: &str) -> bool {
     if host.is_empty() || host.len() > 253 {
         return false;
     }
-    host.split('.').all(|label| {
+    let labels_ok = host.split('.').all(|label| {
         !label.is_empty()
             && label.len() <= 63
             && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
             && !label.starts_with('-')
             && !label.ends_with('-')
-    })
+    });
+    labels_ok && !is_numeric_host(host)
+}
+
+/// A host the system resolver reads as an IPv4 address, not a name, so
+/// it would bypass DNS-based allowlisting like an IP literal: any form
+/// `inet_aton` accepts (one to four dot-separated parts, each decimal,
+/// octal with a leading `0`, or hex with `0x`: `2130706433`,
+/// `0x7f000001`, `0177.0.0.1`, `127.1`), and any host whose last label
+/// is all digits, which no real domain has. Called on well-formed labels
+/// only, so no part is empty.
+fn is_numeric_host(host: &str) -> bool {
+    let all_digits = |part: &str| part.chars().all(|c| c.is_ascii_digit());
+    let numeric_part = |part: &str| {
+        part.strip_prefix("0x")
+            .or_else(|| part.strip_prefix("0X"))
+            .map_or_else(
+                || all_digits(part),
+                |hex| hex.chars().all(|c| c.is_ascii_hexdigit()),
+            )
+    };
+    host.rsplit('.').next().is_some_and(all_digits)
+        || (host.split('.').count() <= 4 && host.split('.').all(numeric_part))
 }
 
 #[cfg(test)]
@@ -377,6 +399,42 @@ mod tests {
                 mint_surrogate(&key, 1000, bad, 3600).is_err(),
                 "should reject bad destination"
             );
+        }
+    }
+
+    #[test]
+    fn numeric_host_forms_are_refused_like_ip_literals() {
+        // Each of these resolves to an IPv4 address through the system
+        // resolver (inet_aton), so it would reach an address no name
+        // in the allowlist names.
+        for numeric in [
+            "2130706433:443",       // 127.0.0.1 as one decimal number
+            "0x7f000001:443",       // hex
+            "0X7F000001:443",       // hex, upper-case prefix
+            "0177.0.0.1:443",       // octal first part
+            "127.1:443",            // two parts
+            "127.0.1:443",          // three parts
+            "0x7f.0x1:443",         // two hex parts: the last label isn't all digits
+            "0x7f.0x0.0x0.0x1:443", // four hex parts
+            "0x:443",               // inet_aton reads a bare "0x" as 0
+            "0:443",
+            "example.123:443", // an all-digit last label: no real domain has one
+        ] {
+            assert!(!is_valid_destination(numeric), "{numeric} must be refused");
+            let host = numeric.rsplit_once(':').map_or(numeric, |(host, _)| host);
+            assert!(is_numeric_host(host), "{host} is numeric");
+        }
+        // Names that only look numeric are still names.
+        for name in [
+            "123.example.com:443",
+            "3com.com:443",
+            "0x7f.example:443",
+            "1password.com:443",
+            "0x1.0x2.0x3.0x4.0x5:443", // five parts: inet_aton reads no five-part address
+        ] {
+            assert!(is_valid_destination(name), "{name} must be accepted");
+            let host = name.rsplit_once(':').map_or(name, |(host, _)| host);
+            assert!(!is_numeric_host(host), "{host} is a name");
         }
     }
 
