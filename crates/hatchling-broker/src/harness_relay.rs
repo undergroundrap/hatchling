@@ -23,7 +23,7 @@ use std::io::{BufRead as _, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::net::UnixListener;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -53,6 +53,11 @@ const IO_TIMEOUT: Duration = Duration::from_secs(300);
 const HANDOFF_TIMEOUT: Duration = Duration::from_secs(60);
 /// Most connections the relay serves at once.
 const MAX_LIVE: u32 = 16;
+/// Most request-body bytes one run's connections hold between them: 64
+/// MiB, two of the largest bodies. Without it, a cell could open
+/// [`MAX_LIVE`] connections, each declaring the largest body, and hold
+/// half a GiB of the broker's memory.
+const MAX_HELD_BYTES: usize = 67_108_864;
 /// How often the accept loop looks at its deadline and stop flag.
 const POLL: Duration = Duration::from_millis(20);
 
@@ -156,6 +161,7 @@ impl Relay {
             key,
             counts: Arc::clone(&counts),
             live: AtomicU32::new(0),
+            held: AtomicUsize::new(0),
         });
         let flag = Arc::clone(&stop);
         let serving = std::thread::spawn(move || {
@@ -209,6 +215,52 @@ struct Context {
     key: Zeroizing<String>,
     counts: Arc<(AtomicU32, AtomicU32)>,
     live: AtomicU32,
+    /// Request-body bytes the run's connections hold now (see [`Share`]).
+    held: AtomicUsize,
+}
+
+/// A connection's place among its run's [`MAX_LIVE`], given back when its
+/// thread ends, however it ends.
+struct Live(Arc<Context>);
+
+impl Drop for Live {
+    fn drop(&mut self) {
+        self.0.live.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// A connection's share of its run's [`MAX_HELD_BYTES`]: what it holds of
+/// a request body, given back when it's dropped.
+struct Share<'a> {
+    held: &'a AtomicUsize,
+    bytes: usize,
+}
+
+impl<'a> Share<'a> {
+    /// A share of nothing yet, of the run's `held`.
+    const fn new(held: &'a AtomicUsize) -> Self {
+        Self { held, bytes: 0 }
+    }
+
+    /// Takes `more` bytes of the run's budget, or refuses, taking
+    /// nothing, if the run's connections would hold more than
+    /// [`MAX_HELD_BYTES`] between them.
+    fn grow(&mut self, more: usize) -> Result<(), Refusal> {
+        self.held
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |held| {
+                held.checked_add(more)
+                    .filter(|total| *total <= MAX_HELD_BYTES)
+            })
+            .map_err(|_| (503, "the run's requests hold too much at once"))?;
+        self.bytes += more;
+        Ok(())
+    }
+}
+
+impl Drop for Share<'_> {
+    fn drop(&mut self) {
+        self.held.fetch_sub(self.bytes, Ordering::SeqCst);
+    }
 }
 
 /// Waits on `handoff` for the cell's listener, until `deadline` or `stop`.
@@ -264,16 +316,15 @@ fn serve(listener: &TcpListener, context: &Arc<Context>, deadline: Instant, stop
                     continue;
                 }
                 context.live.fetch_add(1, Ordering::SeqCst);
-                let shared = Arc::clone(context);
+                let live = Live(Arc::clone(context));
                 std::thread::spawn(move || {
-                    let forwarded = relay_one(&client, &shared);
+                    let forwarded = relay_one(&client, &live.0);
                     let counter = if forwarded {
-                        &shared.counts.0
+                        &live.0.counts.0
                     } else {
-                        &shared.counts.1
+                        &live.0.counts.1
                     };
                     counter.fetch_add(1, Ordering::SeqCst);
-                    shared.live.fetch_sub(1, Ordering::SeqCst);
                 });
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -313,14 +364,15 @@ fn relay_one(client: &TcpStream, context: &Context) -> bool {
         let _ = answer(client, 401, "not this run's key");
         return false;
     }
-    let body = match read_body(&mut reader, &request) {
+    let mut share = Share::new(&context.held);
+    let body = match read_body(&mut reader, &request, &mut share) {
         Ok(body) => body,
         Err((status, reason)) => {
             let _ = answer(client, status, reason);
             return false;
         }
     };
-    let upstream_request = upstream_bytes(&request, &body, vendor, &context.key);
+    let head = upstream_head(&request, body.len(), vendor, &context.key);
     let opened = hatchling_egress::relay::open(
         &vendor.allowlist,
         &vendor.tls,
@@ -332,13 +384,18 @@ fn relay_one(client: &TcpStream, context: &Context) -> bool {
         return false;
     };
     if upstream
-        .write_all(&upstream_request)
+        .write_all(&head)
+        .and_then(|()| upstream.write_all(&body))
         .and_then(|()| upstream.flush())
         .is_err()
     {
         let _ = answer(client, 502, "the vendor could not be reached");
         return false;
     }
+    // The body has gone upstream: its share of the run's budget goes back
+    // before the answer streams, which can take minutes.
+    drop(body);
+    drop(share);
     if matches!(
         stream_back(&mut upstream, client, context.key.as_bytes()),
         Ok(true)
@@ -454,8 +511,13 @@ const fn is_token_byte(byte: u8) -> bool {
 }
 
 /// Reads a request's body, framed by `Content-Length` or chunked, never
-/// both, within [`MAX_REQUEST_BODY_BYTES`].
-fn read_body(reader: &mut impl std::io::BufRead, request: &Request) -> Result<Vec<u8>, Refusal> {
+/// both, within [`MAX_REQUEST_BODY_BYTES`] and the run's budget: `share`
+/// takes each byte before it's allocated.
+fn read_body(
+    reader: &mut impl std::io::BufRead,
+    request: &Request,
+    share: &mut Share<'_>,
+) -> Result<Vec<u8>, Refusal> {
     let length = request
         .headers
         .iter()
@@ -472,19 +534,23 @@ fn read_body(reader: &mut impl std::io::BufRead, request: &Request) -> Result<Ve
             if length > MAX_REQUEST_BODY_BYTES {
                 return Err((413, "the request body is past its bound"));
             }
+            share.grow(length)?;
             let mut body = vec![0; length];
             reader
                 .read_exact(&mut body)
                 .map_err(|_| (400, "the request body ended early"))?;
             Ok(body)
         }
-        (0, Some(coding)) if coding.eq_ignore_ascii_case("chunked") => read_chunked(reader),
+        (0, Some(coding)) if coding.eq_ignore_ascii_case("chunked") => read_chunked(reader, share),
         _ => Err((400, "the request body's framing is ambiguous")),
     }
 }
 
-/// Reads a chunked body, within [`MAX_REQUEST_BODY_BYTES`].
-fn read_chunked(reader: &mut impl std::io::BufRead) -> Result<Vec<u8>, Refusal> {
+/// Reads a chunked body, within [`MAX_REQUEST_BODY_BYTES`] and `share`.
+fn read_chunked(
+    reader: &mut impl std::io::BufRead,
+    share: &mut Share<'_>,
+) -> Result<Vec<u8>, Refusal> {
     let mut body = Vec::new();
     loop {
         let line = read_line(reader)?;
@@ -496,11 +562,16 @@ fn read_chunked(reader: &mut impl std::io::BufRead) -> Result<Vec<u8>, Refusal> 
             while !read_line(reader)?.is_empty() {}
             return Ok(body);
         }
-        if body.len() + size > MAX_REQUEST_BODY_BYTES {
-            return Err((413, "the request body is past its bound"));
-        }
+        // Checked: a chunk size near the largest number must not wrap
+        // around to a small one.
+        let total = body
+            .len()
+            .checked_add(size)
+            .filter(|total| *total <= MAX_REQUEST_BODY_BYTES)
+            .ok_or((413, "the request body is past its bound"))?;
+        share.grow(size)?;
         let start = body.len();
-        body.resize(start + size, 0);
+        body.resize(total, 0);
         let chunk = body
             .get_mut(start..)
             .ok_or((400, "a chunk could not be read"))?;
@@ -534,12 +605,13 @@ const DROPPED: [&str; 14] = [
     "accept-encoding",
 ];
 
-/// The request the vendor receives: the cell's, with the vendor key in
-/// place of the surrogate, the vendor's host, its own framing, and a
-/// closed connection.
-fn upstream_bytes(
+/// The head of the request the vendor receives, for a body of `length`
+/// bytes sent after it: the cell's head, with the vendor key in place of
+/// the surrogate, the vendor's host, its own framing, and a closed
+/// connection.
+fn upstream_head(
     request: &Request,
-    body: &[u8],
+    length: usize,
     vendor: &Vendor,
     key: &str,
 ) -> Zeroizing<Vec<u8>> {
@@ -562,7 +634,7 @@ fn upstream_bytes(
         }
     }
     let wire = vendor.wire;
-    let length = body.len().to_string();
+    let length = length.to_string();
     for part in [
         wire.key_header(),
         ": ",
@@ -573,9 +645,7 @@ fn upstream_bytes(
     ] {
         head.push_str(part);
     }
-    let mut bytes = Zeroizing::new(head.as_bytes().to_vec());
-    bytes.extend_from_slice(body);
-    bytes
+    Zeroizing::new(head.as_bytes().to_vec())
 }
 
 /// Passes the vendor's answer back as it arrives: its head with the
@@ -832,6 +902,7 @@ mod tests {
             key: Zeroizing::new(String::from("real-vendor-key")),
             counts: Arc::new((AtomicU32::new(0), AtomicU32::new(0))),
             live: AtomicU32::new(0),
+            held: AtomicUsize::new(0),
         }
     }
 
@@ -853,6 +924,91 @@ mod tests {
         assert_eq!(MAX_LINE_BYTES, 16 << 10);
         assert_eq!(MAX_REQUEST_BODY_BYTES, 32 << 20);
         assert_eq!(MAX_RESPONSE_BYTES, 64 << 20);
+        assert_eq!(MAX_HELD_BYTES, 64 << 20);
+    }
+
+    #[test]
+    fn a_runs_connections_hold_at_most_its_budget_between_them() {
+        let held = AtomicUsize::new(0);
+        let mut first = Share::new(&held);
+        first.grow(MAX_HELD_BYTES - 10).unwrap();
+        let mut second = Share::new(&held);
+        second.grow(4).unwrap();
+        second.grow(6).unwrap();
+        // Exactly the budget is held; past it is refused, taking nothing.
+        assert_eq!(held.load(Ordering::SeqCst), MAX_HELD_BYTES);
+        let refused = (503, "the run's requests hold too much at once");
+        assert_eq!(second.grow(1).unwrap_err(), refused);
+        assert_eq!(second.grow(usize::MAX).unwrap_err(), refused);
+        assert_eq!(held.load(Ordering::SeqCst), MAX_HELD_BYTES);
+        // Each share gives back what it took, and no more.
+        drop(first);
+        assert_eq!(held.load(Ordering::SeqCst), 10);
+        drop(second);
+        assert_eq!(held.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_body_the_runs_budget_cannot_hold_is_refused_before_it_is_read() {
+        let held = AtomicUsize::new(MAX_HELD_BYTES - 2);
+        let mut share = Share::new(&held);
+        let length = |length: &'static str| request("POST", "/", &[("Content-Length", length)]);
+        let refused = (503, "the run's requests hold too much at once");
+        assert_eq!(
+            read_body(&mut reader(b"abc"), &length("3"), &mut share).unwrap_err(),
+            refused
+        );
+        assert_eq!(
+            read_body(&mut reader(b"ab"), &length("2"), &mut share).unwrap(),
+            b"ab"
+        );
+        assert_eq!(held.load(Ordering::SeqCst), MAX_HELD_BYTES);
+        drop(share);
+        assert_eq!(held.load(Ordering::SeqCst), MAX_HELD_BYTES - 2);
+        // A chunked body takes its share chunk by chunk.
+        let mut share = Share::new(&held);
+        assert_eq!(
+            read_chunked(&mut reader(b"1\r\na\r\n2\r\nbc\r\n0\r\n\r\n"), &mut share).unwrap_err(),
+            refused
+        );
+        assert_eq!(held.load(Ordering::SeqCst), MAX_HELD_BYTES - 1);
+        drop(share);
+        assert_eq!(held.load(Ordering::SeqCst), MAX_HELD_BYTES - 2);
+    }
+
+    #[test]
+    fn the_relay_refuses_what_the_runs_budget_cannot_hold_and_frees_what_it_forwarded() {
+        let sent = b"POST /v1/messages HTTP/1.1\r\nx-api-key: sk-ant-hatchling-cell\r\n\
+                     Content-Length: 2\r\n\r\n{}";
+        let full = context(vendor(Wire::Anthropic, 1));
+        full.held.store(MAX_HELD_BYTES, Ordering::SeqCst);
+        let (forwarded, answer) = relay_once(&full, sent);
+        assert!(!forwarded);
+        assert!(answer.starts_with("HTTP/1.1 503 "), "{answer}");
+        assert_eq!(full.held.load(Ordering::SeqCst), MAX_HELD_BYTES);
+        let (port, got) = mock_vendor(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+        let open = context(vendor(Wire::Anthropic, port));
+        let (forwarded, answer) = relay_once(&open, sent);
+        assert!(forwarded, "{answer}");
+        assert!(got.recv().unwrap().ends_with(b"\r\n\r\n{}"));
+        assert_eq!(open.held.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_connection_gives_its_place_back_however_its_thread_ends() {
+        let context = Arc::new(context(vendor(Wire::Anthropic, 1)));
+        context.live.fetch_add(2, Ordering::SeqCst);
+        let live = Live(Arc::clone(&context));
+        drop(live);
+        assert_eq!(context.live.load(Ordering::SeqCst), 1);
+        let live = Live(Arc::clone(&context));
+        let ended = std::thread::spawn(move || {
+            let _live = live;
+            std::panic::resume_unwind(Box::new("the connection's thread broke"));
+        })
+        .join();
+        assert!(ended.is_err());
+        assert_eq!(context.live.load(Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -992,7 +1148,11 @@ mod tests {
     #[test]
     fn a_body_is_framed_one_way_within_its_bound() {
         let post = |headers: &[(&str, &str)], bytes: &[u8]| {
-            read_body(&mut reader(bytes), &request("POST", "/", headers))
+            read_body(
+                &mut reader(bytes),
+                &request("POST", "/", headers),
+                &mut Share::new(&AtomicUsize::new(0)),
+            )
         };
         assert_eq!(post(&[], b"ignored").unwrap(), b"");
         assert_eq!(post(&[("Content-Length", "3")], b"abcd").unwrap(), b"abc");
@@ -1028,7 +1188,8 @@ mod tests {
 
     #[test]
     fn a_chunked_body_is_read_whole_within_its_bound() {
-        let chunked = |bytes: &[u8]| read_chunked(&mut reader(bytes));
+        let chunked =
+            |bytes: &[u8]| read_chunked(&mut reader(bytes), &mut Share::new(&AtomicUsize::new(0)));
         assert_eq!(
             chunked(b"3;ext=1\r\nabc\r\nA\r\n0123456789\r\n0\r\nTrailer: x\r\n\r\n").unwrap(),
             b"abc0123456789"
@@ -1057,6 +1218,12 @@ mod tests {
             chunked(at.as_bytes()).unwrap_err(),
             (400, "a chunk ended early")
         );
+        // A size so large the running total would wrap is refused too.
+        let wraps = format!("1\r\na\r\n{:x}\r\n", usize::MAX);
+        assert_eq!(
+            chunked(wraps.as_bytes()).unwrap_err(),
+            (413, "the request body is past its bound")
+        );
     }
 
     #[test]
@@ -1072,15 +1239,15 @@ mod tests {
         let head = request("POST", "/v1/messages?beta=true", &headers);
         let mut anthropic = vendor(Wire::Anthropic, 443);
         anthropic.destination = String::from("api.anthropic.com:443");
-        let bytes = upstream_bytes(&head, b"{}", &anthropic, "real");
+        let bytes = upstream_head(&head, 2, &anthropic, "real");
         assert_eq!(
             String::from_utf8(bytes.to_vec()).unwrap(),
             "POST /v1/messages?beta=true HTTP/1.1\r\nHost: api.anthropic.com\r\n\
              Content-Type: application/json\r\nanthropic-version: 1\r\n\
-             x-api-key: real\r\nAccept-Encoding: identity\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
+             x-api-key: real\r\nAccept-Encoding: identity\r\nContent-Length: 2\r\nConnection: close\r\n\r\n"
         );
         let openai = vendor(Wire::OpenAi, 8443);
-        let bytes = upstream_bytes(&request("GET", "/v1/models", &[]), b"", &openai, "real");
+        let bytes = upstream_head(&request("GET", "/v1/models", &[]), 0, &openai, "real");
         assert_eq!(
             String::from_utf8(bytes.to_vec()).unwrap(),
             "GET /v1/models HTTP/1.1\r\nHost: localhost:8443\r\n\
