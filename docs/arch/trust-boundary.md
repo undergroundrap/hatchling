@@ -52,9 +52,30 @@ code behaving well.
 | Malicious code in a cell | seccomp-BPF syscall allowlist, namespaces; inherited descriptors closed, so a cell holds only what it was handed (an agent cell: its one peer-authorized broker session) |
 | Credential exfiltration | Egress/channel credentials never enter cells (refused at startup; proxy substitutes at the boundary); fetch grants hand over only the named secret |
 | Unscoped network access | Empty network namespace by default; egress allowlist per grant |
+| Data carried out by a model vendor | The model request policy (below): a model request that asks the vendor to fetch anything is refused before it leaves |
 | Prompt injection via tool output | Tool output reaches the model only inside an untrusted-data envelope it can't close early; state-changing actions go through confirmation rails; everything sent to a person passes the output gate, which redacts held secrets and private keys |
 | Privilege escalation | Capabilities dropped; user namespaces; with a root broker, cells run as `HATCHLING_AGENT_UID`, which must be a uid no other process uses (a dedicated system user, never `nobody`): the broker admits an agent by its uid alone. An unprivileged broker can map only its own uid, so its cells run as the owner; the local API then refuses to start, so a cell can never drive it |
 | Supply-chain tampering | Pinned binaries (SHA-256); `cargo deny`; dependency review |
+
+## The model request policy
+
+A model vendor's API can fetch on the caller's behalf: an image or a document named by URL, a server-side search or fetch tool, a remote tool server. A cell allowed to reach a vendor could ask it to fetch an attacker's URL and carry data to a host the allowlist never named. So the egress proxy and the harness relay read every model request before it leaves (`crates/hatchling-egress/src/policy.rs`).
+
+**What's read.** Every `POST` to a path ending in `/chat/completions`, `/responses`, `/messages`, `/messages/count_tokens` or `/embeddings`, on any destination; and every request the harness relay passes on. The body must be JSON, and no object in it may name a key twice: another parser could keep the other copy and read a different request.
+
+**What's refused, anywhere in the body:**
+
+- **Content by URL:** a block whose `type` is `url`, or an `image_url`, `file_url`, `audio_url`, `video_url` or `document_url` naming anything but a `data:` URI. Content sent inline passes.
+- **A tool the vendor runs:** any tool whose `type` isn't one the caller runs itself. Allowed: no `type` (Anthropic's own tool definitions), `function`, `custom`, `local_shell`, and the `bash_`, `text_editor_`, `computer_` and `memory_` families. Anything else, including a type no vendor had shipped when the list was written, is refused until it's reviewed and listed.
+- **A remote tool server or the vendor's own search:** `mcp_servers`, `web_search_options`, a `plugins` list, a stored prompt (`prompt` with an `id`, which can carry tools set on the vendor's side), or a model named with `:online`.
+
+**What passes.** Ordinary chat, responses and messages requests, tool definitions and tool calls, inline images, thinking and caching. A tool call's own `input` isn't read: it's what a tool the caller runs was asked, not something the vendor acts on. Prompt text is never filtered.
+
+**Known vendors.** A destination on a known model vendor's host (`api.openai.com`, `api.anthropic.com` and the others in `MODEL_VENDORS`) is open to those endpoints and `GET` of its model list only. Its batch, file and assistant APIs are refused: a batch would carry requests this policy never reads. The harness relay already holds each vendor to its own API.
+
+**Beta headers** pass. A beta only unlocks request fields, and the fields that fetch are refused whichever betas are set.
+
+**What it costs.** A harness configured to use its vendor's web search or fetch gets those requests refused with a 403 that says why; turn them off in the harness. A new vendor feature that fetches stays refused until it's reviewed and added here.
 
 ## What the boundary does NOT cover
 
@@ -62,6 +83,11 @@ code behaving well.
   problem. We document minimum kernel versions below.
 - **Physical access.** If someone has your machine, no software
   boundary helps. Full-disk encryption is your friend.
+- **What goes to the model vendor itself.** A model request
+  carries the conversation to the vendor the operator chose, under
+  the operator's account. The request policy stops the vendor
+  fetching on the cell's behalf; it doesn't filter what the cell
+  says to the vendor.
 - **The model's judgment.** The trust boundary constrains what
   the agent *can* do. What it *should* do is governed by grants
   and confirmation rails, not by the sandbox.
@@ -78,7 +104,7 @@ Hatchling is pre-1.0. Before launch we reviewed our own trust boundary: who may 
 | Filesystem | Some ownership and permission changes go by path rather than by a no-follow handle, and cell staging directories have predictable names under a shared `TMPDIR`. A local attacker who can write there can deny cell spawns. | [WO-006](../workorders/workorder-006-symlink-safe-ownership.md) |
 | Vault | A sealed secret isn't bound to its name. Someone who can write the vault on disk, without the key, can swap two sealed files. | [WO-002](../workorders/workorder-002-bind-secrets-to-names.md) |
 | Vault | Key rotation isn't complete for keyring vaults: `rekey-vault` bypasses the keyring, and raising the unlock tier keeps the same data key. | [WO-003](../workorders/workorder-003-keyring-key-rotation.md) |
-| Egress | An allowlisted model vendor that fetches URLs on request (image or document URLs, server-side tools) can carry data to hosts outside the allowlist. The proxy checks destinations, not request bodies. An upstream that echoes a credential back re-encoded (base64, hex) gets past the scrub, which matches its exact bytes. | [WO-008](../workorders/workorder-008-model-request-policy.md) |
+| Egress | An upstream that echoes a credential back re-encoded (base64, hex) gets past the scrub, which matches its exact bytes. The upstream is the service the operator gave the credential to. | None yet |
 | Grants | A cell can list and cancel every schedule, not only its own. | [WO-010](../workorders/workorder-010-schedule-ownership.md) |
 | Hygiene | Some copies of secrets in memory aren't wiped; the redaction audit log stores unsalted hashes; concurrent keyring edits aren't locked; the hardware-key factor doesn't ask for a PIN. A cell killed by seccomp dumps core, so the host's crash handler (apport, on Ubuntu) receives that cell's memory, including any secret it fetched. | [WO-011](../workorders/workorder-011-secret-hygiene.md) |
 

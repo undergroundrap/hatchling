@@ -31,6 +31,7 @@ pub mod allowlist;
 pub mod error;
 pub mod https;
 pub mod local;
+pub mod policy;
 pub mod proxy;
 pub mod relay;
 pub mod scrub;

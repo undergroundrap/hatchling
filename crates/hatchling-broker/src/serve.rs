@@ -1063,6 +1063,7 @@ fn handle_egress_op(
                 Ok(response) => Ok(ok_reply(response, pages)),
                 Err(
                     hatchling_egress::Error::DestinationDenied
+                    | hatchling_egress::Error::PolicyRefused { .. }
                     | hatchling_egress::Error::InvalidSurrogate
                     | hatchling_egress::Error::ExpiredSurrogate
                     | hatchling_egress::Error::PeerMismatch

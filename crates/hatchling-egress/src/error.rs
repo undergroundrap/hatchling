@@ -27,6 +27,13 @@ pub enum Error {
     /// The destination is not on the allowlist.
     #[error("destination denied")]
     DestinationDenied,
+    /// The model request policy refused the request: it would have a
+    /// model vendor fetch on the cell's behalf (see [`crate::policy`]).
+    #[error("refused by the model request policy: {reason}")]
+    PolicyRefused {
+        /// Which rule refused it.
+        reason: crate::policy::Refusal,
+    },
     /// The allowlist configuration is invalid.
     #[error("invalid allowlist: {reason}")]
     InvalidAllowlist {

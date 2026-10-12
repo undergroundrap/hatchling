@@ -141,7 +141,9 @@ pinned at startup), and credential swap (real credentials from the
 vault, zeroized after use). Owned by the broker alone — the agent
 never depends on it; the agent reaches the network only through the
 broker's grant-checked session. No external deps beyond the reviewed
-set.
+set: `serde` and `serde_json` (reviewed above) read model request
+bodies for the request policy, with a strict reader that refuses a key
+named twice.
 
 ## rustls
 

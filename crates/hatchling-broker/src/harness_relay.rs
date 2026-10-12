@@ -372,6 +372,13 @@ fn relay_one(client: &TcpStream, context: &Context) -> bool {
             return false;
         }
     };
+    // The model request policy: the vendor is not asked to fetch anything
+    // on the cell's behalf (see `hatchling_egress::policy`).
+    if let Err(reason) = hatchling_egress::policy::check_body(&body) {
+        tracing::warn!(reason, "relay request refused by the model request policy");
+        let _ = answer(client, 403, reason);
+        return false;
+    }
     let head = upstream_head(&request, body.len(), vendor, &context.key);
     let opened = hatchling_egress::relay::open(
         &vendor.allowlist,
@@ -1518,6 +1525,27 @@ mod tests {
             b"real-vendor-key",
         );
         result.unwrap();
+    }
+
+    #[test]
+    fn a_request_asking_the_vendor_to_fetch_is_refused_and_never_sent() {
+        let (port, requests) = mock_vendor(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+        let context = context(vendor(Wire::Anthropic, port));
+        let fetch = br#"{"model":"m","max_tokens":1,"messages":[],"tools":[{"type":"web_fetch_20250910","name":"web_fetch"}]}"#;
+        let mut sent = format!(
+            "POST /v1/messages HTTP/1.1\r\nx-api-key: sk-ant-hatchling-cell\r\nContent-Length: {}\r\n\r\n",
+            fetch.len()
+        )
+        .into_bytes();
+        sent.extend_from_slice(fetch);
+        let (forwarded, answer) = relay_once(&context, &sent);
+        assert!(!forwarded);
+        assert!(answer.starts_with("HTTP/1.1 403 "), "{answer}");
+        assert!(answer.contains("a tool the vendor runs"), "{answer}");
+        assert!(
+            requests.recv_timeout(SOON).is_err(),
+            "nothing reached the vendor"
+        );
     }
 
     #[test]

