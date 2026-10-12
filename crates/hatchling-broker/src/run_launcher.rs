@@ -723,7 +723,7 @@ mod tests {
                 ],
             },
             egress: EgressConfig {
-                allowlist_raw: String::from("api.example.com:443"),
+                allowlist: crate::EgressAllowlist::new("api.example.com:443"),
                 grants: vec![
                     String::from("api.example.com:443"),
                     String::from("b.example:1"),
@@ -837,7 +837,7 @@ mod tests {
             "a run invokes no skills"
         );
         // Not grants: kept as the operator set them.
-        assert_eq!(run.egress.allowlist_raw, config.egress.allowlist_raw);
+        assert_eq!(run.egress.allowlist.raw(), config.egress.allowlist.raw());
         assert_eq!(run.vault.root, config.vault.root);
         assert_eq!(run.agent_uid, config.agent_uid);
     }

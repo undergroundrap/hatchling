@@ -67,7 +67,7 @@ fn test_config(name: &str, socket: &str, agent_uid: u32) -> Result<Config, Strin
             grants: Vec::new(),
         },
         egress: EgressConfig {
-            allowlist_raw: String::new(),
+            allowlist: hatchling_broker::EgressAllowlist::default(),
             grants: Vec::new(),
         },
         channels: Vec::new(),

@@ -1709,7 +1709,7 @@ mod tests {
                 grants: Vec::new(),
             },
             egress: EgressConfig {
-                allowlist_raw: String::new(),
+                allowlist: crate::EgressAllowlist::default(),
                 grants: Vec::new(),
             },
             channels: Vec::new(),

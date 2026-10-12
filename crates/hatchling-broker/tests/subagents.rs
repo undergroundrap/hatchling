@@ -92,7 +92,7 @@ fn config(base: &Path) -> Config {
                 .collect(),
         },
         egress: EgressConfig {
-            allowlist_raw: String::new(),
+            allowlist: hatchling_broker::EgressAllowlist::default(),
             grants: Vec::new(),
         },
         channels: vec![String::from("local")],

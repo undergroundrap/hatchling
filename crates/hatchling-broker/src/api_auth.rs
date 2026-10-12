@@ -364,7 +364,7 @@ pub(crate) mod tests {
                 grants: Vec::new(),
             },
             egress: crate::EgressConfig {
-                allowlist_raw: String::new(),
+                allowlist: crate::EgressAllowlist::default(),
                 grants: Vec::new(),
             },
             channels: vec![String::from("local")],

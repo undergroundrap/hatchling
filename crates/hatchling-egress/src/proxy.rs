@@ -29,6 +29,8 @@
 //!
 //! Every step is fail-closed. Failures are opaque to the agent.
 
+use std::sync::Arc;
+
 use zeroize::Zeroizing;
 
 use crate::allowlist::Allowlist;
@@ -83,12 +85,13 @@ pub struct EgressResponse {
 /// The egress proxy.
 ///
 /// Holds the surrogate HMAC key, the destination allowlist, and a
-/// credential fetcher (the vault, via the broker). The proxy is
-/// constructed once at broker startup; the HMAC key is generated fresh
-/// each time, so surrogates do not survive restarts.
+/// credential fetcher (the vault, via the broker). The HMAC key is
+/// generated fresh for each proxy, so surrogates do not outlive it; the
+/// allowlist can be shared, resolved once, by many proxies (see
+/// [`Proxy::shared`]).
 pub struct Proxy<F> {
     surrogate_key: SurrogateKey,
-    allowlist: Allowlist,
+    allowlist: Arc<Allowlist>,
     /// Fetches the real credential for a destination. The closure
     /// receives the destination (`host:port`) and returns the
     /// credential bytes, or `None` if no credential is configured.
@@ -114,13 +117,39 @@ where
     /// malformed, or [`Error::Random`] if the OS will not provide
     /// randomness for the surrogate key.
     pub fn new(allowlist_raw: &str, credential_fetcher: F) -> Result<Self> {
-        let allowlist = Allowlist::parse(allowlist_raw)?;
+        let allowlist = Arc::new(Allowlist::parse(allowlist_raw)?);
+        Self::shared(allowlist, TlsClient::bundled()?, credential_fetcher)
+    }
+
+    /// A proxy over an allowlist already parsed and resolved, which other
+    /// proxies may share, with `tls` as its HTTPS client.
+    ///
+    /// Only the surrogate HMAC key is new. A broker resolves its
+    /// allowlist once and gives each session a proxy of its own over it,
+    /// so no session resolves a destination again: what its DNS says
+    /// later doesn't change the addresses its traffic goes to.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Random`] if the OS will not provide randomness
+    /// for the surrogate key.
+    pub fn shared(
+        allowlist: Arc<Allowlist>,
+        tls: TlsClient,
+        credential_fetcher: F,
+    ) -> Result<Self> {
         Ok(Self {
             surrogate_key: SurrogateKey::generate()?,
             allowlist,
             credential_fetcher,
-            tls: TlsClient::bundled()?,
+            tls,
         })
+    }
+
+    /// The allowlist this proxy checks destinations against.
+    #[must_use]
+    pub fn allowlist(&self) -> &Allowlist {
+        &self.allowlist
     }
 
     /// The proxy, with `tls` as its HTTPS client: the operator's root
@@ -381,6 +410,28 @@ mod tests {
     }
 
     #[test]
+    fn proxies_built_over_one_allowlist_share_it_but_not_their_keys() {
+        let allowlist = Arc::new(Allowlist::parse("localhost:443").unwrap());
+        let tls = TlsClient::bundled().unwrap();
+        let first = Proxy::shared(Arc::clone(&allowlist), tls.clone(), |_: &str| None).unwrap();
+        let second = Proxy::shared(Arc::clone(&allowlist), tls, |_: &str| None).unwrap();
+        // One resolution, the same addresses: neither proxy parsed its own.
+        assert!(std::ptr::eq(first.allowlist(), Arc::as_ptr(&allowlist)));
+        assert!(std::ptr::eq(first.allowlist(), second.allowlist()));
+        assert!(first.allowlist().allows("localhost:443"));
+        // Each proxy mints with its own key: one's surrogate is no good to
+        // the other.
+        let surrogate = first.mint_surrogate(1000, "localhost:443", 3600).unwrap();
+        assert!(validate_surrogate(&first.surrogate_key, &surrogate).is_ok());
+        assert!(validate_surrogate(&second.surrogate_key, &surrogate).is_err());
+        // `new` parses its own, over the bundled roots.
+        let own = test_proxy();
+        assert!(!std::ptr::eq(own.allowlist(), Arc::as_ptr(&allowlist)));
+        assert!(own.allowlist().allows("localhost:443"));
+        assert_eq!(own.tls.operator_roots(), 0);
+    }
+
+    #[test]
     fn mint_surrogate_requires_allowlisted_destination() {
         let proxy = test_proxy();
         // localhost:443 is allowlisted.
@@ -395,9 +446,9 @@ mod tests {
     /// A proxy over one public source and one credentialed
     /// destination, counting credential lookups.
     fn mixed_proxy(
-        lookups: &std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        lookups: &Arc<std::sync::atomic::AtomicUsize>,
     ) -> Proxy<impl Fn(&str) -> Option<Zeroizing<Vec<u8>>>> {
-        let lookups = std::sync::Arc::clone(lookups);
+        let lookups = Arc::clone(lookups);
         Proxy::new("public:localhost:443,localhost:8443", move |_dest| {
             lookups.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Some(Zeroizing::new(b"test-credential".to_vec()))
@@ -421,7 +472,7 @@ mod tests {
 
     #[test]
     fn a_public_source_is_read_without_ever_consulting_the_credential_lookup() {
-        let lookups = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let lookups = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let proxy = mixed_proxy(&lookups);
         // Nothing listens on localhost:443 here: the read gets as far as
         // the connection, which fails upstream, not as a denial.
@@ -440,9 +491,9 @@ mod tests {
     fn local_proxy(
         entry: &str,
         credential: &'static [u8],
-        lookups: &std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        lookups: &Arc<std::sync::atomic::AtomicUsize>,
     ) -> Proxy<impl Fn(&str) -> Option<Zeroizing<Vec<u8>>> + use<>> {
-        let lookups = std::sync::Arc::clone(lookups);
+        let lookups = Arc::clone(lookups);
         Proxy::new(entry, move |_dest| {
             lookups.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Some(Zeroizing::new(credential.to_vec()))
@@ -456,7 +507,7 @@ mod tests {
     fn a_keyless_local_endpoint_is_reached_without_a_credential() {
         let (live, server) = crate::local::tests::serve_once(OK_REPLY);
         let destination = format!("localhost:{}", live.port());
-        let lookups = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let lookups = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let proxy = local_proxy(
             &format!("local-keyless:{destination}"),
             b"test-credential",
@@ -478,7 +529,7 @@ mod tests {
         const ECHO: &[u8] = b"HTTP/1.1 400 Bad Request\r\nX-Echo: test-credential\r\nContent-Length: 28\r\n\r\necho: Bearer test-credential";
         let (live, server) = crate::local::tests::serve_once(ECHO);
         let destination = format!("localhost:{}", live.port());
-        let lookups = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let lookups = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let proxy = local_proxy(
             &format!("local:{destination}"),
             b"test-credential",
@@ -518,7 +569,7 @@ mod tests {
             b"HTTP/1.1 200 OK\r\nContent-Encoding: identity\r\nContent-Length: 2\r\n\r\nok";
         let (live, server) = crate::local::tests::serve_once(GZIP);
         let destination = format!("localhost:{}", live.port());
-        let lookups = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let lookups = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let proxy = local_proxy(
             &format!("local:{destination}"),
             b"test-credential",
@@ -583,7 +634,7 @@ mod tests {
     fn a_keyed_local_endpoint_carries_the_vault_credential() {
         let (live, server) = crate::local::tests::serve_once(OK_REPLY);
         let destination = format!("localhost:{}", live.port());
-        let lookups = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let lookups = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let proxy = local_proxy(
             &format!("local:{destination}"),
             b"test-credential",
@@ -605,7 +656,7 @@ mod tests {
         // denied before any connection, where sending would have failed
         // upstream.
         let dead = crate::local::tests::dead_addr().port();
-        let lookups = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let lookups = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let proxy = local_proxy(
             &format!("localhost:443,local:localhost:{dead}"),
             b"",
@@ -632,7 +683,7 @@ mod tests {
 
     #[test]
     fn a_public_source_is_never_written() {
-        let lookups = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let lookups = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let proxy = mixed_proxy(&lookups);
         let mut post = get(&proxy, "localhost:443");
         post.method = String::from("POST");

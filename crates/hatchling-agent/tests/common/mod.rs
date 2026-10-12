@@ -280,7 +280,7 @@ fn serve(listener: UnixListener, behavior: BrokerBehavior, vault_root: Option<Pa
                 grants,
             },
             egress: EgressConfig {
-                allowlist_raw: String::new(),
+                allowlist: hatchling_broker::EgressAllowlist::default(),
                 grants: Vec::new(),
             },
             channels: Vec::new(),
@@ -334,7 +334,7 @@ fn serve(listener: UnixListener, behavior: BrokerBehavior, vault_root: Option<Pa
                 grants: Vec::new(),
             },
             egress: EgressConfig {
-                allowlist_raw: String::new(),
+                allowlist: hatchling_broker::EgressAllowlist::default(),
                 grants: Vec::new(),
             },
             channels: Vec::new(),
@@ -383,7 +383,7 @@ fn serve(listener: UnixListener, behavior: BrokerBehavior, vault_root: Option<Pa
                 grants: Vec::new(),
             },
             egress: EgressConfig {
-                allowlist_raw: String::new(),
+                allowlist: hatchling_broker::EgressAllowlist::default(),
                 grants: Vec::new(),
             },
             channels: Vec::new(),
@@ -442,7 +442,7 @@ fn serve(listener: UnixListener, behavior: BrokerBehavior, vault_root: Option<Pa
                 grants: vault,
             },
             egress: EgressConfig {
-                allowlist_raw: allowlist,
+                allowlist: hatchling_broker::EgressAllowlist::new(allowlist),
                 grants,
             },
             channels: Vec::new(),

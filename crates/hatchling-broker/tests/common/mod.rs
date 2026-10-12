@@ -104,7 +104,7 @@ pub(crate) fn broker_config(socket: &Path, agent_uid: u32) -> Result<Config, Str
             grants: Vec::new(),
         },
         egress: EgressConfig {
-            allowlist_raw: String::new(),
+            allowlist: hatchling_broker::EgressAllowlist::default(),
             grants: Vec::new(),
         },
         channels: Vec::new(),

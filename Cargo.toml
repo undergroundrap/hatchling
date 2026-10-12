@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.2"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85.0"
 license = "AGPL-3.0-or-later"
@@ -16,27 +16,27 @@ readme = "crates/README.md"
 # on another as `name.workspace = true`; dev-dependencies use a bare path, so
 # they never block publishing.
 [workspace.dependencies]
-hatchling-agent = { version = "0.1.2", path = "crates/hatchling-agent" }
-hatchling-artifact = { version = "0.1.2", path = "crates/hatchling-artifact" }
-hatchling-broker = { version = "0.1.2", path = "crates/hatchling-broker" }
-hatchling-channel = { version = "0.1.2", path = "crates/hatchling-channel" }
-hatchling-core = { version = "0.1.2", path = "crates/hatchling-core" }
-hatchling-egress = { version = "0.1.2", path = "crates/hatchling-egress" }
-hatchling-feed = { version = "0.1.2", path = "crates/hatchling-feed" }
-hatchling-fido2 = { version = "0.1.2", path = "crates/hatchling-fido2" }
-hatchling-goals = { version = "0.1.2", path = "crates/hatchling-goals" }
-hatchling-isolation = { version = "0.1.2", path = "crates/hatchling-isolation" }
-hatchling-loop = { version = "0.1.2", path = "crates/hatchling-loop" }
-hatchling-memory = { version = "0.1.2", path = "crates/hatchling-memory" }
-hatchling-model = { version = "0.1.2", path = "crates/hatchling-model" }
-hatchling-prompt = { version = "0.1.2", path = "crates/hatchling-prompt" }
-hatchling-research = { version = "0.1.2", path = "crates/hatchling-research" }
-hatchling-runtime = { version = "0.1.2", path = "crates/hatchling-runtime" }
-hatchling-scheduler = { version = "0.1.2", path = "crates/hatchling-scheduler" }
-hatchling-skill = { version = "0.1.2", path = "crates/hatchling-skill" }
-hatchling-space = { version = "0.1.2", path = "crates/hatchling-space" }
-hatchling-sys = { version = "0.1.2", path = "crates/hatchling-sys" }
-hatchling-vault = { version = "0.1.2", path = "crates/hatchling-vault" }
+hatchling-agent = { version = "0.2.0", path = "crates/hatchling-agent" }
+hatchling-artifact = { version = "0.2.0", path = "crates/hatchling-artifact" }
+hatchling-broker = { version = "0.2.0", path = "crates/hatchling-broker" }
+hatchling-channel = { version = "0.2.0", path = "crates/hatchling-channel" }
+hatchling-core = { version = "0.2.0", path = "crates/hatchling-core" }
+hatchling-egress = { version = "0.2.0", path = "crates/hatchling-egress" }
+hatchling-feed = { version = "0.2.0", path = "crates/hatchling-feed" }
+hatchling-fido2 = { version = "0.2.0", path = "crates/hatchling-fido2" }
+hatchling-goals = { version = "0.2.0", path = "crates/hatchling-goals" }
+hatchling-isolation = { version = "0.2.0", path = "crates/hatchling-isolation" }
+hatchling-loop = { version = "0.2.0", path = "crates/hatchling-loop" }
+hatchling-memory = { version = "0.2.0", path = "crates/hatchling-memory" }
+hatchling-model = { version = "0.2.0", path = "crates/hatchling-model" }
+hatchling-prompt = { version = "0.2.0", path = "crates/hatchling-prompt" }
+hatchling-research = { version = "0.2.0", path = "crates/hatchling-research" }
+hatchling-runtime = { version = "0.2.0", path = "crates/hatchling-runtime" }
+hatchling-scheduler = { version = "0.2.0", path = "crates/hatchling-scheduler" }
+hatchling-skill = { version = "0.2.0", path = "crates/hatchling-skill" }
+hatchling-space = { version = "0.2.0", path = "crates/hatchling-space" }
+hatchling-sys = { version = "0.2.0", path = "crates/hatchling-sys" }
+hatchling-vault = { version = "0.2.0", path = "crates/hatchling-vault" }
 
 # All lint configuration lives here. Every crate sets `lints.workspace = true`.
 # There are no per-file `#![allow]`s. A local `#[allow]`/`#[expect]` must name

@@ -583,7 +583,7 @@ mod tests {
                 }],
             },
             egress: EgressConfig {
-                allowlist_raw: String::from("api.example.com:443"),
+                allowlist: crate::EgressAllowlist::new("api.example.com:443"),
                 grants: vec![String::from("api.example.com:443")],
             },
             channels: vec![String::from("local")],

@@ -6,6 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use hatchling_core::{
     CapabilityName, LogLevel, PeerUid, ScheduleGrant, SecretName, SocketPath, VaultAction,
@@ -474,13 +475,75 @@ impl MemoryAction {
 /// after the grant check.
 #[derive(Debug, Clone)]
 pub struct EgressConfig {
-    /// Comma-separated `host:port` allowlist, parsed once at startup.
+    /// The `host:port` allowlist, resolved once (see [`EgressAllowlist`]).
     /// Empty means deny everything: the broker answers
     /// [`Denied`](hatchling_core::EgressResult::Denied) for any egress
     /// op.
-    pub allowlist_raw: String,
+    pub allowlist: EgressAllowlist,
     /// Explicit destination grants. Empty means deny everything.
     pub grants: Vec<String>,
+}
+
+/// The egress allowlist: the operator's comma-separated `host:port` list,
+/// resolved once.
+///
+/// The first [`resolve`](Self::resolve) parses it, resolves each
+/// destination and pins its addresses; every later call, on this value or
+/// any copy of it, returns that same [`Allowlist`]. Each session's egress
+/// proxy is built over it, so no session resolves a destination again:
+/// what a destination's DNS says later doesn't change where its traffic
+/// goes. A resolution that fails pins nothing, and the next tries again.
+#[derive(Clone, Default)]
+pub struct EgressAllowlist {
+    raw: String,
+    resolved: Arc<Mutex<Option<Arc<hatchling_egress::Allowlist>>>>,
+}
+
+impl EgressAllowlist {
+    /// The allowlist the operator wrote, not resolved yet.
+    #[must_use]
+    pub fn new(raw: impl Into<String>) -> Self {
+        Self {
+            raw: raw.into(),
+            resolved: Arc::default(),
+        }
+    }
+
+    /// The allowlist as the operator wrote it.
+    #[must_use]
+    pub fn raw(&self) -> &str {
+        &self.raw
+    }
+
+    /// The allowlist, parsed with its destinations' addresses pinned: the
+    /// first time, resolved now; after that, the same one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`hatchling_egress::Error::InvalidAllowlist`] if an entry
+    /// is malformed or a destination doesn't resolve.
+    pub fn resolve(&self) -> Result<Arc<hatchling_egress::Allowlist>, hatchling_egress::Error> {
+        // Held while resolving: two sessions starting at once resolve it
+        // once between them.
+        let mut resolved = self.resolved.lock().unwrap_or_else(PoisonError::into_inner);
+        let allowlist = if let Some(pinned) = resolved.as_ref() {
+            Arc::clone(pinned)
+        } else {
+            let allowlist = Arc::new(hatchling_egress::Allowlist::parse(&self.raw)?);
+            *resolved = Some(Arc::clone(&allowlist));
+            allowlist
+        };
+        drop(resolved);
+        Ok(allowlist)
+    }
+}
+
+impl std::fmt::Debug for EgressAllowlist {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EgressAllowlist")
+            .field("raw", &self.raw)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Validated skill configuration.
@@ -648,7 +711,7 @@ impl Config {
                 grants: vault_grants,
             },
             egress: EgressConfig {
-                allowlist_raw: egress_allowlist,
+                allowlist: EgressAllowlist::new(egress_allowlist),
                 grants: egress_grants,
             },
             channels,
@@ -2119,6 +2182,35 @@ mod tests {
     }
 
     #[test]
+    fn the_egress_allowlist_is_resolved_once_and_shared_by_every_copy() {
+        let allowlist = EgressAllowlist::new("localhost:443");
+        assert_eq!(allowlist.raw(), "localhost:443");
+        let copy = allowlist.clone();
+        let first = allowlist.resolve().unwrap();
+        assert!(first.allows("localhost:443"));
+        // The same resolution, from the value and from a copy made before
+        // it: no session resolves a destination again.
+        assert!(Arc::ptr_eq(&first, &allowlist.resolve().unwrap()));
+        let from_copy = std::thread::spawn(move || copy.resolve().unwrap())
+            .join()
+            .unwrap();
+        assert!(Arc::ptr_eq(&first, &from_copy));
+        // A separate allowlist with the same text resolves on its own.
+        let other = EgressAllowlist::new("localhost:443").resolve().unwrap();
+        assert!(!Arc::ptr_eq(&first, &other));
+        // Nothing configured: an empty allowlist, which denies everything.
+        assert!(EgressAllowlist::default().resolve().unwrap().is_empty());
+        assert_eq!(EgressAllowlist::default().raw(), "");
+        // A bad entry pins nothing; each try fails again.
+        let bad = EgressAllowlist::new("*.example.com:443");
+        assert!(bad.resolve().is_err());
+        assert!(bad.resolve().is_err());
+        // Debug shows what the operator wrote.
+        let shown = format!("{allowlist:?}");
+        assert!(shown.contains("raw: \"localhost:443\""), "{shown}");
+    }
+
+    #[test]
     fn configured_destinations_lists_grants_then_bare_allowlist_entries() {
         let grants = vec![String::from("api.example.com:443")];
         assert_eq!(
@@ -2222,7 +2314,7 @@ mod tests {
         vars.insert("HATCHLING_EGRESS_ALLOWLIST", "api.example.com:443");
         let config = Config::parse(lookup(&vars)).unwrap();
         assert_eq!(config.egress.grants, ["api.example.com:443"]);
-        assert_eq!(config.egress.allowlist_raw, "api.example.com:443");
+        assert_eq!(config.egress.allowlist.raw(), "api.example.com:443");
         assert_eq!(config.vault.grants.len(), 3);
         // No egress configured at all: every vault grant stands.
         assert!(refuse_egress_secret_grants(&config.vault.grants, &[], "").is_ok());

@@ -95,7 +95,7 @@ fn serve_skills(
             grants: Vec::new(),
         },
         egress: EgressConfig {
-            allowlist_raw: String::new(),
+            allowlist: hatchling_broker::EgressAllowlist::default(),
             grants: Vec::new(),
         },
         channels: Vec::new(),

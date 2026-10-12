@@ -73,7 +73,7 @@ fn spawn_session(
             grants,
         },
         egress: EgressConfig {
-            allowlist_raw: String::new(),
+            allowlist: hatchling_broker::EgressAllowlist::default(),
             grants: Vec::new(),
         },
         channels: Vec::new(),

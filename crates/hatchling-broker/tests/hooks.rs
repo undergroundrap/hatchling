@@ -86,7 +86,7 @@ fn config(base: &Base, ingress: bool) -> Config {
             }],
         },
         egress: EgressConfig {
-            allowlist_raw: String::new(),
+            allowlist: hatchling_broker::EgressAllowlist::default(),
             grants: vec![String::from("api.example.com:443")],
         },
         channels: vec![String::from("local")],
@@ -539,7 +539,7 @@ fn a_hook_fire_withholds_what_the_creator_no_longer_holds() {
     // The operator revokes the egress grant before the hook fires.
     let revoked = Config {
         egress: EgressConfig {
-            allowlist_raw: String::new(),
+            allowlist: hatchling_broker::EgressAllowlist::default(),
             grants: Vec::new(),
         },
         ..config

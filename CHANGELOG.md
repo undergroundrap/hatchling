@@ -8,6 +8,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Fixed
 
+- The broker resolves the egress allowlist once, and every session shares it. Before, each new agent session parsed the allowlist and looked up every destination's addresses again, so a destination whose DNS changed while the broker ran could be reached at addresses the broker had never checked. Now the first resolution is pinned for the broker's life; one that fails pins nothing, and the next session tries again (WO-009).
 - A credential an upstream echoes back (an error quoting the request, a debugging endpoint) no longer reaches the cell. The egress proxy and the harness relay overwrite the real key with `*` wherever it appears in a response's headers or body, keeping its length; the relay does it as the answer streams, through chunked framing, so a key split across reads or chunks is still found. Responses are requested uncompressed, the cell's own `Accept-Encoding` and `TE` are dropped, and a compressed answer is refused, since compression would hide an echo (WO-009).
 - Egress destinations written as numbers the system resolver reads as IPv4 addresses (`2130706433`, `0x7f000001`, `0177.0.0.1`, `127.1`), or with an all-digit last label, are refused like IP literals: they named no host the allowlist could vouch for ([WO-009](docs/workorders/workorder-009-egress-correctness.md)).
 - Two different egress destinations that would share a vault secret name (`api.example.com:443` and `api-example.com:443`) are refused at startup: one would have been sent the other's credential (WO-009).
@@ -15,6 +16,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Changed
 
+- **Breaking, `hatchling-broker`:** `EgressConfig::allowlist_raw: String` is now `EgressConfig::allowlist: EgressAllowlist`, which holds the operator's text and its one shared resolution: build it with `EgressAllowlist::new(text)` (or `default()` for none), and read the text with `raw()`. The workspace version is 0.2.0. `hatchling-egress` adds `Proxy::shared`, a proxy over an allowlist already resolved, and `Proxy::allowlist`.
 - The AGPL license gains three additional terms under its section 7, in `NOTICE.md`: a work built on Hatchling keeps the credit "Built on Hatchling by Ocean Bennett", a modified version is marked as modified and doesn't present itself as Hatchling, and the name and logo aren't licensed. `TRADEMARKS.md` explains, in plain words, what forks can and can't call themselves. Every crate's docs and crates.io page point to the terms. The license tag stays `AGPL-3.0-or-later`.
 
 ## [0.1.2] - 2026-10-11

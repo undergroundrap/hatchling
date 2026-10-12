@@ -86,7 +86,7 @@ fn config(name: &str) -> (Base, Config) {
             grants: Vec::new(),
         },
         egress: EgressConfig {
-            allowlist_raw: String::new(),
+            allowlist: hatchling_broker::EgressAllowlist::default(),
             grants: Vec::new(),
         },
         channels: vec![String::from("local")],

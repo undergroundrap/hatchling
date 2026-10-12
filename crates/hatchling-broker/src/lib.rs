@@ -79,9 +79,9 @@ pub mod vault_keyring;
 pub mod vault_ops;
 
 pub use config::{
-    ArtifactConfig, ChannelAccountSpec, Config, DEFAULT_MAX_CONNECTIONS, EgressConfig,
-    FollowupScope, GoalsAction, GoalsConfig, MAX_MAX_CONNECTIONS, MemoryAction, MemoryConfig,
-    MemoryGrant, SchedulerConfig, SkillConfig, SpaceConfig, VaultConfig, VaultGrant,
+    ArtifactConfig, ChannelAccountSpec, Config, DEFAULT_MAX_CONNECTIONS, EgressAllowlist,
+    EgressConfig, FollowupScope, GoalsAction, GoalsConfig, MAX_MAX_CONNECTIONS, MemoryAction,
+    MemoryConfig, MemoryGrant, SchedulerConfig, SkillConfig, SpaceConfig, VaultConfig, VaultGrant,
 };
 pub use error::Error;
 pub use goals_ops::{handle_goals_op, handle_query_op};

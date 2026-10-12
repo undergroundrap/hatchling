@@ -857,7 +857,7 @@ mod tests {
                 grants: Vec::new(),
             },
             egress: crate::EgressConfig {
-                allowlist_raw: String::new(),
+                allowlist: crate::EgressAllowlist::default(),
                 grants: Vec::new(),
             },
             channels: channels.iter().map(|c| (*c).to_owned()).collect(),

@@ -817,24 +817,6 @@ fn vault_op_result(
     Ok(result)
 }
 
-/// Initializes the egress proxy for a session.
-///
-/// Parses the allowlist (fail-closed on invalid entries) and wires the
-/// credential fetcher to the vault. The HMAC key is generated fresh per
-/// session; surrogates do not survive reconnects.
-///
-/// The credential fetcher maps a destination to the vault secret name
-/// holding its credential. v0.1 uses a fixed mapping: the destination
-/// `host:port` maps to a secret named `egress-{host}-{port}` with
-/// non-alphanumeric characters replaced. No vault grant is involved: the
-/// broker reads the secret itself, after `handle_egress_op` has checked
-/// the peer's *egress destination* grant and the proxy its allowlist.
-/// Config parsing refuses any vault grant that names such a secret
-///, so the cell cannot reach it through the vault ops.
-///
-/// # Errors
-///
-/// Returns [`Error::Egress`] if the allowlist is invalid.
 /// The credential lookup the broker hands the egress proxy: maps a
 /// destination to its vault secret name and decrypts the sealed
 /// credential with the broker's single master key. Unknown
@@ -870,6 +852,28 @@ fn credential_fetcher(
     }
 }
 
+/// Initializes the egress proxy for a session.
+///
+/// The proxy is built over the config's allowlist, resolved once and
+/// shared by every session (see [`crate::EgressAllowlist`]): the first
+/// session resolves it, and its addresses stay pinned for the broker's
+/// life. The HMAC key is generated fresh per session; surrogates do not
+/// survive reconnects.
+///
+/// The credential fetcher maps a destination to the vault secret name
+/// holding its credential. v0.1 uses a fixed mapping: the destination
+/// `host:port` maps to a secret named `egress-{host}-{port}` with
+/// non-alphanumeric characters replaced. No vault grant is involved: the
+/// broker reads the secret itself, after `handle_egress_op` has checked
+/// the peer's *egress destination* grant and the proxy its allowlist.
+/// Config parsing refuses any vault grant that names such a secret, so
+/// the cell cannot reach it through the vault ops.
+///
+/// # Errors
+///
+/// Returns [`Error::Egress`] if the allowlist is invalid or a
+/// destination doesn't resolve, or [`Error::InvalidConfig`] for a bad
+/// CA bundle.
 #[allow(
     clippy::type_complexity,
     reason = "the credential-lookup closure type is inherent to the proxy's generic design; a named type would add indirection without clarity"
@@ -881,12 +885,12 @@ fn init_egress_proxy<'a>(
 ) -> Result<Proxy<impl Fn(&str) -> Option<zeroize::Zeroizing<Vec<u8>>> + 'a>, Error> {
     let vault_root = vault_config.root.clone();
     let tls = egress_tls(|key| std::env::var(key).ok())?;
-    Proxy::new(
-        &egress_config.allowlist_raw,
-        credential_fetcher(vault_root, key),
-    )
-    .map(|proxy| proxy.with_tls(tls))
-    .map_err(|source| Error::Egress { source })
+    let allowlist = egress_config
+        .allowlist
+        .resolve()
+        .map_err(|source| Error::Egress { source })?;
+    Proxy::shared(allowlist, tls, credential_fetcher(vault_root, key))
+        .map_err(|source| Error::Egress { source })
 }
 
 /// The egress proxy's HTTPS root store.
@@ -1215,7 +1219,7 @@ mod tests {
         }
         let key = MasterKey::generate().unwrap();
         let egress = EgressConfig {
-            allowlist_raw: String::from("localhost:443"),
+            allowlist: crate::EgressAllowlist::new("localhost:443"),
             grants: Vec::new(),
         };
         let vault = VaultConfig {
@@ -1223,9 +1227,27 @@ mod tests {
             root: dir.join("vault"),
             grants: Vec::new(),
         };
-        assert!(init_egress_proxy(&egress, &vault, &key).is_ok());
+        // Two sessions' proxies: one resolution of the allowlist between
+        // them, each with its own surrogate key.
+        let first = init_egress_proxy(&egress, &vault, &key).unwrap();
+        let second = init_egress_proxy(&egress.clone(), &vault, &key).unwrap();
+        assert!(std::ptr::eq(first.allowlist(), second.allowlist()));
+        assert!(first.allowlist().allows("localhost:443"));
+        let surrogate = first.mint_surrogate(1000, "localhost:443", 60).unwrap();
+        let request = EgressRequest {
+            method: String::from("GET"),
+            destination: String::from("localhost:443"),
+            path: String::from("/"),
+            headers: Vec::new(),
+            body: Vec::new(),
+            surrogate_b64: surrogate,
+        };
+        assert!(matches!(
+            second.forward(1000, &request),
+            Err(hatchling_egress::Error::InvalidSurrogate)
+        ));
         let bad = EgressConfig {
-            allowlist_raw: String::from("*.example.com:443"),
+            allowlist: crate::EgressAllowlist::new("*.example.com:443"),
             grants: Vec::new(),
         };
         assert!(matches!(

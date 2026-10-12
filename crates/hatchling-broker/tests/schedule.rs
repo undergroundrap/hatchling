@@ -77,7 +77,7 @@ fn config(name: &str, scheduler: bool) -> Config {
             }],
         },
         egress: EgressConfig {
-            allowlist_raw: String::new(),
+            allowlist: hatchling_broker::EgressAllowlist::default(),
             grants: vec![String::from("api.example.com:443")],
         },
         channels: vec![String::from("local")],
