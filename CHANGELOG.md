@@ -8,6 +8,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Added
 
+- `cargo install hatchling-runtime` also installs `hatchling-cell`, the agent alone, for `HATCHLING_AGENT_BIN`: the program inside each cell carries none of the broker's code (2.5 MB against `hatchling`'s 10.9 MB in a release build), and a test fails if trusted-side code ever ends up in it. The quickstart uses it.
 - The module map shows how the crates connect: `hatchling-runtime` at the front, the trusted side (broker, vault, egress, isolation) and the cell side (agent, loop, model), and which crates are published. Every crate's crates.io page links to it.
 - `hatchling-dev audit` fails the gate if a crate has no row in the module map, if the map names a crate that doesn't exist, or if `hatchling-agent` depends on the trusted side, directly or through another crate.
 

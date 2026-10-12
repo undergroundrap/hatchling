@@ -23,14 +23,14 @@ Every crate has a row below: `hatchling-dev audit` fails the gate if one doesn't
 - **The broker is the trusted side.** It holds the vault, owns the network (the egress proxy), builds cells (isolation), and runs the schedules and the local API. It never executes untrusted code.
 - **The agent is the cell side.** It runs inside a cell and reaches the outside only through its one peer-authorized session with the broker.
 - **The cell side never links the trusted side.** `hatchling-agent`'s dependencies, followed all the way down, never reach `hatchling-broker`, `hatchling-vault`, `hatchling-egress`, `hatchling-isolation`, `hatchling-fido2` or `hatchling-runtime`. The code that runs in a cell is built without the code that holds your keys or the network, and `hatchling-dev audit` fails the gate if that ever changes.
-- **The one binary bundles both sides.** `hatchling-runtime` installs one `hatchling` command that is both the broker and the agent. Pointing `HATCHLING_AGENT_BIN` at it is convenient, but the program inside each cell then contains the broker's code too (with no keys and no network to use it on). For the smallest in-cell program, point `HATCHLING_AGENT_BIN` at the `hatchling-agent` binary instead (`cargo install hatchling-agent`, or the one `cargo build` makes).
+- **The program inside each cell is the agent alone.** `hatchling-runtime` installs `hatchling`, the front door (`hatchling broker`), and `hatchling-cell`, the agent's command line alone, which is what `HATCHLING_AGENT_BIN` points at. A test reads the built `hatchling-cell` and fails if it carries any trusted-side code. (`hatchling` started as `/agent` is the agent too, for a one-binary setup, but then the cell's program also carries the broker's code, with no keys or network to use it on.)
 - **What's published:** every crate here is on crates.io at the workspace version, except the three marked *not published*.
 
 ## The front door
 
 | Crate | Role |
 | --- | --- |
-| `hatchling-runtime` | The `hatchling` command: `hatchling broker` and `hatchling agent` run the two sides' command lines, and it also answers the broker's spawner helpers and starts as the agent when a cell runs it as `/agent`. Install it with `cargo install hatchling-runtime`. |
+| `hatchling-runtime` | The front door: installs `hatchling` (`hatchling broker`, `hatchling agent`, the broker's spawner helpers) and `hatchling-cell` (the agent alone, the program each cell runs). Install it with `cargo install hatchling-runtime`. |
 
 ## Core runtime
 

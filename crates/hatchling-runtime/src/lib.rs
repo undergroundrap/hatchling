@@ -10,8 +10,12 @@
 //! - The broker starts its spawner helpers (`skill-cell`, `agent-run`)
 //!   by re-running its own executable, which is `hatchling` here.
 //! - A cell runs its program as `/agent`, so `hatchling` started under
-//!   that name is the agent. Point `HATCHLING_AGENT_BIN` at `hatchling`
-//!   and the one binary serves both sides.
+//!   that name is the agent.
+//!
+//! The crate also installs `hatchling-cell`, the agent's command line
+//! alone, for `HATCHLING_AGENT_BIN`: the program inside each cell then
+//! carries none of the broker's code. `hatchling` started as `/agent` still
+//! works, for a one-binary setup.
 //!
 //! The routing is [`route`], a pure function, so it's tested without
 //! starting anything.
@@ -37,8 +41,8 @@ Broker subcommands (run instead of serving):
   redactions <action>, vault-audit
 
 The broker is configured by HATCHLING_* environment variables; see the
-README's quickstart. Set HATCHLING_AGENT_BIN to this binary's path to run
-the agent from it too.";
+README's quickstart. Set HATCHLING_AGENT_BIN to the hatchling-cell binary
+installed alongside this one: the agent alone, for the program each cell runs.";
 
 /// What one invocation of `hatchling` runs.
 #[derive(Debug, PartialEq, Eq)]

@@ -19,6 +19,12 @@ workspace = true
 name = "hatchling"
 path = "src/main.rs"
 
+# The program the broker runs in each cell: the agent alone, none of the
+# broker's code. HATCHLING_AGENT_BIN points here.
+[[bin]]
+name = "hatchling-cell"
+path = "src/bin/hatchling-cell.rs"
+
 [dependencies]
 # The two command lines `hatchling` routes to: the broker's and the
 # agent's, through their shared `cli` modules.

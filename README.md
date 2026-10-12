@@ -93,7 +93,7 @@ sudo install -m 755 target/release/hatchling-broker target/release/hatchling-age
 sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin hatchling-cell
 ```
 
-Or install from crates.io: `cargo install hatchling-runtime` builds one `hatchling` binary that is both. Copy it where the cell's user can run it (`sudo install -m 755 ~/.cargo/bin/hatchling /usr/local/bin/`), then below use `hatchling broker` for `hatchling-broker`, and set `HATCHLING_AGENT_BIN=/usr/local/bin/hatchling`. Keep the clone either way: the examples run from it.
+Or install from crates.io: `cargo install hatchling-runtime` builds `hatchling` (the broker, as `hatchling broker`) and `hatchling-cell` (the program each cell runs: the agent alone, none of the broker's code). Copy both where the cell's user can run them (`sudo install -m 755 ~/.cargo/bin/hatchling ~/.cargo/bin/hatchling-cell /usr/local/bin/`), then below use `hatchling broker` for `hatchling-broker`, and set `HATCHLING_AGENT_BIN=/usr/local/bin/hatchling-cell`. Keep the clone either way: the examples run from it.
 
 Give cells a uid of their own, never `nobody` or any uid another process uses: the broker admits an agent by its uid, so any process with that uid could act as the agent.
 
