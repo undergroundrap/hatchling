@@ -4,6 +4,9 @@
 //! [`hatchling-runtime`](https://crates.io/crates/hatchling-runtime) can be
 //! installed. It carries no stability promise on its own.
 //!
+//! Licensed AGPL-3.0-or-later, with the additional terms in
+//! [NOTICE.md](https://github.com/undergroundrap/hatchling/blob/main/NOTICE.md).
+//!
 //! User memory (preferences, facts, standing context) and project memory
 //! (per-project notes, decisions) that survive across sessions. The store
 //! lives on the host side, behind the peer-authorized broker session —

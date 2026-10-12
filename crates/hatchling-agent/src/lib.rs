@@ -4,6 +4,9 @@
 //! [`hatchling-runtime`](https://crates.io/crates/hatchling-runtime) can be
 //! installed. It carries no stability promise on its own.
 //!
+//! Licensed AGPL-3.0-or-later, with the additional terms in
+//! [NOTICE.md](https://github.com/undergroundrap/hatchling/blob/main/NOTICE.md).
+//!
 //! Every piece of agent logic lives in this library so it can be tested
 //! without spawning the binary. `main.rs` is a thin edge: parse config,
 //! install logging, run the cell lifecycle, and translate the outcome to a

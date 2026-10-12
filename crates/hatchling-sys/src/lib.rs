@@ -4,6 +4,9 @@
 //! [`hatchling-runtime`](https://crates.io/crates/hatchling-runtime) can be
 //! installed. It carries no stability promise on its own.
 //!
+//! Licensed AGPL-3.0-or-later, with the additional terms in
+//! [NOTICE.md](https://github.com/undergroundrap/hatchling/blob/main/NOTICE.md).
+//!
 //! Every other crate in the workspace denies `unsafe_code`. This crate
 //! owns the entire unsafe surface of the cell boundary: process forking,
 //! Linux namespaces, mount-table construction, and seccomp-bpf filter

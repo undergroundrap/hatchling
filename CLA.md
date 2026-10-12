@@ -60,8 +60,8 @@ ownership.
 ## 5. What the Maintainer promises
 
 Every Contribution the Maintainer includes in a public release of
-Hatchling will be available under AGPL-3.0-or-later as part of that
-release. The Maintainer is not obliged to include any Contribution.
+Hatchling will be available under AGPL-3.0-or-later, with the additional
+terms in NOTICE.md, as part of that release. The Maintainer is not obliged to include any Contribution.
 
 ## 6. Your representations
 

@@ -4,6 +4,9 @@
 //! [`hatchling-runtime`](https://crates.io/crates/hatchling-runtime) can be
 //! installed. It carries no stability promise on its own.
 //!
+//! Licensed AGPL-3.0-or-later, with the additional terms in
+//! [NOTICE.md](https://github.com/undergroundrap/hatchling/blob/main/NOTICE.md).
+//!
 //! The broker owns the host side of the trust boundary. It binds the
 //! Unix socket, authorizes every connecting peer against kernel-reported
 //! credentials before reading a single byte of its traffic, and completes

@@ -4,6 +4,9 @@
 //! [`hatchling-runtime`](https://crates.io/crates/hatchling-runtime) can be
 //! installed. It carries no stability promise on its own.
 //!
+//! Licensed AGPL-3.0-or-later, with the additional terms in
+//! [NOTICE.md](https://github.com/undergroundrap/hatchling/blob/main/NOTICE.md).
+//!
 //! A schedule is broker-owned state: when it fires (a cron expression or
 //! a one-shot local time, always in an explicit IANA timezone), the task
 //! a run is given, the grants that run may use, and the channel its

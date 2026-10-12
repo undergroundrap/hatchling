@@ -173,4 +173,6 @@ Hatchling is dual-licensed.
 - **Open source: [AGPL-3.0-or-later](LICENSE).** Use it, study it, change it, run it. If you offer a modified Hatchling to others over a network, you share your changes under the same license.
 - **Commercial license**, for organizations that need terms the AGPL doesn't give them: private modifications and closed integrations, custom builds for your environment, seat or site licensing, and support. See [oceanbennett.com/hatchling](https://oceanbennett.com/hatchling/#licensing), or contact Ocean Bennett on [LinkedIn](https://www.linkedin.com/in/oceanbennett/) or [X](https://x.com/oceanbennett).
 
+The AGPL comes with three short additional terms, in [NOTICE.md](NOTICE.md): a work built on Hatchling keeps the credit "Built on Hatchling by Ocean Bennett", a modified version says it's modified and doesn't present itself as Hatchling, and the name and logo aren't licensed. [TRADEMARKS.md](TRADEMARKS.md) says in plain words what forks can and can't call themselves.
+
 Contributions are accepted under the [Contributor License Agreement](CLA.md), which lets both licenses cover them. You keep your copyright, and your work stays available under the AGPL.

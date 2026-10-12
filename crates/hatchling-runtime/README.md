@@ -45,4 +45,4 @@ The other `hatchling-*` crates are parts of Hatchling, published so this one can
 
 ## License
 
-AGPL-3.0-or-later, with a [commercial license](https://oceanbennett.com/hatchling/#licensing) for organizations that need other terms.
+AGPL-3.0-or-later with the additional terms in [NOTICE.md](https://github.com/undergroundrap/hatchling/blob/main/NOTICE.md): a work built on Hatchling credits it ("Built on Hatchling by Ocean Bennett") and doesn't present itself as Hatchling ([what forks can say](https://github.com/undergroundrap/hatchling/blob/main/TRADEMARKS.md)). A [commercial license](https://oceanbennett.com/hatchling/#licensing) is available for organizations that need other terms.

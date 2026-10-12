@@ -18,4 +18,4 @@ How this crate fits with the others: the [module map](https://github.com/undergr
 
 [GitHub](https://github.com/undergroundrap/hatchling) · [Quickstart](https://github.com/undergroundrap/hatchling#quickstart) · [Threat model](https://github.com/undergroundrap/hatchling/blob/main/docs/arch/trust-boundary.md) · [Website](https://oceanbennett.com/hatchling/)
 
-Licensed AGPL-3.0-or-later, with a [commercial license](https://oceanbennett.com/hatchling/#licensing) for organizations that need other terms.
+Licensed AGPL-3.0-or-later with the additional terms in [NOTICE.md](https://github.com/undergroundrap/hatchling/blob/main/NOTICE.md): a work built on Hatchling credits it ("Built on Hatchling by Ocean Bennett") and doesn't present itself as Hatchling. A [commercial license](https://oceanbennett.com/hatchling/#licensing) is available for organizations that need other terms.

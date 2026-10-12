@@ -5,6 +5,9 @@
 //! line of `hatchling-broker` and `hatchling-agent`. Install it with
 //! `cargo install hatchling-runtime`.
 //!
+//! Licensed AGPL-3.0-or-later, with the additional terms in
+//! [NOTICE.md](https://github.com/undergroundrap/hatchling/blob/main/NOTICE.md).
+//!
 //! Two invocations don't name a subcommand, because the broker makes
 //! them itself:
 //! - The broker starts its spawner helpers (`skill-cell`, `agent-run`)

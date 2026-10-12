@@ -4,6 +4,9 @@
 //! [`hatchling-runtime`](https://crates.io/crates/hatchling-runtime) can be
 //! installed. It carries no stability promise on its own.
 //!
+//! Licensed AGPL-3.0-or-later, with the additional terms in
+//! [NOTICE.md](https://github.com/undergroundrap/hatchling/blob/main/NOTICE.md).
+//!
 //! The agent loop takes a single task string; channels give it a way to
 //! receive user messages and send replies. The [`Channel`] trait is the
 //! abstraction; the broker owns the concrete endpoints, and the cell-side agent reaches them
