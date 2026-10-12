@@ -38,6 +38,7 @@ pub mod connections;
 pub use connections::{ConnectionSlots, Refused, Slot};
 pub mod custody;
 pub mod device;
+pub mod egress_pages;
 pub use custody::{AccountBook, HandleRejection};
 pub use device::{DeviceEndpoint, open_device_endpoint, pairing_refusals, serve_device};
 pub mod error;

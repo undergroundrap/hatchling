@@ -15,6 +15,10 @@ use crate::Error;
 /// path; a peer speaking anything else is a protocol violation, not a
 /// negotiation.
 ///
+/// v13 carries egress bodies larger than a frame in parts
+/// (`EgressOp::Stage` / `EgressResult::Staged` for a request,
+/// `EgressOp::Read` / `EgressResult::Part` for an answer), with
+/// `EgressOp::Egress`'s `staged` and `EgressResult::Ok`'s `more`.
 /// v12 adds the read-only schedule list (`ScheduleOp::List` /
 /// `ScheduleResult::Listed`), and `ScheduleSpec`'s `tz` is required
 /// in the type. v11 adds the output gate's redaction result
@@ -29,11 +33,18 @@ use crate::Error;
 /// (`EgressOp` / `EgressResult`). v2 adds the post-handshake vault
 /// session (`VaultOp` / `VaultResult`). v1 peers fail closed at the
 /// version check, in both directions.
-pub const PROTOCOL_VERSION: u16 = 12;
+pub const PROTOCOL_VERSION: u16 = 13;
 
 /// Largest single frame accepted, in bytes. Bounds allocation against a
 /// malicious or broken peer before any heap grows.
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
+
+/// Whether `message`, as JSON, is a payload one frame carries: at most
+/// [`MAX_FRAME_BYTES`]. A message that isn't is sent another way (an
+/// egress body in parts) or not at all.
+pub fn fits_one_frame(message: &impl serde::Serialize) -> bool {
+    serde_json::to_vec(message).is_ok_and(|payload| payload.len() <= MAX_FRAME_BYTES)
+}
 
 /// Length prefix size in bytes (a big-endian `u32`).
 const LEN_PREFIX: usize = 4;
@@ -215,6 +226,16 @@ mod tests {
         let payload = vec![0xABu8; 65_536];
         write_frame(&client, &payload).unwrap();
         assert_eq!(read_frame(&server).unwrap().len(), 65_536);
+    }
+
+    #[test]
+    fn a_message_fits_one_frame_up_to_exactly_its_bound() {
+        // A JSON string's payload is its text and two quotes.
+        let exactly = "x".repeat(MAX_FRAME_BYTES - 2);
+        assert!(fits_one_frame(&exactly));
+        let over = "x".repeat(MAX_FRAME_BYTES - 1);
+        assert!(!fits_one_frame(&over));
+        assert!(fits_one_frame(&"small"));
     }
 
     #[test]

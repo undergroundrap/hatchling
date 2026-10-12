@@ -9,7 +9,7 @@ machine-readable contract is `frontend/protocol/schema.json`
 
 There are two versioned protocols. Don't confuse them:
 
-- **Session protocol** (currently **v12**): the broker↔agent
+- **Session protocol** (currently **v13**): the broker↔agent
   wire protocol. `PROTOCOL_VERSION` in
   `crates/hatchling-core/src/framing.rs`, which carries the
   authoritative per-version history.

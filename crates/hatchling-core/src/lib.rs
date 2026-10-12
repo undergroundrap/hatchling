@@ -26,19 +26,19 @@ pub mod types;
 pub mod ui;
 
 pub use error::Error;
-pub use framing::{MAX_FRAME_BYTES, PROTOCOL_VERSION};
+pub use framing::{MAX_FRAME_BYTES, PROTOCOL_VERSION, fits_one_frame};
 pub use log_level::LogLevel;
 pub use messages::{
     ActivationInput, ActivationProposal, AgentMessage, ArtifactInput, ArtifactInspection,
     ArtifactOp, ArtifactResult, ArtifactView, BrokerMessage, BuildFailure, BuildState,
     ChannelAccount, ChannelOp, ChannelResult, ConflictEntry, DeliveryRefusal, DeliveryTarget,
-    DeviceChallenge, DeviceHello, DeviceRefusal, DeviceWelcome, EgressOp, EgressResult, FeedSpec,
-    GoalsOp, GoalsResult, HookOp, HookResult, HookSource, IdeaRef, IdeaRefusal, IdeaSource,
-    IdeaState, IdeaSummary, InspectionFinding, InspectionVerdict, MAX_SKILL_INPUT_BYTES,
-    MAX_SKILL_OUTPUT_BYTES, MediaHeader, MemoryOp, MemoryResult, QueryOp, QueryResult,
-    ScheduleGrant, ScheduleKind, ScheduleOp, ScheduleRefusal, ScheduleResult, ScheduleSpec,
-    ScheduleSummary, SessionRequest, SessionResponse, SkillOp, SkillResult, SpaceOp, SpaceRefusal,
-    SpaceResult, SyncChange, SyncItem, VaultAction, VaultOp, VaultResult,
+    DeviceChallenge, DeviceHello, DeviceRefusal, DeviceWelcome, EGRESS_PART_BYTES, EgressOp,
+    EgressResult, FeedSpec, GoalsOp, GoalsResult, HookOp, HookResult, HookSource, IdeaRef,
+    IdeaRefusal, IdeaSource, IdeaState, IdeaSummary, InspectionFinding, InspectionVerdict,
+    MAX_SKILL_INPUT_BYTES, MAX_SKILL_OUTPUT_BYTES, MediaHeader, MemoryOp, MemoryResult, QueryOp,
+    QueryResult, ScheduleGrant, ScheduleKind, ScheduleOp, ScheduleRefusal, ScheduleResult,
+    ScheduleSpec, ScheduleSummary, SessionRequest, SessionResponse, SkillOp, SkillResult, SpaceOp,
+    SpaceRefusal, SpaceResult, SyncChange, SyncItem, VaultAction, VaultOp, VaultResult,
 };
 pub use peer::{PeerCredentials, peer_credentials};
 pub use secret::{MAX_SECRET_BYTES, decode as decode_secret, encode as encode_secret};

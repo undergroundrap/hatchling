@@ -4,7 +4,7 @@
 /** The frontend protocol version this build speaks. */
 export const UI_SCHEMA_VERSION = 4;
 /** The broker session protocol version the schema was generated at. */
-export const SESSION_PROTOCOL_VERSION = 12;
+export const SESSION_PROTOCOL_VERSION = 13;
 /** The mismatch sentence when this frontend is the newer side. */
 export const INCOMPATIBLE_FRONTEND_NEWER = 'frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update';
 /** The mismatch sentence when the backend is the newer side. */
@@ -1219,7 +1219,10 @@ export type DeviceWelcome = {
  *
  * There are two ops: `MintSurrogate` (ask the broker for a surrogate
  * for a destination the peer is granted for) and `Egress` (perform a
- * request with a previously minted surrogate).
+ * request with a previously minted surrogate). Two more move a body
+ * too large for one frame (v13): `Stage` sends a request body's parts
+ * before its `Egress` op, and `Read` fetches an answer's body after
+ * its `Ok`, a part at a time.
  *
  * Public because the egress protocol is a cross-crate contract.
  */
@@ -1235,7 +1238,8 @@ export type EgressOp = {
     readonly ttl_secs: number;
 } | {
     /**
-     * Request body bytes, base64-encoded. Bounded.
+     * Request body bytes, base64-encoded: all of it, or what
+     * follows the `staged` bytes. Bounded.
      */
     readonly body_b64: string;
     /**
@@ -1261,9 +1265,24 @@ export type EgressOp = {
      */
     readonly path: string;
     /**
+     * How many bytes the body begins with, sent before this op in
+     * `Stage` parts (v13); 0 when `body_b64` is all of it. The
+     * broker refuses the request if its stage holds a different
+     * count, and empties the stage either way.
+     */
+    readonly staged?: number;
+    /**
      * The broker-minted surrogate authorizing this request.
      */
     readonly surrogate_b64: string;
+} | {
+    readonly op: 'stage';
+    /**
+     * The part, base64-encoded: at most [`EGRESS_PART_BYTES`] bytes.
+     */
+    readonly part_b64: string;
+} | {
+    readonly op: 'read';
 };
 /**
  * The broker's reply to one [`EgressOp`].
@@ -1280,7 +1299,8 @@ export type EgressResult = {
     readonly surrogate_b64: string;
 } | {
     /**
-     * Response body, base64-encoded, capped.
+     * Response body, base64-encoded, capped: all of it, or nothing
+     * when `more` says the broker holds it.
      */
     readonly body_b64: string;
     /**
@@ -1290,11 +1310,33 @@ export type EgressResult = {
         string,
         string
     ])[];
+    /**
+     * Bytes of the body the broker holds, because the whole answer
+     * wouldn't fit one frame (v13): read them with `Read` ops. 0
+     * when `body_b64` is all of it.
+     */
+    readonly more?: number;
     readonly r: 'ok';
     /**
      * HTTP status code.
      */
     readonly status: number;
+} | {
+    /**
+     * Bytes on the stage, this part included.
+     */
+    readonly held: number;
+    readonly r: 'staged';
+} | {
+    /**
+     * The part, base64-encoded: at most [`EGRESS_PART_BYTES`] bytes.
+     */
+    readonly body_b64: string;
+    /**
+     * Bytes still held after this part; 0 when it ends the body.
+     */
+    readonly more: number;
+    readonly r: 'part';
 } | {
     readonly r: 'denied';
 } | {

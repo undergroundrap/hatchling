@@ -1,6 +1,6 @@
 # Hatchling session protocol
 
-**Status:** v12 (current). This doc is the human-readable reference
+**Status:** v13 (current). This doc is the human-readable reference
 for the broker session wire protocol. The Rust types live in
 `crates/hatchling-core/src/messages.rs` (op families). The
 authoritative version history is the doc comment on
@@ -20,6 +20,10 @@ Sessions run over the broker's framed transport (`MAX_FRAME_BYTES`
 = 64 KiB per frame, length-prefixed). Every request is a
 `SessionRequest`, every response a `SessionResponse`. All types are
 serde-serializable; the wire format is JSON.
+
+Every message fits one frame. An egress body that wouldn't (a long
+model conversation, or a long answer) moves in parts instead: see
+v13.
 
 ## Op families
 
@@ -111,6 +115,29 @@ result carries the verdict instead of the content.
 read-only schedule listing. `ScheduleSpec.tz` is required in
 the type — a schedule without a timezone is refused, not
 defaulted.
+
+## v13 — Egress bodies in parts
+
+A message must fit one frame, so an egress body larger than about
+48 KiB (once base64-encoded) moved neither way. v13 carries it in parts
+of `EGRESS_PART_BYTES` (32 KiB), within the egress proxy's bounds
+(1 MiB each way):
+
+- **A request:** `EgressOp::Stage { part_b64 }` adds a part to the
+  session's stage; the broker answers `EgressResult::Staged { held }`.
+  Then `EgressOp::Egress` names how many bytes the body begins with in
+  `staged`, and carries the rest, if any, in `body_b64`. The broker
+  refuses the request (`EgressError`) if its stage holds a different
+  count, and empties the stage either way.
+- **An answer:** when the whole `EgressResult::Ok` wouldn't fit a
+  frame, the broker holds the body and answers with the status, the
+  headers, an empty `body_b64` and `more`, the bytes it holds.
+  `EgressOp::Read` returns `EgressResult::Part { body_b64, more }`, the
+  next part and what's left after it, until `more` is 0. A new request
+  lets a held answer go.
+
+A body that fits goes whole, as before, with `staged` and `more` at 0.
+A session holds one staged request and one answer at most.
 
 ## Device handshake
 

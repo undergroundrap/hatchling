@@ -219,6 +219,46 @@ fn is_probe(seen: &Seen) -> bool {
             == Some(PROBE_TOOL)
 }
 
+/// WO-009's acceptance test: a 512 KiB request and a 512 KiB answer
+/// cross the session whole, through the real broker and its egress
+/// proxy, though a session frame holds 64 KiB.
+#[test]
+fn a_512_kib_request_and_answer_cross_the_session_whole() {
+    let content = "x".repeat(512 << 10);
+    let server = LocalServer::start(vec![text_reply(&content)]);
+    let broker = local_broker("egress-large", server.port);
+    let cell = ready_cell(&broker);
+    let destination = format!("localhost:{}", server.port);
+    let surrogate = cell.egress_mint_surrogate(&destination, 60).unwrap();
+    let sent = json!({"messages": [{"role": "user", "content": "y".repeat(512 << 10)}]});
+    let body = serde_json::to_vec(&sent).unwrap();
+    assert!(body.len() > 512 << 10);
+    let response = cell
+        .egress_request(
+            &surrogate,
+            "POST",
+            &destination,
+            "/v1/chat/completions",
+            vec![(
+                String::from("Content-Type"),
+                String::from("application/json"),
+            )],
+            &body,
+        )
+        .unwrap();
+    assert_eq!(response.status, 200);
+    let answer: Value = serde_json::from_slice(&response.body).unwrap();
+    assert_eq!(
+        answer
+            .pointer("/choices/0/message/content")
+            .and_then(Value::as_str),
+        Some(content.as_str())
+    );
+    let seen = server.seen();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen.first().map(|seen| &seen.body), Some(&sent));
+}
+
 #[test]
 fn a_task_runs_end_to_end_against_a_local_endpoint() {
     let server = LocalServer::start(vec![

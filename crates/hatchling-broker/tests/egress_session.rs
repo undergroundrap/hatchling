@@ -260,6 +260,7 @@ fn egress_with_invalid_surrogate_is_denied() {
             headers: Vec::new(),
             body_b64: String::new(),
             surrogate_b64: String::from("Zm9yZ2VkLXN1cnJvZ2F0ZQ=="), // "forged-surrogate"
+            staged: 0,
         },
     )
     .unwrap();
@@ -289,6 +290,7 @@ fn egress_without_grant_is_denied() {
             headers: Vec::new(),
             body_b64: String::new(),
             surrogate_b64: String::from("c3Vycm9nYXRl"),
+            staged: 0,
         },
     )
     .unwrap();

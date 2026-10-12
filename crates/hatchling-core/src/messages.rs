@@ -937,6 +937,11 @@ impl fmt::Display for VaultAction {
     }
 }
 
+/// The size of one part of an egress body sent in parts: 32 KiB, which
+/// base64 makes about 43 KiB, well within a frame with the message
+/// around it.
+pub const EGRESS_PART_BYTES: usize = 32_768;
+
 /// An egress operation: the agent's post-handshake outbound-network
 /// request vocabulary.
 ///
@@ -947,7 +952,10 @@ impl fmt::Display for VaultAction {
 ///
 /// There are two ops: `MintSurrogate` (ask the broker for a surrogate
 /// for a destination the peer is granted for) and `Egress` (perform a
-/// request with a previously minted surrogate).
+/// request with a previously minted surrogate). Two more move a body
+/// too large for one frame (v13): `Stage` sends a request body's parts
+/// before its `Egress` op, and `Read` fetches an answer's body after
+/// its `Ok`, a part at a time.
 ///
 /// Public because the egress protocol is a cross-crate contract.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -977,11 +985,30 @@ pub enum EgressOp {
         /// Request headers (name, value). `Authorization` and `Host`
         /// are forbidden — they come from the swap.
         headers: Vec<(String, String)>,
-        /// Request body bytes, base64-encoded. Bounded.
+        /// Request body bytes, base64-encoded: all of it, or what
+        /// follows the `staged` bytes. Bounded.
         body_b64: String,
         /// The broker-minted surrogate authorizing this request.
         surrogate_b64: String,
+        /// How many bytes the body begins with, sent before this op in
+        /// `Stage` parts (v13); 0 when `body_b64` is all of it. The
+        /// broker refuses the request if its stage holds a different
+        /// count, and empties the stage either way.
+        #[serde(default)]
+        staged: u64,
     },
+    /// Adds a part of a request body to the session's stage (v13), for
+    /// an `Egress` op to send. The stage holds at most the egress
+    /// proxy's request bound.
+    #[serde(rename = "stage")]
+    Stage {
+        /// The part, base64-encoded: at most [`EGRESS_PART_BYTES`] bytes.
+        part_b64: String,
+    },
+    /// Reads the next part of the body the broker holds from the last
+    /// `Ok` answer (v13): what its `more` said was left.
+    #[serde(rename = "read")]
+    Read,
 }
 
 /// The broker's reply to one [`EgressOp`].
@@ -1007,15 +1034,37 @@ pub enum EgressResult {
         status: u16,
         /// Response headers.
         headers: Vec<(String, String)>,
-        /// Response body, base64-encoded, capped.
+        /// Response body, base64-encoded, capped: all of it, or nothing
+        /// when `more` says the broker holds it.
         body_b64: String,
+        /// Bytes of the body the broker holds, because the whole answer
+        /// wouldn't fit one frame (v13): read them with `Read` ops. 0
+        /// when `body_b64` is all of it.
+        #[serde(default)]
+        more: u64,
+    },
+    /// A part was added to the stage (v13): how many bytes it holds now.
+    #[serde(rename = "staged")]
+    Staged {
+        /// Bytes on the stage, this part included.
+        held: u64,
+    },
+    /// The next part of a held answer's body (v13).
+    #[serde(rename = "part")]
+    Part {
+        /// The part, base64-encoded: at most [`EGRESS_PART_BYTES`] bytes.
+        body_b64: String,
+        /// Bytes still held after this part; 0 when it ends the body.
+        more: u64,
     },
     /// The op was denied: no grant, not on the allowlist, invalid
     /// surrogate, or no credential configured. The agent learns nothing
     /// beyond "no".
     #[serde(rename = "denied")]
     Denied,
-    /// The upstream request failed, or the response was too large.
+    /// The upstream request failed, or the response was too large; or,
+    /// for a body in parts, the stage would pass its bound, an `Egress`
+    /// op's `staged` doesn't match it, or there is no part to read.
     /// Deliberately opaque.
     #[serde(rename = "egress-error")]
     EgressError,
@@ -2445,6 +2494,7 @@ mod tests {
             headers: vec![(String::from("Accept"), String::from("application/json"))],
             body_b64: String::new(),
             surrogate_b64: String::from("c3Vycm9nYXRl"),
+            staged: 7,
         };
         let json = serde_json::to_vec(&op).unwrap();
         assert_eq!(serde_json::from_slice::<EgressOp>(&json).unwrap(), op);
@@ -2453,16 +2503,66 @@ mod tests {
             status: 200,
             headers: vec![],
             body_b64: String::from("aGVsbG8="),
+            more: 0,
         };
         let json = serde_json::to_vec(&result).unwrap();
         assert_eq!(
             json,
-            br#"{"r":"ok","status":200,"headers":[],"body_b64":"aGVsbG8="}"#.as_slice()
+            br#"{"r":"ok","status":200,"headers":[],"body_b64":"aGVsbG8=","more":0}"#.as_slice()
         );
         assert_eq!(
             serde_json::from_slice::<EgressResult>(&json).unwrap(),
             result
         );
+    }
+
+    #[test]
+    fn egress_bodies_in_parts_have_their_own_tags() {
+        // v13: a body too large for one frame moves in parts.
+        let cases: [(EgressOp, &[u8]); 2] = [
+            (
+                EgressOp::Stage {
+                    part_b64: String::from("cGFydA=="),
+                },
+                br#"{"op":"stage","part_b64":"cGFydA=="}"#,
+            ),
+            (EgressOp::Read, br#"{"op":"read"}"#),
+        ];
+        for (op, json) in cases {
+            assert_eq!(serde_json::to_vec(&op).unwrap(), json);
+            assert_eq!(serde_json::from_slice::<EgressOp>(json).unwrap(), op);
+        }
+        let cases: [(EgressResult, &[u8]); 2] = [
+            (
+                EgressResult::Staged { held: 32_768 },
+                br#"{"r":"staged","held":32768}"#,
+            ),
+            (
+                EgressResult::Part {
+                    body_b64: String::from("cGFydA=="),
+                    more: 4,
+                },
+                br#"{"r":"part","body_b64":"cGFydA==","more":4}"#,
+            ),
+        ];
+        for (result, json) in cases {
+            assert_eq!(serde_json::to_vec(&result).unwrap(), json);
+            assert_eq!(
+                serde_json::from_slice::<EgressResult>(json).unwrap(),
+                result
+            );
+        }
+        // A body sent whole needs neither field.
+        let op: EgressOp = serde_json::from_slice(
+            br#"{"op":"egress","method":"GET","destination":"d:443","path":"/","headers":[],"body_b64":"","surrogate_b64":"s"}"#,
+        )
+        .unwrap();
+        assert!(matches!(op, EgressOp::Egress { staged: 0, .. }));
+        let result: EgressResult =
+            serde_json::from_slice(br#"{"r":"ok","status":200,"headers":[],"body_b64":""}"#)
+                .unwrap();
+        assert!(matches!(result, EgressResult::Ok { more: 0, .. }));
+        assert_eq!(EGRESS_PART_BYTES, 32 << 10);
     }
 
     #[test]

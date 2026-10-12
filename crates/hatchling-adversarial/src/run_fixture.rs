@@ -286,6 +286,12 @@ mod tests {
     #[test]
     fn the_schedule_probe_asks_for_a_create_with_its_timezone() {
         let (ours, peer) = UnixStream::pair().unwrap();
+        // Both ends time out: a probe that never writes its frame must
+        // fail this test, not leave both sides waiting on a read.
+        for end in [&ours, &peer] {
+            end.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+        }
         let answering = std::thread::spawn(move || {
             let asked: SessionRequest =
                 serde_json::from_slice(&read_frame(&peer).unwrap()).unwrap();

@@ -434,6 +434,9 @@ fn serve_session(
     // Initialize the egress proxy once per session. The HMAC key is
     // fresh per session; surrogates do not survive reconnects.
     let egress_proxy = init_egress_proxy(&config.egress, &config.vault, key)?;
+    // Egress bodies too large for one frame, in transit (see
+    // `crate::egress_pages`): one staged request and one answer at most.
+    let mut egress_pages = crate::egress_pages::Pages::default();
     // The session id is minted per connection; the agent never supplies
     // it. It names the session's output gate scope, forgotten
     // when the session ends, however it ends.
@@ -502,6 +505,7 @@ fn serve_session(
                     &op,
                     cell_id,
                     creds.uid().as_u32(),
+                    &mut egress_pages,
                 )?),
                 SessionRequest::Channel(op) => SessionResponse::Channel(
                     crate::channel::handle_channel_op(&mut channels, &op, creds.uid().as_u32())?,
@@ -952,6 +956,13 @@ pub(crate) fn destination_to_secret_name(destination: &str) -> String {
 /// checks the grant, then the proxy validates the surrogate, allowlist,
 /// and peer binding before forwarding.
 ///
+/// A body too large for one frame moves in parts through `pages` (see
+/// [`crate::egress_pages`]): `Stage` adds to a request's body before its
+/// `Egress` op, and `Read` returns the next part of an answer an `Ok`
+/// said the broker holds. Neither names a destination: staging only
+/// fills the session's bounded stage, and a part read was already
+/// checked as its request's answer.
+///
 /// Backend failures collapse to the opaque `EgressError` reply: the
 /// session survives them, and the agent learns that the op failed, not
 /// why.
@@ -970,11 +981,13 @@ fn handle_egress_op(
     op: &EgressOp,
     cell_id: &CellId,
     peer_uid: u32,
+    pages: &mut crate::egress_pages::Pages,
 ) -> Result<EgressResult, Error> {
     let destination = match op {
         EgressOp::MintSurrogate { destination, .. } | EgressOp::Egress { destination, .. } => {
             destination
         }
+        EgressOp::Stage { .. } | EgressOp::Read => return handle_paging_op(op, pages),
     };
 
     // Grant check: the peer must hold a grant for this destination.
@@ -990,6 +1003,8 @@ fn handle_egress_op(
     }
 
     match op {
+        // Answered above: neither names a destination.
+        EgressOp::Stage { .. } | EgressOp::Read => Ok(EgressResult::EgressError),
         EgressOp::MintSurrogate { ttl_secs, .. } => {
             // Bound the TTL: surrogates live at most 1 hour. Longer
             // TTLs are a confused-deputy risk.
@@ -1020,11 +1035,22 @@ fn handle_egress_op(
             headers,
             body_b64,
             surrogate_b64,
+            staged,
             ..
         } => {
-            let body = decode_secret(body_b64).map_err(|e| Error::SessionProtocol {
+            let rest = decode_secret(body_b64).map_err(|e| Error::SessionProtocol {
                 reason: format!("egress body is not valid base64: {e}"),
             })?;
+            // A new request's answer replaces any still held.
+            pages.drop_answer();
+            let Some(body) = pages.body(*staged, &rest) else {
+                tracing::warn!(
+                    cell_id = %cell_id,
+                    destination = %destination,
+                    "egress request refused: its staged body doesn't match the stage"
+                );
+                return Ok(EgressResult::EgressError);
+            };
             let request = EgressRequest {
                 method: method.clone(),
                 destination: destination.clone(),
@@ -1034,11 +1060,7 @@ fn handle_egress_op(
                 surrogate_b64: surrogate_b64.clone(),
             };
             match proxy.forward(peer_uid, &request) {
-                Ok(response) => Ok(EgressResult::Ok {
-                    status: response.status,
-                    headers: response.headers,
-                    body_b64: encode_secret(&response.body),
-                }),
+                Ok(response) => Ok(ok_reply(response, pages)),
                 Err(
                     hatchling_egress::Error::DestinationDenied
                     | hatchling_egress::Error::InvalidSurrogate
@@ -1064,6 +1086,69 @@ fn handle_egress_op(
                 }
             }
         }
+    }
+}
+
+/// Answers the ops that move a body in parts (see [`crate::egress_pages`]):
+/// `Stage` adds a part to the session's stage, `Read` returns the next
+/// part of the answer it holds. Either fails, opaquely, past the stage's
+/// bound or with nothing to read. The others name a destination and
+/// are refused here.
+///
+/// # Errors
+///
+/// Returns [`Error::SessionProtocol`] if a part is not valid base64.
+fn handle_paging_op(
+    op: &EgressOp,
+    pages: &mut crate::egress_pages::Pages,
+) -> Result<EgressResult, Error> {
+    Ok(match op {
+        EgressOp::Stage { part_b64 } => {
+            let part = decode_secret(part_b64).map_err(|e| Error::SessionProtocol {
+                reason: format!("egress body part is not valid base64: {e}"),
+            })?;
+            pages
+                .stage(&part)
+                .map_or(EgressResult::EgressError, |held| EgressResult::Staged {
+                    held,
+                })
+        }
+        EgressOp::Read => pages
+            .next_part()
+            .map_or(EgressResult::EgressError, |(part, more)| {
+                EgressResult::Part {
+                    body_b64: encode_secret(&part),
+                    more,
+                }
+            }),
+        EgressOp::MintSurrogate { .. } | EgressOp::Egress { .. } => EgressResult::EgressError,
+    })
+}
+
+/// The `Ok` reply to a forwarded request: the whole answer, if it fits
+/// one frame; otherwise its status and headers, with the body held in
+/// `pages` for the agent to read in parts.
+fn ok_reply(
+    response: hatchling_egress::EgressResponse,
+    pages: &mut crate::egress_pages::Pages,
+) -> EgressResult {
+    let whole = SessionResponse::Egress(EgressResult::Ok {
+        status: response.status,
+        headers: response.headers.clone(),
+        body_b64: encode_secret(&response.body),
+        more: 0,
+    });
+    if hatchling_core::fits_one_frame(&whole) {
+        if let SessionResponse::Egress(whole) = whole {
+            return whole;
+        }
+    }
+    let more = pages.hold(response.body);
+    EgressResult::Ok {
+        status: response.status,
+        headers: response.headers,
+        body_b64: String::new(),
+        more,
     }
 }
 
@@ -1193,6 +1278,121 @@ mod tests {
     /// the egress root store comes from `HATCHLING_EGRESS_CA_BUNDLE`
     /// or is the bundled set; a bad bundle stops the broker, and every
     /// session's proxy is built with it.
+    #[test]
+    fn an_answer_too_large_for_one_frame_is_held_and_read_in_parts() {
+        let mut pages = crate::egress_pages::Pages::default();
+        let answer = |body: Vec<u8>| hatchling_egress::EgressResponse {
+            status: 200,
+            headers: vec![(String::from("X-A"), String::from("1"))],
+            body,
+        };
+        // Small: whole, nothing held.
+        assert_eq!(
+            ok_reply(answer(b"ok".to_vec()), &mut pages),
+            EgressResult::Ok {
+                status: 200,
+                headers: vec![(String::from("X-A"), String::from("1"))],
+                body_b64: encode_secret(b"ok"),
+                more: 0,
+            }
+        );
+        assert_eq!(pages.next_part(), None);
+        // 512 KiB: the status and headers now, the body held.
+        let large = vec![b'x'; 512 << 10];
+        assert_eq!(
+            ok_reply(answer(large.clone()), &mut pages),
+            EgressResult::Ok {
+                status: 200,
+                headers: vec![(String::from("X-A"), String::from("1"))],
+                body_b64: String::new(),
+                more: 512 << 10,
+            }
+        );
+        let mut read = Vec::new();
+        while let Some((part, _)) = pages.next_part() {
+            read.extend_from_slice(&part);
+        }
+        assert_eq!(read, large);
+    }
+
+    #[test]
+    fn handle_egress_op_stages_a_body_and_reads_a_held_answer() {
+        let dir =
+            std::env::temp_dir().join(format!("hatchling-egress-pages-{}", std::process::id()));
+        let key = MasterKey::generate().unwrap();
+        let egress = EgressConfig {
+            allowlist: crate::EgressAllowlist::new("localhost:443"),
+            grants: vec![String::from("localhost:443")],
+        };
+        let vault = VaultConfig {
+            key_file: VaultConfig::default_key_file(&dir),
+            root: dir.join("vault"),
+            grants: Vec::new(),
+        };
+        let proxy = init_egress_proxy(&egress, &vault, &key).unwrap();
+        let cell_id: CellId = "cell-pages".parse().unwrap();
+        let mut pages = crate::egress_pages::Pages::default();
+        let mut op =
+            |op: EgressOp| handle_egress_op(&proxy, &egress, &op, &cell_id, 1000, &mut pages);
+        let stage = |part: &[u8]| EgressOp::Stage {
+            part_b64: encode_secret(part),
+        };
+        assert_eq!(op(stage(b"abc")).unwrap(), EgressResult::Staged { held: 3 });
+        assert_eq!(op(stage(b"de")).unwrap(), EgressResult::Staged { held: 5 });
+        // Nothing held to read.
+        assert_eq!(op(EgressOp::Read).unwrap(), EgressResult::EgressError);
+        // A request whose `staged` doesn't match the stage is refused
+        // before it reaches the proxy, and the stage is emptied.
+        let request = |staged: u64| EgressOp::Egress {
+            method: String::from("POST"),
+            destination: String::from("localhost:443"),
+            path: String::from("/"),
+            headers: Vec::new(),
+            body_b64: String::new(),
+            surrogate_b64: String::from("c3Vycm9nYXRl"),
+            staged,
+        };
+        assert_eq!(op(request(4)).unwrap(), EgressResult::EgressError);
+        assert_eq!(op(stage(b"f")).unwrap(), EgressResult::Staged { held: 1 });
+        // A matching one reaches the proxy, which refuses the surrogate.
+        assert_eq!(op(request(1)).unwrap(), EgressResult::Denied);
+        assert!(matches!(
+            op(EgressOp::Stage {
+                part_b64: String::from("not base64!")
+            }),
+            Err(Error::SessionProtocol { .. })
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn handle_paging_op_answers_only_the_paging_ops() {
+        let mut pages = crate::egress_pages::Pages::default();
+        let _ = pages.hold(b"held".to_vec());
+        assert_eq!(
+            handle_paging_op(&EgressOp::Read, &mut pages).unwrap(),
+            EgressResult::Part {
+                body_b64: encode_secret(b"held"),
+                more: 0,
+            }
+        );
+        let stage = EgressOp::Stage {
+            part_b64: encode_secret(b"ab"),
+        };
+        assert_eq!(
+            handle_paging_op(&stage, &mut pages).unwrap(),
+            EgressResult::Staged { held: 2 }
+        );
+        let mint = EgressOp::MintSurrogate {
+            destination: String::from("localhost:443"),
+            ttl_secs: 60,
+        };
+        assert_eq!(
+            handle_paging_op(&mint, &mut pages).unwrap(),
+            EgressResult::EgressError
+        );
+    }
+
     #[test]
     fn the_egress_root_store_is_the_operators_choice_or_the_bundled_set() {
         let none = |_: &str| None;

@@ -2631,7 +2631,7 @@
       ]
     },
     "EgressOp": {
-      "description": "An egress operation: the agent's post-handshake outbound-network\nrequest vocabulary.\n\nThe agent never touches the network directly. It presents a\nbroker-minted surrogate (see `hatchling-egress`); the broker\nvalidates the surrogate, checks the destination against the\nallowlist, swaps in the real credential, and forwards the request.\n\nThere are two ops: `MintSurrogate` (ask the broker for a surrogate\nfor a destination the peer is granted for) and `Egress` (perform a\nrequest with a previously minted surrogate).\n\nPublic because the egress protocol is a cross-crate contract.",
+      "description": "An egress operation: the agent's post-handshake outbound-network\nrequest vocabulary.\n\nThe agent never touches the network directly. It presents a\nbroker-minted surrogate (see `hatchling-egress`); the broker\nvalidates the surrogate, checks the destination against the\nallowlist, swaps in the real credential, and forwards the request.\n\nThere are two ops: `MintSurrogate` (ask the broker for a surrogate\nfor a destination the peer is granted for) and `Egress` (perform a\nrequest with a previously minted surrogate). Two more move a body\ntoo large for one frame (v13): `Stage` sends a request body's parts\nbefore its `Egress` op, and `Read` fetches an answer's body after\nits `Ok`, a part at a time.\n\nPublic because the egress protocol is a cross-crate contract.",
       "oneOf": [
         {
           "description": "Mints a surrogate for `destination`. The broker checks the\npeer's grant for the destination, then the egress allowlist.\nThe surrogate is bound to (`peer_uid`, `destination`, `expiry`).",
@@ -2662,7 +2662,7 @@
           "description": "Performs an outbound request with a previously minted surrogate.",
           "properties": {
             "body_b64": {
-              "description": "Request body bytes, base64-encoded. Bounded.",
+              "description": "Request body bytes, base64-encoded: all of it, or what\nfollows the `staged` bytes. Bounded.",
               "type": "string"
             },
             "destination": {
@@ -2698,6 +2698,13 @@
               "description": "Request path, starting with `/`.",
               "type": "string"
             },
+            "staged": {
+              "default": 0,
+              "description": "How many bytes the body begins with, sent before this op in\n`Stage` parts (v13); 0 when `body_b64` is all of it. The\nbroker refuses the request if its stage holds a different\ncount, and empties the stage either way.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
             "surrogate_b64": {
               "description": "The broker-minted surrogate authorizing this request.",
               "type": "string"
@@ -2711,6 +2718,37 @@
             "headers",
             "body_b64",
             "surrogate_b64"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Adds a part of a request body to the session's stage (v13), for\nan `Egress` op to send. The stage holds at most the egress\nproxy's request bound.",
+          "properties": {
+            "op": {
+              "const": "stage",
+              "type": "string"
+            },
+            "part_b64": {
+              "description": "The part, base64-encoded: at most [`EGRESS_PART_BYTES`] bytes.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "part_b64"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Reads the next part of the body the broker holds from the last\n`Ok` answer (v13): what its `more` said was left.",
+          "properties": {
+            "op": {
+              "const": "read",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op"
           ],
           "type": "object"
         }
@@ -2741,7 +2779,7 @@
           "description": "The egress request was forwarded; this is the bounded upstream\nresponse.",
           "properties": {
             "body_b64": {
-              "description": "Response body, base64-encoded, capped.",
+              "description": "Response body, base64-encoded, capped: all of it, or nothing\nwhen `more` says the broker holds it.",
               "type": "string"
             },
             "headers": {
@@ -2760,6 +2798,13 @@
                 "type": "array"
               },
               "type": "array"
+            },
+            "more": {
+              "default": 0,
+              "description": "Bytes of the body the broker holds, because the whole answer\nwouldn't fit one frame (v13): read them with `Read` ops. 0\nwhen `body_b64` is all of it.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
             },
             "r": {
               "const": "ok",
@@ -2782,6 +2827,51 @@
           "type": "object"
         },
         {
+          "description": "A part was added to the stage (v13): how many bytes it holds now.",
+          "properties": {
+            "held": {
+              "description": "Bytes on the stage, this part included.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "r": {
+              "const": "staged",
+              "type": "string"
+            }
+          },
+          "required": [
+            "r",
+            "held"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The next part of a held answer's body (v13).",
+          "properties": {
+            "body_b64": {
+              "description": "The part, base64-encoded: at most [`EGRESS_PART_BYTES`] bytes.",
+              "type": "string"
+            },
+            "more": {
+              "description": "Bytes still held after this part; 0 when it ends the body.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "r": {
+              "const": "part",
+              "type": "string"
+            }
+          },
+          "required": [
+            "r",
+            "body_b64",
+            "more"
+          ],
+          "type": "object"
+        },
+        {
           "description": "The op was denied: no grant, not on the allowlist, invalid\nsurrogate, or no credential configured. The agent learns nothing\nbeyond \"no\".",
           "properties": {
             "r": {
@@ -2795,7 +2885,7 @@
           "type": "object"
         },
         {
-          "description": "The upstream request failed, or the response was too large.\nDeliberately opaque.",
+          "description": "The upstream request failed, or the response was too large; or,\nfor a body in parts, the stage would pass its bound, an `Egress`\nop's `staged` doesn't match it, or there is no part to read.\nDeliberately opaque.",
           "properties": {
             "r": {
               "const": "egress-error",
@@ -7805,7 +7895,7 @@
       "backend_newer": "broker v{backend} needs frontend ≥ v{backend}; frontend is v{frontend} — reload the frontend to update",
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
-    "session_protocol": 12,
+    "session_protocol": 13,
     "ui_schema_version": 4
   },
   "x-roots": {
