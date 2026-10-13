@@ -541,6 +541,7 @@ fn serve_session(
                         key,
                         &op,
                         hatchling_scheduler::Timestamp::now(),
+                        hatchling_scheduler::Creator::Agent,
                     ))
                 }
                 SessionRequest::Hook(op) => {

@@ -5,14 +5,23 @@
 //! under the broker's master key, at its own root
 //! (`HATCHLING_SCHEDULER_DIR`). Config parsing keeps that root apart
 //! from the credential vault's, so no vault op or grant can name an
-//! entry. The cell has no op that lists or reads it: it creates a
-//! schedule and learns its id, and it cancels by that id.
+//! entry. A cell creates a schedule and learns its id; it lists what
+//! it may see (never a task's text) and cancels by id.
 //!
 //! **Its layout:** one sealed entry per schedule (`schedule-<id>`), an
 //! index of ids (the vault deliberately has no list op), and parked
 //! results the same way (`parked-<n>` plus `parked-index`). All of it is
 //! bounded: [`MAX_SCHEDULES`], [`MAX_PARKED`], and each entry within the
 //! vault's size limit.
+//!
+//! **Who made it.** Each schedule records its [`Creator`]: the owner,
+//! through the local API, or the agent, through a session (a cell, or a
+//! run asking for its follow-up). A cell lists and cancels only the
+//! agent's; the owner's it can neither see nor cancel, and a cancel of
+//! one answers `NotFound`, as for an id that doesn't exist. Cells aren't
+//! told apart from each other: every agent session runs as the one
+//! agent uid and names its own cell, so until WO-007 binds a session to
+//! the cell the broker spawned, "the agent's" is every agent session's.
 //!
 //! **"The creator's grants"** are the broker's grants for the session
 //! peer, the one authorized uid, translated into the schedule vocabulary
@@ -40,8 +49,8 @@ use hatchling_core::{
     ScheduleOp, ScheduleRefusal, ScheduleResult, ScheduleSpec, ScheduleSummary, SecretName,
 };
 use hatchling_scheduler::{
-    Delivery, Dispatcher, FollowupParent, Hook, Launcher, Parked, Schedule, Services, Sources,
-    Store, TickReport, Timestamp, validate, validate_followup, validate_hook,
+    Creator, Delivery, Dispatcher, FollowupParent, Hook, Launcher, Parked, Schedule, Services,
+    Sources, Store, TickReport, Timestamp, validate, validate_followup, validate_hook,
 };
 use hatchling_vault::{MasterKey, SealedVault, Secret};
 
@@ -215,6 +224,31 @@ impl<'k> SealedScheduleStore<'k> {
         Ok(true)
     }
 
+    /// Removes the schedule `id`, if `by` reaches it (see
+    /// [`Creator::reaches`]). Returns whether it did: `false` for one that
+    /// doesn't exist and for one `by` can't touch alike, so a cancel
+    /// learns nothing about schedules it can't reach.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error`] on a backend failure.
+    pub fn cancel(&self, id: &str, by: Creator) -> Result<bool, Error> {
+        let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
+        let vault = self.vault()?;
+        let mut index: Vec<String> = read_json(&vault, INDEX)?.unwrap_or_default();
+        let Some(position) = index.iter().position(|stored| stored == id) else {
+            return Ok(false);
+        };
+        let stored: Option<Schedule> = read_json(&vault, &entry_name(id))?;
+        if !stored.is_some_and(|schedule| by.reaches(schedule.creator)) {
+            return Ok(false);
+        }
+        index.remove(position);
+        write_json(&vault, INDEX, &index)?;
+        let _ = vault.remove(&secret_name(&entry_name(id))?);
+        Ok(true)
+    }
+
     /// Removes a hook. Returns whether it existed.
     ///
     /// # Errors
@@ -383,8 +417,10 @@ fn write_json<T: serde::Serialize>(
         .map_err(|source| Error::Vault { source })
 }
 
-/// Handles one [`ScheduleOp`], at `now`.
+/// Handles one [`ScheduleOp`] from `caller`, at `now`.
 ///
+/// A create records `caller` as the creator; a list shows, and a cancel
+/// reaches, only what `caller` reaches ([`Creator::reaches`]).
 /// `Create` and `Cancel` are the authorized peer's: `Denied` when
 /// scheduling is off, which it always is in a run's own session.
 /// `Followup` is a run's own session's, and `Denied` in any other. A
@@ -395,6 +431,7 @@ pub fn handle_schedule_op(
     key: &MasterKey,
     op: &ScheduleOp,
     now: Timestamp,
+    caller: Creator,
 ) -> ScheduleResult {
     match op {
         ScheduleOp::Followup {
@@ -409,7 +446,7 @@ pub fn handle_schedule_op(
                 request_followup(scope, key, task, *delay_secs, grants, now)
             }),
         ScheduleOp::List { after } => {
-            list_schedules(config, key, &held_grants(config), after.as_deref())
+            list_schedules(config, key, &held_grants(config), after.as_deref(), caller)
         }
         ScheduleOp::Create { .. } | ScheduleOp::CreateFeed { .. } | ScheduleOp::Cancel { .. }
             if !config.scheduler.enabled() =>
@@ -420,15 +457,15 @@ pub fn handle_schedule_op(
             when,
             channel,
             feed,
-        } => create_feed(config, key, when, channel, feed, now),
+        } => create_feed(config, key, when, channel, feed, now, caller),
         ScheduleOp::Create {
             when,
             task,
             grants,
             channel,
-        } => create_schedule(config, key, when, task, grants, channel, now),
+        } => create_schedule(config, key, when, task, grants, channel, now, caller),
         ScheduleOp::Cancel { id } => {
-            match SealedScheduleStore::new(&config.scheduler.root, key).remove(id) {
+            match SealedScheduleStore::new(&config.scheduler.root, key).cancel(id, caller) {
                 Ok(true) => ScheduleResult::Cancelled,
                 Ok(false) => ScheduleResult::NotFound,
                 Err(error) => {
@@ -440,10 +477,10 @@ pub fn handle_schedule_op(
     }
 }
 
-/// One page of the schedules a caller holding `grants` may see.
+/// One page of the schedules `caller`, holding `grants`, may see.
 ///
-/// Those are the ones whose every grant it holds, in id order, after
-/// `after`. Nothing says how many others exist. A page is bounded as every
+/// Those are the ones it reaches ([`Creator::reaches`]) whose every
+/// grant it holds, in id order, after `after`. Nothing says how many others exist. A page is bounded as every
 /// multi-item reply is ([`hatchling_memory::paging`]), so it always fits a
 /// frame.
 #[must_use]
@@ -452,6 +489,7 @@ pub fn list_schedules(
     key: &MasterKey,
     grants: &BTreeSet<ScheduleGrant>,
     after: Option<&str>,
+    caller: Creator,
 ) -> ScheduleResult {
     if !config.scheduler.enabled() {
         return ScheduleResult::Denied;
@@ -465,6 +503,7 @@ pub fn list_schedules(
     };
     let mut visible: Vec<ScheduleSummary> = schedules
         .iter()
+        .filter(|schedule| caller.reaches(schedule.creator))
         .filter(|schedule| schedule.grants.iter().all(|grant| grants.contains(grant)))
         .filter(|schedule| after.is_none_or(|after| schedule.id.as_str() > after))
         .map(summary)
@@ -513,7 +552,11 @@ fn summary(schedule: &Schedule) -> ScheduleSummary {
     }
 }
 
-/// A peer's schedule create.
+/// A schedule create, recorded as `creator`'s.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the create's own fields, and who asked: each the request's or the session's, none derivable from another"
+)]
 fn create_schedule(
     config: &Config,
     key: &MasterKey,
@@ -522,12 +565,13 @@ fn create_schedule(
     grants: &[ScheduleGrant],
     channel: &str,
     now: Timestamp,
+    creator: Creator,
 ) -> ScheduleResult {
     let Ok(id) = crate::approval::random_hex(SCHEDULE_ID_PREFIX) else {
         tracing::error!("schedule id entropy unavailable");
         return ScheduleResult::ScheduleError;
     };
-    let schedule = match validate(
+    let mut schedule = match validate(
         id,
         when.clone(),
         task.to_owned(),
@@ -539,6 +583,7 @@ fn create_schedule(
         Ok(schedule) => schedule,
         Err(reason) => return ScheduleResult::Refused { reason },
     };
+    schedule.creator = creator;
     match SealedScheduleStore::new(&config.scheduler.root, key).insert(&schedule) {
         Ok(true) => ScheduleResult::Created { id: schedule.id },
         Ok(false) => ScheduleResult::Refused {
@@ -562,6 +607,7 @@ fn create_feed(
     channel: &str,
     feed: &FeedSpec,
     now: Timestamp,
+    creator: Creator,
 ) -> ScheduleResult {
     let Some(spec) = hatchling_feed::Spec::parse(feed) else {
         return ScheduleResult::Refused {
@@ -589,6 +635,7 @@ fn create_feed(
         Err(reason) => return ScheduleResult::Refused { reason },
     };
     schedule.feed = Some(feed.clone());
+    schedule.creator = creator;
     match SealedScheduleStore::new(&config.scheduler.root, key).insert(&schedule) {
         Ok(true) => ScheduleResult::Created { id: schedule.id },
         Ok(false) => ScheduleResult::Refused {
@@ -891,6 +938,7 @@ mod tests {
             depth: 0,
             space: None,
             feed: None,
+            creator: Creator::Agent,
         };
         let shown = summary(&schedule);
         assert_eq!(
@@ -917,13 +965,19 @@ mod tests {
             ..schedule
         };
         assert_eq!(summary(&feed).kind, ScheduleKind::Feed);
+        // A schedule stored before creators were recorded is the owner's.
+        let mut stored = serde_json::to_value(&feed).unwrap();
+        stored.as_object_mut().unwrap().remove("creator");
+        let old: Schedule = serde_json::from_value(stored).unwrap();
+        assert_eq!(old.creator, Creator::Owner);
         let key = MasterKey::generate().unwrap();
         assert_eq!(
             list_schedules(
                 &channel_config(&["local"], false),
                 &key,
                 &BTreeSet::new(),
-                None
+                None,
+                Creator::Agent
             ),
             ScheduleResult::Denied
         );
@@ -986,6 +1040,61 @@ mod tests {
         );
         assert!(authenticated_channels(&channel_config(&["local"], false)).is_empty());
         assert!(authenticated_channels(&channel_config(&["mail"], true)).is_empty());
+    }
+
+    #[test]
+    fn a_schedule_is_created_as_its_callers_and_cancelled_only_by_who_reaches_it() {
+        let root = std::env::temp_dir().join(format!(
+            "hatchling-test-schedule-creator-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let key = MasterKey::generate().unwrap();
+        let mut config = channel_config(&["local"], false);
+        config.scheduler.root.clone_from(&root);
+        let when = ScheduleSpec::Cron {
+            expr: String::from("0 8 * * *"),
+            tz: String::from("UTC"),
+        };
+        let grants = [ScheduleGrant::ChannelSend {
+            channel: String::from("local"),
+        }];
+        let now = Timestamp::now();
+        let create = |creator| {
+            let result = create_schedule(&config, &key, &when, "t", &grants, "local", now, creator);
+            if let ScheduleResult::Created { id } = result {
+                id
+            } else {
+                format!("not created: {result:?}")
+            }
+        };
+        let owners = create(Creator::Owner);
+        let agents = create(Creator::Agent);
+        let store = SealedScheduleStore::new(&root, &key);
+        let creators: Vec<(String, Creator)> = store
+            .load()
+            .unwrap()
+            .into_iter()
+            .map(|schedule| (schedule.id, schedule.creator))
+            .collect();
+        assert!(
+            creators.contains(&(owners.clone(), Creator::Owner)),
+            "{creators:?}"
+        );
+        assert!(
+            creators.contains(&(agents.clone(), Creator::Agent)),
+            "{creators:?}"
+        );
+        // The agent can't cancel the owner's, nor an id that doesn't exist.
+        assert!(!store.cancel(&owners, Creator::Agent).unwrap());
+        assert!(!store.cancel("sch-none", Creator::Owner).unwrap());
+        assert_eq!(store.load().unwrap().len(), 2);
+        // It cancels its own, once; the owner cancels any.
+        assert!(store.cancel(&agents, Creator::Agent).unwrap());
+        assert!(!store.cancel(&agents, Creator::Agent).unwrap());
+        assert!(store.cancel(&owners, Creator::Owner).unwrap());
+        assert!(store.load().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

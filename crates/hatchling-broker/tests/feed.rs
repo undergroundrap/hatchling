@@ -214,7 +214,7 @@ fn a_scheduled_feed_delivers_a_digest_whose_every_item_is_labeled() {
     let base = Base::new("deliver");
     let config = config(&base.0);
     let key = MasterKey::generate().unwrap();
-    let id = created(handle_schedule_op(
+    let id = created(agent_schedule_op(
         &config,
         &key,
         &create_feed(spec()),
@@ -318,7 +318,7 @@ fn a_feed_holds_only_reads_and_reads_only_what_it_still_may() {
         },
     ] {
         assert_eq!(
-            handle_schedule_op(&config, &key, &create_feed(bad.clone()), now),
+            agent_schedule_op(&config, &key, &create_feed(bad.clone()), now),
             ScheduleResult::Refused {
                 reason: ScheduleRefusal::BadTask
             },
@@ -329,7 +329,7 @@ fn a_feed_holds_only_reads_and_reads_only_what_it_still_may() {
     let mut lacking = crate::config(&base.0);
     lacking.memory.grants.clear();
     assert_eq!(
-        handle_schedule_op(&lacking, &key, &create_feed(spec()), now),
+        agent_schedule_op(&lacking, &key, &create_feed(spec()), now),
         ScheduleResult::Refused {
             reason: ScheduleRefusal::ExceedsGrants
         }
@@ -337,11 +337,11 @@ fn a_feed_holds_only_reads_and_reads_only_what_it_still_may() {
     let mut off = crate::config(&base.0);
     off.scheduler = SchedulerConfig::disabled();
     assert_eq!(
-        handle_schedule_op(&off, &key, &create_feed(spec()), now),
+        agent_schedule_op(&off, &key, &create_feed(spec()), now),
         ScheduleResult::Denied
     );
     // A grant revoked after the feed was created is not read when it fires.
-    let id = created(handle_schedule_op(&config, &key, &create_feed(spec()), now));
+    let id = created(agent_schedule_op(&config, &key, &create_feed(spec()), now));
     seed(&config, 1_789_975_800);
     config.goals.grants = vec![GoalsAction::QueryGoals];
     let (hub, received) = hub_with_client();
@@ -389,7 +389,7 @@ fn an_ordinary_run_still_gets_its_cell() {
     let base = Base::new("ordinary");
     let config = config(&base.0);
     let key = MasterKey::generate().unwrap();
-    let id = created(handle_schedule_op(
+    let id = created(agent_schedule_op(
         &config,
         &key,
         &ScheduleOp::Create {
@@ -432,4 +432,15 @@ fn an_ordinary_run_still_gets_its_cell() {
         received.lock().unwrap().first().map(|m| m.text.clone()),
         Some(String::from("a cell ran"))
     );
+}
+
+/// A schedule op as an agent session sends it: every one these tests
+/// make.
+fn agent_schedule_op(
+    config: &Config,
+    key: &MasterKey,
+    op: &ScheduleOp,
+    now: Timestamp,
+) -> ScheduleResult {
+    handle_schedule_op(config, key, op, now, hatchling_scheduler::Creator::Agent)
 }

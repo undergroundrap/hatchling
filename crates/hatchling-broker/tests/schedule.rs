@@ -358,7 +358,7 @@ fn the_store_holds_at_most_64_schedules() {
     for n in 0..hatchling_broker::schedule_ops::MAX_SCHEDULES {
         assert!(
             matches!(
-                handle_schedule_op(
+                agent_schedule_op(
                     &config,
                     &key,
                     &create(hourly(Some("UTC")), vec![send()]),
@@ -370,7 +370,7 @@ fn the_store_holds_at_most_64_schedules() {
         );
     }
     assert_eq!(
-        handle_schedule_op(
+        agent_schedule_op(
             &config,
             &key,
             &create(hourly(Some("UTC")), vec![send()]),
@@ -432,7 +432,7 @@ fn hub_with_client() -> (LocalHub, Arc<Mutex<Vec<Message>>>) {
 }
 
 fn created(config: &Config, key: &MasterKey, grants: Vec<ScheduleGrant>, now: &str) -> String {
-    created_id(handle_schedule_op(
+    created_id(agent_schedule_op(
         config,
         key,
         &create(hourly(Some("UTC")), grants),
@@ -447,7 +447,7 @@ fn a_list_pages_through_every_schedule_in_id_order_without_its_task() {
     let now = ts("2026-10-10T08:00:00Z");
     let mut ids: Vec<String> = (0..3)
         .map(|_| {
-            created_id(handle_schedule_op(
+            created_id(agent_schedule_op(
                 &config,
                 &key,
                 &create(hourly(Some("UTC")), vec![send()]),
@@ -457,7 +457,7 @@ fn a_list_pages_through_every_schedule_in_id_order_without_its_task() {
         .collect();
     ids.sort();
     let list = |after: Option<&str>| {
-        handle_schedule_op(
+        agent_schedule_op(
             &config,
             &key,
             &ScheduleOp::List {
@@ -505,7 +505,7 @@ fn a_list_pages_through_every_schedule_in_id_order_without_its_task() {
     // No scheduler, no list.
     let off = self::config("list-off", false);
     assert_eq!(
-        handle_schedule_op(&off, &key, &ScheduleOp::List { after: None }, now),
+        agent_schedule_op(&off, &key, &ScheduleOp::List { after: None }, now),
         ScheduleResult::Denied
     );
     cleanup(&off);
@@ -523,7 +523,7 @@ fn a_missing_timezone_is_still_refused_by_name() {
     ] {
         let when: ScheduleSpec = serde_json::from_str(when).unwrap();
         assert_eq!(
-            handle_schedule_op(
+            agent_schedule_op(
                 &config,
                 &key,
                 &create(when, vec![send()]),
@@ -761,4 +761,15 @@ fn a_disabled_scheduler_dispatches_nothing() {
     .unwrap();
     assert_eq!(report, hatchling_scheduler::TickReport::default());
     cleanup(&config);
+}
+
+/// A schedule op as an agent session sends it: every one these tests
+/// make.
+fn agent_schedule_op(
+    config: &Config,
+    key: &MasterKey,
+    op: &ScheduleOp,
+    now: Timestamp,
+) -> ScheduleResult {
+    handle_schedule_op(config, key, op, now, hatchling_scheduler::Creator::Agent)
 }

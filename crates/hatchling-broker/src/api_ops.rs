@@ -16,6 +16,11 @@
 //!   any of them. These need the caller to hold the owner's whole set.
 //!   Anything less is the confused deputy: a narrow caller borrowing the
 //!   agent's reach.
+//! - **A caller with no grants** is refused every action, whatever the
+//!   owner holds: "the owner's whole set" is no bar when the owner holds
+//!   none, and a caller with nothing must not pass it.
+//! - **Schedules the API makes are the owner's** ([`Creator::Owner`]): a
+//!   cell can neither see nor cancel them.
 //!
 //! Every other action has no backend in this build and is refused as
 //! unavailable. Every call, served or refused, is recorded ([`Audit`]).
@@ -35,7 +40,7 @@ use hatchling_core::ui::{
     ActionRefusal, ApiOutcome, ApiRequest, ChatAuthor, ChatMessage, UiAction, UiActionResult,
     UiEventBody,
 };
-use hatchling_scheduler::Timestamp;
+use hatchling_scheduler::{Creator, Timestamp};
 use hatchling_vault::MasterKey;
 
 use crate::api_auth::Caller;
@@ -113,6 +118,9 @@ impl<'a> Ops<'a> {
     ) -> (UiActionResult, ApiOutcome) {
         let owner = held_grants(self.config);
         let refused = |reason| (UiActionResult::Refused { reason }, ApiOutcome::Refused);
+        if caller.grants().is_empty() {
+            return refused(ActionRefusal::NotGranted);
+        }
         match action {
             UiAction::SendMessage { chat_id, text } => {
                 if !caller.holds(&owner) {
@@ -135,33 +143,34 @@ impl<'a> Ops<'a> {
                     ApiOutcome::Served,
                 )
             }
-            // A list shows what the caller's own grants cover ; a
-            // caller with none has nothing to list.
+            // A list shows what the caller's own grants cover.
             UiAction::ManageSchedule {
                 op: ScheduleOp::List { after },
-            } => {
-                if caller.grants().is_empty() {
-                    return refused(ActionRefusal::NotGranted);
-                }
-                (
-                    UiActionResult::Schedule {
-                        outcome: list_schedules(
-                            self.config,
-                            self.key,
-                            caller.grants(),
-                            after.as_deref(),
-                        ),
-                    },
-                    ApiOutcome::Served,
-                )
-            }
+            } => (
+                UiActionResult::Schedule {
+                    outcome: list_schedules(
+                        self.config,
+                        self.key,
+                        caller.grants(),
+                        after.as_deref(),
+                        Creator::Owner,
+                    ),
+                },
+                ApiOutcome::Served,
+            ),
             UiAction::ManageSchedule { op } => {
                 if !caller.holds(&schedule_needs(op, &owner)) {
                     return refused(ActionRefusal::NotGranted);
                 }
                 (
                     UiActionResult::Schedule {
-                        outcome: handle_schedule_op(self.config, self.key, op, Timestamp::now()),
+                        outcome: handle_schedule_op(
+                            self.config,
+                            self.key,
+                            op,
+                            Timestamp::now(),
+                            Creator::Owner,
+                        ),
                     },
                     ApiOutcome::Served,
                 )
@@ -493,6 +502,153 @@ mod tests {
             schedule_needs(&ScheduleOp::List { after: None }, &owner),
             owner,
             "a list is filtered by the caller's grants before it gets here"
+        );
+    }
+
+    /// The ids a schedule list shows.
+    fn listed(result: &ScheduleResult) -> Vec<String> {
+        if let ScheduleResult::Listed { schedules, .. } = result {
+            schedules.iter().map(|shown| shown.id.clone()).collect()
+        } else {
+            vec![format!("not listed: {result:?}")]
+        }
+    }
+
+    #[test]
+    fn a_schedule_the_api_makes_is_the_owners_and_a_cell_can_neither_see_nor_cancel_it() {
+        let dir = scratch("creator");
+        let mut config = owner_config(Some(&dir.0.join("schedules").to_string_lossy()));
+        config.goals.grants = vec![GoalsAction::QueryGoals];
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let ops = Ops::new(&config, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        let owner = caller(&ops.owner_grants().into_iter().collect::<Vec<_>>());
+        let created = |result: ScheduleResult| {
+            if let ScheduleResult::Created { id } = result {
+                id
+            } else {
+                format!("not created: {result:?}")
+            }
+        };
+        let owners = match ops.handle(&owner, &create(vec![local_send()]), &mut Replies::default())
+        {
+            (UiActionResult::Schedule { outcome }, ApiOutcome::Served) => created(outcome),
+            other => format!("not served: {other:?}"),
+        };
+        let UiAction::ManageSchedule { op: create_op } = create(vec![local_send()]) else {
+            return;
+        };
+        let now = Timestamp::now();
+        let agent = |op: &ScheduleOp| handle_schedule_op(&config, &key, op, now, Creator::Agent);
+        let agents = created(agent(&create_op));
+        let list = ScheduleOp::List { after: None };
+        // The cell sees its own; the owner sees both.
+        assert_eq!(listed(&agent(&list)), std::slice::from_ref(&agents));
+        let mut both = vec![owners.clone(), agents.clone()];
+        both.sort();
+        assert_eq!(
+            listed(&handle_schedule_op(
+                &config,
+                &key,
+                &list,
+                now,
+                Creator::Owner
+            )),
+            both
+        );
+        // The cell's cancel of the owner's is answered as for no such id,
+        // and the schedule stays.
+        let cancel = |id: &str| ScheduleOp::Cancel { id: id.to_owned() };
+        assert_eq!(agent(&cancel(&owners)), ScheduleResult::NotFound);
+        assert_eq!(agent(&cancel("sch-none")), ScheduleResult::NotFound);
+        assert_eq!(
+            listed(&handle_schedule_op(
+                &config,
+                &key,
+                &list,
+                now,
+                Creator::Owner
+            )),
+            both
+        );
+        // Each cancels its own; the owner may cancel the agent's.
+        assert_eq!(agent(&cancel(&agents)), ScheduleResult::Cancelled);
+        let again = created(agent(&create_op));
+        assert_eq!(
+            handle_schedule_op(&config, &key, &cancel(&again), now, Creator::Owner),
+            ScheduleResult::Cancelled
+        );
+        let by_api = UiAction::ManageSchedule {
+            op: cancel(&owners),
+        };
+        assert_eq!(
+            ops.handle(&owner, &by_api, &mut Replies::default()),
+            (
+                UiActionResult::Schedule {
+                    outcome: ScheduleResult::Cancelled
+                },
+                ApiOutcome::Served
+            )
+        );
+        assert_eq!(listed(&agent(&list)), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_caller_with_no_grants_is_refused_everything_even_when_the_owner_holds_none() {
+        let dir = scratch("none");
+        let mut config = owner_config(Some(&dir.0.join("schedules").to_string_lossy()));
+        config.goals.grants = Vec::new();
+        config.channels = Vec::new();
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let ops = Ops::new(&config, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        assert!(ops.owner_grants().is_empty(), "{:?}", ops.owner_grants());
+        let not_granted = (
+            UiActionResult::Refused {
+                reason: ActionRefusal::NotGranted,
+            },
+            ApiOutcome::Refused,
+        );
+        let skill = UiAction::InvokeSkill {
+            op: SkillOp::Invoke {
+                skill: String::from("notes@1.0.0"),
+                capability: "read".parse().unwrap(),
+                input: String::new(),
+            },
+        };
+        let cancel = UiAction::ManageSchedule {
+            op: ScheduleOp::Cancel {
+                id: String::from("sch-1"),
+            },
+        };
+        for action in [send("hi"), skill, cancel, create(Vec::new())] {
+            assert_eq!(
+                ops.handle(&caller(&[]), &action, &mut Replies::default()),
+                not_granted,
+                "{action:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_message_of_exactly_the_ingress_bound_passes_the_length_check() {
+        let dir = scratch("bound");
+        let config = owner_config(Some(&dir.0.join("schedules").to_string_lossy()));
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let ops = Ops::new(&config, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        let owner = caller(&ops.owner_grants().into_iter().collect::<Vec<_>>());
+        let refused = |reason| (UiActionResult::Refused { reason }, ApiOutcome::Refused);
+        let at = "x".repeat(MAX_INGRESS_TEXT_BYTES);
+        // No hub here: a message the length check passes ends at
+        // "unavailable"; one byte more is a bad request.
+        assert_eq!(
+            ops.handle(&owner, &send(&at), &mut Replies::default()),
+            refused(ActionRefusal::Unavailable)
+        );
+        assert_eq!(
+            ops.handle(&owner, &send(&format!("{at}x")), &mut Replies::default()),
+            refused(ActionRefusal::BadRequest)
         );
     }
 
