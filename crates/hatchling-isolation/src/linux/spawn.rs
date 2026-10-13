@@ -1857,7 +1857,10 @@ pub(super) mod tests {
                 if reason.starts_with("the cell's relay listener did not arrive: ")),
             "{late:?}"
         );
-        assert!(started.elapsed() >= Duration::from_millis(200));
+        // It waited out its timeout rather than answering at once. A
+        // socket's receive timeout counts in the kernel's ticks, and can
+        // end up to one tick early.
+        assert!(started.elapsed() >= Duration::from_millis(150));
         assert!(started.elapsed() < SHORT_DEADLINE);
     }
 
