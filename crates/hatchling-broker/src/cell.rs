@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 use hatchling_core::{LogLevel, SocketPath};
 use hatchling_isolation::{
     Cell as _, CellIdentity, CellSpec, ENDPOINT_DIR, Endpoint, Exit, Exposure, Filter,
-    IsolationBackend, PROGRAM, Tool,
+    IsolationBackend, Limits, PROGRAM, Tool,
 };
 use serde::{Deserialize, Serialize};
 
@@ -103,6 +103,98 @@ pub struct CellConfig {
     /// write in exactly those two directories.
     #[serde(default)]
     pub harness: Option<HarnessDirs>,
+    /// What the cell's program, and everything it starts, is held to.
+    #[serde(default)]
+    pub limits: CellLimits,
+}
+
+/// What every cell's program, and everything it starts, is held to.
+///
+/// The limits come from `HATCHLING_CELL_MAX_PROCESSES`, `HATCHLING_CELL_MAX_ADDRESS_SPACE`,
+/// `HATCHLING_CELL_MAX_FILE_SIZE` and `HATCHLING_CELL_MAX_OPEN_FILES`:
+/// each a positive count or number of bytes, or `unlimited` to leave the
+/// broker's own. Each is both the cell's soft and its hard limit, so the
+/// cell can't lift it; a value above the broker's own hard limit is held
+/// at the broker's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CellLimits {
+    /// How many processes, threads included, a cell may hold at once:
+    /// 4096 unless configured.
+    pub processes: Option<u64>,
+    /// A program's address space, in bytes: unlimited unless configured.
+    /// It isn't a memory bound: a runtime such as V8 reserves far more
+    /// address space than it uses.
+    pub address_space: Option<u64>,
+    /// The largest file a program may write, in bytes: 8 GiB unless
+    /// configured.
+    pub file_size: Option<u64>,
+    /// How many files a program may hold open at once: 8192 unless
+    /// configured.
+    pub open_files: Option<u64>,
+}
+
+impl Default for CellLimits {
+    fn default() -> Self {
+        Self {
+            processes: Some(4096),
+            address_space: None,
+            file_size: Some(8 << 30),
+            open_files: Some(8192),
+        }
+    }
+}
+
+impl CellLimits {
+    /// The limits `get` sets; an unset one is its default.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidConfig`] for a value that is neither a
+    /// positive base-10 number nor `unlimited`.
+    fn parse(get: impl Fn(&str) -> Option<String>) -> Result<Self, Error> {
+        let defaults = Self::default();
+        Ok(Self {
+            processes: limit(&get, "HATCHLING_CELL_MAX_PROCESSES", defaults.processes)?,
+            address_space: limit(
+                &get,
+                "HATCHLING_CELL_MAX_ADDRESS_SPACE",
+                defaults.address_space,
+            )?,
+            file_size: limit(&get, "HATCHLING_CELL_MAX_FILE_SIZE", defaults.file_size)?,
+            open_files: limit(&get, "HATCHLING_CELL_MAX_OPEN_FILES", defaults.open_files)?,
+        })
+    }
+}
+
+impl From<CellLimits> for Limits {
+    fn from(limits: CellLimits) -> Self {
+        Self {
+            processes: limits.processes,
+            address_space: limits.address_space,
+            file_size: limits.file_size,
+            open_files: limits.open_files,
+        }
+    }
+}
+
+/// One limit: `key`'s value, a positive base-10 number or `unlimited`
+/// for none, or `default` when it's unset.
+fn limit(
+    get: &impl Fn(&str) -> Option<String>,
+    key: &'static str,
+    default: Option<u64>,
+) -> Result<Option<u64>, Error> {
+    match get(key).as_deref() {
+        None => Ok(default),
+        Some("unlimited") => Ok(None),
+        Some(raw) => match raw.parse::<u64>() {
+            Ok(0) | Err(_) => Err(Error::InvalidConfig {
+                key,
+                reason: String::from("expected a positive base-10 number, or `unlimited`"),
+            }),
+            Ok(value) => Ok(Some(value)),
+        },
+    }
 }
 
 /// A harness cell's writable directories and arguments.
@@ -244,7 +336,8 @@ impl CellConfig {
     }
 
     /// The base config for a skill cell: the default uid map (as
-    /// [`CellConfig::from_env`] would choose it), no program yet, and no
+    /// [`CellConfig::from_env`] would choose it), the limits the
+    /// environment sets ([`CellLimits`]), no program yet, and no
     /// broker socket. [`prepare_skill_cell`](crate::skill_cell::prepare_skill_cell)
     /// sets the verified program and code dir, which makes it a skill
     /// cell.
@@ -252,7 +345,8 @@ impl CellConfig {
     /// # Errors
     ///
     /// Returns [`Error::CellMap`] if the default map fails policy
-    /// validation for this broker's privilege level.
+    /// validation for this broker's privilege level, or
+    /// [`Error::InvalidConfig`] for a limit that doesn't parse.
     pub fn skill(cell_id: &str) -> Result<Self, Error> {
         let backend = hatchling_isolation::platform();
         let identity = backend.identity(None, 1)?;
@@ -269,6 +363,7 @@ impl CellConfig {
             skill_code: None,
             scheduled: None,
             harness: None,
+            limits: CellLimits::parse(|key| std::env::var(key).ok())?,
         })
     }
 
@@ -328,7 +423,8 @@ impl CellConfig {
     /// `HATCHLING_CELL_UID_BASE` defaults to the nobody uid (65534) for
     /// a root broker and to the broker's own uid otherwise — the only
     /// map an unprivileged broker can install. `HATCHLING_CELL_UID_COUNT`
-    /// defaults to 1.
+    /// defaults to 1. The `HATCHLING_CELL_MAX_*` limits are
+    /// [`CellLimits`]'s.
     ///
     /// `agent_uid` is the broker's configured `HATCHLING_AGENT_UID`
     /// (what its peer gate expects `SO_PEERCRED` to report). It must
@@ -512,6 +608,7 @@ impl CellConfig {
             skill_code: None,
             scheduled: None,
             harness: None,
+            limits: CellLimits::parse(&get)?,
         })
     }
 }
@@ -719,6 +816,7 @@ fn cell_spec(config: &CellConfig, log_level: LogLevel) -> CellSpec {
         }),
         relay: harness_network(config).map(|network| network.relay),
         filter: cell_filter(config),
+        limits: config.limits.into(),
     }
 }
 
@@ -795,6 +893,7 @@ mod tests {
         assert_eq!(config.agent_bin, Path::new("/bin/true"));
         assert_eq!(config.cell_id, "cell-01");
         assert_eq!(config.uid_count, 1);
+        assert_eq!(config.limits, CellLimits::default());
         assert_eq!(config.socket_dir, Path::new("/tmp/hatchling-test"));
         assert_eq!(config.in_cell_socket, "/sock/broker.sock");
         // Defaults depend on privilege (the backend's choice): root gets
@@ -811,6 +910,67 @@ mod tests {
         if owner() != 0 {
             assert_eq!(config.broker_uid_in_cell, 0);
         }
+    }
+
+    #[test]
+    fn cell_limits_default_to_bounded_processes_files_and_file_sizes() {
+        assert_eq!(
+            CellLimits::default(),
+            CellLimits {
+                processes: Some(4096),
+                address_space: None,
+                file_size: Some(8 << 30),
+                open_files: Some(8192),
+            }
+        );
+    }
+
+    #[test]
+    fn a_cell_limit_is_a_positive_number_or_unlimited() {
+        let vars = HashMap::from([
+            ("HATCHLING_AGENT_BIN", "/bin/true"),
+            ("HATCHLING_CELL_ID", "cell-01"),
+            ("HATCHLING_CELL_MAX_PROCESSES", "64"),
+            ("HATCHLING_CELL_MAX_ADDRESS_SPACE", "4294967296"),
+            ("HATCHLING_CELL_MAX_FILE_SIZE", "unlimited"),
+        ]);
+        let expected = CellLimits {
+            processes: Some(64),
+            address_space: Some(1 << 32),
+            file_size: None,
+            open_files: Some(8192),
+        };
+        assert_eq!(CellLimits::parse(lookup(&vars)).unwrap(), expected);
+        let config =
+            CellConfig::parse(lookup(&vars), &socket("/tmp/x/broker.sock"), default_base())
+                .unwrap();
+        assert_eq!(config.limits, expected);
+        for bad in [
+            "0",
+            "-1",
+            "lots",
+            " 64",
+            "18446744073709551616",
+            "Unlimited",
+            "",
+        ] {
+            let vars = HashMap::from([("HATCHLING_CELL_MAX_OPEN_FILES", bad)]);
+            assert!(
+                matches!(
+                    CellLimits::parse(lookup(&vars)),
+                    Err(Error::InvalidConfig {
+                        key: "HATCHLING_CELL_MAX_OPEN_FILES",
+                        ..
+                    })
+                ),
+                "{bad:?}"
+            );
+        }
+        let vars = HashMap::from([("HATCHLING_CELL_MAX_OPEN_FILES", "1")]);
+        let key = "HATCHLING_CELL_MAX_OPEN_FILES";
+        assert_eq!(limit(&lookup(&vars), key, Some(7)).unwrap(), Some(1));
+        assert_eq!(limit(&lookup(&vars), "unset", Some(7)).unwrap(), Some(7));
+        assert_eq!(limit(&lookup(&vars), "unset", None).unwrap(), None);
     }
 
     #[test]
@@ -1068,6 +1228,15 @@ mod tests {
         assert!(spec.exposures.is_empty());
         assert_eq!(spec.workdir, None);
         assert_eq!(spec.filter, Filter::Program);
+        assert_eq!(
+            spec.limits,
+            Limits {
+                processes: Some(4096),
+                address_space: None,
+                file_size: Some(8 << 30),
+                open_files: Some(8192),
+            }
+        );
     }
 
     #[test]

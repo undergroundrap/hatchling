@@ -226,6 +226,26 @@ pub struct CellSpec {
     pub relay: Option<u16>,
     /// What the program may ask of the platform.
     pub filter: Filter,
+    /// What the program, and everything it starts, is held to.
+    pub limits: Limits,
+}
+
+/// What a cell's program, and everything it starts, is held to.
+///
+/// Each limit set is both the soft and the hard one, so the cell can't
+/// lift it, and one above what the broker itself is held to is held at the
+/// broker's. `None` leaves the broker's own.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Limits {
+    /// How many processes, threads included, the cell may hold at once.
+    pub processes: Option<u64>,
+    /// The program's address space, in bytes. That isn't its memory: a
+    /// runtime may reserve far more address space than it uses.
+    pub address_space: Option<u64>,
+    /// The largest file the program may write, in bytes.
+    pub file_size: Option<u64>,
+    /// How many files the program may hold open at once.
+    pub open_files: Option<u64>,
 }
 
 /// A broker endpoint a cell may reach. Its directory is seen read-only

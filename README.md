@@ -153,6 +153,19 @@ That answer took the whole path: the scheduler started a fresh cell as `hatchlin
 
 The broker runs as root so that each cell can get a uid of its own. Without privilege, Linux lets a process map only its own uid into a user namespace, so an unprivileged broker's cells run as you: still in their own namespaces, under seccomp, with no capabilities and no network. In that mode, the local API and the chat ingress refuse to start, because a cell with your uid could otherwise drive them. Making both work without root is [WO-014](docs/workorders/workorder-014-running-without-root.md).
 
+### Cell limits
+
+Every cell is held to hard limits it can't lift: they're both its soft and its hard limits, and raising a hard limit takes a capability no cell holds. Set them in the broker's environment:
+
+| Variable | Default | Limits |
+| --- | --- | --- |
+| `HATCHLING_CELL_MAX_PROCESSES` | 4096 | processes the cell holds at once, threads included |
+| `HATCHLING_CELL_MAX_OPEN_FILES` | 8192 | files each program holds open at once |
+| `HATCHLING_CELL_MAX_FILE_SIZE` | 8589934592 (8 GiB) | the largest file a program writes, in bytes |
+| `HATCHLING_CELL_MAX_ADDRESS_SPACE` | unlimited | each program's address space, in bytes |
+
+Each takes a positive number, or `unlimited` to leave the broker's own limit. A value above the broker's own hard limit is held at the broker's. The address space isn't a memory bound: a JavaScript runtime reserves far more address space than it uses, so a coding CLI needs it left high. A per-cell CPU and memory share is [WO-004](docs/workorders/workorder-004-cell-resource-limits.md)'s next part.
+
 From here: **[the local API](docs/local-api.md)** for every action and event, and **[testing on WSL2](docs/testing-on-wsl2.md)** for a Windows setup.
 
 ## Held to a high bar

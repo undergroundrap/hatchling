@@ -89,12 +89,12 @@ use common::{
     broker_config, cell_config_for, guard_cell_available, mapped_agent_uid, probe_binary, test_dir,
 };
 use hatchling_adversarial::{
-    Attack, Outcome, Report, all_denied, check_inventory, cli_denied_syscalls, denied_syscalls,
-    is_refused_write, parse_report, responses_uniform,
+    Attack, HeldLimit, Outcome, Report, all_denied, check_inventory, cli_denied_syscalls,
+    denied_syscalls, is_refused_write, parse_report, responses_uniform,
 };
 use hatchling_broker::{Config, bind_listener, serve_connection, spawn_cell};
 use hatchling_core::LogLevel;
-use hatchling_isolation::{Cell as _, CellSpec, Filter, IsolationBackend as _};
+use hatchling_isolation::{Cell as _, CellSpec, Filter, IsolationBackend as _, Limits};
 use hatchling_vault::MasterKey;
 
 /// `128 + SIGSYS`: what [`spawn_cell`]'s reaper reports when the
@@ -165,13 +165,18 @@ fn spawn_attack(attack: Attack, socket_dir: &Path, agent_uid: u32) -> Result<Att
 /// (the seccomp attacks need neither), the CLI cell's own `/proc` and
 /// devices. Captures stdout as [`spawn_attack`] does.
 fn spawn_cli_attack(attack: Attack) -> Result<AttackResult, String> {
+    spawn_cli(attack, &cli_spec(attack)?)
+}
+
+/// Spawn one probe cell for `attack` under `spec`, as
+/// [`spawn_cli_attack`] does.
+fn spawn_cli(attack: Attack, spec: &CellSpec) -> Result<AttackResult, String> {
     let platform = hatchling_isolation::platform();
-    let spec = cli_spec(attack)?;
     capture(
         attack,
         || {
             platform
-                .isolate(&spec)
+                .isolate(spec)
                 .map_err(|e| format!("CLI cell for {}: {e}", attack.slug()))
         },
         |cell| cell.wait().map(|exit| exit.code).map_err(|e| e.to_string()),
@@ -195,6 +200,7 @@ fn cli_spec(attack: Attack) -> Result<CellSpec, String> {
         tools: Vec::new(),
         relay: None,
         filter: Filter::Cli,
+        limits: Limits::default(),
     })
 }
 
@@ -873,6 +879,48 @@ fn cli_rules_refuse_as_designed() -> Result<(), String> {
     Ok(())
 }
 
+/// The limits [`a_cell_is_held_to_its_limits_and_cannot_lift_them`]
+/// gives its cell.
+const HELD: Limits = Limits {
+    processes: Some(512),
+    address_space: Some(1 << 30),
+    file_size: Some(1 << 30),
+    open_files: Some(256),
+};
+
+/// A cell is held to the limits its spec gives it, each both soft and
+/// hard, and can lift none of them: raising a hard limit takes
+/// `CAP_SYS_RESOURCE` in the host's user namespace, which no cell holds.
+fn a_cell_is_held_to_its_limits_and_cannot_lift_them() -> Result<(), String> {
+    if !guard_cell_available()? {
+        return Ok(());
+    }
+    let mut spec = cli_spec(Attack::RaiseLimits)?;
+    spec.limits = HELD;
+    let report = report_of(&spawn_cli(Attack::RaiseLimits, &spec)?)?;
+    let held = |name: &str, value: Option<u64>| HeldLimit {
+        name: name.to_owned(),
+        soft: value,
+        hard: value,
+        raise_errno: 1,
+    };
+    let expected = Outcome::Limits {
+        limits: vec![
+            held("processes", HELD.processes),
+            held("address-space", HELD.address_space),
+            held("file-size", HELD.file_size),
+            held("open-files", HELD.open_files),
+        ],
+    };
+    if report.outcome != expected {
+        return Err(format!(
+            "the cell's limits: {:?}, expected {expected:?}",
+            report.outcome
+        ));
+    }
+    Ok(())
+}
+
 /// A root broker's cell has no supplementary groups: it drops them
 /// before entering its user namespace, where it couldn't. Root only: an
 /// unprivileged broker has none it may drop.
@@ -1180,6 +1228,10 @@ const CHECKS: &[Check] = &[
     (
         "a_root_brokers_cell_has_no_supplementary_groups",
         a_root_brokers_cell_has_no_supplementary_groups,
+    ),
+    (
+        "a_cell_is_held_to_its_limits_and_cannot_lift_them",
+        a_cell_is_held_to_its_limits_and_cannot_lift_them,
     ),
     (
         "a_cell_that_clears_its_death_signal_still_dies_with_its_supervisor",

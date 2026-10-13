@@ -306,6 +306,7 @@ mod tests {
             tools: Vec::new(),
             relay: None,
             filter: Filter::WorkTree,
+            limits: crate::Limits::default(),
         }
     }
 

@@ -8,6 +8,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Fixed
 
+- A cell is held to hard limits: by default 4,096 processes (threads included), 8,192 open files and an 8 GiB largest file, set as both its soft and its hard limits just before the program starts, so it can't lift them. Set each with `HATCHLING_CELL_MAX_PROCESSES`, `HATCHLING_CELL_MAX_OPEN_FILES`, `HATCHLING_CELL_MAX_FILE_SIZE` and `HATCHLING_CELL_MAX_ADDRESS_SPACE` (bytes, unlimited by default), or `unlimited` to leave the broker's own; a value above the broker's own hard limit is held at the broker's. See [cell limits](README.md#cell-limits) (WO-004).
 - A cell no longer outlives its supervisor when its program clears its own parent-death signal. Every cell's pid 1 is now Hatchling's init: it holds the death signal against the supervisor, never runs the program's code, reaps every child that exits, and ends with the program's exit code; the program runs as pid 2. When the supervisor dies, so does the init, and the kernel kills everything left in the cell. The init holds no capability, runs under `no_new_privs`, closes what it inherited, and can't be dumped or traced by the program it shares a uid with (WO-004).
 - A coding CLI's cell may make a socket pair only of Unix sockets: `socketpair` with any other family is answered "address family not supported", as `socket` already was. It had been allowed whatever its family (WO-005).
 - A root broker's cell drops its supplementary groups before entering its user namespace. It had carried the broker's groups in, where it couldn't drop them, so any file a group of the broker's could reach stayed reachable from the cell (WO-005).
@@ -24,6 +25,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Changed
 
+- **Breaking, `hatchling-isolation`, `hatchling-sys` and `hatchling-broker`:** `CellSpec` gains `limits: Limits`, and `CellConfig` gains `limits: CellLimits`. `hatchling_sys::exec` takes a last step to run just before `execve`, and adds `hold_to` and `Limit`.
 - A root broker maps one uid for a cell. `HATCHLING_CELL_UID_COUNT` above 1 is refused at startup: a wider map would let the cell act as every host account it covered. An unprivileged broker could only ever map one (WO-005).
 - **Breaking, `hatchling-broker` and `hatchling-scheduler`:** `handle_schedule_op` and `list_schedules` take the caller's `Creator`, and `Schedule` gains `creator`. The schedule store reads an entry without one as the owner's.
 - The session protocol is v13: `EgressOp::Stage` and `EgressOp::Read`, `EgressResult::Staged` and `EgressResult::Part`, `staged` on `EgressOp::Egress` and `more` on `EgressResult::Ok` (see [the session protocol](docs/session-protocol.md)). The broker and the agent must speak the same version, as always; the one `hatchling` binary is both. `hatchling-core` adds `fits_one_frame` and `EGRESS_PART_BYTES`.

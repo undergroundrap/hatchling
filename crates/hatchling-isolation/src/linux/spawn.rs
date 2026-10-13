@@ -17,7 +17,7 @@ use hatchling_sys::{
 
 use super::identity::id_map;
 use super::view::{mount_plan, view};
-use crate::{CellSpec, Endpoint, Error, Exit, Filter, PROGRAM, PlatformError};
+use crate::{CellSpec, Endpoint, Error, Exit, Filter, Limits, PROGRAM, PlatformError};
 
 /// Bound for the cell child's ready byte in [`parent_after_fork`]: the
 /// child only unshares two namespaces and writes one byte before this,
@@ -895,7 +895,8 @@ fn seccomp_profile(filter: Filter) -> Result<SeccompProfile, hatchling_sys::Erro
 }
 
 /// Execs the spec's program at [`PROGRAM`] with exactly its argv and
-/// environment. Returns only on failure.
+/// environment, held to its limits from just before the exec. Returns
+/// only on failure.
 fn exec_program(spec: &CellSpec) -> hatchling_sys::Error {
     let argv: Vec<&str> = spec.argv.iter().map(String::as_str).collect();
     let env: Vec<(&str, &str)> = spec
@@ -903,7 +904,28 @@ fn exec_program(spec: &CellSpec) -> hatchling_sys::Error {
         .iter()
         .map(|(key, value)| (key.as_str(), value.as_str()))
         .collect();
-    hatchling_sys::exec(Path::new(PROGRAM), &argv, &env)
+    hatchling_sys::exec(Path::new(PROGRAM), &argv, &env, || {
+        hold_to_limits(&spec.limits)
+    })
+}
+
+/// Holds this process to each limit `limits` sets; one it leaves `None`
+/// stays as it was.
+///
+/// # Errors
+///
+/// The first limit the kernel refuses.
+fn hold_to_limits(limits: &Limits) -> Result<(), hatchling_sys::Error> {
+    [
+        (hatchling_sys::Limit::Processes, limits.processes),
+        (hatchling_sys::Limit::AddressSpace, limits.address_space),
+        (hatchling_sys::Limit::FileSize, limits.file_size),
+        (hatchling_sys::Limit::OpenFiles, limits.open_files),
+    ]
+    .into_iter()
+    .try_for_each(|(limit, value)| {
+        value.map_or(Ok(()), |value| hatchling_sys::hold_to(limit, value))
+    })
 }
 
 /// Drops a root broker's supplementary groups with `clear`, which would
@@ -1673,10 +1695,94 @@ pub(super) mod tests {
         );
     }
 
+    /// The limits the tests below hold a forked child to.
+    const HELD: Limits = Limits {
+        processes: Some(100),
+        address_space: Some(1 << 40),
+        file_size: Some(1 << 30),
+        open_files: Some(64),
+    };
+
+    /// Whether this process is held to exactly `limits`, soft and hard,
+    /// each limit it leaves `None` as `before` was.
+    fn held_to(limits: &Limits, before: &[rustix::process::Rlimit; 4]) -> bool {
+        use rustix::process::{Resource, getrlimit};
+        [
+            (Resource::Nproc, limits.processes),
+            (Resource::As, limits.address_space),
+            (Resource::Fsize, limits.file_size),
+            (Resource::Nofile, limits.open_files),
+        ]
+        .iter()
+        .zip(before)
+        .all(|(&(resource, value), before)| {
+            let held = getrlimit(resource);
+            value.map_or(held == *before, |value| {
+                (held.current, held.maximum) == (Some(value), Some(value))
+            })
+        })
+    }
+
+    /// This process's four limits, in [`held_to`]'s order.
+    fn limits_now() -> [rustix::process::Rlimit; 4] {
+        use rustix::process::{Resource, getrlimit};
+        [
+            getrlimit(Resource::Nproc),
+            getrlimit(Resource::As),
+            getrlimit(Resource::Fsize),
+            getrlimit(Resource::Nofile),
+        ]
+    }
+
+    /// Runs `child` in a forked child and asserts it ended with 0;
+    /// `codes` says what its other exit codes mean.
+    fn in_child(codes: &str, child: impl FnOnce() -> i32) {
+        match hatchling_sys::fork().expect("fork") {
+            ForkResult::Parent { child } => {
+                let status = child.wait_deadline(Duration::from_secs(5)).expect("child");
+                assert_eq!(hatchling_sys::child_exit_code(status), 0, "{codes}");
+            }
+            ForkResult::Child => {
+                let code = std::panic::catch_unwind(std::panic::AssertUnwindSafe(child));
+                hatchling_sys::exit_child(code.unwrap_or(3));
+            }
+        }
+    }
+
     #[test]
-    fn exec_program_fails_outside_a_cell_without_running_anything() {
-        // Outside a cell nothing is mounted at /agent: the exec fails
-        // and returns its error, the process image untouched.
+    fn hold_to_limits_sets_the_limits_given_and_leaves_the_rest() {
+        in_child("1: refused; 2: not held as given", || {
+            let before = limits_now();
+            let some = Limits {
+                open_files: Some(32),
+                ..Limits::default()
+            };
+            if hold_to_limits(&some).is_err() {
+                return 1;
+            }
+            if !held_to(&some, &before) {
+                return 2;
+            }
+            if hold_to_limits(&HELD).is_err() {
+                return 1;
+            }
+            // Open files stays at 32: a limit is never raised.
+            let raised = Limits {
+                open_files: Some(32),
+                ..HELD
+            };
+            if held_to(&raised, &before) { 0 } else { 2 }
+        });
+    }
+
+    #[test]
+    fn exec_program_holds_the_program_to_its_limits_and_fails_outside_a_cell() {
+        // Outside a cell nothing is mounted at /agent: the exec fails and
+        // returns its error, the process image untouched, after the
+        // limits were set.
+        if Path::new(PROGRAM).exists() {
+            return;
+        }
         let spec = CellSpec {
             identity: CellIdentity {
                 principal: hatchling_sys::euid(),
@@ -1691,12 +1797,15 @@ pub(super) mod tests {
             tools: Vec::new(),
             relay: None,
             filter: Filter::Program,
+            limits: HELD,
         };
-        if Path::new(PROGRAM).exists() {
-            return;
-        }
-        let err = exec_program(&spec);
-        assert!(!err.to_string().is_empty());
+        in_child("1: no error; 2: not held to its limits", || {
+            let before = limits_now();
+            if exec_program(&spec).to_string().is_empty() {
+                return 1;
+            }
+            if held_to(&HELD, &before) { 0 } else { 2 }
+        });
     }
 
     /// A real cell, end to end: the program runs isolated and its exit

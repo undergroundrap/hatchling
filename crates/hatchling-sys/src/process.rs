@@ -605,15 +605,25 @@ pub fn set_no_new_privs() -> Result<bool, Error> {
 /// argument vector (by convention `argv[0]` names the binary), and `env`
 /// the explicit environment — nothing is inherited implicitly.
 ///
+/// `last` runs just before `execve`, after the last allocation:
+/// [`hold_to`] an address space smaller than the one this process was
+/// forked with would leave it nothing to allocate with.
+///
 /// This function never returns successfully: it yields the error when
 /// `execve` fails.
 ///
 /// # Errors
 ///
 /// Returns [`Error::InvalidExecArg`] if an argument contains an interior
-/// NUL, or [`Error::Process`] if `execve` itself fails.
+/// NUL, `last`'s own error without the `execve`, or [`Error::Process`] if
+/// `execve` itself fails.
 #[must_use]
-pub fn exec(path: &std::path::Path, argv: &[&str], env: &[(&str, &str)]) -> Error {
+pub fn exec(
+    path: &std::path::Path,
+    argv: &[&str],
+    env: &[(&str, &str)],
+    last: impl FnOnce() -> Result<(), Error>,
+) -> Error {
     let Ok(c_path) = CString::new(path.as_os_str().as_bytes()) else {
         return Error::InvalidExecArg {
             reason: String::from("binary path contains an interior NUL"),
@@ -649,6 +659,9 @@ pub fn exec(path: &std::path::Path, argv: &[&str], env: &[(&str, &str)]) -> Erro
         .map(|s| s.as_ptr())
         .chain(std::iter::once(std::ptr::null()))
         .collect();
+    if let Err(error) = last() {
+        return error;
+    }
     // SAFETY: the pointer arrays are NUL-terminated, borrow live
     // CStrings for the duration of the call, and execve only returns on
     // error. argv/env aliasing rules for execve are satisfied.
@@ -711,6 +724,58 @@ pub fn clear_groups() -> Result<(), Error> {
 /// Returns [`Error::Process`] if the `prctl` fails.
 pub fn set_not_dumpable() -> Result<(), Error> {
     prctl_checked(libc::PR_SET_DUMPABLE, [0, 0, 0, 0], "prctl(SET_DUMPABLE)")
+}
+
+/// A limit the kernel holds a process, and every process it starts, to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Limit {
+    /// `RLIMIT_NPROC`: how many tasks, threads included, its user may
+    /// hold in its user namespace.
+    Processes,
+    /// `RLIMIT_AS`: its address space, in bytes.
+    AddressSpace,
+    /// `RLIMIT_FSIZE`: the largest file it may write, in bytes.
+    FileSize,
+    /// `RLIMIT_NOFILE`: one more than the highest descriptor it may open.
+    OpenFiles,
+}
+
+impl Limit {
+    const fn resource(self) -> rustix::process::Resource {
+        match self {
+            Self::Processes => rustix::process::Resource::Nproc,
+            Self::AddressSpace => rustix::process::Resource::As,
+            Self::FileSize => rustix::process::Resource::Fsize,
+            Self::OpenFiles => rustix::process::Resource::Nofile,
+        }
+    }
+}
+
+/// Holds this process to `value` for `limit`.
+///
+/// `value` becomes both its soft and its hard limit, or the hard limit
+/// it already holds does, if that is lower. Raising a hard limit takes `CAP_SYS_RESOURCE` in the initial user
+/// namespace, which no cell holds: a cell can't lift it.
+///
+/// # Errors
+///
+/// Returns [`Error::Process`] if the kernel refuses the limit.
+pub fn hold_to(limit: Limit, value: u64) -> Result<(), Error> {
+    let resource = limit.resource();
+    let value = rustix::process::getrlimit(resource)
+        .maximum
+        .map_or(value, |held| held.min(value));
+    rustix::process::setrlimit(
+        resource,
+        rustix::process::Rlimit {
+            current: Some(value),
+            maximum: Some(value),
+        },
+    )
+    .map_err(|source| Error::Process {
+        operation: "setrlimit",
+        source: source.into(),
+    })
 }
 
 /// Waits as a pid namespace's init until `program` exits, and returns its
@@ -1093,6 +1158,96 @@ mod tests {
                 exit_child(if dumpable == 0 { 0 } else { 2 });
             }
         }
+    }
+
+    #[test]
+    fn hold_to_sets_both_limits_and_never_raises_the_hard_one() {
+        // In a child: the limits it sets are its own.
+        match fork().expect("fork") {
+            ForkResult::Parent { child } => {
+                let status = child.wait_deadline(REAP).expect("child");
+                assert_eq!(
+                    child_exit_code(status),
+                    0,
+                    "1: a call failed; 2: a limit wasn't held"
+                );
+            }
+            ForkResult::Child => {
+                // Unlimited before (the address space and file size) or
+                // above the value: both limits set to it. A value above the
+                // hard limit (open files, the second time): held where it was.
+                let calls = [
+                    (Limit::Processes, 100),
+                    (Limit::AddressSpace, 1 << 40),
+                    (Limit::FileSize, 1 << 30),
+                    (Limit::OpenFiles, 64),
+                    (Limit::OpenFiles, 128),
+                ];
+                if calls
+                    .iter()
+                    .any(|&(limit, value)| hold_to(limit, value).is_err())
+                {
+                    exit_child(1);
+                }
+                let held = [
+                    (Limit::Processes, 100),
+                    (Limit::AddressSpace, 1 << 40),
+                    (Limit::FileSize, 1 << 30),
+                    (Limit::OpenFiles, 64),
+                ]
+                .iter()
+                .all(|&(limit, value)| {
+                    let held = rustix::process::getrlimit(limit.resource());
+                    (held.current, held.maximum) == (Some(value), Some(value))
+                });
+                exit_child(if held { 0 } else { 2 });
+            }
+        }
+    }
+
+    #[test]
+    fn exec_runs_its_last_step_and_answers_with_its_error() {
+        // In a child: an exec that ran would end it with false's 1.
+        match fork().expect("fork") {
+            ForkResult::Parent { child } => {
+                let status = child.wait_deadline(REAP).expect("child");
+                assert_eq!(
+                    child_exit_code(status),
+                    0,
+                    "1: exec ran past its failed last step; 2: another error"
+                );
+            }
+            ForkResult::Child => {
+                let refused = exec(std::path::Path::new("/bin/false"), &["false"], &[], || {
+                    Err(Error::InvalidExecArg {
+                        reason: String::from("last"),
+                    })
+                });
+                let answered = matches!(
+                    &refused,
+                    Error::InvalidExecArg { reason } if reason == "last"
+                );
+                exit_child(if answered { 0 } else { 2 });
+            }
+        }
+        let ran = Cell::new(false);
+        let missing = exec(
+            std::path::Path::new("/nonexistent/hatchling-exec"),
+            &["missing"],
+            &[("KEY", "value")],
+            || {
+                ran.set(true);
+                Ok(())
+            },
+        );
+        assert!(ran.get());
+        assert!(matches!(
+            missing,
+            Error::Process {
+                operation: "execve",
+                ..
+            }
+        ));
     }
 
     #[test]
