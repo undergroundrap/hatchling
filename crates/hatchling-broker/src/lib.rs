@@ -28,7 +28,7 @@ pub mod approval;
 pub mod artifact_ops;
 pub use artifact_ops::{SealedArtifactStore, handle_artifact_op, held_secrets, is_workspace_name};
 pub mod cell;
-pub use cell::{CellConfig, CellHandle, ScheduledRun, spawn_cell};
+pub use cell::{CellConfig, CellHandle, CellLimits, ScheduledRun, spawn_cell};
 pub mod channel;
 pub mod cli;
 pub use approval::{ApprovalLedger, ApprovalToken, MintError, Verdict};

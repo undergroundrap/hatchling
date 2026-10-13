@@ -27,6 +27,7 @@ fn attack_parse_round_trips_every_variant() -> Result<(), String> {
         Attack::TcpSocket,
         Attack::Groups,
         Attack::ClearDeathSignal,
+        Attack::RaiseLimits,
     ];
     for attack in variants {
         let cell_id = attack.cell_id();
@@ -98,6 +99,7 @@ fn attack_slugs_are_cell_id_safe() -> Result<(), String> {
         Attack::TcpSocket,
         Attack::Groups,
         Attack::ClearDeathSignal,
+        Attack::RaiseLimits,
     ] {
         let id = attack.cell_id();
         if id.chars().any(|c| !(c.is_ascii_alphanumeric() || c == '-')) {
@@ -125,6 +127,7 @@ fn signal_verdict_covers_exactly_the_killed_attacks() {
     assert!(!Attack::NegativeSweep.verdict_is_signal());
     assert!(!Attack::Groups.verdict_is_signal());
     assert!(!Attack::ClearDeathSignal.verdict_is_signal());
+    assert!(!Attack::RaiseLimits.verdict_is_signal());
 }
 
 #[test]

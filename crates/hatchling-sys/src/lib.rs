@@ -49,9 +49,9 @@ pub use namespaces::{unshare_ipc, unshare_mount, unshare_net, unshare_pid, unsha
 pub use ownership::chown_ids;
 pub use peercred::{RawPeerCred, socket_peercred};
 pub use process::{
-    Child, ChildPid, ForkResult, become_cell_user, child_exit_code, clear_groups,
-    drop_capabilities, euid, exec, exit_child, fork, reap_as_init, self_pidfd, set_no_new_privs,
-    set_not_dumpable, set_pdeathsig,
+    Child, ChildPid, ForkResult, Limit, become_cell_user, child_exit_code, clear_groups,
+    drop_capabilities, euid, exec, exit_child, fork, hold_to, reap_as_init, self_pidfd,
+    set_no_new_privs, set_not_dumpable, set_pdeathsig,
 };
 pub use seccomp::{SeccompProfile, SockFilter};
 pub use sync_pipe::{ChildToParent, ParentToChild, handshake_pipes};

@@ -45,8 +45,8 @@ use crate::dictionaries::{
     ABSENT_PATHS, ABSTRACT_CANDIDATES, DECOY_SOCKET, FS_SOCKET_CANDIDATES, LIB_CANDIDATES,
 };
 use crate::{
-    Attack, NO_ERRNO, Outcome, PresenceCheck, Report, ScannedFile, SocketAttempt, WriteAttempt,
-    failed_call_ret, os_errno, read_until_eof,
+    Attack, HeldLimit, NO_ERRNO, Outcome, PresenceCheck, Report, ScannedFile, SocketAttempt,
+    WriteAttempt, failed_call_ret, os_errno, read_until_eof,
 };
 use hatchling_core::framing::{read_frame, read_frame_or_eof, write_frame};
 use hatchling_core::{
@@ -158,7 +158,8 @@ pub fn run() -> Result<(), String> {
         | Attack::PeerGarbage
         | Attack::SessionUniform
         | Attack::NegativeSweep
-        | Attack::Groups => {
+        | Attack::Groups
+        | Attack::RaiseLimits => {
             let outcome = run_report_attack(attack)?;
             emit(attack, outcome, None)
         }
@@ -191,6 +192,7 @@ fn run_report_attack(attack: Attack) -> Result<Outcome, String> {
         Attack::SessionUniform => session_uniform(),
         Attack::NegativeSweep => Ok(negative_sweep()),
         Attack::Groups => groups(),
+        Attack::RaiseLimits => Ok(raise_limits()),
         Attack::Seccomp(_) | Attack::PrivescUnshare | Attack::NetBind | Attack::TcpSocket => {
             Err(String::from("signal-verdict attack has no report form"))
         }
@@ -486,6 +488,35 @@ fn groups() -> Result<Outcome, String> {
     })
 }
 
+/// The cell's resource limits, each after trying to lift it to none.
+fn raise_limits() -> Outcome {
+    use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+    let limits = [
+        ("processes", Resource::Nproc),
+        ("address-space", Resource::As),
+        ("file-size", Resource::Fsize),
+        ("open-files", Resource::Nofile),
+    ]
+    .into_iter()
+    .map(|(name, resource)| {
+        let none = Rlimit {
+            current: None,
+            maximum: None,
+        };
+        let raise_errno =
+            setrlimit(resource, none).map_or_else(rustix::io::Errno::raw_os_error, |()| 0);
+        let held = getrlimit(resource);
+        HeldLimit {
+            name: name.to_owned(),
+            soft: held.current,
+            hard: held.maximum,
+            raise_errno,
+        }
+    })
+    .collect();
+    Outcome::Limits { limits }
+}
+
 fn negative_sweep() -> Outcome {
     let mut checks = Vec::with_capacity(ABSENT_PATHS.len());
     for path in ABSENT_PATHS {
@@ -500,6 +531,7 @@ fn negative_sweep() -> Outcome {
 #[cfg(test)]
 mod tests {
     use super::raw_syscall_nr;
+    use crate::HeldLimit;
 
     #[test]
     fn the_death_signal_attack_clears_it_says_so_and_reports_its_spin() {
@@ -529,6 +561,58 @@ mod tests {
         let expected = Ok(crate::Outcome::Groups { groups: line });
         assert_eq!(super::groups(), expected);
         assert_eq!(super::run_report_attack(crate::Attack::Groups), expected);
+    }
+
+    #[test]
+    fn the_limits_report_is_each_limit_after_trying_to_lift_it() {
+        // In a child held to limits of its own: lifting one is refused
+        // with EPERM, unless root may (any but open files, which stops at
+        // the kernel's own bound).
+        use hatchling_sys::{ForkResult, child_exit_code, exit_child, fork};
+        use rustix::process::{Resource, Rlimit, setrlimit};
+        let child = match fork().unwrap() {
+            ForkResult::Parent { child } => child,
+            ForkResult::Child => {
+                let reported = std::panic::catch_unwind(|| {
+                    let root = hatchling_sys::euid() == 0;
+                    let expected = [
+                        ("processes", Resource::Nproc, 100, root),
+                        ("address-space", Resource::As, 1 << 40, root),
+                        ("file-size", Resource::Fsize, 1 << 30, root),
+                        ("open-files", Resource::Nofile, 64, false),
+                    ]
+                    .map(|(name, resource, value, lifted)| {
+                        let held = Some(value);
+                        let both = Rlimit {
+                            current: held,
+                            maximum: held,
+                        };
+                        assert!(setrlimit(resource, both).is_ok());
+                        let held = if lifted { None } else { held };
+                        HeldLimit {
+                            name: name.to_owned(),
+                            soft: held,
+                            hard: held,
+                            raise_errno: i32::from(!lifted),
+                        }
+                    });
+                    let expected = crate::Outcome::Limits {
+                        limits: expected.to_vec(),
+                    };
+                    super::raise_limits() == expected
+                        && super::run_report_attack(crate::Attack::RaiseLimits) == Ok(expected)
+                });
+                exit_child(match reported {
+                    Ok(true) => 0,
+                    Ok(false) => 1,
+                    Err(_) => 2,
+                });
+            }
+        };
+        let status = child
+            .wait_deadline(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(child_exit_code(status), 0, "1: another report; 2: panicked");
     }
 
     #[cfg(target_arch = "x86_64")]

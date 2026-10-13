@@ -85,6 +85,9 @@ pub enum Attack {
     /// minute: the driver kills the cell's supervisor, and the probe must
     /// die with it all the same.
     ClearDeathSignal,
+    /// Try to lift each of the cell's resource limits, and report them:
+    /// each must stay as the cell was given it.
+    RaiseLimits,
 }
 
 /// Why a cell id did not name an attack.
@@ -140,6 +143,7 @@ impl Attack {
             "tcp-socket" => Ok(Self::TcpSocket),
             "groups" => Ok(Self::Groups),
             "clear-death-signal" => Ok(Self::ClearDeathSignal),
+            "raise-limits" => Ok(Self::RaiseLimits),
             _ => Err(ParseAttackError::UnknownAttack(slug.to_owned())),
         }
     }
@@ -161,6 +165,7 @@ impl Attack {
             Self::TcpSocket => String::from("tcp-socket"),
             Self::Groups => String::from("groups"),
             Self::ClearDeathSignal => String::from("clear-death-signal"),
+            Self::RaiseLimits => String::from("raise-limits"),
         }
     }
 
@@ -213,6 +218,19 @@ pub struct ScannedFile {
     pub setuid: bool,
     /// Whether the setgid bit was set.
     pub setgid: bool,
+}
+
+/// One of the cell's resource limits, after the probe tried to lift it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeldLimit {
+    /// `processes`, `address-space`, `file-size` or `open-files`.
+    pub name: String,
+    /// The soft limit; `None` for none.
+    pub soft: Option<u64>,
+    /// The hard limit; `None` for none.
+    pub hard: Option<u64>,
+    /// The errno of lifting both to none, or 0 if that worked.
+    pub raise_errno: i32,
 }
 
 /// One absence check in the negative sweep.
@@ -290,6 +308,11 @@ pub enum Outcome {
         /// The `Groups:` value of its `/proc/self/status`, as the kernel
         /// wrote it: empty when it has none.
         groups: String,
+    },
+    /// The cell's resource limits, each after the probe tried to lift it.
+    Limits {
+        /// One entry per limit, in [`HeldLimit::name`]'s order.
+        limits: Vec<HeldLimit>,
     },
 }
 
