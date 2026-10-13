@@ -675,6 +675,30 @@ pub fn euid() -> u32 {
     unsafe { libc::geteuid() }
 }
 
+/// Drops every supplementary group: `setgroups(0, NULL)`.
+///
+/// A root broker's cell would otherwise carry the broker's groups into
+/// its user namespace, where, once `setgroups` is denied there, it can't
+/// drop them. It needs `CAP_SETGID`, so a cell calls it while it is
+/// still the broker's root child, before `unshare(CLONE_NEWUSER)`.
+///
+/// # Errors
+///
+/// Returns [`Error::Process`] if the call fails, as it does without
+/// `CAP_SETGID`.
+pub fn clear_groups() -> Result<(), Error> {
+    // SAFETY: a count of zero with a null list is `setgroups`' "drop
+    // every supplementary group"; nothing is read through the pointer.
+    let ret = unsafe { libc::setgroups(0, std::ptr::null()) };
+    if ret != 0 {
+        return Err(Error::Process {
+            operation: "setgroups(0)",
+            source: io::Error::last_os_error(),
+        });
+    }
+    Ok(())
+}
+
 /// Exits the current process immediately without running destructors.
 ///
 /// For fork children that must not touch parent state (no `Drop`, no
@@ -982,6 +1006,54 @@ pub fn exec_uid_egid() -> (u32, u32) {
 
 #[cfg(test)]
 mod tests {
+    /// How long a test waits to reap a child it killed: a `SIGKILL`ed
+    /// child is reaped in milliseconds, so a child that was never killed
+    /// fails the wait quickly instead of holding the run.
+    const REAP: Duration = Duration::from_secs(5);
+
+    #[test]
+    fn drop_capabilities_reports_the_bounding_set_step_it_may_not_take() {
+        // Unprivileged, outside a user namespace, emptying the bounding
+        // set needs CAP_SETPCAP: the first step is refused with EPERM, and
+        // the call fails there, naming it, rather than taking the refusal
+        // for the end of the set (EINVAL). As root it would strip this test
+        // process.
+        if euid() == 0 {
+            return;
+        }
+        let refused = drop_capabilities();
+        assert!(
+            matches!(
+                refused,
+                Err(Error::Process {
+                    operation: "prctl(CAPBSET_DROP)",
+                    ..
+                })
+            ),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
+    fn clear_groups_needs_the_right_to_set_groups() {
+        // As root it would drop this test process's groups; that path is
+        // the root cell test's. Unprivileged, the kernel refuses it.
+        if euid() == 0 {
+            return;
+        }
+        let refused = clear_groups();
+        assert!(
+            matches!(
+                refused,
+                Err(Error::Process {
+                    operation: "setgroups(0)",
+                    ..
+                })
+            ),
+            "{refused:?}"
+        );
+    }
+
     /// The calling thread's effective, permitted and inheritable sets,
     /// each as one 64-bit mask.
     fn capabilities() -> [u64; 3] {
@@ -1150,9 +1222,7 @@ mod tests {
         let fd = child.as_fd().as_raw_fd();
         assert!(fd > 2, "{fd}");
         assert!(crate::fd_flags(fd).is_some(), "the pidfd is open");
-        let status = child
-            .wait_deadline(Duration::from_secs(30))
-            .expect("bounded wait");
+        let status = child.wait_deadline(REAP).expect("bounded wait");
         assert_eq!(child_exit_code(status), 0);
     }
 
@@ -1162,7 +1232,7 @@ mod tests {
         // to read its parent-death signal, which must already be SIGKILL.
         match fork().expect("fork") {
             ForkResult::Parent { child } => {
-                let status = child.wait_deadline(Duration::from_secs(30)).expect("wait");
+                let status = child.wait_deadline(REAP).expect("wait");
                 assert_eq!(
                     child_exit_code(status),
                     0,
@@ -1259,7 +1329,7 @@ mod tests {
         match fork().expect("fork") {
             ForkResult::Parent { child } => {
                 assert!(child.pid().get() > 0);
-                let status = child.wait_deadline(Duration::from_secs(30)).expect("wait");
+                let status = child.wait_deadline(REAP).expect("wait");
                 assert_eq!(child_exit_code(status), 0);
             }
             ForkResult::Child => exit_child(0),
@@ -1305,7 +1375,7 @@ mod tests {
             ForkResult::Parent { child } => child,
             ForkResult::Child => exit_child(42),
         };
-        let status = child.wait_deadline(Duration::from_secs(30)).expect("wait");
+        let status = child.wait_deadline(REAP).expect("wait");
         assert_eq!(child_exit_code(status), 42);
     }
 
@@ -1323,7 +1393,7 @@ mod tests {
                 exit_child(99);
             }
         };
-        let status = child.wait_deadline(Duration::from_secs(30)).expect("wait");
+        let status = child.wait_deadline(REAP).expect("wait");
         assert_eq!(child_exit_code(status), 128 + libc::SIGTERM);
     }
 
@@ -1353,7 +1423,7 @@ mod tests {
         child.terminate().expect("terminate");
         // Reap via the deadline path; polling afterwards reports None:
         // the child was already reaped (ECHILD is not an error here).
-        let status = child.wait_deadline(Duration::from_secs(30)).expect("reap");
+        let status = child.wait_deadline(REAP).expect("reap");
         assert_eq!(child_exit_code(status), 128 + libc::SIGKILL);
         assert_eq!(child.try_wait().expect("try_wait reaped"), None);
     }
@@ -1370,10 +1440,10 @@ mod tests {
         // try_wait → same.
         let child = sleeper();
         child.terminate().expect("terminate");
-        let status = child.wait_deadline(Duration::from_secs(30)).expect("reap");
+        let status = child.wait_deadline(REAP).expect("reap");
         assert_eq!(child_exit_code(status), 128 + libc::SIGKILL);
         let err = child
-            .wait_deadline(Duration::from_secs(30))
+            .wait_deadline(REAP)
             .expect_err("second wait on a reaped child must fail");
         assert!(
             !matches!(err, Error::ProcessTimeout { .. }),
@@ -1405,7 +1475,7 @@ mod tests {
         let b = sleeper();
         let b_pid = b.pid().get();
         a.terminate().expect("terminate");
-        let status = a.wait_deadline(Duration::from_secs(30)).expect("reap a");
+        let status = a.wait_deadline(REAP).expect("reap a");
         assert_eq!(child_exit_code(status), 128 + libc::SIGKILL);
         assert_eq!(
             b.try_wait().expect("try_wait b"),
@@ -1474,7 +1544,7 @@ mod tests {
                     }
                 };
                 let status = grandchild
-                    .wait_deadline(Duration::from_secs(30))
+                    .wait_deadline(REAP)
                     .expect("wait_deadline must survive EINTR");
                 if child_exit_code(status) != 7 {
                     exit_child(1);
@@ -1509,7 +1579,7 @@ mod tests {
                 exit_child(0);
             }
         };
-        let status = child.wait_deadline(Duration::from_secs(30)).expect("wait");
+        let status = child.wait_deadline(REAP).expect("wait");
         assert_eq!(child_exit_code(status), 0);
     }
 
@@ -1525,7 +1595,7 @@ mod tests {
             ForkResult::Parent { child } => child,
             ForkResult::Child => exit_child(0),
         };
-        let status = dead.wait_deadline(Duration::from_secs(30)).expect("reap");
+        let status = dead.wait_deadline(REAP).expect("reap");
         assert_eq!(child_exit_code(status), 0);
         let probe = match fork().expect("fork probe") {
             ForkResult::Parent { child } => child,
@@ -1554,9 +1624,7 @@ mod tests {
                 ));
             }
         };
-        let status = probe
-            .wait_deadline(Duration::from_secs(30))
-            .expect("wait probe");
+        let status = probe.wait_deadline(REAP).expect("wait probe");
         assert_eq!(child_exit_code(status), 0);
     }
 
@@ -1617,7 +1685,7 @@ mod tests {
         let mut pid_bytes = [0u8; 4];
         a_sock.read_exact(&mut pid_bytes).expect("read b pid");
         let b_pid = i32::from_ne_bytes(pid_bytes);
-        let status = a.wait_deadline(Duration::from_secs(30)).expect("wait A");
+        let status = a.wait_deadline(REAP).expect("wait A");
         assert_eq!(child_exit_code(status), 0);
         // B must be gone: reparented and reaped by init → ESRCH. (A
         // zombie would still answer kill(pid, 0), so this also proves
@@ -1680,7 +1748,7 @@ mod tests {
                 }
             }
         };
-        let status = child.wait_deadline(Duration::from_secs(30)).expect("wait");
+        let status = child.wait_deadline(REAP).expect("wait");
         assert_eq!(
             child_exit_code(status),
             0,
@@ -1696,7 +1764,7 @@ mod tests {
                 ForkResult::Parent { child } => child,
                 ForkResult::Child => exit_child(code),
             };
-            let status = child.wait_deadline(Duration::from_secs(30)).expect("wait");
+            let status = child.wait_deadline(REAP).expect("wait");
             assert_eq!(child_exit_code(status), code);
         };
         exited(0);

@@ -757,8 +757,14 @@ fn cli_rules_refuse_as_designed() -> Result<(), String> {
     };
     let clone = spawn_cli_attack(Attack::Seccomp(number("clone")?))?;
     assert_sigsys(&clone).map_err(|e| format!("clone with namespace flags: {e}"))?;
-    // EAFNOSUPPORT, ENOSYS, EPERM, ENOTTY.
-    for (name, errno) in [("socket", 97), ("clone3", 38), ("prctl", 1), ("ioctl", 25)] {
+    // EAFNOSUPPORT (a socket, a socket pair), ENOSYS, EPERM, ENOTTY.
+    for (name, errno) in [
+        ("socket", 97),
+        ("socketpair", 97),
+        ("clone3", 38),
+        ("prctl", 1),
+        ("ioctl", 25),
+    ] {
         let nr = number(name)?;
         let result = spawn_cli_attack(Attack::Seccomp(nr))?;
         let marker = format!("READY {}\n", result.slug);
@@ -789,6 +795,26 @@ fn cli_rules_refuse_as_designed() -> Result<(), String> {
                 report.outcome
             ));
         }
+    }
+    Ok(())
+}
+
+/// A root broker's cell has no supplementary groups: it drops them
+/// before entering its user namespace, where it couldn't. Root only: an
+/// unprivileged broker has none it may drop.
+fn a_root_brokers_cell_has_no_supplementary_groups() -> Result<(), String> {
+    if hatchling_sys::euid() != 0 || !guard_cell_available()? {
+        return Ok(());
+    }
+    let report = report_of(&spawn_cli_attack(Attack::Groups)?)?;
+    let none = Outcome::Groups {
+        groups: String::new(),
+    };
+    if report.outcome != none {
+        return Err(format!(
+            "a root broker's cell kept supplementary groups: {:?}",
+            report.outcome
+        ));
     }
     Ok(())
 }
@@ -1077,6 +1103,10 @@ const CHECKS: &[Check] = &[
         cli_denied_syscalls_each_sigsys,
     ),
     ("cli_rules_refuse_as_designed", cli_rules_refuse_as_designed),
+    (
+        "a_root_brokers_cell_has_no_supplementary_groups",
+        a_root_brokers_cell_has_no_supplementary_groups,
+    ),
     ("privesc_unshare_dies", privesc_unshare_dies),
     ("net_bind_dies", net_bind_dies),
     ("tcp_socket_dies", tcp_socket_dies),

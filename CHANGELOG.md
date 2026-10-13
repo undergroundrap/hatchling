@@ -8,6 +8,8 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Fixed
 
+- A coding CLI's cell may make a socket pair only of Unix sockets: `socketpair` with any other family is answered "address family not supported", as `socket` already was. It had been allowed whatever its family (WO-005).
+- A root broker's cell drops its supplementary groups before entering its user namespace. It had carried the broker's groups in, where it couldn't drop them, so any file a group of the broker's could reach stayed reachable from the cell (WO-005).
 - A cell can no longer see or cancel the owner's schedules. Each schedule records who made it: the owner, through the local API, or the agent, through a session. A cell lists and cancels only the agent's, and its cancel of the owner's is answered as for an id that doesn't exist. A schedule stored before this change counts as the owner's (WO-010).
 - A local API caller with no grants is refused every action. Sending a message, invoking a skill and cancelling a schedule needed the owner's whole set of grants, which a caller with none held whenever the owner held none (WO-010).
 - A cell can no longer have a model vendor fetch on its behalf. The egress proxy and the harness relay read every model request (chat completions, responses, messages, embeddings) before it leaves, and refuse content given by URL, a tool the vendor runs (web search, web fetch, code execution, remote tool servers, and any tool type not yet reviewed), and the vendor's own search; a body that isn't JSON, or names a key twice, is refused too. A known vendor is open to its model endpoints only, not its batch, file or assistant APIs. Ordinary requests pass unchanged. A harness set to use its vendor's web search gets those requests refused with a 403 that says why. See [the model request policy](docs/arch/trust-boundary.md#the-model-request-policy) (WO-008).
@@ -21,6 +23,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Changed
 
+- A root broker maps one uid for a cell. `HATCHLING_CELL_UID_COUNT` above 1 is refused at startup: a wider map would let the cell act as every host account it covered. An unprivileged broker could only ever map one (WO-005).
 - **Breaking, `hatchling-broker` and `hatchling-scheduler`:** `handle_schedule_op` and `list_schedules` take the caller's `Creator`, and `Schedule` gains `creator`. The schedule store reads an entry without one as the owner's.
 - The session protocol is v13: `EgressOp::Stage` and `EgressOp::Read`, `EgressResult::Staged` and `EgressResult::Part`, `staged` on `EgressOp::Egress` and `more` on `EgressResult::Ok` (see [the session protocol](docs/session-protocol.md)). The broker and the agent must speak the same version, as always; the one `hatchling` binary is both. `hatchling-core` adds `fits_one_frame` and `EGRESS_PART_BYTES`.
 - **Breaking, `hatchling-broker`:** `EgressConfig::allowlist_raw: String` is now `EgressConfig::allowlist: EgressAllowlist`, which holds the operator's text and its one shared resolution: build it with `EgressAllowlist::new(text)` (or `default()` for none), and read the text with `raw()`. The workspace version is 0.2.0. `hatchling-egress` adds `Proxy::shared`, a proxy over an allowlist already resolved, and `Proxy::allowlist`.

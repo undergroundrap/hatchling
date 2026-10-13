@@ -91,6 +91,15 @@ impl IdMap {
                     ),
                 });
             }
+            if self.count != 1 {
+                return Err(Error::InvalidIdMap {
+                    reason: format!(
+                        "a root broker maps one uid for a cell, not {}: a wider \
+                         map would let the cell act as every host account it covers",
+                        self.count
+                    ),
+                });
+            }
             return Ok(());
         }
         if self.base != euid || self.count != 1 {
@@ -193,10 +202,14 @@ mod tests {
         assert!(matches!(err, Error::InvalidIdMap { .. }));
         // A non-zero base is fine for root.
         IdMap::new(65534, 1).unwrap().validate_for_euid(0).unwrap();
-        IdMap::new(100_000, 65_536)
-            .unwrap()
-            .validate_for_euid(0)
-            .unwrap();
+        // One uid only: a wider map covers other host accounts.
+        for count in [2, 65_536] {
+            let wide = IdMap::new(100_000, count).unwrap().validate_for_euid(0);
+            assert!(
+                matches!(&wide, Err(Error::InvalidIdMap { reason }) if reason.contains("one uid")),
+                "{count}: {wide:?}"
+            );
+        }
     }
 
     #[test]

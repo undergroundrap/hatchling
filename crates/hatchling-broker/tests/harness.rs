@@ -386,7 +386,14 @@ fn failures_are_reported_in_hatchlings_words() -> Result<(), String> {
         field(&flooded, "/reason"),
         "the harness wrote more than 65536 bytes"
     );
+    let started = std::time::Instant::now();
     let hung = run("Go.\nSTUB hang")?;
+    // Stopped at its timeout, not left to spin out its minute.
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(30),
+        "a hung harness took {:?}",
+        started.elapsed()
+    );
     assert_eq!(field(&hung, "/outcome"), "timed_out");
     assert_eq!(
         field(&hung, "/reason"),

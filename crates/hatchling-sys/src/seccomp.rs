@@ -370,7 +370,7 @@ const IOCTL_REQUESTS: [u32; 6] = [
 /// The calls the real harness CLIs were traced making, beyond the harness
 /// profile and the ones [`SeccompProfile::harness_cli`] checks by argument.
 #[cfg(target_arch = "x86_64")]
-const CLI_CALLS: [&str; 62] = [
+const CLI_CALLS: [&str; 61] = [
     "open",
     "stat",
     "lstat",
@@ -387,7 +387,6 @@ const CLI_CALLS: [&str; 62] = [
     "listen",
     "getsockname",
     "getpeername",
-    "socketpair",
     "setsockopt",
     "vfork",
     "wait4",
@@ -619,7 +618,8 @@ impl SeccompProfile {
     ///   whose flags sit behind a pointer the filter cannot read, answers
     ///   `ENOSYS`, and threads fall back to `clone`.
     /// - `socket` is `AF_UNIX` or `AF_INET` only; any other family answers
-    ///   `EAFNOSUPPORT`.
+    ///   `EAFNOSUPPORT`. `socketpair` is `AF_UNIX` only, answered the
+    ///   same way otherwise: a pair is never a network socket.
     /// - `prctl` and `ioctl` take only the options and requests the CLIs
     ///   were seen to use; anything else answers `EPERM` or `ENOTTY`.
     ///
@@ -641,6 +641,14 @@ impl SeccompProfile {
                 Check::OneOf {
                     arg: 0,
                     values: vec![AF_UNIX, AF_INET],
+                },
+                Refusal::Errno(EAFNOSUPPORT),
+            )?;
+            profile.allow_if(
+                "socketpair",
+                Check::OneOf {
+                    arg: 0,
+                    values: vec![AF_UNIX],
                 },
                 Refusal::Errno(EAFNOSUPPORT),
             )?;
@@ -1476,6 +1484,27 @@ mod tests {
 
     #[cfg(target_arch = "x86_64")]
     #[test]
+    fn a_cli_cell_pairs_unix_sockets_only() {
+        let prog = SeccompProfile::harness_cli().unwrap().build();
+        let errno = |e: u32| SECCOMP_RET_ERRNO + e;
+        // A socket pair: AF_UNIX only, any other family a soft refusal.
+        for (family, action) in [
+            (AF_UNIX, SECCOMP_RET_ALLOW),
+            (AF_INET, errno(EAFNOSUPPORT)),
+            (10, errno(EAFNOSUPPORT)),
+            (16, errno(EAFNOSUPPORT)),
+        ] {
+            let args = [u64::from(family), 1, 0, 0, 0, 0];
+            assert_eq!(
+                call(&prog, "socketpair", args),
+                action,
+                "socketpair family {family}"
+            );
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
     fn the_harness_cli_profile_decides_each_call_as_designed() {
         let prog = SeccompProfile::harness_cli().unwrap().build();
         let no = [0u64; 6];
@@ -1681,8 +1710,8 @@ mod tests {
         #[cfg(target_arch = "x86_64")]
         assert_eq!(
             SeccompProfile::harness_cli().unwrap().ruled_numbers(),
-            // ioctl, socket, clone, prctl, clone3.
-            vec![16, 41, 56, 157, 435]
+            // ioctl, socket, socketpair, clone, prctl, clone3.
+            vec![16, 41, 53, 56, 157, 435]
         );
     }
 

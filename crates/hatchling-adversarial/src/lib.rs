@@ -78,6 +78,9 @@ pub enum Attack {
     /// `socket(AF_INET, ...)` : must `SIGSYS` (the filter constrains the
     /// family argument to `AF_UNIX`).
     TcpSocket,
+    /// Report the cell's supplementary groups: a root broker's cell must
+    /// have none.
+    Groups,
 }
 
 /// Why a cell id did not name an attack.
@@ -131,6 +134,7 @@ impl Attack {
             "negative-sweep" => Ok(Self::NegativeSweep),
             "net-bind" => Ok(Self::NetBind),
             "tcp-socket" => Ok(Self::TcpSocket),
+            "groups" => Ok(Self::Groups),
             _ => Err(ParseAttackError::UnknownAttack(slug.to_owned())),
         }
     }
@@ -150,6 +154,7 @@ impl Attack {
             Self::NegativeSweep => String::from("negative-sweep"),
             Self::NetBind => String::from("net-bind"),
             Self::TcpSocket => String::from("tcp-socket"),
+            Self::Groups => String::from("groups"),
         }
     }
 
@@ -267,6 +272,12 @@ pub enum Outcome {
     NegativeSweep {
         /// One entry per checked path, in probe order.
         checks: Vec<PresenceCheck>,
+    },
+    /// The cell's supplementary groups.
+    Groups {
+        /// The `Groups:` value of its `/proc/self/status`, as the kernel
+        /// wrote it: empty when it has none.
+        groups: String,
     },
 }
 
