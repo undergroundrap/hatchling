@@ -106,6 +106,9 @@ pub struct CellConfig {
     /// What the cell's program, and everything it starts, is held to.
     #[serde(default)]
     pub limits: CellLimits,
+    /// Operator-delegated cgroup v2 parent. Unset uses the rlimit fallback.
+    #[serde(default)]
+    pub cgroup: Option<PathBuf>,
 }
 
 /// What every cell's program, and everything it starts, is held to.
@@ -115,7 +118,9 @@ pub struct CellConfig {
 /// each a positive count or number of bytes, or `unlimited` to leave the
 /// broker's own. Each is both the cell's soft and its hard limit, so the
 /// cell can't lift it; a value above the broker's own hard limit is held
-/// at the broker's.
+/// at the broker's. With `HATCHLING_CELL_CGROUP`, processes count the whole
+/// cell, and `HATCHLING_CELL_MAX_MEMORY` and `HATCHLING_CELL_MAX_CPUS` set its
+/// aggregate memory and CPU limits. Without a group those two have no effect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CellLimits {
     /// How many processes, threads included, a cell may hold at once:
@@ -131,6 +136,12 @@ pub struct CellLimits {
     /// How many files a program may hold open at once: 8192 unless
     /// configured.
     pub open_files: Option<u64>,
+    /// Whole-cell memory in bytes; only effective with a cgroup.
+    #[serde(default)]
+    pub memory: Option<u64>,
+    /// CPU allowance in thousandths of a core; only effective with a cgroup.
+    #[serde(default)]
+    pub cpu_millis: Option<u64>,
 }
 
 impl Default for CellLimits {
@@ -140,6 +151,8 @@ impl Default for CellLimits {
             address_space: None,
             file_size: Some(8 << 30),
             open_files: Some(8192),
+            memory: None,
+            cpu_millis: None,
         }
     }
 }
@@ -162,6 +175,21 @@ impl CellLimits {
             )?,
             file_size: limit(&get, "HATCHLING_CELL_MAX_FILE_SIZE", defaults.file_size)?,
             open_files: limit(&get, "HATCHLING_CELL_MAX_OPEN_FILES", defaults.open_files)?,
+            memory: limit(
+                &get,
+                "HATCHLING_CELL_MAX_MEMORY",
+                if get("HATCHLING_CELL_CGROUP").is_some() {
+                    Some(hatchling_sys::cgroup::default_memory().map_err(|source| {
+                        Error::InvalidConfig {
+                            key: "HATCHLING_CELL_MAX_MEMORY",
+                            reason: source.to_string(),
+                        }
+                    })?)
+                } else {
+                    None
+                },
+            )?,
+            cpu_millis: cpu_limit(get("HATCHLING_CELL_MAX_CPUS").as_deref())?,
         })
     }
 }
@@ -173,6 +201,8 @@ impl From<CellLimits> for Limits {
             address_space: limits.address_space,
             file_size: limits.file_size,
             open_files: limits.open_files,
+            memory: limits.memory,
+            cpu_millis: limits.cpu_millis,
         }
     }
 }
@@ -195,6 +225,70 @@ fn limit(
             Ok(value) => Ok(Some(value)),
         },
     }
+}
+
+/// Keeps malformed settings present, so validation cannot select a default.
+/// Every cell setting read here rejects an empty value.
+pub(crate) fn env_value(raw: Result<String, std::env::VarError>) -> Option<String> {
+    match raw {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => Some(String::new()),
+    }
+}
+
+/// Validates an operator-provided cgroup parent; unset uses rlimits alone.
+pub(crate) fn cgroup_parent(
+    get: &impl Fn(&str) -> Option<String>,
+) -> Result<Option<PathBuf>, Error> {
+    get("HATCHLING_CELL_CGROUP")
+        .map(|raw| {
+            let parent = PathBuf::from(raw);
+            hatchling_sys::cgroup::prepare_parent(&parent).map_err(|source| {
+                Error::InvalidConfig {
+                    key: "HATCHLING_CELL_CGROUP",
+                    reason: source.to_string(),
+                }
+            })?;
+            Ok(parent)
+        })
+        .transpose()
+}
+
+/// A fractional core count, represented exactly in thousandths of a core.
+fn cpu_limit(raw: Option<&str>) -> Result<Option<u64>, Error> {
+    let refused = || Error::InvalidConfig {
+        key: "HATCHLING_CELL_MAX_CPUS",
+        reason: String::from(
+            "expected a positive core count (at least 0.01, up to three decimal places), or `unlimited`",
+        ),
+    };
+    let raw = match raw {
+        None | Some("unlimited") => return Ok(None),
+        Some(raw) => raw,
+    };
+    let (whole, fraction) = raw.split_once('.').unwrap_or((raw, ""));
+    if whole.is_empty()
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || fraction.len() > 3
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(refused());
+    }
+    let whole = whole.parse::<u64>().map_err(|_| refused())?;
+    let fractional = match fraction.len() {
+        0 => 0,
+        1 => fraction.parse::<u64>().map_err(|_| refused())? * 100,
+        2 => fraction.parse::<u64>().map_err(|_| refused())? * 10,
+        3 => fraction.parse::<u64>().map_err(|_| refused())?,
+        _ => return Err(refused()),
+    };
+    whole
+        .checked_mul(1000)
+        .and_then(|millis| millis.checked_add(fractional))
+        .filter(|millis| *millis >= 10 && millis.checked_mul(100).is_some())
+        .map(Some)
+        .ok_or_else(refused)
 }
 
 /// A harness cell's writable directories and arguments.
@@ -306,6 +400,31 @@ impl ScheduledRun {
 }
 
 impl CellConfig {
+    /// Holds cleanup ownership in the broker while a helper builds its cell.
+    /// The helper gets a private parent; killing it cannot strand its leaves.
+    pub(crate) fn supervised_cgroup(
+        &self,
+    ) -> Result<(Self, Option<hatchling_sys::cgroup::CellCgroup>), Error> {
+        let group = self
+            .cgroup
+            .as_ref()
+            .map(|parent| {
+                hatchling_sys::cgroup::CellCgroup::create(
+                    parent,
+                    hatchling_sys::cgroup::CgroupLimits::default(),
+                )
+            })
+            .transpose()
+            .map_err(|source| Error::InvalidConfig {
+                key: "HATCHLING_CELL_CGROUP",
+                reason: source.to_string(),
+            })?;
+        let mut cell = self.clone();
+        if let Some(group) = &group {
+            cell.cgroup = Some(group.path().to_path_buf());
+        }
+        Ok((cell, group))
+    }
     /// Refuses a vault the agent cell could see: the cell
     /// bind-mounts the broker socket's directory at `/sock`, so neither the
     /// vault root nor its key file may lie inside it. With an unprivileged
@@ -363,7 +482,8 @@ impl CellConfig {
             skill_code: None,
             scheduled: None,
             harness: None,
-            limits: CellLimits::parse(|key| std::env::var(key).ok())?,
+            limits: CellLimits::parse(|key| env_value(std::env::var(key)))?,
+            cgroup: cgroup_parent(&|key| env_value(std::env::var(key)))?,
         })
     }
 
@@ -395,7 +515,7 @@ impl CellConfig {
             |key| match key {
                 "HATCHLING_AGENT_BIN" => Some(agent_bin.clone()),
                 "HATCHLING_CELL_ID" => Some(cell_id.to_owned()),
-                other => std::env::var(other).ok(),
+                other => env_value(std::env::var(other)),
             },
             socket,
             agent_uid,
@@ -437,7 +557,7 @@ impl CellConfig {
     /// absolute, the id map fails policy validation, or `agent_uid`
     /// differs from the map base.
     pub fn from_env(socket: &SocketPath, agent_uid: u32) -> Result<Self, Error> {
-        Self::parse(|key| std::env::var(key).ok(), socket, agent_uid)
+        Self::parse(|key| env_value(std::env::var(key)), socket, agent_uid)
     }
 
     /// Builds a cell config for tests without touching process
@@ -609,6 +729,7 @@ impl CellConfig {
             scheduled: None,
             harness: None,
             limits: CellLimits::parse(&get)?,
+            cgroup: cgroup_parent(&get)?,
         })
     }
 }
@@ -617,7 +738,7 @@ impl CellConfig {
 ///
 /// The broker's decisions become a [`CellSpec`] ([`cell_spec`]); the
 /// platform's isolation backend builds exactly that cell and runs the
-/// program as its PID 1, confined (on Linux) by its own namespaces, a
+/// program as PID 2 under Hatchling's init, confined (on Linux) by its namespaces, a
 /// read-only bind-mounted root, the seccomp allowlist, and
 /// `NoNewPrivs`. The returned handle must be [`CellHandle::wait`]ed
 /// (directly, or by a reaper thread) to avoid a zombie and to clean up
@@ -817,6 +938,7 @@ fn cell_spec(config: &CellConfig, log_level: LogLevel) -> CellSpec {
         relay: harness_network(config).map(|network| network.relay),
         filter: cell_filter(config),
         limits: config.limits.into(),
+        cgroup: config.cgroup.clone(),
     }
 }
 
@@ -921,8 +1043,195 @@ mod tests {
                 address_space: None,
                 file_size: Some(8 << 30),
                 open_files: Some(8192),
+                memory: None,
+                cpu_millis: None,
             }
         );
+    }
+
+    #[test]
+    fn from_env_validates_real_process_settings_without_changing_the_parent_env() {
+        use std::os::unix::ffi::OsStringExt as _;
+        const MARKER: &str = "HATCHLING_TEST_CELL_ENV_CASE";
+        if let Ok(case) = std::env::var(MARKER) {
+            let parsed = CellConfig::from_env(&socket("/tmp/cell-env/broker.sock"), default_base());
+            if case == "valid" {
+                let parsed = parsed.unwrap();
+                assert_eq!(parsed.agent_bin, PathBuf::from("/bin/true"));
+                assert_eq!(parsed.cell_id, "cell-environment");
+                assert_eq!(parsed.cgroup, None);
+                assert_eq!(parsed.limits.memory, Some(123_456));
+                assert_eq!(parsed.limits.cpu_millis, Some(1500));
+            } else {
+                assert!(matches!(parsed, Err(Error::InvalidConfig { key, .. }) if key == case));
+            }
+            return;
+        }
+        for case in [
+            "valid",
+            "HATCHLING_CELL_CGROUP",
+            "HATCHLING_CELL_MAX_MEMORY",
+            "HATCHLING_CELL_MAX_CPUS",
+        ] {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command.args(["--exact", "cell::tests::from_env_validates_real_process_settings_without_changing_the_parent_env", "--nocapture"])
+                .env_clear().env(MARKER, case)
+                .env("HATCHLING_AGENT_BIN", "/bin/true")
+                .env("HATCHLING_CELL_ID", "cell-environment")
+                .env("HATCHLING_CELL_MAX_MEMORY", "123456")
+                .env("HATCHLING_CELL_MAX_CPUS", "1.5");
+            if case != "valid" {
+                command.env(case, std::ffi::OsString::from_vec(vec![0xff]));
+            }
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{case}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                "the exact child case must run"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_process_settings_never_select_missing_value_defaults() {
+        use std::os::unix::ffi::OsStringExt as _;
+        let invalid = || {
+            env_value(Err(std::env::VarError::NotUnicode(
+                std::ffi::OsString::from_vec(vec![0xff]),
+            )))
+        };
+        assert_eq!(
+            env_value(Ok(String::from("1.5"))),
+            Some(String::from("1.5"))
+        );
+        assert_eq!(env_value(Err(std::env::VarError::NotPresent)), None);
+        assert_eq!(
+            CellLimits::parse(|_| env_value(Err(std::env::VarError::NotPresent))).unwrap(),
+            CellLimits::default()
+        );
+        assert_eq!(
+            cgroup_parent(&|_| env_value(Err(std::env::VarError::NotPresent))).unwrap(),
+            None
+        );
+        assert!(matches!(
+            cgroup_parent(&|_| invalid()),
+            Err(Error::InvalidConfig {
+                key: "HATCHLING_CELL_CGROUP",
+                ..
+            })
+        ));
+        for bad_key in ["HATCHLING_CELL_MAX_MEMORY", "HATCHLING_CELL_MAX_CPUS"] {
+            let parsed = CellLimits::parse(|key| if key == bad_key { invalid() } else { None });
+            assert!(matches!(parsed, Err(Error::InvalidConfig { key, .. }) if key == bad_key));
+        }
+        let parsed = CellLimits::parse(|key| match key {
+            "HATCHLING_CELL_MAX_MEMORY" => env_value(Ok(String::from("1048576"))),
+            "HATCHLING_CELL_MAX_CPUS" => env_value(Ok(String::from("1.5"))),
+            _ => env_value(Err(std::env::VarError::NotPresent)),
+        })
+        .unwrap();
+        assert_eq!(parsed.memory, Some(1_048_576));
+        assert_eq!(parsed.cpu_millis, Some(1500));
+    }
+
+    #[test]
+    fn cpu_limits_are_exact_fractional_cores_with_checked_bounds() {
+        assert_eq!(cpu_limit(None).unwrap(), None);
+        assert_eq!(cpu_limit(Some("unlimited")).unwrap(), None);
+        for (raw, expected) in [("1", 1000), ("1.5", 1500), ("0.01", 10), ("2.125", 2125)] {
+            assert_eq!(cpu_limit(Some(raw)).unwrap(), Some(expected));
+        }
+        for raw in [
+            "",
+            "-1",
+            "+1",
+            "1.+1",
+            "0",
+            "0.009",
+            "1.0001",
+            "NaN",
+            "inf",
+            " 1",
+            "1.x",
+            "18446744073709551615",
+            ".5",
+        ] {
+            assert!(cpu_limit(Some(raw)).is_err(), "{raw}");
+        }
+        let vars = HashMap::from([
+            ("HATCHLING_CELL_MAX_CPUS", "1.5"),
+            ("HATCHLING_CELL_MAX_MEMORY", "123456"),
+        ]);
+        let parsed = CellLimits::parse(lookup(&vars)).unwrap();
+        assert_eq!(parsed.memory, Some(123_456));
+        assert_eq!(parsed.cpu_millis, Some(1500));
+        let limits = Limits::from(parsed);
+        assert_eq!(limits.memory, parsed.memory);
+        assert_eq!(limits.cpu_millis, parsed.cpu_millis);
+        let vars = HashMap::from([("HATCHLING_CELL_CGROUP", "/a-delegation")]);
+        assert_eq!(
+            CellLimits::parse(lookup(&vars)).unwrap().memory,
+            Some(hatchling_sys::cgroup::default_memory().unwrap())
+        );
+    }
+
+    #[test]
+    #[allow(
+        clippy::mem_forget,
+        reason = "simulates SIGKILL of a helper, which cannot run its cgroup destructor"
+    )]
+    fn helper_cgroups_are_owned_by_the_broker_and_reach_the_cell_spec() {
+        let mut cell = CellConfig::skill("cgroup-helper").unwrap();
+        let (fallback, group) = cell.supervised_cgroup().unwrap();
+        assert!(group.is_none());
+        assert!(fallback.cgroup.is_none());
+        let Some(base) = std::env::var_os("HATCHLING_TEST_CGROUP") else {
+            assert!(!std::env::var("HATCHLING_REQUIRE_CGROUP").is_ok_and(|v| v == "1"));
+            return;
+        };
+        let mut root = hatchling_sys::cgroup::CellCgroup::create(
+            Path::new(&base),
+            hatchling_sys::cgroup::CgroupLimits::default(),
+        )
+        .unwrap();
+        cell.cgroup = Some(root.path().to_path_buf());
+        let (scoped, mut group) = cell.supervised_cgroup().unwrap();
+        let group = group.as_mut().unwrap();
+        let path = group.path().to_path_buf();
+        assert_ne!(scoped.cgroup, cell.cgroup);
+        assert_eq!(scoped.cgroup.as_deref(), Some(group.path()));
+        assert_eq!(cell_spec(&scoped, LogLevel::Error).cgroup, scoped.cgroup);
+        let nested = hatchling_sys::cgroup::CellCgroup::create(
+            group.path(),
+            hatchling_sys::cgroup::CgroupLimits::default(),
+        )
+        .unwrap();
+        let nested_path = nested.path().to_path_buf();
+        std::mem::forget(nested);
+        group.finish().unwrap();
+        assert!(!nested_path.exists());
+        assert!(!path.exists());
+        root.finish().unwrap();
+    }
+
+    #[test]
+    fn configured_cgroups_fail_closed_and_unset_uses_the_fallback() {
+        assert_eq!(cgroup_parent(&|_| None).unwrap(), None);
+        for raw in ["", "relative", "/tmp", "/no-such-hatchling-cgroup"] {
+            let vars = HashMap::from([("HATCHLING_CELL_CGROUP", raw)]);
+            assert!(matches!(
+                cgroup_parent(&lookup(&vars)),
+                Err(Error::InvalidConfig {
+                    key: "HATCHLING_CELL_CGROUP",
+                    ..
+                })
+            ));
+        }
     }
 
     #[test]
@@ -939,6 +1248,8 @@ mod tests {
             address_space: Some(1 << 32),
             file_size: None,
             open_files: Some(8192),
+            memory: None,
+            cpu_millis: None,
         };
         assert_eq!(CellLimits::parse(lookup(&vars)).unwrap(), expected);
         let config =
@@ -1235,6 +1546,8 @@ mod tests {
                 address_space: None,
                 file_size: Some(8 << 30),
                 open_files: Some(8192),
+                memory: None,
+                cpu_millis: None,
             }
         );
     }

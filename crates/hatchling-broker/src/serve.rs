@@ -83,6 +83,11 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
             worker: None,
         },
     };
+    if crate::cell::cgroup_parent(&|key| crate::cell::env_value(std::env::var(key)))?.is_none() {
+        tracing::warn!(
+            "HATCHLING_CELL_CGROUP unset: cells use rlimits alone; no whole-cell memory or CPU limit"
+        );
+    }
     let listener = bind_listener(config)?;
     // The local channel's ingress, if configured: bound now, served on
     // its own thread once the cell has forked. Every reply its hub

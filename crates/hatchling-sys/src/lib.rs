@@ -26,6 +26,7 @@
 )]
 #![warn(missing_docs)]
 
+pub mod cgroup;
 pub mod error;
 pub mod fds;
 pub mod idmap;

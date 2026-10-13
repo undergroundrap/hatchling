@@ -307,6 +307,7 @@ mod tests {
             relay: None,
             filter: Filter::WorkTree,
             limits: crate::Limits::default(),
+            cgroup: None,
         }
     }
 

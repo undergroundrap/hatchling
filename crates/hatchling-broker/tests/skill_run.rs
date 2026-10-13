@@ -362,3 +362,15 @@ fn a_cell_inherits_nothing_but_stdio() -> Result<(), String> {
     drop(planted);
     Ok(())
 }
+
+#[test]
+fn cgroups_are_removed_after_skill_success_timeout_and_output_overflow() -> Result<(), String> {
+    common::cgroup_lifecycle_cases(
+        "skill",
+        &[
+            "a_skill_runs_in_its_cell_and_returns_its_output",
+            "a_hung_skill_is_killed_at_the_timeout",
+            "oversized_output_is_refused_not_truncated",
+        ],
+    )
+}

@@ -201,6 +201,7 @@ fn cli_spec(attack: Attack) -> Result<CellSpec, String> {
         relay: None,
         filter: Filter::Cli,
         limits: Limits::default(),
+        cgroup: None,
     })
 }
 
@@ -886,6 +887,8 @@ const HELD: Limits = Limits {
     address_space: Some(1 << 30),
     file_size: Some(1 << 30),
     open_files: Some(256),
+    memory: None,
+    cpu_millis: None,
 };
 
 /// A cell is held to the limits its spec gives it, each both soft and
@@ -917,6 +920,131 @@ fn a_cell_is_held_to_its_limits_and_cannot_lift_them() -> Result<(), String> {
             "the cell's limits: {:?}, expected {expected:?}",
             report.outcome
         ));
+    }
+    Ok(())
+}
+
+/// A fork bomb is held to its whole-cell task bound; host forks still work.
+fn a_cell_fork_bomb_hits_its_cgroup_and_leaves_the_host_usable() -> Result<(), String> {
+    if !guard_cell_available()? {
+        return Ok(());
+    }
+    let base = std::env::var_os("HATCHLING_TEST_CGROUP")
+        .map(PathBuf::from)
+        .or_else(|| (hatchling_sys::euid() == 0).then(|| PathBuf::from("/sys/fs/cgroup")));
+    let Some(base) = base else {
+        if std::env::var("HATCHLING_REQUIRE_CGROUP").is_ok_and(|value| value == "1") {
+            return Err(String::from("HATCHLING_REQUIRE_CGROUP=1 but no delegation"));
+        }
+        let _ = writeln!(
+            std::io::stderr(),
+            "skipping cgroup attack: no delegation; set HATCHLING_TEST_CGROUP"
+        );
+        return Ok(());
+    };
+    hatchling_sys::cgroup::prepare_parent(&base).map_err(|e| e.to_string())?;
+    let parent = base.join(format!("adversarial-test-{}", std::process::id()));
+    std::fs::create_dir(&parent).map_err(|e| e.to_string())?;
+    let result = cgroup_bomb(&parent);
+    std::fs::remove_dir(&parent).map_err(|e| format!("cgroup test left a leaf: {e}"))?;
+    result
+}
+
+fn cgroup_bomb(parent: &Path) -> Result<(), String> {
+    let mut spec = cli_spec(Attack::ForkBomb)?;
+    spec.cgroup = Some(parent.to_path_buf());
+    spec.limits = Limits {
+        processes: Some(64),
+        memory: Some(128 << 20),
+        cpu_millis: Some(1500),
+        ..Limits::default()
+    };
+    let before = std::fs::read_to_string("/proc/self/cgroup").map_err(|e| e.to_string())?;
+    let result = capture(
+        Attack::ForkBomb,
+        || {
+            let cell = hatchling_isolation::platform()
+                .isolate(&spec)
+                .map_err(|e| e.to_string())?;
+            let group = std::fs::read_dir(parent)
+                .map_err(|e| e.to_string())?
+                .filter_map(Result::ok)
+                .find(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+                .ok_or_else(|| String::from("no cell cgroup was created"))?
+                .path();
+            Ok((cell, group))
+        },
+        |(cell, group)| {
+            for (file, expected) in [
+                ("pids.max", "64"),
+                ("memory.max", "134217728"),
+                ("cpu.max", "150000 100000"),
+            ] {
+                let actual =
+                    std::fs::read_to_string(group.join(file)).map_err(|e| e.to_string())?;
+                if actual.trim() != expected {
+                    return Err(format!("{file}: {actual:?}, expected {expected}"));
+                }
+            }
+            let started = Instant::now();
+            loop {
+                let events = std::fs::read_to_string(group.join("pids.events"))
+                    .map_err(|e| e.to_string())?;
+                if events.lines().any(|line| {
+                    line.strip_prefix("max ")
+                        .and_then(|count| count.parse::<u64>().ok())
+                        .is_some_and(|count| count > 0)
+                }) {
+                    break;
+                }
+                if started.elapsed() >= Duration::from_secs(5) {
+                    return Err(format!("fork bomb never hit pids.max: {events}"));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let current =
+                std::fs::read_to_string(group.join("pids.current")).map_err(|e| e.to_string())?;
+            if current.trim() != "64" {
+                return Err(format!("cell is not saturated: {current}"));
+            }
+            if !std::process::Command::new("/bin/true")
+                .status()
+                .map_err(|e| e.to_string())?
+                .success()
+            {
+                return Err(String::from(
+                    "host could not fork while the cell hit its limit",
+                ));
+            }
+            let current =
+                std::fs::read_to_string(group.join("pids.current")).map_err(|e| e.to_string())?;
+            if current.trim() != "64" {
+                return Err(format!(
+                    "cell stopped being saturated during the host fork: {current}"
+                ));
+            }
+            let exit = cell.wait().map_err(|e| e.to_string())?;
+            if group.exists() {
+                return Err(String::from("cell left its cgroup behind"));
+            }
+            Ok(exit.code)
+        },
+    )?;
+    let report = report_of(&result)?;
+    if !matches!(
+        report.outcome,
+        Outcome::ForkBomb {
+            forks: 1..=61,
+            errno: 11
+        }
+    ) {
+        return Err(format!(
+            "fork bomb: {:?}; expected at most 61 children and EAGAIN",
+            report.outcome
+        ));
+    }
+    if std::fs::read_to_string("/proc/self/cgroup").map_err(|e| e.to_string())? != before {
+        return Err(String::from("spawning a cell moved the owner"));
     }
     Ok(())
 }
@@ -1203,6 +1331,10 @@ type Check = (&'static str, fn() -> Result<(), String>);
 
 /// Every check, in run order.
 const CHECKS: &[Check] = &[
+    (
+        "a_cell_fork_bomb_hits_its_cgroup_and_leaves_the_host_usable",
+        a_cell_fork_bomb_hits_its_cgroup_and_leaves_the_host_usable,
+    ),
     (
         "socket_sweep_reaches_only_the_broker",
         socket_sweep_reaches_only_the_broker,

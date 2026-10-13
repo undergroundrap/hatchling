@@ -61,6 +61,16 @@ fn base(name: &str) -> common::TestDir {
     common::TestDir::guard(base)
 }
 
+/// Releases an accept loop if broken cleanup leaves the run socket behind.
+/// Armed before assertions, so a panic cannot pin the scoped test thread.
+struct DrainPendingAccept(PathBuf);
+
+impl Drop for DrainPendingAccept {
+    fn drop(&mut self) {
+        let _ = std::os::unix::net::UnixStream::connect(&self.0);
+    }
+}
+
 fn config(base: &Path, vault_grants: &[&str]) -> Config {
     let vault_root = base.join("vault");
     Config {
@@ -706,4 +716,83 @@ fn agent_schedule_op(
     now: Timestamp,
 ) -> ScheduleResult {
     handle_schedule_op(config, key, op, now, hatchling_scheduler::Creator::Agent)
+}
+
+#[test]
+fn dropping_a_running_cell_cancels_it_and_cleans_its_resources() {
+    if !guard_cell_available().unwrap() {
+        return;
+    }
+    let base = base("cancel");
+    let config = config(&base, &[]);
+    let key = MasterKey::generate().unwrap();
+    std::thread::scope(|scope| {
+        let launcher = CellLauncher::new(scope, &config, &key, env(&config, RUN_DEADLINE));
+        let run = launcher
+            .launch(RunRequest {
+                schedule_id: String::from("cancel"),
+                task: String::from("hang"),
+                grants: vec![send()],
+                due: ts("2026-09-21T12:01:00Z"),
+                missed: false,
+                channel: String::from("local"),
+                depth: 0,
+                event: None,
+                space: None,
+                feed: None,
+            })
+            .unwrap();
+        let run_dir = run_dirs(&config.scheduler.run_root())
+            .into_iter()
+            .next()
+            .unwrap();
+        let accept_rescue = DrainPendingAccept(run_dir.join("broker.sock"));
+        // Wait until the helper has actually constructed a cell before
+        // cancellation; cancelling only the launch would miss its cleanup.
+        if let Some(parent) = std::env::var_os("HATCHLING_CELL_CGROUP") {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let nested = std::fs::read_dir(&parent)
+                    .unwrap()
+                    .filter_map(Result::ok)
+                    .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+                    .any(|entry| {
+                        std::fs::read_dir(entry.path())
+                            .unwrap()
+                            .filter_map(Result::ok)
+                            .any(|entry| {
+                                entry.file_type().is_ok_and(|kind| kind.is_dir())
+                                    && std::fs::read_to_string(entry.path().join("pids.current"))
+                                        .ok()
+                                        .and_then(|value| value.trim().parse::<u64>().ok())
+                                        .is_some_and(|count| count >= 3)
+                            })
+                    });
+                if nested {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "helper never created its cell cgroup"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        drop(run);
+        // Correct cancellation already removed the socket. Rescue only a
+        // broken destructor, after dropping the run, before scope joins.
+        drop(accept_rescue);
+    });
+    assert!(run_dirs(&config.scheduler.run_root()).is_empty());
+}
+
+#[test]
+fn cgroups_are_removed_after_scheduled_timeout_and_cancellation() -> Result<(), String> {
+    common::cgroup_lifecycle_cases(
+        "scheduled",
+        &[
+            "a_hung_run_blocks_the_next_fire_until_the_timeout_reaps_it",
+            "dropping_a_running_cell_cancels_it_and_cleans_its_resources",
+        ],
+    )
 }

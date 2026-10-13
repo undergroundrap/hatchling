@@ -247,7 +247,10 @@ pub(crate) fn run_cell(
     input: &[u8],
     limit: usize,
 ) -> Result<Vec<u8>, SkillRunError> {
-    let spec = serde_json::to_string(cell)
+    let (cell, _cgroup) = cell
+        .supervised_cgroup()
+        .map_err(|error| SkillRunError::Prepare(error.to_string()))?;
+    let spec = serde_json::to_string(&cell)
         .map_err(|err| SkillRunError::Prepare(format!("cannot encode the cell spec: {err}")))?;
     let run_dir = RunDir::create().map_err(SkillRunError::Spawn)?;
     let output = supervise(runtime, &spec, run_dir.path(), input, limit);

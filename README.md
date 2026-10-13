@@ -163,8 +163,43 @@ Every cell is held to hard limits it can't lift: they're both its soft and its h
 | `HATCHLING_CELL_MAX_OPEN_FILES` | 8192 | files each program holds open at once |
 | `HATCHLING_CELL_MAX_FILE_SIZE` | 8589934592 (8 GiB) | the largest file a program writes, in bytes |
 | `HATCHLING_CELL_MAX_ADDRESS_SPACE` | unlimited | each program's address space, in bytes |
+| `HATCHLING_CELL_MAX_MEMORY` | half the host's physical memory | whole-cell memory in bytes; requires a cgroup |
+| `HATCHLING_CELL_MAX_CPUS` | unlimited | whole-cell CPU cores, e.g. `1.5`; requires a cgroup |
 
-Each takes a positive number, or `unlimited` to leave the broker's own limit. A value above the broker's own hard limit is held at the broker's. The address space isn't a memory bound: a JavaScript runtime reserves far more address space than it uses, so a coding CLI needs it left high. A per-cell CPU and memory share is [WO-004](docs/workorders/workorder-004-cell-resource-limits.md)'s next part.
+Each takes a positive number, or `unlimited`. Rlimits leave the broker's own bound when unlimited, and a value above its hard limit is held at that limit. The address space isn't a memory bound: a JavaScript runtime reserves far more address space than it uses, so a coding CLI needs it left high. CPU takes decimal digits without a sign or exponent, with up to three decimal places and at least `0.01` cores, using a 100 ms scheduling period; unlimited still shares CPU by the kernel's group weights.
+
+#### Giving Hatchling a cgroup
+
+Set `HATCHLING_CELL_CGROUP` to an empty cgroup v2 directory delegated to the broker. Hatchling enables its `pids`, `memory` and `cpu` controllers and creates a child group per cell. Its limits are written before the first child is placed there and released; every descendant inherits membership. The process bound counts the supervisor, init and program too. The broker stays in its own group. For helper-backed skills, harnesses and scheduled runs it retains an outer cleanup group, so cancelling or killing the helper also removes its cell groups. When a cell ends or its handle is dropped, Hatchling kills the whole group with `cgroup.kill`, waits up to five seconds for it to empty, and removes it. This mode needs Linux 5.14+ for `cgroup.kill` and access to the common ancestor's `cgroup.procs` when placing children. The group path is never mounted in a cell.
+
+With systemd 254 or later, add these settings to the broker's service:
+
+```ini
+[Service]
+Delegate=yes
+DelegateSubgroup=broker
+Environment=HATCHLING_CELL_CGROUP=/sys/fs/cgroup/system.slice/hatchling.service
+```
+
+Systemd starts the broker in the `broker` subgroup, leaving the delegated service directory empty. Adjust the path for your unit and slice. See [systemd's delegation documentation](https://systemd.io/CGROUP_DELEGATION/).
+
+For a manual root-run broker, run this in a root shell (use a fresh directory):
+
+```sh
+cg=/sys/fs/cgroup/hatchling
+mkdir "$cg"
+echo '+pids +memory +cpu' > "$cg/cgroup.subtree_control"
+mkdir "$cg/broker"
+echo $$ > "$cg/broker/cgroup.procs"
+export HATCHLING_CELL_CGROUP="$cg"
+exec hatchling broker
+```
+
+An unprivileged broker additionally needs the directory and its `cgroup.procs` and `cgroup.subtree_control`, and the broker leaf, delegated to its user; start it from that leaf so the source and destination share a writable ancestor. See [the kernel's delegation rules](https://docs.kernel.org/admin-guide/cgroup-v2.html#delegation). Hatchling never provisions this itself.
+
+An abrupt kill or crash of the entire broker can leave cgroup directories and helper-backed cells until their helpers terminate. Whole-broker crash recovery is outside this work; [WO-012](docs/workorders/workorder-012-disposable-state-and-cleanup.md) covers the planned cleanup of filesystem staging and run directories.
+
+Unset `HATCHLING_CELL_CGROUP` uses the hard rlimits alone and logs one startup warning. `RLIMIT_NPROC` is per real host uid, so this fallback can share a process budget with other cells or host processes; it does not bound aggregate memory or CPU. The memory and CPU variables have no effect in this mode. With a cgroup, `pids.max` replaces the configured `RLIMIT_NPROC`; inherited host rlimits still apply. A configured directory that is missing, non-cgroup, unwritable, holds processes, lacks a required controller or lacks `cgroup.kill` makes startup fail closed.
 
 From here: **[the local API](docs/local-api.md)** for every action and event, and **[testing on WSL2](docs/testing-on-wsl2.md)** for a Windows setup.
 

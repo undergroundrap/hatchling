@@ -28,6 +28,7 @@ fn attack_parse_round_trips_every_variant() -> Result<(), String> {
         Attack::Groups,
         Attack::ClearDeathSignal,
         Attack::RaiseLimits,
+        Attack::ForkBomb,
     ];
     for attack in variants {
         let cell_id = attack.cell_id();

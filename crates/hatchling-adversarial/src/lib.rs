@@ -88,6 +88,8 @@ pub enum Attack {
     /// Try to lift each of the cell's resource limits, and report them:
     /// each must stay as the cell was given it.
     RaiseLimits,
+    /// Fork sleeping children until the kernel refuses, bounded at 128 attempts.
+    ForkBomb,
 }
 
 /// Why a cell id did not name an attack.
@@ -144,6 +146,7 @@ impl Attack {
             "groups" => Ok(Self::Groups),
             "clear-death-signal" => Ok(Self::ClearDeathSignal),
             "raise-limits" => Ok(Self::RaiseLimits),
+            "fork-bomb" => Ok(Self::ForkBomb),
             _ => Err(ParseAttackError::UnknownAttack(slug.to_owned())),
         }
     }
@@ -166,6 +169,7 @@ impl Attack {
             Self::Groups => String::from("groups"),
             Self::ClearDeathSignal => String::from("clear-death-signal"),
             Self::RaiseLimits => String::from("raise-limits"),
+            Self::ForkBomb => String::from("fork-bomb"),
         }
     }
 
@@ -247,6 +251,13 @@ pub struct PresenceCheck {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Outcome {
+    /// Fork pressure: a cgroup must refuse with EAGAIN before the safety cap.
+    ForkBomb {
+        /// Successfully forked sleeping children.
+        forks: usize,
+        /// The final refusal's errno, or zero if the safety cap was reached.
+        errno: i32,
+    },
     /// Socket reachability sweep results.
     SocketSweep {
         /// One entry per probed socket, in probe order.
