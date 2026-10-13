@@ -646,6 +646,10 @@ const fn should_exit_on_release(released: &Result<Option<u8>, hatchling_sys::Err
 /// root broker's child changes it; ). `PR_SET_PDEATHSIG`
 /// survives `execve`, so the agent's arm covers its whole lifetime, not
 /// just the pre-exec window.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the cell is set up in the one order the kernel allows, step after step; split up, the order would be harder to check"
+)]
 fn child_main(
     spec: &CellSpec,
     plan: &MountPlan,
@@ -670,8 +674,13 @@ fn child_main(
     if let Err(source) = hatchling_sys::set_pdeathsig(broker_pidfd.as_fd()) {
         fail(&mut child_to_parent, format!("pdeathsig: {source}"));
     }
-    if let Err(source) = hatchling_sys::unshare_user() {
-        fail(&mut child_to_parent, format!("unshare(user): {source}"));
+    if let Err(reason) = drop_inherited_groups(hatchling_sys::euid(), hatchling_sys::clear_groups)
+        .map_err(|source| format!("setgroups: {source}"))
+        .and_then(|()| {
+            hatchling_sys::unshare_user().map_err(|source| format!("unshare(user): {source}"))
+        })
+    {
+        fail(&mut child_to_parent, reason);
     }
     if let Err(source) = hatchling_sys::unshare_mount() {
         fail(&mut child_to_parent, format!("unshare(mount): {source}"));
@@ -840,11 +849,50 @@ fn exec_program(spec: &CellSpec) -> hatchling_sys::Error {
     hatchling_sys::exec(Path::new(PROGRAM), &argv, &env)
 }
 
+/// Drops a root broker's supplementary groups with `clear`, which would
+/// otherwise follow the cell into its user namespace, where it couldn't
+/// drop them. The cell's child calls it before `unshare(CLONE_NEWUSER)`,
+/// with its `euid` and [`hatchling_sys::clear_groups`]. An unprivileged
+/// broker has none it may drop, so `clear` isn't called.
+///
+/// # Errors
+///
+/// What `clear` returns.
+fn drop_inherited_groups(
+    euid: u32,
+    clear: impl FnOnce() -> Result<(), hatchling_sys::Error>,
+) -> Result<(), hatchling_sys::Error> {
+    if euid == 0 { clear() } else { Ok(()) }
+}
+
 #[cfg(test)]
 pub(super) mod tests {
     use std::collections::HashSet;
 
     use super::*;
+
+    #[test]
+    fn only_a_root_broker_drops_its_groups() {
+        let refused = || {
+            Err(hatchling_sys::Error::Process {
+                operation: "setgroups(0)",
+                source: std::io::Error::from_raw_os_error(1),
+            })
+        };
+        // As root, the drop is made, and its failure is the child's.
+        let mut cleared = false;
+        assert!(
+            drop_inherited_groups(0, || {
+                cleared = true;
+                Ok(())
+            })
+            .is_ok()
+        );
+        assert!(cleared, "a root broker's cell drops its groups");
+        assert!(drop_inherited_groups(0, refused).is_err());
+        // Unprivileged, nothing is tried: there is nothing it may drop.
+        assert!(drop_inherited_groups(1000, refused).is_ok());
+    }
     use crate::linux::view::tests::{Scratch, specs, within_watchdog};
     use crate::{Cell, CellIdentity};
 

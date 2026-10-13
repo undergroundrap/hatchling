@@ -156,7 +156,8 @@ pub fn run() -> Result<(), String> {
         | Attack::PeerDecoy
         | Attack::PeerGarbage
         | Attack::SessionUniform
-        | Attack::NegativeSweep => {
+        | Attack::NegativeSweep
+        | Attack::Groups => {
             let outcome = run_report_attack(attack)?;
             emit(attack, outcome, None)
         }
@@ -184,6 +185,7 @@ fn run_report_attack(attack: Attack) -> Result<Outcome, String> {
         Attack::PeerGarbage => peer_garbage(),
         Attack::SessionUniform => session_uniform(),
         Attack::NegativeSweep => Ok(negative_sweep()),
+        Attack::Groups => groups(),
         Attack::Seccomp(_) | Attack::PrivescUnshare | Attack::NetBind | Attack::TcpSocket => {
             Err(String::from("signal-verdict attack has no report form"))
         }
@@ -437,6 +439,19 @@ fn session_uniform() -> Result<Outcome, String> {
 }
 
 /// Negative sweep: none of these paths may exist in the cell.
+/// The cell's supplementary groups, from its own `/proc/self/status`.
+fn groups() -> Result<Outcome, String> {
+    let status = std::fs::read_to_string("/proc/self/status")
+        .map_err(|e| format!("/proc/self/status: {e}"))?;
+    let groups = status
+        .lines()
+        .find_map(|line| line.strip_prefix("Groups:"))
+        .ok_or_else(|| String::from("/proc/self/status has no Groups line"))?;
+    Ok(Outcome::Groups {
+        groups: groups.trim().to_owned(),
+    })
+}
+
 fn negative_sweep() -> Outcome {
     let mut checks = Vec::with_capacity(ABSENT_PATHS.len());
     for path in ABSENT_PATHS {
@@ -451,6 +466,20 @@ fn negative_sweep() -> Outcome {
 #[cfg(test)]
 mod tests {
     use super::raw_syscall_nr;
+
+    #[test]
+    fn the_groups_report_is_the_status_files_groups_line() {
+        let status = std::fs::read_to_string("/proc/self/status").unwrap();
+        let line = status
+            .lines()
+            .find_map(|line| line.strip_prefix("Groups:"))
+            .unwrap()
+            .trim()
+            .to_owned();
+        let expected = Ok(crate::Outcome::Groups { groups: line });
+        assert_eq!(super::groups(), expected);
+        assert_eq!(super::run_report_attack(crate::Attack::Groups), expected);
+    }
 
     #[cfg(target_arch = "x86_64")]
     #[test]
