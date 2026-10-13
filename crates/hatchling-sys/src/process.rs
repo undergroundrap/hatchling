@@ -699,6 +699,42 @@ pub fn clear_groups() -> Result<(), Error> {
     Ok(())
 }
 
+/// Makes this process not dumpable.
+///
+/// No core dump, and its `/proc` files, `/proc/<pid>/mem` among them,
+/// owned by root and closed to any process without `CAP_SYS_PTRACE`. A
+/// cell's init shares its uid with the program it runs; this keeps the
+/// program out of the init's memory.
+///
+/// # Errors
+///
+/// Returns [`Error::Process`] if the `prctl` fails.
+pub fn set_not_dumpable() -> Result<(), Error> {
+    prctl_checked(libc::PR_SET_DUMPABLE, [0, 0, 0, 0], "prctl(SET_DUMPABLE)")
+}
+
+/// Waits as a pid namespace's init until `program` exits, and returns its
+/// exit code (see [`child_exit_code`]); 1 if the wait itself fails.
+///
+/// Every child that exits on the way is reaped, the orphans reparented
+/// here among them. When the init exits, the kernel kills whatever is
+/// left in its namespace, so nothing the program started outlives it.
+#[must_use]
+pub fn reap_as_init(program: &Child) -> i32 {
+    loop {
+        match rustix::process::wait(rustix::process::WaitOptions::empty()) {
+            Ok(Some((pid, status))) => {
+                if pid.as_raw_nonzero().get() == program.pid.get() {
+                    program.reaped.set(true);
+                    return child_exit_code(i32::try_from(status.as_raw()).unwrap_or(1));
+                }
+            }
+            Err(rustix::io::Errno::INTR) => {}
+            Ok(None) | Err(_) => return 1,
+        }
+    }
+}
+
 /// Exits the current process immediately without running destructors.
 ///
 /// For fork children that must not touch parent state (no `Drop`, no
@@ -1032,6 +1068,81 @@ mod tests {
             ),
             "{refused:?}"
         );
+    }
+
+    #[test]
+    fn set_not_dumpable_makes_the_process_not_dumpable() {
+        // In a child: not dumpable, this test process's /proc files would
+        // belong to root.
+        match fork().expect("fork") {
+            ForkResult::Parent { child } => {
+                let status = child.wait_deadline(REAP).expect("child");
+                assert_eq!(
+                    child_exit_code(status),
+                    0,
+                    "1: the call failed; 2: still dumpable"
+                );
+            }
+            ForkResult::Child => {
+                if set_not_dumpable().is_err() {
+                    exit_child(1);
+                }
+                // SAFETY: PR_GET_DUMPABLE takes no further arguments and
+                // only reads this process's flag.
+                let dumpable = unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) };
+                exit_child(if dumpable == 0 { 0 } else { 2 });
+            }
+        }
+    }
+
+    #[test]
+    fn reap_as_init_returns_its_programs_code_and_reaps_the_others() {
+        // In a child of its own: a wait for any child must take none of
+        // this test process's.
+        match fork().expect("fork helper") {
+            ForkResult::Parent { child } => {
+                let status = child
+                    .wait_deadline(Duration::from_secs(10))
+                    .expect("helper");
+                assert_eq!(
+                    child_exit_code(status),
+                    0,
+                    "1: a fork failed; 2: not the program's code; 3: a child left unreaped"
+                );
+            }
+            ForkResult::Child => {
+                // A child that exits at once, then the program, which exits
+                // 7 a moment later: the first is reaped on the way.
+                let Ok(ForkResult::Parent { child: _early }) =
+                    fork().map_err(|_| ()).and_then(|forked| match forked {
+                        ForkResult::Child => exit_child(3),
+                        parent @ ForkResult::Parent { .. } => Ok(parent),
+                    })
+                else {
+                    exit_child(1);
+                };
+                let Ok(ForkResult::Parent { child: program }) =
+                    fork().map_err(|_| ()).and_then(|forked| match forked {
+                        ForkResult::Child => {
+                            std::thread::sleep(Duration::from_millis(200));
+                            exit_child(7)
+                        }
+                        parent @ ForkResult::Parent { .. } => Ok(parent),
+                    })
+                else {
+                    exit_child(1);
+                };
+                let code = reap_as_init(&program);
+                let left = rustix::process::wait(rustix::process::WaitOptions::NOHANG);
+                exit_child(if code != 7 {
+                    2
+                } else if matches!(left, Err(rustix::io::Errno::CHILD)) {
+                    0
+                } else {
+                    3
+                });
+            }
+        }
     }
 
     #[test]

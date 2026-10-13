@@ -86,11 +86,12 @@ pub fn run() -> Result<(), String> {
     match attack {
         Attack::Seccomp(nr) => {
             // Only ever inside a cell: without the filter some numbers
-            // really run with `-1` args (see `raw_syscall_inert`). PID 1
-            // means a fresh pid namespace — never true on a host.
-            if std::process::id() != 1 {
+            // really run with `-1` args (see `raw_syscall_inert`). PID 2,
+            // the program under a cell's init, means a fresh pid namespace:
+            // on a host, pid 2 is the kernel's own thread.
+            if std::process::id() != 2 {
                 return Err(format!(
-                    "refusing seccomp probe {nr}: not PID 1 inside a cell"
+                    "refusing seccomp probe {nr}: not PID 2 inside a cell"
                 ));
             }
             let ret = raw_syscall_nr(nr);
@@ -161,6 +162,10 @@ pub fn run() -> Result<(), String> {
             let outcome = run_report_attack(attack)?;
             emit(attack, outcome, None)
         }
+        Attack::ClearDeathSignal => {
+            let outcome = outlive_the_supervisor(OUTLIVE_FOR)?;
+            emit(attack, outcome, None)
+        }
     }
 }
 /// The raw call's return in the kernel's own form, like every survival
@@ -189,6 +194,9 @@ fn run_report_attack(attack: Attack) -> Result<Outcome, String> {
         Attack::Seccomp(_) | Attack::PrivescUnshare | Attack::NetBind | Attack::TcpSocket => {
             Err(String::from("signal-verdict attack has no report form"))
         }
+        Attack::ClearDeathSignal => Err(String::from(
+            "the death-signal attack reports only if it outlives its supervisor",
+        )),
     }
 }
 
@@ -439,6 +447,32 @@ fn session_uniform() -> Result<Outcome, String> {
 }
 
 /// Negative sweep: none of these paths may exist in the cell.
+/// How long the death-signal attack waits: far past the seconds the
+/// driver gives the cell to die once its supervisor is killed.
+const OUTLIVE_FOR: Duration = Duration::from_secs(60);
+
+/// Clears the probe's own parent-death signal, says `CLEARED` on stdout,
+/// and waits for `spin` ([`OUTLIVE_FOR`] in a cell): the driver kills the
+/// cell's supervisor meanwhile, and the probe must die with it. Reaching
+/// the end is the hole: the probe outlived its supervisor.
+fn outlive_the_supervisor(spin: Duration) -> Result<Outcome, String> {
+    rustix::process::set_parent_process_death_signal(None)
+        .map_err(|e| format!("clear the death signal: {e}"))?;
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    out.write_all(b"CLEARED\n")
+        .and_then(|()| out.flush())
+        .map_err(|e| format!("write CLEARED: {e}"))?;
+    drop(out);
+    let started = std::time::Instant::now();
+    // The CLI profile allows nanosleep: the probe waits, rather than
+    // timing a loop.
+    std::thread::sleep(spin);
+    Ok(Outcome::OutlivedSupervisor {
+        spun_secs: started.elapsed().as_secs(),
+    })
+}
+
 /// The cell's supplementary groups, from its own `/proc/self/status`.
 fn groups() -> Result<Outcome, String> {
     let status = std::fs::read_to_string("/proc/self/status")
@@ -466,6 +500,22 @@ fn negative_sweep() -> Outcome {
 #[cfg(test)]
 mod tests {
     use super::raw_syscall_nr;
+
+    #[test]
+    fn the_death_signal_attack_clears_it_says_so_and_reports_its_spin() {
+        // Outside a cell there's no signal armed to clear, and no spin.
+        assert_eq!(
+            super::outlive_the_supervisor(std::time::Duration::ZERO),
+            Ok(crate::Outcome::OutlivedSupervisor { spun_secs: 0 })
+        );
+        assert_eq!(
+            rustix::process::parent_process_death_signal()
+                .ok()
+                .flatten(),
+            None
+        );
+        assert_eq!(super::OUTLIVE_FOR.as_secs(), 60);
+    }
 
     #[test]
     fn the_groups_report_is_the_status_files_groups_line() {
