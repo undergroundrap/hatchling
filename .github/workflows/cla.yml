@@ -21,11 +21,16 @@ permissions:
 jobs:
   cla:
     runs-on: ubuntu-latest
+    # A signing comment starts the check if it contains the sentence: the
+    # action trims it and ignores case before comparing, so a trailing
+    # space or line break from pasting still signs, where an exact match
+    # here would skip the run silently. The action still checks the
+    # sentence itself.
     if: >-
       github.event_name == 'pull_request_target' ||
       (github.event.issue.pull_request &&
         (github.event.comment.body == 'recheck' ||
-         github.event.comment.body == 'I have read the Hatchling CLA and I hereby sign it.'))
+         contains(github.event.comment.body, 'I have read the Hatchling CLA and I hereby sign it.')))
     steps:
       - name: Check signatures
         # contributor-assistant/github-action v2.6.1
