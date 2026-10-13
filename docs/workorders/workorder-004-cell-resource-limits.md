@@ -1,6 +1,6 @@
 # WO-004: Per-cell resource limits
 
-**Status:** QUEUED
+**Status:** IN-PROGRESS
 **Area:** `crates/hatchling-isolation`, `crates/hatchling-sys`, `crates/hatchling-broker` (cell, run launcher, harness)
 **Issue:** [#7](https://github.com/undergroundrap/hatchling/issues/7)
 **Trust boundary:** yes
@@ -20,7 +20,7 @@ Found in the pre-launch review of the trust boundary (see [Known limitations](..
 ## Acceptance criteria
 
 - [ ] A fork bomb in a cell stops at its `pids.max`, and the host is unaffected; a real-cell test.
-- [ ] A cell that clears its parent-death signal is still killed when its supervisor is; a real-cell test.
+- [x] A cell that clears its parent-death signal is still killed when its supervisor is; a real-cell test.
 - [ ] Configured limits are visible in the cell's cgroup and rlimits; tested.
 
 ## Gates

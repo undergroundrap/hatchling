@@ -166,7 +166,23 @@ fn spawn_attack(attack: Attack, socket_dir: &Path, agent_uid: u32) -> Result<Att
 /// devices. Captures stdout as [`spawn_attack`] does.
 fn spawn_cli_attack(attack: Attack) -> Result<AttackResult, String> {
     let platform = hatchling_isolation::platform();
-    let spec = CellSpec {
+    let spec = cli_spec(attack)?;
+    capture(
+        attack,
+        || {
+            platform
+                .isolate(&spec)
+                .map_err(|e| format!("CLI cell for {}: {e}", attack.slug()))
+        },
+        |cell| cell.wait().map(|exit| exit.code).map_err(|e| e.to_string()),
+    )
+}
+
+/// The cell spec a CLI-filter probe runs `attack` under: no broker
+/// socket, no relay, the CLI cell's own `/proc` and devices.
+fn cli_spec(attack: Attack) -> Result<CellSpec, String> {
+    let platform = hatchling_isolation::platform();
+    Ok(CellSpec {
         identity: platform
             .identity(None, 1)
             .map_err(|e| format!("cell identity: {e}"))?,
@@ -179,16 +195,73 @@ fn spawn_cli_attack(attack: Attack) -> Result<AttackResult, String> {
         tools: Vec::new(),
         relay: None,
         filter: Filter::Cli,
-    };
-    capture(
-        attack,
-        || {
-            platform
-                .isolate(&spec)
-                .map_err(|e| format!("CLI cell for {}: {e}", attack.slug()))
-        },
-        |cell| cell.wait().map(|exit| exit.code).map_err(|e| e.to_string()),
-    )
+    })
+}
+
+/// A cell that clears its parent-death signal still dies with its
+/// supervisor: the cell's pid 1 is Hatchling's init, which keeps its own
+/// signal, and the kernel kills a pid namespace whose init dies. The
+/// probe clears its signal, says `CLEARED`, and spins for a minute; the
+/// cell's reaper is killed, as the broker's death would kill it; every
+/// process holding the probe's stdout must be gone within seconds.
+fn a_cell_that_clears_its_death_signal_still_dies_with_its_supervisor() -> Result<(), String> {
+    if !guard_cell_available()? {
+        return Ok(());
+    }
+    let spec = cli_spec(Attack::ClearDeathSignal)?;
+    let lock = STDOUT_REDIRECT_LOCK
+        .lock()
+        .map_err(|e| format!("stdout redirect lock poisoned: {e}"))?;
+    let (read_fd, write_fd) = rustix::pipe::pipe().map_err(|e| format!("pipe: {e}"))?;
+    let saved = rustix::io::dup(rustix::stdio::stdout()).map_err(|e| format!("dup stdout: {e}"))?;
+    rustix::stdio::dup2_stdout(&write_fd).map_err(|e| format!("dup2 pipe -> stdout: {e}"))?;
+    let started = hatchling_isolation::platform().isolate(&spec);
+    let restore = rustix::stdio::dup2_stdout(&saved);
+    drop(saved);
+    drop(write_fd);
+    drop(lock);
+    restore.map_err(|e| format!("restore stdout: {e}"))?;
+    let cell = started.map_err(|e| format!("CLI cell: {e}"))?;
+    let (cleared_tx, cleared_rx) = std::sync::mpsc::channel();
+    let (ended_tx, ended_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut file = std::fs::File::from(read_fd);
+        let mut seen = Vec::new();
+        let mut buf = [0_u8; 256];
+        while let Ok(read) = file.read(&mut buf) {
+            if read == 0 {
+                break;
+            }
+            seen.extend_from_slice(buf.get(..read).unwrap_or_default());
+            if seen.starts_with(b"CLEARED\n") {
+                let _ = cleared_tx.send(());
+            }
+        }
+        let _ = ended_tx.send(seen);
+    });
+    cleared_rx
+        .recv_timeout(CELL_WATCHDOG)
+        .map_err(|_| String::from("the probe never said it cleared its death signal"))?;
+    let reaper = rustix::process::Pid::from_raw(cell.pid())
+        .ok_or_else(|| String::from("the cell has no reaper pid"))?;
+    rustix::process::kill_process(reaper, rustix::process::Signal::Kill)
+        .map_err(|e| format!("kill the reaper: {e}"))?;
+    let killed = Instant::now();
+    let ended = ended_rx.recv_timeout(Duration::from_secs(15));
+    let _ = cell.wait();
+    match ended {
+        // Killed: the probe said CLEARED and nothing after. A probe that
+        // ended on its own would have reported outliving its supervisor.
+        Ok(seen) if seen == b"CLEARED\n" => Ok(()),
+        Ok(seen) => Err(format!(
+            "the probe ended on its own rather than with its cell: {:?}",
+            String::from_utf8_lossy(&seen)
+        )),
+        Err(_) => Err(format!(
+            "the cell outlived its supervisor: still running {:?} after its reaper was killed",
+            killed.elapsed()
+        )),
+    }
 }
 
 /// Runs `start` with fd 1 redirected into a fresh pipe, then waits for
@@ -257,7 +330,8 @@ fn capture<H: Send + 'static>(
 
 /// Parse and validate a report attack's [`Report`]: the probe exited
 /// 0, named the attack it ran, saw the cell's interior view
-/// (`uid == 0`, `gid == 0`, `pid == 1`), and completed the attack.
+/// (`uid == 0`, `gid == 0`, `pid == 2`: the program under the cell's
+/// init), and completed the attack.
 /// Returns the outcome for attack-specific assertions.
 fn report_of(result: &AttackResult) -> Result<Report, String> {
     if result.exit_code != 0 {
@@ -277,9 +351,9 @@ fn report_of(result: &AttackResult) -> Result<Report, String> {
             report.attack, result.slug
         ));
     }
-    if report.uid != 0 || report.gid != 0 || report.pid != 1 {
+    if report.uid != 0 || report.gid != 0 || report.pid != 2 {
         return Err(format!(
-            "probe saw uid={} gid={} pid={} — not the cell interior (0/0/1); \
+            "probe saw uid={} gid={} pid={} — not the cell interior (0/0/2); \
              the probe did not run inside the cell",
             report.uid, report.gid, report.pid
         ));
@@ -1106,6 +1180,10 @@ const CHECKS: &[Check] = &[
     (
         "a_root_brokers_cell_has_no_supplementary_groups",
         a_root_brokers_cell_has_no_supplementary_groups,
+    ),
+    (
+        "a_cell_that_clears_its_death_signal_still_dies_with_its_supervisor",
+        a_cell_that_clears_its_death_signal_still_dies_with_its_supervisor,
     ),
     ("privesc_unshare_dies", privesc_unshare_dies),
     ("net_bind_dies", net_bind_dies),

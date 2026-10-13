@@ -8,6 +8,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Fixed
 
+- A cell no longer outlives its supervisor when its program clears its own parent-death signal. Every cell's pid 1 is now Hatchling's init: it holds the death signal against the supervisor, never runs the program's code, reaps every child that exits, and ends with the program's exit code; the program runs as pid 2. When the supervisor dies, so does the init, and the kernel kills everything left in the cell. The init holds no capability, runs under `no_new_privs`, closes what it inherited, and can't be dumped or traced by the program it shares a uid with (WO-004).
 - A coding CLI's cell may make a socket pair only of Unix sockets: `socketpair` with any other family is answered "address family not supported", as `socket` already was. It had been allowed whatever its family (WO-005).
 - A root broker's cell drops its supplementary groups before entering its user namespace. It had carried the broker's groups in, where it couldn't drop them, so any file a group of the broker's could reach stayed reachable from the cell (WO-005).
 - A cell can no longer see or cancel the owner's schedules. Each schedule records who made it: the owner, through the local API, or the agent, through a session. A cell lists and cancels only the agent's, and its cancel of the owner's is answered as for an id that doesn't exist. A schedule stored before this change counts as the owner's (WO-010).

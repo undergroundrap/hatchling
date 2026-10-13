@@ -658,12 +658,7 @@ fn child_main(
     relay: Option<(u16, UnixStream)>,
 ) -> ! {
     let fail = |child_to_parent: &mut ChildToParent, reason: String| -> ! {
-        let mut msg = Vec::with_capacity(reason.len() + 1);
-        msg.push(b'E');
-        msg.extend_from_slice(reason.as_bytes());
-        let _ = child_to_parent.write_all(&msg);
-        child_to_parent.close_write();
-        hatchling_sys::exit_child(1);
+        fail_cell(child_to_parent, &reason)
     };
     // Arm first: if the broker is gone, die with it rather than
     // continuing setup unsupervised. The broker is alive here (it
@@ -788,42 +783,104 @@ fn child_main(
             if let Err(source) = hatchling_sys::set_pdeathsig(reaper_pidfd.as_fd()) {
                 fail(&mut child_to_parent, format!("pdeathsig: {source}"));
             }
-            // The liveness fd served its purpose — drop it before
-            // arming seccomp and exec, so it never leaks into the agent.
+            // The liveness fd served its purpose: dropped before the
+            // program is forked, so it never leaks into the program.
             drop(reaper_pidfd);
-            // Capabilities stop at the boundary: uid 0 in its own
-            // namespace, the program holds none. Nothing below needs one,
-            // and seccomp would refuse these calls later.
-            if let Err(source) = hatchling_sys::drop_capabilities() {
-                fail(&mut child_to_parent, format!("drop capabilities: {source}"));
-            }
-            // Nothing but stdio crosses the exec: every fd above
-            // stderr is marked close-on-exec, whatever the broker forgot to
-            // mark. The report pipe stays usable until the exec itself.
-            if let Err(source) = hatchling_sys::cloexec_fds_above_stderr() {
-                fail(&mut child_to_parent, format!("close_range: {source}"));
-            }
-            if let Err(source) = hatchling_sys::set_no_new_privs() {
-                fail(&mut child_to_parent, format!("no_new_privs: {source}"));
-            }
-            // Set before seccomp narrows what the cell may call.
-            if let Some(dir) = spec.workdir.as_deref() {
-                if let Err(source) = std::env::set_current_dir(dir) {
-                    fail(&mut child_to_parent, format!("chdir({dir}): {source}"));
-                }
-            }
-            let profile = match seccomp_profile(spec.filter) {
-                Ok(profile) => profile,
-                Err(source) => fail(&mut child_to_parent, format!("seccomp profile: {source}")),
-            };
-            if let Err(source) = hatchling_sys::seccomp::install(&profile) {
-                fail(&mut child_to_parent, format!("seccomp install: {source}"));
-            }
-            let err = exec_program(spec);
-            fail(&mut child_to_parent, format!("exec agent: {err}"));
+            run_as_init(spec, child_to_parent)
         }
         Err(_) => fail(&mut child_to_parent, String::from("fork for pid namespace")),
     }
+}
+
+/// Reports `reason` on the child->parent pipe, as a setup failure, and
+/// exits: the cell never starts.
+fn fail_cell(child_to_parent: &mut ChildToParent, reason: &str) -> ! {
+    let mut msg = Vec::with_capacity(reason.len() + 1);
+    msg.push(b'E');
+    msg.extend_from_slice(reason.as_bytes());
+    let _ = child_to_parent.write_all(&msg);
+    child_to_parent.close_write();
+    hatchling_sys::exit_child(1);
+}
+
+/// The cell's pid 1 once its view is built: Hatchling's init.
+///
+/// It forks the program, which runs as pid 2, and stays. It never runs
+/// the program's code, so the parent-death signal it holds against the
+/// reaper is one the program can't clear: the program may clear its
+/// own, and still dies with its supervisor, since the kernel kills a pid
+/// namespace whose init dies. Until then it reaps every child that exits,
+/// and it ends with the program's exit code. It holds no capability,
+/// can't be dumped or traced by the program it shares a uid with, and
+/// runs under `no_new_privs`.
+fn run_as_init(spec: &CellSpec, mut child_to_parent: ChildToParent) -> ! {
+    let program = match hatchling_sys::fork() {
+        Ok(ForkResult::Child) => exec_cell_program(spec, child_to_parent),
+        Ok(ForkResult::Parent { child }) => child,
+        Err(source) => fail_cell(&mut child_to_parent, &format!("fork the program: {source}")),
+    };
+    // It never execs, so nothing it inherited closes by itself: it keeps
+    // only the program's pidfd and the report pipe, as the reaper does.
+    let keep: Vec<_> = std::iter::once(program.as_fd())
+        .chain(child_to_parent.fds())
+        .collect();
+    if let Err(source) = hatchling_sys::close_fds_above_stderr_except(&keep) {
+        let _ = program.terminate();
+        fail_cell(
+            &mut child_to_parent,
+            &format!("init: close inherited fds: {source}"),
+        );
+    }
+    let hardened = hatchling_sys::set_not_dumpable()
+        .and_then(|()| hatchling_sys::drop_capabilities())
+        .and_then(|()| hatchling_sys::set_no_new_privs());
+    if let Err(source) = hardened {
+        let _ = program.terminate();
+        fail_cell(&mut child_to_parent, &format!("init: {source}"));
+    }
+    // The program reports its own setup failures, and its exec closes the
+    // pipe: the init's copy must not hold the broker's wait open.
+    child_to_parent.close_write();
+    hatchling_sys::exit_child(hatchling_sys::reap_as_init(&program))
+}
+
+/// The cell's program, pid 2: capabilities dropped, every fd but stdio
+/// closed on exec, `no_new_privs`, its working directory, its seccomp
+/// filter, then the exec. Setup failures are reported on the pipe.
+fn exec_cell_program(spec: &CellSpec, mut child_to_parent: ChildToParent) -> ! {
+    let fail = |child_to_parent: &mut ChildToParent, reason: String| -> ! {
+        fail_cell(child_to_parent, &reason)
+    };
+    // Capabilities stop at the boundary: uid 0 in its own
+    // namespace, the program holds none. Nothing below needs one,
+    // and seccomp would refuse these calls later.
+    if let Err(source) = hatchling_sys::drop_capabilities() {
+        fail(&mut child_to_parent, format!("drop capabilities: {source}"));
+    }
+    // Nothing but stdio crosses the exec: every fd above
+    // stderr is marked close-on-exec, whatever the broker forgot to
+    // mark. The report pipe stays usable until the exec itself.
+    if let Err(source) = hatchling_sys::cloexec_fds_above_stderr() {
+        fail(&mut child_to_parent, format!("close_range: {source}"));
+    }
+    if let Err(source) = hatchling_sys::set_no_new_privs() {
+        fail(&mut child_to_parent, format!("no_new_privs: {source}"));
+    }
+    // Set before seccomp narrows what the cell may call.
+    if let Some(dir) = spec.workdir.as_deref() {
+        if let Err(source) = std::env::set_current_dir(dir) {
+            fail(&mut child_to_parent, format!("chdir({dir}): {source}"));
+        }
+    }
+    let profile = match seccomp_profile(spec.filter) {
+        Ok(profile) => profile,
+        Err(source) => fail(&mut child_to_parent, format!("seccomp profile: {source}")),
+    };
+    if let Err(source) = hatchling_sys::seccomp::install(&profile) {
+        fail(&mut child_to_parent, format!("seccomp install: {source}"));
+    }
+    let err = exec_program(spec);
+    fail(&mut child_to_parent, format!("exec agent: {err}"));
 }
 
 /// The seccomp profile for a filter class: a work-tree program's adds

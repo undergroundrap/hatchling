@@ -81,6 +81,10 @@ pub enum Attack {
     /// Report the cell's supplementary groups: a root broker's cell must
     /// have none.
     Groups,
+    /// Clear the probe's own parent-death signal, say so, and spin for a
+    /// minute: the driver kills the cell's supervisor, and the probe must
+    /// die with it all the same.
+    ClearDeathSignal,
 }
 
 /// Why a cell id did not name an attack.
@@ -135,6 +139,7 @@ impl Attack {
             "net-bind" => Ok(Self::NetBind),
             "tcp-socket" => Ok(Self::TcpSocket),
             "groups" => Ok(Self::Groups),
+            "clear-death-signal" => Ok(Self::ClearDeathSignal),
             _ => Err(ParseAttackError::UnknownAttack(slug.to_owned())),
         }
     }
@@ -155,6 +160,7 @@ impl Attack {
             Self::NetBind => String::from("net-bind"),
             Self::TcpSocket => String::from("tcp-socket"),
             Self::Groups => String::from("groups"),
+            Self::ClearDeathSignal => String::from("clear-death-signal"),
         }
     }
 
@@ -273,6 +279,12 @@ pub enum Outcome {
         /// One entry per checked path, in probe order.
         checks: Vec<PresenceCheck>,
     },
+    /// The probe cleared its death signal and spun out its minute: it
+    /// outlived its supervisor.
+    OutlivedSupervisor {
+        /// How long it spun, in seconds.
+        spun_secs: u64,
+    },
     /// The cell's supplementary groups.
     Groups {
         /// The `Groups:` value of its `/proc/self/status`, as the kernel
@@ -290,7 +302,8 @@ pub struct Report {
     pub uid: u32,
     /// Observed gid inside the cell (for the record; always 0).
     pub gid: u32,
-    /// Observed pid inside the cell (for the record; always 1).
+    /// Observed pid inside the cell (for the record; always 2, the cell's
+    /// program under its init).
     pub pid: u32,
     /// The structured outcome.
     pub outcome: Outcome,
