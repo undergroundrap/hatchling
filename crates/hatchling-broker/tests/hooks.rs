@@ -742,7 +742,7 @@ fn a_run_session_has_no_other_scheduler_surface_and_a_peer_has_no_followup() {
         ScheduleResult::Denied
     );
     assert_eq!(
-        handle_schedule_op(
+        agent_schedule_op(
             &config,
             key,
             &followup("t", 60, vec![send()]),
@@ -801,4 +801,15 @@ fn a_followup_chain_fires_one_link_at_a_time_and_terminates() {
             .unwrap()
             .is_empty()
     );
+}
+
+/// A schedule op as an agent session sends it: every one these tests
+/// make.
+fn agent_schedule_op(
+    config: &Config,
+    key: &MasterKey,
+    op: &ScheduleOp,
+    now: Timestamp,
+) -> ScheduleResult {
+    handle_schedule_op(config, key, op, now, hatchling_scheduler::Creator::Agent)
 }

@@ -44,6 +44,7 @@ pub use dispatcher::{
 pub use hook::{Hook, Sources, validate_hook};
 pub use jiff::Timestamp;
 pub use schedule::{
-    FollowupParent, MAX_FOLLOWUP_DELAY_SECS, MAX_FOLLOWUP_DEPTH, MAX_GRANTS, MAX_TASK_BYTES,
-    Schedule, Timing, effective_grants, validate, validate_followup, validate_space_task,
+    Creator, FollowupParent, MAX_FOLLOWUP_DELAY_SECS, MAX_FOLLOWUP_DEPTH, MAX_GRANTS,
+    MAX_TASK_BYTES, Schedule, Timing, effective_grants, validate, validate_followup,
+    validate_space_task,
 };

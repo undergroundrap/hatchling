@@ -98,14 +98,13 @@ Hatchling is pre-1.0. Before launch we reviewed our own trust boundary: who may 
 
 | Area | Limitation | Work order |
 | --- | --- | --- |
-| Identity | An agent session is admitted by its kernel uid alone, not tied to the cell the broker spawned. A uid shared with another process (such as `nobody`) lets that process act as the agent. Use a dedicated uid. | [WO-007](../workorders/workorder-007-bind-sessions-to-cells.md) |
+| Identity | An agent session is admitted by its kernel uid alone, not tied to the cell the broker spawned. A uid shared with another process (such as `nobody`) lets that process act as the agent. Use a dedicated uid. Cells aren't told apart from each other either: a cell can list and cancel any schedule an agent session made, though never the owner's. | [WO-007](../workorders/workorder-007-bind-sessions-to-cells.md) |
 | Resources | Cells have no CPU, memory or process-count limits, beyond a runtime bound. A hostile cell can exhaust the host. A CLI cell can also clear its own parent-death signal and outlive its supervisor. | [WO-004](../workorders/workorder-004-cell-resource-limits.md) |
 | Seccomp | `socketpair` isn't restricted to Unix sockets. A root broker's supplementary groups carry into the cell. | [WO-005](../workorders/workorder-005-seccomp-and-identity-tightening.md) |
 | Filesystem | Some ownership and permission changes go by path rather than by a no-follow handle, and cell staging directories have predictable names under a shared `TMPDIR`. A local attacker who can write there can deny cell spawns. | [WO-006](../workorders/workorder-006-symlink-safe-ownership.md) |
 | Vault | A sealed secret isn't bound to its name. Someone who can write the vault on disk, without the key, can swap two sealed files. | [WO-002](../workorders/workorder-002-bind-secrets-to-names.md) |
 | Vault | Key rotation isn't complete for keyring vaults: `rekey-vault` bypasses the keyring, and raising the unlock tier keeps the same data key. | [WO-003](../workorders/workorder-003-keyring-key-rotation.md) |
 | Egress | An upstream that echoes a credential back re-encoded (base64, hex) gets past the scrub, which matches its exact bytes. The upstream is the service the operator gave the credential to. | None yet |
-| Grants | A cell can list and cancel every schedule, not only its own. | [WO-010](../workorders/workorder-010-schedule-ownership.md) |
 | Hygiene | Some copies of secrets in memory aren't wiped; the redaction audit log stores unsalted hashes; concurrent keyring edits aren't locked; the hardware-key factor doesn't ask for a PIN. A cell killed by seccomp dumps core, so the host's crash handler (apport, on Ubuntu) receives that cell's memory, including any secret it fetched. | [WO-011](../workorders/workorder-011-secret-hygiene.md) |
 
 Found something that isn't here? Report it privately: [SECURITY.md](../../SECURITY.md).

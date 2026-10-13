@@ -954,12 +954,14 @@ mod tests {
                     },
                 ),
             );
+            // The caller holds no grants, so every action is refused as
+            // not granted, before its backend is looked for.
             assert_eq!(
                 read(&client),
                 UiResponse::ActionResult {
                     request_id: String::from("stop"),
                     result: UiActionResult::Refused {
-                        reason: ActionRefusal::Unavailable
+                        reason: ActionRefusal::NotGranted
                     }
                 }
             );

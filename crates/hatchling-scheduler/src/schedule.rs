@@ -100,6 +100,30 @@ fn timezone(name: &str) -> Result<TimeZone, ScheduleRefusal> {
         .map_err(|_| ScheduleRefusal::UnknownTimezone)
 }
 
+/// Who created a schedule. The broker records it; a cell lists and
+/// cancels only the agent's.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Creator {
+    /// The owner, through the local API, or the broker itself (a space
+    /// task's run). It's also what a schedule stored before creators were
+    /// recorded counts as, so a cell can't touch one it can't be shown to
+    /// have made.
+    #[default]
+    Owner,
+    /// An agent session: a cell, or a run asking for its follow-up.
+    Agent,
+}
+
+impl Creator {
+    /// Whether a caller that is `self` may see and cancel a schedule
+    /// `made_by` created: the owner, any; the agent, only its own.
+    #[must_use]
+    pub fn reaches(self, made_by: Self) -> bool {
+        self == Self::Owner || made_by == self
+    }
+}
+
 /// One stored schedule.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Schedule {
@@ -128,6 +152,9 @@ pub struct Schedule {
     /// by the broker, read-only. Broker-set at `CreateFeed`.
     #[serde(default)]
     pub feed: Option<FeedSpec>,
+    /// Who created it (see [`Creator`]). Broker-set; never on the wire.
+    #[serde(default)]
+    pub creator: Creator,
 }
 
 impl Schedule {
@@ -177,6 +204,7 @@ pub fn validate(
         depth: 0,
         space: None,
         feed: None,
+        creator: Creator::Owner,
     })
 }
 
@@ -273,6 +301,8 @@ pub fn validate_followup(
         now,
     )?;
     schedule.depth = parent.depth.saturating_add(1);
+    // A follow-up is asked for by a run, an agent session.
+    schedule.creator = Creator::Agent;
     Ok(schedule)
 }
 
@@ -331,6 +361,15 @@ pub fn effective_grants(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_owner_reaches_every_schedule_and_the_agent_only_its_own() {
+        assert!(Creator::Owner.reaches(Creator::Owner));
+        assert!(Creator::Owner.reaches(Creator::Agent));
+        assert!(Creator::Agent.reaches(Creator::Agent));
+        assert!(!Creator::Agent.reaches(Creator::Owner));
+        assert_eq!(Creator::default(), Creator::Owner);
+    }
 
     #[test]
     fn a_timezone_is_named_and_known_or_refused_by_name() {

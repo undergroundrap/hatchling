@@ -147,7 +147,7 @@ fn every_minute(
         grants,
         channel: String::from("local"),
     };
-    match handle_schedule_op(config, key, &op, ts(now)) {
+    match agent_schedule_op(config, key, &op, ts(now)) {
         ScheduleResult::Created { id } => id,
         other @ (ScheduleResult::Cancelled
         | ScheduleResult::NotFound
@@ -558,7 +558,7 @@ fn a_run_asks_for_its_followup_through_its_own_socket_within_its_own_grants() {
     assert!(matches!(next.when, ScheduleSpec::Once { .. }));
     // Its parent is cancelled; the follow-up fires on its own.
     assert_eq!(
-        handle_schedule_op(
+        agent_schedule_op(
             &config,
             &key,
             &ScheduleOp::Cancel { id },
@@ -695,4 +695,15 @@ fn a_space_tasks_run_uses_its_own_space_and_nothing_outside_it() {
             );
         }
     });
+}
+
+/// A schedule op as an agent session sends it: every one these tests
+/// make.
+fn agent_schedule_op(
+    config: &Config,
+    key: &MasterKey,
+    op: &ScheduleOp,
+    now: Timestamp,
+) -> ScheduleResult {
+    handle_schedule_op(config, key, op, now, hatchling_scheduler::Creator::Agent)
 }
