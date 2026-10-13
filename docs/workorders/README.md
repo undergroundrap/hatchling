@@ -25,7 +25,8 @@ The goal is a runtime a security team can approve, for one person or a whole com
 2. **What another local user, or someone with disk access, can do:** WO-006 (a root broker follows symlinks), WO-007 (any process with the agent's uid can open a session), WO-002 (swapped vault files), WO-003 (key rotation at the keyring tiers), WO-011 (secret copies in memory and core dumps), WO-012 (crash leftovers and safe cleanup).
 3. **In parallel, the first five minutes:** WO-001 (`--help`, and a quickstart CI runs) and WO-016 (`cargo install hatchling-runtime`, which also holds the crates.io names with real releases).
 4. **Then what a security review asks for next:** WO-014 (running without root) and WO-017 (privilege-separating the trusted side, so a bug in the broker can't reach your keys), designed together since they share the spawner; WO-013 (the release process: signed and reproducible binaries, an SBOM, publishing from CI); and WO-015 (root cell tests in CI).
-5. **Then integrations** for larger deployments: audit export, external secret backends, fleet configuration, and the macOS backend.
+5. **What runs in a cell, by the operator's choice:** WO-018 (a coding CLI added by a manifest, OpenCode first) and WO-019 (tools approved, pinned and listed). Hatchling bundles neither: it makes adding one safe. These can start once the hostile-cell work is done.
+6. **Then integrations** for larger deployments: audit export, external secret backends, fleet configuration, and the macOS backend.
 
 ## Queue
 
@@ -50,6 +51,8 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | [015](workorder-015-root-cell-tests-in-ci.md) | Run the cell test suites as root in CI | yes | QUEUED |
 | [016](workorder-016-publish-to-crates-io.md) | Publish to crates.io, with `hatchling-runtime` as the front door | yes | CLOSED |
 | [017](workorder-017-privilege-separate-the-trusted-side.md) | Privilege-separate the trusted side: a credential keeper, an egress authority, and a spawner so the broker drops root | yes | QUEUED |
+| [018](workorder-018-harness-manifests.md) | Harness manifests: add a coding CLI by configuration, with OpenCode first | yes | QUEUED |
+| [019](workorder-019-approved-tools.md) | Approved tools: what a cell can run, pinned and listed | yes | QUEUED |
 
 ## Candidates
 
