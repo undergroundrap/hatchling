@@ -16,6 +16,8 @@ on:
       - 'docs/local-api.md'
       - 'docs/dependency-review.md'
       - 'docs/arch/module-map.md'
+      - 'README.md'
+      - 'docs/examples/**'
   # Every pull request, with no path filter: main requires these checks,
   # and a required check that never starts blocks the merge.
   pull_request:
@@ -140,6 +142,46 @@ jobs:
           awk 'NR <= 2 || $2 > 0 || $16 > 10 || $17 > 10' "$RUNNER_TEMP/vmstat.log" | head -60 || true
           echo 'kernel log tail:'
           sudo dmesg -T | tail -40 || true
+
+  quickstart:
+    name: README quickstart
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+
+      - name: Check quickstart runner
+        run: python3 -m unittest discover -s scripts -p 'test_readme_quickstart.py' -v
+
+      - name: Allow real cells
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Run the README commands as root
+        env:
+          RUSTUP_TOOLCHAIN: 1.98.1
+        run: |
+          task_work=$(mktemp -d "$RUNNER_TEMP/hatchling-quickstart.XXXXXX")
+          trap 'sudo rm -rf -- "$task_work"' EXIT
+          sudo env "PATH=$PATH" "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" \
+            "RUSTUP_TOOLCHAIN=$RUSTUP_TOOLCHAIN" \
+            unshare --mount --pid --fork --kill-child --mount-proc \
+            python3 scripts/readme_quickstart.py "$PWD" \
+              "$RUNNER_TEMP/quickstart-logs" "$task_work"
+
+      - name: Retain the extracted commands and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: readme-quickstart
+          path: ${{ runner.temp }}/quickstart-logs
 
   publish:
     # Every crate the hatchling-runtime front door needs is published to

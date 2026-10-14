@@ -88,6 +88,9 @@ The **broker** is the trusted side: it owns the vault, the proxy, the schedules 
 
 ## Quickstart
 
+CI extracts and runs the shell blocks below as root with the stand-in model,
+and fails unless the agent's answer arrives.
+
 For the complete command and environment reference, run `hatchling --help`,
 `hatchling broker --help` or `hatchling agent --help`. The standalone
 `hatchling-broker`, `hatchling-agent` and development-only `hatchling-dev`
