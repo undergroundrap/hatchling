@@ -37,6 +37,56 @@ See [TEMPLATE.md](TEMPLATE.md#gates).
 
 ## Evidence
 
+### Part 2, README quickstart CI
+
+The new `README quickstart` job extracts the four shell blocks in the README's
+Quickstart section and runs them together as root with the stand-in model.
+It pins the documented clone to the checked-out commit, verifies the cloned
+tree stayed unchanged, and requires the exact agent answer rather than a
+scheduling acknowledgment. Its PID namespace ends every descendant on exit;
+the job retains the extracted commands, source identity and per-block logs.
+
+Local proof used frozen commit `1303903`, tree
+`556e15b2ea37085dc64ce6e8aa3ec7408e8c2e4f`:
+
+- The complete workflow YAML parsed, and every new shell body passed `bash -n`.
+  The exact root run body was replayed on pinned Rust 1.98.1 in a disposable
+  mount/PID/network namespace. All four extracted README blocks passed;
+  the real cell's stand-in answer arrived. Host accounts and installed
+  binaries stayed unchanged, and all private replay state was removed.
+- `python3 -m unittest discover -s scripts -p 'test_readme_quickstart.py' -v`
+  passed **five tests**: changed README commands execute, exports persist,
+  output fences and subsequent sections are excluded, malformed input fails,
+  and acknowledgments/near matches cannot satisfy the answer check.
+- Two source-only Python hand mutants failed their named assertions:
+  bypassing `require_answer` failed
+  `test_schedule_acknowledgment_and_near_matches_cannot_pass`; replacing the
+  extracted commands with `true` failed
+  `test_commands_change_with_the_readme_and_share_shell_state`.
+  The restored suite passed all five tests; neither proof used a timeout.
+- A shallow detached checkout, matching CI's checkout form, cloned through
+  the pinned snapshot with identical commit and tree.
+- Both 1.98.1 and 1.85.0 ran `HATCHLING_REQUIRE_CELL=1
+  HATCHLING_REQUIRE_CGROUP=1 bash scripts/check.sh` with a delegated
+  `HATCHLING_TEST_CGROUP`: **2,127 tests, zero failures, 19 adversarial checks**
+  each, `gate: green`. Both plain clippy passes and preflight passed.
+  `npm ci && npm run check` passed, including 100% live adapter coverage.
+- No Rust file changed in Part 2; cargo-mutants has no changed Rust target.
+  The two hand mutants above cover the new Python failure guards.
+
+The first local gate launcher stopped before tests on its cgroup-placement
+setup; it was corrected before the full gates above. After both gates and the
+frontend check passed, the revised wrapper's immediate cgroup-population
+assertion failed. Its event contents at that instant were not recorded, so
+the transient cause is not claimed as proven. A separate bounded cleanup
+audit found no remaining tasks and removed only the empty owned cgroup.
+Both failed wrapper logs remain preserved; the successful test-command
+results were not rewritten or rerun.
+
+The quickstart checkbox remains open until the GitHub CI result is recorded.
+Hosted-model guidance and its manual provider proof also remain pending;
+this partial change references issue #4 and keeps WO-001 IN-PROGRESS.
+
 ### Part 1, retested after the security dependency repair
 
 Configuration-free help covers the installed `hatchling` front door and all
