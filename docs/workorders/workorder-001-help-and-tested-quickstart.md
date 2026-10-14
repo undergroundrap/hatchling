@@ -37,6 +37,54 @@ See [TEMPLATE.md](TEMPLATE.md#gates).
 
 ## Evidence
 
+### Part 1, retested after the security dependency repair
+
+Configuration-free help covers the installed `hatchling` front door and all
+three standalone binaries. Shared declarations supply 65 broker, nine agent
+and three development settings, including cell limits and cgroups.
+The source audit fails on missing settings and unsupported dynamic readers;
+process tests cover stdout/stderr, exit status and unchanged filesystem state.
+
+The help change was reconciled with main `2ba3cb7`, the rustls repair in
+[#58](https://github.com/undergroundrap/hatchling/pull/58), then fully retested.
+The frozen input was commit `ee857b8`, tree
+`f8bda642be71a25dde967b294836e3780755af72`. Its source stayed unchanged throughout the fresh run.
+
+- Both toolchains ran `HATCHLING_REQUIRE_CELL=1 HATCHLING_REQUIRE_CGROUP=1
+  bash scripts/check.sh`, with a delegated `HATCHLING_TEST_CGROUP`: 1.98.1
+  and 1.85.0 each passed **2,127 tests, zero failures**, `gate: green`,
+  and **19 adversarial checks**. Both plain clippy passes, format checking
+  and preflight against `2ba3cb7` passed.
+- `npm ci && npm run check` passed, with 100% live adapter coverage.
+- One fresh supervised run tested all **913 distinct mutants** from all
+  24 changed production Rust files: **776 caught,
+  137 unviable, zero missed, zero timeouts**, kill floor 1.0.
+  Discovery identities, every build/test phase, compiler diagnostics and
+  the unchanged source fingerprint were verified from the original outputs.
+  Resource failures were not accepted as mutation evidence. No new
+  equivalence exclusions were added.
+- Eight source-only hand mutants failed their intended tests: four unlisted
+  key/read variants and three unsupported dynamic/alias variants failed
+  `broker_reads_are_listed_in_help`; replacing exit 64 with success failed
+  `unknown_arguments_are_stderr_usage_with_exit_64`. Zero runner timeouts;
+  the restored help suite passed all 13 tests.
+
+Fresh run: `20261014T183157Z-f546d761`. The source hash was
+`f546d761635a9c1ef608cd5d9b99223e0bd128dfdd628dd55422c769d8fc9f46`. Earlier runs and their original partial ledgers
+remain preserved as historical evidence below; their results were not reused
+to fill this fresh run.
+
+```bash
+base=2ba3cb70428ed6fdca43bb4285bf629d573a530a
+mapfile -t files < <(git diff --name-only "$base" -- 'crates/*/src/*.rs')
+scripts/mutant-run.sh --base "$base" --expected 913 -- "${files[@]}" --jobs 4
+```
+
+Quickstart CI and hosted-model guidance remain pending. This partial change
+references issue #4 without closing it.
+
+### Earlier evidence on the original base
+
 Part 1: configuration-free help (base `1781af8`). The installed
 `hatchling` front door and all three standalone binaries are covered. Shared
 declarations supply 65 broker, nine agent and three development settings.
