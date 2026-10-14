@@ -170,6 +170,56 @@ say so explicitly in the PR description. Security-relevant PRs
 get extra review. When in doubt, flag it — over-flagging is fine,
 under-flagging is not.
 
+### Security fixes
+
+**Name the threat first.** Start a trust-boundary PR with the attacker,
+the hole they can exploit, and the outcome the fix prevents. Then explain
+how the fix closes that path. A new defense needs a concrete attack.
+
+**Hand-break the fix.** In a source-only copy, remove or bypass the
+protection and show that the new test fails for the expected reason.
+Report the patch, exact test command, failed assertion and test name in
+the PR. A build error, unrelated failure or a test process killed by the
+runner's timeout is not that proof. A bounded assertion that the attacker
+survived past a deadline is valid.
+Restore the protection and show the test passes. Mechanical mutation
+testing is still required; it does not replace this check.
+
+**Attack each new cell defense in a real cell.** Use the production
+spawn path and the profile the affected program uses:
+
+1. Add an `Attack` variant, its parsing/slug cases, and an `Outcome`
+   when the attack reports a result in
+   [`hatchling-adversarial`](crates/hatchling-adversarial/src/lib.rs).
+2. Implement the attack in [`probe.rs`](crates/hatchling-adversarial/src/probe.rs)
+   and update its unit/report tests. Bound resource-consuming attacks;
+   the probe must not exhaust the host when the defense is broken.
+3. Add a check to the broker's
+   [`adversarial.rs`](crates/hatchling-broker/tests/adversarial.rs) and
+   register it in `CHECKS`. Assert kernel results (errno, exit signal,
+   limits, membership) and cleanup, not just a report saying "safe".
+   For a signal verdict, verify the probe's readiness marker so a
+   startup failure cannot impersonate the defended attack.
+4. Build with `cargo build --workspace --locked`, then run
+   `HATCHLING_REQUIRE_CELL=1 cargo test -p hatchling-broker --locked --test adversarial`.
+   Report the adversarial summary as well as the gate's test counts.
+   For cgroup tests, provision a delegated parent as in
+   [Cell limits](README.md#cell-limits), set `HATCHLING_TEST_CGROUP`,
+   and also set `HATCHLING_REQUIRE_CGROUP=1` so they cannot skip.
+
+For a defense outside the cell boundary, describe and test its attack at
+the affected boundary instead. Trust-boundary changes receive independent
+review before merge. Worked examples: [#52](https://github.com/undergroundrap/hatchling/pull/52)
+(supervisor death), [#53](https://github.com/undergroundrap/hatchling/pull/53)
+(hard rlimits), and [#54](https://github.com/undergroundrap/hatchling/pull/54)
+(aggregate limits and descendant cleanup).
+
+**Diagnose flakes.** Record the failing test, command and environment;
+prove the cause and fix it in a separate scoped commit. Do not rerun
+until green and present the last run as proof. Repetition after a fix
+measures it; it does not replace diagnosis. See
+[testing patterns](docs/testing-patterns.md) for the traps behind these rules.
+
 Never commit secrets, keys, tokens, or credentials.
 
 To report a vulnerability, don't open a PR or an issue: see
