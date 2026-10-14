@@ -68,4 +68,3 @@ Not yet WOs. Each gets a full file, with a scope and acceptance criteria, before
 - **Audit export.** Stream the broker's audit and vault-access records to an operator's log pipeline (syslog, or JSON lines for a SIEM) through an audit-sink interface. Exporting adds no read path for a cell or an API caller.
 - **External secret backends.** A secret-backend interface, so an operator's secret manager (HashiCorp Vault, a cloud KMS) can hold the real credentials. The egress swap is unchanged: a cell still only ever holds a surrogate.
 - **Fleet configuration.** A configuration file, alongside the environment variables, that provisioning tools (Terraform, Kubernetes, Ansible) can manage across many machines; and identity for local API callers beyond a socket's uid.
-- **Issue triage.** How outside reports and proposals are labeled, accepted or declined.
