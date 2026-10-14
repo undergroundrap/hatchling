@@ -161,6 +161,15 @@ broker is the TLS client end to end: nothing is decrypted in the middle.
 Its own dependencies (`ring`, `rustls-webpki`, `rustls-pki-types`,
 `subtle`, `zeroize`) were already in the tree under minreq.
 
+The minimum is 0.23.46, the [upstream security release](https://github.com/rustls/rustls/releases/tag/v/0.23.46)
+fixing RUSTSEC-2026-0346 through RUSTSEC-2026-0349. The lockfile
+selects that release; features remain `ring`, `std` and `tls12`, with
+defaults disabled. Hatchling uses the built-in session cache, enables
+neither ECH nor Brotli certificate compression, and uses ring rather
+than aws-lc's hybrid key exchange. These configurations narrow exposure
+to the reported paths; upgrading retains all upstream hardening without
+adding advisory exceptions or weakening certificate verification.
+
 ## webpki-roots
 
 The Mozilla CA root list, compiled in, as `hatchling-egress`'s bundled

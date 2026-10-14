@@ -16,6 +16,8 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Fixed
 
+- TLS uses rustls 0.23.46 or newer, fixing four upstream security advisories and preventing selection of an older affected version. The crypto provider and TLS configuration are unchanged.
+
 
 - A cell is held to hard limits: by default 4,096 processes (threads included), 8,192 open files and an 8 GiB largest file, set as both its soft and its hard limits just before the program starts, so it can't lift them. Set each with `HATCHLING_CELL_MAX_PROCESSES`, `HATCHLING_CELL_MAX_OPEN_FILES`, `HATCHLING_CELL_MAX_FILE_SIZE` and `HATCHLING_CELL_MAX_ADDRESS_SPACE` (bytes, unlimited by default), or `unlimited` to leave the broker's own; a value above the broker's own hard limit is held at the broker's. See [cell limits](README.md#cell-limits) (WO-004).
 - A cell no longer outlives its supervisor when its program clears its own parent-death signal. Every cell's pid 1 is now Hatchling's init: it holds the death signal against the supervisor, never runs the program's code, reaps every child that exits, and ends with the program's exit code; the program runs as pid 2. When the supervisor dies, so does the init, and the kernel kills everything left in the cell. The init holds no capability, runs under `no_new_privs`, closes what it inherited, and can't be dumped or traced by the program it shares a uid with (WO-004).
