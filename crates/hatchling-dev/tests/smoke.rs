@@ -33,7 +33,11 @@ fn unknown_command_fails_closed() {
         .arg("no-such-command")
         .output()
         .unwrap();
-    assert!(!output.status.success(), "unknown command exited 0");
+    assert_eq!(output.status.code(), Some(64));
+    assert!(output.stdout.is_empty());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("unknown command"), "stderr was: {stderr}");
+    assert!(
+        stderr.starts_with("Usage: hatchling-dev "),
+        "stderr was: {stderr}"
+    );
 }

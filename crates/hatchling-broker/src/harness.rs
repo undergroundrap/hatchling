@@ -62,6 +62,7 @@ use hatchling_skill::CodeHash;
 use serde::{Deserialize, Serialize};
 
 use crate::cell::{HarnessDirs, HarnessNetwork};
+use crate::environment as env;
 use crate::harness_relay::{RELAY_PORT, Relay, Vendor, Wire};
 use crate::skill_cell::VerifiedCode;
 use crate::skill_run::{SkillRunError, SkillRuntime, run_cell};
@@ -112,11 +113,11 @@ const CODEX_HOST: &str = "codex-code-mode-host";
 
 /// The settings pinning the Codex CLI's code-mode host: its
 /// default model has no tools without it.
-const CODEX_HOST_KEY: &str = "HATCHLING_HARNESS_CODEX_CLI_HOST";
-const CODEX_HOST_HASH_KEY: &str = "HATCHLING_HARNESS_CODEX_CLI_HOST_SHA256";
+const CODEX_HOST_KEY: &str = env::HATCHLING_HARNESS_CODEX_CLI_HOST.name;
+const CODEX_HOST_HASH_KEY: &str = env::HATCHLING_HARNESS_CODEX_CLI_HOST_SHA256.name;
 
 /// The setting naming a CLI cell's tools.
-const TOOLS_KEY: &str = "HATCHLING_HARNESS_TOOLS";
+const TOOLS_KEY: &str = env::HATCHLING_HARNESS_TOOLS.name;
 
 /// The tools a CLI cell gets unless `HATCHLING_HARNESS_TOOLS` names
 /// others: a shell, bash, git, ripgrep and the coreutils a coding
@@ -221,24 +222,24 @@ impl HarnessKind {
     /// The setting that names the harness binary.
     const fn path_key(self) -> &'static str {
         match self {
-            Self::ClaudeCode => "HATCHLING_HARNESS_CLAUDE_CODE",
-            Self::CodexCli => "HATCHLING_HARNESS_CODEX_CLI",
+            Self::ClaudeCode => env::HATCHLING_HARNESS_CLAUDE_CODE.name,
+            Self::CodexCli => env::HATCHLING_HARNESS_CODEX_CLI.name,
         }
     }
 
     /// The setting that pins the binary's SHA-256.
     const fn hash_key(self) -> &'static str {
         match self {
-            Self::ClaudeCode => "HATCHLING_HARNESS_CLAUDE_CODE_SHA256",
-            Self::CodexCli => "HATCHLING_HARNESS_CODEX_CLI_SHA256",
+            Self::ClaudeCode => env::HATCHLING_HARNESS_CLAUDE_CODE_SHA256.name,
+            Self::CodexCli => env::HATCHLING_HARNESS_CODEX_CLI_SHA256.name,
         }
     }
 
     /// The setting that names the harness's vendor API.
     const fn api_key(self) -> &'static str {
         match self {
-            Self::ClaudeCode => "HATCHLING_HARNESS_CLAUDE_CODE_API",
-            Self::CodexCli => "HATCHLING_HARNESS_CODEX_CLI_API",
+            Self::ClaudeCode => env::HATCHLING_HARNESS_CLAUDE_CODE_API.name,
+            Self::CodexCli => env::HATCHLING_HARNESS_CODEX_CLI_API.name,
         }
     }
 
@@ -472,8 +473,8 @@ impl Harnesses {
             ));
         }
         let tools = parse_tools(get(TOOLS_KEY).as_deref(), !vendors.is_empty())?;
-        let roots = parse_roots(get("HATCHLING_HARNESS_ROOTS").as_deref(), config)?;
-        let timeout = parse_timeout(get("HATCHLING_HARNESS_TIMEOUT_SECS").as_deref())?;
+        let roots = parse_roots(get(env::HATCHLING_HARNESS_ROOTS.name).as_deref(), config)?;
+        let timeout = parse_timeout(get(env::HATCHLING_HARNESS_TIMEOUT_SECS.name).as_deref())?;
         if !binaries.is_empty() {
             if roots.is_empty() {
                 return Err(invalid(

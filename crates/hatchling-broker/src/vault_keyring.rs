@@ -26,6 +26,7 @@ use hatchling_vault::{
     Protection, SingleKeyRisk, Tier, Unlocked, Warning,
 };
 
+use crate::environment as env;
 use crate::{Error, VaultConfig};
 
 /// The keyring settings.
@@ -94,10 +95,16 @@ impl KeyringConfig {
     /// Returns [`Error::InvalidConfig`] for a relative path.
     pub fn parse(get: impl Fn(&str) -> Option<String>) -> Result<Self, Error> {
         Ok(Self {
-            keyring: absolute(get("HATCHLING_VAULT_KEYRING"), "HATCHLING_VAULT_KEYRING")?,
-            kek_file: absolute(get("HATCHLING_VAULT_KEK_FILE"), "HATCHLING_VAULT_KEK_FILE")?,
+            keyring: absolute(
+                get(env::HATCHLING_VAULT_KEYRING.name),
+                "HATCHLING_VAULT_KEYRING",
+            )?,
+            kek_file: absolute(
+                get(env::HATCHLING_VAULT_KEK_FILE.name),
+                "HATCHLING_VAULT_KEK_FILE",
+            )?,
             require_hardware_key: flag(
-                get("HATCHLING_REQUIRE_HARDWARE_KEY").as_deref(),
+                get(env::HATCHLING_REQUIRE_HARDWARE_KEY.name).as_deref(),
                 "HATCHLING_REQUIRE_HARDWARE_KEY",
             )?,
         })

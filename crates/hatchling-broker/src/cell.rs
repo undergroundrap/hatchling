@@ -37,6 +37,7 @@ use hatchling_isolation::{
 use serde::{Deserialize, Serialize};
 
 use crate::Error;
+use crate::environment as env;
 
 /// Where a harness cell sees its work tree: its working
 /// directory.
@@ -167,18 +168,30 @@ impl CellLimits {
     fn parse(get: impl Fn(&str) -> Option<String>) -> Result<Self, Error> {
         let defaults = Self::default();
         Ok(Self {
-            processes: limit(&get, "HATCHLING_CELL_MAX_PROCESSES", defaults.processes)?,
+            processes: limit(
+                &get,
+                env::HATCHLING_CELL_MAX_PROCESSES.name,
+                defaults.processes,
+            )?,
             address_space: limit(
                 &get,
-                "HATCHLING_CELL_MAX_ADDRESS_SPACE",
+                env::HATCHLING_CELL_MAX_ADDRESS_SPACE.name,
                 defaults.address_space,
             )?,
-            file_size: limit(&get, "HATCHLING_CELL_MAX_FILE_SIZE", defaults.file_size)?,
-            open_files: limit(&get, "HATCHLING_CELL_MAX_OPEN_FILES", defaults.open_files)?,
+            file_size: limit(
+                &get,
+                env::HATCHLING_CELL_MAX_FILE_SIZE.name,
+                defaults.file_size,
+            )?,
+            open_files: limit(
+                &get,
+                env::HATCHLING_CELL_MAX_OPEN_FILES.name,
+                defaults.open_files,
+            )?,
             memory: limit(
                 &get,
-                "HATCHLING_CELL_MAX_MEMORY",
-                if get("HATCHLING_CELL_CGROUP").is_some() {
+                env::HATCHLING_CELL_MAX_MEMORY.name,
+                if get(env::HATCHLING_CELL_CGROUP.name).is_some() {
                     Some(hatchling_sys::cgroup::default_memory().map_err(|source| {
                         Error::InvalidConfig {
                             key: "HATCHLING_CELL_MAX_MEMORY",
@@ -189,7 +202,7 @@ impl CellLimits {
                     None
                 },
             )?,
-            cpu_millis: cpu_limit(get("HATCHLING_CELL_MAX_CPUS").as_deref())?,
+            cpu_millis: cpu_limit(get(env::HATCHLING_CELL_MAX_CPUS.name).as_deref())?,
         })
     }
 }
@@ -241,7 +254,7 @@ pub(crate) fn env_value(raw: Result<String, std::env::VarError>) -> Option<Strin
 pub(crate) fn cgroup_parent(
     get: &impl Fn(&str) -> Option<String>,
 ) -> Result<Option<PathBuf>, Error> {
-    get("HATCHLING_CELL_CGROUP")
+    get(env::HATCHLING_CELL_CGROUP.name)
         .map(|raw| {
             let parent = PathBuf::from(raw);
             hatchling_sys::cgroup::prepare_parent(&parent).map_err(|source| {
@@ -641,8 +654,8 @@ impl CellConfig {
         socket: &SocketPath,
         agent_uid: u32,
     ) -> Result<Self, Error> {
-        let agent_bin =
-            get("HATCHLING_AGENT_BIN").ok_or(Error::MissingConfig("HATCHLING_AGENT_BIN"))?;
+        let agent_bin = get(env::HATCHLING_AGENT_BIN.name)
+            .ok_or(Error::MissingConfig("HATCHLING_AGENT_BIN"))?;
         let agent_bin = PathBuf::from(agent_bin);
         if !agent_bin.is_absolute() {
             return Err(Error::InvalidConfig {
@@ -659,7 +672,8 @@ impl CellConfig {
                 reason: format!("agent binary not found: {}", agent_bin.display()),
             });
         }
-        let cell_id = get("HATCHLING_CELL_ID").ok_or(Error::MissingConfig("HATCHLING_CELL_ID"))?;
+        let cell_id =
+            get(env::HATCHLING_CELL_ID.name).ok_or(Error::MissingConfig("HATCHLING_CELL_ID"))?;
         if cell_id.trim().is_empty() {
             return Err(Error::InvalidConfig {
                 key: "HATCHLING_CELL_ID",
@@ -667,14 +681,14 @@ impl CellConfig {
             });
         }
         let backend = hatchling_isolation::platform();
-        let principal = match get("HATCHLING_CELL_UID_BASE") {
+        let principal = match get(env::HATCHLING_CELL_UID_BASE.name) {
             Some(raw) => Some(raw.parse::<u32>().map_err(|_| Error::InvalidConfig {
                 key: "HATCHLING_CELL_UID_BASE",
                 reason: String::from("expected a kernel uid as a base-10 u32"),
             })?),
             None => None,
         };
-        let uid_count = match get("HATCHLING_CELL_UID_COUNT") {
+        let uid_count = match get(env::HATCHLING_CELL_UID_COUNT.name) {
             Some(raw) => raw.parse::<u32>().map_err(|_| Error::InvalidConfig {
                 key: "HATCHLING_CELL_UID_COUNT",
                 reason: String::from("expected a count as a base-10 u32"),

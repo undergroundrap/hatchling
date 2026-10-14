@@ -21,6 +21,7 @@ pub mod channel;
 pub mod cli;
 pub mod config;
 pub mod egress;
+pub mod environment;
 pub mod error;
 pub mod goals;
 pub mod handshake;
