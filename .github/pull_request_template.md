@@ -35,6 +35,9 @@ Work order: <!-- WO-NNN, or "none" -->
 
 - [ ] This PR touches the trust boundary: <!-- yes / no -->
   <!-- If yes: auth, isolation, secrets, egress, or permissions — describe the impact -->
+- Attack this stops: <!-- attacker, exploit path, prevented outcome; n/a if not a defense -->
+- Hand mutant result: <!-- patch, exact command, test name and expected failure; n/a with reason -->
+- [ ] Real-cell proof ran with `HATCHLING_REQUIRE_CELL=1`: <!-- command and adversarial summary; n/a with reason; cgroups also require HATCHLING_REQUIRE_CGROUP=1 -->
 
 ## Checklist
 

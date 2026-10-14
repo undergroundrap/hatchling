@@ -13,6 +13,7 @@ Instructions for AI agents working in this repository.
   order's scope; anything outside it is a different work order.
 - **Docs must match code.** If you change behavior, update the docs in the
   same commit.
+- **Security fixes** follow `CONTRIBUTING.md#security-fixes` and `docs/testing-patterns.md`: name the attack, hand-break the defense, and prove the affected boundary.
 
 ## Repository layout
 
