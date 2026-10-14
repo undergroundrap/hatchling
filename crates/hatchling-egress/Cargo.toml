@@ -40,7 +40,7 @@ serde = "1"
 serde_json = "1"
 # The proxy's own HTTPS client. ring is the one crypto backend;
 # the system CA store is never read (webpki-roots is the bundled set).
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 webpki-roots = "1"
 
 [dev-dependencies]
