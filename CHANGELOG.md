@@ -6,7 +6,12 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ## [Unreleased]
 
+### Changed
+
+- An operator-delegated `HATCHLING_CELL_CGROUP` now gives every cell its own cgroup v2 leaf, holding the whole cell to `pids.max`, `memory.max` (half the host's memory by default, configurable with `HATCHLING_CELL_MAX_MEMORY`) and `cpu.max` (`HATCHLING_CELL_MAX_CPUS`, fractional cores, unlimited by default). The first child enters before release, and cleanup kills all tasks and removes the leaf. Unset uses the documented rlimit fallback with a startup warning; configured but unusable fails closed. `CellSpec` and `CellConfig` gain `cgroup`; `Limits` and `CellLimits` gain `memory` and `cpu_millis`; `hatchling_sys::Error` gains `Cgroup` (breaking Rust struct construction and exhaustive matches; serialized configs retain defaults). See [cell limits](README.md#cell-limits) (WO-004).
+
 ### Fixed
+
 
 - A cell is held to hard limits: by default 4,096 processes (threads included), 8,192 open files and an 8 GiB largest file, set as both its soft and its hard limits just before the program starts, so it can't lift them. Set each with `HATCHLING_CELL_MAX_PROCESSES`, `HATCHLING_CELL_MAX_OPEN_FILES`, `HATCHLING_CELL_MAX_FILE_SIZE` and `HATCHLING_CELL_MAX_ADDRESS_SPACE` (bytes, unlimited by default), or `unlimited` to leave the broker's own; a value above the broker's own hard limit is held at the broker's. See [cell limits](README.md#cell-limits) (WO-004).
 - A cell no longer outlives its supervisor when its program clears its own parent-death signal. Every cell's pid 1 is now Hatchling's init: it holds the death signal against the supervisor, never runs the program's code, reaps every child that exits, and ends with the program's exit code; the program runs as pid 2. When the supervisor dies, so does the init, and the kernel kills everything left in the cell. The init holds no capability, runs under `no_new_privs`, closes what it inherited, and can't be dumped or traced by the program it shares a uid with (WO-004).

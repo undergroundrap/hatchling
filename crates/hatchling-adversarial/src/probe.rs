@@ -167,6 +167,19 @@ pub fn run() -> Result<(), String> {
             let outcome = outlive_the_supervisor(OUTLIVE_FOR)?;
             emit(attack, outcome, None)
         }
+        Attack::ForkBomb => {
+            if std::process::id() != 2 {
+                return Err(String::from("refusing fork bomb: not PID 2 inside a cell"));
+            }
+            let (outcome, _children) = fork_bomb(128);
+            emit(attack, outcome, None)?;
+            // Keep the group saturated while the driver proves host forks work.
+            std::thread::sleep(Duration::from_secs(3));
+            // Child's pidfd signalling/waitid are deliberately outside this
+            // filter. Exit without Rust destructors; the cell's init and
+            // cgroup cleanup kill and reap every sleeping descendant.
+            hatchling_sys::exit_child(0)
+        }
     }
 }
 /// The raw call's return in the kernel's own form, like every survival
@@ -193,6 +206,9 @@ fn run_report_attack(attack: Attack) -> Result<Outcome, String> {
         Attack::NegativeSweep => Ok(negative_sweep()),
         Attack::Groups => groups(),
         Attack::RaiseLimits => Ok(raise_limits()),
+        Attack::ForkBomb => Err(String::from(
+            "fork bomb requires the CLI cell and its live driver",
+        )),
         Attack::Seccomp(_) | Attack::PrivescUnshare | Attack::NetBind | Attack::TcpSocket => {
             Err(String::from("signal-verdict attack has no report form"))
         }
@@ -200,6 +216,35 @@ fn run_report_attack(attack: Attack) -> Result<Outcome, String> {
             "the death-signal attack reports only if it outlives its supervisor",
         )),
     }
+}
+
+/// Finite even under a broken limit: never puts unbounded pressure on the host.
+fn fork_bomb(attempts: usize) -> (Outcome, Vec<hatchling_sys::Child>) {
+    let mut children = Vec::new();
+    let mut errno = 0;
+    for _ in 0..attempts {
+        match hatchling_sys::fork() {
+            Ok(hatchling_sys::ForkResult::Parent { child }) => children.push(child),
+            Ok(hatchling_sys::ForkResult::Child) => {
+                std::thread::sleep(Duration::from_secs(30));
+                hatchling_sys::exit_child(0);
+            }
+            Err(error) => {
+                errno = error
+                    .source()
+                    .and_then(|source| source.downcast_ref::<std::io::Error>())
+                    .map_or(NO_ERRNO, os_errno);
+                break;
+            }
+        }
+    }
+    (
+        Outcome::ForkBomb {
+            forks: children.len(),
+            errno,
+        },
+        children,
+    )
 }
 
 fn broker_socket() -> Result<String, String> {
@@ -530,6 +575,13 @@ fn negative_sweep() -> Outcome {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fork_bomb_reports_its_bounded_attempts_and_reaps_children() {
+        assert_eq!(
+            super::fork_bomb(2).0,
+            crate::Outcome::ForkBomb { forks: 2, errno: 0 }
+        );
+    }
     use super::raw_syscall_nr;
     use crate::HeldLimit;
 

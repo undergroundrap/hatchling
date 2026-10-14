@@ -8,6 +8,16 @@ use thiserror::Error;
 /// All errors producible by `hatchling-sys`.
 #[derive(Debug, Error)]
 pub enum Error {
+    /// A delegated cgroup could not be configured or cleaned up.
+    #[error("cgroup operation failed: {operation} at {path}: {source}")]
+    Cgroup {
+        /// Which operation failed.
+        operation: &'static str,
+        /// The operator's directory or this cell's leaf.
+        path: std::path::PathBuf,
+        /// The underlying failure.
+        source: std::io::Error,
+    },
     /// An id map was constructed with invalid parameters.
     #[error("invalid id map: {reason}")]
     InvalidIdMap {

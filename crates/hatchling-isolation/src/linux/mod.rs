@@ -85,6 +85,7 @@ pub(crate) fn cell_available() -> bool {
         relay: None,
         filter: crate::Filter::Program,
         limits: crate::Limits::default(),
+        cgroup: None,
     });
     let works = probe
         .and_then(|spec| Linux.isolate(&spec))
@@ -140,6 +141,7 @@ mod tests {
             relay: None,
             filter: crate::Filter::Program,
             limits: crate::Limits::default(),
+            cgroup: None,
         };
         assert_eq!(Linux.view(&spec).unwrap(), view::view(&spec).unwrap());
     }

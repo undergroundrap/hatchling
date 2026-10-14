@@ -708,3 +708,52 @@ pub(crate) fn write_roots_file(path: &Path, keys: &[[u8; 32]]) -> Result<(), Str
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
         .map_err(|e| format!("roots file mode: {e}"))
 }
+
+/// Replays real helper lifecycle cases in a fresh process with a private
+/// delegation, without changing the parallel test process's environment.
+#[allow(dead_code, reason = "shared by the skill and scheduled-run suites")]
+pub(crate) fn cgroup_lifecycle_cases(tag: &str, cases: &[&str]) -> Result<(), String> {
+    if !guard_cell_available()? {
+        return Ok(());
+    }
+    let Some(base) = std::env::var_os("HATCHLING_TEST_CGROUP") else {
+        if std::env::var("HATCHLING_REQUIRE_CGROUP").is_ok_and(|v| v == "1") {
+            return Err(String::from("HATCHLING_REQUIRE_CGROUP=1 but no delegation"));
+        }
+        let _ = writeln!(std::io::stderr(), "skipping helper cgroups: no delegation");
+        return Ok(());
+    };
+    let mut parent = hatchling_sys::cgroup::CellCgroup::create(
+        Path::new(&base),
+        hatchling_sys::cgroup::CgroupLimits::default(),
+    )
+    .map_err(|e| e.to_string())?;
+    for case in cases {
+        let output =
+            std::process::Command::new(std::env::current_exe().map_err(|e| e.to_string())?)
+                .args(["--exact", case, "--nocapture"])
+                .env("HATCHLING_CELL_CGROUP", parent.path())
+                .env("HATCHLING_REQUIRE_CELL", "1")
+                .output()
+                .map_err(|e| e.to_string())?;
+        if !output.status.success() || !String::from_utf8_lossy(&output.stdout).contains("1 passed")
+        {
+            return Err(format!(
+                "{tag} case {case}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        let leaves = std::fs::read_dir(parent.path())
+            .map_err(|e| e.to_string())?
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+            .count();
+        if leaves != 0 {
+            return Err(format!(
+                "{tag} case {case} stranded {leaves} cgroup directories"
+            ));
+        }
+    }
+    parent.finish().map_err(|e| e.to_string())
+}

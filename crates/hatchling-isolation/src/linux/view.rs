@@ -387,6 +387,7 @@ pub(super) mod tests {
             relay: None,
             filter: Filter::Program,
             limits: crate::Limits::default(),
+            cgroup: None,
         };
         let mut harness = skill.clone();
         for name in ["work", "scratch"] {

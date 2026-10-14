@@ -228,13 +228,18 @@ pub struct CellSpec {
     pub filter: Filter,
     /// What the program, and everything it starts, is held to.
     pub limits: Limits,
+    /// The delegated parent for this cell's resource group, if configured.
+    /// The cell itself never sees this host path.
+    pub cgroup: Option<PathBuf>,
 }
 
 /// What a cell's program, and everything it starts, is held to.
 ///
-/// Each limit set is both the soft and the hard one, so the cell can't
-/// lift it, and one above what the broker itself is held to is held at the
-/// broker's. `None` leaves the broker's own.
+/// Program limits are both soft and hard, so the cell can't lift them;
+/// values above the broker's hard limit are held at that limit. `None`
+/// leaves the inherited limit. Whole-cell memory and CPU require a group;
+/// unset values there inherit its parent's bound. With a group, the process
+/// bound counts every task in the cell; without one it is a real-uid rlimit.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Limits {
     /// How many processes, threads included, the cell may hold at once.
@@ -246,6 +251,10 @@ pub struct Limits {
     pub file_size: Option<u64>,
     /// How many files the program may hold open at once.
     pub open_files: Option<u64>,
+    /// Memory for the whole cell, in bytes; requires a delegated group.
+    pub memory: Option<u64>,
+    /// CPU allowance in thousandths of a core; requires a delegated group.
+    pub cpu_millis: Option<u64>,
 }
 
 /// A broker endpoint a cell may reach. Its directory is seen read-only

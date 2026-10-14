@@ -244,6 +244,8 @@ pub struct LinuxCell {
     child_to_parent: ChildToParent,
     /// The cell's relay listener, until the owner takes it.
     relay: Option<TcpListener>,
+    /// Owned resource leaf; kills all remaining tasks on every exit path.
+    cgroup: Option<hatchling_sys::cgroup::CellCgroup>,
 }
 
 impl crate::Cell for LinuxCell {
@@ -298,6 +300,11 @@ impl LinuxCell {
             .child
             .wait_deadline(child_deadline)
             .map_err(|source| Error::Wait(PlatformError::new(source)))?;
+        if let Some(group) = &mut self.cgroup {
+            group
+                .finish()
+                .map_err(|source| Error::Wait(PlatformError::new(source)))?;
+        }
         // The pipe reaches EOF once every child has exited or exec'd
         // (CLOEXEC); anything written before that is a setup failure
         // report. Bounded: a leaked writer cannot hang the broker.
@@ -325,6 +332,9 @@ impl Drop for LinuxCell {
     /// harmlessly when the fields drop right after.
     fn drop(&mut self) {
         let _ = self.child.terminate();
+        if let Some(group) = &mut self.cgroup {
+            let _ = group.finish();
+        }
         // Bounded reap: the SIGKILL is already in flight, so this
         // returns as soon as the child dies. Already-reaped is an
         // ignored error, not a hang.
@@ -356,7 +366,7 @@ fn staging_dir() -> PathBuf {
 
 /// Spawns the cell and execs the spec's program inside it.
 ///
-/// On success the program is running as PID 1 in the new pid namespace,
+/// On success the program runs as PID 2 under Hatchling's init in its pid namespace,
 /// confined by the mount namespace, the seccomp allowlist, and
 /// `NoNewPrivs`. The returned cell must be waited on (directly, or by a
 /// reaper thread) to avoid a zombie and to clean up the staging
@@ -368,7 +378,28 @@ fn staging_dir() -> PathBuf {
 /// construction, or any spawn step fails. Failures before the program
 /// image is exec'd are fail-closed: the child exits without running
 /// anything.
+#[allow(
+    clippy::too_many_lines,
+    reason = "resource configuration and the fork handshake are audited together in fail-closed order"
+)]
 pub(super) fn isolate(spec: &CellSpec) -> Result<LinuxCell, Error> {
+    // Limits precede fork and placement; the child cannot execute or fork
+    // until the parent places it and sends the release byte.
+    let cgroup = spec
+        .cgroup
+        .as_ref()
+        .map(|parent| {
+            hatchling_sys::cgroup::CellCgroup::create(
+                parent,
+                hatchling_sys::cgroup::CgroupLimits {
+                    processes: spec.limits.processes,
+                    memory: spec.limits.memory,
+                    cpu_millis: spec.limits.cpu_millis,
+                },
+            )
+        })
+        .transpose()
+        .map_err(|source| Error::Start(PlatformError::new(source)))?;
     // The agent reaches the broker through the socket directory, which
     // is bind-mounted read-only into the cell. Inside the cell the
     // agent runs as the map base (a host uid), so the host socket and
@@ -444,6 +475,7 @@ pub(super) fn isolate(spec: &CellSpec) -> Result<LinuxCell, Error> {
                 &mut child_to_parent,
                 &mut parent_to_child,
                 READY_TIMEOUT,
+                cgroup.as_ref(),
             )?;
             let relay = match relay.map(|channel| receive_relay(&channel, RELAY_TIMEOUT)) {
                 None => None,
@@ -464,6 +496,7 @@ pub(super) fn isolate(spec: &CellSpec) -> Result<LinuxCell, Error> {
                 staging_dir,
                 child_to_parent,
                 relay,
+                cgroup,
             })
         }
         ForkResult::Child => {
@@ -572,6 +605,7 @@ fn parent_after_fork(
     child_to_parent: &mut ChildToParent,
     parent_to_child: &mut ParentToChild,
     ready_timeout: Duration,
+    cgroup: Option<&hatchling_sys::cgroup::CellCgroup>,
 ) -> Result<Child, Error> {
     // Wait for the child's ready byte: EOF or anything else means it
     // died or failed before the namespaces were ready. If the child
@@ -607,6 +641,11 @@ fn parent_after_fork(
     // Release the child into mount construction, then drop our write
     // end: the parent never writes again. The child's read end stays
     // open so `wait` still sees EOF only after every child is gone.
+    if let Some(group) = cgroup {
+        group
+            .place(child.pid().get())
+            .map_err(|source| Error::Start(PlatformError::new(source)))?;
+    }
     if let Err(source) = parent_to_child.write_byte(b'D') {
         drop(child);
         return Err(Error::Spawn {
@@ -905,7 +944,7 @@ fn exec_program(spec: &CellSpec) -> hatchling_sys::Error {
         .map(|(key, value)| (key.as_str(), value.as_str()))
         .collect();
     hatchling_sys::exec(Path::new(PROGRAM), &argv, &env, || {
-        hold_to_limits(&spec.limits)
+        hold_to_limits(&spec.limits, spec.cgroup.is_some())
     })
 }
 
@@ -915,9 +954,12 @@ fn exec_program(spec: &CellSpec) -> hatchling_sys::Error {
 /// # Errors
 ///
 /// The first limit the kernel refuses.
-fn hold_to_limits(limits: &Limits) -> Result<(), hatchling_sys::Error> {
+fn hold_to_limits(limits: &Limits, grouped: bool) -> Result<(), hatchling_sys::Error> {
     [
-        (hatchling_sys::Limit::Processes, limits.processes),
+        (
+            hatchling_sys::Limit::Processes,
+            if grouped { None } else { limits.processes },
+        ),
         (hatchling_sys::Limit::AddressSpace, limits.address_space),
         (hatchling_sys::Limit::FileSize, limits.file_size),
         (hatchling_sys::Limit::OpenFiles, limits.open_files),
@@ -1333,6 +1375,7 @@ pub(super) mod tests {
             staging_dir: staging.clone(),
             child_to_parent,
             relay: None,
+            cgroup: None,
         };
         // The production wait delegates to `wait_with_deadlines` with
         // the hour-long `CELL_WAIT_DEADLINE` for the child and the 30 s
@@ -1377,6 +1420,7 @@ pub(super) mod tests {
             staging_dir: staging,
             child_to_parent,
             relay: None,
+            cgroup: None,
         };
         // Child wrote an E-report: wait must surface it as Spawn.
         let result = cell.wait_with_deadlines(SHORT_DEADLINE, SHORT_DEADLINE);
@@ -1491,7 +1535,15 @@ pub(super) mod tests {
         let uid_map = IdMap::new(65534, 1).unwrap();
         let gid_map = IdMap::new(65534, 1).unwrap();
         let err = within_watchdog("parent_after_fork", move || {
-            parent_after_fork(child, uid_map, gid_map, &mut c2p, &mut p2c, SHORT_DEADLINE)
+            parent_after_fork(
+                child,
+                uid_map,
+                gid_map,
+                &mut c2p,
+                &mut p2c,
+                SHORT_DEADLINE,
+                None,
+            )
         })
         .expect_err("wrong ready byte must fail");
         assert!(
@@ -1520,7 +1572,15 @@ pub(super) mod tests {
         let uid_map = IdMap::new(65534, 1).unwrap();
         let gid_map = IdMap::new(65534, 1).unwrap();
         let err = within_watchdog("parent_after_fork", move || {
-            parent_after_fork(child, uid_map, gid_map, &mut c2p, &mut p2c, SHORT_DEADLINE)
+            parent_after_fork(
+                child,
+                uid_map,
+                gid_map,
+                &mut c2p,
+                &mut p2c,
+                SHORT_DEADLINE,
+                None,
+            )
         })
         .expect_err("write_maps without userns must fail");
         // Must be an Identity error (from write_maps), NOT the
@@ -1551,7 +1611,15 @@ pub(super) mod tests {
         let uid_map = IdMap::new(65534, 1).unwrap();
         let gid_map = IdMap::new(65534, 1).unwrap();
         let err = within_watchdog("parent_after_fork", move || {
-            parent_after_fork(child, uid_map, gid_map, &mut c2p, &mut p2c, SHORT_DEADLINE)
+            parent_after_fork(
+                child,
+                uid_map,
+                gid_map,
+                &mut c2p,
+                &mut p2c,
+                SHORT_DEADLINE,
+                None,
+            )
         })
         .expect_err("'E' from child must fail");
         assert!(
@@ -1632,6 +1700,7 @@ pub(super) mod tests {
                     staging_dir: staging.clone(),
                     child_to_parent: c2p,
                     relay: None,
+                    cgroup: None,
                 };
                 (pid, cell, staging)
             }
@@ -1701,6 +1770,8 @@ pub(super) mod tests {
         address_space: Some(1 << 40),
         file_size: Some(1 << 30),
         open_files: Some(64),
+        memory: None,
+        cpu_millis: None,
     };
 
     /// Whether this process is held to exactly `limits`, soft and hard,
@@ -1755,24 +1826,46 @@ pub(super) mod tests {
             let before = limits_now();
             let some = Limits {
                 open_files: Some(32),
+                memory: None,
+                cpu_millis: None,
                 ..Limits::default()
             };
-            if hold_to_limits(&some).is_err() {
+            if hold_to_limits(&some, false).is_err() {
                 return 1;
             }
             if !held_to(&some, &before) {
                 return 2;
             }
-            if hold_to_limits(&HELD).is_err() {
+            if hold_to_limits(&HELD, false).is_err() {
                 return 1;
             }
             // Open files stays at 32: a limit is never raised.
             let raised = Limits {
                 open_files: Some(32),
+                memory: None,
+                cpu_millis: None,
                 ..HELD
             };
             if held_to(&raised, &before) { 0 } else { 2 }
         });
+    }
+
+    #[test]
+    fn a_grouped_cell_keeps_nproc_for_the_cgroup_to_enforce() {
+        in_child(
+            "1: refused; 2: grouped cell changed NPROC or lost another limit",
+            || {
+                let before = limits_now();
+                if hold_to_limits(&HELD, true).is_err() {
+                    return 1;
+                }
+                let grouped = Limits {
+                    processes: None,
+                    ..HELD
+                };
+                if held_to(&grouped, &before) { 0 } else { 2 }
+            },
+        );
     }
 
     #[test]
@@ -1798,6 +1891,7 @@ pub(super) mod tests {
             relay: None,
             filter: Filter::Program,
             limits: HELD,
+            cgroup: None,
         };
         in_child("1: no error; 2: not held to its limits", || {
             let before = limits_now();

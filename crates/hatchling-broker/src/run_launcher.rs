@@ -274,6 +274,7 @@ impl<'scope, 'env> CellLauncher<'scope, 'env> {
 /// One run in flight.
 pub struct CellRun<'scope> {
     child: Process,
+    cgroup: Option<hatchling_sys::cgroup::CellCgroup>,
     started: Instant,
     timeout: Duration,
     output: mpsc::Receiver<Vec<u8>>,
@@ -347,6 +348,9 @@ impl<'scope> CellLauncher<'scope, '_> {
             run,
         )
         .map_err(|err| cleanup(format!("cannot configure the run cell: {err}")))?;
+        let (cell, cgroup) = cell
+            .supervised_cgroup()
+            .map_err(|err| cleanup(format!("cannot prepare the run cgroup: {err}")))?;
         let spec = serde_json::to_string(&cell)
             .map_err(|err| cleanup(format!("cannot encode the run cell: {err}")))?;
         let run_config = scoped(&token, socket);
@@ -369,6 +373,7 @@ impl<'scope> CellLauncher<'scope, '_> {
         tracing::info!(label = %label, run = %token, "run cell started");
         Ok(CellRun {
             child,
+            cgroup,
             started,
             timeout: self.env.timeout,
             output,
@@ -471,6 +476,7 @@ impl CellRun<'_> {
     /// its stdout and kept stderr.
     fn teardown(&mut self) -> (Vec<u8>, Vec<u8>) {
         self.done = true;
+        drop(self.cgroup.take());
         // A run that never connected leaves its session waiting to
         // accept: the flag ends that wait.
         self.stop.store(true, Ordering::Release);
@@ -949,6 +955,7 @@ mod tests {
         let (child, output, errors) = start_helper(spawner, "{}", dir).unwrap();
         CellRun {
             child,
+            cgroup: None,
             started: Instant::now(),
             timeout,
             output,
@@ -965,6 +972,81 @@ mod tests {
     /// to its end: `/bin/sh agent-run {}` finds no script called
     /// `agent-run` and exits non-zero. The end is taken once, and the run's
     /// directory goes with it.
+    #[test]
+    fn launch_cell_and_teardown_cover_failed_spawn_and_a_completed_helper() {
+        let dir = helper_dir("direct-launch");
+        let mut config = config();
+        config.agent_uid = PeerUid::from_kernel(
+            hatchling_isolation::platform()
+                .identity(None, 1)
+                .unwrap()
+                .principal,
+        );
+        let key = MasterKey::generate().unwrap();
+        let request = request(Vec::new());
+        let run = ScheduledRun {
+            task: String::from("test"),
+            missed: false,
+            due: 1,
+            model_endpoint: None,
+            model_name: None,
+            depth: 0,
+            event: None,
+            max_steps: None,
+            subagent: false,
+        };
+        std::thread::scope(|scope| {
+            let env = RunEnv {
+                spawner: PathBuf::from("/no-such-hatchling-spawner"),
+                agent_bin: PathBuf::from("/bin/true"),
+                run_root: dir.clone(),
+                timeout: Duration::from_secs(5),
+            };
+            let launcher = CellLauncher::new(scope, &config, &key, env.clone());
+            let error = launcher
+                .launch_cell("missing", run.clone(), |token, socket| {
+                    scoped_config(&config, &request, token, socket)
+                })
+                .unwrap_err();
+            assert!(error.contains("cannot start"), "{error}");
+            assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+            let launcher = CellLauncher::new(
+                scope,
+                &config,
+                &key,
+                RunEnv {
+                    spawner: PathBuf::from("/bin/sh"),
+                    ..env
+                },
+            );
+            let mut started = launcher
+                .launch_cell("direct", run, |token, socket| {
+                    scoped_config(&config, &request, token, socket)
+                })
+                .unwrap();
+            let run_dir = started.run_dir.clone();
+            started.child.wait_deadline(Duration::from_secs(5)).unwrap();
+            let group_path = std::env::var_os("HATCHLING_TEST_CGROUP").map(|base| {
+                let group = hatchling_sys::cgroup::CellCgroup::create(
+                    Path::new(&base),
+                    hatchling_sys::cgroup::CgroupLimits::default(),
+                )
+                .unwrap();
+                let path = group.path().to_path_buf();
+                started.cgroup = Some(group);
+                path
+            });
+            let (_, errors) = started.teardown();
+            assert!(String::from_utf8_lossy(&errors).contains("agent-run"));
+            assert!(started.done);
+            assert!(!run_dir.exists());
+            if let Some(path) = group_path {
+                assert!(!path.exists());
+            }
+        });
+        std::fs::remove_dir(dir).unwrap();
+    }
+
     #[test]
     fn a_started_helper_is_polled_to_its_exit_code() {
         let dir = helper_dir("exit");
@@ -985,6 +1067,19 @@ mod tests {
         );
         assert_eq!(run.poll_end(), None, "an end is taken once");
         assert!(!dir.exists(), "the run directory goes with the run");
+    }
+
+    #[test]
+    fn dropping_a_helper_signals_stop_and_removes_its_directory() {
+        let dir = helper_dir("drop");
+        let run = helper_run(Path::new("/bin/sh"), &dir, Duration::from_secs(30));
+        let stop = Arc::clone(&run.stop);
+        drop(run);
+        let stopped = stop.load(Ordering::Acquire);
+        let removed = !dir.exists();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(stopped, "drop must stop a session that never connected");
+        assert!(removed, "drop must remove the run directory");
     }
 
     #[test]

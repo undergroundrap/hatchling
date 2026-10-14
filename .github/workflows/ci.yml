@@ -41,6 +41,8 @@ jobs:
       RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
       # The real-kernel cell tests must run here, never skip.
       HATCHLING_REQUIRE_CELL: "1"
+      HATCHLING_REQUIRE_CGROUP: "1"
+      HATCHLING_TEST_CGROUP: /sys/fs/cgroup/hatchling-ci/cells
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -93,19 +95,34 @@ jobs:
       - name: Start a runner sampler
         run: nohup vmstat -t -w 5 > "$RUNNER_TEMP/vmstat.log" 2>&1 &
 
+      - name: Delegate cgroups for real resource-limit tests
+        run: |
+          cg=/sys/fs/cgroup/hatchling-ci
+          sudo mkdir "$cg"
+          echo '+pids +memory +cpu' | sudo tee "$cg/cgroup.subtree_control" > /dev/null
+          sudo mkdir "$cg/runner" "$cg/cells"
+          sudo chown "$(id -u):$(id -g)" "$cg" "$cg/cgroup.procs" "$cg/cgroup.subtree_control"
+          sudo chown -R "$(id -u):$(id -g)" "$cg/runner" "$cg/cells"
+
       - name: Run gate
-        run: bash scripts/check.sh
+        run: |
+          # This shell and its descendants must share the delegated ancestor
+          # with the test cells. Moving a setup step's shell would not carry
+          # over to this step or any subsequent step.
+          echo $$ | sudo tee /sys/fs/cgroup/hatchling-ci/runner/cgroup.procs > /dev/null
+          bash scripts/check.sh
 
       # The broker starts its spawner helpers (skill cells, scheduled runs,
       # subagents, harnesses) by re-running its own executable. Run the suites
       # that use them again with `hatchling` (crate hatchling-runtime) as that
       # executable, so the front door's routing is proven with real cells.
       - name: Spawner helpers through hatchling
-        run: >-
-          HATCHLING_TEST_SPAWNER="$PWD/target/debug/hatchling"
-          cargo test -p hatchling-broker --locked
-          --test skill_run --test schedule_run --test subagents
-          --test harness --test harness_cli --test skill_cell_spawn
+        run: |
+          echo $$ | sudo tee /sys/fs/cgroup/hatchling-ci/runner/cgroup.procs > /dev/null
+          HATCHLING_TEST_SPAWNER="$PWD/target/debug/hatchling" \
+            cargo test -p hatchling-broker --locked \
+            --test skill_run --test schedule_run --test subagents \
+            --test harness --test harness_cli --test skill_cell_spawn
 
       # The denied-syscall catalogs kill hundreds of probes in minutes, and
       # each seccomp kill is audited. Report how many audit records this job
