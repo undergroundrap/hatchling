@@ -27,6 +27,9 @@ You don't need a work order to send a pull request. Bug fixes, tests,
 docs and focused features are welcome as they are, and meet the same
 bar as below.
 
+Maintainers: [MAINTAINING.md](MAINTAINING.md) covers triage, issue and WO
+tracking, review, the CLA, changelog entries and branch hygiene.
+
 ## Setting up
 
 ```bash

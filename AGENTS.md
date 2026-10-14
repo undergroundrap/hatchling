@@ -14,6 +14,7 @@ Instructions for AI agents working in this repository.
 - **Docs must match code.** If you change behavior, update the docs in the
   same commit.
 - **Security fixes** follow `CONTRIBUTING.md#security-fixes` and `docs/testing-patterns.md`: name the attack, hand-break the defense, and prove the affected boundary.
+- **Maintainer work** follows [MAINTAINING.md](MAINTAINING.md) for issue/WO tracking, labels, milestones, reviews, the CLA, changelog and branches.
 
 ## Repository layout
 
