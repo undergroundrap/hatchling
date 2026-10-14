@@ -80,25 +80,19 @@ fn broker_reaches_the_brokers_command_line() {
 #[test]
 fn agent_reaches_the_agents_command_line() {
     let out = hatchling(None, &["agent", "frobnicate"]).expect("hatchling runs");
-    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(out.status.code(), Some(64));
+    assert!(out.stdout.is_empty());
     let err = stderr(&out);
-    assert!(
-        err.starts_with("hatchling agent: failed to start: "),
-        "{err}"
-    );
-    assert!(err.contains("usage: hatchling agent run"), "{err}");
+    assert!(err.starts_with("Usage: hatchling agent "), "{err}");
 }
 
 #[test]
 fn started_as_the_cell_program_it_is_the_agent() {
     let out = hatchling(Some("/agent"), &["frobnicate"]).expect("hatchling runs");
-    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(out.status.code(), Some(64));
+    assert!(out.stdout.is_empty());
     let err = stderr(&out);
-    assert!(
-        err.starts_with("hatchling agent: failed to start: "),
-        "{err}"
-    );
-    assert!(err.contains("unknown subcommand \"frobnicate\""), "{err}");
+    assert!(err.starts_with("Usage: hatchling agent "), "{err}");
 }
 
 #[test]

@@ -163,7 +163,15 @@ fn preflight_without_a_base_is_a_usage_error() {
         .arg("preflight")
         .output()
         .unwrap();
-    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(64));
+    assert!(output.stdout.is_empty());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("missing --base"), "stderr was: {stderr}");
+    assert!(
+        stderr.starts_with("Usage: hatchling-dev "),
+        "stderr was: {stderr}"
+    );
+    assert!(
+        stderr.contains("preflight --base <commit>"),
+        "stderr was: {stderr}"
+    );
 }

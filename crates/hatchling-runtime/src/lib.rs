@@ -43,6 +43,16 @@ The broker is configured by HATCHLING_* environment variables; see the
 README's quickstart. Set HATCHLING_AGENT_BIN to this binary's path to run
 the agent from it too.";
 
+/// Front-door help includes both command lines' generated variable inventories.
+#[must_use]
+pub fn help() -> String {
+    format!(
+        "{USAGE}\n\n{}\n{}",
+        hatchling_broker::cli::help("hatchling broker"),
+        hatchling_agent::cli::help("hatchling agent")
+    )
+}
+
 /// What one invocation of `hatchling` runs.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Route<'a> {
@@ -70,8 +80,8 @@ pub fn route<'a>(argv0: &str, args: &'a [String]) -> Route<'a> {
         Some("broker") => Route::Broker(rest),
         Some("agent") => Route::Agent(rest),
         Some(SKILL_CELL_SUBCOMMAND | AGENT_RUN_SUBCOMMAND) => Route::Broker(args),
-        Some("--help" | "-h" | "help") => Route::Help,
-        Some("--version" | "-V") => Route::Version,
+        Some("--help" | "-h" | "help") if args.len() == 1 => Route::Help,
+        Some("--version" | "-V") if args.len() == 1 => Route::Version,
         Some(_) | None => Route::Usage,
     }
 }
@@ -131,6 +141,14 @@ mod tests {
         for flag in ["--version", "-V"] {
             assert_eq!(route("hatchling", &args(&[flag])), Route::Version);
         }
+        for flag in ["--help", "-h", "help", "--version", "-V"] {
+            assert_eq!(route("hatchling", &args(&[flag, "extra"])), Route::Usage);
+        }
+        let text = help();
+        assert!(text.contains("Usage: hatchling broker"));
+        assert!(text.contains("Usage: hatchling agent"));
+        assert!(text.contains("HATCHLING_CELL_CGROUP"));
+        assert!(text.contains("HATCHLING_MODEL_ENDPOINT"));
     }
 
     #[test]

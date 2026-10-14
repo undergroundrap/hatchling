@@ -21,6 +21,8 @@ use hatchling_egress::{EgressRequest, Proxy};
 use hatchling_memory::{MemoryPrincipal, SessionId};
 use hatchling_vault::{MasterKey, SealedVault, Secret};
 
+use crate::cell::cgroup_parent;
+use crate::environment as env;
 use crate::{
     CellConfig, Config, EgressConfig, Error, SkillRuntime, Skills, VaultConfig, bind_listener,
     load_master_key, spawn_cell, validate_sealed_vault,
@@ -83,7 +85,7 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
             worker: None,
         },
     };
-    if crate::cell::cgroup_parent(&|key| crate::cell::env_value(std::env::var(key)))?.is_none() {
+    if cgroup_parent(&|key| crate::cell::env_value(std::env::var(key)))?.is_none() {
         tracing::warn!(
             "HATCHLING_CELL_CGROUP unset: cells use rlimits alone; no whole-cell memory or CPU limit"
         );
@@ -102,7 +104,7 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
     // Spawn the cell BEFORE serving: spawn_cell forks, and forking a
     // multi-threaded process is unsound. HATCHLING_AGENT_BIN selects
     // cell mode; without it the broker serves bare (tests, debugging).
-    if std::env::var_os("HATCHLING_AGENT_BIN").is_some() {
+    if std::env::var_os(env::HATCHLING_AGENT_BIN.name).is_some() {
         let cell_config = CellConfig::from_env(&config.socket, config.agent_uid.as_u32())?;
         cell_config.refuse_vault_in_view(&config.vault)?;
         let handle = spawn_cell(&cell_config, config.log_level)?;
@@ -916,7 +918,7 @@ fn init_egress_proxy<'a>(
 pub fn egress_tls(
     get: impl Fn(&str) -> Option<String>,
 ) -> Result<hatchling_egress::TlsClient, Error> {
-    const KEY: &str = "HATCHLING_EGRESS_CA_BUNDLE";
+    const KEY: &str = env::HATCHLING_EGRESS_CA_BUNDLE.name;
     let invalid = |reason: String| Error::InvalidConfig { key: KEY, reason };
     let Some(raw) = get(KEY).filter(|raw| !raw.trim().is_empty()) else {
         return hatchling_egress::TlsClient::bundled().map_err(|error| invalid(error.to_string()));

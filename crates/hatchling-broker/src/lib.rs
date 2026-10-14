@@ -41,6 +41,7 @@ pub mod device;
 pub mod egress_pages;
 pub use custody::{AccountBook, HandleRejection};
 pub use device::{DeviceEndpoint, open_device_endpoint, pairing_refusals, serve_device};
+pub mod environment;
 pub mod error;
 pub mod feed_run;
 pub use feed_run::{FEED_TASK, FeedLauncher, FeedRun};

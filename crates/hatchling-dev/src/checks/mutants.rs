@@ -12,6 +12,7 @@ use std::time::Duration;
 use super::Finding;
 use crate::Error;
 use crate::config::MUTANT_KILL_FLOOR;
+use crate::environment as env;
 
 /// Bound for the agent prebuild (`cargo build -p hatchling-agent`,
 /// ): a debug build of one binary, 10 minutes is generous even
@@ -141,7 +142,7 @@ pub(crate) fn scratch_dir(_root: &Path) -> Result<std::path::PathBuf, Error> {
     // copies the workspace into TMPDIR and would recurse into itself)
     // and never under `/tmp` (tmpfs, ENOSPC on large runs).
     // Validated HOME lookup, no deprecated APIs.
-    let home = std::env::var("HOME").map_err(|_| Error::MissingEnv("HOME"))?;
+    let home = std::env::var(env::HOME.name).map_err(|_| Error::MissingEnv("HOME"))?;
     if home.is_empty() {
         return Err(Error::MissingEnv("HOME"));
     }
@@ -270,7 +271,7 @@ mod tests {
         // the repository, so tree copies never nest scratch inside
         // scratch. A mutant that returns `temp_dir()` or a
         // repository-local path fails here.
-        let Ok(home) = std::env::var("HOME") else {
+        let Ok(home) = std::env::var(env::HOME.name) else {
             // Without HOME the function errors; nothing to assert.
             return;
         };

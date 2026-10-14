@@ -88,6 +88,14 @@ The **broker** is the trusted side: it owns the vault, the proxy, the schedules 
 
 ## Quickstart
 
+For the complete command and environment reference, run `hatchling --help`,
+`hatchling broker --help` or `hatchling agent --help`. The standalone
+`hatchling-broker`, `hatchling-agent` and development-only `hatchling-dev`
+also support `--help` and `-h`. Help works with no configuration and
+creates no sockets, directories or vault files. An invalid argument prints
+usage to stderr and exits 64. The broker builds the cell in which the agent
+runs; it supplies the agent's identity and configuration.
+
 **Requirements:** Linux 5.11+ with unprivileged user namespaces and seccomp-BPF (or WSL2); Rust (the pinned 1.98.1 installs itself through `rust-toolchain.toml`; the minimum supported is 1.85); a C compiler; Python 3 for the examples; root, for the reason [below](#running-without-root).
 
 Build, install the two binaries, and create the user the cells run as: a system user nothing else runs as.

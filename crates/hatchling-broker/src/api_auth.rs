@@ -33,6 +33,7 @@ use hatchling_core::subagent::{grant_label, parse_grant_label};
 use hatchling_core::ui::ApiToken;
 use hatchling_core::{PeerUid, SocketPath, peer_credentials};
 
+use crate::environment as env;
 use crate::schedule_ops::held_grants;
 use crate::{Config, Error};
 
@@ -66,11 +67,14 @@ impl ApiConfig {
     /// listener.
     pub fn parse(config: &Config, get: impl Fn(&str) -> Option<String>) -> Result<Self, Error> {
         refuse_network(
-            get("HATCHLING_API_NETWORK").as_deref(),
-            get("HATCHLING_API_ALLOW_NETWORK").as_deref(),
+            get(env::HATCHLING_API_NETWORK.name).as_deref(),
+            get(env::HATCHLING_API_ALLOW_NETWORK.name).as_deref(),
         )?;
-        let grants = parse_grants(get("HATCHLING_API_GRANTS").as_deref(), &held_grants(config))?;
-        let socket = parse_socket(get("HATCHLING_API_SOCKET").as_deref(), config)?;
+        let grants = parse_grants(
+            get(env::HATCHLING_API_GRANTS.name).as_deref(),
+            &held_grants(config),
+        )?;
+        let socket = parse_socket(get(env::HATCHLING_API_SOCKET.name).as_deref(), config)?;
         Ok(Self { socket, grants })
     }
 }

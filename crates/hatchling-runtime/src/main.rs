@@ -8,7 +8,7 @@
 use std::io::Write as _;
 use std::process::ExitCode;
 
-use hatchling_runtime::{Route, USAGE, route};
+use hatchling_runtime::{Route, USAGE, help, route};
 
 /// `EX_USAGE` from `sysexits.h`: the command was used incorrectly.
 const EX_USAGE: u8 = 64;
@@ -21,7 +21,7 @@ fn main() -> ExitCode {
         Route::Broker(rest) => hatchling_broker::cli::main("hatchling broker", rest),
         Route::Agent(rest) => hatchling_agent::cli::main("hatchling agent", rest),
         Route::Help => {
-            let _ = writeln!(std::io::stdout().lock(), "{USAGE}");
+            let _ = write!(std::io::stdout().lock(), "{}", help());
             ExitCode::SUCCESS
         }
         Route::Version => {

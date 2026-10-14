@@ -1,7 +1,7 @@
 # WO-001: `--help` on every binary, a quickstart CI runs, and a hosted-model guide
 
-**Status:** QUEUED
-**Area:** `crates/hatchling-broker`, `crates/hatchling-agent`, `crates/hatchling-dev`, `docs/`, `README.md`, `.github/workflows/`
+**Status:** IN-PROGRESS
+**Area:** `crates/hatchling-broker`, `crates/hatchling-agent`, `crates/hatchling-dev`, `crates/hatchling-runtime`, shared CLI support in `crates/hatchling-core`, `docs/`, `README.md`, `.github/workflows/`
 **Issue:** [#4](https://github.com/undergroundrap/hatchling/issues/4)
 **Trust boundary:** no
 
@@ -25,9 +25,9 @@ The quickstart itself works today, run by hand, but nothing keeps it working: if
 
 ## Acceptance criteria
 
-- [ ] `hatchling-broker --help` lists every environment variable the broker reads; a test fails if the broker reads a variable `--help` doesn't list.
-- [ ] `--help` and `-h` exit 0 with usage on stdout, on every binary, with no side effects (no socket, no directory, no vault touched); tested.
-- [ ] An unknown argument exits 64 with usage on stderr; tested.
+- [x] `hatchling-broker --help` lists every environment variable the broker reads; a test fails if the broker reads a variable `--help` doesn't list.
+- [x] `--help` and `-h` exit 0 with usage on stdout, on every binary, with no side effects (no socket, no directory, no vault touched); tested.
+- [x] An unknown argument exits 64 with usage on stderr; tested.
 - [ ] The CI quickstart job extracts the README's quickstart blocks rather than duplicating them, so editing the README changes what CI runs. It's green on the pinned toolchain.
 - [ ] Following the hosted-model guide gets an agent's answer from a hosted endpoint, with the key never present in the cell (shown by the cell's environment and its view).
 
@@ -37,8 +37,103 @@ See [TEMPLATE.md](TEMPLATE.md#gates).
 
 ## Evidence
 
-Filled in at close.
+### Part 1, retested after the security dependency repair
+
+Configuration-free help covers the installed `hatchling` front door and all
+three standalone binaries. Shared declarations supply 65 broker, nine agent
+and three development settings, including cell limits and cgroups.
+The source audit fails on missing settings and unsupported dynamic readers;
+process tests cover stdout/stderr, exit status and unchanged filesystem state.
+
+The help change was reconciled with main `2ba3cb7`, the rustls repair in
+[#58](https://github.com/undergroundrap/hatchling/pull/58), then fully retested.
+The frozen input was commit `ee857b8`, tree
+`f8bda642be71a25dde967b294836e3780755af72`. Its source stayed unchanged throughout the fresh run.
+
+- Both toolchains ran `HATCHLING_REQUIRE_CELL=1 HATCHLING_REQUIRE_CGROUP=1
+  bash scripts/check.sh`, with a delegated `HATCHLING_TEST_CGROUP`: 1.98.1
+  and 1.85.0 each passed **2,127 tests, zero failures**, `gate: green`,
+  and **19 adversarial checks**. Both plain clippy passes, format checking
+  and preflight against `2ba3cb7` passed.
+- `npm ci && npm run check` passed, with 100% live adapter coverage.
+- One fresh supervised run tested all **913 distinct mutants** from all
+  24 changed production Rust files: **776 caught,
+  137 unviable, zero missed, zero timeouts**, kill floor 1.0.
+  Discovery identities, every build/test phase, compiler diagnostics and
+  the unchanged source fingerprint were verified from the original outputs.
+  Resource failures were not accepted as mutation evidence. No new
+  equivalence exclusions were added.
+- Eight source-only hand mutants failed their intended tests: four unlisted
+  key/read variants and three unsupported dynamic/alias variants failed
+  `broker_reads_are_listed_in_help`; replacing exit 64 with success failed
+  `unknown_arguments_are_stderr_usage_with_exit_64`. Zero runner timeouts;
+  the restored help suite passed all 13 tests.
+
+Fresh run: `20261014T183157Z-f546d761`. The source hash was
+`f546d761635a9c1ef608cd5d9b99223e0bd128dfdd628dd55422c769d8fc9f46`. Earlier runs and their original partial ledgers
+remain preserved as historical evidence below; their results were not reused
+to fill this fresh run.
+
+```bash
+base=2ba3cb70428ed6fdca43bb4285bf629d573a530a
+mapfile -t files < <(git diff --name-only "$base" -- 'crates/*/src/*.rs')
+scripts/mutant-run.sh --base "$base" --expected 913 -- "${files[@]}" --jobs 4
+```
+
+Quickstart CI and hosted-model guidance remain pending. This partial change
+references issue #4 without closing it.
+
+### Earlier evidence on the original base
+
+Part 1: configuration-free help (base `1781af8`). The installed
+`hatchling` front door and all three standalone binaries are covered. Shared
+declarations supply 65 broker, nine agent and three development settings.
+The source audit fails on missing settings and unsupported dynamic readers;
+process tests cover stdout/stderr, exit status and unchanged filesystem state.
+
+- Linux, ordinary user, with a delegated cgroup parent. Both toolchains ran
+  `HATCHLING_REQUIRE_CELL=1 HATCHLING_REQUIRE_CGROUP=1 bash scripts/check.sh`
+  with `HATCHLING_TEST_CGROUP` set: 1.98.1 and 1.85.0 each passed **2,127
+  tests, zero failures**, `gate: green`; each passed **19 adversarial checks**.
+- `npm ci && npm run check` passed, with 100% live adapter coverage.
+- The supervised run below discovered **913** mutants. A machine restart interrupted it
+  after 721 completed (605 caught, 116 unviable). The unchanged source was
+  verified by its content hash, and a supervised recovery run selected every
+  untested identity: 194 completed, including two already-tested struct-field
+  cases that cargo-mutants 27.1.0 adds despite its regex filter. Verifying and
+  de-duplicating the two real runs gives **913 distinct mutants: 776
+  caught, 137 unviable, zero missed, zero timeouts**, kill floor 1.0.
+  The interrupted ledger remains partial; no result was silently discarded.
+  No mutation workers remained. No new equivalence exclusions were added.
+- Eight source-only hand mutants built and failed their intended tests:
+  four unlisted key/read variants and three unsupported dynamic/alias variants
+  failed `broker_reads_are_listed_in_help`; replacing exit 64 with success
+  failed `unknown_arguments_are_stderr_usage_with_exit_64`. Zero runner
+  timeouts; the restored help suite passed all 13 tests.
+- Two independent source reviews accepted the final corrections; an
+  independent recovery review accepted the evidence-preserving resume method.
+
+Quickstart CI and hosted-model guidance remain pending; this part references
+issue #4 without closing it.
+
+```bash
+base=1781af8398cfbd7e39c5782d9f3dc6e475e8d3f6
+mapfile -t files < <(git diff --name-only "$base" -- 'crates/*/src/*.rs')
+scripts/mutant-run.sh --base "$base" --expected 913 -- "${files[@]}" --jobs 4
+```
+
+The recovery used the same files and test configuration, with `--re` set to
+the anchored literal union of the untested names in the saved discovery list
+and `--expected 194`. The saved per-run ledgers and a verified aggregate
+retain the identity checks and original logs.
 
 ## Notes
 
 The environment-variable list should come from the same place the broker reads them, so `--help` can't drift from the code.
+
+The owner's scope clarification includes `hatchling`, the installed front
+door added after this WO was written. Its help includes the broker and
+agent inventories, and `hatchling broker --help` / `hatchling agent --help`
+use their respective command lines. Work is split into help, README-run
+quickstart CI, and hosted-model guidance; partial PRs reference #4 and
+only the completing PR closes it.

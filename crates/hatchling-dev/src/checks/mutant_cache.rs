@@ -62,6 +62,7 @@ use serde_json::Value;
 use super::Finding;
 use super::sha256::Sha256;
 use crate::Error;
+use crate::environment as env;
 
 /// Cache format version. Bump when the on-disk shape changes; older
 /// caches are then rejected rather than misread.
@@ -214,7 +215,7 @@ fn cargo_bin() -> String {
             return path.to_string_lossy().into_owned();
         }
     }
-    std::env::var("HATCHLING_CARGO").unwrap_or_else(|_| String::from("cargo"))
+    std::env::var(env::HATCHLING_CARGO.name).unwrap_or_else(|_| String::from("cargo"))
 }
 
 /// Test-only override for the cargo binary. Production code always uses
@@ -444,7 +445,9 @@ struct TreeState {
 fn tree_state(root: &Path) -> Result<TreeState, Error> {
     tree_state_with_env(
         root,
-        std::env::var("HATCHLING_REQUIRE_CELL").ok().as_deref(),
+        std::env::var(env::HATCHLING_REQUIRE_CELL.name)
+            .ok()
+            .as_deref(),
     )
 }
 
@@ -1596,6 +1599,40 @@ pub fn seed_cache(root: &Path, from: &Path, out: &Path) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cargo_bin_reads_declared_override_and_default_in_isolated_processes() {
+        const CASE: &str = "HATCHLING_TEST_CARGO_BIN_CASE";
+        if let Ok(case) = std::env::var(CASE) {
+            assert_eq!(
+                cargo_bin(),
+                if case == "custom" {
+                    "/private/cargo-wrapper"
+                } else {
+                    "cargo"
+                }
+            );
+            with_fake_cargo(Path::new("/test-only/cargo"), || {
+                assert_eq!(cargo_bin(), "/test-only/cargo");
+            });
+            return;
+        }
+        for case in ["custom", "default"] {
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            child.args(["--exact", "checks::mutant_cache::tests::cargo_bin_reads_declared_override_and_default_in_isolated_processes", "--nocapture"])
+                .env_clear().env(CASE, case);
+            if case == "custom" {
+                child.env("HATCHLING_CARGO", "/private/cargo-wrapper");
+            }
+            let output = child.output().unwrap();
+            assert!(output.status.success(), "{case}: {output:?}");
+            assert!(
+                String::from_utf8(output.stdout)
+                    .unwrap()
+                    .contains("1 passed")
+            );
+        }
+    }
 
     /// Fake workspace root under `/tmp` directly (never `temp_dir()`:
     /// see the `fake_root` rationale in `checks::mutants`).

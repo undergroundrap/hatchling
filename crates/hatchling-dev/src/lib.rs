@@ -8,7 +8,9 @@
 //! schedule or on demand.
 
 pub mod checks;
+pub mod cli;
 pub mod config;
+pub mod environment;
 pub mod error;
 
 pub use error::Error;

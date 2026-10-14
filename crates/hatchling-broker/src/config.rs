@@ -13,6 +13,7 @@ use hatchling_core::{
 };
 
 use crate::Error;
+use crate::environment as env;
 
 /// Default socket mode: owner-only. The fail-closed default — the
 /// operator opens it deliberately for the production uid layout.
@@ -599,10 +600,10 @@ impl Config {
     /// Split out so tests can inject values without touching process
     /// environment (tests run in parallel; the process env is shared).
     fn parse(get: impl Fn(&str) -> Option<String>) -> Result<Self, Error> {
-        let socket = get("HATCHLING_BROKER_SOCKET")
+        let socket = get(env::HATCHLING_BROKER_SOCKET.name)
             .ok_or(Error::MissingConfig("HATCHLING_BROKER_SOCKET"))?
             .parse::<SocketPath>()?;
-        let agent_uid = get("HATCHLING_AGENT_UID")
+        let agent_uid = get(env::HATCHLING_AGENT_UID.name)
             .ok_or(Error::MissingConfig("HATCHLING_AGENT_UID"))?
             .parse::<u32>()
             .map(PeerUid::from_kernel)
@@ -610,13 +611,13 @@ impl Config {
                 key: "HATCHLING_AGENT_UID",
                 reason: String::from("expected a kernel uid as a base-10 u32"),
             })?;
-        let socket_mode = get("HATCHLING_BROKER_SOCKET_MODE")
+        let socket_mode = get(env::HATCHLING_BROKER_SOCKET_MODE.name)
             .map_or(Ok(DEFAULT_SOCKET_MODE), |raw| parse_socket_mode(&raw))?;
-        let log_level =
-            get("HATCHLING_LOG_LEVEL").map_or(Ok(LogLevel::Info), |raw| raw.parse::<LogLevel>())?;
-        let vault_dir = PathBuf::from(
-            get("HATCHLING_VAULT_DIR").ok_or(Error::MissingConfig("HATCHLING_VAULT_DIR"))?,
-        );
+        let log_level = get(env::HATCHLING_LOG_LEVEL.name)
+            .map_or(Ok(LogLevel::Info), |raw| raw.parse::<LogLevel>())?;
+        let vault_dir = get(env::HATCHLING_VAULT_DIR.name)
+            .ok_or(Error::MissingConfig("HATCHLING_VAULT_DIR"))?;
+        let vault_dir = PathBuf::from(vault_dir);
         if !vault_dir.is_absolute() {
             return Err(Error::InvalidConfig {
                 key: "HATCHLING_VAULT_DIR",
@@ -626,7 +627,7 @@ impl Config {
                 ),
             });
         }
-        let vault_grants = parse_grants(get("HATCHLING_VAULT_GRANTS"))?;
+        let vault_grants = parse_grants(get(env::HATCHLING_VAULT_GRANTS.name))?;
         // The master-key file defaults to a dedicated 0700 directory
         // sibling to the vault root (see
         // [`VaultConfig::default_key_file`]): never *inside* the vault
@@ -635,7 +636,7 @@ impl Config {
         // which is generally not owner-only. An explicit path must be
         // absolute for the same reason the vault dir must be — a
         // relative key path would resolve against the broker's cwd.
-        let key_file = match get("HATCHLING_VAULT_KEY_FILE") {
+        let key_file = match get(env::HATCHLING_VAULT_KEY_FILE.name) {
             Some(raw) => {
                 let path = PathBuf::from(raw);
                 if !path.is_absolute() {
@@ -651,8 +652,8 @@ impl Config {
             }
             None => VaultConfig::default_key_file(&vault_dir),
         };
-        let egress_allowlist = get("HATCHLING_EGRESS_ALLOWLIST").unwrap_or_default();
-        let egress_grants = parse_egress_grants(get("HATCHLING_EGRESS_GRANTS"))?;
+        let egress_allowlist = get(env::HATCHLING_EGRESS_ALLOWLIST.name).unwrap_or_default();
+        let egress_grants = parse_egress_grants(get(env::HATCHLING_EGRESS_GRANTS.name))?;
         // The broker reads each egress destination's credential from the
         // vault: no grant may name one, and no two may share one.
         refuse_egress_secret_conflicts(&vault_grants, &egress_grants, &egress_allowlist)?;
@@ -660,19 +661,19 @@ impl Config {
         // available; an empty list means only local. Unknown ids fail
         // at registry construction, not here — the error needs the
         // registry's knowledge of what exists.
-        let channels = parse_channels(get("HATCHLING_CHANNELS"))?;
+        let channels = parse_channels(get(env::HATCHLING_CHANNELS.name))?;
         // Channel accounts: `channel:label=secret-name`, comma-separated.
         // Checked against the channel list and the vault grants here, so
         // a secret a cell could reach fails the broker at startup.
         let channel_accounts = parse_channel_accounts(
-            get("HATCHLING_CHANNEL_ACCOUNTS").as_deref(),
+            get(env::HATCHLING_CHANNEL_ACCOUNTS.name).as_deref(),
             &channels,
             &vault_grants,
         )?;
         // Channel ingress: an absolute socket path, outside the directory
         // the cell mounts, for the local channel.
         let channel_ingress = parse_channel_ingress(
-            get("HATCHLING_CHANNEL_INGRESS").as_deref(),
+            get(env::HATCHLING_CHANNEL_INGRESS.name).as_deref(),
             &socket,
             &channels,
         )?;
@@ -680,7 +681,7 @@ impl Config {
         // skills loaded. Trust root is required if a skills dir is set.
         // The inline key moved to a file so it can rotate: refuse the old
         // variable by name rather than silently ignore a key someone set.
-        if get("HATCHLING_SKILL_TRUST_ROOT").is_some() {
+        if get(env::HATCHLING_SKILL_TRUST_ROOT.name).is_some() {
             return Err(Error::InvalidConfig {
                 key: "HATCHLING_SKILL_TRUST_ROOT",
                 reason: String::from(
@@ -689,9 +690,9 @@ impl Config {
             });
         }
         let skills = parse_skills(
-            get("HATCHLING_SKILLS_DIR"),
-            get("HATCHLING_SKILL_TRUST_ROOTS"),
-            get("HATCHLING_SKILL_GRANTS"),
+            get(env::HATCHLING_SKILLS_DIR.name),
+            get(env::HATCHLING_SKILL_TRUST_ROOTS.name),
+            get(env::HATCHLING_SKILL_GRANTS.name),
         )?;
         // The stores: memory, goals, schedules, artifacts, and
         // spaces ; each a root directory (empty means off).
@@ -702,7 +703,7 @@ impl Config {
             agent_uid,
             socket_mode,
             max_connections: parse_max_connections(
-                get("HATCHLING_BROKER_MAX_CONNECTIONS").as_deref(),
+                get(env::HATCHLING_BROKER_MAX_CONNECTIONS.name).as_deref(),
             )?,
             log_level,
             vault: VaultConfig {
@@ -816,28 +817,34 @@ fn parse_stores(
 > {
     let socket_dir = socket.as_path().parent();
     let scheduler = parse_scheduler(
-        get("HATCHLING_SCHEDULER_DIR").as_deref(),
+        get(env::HATCHLING_SCHEDULER_DIR.name).as_deref(),
         (
-            get("HATCHLING_SCHEDULER_MODEL_ENDPOINT"),
-            get("HATCHLING_SCHEDULER_MODEL_NAME"),
+            get(env::HATCHLING_SCHEDULER_MODEL_ENDPOINT.name),
+            get(env::HATCHLING_SCHEDULER_MODEL_NAME.name),
         ),
         vault_root,
         socket_dir,
     )?
-    .with_agent_bin(get("HATCHLING_AGENT_BIN"));
+    .with_agent_bin(get(env::HATCHLING_AGENT_BIN.name));
     let artifacts = parse_artifacts(get, vault_root, socket_dir)?;
     let spaces = parse_spaces(
         (
-            get("HATCHLING_SPACE_DIR").as_deref(),
-            get("HATCHLING_DEVICE_SOCKET").as_deref(),
+            get(env::HATCHLING_SPACE_DIR.name).as_deref(),
+            get(env::HATCHLING_DEVICE_SOCKET.name).as_deref(),
         ),
         vault_root,
         socket_dir,
         &[&scheduler.root, &artifacts.root],
     )?;
     Ok((
-        parse_memory(get("HATCHLING_MEMORY_DIR"), get("HATCHLING_MEMORY_GRANTS"))?,
-        parse_goals(get("HATCHLING_GOALS_DIR"), get("HATCHLING_GOALS_GRANTS"))?,
+        parse_memory(
+            get(env::HATCHLING_MEMORY_DIR.name),
+            get(env::HATCHLING_MEMORY_GRANTS.name),
+        )?,
+        parse_goals(
+            get(env::HATCHLING_GOALS_DIR.name),
+            get(env::HATCHLING_GOALS_GRANTS.name),
+        )?,
         scheduler,
         artifacts,
         spaces,
@@ -948,7 +955,8 @@ fn parse_artifacts(
     vault_root: &Path,
     socket_dir: Option<&Path>,
 ) -> Result<ArtifactConfig, Error> {
-    let Some(dir) = get("HATCHLING_ARTIFACT_DIR").filter(|dir| !dir.trim().is_empty()) else {
+    let Some(dir) = get(env::HATCHLING_ARTIFACT_DIR.name).filter(|dir| !dir.trim().is_empty())
+    else {
         return Ok(ArtifactConfig::disabled());
     };
     let place = |key: &'static str, raw: &str| -> Result<PathBuf, Error> {
@@ -976,31 +984,32 @@ fn parse_artifacts(
         Ok(path)
     };
     let root = place("HATCHLING_ARTIFACT_DIR", &dir)?;
-    let workspace = match get("HATCHLING_ARTIFACT_WORKSPACE").filter(|raw| !raw.trim().is_empty()) {
-        Some(raw) => {
-            let workspace = place("HATCHLING_ARTIFACT_WORKSPACE", &raw)?;
-            if overlaps(&workspace, &root) {
-                return Err(Error::InvalidConfig {
-                    key: "HATCHLING_ARTIFACT_WORKSPACE",
-                    reason: format!(
-                        "{} overlaps the build store {}",
-                        workspace.display(),
-                        root.display()
-                    ),
-                });
+    let workspace =
+        match get(env::HATCHLING_ARTIFACT_WORKSPACE.name).filter(|raw| !raw.trim().is_empty()) {
+            Some(raw) => {
+                let workspace = place("HATCHLING_ARTIFACT_WORKSPACE", &raw)?;
+                if overlaps(&workspace, &root) {
+                    return Err(Error::InvalidConfig {
+                        key: "HATCHLING_ARTIFACT_WORKSPACE",
+                        reason: format!(
+                            "{} overlaps the build store {}",
+                            workspace.display(),
+                            root.display()
+                        ),
+                    });
+                }
+                Some(workspace)
             }
-            Some(workspace)
-        }
-        None => None,
-    };
-    let deny: Vec<String> = get("HATCHLING_ARTIFACT_DENY")
+            None => None,
+        };
+    let deny: Vec<String> = get(env::HATCHLING_ARTIFACT_DENY.name)
         .unwrap_or_default()
         .split(',')
         .map(str::trim)
         .filter(|pattern| !pattern.is_empty())
         .map(str::to_owned)
         .collect();
-    let policy = match get("HATCHLING_ARTIFACT_MAX_BYTES") {
+    let policy = match get(env::HATCHLING_ARTIFACT_MAX_BYTES.name) {
         Some(raw) => {
             let max_bytes = raw
                 .trim()
@@ -1644,6 +1653,72 @@ mod tests {
                 "fetch:app-token,store:app-token,remove:old-key",
             ),
         ])
+    }
+
+    #[test]
+    fn parse_stores_routes_nondefault_registered_settings() {
+        let mut vars = valid_vars();
+        vars.extend([
+            ("HATCHLING_MEMORY_DIR", "/srv/hatchling/memory"),
+            ("HATCHLING_MEMORY_GRANTS", "user:write"),
+            ("HATCHLING_GOALS_DIR", "/srv/hatchling/goals"),
+            ("HATCHLING_GOALS_GRANTS", "goal-create"),
+            ("HATCHLING_SCHEDULER_DIR", "/srv/hatchling/schedules"),
+            (
+                "HATCHLING_SCHEDULER_MODEL_ENDPOINT",
+                "http://127.0.0.1:8000",
+            ),
+            ("HATCHLING_SCHEDULER_MODEL_NAME", "stand-in"),
+            ("HATCHLING_AGENT_BIN", "/usr/local/bin/hatchling"),
+            ("HATCHLING_ARTIFACT_DIR", "/srv/hatchling/artifacts"),
+            ("HATCHLING_SPACE_DIR", "/srv/hatchling/spaces"),
+        ]);
+        let base = Config::parse(lookup(&valid_vars())).unwrap();
+        let (memory, goals, scheduler, artifacts, spaces) =
+            parse_stores(&lookup(&vars), &base.vault.root, &base.socket).unwrap();
+        assert_eq!(memory.root, Path::new("/srv/hatchling/memory"));
+        assert_eq!(memory.grants.len(), 1);
+        assert_eq!(goals.root, Path::new("/srv/hatchling/goals"));
+        assert_eq!(goals.grants, vec![GoalsAction::GoalCreate]);
+        assert_eq!(scheduler.root, Path::new("/srv/hatchling/schedules"));
+        assert_eq!(
+            scheduler.model_endpoint.as_deref(),
+            Some("http://127.0.0.1:8000")
+        );
+        assert_eq!(scheduler.model_name.as_deref(), Some("stand-in"));
+        assert_eq!(
+            scheduler.agent_bin,
+            Some(PathBuf::from("/usr/local/bin/hatchling"))
+        );
+        assert_eq!(artifacts.root, Path::new("/srv/hatchling/artifacts"));
+        assert_eq!(spaces.root, Path::new("/srv/hatchling/spaces"));
+    }
+
+    #[test]
+    fn parse_artifacts_reads_registered_policy_and_refuses_a_vault_overlap() {
+        let mut vars = valid_vars();
+        vars.extend([
+            ("HATCHLING_ARTIFACT_DIR", "/srv/hatchling/artifacts"),
+            ("HATCHLING_ARTIFACT_WORKSPACE", "/home/user/output"),
+            ("HATCHLING_ARTIFACT_MAX_BYTES", "4096"),
+            ("HATCHLING_ARTIFACT_DENY", " secret, token "),
+        ]);
+        let vault = Path::new("/tmp/hatchling-test/vault");
+        let socket_dir = Some(Path::new("/tmp/hatchling-test"));
+        let parsed = parse_artifacts(&lookup(&vars), vault, socket_dir).unwrap();
+        assert_eq!(parsed.root, Path::new("/srv/hatchling/artifacts"));
+        assert_eq!(parsed.workspace, Some(PathBuf::from("/home/user/output")));
+        let policy = parsed.policy.unwrap();
+        assert_eq!(policy.max_bytes, 4096);
+        assert_eq!(policy.deny, vec!["secret", "token"]);
+        vars.insert("HATCHLING_ARTIFACT_DIR", "/tmp/hatchling-test/vault/output");
+        assert!(matches!(
+            parse_artifacts(&lookup(&vars), vault, socket_dir),
+            Err(Error::InvalidConfig {
+                key: "HATCHLING_ARTIFACT_DIR",
+                ..
+            })
+        ));
     }
 
     #[test]

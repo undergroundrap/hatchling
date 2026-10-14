@@ -39,6 +39,7 @@ use hatchling_channel::gate::{DEFAULT_CLASSIFIER_TIMEOUT, FAILED_CATEGORY, MIN_B
 use hatchling_channel::{Category, Classifier, OutputGate, Request, Verdict, normalize};
 use hatchling_vault::{MAX_SECRET_BYTES, MasterKey, SealedVault, Secret, SecretName};
 
+use crate::environment as env;
 use crate::redactions::{FileAudit, FileOverrides, RawOutcome, Settings};
 use crate::{Config, Error};
 
@@ -170,7 +171,10 @@ impl RedactionConfig {
     /// directory that is relative, overlaps the vault root, or lies inside
     /// the broker socket directory.
     pub fn parse(config: &Config, get: impl Fn(&str) -> Option<String>) -> Result<Self, Error> {
-        let enabled = match get("HATCHLING_OUTPUT_GATE").as_deref().map(str::trim) {
+        let enabled = match get(env::HATCHLING_OUTPUT_GATE.name)
+            .as_deref()
+            .map(str::trim)
+        {
             None | Some("" | "on") => true,
             Some("off") => false,
             Some(other) => {
@@ -180,7 +184,7 @@ impl RedactionConfig {
                 });
             }
         };
-        let keep_raw = match get("HATCHLING_REDACTION_KEEP_RAW")
+        let keep_raw = match get(env::HATCHLING_REDACTION_KEEP_RAW.name)
             .as_deref()
             .map(str::trim)
         {
@@ -193,9 +197,9 @@ impl RedactionConfig {
                 });
             }
         };
-        let timeout = parse_timeout(get("HATCHLING_REDACTION_TIMEOUT_MS").as_deref())?;
-        let dir = parse_dir(config, get("HATCHLING_REDACTION_DIR").as_deref())?;
-        let builtins = parse_builtins(get("HATCHLING_REDACTION_BUILTINS").as_deref())?;
+        let timeout = parse_timeout(get(env::HATCHLING_REDACTION_TIMEOUT_MS.name).as_deref())?;
+        let dir = parse_dir(config, get(env::HATCHLING_REDACTION_DIR.name).as_deref())?;
+        let builtins = parse_builtins(get(env::HATCHLING_REDACTION_BUILTINS.name).as_deref())?;
         Ok(Self {
             enabled,
             dir,

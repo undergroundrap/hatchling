@@ -7,6 +7,7 @@
 use hatchling_core::{CellId, LogLevel, PeerUid, SocketPath};
 
 use crate::Error;
+use crate::environment as env;
 
 /// Validated agent configuration.
 #[derive(Debug, Clone)]
@@ -55,13 +56,13 @@ impl Config {
     /// Split out so tests can inject values without touching process
     /// environment (tests run in parallel; the process env is shared).
     fn parse(get: impl Fn(&str) -> Option<String>) -> Result<Self, Error> {
-        let cell_id = get("HATCHLING_CELL_ID")
+        let cell_id = get(env::HATCHLING_CELL_ID.name)
             .ok_or(Error::MissingConfig("HATCHLING_CELL_ID"))?
             .parse::<CellId>()?;
-        let broker_socket = get("HATCHLING_BROKER_SOCKET")
+        let broker_socket = get(env::HATCHLING_BROKER_SOCKET.name)
             .ok_or(Error::MissingConfig("HATCHLING_BROKER_SOCKET"))?
             .parse::<SocketPath>()?;
-        let broker_uid = get("HATCHLING_BROKER_UID")
+        let broker_uid = get(env::HATCHLING_BROKER_UID.name)
             .ok_or(Error::MissingConfig("HATCHLING_BROKER_UID"))?
             .parse::<u32>()
             .map(PeerUid::from_kernel)
@@ -69,21 +70,21 @@ impl Config {
                 key: "HATCHLING_BROKER_UID",
                 reason: String::from("expected a kernel uid as a base-10 u32"),
             })?;
-        let log_level = match get("HATCHLING_LOG_LEVEL") {
+        let log_level = match get(env::HATCHLING_LOG_LEVEL.name) {
             Some(raw) => raw.parse::<LogLevel>()?,
             None => LogLevel::Info,
         };
-        let model_max_steps = match get("HATCHLING_MODEL_MAX_STEPS") {
+        let model_max_steps = match get(env::HATCHLING_MODEL_MAX_STEPS.name) {
             Some(raw) => raw.parse::<u32>().map_err(|_| Error::InvalidConfig {
                 key: "HATCHLING_MODEL_MAX_STEPS",
                 reason: String::from("expected a base-10 u32 step budget"),
             })?,
             None => 10,
         };
-        let model_context_window = get("HATCHLING_MODEL_CONTEXT_WINDOW")
+        let model_context_window = get(env::HATCHLING_MODEL_CONTEXT_WINDOW.name)
             .map(|raw| parse_context_window(&raw))
             .transpose()?;
-        let run_subagent = match get("HATCHLING_RUN_SUBAGENT").as_deref() {
+        let run_subagent = match get(env::HATCHLING_RUN_SUBAGENT.name).as_deref() {
             None | Some("0") => false,
             Some("1") => true,
             Some(_) => {
@@ -98,8 +99,8 @@ impl Config {
             broker_socket,
             broker_uid,
             log_level,
-            model_endpoint: get("HATCHLING_MODEL_ENDPOINT"),
-            model_name: get("HATCHLING_MODEL_NAME"),
+            model_endpoint: get(env::HATCHLING_MODEL_ENDPOINT.name),
+            model_name: get(env::HATCHLING_MODEL_NAME.name),
             model_max_steps,
             model_context_window,
             run_subagent,

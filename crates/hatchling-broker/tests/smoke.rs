@@ -120,13 +120,11 @@ fn unknown_subcommand_is_usage_error() {
     .unwrap();
     let _ = std::fs::remove_dir_all(&scratch);
 
-    assert!(
-        !output.status.success(),
-        "broker accepted an unknown subcommand"
-    );
+    assert_eq!(output.status.code(), Some(64));
+    assert!(output.stdout.is_empty());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("unknown subcommand"),
+        stderr.starts_with("Usage: hatchling-broker "),
         "stderr should name the misuse, was: {stderr}"
     );
 }
@@ -145,13 +143,11 @@ fn rekey_vault_without_new_key_file_is_usage_error() {
     .unwrap();
     let _ = std::fs::remove_dir_all(&scratch);
 
-    assert!(
-        !output.status.success(),
-        "rekey-vault without a new key file must fail"
-    );
+    assert_eq!(output.status.code(), Some(64));
+    assert!(output.stdout.is_empty());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("rekey-vault requires"),
+        stderr.contains("rekey-vault <new-key-file>"),
         "stderr should name the missing argument, was: {stderr}"
     );
 }
