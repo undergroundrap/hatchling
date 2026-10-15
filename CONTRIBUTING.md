@@ -27,6 +27,16 @@ You don't need a work order to send a pull request. Bug fixes, tests,
 docs and focused features are welcome as they are, and meet the same
 bar as below.
 
+### AI-assisted contributions
+
+AI-assisted contributions are welcome, with a person accountable for each
+one. That person signs the CLA themselves, has read and understands every
+line they submit, and can answer review questions about it.
+
+Pull requests that look automated and opened only to collect contributions
+(no response to review, no CLA, the same change sent to many projects) are
+closed without review.
+
 Maintainers: [MAINTAINING.md](MAINTAINING.md) covers triage, issue and WO
 tracking, review, the CLA, changelog entries and branch hygiene.
 

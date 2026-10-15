@@ -45,4 +45,5 @@ Work order: <!-- WO-NNN, or "none" -->
 - [ ] A line under **Unreleased** in `CHANGELOG.md`, or no user-visible change
 - [ ] No secrets, keys, or credentials committed
 - [ ] I've signed the [CLA](https://github.com/undergroundrap/hatchling/blob/main/CLA.md) (on your first PR, the CLA bot asks you to)
+- [ ] I've read and understood every change in this PR and can answer questions about it, however it was written
 - [ ] No `unwrap()`/`expect()` in production paths

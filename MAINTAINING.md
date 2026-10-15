@@ -101,6 +101,10 @@ independent implementation from the problem description. Do not copy or
 cherry-pick the unsigned patch, or rewrite it to evade the CLA. Apply the
 normal review and proof requirements to the replacement too.
 
+A pull request that looks automated and opened only to collect contributions
+(see [AI-assisted contributions](CONTRIBUTING.md#ai-assisted-contributions))
+may be closed without review, with a one-line thanks that links that section.
+
 ## Changelog
 
 Review the changelog for every PR. Add one concise entry for its
