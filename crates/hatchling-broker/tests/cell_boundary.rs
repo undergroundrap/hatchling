@@ -179,9 +179,9 @@ fn cell_agent_handshake_reports_mapped_uid() -> Result<(), String> {
     let listener = bind_listener(&config).map_err(|e| format!("bind broker socket: {e}"))?;
     let cell = cell_config(&socket_path, agent_uid)?;
 
-    // Snapshot staging dirs before the spawn: scoped to this
-    // process+thread, so the check below sees exactly the dirs this
-    // spawn created.
+    // Snapshot staging dirs before the spawn. Their names are random,
+    // so other tests' cells in this process can show up in the diff
+    // below; theirs drain as those cells end, and a leak never does.
     let before = cell_staging_dirs();
     let handle = spawn_cell(&cell, LogLevel::Error).map_err(|e| format!("spawn cell: {e}"))?;
     let peer_uid = broker_handshake(&listener, agent_uid)?;
@@ -196,9 +196,9 @@ fn cell_agent_handshake_reports_mapped_uid() -> Result<(), String> {
     if code != 0 {
         return Err(format!("agent inside the cell should exit 0, got {code}"));
     }
-    // The staging dir must be gone after wait. Drain briefly: the
-    // reaper may lag the wait by a moment.
-    for _ in 0..100 {
+    // The staging dir must be gone after wait. Drain: the reaper may lag
+    // the wait by a moment, and other tests' cells end in their time.
+    for _ in 0..600 {
         let after = cell_staging_dirs();
         if after.iter().all(|p| before.contains(p)) {
             return Ok(());
@@ -338,36 +338,25 @@ fn cell_config_rejects_uid_base_mismatch() -> Result<(), String> {
     Ok(())
 }
 
-/// Staging dirs from real `spawn_cell` calls (in-flight or leaked).
-///
-/// Test scratch dirs (`hatchling-cell-test-*`) are excluded: they are
-/// not staging dirs and are cleaned by their own tests. The old
-/// broad-prefix scan matched them too, so a passing suite could hide a
-/// real staging leak.
+/// Staging dirs from real `spawn_cell` calls in this process (in-flight
+/// or leaked): every `cell-*` directory in this process's staging roots,
+/// `hatchling-staging-<pid>-<random>` in the temp dir.
 fn cell_staging_dirs() -> std::collections::HashSet<PathBuf> {
-    // Scoped to this process and this thread: production staging names
-    // are `hatchling-cell-<pid>-<ThreadId>-<counter>`, and spawn_cell
-    // builds the name synchronously on the caller's thread. The
-    // before/after diff is then exactly the dirs this spawn created —
-    // other tests' in-flight dirs (other threads) can neither mask a
-    // leak nor cause a false positive.
-    let prefix = format!(
-        "hatchling-cell-{}-{:?}-",
-        std::process::id(),
-        std::thread::current().id()
-    );
-    std::env::temp_dir()
-        .read_dir()
-        .map(|entries| {
-            entries
-                .filter_map(Result::ok)
-                .map(|e| e.path())
-                .filter(|p| {
-                    p.file_name()
-                        .and_then(|n| n.to_str())
-                        .is_some_and(|n| n.starts_with(prefix.as_str()))
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+    let root_prefix = format!("hatchling-staging-{}-", std::process::id());
+    let named = |path: &PathBuf, prefix: &str| {
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with(prefix))
+    };
+    let entries = |dir: &std::path::Path| -> Vec<PathBuf> {
+        dir.read_dir()
+            .map(|entries| entries.filter_map(Result::ok).map(|e| e.path()).collect())
+            .unwrap_or_default()
+    };
+    entries(&std::env::temp_dir())
+        .into_iter()
+        .filter(|root| named(root, &root_prefix))
+        .flat_map(|root| entries(&root))
+        .filter(|dir| named(dir, "cell-"))
+        .collect()
 }

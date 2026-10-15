@@ -1,6 +1,6 @@
 # WO-006: Symlink-safe ownership and staging
 
-**Status:** QUEUED
+**Status:** IN-PROGRESS
 **Area:** `crates/hatchling-isolation` (spawn), `crates/hatchling-sys` (ownership), `crates/hatchling-broker` (listener, ingress, device), `crates/hatchling-vault`
 **Issue:** [#9](https://github.com/undergroundrap/hatchling/issues/9)
 **Trust boundary:** yes
@@ -20,7 +20,7 @@ Found in the pre-launch review of the trust boundary (see [Known limitations](..
 ## Acceptance criteria
 
 - [ ] A symlink swapped in at any of these points makes the operation fail closed, never act on the target; tested where it can be raced deterministically.
-- [ ] A pre-created staging directory name can't block or redirect a spawn; tested.
+- [x] A pre-created staging directory name can't block or redirect a spawn; tested.
 - [ ] The broker socket's directory is never owned by the cell uid; tested as root.
 
 ## Gates

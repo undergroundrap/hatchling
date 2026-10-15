@@ -6,6 +6,10 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ## [Unreleased]
 
+### Fixed
+
+- A cell's staging directory can no longer be pre-created by another local user to block or redirect a spawn. Each broker process makes one private staging root in the temp directory (mode 0700, a random name, created exclusively), and each cell's directory inside it gets a random name too; a name already taken, by a directory or a symlink, is skipped and never followed (WO-006).
+
 ## [0.2.0] - 2026-10-15
 
 The hostile-cell release. It closes the work orders the pre-launch review of the trust boundary found for a cell acting against its host: credential echoes and numeric allowlist forms (WO-009), vendor-side fetching (WO-008), schedule ownership (WO-010), socket families and inherited groups (WO-005), and per-cell resource limits (WO-004). It also makes the first five minutes tested: `--help` everywhere, a quickstart CI runs, and a hosted-model guide (WO-001), with an operator thinking-mode setting for models that need it (WO-020). The session protocol is v13, so the broker and the agent must both be 0.2.0; the one `hatchling` binary is both. Rust API changes are marked **Breaking** below.

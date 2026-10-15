@@ -10,7 +10,7 @@
 Hatchling keeps two kinds of files on disk, and nothing tells you which is which:
 
 - **Your data:** the vault, schedules, memory, goals, spaces, artifacts and skills, under the `HATCHLING_*_DIR` directories. Deleting any of it loses credentials or history.
-- **Disposable files:** a cell's staging directory (`$TMPDIR/hatchling-cell-<pid>-…`), a scheduled run's directory (`<scheduler dir>.runs/run-<token>/`) and its socket. The broker removes these when a cell or run ends normally, but a broker killed mid-run (`kill -9`, a crash, a power cut) leaves them behind, and nothing removes them later.
+- **Disposable files:** a cell's staging directory (`$TMPDIR/hatchling-staging-<pid>-<random>/cell-<random>/`), a scheduled run's directory (`<scheduler dir>.runs/run-<token>/`) and its socket. The broker removes these when a cell or run ends normally, but a broker killed mid-run (`kill -9`, a crash, a power cut) leaves them behind, and nothing removes them later.
 
 So the leftovers pile up after crashes, and someone freeing disk space has to guess which directories are safe to delete. A wrong guess deletes the vault. On WSL2 there's a second surprise: deleting files inside Linux doesn't shrink the virtual disk on Windows, which only grows until it's compacted.
 
