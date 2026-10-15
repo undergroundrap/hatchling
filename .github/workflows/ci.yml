@@ -183,6 +183,67 @@ jobs:
           name: readme-quickstart
           path: ${{ runner.temp }}/quickstart-logs
 
+  hosted-model:
+    name: hosted model (${{ matrix.mode }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [local, https]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Check hosted-model proof helpers
+        run: |
+          python3 -m unittest discover -s scripts -p 'test_first_run.py' -v
+          python3 -m unittest discover -s scripts -p 'test_*hosted_model*.py' -v
+
+      - name: Build the broker and agent
+        run: cargo build --locked -p hatchling-broker -p hatchling-agent
+
+      - name: Fetch pinned test-only model fixtures
+        if: matrix.mode == 'local'
+        run: python3 scripts/fetch_hosted_model.py "$RUNNER_TEMP/hosted-fixtures"
+
+      - name: Allow real cells
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Prove sealed model access through a real cell
+        env:
+          PROOF_MODE: ${{ matrix.mode }}
+        run: |
+          task_work=$(mktemp -d "$RUNNER_TEMP/hatchling-hosted.XXXXXX")
+          trap 'sudo rm -rf -- "$task_work"' EXIT
+          fixture_args=()
+          if [[ "$PROOF_MODE" == local ]]; then
+            fixture_args=(--fixtures "$RUNNER_TEMP/hosted-fixtures/paths.json")
+          fi
+          sudo unshare --mount --pid --fork --kill-child --mount-proc --net \
+            python3 scripts/hosted_model_smoke.py "$PWD" \
+              "$RUNNER_TEMP/hosted-model-logs" "$task_work" \
+              --mode "$PROOF_MODE" "${fixture_args[@]}"
+
+      - name: Retain nonsecret proof and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hosted-model-${{ matrix.mode }}
+          path: ${{ runner.temp }}/hosted-model-logs
+
   publish:
     # Every crate the hatchling-runtime front door needs is published to
     # crates.io. Each must stay publishable: metadata, versioned dependencies,
