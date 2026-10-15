@@ -2,12 +2,14 @@
 //! staging tree, the fork and its handshake, the in-cell setup, and the
 //! cell's supervision.
 
+use std::fmt::Write as _;
+use std::io::Read as _;
 use std::net::TcpListener;
 use std::os::fd::{AsFd, OwnedFd};
-use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+use std::os::unix::fs::FileTypeExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use hatchling_sys::{
@@ -186,42 +188,144 @@ fn chown_to_cell(path: &Path, uid: u32, what: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// RAII guard for the cell staging directory: removes it on drop
-/// unless [`StagingGuard::defuse`] releases ownership first.
+/// A cell's staging directory, where its mount tree is built before
+/// `pivot_root`.
 ///
-/// [`isolate`] creates the staging tree before forking; if the fork
-/// succeeds but a parent-side handshake step fails, the child is gone
-/// but the directory would leak without this guard. The child's
-/// staging cleanup happens in its own namespace via `pivot_root` —
-///
-/// this guard only covers the parent path.
-struct StagingGuard {
+/// It is made exclusively, with a name no one can predict, inside this
+/// process's private staging root (see [`StagingRoot`]), so another local
+/// user can neither pre-create it to block or redirect a spawn nor reach
+/// into it. Dropping it removes the directory and releases its share of
+/// the root. [`isolate`] creates it before the fork, so a failed handshake
+/// removes it; [`LinuxCell`] takes it over after.
+#[derive(Debug)]
+struct Staging {
     dir: PathBuf,
-    defused: bool,
 }
 
-impl StagingGuard {
-    const fn new(dir: PathBuf) -> Self {
-        Self {
-            dir,
-            defused: false,
-        }
+impl Staging {
+    /// Makes a new staging directory in the staging root.
+    fn create() -> Result<Self, Error> {
+        let root = StagingRoot::enter()?;
+        create_unique(&root, "cell-", random_name).map_or_else(
+            |error| {
+                StagingRoot::leave();
+                Err(error)
+            },
+            |dir| Ok(Self { dir }),
+        )
     }
 
-    /// Releases the directory: the caller takes over cleanup
-    /// responsibility (normally [`LinuxCell`]'s wait).
-    fn defuse(mut self) -> PathBuf {
-        self.defused = true;
-        std::mem::replace(&mut self.dir, PathBuf::new())
+    fn path(&self) -> &Path {
+        &self.dir
     }
 }
 
-impl Drop for StagingGuard {
+impl Drop for Staging {
     fn drop(&mut self) {
-        if !self.defused {
-            let _ = std::fs::remove_dir_all(&self.dir);
+        let _ = std::fs::remove_dir_all(&self.dir);
+        StagingRoot::leave();
+    }
+}
+
+/// This process's staging root: one directory in the temp dir, made
+/// exclusively with mode 0700 and a name no one can predict, shared by
+/// the process's live cells and removed when the last one is gone.
+#[derive(Debug)]
+struct StagingRoot {
+    path: Option<PathBuf>,
+    cells: usize,
+}
+
+static STAGING_ROOT: Mutex<StagingRoot> = Mutex::new(StagingRoot {
+    path: None,
+    cells: 0,
+});
+
+impl StagingRoot {
+    /// The process's root, made now in the temp dir if no live cell holds
+    /// it, for one more cell.
+    fn enter() -> Result<PathBuf, Error> {
+        Self::enter_in(&STAGING_ROOT, &std::env::temp_dir())
+    }
+
+    /// One cell fewer; the last one out removes the root.
+    fn leave() {
+        Self::leave_in(&STAGING_ROOT);
+    }
+
+    /// [`StagingRoot::enter`] on `state`, making the root in `parent`.
+    fn enter_in(state: &Mutex<Self>, parent: &Path) -> Result<PathBuf, Error> {
+        let mut root = state.lock().unwrap_or_else(PoisonError::into_inner);
+        let path = if let Some(path) = &root.path {
+            path.clone()
+        } else {
+            let prefix = format!("hatchling-staging-{}-", std::process::id());
+            let path = create_unique(parent, &prefix, random_name)?;
+            root.path = Some(path.clone());
+            path
+        };
+        root.cells += 1;
+        drop(root);
+        Ok(path)
+    }
+
+    /// [`StagingRoot::leave`] on `state`.
+    fn leave_in(state: &Mutex<Self>) {
+        let mut root = state.lock().unwrap_or_else(PoisonError::into_inner);
+        root.cells = root.cells.saturating_sub(1);
+        if root.cells == 0 {
+            if let Some(path) = root.path.take() {
+                let _ = std::fs::remove_dir(path);
+            }
         }
     }
+}
+
+/// How many names [`create_unique`] tries before giving up.
+const STAGING_NAME_ATTEMPTS: usize = 8;
+
+/// Makes a private directory `prefix` + a name from `name` in `parent`
+/// ([`hatchling_sys::create_private_dir`]), trying a fresh name while one
+/// is already taken: a planted directory or symlink is skipped, never
+/// used or followed.
+fn create_unique(
+    parent: &Path,
+    prefix: &str,
+    mut name: impl FnMut() -> Result<String, Error>,
+) -> Result<PathBuf, Error> {
+    for _ in 0..STAGING_NAME_ATTEMPTS {
+        let dir = parent.join(format!("{prefix}{}", name()?));
+        match hatchling_sys::create_private_dir(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(hatchling_sys::Error::Ownership { source, .. })
+                if source.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(source) => {
+                return Err(Error::Spawn {
+                    reason: format!("cannot create staging dir {}: {source}", dir.display()),
+                });
+            }
+        }
+    }
+    Err(Error::Spawn {
+        reason: format!("every staging name tried in {} was taken", parent.display()),
+    })
+}
+
+/// 128 bits from the kernel's random source, as hex: a name no one can
+/// guess.
+fn random_name() -> Result<String, Error> {
+    let mut bytes = [0_u8; 16];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut source| source.read_exact(&mut bytes))
+        .map_err(|source| Error::Spawn {
+            reason: format!("cannot read /dev/urandom for a staging name: {source}"),
+        })?;
+    Ok(bytes
+        .iter()
+        .fold(String::with_capacity(32), |mut name, byte| {
+            let _ = write!(name, "{byte:02x}");
+            name
+        }))
 }
 
 /// A spawned cell: the intermediate child under supervision and the
@@ -231,21 +335,27 @@ impl Drop for StagingGuard {
 /// waits, and kill-on-drop. Dropping the cell without waiting
 /// SIGKILLs it — no orphans — and removes the staging directory
 /// best-effort.
+///
+/// Each field cleans itself up when dropped, and fields drop in the
+/// order they're declared, which is the order a cell abandoned without a
+/// wait must be taken down in: the child is killed and reaped, then the
+/// cgroup is killed and drained, and only then is the staging directory,
+/// which holds the cell's mount tree, removed.
 #[derive(Debug)]
 pub struct LinuxCell {
     /// The cell child (the spawner's direct child: setup, then the
     /// agent's reaper). Owned supervision: kill-on-drop, bounded wait.
     child: Child,
+    /// Owned resource leaf; kills all remaining tasks on every exit path.
+    cgroup: Option<hatchling_sys::cgroup::CellCgroup>,
     /// Staging directory holding the cell's mount tree; removed on
-    /// wait (or best-effort on drop).
-    staging_dir: PathBuf,
+    /// wait, or on drop after the child and its cgroup.
+    staging: Option<Staging>,
     /// The child->parent pipe: the child reports setup failures here
     /// before the agent image replaces it.
     child_to_parent: ChildToParent,
     /// The cell's relay listener, until the owner takes it.
     relay: Option<TcpListener>,
-    /// Owned resource leaf; kills all remaining tasks on every exit path.
-    cgroup: Option<hatchling_sys::cgroup::CellCgroup>,
 }
 
 impl crate::Cell for LinuxCell {
@@ -313,7 +423,7 @@ impl LinuxCell {
             .read_to_end_deadline(report_deadline)
             .map_err(|source| Error::Wait(PlatformError::new(source)))?;
         self.child_to_parent.close_read();
-        let _ = std::fs::remove_dir_all(&self.staging_dir);
+        drop(self.staging.take());
         if report.first() == Some(&b'E') {
             let message: Vec<u8> = report.iter().skip(1).copied().collect();
             let reason = String::from_utf8_lossy(&message).into_owned();
@@ -321,47 +431,6 @@ impl LinuxCell {
         }
         Ok(status)
     }
-}
-
-impl Drop for LinuxCell {
-    /// Best-effort staging cleanup for a cell abandoned without a
-    /// wait. The child is `SIGKILL`ed and reaped BEFORE the staging
-    /// dir is touched: the cell's mount tree lives there, and removing
-    /// it under a live child can fail (`EBUSY`) or leave a half-removed
-    /// tree. The `Child`'s own `Drop` repeats the terminate+reap
-    /// harmlessly when the fields drop right after.
-    fn drop(&mut self) {
-        let _ = self.child.terminate();
-        if let Some(group) = &mut self.cgroup {
-            let _ = group.finish();
-        }
-        // Bounded reap: the SIGKILL is already in flight, so this
-        // returns as soon as the child dies. Already-reaped is an
-        // ignored error, not a hang.
-        let _ = self.child.wait_deadline(Duration::from_secs(5));
-        let _ = std::fs::remove_dir_all(&self.staging_dir);
-    }
-}
-
-/// Counter disambiguating concurrent cell spawns from this process.
-/// `hatchling-cell-{pid}` alone collides when one broker process
-/// spawns two cells concurrently, so the staging name also carries the
-/// spawning thread id and this counter (the same pattern as the probe
-/// staging names).
-static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-/// A staging directory unique to this spawn.
-///
-/// The mount tree is built here, then handed to `pivot_root`.
-/// Uniqueness matters: two concurrent spawns sharing a staging dir
-/// would corrupt each other's mount trees.
-fn staging_dir() -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "hatchling-cell-{}-{:?}-{}",
-        std::process::id(),
-        std::thread::current().id(),
-        STAGING_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ))
 }
 
 /// Spawns the cell and execs the spec's program inside it.
@@ -412,20 +481,9 @@ pub(super) fn isolate(spec: &CellSpec) -> Result<LinuxCell, Error> {
         hand_over_endpoint(endpoint, spec.identity.principal)?;
     }
     // Staging: the mount tree is built here, then pivot_rooted into.
-    let staging_dir = staging_dir();
-    std::fs::create_dir_all(&staging_dir).map_err(|source| Error::Spawn {
-        reason: format!(
-            "cannot create cell staging dir {}: {source}",
-            staging_dir.display()
-        ),
-    })?;
-    std::fs::set_permissions(&staging_dir, std::fs::Permissions::from_mode(0o700)).map_err(
-        |source| Error::Spawn {
-            reason: format!("cannot chmod cell staging dir: {source}"),
-        },
-    )?;
-    let new_root = staging_dir.join("root");
-    std::fs::create_dir_all(&new_root).map_err(|source| Error::Spawn {
+    let staging = Staging::create()?;
+    let new_root = staging.path().join("root");
+    std::fs::create_dir(&new_root).map_err(|source| Error::Spawn {
         reason: format!("cannot create cell root dir: {source}"),
     })?;
 
@@ -457,9 +515,8 @@ pub(super) fn isolate(spec: &CellSpec) -> Result<LinuxCell, Error> {
 
     match hatchling_sys::fork().map_err(|source| Error::Start(PlatformError::new(source)))? {
         ForkResult::Parent { child } => {
-            // From here on the staging directory must not leak: the
-            // guard removes it if any parent-side handshake step fails.
-            let staging_guard = StagingGuard::new(staging_dir);
+            // From here on the staging directory must not leak: dropped on
+            // any failed parent-side handshake step, it removes itself.
             // Only the child sends on its end; holding it here would keep
             // the receive below from ever seeing the child give up.
             let relay = relay.map(|(_, (ours, theirs))| {
@@ -490,16 +547,18 @@ pub(super) fn isolate(spec: &CellSpec) -> Result<LinuxCell, Error> {
                     return Err(with_report(error, &report));
                 }
             };
-            let staging_dir = staging_guard.defuse();
             Ok(LinuxCell {
                 child,
-                staging_dir,
+                staging: Some(staging),
                 child_to_parent,
                 relay,
                 cgroup,
             })
         }
         ForkResult::Child => {
+            // The staging directory is the parent's to remove; the child
+            // only builds its mount tree there.
+            let _staging = std::mem::ManuallyDrop::new(staging);
             let relay = relay.map(|(port, (ours, theirs))| {
                 drop(ours);
                 (port, theirs)
@@ -988,7 +1047,7 @@ fn drop_inherited_groups(
 
 #[cfg(test)]
 pub(super) mod tests {
-    use std::collections::HashSet;
+    use std::os::unix::fs::PermissionsExt as _;
 
     use super::*;
 
@@ -1114,78 +1173,150 @@ pub(super) mod tests {
         assert!(socket_dir_traversable(0o100_700));
     }
 
-    #[test]
-    fn staging_guard_removes_dir_on_drop() {
-        // Mutants: Drop replaced with (), or the `!` deleted (so it
-        // removes even when defused, or never removes).
+    /// A fresh, empty scratch directory for one staging test.
+    fn staging_scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "hatchling-isolation-guard-drop-{}",
+            "hatchling-isolation-staging-{name}-{}",
             std::process::id()
         ));
-        std::fs::create_dir_all(&dir).unwrap();
-        {
-            let _guard = StagingGuard::new(dir.clone());
-        }
-        assert!(
-            !dir.exists(),
-            "StagingGuard::drop must remove the directory"
-        );
-    }
-
-    #[test]
-    fn staging_guard_defuse_releases_the_dir() {
-        // Mutants: defuse replaced with Default::default(), or drop's
-        // `!` deleted. Defused guards must not delete; defuse must
-        // return the original path.
-        let dir = std::env::temp_dir().join(format!(
-            "hatchling-isolation-guard-defuse-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let released = {
-            let guard = StagingGuard::new(dir.clone());
-            guard.defuse()
-        };
-        assert_eq!(released, dir);
-        assert!(dir.exists(), "defused guard must not remove the directory");
         let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).unwrap();
+        dir
+    }
+
+    /// Names from `names`, in order, as [`create_unique`] asks for them.
+    fn names_from(names: &[&str]) -> impl FnMut() -> Result<String, Error> {
+        let mut names: Vec<String> = names.iter().rev().map(|name| (*name).to_owned()).collect();
+        move || Ok(names.pop().unwrap_or_else(|| String::from("exhausted")))
     }
 
     #[test]
-    fn staging_dir_names_are_unique_per_spawn() {
-        // Two concurrent spawns from one broker process must never
-        // share a staging tree. Mutant: counter removed (pid+tid only)
-        // — same-thread consecutive spawns would collide.
-        let first = staging_dir();
-        let second = staging_dir();
-        assert_ne!(first, second);
-        assert!(
-            first
-                .file_name()
-                .expect("staging dir has a name")
-                .to_string_lossy()
-                .starts_with("hatchling-cell-")
-        );
-    }
-
-    #[test]
-    fn staging_dir_names_are_unique_across_threads() {
-        // The counter is process-wide (AtomicU64): 8 threads racing
-        // staging_dir() must all get distinct names. Mutant: counter
-        // replaced with a thread-local or removed — cross-thread
-        // collisions would appear.
-        let names = std::thread::scope(|s| {
-            (0..8)
-                .map(|_| s.spawn(|| (0..16).map(|_| staging_dir()).collect::<Vec<_>>()))
-                .flat_map(|h| h.join().expect("worker thread"))
-                .collect::<Vec<_>>()
-        });
-        let unique: HashSet<_> = names.iter().collect();
+    fn a_planted_staging_name_is_skipped_never_used_or_followed() {
+        // Another user's directory, or a symlink to somewhere the
+        // broker can write, planted at the name a spawn would use.
+        let scratch = staging_scratch("planted");
+        let elsewhere = scratch.join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::fs::create_dir(scratch.join("cell-taken")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, scratch.join("cell-link")).unwrap();
+        let made =
+            create_unique(&scratch, "cell-", names_from(&["taken", "link", "fresh"])).unwrap();
+        assert_eq!(made, scratch.join("cell-fresh"));
+        let perms = std::fs::metadata(&made).unwrap().permissions().mode();
+        assert_eq!(perms & 0o777, 0o700);
+        assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
         assert_eq!(
-            unique.len(),
-            names.len(),
-            "staging dir names must be unique across threads"
+            std::fs::read_dir(scratch.join("cell-taken"))
+                .unwrap()
+                .count(),
+            0
         );
+        std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    #[test]
+    fn creating_a_staging_dir_gives_up_after_its_attempts() {
+        let scratch = staging_scratch("give-up");
+        std::fs::create_dir(scratch.join("cell-same")).unwrap();
+        let mut asked = 0;
+        let result = create_unique(&scratch, "cell-", || {
+            asked += 1;
+            Ok(String::from("same"))
+        });
+        assert!(
+            matches!(&result, Err(Error::Spawn { reason }) if reason.starts_with("every staging name tried")),
+            "{result:?}"
+        );
+        assert_eq!(asked, STAGING_NAME_ATTEMPTS);
+        // Any other failure is reported at once.
+        let missing = scratch.join("missing");
+        let result = create_unique(&missing, "cell-", names_from(&["a"]));
+        assert!(
+            matches!(&result, Err(Error::Spawn { reason }) if reason.starts_with("cannot create staging dir")),
+            "{result:?}"
+        );
+        std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    #[test]
+    fn staging_names_are_unguessable() {
+        let first = random_name().unwrap();
+        let second = random_name().unwrap();
+        assert_eq!(first.len(), 32);
+        assert!(first.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn the_staging_root_is_shared_and_removed_by_the_last_cell_out() {
+        let scratch = staging_scratch("root");
+        let state = Mutex::new(StagingRoot {
+            path: None,
+            cells: 0,
+        });
+        let first = StagingRoot::enter_in(&state, &scratch).unwrap();
+        let second = StagingRoot::enter_in(&state, &scratch).unwrap();
+        assert_eq!(first, second, "one root for every live cell");
+        assert_eq!(first.parent(), Some(scratch.as_path()));
+        let name = first.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with(&format!("hatchling-staging-{}-", std::process::id())));
+        let mode = std::fs::metadata(&first).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+        StagingRoot::leave_in(&state);
+        assert!(first.exists(), "a live cell still holds it");
+        StagingRoot::leave_in(&state);
+        assert!(!first.exists(), "the last cell out removes it");
+        let third = StagingRoot::enter_in(&state, &scratch).unwrap();
+        assert_ne!(third, first, "a new root, with a new name");
+        StagingRoot::leave_in(&state);
+        StagingRoot::leave_in(&state);
+        assert!(!third.exists());
+        std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    #[test]
+    fn the_process_staging_root_lives_in_the_temp_dir_until_its_last_user_leaves() {
+        // Other tests' cells share this root, so it may outlive this
+        // test's hold for a moment; it must go once they're done.
+        let root = StagingRoot::enter().unwrap();
+        assert_eq!(root.parent(), Some(std::env::temp_dir().as_path()));
+        assert!(root.is_dir());
+        let staging = Staging::create().unwrap();
+        assert_eq!(staging.path().parent(), Some(root.as_path()));
+        drop(staging);
+        assert!(root.is_dir(), "this test still holds it");
+        StagingRoot::leave();
+        let gone = (0..600).any(|_| {
+            let gone = !root.exists();
+            if !gone {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            gone
+        });
+        assert!(gone, "the last user out removes the root");
+    }
+
+    #[test]
+    fn a_staging_dir_is_private_and_removed_on_drop() {
+        let staging = Staging::create().unwrap();
+        let dir = staging.path().to_path_buf();
+        let root = dir.parent().unwrap().to_path_buf();
+        assert!(
+            dir.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("cell-")
+        );
+        assert!(
+            root.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("hatchling-staging-")
+        );
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+        drop(staging);
+        assert!(!dir.exists());
     }
 
     #[test]
@@ -1349,10 +1480,8 @@ pub(super) mod tests {
         // Mutants: the wait replaced with a constant. Fork a child that
         // exits with a distinctive code; wait must return the real
         // status, not a constant.
-        let staging =
-            std::env::temp_dir().join(format!("hatchling-isolation-wait-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&staging);
-        std::fs::create_dir_all(&staging).unwrap();
+        let staging_dir = Staging::create().unwrap();
+        let staging = staging_dir.path().to_path_buf();
         let (mut child_to_parent, _parent_to_child) = handshake_pipes().unwrap();
         // Child exits immediately with code 42; the pipe stays open
         // just long enough for wait to read EOF.
@@ -1372,7 +1501,7 @@ pub(super) mod tests {
         };
         let cell = LinuxCell {
             child,
-            staging_dir: staging.clone(),
+            staging: Some(staging_dir),
             child_to_parent,
             relay: None,
             cgroup: None,
@@ -1394,12 +1523,7 @@ pub(super) mod tests {
         // Mutant: `report.first() == Some(&b'E')` with == -> !=. A child
         // that writes an E-prefixed failure report must produce
         // Error::Spawn, not Ok.
-        let staging = std::env::temp_dir().join(format!(
-            "hatchling-isolation-wait-err-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&staging);
-        std::fs::create_dir_all(&staging).unwrap();
+        let staging_dir = Staging::create().unwrap();
         let (mut child_to_parent, _parent_to_child) = handshake_pipes().unwrap();
         let child = match hatchling_sys::process::fork().unwrap() {
             ForkResult::Parent { child } => child,
@@ -1417,7 +1541,7 @@ pub(super) mod tests {
         child_to_parent.close_write();
         let cell = LinuxCell {
             child,
-            staging_dir: staging,
+            staging: Some(staging_dir),
             child_to_parent,
             relay: None,
             cgroup: None,
@@ -1684,20 +1808,15 @@ pub(super) mod tests {
     /// staging dir. The child arm either exits at once or sleeps so the
     /// parent can drop the cell under a live child.
     fn dummy_cell(sleeper: bool) -> (i32, LinuxCell, PathBuf) {
-        static SEQ: AtomicU64 = AtomicU64::new(0);
-        let staging = std::env::temp_dir().join(format!(
-            "hatchling-isolation-cell-{}-{}",
-            std::process::id(),
-            SEQ.fetch_add(1, Ordering::SeqCst)
-        ));
-        std::fs::create_dir_all(&staging).unwrap();
+        let staging_dir = Staging::create().unwrap();
+        let staging = staging_dir.path().to_path_buf();
         match hatchling_sys::fork().unwrap() {
             ForkResult::Parent { child } => {
                 let pid = child.pid().get();
                 let (c2p, _p2c) = handshake_pipes().unwrap();
                 let cell = LinuxCell {
                     child,
-                    staging_dir: staging.clone(),
+                    staging: Some(staging_dir),
                     child_to_parent: c2p,
                     relay: None,
                     cgroup: None,
