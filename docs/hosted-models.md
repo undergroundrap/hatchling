@@ -3,7 +3,8 @@
 Hatchling uses an OpenAI-compatible chat-completions API through the broker.
 The model must support function calling and `tool_choice: "required"`: the
 agent checks that capability before asking its task. The agent currently sends
-`model`, `messages` and `tools`; it does not send `response_format`.
+`model`, `messages` and `tools`, plus `reasoning` when thinking is turned off
+([model thinking mode](model-thinking.md)); it does not send `response_format`.
 
 Follow the README's build/install and root configuration steps. Keep the broker
 stopped while importing its credential. The endpoint is the API base URL, before
@@ -20,10 +21,17 @@ Use the exact model, rather than an automatic router:
 ```bash
 export HATCHLING_SCHEDULER_MODEL_ENDPOINT=https://openrouter.ai/api/v1
 export HATCHLING_SCHEDULER_MODEL_NAME=nvidia/nemotron-3-ultra-550b-a55b:free
+export HATCHLING_SCHEDULER_MODEL_REASONING=disabled
 export HATCHLING_EGRESS_ALLOWLIST=openrouter.ai:443
 export HATCHLING_EGRESS_GRANTS=openrouter.ai:443
 export HATCHLING_API_GRANTS=egress:openrouter.ai:443,channel-send:local
 ```
+
+This model needs thinking turned off: with it on, the free endpoint sometimes
+answers the capability check in text, and the agent refuses to start the task.
+Other models may work with the provider's default. A free endpoint can still
+fail now and then; if `first-run.py` reports no answer within five minutes,
+check the broker's log and run it again.
 
 The credential name is `egress-` plus the destination, keeping ASCII letters and
 digits and replacing every other character with `-`. Thus this destination needs the vault

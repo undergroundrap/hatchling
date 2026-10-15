@@ -1,6 +1,6 @@
 # WO-001: `--help` on every binary, a quickstart CI runs, and a hosted-model guide
 
-**Status:** IN-PROGRESS
+**Status:** DONE
 **Area:** `crates/hatchling-broker`, `crates/hatchling-agent`, `crates/hatchling-dev`, `crates/hatchling-runtime`, shared CLI support in `crates/hatchling-core`, `docs/`, `README.md`, `.github/workflows/`
 **Issue:** [#4](https://github.com/undergroundrap/hatchling/issues/4)
 **Trust boundary:** no
@@ -32,14 +32,49 @@ The quickstart itself works today, run by hand, but nothing keeps it working: if
 - [x] `hatchling-broker --help` lists every environment variable the broker reads; a test fails if the broker reads a variable `--help` doesn't list.
 - [x] `--help` and `-h` exit 0 with usage on stdout, on every binary, with no side effects (no socket, no directory, no vault touched); tested.
 - [x] An unknown argument exits 64 with usage on stderr; tested.
-- [ ] The CI quickstart job extracts the README's quickstart blocks rather than duplicating them, so editing the README changes what CI runs. It's green on the pinned toolchain.
-- [ ] Following the hosted-model guide gets an agent's answer from a hosted endpoint, with the key never present in the cell (shown by the cell's environment and its view).
+- [x] The CI quickstart job extracts the README's quickstart blocks rather than duplicating them, so editing the README changes what CI runs. It's green on the pinned toolchain.
+- [x] Following the hosted-model guide gets an agent's answer from a hosted endpoint, with the key never present in the cell (shown by the cell's environment and its view).
 
 ## Gates
 
 See [TEMPLATE.md](TEMPLATE.md#gates).
 
 ## Evidence
+
+### Part 3, the hosted-model guide
+
+`docs/hosted-models.md` covers the vault import (a hidden prompt; the key never
+enters an argument, the environment or shell history), the HTTPS destination,
+allowlist and grants, and what the agent sends at the boundary, with OpenRouter
+as the worked example.
+
+- **CI, no real key:** two new jobs run the guide's path in a disposable
+  namespace. `local` serves a pinned llama.cpp model that requires an API key
+  through `local:localhost:18090`; `https` uses a named HTTPS stand-in with a
+  disposable CA supplied only to the broker. Each refuses a missing or wrong
+  key (401 on both endpoints), seals a generated key (`HVL1`, vault 700, file
+  600), runs the documented first-run client, requires the scheduled agent's
+  answer, and inspects the live cell's environment, argv and every read-only
+  file for the key. Both passed, replaying the exact workflow YAML, with the
+  host's accounts and binaries unchanged.
+- **Gates on that tree** (commit `61d9d38`, rebased here unchanged in code):
+  both toolchains passed 2,127 tests and 19 adversarial checks each, with
+  `HATCHLING_REQUIRE_CELL=1` and the cgroup delegation required; the frontend
+  check passed 397 tests with 100% live adapter coverage. No Rust changed in
+  this part, so there is no mutation target.
+- **A real hosted provider:** following the guide with WO-020's setting, the
+  exact model `nvidia/nemotron-3-ultra-550b-a55b:free` through OpenRouter, a
+  key with a $0 credit limit, and the candidate's own binaries, the scheduled
+  agent answered: "I'm Hatchling, a capable personal agent running inside a
+  secured cell on your machine." The key was sealed and absent from the live
+  cell, cap and usage stayed $0, and cleanup passed. The first of the two
+  attempts parked its task instead; see
+  [WO-020's evidence](workorder-020-model-reasoning-control.md#evidence).
+
+### Part 2, CI result
+
+The `README quickstart` job passed on
+[#59](https://github.com/undergroundrap/hatchling/pull/59), with both Rust gates.
 
 ### Part 2, README quickstart CI
 
