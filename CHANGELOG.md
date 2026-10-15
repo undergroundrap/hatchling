@@ -8,6 +8,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Added
 
+- A hosted-model guide covers vault import, HTTPS destinations and grants, with OpenRouter as an OpenAI-compatible example; the first-run client also accepts a hosted `host:port` destination (WO-001, part 3).
 - CI runs the README quickstart as written with the stand-in model and checks that the agent's answer arrives, so documentation changes cannot silently break the first run (WO-001, part 2).
 - Every command now supports `--help` and `-h` before startup, with generated environment-variable inventories, including cell limits and cgroups. This covers `hatchling`, `hatchling-broker`, `hatchling-agent` and `hatchling-dev`; unknown arguments print usage to stderr and exit 64 without starting work (WO-001, part 1).
 

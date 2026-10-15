@@ -158,7 +158,7 @@ agent: Hello from inside a Hatchling cell. This answer came from the stand-in mo
 
 That answer took the whole path: the scheduler started a fresh cell as `hatchling-cell`, the agent in it checked that the model can call tools, asked it the task through the egress proxy (the cell's only way out), and replied on the local channel, back through the API to you.
 
-**A real model:** run one locally with an OpenAI-compatible API (Ollama, llama.cpp, LM Studio, vLLM), and use its port and model name instead. For Ollama: `http://localhost:11434/v1`, `local-keyless:localhost:11434`, `localhost:11434`, and `egress:localhost:11434` in the API grants. A guide for hosted APIs, whose key the vault holds, is part of [WO-001](docs/workorders/workorder-001-help-and-tested-quickstart.md). For endpoints that need thinking disabled, see [model thinking mode](docs/model-thinking.md).
+**A real model:** run one locally with an OpenAI-compatible API (Ollama, llama.cpp, LM Studio, vLLM), and use its port and model name instead. For Ollama: `http://localhost:11434/v1`, `local-keyless:localhost:11434`, `localhost:11434`, and `egress:localhost:11434` in the API grants. For a hosted API, follow [Using a hosted model](docs/hosted-models.md): the vault holds its key, and the broker supplies it over HTTPS. For endpoints that need thinking disabled, see [model thinking mode](docs/model-thinking.md).
 
 ### Running without root
 

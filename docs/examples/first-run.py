@@ -1,9 +1,9 @@
 """Gives an agent its first task, and prints its answer.
 
-Usage: python3 docs/examples/first-run.py "$HATCHLING_API_SOCKET" [model port]
+Usage: python3 docs/examples/first-run.py "$HATCHLING_API_SOCKET" [model port or host:port]
 
-It schedules a one-off task for the next minute, with exactly two grants:
-reaching the model (egress to localhost:<port>) and replying on the local
+It schedules a one-off task two minute boundaries ahead, with exactly two grants:
+reaching the model (egress to the destination) and replying on the local
 channel. The broker runs the agent in a fresh cell when the task is due, and
 its answer comes back here as a chat message. The scheduler ticks once a
 minute, so this takes one to three minutes. See docs/local-api.md.
@@ -20,8 +20,21 @@ from hello import receive, schedule, send
 TASK = "Introduce yourself in one sentence."
 
 
-def main(path, port):
-    grants = [{"grant": "egress", "destination": f"localhost:{port}"},
+def parse_destination(value):
+    """Keep the local-port example, and accept a hosted host:port grant."""
+    host, separator, port = value.rpartition(":")
+    if not separator:
+        host, port = "localhost", value
+    if not host or ":" in host or not port.isascii() or not port.isdecimal():
+        raise ValueError("Expected a model port or host:port destination")
+    number = int(port)
+    if not 1 <= number <= 65535:
+        raise ValueError("Model port must be between 1 and 65535")
+    return f"{host}:{number}"
+
+
+def main(path, destination):
+    grants = [{"grant": "egress", "destination": destination},
               {"grant": "channel-send", "channel": "local"}]
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.connect(path)
@@ -68,4 +81,9 @@ if __name__ == "__main__":
     if len(sys.argv) not in (2, 3):
         print(__doc__.strip().splitlines()[2])
         sys.exit(64)
-    sys.exit(main(sys.argv[1], int(sys.argv[2]) if len(sys.argv) == 3 else 18089))
+    try:
+        model_destination = parse_destination(sys.argv[2] if len(sys.argv) == 3 else "18089")
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        sys.exit(64)
+    sys.exit(main(sys.argv[1], model_destination))
