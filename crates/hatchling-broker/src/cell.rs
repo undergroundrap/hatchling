@@ -69,9 +69,9 @@ pub struct CellConfig {
     /// at `/sock` in the cell).
     pub socket_dir: PathBuf,
     /// Absolute host path of the broker listen socket. [`spawn_cell`]
-    /// transfers ownership of the socket and its directory to
-    /// [`CellConfig::uid_base`] before forking so the mapped agent can
-    /// traverse the directory and connect.
+    /// gives the socket to [`CellConfig::uid_base`] before forking, and
+    /// lets that uid traverse the directory, which stays the broker's, so
+    /// the mapped agent can connect.
     pub socket_path: PathBuf,
     /// In-cell broker socket path handed to the agent
     /// (`/sock/<basename>`).
@@ -1638,7 +1638,7 @@ mod tests {
         let error = spawn_cell(&config, LogLevel::Error).unwrap_err();
         let _ = std::fs::remove_dir_all(&dir);
         assert!(
-            matches!(&error, Error::CellSpawn { reason } if reason.starts_with("cannot inspect broker socket ")),
+            matches!(&error, Error::CellSpawn { reason } if reason.starts_with("cannot hand the broker socket ")),
             "{error:?}"
         );
     }
