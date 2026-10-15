@@ -2,13 +2,13 @@
 
 Revision **v10 + UI touch-up + reliability UX + approvals/mascot + shared loading, style guide and consistent popup menus**, package **1.12.0**. A frontend-only personal-agent workspace with strict TypeScript, native ES modules, original icon motion, and entirely synthetic local fixtures. No live backend is implemented. Screens, consent flows and browser frames are demonstrations, not connected account activity.
 
-Start every UI change with **[STYLE_GUIDE.md](STYLE_GUIDE.md)** and **[docs/UI-CHECKLIST.md](docs/UI-CHECKLIST.md)**. The latest iteration brings every action popup into the existing More-menu style and fixes navigation in script-enabled sandboxed previews. See **[docs/MENUS-PREVIEW.md](docs/MENUS-PREVIEW.md)**. The preceding iteration added reusable text/media skeletons, real image loading/error/retry handling, explicit content-loading previews and a token/style guard. See **[docs/DESIGN-SYSTEM.md](docs/DESIGN-SYSTEM.md)** for scope and **[docs/DESIGN-SYSTEM-TEST-RESULTS.md](docs/DESIGN-SYSTEM-TEST-RESULTS.md)** for executed checks.
+Start every UI change with **[STYLE_GUIDE.md](STYLE_GUIDE.md)** and **[docs/UI-CHECKLIST.md](docs/UI-CHECKLIST.md)**. The latest iteration brings every action popup into the existing More-menu style and fixes navigation in script-enabled sandboxed previews. The preceding iteration added reusable text/media skeletons, real image loading/error/retry handling, explicit content-loading previews and a token/style guard; **[docs/DESIGN-SYSTEM.md](docs/DESIGN-SYSTEM.md)** describes its scope.
 
-The preceding iteration centered the reaction plus, replaced the default companion with the supplied mascot, and put approvals above the composer. Its notes remain in **[docs/APPROVALS-MASCOT.md](docs/APPROVALS-MASCOT.md)**.
+The preceding iteration centered the reaction plus, replaced the default companion with the supplied mascot, and put approvals above the composer.
 
-The existing loading/retry states, visible outbox, per-tab draft recovery, and separate bottom **Connector chats** section remain. Their behavior is documented in **[docs/RELIABILITY-UX.md](docs/RELIABILITY-UX.md)**.
+The existing loading/retry states, visible outbox, per-tab draft recovery, and separate bottom **Connector chats** section remain.
 
-The earlier example-led refinements are documented in **[docs/UI-TOUCHUP.md](docs/UI-TOUCHUP.md)**. The updated source and both compiled previews are included. Existing behavior and text-size settings are retained.
+The updated source and both compiled previews are included. Existing behavior and text-size settings are retained.
 
 ## Run
 
@@ -61,9 +61,9 @@ Press **Ctrl/Cmd + Shift + D** for the scripted scenario chooser. The **Loading 
 
 ## Agent handoff
 
-For backend wiring, start with **docs/BACKEND-INTEGRATION-CHECKLIST.md**, then read **docs/LIVE-ADAPTER-HANDOFF.md** and **AGENTS.md**. For UI context, read **STYLE_GUIDE.md**, **docs/UI-CHECKLIST.md**, **docs/DESIGN-SYSTEM.md**, **docs/APPROVALS-MASCOT.md**, **docs/RELIABILITY-UX.md**, **docs/UI-TOUCHUP.md**, **docs/PARITY-V10.md**, and **docs/TEST-RESULTS.md**. `ProtocolAdapter` remains the frozen seam. The optional `chatSession` and `taskApprovals` UI capabilities require integration review and authoritative live receipts; it is not a change to that frozen protocol. There is no live implementation. Changes to the interface require review before implementation; selecting a future live adapter also requires the one approved composition-root change in `src/main.ts`.
+For backend wiring, start with **AGENTS.md**. For UI context, read **STYLE_GUIDE.md**, **docs/UI-CHECKLIST.md** and **docs/DESIGN-SYSTEM.md**. `ProtocolAdapter` remains the frozen seam. The optional `chatSession` and `taskApprovals` UI capabilities require integration review and authoritative live receipts; it is not a change to that frozen protocol. There is no live implementation. Changes to the interface require review before implementation; selecting a future live adapter also requires the one approved composition-root change in `src/main.ts`.
 
-The optional CLI/MCP developer companion is disabled by default and needs explicit tab enablement. See `docs/AGENT-CONTROL.md`. It is not production authorization, remote browser streaming, or a hosted agent runtime.
+The optional CLI/MCP developer companion is disabled by default and needs explicit tab enablement. It is not production authorization, remote browser streaming, or a hosted agent runtime.
 
 ## Validation limitation for this delivery
 
