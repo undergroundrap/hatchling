@@ -340,12 +340,15 @@ fn a_hung_run_blocks_the_next_fire_until_the_timeout_reaps_it() {
         )
         .unwrap();
         assert_eq!(first.launched, [(id.clone(), false)]);
-        // While it hangs: its socket and directory are owner-only.
+        // While it hangs: its socket is owner-only, and so is its directory,
+        // except that a root broker lets the cell's group traverse it once
+        // the cell is spawned (WO-006): 0700, or 0710 after the handover,
+        // which the helper may not have reached yet.
         let dirs = run_dirs(&config.scheduler.run_root());
         assert_eq!(dirs.len(), 1);
         let dir = dirs.first().unwrap();
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode(dir), 0o700);
+        assert_eq!(mode(dir) | 0o010, 0o710, "{:o}", mode(dir));
         assert_eq!(mode(&dir.join("broker.sock")), 0o600);
         // The next fire comes while it still runs: skipped, not stacked.
         let next = dispatch_once(

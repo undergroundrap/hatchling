@@ -666,7 +666,7 @@ mod tests {
             let error =
                 exits_reach_the_owner(&crate::linux::Linux, &unbuildable, &witnesses).unwrap_err();
             assert!(
-                error.starts_with("cannot isolate /bin/true: cannot inspect broker socket "),
+                error.starts_with("cannot isolate /bin/true: cannot hand the broker socket "),
                 "{error}"
             );
         }

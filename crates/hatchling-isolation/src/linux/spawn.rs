@@ -6,7 +6,6 @@ use std::fmt::Write as _;
 use std::io::Read as _;
 use std::net::TcpListener;
 use std::os::fd::{AsFd, OwnedFd};
-use std::os::unix::fs::FileTypeExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
@@ -61,8 +60,8 @@ const CELL_WAIT_DEADLINE: Duration =
     Duration::from_secs(MAX_CELL_RUNTIME.as_secs() + OUTER_WAIT_GRACE.as_secs());
 
 /// Makes the broker endpoint reachable by the cell's principal: the
-/// socket and its directory become the principal's, so the mapped
-/// agent can traverse the directory and connect to the socket.
+/// socket becomes the principal's, and its directory, which stays the
+/// broker's, lets the principal traverse it and nothing more.
 ///
 /// Inside the cell the agent is uid 0, which the kernel maps to the
 /// principal on the host. The socket directory is bind-mounted
@@ -72,120 +71,34 @@ const CELL_WAIT_DEADLINE: Duration =
 /// socket (not chmodding it world-writable) keeps the peer gate as the
 /// enforcement point.
 ///
-/// Paths already owned by the target uid are left alone, which makes
-/// the unprivileged case (broker uid == map base) a no-op instead of
-/// an `EPERM` from an unprivileged `chown`. Anything else that cannot
-/// be chowned fails closed: silently spawning an unreachable cell
-/// would wedge the broker's only agent.
+/// The directory isn't given away: a cell's user that owned it could
+/// swap the socket for a symlink between spawns, and send the next
+/// handover to a file the link names. Both steps go through handles
+/// opened without following symlinks
+/// ([`hatchling_sys::share_dir_with_cell`],
+/// [`hatchling_sys::hand_over_socket`]); for an unprivileged broker,
+/// whose cells run as its own user, neither changes anything.
 ///
 /// # Errors
 ///
-/// Returns [`Error::Spawn`] if the socket or its directory cannot
-/// be inspected, cannot be chowned to the principal, or the directory
-/// lacks owner-traverse permission afterwards.
-/// Fails closed: a cell whose agent cannot reach the broker is never
-/// spawned.
+/// Returns [`Error::Spawn`] if the directory or the socket isn't what it
+/// should be, or can't be changed. Fails closed: a cell whose agent
+/// cannot reach the broker is never spawned.
 fn hand_over_endpoint(endpoint: &Endpoint, uid: u32) -> Result<(), Error> {
-    use std::os::unix::fs::MetadataExt as _;
-
-    let socket_meta =
-        std::fs::symlink_metadata(&endpoint.socket).map_err(|source| Error::Spawn {
-            reason: format!(
-                "cannot inspect broker socket {}: {source}",
-                endpoint.socket.display()
-            ),
-        })?;
-    if !socket_meta.file_type().is_socket() {
-        return Err(Error::Spawn {
-            reason: format!(
-                "broker socket path {} is not a socket",
-                endpoint.socket.display()
-            ),
-        });
-    }
-    chown_to_cell(&endpoint.socket, uid, "broker socket")?;
-    chown_to_cell(&endpoint.dir, uid, "broker socket directory")?;
-    // The agent needs owner-traverse on the directory to reach the
-    // socket through the read-only bind mount. Ownership was just
-    // transferred above, so the owner bits are the agent's bits.
-    let dir_mode = std::fs::metadata(&endpoint.dir)
-        .map_err(|source| Error::Spawn {
-            reason: format!(
-                "cannot inspect broker socket dir {}: {source}",
-                endpoint.dir.display()
-            ),
-        })?
-        .mode();
-    if !socket_dir_traversable(dir_mode) {
-        return Err(Error::Spawn {
-            reason: format!(
-                "broker socket dir {} mode {dir_mode:06o} lacks owner traverse: the cell agent \
-                 (uid {uid}) could not reach the broker socket",
-                endpoint.dir.display(),
-            ),
-        });
-    }
-    Ok(())
-}
-
-/// Whether the cell agent can traverse the socket directory: the
-/// owner-execute bit must be set on the permission bits. The agent
-/// reaches the broker socket through this directory (bind-mounted
-/// read-only into the cell), so without owner-traverse the connect
-/// fails before `SO_PEERCRED` ever runs.
-///
-/// Takes the raw `mode()` value and masks to the permission bits
-/// itself: a file-type bit must never fake a traverse bit.
-///
-/// A pure function so the bit logic is unit-testable without
-/// privilege. Reaching this check through `hand_over_endpoint` with
-/// a traverse-less directory needs the stat to succeed while
-/// owner-execute is missing, which only a permission-bypassing
-/// (root) broker can observe — the bit logic itself needs no such
-/// setup.
-const fn socket_dir_traversable(dir_mode: u32) -> bool {
-    dir_mode & 0o777 & 0o100 != 0
-}
-
-/// Changes a path's owner to the cell uid, unless it already is.
-/// Symlinks are never followed: the broker socket must be a real
-/// socket, and its directory a real directory.
-///
-/// # Errors
-///
-/// Returns [`Error::Spawn`] if the ownership probe or the chown
-/// fails. An unprivileged broker cannot chown a foreign-owned path;
-/// that fails closed with an actionable message instead of an
-/// unreachable cell.
-fn chown_to_cell(path: &Path, uid: u32, what: &str) -> Result<(), Error> {
-    use std::os::unix::fs::MetadataExt as _;
-
-    let current = std::fs::symlink_metadata(path)
-        .map_err(|source| Error::Spawn {
-            reason: format!("cannot inspect {what} {}: {source}", path.display()),
-        })?
-        .uid();
-    if current == uid {
-        return Ok(());
-    }
     // The group goes too: the cell's gid map maps the same number
-    // (`id_map(principal)` for both maps). Before the cell drops to its
-    // ids, it builds its mounts as the host uid that forked it, and a
-    // root broker's run cell stages inside its handed-over run
-    // directory: owner-only, and owned by the cell. Its namespace
-    // capabilities reach only inodes whose owner *and* group are mapped,
-    // so a root group left behind makes the directory untraversable and
-    // every scheduled run fails at its first mount.
-    // rustix::fs::chown is the safe wrapper; no unsafe leaves
-    // hatchling-sys.
-    hatchling_sys::chown_ids(path, uid, uid).map_err(|source| Error::Spawn {
+    // (`id_map(principal)` for both maps).
+    hatchling_sys::hand_over_socket(&endpoint.socket, uid, uid).map_err(|source| Error::Spawn {
         reason: format!(
-            "cannot chown {what} {} to cell uid {uid}: {source} \
-             (run the broker with privilege to transfer ownership, or chown it beforehand)",
-            path.display(),
+            "cannot hand the broker socket {} to the cell (uid {uid}): {source}              (run the broker with privilege to transfer ownership, or chown it beforehand)",
+            endpoint.socket.display()
         ),
     })?;
-    Ok(())
+    hatchling_sys::share_dir_with_cell(&endpoint.dir, uid).map_err(|source| Error::Spawn {
+        reason: format!(
+            "cannot let the cell (uid {uid}) reach the broker socket dir {}: {source}",
+            endpoint.dir.display()
+        ),
+    })
 }
 
 /// A cell's staging directory, where its mount tree is built before
@@ -1158,21 +1071,6 @@ pub(super) mod tests {
         );
     }
 
-    #[test]
-    fn socket_dir_traverse_bit_logic() {
-        // Mutants: `& 0o777` -> `|` (permission mask), `& 0o100` ->
-        // `|`/`^` (traverse-bit test), `!= 0` -> `== 0`. A
-        // traverse-less directory must stay rejected and a
-        // traversable one accepted; the file-type bits must not fake
-        // a traverse bit through the mask.
-        assert!(socket_dir_traversable(0o040_700));
-        assert!(socket_dir_traversable(0o040_711));
-        assert!(!socket_dir_traversable(0o040_600));
-        assert!(!socket_dir_traversable(0o040_666));
-        assert!(!socket_dir_traversable(0o100_600));
-        assert!(socket_dir_traversable(0o100_700));
-    }
-
     /// A fresh, empty scratch directory for one staging test.
     fn staging_scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -1319,76 +1217,6 @@ pub(super) mod tests {
         assert!(!dir.exists());
     }
 
-    #[test]
-    fn chown_to_cell_is_a_noop_when_already_owned() {
-        // Mutants: chown_to_cell replaced with Ok(()), or the
-        // `current == uid` check inverted. A path already owned by the
-        // target uid must succeed without chowning (no privilege
-        // needed); the early return is the observable behavior.
-        let dir = owned_test_dir("chown");
-        std::fs::create_dir_all(&dir).unwrap();
-        let euid = hatchling_sys::euid();
-        // The temp dir is owned by us; chown to our own uid is a no-op.
-        chown_to_cell(&dir, euid, "test dir").unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn chown_to_cell_changes_ownership() {
-        // Mutants: chown_to_cell replaced with Ok(()), or the
-        // `current == uid` check inverted to `!=`. As root, chown a
-        // fresh dir from root to 65534 and verify the uid actually
-        // changed. The no-op mutant leaves it at 0; the inverted
-        // check returns early when the uids differ, also leaving it
-        // at 0. Only meaningful as root.
-        use std::os::unix::fs::MetadataExt as _;
-        if hatchling_sys::euid() != 0 {
-            return;
-        }
-        let dir = owned_test_dir("chown2");
-        std::fs::create_dir_all(&dir).unwrap();
-        let target = 65534u32;
-        chown_to_cell(&dir, target, "test dir").unwrap();
-        let meta = std::fs::symlink_metadata(&dir).unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(
-            meta.uid(),
-            target,
-            "chown_to_cell must actually transfer ownership"
-        );
-        assert_eq!(
-            meta.gid(),
-            target,
-            "chown_to_cell must transfer the group too: the cell's gid map maps only that number"
-        );
-    }
-
-    #[test]
-    fn chown_to_cell_fails_closed_when_chown_impossible() {
-        // Mutants: chown_to_cell replaced with Ok(()), or the
-        // `current == uid` check inverted to `!=`. A path whose owner
-        // differs from the target and cannot be chowned must fail
-        // closed, not stay silently foreign-owned. Unprivileged,
-        // chowning to any other uid fails with EPERM — no privilege
-        // needed to observe the failure path. (As root the chown
-        // would succeed; the root test above covers that half.)
-        if hatchling_sys::euid() == 0 {
-            return;
-        }
-        let dir = owned_test_dir("chown-fail");
-        std::fs::create_dir_all(&dir).unwrap();
-        let euid = hatchling_sys::euid();
-        // Owned by us, target is a uid we can never chown to: the
-        // no-op mutant returns Ok, the inverted check returns early
-        // Ok, the real code hits EPERM and fails closed.
-        let err = chown_to_cell(&dir, euid.wrapping_add(1), "test dir").unwrap_err();
-        let _ = std::fs::remove_dir_all(&dir);
-        assert!(
-            matches!(err, Error::Spawn { .. }),
-            "chown to an unchownable uid must fail closed, got {err:?}"
-        );
-    }
-
     fn make_socket_dir(tag: &str) -> OwnedTestDir {
         let dir = owned_test_dir(&format!("sock-{tag}"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1409,10 +1237,8 @@ pub(super) mod tests {
 
     #[test]
     fn hand_over_endpoint_accepts_a_real_socket() {
-        // Mutants: hand_over_endpoint replaced with Ok(()), the
-        // `!is_socket()` check deleted, the dir-mode mask/test
-        // operators swapped. A real socket in a traversable dir owned
-        // by the map base must pass.
+        // Mutant: hand_over_endpoint replaced with an error. A real socket
+        // in a traversable dir owned by the map base must pass.
         use std::os::unix::net::UnixListener;
         let dir = make_socket_dir("ok");
         let (endpoint, principal) = endpoint_in(&dir);
@@ -1422,8 +1248,7 @@ pub(super) mod tests {
 
     #[test]
     fn hand_over_endpoint_rejects_a_non_socket() {
-        // Mutant: the `!` deleted from `!is_socket()`. A regular file
-        // at the socket path must fail (not silently pass).
+        // A regular file at the socket path must fail, not pass.
         let dir = make_socket_dir("nonsock");
         let (endpoint, principal) = endpoint_in(&dir);
         std::fs::write(&endpoint.socket, b"not a socket").unwrap();
@@ -1448,31 +1273,32 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn hand_over_endpoint_rejects_untraversable_dir() {
-        // Mutants: `&` -> `|`/`^` in the mode mask, `==` -> `!=` in the
-        // traverse check. A dir without owner-traverse must fail even
-        // though the socket itself is fine.
-        //
-        // Privilege note: as root, permission checks are bypassed, so
-        // the socket stat succeeds and the explicit traverse-bit check
-        // fires ("lacks owner traverse"). As non-root, the stat itself
-        // fails with EACCES ("cannot inspect broker socket"). Both are
-        // rejections of the untraversable dir; accept either.
+    fn an_untraversable_socket_dir_is_refused_or_fixed_by_whoever_owns_it() {
+        // Unprivileged, the cell is the broker's own user: a dir its owner
+        // can't traverse is refused before anything is built. A root broker owns
+        // the dir and opens it to the cell's group (mode 0710).
+        use std::os::unix::fs::MetadataExt as _;
         use std::os::unix::net::UnixListener;
         let dir = make_socket_dir("notrav");
         let (endpoint, principal) = endpoint_in(&dir);
         let _listener = UnixListener::bind(&endpoint.socket).unwrap();
-        // Remove owner-traverse (and everything else) from the dir.
         std::fs::set_permissions(&*dir, std::fs::Permissions::from_mode(0o600)).unwrap();
         let result = hand_over_endpoint(&endpoint, principal);
-        // Restore permissions so cleanup works.
+        let mode = std::fs::symlink_metadata(&*dir).unwrap().mode() & 0o7777;
         std::fs::set_permissions(&*dir, std::fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(
-            matches!(&result, Err(Error::Spawn { reason })
-                if reason.contains("lacks owner traverse")
-                    || reason.contains("cannot inspect broker socket")),
-            "hand_over_endpoint must reject an untraversable dir, got {result:?}"
-        );
+        if hatchling_sys::euid() == 0 {
+            assert!(result.is_ok(), "{result:?}");
+            assert_eq!(mode, 0o710);
+        } else {
+            // The socket comes first, and can't be opened through a dir its
+            // owner can't traverse.
+            assert!(
+                matches!(&result, Err(Error::Spawn { reason })
+                    if reason.starts_with("cannot hand the broker socket ")
+                        && reason.contains("Permission denied")),
+                "hand_over_endpoint must refuse an untraversable dir, got {result:?}"
+            );
+        }
     }
 
     #[test]
@@ -2295,7 +2121,7 @@ pub(super) mod tests {
         });
         let result = isolate(&spec);
         assert!(
-            matches!(&result, Err(Error::Spawn { reason }) if reason.starts_with("cannot inspect broker socket ")),
+            matches!(&result, Err(Error::Spawn { reason }) if reason.starts_with("cannot hand the broker socket ")),
             "got {:?}",
             result.map(|cell| cell.pid())
         );

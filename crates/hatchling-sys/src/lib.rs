@@ -47,7 +47,9 @@ pub use fds::{cloexec_fds_above_stderr, close_fds_above_stderr_except, fd_flags,
 pub use idmap::IdMap;
 pub use mounts::{BindMount, MountPlan};
 pub use namespaces::{unshare_ipc, unshare_mount, unshare_net, unshare_pid, unshare_user};
-pub use ownership::{chown_ids, create_private_dir};
+pub use ownership::{
+    DirShare, create_private_dir, dir_share, hand_over_socket, owner_traverses, share_dir_with_cell,
+};
 pub use peercred::{RawPeerCred, socket_peercred};
 pub use process::{
     Child, ChildPid, ForkResult, Limit, become_cell_user, child_exit_code, clear_groups,
