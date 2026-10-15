@@ -158,6 +158,7 @@ impl Cell<Ready> {
                 key: "HATCHLING_MODEL_ENDPOINT",
                 reason: error.to_string(),
             })?
+            .with_reasoning(self.config().model_reasoning)
             .with_redactor(redactor.clone());
         provider
             .verify_capabilities()

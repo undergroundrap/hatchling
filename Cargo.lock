@@ -567,6 +567,7 @@ dependencies = [
 name = "hatchling-model"
 version = "0.2.0"
 dependencies = [
+ "hatchling-core",
  "hatchling-loop",
  "hatchling-prompt",
  "serde_json",

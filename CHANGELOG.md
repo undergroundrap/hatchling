@@ -13,6 +13,8 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Changed
 
+- **Breaking, hatchling-agent and hatchling-broker:** operators can select `disabled` thinking with `HATCHLING_MODEL_REASONING` (direct runs) or `HATCHLING_SCHEDULER_MODEL_REASONING` (scheduled and child runs). Unset or `provider-default` preserves requests; endpoints may refuse the extension. Rust struct literals for agent `Config`, broker `SchedulerConfig` and `ScheduledRun` must supply `model_reasoning: ModelReasoning::ProviderDefault` to retain previous behavior; older serialized runs default only when the field is absent (WO-020).
+
 - An operator-delegated `HATCHLING_CELL_CGROUP` now gives every cell its own cgroup v2 leaf, holding the whole cell to `pids.max`, `memory.max` (half the host's memory by default, configurable with `HATCHLING_CELL_MAX_MEMORY`) and `cpu.max` (`HATCHLING_CELL_MAX_CPUS`, fractional cores, unlimited by default). The first child enters before release, and cleanup kills all tasks and removes the leaf. Unset uses the documented rlimit fallback with a startup warning; configured but unusable fails closed. `CellSpec` and `CellConfig` gain `cgroup`; `Limits` and `CellLimits` gain `memory` and `cpu_millis`; `hatchling_sys::Error` gains `Cgroup` (breaking Rust struct construction and exhaustive matches; serialized configs retain defaults). See [cell limits](README.md#cell-limits) (WO-004).
 
 ### Fixed

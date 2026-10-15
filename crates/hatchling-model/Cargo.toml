@@ -16,6 +16,7 @@ description = "A real model provider for the agent loop: OpenAI-compatible chat-
 workspace = true
 
 [dependencies]
+hatchling-core.workspace = true
 hatchling-loop.workspace = true
 hatchling-prompt.workspace = true
 thiserror = "2"

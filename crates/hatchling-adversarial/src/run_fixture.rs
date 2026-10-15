@@ -30,6 +30,7 @@
 //! - `space-create`: try to create a space.
 //! - `connect:<path>`: try to connect to a unix socket at `path`.
 //! - `subagent`: try to spawn a child of its own.
+//! - `model-reasoning`: report the thinking-mode setting in the cell environment.
 //! - `hang`: spin forever (the cell's seccomp profile has no `nanosleep`).
 //!
 //! Two tasks replace the report entirely:
@@ -151,6 +152,9 @@ fn connect(socket: &str, cell_id: &str) -> Result<UnixStream, String> {
 }
 
 fn run_probe(session: Result<&UnixStream, &String>, probe: &str) -> String {
+    if probe == "model-reasoning" {
+        return std::env::var("HATCHLING_MODEL_REASONING").unwrap_or_default();
+    }
     if let Some(path) = probe.strip_prefix("connect:") {
         return match UnixStream::connect(path) {
             Ok(_) => String::from("reached"),
@@ -319,5 +323,13 @@ mod tests {
         assert_eq!(run_probe(Err(&none), "schedule"), "no-session");
         assert_eq!(run_probe(Err(&none), "followup:soon"), "bad-delay");
         assert_eq!(run_probe(Err(&none), "nothing"), "unknown-probe");
+    }
+
+    #[test]
+    fn the_model_reasoning_probe_reports_the_actual_environment() {
+        assert_eq!(
+            run_probe(Err(&String::from("no session")), "model-reasoning"),
+            std::env::var("HATCHLING_MODEL_REASONING").unwrap_or_default()
+        );
     }
 }

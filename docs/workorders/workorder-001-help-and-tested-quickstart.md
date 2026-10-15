@@ -5,6 +5,10 @@
 **Issue:** [#4](https://github.com/undergroundrap/hatchling/issues/4)
 **Trust boundary:** no
 
+Hosted-model proof depends on [WO-020](workorder-020-model-reasoning-control.md)
+([#60](https://github.com/undergroundrap/hatchling/issues/60)) for the explicit
+thinking-mode setting. That configuration change remains outside this WO.
+
 ## Problem
 
 A newcomer's first command is `hatchling-broker --help`, and it doesn't print help: the broker parses its environment first, then treats `--help` as an unknown operator subcommand. The broker is configured entirely by environment variables, and the README's quickstart shows only the ones it needs.

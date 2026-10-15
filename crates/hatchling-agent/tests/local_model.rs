@@ -178,6 +178,13 @@ fn local_broker(name: &str, port: u16) -> FixtureBroker {
 }
 
 fn ready_cell(broker: &FixtureBroker) -> Cell<Ready> {
+    ready_cell_with_reasoning(broker, hatchling_core::ModelReasoning::ProviderDefault)
+}
+
+fn ready_cell_with_reasoning(
+    broker: &FixtureBroker,
+    model_reasoning: hatchling_core::ModelReasoning,
+) -> Cell<Ready> {
     let uid = rustix::process::getuid().as_raw();
     let config = Config {
         cell_id: "cell-local".parse().unwrap(),
@@ -188,6 +195,7 @@ fn ready_cell(broker: &FixtureBroker) -> Cell<Ready> {
         model_name: None,
         model_max_steps: 10,
         model_context_window: None,
+        model_reasoning,
         run_subagent: false,
     };
     Cell::new(config)
@@ -441,4 +449,35 @@ fn an_unreachable_local_endpoint_fails_loudly_before_the_task() {
         matches!(&error, Error::ModelRefused(reason) if reason.starts_with("transport failed: ")),
         "got {error:?}"
     );
+}
+
+#[test]
+fn run_task_applies_disabled_thinking_to_the_probe_and_task_through_egress() {
+    let server = LocalServer::start(vec![probe_reply(), text_reply("thinking disabled")]);
+    let broker = local_broker("thinking-disabled", server.port);
+    let cell = ready_cell_with_reasoning(&broker, hatchling_core::ModelReasoning::Disabled);
+    let result = cell
+        .run_task(
+            hatchling_agent::PromptKind::Worker,
+            String::from("hello"),
+            local_provider(server.port),
+            2,
+        )
+        .unwrap();
+    assert_eq!(result.answer, "thinking disabled");
+    let seen = server.seen();
+    assert_eq!(seen.len(), 2);
+    assert!(is_probe(seen.first().unwrap()));
+    assert!(!is_probe(seen.get(1).unwrap()));
+    for request in &seen {
+        assert_eq!(
+            request.body.get("reasoning"),
+            Some(&json!({"enabled": false}))
+        );
+        assert!(
+            request
+                .head
+                .starts_with("POST /v1/chat/completions HTTP/1.1\r\n")
+        );
+    }
 }

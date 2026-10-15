@@ -4,7 +4,7 @@
 //! assume validity without re-checking. Untrusted input (environment
 //! variables) becomes validated types here, at the edge, exactly once.
 
-use hatchling_core::{CellId, LogLevel, PeerUid, SocketPath};
+use hatchling_core::{CellId, LogLevel, ModelReasoning, PeerUid, SocketPath};
 
 use crate::Error;
 use crate::environment as env;
@@ -29,6 +29,8 @@ pub struct Config {
     /// Provider-side model name (`HATCHLING_MODEL_NAME`). Required for
     /// `run`.
     pub model_name: Option<String>,
+    /// Thinking mode (`HATCHLING_MODEL_REASONING`); unset leaves the provider default.
+    pub model_reasoning: ModelReasoning,
     /// Loop step budget for `run` (`HATCHLING_MODEL_MAX_STEPS`).
     pub model_max_steps: u32,
     /// The model's context window in tokens
@@ -48,7 +50,16 @@ impl Config {
     ///
     /// Returns [`Error`] if any required value is missing or invalid.
     pub fn from_env() -> Result<Self, Error> {
-        Self::parse(|key| std::env::var(key).ok())
+        Self::parse(|key| match std::env::var(key) {
+            Ok(value) => Some(value),
+            // A present malformed OS value is invalid, not an absent setting.
+            Err(std::env::VarError::NotUnicode(_))
+                if key == env::HATCHLING_MODEL_REASONING.name =>
+            {
+                Some(String::new())
+            }
+            Err(_) => None,
+        })
     }
 
     /// Parses configuration using a key lookup function.
@@ -73,6 +84,13 @@ impl Config {
         let log_level = match get(env::HATCHLING_LOG_LEVEL.name) {
             Some(raw) => raw.parse::<LogLevel>()?,
             None => LogLevel::Info,
+        };
+        let model_reasoning = match get(env::HATCHLING_MODEL_REASONING.name) {
+            None => ModelReasoning::ProviderDefault,
+            Some(raw) => ModelReasoning::parse(&raw).ok_or_else(|| Error::InvalidConfig {
+                key: "HATCHLING_MODEL_REASONING",
+                reason: String::from("expected provider-default or disabled"),
+            })?,
         };
         let model_max_steps = match get(env::HATCHLING_MODEL_MAX_STEPS.name) {
             Some(raw) => raw.parse::<u32>().map_err(|_| Error::InvalidConfig {
@@ -101,6 +119,7 @@ impl Config {
             log_level,
             model_endpoint: get(env::HATCHLING_MODEL_ENDPOINT.name),
             model_name: get(env::HATCHLING_MODEL_NAME.name),
+            model_reasoning,
             model_max_steps,
             model_context_window,
             run_subagent,
@@ -125,6 +144,75 @@ fn parse_context_window(raw: &str) -> Result<u32, Error> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn thinking_mode_refuses_nonunicode_environment_before_startup() {
+        use std::os::unix::ffi::OsStringExt as _;
+        const CHILD: &str = "HATCHLING_TEST_REASONING_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let error = Config::from_env().unwrap_err();
+            assert!(
+                matches!(error, Error::InvalidConfig { key: "HATCHLING_MODEL_REASONING", reason } if reason == "expected provider-default or disabled")
+            );
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "config::tests::thinking_mode_refuses_nonunicode_environment_before_startup",
+                "--nocapture",
+            ])
+            .env_clear()
+            .envs(valid_vars())
+            .env(CHILD, "1")
+            .env(
+                "HATCHLING_MODEL_REASONING",
+                std::ffi::OsString::from_vec(vec![0xff]),
+            )
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+    }
+    #[test]
+    fn another_settings_nonunicode_value_still_reads_as_unset() {
+        // Only the thinking mode refuses a non-UTF-8 value; any other
+        // setting's reads as unset, as before WO-020. An unset step budget
+        // is the default, and an empty one would be refused.
+        use std::os::unix::ffi::OsStringExt as _;
+        const CHILD: &str = "HATCHLING_TEST_OTHER_NONUNICODE_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let config = Config::from_env().unwrap();
+            assert_eq!(config.model_max_steps, 10);
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "config::tests::another_settings_nonunicode_value_still_reads_as_unset",
+                "--nocapture",
+            ])
+            .env_clear()
+            .envs(valid_vars())
+            .env(CHILD, "1")
+            .env(
+                "HATCHLING_MODEL_MAX_STEPS",
+                std::ffi::OsString::from_vec(vec![0xff]),
+            )
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+    }
+
     use super::*;
     use std::collections::HashMap;
 
@@ -283,6 +371,32 @@ mod tests {
                 matches!(&error, Error::InvalidConfig { key, reason }
                     if *key == "HATCHLING_RUN_SUBAGENT" && reason == "expected 0 or 1"),
                 "{raw:?}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn thinking_mode_is_strict_and_defaults_without_an_extension() {
+        let mut vars = valid_vars();
+        assert_eq!(
+            Config::parse(lookup(&vars)).unwrap().model_reasoning,
+            ModelReasoning::ProviderDefault
+        );
+        for (raw, expected) in [
+            ("provider-default", ModelReasoning::ProviderDefault),
+            ("disabled", ModelReasoning::Disabled),
+        ] {
+            vars.insert("HATCHLING_MODEL_REASONING", raw);
+            assert_eq!(
+                Config::parse(lookup(&vars)).unwrap().model_reasoning,
+                expected
+            );
+        }
+        for raw in ["", "off", "false", "Disabled", "disabled ", "auto"] {
+            vars.insert("HATCHLING_MODEL_REASONING", raw);
+            let error = Config::parse(lookup(&vars)).unwrap_err();
+            assert!(
+                matches!(error, Error::InvalidConfig { key: "HATCHLING_MODEL_REASONING", reason } if reason == "expected provider-default or disabled")
             );
         }
     }

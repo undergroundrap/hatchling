@@ -168,6 +168,8 @@ pub struct SchedulerConfig {
     pub model_endpoint: Option<String>,
     /// The model name scheduled runs use (`HATCHLING_SCHEDULER_MODEL_NAME`).
     pub model_name: Option<String>,
+    /// Thinking mode supplied to scheduled and child runs.
+    pub model_reasoning: hatchling_core::ModelReasoning,
     /// The agent binary run cells execute (`HATCHLING_AGENT_BIN`, the
     /// same binary as the agent cell's). Without it the broker starts no
     /// dispatcher: there is nothing to run.
@@ -209,6 +211,7 @@ impl SchedulerConfig {
             root: PathBuf::new(),
             model_endpoint: None,
             model_name: None,
+            model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
             agent_bin: None,
             followup: None,
             subagent_depth: 0,
@@ -592,7 +595,16 @@ impl Config {
     ///
     /// Returns [`Error`] if any required value is missing or invalid.
     pub fn from_env() -> Result<Self, Error> {
-        Self::parse(|key| std::env::var(key).ok())
+        Self::parse(|key| match std::env::var(key) {
+            Ok(value) => Some(value),
+            // A present malformed OS value is invalid, not an absent setting.
+            Err(std::env::VarError::NotUnicode(_))
+                if key == env::HATCHLING_SCHEDULER_MODEL_REASONING.name =>
+            {
+                Some(String::new())
+            }
+            Err(_) => None,
+        })
     }
 
     /// Parses configuration using a key lookup function.
@@ -816,7 +828,7 @@ fn parse_stores(
     Error,
 > {
     let socket_dir = socket.as_path().parent();
-    let scheduler = parse_scheduler(
+    let mut scheduler = parse_scheduler(
         get(env::HATCHLING_SCHEDULER_DIR.name).as_deref(),
         (
             get(env::HATCHLING_SCHEDULER_MODEL_ENDPOINT.name),
@@ -826,6 +838,15 @@ fn parse_stores(
         socket_dir,
     )?
     .with_agent_bin(get(env::HATCHLING_AGENT_BIN.name));
+    scheduler.model_reasoning = match get(env::HATCHLING_SCHEDULER_MODEL_REASONING.name) {
+        None => hatchling_core::ModelReasoning::ProviderDefault,
+        Some(raw) => {
+            hatchling_core::ModelReasoning::parse(&raw).ok_or_else(|| Error::InvalidConfig {
+                key: "HATCHLING_SCHEDULER_MODEL_REASONING",
+                reason: String::from("expected provider-default or disabled"),
+            })?
+        }
+    };
     let artifacts = parse_artifacts(get, vault_root, socket_dir)?;
     let spaces = parse_spaces(
         (
@@ -1108,6 +1129,7 @@ fn parse_scheduler(
         root,
         model_endpoint: model_endpoint.filter(|value| !value.trim().is_empty()),
         model_name: model_name.filter(|value| !value.trim().is_empty()),
+        model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
         agent_bin: None,
         followup: None,
         subagent_depth: 0,
@@ -1635,6 +1657,75 @@ fn parse_egress_grants(raw: Option<String>) -> Result<Vec<String>, Error> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn thinking_mode_refuses_nonunicode_environment_before_startup() {
+        use std::os::unix::ffi::OsStringExt as _;
+        const CHILD: &str = "HATCHLING_TEST_REASONING_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let error = Config::from_env().unwrap_err();
+            assert!(
+                matches!(error, Error::InvalidConfig { key: "HATCHLING_SCHEDULER_MODEL_REASONING", reason } if reason == "expected provider-default or disabled")
+            );
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "config::tests::thinking_mode_refuses_nonunicode_environment_before_startup",
+                "--nocapture",
+            ])
+            .env_clear()
+            .envs(valid_vars())
+            .env(CHILD, "1")
+            .env(
+                "HATCHLING_SCHEDULER_MODEL_REASONING",
+                std::ffi::OsString::from_vec(vec![0xff]),
+            )
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+    }
+    #[test]
+    fn another_settings_nonunicode_value_still_reads_as_unset() {
+        // Only the thinking mode refuses a non-UTF-8 value; any other
+        // setting's reads as unset, as before WO-020. An unset socket mode
+        // is the default, and an empty one would be refused.
+        use std::os::unix::ffi::OsStringExt as _;
+        const CHILD: &str = "HATCHLING_TEST_OTHER_NONUNICODE_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let config = Config::from_env().unwrap();
+            assert_eq!(config.socket_mode, DEFAULT_SOCKET_MODE);
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "config::tests::another_settings_nonunicode_value_still_reads_as_unset",
+                "--nocapture",
+            ])
+            .env_clear()
+            .envs(valid_vars())
+            .env(CHILD, "1")
+            .env(
+                "HATCHLING_BROKER_SOCKET_MODE",
+                std::ffi::OsString::from_vec(vec![0xff]),
+            )
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+    }
+
     use super::*;
     use std::collections::HashMap;
 
@@ -3024,6 +3115,51 @@ mod tests {
         assert!(parse_channels(Some(String::from("local,"))).is_err());
         assert!(parse_channels(Some(String::from(",local"))).is_err());
         assert!(parse_channels(Some(String::from("local,,telegram"))).is_err());
+    }
+    #[test]
+    fn thinking_mode_is_validated_even_when_the_scheduler_is_off() {
+        use hatchling_core::ModelReasoning;
+        for directory in [None, Some("/tmp/hatchling-schedules/store")] {
+            let mut vars = valid_vars();
+            if let Some(directory) = directory {
+                vars.insert("HATCHLING_SCHEDULER_DIR", directory);
+            }
+            assert_eq!(
+                Config::parse(lookup(&vars))
+                    .unwrap()
+                    .scheduler
+                    .model_reasoning,
+                ModelReasoning::ProviderDefault
+            );
+            assert_eq!(
+                SchedulerConfig::disabled().model_reasoning,
+                ModelReasoning::ProviderDefault
+            );
+            for (raw, expected) in [
+                ("provider-default", ModelReasoning::ProviderDefault),
+                ("disabled", ModelReasoning::Disabled),
+            ] {
+                vars.insert("HATCHLING_SCHEDULER_MODEL_REASONING", raw);
+                let socket: SocketPath = "/tmp/hatchling-test/broker.sock".parse().unwrap();
+                let (_, _, scheduler, _, _) =
+                    parse_stores(&lookup(&vars), Path::new("/srv/vault"), &socket).unwrap();
+                assert_eq!(scheduler.model_reasoning, expected);
+                assert_eq!(
+                    Config::parse(lookup(&vars))
+                        .unwrap()
+                        .scheduler
+                        .model_reasoning,
+                    expected
+                );
+            }
+            for raw in ["", "off", "false", "Disabled", "disabled ", "auto"] {
+                vars.insert("HATCHLING_SCHEDULER_MODEL_REASONING", raw);
+                let error = Config::parse(lookup(&vars)).unwrap_err();
+                assert!(
+                    matches!(error, Error::InvalidConfig { key: "HATCHLING_SCHEDULER_MODEL_REASONING", reason } if reason == "expected provider-default or disabled")
+                );
+            }
+        }
     }
 }
 

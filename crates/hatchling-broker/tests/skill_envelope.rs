@@ -133,6 +133,7 @@ fn ready_cell(socket: &Path) -> Result<hatchling_agent::Cell<hatchling_agent::Re
         model_name: None,
         model_max_steps: 10,
         model_context_window: None,
+        model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
         run_subagent: false,
     })
     .check_preconditions()

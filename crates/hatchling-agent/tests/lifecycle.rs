@@ -21,6 +21,7 @@ fn config_for(socket_path: &str, broker_uid: u32) -> Result<Config, Error> {
         model_name: None,
         model_max_steps: 10,
         model_context_window: None,
+        model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
         run_subagent: false,
     })
 }

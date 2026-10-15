@@ -499,6 +499,7 @@ mod tests {
             model_name: None,
             model_max_steps: 10,
             model_context_window: None,
+            model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
             run_subagent: false,
         }
     }

@@ -30,6 +30,7 @@ hatchling_core::declare_environment! {
     HATCHLING_SCHEDULER_DIR: ("optional; default disabled", "Absolute sealed schedule-store root."),
     HATCHLING_SCHEDULER_MODEL_ENDPOINT: ("optional", "Model API base URL supplied to scheduled run cells."),
     HATCHLING_SCHEDULER_MODEL_NAME: ("optional", "Provider model identifier supplied to scheduled runs."),
+    HATCHLING_SCHEDULER_MODEL_REASONING: ("optional; default provider-default", "Thinking mode supplied to scheduled and child runs: provider-default or disabled."),
     HATCHLING_ARTIFACT_DIR: ("optional; default disabled", "Absolute sealed artifact build-store root."),
     HATCHLING_ARTIFACT_WORKSPACE: ("required with a configured harness", "Absolute workspace destination for approved deliveries."),
     HATCHLING_ARTIFACT_DENY: ("optional", "Comma-separated output categories the review policy refuses."),
