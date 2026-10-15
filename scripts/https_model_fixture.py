@@ -61,6 +61,8 @@ def main():
             super().do_POST()
 
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    # Like a real provider: nothing older than TLS 1.2.
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(args.cert_file, args.private_key_file)
     server = HTTPServer(('127.0.0.1', args.port), Handler)
     server.socket = context.wrap_socket(server.socket, server_side=True)
