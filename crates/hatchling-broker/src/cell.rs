@@ -356,6 +356,9 @@ pub struct ScheduledRun {
     pub model_endpoint: Option<String>,
     /// The model name, likewise.
     pub model_name: Option<String>,
+    /// Thinking mode for the ordinary model client; older specs retain the default.
+    #[serde(default)]
+    pub model_reasoning: hatchling_core::ModelReasoning,
     /// The run's depth in its follow-up chain: 0 unless it is a
     /// follow-up.
     #[serde(default)]
@@ -401,6 +404,12 @@ impl ScheduledRun {
         }
         if let Some(name) = &self.model_name {
             env.push(("HATCHLING_MODEL_NAME", name.clone()));
+        }
+        if self.model_reasoning != hatchling_core::ModelReasoning::ProviderDefault {
+            env.push((
+                "HATCHLING_MODEL_REASONING",
+                self.model_reasoning.as_setting().to_owned(),
+            ));
         }
         env
     }
@@ -1646,6 +1655,7 @@ mod run_cell_tests {
             due: 1_790_000_000,
             model_endpoint: Some(String::from("https://models.example.com/v1")),
             model_name: Some(String::from("m-1")),
+            model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
             depth: 2,
             event: Some(hatchling_core::HookSource::ChannelMessage {
                 channel: String::from("local"),
@@ -1729,6 +1739,7 @@ mod run_cell_tests {
             missed: false,
             model_endpoint: None,
             model_name: None,
+            model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
             depth: 0,
             event: None,
             ..run()
@@ -1754,6 +1765,7 @@ mod run_cell_tests {
             missed: false,
             model_endpoint: None,
             model_name: None,
+            model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
             depth: 0,
             event: None,
             max_steps: Some(4),
@@ -1813,6 +1825,55 @@ mod run_cell_tests {
             serde_json::from_str(&serde_json::to_string(&cell).unwrap()).unwrap();
         assert_eq!(back.scheduled, Some(run()));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn serialized_runs_default_only_when_mode_is_absent_and_emit_disabled() {
+        use hatchling_core::ModelReasoning;
+        let mut value = serde_json::to_value(run()).unwrap();
+        value.as_object_mut().unwrap().remove("model_reasoning");
+        let old: ScheduledRun = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(old.model_reasoning, ModelReasoning::ProviderDefault);
+        assert!(
+            !old.env()
+                .iter()
+                .any(|(key, _)| *key == "HATCHLING_MODEL_REASONING")
+        );
+        value.as_object_mut().unwrap().insert(
+            String::from("model_reasoning"),
+            serde_json::json!("disabled"),
+        );
+        let disabled: ScheduledRun = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(disabled.model_reasoning, ModelReasoning::Disabled);
+        let mut expected = old.env();
+        expected.push(("HATCHLING_MODEL_REASONING", String::from("disabled")));
+        assert_eq!(disabled.env(), expected);
+        for invalid in [
+            serde_json::json!("off"),
+            serde_json::json!(""),
+            serde_json::json!(null),
+            serde_json::json!(false),
+        ] {
+            value
+                .as_object_mut()
+                .unwrap()
+                .insert(String::from("model_reasoning"), invalid);
+            assert!(serde_json::from_value::<ScheduledRun>(value.clone()).is_err());
+        }
+        let cell = CellConfig {
+            scheduled: Some(disabled),
+            ..agent_cell()
+        };
+        let (_, actual) = program_env(&cell, LogLevel::Error);
+        assert_eq!(
+            actual
+                .iter()
+                .filter(|(key, _)| key == "HATCHLING_MODEL_REASONING")
+                .collect::<Vec<_>>(),
+            [&(
+                String::from("HATCHLING_MODEL_REASONING"),
+                String::from("disabled")
+            )]
+        );
     }
 }
 

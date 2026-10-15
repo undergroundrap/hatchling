@@ -15,6 +15,7 @@
 //! does not call tools. There is no local branch here: a local
 //! endpoint differs only in where the broker sends the bytes.
 
+use hatchling_core::ModelReasoning;
 use hatchling_loop::tool::{ToolCall, ToolDescription};
 use hatchling_loop::{Error as LoopError, Message, Model, ModelAction, ToolResultView};
 use hatchling_prompt::probe::{PROBE_INSTRUCTION, PROBE_TOOL, PROBE_TOOL_DESCRIPTION};
@@ -95,6 +96,7 @@ pub struct ChatCompletionsProvider<T: Transport> {
     model: String,
     auth_header: Option<String>,
     redactor: Redactor,
+    reasoning: ModelReasoning,
     transport: T,
 }
 
@@ -119,6 +121,7 @@ impl<T: Transport> ChatCompletionsProvider<T> {
             model: config.model,
             auth_header,
             redactor: Redactor::default(),
+            reasoning: ModelReasoning::ProviderDefault,
             transport,
         })
     }
@@ -128,6 +131,17 @@ impl<T: Transport> ChatCompletionsProvider<T> {
     #[must_use]
     pub fn with_redactor(mut self, redactor: Redactor) -> Self {
         self.redactor = redactor;
+        self
+    }
+
+    /// Selects thinking behavior for both probes and task requests.
+    ///
+    /// This configures this client; the broker does not enforce the setting
+    /// on arbitrary requests from an untrusted cell. Unsupported endpoints
+    /// may refuse the extension. No retry or fallback changes the mode.
+    #[must_use]
+    pub const fn with_reasoning(mut self, reasoning: ModelReasoning) -> Self {
+        self.reasoning = reasoning;
         self
     }
 
@@ -206,7 +220,14 @@ impl<T: Transport> ChatCompletionsProvider<T> {
 
     /// Sends `body` to the endpoint and returns the raw reply.
     fn post(&self, body: &Value) -> Result<Vec<u8>, Error> {
-        let body_bytes = serde_json::to_vec(body).map_err(|error| Error::BadResponse {
+        let mut body = body.clone();
+        if self.reasoning == ModelReasoning::Disabled {
+            let fields = body.as_object_mut().ok_or_else(|| Error::BadResponse {
+                reason: String::from("model request must be a JSON object"),
+            })?;
+            fields.insert(String::from("reasoning"), json!({"enabled": false}));
+        }
+        let body_bytes = serde_json::to_vec(&body).map_err(|error| Error::BadResponse {
             reason: format!("failed to serialize request: {error}"),
         })?;
         let mut headers: Vec<(&str, &str)> = vec![("content-type", "application/json")];
@@ -985,5 +1006,102 @@ mod tests {
             transport,
         );
         assert!(matches!(empty_model, Err(Error::EmptyModelName)));
+    }
+
+    #[test]
+    fn thinking_default_preserves_bytes_and_disabled_adds_only_one_field() {
+        use hatchling_core::ModelReasoning;
+        for probe in [true, false] {
+            let original = provider(Canned::ok(&text_reply("done")));
+            let body = if probe {
+                original.probe_body()
+            } else {
+                original
+                    .request_body(&[Message::User(String::from("hello"))], &no_tools())
+                    .unwrap()
+            };
+            original.post(&body).unwrap();
+            let expected = original.transport.seen().unwrap();
+            // Before WO-020, post serialized exactly this value.
+            assert_eq!(expected.body, serde_json::to_vec(&body).unwrap());
+            for mode in [ModelReasoning::ProviderDefault, ModelReasoning::Disabled] {
+                let configured = provider(Canned::ok(&text_reply("done"))).with_reasoning(mode);
+                configured.post(&body).unwrap();
+                let seen = configured.transport.seen().unwrap();
+                assert_eq!(seen.destination, expected.destination);
+                assert_eq!(seen.path, expected.path);
+                assert_eq!(seen.headers, expected.headers);
+                if mode == ModelReasoning::ProviderDefault {
+                    assert_eq!(seen.body, expected.body);
+                } else {
+                    let mut actual: Value = serde_json::from_slice(&seen.body).unwrap();
+                    assert_eq!(
+                        actual.as_object_mut().unwrap().remove("reasoning"),
+                        Some(json!({"enabled": false}))
+                    );
+                    assert_eq!(actual, body);
+                }
+            }
+        }
+        let malformed =
+            provider(Canned::ok(&text_reply("done"))).with_reasoning(ModelReasoning::Disabled);
+        let error = malformed.post(&Value::Null).unwrap_err();
+        assert!(
+            matches!(error, Error::BadResponse { reason } if reason == "model request must be a JSON object")
+        );
+        assert!(malformed.transport.seen().is_none());
+    }
+
+    #[test]
+    fn disabled_thinking_keeps_the_probe_guard_and_task_redaction() {
+        for mode in [ModelReasoning::ProviderDefault, ModelReasoning::Disabled] {
+            let ready = provider(Canned::ok(&probe_reply(PROBE_TOOL))).with_reasoning(mode);
+            ready.verify_capabilities().unwrap();
+            let body: Value =
+                serde_json::from_slice(&ready.transport.seen().unwrap().body).unwrap();
+            assert_eq!(body.get("tool_choice"), Some(&json!("required")));
+            assert_eq!(
+                body.get("reasoning"),
+                (mode == ModelReasoning::Disabled).then_some(&json!({"enabled": false}))
+            );
+            for reply in [
+                text_reply("not a tool"),
+                probe_reply("wrong_tool"),
+                String::from("not json"),
+                String::from(r#"{"choices":[{"message":{"tool_calls":[]}}]}"#),
+            ] {
+                assert!(matches!(
+                    provider(Canned::ok(&reply))
+                        .with_reasoning(mode)
+                        .verify_capabilities(),
+                    Err(Error::Incapable { .. })
+                ));
+            }
+            let redactor = Redactor::default();
+            redactor.register("private-canary");
+            let task = provider(Canned::ok(&text_reply("done")))
+                .with_reasoning(mode)
+                .with_redactor(redactor);
+            task.next_action(
+                &[Message::User(String::from("private-canary"))],
+                &no_tools(),
+            )
+            .unwrap();
+            let seen = task.transport.seen().unwrap();
+            let wire = String::from_utf8(seen.body.clone()).unwrap();
+            assert!(!wire.contains("private-canary"));
+            assert!(wire.contains(crate::REDACTED));
+            let body: Value = serde_json::from_slice(&seen.body).unwrap();
+            assert_eq!(
+                body.get("reasoning"),
+                (mode == ModelReasoning::Disabled).then_some(&json!({"enabled": false}))
+            );
+        }
+        let refused = provider(Canned::failing(TransportError::HttpStatus(400)))
+            .with_reasoning(ModelReasoning::Disabled);
+        assert!(matches!(
+            refused.verify_capabilities(),
+            Err(Error::Transport(TransportError::HttpStatus(400)))
+        ));
     }
 }

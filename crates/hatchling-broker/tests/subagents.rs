@@ -292,11 +292,12 @@ fn a_child_runs_in_its_own_cell_with_only_what_it_was_given() {
         return;
     }
     let base = base("narrow");
-    let config = config(&base);
+    let mut config = config(&base);
+    config.scheduler.model_reasoning = hatchling_core::ModelReasoning::Disabled;
     let key = MasterKey::generate().unwrap();
     seed(&config, &key, false);
     let parent = Parent::open(&config, key, RUN_DEADLINE);
-    let task = "vault:app-token vault:old-token subagent";
+    let task = "vault:app-token vault:old-token subagent model-reasoning";
     let spawned = parent.spawn(task, 4, vec![vault("app-token")]);
     let SubagentResult::Spawned {
         child,
@@ -324,6 +325,7 @@ fn a_child_runs_in_its_own_cell_with_only_what_it_was_given() {
         format!("cell={child} steps=4 subagent=1"),
         String::from("fds=0,1,2"),
         String::from("sock=visible"),
+        String::from("model-reasoning=disabled"),
         // Narrowed: what it was given, and nothing the parent kept back.
         String::from("vault:app-token=Vault(NotFound)"),
         String::from("vault:old-token=Vault(Denied)"),
@@ -682,6 +684,7 @@ fn agent_parent(
         model_name: None,
         model_max_steps: 10,
         model_context_window: None,
+        model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
         run_subagent: false,
     };
     let cell = hatchling_agent::Cell::new(agent)

@@ -225,12 +225,13 @@ fn a_scheduled_run_executes_in_its_own_cell_with_exactly_its_grants() {
     let id = every_minute(
         &created_under,
         &key,
-        "vault:app-token vault:old-token channel:local schedule",
+        "vault:app-token vault:old-token channel:local schedule model-reasoning",
         vec![vault("app-token"), vault("old-token"), send()],
         "2026-09-21T12:00:30Z",
     );
     // The operator revokes `old-token` before the fire.
-    let fire_under = config(&base, &["app-token"]);
+    let mut fire_under = config(&base, &["app-token"]);
+    fire_under.scheduler.model_reasoning = hatchling_core::ModelReasoning::Disabled;
     let (hub, received) = hub_with_client();
     std::thread::scope(|scope| {
         let launcher = CellLauncher::new(scope, &fire_under, &key, env(&fire_under, RUN_DEADLINE));
@@ -266,6 +267,7 @@ fn a_scheduled_run_executes_in_its_own_cell_with_exactly_its_grants() {
         "vault:old-token=Vault(Denied)",
         "channel:local=Channel(NoMessage)",
         "schedule=Schedule(Denied)",
+        "model-reasoning=disabled",
     ] {
         assert!(
             report.lines().any(|seen| seen == line),

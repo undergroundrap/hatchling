@@ -222,6 +222,7 @@ pub fn scoped_config(
             device_socket: None,
         });
     run.scheduler = SchedulerConfig {
+        model_reasoning: config.scheduler.model_reasoning,
         followup: Some(FollowupScope {
             root: config.scheduler.root.clone(),
             run: token.to_owned(),
@@ -305,6 +306,7 @@ impl<'scope> Launcher for CellLauncher<'scope, '_> {
             due: request.due.as_second(),
             model_endpoint: self.config.scheduler.model_endpoint.clone(),
             model_name: self.config.scheduler.model_name.clone(),
+            model_reasoning: self.config.scheduler.model_reasoning,
             depth: request.depth,
             event: request.event.clone(),
             max_steps: None,
@@ -783,7 +785,8 @@ mod tests {
 
     #[test]
     fn a_run_session_holds_exactly_its_grants_and_nothing_else() {
-        let config = config();
+        let mut config = config();
+        config.scheduler.model_reasoning = hatchling_core::ModelReasoning::Disabled;
         let grants = vec![
             ScheduleGrant::Vault {
                 action: String::from("fetch"),
@@ -822,6 +825,10 @@ mod tests {
         assert!(run.channel_accounts.is_empty());
         assert!(run.channel_ingress.is_none());
         assert!(!run.scheduler.enabled(), "a run cannot schedule");
+        assert_eq!(
+            run.scheduler.model_reasoning,
+            hatchling_core::ModelReasoning::Disabled
+        );
         // Its one scheduler surface: its own follow-up, within its own
         // grants and depth, recorded in the broker's store.
         assert_eq!(
@@ -990,6 +997,7 @@ mod tests {
             due: 1,
             model_endpoint: None,
             model_name: None,
+            model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
             depth: 0,
             event: None,
             max_steps: None,
@@ -1126,6 +1134,7 @@ mod tests {
             due: 0,
             model_endpoint: None,
             model_name: None,
+            model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
             depth: 0,
             event: None,
             max_steps: None,

@@ -23,7 +23,10 @@ Workspace crate, not an external dependency. The shared foundation:
 identity newtypes, protocol framing, handshake message types, kernel
 peer credentials, `LogLevel`. Extracted in so the agent and the
 broker speak one contract instead of duplicating it. No external deps
-beyond the reviewed set.
+beyond the reviewed set. `hatchling-model` also uses this crate for the
+shared `ModelReasoning` vocabulary, keeping agent, broker and provider
+configuration consistent without a broker dependency on the model crate
+or a new external dependency (WO-020).
 
 ## hatchling-adversarial
 

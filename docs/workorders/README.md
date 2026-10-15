@@ -53,6 +53,7 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | [017](workorder-017-privilege-separate-the-trusted-side.md) | Privilege-separate the trusted side: a credential keeper, an egress authority, and a spawner so the broker drops root | yes | QUEUED |
 | [018](workorder-018-harness-manifests.md) | Harness manifests: add a coding CLI by configuration, with OpenCode first | yes | QUEUED |
 | [019](workorder-019-approved-tools.md) | Approved tools: what a cell can run, pinned and listed | yes | QUEUED |
+| [020](workorder-020-model-reasoning-control.md) | Operator-selected model thinking mode | yes | DONE |
 
 ## Candidates
 

@@ -18,6 +18,7 @@ pub mod error;
 pub mod framing;
 pub mod log_level;
 pub mod messages;
+pub mod model_reasoning;
 pub mod peer;
 pub mod secret;
 pub mod subagent;
@@ -41,6 +42,7 @@ pub use messages::{
     ScheduleSpec, ScheduleSummary, SessionRequest, SessionResponse, SkillOp, SkillResult, SpaceOp,
     SpaceRefusal, SpaceResult, SyncChange, SyncItem, VaultAction, VaultOp, VaultResult,
 };
+pub use model_reasoning::ModelReasoning;
 pub use peer::{PeerCredentials, peer_credentials};
 pub use secret::{MAX_SECRET_BYTES, decode as decode_secret, encode as encode_secret};
 pub use subagent::{

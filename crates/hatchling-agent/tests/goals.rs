@@ -43,6 +43,7 @@ fn ready_cell(broker: &FixtureBroker) -> Result<Cell<Ready>, Error> {
         model_name: None,
         model_max_steps: 10,
         model_context_window: None,
+        model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
         run_subagent: false,
     };
     let cell = Cell::new(config)

@@ -161,6 +161,7 @@ pub fn child_config(
     };
     let mut child = scoped_config(parent, &request, token, socket);
     child.scheduler = SchedulerConfig {
+        model_reasoning: parent.scheduler.model_reasoning,
         subagent_depth: parent.scheduler.subagent_depth.saturating_add(1),
         ..SchedulerConfig::disabled()
     };
@@ -410,6 +411,7 @@ impl<'scope, 'env> Subagents<'scope, 'env> {
             due: Timestamp::now().as_second(),
             model_endpoint: self.config.scheduler.model_endpoint.clone(),
             model_name: self.config.scheduler.model_name.clone(),
+            model_reasoning: self.config.scheduler.model_reasoning,
             depth: 0,
             event: None,
             max_steps: Some(budget),
@@ -685,12 +687,17 @@ mod tests {
 
     #[test]
     fn a_childs_session_holds_its_capabilities_and_its_depth_only() {
-        let parent = config();
+        let mut parent = config();
+        parent.scheduler.model_reasoning = hatchling_core::ModelReasoning::Disabled;
         let socket: SocketPath = "/tmp/hatchling-child/broker.sock".parse().unwrap();
         let child = child_config(&parent, &[vault("app-token")], "run-1", socket.clone());
         assert_eq!(held_grants(&child), [vault("app-token")].into());
         assert_eq!(child.socket, socket);
         assert_eq!(child.scheduler.subagent_depth, 1);
+        assert_eq!(
+            child.scheduler.model_reasoning,
+            hatchling_core::ModelReasoning::Disabled
+        );
         assert!(child.scheduler.followup.is_none());
         assert!(!child.scheduler.enabled());
         assert!(child.egress.grants.is_empty());
@@ -876,6 +883,10 @@ mod tests {
         let key = MasterKey::generate().unwrap();
         std::thread::scope(|scope| {
             let mut subagents = Subagents::new(scope, &parent, &key, None, String::from("run"));
+            assert_eq!(
+                subagents.spawn("do it", 2, &[]),
+                Err(SubagentRefusal::Unavailable)
+            );
             let spawn = |subagents: &mut Subagents<'_, '_>, capabilities: Vec<ScheduleGrant>| {
                 subagents.handle(&SubagentOp::Spawn {
                     task: String::from("do it"),
