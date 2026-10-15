@@ -263,8 +263,16 @@ def run(repo, artifacts, work, mode, fixtures):
     model = 'qwen3-0.6b'
     secret_file = state / 'vault' / ('egress-' + re.sub(r'[^A-Za-z0-9]', '-', destination))
     private_file(secret_file, key)
-    broker_path = repo / 'target/debug/hatchling-broker'
-    agent_path = repo / 'target/debug/hatchling-agent'
+    # The cell's mapped UID cannot traverse a maintainer's private home. Keep
+    # only the built programs on a readable path in this namespace's tmpfs.
+    binaries = Path('/tmp/hatchling-hosted-bin')
+    binaries.mkdir(mode=0o755)
+    binaries.chmod(0o755)
+    for name in ('hatchling-broker', 'hatchling-agent'):
+        shutil.copy2(repo / 'target/debug' / name, binaries / name)
+        (binaries / name).chmod(0o755)
+    broker_path = binaries / 'hatchling-broker'
+    agent_path = binaries / 'hatchling-agent'
     agent_hash = hashlib.sha256(agent_path.read_bytes()).hexdigest()
     program = re.search(r'pub const PROGRAM: &str = "([^"]+)";',
                         (repo / 'crates/hatchling-isolation/src/lib.rs').read_text()).group(1)
