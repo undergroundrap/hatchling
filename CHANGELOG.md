@@ -6,6 +6,10 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-15
+
+The hostile-cell release. It closes the work orders the pre-launch review of the trust boundary found for a cell acting against its host: credential echoes and numeric allowlist forms (WO-009), vendor-side fetching (WO-008), schedule ownership (WO-010), socket families and inherited groups (WO-005), and per-cell resource limits (WO-004). It also makes the first five minutes tested: `--help` everywhere, a quickstart CI runs, and a hosted-model guide (WO-001), with an operator thinking-mode setting for models that need it (WO-020). The session protocol is v13, so the broker and the agent must both be 0.2.0; the one `hatchling` binary is both. Rust API changes are marked **Breaking** below.
+
 ### Added
 
 - A hosted-model guide covers vault import, HTTPS destinations and grants, with OpenRouter as an OpenAI-compatible example; the first-run client also accepts a hosted `host:port` destination (WO-001, part 3).
@@ -15,14 +19,17 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 ### Changed
 
 - **Breaking, hatchling-agent and hatchling-broker:** operators can select `disabled` thinking with `HATCHLING_MODEL_REASONING` (direct runs) or `HATCHLING_SCHEDULER_MODEL_REASONING` (scheduled and child runs). Unset or `provider-default` preserves requests; endpoints may refuse the extension. Rust struct literals for agent `Config`, broker `SchedulerConfig` and `ScheduledRun` must supply `model_reasoning: ModelReasoning::ProviderDefault` to retain previous behavior; older serialized runs default only when the field is absent (WO-020).
-
 - An operator-delegated `HATCHLING_CELL_CGROUP` now gives every cell its own cgroup v2 leaf, holding the whole cell to `pids.max`, `memory.max` (half the host's memory by default, configurable with `HATCHLING_CELL_MAX_MEMORY`) and `cpu.max` (`HATCHLING_CELL_MAX_CPUS`, fractional cores, unlimited by default). The first child enters before release, and cleanup kills all tasks and removes the leaf. Unset uses the documented rlimit fallback with a startup warning; configured but unusable fails closed. `CellSpec` and `CellConfig` gain `cgroup`; `Limits` and `CellLimits` gain `memory` and `cpu_millis`; `hatchling_sys::Error` gains `Cgroup` (breaking Rust struct construction and exhaustive matches; serialized configs retain defaults). See [cell limits](README.md#cell-limits) (WO-004).
+- **Breaking, `hatchling-isolation`, `hatchling-sys` and `hatchling-broker`:** `CellSpec` gains `limits: Limits`, and `CellConfig` gains `limits: CellLimits`. `hatchling_sys::exec` takes a last step to run just before `execve`, and adds `hold_to` and `Limit`.
+- A root broker maps one uid for a cell. `HATCHLING_CELL_UID_COUNT` above 1 is refused at startup: a wider map would let the cell act as every host account it covered. An unprivileged broker could only ever map one (WO-005).
+- **Breaking, `hatchling-broker` and `hatchling-scheduler`:** `handle_schedule_op` and `list_schedules` take the caller's `Creator`, and `Schedule` gains `creator`. The schedule store reads an entry without one as the owner's.
+- The session protocol is v13: `EgressOp::Stage` and `EgressOp::Read`, `EgressResult::Staged` and `EgressResult::Part`, `staged` on `EgressOp::Egress` and `more` on `EgressResult::Ok` (see [the session protocol](docs/session-protocol.md)). The broker and the agent must speak the same version, as always; the one `hatchling` binary is both. `hatchling-core` adds `fits_one_frame` and `EGRESS_PART_BYTES`.
+- **Breaking, `hatchling-broker`:** `EgressConfig::allowlist_raw: String` is now `EgressConfig::allowlist: EgressAllowlist`, which holds the operator's text and its one shared resolution: build it with `EgressAllowlist::new(text)` (or `default()` for none), and read the text with `raw()`. The workspace version is 0.2.0. `hatchling-egress` adds `Proxy::shared`, a proxy over an allowlist already resolved, and `Proxy::allowlist`.
+- The AGPL license gains three additional terms under its section 7, in `NOTICE.md`: a work built on Hatchling keeps the credit "Built on Hatchling by Ocean Bennett", a modified version is marked as modified and doesn't present itself as Hatchling, and the name and logo aren't licensed. `TRADEMARKS.md` explains, in plain words, what forks can and can't call themselves. Every crate's docs and crates.io page point to the terms. The license tag stays `AGPL-3.0-or-later`.
 
 ### Fixed
 
 - TLS uses rustls 0.23.46 or newer, fixing four upstream security advisories and preventing selection of an older affected version. The crypto provider and TLS configuration are unchanged.
-
-
 - A cell is held to hard limits: by default 4,096 processes (threads included), 8,192 open files and an 8 GiB largest file, set as both its soft and its hard limits just before the program starts, so it can't lift them. Set each with `HATCHLING_CELL_MAX_PROCESSES`, `HATCHLING_CELL_MAX_OPEN_FILES`, `HATCHLING_CELL_MAX_FILE_SIZE` and `HATCHLING_CELL_MAX_ADDRESS_SPACE` (bytes, unlimited by default), or `unlimited` to leave the broker's own; a value above the broker's own hard limit is held at the broker's. See [cell limits](README.md#cell-limits) (WO-004).
 - A cell no longer outlives its supervisor when its program clears its own parent-death signal. Every cell's pid 1 is now Hatchling's init: it holds the death signal against the supervisor, never runs the program's code, reaps every child that exits, and ends with the program's exit code; the program runs as pid 2. When the supervisor dies, so does the init, and the kernel kills everything left in the cell. The init holds no capability, runs under `no_new_privs`, closes what it inherited, and can't be dumped or traced by the program it shares a uid with (WO-004).
 - A coding CLI's cell may make a socket pair only of Unix sockets: `socketpair` with any other family is answered "address family not supported", as `socket` already was. It had been allowed whatever its family (WO-005).
@@ -37,15 +44,6 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 - Egress destinations written as numbers the system resolver reads as IPv4 addresses (`2130706433`, `0x7f000001`, `0177.0.0.1`, `127.1`), or with an all-digit last label, are refused like IP literals: they named no host the allowlist could vouch for ([WO-009](docs/workorders/workorder-009-egress-correctness.md)).
 - Two different egress destinations that would share a vault secret name (`api.example.com:443` and `api-example.com:443`) are refused at startup: one would have been sent the other's credential (WO-009).
 - The startup check that keeps vault grants off egress credentials now maps `public:`, `local:` and `local-keyless:` allowlist entries without their prefix, as the credential lookup does; before, a vault grant could name the credential of a prefixed entry that wasn't also an egress grant.
-
-### Changed
-
-- **Breaking, `hatchling-isolation`, `hatchling-sys` and `hatchling-broker`:** `CellSpec` gains `limits: Limits`, and `CellConfig` gains `limits: CellLimits`. `hatchling_sys::exec` takes a last step to run just before `execve`, and adds `hold_to` and `Limit`.
-- A root broker maps one uid for a cell. `HATCHLING_CELL_UID_COUNT` above 1 is refused at startup: a wider map would let the cell act as every host account it covered. An unprivileged broker could only ever map one (WO-005).
-- **Breaking, `hatchling-broker` and `hatchling-scheduler`:** `handle_schedule_op` and `list_schedules` take the caller's `Creator`, and `Schedule` gains `creator`. The schedule store reads an entry without one as the owner's.
-- The session protocol is v13: `EgressOp::Stage` and `EgressOp::Read`, `EgressResult::Staged` and `EgressResult::Part`, `staged` on `EgressOp::Egress` and `more` on `EgressResult::Ok` (see [the session protocol](docs/session-protocol.md)). The broker and the agent must speak the same version, as always; the one `hatchling` binary is both. `hatchling-core` adds `fits_one_frame` and `EGRESS_PART_BYTES`.
-- **Breaking, `hatchling-broker`:** `EgressConfig::allowlist_raw: String` is now `EgressConfig::allowlist: EgressAllowlist`, which holds the operator's text and its one shared resolution: build it with `EgressAllowlist::new(text)` (or `default()` for none), and read the text with `raw()`. The workspace version is 0.2.0. `hatchling-egress` adds `Proxy::shared`, a proxy over an allowlist already resolved, and `Proxy::allowlist`.
-- The AGPL license gains three additional terms under its section 7, in `NOTICE.md`: a work built on Hatchling keeps the credit "Built on Hatchling by Ocean Bennett", a modified version is marked as modified and doesn't present itself as Hatchling, and the name and logo aren't licensed. `TRADEMARKS.md` explains, in plain words, what forks can and can't call themselves. Every crate's docs and crates.io page point to the terms. The license tag stays `AGPL-3.0-or-later`.
 
 ## [0.1.2] - 2026-10-11
 
@@ -102,7 +100,8 @@ The first public release. [Release notes](https://github.com/undergroundrap/hatc
 
 Published in [the trust boundary](docs/arch/trust-boundary.md#known-limitations), each with a work order and an issue.
 
-[Unreleased]: https://github.com/undergroundrap/hatchling/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/undergroundrap/hatchling/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/undergroundrap/hatchling/releases/tag/v0.2.0
 [0.1.2]: https://github.com/undergroundrap/hatchling/releases/tag/v0.1.2
 [0.1.1]: https://github.com/undergroundrap/hatchling/releases/tag/v0.1.1
 [0.1.0]: https://github.com/undergroundrap/hatchling/releases/tag/v0.1.0
