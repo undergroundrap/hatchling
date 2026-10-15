@@ -249,7 +249,9 @@ def run(repo, artifacts, work, mode, fixtures):
     subprocess.run(['useradd', '--system', '--user-group', '--no-create-home', '--no-log-init',
                     '--shell', '/usr/sbin/nologin', 'hatchling-hosted-ci'], check=True)
     uid = pwd.getpwnam('hatchling-hosted-ci').pw_uid
-    state = work / 'state'
+    # /tmp is a private tmpfs above. A short state path also keeps broker/run
+    # Unix sockets below the kernel limit, regardless of RUNNER_TEMP length.
+    state = Path('/tmp/hatchling-hosted')
     state.mkdir(mode=0o700)
     for name in ('sock', 'vault', 'schedules'):
         (state / name).mkdir(mode=0o700)
