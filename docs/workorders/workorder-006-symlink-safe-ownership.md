@@ -19,7 +19,7 @@ Found in the pre-launch review of the trust boundary (see [Known limitations](..
 
 ## Acceptance criteria
 
-- [ ] A symlink swapped in at any of these points makes the operation fail closed, never act on the target; tested where it can be raced deterministically.
+- [x] A symlink swapped in at any of these points makes the operation fail closed, never act on the target; tested where it can be raced deterministically.
 - [x] A pre-created staging directory name can't block or redirect a spawn; tested.
 - [x] The broker socket's directory is never owned by the cell uid; tested as root.
 

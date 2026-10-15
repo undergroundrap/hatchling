@@ -27,7 +27,6 @@
 //! "broker-delivered", and would bank the reply credit that lets a send
 //! skip the rail.
 
-use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -62,13 +61,12 @@ impl Ingress {
     /// # Errors
     ///
     /// Returns [`Error::SocketPathNotSocket`] or [`Error::SocketSetup`]
-    /// as [`bind_socket`] does, or [`Error::SocketSetup`] if the bound
-    /// socket's owner cannot be read.
+    /// as [`bind_socket`] does.
     pub fn bind(socket: &SocketPath, gate: OutputGate) -> Result<Self, Error> {
         let listener = bind_socket(socket, INGRESS_SOCKET_MODE)?;
-        let owner = std::fs::metadata(socket.as_path())
-            .map_err(|source| Error::SocketSetup { source })?
-            .uid();
+        // The broker made the socket, so it is the broker's: its own uid,
+        // never read back from a path that could be swapped.
+        let owner = hatchling_sys::euid();
         Ok(Self {
             listener,
             hub: LocalHub::new(gate),

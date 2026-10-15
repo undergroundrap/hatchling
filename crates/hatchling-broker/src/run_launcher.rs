@@ -45,7 +45,6 @@
 //!   failure report.
 
 use std::io::Read as _;
-use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -539,12 +538,10 @@ fn run_token() -> Result<String, String> {
 
 /// Makes the run's own directory, owner-only, under `root`.
 fn make_run_dir(root: &Path, token: &str) -> Result<PathBuf, String> {
-    std::fs::create_dir_all(root)
-        .and_then(|()| std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700)))
+    hatchling_sys::ensure_private_dir(root)
         .map_err(|err| format!("cannot prepare the run root {}: {err}", root.display()))?;
     let dir = root.join(token);
-    std::fs::create_dir(&dir)
-        .and_then(|()| std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)))
+    hatchling_sys::create_private_dir(&dir)
         .map_err(|err| format!("cannot make the run directory: {err}"))?;
     Ok(dir)
 }
@@ -703,6 +700,7 @@ mod tests {
     use super::*;
     use crate::{ChannelAccountSpec, EgressConfig, GoalsConfig, MemoryConfig, VaultConfig};
     use hatchling_core::{PeerUid, VaultAction};
+    use std::os::unix::fs::PermissionsExt as _;
 
     fn config() -> Config {
         let root = PathBuf::from("/srv/hatchling/vault");

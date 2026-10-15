@@ -26,7 +26,6 @@
 //! and no others. A frame that is not a hello where one is due ends the
 //! connection before anything is read from the store.
 
-use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::net::{UnixListener, UnixStream};
 
 use base64::Engine as _;
@@ -65,13 +64,12 @@ impl DeviceEndpoint {
     ///
     /// # Errors
     ///
-    /// The errors of [`bind_socket`], or [`Error::SocketSetup`] if the
-    /// bound socket's owner cannot be read.
+    /// The errors of [`bind_socket`].
     pub fn bind(socket: &SocketPath) -> Result<Self, Error> {
         let listener = bind_socket(socket, DEVICE_SOCKET_MODE)?;
-        let owner = std::fs::metadata(socket.as_path())
-            .map_err(|source| Error::SocketSetup { source })?
-            .uid();
+        // The broker made the socket, so it is the broker's: its own uid,
+        // never read back from a path that could be swapped.
+        let owner = hatchling_sys::euid();
         Ok(Self {
             listener,
             peer_uid: PeerUid::from_kernel(owner),
