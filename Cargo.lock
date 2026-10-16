@@ -533,6 +533,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hatchling-host"
+version = "0.4.0"
+dependencies = [
+ "base64",
+ "hatchling-core",
+ "sha1",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "hatchling-isolation"
 version = "0.4.0"
 dependencies = [

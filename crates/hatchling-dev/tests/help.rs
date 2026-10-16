@@ -120,6 +120,7 @@ fn help_and_short_help_are_stdout_success_without_startup_side_effects() {
         "hatchling-broker",
         "hatchling-agent",
         "hatchling-dev",
+        "hatchling-host",
         "hatchling",
     ] {
         for poisoned in [false, true] {
@@ -149,6 +150,7 @@ fn unknown_arguments_are_stderr_usage_with_exit_64() {
         "hatchling-broker",
         "hatchling-agent",
         "hatchling-dev",
+        "hatchling-host",
         "hatchling",
     ] {
         for args in [

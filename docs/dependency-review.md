@@ -217,6 +217,18 @@ surrogate authentication: surrogates are HMAC-SHA256 over
 (peer_uid, destination, expiry) with a per-session key, so the agent
 cannot forge or extend them.
 
+## sha1
+
+SHA-1, used by `hatchling-host` for one thing: the WebSocket opening
+handshake's `Sec-WebSocket-Accept` value, which RFC 6455 defines as the
+base64 of the SHA-1 of the client's key and a fixed GUID. It proves only
+that the server speaks WebSocket; nothing in Hatchling's security rests
+on it. The RustCrypto crate, version 0.10, beside `sha2` 0.10, so the two
+share one `digest` and no version is duplicated. Chosen over a WebSocket
+library, whose own dependencies (`rand`, `getrandom`, `http`) would
+duplicate versions the workspace already holds, against `cargo deny`'s
+rule.
+
 ## sha2
 
 SHA-256 implementation. Used by `hatchling-egress` as the hash
