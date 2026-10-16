@@ -1193,4 +1193,28 @@ mod tests {
         assert!(secret_name(&entry_name("../etc")).is_err());
         assert!(secret_name("parked-3").is_ok());
     }
+
+    #[test]
+    fn the_store_seals_under_its_own_label() {
+        let root = std::env::temp_dir().join(format!(
+            "hatchling-test-schedules-label-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let key = MasterKey::generate().unwrap();
+        let name: SecretName = "probe".parse().unwrap();
+        let secret = Secret::new(b"p".to_vec()).unwrap();
+        SealedScheduleStore::new(&root, &key)
+            .vault()
+            .unwrap()
+            .store(&name, &secret)
+            .unwrap();
+        let own = SealedVault::open_in(&root, &key, hatchling_vault::Store::SCHEDULES)
+            .unwrap()
+            .fetch(&name);
+        let secrets = SealedVault::open(&root, &key).unwrap().fetch(&name);
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(own.unwrap().as_bytes(), b"p");
+        assert!(secrets.is_err(), "opened under the secrets label");
+    }
 }

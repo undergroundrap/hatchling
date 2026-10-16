@@ -321,4 +321,45 @@ mod tests {
             .collect();
         assert_eq!(labels, ["secrets", "artifacts", "spaces"]);
     }
+
+    #[test]
+    fn the_operator_commands_migrate_and_rekey_the_configured_vault() {
+        let dir = crate::api_auth::tests::scratch("vault-ops-commands");
+        let mut config = crate::api_auth::tests::owner_config(None);
+        config.vault.root = dir.0.join("vault");
+        config.vault.key_file = VaultConfig::default_key_file(&config.vault.root);
+        config.artifacts.root = dir.0.join("artifacts");
+        config.spaces.root = dir.0.join("spaces");
+        hatchling_vault::Vault::open(&config.vault.root).unwrap();
+        let planted = config.vault.root.join("tok");
+        std::fs::write(&planted, b"plaintext").unwrap();
+        std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let name: SecretName = "tok".parse().unwrap();
+        let fetch = |key: &MasterKey| {
+            SealedVault::open(&config.vault.root, key)
+                .unwrap()
+                .fetch(&name)
+                .map(|secret| secret.as_bytes().to_vec())
+        };
+        // migrate-vault seals the configured store under the configured key.
+        assert!(check_sealed_stores(&sealed_stores(&config, None)).is_err());
+        run_migrate_vault(&config).unwrap();
+        assert!(check_sealed_stores(&sealed_stores(&config, None)).is_ok());
+        let first = load_master_key(&config.vault).unwrap();
+        assert_eq!(fetch(&first).unwrap(), b"plaintext");
+        // rekey-vault moves it from the configured key to a new one.
+        let keys = dir.0.join("keys");
+        std::fs::create_dir_all(&keys).unwrap();
+        std::fs::set_permissions(&keys, std::fs::Permissions::from_mode(0o700)).unwrap();
+        run_rekey_vault(&config, &keys.join("second")).unwrap();
+        let second = FileKey::new(keys.join("second")).load().unwrap();
+        assert!(fetch(&first).is_err(), "the old key still opens it");
+        assert_eq!(fetch(&second).unwrap(), b"plaintext");
+        // And on from that key, reporting what it did.
+        let report = rekey_vault(&config.vault, &second, &keys.join("third")).unwrap();
+        assert_eq!((report.rekeyed, report.skipped), (1, 0));
+        let third = FileKey::new(keys.join("third")).load().unwrap();
+        assert!(fetch(&second).is_err());
+        assert_eq!(fetch(&third).unwrap(), b"plaintext");
+    }
 }

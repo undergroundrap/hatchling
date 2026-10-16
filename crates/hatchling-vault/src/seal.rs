@@ -1052,6 +1052,48 @@ mod tests {
     }
 
     #[test]
+    fn an_envelope_opens_only_as_it_was_sealed() {
+        let key = test_key();
+        let name = secret_name("tok");
+        let envelope = seal_envelope(&key, Store::SECRETS, &name, b"value").unwrap();
+        assert_eq!(envelope.get(..4), Some(ENVELOPE_MAGIC.as_slice()));
+        assert_eq!(envelope.len(), ENVELOPE_OVERHEAD + b"value".len());
+        assert_eq!(
+            open_envelope(&key, Store::SECRETS, &name, &envelope)
+                .unwrap()
+                .as_bytes(),
+            b"value"
+        );
+        for (store, under) in [(Store::SPACES, "tok"), (Store::SECRETS, "other")] {
+            assert!(matches!(
+                open_envelope(&key, store, &secret_name(under), &envelope),
+                Err(Error::DecryptFailed { .. })
+            ));
+        }
+        // A version-1 envelope: refused as old, read under its own magic
+        // and empty associated data, and nothing else.
+        let old = seal_v1(&key, b"from 0.3");
+        assert!(matches!(
+            open_envelope(&key, Store::SECRETS, &name, &old),
+            Err(Error::OldEnvelope { .. })
+        ));
+        assert_eq!(
+            open_versioned(&key, *ENVELOPE_V1_MAGIC, b"", &name, &old)
+                .unwrap()
+                .as_bytes(),
+            b"from 0.3"
+        );
+        assert!(matches!(
+            open_versioned(&key, *ENVELOPE_MAGIC, b"", &name, &old),
+            Err(Error::NotSealed { .. })
+        ));
+        assert!(matches!(
+            open_versioned(&key, *ENVELOPE_V1_MAGIC, b"x", &name, &old),
+            Err(Error::DecryptFailed { .. })
+        ));
+    }
+
+    #[test]
     fn the_associated_data_names_the_domain_the_store_and_the_name() {
         assert_eq!(
             Store::SPACES.associated(&secret_name("team-7")),

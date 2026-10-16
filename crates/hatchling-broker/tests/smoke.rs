@@ -369,10 +369,15 @@ fn a_stale_sealed_store_stops_the_broker_before_bind() {
     assert!(!output.status.success(), "the broker started");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("the secrets store") && stderr.contains("tok") && stderr.contains("migrate-vault"),
+        stderr.contains("the secrets store")
+            && stderr.contains("tok")
+            && stderr.contains("migrate-vault"),
         "{stderr}"
     );
-    assert!(!bound, "the broker bound its socket before checking its stores");
+    assert!(
+        !bound,
+        "the broker bound its socket before checking its stores"
+    );
 }
 
 #[test]
