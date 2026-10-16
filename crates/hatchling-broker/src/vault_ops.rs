@@ -485,4 +485,38 @@ mod tests {
             Some("redactions")
         );
     }
+
+    #[test]
+    fn rekey_vault_stops_before_touching_anything_when_a_store_is_stale() {
+        let dir = crate::api_auth::tests::scratch("vault-ops-rekey-stale");
+        let mut config = crate::api_auth::tests::owner_config(None);
+        config.vault.root = dir.0.join("vault");
+        config.vault.key_file = VaultConfig::default_key_file(&config.vault.root);
+        config.artifacts.root = dir.0.join("artifacts");
+        config.spaces.root = dir.0.join("spaces");
+        let key = load_master_key(&config.vault).unwrap();
+        let name: SecretName = "tok".parse().unwrap();
+        SealedVault::open(&config.vault.root, &key)
+            .unwrap()
+            .store(&name, &Secret::new(b"kept".to_vec()).unwrap())
+            .unwrap();
+        // The spaces store, after the secrets, still holds plaintext.
+        hatchling_vault::Vault::open(&config.spaces.root).unwrap();
+        let planted = config.spaces.root.join("team-7");
+        std::fs::write(&planted, b"members").unwrap();
+        std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let new_key = dir.0.join("new.key");
+        let refused = run_rekey_vault(&config, &new_key).unwrap_err().to_string();
+        assert!(refused.contains("spaces") && refused.contains("team-7"), "{refused}");
+        assert!(!new_key.exists(), "no new key was made");
+        assert_eq!(
+            SealedVault::open(&config.vault.root, &key)
+                .unwrap()
+                .fetch(&name)
+                .unwrap()
+                .as_bytes(),
+            b"kept",
+            "the secrets are still under the old key"
+        );
+    }
 }
