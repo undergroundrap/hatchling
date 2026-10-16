@@ -89,6 +89,7 @@ exceptions = [
     { allow = ["AGPL-3.0-or-later"], crate = "hatchling-feed" },
     { allow = ["AGPL-3.0-or-later"], crate = "hatchling-fido2" },
     { allow = ["AGPL-3.0-or-later"], crate = "hatchling-goals" },
+    { allow = ["AGPL-3.0-or-later"], crate = "hatchling-host" },
     { allow = ["AGPL-3.0-or-later"], crate = "hatchling-isolation" },
     { allow = ["AGPL-3.0-or-later"], crate = "hatchling-loop" },
     { allow = ["AGPL-3.0-or-later"], crate = "hatchling-memory" },

@@ -66,6 +66,7 @@ Every crate has a row below: `hatchling-dev audit` fails the gate if one doesn't
 | `hatchling-artifact` | The artifact pipeline: where untrusted build output becomes user-facing content, with an inspector at the boundary. |
 | `hatchling-fido2` | The FIDO2 transport (CTAP2 over USB HID), one of the vault's unlock factors. |
 | `hatchling-channel` | Messaging channels: how the user reaches the agent. The broker owns the endpoints. |
+| `hatchling-host` | The frontend host: serves the built UI on `127.0.0.1` and carries its WebSocket to the broker's UI socket, frame for frame. A transport only; the broker checks every connection's UI token. |
 | `hatchling-builders` | *Not published.* The document and page builders, each a signed skill. |
 | `hatchling-research` | Deep research runs: plan, gather, synthesize, and deliver a cited report as an artifact. |
 

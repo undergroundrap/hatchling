@@ -1,0 +1,30 @@
+[package]
+name = "hatchling-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["agent", "websocket", "frontend", "localhost", "self-hosted"]
+categories = ["command-line-utilities", "web-programming::websocket"]
+readme.workspace = true
+description = "The frontend host for Hatchling: serves the UI on loopback and carries its channel to the broker's UI socket, unchanged"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "hatchling-host"
+path = "src/main.rs"
+
+[dependencies]
+# The wire contract: the broker's length-prefixed framing and its limit.
+hatchling-core.workspace = true
+thiserror = "2"
+tracing = "0.1"
+# The WebSocket opening handshake's accept key (RFC 6455, section 4.2.2):
+# SHA-1 of the client's key, in base64. Not a security property.
+sha1 = "0.10"
+base64 = "0.22"

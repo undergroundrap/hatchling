@@ -166,8 +166,7 @@ fn check_cell_side(root: &Path) -> Result<Vec<Finding>, crate::Error> {
 }
 
 /// The frontend host crate: the thin transport adapter between
-/// the UI and the broker's socket. It does not exist yet; when it does,
-/// this check holds it thin.
+/// the UI and the broker's UI socket. This check holds it thin.
 pub const ADAPTER_CRATE: &str = "hatchling-host";
 
 /// The local API's adapter: a module of the broker, held to the
@@ -176,14 +175,17 @@ pub const ADAPTER_CRATE: &str = "hatchling-host";
 pub const API_ADAPTER: &str = "crates/hatchling-broker/src/api.rs";
 
 /// What the frontend host may depend on: the wire contract and its
-/// serialization, errors and logs. Anything more is a reviewed change
-/// to this list, not drift.
-const ADAPTER_DEPENDENCIES: [&str; 5] = [
+/// serialization, errors and logs, and the two pieces of the WebSocket
+/// opening handshake's accept key (`sha1`, `base64`; WO-021). Anything
+/// more is a reviewed change to this list, not drift.
+const ADAPTER_DEPENDENCIES: [&str; 7] = [
     "hatchling-core",
     "serde",
     "serde_json",
     "thiserror",
     "tracing",
+    "sha1",
+    "base64",
 ];
 
 /// Words that name authorization. In the frontend host, code that uses
@@ -784,7 +786,7 @@ mod tests {
         let root = synthetic_root("host-thin");
         host(
             &root,
-            "hatchling-core = \"0.1\"\nserde = \"1\"\nserde_json = \"1\"\nthiserror = \"2\"\ntracing = \"0.1\"\n",
+            "hatchling-core = \"0.1\"\nserde = \"1\"\nserde_json = \"1\"\nthiserror = \"2\"\ntracing = \"0.1\"\nsha1 = \"0.10\"\nbase64 = \"0.22\"\n",
             "// No authorization here: the broker decides.\npub fn relay(frame: &[u8]) -> Vec<u8> { frame.to_vec() }\npub const ORACLE: u8 = 1;\n",
         );
         assert!(adapter_findings(&root).is_empty());
