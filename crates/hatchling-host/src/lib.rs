@@ -180,9 +180,10 @@ pub fn handle(mut stream: TcpStream, settings: &Settings) -> Result<(), Error> {
     let head = http::read_head(&mut stream)?;
     let socket = match head.websocket() {
         Some((http::Channel::Ui, key)) => Some((&settings.ui_socket, key)),
-        Some((http::Channel::Operator, key)) => {
-            settings.operator_socket.as_ref().map(|socket| (socket, key))
-        }
+        Some((http::Channel::Operator, key)) => settings
+            .operator_socket
+            .as_ref()
+            .map(|socket| (socket, key)),
         None => None,
     };
     match socket {
@@ -493,11 +494,24 @@ mod tests {
                 let (stream, _) = listener.accept().unwrap();
                 handle(stream, &with)
             });
+            // It waits at most five seconds: a channel sent elsewhere fails
+            // the test instead of hanging it.
             let fake_operator = scope.spawn(|| {
-                let (stream, _) = operator.accept().unwrap();
+                operator.set_nonblocking(true).unwrap();
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                let stream = loop {
+                    match operator.accept() {
+                        Ok((stream, _)) => break Some(stream),
+                        Err(_) if std::time::Instant::now() < deadline => {
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(_) => break None,
+                    }
+                }?;
+                stream.set_nonblocking(false).unwrap();
                 let heard = read_frame(&stream).unwrap();
                 write_frame(&stream, b"{\"type\":\"welcome\"}").unwrap();
-                heard
+                Some(heard)
             });
             let mut browser = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
             browser
@@ -505,8 +519,12 @@ mod tests {
                 .unwrap();
             upgrade_on(&mut browser, "/operator");
             browser.write_all(&masked(b"{\"type\":\"hello\"}")).unwrap();
+            assert_eq!(
+                fake_operator.join().unwrap().as_deref(),
+                Some(&b"{\"type\":\"hello\"}"[..]),
+                "the operator socket heard the hello"
+            );
             assert_eq!(websocket_text(&mut browser), b"{\"type\":\"welcome\"}");
-            assert_eq!(fake_operator.join().unwrap(), b"{\"type\":\"hello\"}");
             drop(browser);
             let _ = host.join().unwrap();
         });
