@@ -2,15 +2,18 @@
 //!
 //! The broker's run launcher starts it in place of the agent, inside a
 //! real run cell, as `run <task>`. It reports what the run can see and do
-//! through its own socket, one line per fact, which the dispatcher then
-//! delivers like any run's output:
+//! through its own connection, one line per fact, which the dispatcher
+//! then delivers like any run's output:
 //!
 //! - `missed=<0|1> due=<secs>`: the broker-asserted run flags.
 //! - `depth=<n> event=<source>`: the run's follow-up depth and, for a
 //!   hook run, the event that fired it, as the broker set them.
-//! - `fds=<list>`: the fds open at start (only 0, 1 and 2 may be).
-//! - `sock=<visible|absent>`: whether `/sock` (the run socket's mount)
-//!   is there.
+//! - `fds=<list>`: the fds open at start: only 0, 1 and 2, and the run's
+//!   connection, shown as `c`.
+//! - `sock=<visible|absent>`: whether `/sock` (where a broker socket
+//!   would be mounted) is there.
+//! - `stdin=<socket|not-socket>`: whether stdin is a socket (it must not
+//!   be: the helper's channel to the broker stays the helper's).
 //! - `cell=<id> steps=<n> subagent=<0|1>`: the run's cell id and, for a
 //!   subagent, the step budget and mode the broker set.
 //!
@@ -43,6 +46,7 @@
 //! Dev-only, like the probe: never linked into the runtime.
 
 use std::io::Write as _;
+use std::os::fd::AsFd as _;
 use std::os::unix::net::UnixStream;
 use std::process::ExitCode;
 
@@ -88,11 +92,18 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         };
     }
+    let env = |key: &str| std::env::var(key).unwrap_or_default();
+    let connection = env("HATCHLING_CONNECTION_FD");
     let fds: Vec<String> = hatchling_sys::open_fds(1024)
         .iter()
-        .map(ToString::to_string)
+        .map(|fd| {
+            if fd.to_string() == connection {
+                String::from("c")
+            } else {
+                fd.to_string()
+            }
+        })
         .collect();
-    let env = |key: &str| std::env::var(key).unwrap_or_default();
     let sock = if std::path::Path::new("/sock").exists() {
         "visible"
     } else {
@@ -111,6 +122,7 @@ fn main() -> ExitCode {
         ),
         format!("fds={}", fds.join(",")),
         format!("sock={sock}"),
+        format!("stdin={}", socket_kind(std::io::stdin().as_fd())),
         format!(
             "cell={} steps={} subagent={}",
             env("HATCHLING_CELL_ID"),
@@ -118,7 +130,11 @@ fn main() -> ExitCode {
             env("HATCHLING_RUN_SUBAGENT")
         ),
     ];
-    let session = connect(&env("HATCHLING_BROKER_SOCKET"), &env("HATCHLING_CELL_ID"));
+    let session = connect(
+        &connection,
+        &env("HATCHLING_BROKER_SOCKET"),
+        &env("HATCHLING_CELL_ID"),
+    );
     for probe in task.split_whitespace() {
         if probe == "hang" {
             let _ = writeln!(out, "{}", lines.join("\n"));
@@ -138,9 +154,25 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Connects and completes the handshake, or says why not.
-fn connect(socket: &str, cell_id: &str) -> Result<UnixStream, String> {
-    let stream = UnixStream::connect(socket).map_err(|err| format!("connect: {err}"))?;
+/// Whether `fd` is a socket: a socket answers `SO_ACCEPTCONN`, anything
+/// else refuses it.
+fn socket_kind(fd: std::os::fd::BorrowedFd<'_>) -> &'static str {
+    if hatchling_sys::net::is_listening(fd).is_ok() {
+        "socket"
+    } else {
+        "not-socket"
+    }
+}
+
+/// Takes the run's connection (its inherited descriptor, `connection`, or
+/// else the socket at `socket`) and completes the handshake, or says why
+/// not.
+fn connect(connection: &str, socket: &str, cell_id: &str) -> Result<UnixStream, String> {
+    let stream = match connection.parse::<i32>() {
+        Ok(fd) => hatchling_sys::net::inherited_unix_stream(fd)
+            .map_err(|err| format!("connection: {err}"))?,
+        Err(_) => UnixStream::connect(socket).map_err(|err| format!("connect: {err}"))?,
+    };
     let hello = AgentMessage::Hello {
         v: PROTOCOL_VERSION,
         cell_id: cell_id.to_owned(),
@@ -286,6 +318,14 @@ mod tests {
     use hatchling_core::ScheduleResult;
 
     use super::*;
+
+    #[test]
+    fn only_a_socket_reads_as_one() {
+        let (socket, _other) = UnixStream::pair().unwrap();
+        assert_eq!(socket_kind(socket.as_fd()), "socket");
+        let file = std::fs::File::open("/dev/null").unwrap();
+        assert_eq!(socket_kind(file.as_fd()), "not-socket");
+    }
 
     #[test]
     fn the_schedule_probe_asks_for_a_create_with_its_timezone() {

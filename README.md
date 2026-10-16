@@ -113,7 +113,7 @@ sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin ha
 
 Or install from crates.io: `cargo install hatchling-runtime` builds one `hatchling` binary that is both. Copy it where the cell's user can run it (`sudo install -m 755 ~/.cargo/bin/hatchling /usr/local/bin/`), then below use `hatchling broker` for `hatchling-broker`, and set `HATCHLING_AGENT_BIN=/usr/local/bin/hatchling`. Keep the clone either way: the examples run from it.
 
-Give cells a uid of their own, never `nobody` or any uid another process uses: the broker admits an agent by its uid, so any process with that uid could act as the agent. The broker refuses to start with `nobody` (65534) as the agent uid unless `HATCHLING_AGENT_ALLOW_NOBODY=true`.
+Give cells a uid of their own, never `nobody` or any uid another process uses: a process with the cells' uid can't open an agent session (each cell gets a connection of its own), but it shares the cells' file permissions and process limits. The broker refuses to start with `nobody` (65534) as the agent uid unless `HATCHLING_AGENT_ALLOW_NOBODY=true`.
 
 The rest runs as root (`sudo -s`, still in the clone). Configure the broker: where it keeps its state, which uid its cells get, and the one network destination a cell may reach, the model:
 
