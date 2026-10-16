@@ -15,6 +15,16 @@
 //! disclosure of secret files. The key path is independently
 //! configurable so it can live apart from the vault.
 //!
+//! **Each envelope names what it holds.** A version-2 envelope (`HVL2`)
+//! authenticates, as associated data, a domain separator, the [`Store`]
+//! it belongs to and the name it is stored under. A sealed file renamed
+//! to another secret's name, or moved into another store, fails to open
+//! with the same generic [`Error::DecryptFailed`] as a tampered one: a
+//! cell granted one secret can't be handed another by swapping files on
+//! disk. Version-1 envelopes (`HVL1`, empty associated data) are read
+//! only by [`migrate`], which re-seals them; anywhere else they are
+//! [`Error::OldEnvelope`], and [`check`] refuses a store holding any.
+//!
 //! Fail-closed rules: a sealed vault never falls back to plaintext
 //! ([`Error::NotSealed`]); authentication failure is one generic
 //! error ([`Error::DecryptFailed`]) whether the key is wrong or the
@@ -25,7 +35,7 @@
 //! use. Ciphertext is not — it is stored on disk by design, so
 //! scrubbing a heap copy of it buys nothing.
 //!
-//! There is deliberately no `list`. [`migrate_plaintext`] and
+//! There is deliberately no `list`. [`migrate`], [`check`] and
 //! [`rekey`] enumerate the store directory, but they are one-shot
 //! operator actions that transform files in place and never return
 //! secret material to any caller; the broker never exposes them over
@@ -35,7 +45,7 @@ use std::io::Read as _;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
-use chacha20poly1305::aead::{Aead, AeadInPlace, KeyInit};
+use chacha20poly1305::aead::{Aead, AeadInPlace, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -44,10 +54,52 @@ use crate::{Error, Secret, SecretName};
 use hatchling_core::MAX_SECRET_BYTES;
 
 /// Envelope magic: identifies a sealed envelope and its version.
-/// `HVL1` = hatchling vault, envelope v1. A future algorithm or layout
-/// bumps the version; v1 readers reject anything else fail-closed
-/// ([`Error::NotSealed`]).
-const ENVELOPE_MAGIC: &[u8; 4] = b"HVL1";
+/// `HVL2` = hatchling vault, envelope v2, bound to its store and name.
+/// Anything else is refused: [`Error::OldEnvelope`] for `HVL1`,
+/// [`Error::NotSealed`] for any other bytes.
+const ENVELOPE_MAGIC: &[u8; 4] = b"HVL2";
+
+/// The version-1 magic: the same layout, with empty associated data.
+const ENVELOPE_V1_MAGIC: &[u8; 4] = b"HVL1";
+
+/// The associated data's domain separator, so an envelope can never be
+/// confused with another use of the same key.
+const DOMAIN: &[u8] = b"hatchling vault envelope v2";
+
+/// Which store a sealed file belongs to: part of every v2 envelope's
+/// associated data, so a file moved between stores fails to open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Store(&'static str);
+
+impl Store {
+    /// The broker's secrets: the vault proper.
+    pub const SECRETS: Self = Self("secrets");
+    /// Scheduled tasks and hooks.
+    pub const SCHEDULES: Self = Self("schedules");
+    /// Artifacts and their revisions.
+    pub const ARTIFACTS: Self = Self("artifacts");
+    /// Spaces and their members.
+    pub const SPACES: Self = Self("spaces");
+    /// The raw text of redaction records.
+    pub const REDACTIONS: Self = Self("redactions");
+
+    /// The store's label.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        self.0
+    }
+
+    /// The associated data an envelope of `name` in this store carries.
+    fn associated(self, name: &SecretName) -> Vec<u8> {
+        let mut data = Vec::with_capacity(DOMAIN.len() + self.0.len() + name.as_str().len() + 2);
+        data.extend_from_slice(DOMAIN);
+        data.push(0);
+        data.extend_from_slice(self.0.as_bytes());
+        data.push(0);
+        data.extend_from_slice(name.as_str().as_bytes());
+        data
+    }
+}
 /// `XChaCha20` nonce length in bytes. Fresh OS randomness per `store`;
 /// the 192-bit width makes random nonces safe.
 const NONCE_LEN: usize = 24;
@@ -315,6 +367,7 @@ impl KeySource for FileKey {
 pub struct SealedVault<'a> {
     vault: Vault,
     key: &'a MasterKey,
+    store: Store,
 }
 
 impl<'a> SealedVault<'a> {
@@ -322,7 +375,7 @@ impl<'a> SealedVault<'a> {
     /// `key` for all cryptographic operations.
     ///
     /// No migration happens here. A store that still holds plaintext
-    /// must be migrated explicitly via [`migrate_plaintext`];
+    /// must be migrated explicitly via [`migrate`];
     /// `fetch` on a non-envelope file fails closed with
     /// [`Error::NotSealed`].
     ///
@@ -332,8 +385,19 @@ impl<'a> SealedVault<'a> {
     /// [`Error::InsecurePermissions`], or [`Error::Io`] exactly as
     /// [`Vault::open`] does.
     pub fn open(root: &Path, key: &'a MasterKey) -> Result<Self, Error> {
+        Self::open_in(root, key, Store::SECRETS)
+    }
+
+    /// Opens the sealed store `store` at `root`, as [`open`](Self::open)
+    /// opens the secrets: every envelope it seals or opens is bound to
+    /// `store`.
+    ///
+    /// # Errors
+    ///
+    /// As [`open`](Self::open).
+    pub fn open_in(root: &Path, key: &'a MasterKey, store: Store) -> Result<Self, Error> {
         let vault = Vault::open(root)?;
-        Ok(Self { vault, key })
+        Ok(Self { vault, key, store })
     }
 
     /// Stores `secret` under `name` as a sealed envelope, atomically
@@ -346,7 +410,7 @@ impl<'a> SealedVault<'a> {
     /// key and a fresh nonce cannot fail) or [`Error::Io`] on
     /// filesystem failure.
     pub fn store(&self, name: &SecretName, secret: &Secret) -> Result<(), Error> {
-        let envelope = seal_envelope(self.key, secret.as_bytes())?;
+        let envelope = seal_envelope(self.key, self.store, name, secret.as_bytes())?;
         self.vault.store_raw(name, &envelope)?;
         tracing::info!(secret_name = name.as_str(), "stored sealed secret");
         Ok(())
@@ -366,7 +430,7 @@ impl<'a> SealedVault<'a> {
         let envelope = self
             .vault
             .fetch_raw(name, MAX_SECRET_BYTES + ENVELOPE_OVERHEAD)?;
-        let secret = open_envelope(self.key, name, &envelope)?;
+        let secret = open_envelope(self.key, self.store, name, &envelope)?;
         tracing::debug!(secret_name = name.as_str(), "fetched sealed secret");
         Ok(secret)
     }
@@ -389,14 +453,20 @@ impl<'a> SealedVault<'a> {
     }
 }
 
-/// Seals `plaintext` into a versioned envelope:
-/// magic || nonce || ciphertext+tag.
+/// Seals `plaintext`, stored as `name` in `store`, into a version-2
+/// envelope: magic || nonce || ciphertext+tag, with the store and name
+/// authenticated as associated data.
 ///
 /// The nonce is fresh OS randomness per call; encryption happens in
 /// place in the envelope's tail, so no intermediate ciphertext buffer
 /// exists to scrub. Plaintext is borrowed, never copied except into
 /// the envelope being built.
-fn seal_envelope(key: &MasterKey, plaintext: &[u8]) -> Result<Vec<u8>, Error> {
+fn seal_envelope(
+    key: &MasterKey,
+    store: Store,
+    name: &SecretName,
+    plaintext: &[u8],
+) -> Result<Vec<u8>, Error> {
     let cipher = key.cipher();
     // Fresh OS randomness per seal: XChaCha's 192-bit nonce makes
     // random nonces safe (reuse is catastrophic only for repeated
@@ -414,17 +484,30 @@ fn seal_envelope(key: &MasterKey, plaintext: &[u8]) -> Result<Vec<u8>, Error> {
     debug_assert_eq!(body_start, ENVELOPE_MAGIC.len() + NONCE_LEN);
     let (_, body) = envelope.split_at_mut(body_start);
     let tag = cipher
-        .encrypt_in_place_detached(&nonce, b"", body)
+        .encrypt_in_place_detached(&nonce, &store.associated(name), body)
         .map_err(|e| Error::SealFailed { source: e })?;
     envelope.extend_from_slice(tag.as_slice());
     Ok(envelope)
 }
 
-/// Whether `bytes` carry the sealed-envelope magic.
-fn has_magic(bytes: &[u8]) -> bool {
-    bytes
-        .get(..ENVELOPE_MAGIC.len())
-        .is_some_and(|magic| magic == ENVELOPE_MAGIC)
+/// Which kind of file `bytes` are, by their first four bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    /// A current (v2) envelope.
+    Current,
+    /// A version-1 envelope.
+    Old,
+    /// Anything else: plaintext, or an unknown version.
+    Other,
+}
+
+/// What `bytes` are.
+fn kind_of(bytes: &[u8]) -> Kind {
+    match bytes.get(..ENVELOPE_MAGIC.len()) {
+        Some(magic) if magic == ENVELOPE_MAGIC => Kind::Current,
+        Some(magic) if magic == ENVELOPE_V1_MAGIC => Kind::Old,
+        _ => Kind::Other,
+    }
 }
 
 /// Opens a sealed envelope: checks the magic, splits the nonce, and
@@ -435,7 +518,26 @@ fn has_magic(bytes: &[u8]) -> bool {
 /// envelope is [`Error::Malformed`]. Authentication failure is the
 /// single generic [`Error::DecryptFailed`]: wrong key, tampered
 /// ciphertext, and tampered tag are indistinguishable by design.
-fn open_envelope(key: &MasterKey, name: &SecretName, envelope: &[u8]) -> Result<Secret, Error> {
+fn open_envelope(
+    key: &MasterKey,
+    store: Store,
+    name: &SecretName,
+    envelope: &[u8],
+) -> Result<Secret, Error> {
+    if kind_of(envelope) == Kind::Old {
+        return Err(Error::OldEnvelope { name: name.clone() });
+    }
+    open_versioned(key, ENVELOPE_MAGIC, &store.associated(name), name, envelope)
+}
+
+/// Opens an envelope carrying `magic`, authenticated with `associated`.
+fn open_versioned(
+    key: &MasterKey,
+    magic_wanted: &[u8; 4],
+    associated: &[u8],
+    name: &SecretName,
+    envelope: &[u8],
+) -> Result<Secret, Error> {
     let not_sealed = || Error::NotSealed { name: name.clone() };
     let malformed = || Error::Malformed { name: name.clone() };
     // Magic first, with the length gate before it: a file shorter
@@ -448,7 +550,7 @@ fn open_envelope(key: &MasterKey, name: &SecretName, envelope: &[u8]) -> Result<
     // conversion is infallible; the error arm is fail-closed dead
     // code, not a panic.
     let magic = <&[u8; 4]>::try_from(magic_slice).map_err(|_| malformed())?;
-    if magic != ENVELOPE_MAGIC {
+    if magic != magic_wanted {
         return Err(not_sealed());
     }
     let nonce: [u8; NONCE_LEN] = envelope
@@ -466,7 +568,13 @@ fn open_envelope(key: &MasterKey, name: &SecretName, envelope: &[u8]) -> Result<
     let nonce = XNonce::from(nonce);
     let plaintext = key
         .cipher()
-        .decrypt(&nonce, ciphertext)
+        .decrypt(
+            &nonce,
+            Payload {
+                msg: ciphertext,
+                aad: associated,
+            },
+        )
         .map_err(|_| Error::DecryptFailed { name: name.clone() })?;
     Secret::new(plaintext)
 }
@@ -485,42 +593,48 @@ fn secret_entry(entry: std::io::Result<std::fs::DirEntry>) -> Result<Option<Secr
     Ok(name_str.parse().ok())
 }
 
-/// Outcome of [`migrate_plaintext`].
+/// Outcome of [`migrate`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MigrateReport {
-    /// Files encrypted into sealed envelopes.
+    /// Plaintext files sealed into current envelopes.
     pub encrypted: usize,
-    /// Files left untouched (already sealed, temp files, foreign names).
+    /// Version-1 envelopes re-sealed as current ones.
+    pub upgraded: usize,
+    /// Files left untouched: current envelopes (verified), temp files,
+    /// foreign names.
     pub skipped: usize,
 }
 
-/// One-shot migration: encrypts every plaintext secret file under
-/// `root` in place, after which it opens as a [`SealedVault`].
+/// One-shot migration of the store `store` at `root`: plaintext files
+/// are sealed, and version-1 envelopes re-sealed, into current
+/// envelopes bound to `store` and their names. Afterwards the store
+/// passes [`check`].
 ///
-/// Operator action, run once when adopting the sealed vault — not a
-/// runtime API. Files already carrying the envelope magic are
-/// verified against `key` and left untouched (a magic-bearing file
-/// that does not authenticate fails the migration closed — it is
-/// tampered or corrupt, not "already migrated"); dotfiles and
-/// foreign names are skipped and counted. Each rewrite goes through
-/// the vault's atomic temp-write + rename pipeline, so an
-/// interrupted migration is resumed by re-running it: already-sealed
-/// files authenticate and are skipped.
+/// Operator action, run when adopting the sealed vault and after an
+/// upgrade, not a runtime API. A version-1 envelope is opened under
+/// `key` before it is re-sealed, and a current one is verified, not
+/// assumed: either failing to authenticate fails the migration closed
+/// (it is tampered or corrupt, not "already migrated"). A file with an
+/// unknown magic is not touched and fails it too. Dotfiles and foreign
+/// names are skipped and counted. Each rewrite goes through the vault's
+/// atomic temp-write + rename, one file at a time, so an interrupted
+/// migration leaves every file readable as either version, and running
+/// it again resumes it.
 ///
-/// Enumeration happens here and only here. This function never
-/// returns secret material to its caller — it transforms files in
-/// place — and the broker never exposes it over the protocol.
+/// Enumeration happens here and in [`check`] and [`rekey`] only. This
+/// never returns secret material to its caller, and the broker never
+/// exposes it over the protocol.
 ///
 /// # Errors
 ///
-/// Returns [`Error::NotSealed`] for a plaintext file encountered
-/// mid-migration, [`Error::Malformed`] or [`Error::DecryptFailed`]
-/// for a tampered envelope, and I/O or permission errors from the
-/// vault root.
-pub fn migrate_plaintext(root: &Path, key: &MasterKey) -> Result<MigrateReport, Error> {
+/// Returns [`Error::Malformed`] or [`Error::DecryptFailed`] for a
+/// tampered envelope, [`Error::NotSealed`] for an unknown version, and
+/// I/O or permission errors from the store's root.
+pub fn migrate(root: &Path, key: &MasterKey, store: Store) -> Result<MigrateReport, Error> {
     let vault = Vault::open(root)?;
     let mut report = MigrateReport {
         encrypted: 0,
+        upgraded: 0,
         skipped: 0,
     };
     for entry in std::fs::read_dir(root).map_err(|source| Error::Io { source })? {
@@ -529,29 +643,79 @@ pub fn migrate_plaintext(root: &Path, key: &MasterKey) -> Result<MigrateReport, 
             continue;
         };
         // Plaintext files were written by `Vault::store`, so they fit
-        // the plaintext bound; the sealed bound also covers envelopes
-        // from an interrupted earlier pass. Anything larger is foreign
-        // and fails the migration fail-closed.
+        // the plaintext bound; the sealed bound also covers envelopes.
+        // Anything larger is foreign and fails the migration closed.
         let mut bytes = vault.fetch_raw(&name, MAX_SECRET_BYTES + ENVELOPE_OVERHEAD)?;
-        if has_magic(&bytes) {
-            // Already sealed — but "already" is verified, not assumed:
-            // a magic-bearing file that does not authenticate under
-            // this key is tampered or corrupt, and the migration fails
-            // closed instead of leaving it behind silently. The opened
-            // `Secret` drops zeroized at the end of the statement;
-            // nothing is returned to the caller.
-            open_envelope(key, &name, &bytes)?;
-            bytes.zeroize();
-            report.skipped += 1;
-            continue;
-        }
-        let envelope = seal_envelope(key, &bytes)?;
-        // The plaintext copy has served its purpose; scrub it.
+        let plaintext = match kind_of(&bytes) {
+            Kind::Current => {
+                // Verified, not assumed. The `Secret` drops zeroized.
+                open_envelope(key, store, &name, &bytes)?;
+                bytes.zeroize();
+                report.skipped += 1;
+                continue;
+            }
+            Kind::Old => {
+                let opened = open_versioned(key, ENVELOPE_V1_MAGIC, b"", &name, &bytes)?;
+                report.upgraded += 1;
+                opened.as_bytes().to_vec()
+            }
+            Kind::Other if bytes.get(..ENVELOPE_MAGIC.len()).is_some_and(looks_like_magic) => {
+                // `HVL` and a digit: an envelope version this build
+                // doesn't know. Never sealed over as if plaintext.
+                return Err(Error::NotSealed { name });
+            }
+            Kind::Other => {
+                report.encrypted += 1;
+                std::mem::take(&mut bytes)
+            }
+        };
+        let mut plaintext = zeroize::Zeroizing::new(plaintext);
+        let envelope = seal_envelope(key, store, &name, &plaintext)?;
+        plaintext.zeroize();
         bytes.zeroize();
         vault.store_raw(&name, &envelope)?;
-        report.encrypted += 1;
     }
     Ok(report)
+}
+
+/// Whether `magic` has the shape of an envelope magic: `HVL` and a digit.
+fn looks_like_magic(magic: &[u8]) -> bool {
+    matches!(magic, [b'H', b'V', b'L', digit] if digit.is_ascii_digit())
+}
+
+/// Refuses a store that holds anything but current envelopes: old
+/// (v1) envelopes, unknown versions, or plaintext, named in the error.
+/// The broker calls this for every store it opens, before it serves.
+/// Nothing is decrypted, so no key is needed.
+///
+/// # Errors
+///
+/// Returns [`Error::UnmigratedStore`] naming every such file, and I/O
+/// or permission errors from the store's root.
+pub fn check(root: &Path, store: Store) -> Result<(), Error> {
+    let vault = Vault::open(root)?;
+    let mut stale = Vec::new();
+    for entry in std::fs::read_dir(root).map_err(|source| Error::Io { source })? {
+        let Some(name) = secret_entry(entry)? else {
+            continue;
+        };
+        // The whole file is read to see its first bytes; a plaintext
+        // one is scrubbed straight after.
+        let mut head = vault.fetch_raw(&name, MAX_SECRET_BYTES + ENVELOPE_OVERHEAD)?;
+        let current = kind_of(&head) == Kind::Current;
+        head.zeroize();
+        if !current {
+            stale.push(name.as_str().to_owned());
+        }
+    }
+    if stale.is_empty() {
+        return Ok(());
+    }
+    stale.sort();
+    Err(Error::UnmigratedStore {
+        store: store.label(),
+        names: stale.join(", "),
+    })
 }
 
 /// Outcome of [`rekey`].
@@ -565,8 +729,8 @@ pub struct RekeyReport {
     pub skipped: usize,
 }
 
-/// One-shot master-key rotation: re-encrypts every sealed file under
-/// `root` from `old_key` to `new_key`, in place.
+/// One-shot master-key rotation: re-encrypts every sealed file of the
+/// store `store` under `root` from `old_key` to `new_key`, in place.
 ///
 /// Two phases — open every envelope first, then write every new one —
 /// so a phase-1 failure aborts before any file is touched. Rotation
@@ -575,20 +739,24 @@ pub struct RekeyReport {
 /// it — a file that authenticates under `new_key` is recognized as
 /// already done and skipped, so the rotation never aborts on its own
 /// output. A file that authenticates under neither key aborts with
-/// [`Error::DecryptFailed`]; a plaintext file aborts with
+/// [`Error::DecryptFailed`]; a version-1 envelope aborts with
+/// [`Error::OldEnvelope`] and a plaintext file with
 /// [`Error::NotSealed`] (migrate first).
 ///
-/// Same one-shot operator discipline as [`migrate_plaintext`]:
-/// enumeration here never returns secret material to a caller, and
-/// the broker never exposes it over the protocol. Note the transient
-/// memory cost: all secrets are held while re-encrypting.
+/// Same one-shot operator discipline as [`migrate`]: enumeration here
+/// never returns secret material to a caller, and the broker never
+/// exposes it over the protocol. Note the transient memory cost: all
+/// secrets are held while re-encrypting.
 ///
 /// # Errors
 ///
-/// Returns [`Error::NotSealed`] for a plaintext file (migrate
-/// first), [`Error::DecryptFailed`] for a file authenticating under
-/// neither key, and I/O or permission errors from the vault root.
-pub fn rekey(root: &Path, old_key: &MasterKey, new_key: &MasterKey) -> Result<RekeyReport, Error> {
+/// As above, and I/O or permission errors from the store's root.
+pub fn rekey(
+    root: &Path,
+    old_key: &MasterKey,
+    new_key: &MasterKey,
+    store: Store,
+) -> Result<RekeyReport, Error> {
     let vault = Vault::open(root)?;
     // Phase 1: open every envelope. Any failure aborts before the
     // first write in phase 2.
@@ -604,10 +772,10 @@ pub fn rekey(root: &Path, old_key: &MasterKey, new_key: &MasterKey) -> Result<Re
         // rekeyed": probe the new key before giving up, so an
         // interrupted rotation resumes instead of aborting on its own
         // output. The probe's `Secret` drops zeroized immediately.
-        let secret = match open_envelope(old_key, &name, &envelope) {
+        let secret = match open_envelope(old_key, store, &name, &envelope) {
             Ok(secret) => Some(secret),
             Err(Error::DecryptFailed { .. }) => {
-                if open_envelope(new_key, &name, &envelope).is_ok() {
+                if open_envelope(new_key, store, &name, &envelope).is_ok() {
                     skipped += 1;
                     None
                 } else {
@@ -624,7 +792,7 @@ pub fn rekey(root: &Path, old_key: &MasterKey, new_key: &MasterKey) -> Result<Re
     // key through the atomic pipeline. `Secret`s drop zeroized.
     let mut rekeyed = 0;
     for (name, secret) in &opened {
-        let envelope = seal_envelope(new_key, secret.as_bytes())?;
+        let envelope = seal_envelope(new_key, store, name, secret.as_bytes())?;
         vault.store_raw(name, &envelope)?;
         rekeyed += 1;
     }
@@ -770,6 +938,240 @@ mod tests {
         assert!(!vault.exists(&name));
         let err = vault.fetch(&name).unwrap_err();
         assert!(matches!(err, Error::NotFound { .. }));
+    }
+
+    /// A version-1 envelope of `plaintext`, as earlier builds sealed it:
+    /// empty associated data.
+    fn seal_v1(key: &MasterKey, plaintext: &[u8]) -> Vec<u8> {
+        let nonce = XNonce::from([7u8; NONCE_LEN]);
+        let mut envelope = ENVELOPE_V1_MAGIC.to_vec();
+        envelope.extend_from_slice(nonce.as_slice());
+        envelope.extend(key.cipher().encrypt(&nonce, plaintext).unwrap());
+        envelope
+    }
+
+    /// Writes `bytes` as the raw file for `name` in the store at `root`.
+    fn plant(root: &Path, name: &str, bytes: &[u8]) {
+        Vault::open(root)
+            .unwrap()
+            .store_raw(&secret_name(name), bytes)
+            .unwrap();
+    }
+
+    #[test]
+    fn a_sealed_file_renamed_to_another_secret_fails_to_open() {
+        let dir = test_dir("renamed");
+        let key = test_key();
+        let vault = SealedVault::open(&dir, &key).unwrap();
+        vault.store(&secret_name("cell-granted"), &secret(b"harmless")).unwrap();
+        vault.store(&secret_name("never-in-a-cell"), &secret(b"crown jewels")).unwrap();
+        // An attacker with write access to the vault, and no key, swaps
+        // the two files.
+        let granted = raw_bytes(&dir, &secret_name("cell-granted"));
+        let jewels = raw_bytes(&dir, &secret_name("never-in-a-cell"));
+        plant(&dir, "cell-granted", &jewels);
+        plant(&dir, "never-in-a-cell", &granted);
+        for name in ["cell-granted", "never-in-a-cell"] {
+            let err = vault.fetch(&secret_name(name)).unwrap_err();
+            assert!(
+                matches!(&err, Error::DecryptFailed { name: failed } if failed.as_str() == name),
+                "the same generic error as a tampered file: {err:?}"
+            );
+        }
+        // Put back, both open again.
+        plant(&dir, "cell-granted", &granted);
+        assert_eq!(
+            vault.fetch(&secret_name("cell-granted")).unwrap().as_bytes(),
+            b"harmless"
+        );
+    }
+
+    #[test]
+    fn a_record_moved_between_stores_or_names_fails_to_open() {
+        let dir = test_dir("stores");
+        let other = test_dir("stores-other");
+        let key = test_key();
+        let redactions = SealedVault::open_in(&dir, &key, Store::REDACTIONS).unwrap();
+        let schedules = SealedVault::open_in(&other, &key, Store::SCHEDULES).unwrap();
+        redactions.store(&secret_name("red-1"), &secret(b"flagged text")).unwrap();
+        let record = raw_bytes(&dir, &secret_name("red-1"));
+        // Into another store under the same name: refused.
+        plant(&other, "red-1", &record);
+        assert!(matches!(
+            schedules.fetch(&secret_name("red-1")),
+            Err(Error::DecryptFailed { .. })
+        ));
+        // The same directory opened as another store: refused.
+        let as_secrets = SealedVault::open(&dir, &key).unwrap();
+        assert!(matches!(
+            as_secrets.fetch(&secret_name("red-1")),
+            Err(Error::DecryptFailed { .. })
+        ));
+        // Under another name in its own store: refused.
+        plant(&dir, "red-2", &record);
+        assert!(matches!(
+            redactions.fetch(&secret_name("red-2")),
+            Err(Error::DecryptFailed { .. })
+        ));
+        // Where it was made, it opens.
+        assert_eq!(
+            redactions.fetch(&secret_name("red-1")).unwrap().as_bytes(),
+            b"flagged text"
+        );
+        assert_eq!(
+            [
+                Store::SECRETS,
+                Store::SCHEDULES,
+                Store::ARTIFACTS,
+                Store::SPACES,
+                Store::REDACTIONS
+            ]
+            .map(Store::label),
+            ["secrets", "schedules", "artifacts", "spaces", "redactions"]
+        );
+    }
+
+    #[test]
+    fn the_associated_data_names_the_domain_the_store_and_the_name() {
+        assert_eq!(
+            Store::SPACES.associated(&secret_name("team-7")),
+            b"hatchling vault envelope v2\0spaces\0team-7".to_vec()
+        );
+    }
+
+    #[test]
+    fn an_old_envelope_is_read_only_by_the_migration() {
+        let dir = test_dir("old-envelope");
+        let key = test_key();
+        let vault = SealedVault::open(&dir, &key).unwrap();
+        plant(&dir, "legacy", &seal_v1(&key, b"from 0.3"));
+        assert!(matches!(
+            vault.fetch(&secret_name("legacy")),
+            Err(Error::OldEnvelope { .. })
+        ));
+        let report = migrate(&dir, &key, Store::SECRETS).unwrap();
+        assert_eq!(
+            report,
+            MigrateReport {
+                encrypted: 0,
+                upgraded: 1,
+                skipped: 0
+            }
+        );
+        assert_eq!(
+            vault.fetch(&secret_name("legacy")).unwrap().as_bytes(),
+            b"from 0.3"
+        );
+        assert_eq!(
+            raw_bytes(&dir, &secret_name("legacy")).get(..4),
+            Some(ENVELOPE_MAGIC.as_slice())
+        );
+    }
+
+    #[test]
+    fn an_interrupted_migration_leaves_every_secret_readable_and_resumes() {
+        let dir = test_dir("interrupted");
+        let key = test_key();
+        let vault = SealedVault::open(&dir, &key).unwrap();
+        // As if a migration stopped halfway: one file re-sealed, one old,
+        // one still plaintext.
+        vault.store(&secret_name("done"), &secret(b"one")).unwrap();
+        plant(&dir, "old", &seal_v1(&key, b"two"));
+        plant(&dir, "plain", b"three");
+        assert!(check(&dir, Store::SECRETS).is_err());
+        let report = migrate(&dir, &key, Store::SECRETS).unwrap();
+        assert_eq!(
+            report,
+            MigrateReport {
+                encrypted: 1,
+                upgraded: 1,
+                skipped: 1
+            }
+        );
+        for (name, value) in [
+            ("done", b"one".as_slice()),
+            ("old", b"two".as_slice()),
+            ("plain", b"three".as_slice()),
+        ] {
+            assert_eq!(vault.fetch(&secret_name(name)).unwrap().as_bytes(), value);
+        }
+        assert!(check(&dir, Store::SECRETS).is_ok());
+        // Run again: nothing left to do.
+        assert_eq!(
+            migrate(&dir, &key, Store::SECRETS).unwrap(),
+            MigrateReport {
+                encrypted: 0,
+                upgraded: 0,
+                skipped: 3
+            }
+        );
+    }
+
+    #[test]
+    fn a_store_with_anything_but_current_envelopes_is_refused_by_name() {
+        let dir = test_dir("check");
+        let key = test_key();
+        let vault = SealedVault::open_in(&dir, &key, Store::ARTIFACTS).unwrap();
+        vault.store(&secret_name("current"), &secret(b"ok")).unwrap();
+        assert!(check(&dir, Store::ARTIFACTS).is_ok());
+        plant(&dir, "z-old", &seal_v1(&key, b"x"));
+        plant(&dir, "a-plain", b"plaintext");
+        let mut future = b"HVL9".to_vec();
+        future.extend_from_slice(&[0u8; 64]);
+        plant(&dir, "m-future", &future);
+        // Temp files and foreign names are not the store's.
+        std::fs::write(dir.join(".tmp-123"), b"partial").unwrap();
+        let err = check(&dir, Store::ARTIFACTS).unwrap_err();
+        assert!(
+            matches!(&err, Error::UnmigratedStore { store: "artifacts", names } if names == "a-plain, m-future, z-old"),
+            "{err:?}"
+        );
+        let shown = err.to_string();
+        assert!(shown.contains("migrate-vault"), "{shown}");
+        // An unknown version is never sealed over as plaintext.
+        let refused = migrate(&dir, &key, Store::ARTIFACTS).unwrap_err();
+        assert!(matches!(refused, Error::NotSealed { .. }), "{refused:?}");
+        assert_eq!(raw_bytes(&dir, &secret_name("m-future")), future);
+    }
+
+    #[test]
+    fn an_old_envelope_that_does_not_authenticate_fails_the_migration() {
+        let dir = test_dir("old-tampered");
+        let key = test_key();
+        let mut tampered = seal_v1(&key, b"secret");
+        if let Some(last) = tampered.last_mut() {
+            *last ^= 1;
+        }
+        plant(&dir, "tampered", &tampered);
+        assert!(matches!(
+            migrate(&dir, &key, Store::SECRETS),
+            Err(Error::DecryptFailed { .. })
+        ));
+        assert_eq!(raw_bytes(&dir, &secret_name("tampered")), tampered);
+    }
+
+    #[test]
+    fn only_hvl_and_a_digit_looks_like_an_envelope() {
+        assert!(looks_like_magic(b"HVL1"));
+        assert!(looks_like_magic(b"HVL9"));
+        for other in [b"HVLx".as_slice(), b"hvl1", b"XVL1", b"HVL", b""] {
+            assert!(!looks_like_magic(other), "{other:?}");
+        }
+        assert_eq!(kind_of(b"HVL2...."), Kind::Current);
+        assert_eq!(kind_of(b"HVL1...."), Kind::Old);
+        assert_eq!(kind_of(b"HV"), Kind::Other);
+    }
+
+    #[test]
+    fn rekey_refuses_an_old_envelope_until_it_is_migrated() {
+        let dir = test_dir("rekey-old");
+        let old = test_key();
+        let new = test_key();
+        plant(&dir, "legacy", &seal_v1(&old, b"x"));
+        assert!(matches!(
+            rekey(&dir, &old, &new, Store::SECRETS),
+            Err(Error::OldEnvelope { .. })
+        ));
     }
 
     #[test]
@@ -1221,7 +1623,7 @@ mod tests {
         assert_same_key(&key, &MasterKey::from_bytes(winner_bytes), &dir2);
     }
 
-    // ---- migrate_plaintext ----
+    // ---- migrate ----
 
     #[test]
     fn migrate_encrypts_plaintext_in_place() {
@@ -1236,11 +1638,12 @@ mod tests {
             .store(&secret_name("two"), &secret(b"second-value"))
             .unwrap();
 
-        let report = migrate_plaintext(&dir, &key).unwrap();
+        let report = migrate(&dir, &key, Store::SECRETS).unwrap();
         assert_eq!(
             report,
             MigrateReport {
                 encrypted: 2,
+                upgraded: 0,
                 skipped: 0
             }
         );
@@ -1281,7 +1684,7 @@ mod tests {
         // magic so they cannot be mistaken for an envelope.
         let big = vec![0x41u8; MAX_SECRET_BYTES + ENVELOPE_OVERHEAD + 1];
         std::fs::write(dir.join("big"), &big).unwrap();
-        let err = migrate_plaintext(&dir, &key).unwrap_err();
+        let err = migrate(&dir, &key, Store::SECRETS).unwrap_err();
         assert!(
             matches!(err, Error::TooLarge { max, .. } if max == MAX_SECRET_BYTES + ENVELOPE_OVERHEAD),
             "got {err:?}"
@@ -1294,14 +1697,15 @@ mod tests {
         let key = test_key();
         let plain = Vault::open(&dir).unwrap();
         plain.store(&secret_name("one"), &secret(b"value")).unwrap();
-        migrate_plaintext(&dir, &key).unwrap();
+        migrate(&dir, &key, Store::SECRETS).unwrap();
         // Second run: the sealed file authenticates under the key and
         // is verified-skipped, not re-encrypted.
-        let report = migrate_plaintext(&dir, &key).unwrap();
+        let report = migrate(&dir, &key, Store::SECRETS).unwrap();
         assert_eq!(
             report,
             MigrateReport {
                 encrypted: 0,
+                upgraded: 0,
                 skipped: 1
             }
         );
@@ -1316,7 +1720,7 @@ mod tests {
         let key_b = test_key();
         let sealed = SealedVault::open(&dir, &key_a).unwrap();
         sealed.store(&secret_name("s"), &secret(b"value")).unwrap();
-        let err = migrate_plaintext(&dir, &key_b).unwrap_err();
+        let err = migrate(&dir, &key_b, Store::SECRETS).unwrap_err();
         assert!(matches!(err, Error::DecryptFailed { .. }), "got {err:?}");
     }
 
@@ -1331,7 +1735,7 @@ mod tests {
         let byte = raw.get_mut(ENVELOPE_MAGIC.len()).unwrap();
         *byte ^= 0xFF;
         Vault::open(&dir).unwrap().store_raw(&name, &raw).unwrap();
-        let err = migrate_plaintext(&dir, &key).unwrap_err();
+        let err = migrate(&dir, &key, Store::SECRETS).unwrap_err();
         assert!(matches!(err, Error::DecryptFailed { .. }), "got {err:?}");
     }
 
@@ -1347,11 +1751,12 @@ mod tests {
         // not secrets, counted as skipped, left untouched.
         std::fs::write(dir.join(".tmp-12"), b"partial").unwrap();
         std::fs::write(dir.join("has space"), b"foreign").unwrap();
-        let report = migrate_plaintext(&dir, &key).unwrap();
+        let report = migrate(&dir, &key, Store::SECRETS).unwrap();
         assert_eq!(
             report,
             MigrateReport {
                 encrypted: 1,
+                upgraded: 0,
                 skipped: 2
             }
         );
@@ -1373,11 +1778,12 @@ mod tests {
             .unwrap()
             .store(&secret_name("todo"), &secret(b"todo-value"))
             .unwrap();
-        let report = migrate_plaintext(&dir, &key).unwrap();
+        let report = migrate(&dir, &key, Store::SECRETS).unwrap();
         assert_eq!(
             report,
             MigrateReport {
                 encrypted: 1,
+                upgraded: 0,
                 skipped: 1
             }
         );
@@ -1399,7 +1805,7 @@ mod tests {
         sealed.store(&secret_name("a"), &secret(b"alpha")).unwrap();
         sealed.store(&secret_name("b"), &secret(b"beta")).unwrap();
 
-        let report = rekey(&dir, &old, &new).unwrap();
+        let report = rekey(&dir, &old, &new, Store::SECRETS).unwrap();
         assert_eq!(
             report,
             RekeyReport {
@@ -1427,8 +1833,8 @@ mod tests {
             .unwrap()
             .store(&secret_name("a"), &secret(b"alpha"))
             .unwrap();
-        rekey(&dir, &old, &new).unwrap();
-        let report = rekey(&dir, &old, &new).unwrap();
+        rekey(&dir, &old, &new, Store::SECRETS).unwrap();
+        let report = rekey(&dir, &old, &new, Store::SECRETS).unwrap();
         assert_eq!(
             report,
             RekeyReport {
@@ -1456,7 +1862,7 @@ mod tests {
             .unwrap()
             .store(&secret_name("b"), &secret(b"beta"))
             .unwrap();
-        let report = rekey(&dir, &old, &new).unwrap();
+        let report = rekey(&dir, &old, &new, Store::SECRETS).unwrap();
         assert_eq!(
             report,
             RekeyReport {
@@ -1485,7 +1891,7 @@ mod tests {
             .unwrap()
             .store(&secret_name("x"), &secret(b"???"))
             .unwrap();
-        let err = rekey(&dir, &old, &new).unwrap_err();
+        let err = rekey(&dir, &old, &new, Store::SECRETS).unwrap_err();
         assert!(matches!(err, Error::DecryptFailed { .. }), "got {err:?}");
     }
 
@@ -1500,7 +1906,7 @@ mod tests {
             .unwrap()
             .store(&secret_name("p"), &secret(b"plaintext"))
             .unwrap();
-        let err = rekey(&dir, &old, &new).unwrap_err();
+        let err = rekey(&dir, &old, &new, Store::SECRETS).unwrap_err();
         assert!(matches!(err, Error::NotSealed { .. }), "got {err:?}");
     }
 
@@ -1521,7 +1927,7 @@ mod tests {
             .unwrap();
         let big = vec![0x41u8; MAX_SECRET_BYTES + ENVELOPE_OVERHEAD + 1];
         std::fs::write(dir.join("big"), &big).unwrap();
-        let err = rekey(&dir, &old, &new).unwrap_err();
+        let err = rekey(&dir, &old, &new, Store::SECRETS).unwrap_err();
         assert!(
             matches!(err, Error::TooLarge { max, .. } if max == MAX_SECRET_BYTES + ENVELOPE_OVERHEAD),
             "got {err:?}"
@@ -1538,7 +1944,7 @@ mod tests {
             .store(&secret_name("a"), &secret(b"alpha"))
             .unwrap();
         std::fs::write(dir.join(".tmp-7"), b"partial").unwrap();
-        let report = rekey(&dir, &old, &new).unwrap();
+        let report = rekey(&dir, &old, &new, Store::SECRETS).unwrap();
         assert_eq!(
             report,
             RekeyReport {
