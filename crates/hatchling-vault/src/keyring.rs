@@ -19,7 +19,9 @@
 //! factor (plus recovery wraps, which add no unlock path of their own
 //! kind). Changing tier needs an [`Unlocked`] obtained through the
 //! current tier, and drops every wrap of the old one: a weaker wrap left
-//! behind would be a side door, a downgrade nobody chose.
+//! behind would be a side door, a downgrade nobody chose. Enrolling a
+//! tier also moves the vault to a new DEK (`rotate.rs`), so a copy of the
+//! keyring from before opens nothing once the stores are re-sealed.
 //!
 //! # Format
 //!
