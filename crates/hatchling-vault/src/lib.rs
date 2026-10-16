@@ -55,8 +55,8 @@ pub use keyring::{Factor, Kek, Keyring, Tier, Unlocked, Wrap};
 pub use lease::KeyLease;
 pub use manage::{KeyInfo, Label, MAX_LABEL_CHARS, Protection, Warning};
 pub use seal::{
-    FileKey, KeySource, MasterKey, MigrateReport, RekeyReport, SealedVault, Store, check, migrate,
-    rekey,
+    FileKey, KeySource, MasterKey, MigrateReport, RekeyReport, SealedVault, Store, check,
+    holds_envelopes, migrate, rekey,
 };
 pub use secret::Secret;
 pub use totp::{PendingTotp, totp_code};

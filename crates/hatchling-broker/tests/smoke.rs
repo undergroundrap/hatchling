@@ -275,7 +275,7 @@ fn rekey_vault_rotates_key() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("rekey-vault: re-encrypted 1 secret(s)"),
+        stdout.contains("rekey-vault: secrets: re-sealed 1 under the new key, skipped 0 file(s)"),
         "missing rekey report, stdout was: {stdout}"
     );
 
@@ -302,6 +302,88 @@ fn rekey_vault_rotates_key() {
         .unwrap();
     assert_eq!(secret.as_bytes(), b"plaintext-secret");
     let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// `rekey-vault` with a keyring configured refuses by name and writes no
+/// key file: a plain key the keyring never learns of would leave the
+/// next unlock opening nothing.
+#[test]
+fn rekey_vault_refuses_a_keyring_vault_and_writes_no_key() {
+    let scratch = scratch_dir("rekey-keyring").unwrap();
+    let mut env = operator_env(&scratch, "vault");
+    let keyring = scratch.join("vault.key").join("keyring");
+    env.push((
+        "HATCHLING_VAULT_KEYRING",
+        keyring.to_string_lossy().into_owned(),
+    ));
+    let new_key = scratch.join("new.key");
+    let output = run_broker(
+        &["rekey-vault", new_key.to_str().unwrap()],
+        &operator_env_refs(&env),
+        &["HATCHLING_AGENT_BIN"],
+    )
+    .unwrap();
+    let written = new_key.exists();
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        !output.status.success(),
+        "rekey-vault ran on a keyring vault"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("HATCHLING_VAULT_KEYRING") && stderr.contains(&*keyring.to_string_lossy()),
+        "{stderr}"
+    );
+    assert!(!written, "a plain key file was written");
+}
+
+/// A vault adopted into a keyring, started without
+/// `HATCHLING_VAULT_KEYRING`, refuses to serve instead of minting a
+/// fresh plain key: the socket never appears and no key file is made.
+#[test]
+fn a_keyring_vault_started_without_its_keyring_refuses_to_serve() {
+    let scratch = scratch_dir("keyring-unset").unwrap();
+    let vault_dir = scratch.join("vault");
+    std::fs::create_dir_all(&vault_dir).unwrap();
+    std::fs::set_permissions(&vault_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut env = operator_env(&scratch, "vault");
+    let unset = &["HATCHLING_AGENT_BIN"];
+    let made = run_broker(&["migrate-vault"], &operator_env_refs(&env), unset).unwrap();
+    assert!(
+        made.status.success(),
+        "{}",
+        String::from_utf8_lossy(&made.stderr)
+    );
+    env.push((
+        "HATCHLING_VAULT_KEYRING",
+        scratch
+            .join("vault.key")
+            .join("keyring")
+            .to_string_lossy()
+            .into_owned(),
+    ));
+    let adopted = run_broker(&["vault-keyring", "init"], &operator_env_refs(&env), unset).unwrap();
+    assert!(
+        adopted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&adopted.stderr)
+    );
+    env.pop();
+    let key_file = scratch.join("vault.key").join("key");
+    assert!(!key_file.exists());
+    let output = run_broker(
+        &[],
+        &operator_env_refs(&env),
+        &["HATCHLING_AGENT_BIN", "HATCHLING_VAULT_KEYRING"],
+    );
+    let (minted, bound) = (key_file.exists(), scratch.join("broker.sock").exists());
+    let _ = std::fs::remove_dir_all(&scratch);
+    let output = output.expect("the broker must stop at start-up, not serve");
+    assert!(!output.status.success(), "the broker started");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("HATCHLING_VAULT_KEYRING"), "{stderr}");
+    assert!(!minted, "a fresh plain key was minted");
+    assert!(!bound, "the broker bound its socket");
 }
 
 /// Reads a 32-byte key file the broker provisioned.

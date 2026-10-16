@@ -130,6 +130,61 @@ const fn vault_error(source: hatchling_vault::Error) -> Error {
     Error::Vault { source }
 }
 
+const fn io_error(source: std::io::Error) -> Error {
+    vault_error(hatchling_vault::Error::Io { source })
+}
+
+/// The file beside the key file that records that the vault's key is in
+/// a keyring, so a start without `HATCHLING_VAULT_KEYRING` never mints a
+/// plain key in its place.
+fn keyring_marker(vault: &VaultConfig) -> PathBuf {
+    vault.key_file.with_file_name("keyring-in-use")
+}
+
+/// Records, once, that `vault`'s key is in the keyring at `path`. Written
+/// on adoption and on each keyring unlock, so vaults adopted before the
+/// record existed get one too.
+fn mark_keyring(vault: &VaultConfig, path: &Path) -> Result<(), Error> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let marker = keyring_marker(vault);
+    if marker.parent().is_none_or(|dir| !dir.is_dir()) {
+        return Ok(());
+    }
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&marker)
+    {
+        Ok(mut file) => file
+            .write_all(format!("{}\n", path.display()).as_bytes())
+            .map_err(io_error),
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(source) => Err(io_error(source)),
+    }
+}
+
+/// Refuses to create a plain key for a vault whose key is elsewhere: one
+/// that has used a keyring, or whose store already holds sealed files.
+fn refuse_new_key(vault: &VaultConfig) -> Result<(), Error> {
+    let marker = keyring_marker(vault);
+    let reason = if marker.try_exists().map_err(io_error)? {
+        format!(
+            "this vault's key is in a keyring (recorded in {}): set HATCHLING_VAULT_KEYRING to it; no plain key was created",
+            marker.display()
+        )
+    } else if hatchling_vault::holds_envelopes(&vault.root).map_err(vault_error)? {
+        format!(
+            "{} holds sealed files but there is no key at {}: set HATCHLING_VAULT_KEYRING if the vault uses a keyring, or restore the key file; no plain key was created",
+            vault.root.display(),
+            vault.key_file.display()
+        )
+    } else {
+        return Ok(());
+    };
+    Err(Error::Usage { reason })
+}
+
 /// Why a hardware-key vault did not open: neither a key nor a code.
 const NO_KEY: &str = "this vault is at the hardware-key tier: plug in an enrolled security key, or give a backup code";
 
@@ -281,11 +336,13 @@ pub fn unlock_asking(
         .keyring
         .as_deref()
         .and_then(|path| Keyring::load(path).ok());
-    match loaded {
-        Some(mut keyring) if keyring.tier() == Tier::HardwareKey => {
-            authorize(&mut keyring, ask, devices).map(Unlocked::into_key)
+    match (loaded, config.keyring.as_deref()) {
+        (Some(mut keyring), Some(path)) if keyring.tier() == Tier::HardwareKey => {
+            let unlocked = authorize(&mut keyring, ask, devices)?;
+            mark_keyring(vault, path)?;
+            Ok(unlocked.into_key())
         }
-        loaded => {
+        (loaded, _) => {
             let tier = loaded.map_or(Tier::File, |keyring| keyring.tier());
             unlock_with(vault, config, asked_factors(tier, ask)?)
         }
@@ -306,6 +363,9 @@ pub fn unlock_with(
         if config.require_hardware_key {
             return Err(policy("this vault has no keyring"));
         }
+        if !vault.key_file.try_exists().map_err(io_error)? {
+            refuse_new_key(vault)?;
+        }
         return FileKey::new(vault.key_file.clone())
             .load_or_create()
             .map_err(vault_error);
@@ -314,7 +374,9 @@ pub fn unlock_with(
     if config.require_hardware_key && keyring.tier() != Tier::HardwareKey {
         return Err(policy("this vault is at a lower tier"));
     }
-    open(&mut keyring, vault, config, factors).map(Unlocked::into_key)
+    let unlocked = open(&mut keyring, vault, config, factors)?;
+    mark_keyring(vault, path)?;
+    Ok(unlocked.into_key())
 }
 
 /// Adopts a keyring (`vault-keyring init`).
@@ -343,9 +405,8 @@ pub fn init(vault: &VaultConfig, config: &KeyringConfig) -> Result<(), Error> {
     Keyring::load(path)
         .and_then(|keyring| keyring.unlock_file(&kek))
         .map_err(vault_error)?;
-    std::fs::remove_file(&vault.key_file).map_err(|source| Error::Vault {
-        source: hatchling_vault::Error::Io { source },
-    })
+    mark_keyring(vault, path)?;
+    std::fs::remove_file(&vault.key_file).map_err(io_error)
 }
 
 /// How many codes `enroll-totp` takes before it gives up.
@@ -3108,5 +3169,121 @@ mod tests {
         drop(Console::terminal());
         let (_asking, devices) = terminal_operator();
         assert_eq!(devices.unreachable(), NONE_PLUGGED);
+    }
+
+    #[test]
+    fn a_keyring_vault_started_without_its_keyring_refuses_and_creates_no_key() {
+        let (_scratch, vault, config) = adopted("no-keyring");
+        let marker = keyring_marker(&vault);
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap(),
+            format!("{}\n", config.keyring.as_deref().unwrap().display()),
+            "adoption records the keyring"
+        );
+        let refused = unlock(&vault, &KeyringConfig::default()).unwrap_err();
+        assert!(matches!(refused, Error::Usage { .. }));
+        let shown = refused.to_string();
+        assert!(
+            shown.contains("HATCHLING_VAULT_KEYRING") && shown.contains("keyring-in-use"),
+            "{shown}"
+        );
+        assert!(!vault.key_file.exists(), "no plain key in its place");
+        // A vault adopted before the record: its keyring's next unlock writes it.
+        std::fs::remove_file(&marker).unwrap();
+        assert!(reads_the_secret(&vault, &unlock(&vault, &config).unwrap()));
+        assert!(marker.exists());
+        // Without the record, sealed files alone stop it, naming the store.
+        std::fs::remove_file(&marker).unwrap();
+        let refused = unlock(&vault, &KeyringConfig::default())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains(&vault.root.display().to_string())
+                && refused.contains("HATCHLING_VAULT_KEYRING"),
+            "{refused}"
+        );
+        assert!(!vault.key_file.exists());
+        // An existing record is left as it is.
+        std::fs::write(&marker, b"kept\n").unwrap();
+        assert!(unlock(&vault, &config).is_ok());
+        assert_eq!(std::fs::read(&marker).unwrap(), b"kept\n");
+    }
+
+    #[test]
+    fn a_new_vault_still_gets_its_plain_key() {
+        let (_scratch, vault) = scratch("new-vault");
+        // Nothing sealed yet and no keyring recorded: the key is made.
+        std::fs::create_dir_all(&vault.root).unwrap();
+        std::fs::set_permissions(&vault.root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(vault.root.join("plain"), b"plaintext").unwrap();
+        std::fs::set_permissions(
+            vault.root.join("plain"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        assert!(unlock(&vault, &KeyringConfig::default()).is_ok());
+        assert!(vault.key_file.exists());
+        assert!(
+            !keyring_marker(&vault).exists(),
+            "a plain vault records no keyring"
+        );
+    }
+
+    #[test]
+    fn the_keyring_record_helpers_each_do_their_one_job() {
+        let (scratch, vault) = scratch("record-helpers");
+        // io_error: an I/O failure, as the vault's error.
+        assert!(matches!(
+            io_error(std::io::Error::other("x")),
+            Error::Vault {
+                source: hatchling_vault::Error::Io { .. }
+            }
+        ));
+        // refuse_new_key: nothing recorded and nothing sealed is a new vault.
+        assert!(refuse_new_key(&vault).is_ok());
+        // mark_keyring: nowhere to record it, nothing is written.
+        let path = scratch.0.join("vault.key").join("keyring");
+        mark_keyring(&vault, &path).unwrap();
+        assert!(!keyring_marker(&vault).exists());
+        // Beside the key file, once, naming the keyring.
+        std::fs::create_dir_all(vault.key_file.parent().unwrap()).unwrap();
+        mark_keyring(&vault, &path).unwrap();
+        mark_keyring(&vault, Path::new("/elsewhere")).unwrap();
+        let marker = keyring_marker(&vault);
+        assert_eq!(marker, scratch.0.join("vault.key").join("keyring-in-use"));
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap(),
+            format!(
+                "{}
+",
+                path.display()
+            )
+        );
+        assert_eq!(
+            std::fs::metadata(&marker).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(matches!(refuse_new_key(&vault), Err(Error::Usage { .. })));
+        // A record that can't be written is an error, not a skip (root
+        // writes through the mode, so only as another user).
+        std::fs::remove_file(&marker).unwrap();
+        if rustix::process::geteuid().is_root() {
+            return;
+        }
+        std::fs::set_permissions(
+            vault.key_file.parent().unwrap(),
+            std::fs::Permissions::from_mode(0o500),
+        )
+        .unwrap();
+        let unwritable = mark_keyring(&vault, &path);
+        std::fs::set_permissions(
+            vault.key_file.parent().unwrap(),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        assert!(
+            matches!(unwritable, Err(Error::Vault { .. })),
+            "{unwritable:?}"
+        );
     }
 }
