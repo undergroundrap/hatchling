@@ -14,7 +14,8 @@ How a Hatchling version is cut and published, and how a new crate gets onto crat
 1. **A release pull request:**
    - bump the version in the root `Cargo.toml`: `[workspace.package] version` and every `[workspace.dependencies]` entry (all the same string), then `cargo update --workspace` so `Cargo.lock` follows;
    - rename `## [Unreleased]` in `CHANGELOG.md` to `## [X.Y.Z] - YYYY-MM-DD`, add an empty Unreleased above it, and update the compare links at the bottom;
-   - all required checks green, including "crates.io dry run".
+   - all required checks green, including "crates.io dry run";
+   - the [release security checklist](release-security-checklist.md) run, each item's result recorded in the pull request's description.
 2. **Merge it**, and wait for `main`'s CI to pass.
 3. **Publish a GitHub release** with the tag `vX.Y.Z` on that commit, and the version's changelog section as the notes:
 
