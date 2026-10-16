@@ -38,7 +38,11 @@ class CompanionTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.browser.close();cls.driver.stop();cls.process.terminate();cls.process.wait(timeout=10)
-        cls.profile.cleanup()
+        # Chromium's helpers can still be writing the profile as they exit.
+        for _ in range(20):
+            try: cls.profile.cleanup();break
+            except OSError: time.sleep(.25)
+        else: cls.profile.cleanup()
 
     def cli(self,method,args=None):
         result=subprocess.run(['python3',str(TOOL),'--cdp',self.endpoint,method,json.dumps(args or {})],capture_output=True,text=True,timeout=15)
