@@ -77,7 +77,7 @@ const fn copy(key: &MasterKey) -> MasterKey {
 /// The key the retiring DEK is wrapped under: derived from the new DEK,
 /// so only an unlock of the new one reaches the old.
 fn retiring_kek(vault_id: &str, new: &MasterKey) -> Kek {
-    let mut okm = [0u8; 32];
+    let mut okm = <[u8; 32]>::default();
     // HKDF-SHA-256 expands up to 8160 bytes; 32 always fits.
     let _ = Hkdf::<Sha256>::new(Some(vault_id.as_bytes()), new.expose())
         .expand(RETIRING_INFO, &mut okm);
@@ -337,7 +337,7 @@ mod tests {
         let before = file_wrap(&keyring);
         // A wrong KEK file, or none, stops it before anything is written.
         let untouched = std::fs::read(&path).unwrap();
-        for wrong in [Some(Kek::from_bytes([1; 32])), None] {
+        for wrong in [Some(Kek::from_bytes(random::<32>().unwrap())), None] {
             assert!(matches!(
                 keyring.rotate_in_place(&unlocked, wrong.as_ref(), &mut []),
                 Err(Error::UnlockFailed)
