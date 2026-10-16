@@ -6,15 +6,24 @@
 //! exactly as long as the broker holds it. Only metadata is kept: the
 //! id the broker gave the cell, what kind it is, when it started and its
 //! limits; never its task, its input or its output.
+//!
+//! Every admitted API and UI connection is listed the same way, by an
+//! [`Open`] guard: its id, its socket and when it was admitted, never
+//! what it said.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use hatchling_core::ui::operator::{CellKind, CellLimits, OperatorCell};
+use hatchling_core::ui::operator::{
+    CellKind, CellLimits, OperatorCell, OperatorSession, SessionSocket,
+};
 
 /// The cells running, by the order they started in.
 static CELLS: Mutex<BTreeMap<u64, OperatorCell>> = Mutex::new(BTreeMap::new());
+
+/// The connections open, by the order they were admitted in.
+static SESSIONS: Mutex<BTreeMap<u64, OperatorSession>> = Mutex::new(BTreeMap::new());
 
 /// The next listing's key: its place in the start order.
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -57,6 +66,44 @@ impl Drop for Running {
 #[must_use]
 pub fn cells() -> Vec<OperatorCell> {
     cells_now().values().cloned().collect()
+}
+
+/// The sessions listing, even if a holder panicked.
+fn sessions_now() -> MutexGuard<'static, BTreeMap<u64, OperatorSession>> {
+    SESSIONS.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// One open connection's listing, removed when dropped.
+#[derive(Debug)]
+#[must_use = "a session is listed only while its guard lives"]
+pub struct Open(u64);
+
+impl Open {
+    /// Lists the connection `connection`, on `socket`, as admitted now.
+    pub fn start(connection: &str, socket: SessionSocket) -> Self {
+        let key = NEXT.fetch_add(1, Ordering::Relaxed);
+        sessions_now().insert(
+            key,
+            OperatorSession {
+                connection: connection.to_owned(),
+                socket,
+                opened_at: hatchling_scheduler::Timestamp::now().to_string(),
+            },
+        );
+        Self(key)
+    }
+}
+
+impl Drop for Open {
+    fn drop(&mut self) {
+        sessions_now().remove(&self.0);
+    }
+}
+
+/// The connections open now, oldest first.
+#[must_use]
+pub fn sessions() -> Vec<OperatorSession> {
+    sessions_now().values().cloned().collect()
 }
 
 /// A cell's limits as the operator's protocol carries them.
@@ -141,6 +188,40 @@ mod tests {
         );
         drop(guard);
         assert!(cells_now().get(&key).is_none());
+    }
+
+    #[test]
+    fn a_session_is_listed_while_its_guard_lives() {
+        let mine = || -> Vec<(String, SessionSocket)> {
+            sessions()
+                .into_iter()
+                .filter(|open| open.connection.starts_with("machine-session-"))
+                .map(|open| (open.connection, open.socket))
+                .collect()
+        };
+        let api = Open::start("machine-session-api", SessionSocket::Api);
+        let ui = Open::start("machine-session-ui", SessionSocket::Ui);
+        assert_eq!(
+            mine(),
+            [
+                (String::from("machine-session-api"), SessionSocket::Api),
+                (String::from("machine-session-ui"), SessionSocket::Ui)
+            ]
+        );
+        let key = ui.0;
+        assert!(sessions_now().get(&key).is_some_and(|open| {
+            open.opened_at
+                .parse::<hatchling_scheduler::Timestamp>()
+                .is_ok()
+        }));
+        drop(api);
+        assert_eq!(
+            mine(),
+            [(String::from("machine-session-ui"), SessionSocket::Ui)]
+        );
+        drop(ui);
+        assert!(mine().is_empty());
+        assert!(sessions_now().get(&key).is_none());
     }
 
     #[test]
