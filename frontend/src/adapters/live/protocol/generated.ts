@@ -1865,6 +1865,93 @@ export type MemoryResult = {
     readonly result: 'memory-error';
 };
 /**
+ * An answer to an [`OperatorQuery`].
+ */
+export type OperatorAnswer = {
+    readonly answer: 'broker';
+    /**
+     * When the broker started, as an RFC 3339 timestamp.
+     */
+    readonly started_at: string;
+    /**
+     * Whole seconds it has run.
+     */
+    readonly uptime_secs: number;
+    /**
+     * The broker's version, as its crate names it.
+     */
+    readonly version: string;
+};
+/**
+ * What an operator may ask: read-only, and metadata only.
+ */
+export type OperatorQuery = {
+    readonly query: 'broker';
+};
+/**
+ * A frame the operator's client sends.
+ */
+export type OperatorRequest = {
+    /**
+     * Who is connecting, for the broker's log.
+     */
+    readonly client: string;
+    /**
+     * The client's [`UI_SCHEMA_VERSION`]: the operator's types are
+     * part of the same schema.
+     */
+    readonly schema_version: number;
+    /**
+     * The operator token, from `<socket>.token`.
+     */
+    readonly token?: ApiToken | null;
+    readonly type: 'hello';
+} | {
+    /**
+     * What the operator asks.
+     */
+    readonly query: OperatorQuery;
+    /**
+     * The client's id for this request.
+     */
+    readonly request_id: string;
+    readonly type: 'query';
+};
+/**
+ * A frame the operator's client receives.
+ */
+export type OperatorResponse = {
+    /**
+     * The broker's [`UI_SCHEMA_VERSION`].
+     */
+    readonly schema_version: number;
+    readonly type: 'welcome';
+} | {
+    /**
+     * The broker's version.
+     */
+    readonly backend: number;
+    /**
+     * The client's version.
+     */
+    readonly frontend: number;
+    /**
+     * Which side to update, in a sentence.
+     */
+    readonly message: string;
+    readonly type: 'incompatible';
+} | {
+    /**
+     * The answer.
+     */
+    readonly answer: OperatorAnswer;
+    /**
+     * The query's `request_id`.
+     */
+    readonly request_id: string;
+    readonly type: 'answer';
+};
+/**
  * A read-scoped query: the vocabulary the feed reads through.
  *
  * Every variant reads, and nothing else is expressible here: the

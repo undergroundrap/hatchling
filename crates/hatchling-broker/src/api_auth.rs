@@ -188,6 +188,30 @@ fn parse_socket(
     config: &Config,
     key: &'static str,
 ) -> Result<Option<SocketPath>, Error> {
+    let socket = parse_socket_path(raw, config, key)?;
+    if socket.is_some() && !config.scheduler.enabled() {
+        return Err(Error::InvalidConfig {
+            key,
+            reason: String::from(
+                "every API call is recorded in the activity log, which needs HATCHLING_SCHEDULER_DIR",
+            ),
+        });
+    }
+    Ok(socket)
+}
+
+/// A local socket's path setting: unset or blank is none; otherwise an
+/// absolute path outside the broker socket's directory, which cells
+/// mount.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidConfig`] under `key` for any other path.
+pub(crate) fn parse_socket_path(
+    raw: Option<&str>,
+    config: &Config,
+    key: &'static str,
+) -> Result<Option<SocketPath>, Error> {
     let Some(raw) = raw.map(str::trim).filter(|raw| !raw.is_empty()) else {
         return Ok(None);
     };
@@ -202,11 +226,6 @@ fn parse_socket(
                 cell_visible.display()
             )));
         }
-    }
-    if !config.scheduler.enabled() {
-        return Err(invalid(String::from(
-            "every API call is recorded in the activity log, which needs HATCHLING_SCHEDULER_DIR",
-        )));
     }
     Ok(Some(socket))
 }
@@ -639,6 +658,45 @@ pub(crate) mod tests {
             Path::new("/run/user/1000/hatchling-api.sock")
         );
         assert!(on.grants.is_empty());
+    }
+
+    #[test]
+    fn a_socket_path_is_absolute_and_out_of_the_cells_sight_alone() {
+        // The path rules alone: no scheduler, which only the API's
+        // sockets need.
+        let config = owner_config(None);
+        let key = "HATCHLING_OPERATOR_SOCKET";
+        for unset in [None, Some(""), Some("  ")] {
+            assert_eq!(parse_socket_path(unset, &config, key).unwrap(), None);
+        }
+        assert_eq!(
+            parse_socket_path(Some(" /run/hatchling/x.sock "), &config, key).unwrap(),
+            Some("/run/hatchling/x.sock".parse().unwrap())
+        );
+        for refused in ["x.sock", "/tmp/hatchling-test-api-dummy/x.sock"] {
+            assert!(
+                matches!(
+                    parse_socket_path(Some(refused), &config, key),
+                    Err(Error::InvalidConfig {
+                        key: "HATCHLING_OPERATOR_SOCKET",
+                        ..
+                    })
+                ),
+                "{refused}"
+            );
+        }
+        // The same path for the API needs the activity log.
+        assert!(matches!(
+            parse_socket(
+                Some("/run/hatchling/x.sock"),
+                &config,
+                "HATCHLING_API_SOCKET"
+            ),
+            Err(Error::InvalidConfig {
+                key: "HATCHLING_API_SOCKET",
+                ..
+            })
+        ));
     }
 
     #[test]

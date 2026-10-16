@@ -23,6 +23,7 @@ use hatchling_core::messages::{
     SessionRequest, SessionResponse,
 };
 use hatchling_core::subagent::ActivityEvent;
+use hatchling_core::ui::operator::{OperatorRequest, OperatorResponse};
 use hatchling_core::ui::{
     BACKEND_NEWER, Control, FRONTEND_NEWER, UI_SCHEMA_VERSION, UiRequest, UiResponse, control,
 };
@@ -48,6 +49,14 @@ pub fn generate() -> String {
     };
     root("UiRequest", generator.subschema_for::<UiRequest>());
     root("UiResponse", generator.subschema_for::<UiResponse>());
+    root(
+        "OperatorRequest",
+        generator.subschema_for::<OperatorRequest>(),
+    );
+    root(
+        "OperatorResponse",
+        generator.subschema_for::<OperatorResponse>(),
+    );
     root("ActivityEvent", generator.subschema_for::<ActivityEvent>());
     root(
         "SessionRequest",
@@ -257,6 +266,8 @@ mod tests {
             "DeviceHello",
             "DeviceRefusal",
             "DeviceWelcome",
+            "OperatorRequest",
+            "OperatorResponse",
             "SessionRequest",
             "SessionResponse",
             "UiRequest",

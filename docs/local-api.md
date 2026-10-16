@@ -49,6 +49,20 @@ The README's quickstart sets these, along with the broker's own required variabl
 - **Why:** a browser's channel reaches a loopback port, and any web page the person has open can reach one too. A page can't read the token file, so it has no token to send. The host only forwards frames; the broker decides.
 - **Rules it shares with the API socket:** an absolute path outside the broker socket's directory, the activity log, and the owner's peer credentials. It needs `HATCHLING_API_SOCKET` set too, and a different path.
 
+## The operator socket
+
+`HATCHLING_OPERATOR_SOCKET` turns on a socket for the people who run the machine, apart from its users ([WO-022](workorders/workorder-022-operator-api.md)). An operator can see the machine's state there, and can't act as its users; a user can't reach it.
+
+- **Its own frames.** It speaks `OperatorRequest` and `OperatorResponse` (in the schema): a `hello`, then `query` frames, each answered by one `answer` with the same `request_id`. The API and UI sockets can't decode a query, and the operator socket can't decode a user's action or `subscribe`: either ends the connection.
+- **Its own token,** minted at each start into `<socket>.token`, mode `0600`, as the UI's is. A hello without it, or with another (the UI's included), is closed without a word.
+- **Its rules:** an absolute path outside the broker socket's directory, different from the API and UI sockets; the owner's peer credentials; refused when cells run as the broker's own uid. It needs no other socket and no activity log.
+- **Metadata only.** `broker` answers with the broker's version, when it started and how long it has run. What runs and talks to the broker comes next; no answer ever holds what a user said or stored.
+
+```json
+{"type": "query", "request_id": "q1", "query": {"query": "broker"}}
+{"type": "answer", "request_id": "q1", "answer": {"answer": "broker", "version": "0.4.0", "started_at": "2026-10-16T09:00:00Z", "uptime_secs": 61}}
+```
+
 ## Chat
 
 `send_message` on the `local` chat queues the text on the broker's local channel, and the API's stream shows it as a `chat_message` from the user. The broker answers it with a **chat run**: the agent, in a fresh cell, given the message as its task, exactly as a scheduled run is given its task. The answer comes back as a `chat_message` from the agent.
