@@ -12,7 +12,8 @@
 //! included), is closed unanswered.
 //!
 //! Every answer is metadata: the broker's version and uptime, the cells
-//! running and the API and UI connections open ([`crate::machine`]).
+//! running, the API and UI connections open, and the recent egress
+//! decisions ([`crate::machine`]).
 //! Nothing a user said or stored is ever in one.
 
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -224,6 +225,9 @@ impl Operator {
             },
             OperatorQuery::Sessions {} => OperatorAnswer::Sessions {
                 sessions: crate::machine::sessions(),
+            },
+            OperatorQuery::Egress {} => OperatorAnswer::Egress {
+                decisions: crate::machine::decisions(),
             },
         }
     }
@@ -591,6 +595,25 @@ mod tests {
         assert_eq!(mine(ask()), [String::from("op-sessions-ui")]);
         drop(open);
         assert!(mine(ask()).is_empty());
+    }
+
+    #[test]
+    fn the_operator_sees_the_recent_egress_decisions() {
+        use hatchling_core::ui::operator::EgressVerdict;
+        let (operator, _socket) = operator("egress", real_uid());
+        crate::machine::decided("op-egress-cell", "localhost:18089", EgressVerdict::Policy);
+        let OperatorAnswer::Egress { decisions } =
+            operator.answer(OperatorQuery::Egress {}, Duration::ZERO)
+        else {
+            unreachable!("not the egress answer");
+        };
+        assert!(
+            decisions
+                .iter()
+                .any(|decision| decision.cell_id == "op-egress-cell"
+                    && decision.destination == "localhost:18089"
+                    && decision.verdict == EgressVerdict::Policy)
+        );
     }
 
     #[test]

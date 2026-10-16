@@ -10,20 +10,36 @@
 //! Every admitted API and UI connection is listed the same way, by an
 //! [`Open`] guard: its id, its socket and when it was admitted, never
 //! what it said.
+//!
+//! The broker's last [`MAX_DECISIONS`] egress decisions are kept too
+//! ([`decided`]): when, which cell, the destination it named (bounded to
+//! [`MAX_DESTINATION_CHARS`]) and the verdict; never a path, a header, a
+//! body or an answer.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use hatchling_core::ui::operator::{
-    CellKind, CellLimits, OperatorCell, OperatorSession, SessionSocket,
+    CellKind, CellLimits, EgressDecision, EgressVerdict, OperatorCell, OperatorSession,
+    SessionSocket,
 };
+
+/// How many egress decisions are kept: the most recent.
+pub const MAX_DECISIONS: usize = 200;
+
+/// The most of a destination a decision keeps, in characters: the cell
+/// chose it, so it is bounded.
+pub const MAX_DESTINATION_CHARS: usize = 255;
 
 /// The cells running, by the order they started in.
 static CELLS: Mutex<BTreeMap<u64, OperatorCell>> = Mutex::new(BTreeMap::new());
 
 /// The connections open, by the order they were admitted in.
 static SESSIONS: Mutex<BTreeMap<u64, OperatorSession>> = Mutex::new(BTreeMap::new());
+
+/// The egress decisions kept, oldest first.
+static DECISIONS: Mutex<VecDeque<EgressDecision>> = Mutex::new(VecDeque::new());
 
 /// The next listing's key: its place in the start order.
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -104,6 +120,34 @@ impl Drop for Open {
 #[must_use]
 pub fn sessions() -> Vec<OperatorSession> {
     sessions_now().values().cloned().collect()
+}
+
+/// The decisions kept, even if a holder panicked.
+fn decisions_now() -> MutexGuard<'static, VecDeque<EgressDecision>> {
+    DECISIONS.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Keeps the broker's `verdict` on `cell_id`'s request to `destination`,
+/// made now, dropping the oldest past [`MAX_DECISIONS`].
+pub fn decided(cell_id: &str, destination: &str, verdict: EgressVerdict) {
+    let decision = EgressDecision {
+        at: hatchling_scheduler::Timestamp::now().to_string(),
+        cell_id: cell_id.to_owned(),
+        destination: destination.chars().take(MAX_DESTINATION_CHARS).collect(),
+        verdict,
+    };
+    let mut kept = decisions_now();
+    // One in at a time, so one out at most keeps the bound.
+    if kept.len() >= MAX_DECISIONS {
+        kept.pop_front();
+    }
+    kept.push_back(decision);
+}
+
+/// The egress decisions kept, oldest first.
+#[must_use]
+pub fn decisions() -> Vec<EgressDecision> {
+    decisions_now().iter().cloned().collect()
 }
 
 /// A cell's limits as the operator's protocol carries them.
@@ -222,6 +266,59 @@ mod tests {
         drop(ui);
         assert!(mine().is_empty());
         assert!(sessions_now().get(&key).is_none());
+    }
+
+    #[test]
+    fn egress_decisions_are_kept_bounded_and_newest_last() {
+        // Others decide in parallel: only this cell's are looked at, and
+        // each test cell's own order is what is checked.
+        let mine = |cell: &str| -> Vec<(String, EgressVerdict)> {
+            decisions()
+                .into_iter()
+                .filter(|decision| decision.cell_id == cell)
+                .map(|decision| (decision.destination, decision.verdict))
+                .collect()
+        };
+        decided("machine-egress", "localhost:18089", EgressVerdict::Allowed);
+        decided("machine-egress", "evil.example:443", EgressVerdict::NoGrant);
+        assert_eq!(
+            mine("machine-egress"),
+            [
+                (String::from("localhost:18089"), EgressVerdict::Allowed),
+                (String::from("evil.example:443"), EgressVerdict::NoGrant)
+            ]
+        );
+        // A long destination is cut, on a character.
+        let long = "\u{e9}".repeat(MAX_DESTINATION_CHARS + 10);
+        decided("machine-egress-long", &long, EgressVerdict::NotAllowed);
+        let kept = mine("machine-egress-long");
+        assert_eq!(kept.len(), 1);
+        assert_eq!(
+            kept.first().map(|cut| cut.0.chars().count()),
+            Some(MAX_DESTINATION_CHARS)
+        );
+        assert!(decisions_now().iter().all(|decision| {
+            decision
+                .at
+                .parse::<hatchling_scheduler::Timestamp>()
+                .is_ok()
+        }));
+        // Never more than the bound: the oldest go first.
+        for n in 0..=MAX_DECISIONS {
+            decided(
+                "machine-egress-flood",
+                &n.to_string(),
+                EgressVerdict::Failed,
+            );
+        }
+        assert!(decisions().len() <= MAX_DECISIONS);
+        assert!(
+            mine("machine-egress").is_empty(),
+            "pushed out by newer ones"
+        );
+        let flood = mine("machine-egress-flood");
+        assert_eq!(flood.last().map(|kept| kept.0.as_str()), Some("200"));
+        assert!(!flood.iter().any(|kept| kept.0 == "0"));
     }
 
     #[test]

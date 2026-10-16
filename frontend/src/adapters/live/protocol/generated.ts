@@ -1243,6 +1243,29 @@ export type DeviceWelcome = {
     readonly welcome: 'refused';
 };
 /**
+ * One egress decision: never the request's path, headers or body, nor
+ * the answer.
+ */
+export type EgressDecision = {
+    /**
+     * When, as an RFC 3339 timestamp.
+     */
+    readonly at: string;
+    /**
+     * The cell that asked.
+     */
+    readonly cell_id: string;
+    /**
+     * Where it asked to go, as it named it (the cell's own text, so
+     * bounded, and shown as text).
+     */
+    readonly destination: string;
+    /**
+     * What the broker decided.
+     */
+    readonly verdict: EgressVerdict;
+};
+/**
  * An egress operation: the agent's post-handshake outbound-network
  * request vocabulary.
  *
@@ -1376,6 +1399,10 @@ export type EgressResult = {
 } | {
     readonly r: 'egress-error';
 };
+/**
+ * What the broker decided about one egress request, and why.
+ */
+export type EgressVerdict = 'allowed' | 'no_grant' | 'not_allowed' | 'bad_surrogate' | 'policy' | 'failed';
 /**
  * What a feed digest gathers: the user's own tuning, as rules.
  *
@@ -1927,6 +1954,12 @@ export type OperatorAnswer = {
      * The connections open.
      */
     readonly sessions: readonly (OperatorSession)[];
+} | {
+    readonly answer: 'egress';
+    /**
+     * The decisions.
+     */
+    readonly decisions: readonly (EgressDecision)[];
 };
 /**
  * One running cell, as an operator sees it: never what it was asked.
@@ -1958,6 +1991,8 @@ export type OperatorQuery = {
     readonly query: 'cells';
 } | {
     readonly query: 'sessions';
+} | {
+    readonly query: 'egress';
 };
 /**
  * A frame the operator's client sends.

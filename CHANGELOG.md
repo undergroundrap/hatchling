@@ -10,6 +10,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 - `HATCHLING_OPERATOR_SOCKET`: a socket for the people who run the machine, apart from its users. It speaks its own frames, so a user's socket can't answer an operator's query and the operator's can't take a user's action; it has its own token in `<socket>.token`; and its one query so far, `broker`, answers with the broker's version and uptime (WO-022, part 1).
 - The operator's `cells` query: every cell running, oldest first, with its id, kind (agent, run, subagent, skill or harness), start and limits, and never its task, input or output (WO-022, part 2).
+- The operator's `egress` query: the broker's last 200 egress decisions, with when, which cell, the destination and a verdict from a closed set, never a request's path, headers or body, or its answer (WO-022, part 4).
 - The operator's `sessions` query: every API and UI connection open, oldest first, with its id, socket and when it was admitted, never what it said (WO-022, part 3).
 - The README's "Using the app": build the UI, start `hatchling-host`, open the address it prints, and chat with the agent. CI runs it as written and checks the agent's answer on the page in Chromium (WO-021, closed).
 - Chat: the broker answers each message sent on the local channel, through the API or the ingress, with an agent run in a fresh cell, given the message as its task, one at a time. Its grants are the API caller's, and it runs only when they include `channel-send:local` (WO-021, part 4).

@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use hatchling_channel::LocalHub;
 use hatchling_core::framing::{read_frame, read_frame_or_eof, write_frame};
-use hatchling_core::ui::operator::CellKind;
+use hatchling_core::ui::operator::{CellKind, EgressVerdict};
 use hatchling_core::{
     AgentMessage, BrokerMessage, CellId, ChannelResult, EgressOp, EgressResult, GoalsResult,
     HookResult, MAX_FRAME_BYTES, MemoryResult, PROTOCOL_VERSION, PeerCredentials, PeerPid,
@@ -1246,6 +1246,7 @@ fn handle_egress_op(
             destination = ?destination,
             "denied egress op: no grant"
         );
+        crate::machine::decided(cell_id.as_str(), destination, EgressVerdict::NoGrant);
         return Ok(EgressResult::Denied);
     }
 
@@ -1253,28 +1254,7 @@ fn handle_egress_op(
         // Answered above: neither names a destination.
         EgressOp::Stage { .. } | EgressOp::Read => Ok(EgressResult::EgressError),
         EgressOp::MintSurrogate { ttl_secs, .. } => {
-            // Bound the TTL: surrogates live at most 1 hour. Longer
-            // TTLs are a confused-deputy risk.
-            let ttl = (*ttl_secs).min(3600);
-            match proxy.mint_surrogate(peer_uid, destination, ttl) {
-                Ok(surrogate_b64) => {
-                    tracing::info!(
-                        cell_id = %cell_id,
-                        destination = %destination,
-                        "minted egress surrogate"
-                    );
-                    Ok(EgressResult::Surrogate { surrogate_b64 })
-                }
-                Err(source) => {
-                    tracing::warn!(
-                        cell_id = %cell_id,
-                        destination = %destination,
-                        %source,
-                        "egress surrogate mint failed"
-                    );
-                    Ok(EgressResult::Denied)
-                }
-            }
+            Ok(mint_for(proxy, cell_id, peer_uid, destination, *ttl_secs))
         }
         EgressOp::Egress {
             method,
@@ -1306,7 +1286,9 @@ fn handle_egress_op(
                 body,
                 surrogate_b64: surrogate_b64.clone(),
             };
-            match proxy.forward(peer_uid, &request) {
+            let forwarded = proxy.forward(peer_uid, &request);
+            crate::machine::decided(cell_id.as_str(), destination, egress_verdict(&forwarded));
+            match forwarded {
                 Ok(response) => Ok(ok_reply(response, pages)),
                 Err(
                     hatchling_egress::Error::DestinationDenied
@@ -1334,6 +1316,65 @@ fn handle_egress_op(
                 }
             }
         }
+    }
+}
+
+/// Mints `cell_id`'s surrogate for `destination`, granted, living at most
+/// an hour whatever `ttl_secs` asks: longer is a confused-deputy risk.
+/// A refusal is kept for the operator.
+#[allow(
+    clippy::type_complexity,
+    reason = "the credential-lookup closure type is inherent to the proxy's generic design"
+)]
+fn mint_for(
+    proxy: &Proxy<impl Fn(&str) -> Option<zeroize::Zeroizing<Vec<u8>>>>,
+    cell_id: &CellId,
+    peer_uid: u32,
+    destination: &str,
+    ttl_secs: u64,
+) -> EgressResult {
+    match proxy.mint_surrogate(peer_uid, destination, ttl_secs.min(3600)) {
+        Ok(surrogate_b64) => {
+            tracing::info!(
+                cell_id = %cell_id,
+                destination = %destination,
+                "minted egress surrogate"
+            );
+            EgressResult::Surrogate { surrogate_b64 }
+        }
+        Err(source) => {
+            tracing::warn!(
+                cell_id = %cell_id,
+                destination = %destination,
+                %source,
+                "egress surrogate mint failed"
+            );
+            crate::machine::decided(cell_id.as_str(), destination, EgressVerdict::NotAllowed);
+            EgressResult::Denied
+        }
+    }
+}
+
+/// The operator's verdict on a forwarded request's outcome.
+const fn egress_verdict<T>(forwarded: &Result<T, hatchling_egress::Error>) -> EgressVerdict {
+    match forwarded {
+        Ok(_) => EgressVerdict::Allowed,
+        Err(hatchling_egress::Error::DestinationDenied) => EgressVerdict::NotAllowed,
+        Err(hatchling_egress::Error::PolicyRefused { .. }) => EgressVerdict::Policy,
+        Err(
+            hatchling_egress::Error::InvalidSurrogate
+            | hatchling_egress::Error::ExpiredSurrogate
+            | hatchling_egress::Error::PeerMismatch
+            | hatchling_egress::Error::DestinationMismatch,
+        ) => EgressVerdict::BadSurrogate,
+        Err(
+            hatchling_egress::Error::UpstreamFailed
+            | hatchling_egress::Error::ResponseTooLarge
+            | hatchling_egress::Error::Io { .. }
+            | hatchling_egress::Error::InvalidAllowlist { .. }
+            | hatchling_egress::Error::InvalidTrustBundle { .. }
+            | hatchling_egress::Error::Random { .. },
+        ) => EgressVerdict::Failed,
     }
 }
 
@@ -1680,7 +1721,102 @@ mod tests {
             }),
             Err(Error::SessionProtocol { .. })
         ));
+        // A destination with no grant is refused before the proxy.
+        let ungranted = EgressOp::Egress {
+            method: String::from("GET"),
+            destination: String::from("ungranted.example:443"),
+            path: String::from("/"),
+            headers: Vec::new(),
+            body_b64: String::new(),
+            surrogate_b64: String::new(),
+            staged: 0,
+        };
+        assert_eq!(op(ungranted).unwrap(), EgressResult::Denied);
+        // Granted but not on the proxy's allowlist: its mint is refused.
+        let granted_elsewhere = EgressConfig {
+            allowlist: crate::EgressAllowlist::new("localhost:443"),
+            grants: vec![String::from("elsewhere.example:443")],
+        };
+        let mint = EgressOp::MintSurrogate {
+            destination: String::from("elsewhere.example:443"),
+            ttl_secs: 60,
+        };
+        assert_eq!(
+            handle_egress_op(
+                &proxy,
+                &granted_elsewhere,
+                &mint,
+                &cell_id,
+                1000,
+                &mut pages
+            )
+            .unwrap(),
+            EgressResult::Denied
+        );
+        // Minting directly: an allowlisted destination gets its surrogate,
+        // and the refusal for another is kept.
+        assert!(matches!(
+            mint_for(&proxy, &cell_id, 1000, "localhost:443", 7200),
+            EgressResult::Surrogate { .. }
+        ));
+        // Each decision is kept for the operator, in order.
+        let kept: Vec<(String, EgressVerdict)> = crate::machine::decisions()
+            .into_iter()
+            .filter(|decision| decision.cell_id == "cell-pages")
+            .map(|decision| (decision.destination, decision.verdict))
+            .collect();
+        assert_eq!(
+            kept,
+            [
+                (String::from("localhost:443"), EgressVerdict::BadSurrogate),
+                (
+                    String::from("ungranted.example:443"),
+                    EgressVerdict::NoGrant
+                ),
+                (
+                    String::from("elsewhere.example:443"),
+                    EgressVerdict::NotAllowed
+                )
+            ]
+        );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn each_egress_outcome_has_its_verdict() {
+        use hatchling_egress::Error as Egress;
+        let forwarded: Result<(), Egress> = Ok(());
+        assert_eq!(egress_verdict(&forwarded), EgressVerdict::Allowed);
+        for (error, verdict) in [
+            (Egress::DestinationDenied, EgressVerdict::NotAllowed),
+            (
+                Egress::PolicyRefused {
+                    reason: "a model request may not use a tool the vendor runs",
+                },
+                EgressVerdict::Policy,
+            ),
+            (Egress::InvalidSurrogate, EgressVerdict::BadSurrogate),
+            (Egress::ExpiredSurrogate, EgressVerdict::BadSurrogate),
+            (Egress::PeerMismatch, EgressVerdict::BadSurrogate),
+            (Egress::DestinationMismatch, EgressVerdict::BadSurrogate),
+            (Egress::UpstreamFailed, EgressVerdict::Failed),
+            (Egress::ResponseTooLarge, EgressVerdict::Failed),
+            (
+                Egress::Io {
+                    source: std::io::Error::other("down"),
+                },
+                EgressVerdict::Failed,
+            ),
+            (
+                Egress::InvalidAllowlist {
+                    reason: String::new(),
+                },
+                EgressVerdict::Failed,
+            ),
+        ] {
+            let refused: Result<(), Egress> = Err(error);
+            assert_eq!(egress_verdict(&refused), verdict);
+        }
     }
 
     #[test]
