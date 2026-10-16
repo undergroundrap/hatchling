@@ -4,16 +4,20 @@ Usage: python3 docs/examples/stand-in-model.py [port]   (default 18089)
 
 It speaks just enough of the OpenAI chat-completions API for an agent run:
 it passes the agent's tool-calling check, then answers every task with a
-fixed sentence. Nothing here is a model. To use a real one, point
+fixed sentence. A task that says "take your time" gets its answer after a few
+seconds, so you can watch its run in the Machine view. Nothing here is a model. To use a real one, point
 HATCHLING_SCHEDULER_MODEL_ENDPOINT at it instead (for example Ollama's
 http://localhost:11434/v1) and allow that port in the egress settings.
 """
 import json
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 ANSWER = ("Hello from inside a Hatchling cell. This answer came from the stand-in "
           "model; point HATCHLING_SCHEDULER_MODEL_ENDPOINT at a real one.")
+SLOW = "take your time"
+SLOW_SECS = 5
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -30,6 +34,8 @@ class Handler(BaseHTTPRequestHandler):
                 "function": {"name": tools[0]["function"]["name"], "arguments": "{\"ready\": true}"},
             }]}
         else:
+            if SLOW in json.dumps(request.get("messages", [])).lower():
+                time.sleep(SLOW_SECS)
             message = {"role": "assistant", "content": ANSWER}
         body = json.dumps({"choices": [{"index": 0, "message": message,
                                         "finish_reason": "tool_calls" if message.get("tool_calls") else "stop"}]}).encode()

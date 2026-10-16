@@ -88,6 +88,24 @@ def open_machine(browser, machine):
     return page, errors
 
 
+# A task the stand-in answers slowly, so its run lives long enough to be seen.
+SLOW_TASK = "Take your time, then say hello."
+# The cells running that the Machine view lists as runs.
+RUNS = "() => [...document.querySelectorAll('#machine-cells-title ~ * td:nth-child(2)')].filter(td => td.textContent === 'Run').length"
+
+
+def check_a_run_comes_and_goes(app, machine):
+    """Raise unless, while the app's slow message runs, the Machine view lists
+    a run cell, and once it is answered, lists none."""
+    app.locator("#message-input").fill(SLOW_TASK)
+    app.get_by_role("button", name="Send message", exact=True).click()
+    machine.wait_for_function(f"() => ({RUNS})() > 0", timeout=ANSWER_TIMEOUT_MS)
+    screenshot(machine, "machine-running.png")
+    machine.wait_for_function(f"() => ({RUNS})() === 0", timeout=ANSWER_TIMEOUT_MS)
+    if SLOW_TASK in machine.inner_text("body"):
+        raise ValueError("The Machine view showed what the person said")
+
+
 def check_machine(page, errors, before):
     """Raise unless the open Machine view, without a reload, came to show
     more egress decisions than `before`, the app's connection, and the chat's
@@ -141,6 +159,7 @@ def check(address, answer, machine=None):
             screenshot(page, "app.png")
             if watching is not None:
                 check_machine(*watching)
+                check_a_run_comes_and_goes(page, watching[0])
         finally:
             browser.close()
     if errors:
