@@ -173,9 +173,10 @@ class NavigationCases:
         match=re.search(r'<script>([\s\S]*?)</script>',html)
         assert match is not None
         script=match.group(1)
-        old='const app = new controller_js_1.App((0, scripted_adapter_js_1.createBrowserAdapter)(), root, dialogs, toasts);'
+        old='const app = new controller_js_1.App(adapter, root, dialogs, toasts);'
         assert script.count(old)==1, 'Test adapter mount no longer matches the compiled entry; review it.'
-        replacement='''const delayed = (0, scripted_adapter_js_1.createBrowserAdapter)();
+        # Opened by set_content, the page has no token: adapter is the scripted one.
+        replacement='''const delayed = adapter;
 const executeOriginal = delayed.execute.bind(delayed);
 let waiting = true;
 delayed.execute = command => {
