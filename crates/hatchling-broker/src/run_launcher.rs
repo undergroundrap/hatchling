@@ -61,6 +61,7 @@ use std::thread::{JoinHandle, Scope, ScopedJoinHandle};
 use std::time::{Duration, Instant};
 
 use hatchling_channel::LocalHub;
+use hatchling_core::ui::operator::CellKind;
 use hatchling_core::{CellId, LogLevel, ScheduleGrant, SocketPath};
 use hatchling_isolation::{IsolationBackend as _, Supervised};
 use hatchling_scheduler::{Dispatcher, Launcher, Run, RunRequest, Timestamp};
@@ -291,6 +292,8 @@ pub struct CellRun<'scope> {
     run_dir: PathBuf,
     token: String,
     done: bool,
+    /// Its listing for the operator, until it ends.
+    running: Option<crate::machine::Running>,
 }
 
 impl std::fmt::Debug for CellRun<'_> {
@@ -337,6 +340,11 @@ impl<'scope> CellLauncher<'scope, '_> {
         scoped: impl FnOnce(&str, SocketPath) -> Config,
     ) -> Result<CellRun<'scope>, String> {
         let token = run_token()?;
+        let kind = if run.subagent {
+            CellKind::Subagent
+        } else {
+            CellKind::Run
+        };
         let run_dir = make_run_dir(&self.env.run_root, &token)?;
         let cleanup = |error: String| {
             let _ = std::fs::remove_dir_all(&run_dir);
@@ -382,6 +390,7 @@ impl<'scope> CellLauncher<'scope, '_> {
             }
         };
         tracing::info!(label = %label, run = %token, "run cell started");
+        let running = Some(crate::machine::Running::start(&token, kind, &cell.limits));
         Ok(CellRun {
             child,
             cgroup,
@@ -394,6 +403,7 @@ impl<'scope> CellLauncher<'scope, '_> {
             run_dir,
             token,
             done: false,
+            running,
         })
     }
 }
@@ -487,6 +497,7 @@ impl CellRun<'_> {
     /// its stdout and kept stderr.
     fn teardown(&mut self) -> (Vec<u8>, Vec<u8>) {
         self.done = true;
+        drop(self.running.take());
         drop(self.cgroup.take());
         // A run that never connected leaves its session waiting to
         // accept: the flag ends that wait.
@@ -1024,6 +1035,7 @@ mod tests {
             run_dir: dir.to_path_buf(),
             token: String::from("helper-test"),
             done: false,
+            running: None,
         }
     }
 
@@ -1085,6 +1097,12 @@ mod tests {
                 })
                 .unwrap();
             let run_dir = started.run_dir.clone();
+            let listed = |token: &str| {
+                crate::machine::cells()
+                    .iter()
+                    .any(|cell| cell.cell_id == token && cell.kind == CellKind::Run)
+            };
+            assert!(listed(&started.token), "listed while it runs");
             started.child.wait_deadline(Duration::from_secs(5)).unwrap();
             let group_path = std::env::var_os("HATCHLING_TEST_CGROUP").map(|base| {
                 let group = hatchling_sys::cgroup::CellCgroup::create(
@@ -1097,6 +1115,7 @@ mod tests {
                 path
             });
             let (_, errors) = started.teardown();
+            assert!(!listed(&started.token), "gone once it ends");
             assert!(String::from_utf8_lossy(&errors).contains("agent-run"));
             assert!(started.done);
             assert!(!run_dir.exists());

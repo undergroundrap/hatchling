@@ -56,7 +56,7 @@ The README's quickstart sets these, along with the broker's own required variabl
 - **Its own frames.** It speaks `OperatorRequest` and `OperatorResponse` (in the schema): a `hello`, then `query` frames, each answered by one `answer` with the same `request_id`. The API and UI sockets can't decode a query, and the operator socket can't decode a user's action or `subscribe`: either ends the connection.
 - **Its own token,** minted at each start into `<socket>.token`, mode `0600`, as the UI's is. A hello without it, or with another (the UI's included), is closed without a word.
 - **Its rules:** an absolute path outside the broker socket's directory, different from the API and UI sockets; the owner's peer credentials; refused when cells run as the broker's own uid. It needs no other socket and no activity log.
-- **Metadata only.** `broker` answers with the broker's version, when it started and how long it has run. What runs and talks to the broker comes next; no answer ever holds what a user said or stored.
+- **Metadata only.** `broker` answers with the broker's version, when it started and how long it has run. `cells` lists the cells running, oldest first: each one's id, its kind (`agent`, `run` for a scheduled task's, a hook's or a chat message's, `subagent`, `skill` or `harness`), when it started and the limits it's held to; a cell is listed from its start until the broker reaps it. Who talks to the broker comes next. No answer ever holds what a user said or stored, or what a cell was asked.
 
 ```json
 {"type": "query", "request_id": "q1", "query": {"query": "broker"}}

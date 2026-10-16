@@ -798,6 +798,40 @@ export type BuildState = 'pending' | 'completed' | 'failed';
  */
 export type CapabilityName = string;
 /**
+ * What a cell is for.
+ */
+export type CellKind = 'agent' | 'run' | 'subagent' | 'skill' | 'harness';
+/**
+ * The limits a cell is held to; `None` is unlimited, or the broker's own
+ * bound. Memory and CPU apply only under a cgroup.
+ */
+export type CellLimits = {
+    /**
+     * A program's address space, in bytes.
+     */
+    readonly address_space?: number | null;
+    /**
+     * CPU, in thousandths of a core.
+     */
+    readonly cpu_millis?: number | null;
+    /**
+     * The largest file a program may write, in bytes.
+     */
+    readonly file_size?: number | null;
+    /**
+     * Whole-cell memory, in bytes.
+     */
+    readonly memory?: number | null;
+    /**
+     * Files a program may hold open at once.
+     */
+    readonly open_files?: number | null;
+    /**
+     * Processes, threads included.
+     */
+    readonly processes?: number | null;
+};
+/**
  * One account of a credentialed channel, as the cell sees it: a
  * broker-minted handle and the operator's label for it. Neither is
  * secret, and neither derives from the secret.
@@ -1881,12 +1915,41 @@ export type OperatorAnswer = {
      * The broker's version, as its crate names it.
      */
     readonly version: string;
+} | {
+    readonly answer: 'cells';
+    /**
+     * The cells running.
+     */
+    readonly cells: readonly (OperatorCell)[];
+};
+/**
+ * One running cell, as an operator sees it: never what it was asked.
+ */
+export type OperatorCell = {
+    /**
+     * The id the broker gave it.
+     */
+    readonly cell_id: string;
+    /**
+     * What it is for.
+     */
+    readonly kind: CellKind;
+    /**
+     * What it is held to.
+     */
+    readonly limits: CellLimits;
+    /**
+     * When it started, as an RFC 3339 timestamp.
+     */
+    readonly started_at: string;
 };
 /**
  * What an operator may ask: read-only, and metadata only.
  */
 export type OperatorQuery = {
     readonly query: 'broker';
+} | {
+    readonly query: 'cells';
 };
 /**
  * A frame the operator's client sends.

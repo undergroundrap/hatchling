@@ -1716,6 +1716,96 @@
       "description": "Name of a capability an agent may request from a broker.\n\nValid names are 1–128 ASCII alphanumeric, `-`, `_` or `.` characters.\n\nSerializes as the bare string and deserializes through [`FromStr`]:\na malformed name never decodes, so a frame or manifest carrying one\nis refused where it enters, never carried inward as a string.",
       "type": "string"
     },
+    "CellKind": {
+      "description": "What a cell is for.",
+      "oneOf": [
+        {
+          "const": "agent",
+          "description": "The broker's own agent.",
+          "type": "string"
+        },
+        {
+          "const": "run",
+          "description": "A run: a scheduled task's, a hook's, or a chat message's.",
+          "type": "string"
+        },
+        {
+          "const": "subagent",
+          "description": "A run a parent started for part of its task.",
+          "type": "string"
+        },
+        {
+          "const": "skill",
+          "description": "A signed skill.",
+          "type": "string"
+        },
+        {
+          "const": "harness",
+          "description": "A coding CLI (a harness).",
+          "type": "string"
+        }
+      ]
+    },
+    "CellLimits": {
+      "description": "The limits a cell is held to; `None` is unlimited, or the broker's own\nbound. Memory and CPU apply only under a cgroup.",
+      "properties": {
+        "address_space": {
+          "description": "A program's address space, in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cpu_millis": {
+          "description": "CPU, in thousandths of a core.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "file_size": {
+          "description": "The largest file a program may write, in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "memory": {
+          "description": "Whole-cell memory, in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "open_files": {
+          "description": "Files a program may hold open at once.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "processes": {
+          "description": "Processes, threads included.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "ChannelAccount": {
       "description": "One account of a credentialed channel, as the cell sees it: a\nbroker-minted handle and the operator's label for it. Neither is\nsecret, and neither derives from the secret.",
       "properties": {
@@ -4258,8 +4348,57 @@
             "uptime_secs"
           ],
           "type": "object"
+        },
+        {
+          "description": "[`OperatorQuery::Cells`], oldest first.",
+          "properties": {
+            "answer": {
+              "const": "cells",
+              "type": "string"
+            },
+            "cells": {
+              "description": "The cells running.",
+              "items": {
+                "$ref": "#/$defs/OperatorCell"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "answer",
+            "cells"
+          ],
+          "type": "object"
         }
       ]
+    },
+    "OperatorCell": {
+      "description": "One running cell, as an operator sees it: never what it was asked.",
+      "properties": {
+        "cell_id": {
+          "description": "The id the broker gave it.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/CellKind",
+          "description": "What it is for."
+        },
+        "limits": {
+          "$ref": "#/$defs/CellLimits",
+          "description": "What it is held to."
+        },
+        "started_at": {
+          "description": "When it started, as an RFC 3339 timestamp.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "cell_id",
+        "kind",
+        "started_at",
+        "limits"
+      ],
+      "type": "object"
     },
     "OperatorQuery": {
       "description": "What an operator may ask: read-only, and metadata only.",
@@ -4270,6 +4409,20 @@
           "properties": {
             "query": {
               "const": "broker",
+              "type": "string"
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The cells running now: each one's id, kind, start and limits.",
+          "properties": {
+            "query": {
+              "const": "cells",
               "type": "string"
             }
           },

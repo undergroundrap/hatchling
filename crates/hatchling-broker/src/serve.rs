@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use hatchling_channel::LocalHub;
 use hatchling_core::framing::{read_frame, read_frame_or_eof, write_frame};
+use hatchling_core::ui::operator::CellKind;
 use hatchling_core::{
     AgentMessage, BrokerMessage, CellId, ChannelResult, EgressOp, EgressResult, GoalsResult,
     HookResult, MAX_FRAME_BYTES, MemoryResult, PROTOCOL_VERSION, PeerCredentials, PeerPid,
@@ -188,6 +189,8 @@ pub fn spawn_agent_cell(config: &Config, mut cell_config: CellConfig) -> Result<
         reason: String::from("the agent cell came without its connection"),
     })?;
     let pid = handle.child_pid();
+    let running =
+        crate::machine::Running::start(&cell_config.cell_id, CellKind::Agent, &cell_config.limits);
     tracing::info!(
         cell_id = %cell_id,
         child_pid = pid,
@@ -197,9 +200,13 @@ pub fn spawn_agent_cell(config: &Config, mut cell_config: CellConfig) -> Result<
     // The reaper owns the wait: it collects the agent's exit
     // status, surfaces child-reported setup failures in the logs,
     // and removes the staging directory.
-    std::thread::spawn(move || match handle.wait_exit() {
-        Ok(exit) => tracing::info!(status = exit.status, exit_code = exit.code, "cell exited"),
-        Err(err) => tracing::error!(%err, "cell wait failed"),
+    std::thread::spawn(move || {
+        match handle.wait_exit() {
+            Ok(exit) => tracing::info!(status = exit.status, exit_code = exit.code, "cell exited"),
+            Err(err) => tracing::error!(%err, "cell wait failed"),
+        }
+        // Listed until it is reaped.
+        drop(running);
     });
     Ok(AgentCell {
         connection,
