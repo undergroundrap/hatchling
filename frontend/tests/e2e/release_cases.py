@@ -97,6 +97,9 @@ class ReleaseCases:
             self.page.set_viewport_size({'width':width,'height':760})
             if self.page.get_by_role('button',name='Show agent status',exact=True).count():
                 self.page.get_by_role('button',name='Show agent status',exact=True).click()
+            # Restoring the status animates it in: measure once it's shown.
+            expect(self.page.locator('.agent-status')).to_be_visible()
+            expect(self.page.locator('.context-tabs')).to_be_visible()
             a=self.page.locator('.agent-status').bounding_box();b=self.page.locator('.context-tabs').bounding_box()
             self.assertLess(a['y']+a['height'],b['y'])
             self.assert_no_overflow()
