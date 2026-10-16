@@ -6,6 +6,10 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-16
+
+The local-attacker release, first part. It closes what another local user could do to a running broker: a root broker that followed symlinks when it handed a cell its socket, set modes or made directories (WO-006), and agent sessions admitted by uid alone, so any process with the agent's uid could open one (WO-007). Every agent cell, the broker's own and each scheduled run's and subagent's, now reaches the broker over a connection made for it alone, and in cell mode no agent socket is bound. The broker and the agent must both be 0.3.0: a 0.2.0 agent can't use the connection a 0.3.0 cell gives it; the one `hatchling` binary is both. The broker also refuses `nobody` as the agent uid unless told otherwise. Rust API changes are marked **Breaking** below.
+
 ### Added
 
 - `HATCHLING_AGENT_ALLOW_NOBODY`: the broker now refuses to start with `nobody` (65534) as `HATCHLING_AGENT_UID`, since every process running as nobody could act as the agent; this setting accepts it anyway (WO-007).
@@ -117,7 +121,8 @@ The first public release. [Release notes](https://github.com/undergroundrap/hatc
 
 Published in [the trust boundary](docs/arch/trust-boundary.md#known-limitations), each with a work order and an issue.
 
-[Unreleased]: https://github.com/undergroundrap/hatchling/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/undergroundrap/hatchling/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/undergroundrap/hatchling/releases/tag/v0.3.0
 [0.2.0]: https://github.com/undergroundrap/hatchling/releases/tag/v0.2.0
 [0.1.2]: https://github.com/undergroundrap/hatchling/releases/tag/v0.1.2
 [0.1.1]: https://github.com/undergroundrap/hatchling/releases/tag/v0.1.1
