@@ -40,6 +40,15 @@ The README's quickstart sets these, along with the broker's own required variabl
   - `subscribe` starts the event stream (once per connection);
   - each `action` is answered by an `action_result` with the same `request_id`.
 
+## The UI socket
+
+`HATCHLING_UI_SOCKET` turns on a second socket beside the API's, for `hatchling-host`, which carries a browser's channel to it. It speaks exactly the same protocol, with one more rule: the `hello` must carry the UI token as its `token`.
+
+- **The token** is minted at each broker start and kept in `<socket>.token` (the socket's path with `.token` added), mode `0600`, readable by the broker's user alone. A new start replaces it.
+- **A hello without it, or with another,** is closed without a word, as a non-owner's connection is. The comparison takes the same time however much of a guess was right.
+- **Why:** a browser's channel reaches a loopback port, and any web page the person has open can reach one too. A page can't read the token file, so it has no token to send. The host only forwards frames; the broker decides.
+- **Rules it shares with the API socket:** an absolute path outside the broker socket's directory, the activity log, and the owner's peer credentials. It needs `HATCHLING_API_SOCKET` set too, and a different path.
+
 ## How enums appear in JSON
 
 Every enum is *internally tagged*: one field names the variant, beside the variant's own fields. It is never a wrapper object such as `{"Cron": {...}}`.
