@@ -28,7 +28,7 @@ export HATCHLING_API_GRANTS=channel-send:local
 - **Not with cells that run as you.** The API refuses to start when `HATCHLING_AGENT_UID` is the broker's own uid, since a cell could then drive it. An unprivileged broker can give cells only its own uid, so serving cells *and* the API takes a root broker (see the README's quickstart).
 - Restart the broker after changing either variable.
 
-The README's quickstart sets these, along with the broker's own required variables. Two clients in the standard library show the protocol: [`docs/examples/hello.py`](examples/hello.py) (handshake, create, list, cancel) and [`docs/examples/first-run.py`](examples/first-run.py) (schedule a task, receive the agent's answer as a `chat_message` event).
+The README's quickstart sets these, along with the broker's own required variables. Two clients in the standard library show the protocol: [`docs/examples/hello.py`](examples/hello.py) (handshake, create, list, cancel) and [`docs/examples/first-run.py`](examples/first-run.py) (send the agent a task on the local chat, receive its answer as a `chat_message` event).
 
 ## Connecting
 
@@ -48,6 +48,17 @@ The README's quickstart sets these, along with the broker's own required variabl
 - **A hello without it, or with another,** is closed without a word, as a non-owner's connection is. The comparison takes the same time however much of a guess was right.
 - **Why:** a browser's channel reaches a loopback port, and any web page the person has open can reach one too. A page can't read the token file, so it has no token to send. The host only forwards frames; the broker decides.
 - **Rules it shares with the API socket:** an absolute path outside the broker socket's directory, the activity log, and the owner's peer credentials. It needs `HATCHLING_API_SOCKET` set too, and a different path.
+
+## Chat
+
+`send_message` on the `local` chat queues the text on the broker's local channel, and the API's stream shows it as a `chat_message` from the user. The broker answers it with a **chat run**: the agent, in a fresh cell, given the message as its task, exactly as a scheduled run is given its task. The answer comes back as a `chat_message` from the agent.
+
+- **Its grants are the API caller's** (`HATCHLING_API_GRANTS`): only the owner can queue a message, so a chat run can do what the owner's API client could schedule. Without `channel-send:local` among them there is nowhere to answer, and the broker runs no chat.
+- **It needs runs:** the scheduler (`HATCHLING_SCHEDULER_DIR` and its model settings), the agent binary, and the chat ingress (`HATCHLING_CHANNEL_INGRESS`), whose queue the messages wait in. Messages the ingress's own client sends are answered the same way.
+- **One at a time,** oldest first: the next message waits for the answer to the last.
+- **The stream follows it:** an `agent_status` of `working` once a message is queued, with the message's first line as the detail, and `idle` when the answer arrives.
+- **A run that fails** answers with a fixed sentence; why it failed is in the broker's log.
+- **Each message stands alone** in this build: a chat run sees its own message, not the ones before it.
 
 ## How enums appear in JSON
 

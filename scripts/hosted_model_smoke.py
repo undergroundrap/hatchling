@@ -380,7 +380,7 @@ def run(repo, artifacts, work, mode, fixtures):
             endpoint, model, [key_file, state / 'vault'], example.TASK, stop, observations, errors, release))
         observer.start()
         client = launch('client', [sys.executable, str(repo / 'docs/examples/first-run.py'),
-                                   str(state / 'api.sock'), destination])
+                                   str(state / 'api.sock')])
         deadline = time.monotonic() + 350
         while client.poll() is None:
             require(not errors, 'Live-agent inspection failed: ' + str(errors))
