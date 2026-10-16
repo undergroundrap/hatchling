@@ -47,6 +47,7 @@ use crate::subagent::{ActivityEvent, ChildVerdict, HarnessOutcome, SubagentEvent
 
 pub mod api;
 pub mod control;
+pub mod operator;
 pub mod surfaces;
 
 pub use api::{ApiOutcome, ApiRequest, ApiToken};

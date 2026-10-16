@@ -52,6 +52,7 @@ hatchling_core::declare_environment! {
     HATCHLING_API_SOCKET: ("optional; enables the local API", "Absolute API socket outside the cell's socket directory; requires the schedule activity log."),
     HATCHLING_API_GRANTS: ("optional; default none", "Comma-separated local API grant labels; each must be held by the owner."),
     HATCHLING_UI_SOCKET: ("optional; enables the UI socket", "Absolute UI socket for hatchling-host; callers present the token in <socket>.token."),
+    HATCHLING_OPERATOR_SOCKET: ("optional; enables the operator socket", "Absolute operator socket, read-only machine metadata; callers present the token in <socket>.token."),
     HATCHLING_API_NETWORK: ("optional; refused in this build", "Requested network API address; this build has no token provider and never enables it."),
     HATCHLING_API_ALLOW_NETWORK: ("optional; default false", "Network API acknowledgement: true/1 or false/0; does not enable a listener in this build."),
     HATCHLING_HARNESS_CLAUDE_CODE: ("optional; paired with its SHA256", "Absolute pinned Claude Code executable path."),

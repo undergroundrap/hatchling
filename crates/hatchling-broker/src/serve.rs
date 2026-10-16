@@ -103,7 +103,18 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
     let devices = crate::device::open_device_endpoint(config)?;
     // The local API, if configured: bound now, served on its
     // own thread once the cell has forked.
-    let api = crate::api::open_api(config, &crate::api_auth::ApiConfig::from_env(config)?)?;
+    let api_config = crate::api_auth::ApiConfig::from_env(config)?;
+    let api = crate::api::open_api(config, &api_config)?;
+    // The operator socket, if configured (WO-022): bound now, served on
+    // its own thread once the cell has forked.
+    let operator_socket = crate::operator::parse_operator_socket(
+        config,
+        &api_config,
+        std::env::var(env::HATCHLING_OPERATOR_SOCKET.name)
+            .ok()
+            .as_deref(),
+    )?;
+    let operator = crate::operator::open_operator(config, operator_socket.as_ref())?;
     // Spawn the cell BEFORE serving: spawn_cell forks, and forking a
     // multi-threaded process is unsound. HATCHLING_AGENT_BIN selects
     // cell mode: the cell's agent gets a connection of its own, and the
@@ -139,6 +150,9 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
             let rules = crate::Rules::new(config, &key, redaction.builtins, phrases);
             let raw = redaction.dir.join(crate::output_gate::RAW_DIR);
             scope.spawn(move || worker.serve(&rules, &raw));
+        }
+        if let Some(operator) = &operator {
+            scope.spawn(move || operator.serve());
         }
         if let Some(api) = &api {
             let hub = ingress.as_ref().map(crate::ingress::Ingress::hub);

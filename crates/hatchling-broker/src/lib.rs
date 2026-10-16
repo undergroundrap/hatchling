@@ -54,6 +54,7 @@ pub mod ingress;
 pub use ingress::{Ingress, open_ingress};
 pub mod listener;
 pub mod memory_ops;
+pub mod operator;
 pub mod output_gate;
 pub use output_gate::{RedactionConfig, Rules, RulesHandle, RulesWorker};
 pub mod run_launcher;

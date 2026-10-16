@@ -4226,6 +4226,210 @@
         }
       ]
     },
+    "OperatorAnswer": {
+      "description": "An answer to an [`OperatorQuery`].",
+      "oneOf": [
+        {
+          "description": "[`OperatorQuery::Broker`].",
+          "properties": {
+            "answer": {
+              "const": "broker",
+              "type": "string"
+            },
+            "started_at": {
+              "description": "When the broker started, as an RFC 3339 timestamp.",
+              "type": "string"
+            },
+            "uptime_secs": {
+              "description": "Whole seconds it has run.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "version": {
+              "description": "The broker's version, as its crate names it.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "answer",
+            "version",
+            "started_at",
+            "uptime_secs"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "OperatorQuery": {
+      "description": "What an operator may ask: read-only, and metadata only.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The broker itself: its version, and how long it has run. (Braced,\nso a field it doesn't have is refused rather than ignored.)",
+          "properties": {
+            "query": {
+              "const": "broker",
+              "type": "string"
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "OperatorRequest": {
+      "description": "A frame the operator's client sends.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The first frame on a connection: the client's protocol version\nand the operator token.",
+          "properties": {
+            "client": {
+              "description": "Who is connecting, for the broker's log.",
+              "type": "string"
+            },
+            "schema_version": {
+              "description": "The client's [`UI_SCHEMA_VERSION`]: the operator's types are\npart of the same schema.",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "token": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ApiToken"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The operator token, from `<socket>.token`."
+            },
+            "type": {
+              "const": "hello",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "schema_version",
+            "client"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One query, answered by one [`OperatorResponse::Answer`] carrying\nthe same `request_id`.",
+          "properties": {
+            "query": {
+              "$ref": "#/$defs/OperatorQuery",
+              "description": "What the operator asks."
+            },
+            "request_id": {
+              "description": "The client's id for this request.",
+              "type": "string"
+            },
+            "type": {
+              "const": "query",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "query"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "OperatorResponse": {
+      "description": "A frame the operator's client receives.",
+      "oneOf": [
+        {
+          "description": "The versions match: the connection is open.",
+          "properties": {
+            "schema_version": {
+              "description": "The broker's [`UI_SCHEMA_VERSION`].",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "welcome",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "schema_version"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The versions don't match; the broker then closes the connection.",
+          "properties": {
+            "backend": {
+              "description": "The broker's version.",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "frontend": {
+              "description": "The client's version.",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "message": {
+              "description": "Which side to update, in a sentence.",
+              "type": "string"
+            },
+            "type": {
+              "const": "incompatible",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "frontend",
+            "backend",
+            "message"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The answer to one query.",
+          "properties": {
+            "answer": {
+              "$ref": "#/$defs/OperatorAnswer",
+              "description": "The answer."
+            },
+            "request_id": {
+              "description": "The query's `request_id`.",
+              "type": "string"
+            },
+            "type": {
+              "const": "answer",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "answer"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "QueryOp": {
       "description": "A read-scoped query: the vocabulary the feed reads through.\n\nEvery variant reads, and nothing else is expressible here: the\nwrites live in [`GoalsOp`], a different session kind. Each query\nselects one store; every reply item is a feed item carrying its\nprovenance (which store, and its original source) from the store\nlayer.\n\n`after` resumes a paged query past the `next` cursor of the previous\nreply.",
       "oneOf": [
@@ -7922,6 +8126,12 @@
     },
     "DeviceWelcome": {
       "$ref": "#/$defs/DeviceWelcome"
+    },
+    "OperatorRequest": {
+      "$ref": "#/$defs/OperatorRequest"
+    },
+    "OperatorResponse": {
+      "$ref": "#/$defs/OperatorResponse"
     },
     "SessionRequest": {
       "$ref": "#/$defs/SessionRequest"
