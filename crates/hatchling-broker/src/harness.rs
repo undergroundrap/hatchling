@@ -56,6 +56,7 @@ use hatchling_vault::{MasterKey, SealedVault};
 use zeroize::Zeroizing;
 
 use hatchling_core::subagent::{ActivityEvent, HarnessOutcome, SubagentEvent};
+use hatchling_core::ui::operator::CellKind;
 use hatchling_core::{CapabilityName, SkillOp, SkillResult};
 use hatchling_scheduler::Timestamp;
 use hatchling_skill::CodeHash;
@@ -643,6 +644,7 @@ impl Harnesses {
         let ran = run_cell(
             &runtime.clone().with_timeout(self.timeout),
             &cell,
+            CellKind::Harness,
             &[],
             MAX_HARNESS_OUTPUT_BYTES,
         );

@@ -63,6 +63,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use hatchling_core::ui::operator::CellKind;
 use hatchling_core::{LogLevel, MAX_SKILL_INPUT_BYTES, MAX_SKILL_OUTPUT_BYTES};
 use hatchling_isolation::{IsolationBackend as _, SuperviseError, Supervised};
 use hatchling_skill::RegisteredSkill;
@@ -227,16 +228,23 @@ pub fn run_skill(
     let config =
         SkillCellConfig::new(skill.clone(), package_dir.to_path_buf(), base).map_err(prepare)?;
     let (cell, code) = prepare_skill_cell(&config).map_err(prepare)?;
-    let output = run_cell(runtime, &cell, input.as_bytes(), MAX_SKILL_OUTPUT_BYTES);
+    let output = run_cell(
+        runtime,
+        &cell,
+        CellKind::Skill,
+        input.as_bytes(),
+        MAX_SKILL_OUTPUT_BYTES,
+    );
     // `run_cell` returns only after the helper is reaped: nothing can
     // still be using the verified copy.
     drop(code);
     String::from_utf8(output?).map_err(|_| SkillRunError::NotUtf8)
 }
 
-/// Runs the prepared skill or harness `cell` through the spawner helper,
-/// with `input` on its stdin, and returns its stdout: at most `limit`
-/// bytes, or [`SkillRunError::OutputTooLarge`].
+/// Runs the prepared skill or harness `cell` (its `kind`) through the
+/// spawner helper, with `input` on its stdin, and returns its stdout: at
+/// most `limit` bytes, or [`SkillRunError::OutputTooLarge`]. The cell is
+/// listed for the operator while it runs.
 ///
 /// # Errors
 ///
@@ -244,9 +252,11 @@ pub fn run_skill(
 pub(crate) fn run_cell(
     runtime: &SkillRuntime,
     cell: &CellConfig,
+    kind: CellKind,
     input: &[u8],
     limit: usize,
 ) -> Result<Vec<u8>, SkillRunError> {
+    let _running = crate::machine::Running::start(&cell.cell_id, kind, &cell.limits);
     let (cell, _cgroup) = cell
         .supervised_cgroup()
         .map_err(|error| SkillRunError::Prepare(error.to_string()))?;
@@ -789,6 +799,27 @@ mod tests {
     }
 
     #[test]
+    fn a_cell_is_listed_for_the_operator_while_it_runs() {
+        let (_slow, runtime) = script("sleep 1");
+        let cell = CellConfig::skill("listed-harness").unwrap();
+        let listed = || {
+            crate::machine::cells()
+                .iter()
+                .any(|seen| seen.cell_id == cell.cell_id && seen.kind == CellKind::Harness)
+        };
+        std::thread::scope(|scope| {
+            let running = scope.spawn(|| run_cell(&runtime, &cell, CellKind::Harness, b"", 1));
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !listed() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(listed(), "listed while it runs");
+            assert!(running.join().unwrap().is_ok());
+        });
+        assert!(!listed(), "gone once it returns");
+    }
+
+    #[test]
     fn a_run_reads_at_most_its_own_limit() {
         let (_echo, runtime) = script("exec cat");
         let run_dir = RunDir::create().unwrap();
@@ -813,17 +844,17 @@ mod tests {
         let cell = CellConfig::skill("echo").unwrap();
         let big = vec![b'x'; MAX_SKILL_OUTPUT_BYTES * 2];
         assert_eq!(
-            run_cell(&runtime, &cell, &big, big.len()).unwrap(),
+            run_cell(&runtime, &cell, CellKind::Harness, &big, big.len()).unwrap(),
             big,
             "a harness's cap, above a skill's"
         );
         assert!(matches!(
-            run_cell(&runtime, &cell, b"ab", 1),
+            run_cell(&runtime, &cell, CellKind::Skill, b"ab", 1),
             Err(SkillRunError::OutputTooLarge)
         ));
         let missing = SkillRuntime::new(PathBuf::from("/nonexistent/hatchling-spawner"));
         assert!(matches!(
-            run_cell(&missing, &cell, b"", 1),
+            run_cell(&missing, &cell, CellKind::Skill, b"", 1),
             Err(SkillRunError::Spawn(_))
         ));
     }

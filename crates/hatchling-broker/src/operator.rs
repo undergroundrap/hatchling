@@ -11,9 +11,9 @@
 //! `<socket>.token`. A hello without it, or with another (the UI's
 //! included), is closed unanswered.
 //!
-//! Every answer is metadata: the broker's version and uptime here; what
-//! runs and talks to it later in WO-022. Nothing a user said or stored
-//! is ever in one.
+//! Every answer is metadata: the broker's version and uptime, and the
+//! cells running ([`crate::machine`]); who talks to it later in WO-022.
+//! Nothing a user said or stored is ever in one.
 
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::time::{Duration, Instant};
@@ -218,6 +218,9 @@ impl Operator {
                 version: String::from(env!("CARGO_PKG_VERSION")),
                 started_at: self.started_at.clone(),
                 uptime_secs: uptime.as_secs(),
+            },
+            OperatorQuery::Cells {} => OperatorAnswer::Cells {
+                cells: crate::machine::cells(),
             },
         }
     }
@@ -440,7 +443,10 @@ mod tests {
                     version,
                     started_at,
                     uptime_secs,
-                } = answer;
+                } = answer
+                else {
+                    unreachable!("not the broker's answer");
+                };
                 assert_eq!(version, env!("CARGO_PKG_VERSION"));
                 assert_eq!(started_at, operator.started_at);
                 assert!(started_at.parse::<hatchling_scheduler::Timestamp>().is_ok());
@@ -497,6 +503,70 @@ mod tests {
             write(client, &broker_query("q"));
             assert_eq!(read(client), None);
         });
+    }
+
+    #[test]
+    fn the_operator_sees_each_running_cell_and_not_once_it_ends() {
+        use hatchling_core::ui::operator::CellKind;
+        let (operator, _socket) = operator("cells", real_uid());
+        let mine = |answer: OperatorAnswer| -> Vec<(String, CellKind)> {
+            let OperatorAnswer::Cells { cells } = answer else {
+                return Vec::new();
+            };
+            cells
+                .into_iter()
+                .filter(|cell| cell.cell_id.starts_with("op-cells-"))
+                .map(|cell| (cell.cell_id, cell.kind))
+                .collect()
+        };
+        let agent = crate::machine::Running::start(
+            "op-cells-agent",
+            CellKind::Agent,
+            &crate::CellLimits::default(),
+        );
+        let run = crate::machine::Running::start(
+            "op-cells-run",
+            CellKind::Run,
+            &crate::CellLimits::default(),
+        );
+        let ask = || operator.answer(OperatorQuery::Cells {}, Duration::ZERO);
+        assert_eq!(
+            mine(ask()),
+            [
+                (String::from("op-cells-agent"), CellKind::Agent),
+                (String::from("op-cells-run"), CellKind::Run)
+            ]
+        );
+        drop(run);
+        assert_eq!(
+            mine(ask()),
+            [(String::from("op-cells-agent"), CellKind::Agent)]
+        );
+        // Over the socket, the same answer.
+        session(&operator, |client| {
+            write(client, &hello(Some(TOKEN)));
+            assert!(matches!(
+                read(client),
+                Some(OperatorResponse::Welcome { .. })
+            ));
+            write(
+                client,
+                &OperatorRequest::Query {
+                    request_id: String::from("c1"),
+                    query: OperatorQuery::Cells {},
+                },
+            );
+            let Some(OperatorResponse::Answer { request_id, answer }) = read(client) else {
+                unreachable!("no answer");
+            };
+            assert_eq!(request_id, "c1");
+            assert_eq!(
+                mine(answer),
+                [(String::from("op-cells-agent"), CellKind::Agent)]
+            );
+        });
+        drop(agent);
+        assert!(mine(ask()).is_empty());
     }
 
     #[test]

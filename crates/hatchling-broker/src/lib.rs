@@ -53,6 +53,7 @@ pub use harness::{HarnessKind, Harnesses};
 pub mod ingress;
 pub use ingress::{Ingress, open_ingress};
 pub mod listener;
+pub mod machine;
 pub mod memory_ops;
 pub mod operator;
 pub mod output_gate;

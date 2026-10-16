@@ -48,6 +48,8 @@ pub enum OperatorQuery {
     /// The broker itself: its version, and how long it has run. (Braced,
     /// so a field it doesn't have is refused rather than ignored.)
     Broker {},
+    /// The cells running now: each one's id, kind, start and limits.
+    Cells {},
 }
 
 /// A frame the operator's client receives.
@@ -92,6 +94,61 @@ pub enum OperatorAnswer {
         /// Whole seconds it has run.
         uptime_secs: u64,
     },
+    /// [`OperatorQuery::Cells`], oldest first.
+    Cells {
+        /// The cells running.
+        cells: Vec<OperatorCell>,
+    },
+}
+
+/// One running cell, as an operator sees it: never what it was asked.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct OperatorCell {
+    /// The id the broker gave it.
+    pub cell_id: String,
+    /// What it is for.
+    pub kind: CellKind,
+    /// When it started, as an RFC 3339 timestamp.
+    pub started_at: String,
+    /// What it is held to.
+    pub limits: CellLimits,
+}
+
+/// What a cell is for.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum CellKind {
+    /// The broker's own agent.
+    Agent,
+    /// A run: a scheduled task's, a hook's, or a chat message's.
+    Run,
+    /// A run a parent started for part of its task.
+    Subagent,
+    /// A signed skill.
+    Skill,
+    /// A coding CLI (a harness).
+    Harness,
+}
+
+/// The limits a cell is held to; `None` is unlimited, or the broker's own
+/// bound. Memory and CPU apply only under a cgroup.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CellLimits {
+    /// Processes, threads included.
+    pub processes: Option<u64>,
+    /// A program's address space, in bytes.
+    pub address_space: Option<u64>,
+    /// The largest file a program may write, in bytes.
+    pub file_size: Option<u64>,
+    /// Files a program may hold open at once.
+    pub open_files: Option<u64>,
+    /// Whole-cell memory, in bytes.
+    pub memory: Option<u64>,
+    /// CPU, in thousandths of a core.
+    pub cpu_millis: Option<u64>,
 }
 
 /// The broker's answer to an operator's hello with `frontend` as its
@@ -161,6 +218,53 @@ mod tests {
                 "answer": "broker", "version": "0.4.0",
                 "started_at": "2026-10-16T09:00:00Z", "uptime_secs": 61}})
         );
+    }
+
+    #[test]
+    fn a_cell_has_its_wire_shape() {
+        let cells = OperatorResponse::Answer {
+            request_id: String::from("q2"),
+            answer: OperatorAnswer::Cells {
+                cells: vec![OperatorCell {
+                    cell_id: String::from("run-1f2e"),
+                    kind: CellKind::Subagent,
+                    started_at: String::from("2026-10-16T09:00:00Z"),
+                    limits: CellLimits {
+                        processes: Some(4096),
+                        memory: Some(1 << 30),
+                        ..CellLimits::default()
+                    },
+                }],
+            },
+        };
+        let wire = json!({"type": "answer", "request_id": "q2", "answer": {"answer": "cells", "cells": [{
+            "cell_id": "run-1f2e", "kind": "subagent", "started_at": "2026-10-16T09:00:00Z",
+            "limits": {"processes": 4096, "address_space": null, "file_size": null,
+                       "open_files": null, "memory": 1_073_741_824_u64, "cpu_millis": null}}]}});
+        assert_eq!(serde_json::to_value(&cells).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<OperatorResponse>(wire).unwrap(),
+            cells
+        );
+        assert_eq!(
+            serde_json::from_value::<OperatorRequest>(
+                json!({"type": "query", "request_id": "q2", "query": {"query": "cells"}})
+            )
+            .unwrap(),
+            OperatorRequest::Query {
+                request_id: String::from("q2"),
+                query: OperatorQuery::Cells {},
+            }
+        );
+        for (kind, name) in [
+            (CellKind::Agent, "agent"),
+            (CellKind::Run, "run"),
+            (CellKind::Subagent, "subagent"),
+            (CellKind::Skill, "skill"),
+            (CellKind::Harness, "harness"),
+        ] {
+            assert_eq!(serde_json::to_value(kind).unwrap(), json!(name));
+        }
     }
 
     #[test]
