@@ -31,10 +31,7 @@ use crate::{Config, Error, RedactionConfig, VaultConfig};
 pub fn load_master_key(vault_config: &VaultConfig) -> Result<MasterKey, Error> {
     // With a keyring the key file no longer holds the key:
     // the keyring module unlocks it through the vault's tier.
-    crate::vault_keyring::unlock(
-        vault_config,
-        &KeyringConfig::from_env()?,
-    )
+    crate::vault_keyring::unlock(vault_config, &KeyringConfig::from_env()?)
 }
 
 /// Validates that the sealed vault opens under `key`.
@@ -191,7 +188,10 @@ fn redaction_config(config: &Config) -> Result<Option<RedactionConfig>, Error> {
 /// migration.
 pub fn run_migrate_vault(config: &Config) -> Result<(), Error> {
     let key = load_master_key(&config.vault)?;
-    let reports = migrate_vault(&sealed_stores(config, redaction_config(config)?.as_ref()), &key)?;
+    let reports = migrate_vault(
+        &sealed_stores(config, redaction_config(config)?.as_ref()),
+        &key,
+    )?;
     let mut stdout = std::io::stdout().lock();
     for (store, report) in reports {
         let _ = writeln!(
@@ -388,7 +388,8 @@ mod tests {
         assert!(fetch(&first).is_err(), "the old key still opens it");
         assert_eq!(fetch(&second).unwrap(), b"plaintext");
         // And on from that key, reporting what it did.
-        let reports = rekey_vault(&sealed_stores(&config, None), &second, &keys.join("third")).unwrap();
+        let reports =
+            rekey_vault(&sealed_stores(&config, None), &second, &keys.join("third")).unwrap();
         assert_eq!(
             reports
                 .iter()
@@ -421,7 +422,10 @@ mod tests {
         for (store, root) in &stores {
             SealedVault::open_in(root, &old, *store)
                 .unwrap()
-                .store(&name, &Secret::new(store.label().as_bytes().to_vec()).unwrap())
+                .store(
+                    &name,
+                    &Secret::new(store.label().as_bytes().to_vec()).unwrap(),
+                )
                 .unwrap();
         }
         let keys = dir.0.join("keys");
@@ -450,7 +454,10 @@ mod tests {
             };
             assert_eq!(under(&new).unwrap().as_bytes(), store.label().as_bytes());
             assert!(
-                matches!(under(&old), Err(hatchling_vault::Error::DecryptFailed { .. })),
+                matches!(
+                    under(&old),
+                    Err(hatchling_vault::Error::DecryptFailed { .. })
+                ),
                 "{} still opens under the old key",
                 store.label()
             );
@@ -481,7 +488,9 @@ mod tests {
         config.channel_ingress = Some("/run/hatchling-test/ingress.sock".parse().unwrap());
         let redaction = redaction_config(&config).unwrap().unwrap();
         assert_eq!(
-            sealed_stores(&config, Some(&redaction)).last().map(|(store, _)| store.label()),
+            sealed_stores(&config, Some(&redaction))
+                .last()
+                .map(|(store, _)| store.label()),
             Some("redactions")
         );
     }
@@ -507,7 +516,10 @@ mod tests {
         std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o600)).unwrap();
         let new_key = dir.0.join("new.key");
         let refused = run_rekey_vault(&config, &new_key).unwrap_err().to_string();
-        assert!(refused.contains("spaces") && refused.contains("team-7"), "{refused}");
+        assert!(
+            refused.contains("spaces") && refused.contains("team-7"),
+            "{refused}"
+        );
         assert!(!new_key.exists(), "no new key was made");
         assert_eq!(
             SealedVault::open(&config.vault.root, &key)

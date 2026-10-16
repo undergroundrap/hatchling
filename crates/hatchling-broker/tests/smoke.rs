@@ -325,7 +325,10 @@ fn rekey_vault_refuses_a_keyring_vault_and_writes_no_key() {
     .unwrap();
     let written = new_key.exists();
     let _ = std::fs::remove_dir_all(&scratch);
-    assert!(!output.status.success(), "rekey-vault ran on a keyring vault");
+    assert!(
+        !output.status.success(),
+        "rekey-vault ran on a keyring vault"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("HATCHLING_VAULT_KEYRING") && stderr.contains(&*keyring.to_string_lossy()),
@@ -346,17 +349,33 @@ fn a_keyring_vault_started_without_its_keyring_refuses_to_serve() {
     let mut env = operator_env(&scratch, "vault");
     let unset = &["HATCHLING_AGENT_BIN"];
     let made = run_broker(&["migrate-vault"], &operator_env_refs(&env), unset).unwrap();
-    assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+    assert!(
+        made.status.success(),
+        "{}",
+        String::from_utf8_lossy(&made.stderr)
+    );
     env.push((
         "HATCHLING_VAULT_KEYRING",
-        scratch.join("vault.key").join("keyring").to_string_lossy().into_owned(),
+        scratch
+            .join("vault.key")
+            .join("keyring")
+            .to_string_lossy()
+            .into_owned(),
     ));
     let adopted = run_broker(&["vault-keyring", "init"], &operator_env_refs(&env), unset).unwrap();
-    assert!(adopted.status.success(), "{}", String::from_utf8_lossy(&adopted.stderr));
+    assert!(
+        adopted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&adopted.stderr)
+    );
     env.pop();
     let key_file = scratch.join("vault.key").join("key");
     assert!(!key_file.exists());
-    let output = run_broker(&[], &operator_env_refs(&env), &["HATCHLING_AGENT_BIN", "HATCHLING_VAULT_KEYRING"]);
+    let output = run_broker(
+        &[],
+        &operator_env_refs(&env),
+        &["HATCHLING_AGENT_BIN", "HATCHLING_VAULT_KEYRING"],
+    );
     let (minted, bound) = (key_file.exists(), scratch.join("broker.sock").exists());
     let _ = std::fs::remove_dir_all(&scratch);
     let output = output.expect("the broker must stop at start-up, not serve");

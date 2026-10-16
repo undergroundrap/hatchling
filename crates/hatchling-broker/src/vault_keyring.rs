@@ -3223,6 +3223,67 @@ mod tests {
         .unwrap();
         assert!(unlock(&vault, &KeyringConfig::default()).is_ok());
         assert!(vault.key_file.exists());
-        assert!(!keyring_marker(&vault).exists(), "a plain vault records no keyring");
+        assert!(
+            !keyring_marker(&vault).exists(),
+            "a plain vault records no keyring"
+        );
+    }
+
+    #[test]
+    fn the_keyring_record_helpers_each_do_their_one_job() {
+        let (scratch, vault) = scratch("record-helpers");
+        // io_error: an I/O failure, as the vault's error.
+        assert!(matches!(
+            io_error(std::io::Error::other("x")),
+            Error::Vault {
+                source: hatchling_vault::Error::Io { .. }
+            }
+        ));
+        // refuse_new_key: nothing recorded and nothing sealed is a new vault.
+        assert!(refuse_new_key(&vault).is_ok());
+        // mark_keyring: nowhere to record it, nothing is written.
+        let path = scratch.0.join("vault.key").join("keyring");
+        mark_keyring(&vault, &path).unwrap();
+        assert!(!keyring_marker(&vault).exists());
+        // Beside the key file, once, naming the keyring.
+        std::fs::create_dir_all(vault.key_file.parent().unwrap()).unwrap();
+        mark_keyring(&vault, &path).unwrap();
+        mark_keyring(&vault, Path::new("/elsewhere")).unwrap();
+        let marker = keyring_marker(&vault);
+        assert_eq!(marker, scratch.0.join("vault.key").join("keyring-in-use"));
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap(),
+            format!(
+                "{}
+",
+                path.display()
+            )
+        );
+        assert_eq!(
+            std::fs::metadata(&marker).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(matches!(refuse_new_key(&vault), Err(Error::Usage { .. })));
+        // A record that can't be written is an error, not a skip (root
+        // writes through the mode, so only as another user).
+        std::fs::remove_file(&marker).unwrap();
+        if rustix::process::geteuid().is_root() {
+            return;
+        }
+        std::fs::set_permissions(
+            vault.key_file.parent().unwrap(),
+            std::fs::Permissions::from_mode(0o500),
+        )
+        .unwrap();
+        let unwritable = mark_keyring(&vault, &path);
+        std::fs::set_permissions(
+            vault.key_file.parent().unwrap(),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        assert!(
+            matches!(unwritable, Err(Error::Vault { .. })),
+            "{unwritable:?}"
+        );
     }
 }
