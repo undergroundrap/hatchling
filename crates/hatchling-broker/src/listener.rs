@@ -12,7 +12,7 @@
 //! can only be set through [`OwnerOnlyListener::with_mode`], and an
 //! [`OwnerOnlyListener`] only comes from [`OwnerOnlyListener::bind`].
 
-use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+use std::os::unix::fs::FileTypeExt;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 
@@ -115,8 +115,15 @@ impl OwnerOnlyListener {
     ///
     /// Returns [`Error::SocketSetup`] if the mode cannot be set.
     pub fn with_mode(self, mode: u32) -> Result<UnixListener, Error> {
-        std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(mode))
-            .map_err(|source| Error::SocketSetup { source })?;
+        // Through a handle opened without following symlinks: a symlink
+        // swapped in at the path after the bind can't redirect the change.
+        hatchling_sys::chmod_socket(&self.path, mode).map_err(|error| Error::SocketSetup {
+            source: if let hatchling_sys::Error::Ownership { source, .. } = error {
+                source
+            } else {
+                std::io::Error::other(error.to_string())
+            },
+        })?;
         Ok(self.listener)
     }
 }

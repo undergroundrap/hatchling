@@ -25,6 +25,9 @@ hatchling-core.workspace = true
 # The `derive` feature gives `MasterKey` the declarative
 # `Zeroize`/`ZeroizeOnDrop` derives instead of a hand-written `Drop`.
 zeroize = { version = "1", features = ["derive"] }
+# Directories made private at once, through handles
+# (hatchling-core already depends on it).
+hatchling-sys.workspace = true
 # Safe wrappers over Linux syscalls (getuid for vault-root ownership checks).
 # Keeps the workspace-wide `unsafe_code = "deny"` intact: no hand-rolled FFI.
 rustix = { version = "0.38", features = ["process"] }

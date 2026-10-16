@@ -21,7 +21,6 @@
 //! capability profile.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use hatchling_core::LogLevel;
 use hatchling_skill::RegisteredSkill;
@@ -94,9 +93,6 @@ pub struct VerifiedCode {
     dir: PathBuf,
 }
 
-/// Disambiguates concurrent copies from one broker process.
-static VERIFIED_CODE_COUNTER: AtomicU64 = AtomicU64::new(0);
-
 impl VerifiedCode {
     /// Write `code` at `entry_point` (already validated as a plain
     /// relative path) inside a fresh directory. A harness uses it
@@ -108,11 +104,12 @@ impl VerifiedCode {
             skill: skill.to_owned(),
             reason: format!("cannot {what} {}: {err}", path.display()),
         };
-        let dir = std::env::temp_dir().join(format!(
-            "hatchling-skill-code-{}-{}",
-            std::process::id(),
-            VERIFIED_CODE_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
+        // A name no one can guess, made exclusively: another local user
+        // can't pre-create it to block the skill.
+        let name =
+            crate::approval::random_hex(&format!("hatchling-skill-code-{}-", std::process::id()))
+                .map_err(|err| fail("name the verified code dir", &std::env::temp_dir(), err))?;
+        let dir = std::env::temp_dir().join(name);
         std::fs::DirBuilder::new()
             .mode(0o755)
             .create(&dir)

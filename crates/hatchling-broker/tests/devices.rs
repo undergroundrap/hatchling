@@ -1104,6 +1104,11 @@ fn the_device_endpoint_refuses_to_serve_the_agents_own_uid() {
     assert_eq!(mode & 0o777, 0o600);
     drop(endpoint);
     let _ = std::fs::remove_file(&socket);
+    // Bound directly: its one peer is the broker's own uid.
+    let endpoint = hatchling_broker::DeviceEndpoint::bind(&socket.parse().unwrap()).unwrap();
+    assert_eq!(endpoint.peer_uid(), PeerUid::from_kernel(real_uid()));
+    drop(endpoint);
+    let _ = std::fs::remove_file(&socket);
     // No device socket configured: no endpoint.
     config.spaces.device_socket = None;
     assert!(

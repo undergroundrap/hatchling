@@ -52,15 +52,7 @@ const fn ids(uid: u32, gid: u32) -> (rustix::fs::Uid, rustix::fs::Gid) {
 /// there isn't a socket (a symlink to one included), or if the change
 /// is refused.
 pub fn hand_over_socket(path: &Path, uid: u32, gid: u32) -> Result<(), Error> {
-    const FLAGS: rustix::fs::OFlags = rustix::fs::OFlags::PATH
-        .union(rustix::fs::OFlags::NOFOLLOW)
-        .union(rustix::fs::OFlags::CLOEXEC);
-    let handle = rustix::fs::open(path, FLAGS, rustix::fs::Mode::empty())
-        .map_err(failed("open the socket"))?;
-    let stat = rustix::fs::fstat(&handle).map_err(failed("fstat the socket"))?;
-    if rustix::fs::FileType::from_raw_mode(stat.st_mode) != rustix::fs::FileType::Socket {
-        return Err(refused("check the socket", "not a socket"));
-    }
+    let (handle, stat) = open_socket_nofollow(path)?;
     if stat.st_uid == uid {
         return Ok(());
     }
@@ -73,6 +65,40 @@ pub fn hand_over_socket(path: &Path, uid: u32, gid: u32) -> Result<(), Error> {
         rustix::fs::AtFlags::EMPTY_PATH,
     )
     .map_err(failed("chown the socket"))
+}
+
+/// Sets the socket at `path` to permission bits `mode`.
+///
+/// As [`hand_over_socket`], `path` is opened without following symlinks
+/// and must be a socket itself; the mode is set on what was opened,
+/// through `/proc/self/fd`, never by looking `path` up again.
+///
+/// # Errors
+///
+/// Returns [`Error::Ownership`] if nothing is at `path`, if what is
+/// there isn't a socket, or if the change is refused.
+pub fn chmod_socket(path: &Path, mode: u32) -> Result<(), Error> {
+    use rustix::fd::AsRawFd as _;
+    let (handle, _) = open_socket_nofollow(path)?;
+    let opened = format!("/proc/self/fd/{}", handle.as_raw_fd());
+    rustix::fs::chmod(opened.as_str(), rustix::fs::Mode::from_raw_mode(mode))
+        .map_err(failed("chmod the socket"))
+}
+
+/// Opens `path` without following symlinks, and only if it is a socket
+/// itself: the handle and what it is.
+fn open_socket_nofollow(path: &Path) -> Result<(rustix::fd::OwnedFd, rustix::fs::Stat), Error> {
+    const FLAGS: rustix::fs::OFlags = rustix::fs::OFlags::PATH
+        .union(rustix::fs::OFlags::NOFOLLOW)
+        .union(rustix::fs::OFlags::CLOEXEC);
+    let handle = rustix::fs::open(path, FLAGS, rustix::fs::Mode::empty())
+        .map_err(failed("open the socket"))?;
+    let stat = rustix::fs::fstat(&handle).map_err(failed("fstat the socket"))?;
+    if rustix::fs::FileType::from_raw_mode(stat.st_mode) == rustix::fs::FileType::Socket {
+        Ok((handle, stat))
+    } else {
+        Err(refused("check the socket", "not a socket"))
+    }
 }
 
 /// What the broker does with its socket's directory for a cell.
@@ -154,28 +180,59 @@ pub const fn owner_traverses(mode: u32) -> bool {
 /// directory or a symlink planted at `path` fails the call, and nothing
 /// is followed. The result is then checked through a handle opened
 /// without following symlinks: a directory, owned by the effective uid,
-/// closed to group and others ([`private_dir_ok`]).
+/// closed to group and others ([`private_dir_ok`]). Its mode is then
+/// set to 0700 exactly through that handle.
 ///
 /// # Errors
 ///
 /// Returns [`Error::Ownership`] if the directory can't be made (an
-/// existing entry's error is `AlreadyExists`), or if the check fails.
+/// existing entry's error is `AlreadyExists`), if the check fails, or
+/// if the mode change is refused.
 pub fn create_private_dir(path: &Path) -> Result<(), Error> {
+    // Any umask can only remove bits from 0700, so the directory is never
+    // open to anyone else; the fchmod below restores the owner's bits a
+    // strict umask took. The umask itself isn't touched: a caller may
+    // already hold its lock (`with_umask` isn't reentrant).
     rustix::fs::mkdir(path, rustix::fs::Mode::from_raw_mode(0o700)).map_err(failed("mkdir"))?;
     let handle = open_dir_nofollow(path).map_err(failed("open the new directory"))?;
     let stat = rustix::fs::fstat(&handle).map_err(failed("fstat"))?;
-    if private_dir_ok(
+    if !private_dir_ok(
         stat.st_uid,
         stat.st_mode,
         rustix::process::geteuid().as_raw(),
     ) {
-        Ok(())
-    } else {
-        Err(refused(
+        return Err(refused(
             "check the new directory",
             "it isn't the broker's alone",
-        ))
+        ));
     }
+    rustix::fs::fchmod(&handle, rustix::fs::Mode::from_raw_mode(0o700))
+        .map_err(failed("chmod the new directory"))
+}
+
+/// Makes `path` a directory only this process's user can use.
+///
+/// A new one is made as by [`create_private_dir`]. One already there
+/// must be a directory itself, owned by the effective uid; its mode is
+/// then set to 0700 through a handle opened without following symlinks.
+///
+/// # Errors
+///
+/// Returns [`Error::Ownership`] if the directory can't be made, if what
+/// is at `path` isn't a directory of this process's user, or if the
+/// change is refused.
+pub fn ensure_private_dir(path: &Path) -> Result<(), Error> {
+    match create_private_dir(path) {
+        Err(Error::Ownership { source, .. }) if source.kind() == io::ErrorKind::AlreadyExists => {}
+        made => return made,
+    }
+    let handle = open_dir_nofollow(path).map_err(failed("open the directory"))?;
+    let stat = rustix::fs::fstat(&handle).map_err(failed("fstat the directory"))?;
+    if stat.st_uid != rustix::process::geteuid().as_raw() {
+        return Err(refused("check the directory", "it isn't the broker's"));
+    }
+    rustix::fs::fchmod(&handle, rustix::fs::Mode::from_raw_mode(0o700))
+        .map_err(failed("chmod the directory"))
 }
 
 /// Opens `path` only if it is a directory itself: a symlink, even to a
@@ -254,6 +311,160 @@ mod tests {
         assert_eq!(
             open_dir_nofollow(&dir.join("file")).unwrap_err(),
             rustix::io::Errno::NOTDIR
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_socket_mode_is_set_only_on_a_socket_itself() {
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::os::unix::net::UnixListener;
+        let dir = owned_test_dir().with_extension("chmod");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("broker.sock");
+        let _listener = UnixListener::bind(&socket).unwrap();
+        chmod_socket(&socket, 0o660).unwrap();
+        let mode = |p: &Path| std::fs::symlink_metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&socket), 0o660);
+        chmod_socket(&socket, 0o600).unwrap();
+        assert_eq!(mode(&socket), 0o600);
+        // A symlink to the socket or to a file is refused, and neither
+        // target changes.
+        let file = dir.join("file");
+        std::fs::write(&file, b"x").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::os::unix::fs::symlink(&socket, dir.join("to-socket")).unwrap();
+        std::os::unix::fs::symlink(&file, dir.join("to-file")).unwrap();
+        for name in ["to-socket", "to-file", "file"] {
+            let err = chmod_socket(&dir.join(name), 0o666).unwrap_err();
+            assert!(
+                matches!(
+                    &err,
+                    Error::Ownership {
+                        operation: "check the socket",
+                        ..
+                    }
+                ),
+                "{name}: {err:?}"
+            );
+        }
+        assert_eq!(mode(&socket), 0o600);
+        assert_eq!(mode(&file), 0o600);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn only_a_socket_itself_opens_as_one() {
+        use std::os::unix::net::UnixListener;
+        let dir = owned_test_dir().with_extension("open-socket");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("broker.sock");
+        let _listener = UnixListener::bind(&socket).unwrap();
+        let (_, stat) = open_socket_nofollow(&socket).unwrap();
+        assert_eq!(
+            rustix::fs::FileType::from_raw_mode(stat.st_mode),
+            rustix::fs::FileType::Socket
+        );
+        assert_eq!(stat.st_uid, rustix::process::geteuid().as_raw());
+        std::fs::write(dir.join("file"), b"x").unwrap();
+        std::os::unix::fs::symlink(&socket, dir.join("to-socket")).unwrap();
+        for name in ["to-socket", "file"] {
+            assert!(
+                matches!(
+                    open_socket_nofollow(&dir.join(name)),
+                    Err(Error::Ownership {
+                        operation: "check the socket",
+                        ..
+                    })
+                ),
+                "{name}"
+            );
+        }
+        assert!(matches!(
+            open_socket_nofollow(&dir.join("missing")),
+            Err(Error::Ownership {
+                operation: "open the socket",
+                ..
+            })
+        ));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_private_dir_is_0700_whatever_the_umask() {
+        use crate::{ForkResult, child_exit_code, exit_child, fork};
+        let dir = owned_test_dir().with_extension("umask");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let made = dir.join("made");
+        // In a child: a umask that would also strip the owner's bits must
+        // not reach the other tests' files.
+        let child = match fork().expect("fork") {
+            ForkResult::Parent { child } => child,
+            ForkResult::Child => {
+                let _ = rustix::process::umask(rustix::fs::Mode::from_raw_mode(0o377));
+                if create_private_dir(&made).is_err() {
+                    exit_child(2);
+                }
+                let Ok(stat) = rustix::fs::stat(&made) else {
+                    exit_child(3)
+                };
+                exit_child(if stat.st_mode & 0o777 == 0o700 { 0 } else { 4 });
+            }
+        };
+        let status = child
+            .wait_deadline(std::time::Duration::from_secs(30))
+            .expect("bounded wait");
+        assert_eq!(
+            child_exit_code(status),
+            0,
+            "exit 2: not made; 3: not found; 4: not 0700"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_existing_dir_is_made_private_only_if_it_is_ours_itself() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = owned_test_dir().with_extension("ensure");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("open")).unwrap();
+        std::fs::set_permissions(dir.join("open"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mode = |p: &Path| std::fs::symlink_metadata(p).unwrap().permissions().mode() & 0o777;
+        ensure_private_dir(&dir.join("open")).unwrap();
+        assert_eq!(mode(&dir.join("open")), 0o700, "an existing one is pinned");
+        ensure_private_dir(&dir.join("fresh")).unwrap();
+        assert_eq!(mode(&dir.join("fresh")), 0o700, "a missing one is made");
+        // A symlink to a directory is refused, and the target is untouched.
+        std::fs::create_dir(dir.join("target")).unwrap();
+        std::fs::set_permissions(dir.join("target"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        std::os::unix::fs::symlink(dir.join("target"), dir.join("link")).unwrap();
+        let err = ensure_private_dir(&dir.join("link")).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                Error::Ownership {
+                    operation: "open the directory",
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+        assert_eq!(mode(&dir.join("target")), 0o755);
+        // Anything else that fails is reported as it is.
+        let err = ensure_private_dir(&dir.join("missing").join("deeper")).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                Error::Ownership {
+                    operation: "mkdir",
+                    ..
+                }
+            ),
+            "{err:?}"
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }

@@ -14,7 +14,7 @@
 
 use std::fs::OpenOptions;
 use std::io::Read;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -36,14 +36,9 @@ static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// `owner`. Shared by the vault root and the key-file parent directory —
 /// one implementation of the check, so the two cannot drift.
 pub(crate) fn ensure_owner_only_dir(path: &Path, owner: u32) -> Result<(), Error> {
-    if std::fs::create_dir(path).is_ok() {
-        // `create_dir` honors the umask; pin the mode explicitly.
-        // The unconditional validation below kills a mutant that
-        // drops this call: without it a fresh directory keeps the
-        // umask mode and fails the mode check.
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(VAULT_DIR_MODE))
-            .map_err(|source| Error::Io { source })?;
-    }
+    // Made 0700 at once, whatever the umask, and never chmodded by path
+    // afterwards; one already there is only checked below.
+    let _ = hatchling_sys::create_private_dir(path);
     // `symlink_metadata`: a symlink is never accepted, even one
     // pointing at a directory.
     let metadata = std::fs::symlink_metadata(path).map_err(|source| Error::Io { source })?;
@@ -287,6 +282,7 @@ impl Vault {
 mod tests {
     use super::*;
     use crate::MAX_SECRET_BYTES;
+    use std::os::unix::fs::PermissionsExt as _;
 
     /// A fresh vault root unique to this test and process, so tests run
     /// in parallel without colliding.
