@@ -37,8 +37,8 @@ use hatchling_core::CellId;
 use hatchling_core::messages::{ScheduleGrant, ScheduleOp};
 use hatchling_core::subagent::{ActivityEvent, SubagentEvent};
 use hatchling_core::ui::{
-    ActionRefusal, ApiOutcome, ApiRequest, ChatAuthor, ChatMessage, UiAction, UiActionResult,
-    UiEventBody,
+    ActionRefusal, AgentState, ApiOutcome, ApiRequest, ChatAuthor, ChatMessage, UiAction,
+    UiActionResult, UiEventBody,
 };
 use hatchling_scheduler::{Creator, Timestamp};
 use hatchling_vault::MasterKey;
@@ -51,6 +51,21 @@ use crate::{Config, handle_schedule_op, handle_skill_op};
 
 /// The one chat the API offers: the local channel's conversation.
 pub const LOCAL_CHAT: &str = "local";
+
+/// The most characters of a message its working status shows.
+const STATUS_DETAIL_CHARS: usize = 80;
+
+/// What the agent's working status says about `text`: its first line,
+/// cut to [`STATUS_DETAIL_CHARS`] characters (an ellipsis marks a cut).
+fn status_detail(text: &str) -> String {
+    let mut lines = text.trim().lines();
+    let mut chars = lines.next().unwrap_or_default().trim_end().chars();
+    let mut detail: String = chars.by_ref().take(STATUS_DETAIL_CHARS).collect();
+    if chars.next().is_some() || lines.next().is_some() {
+        detail.push('\u{2026}');
+    }
+    detail
+}
 
 /// The activity thread every API call is recorded on.
 pub const API_RUN_ID: &str = "api";
@@ -187,7 +202,8 @@ impl<'a> Ops<'a> {
     }
 
     /// Queues `text` for the agent on the local channel, shows it on the
-    /// stream, and routes the agent's replies to the stream.
+    /// stream with the agent working on it, and routes the agent's
+    /// replies to the stream, each leaving it idle.
     fn send(
         &self,
         chat_id: &str,
@@ -220,6 +236,13 @@ impl<'a> Ops<'a> {
                         author: ChatAuthor::User,
                         text: text.to_owned(),
                     }),
+                );
+                self.bus.push(
+                    Timestamp::now().to_string(),
+                    UiEventBody::AgentStatus {
+                        state: AgentState::Working,
+                        detail: status_detail(text),
+                    },
                 );
                 (
                     UiActionResult::MessageAccepted { message_id },
@@ -290,6 +313,13 @@ impl<'h> Replies<'h> {
                     author: ChatAuthor::Agent,
                     text: reply.text.clone(),
                 }),
+            );
+            bus.push(
+                Timestamp::now().to_string(),
+                UiEventBody::AgentStatus {
+                    state: AgentState::Idle,
+                    detail: String::new(),
+                },
             );
             Ok(())
         }));
@@ -446,6 +476,41 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    fn statuses(bus: &Bus) -> Vec<(AgentState, String)> {
+        bus.after(None)
+            .into_iter()
+            .filter_map(|event: UiEvent| {
+                if let UiEventBody::AgentStatus { state, detail } = event.body {
+                    Some((state, detail))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_status_shows_the_first_line_cut_on_a_character() {
+        assert_eq!(status_detail("What is on today?"), "What is on today?");
+        assert_eq!(status_detail("  padded  "), "padded");
+        assert_eq!(
+            status_detail("Plan the week.\nThen book it."),
+            "Plan the week.\u{2026}"
+        );
+        assert_eq!(status_detail("trailing line\n"), "trailing line");
+        assert_eq!(status_detail(""), "");
+        let exact = "a".repeat(STATUS_DETAIL_CHARS);
+        assert_eq!(status_detail(&exact), exact);
+        // Two-byte characters past the limit are cut whole, not mid-byte.
+        let long = "\u{e9}".repeat(STATUS_DETAIL_CHARS + 1);
+        let shown = status_detail(&long);
+        assert_eq!(shown.chars().count(), STATUS_DETAIL_CHARS + 1);
+        assert_eq!(
+            shown,
+            format!("{}\u{2026}", "\u{e9}".repeat(STATUS_DETAIL_CHARS))
+        );
     }
 
     #[test]
@@ -956,6 +1021,46 @@ mod tests {
         );
         let shown = format!("{:?}", Replies::default());
         assert!(shown.contains("attached: false"));
+    }
+
+    #[test]
+    fn the_agent_works_on_a_message_until_its_reply_arrives() {
+        let mut config = owner_config(Some("/srv/hatchling/schedules"));
+        config.goals.grants = Vec::new();
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());
+        let bus = Arc::new(Bus::starting_at(1));
+        let ops = Ops::new(&config, &key, &skills, Some(&hub), Arc::clone(&bus));
+        let mut replies = Replies::default();
+        let owner = caller(&[local_send()]);
+        let sent = ops.handle(&owner, &send("Plan the week.\nThen book it."), &mut replies);
+        assert_eq!(sent.1, ApiOutcome::Served);
+        let working = (AgentState::Working, String::from("Plan the week.\u{2026}"));
+        assert_eq!(statuses(&bus), std::slice::from_ref(&working));
+        hub.deliver(
+            &Message {
+                sender: SenderId(String::from("agent")),
+                channel: ChannelId::local(),
+                text: String::from("Booked."),
+            },
+            "s",
+        )
+        .unwrap();
+        assert_eq!(statuses(&bus), [working, (AgentState::Idle, String::new())]);
+        // Each status follows the message it is about.
+        let order: Vec<bool> = bus
+            .after(None)
+            .into_iter()
+            .filter(|event| {
+                matches!(
+                    event.body,
+                    UiEventBody::ChatMessage(_) | UiEventBody::AgentStatus { .. }
+                )
+            })
+            .map(|event| matches!(event.body, UiEventBody::AgentStatus { .. }))
+            .collect();
+        assert_eq!(order, [false, true, false, true]);
     }
 
     #[test]
