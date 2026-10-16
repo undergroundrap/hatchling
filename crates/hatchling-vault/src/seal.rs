@@ -527,13 +527,19 @@ fn open_envelope(
     if kind_of(envelope) == Kind::Old {
         return Err(Error::OldEnvelope { name: name.clone() });
     }
-    open_versioned(key, ENVELOPE_MAGIC, &store.associated(name), name, envelope)
+    open_versioned(
+        key,
+        *ENVELOPE_MAGIC,
+        &store.associated(name),
+        name,
+        envelope,
+    )
 }
 
 /// Opens an envelope carrying `magic`, authenticated with `associated`.
 fn open_versioned(
     key: &MasterKey,
-    magic_wanted: &[u8; 4],
+    magic_wanted: [u8; 4],
     associated: &[u8],
     name: &SecretName,
     envelope: &[u8],
@@ -550,7 +556,7 @@ fn open_versioned(
     // conversion is infallible; the error arm is fail-closed dead
     // code, not a panic.
     let magic = <&[u8; 4]>::try_from(magic_slice).map_err(|_| malformed())?;
-    if magic != magic_wanted {
+    if *magic != magic_wanted {
         return Err(not_sealed());
     }
     let nonce: [u8; NONCE_LEN] = envelope
@@ -605,10 +611,10 @@ pub struct MigrateReport {
     pub skipped: usize,
 }
 
-/// One-shot migration of the store `store` at `root`: plaintext files
-/// are sealed, and version-1 envelopes re-sealed, into current
-/// envelopes bound to `store` and their names. Afterwards the store
-/// passes [`check`].
+/// One-shot migration of the store `store` at `root` to current envelopes.
+///
+/// Plaintext files are sealed, and version-1 envelopes re-sealed, each
+/// bound to `store` and its name. Afterwards the store passes [`check`].
 ///
 /// Operator action, run when adopting the sealed vault and after an
 /// upgrade, not a runtime API. A version-1 envelope is opened under
@@ -655,11 +661,15 @@ pub fn migrate(root: &Path, key: &MasterKey, store: Store) -> Result<MigrateRepo
                 continue;
             }
             Kind::Old => {
-                let opened = open_versioned(key, ENVELOPE_V1_MAGIC, b"", &name, &bytes)?;
+                let opened = open_versioned(key, *ENVELOPE_V1_MAGIC, b"", &name, &bytes)?;
                 report.upgraded += 1;
                 opened.as_bytes().to_vec()
             }
-            Kind::Other if bytes.get(..ENVELOPE_MAGIC.len()).is_some_and(looks_like_magic) => {
+            Kind::Other
+                if bytes
+                    .get(..ENVELOPE_MAGIC.len())
+                    .is_some_and(looks_like_magic) =>
+            {
                 // `HVL` and a digit: an envelope version this build
                 // doesn't know. Never sealed over as if plaintext.
                 return Err(Error::NotSealed { name });
@@ -679,14 +689,15 @@ pub fn migrate(root: &Path, key: &MasterKey, store: Store) -> Result<MigrateRepo
 }
 
 /// Whether `magic` has the shape of an envelope magic: `HVL` and a digit.
-fn looks_like_magic(magic: &[u8]) -> bool {
+const fn looks_like_magic(magic: &[u8]) -> bool {
     matches!(magic, [b'H', b'V', b'L', digit] if digit.is_ascii_digit())
 }
 
-/// Refuses a store that holds anything but current envelopes: old
-/// (v1) envelopes, unknown versions, or plaintext, named in the error.
-/// The broker calls this for every store it opens, before it serves.
-/// Nothing is decrypted, so no key is needed.
+/// Refuses a store that holds anything but current envelopes.
+///
+/// Old (v1) envelopes, unknown versions and plaintext are named in the
+/// error. The broker calls this for every store it keeps, before it
+/// serves. Nothing is decrypted, so no key is needed.
 ///
 /// # Errors
 ///
@@ -963,8 +974,12 @@ mod tests {
         let dir = test_dir("renamed");
         let key = test_key();
         let vault = SealedVault::open(&dir, &key).unwrap();
-        vault.store(&secret_name("cell-granted"), &secret(b"harmless")).unwrap();
-        vault.store(&secret_name("never-in-a-cell"), &secret(b"crown jewels")).unwrap();
+        vault
+            .store(&secret_name("cell-granted"), &secret(b"harmless"))
+            .unwrap();
+        vault
+            .store(&secret_name("never-in-a-cell"), &secret(b"crown jewels"))
+            .unwrap();
         // An attacker with write access to the vault, and no key, swaps
         // the two files.
         let granted = raw_bytes(&dir, &secret_name("cell-granted"));
@@ -981,7 +996,10 @@ mod tests {
         // Put back, both open again.
         plant(&dir, "cell-granted", &granted);
         assert_eq!(
-            vault.fetch(&secret_name("cell-granted")).unwrap().as_bytes(),
+            vault
+                .fetch(&secret_name("cell-granted"))
+                .unwrap()
+                .as_bytes(),
             b"harmless"
         );
     }
@@ -993,7 +1011,9 @@ mod tests {
         let key = test_key();
         let redactions = SealedVault::open_in(&dir, &key, Store::REDACTIONS).unwrap();
         let schedules = SealedVault::open_in(&other, &key, Store::SCHEDULES).unwrap();
-        redactions.store(&secret_name("red-1"), &secret(b"flagged text")).unwrap();
+        redactions
+            .store(&secret_name("red-1"), &secret(b"flagged text"))
+            .unwrap();
         let record = raw_bytes(&dir, &secret_name("red-1"));
         // Into another store under the same name: refused.
         plant(&other, "red-1", &record);
@@ -1112,7 +1132,9 @@ mod tests {
         let dir = test_dir("check");
         let key = test_key();
         let vault = SealedVault::open_in(&dir, &key, Store::ARTIFACTS).unwrap();
-        vault.store(&secret_name("current"), &secret(b"ok")).unwrap();
+        vault
+            .store(&secret_name("current"), &secret(b"ok"))
+            .unwrap();
         assert!(check(&dir, Store::ARTIFACTS).is_ok());
         plant(&dir, "z-old", &seal_v1(&key, b"x"));
         plant(&dir, "a-plain", b"plaintext");

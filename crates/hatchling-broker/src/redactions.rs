@@ -751,9 +751,13 @@ fn raw(
         reason: format!("{id} is not a record name"),
     })?;
     let key = key()?;
-    let secret = SealedVault::open_in(&redaction.dir.join(RAW_DIR), &key, hatchling_vault::Store::REDACTIONS)
-        .and_then(|vault| vault.fetch(&name))
-        .map_err(|source| Error::Vault { source })?;
+    let secret = SealedVault::open_in(
+        &redaction.dir.join(RAW_DIR),
+        &key,
+        hatchling_vault::Store::REDACTIONS,
+    )
+    .and_then(|vault| vault.fetch(&name))
+    .map_err(|source| Error::Vault { source })?;
     let text = String::from_utf8(secret.as_bytes().to_vec()).map_err(|_| Error::Redaction {
         reason: format!("{id}'s kept text is not UTF-8"),
     })?;
@@ -1294,13 +1298,17 @@ mod tests {
                 raw: RawOutcome::Kept,
             })
             .unwrap();
-        SealedVault::open_in(&redaction.dir.join(RAW_DIR), &key, hatchling_vault::Store::REDACTIONS)
-            .unwrap()
-            .store(
-                &"red-2".parse().unwrap(),
-                &Secret::new(b"the nightjar plan".to_vec()).unwrap(),
-            )
-            .unwrap();
+        SealedVault::open_in(
+            &redaction.dir.join(RAW_DIR),
+            &key,
+            hatchling_vault::Store::REDACTIONS,
+        )
+        .unwrap()
+        .store(
+            &"red-2".parse().unwrap(),
+            &Secret::new(b"the nightjar plan".to_vec()).unwrap(),
+        )
+        .unwrap();
         let (records, _) = read_log(&redaction.dir.join(AUDIT_FILE)).unwrap();
         let not_kept = raw(&redaction, &records, "red-1", || unreachable!("not needed"));
         assert!(

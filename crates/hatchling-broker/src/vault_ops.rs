@@ -51,12 +51,16 @@ pub fn validate_sealed_vault(vault_config: &VaultConfig, key: &MasterKey) -> Res
         .map_err(|source| Error::Vault { source })
 }
 
-/// Every sealed store the broker keeps, as configured: each one's label
-/// and root. The secrets, artifacts and spaces always; the schedules when
+/// Every sealed store the broker keeps, as configured: its label and root.
+///
+/// The secrets, artifacts and spaces always; the schedules when
 /// scheduling is on; the raw text of redaction records when there is an
 /// output gate (`redaction`).
 #[must_use]
-pub fn sealed_stores(config: &Config, redaction: Option<&RedactionConfig>) -> Vec<(Store, PathBuf)> {
+pub fn sealed_stores(
+    config: &Config,
+    redaction: Option<&RedactionConfig>,
+) -> Vec<(Store, PathBuf)> {
     let mut stores = vec![(Store::SECRETS, config.vault.root.clone())];
     if config.scheduler.enabled() {
         stores.push((Store::SCHEDULES, config.scheduler.root.clone()));
@@ -72,10 +76,11 @@ pub fn sealed_stores(config: &Config, redaction: Option<&RedactionConfig>) -> Ve
     stores
 }
 
-/// Refuses to serve while any of `stores` holds anything but current
-/// sealed envelopes (old ones, an unknown version, or plaintext), naming
-/// the store and the files. A store whose root doesn't exist yet holds
-/// nothing, and is left as it is.
+/// Refuses to serve while any of `stores` holds stale sealed files.
+///
+/// Old envelopes, an unknown version or plaintext are named, with their
+/// store. A store whose root doesn't exist yet holds nothing, and is left
+/// as it is.
 ///
 /// # Errors
 ///
@@ -180,7 +185,7 @@ pub fn run_migrate_vault(config: &Config) -> Result<(), Error> {
 /// # Errors
 ///
 /// Returns [`Error`] from key loading/creation or rotation.
-pub fn run_rekey_vault(config: &crate::Config, new_key_file: &Path) -> Result<(), Error> {
+pub fn run_rekey_vault(config: &Config, new_key_file: &Path) -> Result<(), Error> {
     let old_key = load_master_key(&config.vault)?;
     let report = rekey_vault(&config.vault, &old_key, new_key_file)?;
     let mut stdout = std::io::stdout().lock();
@@ -259,19 +264,13 @@ mod tests {
                 ("redactions", dir.0.join("red").join("raw"))
             ]
         );
-        // Scheduling off and no output gate: those two aren't kept.
-        let mut off = config.clone();
-        off.scheduler = crate::SchedulerConfig::disabled();
-        let labels: Vec<_> = sealed_stores(&off, None)
-            .iter()
-            .map(|(store, _)| store.label())
-            .collect();
-        assert_eq!(labels, ["secrets", "artifacts", "spaces"]);
         // Nothing exists yet: nothing to check, nothing created.
         assert!(check_sealed_stores(&stores).is_ok());
-        assert!(migrate_vault(&stores, &MasterKey::generate().unwrap())
-            .unwrap()
-            .is_empty());
+        assert!(
+            migrate_vault(&stores, &MasterKey::generate().unwrap())
+                .unwrap()
+                .is_empty()
+        );
         assert!(!dir.0.join("spaces").exists());
         // A plaintext file in the spaces store stops the broker, by name.
         let key = MasterKey::generate().unwrap();
@@ -281,11 +280,17 @@ mod tests {
         std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o600)).unwrap();
         SealedVault::open(&config.vault.root, &key)
             .unwrap()
-            .store(&"probe".parse().unwrap(), &Secret::new(b"p".to_vec()).unwrap())
+            .store(
+                &"probe".parse().unwrap(),
+                &Secret::new(b"p".to_vec()).unwrap(),
+            )
             .unwrap();
         let refused = check_sealed_stores(&stores).unwrap_err();
         let shown = refused.to_string();
-        assert!(shown.contains("spaces") && shown.contains("team-7"), "{shown}");
+        assert!(
+            shown.contains("spaces") && shown.contains("team-7"),
+            "{shown}"
+        );
         // migrate-vault seals it into the spaces store, bound to it.
         let reports = migrate_vault(&stores, &key).unwrap();
         assert_eq!(
@@ -302,9 +307,18 @@ mod tests {
             b"members"
         );
         // Under another store's label, it does not open.
-        assert!(SealedVault::open(&dir.0.join("spaces"), &key)
-            .unwrap()
-            .fetch(&"team-7".parse().unwrap())
-            .is_err());
+        assert!(
+            SealedVault::open(&dir.0.join("spaces"), &key)
+                .unwrap()
+                .fetch(&"team-7".parse().unwrap())
+                .is_err()
+        );
+        // Scheduling off and no output gate: those two aren't kept.
+        config.scheduler = crate::SchedulerConfig::disabled();
+        let labels: Vec<_> = sealed_stores(&config, None)
+            .iter()
+            .map(|(store, _)| store.label())
+            .collect();
+        assert_eq!(labels, ["secrets", "artifacts", "spaces"]);
     }
 }

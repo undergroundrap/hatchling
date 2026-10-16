@@ -1051,8 +1051,7 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&root);
         let key = MasterKey::generate().unwrap();
-        let vault =
-            SealedVault::open_in(&root, &key, hatchling_vault::Store::ARTIFACTS).unwrap();
+        let vault = SealedVault::open_in(&root, &key, hatchling_vault::Store::ARTIFACTS).unwrap();
         // A JSON string is its text plus two quotes.
         let at_bound = "x".repeat(MAX_SECRET_BYTES - 2);
         assert!(write_json(&vault, "probe", &at_bound).is_ok());
