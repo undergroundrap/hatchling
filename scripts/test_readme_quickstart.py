@@ -5,7 +5,8 @@ import subprocess
 import tempfile
 import unittest
 
-from readme_quickstart import app_address, expected_answer, extract, require_answer, script_for
+from readme_quickstart import (MACHINE_ADDRESS, app_address, expected_answer, extract,
+                               require_answer, script_for)
 
 
 class QuickstartTests(unittest.TestCase):
@@ -86,6 +87,12 @@ exit 97
                        "log: Hatchling's UI: open " + address):
             with self.subTest(output=output), self.assertRaises(ValueError):
                 app_address(lambda: [output], wait=0)
+        machine = "http://127.0.0.1:7340/machine.html#hatchling-operator=" + token
+        printed = ["Hatchling's UI: open " + address + "\nHatchling's Machine view: open " + machine + "\n"]
+        self.assertEqual(app_address(lambda: printed, wait=0, pattern=MACHINE_ADDRESS), machine)
+        self.assertEqual(app_address(lambda: printed, wait=0), address)
+        with self.assertRaises(ValueError):
+            app_address(lambda: ["Hatchling's UI: open " + address], wait=0, pattern=MACHINE_ADDRESS)
 
     def test_refuses_missing_empty_and_unclosed_input(self):
         inputs = ["# Other\n", "## Quickstart\ntext only\n",

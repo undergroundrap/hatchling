@@ -17,7 +17,7 @@
     "format:check": "node scripts/format.mjs",
     "test": "npm run build && node --test --experimental-test-coverage --test-coverage-include='dist/app/**' --test-coverage-lines=78 --test-coverage-branches=88 --test-coverage-functions=81 tests/unit/*.test.mjs",
     "test:e2e": "python3 tests/e2e/test_app.py && python3 tests/e2e/test_reliability.py && python3 tests/e2e/test_approvals.py && python3 tests/e2e/test_loading.py && python3 tests/e2e/test_menus_preview.py",
-    "check": "npm run typecheck && npm run lint && npm run design:check && npm run actions:check && npm run protocol:check && npm run seam:check && npm run format:check && npm test && npm run test:live-coverage",
+    "check": "npm run typecheck && npm run lint && npm run design:check && npm run actions:check && npm run protocol:check && npm run seam:check && npm run format:check && npm test && npm run test:live-coverage && npm run test:operator-coverage",
     "check:all": "npm run check && npm run test:e2e && npm run test:smoke && npm run test:agent",
     "screenshots": "python3 tests/e2e/capture_release.py",
     "test:smoke": "node scripts/smoke-http.mjs",
@@ -32,7 +32,8 @@
     "design:check": "node scripts/check-design.mjs",
     "protocol:generate": "node scripts/generate-protocol.mjs",
     "protocol:check": "node scripts/generate-protocol.mjs --check",
-    "test:live-coverage": "node --test --experimental-test-coverage --test-coverage-include='dist/app/adapters/live/**' --test-coverage-lines=100 --test-coverage-branches=100 --test-coverage-functions=100 tests/unit/live-*.test.mjs"
+    "test:live-coverage": "node --test --experimental-test-coverage --test-coverage-include='dist/app/adapters/live/**' --test-coverage-lines=100 --test-coverage-branches=100 --test-coverage-functions=100 tests/unit/live-*.test.mjs",
+    "test:operator-coverage": "node --test --experimental-test-coverage --test-coverage-include='dist/app/adapters/operator/**' --test-coverage-include='dist/app/machine/format.js' --test-coverage-lines=100 --test-coverage-branches=100 --test-coverage-functions=100 tests/unit/operator-*.test.mjs"
   },
   "devDependencies": {
     "typescript": "5.8.3"

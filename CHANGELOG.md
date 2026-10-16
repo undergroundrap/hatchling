@@ -8,6 +8,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Added
 
+- The Machine view, for whoever runs the machine: `hatchling-host`, given `HATCHLING_OPERATOR_SOCKET`, also serves `machine.html` and carries its channel to the broker's operator socket, printing a second address with the operator token. It shows the broker's version and uptime, the cells running, the connections open and the recent egress decisions, refreshed every two seconds, and metadata only. CI opens it in Chromium beside the app (WO-022, part 6).
 - `HATCHLING_OPERATOR_SOCKET`: a socket for the people who run the machine, apart from its users. It speaks its own frames, so a user's socket can't answer an operator's query and the operator's can't take a user's action; it has its own token in `<socket>.token`; and its one query so far, `broker`, answers with the broker's version and uptime (WO-022, part 1).
 - The operator's `cells` query: every cell running, oldest first, with its id, kind (agent, run, subagent, skill or harness), start and limits, and never its task, input or output (WO-022, part 2).
 - The operator's `egress` query: the broker's last 200 egress decisions, with when, which cell, the destination and a verdict from a closed set, never a request's path, headers or body, or its answer (WO-022, part 4).

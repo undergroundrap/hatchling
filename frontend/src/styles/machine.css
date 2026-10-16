@@ -1,0 +1,101 @@
+/* The Machine view (machine.html): read-only tables of what runs on the
+   broker's machine. A family of its own, scoped to `.machine`; shared tokens
+   only. Linked from index.html too, as every stylesheet is, where nothing
+   carries the class. */
+.machine {
+  max-width: calc(1080px * var(--ui-space, 1));
+  margin: 0 auto;
+  padding: var(--space-8) var(--space-6);
+  color: var(--text);
+  font-family: var(--font-ui);
+}
+.machine-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-6);
+  margin-bottom: var(--space-6);
+}
+.machine-header h1 {
+  margin: 0;
+  font-size: calc(34px * var(--ui-scale, 1));
+  font-weight: 600;
+}
+.machine-status {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+.machine-status.machine-ended {
+  color: var(--danger);
+}
+.machine-section {
+  margin-bottom: var(--space-8);
+}
+.machine-section h2 {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-title);
+  font-weight: 600;
+}
+.machine-count {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: 400;
+}
+.machine-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-body);
+}
+.machine-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-2) var(--space-6);
+  margin: 0;
+  font-size: var(--text-body);
+}
+.machine-facts dt {
+  color: var(--muted);
+}
+.machine-facts dd {
+  margin: 0;
+}
+.machine-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.machine-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+.machine-table th,
+.machine-table td {
+  padding: var(--space-2) var(--space-4);
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--border);
+}
+.machine-table tr:last-child td {
+  border-bottom: 0;
+}
+.machine-table th {
+  color: var(--muted);
+  font-weight: 500;
+  background: var(--surface);
+}
+.machine-id {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+.machine-verdict.machine-success {
+  color: var(--success);
+}
+.machine-verdict.machine-danger {
+  color: var(--danger);
+}
+.machine-verdict.machine-attention {
+  color: var(--attention);
+}
