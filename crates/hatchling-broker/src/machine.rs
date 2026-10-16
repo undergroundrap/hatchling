@@ -41,6 +41,11 @@ static SESSIONS: Mutex<BTreeMap<u64, OperatorSession>> = Mutex::new(BTreeMap::ne
 /// The egress decisions kept, oldest first.
 static DECISIONS: Mutex<VecDeque<EgressDecision>> = Mutex::new(VecDeque::new());
 
+/// Held by a test that fills the decisions to their bound, and by one that
+/// needs its own decision still kept: tests share the one process.
+#[cfg(test)]
+pub(crate) static FLOOD: Mutex<()> = Mutex::new(());
+
 /// The next listing's key: its place in the start order.
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -270,6 +275,7 @@ mod tests {
 
     #[test]
     fn egress_decisions_are_kept_bounded_and_newest_last() {
+        let _flood = FLOOD.lock().unwrap_or_else(PoisonError::into_inner);
         // Others decide in parallel: only this cell's are looked at, and
         // each test cell's own order is what is checked.
         let mine = |cell: &str| -> Vec<(String, EgressVerdict)> {

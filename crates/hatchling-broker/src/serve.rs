@@ -1680,6 +1680,10 @@ mod tests {
 
     #[test]
     fn handle_egress_op_stages_a_body_and_reads_a_held_answer() {
+        // Its own egress decisions must still be kept when it reads them.
+        let _flood = crate::machine::FLOOD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir =
             std::env::temp_dir().join(format!("hatchling-egress-pages-{}", std::process::id()));
         let key = MasterKey::generate().unwrap();
