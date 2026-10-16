@@ -35,7 +35,7 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | WO | Title | Trust boundary | Status |
 | --- | --- | --- | --- |
 | [001](workorder-001-help-and-tested-quickstart.md) | `--help` on every binary, a quickstart CI runs, and a hosted-model guide |  | DONE |
-| [002](workorder-002-bind-secrets-to-names.md) | Bind sealed secrets to their names | yes | QUEUED |
+| [002](workorder-002-bind-secrets-to-names.md) | Bind sealed secrets to their names | yes | DONE |
 | [003](workorder-003-keyring-key-rotation.md) | Complete key rotation for keyring vaults | yes | QUEUED |
 | [004](workorder-004-cell-resource-limits.md) | Per-cell resource limits | yes | CLOSED |
 | [005](workorder-005-seccomp-and-identity-tightening.md) | Tighten the seccomp filter and the cell's groups | yes | CLOSED |
