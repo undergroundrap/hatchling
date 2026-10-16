@@ -10,7 +10,7 @@
 import type { ApprovalAttempt, ApprovalResult, ApprovalStatus, TaskApproval, TaskApprovalPort } from '../../session/task-approvals.js';
 import type { LiveClient, Reply } from './client.js';
 import type { ActionRefusal, ConfirmationRequest, DecisionRejection, UiEvent } from './protocol/generated.js';
-import { MAIN_CHAT } from './chat.js';
+import { MAIN_CHAT, appChat } from './chat.js';
 import { clockTime } from './text.js';
 const REJECTIONS: Readonly<Record<DecisionRejection, string>> = {
     unknown: 'Hatchling no longer has this request, so nothing was decided.',
@@ -80,7 +80,7 @@ export class LiveApprovals implements TaskApprovalPort {
         return {
             id: request.confirmation_id,
             revision: request.revision,
-            chatId: request.chat_id ?? MAIN_CHAT,
+            chatId: appChat(request.chat_id ?? MAIN_CHAT),
             threadId: '',
             kind: 'tool',
             title: 'Hatchling asks before it continues',

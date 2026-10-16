@@ -33,9 +33,12 @@ export class LiveAdapter implements ProtocolAdapter {
     #revision = 0;
     #serial = 0;
     #snapshot: AppState;
-    /** Connects at once. `name` is how this app introduces itself in the broker's log. */
-    constructor(transport: UiTransport, name = 'hatchling-frontend') {
-        this.#client = new LiveClient(transport, name, event => this.#observe(event));
+    /**
+     * Connects at once. `name` is how this app introduces itself in the broker's
+     * log; `token` is the UI token the page was given, when there is one.
+     */
+    constructor(transport: UiTransport, name = 'hatchling-frontend', token?: string) {
+        this.#client = new LiveClient(transport, name, event => this.#observe(event), token);
         this.#surfaces = new Surfaces(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.taskApprovals = new LiveApprovals(this.#client);
         this.chatSession = new LiveChatSession(this.#client, this.#chats, artifactId => this.#surfaces.shelf.latest(artifactId));

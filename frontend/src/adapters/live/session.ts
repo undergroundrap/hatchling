@@ -5,6 +5,7 @@
 // reason, or unknown when no answer came. A timeout is never a rejection.
 import type { ChatSessionPort, ChatSessionSnapshot, DeliveryOutcome, SendRequest } from '../../session/chat-session.js';
 import type { ChatBook } from './chat.js';
+import { wireChat } from './chat.js';
 import type { LiveClient } from './client.js';
 import type { ActionRefusal, UiAction } from './protocol/generated.js';
 const REFUSALS: Readonly<Record<ActionRefusal, string>> = {
@@ -63,10 +64,10 @@ export class LiveChatSession implements ChatSessionPort {
             const revision = this.#latest(command.artifactId);
             if (revision === undefined)
                 return { state: 'rejected', detail: 'This file is no longer available to send.' };
-            action = { action: 'attach_artifact', chat_id: command.chatId, artifact_id: command.artifactId, revision };
+            action = { action: 'attach_artifact', chat_id: wireChat(command.chatId), artifact_id: command.artifactId, revision };
         }
         else
-            action = { action: 'send_message', chat_id: command.chatId, text: command.text };
+            action = { action: 'send_message', chat_id: wireChat(command.chatId), text: command.text };
         const reply = await this.#client.request(request.id, action);
         if (reply.kind === 'unsent')
             return { state: 'rejected', detail: reply.detail };

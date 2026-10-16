@@ -491,7 +491,8 @@ test('sending: the typed send_message action under the UI\'s request id, with ho
     const sending = adapter.chatSession.send({ id: 'send-1', command });
     assert.equal(adapter.chatSession.send({ id: 'send-1', command }), sending, 'a repeated request gets the first outcome');
     await flush();
-    assert.deepEqual(transport.last(), { type: 'action', request_id: 'send-1', action: { action: 'send_message', chat_id: 'main', text: 'Hello' } });
+    // The app's main chat is the broker's local channel on the wire.
+    assert.deepEqual(transport.last(), { type: 'action', request_id: 'send-1', action: { action: 'send_message', chat_id: 'local', text: 'Hello' } });
     assert.equal(transport.sent.filter(frame => frame.type === 'action').length, 1);
     answer(transport, 'send-1', { result: 'message_accepted', message_id: 'message-10' });
     assert.deepEqual(await sending, { state: 'accepted', messageId: 'message-10' });

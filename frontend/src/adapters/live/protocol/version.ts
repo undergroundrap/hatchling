@@ -23,9 +23,12 @@ export function incompatibilityMessage(frontend: number, backend: number): strin
     const template = frontend > backend ? INCOMPATIBLE_FRONTEND_NEWER : INCOMPATIBLE_BACKEND_NEWER;
     return template.replaceAll('{frontend}', String(frontend)).replaceAll('{backend}', String(backend));
 }
-/** The first frame this frontend sends. */
-export function hello(client: string, schemaVersion: number = UI_SCHEMA_VERSION): UiRequest {
-    return { type: 'hello', schema_version: schemaVersion, client };
+/**
+ * The first frame this frontend sends. `token` is the UI token `hatchling-host`
+ * gave the page, which the broker asks of every UI connection.
+ */
+export function hello(client: string, schemaVersion: number = UI_SCHEMA_VERSION, token?: string): UiRequest {
+    return token === undefined ? { type: 'hello', schema_version: schemaVersion, client } : { type: 'hello', schema_version: schemaVersion, client, token };
 }
 /**
  * Read the backend's answer to `hello`. A welcome at another version is a

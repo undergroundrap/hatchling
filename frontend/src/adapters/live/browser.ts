@@ -14,6 +14,7 @@
 import type { ActivityRow, ActivityThread, BrowserTask, BrowserTaskState, Message } from '../../protocol/models.js';
 import type { Actor, BrowserAction, BrowserFrame, BrowserSession, BrowserState, Control, Handoff } from './protocol/generated.js';
 import { imageUrl } from './artifacts.js';
+import { appChat } from './chat.js';
 import { controlAfter, drives, switching } from './control.js';
 import { clockTime, count, quoted } from './text.js';
 const STATES: Readonly<Record<BrowserState, BrowserTaskState>> = { queued: 'queued', running: 'running', parked: 'parked', completed: 'completed', failed: 'failed', cancelled: 'cancelled' };
@@ -120,7 +121,7 @@ export class BrowserDesk {
                 continuedFrom: null,
                 blocker: '',
                 lastConfirmedState: session.last_confirmed,
-                ...(typeof session.chat_id === 'string' ? { chatId: session.chat_id } : {}),
+                ...(typeof session.chat_id === 'string' ? { chatId: appChat(session.chat_id) } : {}),
             };
             const frame = desk.frame;
             return frame === null ? task : { ...task, frame: { sequence: frame.sequence, page: 'home', title: frame.title, query: '', capturedAt: frame.captured_at, image: frame.image ? imageUrl(frame.image) : null } };
@@ -128,7 +129,7 @@ export class BrowserDesk {
     }
     /** The browser card in its chat, for each session a chat asked for. */
     messages(): Message[] {
-        return [...this.#desks.values()].flatMap(desk => typeof desk.session.chat_id === 'string' ? [{ id: `browser:${desk.session.session_id}`, chatId: desk.session.chat_id, time: clockTime(desk.firstSeen), source: null, reaction: null, kind: 'browser', role: 'agent', taskId: desk.session.session_id } satisfies Message] : []);
+        return [...this.#desks.values()].flatMap(desk => typeof desk.session.chat_id === 'string' ? [{ id: `browser:${desk.session.session_id}`, chatId: appChat(desk.session.chat_id), time: clockTime(desk.firstSeen), source: null, reaction: null, kind: 'browser', role: 'agent', taskId: desk.session.session_id } satisfies Message] : []);
     }
     /** Each session's action log, as an activity thread. */
     threads(): ActivityThread[] {
