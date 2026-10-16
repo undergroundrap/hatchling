@@ -83,6 +83,10 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
         .as_ref()
         .map(|_| crate::RedactionConfig::from_env(config))
         .transpose()?;
+    // Every sealed store holds current envelopes, each bound to its
+    // store and name (WO-002), or the broker stops here, naming the
+    // files `migrate-vault` must re-seal.
+    crate::check_sealed_stores(&crate::sealed_stores(config, redaction.as_ref()))?;
     let gated = match &redaction {
         Some(redaction) => crate::output_gate::build(config, redaction)?,
         None => crate::output_gate::Built {

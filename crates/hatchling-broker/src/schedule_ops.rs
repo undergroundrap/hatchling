@@ -185,7 +185,8 @@ impl<'k> SealedScheduleStore<'k> {
     }
 
     fn vault(&self) -> Result<SealedVault<'k>, Error> {
-        SealedVault::open(self.root, self.key).map_err(|source| Error::Vault { source })
+        SealedVault::open_in(self.root, self.key, hatchling_vault::Store::SCHEDULES)
+            .map_err(|source| Error::Vault { source })
     }
 
     /// Stores a new schedule, unless the store is full.
@@ -1170,7 +1171,8 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&root);
         let key = MasterKey::generate().unwrap();
-        let vault = SealedVault::open(&root, &key).unwrap();
+        let vault =
+            SealedVault::open_in(&root, &key, hatchling_vault::Store::SCHEDULES).unwrap();
         // A JSON string is its text plus two quotes.
         let at_bound = "x".repeat(MAX_SECRET_BYTES - 2);
         assert!(write_json(&vault, "probe", &at_bound).is_ok());

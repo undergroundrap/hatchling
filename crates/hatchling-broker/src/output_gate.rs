@@ -583,7 +583,7 @@ fn seal_raw(raw_dir: &Path, key: &MasterKey, event_id: &str, text: &str) -> RawO
         .map_err(|_| String::from("the event id is not a record name"))
         .and_then(|name| {
             let secret = Secret::new(text.as_bytes().to_vec()).map_err(|e| e.to_string())?;
-            SealedVault::open(raw_dir, key)
+            SealedVault::open_in(raw_dir, key, hatchling_vault::Store::REDACTIONS)
                 .and_then(|vault| vault.store(&name, &secret))
                 .map_err(|e| e.to_string())
         });
@@ -1119,7 +1119,7 @@ mod tests {
             drop(handle);
             served.join().unwrap();
         });
-        let vault = SealedVault::open(&raw, &key).unwrap();
+        let vault = SealedVault::open_in(&raw, &key, hatchling_vault::Store::REDACTIONS).unwrap();
         let kept = vault.fetch(&"red-1-2-3".parse().unwrap()).unwrap();
         assert_eq!(kept.as_bytes(), b"the text");
         assert!(!vault.exists(&"red-1-2-5".parse().unwrap()));

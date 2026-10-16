@@ -129,7 +129,8 @@ impl<'k> SealedArtifactStore<'k> {
     }
 
     fn vault(&self) -> Result<SealedVault<'k>, Error> {
-        SealedVault::open(self.root, self.key).map_err(|source| Error::Vault { source })
+        SealedVault::open_in(self.root, self.key, hatchling_vault::Store::ARTIFACTS)
+            .map_err(|source| Error::Vault { source })
     }
 
     fn insert_on<T: serde::Serialize>(
@@ -1050,7 +1051,8 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&root);
         let key = MasterKey::generate().unwrap();
-        let vault = SealedVault::open(&root, &key).unwrap();
+        let vault =
+            SealedVault::open_in(&root, &key, hatchling_vault::Store::ARTIFACTS).unwrap();
         // A JSON string is its text plus two quotes.
         let at_bound = "x".repeat(MAX_SECRET_BYTES - 2);
         assert!(write_json(&vault, "probe", &at_bound).is_ok());

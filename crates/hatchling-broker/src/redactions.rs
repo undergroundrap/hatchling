@@ -751,7 +751,7 @@ fn raw(
         reason: format!("{id} is not a record name"),
     })?;
     let key = key()?;
-    let secret = SealedVault::open(&redaction.dir.join(RAW_DIR), &key)
+    let secret = SealedVault::open_in(&redaction.dir.join(RAW_DIR), &key, hatchling_vault::Store::REDACTIONS)
         .and_then(|vault| vault.fetch(&name))
         .map_err(|source| Error::Vault { source })?;
     let text = String::from_utf8(secret.as_bytes().to_vec()).map_err(|_| Error::Redaction {
@@ -1294,7 +1294,7 @@ mod tests {
                 raw: RawOutcome::Kept,
             })
             .unwrap();
-        SealedVault::open(&redaction.dir.join(RAW_DIR), &key)
+        SealedVault::open_in(&redaction.dir.join(RAW_DIR), &key, hatchling_vault::Store::REDACTIONS)
             .unwrap()
             .store(
                 &"red-2".parse().unwrap(),
