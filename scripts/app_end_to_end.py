@@ -14,10 +14,20 @@ import sys
 
 from readme_quickstart import expected_answer
 
-TASK = "Introduce yourself in one sentence."
+# Not first-run.py's task: the page replays the stream, so its chat may
+# already hold that message and its answer.
+TASK = "Say hello from the app."
 TOKEN_FRAGMENT = "#hatchling-ui="
 ANSWER_TIMEOUT_MS = 120_000
 
+
+# True once an agent bubble holding the answer follows the user's bubble
+# holding the task, in the page's order.
+ANSWERED = """([task, answer]) => {
+    const asked = [...document.querySelectorAll('.user-bubble')].find(b => b.textContent.includes(task));
+    return asked !== undefined && [...document.querySelectorAll('.agent-bubble')].some(b =>
+        b.textContent.includes(answer) && (asked.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0);
+}"""
 
 # A hello on the host's channel, as the page sends it: the broker's answer,
 # or nothing if it closes the connection first.
@@ -66,9 +76,10 @@ def check(address, answer):
                 raise ValueError("The token stayed in the address bar")
             page.locator("#message-input").fill(TASK)
             page.get_by_role("button", name="Send message", exact=True).click()
-            expect(page.locator(".user-bubble").filter(has_text=TASK)).to_be_visible()
-            reply = page.locator(".agent-bubble").filter(has_text=answer)
-            expect(reply).to_be_visible(timeout=ANSWER_TIMEOUT_MS)
+            expect(page.locator(".user-bubble").filter(has_text=TASK)).to_have_count(1)
+            # Only an answer after this message counts: the page may already
+            # show first-run.py's answer, the same sentence.
+            page.wait_for_function(ANSWERED, arg=[TASK, answer], timeout=ANSWER_TIMEOUT_MS)
             check_token(page, address)
         finally:
             browser.close()
