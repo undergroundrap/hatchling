@@ -20,6 +20,18 @@ use crate::Error;
 /// Where the browser opens its channel to the broker.
 pub const UI_PATH: &str = "/ui";
 
+/// Where the Machine view's channel is opened.
+pub const OPERATOR_PATH: &str = "/operator";
+
+/// Which of the broker's sockets a WebSocket is carried to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Channel {
+    /// The UI socket, on [`UI_PATH`].
+    Ui,
+    /// The operator socket, on [`OPERATOR_PATH`].
+    Operator,
+}
+
 /// The most a request's head may be.
 pub const MAX_HEAD_BYTES: usize = 8 * 1024;
 
@@ -45,11 +57,23 @@ impl Head {
         }
     }
 
-    /// The client's WebSocket key, when this is an upgrade to one on
-    /// [`UI_PATH`]: `Upgrade: websocket`, `Connection: upgrade`,
-    /// version 13, and a key.
+    /// The channel and the client's WebSocket key, when this is an
+    /// upgrade to one on [`UI_PATH`] or [`OPERATOR_PATH`]: `Upgrade:
+    /// websocket`, `Connection: upgrade`, version 13, and a key.
     #[must_use]
-    pub fn websocket_key(&self) -> Option<&str> {
+    pub fn websocket(&self) -> Option<(Channel, &str)> {
+        let channel = match self.target.as_str() {
+            UI_PATH => Channel::Ui,
+            OPERATOR_PATH => Channel::Operator,
+            _ => return None,
+        };
+        self.websocket_key().map(|key| (channel, key))
+    }
+
+    /// The client's WebSocket key, when this is an upgrade to one:
+    /// `Upgrade: websocket`, `Connection: upgrade`, version 13, and a key.
+    #[must_use]
+    fn websocket_key(&self) -> Option<&str> {
         let has = |name: &str, token: &str| {
             self.header(name).is_some_and(|value| {
                 value
@@ -57,8 +81,7 @@ impl Head {
                     .any(|part| part.trim().eq_ignore_ascii_case(token))
             })
         };
-        (self.target == UI_PATH
-            && has("upgrade", "websocket")
+        (has("upgrade", "websocket")
             && has("connection", "upgrade")
             && self.header("sec-websocket-version") == Some("13"))
         .then(|| self.header("sec-websocket-key"))
@@ -263,13 +286,32 @@ mod tests {
     }
 
     #[test]
-    fn only_a_full_websocket_upgrade_on_the_ui_path_has_a_key() {
+    fn each_channel_has_its_path_and_no_other_path_is_one() {
+        assert_eq!(
+            head(UPGRADE).unwrap().websocket(),
+            Some((Channel::Ui, "dGhlIHNhbXBsZSBub25jZQ=="))
+        );
+        let operator = UPGRADE.replace("GET /ui ", "GET /operator ");
+        assert_eq!(
+            head(&operator).unwrap().websocket(),
+            Some((Channel::Operator, "dGhlIHNhbXBsZSBub25jZQ=="))
+        );
+        for other in ["GET /other ", "GET /ui/ ", "GET /operator/x ", "GET / "] {
+            let changed = UPGRADE.replace("GET /ui ", other);
+            assert_eq!(head(&changed).unwrap().websocket(), None, "{other}");
+        }
+        // A path but no upgrade: no channel.
+        let plain = operator.replace("Upgrade: websocket", "Upgrade: h2c");
+        assert_eq!(head(&plain).unwrap().websocket(), None);
+    }
+
+    #[test]
+    fn only_a_full_websocket_upgrade_has_a_key() {
         assert_eq!(
             head(UPGRADE).unwrap().websocket_key(),
             Some("dGhlIHNhbXBsZSBub25jZQ==")
         );
         for (from, to) in [
-            ("GET /ui ", "GET /other "),
             ("Upgrade: websocket", "Upgrade: h2c"),
             ("Connection: keep-alive, Upgrade", "Connection: keep-alive"),
             ("Version: 13", "Version: 8"),
