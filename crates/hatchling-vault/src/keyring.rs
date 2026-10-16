@@ -24,10 +24,11 @@
 //! # Format
 //!
 //! Format 2 gives each wrap a label and the time it was added,
-//! for display only (`manage.rs`). This build reads format 1 too: its
-//! wraps have no label and no date, and the keyring is written as format
-//! 2 the next time it is saved. An older build refuses a format 2
-//! keyring rather than drop the labels when it saves.
+//! for display only (`manage.rs`). Format 3 adds the retiring DEK of an
+//! unfinished rotation (`rotate.rs`). This build reads formats 1 and 2
+//! too, and writes format 3 the next time it saves. An older build
+//! refuses a newer keyring rather than drop what it can't read when it
+//! saves.
 //!
 //! # Honest threat model
 //!
@@ -50,14 +51,14 @@ use crate::seal::MasterKey;
 use crate::vault::ensure_owner_only_dir;
 
 /// The keyring format this build writes.
-const FORMAT: u32 = 2;
-/// The keyring formats this build reads: 's, which has no labels or
-/// dates, and its own.
-const READS: [u32; 2] = [1, FORMAT];
+const FORMAT: u32 = 3;
+/// The keyring formats this build reads: format 1, which has no labels or
+/// dates; format 2, which has no retiring DEK; and its own.
+const READS: [u32; 3] = [1, 2, FORMAT];
 /// Associated-data prefix for a wrap: hatchling vault keyring, v1.
-const WRAP_DOMAIN: &[u8; 4] = b"HVK1";
+pub(crate) const WRAP_DOMAIN: &[u8; 4] = b"HVK1";
 /// `XChaCha20` nonce length.
-const NONCE_LEN: usize = 24;
+pub(crate) const NONCE_LEN: usize = 24;
 /// Key length, for the DEK and every KEK.
 const KEY_LEN: usize = 32;
 /// Mode of the keyring file: owner-only.
@@ -83,7 +84,7 @@ impl Kek {
         Self(*key.expose())
     }
 
-    fn cipher(&self) -> XChaCha20Poly1305 {
+    pub(crate) fn cipher(&self) -> XChaCha20Poly1305 {
         XChaCha20Poly1305::new(&self.0.into())
     }
 }
@@ -216,6 +217,20 @@ struct Stored {
     vault_id: String,
     tier: Tier,
     wraps: Vec<Wrap>,
+    /// The DEK being retired, while a rotation is unfinished
+    /// (`rotate.rs`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retiring: Option<Retiring>,
+}
+
+/// The previous DEK during a rotation, wrapped under a key derived from
+/// the new DEK (`rotate.rs`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Retiring {
+    /// The nonce, hex.
+    pub(crate) nonce: String,
+    /// The wrapped DEK with its tag, hex.
+    pub(crate) wrapped: String,
 }
 
 /// The DEK, unwrapped, with how it was unlocked.
@@ -374,6 +389,7 @@ impl Keyring {
                 vault_id,
                 tier: Tier::File,
                 wraps: Vec::new(),
+                retiring: None,
             },
         };
         let wrap = keyring.wrap(dek, kek, Factor::File)?;
@@ -483,7 +499,20 @@ impl Keyring {
 
     /// The DEK wrapped under `kek` for `factor`, with a fresh id.
     pub(crate) fn wrap(&self, dek: &MasterKey, kek: &Kek, factor: Factor) -> Result<Wrap, Error> {
-        let id = hex(&random::<8>()?);
+        self.wrap_as(hex(&random::<8>()?), dek, kek, factor)
+    }
+
+    /// `wrap` again, holding `dek` under `kek`: the same id, factor, name
+    /// and date, with a fresh nonce.
+    pub(crate) fn rewrap(&self, wrap: &Wrap, dek: &MasterKey, kek: &Kek) -> Result<Wrap, Error> {
+        let mut fresh = self.wrap_as(wrap.id.clone(), dek, kek, wrap.factor.clone())?;
+        fresh.label.clone_from(&wrap.label);
+        fresh.added = wrap.added;
+        Ok(fresh)
+    }
+
+    /// The DEK wrapped under `kek` for `factor`, as the wrap `id`.
+    fn wrap_as(&self, id: String, dek: &MasterKey, kek: &Kek, factor: Factor) -> Result<Wrap, Error> {
         let nonce = random::<NONCE_LEN>()?;
         let aad = self.aad(&id, &factor);
         let wrapped = kek
@@ -593,6 +622,34 @@ impl Keyring {
     pub(crate) fn store_wraps(&mut self, wraps: Vec<Wrap>) -> Result<(), Error> {
         self.stored.wraps = wraps;
         self.save()
+    }
+
+    /// The retiring DEK, while a rotation is unfinished.
+    pub(crate) const fn retiring(&self) -> Option<&Retiring> {
+        self.stored.retiring.as_ref()
+    }
+
+    /// Puts the keyring at `tier` with exactly `wraps` and `retiring`, in
+    /// one atomic write. If the write fails, the keyring, on disk and
+    /// here, is unchanged.
+    pub(crate) fn commit(
+        &mut self,
+        tier: Tier,
+        wraps: Vec<Wrap>,
+        retiring: Option<Retiring>,
+    ) -> Result<(), Error> {
+        let next = Stored {
+            tier,
+            wraps,
+            retiring,
+            ..self.stored.clone()
+        };
+        let current = std::mem::replace(&mut self.stored, next);
+        let saved = self.save();
+        if saved.is_err() {
+            self.stored = current;
+        }
+        saved
     }
 
     fn save(&self) -> Result<(), Error> {
@@ -922,7 +979,7 @@ mod tests {
             ("junk", String::from("{"), "not a keyring"),
             (
                 "future",
-                stored.replace("\"format\": 2", "\"format\": 3"),
+                stored.replace("\"format\": 3", "\"format\": 4"),
                 "format this build",
             ),
             (

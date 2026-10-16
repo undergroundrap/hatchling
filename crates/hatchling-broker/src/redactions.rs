@@ -412,7 +412,7 @@ pub fn run_redactions(
 }
 
 /// Every operator subcommand, for the broker's usage line.
-pub const SUBCOMMANDS: &str = "usage: hatchling-broker [migrate-vault | rekey-vault <new-key-file> | \
+pub const SUBCOMMANDS: &str = "usage: hatchling-broker [migrate-vault | rekey-vault [<new-key-file>] | \
      vault-keyring <init | enroll-totp | backup-codes | status | add-key | remove-key | label-key> | \
      redactions <list | show | stats | override | categories | raw> | vault-audit [log [count]]]";
 

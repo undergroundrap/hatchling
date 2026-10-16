@@ -110,6 +110,19 @@ impl Keyring {
             .filter(|wrap| wrap.factor.tier().is_some())
             .cloned()
             .collect();
+        let (code_wraps, codes) = self.fresh_backup_codes(unlocked.key())?;
+        wraps.extend(code_wraps);
+        self.store_wraps(wraps)?;
+        Ok(codes)
+    }
+
+    /// A new set of backup codes for `dek`: their wraps, and the codes to
+    /// show once. Nothing is stored.
+    pub(crate) fn fresh_backup_codes(
+        &self,
+        dek: &crate::MasterKey,
+    ) -> Result<(Vec<crate::Wrap>, BackupCodes), Error> {
+        let mut wraps = Vec::with_capacity(CODE_COUNT);
         let mut codes = Vec::with_capacity(CODE_COUNT);
         for _ in 0..CODE_COUNT {
             let code = Zeroizing::new(random::<CODE_BYTES>()?);
@@ -117,7 +130,7 @@ impl Keyring {
             let verifier = derive(self.vault_id(), &salt, code.as_slice(), VERIFY_INFO);
             let kek = Kek::from_bytes(*derive(self.vault_id(), &salt, code.as_slice(), KEK_INFO));
             wraps.push(self.wrap(
-                unlocked.key(),
+                dek,
                 &kek,
                 Factor::BackupCode {
                     verifier: hex(verifier.as_slice()),
@@ -126,8 +139,7 @@ impl Keyring {
             )?);
             codes.push(Zeroizing::new(shown(code.as_slice())));
         }
-        self.store_wraps(wraps)?;
-        Ok(BackupCodes(codes))
+        Ok((wraps, BackupCodes(codes)))
     }
 
     /// How many unused backup codes the vault has.
@@ -190,7 +202,7 @@ impl Keyring {
 mod tests {
     use super::*;
     use crate::keyring::Tier;
-    use crate::testutil::test_dir;
+    use crate::testutil::{settle, test_dir};
     use crate::totp::totp_code;
     use crate::virtual_key::VirtualAuthenticator;
     use crate::{MasterKey, SealedVault, Secret, SecretName, SingleKeyRisk};
@@ -335,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_set_replaces_the_old_and_codes_survive_a_tier_change() {
+    fn a_new_set_replaces_the_old_and_a_tier_change_brings_a_new_set() {
         let dir = test_dir("backup-survive");
         let (mut keyring, kek) = vault(&dir);
         let from_file = keyring.unlock_file(&kek).unwrap();
@@ -372,11 +384,23 @@ mod tests {
             .unwrap()
             .to_owned();
         let seed = read_base32(&seed);
-        keyring
+        let rotated = keyring
             .confirm_totp(&from_file, &pending, &totp_code(&seed, now), now)
             .unwrap();
-        assert_eq!(keyring.backup_codes_left(), CODE_COUNT);
-        let recovered = keyring.recover(fresh.first().unwrap()).unwrap();
+        let renewed = settle(&mut keyring, rotated, &dir.join("vault"));
+        assert_eq!(
+            (keyring.backup_codes_left(), renewed.len()),
+            (CODE_COUNT, CODE_COUNT)
+        );
+        assert!(
+            matches!(
+                keyring.recover(fresh.first().unwrap()),
+                Err(Error::UnlockFailed)
+            ),
+            "the set from before the new key is gone"
+        );
+        let recovered = keyring.recover(renewed.first().unwrap()).unwrap();
+        assert!(reads_the_secret(&dir, recovered.key()));
         assert_eq!(
             (recovered.via(), recovered.is_recovery()),
             (Tier::Totp, true)
@@ -397,9 +421,10 @@ mod tests {
                 .next()
                 .unwrap(),
         );
-        keyring
+        let rotated = keyring
             .confirm_totp(&recovered, &again, &totp_code(&seed, now + 60), now + 60)
             .unwrap();
+        settle(&mut keyring, rotated, &dir.join("vault"));
         assert_eq!(keyring.tier(), Tier::Totp);
         // A wrong-tier proof cannot make codes either.
         assert!(matches!(
@@ -436,19 +461,25 @@ mod tests {
             .map(str::to_owned)
             .collect();
         let (mut primary, mut backup) = (VirtualAuthenticator::new(), VirtualAuthenticator::new());
-        keyring
+        let rotated = keyring
             .enroll_hardware_keys(&from_file, &mut [&mut primary, &mut backup])
             .unwrap();
+        let renewed = settle(&mut keyring, rotated, &dir.join("vault"));
         assert_eq!(
             keyring.backup_codes_left(),
             CODE_COUNT,
-            "the codes outlive the tier change"
+            "a new key, a new set of codes"
         );
+        assert!(renewed.iter().all(|code| !codes.contains(code)));
         // Both keys lost.
         drop((primary, backup));
         let path = dir.join("keys").join("keyring");
         let mut keyring = Keyring::load(&path).unwrap();
-        let recovered = keyring.recover(codes.get(3).unwrap()).unwrap();
+        assert!(
+            matches!(keyring.recover(codes.get(3).unwrap()), Err(Error::UnlockFailed)),
+            "the set from before the new key opens nothing"
+        );
+        let recovered = keyring.recover(renewed.get(3).unwrap()).unwrap();
         assert!(
             reads_the_secret(&dir, recovered.key()),
             "the secrets are back"
@@ -462,9 +493,11 @@ mod tests {
         );
         let (mut new_primary, mut new_backup) =
             (VirtualAuthenticator::new(), VirtualAuthenticator::new());
-        keyring
+        assert_eq!(keyring.backup_codes_left(), CODE_COUNT - 1, "the code used is burned");
+        let rotated = keyring
             .enroll_hardware_keys(&recovered, &mut [&mut new_primary, &mut new_backup])
             .unwrap();
+        let again = settle(&mut keyring, rotated, &dir.join("vault"));
         let keyring = Keyring::load(&path).unwrap();
         assert_eq!(keyring.tier(), Tier::HardwareKey);
         assert!(reads_the_secret(
@@ -472,9 +505,9 @@ mod tests {
             keyring.unlock_hardware_key(&mut new_backup).unwrap().key()
         ));
         assert_eq!(
-            keyring.backup_codes_left(),
-            CODE_COUNT - 1,
-            "the code used is burned; the rest still stand"
+            (keyring.backup_codes_left(), again.len()),
+            (CODE_COUNT, CODE_COUNT),
+            "the new keys come with a whole new set"
         );
     }
 
@@ -501,9 +534,10 @@ mod tests {
             .codes()
             .map(str::to_owned)
             .collect();
-        keyring
+        let rotated = keyring
             .enroll_single_hardware_key(&from_file, &mut only, SingleKeyRisk::accepted())
             .unwrap();
+        let renewed = settle(&mut keyring, rotated, &dir.join("vault"));
         assert_eq!(
             (keyring.tier(), keyring.wraps().len()),
             (Tier::HardwareKey, 1 + CODE_COUNT)
@@ -512,9 +546,13 @@ mod tests {
             &dir,
             keyring.unlock_hardware_key(&mut only).unwrap().key()
         ));
+        assert!(matches!(
+            keyring.recover(codes.first().unwrap()),
+            Err(Error::UnlockFailed)
+        ));
         assert!(
-            keyring.recover(codes.first().unwrap()).is_ok(),
-            "and the codes are the way back"
+            keyring.recover(renewed.first().unwrap()).is_ok(),
+            "and the new codes are the way back"
         );
         let other = test_dir("backup-single-foreign");
         let (foreign, foreign_kek) = vault(&other);

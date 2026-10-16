@@ -27,6 +27,7 @@ use zeroize::{Zeroize as _, Zeroizing};
 
 use crate::Error;
 use crate::keyring::{Factor, Kek, Keyring, Tier, Unlocked, hex, random, unhex};
+use crate::rotate::Rotated;
 
 /// Seconds per code.
 pub const STEP_SECONDS: u64 = 30;
@@ -113,7 +114,7 @@ fn matching_step(seed: &[u8], code: u32, now: u64, after: Option<u64>) -> Option
 
 /// The TOTP tier's KEK: Argon2id of the seed, salted by the vault id and
 /// the wrap's own salt.
-fn kek(vault_id: &str, seed: &[u8], salt: &[u8]) -> Result<Kek, Error> {
+pub(crate) fn kek(vault_id: &str, seed: &[u8], salt: &[u8]) -> Result<Kek, Error> {
     let params = Params::new(ARGON_MEMORY_KIB, ARGON_ITERATIONS, ARGON_LANES, Some(32))
         .map_err(|_| Error::Kdf)?;
     let mut okm = Zeroizing::new([0u8; 32]);
@@ -168,28 +169,32 @@ impl Keyring {
     }
 
     /// Puts the vault at the TOTP tier once `code`, from the app, matches
-    /// the pending seed at `now` (Unix seconds). Every other wrap is
-    /// dropped. A rejected code changes nothing, and may be tried again.
+    /// the pending seed at `now` (Unix seconds), around a fresh DEK: the
+    /// rotation is committed, and the stores move to it next
+    /// (`rotate.rs`). Every other wrap is dropped. A rejected code changes
+    /// nothing, and may be tried again.
     ///
     /// # Errors
     ///
     /// Returns [`Error::TierChange`], [`Error::CodeRejected`] (and nothing
-    /// changes), or a derivation, I/O or randomness error.
+    /// changes), [`Error::RotationUnfinished`], or a derivation, I/O or
+    /// randomness error.
     pub fn confirm_totp(
         &mut self,
         unlocked: &Unlocked,
         pending: &PendingTotp,
         code: &str,
         now: u64,
-    ) -> Result<(), Error> {
+    ) -> Result<Rotated, Error> {
         self.authorize(unlocked, Tier::Totp)?;
         let step = parse_code(code)
             .and_then(|code| matching_step(pending.seed.as_slice(), code, now, None))
             .ok_or(Error::CodeRejected)?;
+        let rotation = self.begin_rotation(unlocked, Tier::Totp)?;
         let salt = random::<16>()?;
         let kek = kek(self.vault_id(), pending.seed.as_slice(), &salt)?;
         let wrap = self.wrap(
-            unlocked.key(),
+            rotation.new_key(),
             &kek,
             Factor::Totp {
                 seed: hex(pending.seed.as_slice()),
@@ -197,7 +202,7 @@ impl Keyring {
                 last_step: step,
             },
         )?;
-        self.set_tier(Tier::Totp, vec![wrap])
+        self.commit_rotation(rotation, Tier::Totp, vec![wrap])
     }
 
     /// Unlocks the TOTP tier with a current code from the app. The code's
@@ -243,10 +248,16 @@ impl Keyring {
     }
 }
 
+/// The seed a pending enrollment shows the app, for tests acting as it.
+#[cfg(test)]
+pub(crate) fn seed_of(pending: &PendingTotp) -> Vec<u8> {
+    pending.seed.to_vec()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::test_dir;
+    use crate::testutil::{settle, test_dir};
     use crate::{MasterKey, SealedVault, Secret, SecretName};
 
     /// RFC 4226 / RFC 6238's test seed.
@@ -391,10 +402,6 @@ mod tests {
         )
     }
 
-    fn seed_of(pending: &PendingTotp) -> Vec<u8> {
-        pending.seed.to_vec()
-    }
-
     #[test]
     fn totp_enrolls_only_after_a_matching_code_then_unlocks_once_per_code() {
         let dir = test_dir("totp-enroll");
@@ -433,9 +440,11 @@ mod tests {
         // The right one switches tier, and the file KEK is no way in after.
         let pending = keyring.begin_totp(&unlocked).unwrap();
         let seed = seed_of(&pending);
-        keyring
+        let rotated = keyring
             .confirm_totp(&unlocked, &pending, &totp_code(&seed, now), now)
             .unwrap();
+        assert!(rotated.codes.is_none(), "no codes before, none made");
+        settle(&mut keyring, rotated, &dir.join("vault"));
         let mut keyring = Keyring::load(&dir.join("keys").join("keyring")).unwrap();
         assert_eq!((keyring.tier(), keyring.wraps().len()), (Tier::Totp, 1));
         assert!(matches!(

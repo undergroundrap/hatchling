@@ -23,6 +23,8 @@ use zeroize::Zeroize as _;
 
 use crate::Error;
 use crate::keyring::{Factor, Kek, Keyring, Tier, Unlocked, hex, random, unhex};
+use crate::rotate::Rotated;
+use crate::seal::MasterKey;
 
 /// The relying-party id the vault's credentials are registered under.
 pub const RP_ID: &str = "hatchling.vault";
@@ -106,9 +108,11 @@ fn kek(vault_id: &str, credential_id: &[u8], output: &[u8; 32]) -> Kek {
 }
 
 impl Keyring {
-    /// Puts the vault at the hardware-key tier: one wrap per key, each
-    /// under a KEK only that key can rebuild. Every other wrap is
-    /// dropped, so no weaker way in remains.
+    /// Puts the vault at the hardware-key tier around a fresh DEK: one
+    /// wrap per key, each under a KEK only that key can rebuild. Every
+    /// other wrap is dropped, so no weaker way in remains, and the
+    /// rotation is committed for the stores to move to the new DEK
+    /// (`rotate.rs`).
     ///
     /// Needs the current tier's unlock, and two keys: a primary and a
     /// backup. A key without `hmac-secret` stops the enrollment, and the
@@ -117,52 +121,87 @@ impl Keyring {
     /// # Errors
     ///
     /// Returns [`Error::TierChange`], [`Error::NeedTwoKeys`],
-    /// [`Error::MissingHmacSecret`], [`Error::Authenticator`], or an
-    /// I/O or randomness error.
+    /// [`Error::MissingHmacSecret`], [`Error::Authenticator`],
+    /// [`Error::RotationUnfinished`], or an I/O or randomness error.
     pub fn enroll_hardware_keys(
         &mut self,
         unlocked: &Unlocked,
         keys: &mut [&mut dyn Authenticator],
-    ) -> Result<(), Error> {
+    ) -> Result<Rotated, Error> {
         self.authorize(unlocked, Tier::HardwareKey)?;
         if keys.len() < 2 {
             return Err(Error::NeedTwoKeys);
         }
+        let rotation = self.begin_rotation(unlocked, Tier::HardwareKey)?;
         let mut wraps = Vec::with_capacity(keys.len());
         for device in keys.iter_mut() {
-            wraps.push(self.hardware_wrap(unlocked, &mut **device)?);
+            wraps.push(self.hardware_wrap(rotation.new_key(), &mut **device)?);
         }
-        self.set_tier(Tier::HardwareKey, wraps)
+        self.commit_rotation(rotation, Tier::HardwareKey, wraps)
     }
 
-    /// Puts the vault at the hardware-key tier with one key, knowingly:
+    /// Puts the vault at the hardware-key tier with one key, knowingly,
+    /// around a fresh DEK as [`Keyring::enroll_hardware_keys`] does:
     /// backup codes must already exist, since they are the only way back
-    /// if the key is lost.
+    /// if the key is lost, and a new set replaces them.
     ///
     /// # Errors
     ///
     /// Returns [`Error::TierChange`], [`Error::NeedBackupCodes`],
-    /// [`Error::MissingHmacSecret`], [`Error::Authenticator`], or an I/O
-    /// or randomness error; the keyring is then unchanged.
+    /// [`Error::MissingHmacSecret`], [`Error::Authenticator`],
+    /// [`Error::RotationUnfinished`], or an I/O or randomness error; the
+    /// keyring is then unchanged.
     pub fn enroll_single_hardware_key(
         &mut self,
         unlocked: &Unlocked,
         device: &mut dyn Authenticator,
         risk: SingleKeyRisk,
-    ) -> Result<(), Error> {
+    ) -> Result<Rotated, Error> {
         let SingleKeyRisk(()) = risk;
         self.authorize(unlocked, Tier::HardwareKey)?;
         if self.backup_codes_left() == 0 {
             return Err(Error::NeedBackupCodes);
         }
-        let wrap = self.hardware_wrap(unlocked, device)?;
-        self.set_tier(Tier::HardwareKey, vec![wrap])
+        let rotation = self.begin_rotation(unlocked, Tier::HardwareKey)?;
+        let wrap = self.hardware_wrap(rotation.new_key(), device)?;
+        self.commit_rotation(rotation, Tier::HardwareKey, vec![wrap])
     }
 
-    /// One credential on `key`, and the DEK wrapped under its KEK.
+    /// The KEK of the enrolled key whose wrap is `wrap`, from the first of
+    /// `keys` that answers for its credential with a KEK that opens it.
+    pub(crate) fn key_kek(
+        &self,
+        wrap: &crate::Wrap,
+        keys: &mut [&mut dyn Authenticator],
+    ) -> Result<Kek, Error> {
+        let absent = || Error::KeyAbsent {
+            key: if wrap.label().is_empty() {
+                wrap.id.clone()
+            } else {
+                format!("{} ({})", wrap.label(), wrap.id)
+            },
+        };
+        let Factor::Fido2 { credential, salt } = &wrap.factor else {
+            return Err(absent());
+        };
+        let credential = unhex(credential).ok_or_else(absent)?;
+        let salt = unhex(salt)
+            .and_then(|salt| <[u8; 32]>::try_from(salt).ok())
+            .ok_or_else(absent)?;
+        keys.iter_mut()
+            .find_map(|device| {
+                let mut output = device.hmac_secret(RP_ID, &credential, &salt).ok()?;
+                let kek = kek(self.vault_id(), &credential, &output);
+                output.zeroize();
+                self.unwrap(wrap, &kek).ok().map(|_| kek)
+            })
+            .ok_or_else(absent)
+    }
+
+    /// One credential on `key`, and `dek` wrapped under its KEK.
     pub(crate) fn hardware_wrap(
         &self,
-        unlocked: &Unlocked,
+        dek: &MasterKey,
         device: &mut dyn Authenticator,
     ) -> Result<crate::Wrap, Error> {
         let failed = |err: AuthenticatorError| Error::Authenticator {
@@ -181,7 +220,7 @@ impl Keyring {
         let kek = kek(self.vault_id(), &credential.id, &output);
         output.zeroize();
         self.wrap(
-            unlocked.key(),
+            dek,
             &kek,
             Factor::Fido2 {
                 credential: hex(&credential.id),
@@ -225,7 +264,7 @@ impl Keyring {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::test_dir;
+    use crate::testutil::{settle, test_dir};
     use crate::virtual_key::VirtualAuthenticator;
     use crate::{MasterKey, SealedVault, Secret, SecretName};
 
@@ -279,9 +318,10 @@ mod tests {
             VirtualAuthenticator::new(),
         );
         let unlocked = keyring.unlock_file(&kek).unwrap();
-        keyring
+        let rotated = keyring
             .enroll_hardware_keys(&unlocked, &mut [&mut primary, &mut backup])
             .unwrap();
+        settle(&mut keyring, rotated, &dir.join("vault"));
         let keyring = Keyring::load(&dir.join("keys").join("keyring")).unwrap();
         assert_eq!(keyring.tier(), Tier::HardwareKey);
         assert_eq!(
@@ -445,9 +485,10 @@ mod tests {
             keyring.enroll_hardware_keys(&foreign, &mut [&mut primary, &mut backup]),
             Err(Error::TierChange { .. })
         ));
-        keyring
+        let rotated = keyring
             .enroll_hardware_keys(&from_file, &mut [&mut primary, &mut backup])
             .unwrap();
+        settle(&mut keyring, rotated, &dir.join("vault"));
         // The downgrade trap: the file-tier unlock from before is stale now.
         let err = keyring.use_file_tier(&from_file, &file_kek()).unwrap_err();
         assert!(matches!(err, Error::TierChange { .. }), "{err}");
@@ -480,7 +521,7 @@ mod tests {
         let (keyring, kek, _) = vault(&dir);
         let unlocked = keyring.unlock_file(&kek).unwrap();
         let mut device = VirtualAuthenticator::new();
-        let wrap = keyring.hardware_wrap(&unlocked, &mut device).unwrap();
+        let wrap = keyring.hardware_wrap(unlocked.key(), &mut device).unwrap();
         let (credential, salt) = parts(&wrap.factor);
         let credential = unhex(&credential).unwrap();
         let salt = <[u8; 32]>::try_from(unhex(&salt).unwrap()).unwrap();
@@ -491,7 +532,7 @@ mod tests {
                 .is_ok()
         );
         assert!(matches!(
-            keyring.hardware_wrap(&unlocked, &mut VirtualAuthenticator::without_hmac_secret()),
+            keyring.hardware_wrap(unlocked.key(), &mut VirtualAuthenticator::without_hmac_secret()),
             Err(Error::MissingHmacSecret)
         ));
     }

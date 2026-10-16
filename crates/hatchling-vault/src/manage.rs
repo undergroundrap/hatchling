@@ -179,7 +179,7 @@ impl Keyring {
             });
         }
         self.authorize(unlocked, Tier::HardwareKey)?;
-        let mut wrap = self.hardware_wrap(unlocked, device)?;
+        let mut wrap = self.hardware_wrap(unlocked.key(), device)?;
         let credential = credential_of(&wrap);
         if self
             .wraps()
@@ -347,7 +347,7 @@ mod tests {
     use crate::fido2::{AuthenticatorError, Credential};
     use crate::keyring::{Kek, now};
     use crate::seal::MasterKey;
-    use crate::testutil::test_dir;
+    use crate::testutil::{settle, test_dir};
     use crate::virtual_key::VirtualAuthenticator;
 
     /// A genuine keyring, written by the unchanged base code
@@ -451,25 +451,20 @@ mod tests {
         let kek = Kek::from_bytes([7; 32]);
         let mut keyring = Keyring::create(&dir.join("keys").join("keyring"), &dek, &kek).unwrap();
         let unlocked = keyring.unlock_file(&kek).unwrap();
-        let made = if codes {
-            keyring
-                .generate_backup_codes(&unlocked)
-                .unwrap()
-                .codes()
-                .map(str::to_owned)
-                .collect()
-        } else {
-            Vec::new()
-        };
+        if codes {
+            keyring.generate_backup_codes(&unlocked).unwrap();
+        }
         let mut keys: Vec<VirtualAuthenticator> =
             (0..count).map(|_| VirtualAuthenticator::new()).collect();
         let mut devices: Vec<&mut dyn Authenticator> = keys
             .iter_mut()
             .map(|key| -> &mut dyn Authenticator { key })
             .collect();
-        keyring
+        let rotated = keyring
             .enroll_hardware_keys(&unlocked, &mut devices)
             .unwrap();
+        // The enrollment's new key brings the codes to use.
+        let made = settle(&mut keyring, rotated, &dir.join("vault"));
         (keyring, keys, made)
     }
 
@@ -538,13 +533,13 @@ mod tests {
         );
         let by_b = keyring.unlock_hardware_key(&mut FixedKey::b()).unwrap();
         assert_eq!(by_b.opened_by(), Some(WO055_KEY_B));
-        // The next save writes format 2, with every wrap as it was.
+        // The next save writes the current format, with every wrap as it was.
         keyring
             .label_key(&by_a, WO055_KEY_B, &"YubiKey 5C, spare".parse().unwrap())
             .unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(
-            text.contains("\"format\": 2") && text.contains("\"label\": \"YubiKey 5C, spare\"")
+            text.contains("\"format\": 3") && text.contains("\"label\": \"YubiKey 5C, spare\"")
         );
         let mut migrated = Keyring::load(&path).unwrap();
         let kept: Vec<(String, Factor)> = migrated
