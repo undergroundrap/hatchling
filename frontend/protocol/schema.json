@@ -2720,6 +2720,34 @@
         }
       ]
     },
+    "EgressDecision": {
+      "description": "One egress decision: never the request's path, headers or body, nor\nthe answer.",
+      "properties": {
+        "at": {
+          "description": "When, as an RFC 3339 timestamp.",
+          "type": "string"
+        },
+        "cell_id": {
+          "description": "The cell that asked.",
+          "type": "string"
+        },
+        "destination": {
+          "description": "Where it asked to go, as it named it (the cell's own text, so\nbounded, and shown as text).",
+          "type": "string"
+        },
+        "verdict": {
+          "$ref": "#/$defs/EgressVerdict",
+          "description": "What the broker decided."
+        }
+      },
+      "required": [
+        "at",
+        "cell_id",
+        "destination",
+        "verdict"
+      ],
+      "type": "object"
+    },
     "EgressOp": {
       "description": "An egress operation: the agent's post-handshake outbound-network\nrequest vocabulary.\n\nThe agent never touches the network directly. It presents a\nbroker-minted surrogate (see `hatchling-egress`); the broker\nvalidates the surrogate, checks the destination against the\nallowlist, swaps in the real credential, and forwards the request.\n\nThere are two ops: `MintSurrogate` (ask the broker for a surrogate\nfor a destination the peer is granted for) and `Egress` (perform a\nrequest with a previously minted surrogate). Two more move a body\ntoo large for one frame (v13): `Stage` sends a request body's parts\nbefore its `Egress` op, and `Read` fetches an answer's body after\nits `Ok`, a part at a time.\n\nPublic because the egress protocol is a cross-crate contract.",
       "oneOf": [
@@ -2986,6 +3014,41 @@
             "r"
           ],
           "type": "object"
+        }
+      ]
+    },
+    "EgressVerdict": {
+      "description": "What the broker decided about one egress request, and why.",
+      "oneOf": [
+        {
+          "const": "allowed",
+          "description": "Forwarded, and answered.",
+          "type": "string"
+        },
+        {
+          "const": "no_grant",
+          "description": "Refused: the cell holds no grant for the destination.",
+          "type": "string"
+        },
+        {
+          "const": "not_allowed",
+          "description": "Refused: the destination isn't on the operator's allowlist, or\nhas no credential.",
+          "type": "string"
+        },
+        {
+          "const": "bad_surrogate",
+          "description": "Refused: the request's surrogate was bad, expired, or another\npeer's or destination's.",
+          "type": "string"
+        },
+        {
+          "const": "policy",
+          "description": "Refused by the model request policy: it would have the model\nfetch for the cell.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "Allowed, but the request failed upstream or on the way.",
+          "type": "string"
         }
       ]
     },
@@ -4390,6 +4453,27 @@
             "sessions"
           ],
           "type": "object"
+        },
+        {
+          "description": "[`OperatorQuery::Egress`], oldest first: the most recent ones the\nbroker keeps.",
+          "properties": {
+            "answer": {
+              "const": "egress",
+              "type": "string"
+            },
+            "decisions": {
+              "description": "The decisions.",
+              "items": {
+                "$ref": "#/$defs/EgressDecision"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "answer",
+            "decisions"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -4458,6 +4542,20 @@
           "properties": {
             "query": {
               "const": "sessions",
+              "type": "string"
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The broker's recent egress decisions: when, for which cell, where\nto, and the verdict.",
+          "properties": {
+            "query": {
+              "const": "egress",
               "type": "string"
             }
           },

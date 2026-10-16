@@ -53,6 +53,9 @@ pub enum OperatorQuery {
     /// The API and UI connections open now: each one's socket and when it
     /// was admitted.
     Sessions {},
+    /// The broker's recent egress decisions: when, for which cell, where
+    /// to, and the verdict.
+    Egress {},
 }
 
 /// A frame the operator's client receives.
@@ -107,6 +110,50 @@ pub enum OperatorAnswer {
         /// The connections open.
         sessions: Vec<OperatorSession>,
     },
+    /// [`OperatorQuery::Egress`], oldest first: the most recent ones the
+    /// broker keeps.
+    Egress {
+        /// The decisions.
+        decisions: Vec<EgressDecision>,
+    },
+}
+
+/// One egress decision: never the request's path, headers or body, nor
+/// the answer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct EgressDecision {
+    /// When, as an RFC 3339 timestamp.
+    pub at: String,
+    /// The cell that asked.
+    pub cell_id: String,
+    /// Where it asked to go, as it named it (the cell's own text, so
+    /// bounded, and shown as text).
+    pub destination: String,
+    /// What the broker decided.
+    pub verdict: EgressVerdict,
+}
+
+/// What the broker decided about one egress request, and why.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum EgressVerdict {
+    /// Forwarded, and answered.
+    Allowed,
+    /// Refused: the cell holds no grant for the destination.
+    NoGrant,
+    /// Refused: the destination isn't on the operator's allowlist, or
+    /// has no credential.
+    NotAllowed,
+    /// Refused: the request's surrogate was bad, expired, or another
+    /// peer's or destination's.
+    BadSurrogate,
+    /// Refused by the model request policy: it would have the model
+    /// fetch for the cell.
+    Policy,
+    /// Allowed, but the request failed upstream or on the way.
+    Failed,
 }
 
 /// One open API or UI connection, as an operator sees it: when and where,
@@ -322,6 +369,39 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<OperatorQuery>(json!({"query": "sessions"})).unwrap(),
             OperatorQuery::Sessions {}
+        );
+    }
+
+    #[test]
+    fn an_egress_decision_has_its_wire_shape() {
+        let decisions = OperatorAnswer::Egress {
+            decisions: vec![EgressDecision {
+                at: String::from("2026-10-16T09:00:00Z"),
+                cell_id: String::from("run-1f2e"),
+                destination: String::from("localhost:18089"),
+                verdict: EgressVerdict::NoGrant,
+            }],
+        };
+        let wire = json!({"answer": "egress", "decisions": [{"at": "2026-10-16T09:00:00Z",
+            "cell_id": "run-1f2e", "destination": "localhost:18089", "verdict": "no_grant"}]});
+        assert_eq!(serde_json::to_value(&decisions).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<OperatorAnswer>(wire).unwrap(),
+            decisions
+        );
+        for (verdict, name) in [
+            (EgressVerdict::Allowed, "allowed"),
+            (EgressVerdict::NoGrant, "no_grant"),
+            (EgressVerdict::NotAllowed, "not_allowed"),
+            (EgressVerdict::BadSurrogate, "bad_surrogate"),
+            (EgressVerdict::Policy, "policy"),
+            (EgressVerdict::Failed, "failed"),
+        ] {
+            assert_eq!(serde_json::to_value(verdict).unwrap(), json!(name));
+        }
+        assert_eq!(
+            serde_json::from_value::<OperatorQuery>(json!({"query": "egress"})).unwrap(),
+            OperatorQuery::Egress {}
         );
     }
 
