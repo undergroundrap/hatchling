@@ -1221,7 +1221,7 @@ pub(crate) fn destination_to_secret_name(destination: &str) -> String {
     clippy::type_complexity,
     reason = "the credential-lookup closure type is inherent to the proxy's generic design; a named type would add indirection without clarity"
 )]
-fn handle_egress_op(
+pub(crate) fn handle_egress_op(
     proxy: &Proxy<impl Fn(&str) -> Option<zeroize::Zeroizing<Vec<u8>>>>,
     egress_config: &EgressConfig,
     op: &EgressOp,

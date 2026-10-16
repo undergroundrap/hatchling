@@ -616,6 +616,173 @@ mod tests {
         );
     }
 
+    /// What a session can carry that no operator answer may: a chat line
+    /// (as the task of the run that answers it), a secret, a surrogate, and
+    /// a request's path, header and body.
+    const PLANTED: [&str; 5] = [
+        "planted-chat-7f3a",
+        "planted-secret-7f3a",
+        "planted-path-7f3a",
+        "planted-header-7f3a",
+        "planted-body-7f3a",
+    ];
+
+    /// Sends one egress request carrying the planted path, header and
+    /// body under a real surrogate, for a destination whose credential is
+    /// planted, as the cell `op-planted`; returns the surrogate.
+    fn planted_egress() -> String {
+        use hatchling_core::{EgressOp, EgressResult, encode_secret};
+        let proxy = hatchling_egress::Proxy::new("localhost:443", |_: &str| {
+            Some(zeroize::Zeroizing::new(PLANTED[1].as_bytes().to_vec()))
+        })
+        .unwrap();
+        let egress = crate::EgressConfig {
+            allowlist: crate::EgressAllowlist::new("localhost:443"),
+            grants: vec![String::from("localhost:443")],
+        };
+        let cell_id: hatchling_core::CellId = "op-planted".parse().unwrap();
+        let mut pages = crate::egress_pages::Pages::default();
+        let surrogate = proxy.mint_surrogate(1000, "localhost:443", 60).unwrap();
+        let request = EgressOp::Egress {
+            method: String::from("POST"),
+            destination: String::from("localhost:443"),
+            path: format!("/{}", PLANTED[2]),
+            headers: vec![(String::from("x-planted"), String::from(PLANTED[3]))],
+            body_b64: encode_secret(PLANTED[4].as_bytes()),
+            surrogate_b64: surrogate.clone(),
+            staged: 0,
+        };
+        let answered =
+            crate::serve::handle_egress_op(&proxy, &egress, &request, &cell_id, 1000, &mut pages)
+                .unwrap();
+        assert_ne!(
+            answered,
+            EgressResult::Denied,
+            "it reached the proxy's forward"
+        );
+        surrogate
+    }
+
+    /// A run whose task is the planted chat line, as the chat would start
+    /// it.
+    fn planted_run() -> (crate::ScheduledRun, hatchling_scheduler::RunRequest) {
+        let run = crate::ScheduledRun {
+            task: String::from(PLANTED[0]),
+            missed: false,
+            due: 1,
+            model_endpoint: None,
+            model_name: None,
+            model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
+            depth: 0,
+            event: None,
+            max_steps: None,
+            subagent: false,
+        };
+        let request = hatchling_scheduler::RunRequest {
+            schedule_id: String::from(PLANTED[0]),
+            task: String::from(PLANTED[0]),
+            grants: Vec::new(),
+            due: hatchling_scheduler::Timestamp::now(),
+            missed: false,
+            channel: String::from("local"),
+            depth: 0,
+            event: None,
+            space: None,
+            feed: None,
+        };
+        (run, request)
+    }
+
+    /// Every answer `operator` gives, as its client receives them.
+    fn every_answer(operator: &Operator) -> Vec<String> {
+        [
+            OperatorQuery::Broker {},
+            OperatorQuery::Cells {},
+            OperatorQuery::Sessions {},
+            OperatorQuery::Egress {},
+        ]
+        .into_iter()
+        .map(|query| {
+            serde_json::to_string(&OperatorResponse::Answer {
+                request_id: String::from("q"),
+                answer: operator.answer(query, Duration::ZERO),
+            })
+            .unwrap()
+        })
+        .collect()
+    }
+
+    #[test]
+    fn nothing_planted_reaches_an_operator_answer() {
+        use hatchling_isolation::IsolationBackend as _;
+        let (operator, _socket) = operator("planted", real_uid());
+        let surrogate = planted_egress();
+        let mut config = owner_config(None);
+        config.agent_uid = PeerUid::from_kernel(
+            hatchling_isolation::platform()
+                .identity(None, 1)
+                .unwrap()
+                .principal,
+        );
+        let key = hatchling_vault::MasterKey::generate().unwrap();
+        let root =
+            std::env::temp_dir().join(format!("hatchling-op-planted-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let (run, request) = planted_run();
+        std::thread::scope(|scope| {
+            let launcher = crate::CellLauncher::new(
+                scope,
+                &config,
+                &key,
+                crate::RunEnv {
+                    spawner: std::path::PathBuf::from("/bin/sh"),
+                    agent_bin: std::path::PathBuf::from("/bin/true"),
+                    run_root: root.clone(),
+                    timeout: Duration::from_secs(5),
+                },
+            );
+            // Alive while the operator asks.
+            let started = launcher
+                .launch_cell(PLANTED[0], run, |token, socket| {
+                    crate::scoped_config(&config, &request, token, socket)
+                })
+                .unwrap();
+            let answers = every_answer(&operator);
+            // The session's own trail is there, so the check is not vacuous.
+            assert!(answers.iter().any(|answer| answer.contains("op-planted")));
+            for planted in PLANTED.iter().copied().chain([surrogate.as_str()]) {
+                for answer in &answers {
+                    assert!(!answer.contains(planted), "{planted} reached an answer");
+                }
+            }
+            drop(started);
+        });
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_operator_code_opens_no_network_connection() {
+        // What it answers is gathered in the broker's memory; nothing here
+        // reaches the network, on its own behalf or anyone's.
+        for (file, source) in [
+            ("operator.rs", include_str!("operator.rs")),
+            ("machine.rs", include_str!("machine.rs")),
+        ] {
+            let code = source.split("#[cfg(test)]").next().unwrap_or_default();
+            for network in [
+                "TcpStream",
+                "TcpListener",
+                "UdpSocket",
+                "ToSocketAddrs",
+                "hatchling_egress",
+                "Proxy",
+            ] {
+                assert!(!code.contains(network), "{file} names {network}");
+            }
+        }
+    }
+
     #[test]
     fn answers_carry_the_brokers_start_and_uptime() {
         let (operator, _socket) = operator("answers", real_uid());
