@@ -954,7 +954,9 @@ mod tests {
     /// A version-1 envelope of `plaintext`, as earlier builds sealed it:
     /// empty associated data.
     fn seal_v1(key: &MasterKey, plaintext: &[u8]) -> Vec<u8> {
-        let nonce = XNonce::from([7u8; NONCE_LEN]);
+        let mut nonce = [0u8; NONCE_LEN];
+        getrandom::fill(&mut nonce).unwrap();
+        let nonce = XNonce::from(nonce);
         let mut envelope = ENVELOPE_V1_MAGIC.to_vec();
         envelope.extend_from_slice(nonce.as_slice());
         envelope.extend(key.cipher().encrypt(&nonce, plaintext).unwrap());
