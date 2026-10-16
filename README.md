@@ -170,7 +170,7 @@ Build the app and start the host, still in the clone and the root shell:
 
 ```bash
 (cd frontend && npm ci && npm run build)
-HATCHLING_HOST_UI=frontend/dist hatchling-host &
+HATCHLING_HOST_UI=$PWD/frontend/dist hatchling-host &
 ```
 
 ```text

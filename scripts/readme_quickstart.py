@@ -90,7 +90,7 @@ def app_address(read_outputs, wait=APP_ADDRESS_WAIT_SECS):
             if match:
                 return match.group(1)
         if time.monotonic() >= deadline:
-            raise ValueError("The app's host printed no address")
+            raise ValueError("The app's host printed no address; its error is in the blocks' stderr logs")
         time.sleep(0.2)
 
 
