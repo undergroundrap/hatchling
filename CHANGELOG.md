@@ -6,12 +6,17 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ## [Unreleased]
 
+### Added
+
+- `HATCHLING_AGENT_ALLOW_NOBODY`: the broker now refuses to start with `nobody` (65534) as `HATCHLING_AGENT_UID`, since every process running as nobody could act as the agent; this setting accepts it anyway (WO-007).
+
 ### Changed
 
 - **Breaking, `hatchling-sys`:** `chown_ids`, which changed ownership by path, is removed. `hand_over_socket` and `share_dir_with_cell` change ownership through handles opened without following symlinks, with `dir_share` and `owner_traverses` deciding what they do; `create_private_dir` makes a directory exclusively with mode 0700, `ensure_private_dir` makes or pins one, and `chmod_socket` sets a socket's mode through a handle. The workspace version is 0.3.0.
 
 ### Fixed
 
+- A connection to the broker that stays silent for 10 seconds before its hello is complete is closed, freeing its connection slot; before, it held the slot until the peer went away (WO-007).
 - The broker sets its listener's mode, and a scheduled run's directories and the vault's, without looking a path up again. The listener's mode goes through a handle opened without following symlinks; private directories are made exclusively and set to 0700 through a handle, and an existing run root is fixed through a handle. The ingress and device endpoints take their owner from the broker's own uid rather than reading it back from the socket's path. A skill's verified-code copy gets a name no one can guess, so another local user can't pre-create it to block the skill (WO-006).
 - A root broker no longer gives its socket's directory to the cell's user. That user could swap the socket for a symlink between spawns, and the broker's next handover, which went by path, would give the cell's user whatever file the link named. The directory now stays the broker's, with the cell's group allowed to traverse it and nothing more (mode 0710); a directory an earlier version handed over is taken back. The socket and the directory are each changed through a handle opened without following symlinks, and the socket must be a socket itself (WO-006).
 - A cell's staging directory can no longer be pre-created by another local user to block or redirect a spawn. Each broker process makes one private staging root in the temp directory (mode 0700, a random name, created exclusively), and each cell's directory inside it gets a random name too; a name already taken, by a directory or a symlink, is skipped and never followed (WO-006).

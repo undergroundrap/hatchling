@@ -81,7 +81,7 @@ impl ApiConfig {
 
 /// A strict boolean setting: `true`/`1` or `false`/`0`, unset meaning
 /// false.
-fn flag(raw: Option<&str>, key: &'static str) -> Result<bool, Error> {
+pub(crate) fn flag(raw: Option<&str>, key: &'static str) -> Result<bool, Error> {
     match raw.map(str::trim) {
         None | Some("false" | "0") => Ok(false),
         Some("true" | "1") => Ok(true),
