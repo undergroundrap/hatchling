@@ -2,6 +2,8 @@
 
 CI invokes this with unshare --mount --pid --fork --kill-child --mount-proc.
 The documented installation and account creation need a disposable machine.
+With --app-python, it also opens the address the README's app section
+prints in a browser (scripts/app_end_to_end.py, run by that interpreter).
 """
 
 import argparse
@@ -12,6 +14,14 @@ from pathlib import Path
 import re
 import shlex
 import subprocess
+import time
+
+# The sections whose shell blocks run: the quickstart up to its first
+# subsection, and the app's.
+QUICKSTART = "## Quickstart"
+APP = "### Using the app"
+APP_ADDRESS = re.compile(r"^Hatchling's UI: open (http://127\.0\.0\.1:\d+/#hatchling-ui=[0-9a-f]+)$", re.M)
+APP_ADDRESS_WAIT_SECS = 30
 
 
 @dataclass(frozen=True)
@@ -21,9 +31,11 @@ class Block:
 
 
 def extract(text):
-    """Return executable fences in Quickstart, before its first subsection."""
+    """Return executable fences in Quickstart, before its first subsection,
+    and in the app's subsection."""
     blocks = []
     active = False
+    seen = False
     fence = None
     language = None
     lines = []
@@ -40,19 +52,18 @@ def extract(text):
             else:
                 lines.append(line)
             continue
-        if line.rstrip() == "## Quickstart":
-            active = True
+        if re.match(r"^#{1,3} ", line):
+            active = line.rstrip() in (QUICKSTART, APP) and (seen or line.rstrip() == QUICKSTART)
+            seen = seen or line.rstrip() == QUICKSTART
             continue
-        if active and re.match(r"^#{1,3} ", line):
-            break
         match = re.fullmatch(r"(`{3,}|~{3,})([\w-]*)\s*", line.strip())
         if match:
             fence, language = match.groups()
             start = number + 1
             lines = []
-    if active and fence is not None:
-        raise ValueError("Quickstart has an unclosed code fence")
-    if not active or not blocks:
+    if fence is not None:
+        raise ValueError("README has an unclosed code fence")
+    if not seen or not blocks:
         raise ValueError("README has no executable Quickstart")
     return blocks
 
@@ -67,6 +78,20 @@ def expected_answer(path):
             if isinstance(answer, str) and answer and "\n" not in answer:
                 return answer
     raise ValueError("Stand-in model has no single-line ANSWER constant")
+
+
+def app_address(read_outputs, wait=APP_ADDRESS_WAIT_SECS):
+    """The address the app's host printed, waiting for it: it runs in the
+    background, so its line can land after its block has ended."""
+    deadline = time.monotonic() + wait
+    while True:
+        for output in read_outputs():
+            match = APP_ADDRESS.search(output)
+            if match:
+                return match.group(1)
+        if time.monotonic() >= deadline:
+            raise ValueError("The app's host printed no address; its error is in the blocks' stderr logs")
+        time.sleep(0.2)
 
 
 def require_answer(outputs, answer):
@@ -90,7 +115,7 @@ def git(repo, *args):
                                     "-C", str(repo), *args], text=True).strip()
 
 
-def run(repo, artifacts, work, timeout):
+def run(repo, artifacts, work, timeout, app_python=None):
     if os.geteuid() != 0 or os.getpid() != 1:
         raise ValueError("Run as root in a disposable PID namespace (see module usage)")
     if git(repo, "status", "--porcelain"):
@@ -136,10 +161,18 @@ def run(repo, artifacts, work, timeout):
         raise ValueError("README cloned a different source tree")
     if git(clone, "status", "--porcelain", "--untracked-files=no"):
         raise ValueError("README modified the cloned source before testing it")
-    outputs = [(artifacts / f"block-{index}.stdout").read_text(encoding="utf-8")
-               for index in range(1, len(blocks) + 1)]
-    require_answer(outputs, answer)
+    def read_outputs():
+        return [(artifacts / f"block-{index}.stdout").read_text(encoding="utf-8")
+                for index in range(1, len(blocks) + 1)]
+    require_answer(read_outputs(), answer)
     print("agent: " + answer, flush=True)
+    if app_python is not None:
+        # The address carries the UI token: hand it over, never print it.
+        address = app_address(read_outputs)
+        subprocess.run([str(app_python), str(repo / "scripts/app_end_to_end.py"), address],
+                       cwd=repo / "scripts", env=environment, check=True, timeout=300)
+    else:
+        print("app in a browser: not checked (no --app-python)", flush=True)
     print("README quickstart: passed", flush=True)
 
 
@@ -149,12 +182,16 @@ def main():
     parser.add_argument("artifacts", type=Path)
     parser.add_argument("work", type=Path)
     parser.add_argument("--timeout", type=int, default=1500)
+    parser.add_argument("--app-python", type=Path,
+                        help="a Python with Playwright, to open the app in a browser")
     args = parser.parse_args()
     try:
         if args.timeout <= 0:
             raise ValueError("Timeout must be positive")
-        run(args.repo.resolve(), args.artifacts.resolve(), args.work.resolve(), args.timeout)
-    except (ValueError, OSError, subprocess.CalledProcessError) as error:
+        run(args.repo.resolve(), args.artifacts.resolve(), args.work.resolve(), args.timeout,
+            args.app_python)
+    except (ValueError, OSError, subprocess.CalledProcessError,
+            subprocess.TimeoutExpired) as error:
         parser.exit(1, f"README quickstart: {error}\n")
 
 

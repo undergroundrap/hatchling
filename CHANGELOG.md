@@ -8,6 +8,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Added
 
+- The README's "Using the app": build the UI, start `hatchling-host`, open the address it prints, and chat with the agent. CI runs it as written and checks the agent's answer on the page in Chromium (WO-021, closed).
 - Chat: the broker answers each message sent on the local channel, through the API or the ingress, with an agent run in a fresh cell, given the message as its task, one at a time. Its grants are the API caller's, and it runs only when they include `channel-send:local` (WO-021, part 4).
 - `HATCHLING_UI_SOCKET`: a second local API socket, for the frontend host to carry a browser's channel to. It serves the same protocol as `HATCHLING_API_SOCKET`, and every `hello` on it must also carry the UI token, which the broker mints at each start into `<socket>.token`, readable by its owner alone (WO-021, part 1).
 - The frontend starts live when `hatchling-host` served it: the address the host prints carries the UI token as `#hatchling-ui=<token>`, which the app takes and clears from the address before its own routing reads it, then speaks to the broker over a WebSocket to the host's `/ui`, its hello carrying the token. Opened any other way, it runs its scripted demonstration as before. The app's main chat is the broker's `local` channel on the wire (WO-021, part 3).

@@ -54,7 +54,7 @@ The full model, what it deliberately doesn't cover, and the gaps our own pre-lau
 | **Artifacts and research** | Documents and pages made by signed builder skills, inspected at the boundary before they reach you; deep-research runs that deliver a cited report. |
 | **Spaces** | Shared, persistent scopes with members and devices. |
 | **Local API** | A Unix-socket JSON API with a generated JSON Schema, for your own clients and integrations: **[docs/local-api.md](docs/local-api.md)**. |
-| **Frontend** | A TypeScript UI. It runs on scripted data today; its live adapter is built and tested, and wiring it to the local API is open work. |
+| **App** | A TypeScript UI, served on loopback by `hatchling-host`: chat with the agent and follow its status. Opened on its own, it runs a scripted preview. |
 
 **Platforms:** Linux (kernel 5.11+, unprivileged user namespaces). On Windows, use WSL2 — you get the Hyper-V boundary underneath the cells. macOS: the isolation layer is a platform-neutral trait, but there is no macOS backend yet.
 
@@ -100,19 +100,19 @@ creates no sockets, directories or vault files. An invalid argument prints
 usage to stderr and exits 64. The broker builds the cell in which the agent
 runs; it supplies the agent's identity and configuration.
 
-**Requirements:** Linux 5.11+ with unprivileged user namespaces and seccomp-BPF (or WSL2); Rust (the pinned 1.98.1 installs itself through `rust-toolchain.toml`; the minimum supported is 1.85); a C compiler; Python 3 for the examples; root, for the reason [below](#running-without-root).
+**Requirements:** Linux 5.11+ with unprivileged user namespaces and seccomp-BPF (or WSL2); Rust (the pinned 1.98.1 installs itself through `rust-toolchain.toml`; the minimum supported is 1.85); a C compiler; Python 3 for the examples; Node.js 22.12+ to build the app; root, for the reason [below](#running-without-root).
 
-Build, install the two binaries, and create the user the cells run as: a system user nothing else runs as.
+Build, install the broker, the agent and the app's host, and create the user the cells run as: a system user nothing else runs as.
 
 ```bash
 git clone https://github.com/undergroundrap/hatchling
 cd hatchling
 cargo build --release
-sudo install -m 755 target/release/hatchling-broker target/release/hatchling-agent /usr/local/bin/
+sudo install -m 755 target/release/hatchling-broker target/release/hatchling-agent target/release/hatchling-host /usr/local/bin/
 sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin hatchling-cell
 ```
 
-Or install from crates.io: `cargo install hatchling-runtime` builds one `hatchling` binary that is both. Copy it where the cell's user can run it (`sudo install -m 755 ~/.cargo/bin/hatchling /usr/local/bin/`), then below use `hatchling broker` for `hatchling-broker`, and set `HATCHLING_AGENT_BIN=/usr/local/bin/hatchling`. Keep the clone either way: the examples run from it.
+Or install from crates.io: `cargo install hatchling-runtime` builds one `hatchling` binary that is both. Copy it where the cell's user can run it (`sudo install -m 755 ~/.cargo/bin/hatchling /usr/local/bin/`), then below use `hatchling broker` for `hatchling-broker`, and set `HATCHLING_AGENT_BIN=/usr/local/bin/hatchling`. Keep the clone either way: the examples run from it, and the app's host is built there (`cargo build --release -p hatchling-host`, then install `target/release/hatchling-host` as above).
 
 Give cells a uid of their own, never `nobody` or any uid another process uses: a process with the cells' uid can't open an agent session (each cell gets a connection of its own), but it shares the cells' file permissions and process limits. The broker refuses to start with `nobody` (65534) as the agent uid unless `HATCHLING_AGENT_ALLOW_NOBODY=true`.
 
@@ -130,6 +130,7 @@ export HATCHLING_VAULT_DIR=$HATCHLING_HOME/vault
 export HATCHLING_SCHEDULER_DIR=$HATCHLING_HOME/schedules
 export HATCHLING_CHANNEL_INGRESS=$HATCHLING_HOME/ingress.sock
 export HATCHLING_API_SOCKET=$HATCHLING_HOME/api.sock
+export HATCHLING_UI_SOCKET=$HATCHLING_HOME/ui.sock   # for the app, below
 export HATCHLING_SCHEDULER_MODEL_ENDPOINT=http://localhost:18089/v1
 export HATCHLING_SCHEDULER_MODEL_NAME=stand-in
 export HATCHLING_EGRESS_ALLOWLIST=local-keyless:localhost:18089
@@ -160,6 +161,23 @@ agent: Hello from inside a Hatchling cell. This answer came from the stand-in mo
 That answer took the whole path: the broker started a fresh cell as `hatchling-cell` for your message, the agent in it checked that the model can call tools, asked it the task through the egress proxy (the cell's only way out), and replied on the local channel, back through the API to you. The run held the API's grants and nothing more.
 
 **A real model:** run one locally with an OpenAI-compatible API (Ollama, llama.cpp, LM Studio, vLLM), and use its port and model name instead. For Ollama: `http://localhost:11434/v1`, `local-keyless:localhost:11434`, `localhost:11434`, and `egress:localhost:11434` in the API grants. For a hosted API, follow [Using a hosted model](docs/hosted-models.md): the vault holds its key, and the broker supplies it over HTTPS. For endpoints that need thinking disabled, see [model thinking mode](docs/model-thinking.md).
+
+### Using the app
+
+The app is Hatchling's UI: chat with the agent and see what it's doing. `hatchling-host` serves it on `127.0.0.1` and carries its channel to the broker's UI socket. The host decides nothing: the broker asks every connection for the UI token it minted at start, which the host puts in the address it prints, after the `#`, the part a browser never sends to a server.
+
+Build the app and start the host, still in the clone and the root shell:
+
+```bash
+(cd frontend && npm ci && npm run build)
+HATCHLING_HOST_UI=$PWD/frontend/dist hatchling-host &
+```
+
+```text
+Hatchling's UI: open http://127.0.0.1:7340/#hatchling-ui=3f9c...
+```
+
+Open that address in a browser on the same machine and say something in the main chat: the agent answers there, each message in a fresh cell, holding the API's grants. On WSL2, a browser in Windows reaches it too. While the broker runs, the address is a key to your agent: don't share it. Each broker start mints a new token, so restart the host after the broker. `HATCHLING_HOST_PORT` picks another port. CI runs this too: it opens the printed address in Chromium, sends a message and waits for the agent's answer on the page.
 
 ### Running without root
 
