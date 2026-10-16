@@ -30,6 +30,7 @@ pub use artifact_ops::{SealedArtifactStore, handle_artifact_op, held_secrets, is
 pub mod cell;
 pub use cell::{CellConfig, CellHandle, CellLimits, ScheduledRun, spawn_cell};
 pub mod channel;
+pub mod chat_run;
 pub mod cli;
 pub use approval::{ApprovalLedger, ApprovalToken, MintError, Verdict};
 pub use channel::{ChannelRegistry, handle_channel_op};

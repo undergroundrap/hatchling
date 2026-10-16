@@ -311,6 +311,17 @@ fn serve_agents(
         // with the real cell launcher, when scheduling is on and an agent
         // binary is configured.
         if let Some(runs) = crate::run_launcher::RunEnv::from_process(config) {
+            // Chat (WO-021): each message the local channel queues is
+            // one run, when the API's grants let a run answer there.
+            let chat = crate::api_auth::ApiConfig::from_env(config)
+                .ok()
+                .and_then(|api| crate::chat_run::chat_grants(&api.grants));
+            if let (Some(hub), Some(grants)) = (hub, chat) {
+                let runs = runs.clone();
+                scope.spawn(move || {
+                    crate::chat_run::chat_forever(scope, config, key, hub, runs, grants)
+                });
+            }
             scope.spawn(move || {
                 crate::run_launcher::dispatch_forever(scope, config, key, hub, runs)
             });

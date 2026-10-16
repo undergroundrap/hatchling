@@ -46,6 +46,7 @@ The full model, what it deliberately doesn't cover, and the gaps our own pre-lau
 | --- | --- |
 | **Your model** | Any OpenAI-compatible chat-completions endpoint: Ollama, llama.cpp, LM Studio and vLLM locally, or a hosted API. Every secret a run fetches is redacted from what it sends, local endpoint or not. |
 | **Coding harnesses** | Claude Code and Codex CLI, pinned to a SHA-256 and verified before they run, inside cells. |
+| **Chat** | Each message you send on the local chat is answered by the agent in a fresh cell, holding your API client's grants and nothing more. |
 | **Scheduling** | Cron or one-off tasks in explicit IANA timezones; each schedule runs with exactly the grants it was created with. |
 | **Memory and goals** | Broker-owned durable memory and goal tracking, paged so no reply outgrows its frame. |
 | **Feed** | A scheduled digest of your own records: what changed in your goals, tracking and tagged memory. |
@@ -147,16 +148,16 @@ hatchling-broker &
 Give the agent its first task:
 
 ```bash
-python3 docs/examples/first-run.py "$HATCHLING_API_SOCKET" 18089
+python3 docs/examples/first-run.py "$HATCHLING_API_SOCKET"
 ```
 
 ```text
-scheduled for 14:07 UTC: Introduce yourself in one sentence.
-waiting for the agent (one to three minutes)...
+sent: Introduce yourself in one sentence.
+waiting for the agent...
 agent: Hello from inside a Hatchling cell. This answer came from the stand-in model; ...
 ```
 
-That answer took the whole path: the scheduler started a fresh cell as `hatchling-cell`, the agent in it checked that the model can call tools, asked it the task through the egress proxy (the cell's only way out), and replied on the local channel, back through the API to you.
+That answer took the whole path: the broker started a fresh cell as `hatchling-cell` for your message, the agent in it checked that the model can call tools, asked it the task through the egress proxy (the cell's only way out), and replied on the local channel, back through the API to you. The run held the API's grants and nothing more.
 
 **A real model:** run one locally with an OpenAI-compatible API (Ollama, llama.cpp, LM Studio, vLLM), and use its port and model name instead. For Ollama: `http://localhost:11434/v1`, `local-keyless:localhost:11434`, `localhost:11434`, and `egress:localhost:11434` in the API grants. For a hosted API, follow [Using a hosted model](docs/hosted-models.md): the vault holds its key, and the broker supplies it over HTTPS. For endpoints that need thinking disabled, see [model thinking mode](docs/model-thinking.md).
 

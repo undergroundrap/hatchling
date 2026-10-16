@@ -61,7 +61,7 @@ with os.fdopen(fd, "wb") as output:
 PY
 hatchling-broker migrate-vault
 hatchling-broker &
-python3 docs/examples/first-run.py "$HATCHLING_API_SOCKET" openrouter.ai:443
+python3 docs/examples/first-run.py "$HATCHLING_API_SOCKET"
 ```
 
 The import briefly creates an owner-only plaintext entry while the broker is
