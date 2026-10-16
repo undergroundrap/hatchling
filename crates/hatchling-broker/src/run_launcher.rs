@@ -1329,7 +1329,11 @@ mod tests {
             hand_over_connection(&handoff, None),
             Err(Error::CellSpawn { reason }) if reason == "the run cell came without its connection"
         ));
-        drop(broker);
+        // Shut the helper's own sending side rather than dropping the
+        // broker's end: a test elsewhere forking a cell at that moment holds
+        // a copy of every descriptor until its exec, so the broker's end
+        // could still be open and the send succeed.
+        handoff.shutdown(std::net::Shutdown::Write).unwrap();
         let (cell_end, _program) = UnixStream::pair().unwrap();
         assert!(matches!(
             hand_over_connection(&handoff, Some(cell_end)),
