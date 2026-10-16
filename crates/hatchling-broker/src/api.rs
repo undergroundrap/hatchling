@@ -24,8 +24,12 @@
 //! The socket is owner-only (`0600`), outside the cell's sight, and never
 //! started for the agent's own uid. There is no network listener (see
 //! [`crate::api_auth`]).
+//!
+//! The UI socket (`HATCHLING_UI_SOCKET`), when it's set, is served the
+//! same way beside it, with one difference: its callers are named by a
+//! [`TokenProvider`], which also wants the UI token. Both share one
+//! stream and one activity log.
 
-use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -40,7 +44,9 @@ use hatchling_core::ui::{
 };
 use hatchling_vault::MasterKey;
 
-use crate::api_auth::{ApiConfig, Caller, PeerProvider, Provider, admit};
+use crate::api_auth::{
+    ApiConfig, Caller, PeerProvider, Provider, TokenProvider, admit, mint_ui_token, ui_token_path,
+};
 use crate::api_ops::{Audit, Ops, Replies};
 use crate::api_stream::{Bus, FOLLOW_POLL, Follower};
 use crate::connections::ConnectionSlots;
@@ -65,13 +71,20 @@ pub const API_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 /// whether its connection has ended.
 const STREAM_WAIT: Duration = Duration::from_millis(500);
 
-/// The bound API: its socket, the provider that names its callers, its
-/// stream, and the activity log its calls are recorded in.
-pub struct Api {
+/// A bound socket of the API, and the provider that names its callers.
+struct Door {
     listener: UnixListener,
-    /// The only uid a byte is read from: the socket's owner, the broker.
-    owner: PeerUid,
     provider: Box<dyn Provider>,
+}
+
+/// The bound API: its socket and, when it has one, the UI's, each with
+/// the provider that names its callers; its stream; and the activity log
+/// its calls are recorded in.
+pub struct Api {
+    local: Door,
+    ui: Option<Door>,
+    /// The only uid a byte is read from: the sockets' owner, the broker.
+    owner: PeerUid,
     bus: Arc<Bus>,
     log: PathBuf,
     slots: ConnectionSlots,
@@ -85,25 +98,33 @@ impl std::fmt::Debug for Api {
     }
 }
 
-/// The broker's API, bound, when one is configured: the socket's owner
-/// (the broker's own uid) is its one local caller, with the configured
-/// grants.
+/// The broker's API, bound, when one is configured.
+///
+/// The sockets' owner (the broker's own uid) is its one local caller,
+/// with the configured grants; on the UI socket, it must also present
+/// the UI token, minted here.
 ///
 /// # Errors
 ///
 /// Returns [`Error::InvalidConfig`] when the API would serve the agent's
-/// own uid (the socket is unlinked again first), or the bind errors of
-/// [`bind_socket`].
+/// own uid, or for a UI socket without an API socket; the bind errors of
+/// [`bind_socket`]; or [`mint_ui_token`]'s.
 pub fn open_api(config: &Config, api: &ApiConfig) -> Result<Option<Api>, Error> {
     let Some(socket) = &api.socket else {
-        return Ok(None);
+        return match api.ui_socket {
+            Some(_) => Err(Error::InvalidConfig {
+                key: "HATCHLING_UI_SOCKET",
+                reason: String::from(
+                    "the UI socket is served beside the API socket: set HATCHLING_API_SOCKET too",
+                ),
+            }),
+            None => Ok(None),
+        };
     };
-    let listener = bind_socket(socket, API_SOCKET_MODE)?;
-    let owner = std::fs::metadata(socket.as_path())
-        .map(|meta| PeerUid::from_kernel(meta.uid()))
-        .map_err(|source| Error::SocketSetup { source })?;
+    // The broker binds the sockets, so they're its own: its uid, never
+    // read back from a path.
+    let owner = PeerUid::from_kernel(hatchling_sys::euid());
     if owner == config.agent_uid {
-        let _ = std::fs::remove_file(socket.as_path());
         return Err(Error::InvalidConfig {
             key: "HATCHLING_API_SOCKET",
             reason: format!(
@@ -112,12 +133,19 @@ pub fn open_api(config: &Config, api: &ApiConfig) -> Result<Option<Api>, Error> 
             ),
         });
     }
-    let provider = PeerProvider::new(owner, api.grants.clone());
-    Ok(Some(Api::new(
+    let listener = bind_socket(socket, API_SOCKET_MODE)?;
+    let peer = PeerProvider::new(owner, api.grants.clone());
+    let mut opened = Api::new(
         listener,
-        Box::new(provider),
+        Box::new(peer.clone()),
         config.scheduler.activity_log(),
-    )))
+    );
+    if let Some(ui_socket) = &api.ui_socket {
+        let listener = bind_socket(ui_socket, API_SOCKET_MODE)?;
+        let token = mint_ui_token(&ui_token_path(ui_socket))?;
+        opened = opened.with_ui(listener, Box::new(TokenProvider::new(peer, token)));
+    }
+    Ok(Some(opened))
 }
 
 impl Api {
@@ -126,13 +154,27 @@ impl Api {
     #[must_use]
     pub fn new(listener: UnixListener, provider: Box<dyn Provider>, log: PathBuf) -> Self {
         Self {
-            listener,
+            local: Door { listener, provider },
+            ui: None,
             owner: PeerUid::from_kernel(hatchling_sys::euid()),
-            provider,
             bus: Arc::new(Bus::starting_now()),
             log,
             slots: ConnectionSlots::new(API_MAX_CONNECTIONS),
         }
+    }
+
+    /// This API, also serving the UI on `listener`, its callers named by
+    /// `provider`.
+    #[must_use]
+    pub fn with_ui(mut self, listener: UnixListener, provider: Box<dyn Provider>) -> Self {
+        self.ui = Some(Door { listener, provider });
+        self
+    }
+
+    /// Whether it serves the UI too.
+    #[must_use]
+    pub const fn serves_ui(&self) -> bool {
+        self.ui.is_some()
     }
 
     /// The API's stream.
@@ -154,44 +196,63 @@ impl Api {
         let ops = Ops::new(config, key, skills, hub, Arc::clone(&self.bus));
         std::thread::scope(|scope| {
             scope.spawn(|| Follower::new(self.log.clone()).follow(&self.bus, FOLLOW_POLL));
+            for door in std::iter::once(&self.local).chain(self.ui.as_ref()) {
+                let ops = &ops;
+                scope.spawn(move || {
+                    loop {
+                        match door.listener.accept() {
+                            Ok((stream, _)) => match self.slots.try_acquire() {
+                                Ok(slot) => {
+                                    scope.spawn(move || {
+                                        self.serve_door(&stream, door.provider.as_ref(), ops);
+                                        drop(slot);
+                                    });
+                                }
+                                Err(full) => {
+                                    if full.first_of_episode {
+                                        tracing::warn!(
+                                            max = API_MAX_CONNECTIONS,
+                                            "API connection cap reached: closing new connections until one ends"
+                                        );
+                                    }
+                                }
+                            },
+                            Err(source) => tracing::error!(%source, "API accept failed"),
+                        }
+                    }
+                });
+            }
             loop {
-                match self.listener.accept() {
-                    Ok((stream, _)) => match self.slots.try_acquire() {
-                        Ok(slot) => {
-                            let ops = &ops;
-                            scope.spawn(move || {
-                                self.serve_client(&stream, ops);
-                                drop(slot);
-                            });
-                        }
-                        Err(full) => {
-                            if full.first_of_episode {
-                                tracing::warn!(
-                                    max = API_MAX_CONNECTIONS,
-                                    "API connection cap reached: closing new connections until one ends"
-                                );
-                            }
-                        }
-                    },
-                    Err(source) => tracing::error!(%source, "API accept failed"),
-                }
+                std::thread::park();
             }
         })
     }
 
-    /// Serves one caller on `stream` until it closes, or breaks the
-    /// protocol.
+    /// Serves one caller of the API socket on `stream` until it closes,
+    /// or breaks the protocol.
     pub fn serve_client(&self, stream: &UnixStream, ops: &Ops<'_>) {
+        self.serve_door(stream, self.local.provider.as_ref(), ops);
+    }
+
+    /// Serves one caller on `stream`, named by `provider`, until it
+    /// closes, or breaks the protocol.
+    fn serve_door(&self, stream: &UnixStream, provider: &dyn Provider, ops: &Ops<'_>) {
         let connection =
             crate::approval::random_hex("api-").unwrap_or_else(|_| String::from("api-unnamed"));
         let mut audit = Audit::new(self.log.clone(), connection);
-        if let Err(error) = self.session(stream, ops, &mut audit) {
+        if let Err(error) = self.session(stream, provider, ops, &mut audit) {
             tracing::info!(%error, "API connection ended");
         }
     }
 
     /// The handshake, then the caller's requests.
-    fn session(&self, stream: &UnixStream, ops: &Ops<'_>, audit: &mut Audit) -> Result<(), Error> {
+    fn session(
+        &self,
+        stream: &UnixStream,
+        provider: &dyn Provider,
+        ops: &Ops<'_>,
+        audit: &mut Audit,
+    ) -> Result<(), Error> {
         // The kernel's word first: a peer that is not the socket's
         // owner gets no byte read, let alone answered. The provider still
         // names the caller after `hello`.
@@ -235,12 +296,7 @@ impl Api {
             audit.record(None, ApiRequest::Hello, ApiOutcome::Refused);
             return send(&writer, &answer);
         }
-        let Some(caller) = admit(
-            self.provider.as_ref(),
-            &ops.owner_grants(),
-            stream,
-            token.as_ref(),
-        ) else {
+        let Some(caller) = admit(provider, &ops.owner_grants(), stream, token.as_ref()) else {
             audit.record(None, ApiRequest::Hello, ApiOutcome::Refused);
             return Ok(());
         };
@@ -332,6 +388,7 @@ fn send(writer: &Mutex<UnixStream>, response: &UiResponse) -> Result<(), Error> 
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+    use std::os::unix::fs::MetadataExt as _;
     use std::path::Path;
 
     use hatchling_core::SocketPath;
@@ -508,6 +565,7 @@ mod tests {
         let _guard = TestSocket::new(socket.as_path().to_string_lossy());
         let settings = ApiConfig {
             socket: Some(socket.clone()),
+            ui_socket: None,
             grants: BTreeSet::new(),
         };
         let api = open_api(&config, &settings).unwrap().unwrap();
@@ -519,6 +577,9 @@ mod tests {
         drop(api);
         let mut agents = config;
         agents.agent_uid = real_uid();
+        // Refused before anything is bound: no socket for the agent's uid,
+        // not even for a moment.
+        std::fs::remove_file(socket.as_path()).unwrap();
         let refused = open_api(&agents, &settings);
         assert!(
             matches!(
@@ -530,7 +591,7 @@ mod tests {
             ),
             "{refused:?}"
         );
-        assert!(!socket.as_path().exists(), "the socket is unlinked again");
+        assert!(!socket.as_path().exists(), "no socket was bound");
     }
 
     /// a peer that is not the socket's owner is closed before a
@@ -842,6 +903,110 @@ mod tests {
     }
 
     #[test]
+    fn each_door_names_its_callers_with_its_own_provider() {
+        let dir = scratch("doors");
+        let config = config_in(&dir);
+        let log = config.scheduler.activity_log();
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let grants = BTreeSet::new();
+        let token = ApiToken::new(String::from("door-token"));
+        let peer = PeerProvider::new(real_uid(), grants);
+        let (api, _guard) = api_with(Box::new(peer.clone()), log, "doors");
+        assert!(!api.serves_ui(), "no UI until one is given");
+        let (_ui_client, ui_server) = UnixStream::pair().unwrap();
+        let ui_listener = UnixListener::from(std::os::fd::OwnedFd::from(ui_server));
+        let api = api.with_ui(ui_listener, Box::new(TokenProvider::new(peer, token)));
+        assert!(api.serves_ui());
+        let ops = Ops::new(&config, &key, &skills, None, Arc::clone(api.bus()));
+        // The UI's provider on a door: the token is wanted, so a hello
+        // without it is closed, and one with it is welcomed.
+        let ui = api.ui.as_ref().unwrap().provider.as_ref();
+        for (token, welcomed) in [(None, false), (Some("door-token"), true)] {
+            let (client, server) = UnixStream::pair().unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let (api, ops) = (&api, &ops);
+            std::thread::scope(|scope| {
+                // The server's end goes with the session, as it does when
+                // the API serves it: a refused caller then sees the close.
+                let worker = scope.spawn(move || {
+                    api.serve_door(&server, ui, ops);
+                    drop(server);
+                });
+                write(&client, &hello(token));
+                if welcomed {
+                    assert!(matches!(read(&client), UiResponse::Welcome { .. }));
+                } else {
+                    assert!(closed(&client));
+                }
+                drop(client);
+                worker.join().unwrap();
+            });
+        }
+    }
+
+    #[test]
+    fn the_ui_socket_is_served_beside_the_api_and_wants_its_token() {
+        let dir = scratch("ui-serve");
+        let config: &'static Config = Box::leak(Box::new(config_in(&dir)));
+        let key: &'static MasterKey = Box::leak(Box::new(MasterKey::generate().unwrap()));
+        let skills: &'static Skills =
+            Box::leak(Box::new(Skills::load(&SkillConfig::disabled()).unwrap()));
+        let (api_socket, ui_socket) = (socket_path("ui-serve-api"), socket_path("ui-serve-ui"));
+        let mut guards = Vec::new();
+        for socket in [&api_socket, &ui_socket] {
+            let _ = std::fs::remove_file(socket.as_path());
+            guards.push(TestSocket::new(socket.as_path().to_string_lossy()));
+        }
+        let token_path = ui_token_path(&ui_socket);
+        guards.push(TestSocket::new(token_path.to_string_lossy()));
+        // A UI socket alone: refused, it's served beside the API.
+        let alone = ApiConfig {
+            socket: None,
+            ui_socket: Some(ui_socket.clone()),
+            grants: BTreeSet::new(),
+        };
+        assert!(matches!(
+            open_api(config, &alone),
+            Err(Error::InvalidConfig {
+                key: "HATCHLING_UI_SOCKET",
+                ..
+            })
+        ));
+        let settings = ApiConfig {
+            socket: Some(api_socket.clone()),
+            ui_socket: Some(ui_socket.clone()),
+            grants: BTreeSet::new(),
+        };
+        let api: &'static Api = Box::leak(Box::new(open_api(config, &settings).unwrap().unwrap()));
+        assert!(api.serves_ui());
+        let token = std::fs::read_to_string(&token_path).unwrap();
+        std::thread::spawn(move || api.serve(config, key, skills, None));
+        let hello_on = |socket: &SocketPath, token: Option<&str>| {
+            let client = UnixStream::connect(socket.as_path()).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            write(&client, &hello(token));
+            client
+        };
+        // The UI socket, with the token: welcomed; without, or with
+        // another: closed without a word.
+        let welcomed = hello_on(&ui_socket, Some(&token));
+        assert!(matches!(read(&welcomed), UiResponse::Welcome { .. }));
+        for wrong in [None, Some("not-the-token")] {
+            assert!(closed(&hello_on(&ui_socket, wrong)));
+        }
+        // The API socket is unchanged: no token needed.
+        let api_client = hello_on(&api_socket, None);
+        assert!(matches!(read(&api_client), UiResponse::Welcome { .. }));
+        drop(guards);
+        drop(dir);
+    }
+
+    #[test]
     fn the_served_api_records_its_own_calls_onto_its_stream() {
         let dir = scratch("serve");
         let config: &'static Config = Box::leak(Box::new(config_in(&dir)));
@@ -853,6 +1018,7 @@ mod tests {
         let _guard = TestSocket::new(socket.as_path().to_string_lossy());
         let settings = ApiConfig {
             socket: Some(socket.clone()),
+            ui_socket: None,
             grants: BTreeSet::new(),
         };
         let api: &'static Api = Box::leak(Box::new(open_api(config, &settings).unwrap().unwrap()));
@@ -910,7 +1076,8 @@ mod tests {
             .unwrap();
         let mut audit = Audit::new(log, String::from("api-direct"));
         std::thread::scope(|scope| {
-            let worker = scope.spawn(|| api.session(&server, &ops, &mut audit));
+            let worker =
+                scope.spawn(|| api.session(&server, api.local.provider.as_ref(), &ops, &mut audit));
             write(&client, &hello(None));
             let welcomed = matches!(read(&client), UiResponse::Welcome { .. });
             assert!(welcomed);
