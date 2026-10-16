@@ -284,7 +284,17 @@ jobs:
           tool: cargo-semver-checks@0.51.0
 
       - name: Public APIs against crates.io
-        run: cargo semver-checks --workspace
+        run: |
+          # A crate new to crates.io has no baseline yet; it's checked
+          # from its first release on (the test is publish-crates.sh's).
+          new=()
+          for crate in $(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.publish != []) | .name'); do
+            if ! cargo info "$crate" --registry crates-io < /dev/null > /dev/null 2>&1; then
+              echo "::notice::$crate is new to crates.io: no baseline to check it against"
+              new+=(--exclude "$crate")
+            fi
+          done
+          cargo semver-checks --workspace "${new[@]}"
 
   protocol:
  # the frontend/backend contract has one source, hatchling-core's

@@ -5,7 +5,7 @@ How a Hatchling version is cut and published, and how a new crate gets onto crat
 ## How versions work
 
 - **One version for every crate** (lockstep): the root `Cargo.toml`'s `[workspace.package] version`, which every crate inherits, and the matching `[workspace.dependencies]` entries. A release bumps them together, and publishes every crate, changed or not, so every `hatchling-*` crate at one version is known to work together.
-- **Before 1.0, a breaking change bumps the minor version** (0.2.0 → 0.3.0); anything else, the patch. The `semver checks` CI job compares each crate's public API with crates.io and says when a change needs the minor bump.
+- **Before 1.0, a breaking change bumps the minor version** (0.2.0 → 0.3.0); anything else, the patch. The `semver checks` CI job compares each crate's public API with crates.io and says when a change needs the minor bump. A crate not yet on crates.io has nothing to compare with, and is checked from its first release on.
 - **`CHANGELOG.md`** has an Unreleased section every pull request adds its line to. At a release it becomes the version's section, and that text is the release notes.
 - **Milestones** on GitHub plan each version; [Order of work](workorders/README.md#order-of-work) sets their order.
 
