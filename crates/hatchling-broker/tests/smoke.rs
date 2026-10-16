@@ -153,7 +153,7 @@ fn rekey_vault_without_new_key_file_is_usage_error() {
 }
 
 /// `migrate-vault` encrypts a plaintext store in place: the file that
-/// held raw bytes becomes a `HVL1` envelope, and the report says so.
+/// held raw bytes becomes an `HVL2` envelope, and the report says so.
 #[test]
 fn migrate_vault_seals_plaintext_store() {
     let scratch = scratch_dir("migrate").unwrap();
@@ -178,12 +178,12 @@ fn migrate_vault_seals_plaintext_store() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("migrate-vault: encrypted 1 secret(s)"),
+        stdout.contains("migrate-vault: secrets: sealed 1, re-sealed 0 old, skipped 0 file(s)"),
         "missing migration report, stdout was: {stdout}"
     );
     let sealed = std::fs::read(vault_dir.join("tok")).unwrap();
     assert!(
-        sealed.starts_with(b"HVL1"),
+        sealed.starts_with(b"HVL2"),
         "migrated file is not a sealed envelope"
     );
     assert_ne!(
@@ -344,6 +344,35 @@ fn the_api_takes_its_settings_from_the_environment() {
         stderr.contains("HATCHLING_API_NETWORK") && stderr.contains("never the default"),
         "{stderr}"
     );
+}
+
+/// A sealed store holding anything but current envelopes stops the
+/// broker before it binds, naming the store, the file and the command
+/// that re-seals it. Pins the serve path's `check_sealed_stores`: a
+/// broker that skipped it would serve, and be killed at the deadline.
+#[test]
+fn a_stale_sealed_store_stops_the_broker_before_bind() {
+    let scratch = scratch_dir("stale-store").unwrap();
+    let vault_dir = scratch.join("vault");
+    std::fs::create_dir_all(&vault_dir).unwrap();
+    std::fs::set_permissions(&vault_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let planted = vault_dir.join("tok");
+    std::fs::write(&planted, b"plaintext-secret").unwrap();
+    std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    let env = operator_env(&scratch, "vault");
+    let socket = scratch.join("broker.sock");
+    let output = run_broker(&[], &operator_env_refs(&env), &["HATCHLING_AGENT_BIN"]);
+    let bound = socket.exists();
+    let _ = std::fs::remove_dir_all(&scratch);
+    let output = output.expect("the broker must stop at start-up, not serve");
+    assert!(!output.status.success(), "the broker started");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("the secrets store") && stderr.contains("tok") && stderr.contains("migrate-vault"),
+        "{stderr}"
+    );
+    assert!(!bound, "the broker bound its socket before checking its stores");
 }
 
 #[test]
