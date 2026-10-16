@@ -44,6 +44,7 @@ const NOT_CONNECTED = 'The app is not connected to Hatchling, so nothing was sen
 export class LiveClient {
     readonly #transport: UiTransport;
     readonly #name: string;
+    readonly #token: string | undefined;
     readonly #sink: (event: UiEvent) => string | undefined;
     readonly #ledger = new EventLedger();
     readonly #listeners = new Set<() => void>();
@@ -59,10 +60,11 @@ export class LiveClient {
      * allow). That ends the connection, and the event is not counted as
      * applied, so a reconnect does not skip past it.
      */
-    constructor(transport: UiTransport, name: string, sink: (event: UiEvent) => string | undefined) {
+    constructor(transport: UiTransport, name: string, sink: (event: UiEvent) => string | undefined, token?: string) {
         this.#transport = transport;
         this.#name = name;
         this.#sink = sink;
+        this.#token = token;
     }
     connection(): ConnectionState {
         return this.#connection;
@@ -82,7 +84,7 @@ export class LiveClient {
         this.#transport.connect({
             opened: () => {
                 if (current())
-                    this.#transport.send(encodeRequest(hello(this.#name)));
+                    this.#transport.send(encodeRequest(hello(this.#name, undefined, this.#token)));
             },
             received: text => {
                 if (current())

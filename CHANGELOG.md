@@ -9,6 +9,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 ### Added
 
 - `HATCHLING_UI_SOCKET`: a second local API socket, for the frontend host to carry a browser's channel to. It serves the same protocol as `HATCHLING_API_SOCKET`, and every `hello` on it must also carry the UI token, which the broker mints at each start into `<socket>.token`, readable by its owner alone (WO-021, part 1).
+- The frontend starts live when `hatchling-host` served it: the address the host prints carries the UI token as `#hatchling-ui=<token>`, which the app takes and clears from the address before its own routing reads it, then speaks to the broker over a WebSocket to the host's `/ui`, its hello carrying the token. Opened any other way, it runs its scripted demonstration as before. The app's main chat is the broker's `local` channel on the wire (WO-021, part 3).
 
 ### Changed
 

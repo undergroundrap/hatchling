@@ -20,6 +20,7 @@ test('the mismatch sentence names the side to update, exactly as the backend wor
 test('hello carries this build\'s protocol version', () => {
     assert.deepEqual(hello('web'), { type: 'hello', schema_version: UI_SCHEMA_VERSION, client: 'web' });
     assert.deepEqual(hello('test', 9), { type: 'hello', schema_version: 9, client: 'test' });
+    assert.deepEqual(hello('web', 9, 'abc'), { type: 'hello', schema_version: 9, client: 'web', token: 'abc' });
     assert.equal(SESSION_PROTOCOL_VERSION, 13);
 });
 test('a matching welcome opens the connection', () => {

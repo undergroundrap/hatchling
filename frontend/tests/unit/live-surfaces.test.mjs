@@ -217,7 +217,7 @@ test('files: added files are a typed save, limits in plain words, artifacts atta
         assert.match((await answered(transport, adapter, { type: 'artifact.import', title: 'a.txt', format: 'text', content: 'x', dataUrl: '' }, { result: 'file_refused', reason })).outcome.message, words);
     assert.match((await answered(transport, adapter, { type: 'artifact.import', title: 'a.txt', format: 'text', content: 'x', dataUrl: '' }, { result: 'artifact_opened', artifact_id: 'a', revision: 1, body: { type: 'text', text: '' } })).outcome.message, /something else/);
     const attached = await answered(transport, adapter, { type: 'chat.attach', chatId: 'main', artifactId: 'notes' }, { result: 'message_accepted', message_id: 'file-2' });
-    assert.deepEqual([attached.sent, attached.outcome], [{ action: 'attach_artifact', chat_id: 'main', artifact_id: 'notes', revision: 2 }, { ok: true, message: 'Sent.' }]);
+    assert.deepEqual([attached.sent, attached.outcome], [{ action: 'attach_artifact', chat_id: 'local', artifact_id: 'notes', revision: 2 }, { ok: true, message: 'Sent.' }]);
     assert.match((await adapter.execute({ type: 'chat.attach', chatId: 'main', artifactId: 'gone' })).message, /no longer available to send/);
 });
 test('files in chat arrive as attachments that name the artifact; their words are plain text', () => {
