@@ -565,4 +565,21 @@ mod tests {
             Err(Error::TierChange { .. })
         ));
     }
+
+    #[test]
+    fn a_fresh_set_wraps_the_key_given_and_stores_nothing() {
+        let dir = test_dir("backup-fresh");
+        let (keyring, _) = vault(&dir);
+        let path = dir.join("keys").join("keyring");
+        let before = std::fs::read(&path).unwrap();
+        let other = MasterKey::generate().unwrap();
+        let (wraps, codes) = keyring.fresh_backup_codes(&other).unwrap();
+        assert_eq!((wraps.len(), codes.codes().count()), (CODE_COUNT, CODE_COUNT));
+        assert_eq!(std::fs::read(&path).unwrap(), before, "nothing stored");
+        assert!(
+            wraps
+                .iter()
+                .all(|wrap| matches!(wrap.factor, Factor::BackupCode { .. }))
+        );
+    }
 }

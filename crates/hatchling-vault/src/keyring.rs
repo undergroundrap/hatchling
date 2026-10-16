@@ -1099,4 +1099,52 @@ mod tests {
         assert_eq!(format!("{:?}", fresh_kek()), "Kek([redacted])");
         assert_eq!(Factor::File.tier(), Some(Tier::File));
     }
+
+    #[test]
+    fn a_commit_writes_the_tier_wraps_and_retiring_key_at_once_and_rewraps_keep_their_names() {
+        let dir = test_dir("keyring-commit");
+        let dek = MasterKey::generate().unwrap();
+        let kek = fresh_kek();
+        let path = dir.join("keys").join("keyring");
+        let mut keyring = Keyring::create(&path, &dek, &kek).unwrap();
+        assert!(keyring.retiring().is_none());
+        let mut named = keyring.wrap(&dek, &kek, Factor::File).unwrap();
+        named.set_label("desk");
+        let other = MasterKey::generate().unwrap();
+        let again = keyring.rewrap(&named, &other, &kek).unwrap();
+        assert_eq!(
+            (&again.id, again.label(), again.added(), &again.factor),
+            (&named.id, "desk", named.added(), &named.factor)
+        );
+        assert_ne!(again.nonce, named.nonce);
+        assert!(same_key(
+            &other,
+            &keyring.unwrap(&again, &kek).unwrap(),
+            &dir.join("vault")
+        ));
+        let explicit = keyring
+            .wrap_as(String::from("chosen"), &dek, &kek, Factor::File)
+            .unwrap();
+        assert_eq!(explicit.id, "chosen");
+        let retiring = Retiring {
+            nonce: String::from("00"),
+            wrapped: String::from("11"),
+        };
+        keyring
+            .commit(Tier::Totp, vec![again.clone()], Some(retiring.clone()))
+            .unwrap();
+        let reloaded = Keyring::load(&path).unwrap();
+        assert_eq!(
+            (reloaded.tier(), reloaded.wraps(), reloaded.retiring()),
+            (Tier::Totp, [again].as_slice(), Some(&retiring))
+        );
+        assert!(std::fs::read_to_string(&path).unwrap().contains("\"format\": 3"));
+        keyring.commit(Tier::File, Vec::new(), None).unwrap();
+        assert!(
+            !std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("retiring"),
+            "no retiring key, nothing written for it"
+        );
+    }
 }

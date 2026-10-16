@@ -578,4 +578,29 @@ mod tests {
         assert!(misfiled.unlock_hardware_key(&mut backup).is_ok());
         assert_eq!(second.factor.tier(), Some(Tier::HardwareKey));
     }
+
+    #[test]
+    fn a_keys_kek_comes_from_whichever_key_holds_its_credential() {
+        let dir = test_dir("fido2-key-kek");
+        let (keyring, _, dek) = vault(&dir);
+        let (mut holder, mut other) = (VirtualAuthenticator::new(), VirtualAuthenticator::new());
+        let mut wrap = keyring.hardware_wrap(&dek, &mut holder).unwrap();
+        let kek = keyring
+            .key_kek(&wrap, &mut [&mut other, &mut holder])
+            .unwrap();
+        assert!(keyring.unwrap(&wrap, &kek).is_ok());
+        let absent = keyring.key_kek(&wrap, &mut [&mut other]).unwrap_err();
+        assert!(matches!(&absent, Error::KeyAbsent { key } if key == &wrap.id));
+        wrap.set_label("spare");
+        let named = keyring.key_kek(&wrap, &mut []).unwrap_err();
+        assert!(
+            matches!(&named, Error::KeyAbsent { key } if key == &format!("spare ({})", wrap.id)),
+            "{named:?}"
+        );
+        let file = keyring.wrap(&dek, &file_kek(), Factor::File).unwrap();
+        assert!(matches!(
+            keyring.key_kek(&file, &mut [&mut holder]),
+            Err(Error::KeyAbsent { .. })
+        ));
+    }
 }

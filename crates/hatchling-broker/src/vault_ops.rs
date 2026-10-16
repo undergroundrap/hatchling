@@ -572,4 +572,34 @@ mod tests {
             "the secrets are still under the old key"
         );
     }
+
+    #[test]
+    fn resealing_moves_each_existing_store_and_skips_what_is_moved() {
+        let dir = crate::api_auth::tests::scratch("vault-ops-reseal");
+        let (old, new) = (MasterKey::generate().unwrap(), MasterKey::generate().unwrap());
+        let name: SecretName = "record".parse().unwrap();
+        SealedVault::open_in(&dir.0.join("spaces"), &old, Store::SPACES)
+            .unwrap()
+            .store(&name, &Secret::new(b"x".to_vec()).unwrap())
+            .unwrap();
+        let stores = [
+            (Store::SECRETS, dir.0.join("absent")),
+            (Store::SPACES, dir.0.join("spaces")),
+        ];
+        let moved = reseal_stores(&stores, &old, &new).unwrap();
+        assert_eq!(
+            moved
+                .iter()
+                .map(|(store, report)| (*store, report.rekeyed, report.skipped))
+                .collect::<Vec<_>>(),
+            [("spaces", 1, 0)]
+        );
+        assert!(!dir.0.join("absent").exists());
+        let again = reseal_stores(&stores, &old, &new).unwrap();
+        assert_eq!(again.first().map(|(_, report)| report.skipped), Some(1));
+        assert!(SealedVault::open_in(&dir.0.join("spaces"), &new, Store::SPACES)
+            .unwrap()
+            .fetch(&name)
+            .is_ok());
+    }
 }
