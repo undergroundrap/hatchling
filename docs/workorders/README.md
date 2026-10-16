@@ -40,7 +40,7 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | [004](workorder-004-cell-resource-limits.md) | Per-cell resource limits | yes | CLOSED |
 | [005](workorder-005-seccomp-and-identity-tightening.md) | Tighten the seccomp filter and the cell's groups | yes | CLOSED |
 | [006](workorder-006-symlink-safe-ownership.md) | Symlink-safe ownership and staging | yes | CLOSED |
-| [007](workorder-007-bind-sessions-to-cells.md) | Bind agent sessions to the cells the broker spawned | yes | QUEUED |
+| [007](workorder-007-bind-sessions-to-cells.md) | Bind agent sessions to the cells the broker spawned | yes | CLOSED |
 | [008](workorder-008-model-request-policy.md) | A request-body policy for model vendors | yes | CLOSED |
 | [009](workorder-009-egress-correctness.md) | Egress correctness fixes | yes | CLOSED |
 | [010](workorder-010-schedule-ownership.md) | Schedule ownership and API grant edges | yes | CLOSED |
@@ -59,6 +59,7 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 
 Not yet WOs. Each gets a full file, with a scope and acceptance criteria, before work starts:
 
+- **Tell cells apart for schedules.** A cell can list and cancel any schedule an agent session made, though never the owner's. Now that every session runs under the cell id the broker gave it (WO-007), record which cell made a schedule and hold list and cancel to that cell.
 - **Store directories through a handle.** The memory and goals stores still repair a directory's mode by path after checking it. Make them use `hatchling_sys::ensure_private_dir`, as the vault and scheduled runs do since WO-006.
 - **Explain failed runs.** When a scheduled run fails, the broker logs only "the run failed": the reason is sealed in the parked result, which nothing reads yet. Log the reason (with redaction), and let the owner list and read parked results through the API.
 - **Live frontend.** Wire the frontend's live adapter (already built and tested) to the local API, so the UI drives a real broker.
