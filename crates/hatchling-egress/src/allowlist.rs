@@ -32,6 +32,17 @@
 //! none is written `local-keyless:localhost:port`, so going without a
 //! credential is always the operator's explicit choice, never what a
 //! missing secret silently turns into.
+//!
+//! **Internal addresses.** Every other destination must resolve, at
+//! startup, only to addresses on the public internet. One that resolves
+//! to a loopback, private, shared, link-local, unique-local, unspecified,
+//! multicast or cloud-metadata address (see [`is_internal`]) fails the
+//! allowlist closed, naming the entry and the address: a poisoned or
+//! stale record, or a typo, would otherwise give a cell a path into the
+//! operator's own network. A destination that is meant to be internal
+//! (a company's model gateway, split-horizon DNS) is written
+//! `internal:host:port`, so going internal is always written down. It is
+//! otherwise an ordinary credentialed destination, held to verified TLS.
 
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
@@ -52,11 +63,78 @@ pub const LOCAL_KEYLESS_PREFIX: &str = "local-keyless:";
 /// The one host a local endpoint may name.
 pub const LOCAL_HOST: &str = "localhost";
 
+/// The prefix that marks a destination meant to be on an internal network.
+///
+/// Credentialed and held to verified TLS like any other, but allowed to
+/// resolve to the addresses [`is_internal`] names.
+pub const INTERNAL_PREFIX: &str = "internal:";
+
+/// Cloud metadata services outside the other refused ranges.
+///
+/// Azure's wire server. AWS, GCP and Oracle use `169.254.169.254`, a
+/// link-local address; Alibaba's `100.100.100.200` is in the shared range;
+/// AWS's IPv6 `fd00:ec2::254` is unique-local.
+const METADATA: [Ipv4Addr; 1] = [Ipv4Addr::new(168, 63, 129, 16)];
+
+/// Whether `ip` may be reached only by a destination written `internal:`.
+///
+/// Loopback, private (RFC 1918), shared (`100.64.0.0/10`), link-local,
+/// this network (`0.0.0.0/8`), broadcast, multicast, a known metadata
+/// address, or IPv6 loopback, unspecified, unique-local (`fc00::/7`),
+/// link-local (`fe80::/10`) or multicast. An IPv4 address mapped into
+/// IPv6 (`::ffff:10.0.0.1`) is judged as the IPv4 address it is.
+#[must_use]
+pub fn is_internal(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let [first, second, ..] = v4.octets();
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || first == 0
+                || (first == 100 && (64..128).contains(&second))
+                || METADATA.contains(&v4)
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_internal(IpAddr::V4(v4));
+            }
+            let [first, ..] = v6.segments();
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (first & 0xfe00) == 0xfc00
+                || (first & 0xffc0) == 0xfe80
+        }
+    }
+}
+
+/// Refuses a destination that resolved to an internal address without
+/// being written `internal:`, naming it and the address.
+fn refuse_internal(entry: &str, resolved: &[SocketAddr]) -> Result<(), Error> {
+    resolved
+        .iter()
+        .find(|addr| is_internal(addr.ip()))
+        .map_or(Ok(()), |addr| {
+            Err(Error::InvalidAllowlist {
+                reason: format!(
+                    "destination {entry:?} resolves to {}, an internal address: if it is meant to be on your own network, write it {INTERNAL_PREFIX}{entry}",
+                    addr.ip()
+                ),
+            })
+        })
+}
+
 /// What kind of destination an allowlist entry is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
     /// A credentialed HTTPS destination.
     Credentialed,
+    /// A credentialed HTTPS destination the operator means to be on an
+    /// internal network.
+    Internal,
     /// A public source: read-only, never credentialed.
     Public,
     /// A local model endpoint, credentialed unless `keyless`.
@@ -73,6 +151,7 @@ impl Kind {
             (LOCAL_KEYLESS_PREFIX, Self::Local { keyless: true }),
             (LOCAL_PREFIX, Self::Local { keyless: false }),
             (PUBLIC_PREFIX, Self::Public),
+            (INTERNAL_PREFIX, Self::Internal),
         ]
         .into_iter()
         .find_map(|(prefix, kind)| entry.strip_prefix(prefix).map(|rest| (kind, rest)))
@@ -163,6 +242,20 @@ impl Allowlist {
     /// Returns [`Error::InvalidAllowlist`] if any entry is malformed
     /// or if a hostname fails to resolve.
     pub fn parse(raw: &str) -> Result<Self, Error> {
+        Self::parse_with(raw, |entry| entry.to_socket_addrs().map(Iterator::collect))
+    }
+
+    /// [`parse`](Self::parse), resolving each destination with `resolve`
+    /// rather than the system's resolver: the same rules, checked against
+    /// whatever addresses it returns.
+    ///
+    /// # Errors
+    ///
+    /// As [`parse`](Self::parse).
+    pub fn parse_with(
+        raw: &str,
+        resolve: impl Fn(&str) -> std::io::Result<Vec<SocketAddr>>,
+    ) -> Result<Self, Error> {
         let mut destinations = HashSet::new();
         let mut public = HashSet::new();
         let mut local = HashMap::new();
@@ -192,12 +285,9 @@ impl Allowlist {
             }
             // Pin the DNS resolution now. If it fails, the allowlist
             // is misconfigured — fail closed at startup.
-            let resolved: Vec<SocketAddr> = entry
-                .to_socket_addrs()
-                .map_err(|_| Error::InvalidAllowlist {
-                    reason: format!("destination {entry:?} does not resolve"),
-                })?
-                .collect();
+            let resolved = resolve(entry).map_err(|_| Error::InvalidAllowlist {
+                reason: format!("destination {entry:?} does not resolve"),
+            })?;
             if resolved.is_empty() {
                 return Err(Error::InvalidAllowlist {
                     reason: format!("destination {entry:?} resolved to no addresses"),
@@ -214,6 +304,7 @@ impl Allowlist {
             destinations.insert(entry.to_owned());
             match kind {
                 Kind::Public => {
+                    refuse_internal(entry, &resolved)?;
                     public.insert(entry.to_owned());
                 }
                 Kind::Local { keyless } => {
@@ -226,7 +317,8 @@ impl Allowlist {
                         },
                     );
                 }
-                Kind::Credentialed => {}
+                Kind::Credentialed => refuse_internal(entry, &resolved)?,
+                Kind::Internal => {}
             }
             pinned.insert(entry.to_owned(), resolved);
         }
@@ -288,10 +380,39 @@ impl Allowlist {
 mod tests {
     use super::*;
 
+    /// A public address, from a documentation range (TEST-NET-3).
+    const PUBLIC: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 5);
+
+    /// Parses `raw`, resolving `localhost` to both loopback addresses,
+    /// `gw.corp` to `internal`, and any other name to [`PUBLIC`].
+    fn resolving(raw: &str, internal: &[IpAddr]) -> Result<Allowlist, Error> {
+        let internal = internal.to_vec();
+        Allowlist::parse_with(raw, move |entry| {
+            let (host, port) = entry.rsplit_once(':').unwrap();
+            let port: u16 = port.parse().unwrap();
+            let ips = match host {
+                "localhost" => vec![
+                    IpAddr::V4(Ipv4Addr::LOCALHOST),
+                    IpAddr::V6(Ipv6Addr::LOCALHOST),
+                ],
+                "gw.corp" => internal.clone(),
+                _ => vec![IpAddr::V4(PUBLIC)],
+            };
+            Ok(ips
+                .into_iter()
+                .map(|ip| SocketAddr::new(ip, port))
+                .collect())
+        })
+    }
+
+    fn fake(raw: &str) -> Result<Allowlist, Error> {
+        resolving(raw, &[])
+    }
+
     #[test]
     fn parses_valid_allowlist() {
-        // Use localhost, which always resolves.
-        let allowlist = Allowlist::parse("localhost:443,localhost:80").unwrap();
+        // Use localhost, which always resolves: written internal, as it is.
+        let allowlist = Allowlist::parse("internal:localhost:443,internal:localhost:80").unwrap();
         assert_eq!(allowlist.len(), 2);
         assert!(!allowlist.is_empty());
         assert!(allowlist.allows("localhost:443"));
@@ -340,47 +461,49 @@ mod tests {
 
     #[test]
     fn ignores_empty_entries() {
-        let allowlist = Allowlist::parse("localhost:443,, localhost:80 ,").unwrap();
+        let allowlist =
+            Allowlist::parse("internal:localhost:443,, internal:localhost:80 ,").unwrap();
         assert_eq!(allowlist.len(), 2);
     }
 
     #[test]
     fn public_sources_are_allowed_and_marked() {
-        let allowlist = Allowlist::parse("public:localhost:443, localhost:80").unwrap();
+        let allowlist = fake("public:docs.example:443, api.example:443").unwrap();
         assert_eq!(allowlist.len(), 2);
-        assert!(allowlist.allows("localhost:443"));
-        assert!(allowlist.allows("localhost:80"));
-        assert!(allowlist.is_public("localhost:443"));
-        assert!(!allowlist.is_public("localhost:80"));
+        assert!(allowlist.allows("docs.example:443"));
+        assert!(allowlist.allows("api.example:443"));
+        assert!(allowlist.is_public("docs.example:443"));
+        assert!(!allowlist.is_public("api.example:443"));
         assert!(!allowlist.is_public("example.com:443"));
         // The same kind twice is one destination.
-        let twice = Allowlist::parse("public:localhost:443,public:localhost:443").unwrap();
+        let twice = fake("public:docs.example:443,public:docs.example:443").unwrap();
         assert_eq!(twice.len(), 1);
-        assert!(twice.is_public("localhost:443"));
-        let plain = Allowlist::parse("localhost:443,localhost:443").unwrap();
-        assert!(!plain.is_public("localhost:443"));
+        assert!(twice.is_public("docs.example:443"));
+        let plain = fake("api.example:443,api.example:443").unwrap();
+        assert!(!plain.is_public("api.example:443"));
         assert_eq!(PUBLIC_PREFIX, "public:");
     }
 
     #[test]
     fn a_destination_listed_both_ways_or_a_bad_public_entry_fails_closed() {
         for bad in [
-            "public:localhost:443,localhost:443",
-            "localhost:443,public:localhost:443",
+            "public:docs.example:443,docs.example:443",
+            "docs.example:443,public:docs.example:443",
             "public:*.example.com:443",
             "public:192.168.1.1:443",
             "public:",
-            "public: localhost:443",
+            "public: docs.example:443",
         ] {
-            assert!(Allowlist::parse(bad).is_err(), "should reject {bad:?}");
+            assert!(fake(bad).is_err(), "should reject {bad:?}");
         }
     }
 
     #[test]
     fn a_local_endpoint_is_pinned_to_loopback_and_marked() {
-        let allowlist =
-            Allowlist::parse("local:localhost:11434, local-keyless:localhost:8080, localhost:443")
-                .unwrap();
+        let allowlist = Allowlist::parse(
+            "local:localhost:11434, local-keyless:localhost:8080, internal:localhost:443",
+        )
+        .unwrap();
         assert_eq!(allowlist.len(), 3);
         assert!(allowlist.allows("localhost:11434"));
         assert!(allowlist.allows("localhost:8080"));
@@ -417,6 +540,7 @@ mod tests {
             "local:localhost:11434,localhost:11434",
             "local:localhost:11434,local-keyless:localhost:11434",
             "public:localhost:11434,local:localhost:11434",
+            "internal:localhost:11434,local:localhost:11434",
         ] {
             assert!(Allowlist::parse(bad).is_err(), "should reject {bad:?}");
         }
@@ -464,7 +588,7 @@ mod tests {
 
     #[test]
     fn addrs_for_returns_pinned_addresses() {
-        let allowlist = Allowlist::parse("localhost:443").unwrap();
+        let allowlist = Allowlist::parse("internal:localhost:443").unwrap();
         let addrs = allowlist.addrs_for("localhost:443").unwrap();
         assert!(!addrs.is_empty());
         assert!(
@@ -474,5 +598,169 @@ mod tests {
         );
         assert!(allowlist.addrs_for("localhost:80").is_none());
         assert!(allowlist.addrs_for("example.com:443").is_none());
+    }
+
+    #[test]
+    fn each_internal_range_is_internal_and_the_internet_is_not() {
+        let ip = |text: &str| text.parse::<IpAddr>().unwrap();
+        for internal in [
+            "127.0.0.1",
+            "127.255.255.254",
+            "10.0.0.1",
+            "172.16.0.1",
+            "172.31.255.255",
+            "192.168.1.1",
+            "169.254.169.254",
+            "169.254.0.1",
+            "100.64.0.1",
+            "100.127.255.255",
+            "100.100.100.200",
+            "0.0.0.0",
+            "0.1.2.3",
+            "255.255.255.255",
+            "224.0.0.1",
+            "239.255.255.250",
+            "168.63.129.16",
+            "::1",
+            "::",
+            "fc00::1",
+            "fd00:ec2::254",
+            "fe80::1",
+            "febf::1",
+            "ff02::1",
+            "::ffff:10.0.0.1",
+            "::ffff:127.0.0.1",
+            "::ffff:169.254.169.254",
+        ] {
+            assert!(is_internal(ip(internal)), "{internal} is internal");
+        }
+        for public in [
+            "8.8.8.8",
+            "1.1.1.1",
+            "203.0.113.5",
+            "172.15.255.255",
+            "172.32.0.1",
+            "100.63.255.255",
+            "100.128.0.1",
+            "169.253.255.255",
+            "168.63.129.17",
+            "2606:4700:4700::1111",
+            "fec0::1",
+            "::ffff:8.8.8.8",
+        ] {
+            assert!(!is_internal(ip(public)), "{public} is public");
+        }
+    }
+
+    #[test]
+    fn a_destination_resolving_inside_fails_unless_written_internal() {
+        let ip = |text: &str| text.parse::<IpAddr>().unwrap();
+        for inside in [
+            "10.1.2.3",
+            "169.254.169.254",
+            "fd00::7",
+            "::ffff:192.168.0.9",
+        ] {
+            for raw in ["gw.corp:443", "public:gw.corp:443"] {
+                let error = resolving(raw, &[ip(inside)]).unwrap_err();
+                let Error::InvalidAllowlist { reason } = &error else {
+                    unreachable!("{error:?}");
+                };
+                assert!(
+                    reason.contains("\"gw.corp:443\"") && reason.contains(&ip(inside).to_string()),
+                    "names the entry and the address: {reason}"
+                );
+                assert!(
+                    reason.contains("internal:gw.corp:443"),
+                    "says how to: {reason}"
+                );
+            }
+            // Written internal: accepted, pinned, an ordinary credentialed
+            // destination (not public, not local).
+            let allowlist = resolving("internal:gw.corp:443", &[ip(inside)]).unwrap();
+            assert!(allowlist.allows("gw.corp:443"));
+            assert_eq!(
+                allowlist.addrs_for("gw.corp:443"),
+                Some(&[SocketAddr::new(ip(inside), 443)][..])
+            );
+            assert!(!allowlist.is_public("gw.corp:443"));
+            assert!(allowlist.local("gw.corp:443").is_none());
+        }
+        // One internal address among public ones is enough to refuse.
+        let mixed = [IpAddr::V4(PUBLIC), ip("10.0.0.1")];
+        assert!(resolving("gw.corp:443", &mixed).is_err());
+        assert!(resolving("internal:gw.corp:443", &mixed).is_ok());
+        // An internal destination that resolves publicly is still allowed.
+        assert!(fake("internal:api.example:443").is_ok());
+        assert_eq!(INTERNAL_PREFIX, "internal:");
+    }
+
+    #[test]
+    fn each_prefix_names_its_kind_and_an_internal_address_is_named() {
+        assert_eq!(
+            Kind::of("internal:gw.corp:443"),
+            (Kind::Internal, "gw.corp:443")
+        );
+        assert_eq!(
+            Kind::of("public:a.example:1"),
+            (Kind::Public, "a.example:1")
+        );
+        assert_eq!(
+            Kind::of("local:localhost:1"),
+            (Kind::Local { keyless: false }, "localhost:1")
+        );
+        assert_eq!(
+            Kind::of("local-keyless:localhost:1"),
+            (Kind::Local { keyless: true }, "localhost:1")
+        );
+        assert_eq!(Kind::of("a.example:1"), (Kind::Credentialed, "a.example:1"));
+        let addr = |text: &str| text.parse::<SocketAddr>().unwrap();
+        assert!(refuse_internal("a.example:443", &[]).is_ok());
+        assert!(refuse_internal("a.example:443", &[addr("203.0.113.5:443")]).is_ok());
+        let refused = refuse_internal(
+            "a.example:443",
+            &[addr("203.0.113.5:443"), addr("10.0.0.1:443")],
+        );
+        assert!(
+            matches!(&refused, Err(Error::InvalidAllowlist { reason }) if reason == "destination \"a.example:443\" resolves to 10.0.0.1, an internal address: if it is meant to be on your own network, write it internal:a.example:443"),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
+    fn an_internal_destination_is_one_kind() {
+        for bad in [
+            "internal:gw.corp:443,gw.corp:443",
+            "gw.corp:443,internal:gw.corp:443",
+            "internal:gw.corp:443,public:gw.corp:443",
+            "internal:*.corp:443",
+            "internal:10.0.0.1:443",
+            "internal:",
+        ] {
+            assert!(
+                resolving(bad, &[IpAddr::V4(PUBLIC)]).is_err(),
+                "should reject {bad:?}"
+            );
+        }
+        let twice = resolving(
+            "internal:gw.corp:443,internal:gw.corp:443",
+            &[IpAddr::V4(PUBLIC)],
+        )
+        .unwrap();
+        assert_eq!(twice.len(), 1);
+    }
+
+    #[test]
+    fn a_name_that_does_not_resolve_fails_closed() {
+        let failing = Allowlist::parse_with("api.example:443", |_| {
+            Err(std::io::Error::other("no such host"))
+        });
+        assert!(
+            matches!(failing, Err(Error::InvalidAllowlist { reason }) if reason.contains("does not resolve"))
+        );
+        let empty = Allowlist::parse_with("api.example:443", |_| Ok(Vec::new()));
+        assert!(
+            matches!(empty, Err(Error::InvalidAllowlist { reason }) if reason.contains("no addresses"))
+        );
     }
 }

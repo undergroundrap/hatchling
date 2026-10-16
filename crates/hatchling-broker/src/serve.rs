@@ -1680,7 +1680,7 @@ mod tests {
             std::env::temp_dir().join(format!("hatchling-egress-pages-{}", std::process::id()));
         let key = MasterKey::generate().unwrap();
         let egress = EgressConfig {
-            allowlist: crate::EgressAllowlist::new("localhost:443"),
+            allowlist: crate::EgressAllowlist::new("internal:localhost:443"),
             grants: vec![String::from("localhost:443")],
         };
         let vault = VaultConfig {
@@ -1734,7 +1734,7 @@ mod tests {
         assert_eq!(op(ungranted).unwrap(), EgressResult::Denied);
         // Granted but not on the proxy's allowlist: its mint is refused.
         let granted_elsewhere = EgressConfig {
-            allowlist: crate::EgressAllowlist::new("localhost:443"),
+            allowlist: crate::EgressAllowlist::new("internal:localhost:443"),
             grants: vec![String::from("elsewhere.example:443")],
         };
         let mint = EgressOp::MintSurrogate {
@@ -1873,7 +1873,7 @@ mod tests {
         }
         let key = MasterKey::generate().unwrap();
         let egress = EgressConfig {
-            allowlist: crate::EgressAllowlist::new("localhost:443"),
+            allowlist: crate::EgressAllowlist::new("internal:localhost:443"),
             grants: Vec::new(),
         };
         let vault = VaultConfig {

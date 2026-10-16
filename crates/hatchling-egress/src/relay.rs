@@ -154,8 +154,10 @@ mod tests {
             b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec(),
             Ending::Notify,
         );
+        // On this machine, so written internal: (WO-023), and still held to
+        // verified TLS.
         let destination = format!("localhost:{}", addr.port());
-        let allowlist = Allowlist::parse(&destination).unwrap();
+        let allowlist = Allowlist::parse(&format!("internal:{destination}")).unwrap();
         let tls = TlsClient::with_operator_bundle(vendor.ca_pem.as_bytes()).unwrap();
         let mut upstream = open(&allowlist, &tls, &destination, SOON).unwrap();
         assert!(matches!(upstream, Upstream::Tls(_)));
@@ -174,7 +176,7 @@ mod tests {
         let stranger = pki("vendor.example");
         let (addr, _) = serve(&stranger, Vec::new(), Ending::Drop);
         let destination = format!("localhost:{}", addr.port());
-        let allowlist = Allowlist::parse(&destination).unwrap();
+        let allowlist = Allowlist::parse(&format!("internal:{destination}")).unwrap();
         let tls = TlsClient::with_operator_bundle(stranger.ca_pem.as_bytes()).unwrap();
         let mut upstream = open(&allowlist, &tls, &destination, SOON).unwrap();
         assert!(
@@ -191,8 +193,13 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let tls = TlsClient::bundled().unwrap();
         let listed = format!("localhost:{port}");
-        let public = Allowlist::parse(&format!("public:{listed}")).unwrap();
-        for (allowlist, destination) in [(&public, listed.as_str()), (&public, "localhost:1")] {
+        // A public source can't be on this machine: it resolves, here, to a
+        // documentation address.
+        let public = Allowlist::parse_with("public:docs.example:443", |_| {
+            Ok(vec!["203.0.113.5:443".parse().unwrap()])
+        })
+        .unwrap();
+        for (allowlist, destination) in [(&public, "docs.example:443"), (&public, "localhost:1")] {
             assert!(matches!(
                 open(allowlist, &tls, destination, SOON),
                 Err(Error::DestinationDenied)
