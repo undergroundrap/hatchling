@@ -9,13 +9,24 @@ use hatchling_core::{CellId, LogLevel, ModelReasoning, PeerUid, SocketPath};
 use crate::Error;
 use crate::environment as env;
 
+/// Where the agent reaches its broker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BrokerAddress {
+    /// The broker's socket, at this path (`HATCHLING_BROKER_SOCKET`).
+    Socket(SocketPath),
+    /// The connection the agent's cell was given, at this inherited
+    /// descriptor (`HATCHLING_CONNECTION_FD`): no other process holds an
+    /// end of it.
+    Connection(i32),
+}
+
 /// Validated agent configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
     /// Identity of the cell this agent runs in.
     pub cell_id: CellId,
-    /// Broker socket the agent talks to.
-    pub broker_socket: SocketPath,
+    /// Where the agent reaches its broker.
+    pub broker: BrokerAddress,
     /// Expected uid of the broker process, from the kernel's point of
     /// view. The peer is authorized against this value via
     /// `SO_PEERCRED`; there is no other identity signal.
@@ -70,9 +81,16 @@ impl Config {
         let cell_id = get(env::HATCHLING_CELL_ID.name)
             .ok_or(Error::MissingConfig("HATCHLING_CELL_ID"))?
             .parse::<CellId>()?;
-        let broker_socket = get(env::HATCHLING_BROKER_SOCKET.name)
-            .ok_or(Error::MissingConfig("HATCHLING_BROKER_SOCKET"))?
-            .parse::<SocketPath>()?;
+        // A cell's own connection, when it was given one, is the only way
+        // to its broker: the socket isn't consulted.
+        let broker = match get(env::HATCHLING_CONNECTION_FD.name) {
+            Some(raw) => BrokerAddress::Connection(parse_connection_fd(&raw)?),
+            None => BrokerAddress::Socket(
+                get(env::HATCHLING_BROKER_SOCKET.name)
+                    .ok_or(Error::MissingConfig("HATCHLING_BROKER_SOCKET"))?
+                    .parse::<SocketPath>()?,
+            ),
+        };
         let broker_uid = get(env::HATCHLING_BROKER_UID.name)
             .ok_or(Error::MissingConfig("HATCHLING_BROKER_UID"))?
             .parse::<u32>()
@@ -114,7 +132,7 @@ impl Config {
         };
         Ok(Self {
             cell_id,
-            broker_socket,
+            broker,
             broker_uid,
             log_level,
             model_endpoint: get(env::HATCHLING_MODEL_ENDPOINT.name),
@@ -125,6 +143,17 @@ impl Config {
             run_subagent,
         })
     }
+}
+
+/// The inherited connection's descriptor: decimal, above stderr.
+fn parse_connection_fd(raw: &str) -> Result<i32, Error> {
+    raw.parse::<i32>()
+        .ok()
+        .filter(|fd| *fd > 2)
+        .ok_or_else(|| Error::InvalidConfig {
+            key: "HATCHLING_CONNECTION_FD",
+            reason: String::from("expected a descriptor above stderr, in decimal"),
+        })
 }
 
 /// A declared context window: a base-10 token count, no smaller than
@@ -235,8 +264,8 @@ mod tests {
         let config = Config::parse(lookup(&vars)).unwrap();
         assert_eq!(config.cell_id.as_str(), "cell-01");
         assert_eq!(
-            config.broker_socket.as_path(),
-            std::path::Path::new("/tmp/hatchling-test/broker.sock")
+            config.broker,
+            BrokerAddress::Socket("/tmp/hatchling-test/broker.sock".parse().unwrap())
         );
         assert_eq!(config.log_level, LogLevel::Info);
     }
@@ -258,6 +287,37 @@ mod tests {
             err,
             Error::MissingConfig("HATCHLING_BROKER_SOCKET")
         ));
+    }
+
+    #[test]
+    fn a_cells_own_connection_replaces_the_socket() {
+        let mut vars = valid_vars();
+        vars.insert("HATCHLING_CONNECTION_FD", "7");
+        assert_eq!(
+            Config::parse(lookup(&vars)).unwrap().broker,
+            BrokerAddress::Connection(7)
+        );
+        // Given a connection, the socket isn't needed.
+        vars.remove("HATCHLING_BROKER_SOCKET");
+        assert_eq!(
+            Config::parse(lookup(&vars)).unwrap().broker,
+            BrokerAddress::Connection(7)
+        );
+        // Only a descriptor above stderr, in decimal.
+        for raw in ["2", "0", "-4", "seven", ""] {
+            vars.insert("HATCHLING_CONNECTION_FD", raw);
+            assert!(
+                matches!(
+                    Config::parse(lookup(&vars)),
+                    Err(Error::InvalidConfig {
+                        key: "HATCHLING_CONNECTION_FD",
+                        ..
+                    })
+                ),
+                "{raw:?}"
+            );
+        }
+        assert_eq!(parse_connection_fd("3").unwrap(), 3);
     }
 
     #[test]

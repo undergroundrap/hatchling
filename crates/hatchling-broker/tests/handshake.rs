@@ -230,3 +230,47 @@ fn post_handshake_garbage_frame_closes_session() {
     write_frame(&stream, b"{}").unwrap();
     assert_silent_close(&mut stream, "post-handshake frame").unwrap();
 }
+
+/// A cell the broker spawned speaks on its own connection: there is no
+/// peer gate (the configured agent uid here is one the kernel would never
+/// report for this process), and the hello must name the cell's own id.
+#[test]
+fn a_cells_own_connection_serves_that_cell_alone() -> Result<(), String> {
+    let socket = test_socket("cell-connection");
+    let config = test_config("cell-connection", &socket, real_uid().wrapping_add(1))?;
+    let key = MasterKey::generate().map_err(|e| format!("key generation failed: {e}"))?;
+    let skills = hatchling_broker::Skills::default();
+    for (named, welcomed) in [("cell-01", true), ("cell-02", false)] {
+        let (broker_end, agent_end) =
+            UnixStream::pair().map_err(|e| format!("socket pair: {e}"))?;
+        agent_end
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .map_err(|e| format!("timeout: {e}"))?;
+        let cell = hatchling_broker::AgentCell {
+            connection: broker_end,
+            cell_id: "cell-01".parse().map_err(|e| format!("cell id: {e}"))?,
+            pid: 42,
+        };
+        let served = std::thread::scope(|scope| {
+            let served = scope.spawn(|| {
+                hatchling_broker::serve_cell_connection(&cell, &config, &key, &skills, None, None)
+            });
+            send_hello(&agent_end, PROTOCOL_VERSION, named)?;
+            let reply = read_broker_message(&agent_end)?;
+            // The session ends when the agent goes.
+            drop(agent_end);
+            let served = served
+                .join()
+                .map_err(|_| String::from("the session panicked"))?;
+            Ok::<_, String>((reply, served))
+        })?;
+        match (welcomed, served) {
+            (true, (BrokerMessage::Welcome { v }, Ok(()))) if v == PROTOCOL_VERSION => {}
+            (false, (BrokerMessage::Reject { reason, .. }, Err(error)))
+                if reason == "the hello names cell cell-02, but this connection is cell-01's"
+                    && matches!(error, hatchling_broker::Error::HandshakeProtocol { .. }) => {}
+            (_, other) => return Err(format!("{named}: got {other:?}")),
+        }
+    }
+    Ok(())
+}

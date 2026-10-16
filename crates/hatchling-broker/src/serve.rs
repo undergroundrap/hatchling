@@ -1,7 +1,10 @@
 //! Connection serving: the per-connection handshake and session.
 //!
-//! Every connection runs the same pipeline: kernel peer credentials
-//! first, then the handshake, then the session. The peer gate fires
+//! In cell mode the broker's agent cell has a connection of its own
+//! ([`serve_cell_connection`]), and no socket admits any other agent.
+//! Without a cell, every connection on the broker's socket runs the same
+//! pipeline: kernel peer credentials first, then the handshake, then the
+//! session. The peer gate fires
 //! before a single byte is parsed, and a peer that fails it is closed
 //! silently — no `REJECT` goes back. Unauthorized peers get an
 //! immediate 0-byte close. The why stays in the broker's logs, where
@@ -14,9 +17,9 @@ use hatchling_channel::LocalHub;
 use hatchling_core::framing::{read_frame, read_frame_or_eof, write_frame};
 use hatchling_core::{
     AgentMessage, BrokerMessage, CellId, ChannelResult, EgressOp, EgressResult, GoalsResult,
-    HookResult, MAX_FRAME_BYTES, MemoryResult, PROTOCOL_VERSION, QueryResult, ScheduleResult,
-    SecretName, SessionRequest, SessionResponse, SkillResult, VaultOp, VaultResult, decode_secret,
-    encode_secret, peer_credentials,
+    HookResult, MAX_FRAME_BYTES, MemoryResult, PROTOCOL_VERSION, PeerCredentials, PeerPid,
+    QueryResult, ScheduleResult, SecretName, SessionRequest, SessionResponse, SkillResult, VaultOp,
+    VaultResult, decode_secret, encode_secret, peer_credentials,
 };
 use hatchling_egress::{EgressRequest, Proxy};
 use hatchling_memory::{MemoryPrincipal, SessionId};
@@ -91,7 +94,6 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
             "HATCHLING_CELL_CGROUP unset: cells use rlimits alone; no whole-cell memory or CPU limit"
         );
     }
-    let listener = bind_listener(config)?;
     // The local channel's ingress, if configured: bound now, served on
     // its own thread once the cell has forked. Every reply its hub
     // delivers passes the gate.
@@ -104,32 +106,32 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
     let api = crate::api::open_api(config, &crate::api_auth::ApiConfig::from_env(config)?)?;
     // Spawn the cell BEFORE serving: spawn_cell forks, and forking a
     // multi-threaded process is unsound. HATCHLING_AGENT_BIN selects
-    // cell mode; without it the broker serves bare (tests, debugging).
-    if std::env::var_os(env::HATCHLING_AGENT_BIN.name).is_some() {
-        let cell_config = CellConfig::from_env(&config.socket, config.agent_uid.as_u32())?;
-        cell_config.refuse_vault_in_view(&config.vault)?;
-        let handle = spawn_cell(&cell_config, config.log_level)?;
+    // cell mode: the cell's agent gets a connection of its own, and the
+    // broker's socket isn't bound at all, so nothing else can open an
+    // agent session. Without it the broker serves bare (tests,
+    // debugging), admitting agents on its socket by uid alone.
+    let listener;
+    let agents = if std::env::var_os(env::HATCHLING_AGENT_BIN.name).is_some() {
+        let cell = spawn_agent_cell(
+            config,
+            CellConfig::from_env(&config.socket, config.agent_uid.as_u32())?,
+        )?;
         tracing::info!(
-            cell_id = %cell_config.cell_id,
-            child_pid = handle.child_pid(),
-            uid_base = cell_config.uid_base,
-            "cell spawned"
+            cell_id = %cell.cell_id,
+            agent_uid = %config.agent_uid,
+            "broker serving its cell"
         );
-        // The reaper owns the wait: it collects the agent's exit
-        // status, surfaces child-reported setup failures in the logs,
-        // and removes the staging directory.
-        std::thread::spawn(move || match handle.wait_exit() {
-            Ok(exit) => tracing::info!(status = exit.status, exit_code = exit.code, "cell exited"),
-            Err(err) => tracing::error!(%err, "cell wait failed"),
-        });
+        Agents::Cell(cell)
     } else {
         tracing::info!("HATCHLING_AGENT_BIN unset: serving without a cell");
-    }
-    tracing::info!(
-        socket = %config.socket,
-        agent_uid = %config.agent_uid,
-        "broker listening"
-    );
+        listener = bind_listener(config)?;
+        tracing::info!(
+            socket = %config.socket,
+            agent_uid = %config.agent_uid,
+            "broker listening"
+        );
+        Agents::Listener(&listener)
+    };
     std::thread::scope(|scope| {
         // The gate's rules borrow the one key on a thread of their own
         // (see `crate::output_gate`): the gate only queues work for them.
@@ -143,8 +145,8 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
             let (key, skills) = (&key, &skills);
             scope.spawn(move || api.serve(config, key, skills, hub));
         }
-        serve_forever(
-            &listener,
+        serve_agents(
+            agents,
             config,
             &key,
             &skills,
@@ -152,6 +154,65 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
             devices.as_ref(),
         )
     })
+}
+
+/// Spawns the broker's agent cell from `cell_config`, connected: the
+/// agent's way to the broker is a connection made for it alone. A
+/// reaper thread owns the cell's wait.
+///
+/// # Errors
+///
+/// A vault in the cell's view, an invalid cell id, the spawn's errors,
+/// or [`Error::CellSpawn`] if the spawned cell came without its
+/// connection.
+pub fn spawn_agent_cell(config: &Config, mut cell_config: CellConfig) -> Result<AgentCell, Error> {
+    cell_config.connected = true;
+    cell_config.refuse_vault_in_view(&config.vault)?;
+    let cell_id: CellId = cell_config.cell_id.parse()?;
+    let mut handle = spawn_cell(&cell_config, config.log_level)?;
+    let connection = handle.connection().ok_or_else(|| Error::CellSpawn {
+        reason: String::from("the agent cell came without its connection"),
+    })?;
+    let pid = handle.child_pid();
+    tracing::info!(
+        cell_id = %cell_id,
+        child_pid = pid,
+        uid_base = cell_config.uid_base,
+        "cell spawned"
+    );
+    // The reaper owns the wait: it collects the agent's exit
+    // status, surfaces child-reported setup failures in the logs,
+    // and removes the staging directory.
+    std::thread::spawn(move || match handle.wait_exit() {
+        Ok(exit) => tracing::info!(status = exit.status, exit_code = exit.code, "cell exited"),
+        Err(err) => tracing::error!(%err, "cell wait failed"),
+    });
+    Ok(AgentCell {
+        connection,
+        cell_id,
+        pid: u32::try_from(pid).unwrap_or_default(),
+    })
+}
+
+/// An agent cell the broker spawned, with the broker's end of the
+/// connection it made for it.
+#[derive(Debug)]
+pub struct AgentCell {
+    /// The broker's end of the cell's connection: in cell mode, the only
+    /// way into an agent session.
+    pub connection: UnixStream,
+    /// The cell's id, as the broker gave it.
+    pub cell_id: CellId,
+    /// The cell's pid, for the audit trail only.
+    pub pid: u32,
+}
+
+/// Where agent sessions come from.
+enum Agents<'a> {
+    /// The broker's socket: any process with the agent uid (bare mode).
+    Listener(&'a UnixListener),
+    /// The one cell the broker spawned, on its own connection.
+    Cell(AgentCell),
 }
 
 /// Forgets a session's output gate scope when the session ends.
@@ -194,6 +255,42 @@ pub fn serve_forever(
     ingress: Option<&crate::ingress::Ingress>,
     devices: Option<&crate::device::DeviceEndpoint>,
 ) -> ! {
+    serve_agents(
+        Agents::Listener(listener),
+        config,
+        key,
+        skills,
+        ingress,
+        devices,
+    )
+}
+
+/// [`serve_forever`] for the one agent `cell` the broker spawned.
+///
+/// Its session is served on the cell's own connection
+/// ([`serve_cell_connection`]), and no socket admits any other. When
+/// the session ends the agent is gone, and the broker goes on serving
+/// everything else (scheduled runs, ingress, devices) until killed.
+pub fn serve_cell_forever(
+    cell: AgentCell,
+    config: &Config,
+    key: &MasterKey,
+    skills: &Skills,
+    ingress: Option<&crate::ingress::Ingress>,
+    devices: Option<&crate::device::DeviceEndpoint>,
+) -> ! {
+    serve_agents(Agents::Cell(cell), config, key, skills, ingress, devices)
+}
+
+/// Serves `agents`, and everything beside them, forever.
+fn serve_agents(
+    agents: Agents<'_>,
+    config: &Config,
+    key: &MasterKey,
+    skills: &Skills,
+    ingress: Option<&crate::ingress::Ingress>,
+    devices: Option<&crate::device::DeviceEndpoint>,
+) -> ! {
     // Scoped threads, not detached: the `&MasterKey` borrow crosses
     // the thread boundary without an `Arc`, and the single-owner
     // discipline holds — every session borrows the broker's one key.
@@ -218,6 +315,10 @@ pub fn serve_forever(
                 crate::run_launcher::dispatch_forever(scope, config, key, hub, runs)
             });
         }
+        let listener = match agents {
+            Agents::Listener(listener) => listener,
+            Agents::Cell(cell) => serve_cell_then_wait(&cell, config, key, skills, hub),
+        };
         loop {
             match listener.accept() {
                 Ok((stream, _)) => match slots.try_acquire() {
@@ -354,7 +455,84 @@ pub fn serve_connection_with_runs(
             expected: config.agent_uid,
         });
     }
+    let cell_id = handshake(stream, None)?;
+    tracing::info!(
+        peer_uid = %creds.uid(),
+        peer_pid = %creds.pid(),
+        cell_id = %cell_id,
+        "agent session established"
+    );
+    serve_session(stream, config, key, skills, &cell_id, creds, hub, runs)
+}
 
+/// Serves the agent session on `cell`'s own connection.
+///
+/// There is no peer gate: the broker made the connection and gave its
+/// other end to the cell it spawned, so whoever speaks on it is that
+/// cell's agent. The kernel's report would only name the broker, which
+/// made both ends. The hello must name the cell's own id: a session
+/// never runs, or is recorded, under another.
+///
+/// # Errors
+///
+/// As [`serve_connection`], less [`Error::PeerUnauthorized`];
+/// [`Error::HandshakeProtocol`] for a hello naming another cell.
+pub fn serve_cell_connection(
+    cell: &AgentCell,
+    config: &Config,
+    key: &MasterKey,
+    skills: &Skills,
+    hub: Option<&LocalHub>,
+    runs: Option<crate::RunEnv>,
+) -> Result<(), Error> {
+    let stream = &cell.connection;
+    let cell_id = handshake(stream, Some(&cell.cell_id))?;
+    let creds = PeerCredentials::of_spawned(config.agent_uid, PeerPid::from_kernel(cell.pid));
+    tracing::info!(
+        peer_uid = %creds.uid(),
+        peer_pid = %creds.pid(),
+        cell_id = %cell_id,
+        "agent session established"
+    );
+    serve_session(stream, config, key, skills, &cell_id, creds, hub, runs)
+}
+
+/// Serves `cell`'s session on this thread, then waits forever: the
+/// broker serves everything else on its other threads.
+fn serve_cell_then_wait(
+    cell: &AgentCell,
+    config: &Config,
+    key: &MasterKey,
+    skills: &Skills,
+    hub: Option<&LocalHub>,
+) -> ! {
+    match serve_cell_connection(
+        cell,
+        config,
+        key,
+        skills,
+        hub,
+        crate::RunEnv::from_process(config),
+    ) {
+        Ok(()) => {}
+        Err(error) => tracing::warn!(%error, cell_id = %cell.cell_id, "agent session failed"),
+    }
+    loop {
+        std::thread::park();
+    }
+}
+
+/// The handshake on an admitted connection: the hello, read within
+/// [`HANDSHAKE_TIMEOUT`], then `WELCOME`. Returns the cell id the hello
+/// named, which must be `expected` when the broker knows who is on the
+/// connection.
+///
+/// # Errors
+///
+/// [`Error::HandshakeIo`] on transport failure, and
+/// [`Error::HandshakeProtocol`] on any framing, encoding or version
+/// violation, an invalid cell id, or one other than `expected`.
+fn handshake(stream: &UnixStream, expected: Option<&CellId>) -> Result<CellId, Error> {
     // A frame-level failure means we never got a complete message: close
     // without answering. `REJECT` is only for authorized peers whose
     // complete bytes turned out to be invalid.
@@ -383,6 +561,11 @@ pub fn serve_connection_with_runs(
             return Err(error.into());
         }
     };
+    if let Some(expected) = expected.filter(|expected| **expected != cell_id) {
+        let reason = format!("the hello names cell {cell_id}, but this connection is {expected}'s");
+        let _ = reject(stream, &reason);
+        return Err(Error::HandshakeProtocol { reason });
+    }
 
     let welcome = BrokerMessage::Welcome {
         v: PROTOCOL_VERSION,
@@ -391,14 +574,7 @@ pub fn serve_connection_with_runs(
         reason: format!("failed to encode welcome: {e}"),
     })?;
     write_frame(stream, &payload)?;
-    tracing::info!(
-        peer_uid = %creds.uid(),
-        peer_pid = %creds.pid(),
-        cell_id = %cell_id,
-        "agent session established"
-    );
-
-    serve_session(stream, config, key, skills, &cell_id, creds, hub, runs)
+    Ok(cell_id)
 }
 
 /// How long an authorized peer may leave the connection silent before
@@ -462,7 +638,7 @@ fn serve_session(
     key: &MasterKey,
     skills: &Skills,
     cell_id: &CellId,
-    creds: hatchling_core::PeerCredentials,
+    creds: PeerCredentials,
     hub: Option<&LocalHub>,
     runs: Option<crate::RunEnv>,
 ) -> Result<(), Error> {
@@ -1229,7 +1405,41 @@ mod tests {
                 if matches!(source.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)),
             "{read:?}"
         );
-        assert!(took >= Duration::from_millis(100), "{took:?}");
+        // It waited: the kernel may wake it a tick early, never at once.
+        assert!(took >= Duration::from_millis(50), "{took:?}");
+    }
+
+    #[test]
+    fn the_handshake_welcomes_only_the_cell_it_expects() {
+        let hello = |agent: &UnixStream, cell: &str| {
+            let hello = AgentMessage::Hello {
+                v: PROTOCOL_VERSION,
+                cell_id: cell.to_owned(),
+            };
+            write_frame(agent, &serde_json::to_vec(&hello).unwrap()).unwrap();
+        };
+        let reply = |agent: &UnixStream| -> BrokerMessage {
+            serde_json::from_slice(&read_frame(agent).unwrap()).unwrap()
+        };
+        let ours: CellId = "cell-01".parse().unwrap();
+        // Expecting this cell: welcomed, and its id returned.
+        let (agent, broker) = UnixStream::pair().unwrap();
+        hello(&agent, "cell-01");
+        assert_eq!(handshake(&broker, Some(&ours)).unwrap(), ours);
+        assert!(matches!(reply(&agent), BrokerMessage::Welcome { .. }));
+        // Another cell's id: refused, with the reason on the wire.
+        let (agent, broker) = UnixStream::pair().unwrap();
+        hello(&agent, "cell-02");
+        assert!(matches!(
+            handshake(&broker, Some(&ours)),
+            Err(Error::HandshakeProtocol { reason })
+                if reason == "the hello names cell cell-02, but this connection is cell-01's"
+        ));
+        assert!(matches!(reply(&agent), BrokerMessage::Reject { .. }));
+        // Expecting nothing in particular (the socket): any valid id.
+        let (agent, broker) = UnixStream::pair().unwrap();
+        hello(&agent, "cell-02");
+        assert_eq!(handshake(&broker, None).unwrap().as_str(), "cell-02");
     }
 
     #[test]

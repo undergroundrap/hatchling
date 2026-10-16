@@ -3,7 +3,8 @@
 hatchling_core::declare_environment! {
     pub,
     HATCHLING_CELL_ID: ("required", "Identity supplied by the broker."),
-    HATCHLING_BROKER_SOCKET: ("required", "Absolute broker socket path inside the cell."),
+    HATCHLING_BROKER_SOCKET: ("required without a connection", "Absolute broker socket path inside the cell."),
+    HATCHLING_CONNECTION_FD: ("set by the cell", "Inherited descriptor of the cell's own broker connection; used instead of the socket."),
     HATCHLING_BROKER_UID: ("required", "Expected kernel uid of the broker peer."),
     HATCHLING_LOG_LEVEL: ("optional; default info", "Log verbosity: error, warn, info, debug or trace."),
     HATCHLING_MODEL_ENDPOINT: ("required for run", "OpenAI-compatible API base URL, reached through the broker."),

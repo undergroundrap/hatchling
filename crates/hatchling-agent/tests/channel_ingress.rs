@@ -111,7 +111,7 @@ fn broker_config(name: &str) -> BrokerConfig {
 fn agent(path: &str) -> Cell<Ready> {
     let config = Config {
         cell_id: "cell-ingress".parse().unwrap(),
-        broker_socket: path.parse().unwrap(),
+        broker: hatchling_agent::BrokerAddress::Socket(path.parse().unwrap()),
         broker_uid: PeerUid::from_kernel(real_uid()),
         log_level: LogLevel::Error,
         model_endpoint: None,

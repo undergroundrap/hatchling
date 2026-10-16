@@ -19,10 +19,12 @@ fn ready_cell(broker: &FixtureBroker) -> Result<Cell<Ready>, Error> {
         cell_id: "cell-egress"
             .parse()
             .map_err(|e| Error::InvalidCellId(format!("{e:?}")))?,
-        broker_socket: broker
-            .socket_path
-            .parse()
-            .map_err(|e| Error::InvalidSocketPath(format!("{e:?}")))?,
+        broker: hatchling_agent::BrokerAddress::Socket(
+            broker
+                .socket_path
+                .parse()
+                .map_err(|e| Error::InvalidSocketPath(format!("{e:?}")))?,
+        ),
         broker_uid: PeerUid::from_kernel(uid),
         log_level: LogLevel::Error,
         model_endpoint: None,

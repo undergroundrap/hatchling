@@ -4,9 +4,11 @@
 //! the broker, and the broker authorizes the agent. The kernel is the
 //! only identity oracle on either side.
 //!
-//! Invariant: [`PeerUid`] and [`PeerPid`] values are constructed here
-//! and only here, from `SO_PEERCRED` via `hatchling-sys`. Nothing the
-//! peer sends about itself is ever trusted for authorization. The raw
+//! Invariant: [`PeerCredentials`] come from `SO_PEERCRED` via
+//! `hatchling-sys`, or, for a connection the broker made itself and gave
+//! to a cell it spawned, from what the broker knows of that cell
+//! ([`PeerCredentials::of_spawned`]). Nothing the peer sends about
+//! itself is ever trusted for authorization. The raw
 //! syscall lives in `hatchling-sys` (the single sanctioned unsafe
 //! crate); this module stays `unsafe`-free and owns the validation
 //! policy.
@@ -46,6 +48,16 @@ impl PeerCredentials {
     #[must_use]
     pub const fn pid(self) -> PeerPid {
         self.pid
+    }
+
+    /// The credentials of a cell the broker spawned, on a connection the
+    /// broker made and gave it: `uid` is the cell's, `pid` its process's,
+    /// for the audit trail. Who is on such a connection is known by how
+    /// it was made; the kernel would only report the broker itself, which
+    /// made both ends.
+    #[must_use]
+    pub const fn of_spawned(uid: PeerUid, pid: PeerPid) -> Self {
+        Self { uid, pid }
     }
 
     /// Validates a raw kernel credential report.
@@ -89,6 +101,14 @@ pub fn peer_credentials(stream: &UnixStream) -> Result<PeerCredentials, Error> {
 mod tests {
     use super::*;
     use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn a_spawned_cells_credentials_are_what_the_broker_knows() {
+        let creds =
+            PeerCredentials::of_spawned(PeerUid::from_kernel(1001), PeerPid::from_kernel(42));
+        assert_eq!(creds.uid(), PeerUid::from_kernel(1001));
+        assert_eq!(creds.pid(), PeerPid::from_kernel(42));
+    }
 
     #[test]
     fn peer_credentials_report_the_real_peer() {

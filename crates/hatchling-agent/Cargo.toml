@@ -17,6 +17,9 @@ workspace = true
 
 [dependencies]
 hatchling-core.workspace = true
+# Adopting the connection a cell is given: the one unsafe step, kept in
+# the sanctioned crate.
+hatchling-sys.workspace = true
 hatchling-loop.workspace = true
 hatchling-memory.workspace = true
 hatchling-model.workspace = true

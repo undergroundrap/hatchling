@@ -89,8 +89,8 @@ pub use error::Error;
 pub use goals_ops::{handle_goals_op, handle_query_op};
 pub use listener::{BIND_UMASK, OwnerOnlyListener, bind_listener, bind_socket};
 pub use serve::{
-    run_serve, serve_connection, serve_connection_with_ingress, serve_connection_with_runs,
-    serve_forever,
+    AgentCell, run_serve, serve_cell_connection, serve_cell_forever, serve_connection,
+    serve_connection_with_ingress, serve_connection_with_runs, serve_forever, spawn_agent_cell,
 };
 pub use skill_invoke::{SkillDenial, check_skill_call};
 pub use skill_ops::handle_skill_op;

@@ -256,6 +256,45 @@ fn a_cell_has_its_own_network_and_ipc_namespaces() -> Result<(), String> {
     Ok(())
 }
 
+/// A connected cell's agent reaches the broker over the connection the
+/// spawn made for it, and nothing else: the cell is given no socket, no
+/// socket is bound, and the broker serves the session with no peer gate.
+#[test]
+fn a_connected_cells_agent_handshakes_over_its_own_connection() -> Result<(), String> {
+    if !guard_cell_available()? {
+        return Ok(());
+    }
+    let dir = test_dir("connected");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create test dir: {e}"))?;
+    // Never bound: the cell must not need it.
+    let socket_path = dir.join("broker.sock");
+    let agent_uid = mapped_agent_uid();
+    let config = broker_config(&socket_path, agent_uid)?;
+    // Not marked connected here: the broker's own spawn connects it.
+    let cell = cell_config(&socket_path, agent_uid)?;
+    let agent = hatchling_broker::spawn_agent_cell(&config, cell)
+        .map_err(|e| format!("spawn the agent cell: {e}"))?;
+    agent
+        .connection
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .map_err(|e| format!("set timeout: {e}"))?;
+    let key = hatchling_vault::MasterKey::generate().map_err(|e| format!("key: {e}"))?;
+    // The agent exits after its handshake; the session then ends at EOF.
+    hatchling_broker::serve_cell_connection(
+        &agent,
+        &config,
+        &key,
+        &hatchling_broker::Skills::default(),
+        None,
+        None,
+    )
+    .map_err(|e| format!("serve the cell's session: {e}"))?;
+    if socket_path.exists() {
+        return Err(String::from("a socket was bound for a connected cell"));
+    }
+    Ok(())
+}
+
 #[test]
 fn mismatched_agent_uid_is_rejected_before_handshake() -> Result<(), String> {
     use std::io::Write as _;

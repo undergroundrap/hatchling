@@ -12,6 +12,8 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Changed
 
+- **Breaking:** the broker's agent cell now reaches the broker over a connection made for it alone, inherited at the descriptor `HATCHLING_CONNECTION_FD` names, and in cell mode the broker binds no agent socket at all. Before, any process with the agent's uid that could reach `HATCHLING_BROKER_SOCKET` could open a full agent session, and name any cell id in its hello; now the cell's session is the only one, and runs under the cell id the broker gave it. `HATCHLING_BROKER_SOCKET` is still read, and used when the broker serves without a cell. Scheduled runs and subagents are unchanged for now (WO-007, part 2).
+- **Breaking, Rust API:** `hatchling-isolation`'s `CellSpec` has a `connection` field and `Cell` a `connection` method, with `CONNECTION_FD_VAR`; `hatchling-agent`'s `Config` names its broker with `broker: BrokerAddress` instead of `broker_socket`; `hatchling-broker`'s `CellConfig` has `connected`, and `serve_cell_connection`, `serve_cell_forever` and `AgentCell` are new; `hatchling-sys` adds `keep_across_exec` and `net::inherited_unix_stream`; `hatchling-core` adds `PeerCredentials::of_spawned`.
 - **Breaking, `hatchling-sys`:** `chown_ids`, which changed ownership by path, is removed. `hand_over_socket` and `share_dir_with_cell` change ownership through handles opened without following symlinks, with `dir_share` and `owner_traverses` deciding what they do; `create_private_dir` makes a directory exclusively with mode 0700, `ensure_private_dir` makes or pins one, and `chmod_socket` sets a socket's mode through a handle. The workspace version is 0.3.0.
 
 ### Fixed

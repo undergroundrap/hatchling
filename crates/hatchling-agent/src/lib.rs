@@ -38,7 +38,7 @@ pub mod vault;
 
 pub use cell::{BrokerConnected, Cell, Configured, PeerAuthorized, PreconditionsChecked, Ready};
 pub use channel::ChannelClient;
-pub use config::Config;
+pub use config::{BrokerAddress, Config};
 pub use error::Error;
 pub use hatchling_core::{
     AgentMessage, BrokerMessage, CapabilityName, CellId, LogLevel, MAX_FRAME_BYTES,

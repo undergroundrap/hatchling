@@ -289,6 +289,7 @@ mod tests {
                 socket: scratch.0.join("sock").join("broker.sock"),
                 dir: scratch.0.join("sock"),
             }),
+            connection: false,
             exposures: vec![
                 Exposure {
                     source: scratch.0.join("code"),
@@ -391,6 +392,10 @@ mod tests {
             })
         }
         fn relay(&mut self) -> Option<std::net::TcpListener> {
+            None
+        }
+
+        fn connection(&mut self) -> Option<std::os::unix::net::UnixStream> {
             None
         }
     }

@@ -31,7 +31,7 @@ fn ready_cell(broker: &FixtureBroker) -> Result<Cell<Ready>, Error> {
     let uid = rustix::process::getuid().as_raw();
     let config = Config {
         cell_id: "cell-model".parse()?,
-        broker_socket: broker.socket_path.parse()?,
+        broker: hatchling_agent::BrokerAddress::Socket(broker.socket_path.parse()?),
         broker_uid: PeerUid::from_kernel(uid),
         log_level: LogLevel::Error,
         model_endpoint: None,

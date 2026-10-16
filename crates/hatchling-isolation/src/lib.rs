@@ -58,6 +58,10 @@ pub const PROGRAM: &str = "/agent";
 /// Where a cell sees the directory of the broker endpoint it may reach.
 pub const ENDPOINT_DIR: &str = "/sock";
 
+/// The variable that tells a cell's program which descriptor holds its
+/// connection to its owner ([`CellSpec::connection`]), in decimal.
+pub const CONNECTION_FD_VAR: &str = "HATCHLING_CONNECTION_FD";
+
 /// The backend for the platform this build runs on.
 #[cfg(target_os = "linux")]
 pub type Platform = linux::Linux;
@@ -153,6 +157,10 @@ pub trait Cell {
     /// The listener of the cell's relay port, once: the owner
     /// serves it. `None` for a cell without one, or once taken.
     fn relay(&mut self) -> Option<std::net::TcpListener>;
+
+    /// The owner's end of the cell's connection, once. `None` for a cell
+    /// without one, or once taken.
+    fn connection(&mut self) -> Option<std::os::unix::net::UnixStream>;
 }
 
 /// A helper process under supervision. Dropping it ends the helper.
@@ -215,6 +223,12 @@ pub struct CellSpec {
     pub workdir: Option<String>,
     /// The broker endpoint the cell may reach, if any.
     pub endpoint: Option<Endpoint>,
+    /// Whether the program gets a connection to its owner: one end of a
+    /// connected stream socket, open in the program at the descriptor
+    /// [`CONNECTION_FD_VAR`] names, while the owner takes the other
+    /// ([`Cell::connection`]). Unlike an endpoint, nothing outside the
+    /// cell can reach it: no other process holds an end.
+    pub connection: bool,
     /// Further host directories the cell sees, in order.
     pub exposures: Vec<Exposure>,
     /// Host programs the cell may run besides its own, each seen

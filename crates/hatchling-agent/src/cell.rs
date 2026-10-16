@@ -12,7 +12,7 @@
 use std::marker::PhantomData;
 use std::os::unix::net::UnixStream;
 
-use crate::{CapabilityName, Config, Error, egress, handshake, skill, vault};
+use crate::{BrokerAddress, CapabilityName, Config, Error, egress, handshake, skill, vault};
 use hatchling_core::peer_credentials;
 
 /// Marker: configuration loaded, preconditions not yet checked.
@@ -93,7 +93,16 @@ impl Cell<Configured> {
     /// Returns [`Error::PreconditionFailed`] if any check fails. The cell
     /// must not run in that case.
     pub fn check_preconditions(self) -> Result<Cell<PreconditionsChecked>, Error> {
-        let socket = self.config.broker_socket.as_path();
+        // A cell's own connection has no path to check: adopting it checks
+        // what it is.
+        let BrokerAddress::Socket(socket) = &self.config.broker else {
+            return Ok(Cell {
+                config: self.config,
+                broker: None,
+                state: PhantomData,
+            });
+        };
+        let socket = socket.as_path();
         let parent = socket.parent().ok_or_else(|| {
             Error::PreconditionFailed(format!(
                 "broker socket {} has no parent directory",
@@ -162,9 +171,19 @@ impl Cell<PreconditionsChecked> {
     /// Returns [`Error::BrokerConnect`] if the connection cannot be
     /// established.
     pub fn connect_broker(self) -> Result<Cell<BrokerConnected>, Error> {
-        let socket = self.config.broker_socket.clone();
-        let stream = UnixStream::connect(socket.as_path())
-            .map_err(|source| Error::BrokerConnect { socket, source })?;
+        let stream = match &self.config.broker {
+            BrokerAddress::Socket(socket) => {
+                UnixStream::connect(socket.as_path()).map_err(|source| Error::BrokerConnect {
+                    socket: socket.clone(),
+                    source,
+                })?
+            }
+            BrokerAddress::Connection(fd) => hatchling_sys::net::inherited_unix_stream(*fd)
+                .map_err(|source| Error::BrokerConnection {
+                    fd: *fd,
+                    reason: source.to_string(),
+                })?,
+        };
         Ok(Cell {
             config: self.config,
             broker: Some(stream),
@@ -489,7 +508,7 @@ mod tests {
     fn config_with_socket(socket: &str) -> Config {
         Config {
             cell_id: "cell-01".parse::<CellId>().unwrap(),
-            broker_socket: socket.parse::<SocketPath>().unwrap(),
+            broker: BrokerAddress::Socket(socket.parse::<SocketPath>().unwrap()),
             // Tests that exercise authorization override this with the
             // real uid; the placeholder only matters where authorization
             // is never reached.
@@ -527,6 +546,32 @@ mod tests {
         let cell = Cell::new(config_with_socket("/tmp/hatchling-test-broker.sock"));
         let checked = cell.check_preconditions().unwrap();
         assert_eq!(checked.config().cell_id.as_str(), "cell-01");
+    }
+
+    #[test]
+    fn a_cells_own_connection_is_adopted_and_authorized_like_a_socket() {
+        use std::os::fd::IntoRawFd as _;
+        let (_broker, agent) = UnixStream::pair().unwrap();
+        let mut config = config_with_socket("/no/such/dir-xyz/broker.sock");
+        config.broker = BrokerAddress::Connection(agent.into_raw_fd());
+        // The broker made the pair here, so the kernel names this process.
+        config.broker_uid = PeerUid::from_kernel(rustix::process::getuid().as_raw());
+        let authorized = Cell::new(config)
+            .check_preconditions()
+            .and_then(Cell::connect_broker)
+            .and_then(Cell::authorize);
+        assert!(authorized.is_ok(), "{authorized:?}");
+        // A descriptor that isn't a connection is refused, closed.
+        let mut config = config_with_socket("/no/such/dir-xyz/broker.sock");
+        config.broker = BrokerAddress::Connection(i32::MAX - 1);
+        let err = Cell::new(config)
+            .check_preconditions()
+            .and_then(Cell::connect_broker)
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::BrokerConnection { fd, .. } if *fd == i32::MAX - 1),
+            "{err:?}"
+        );
     }
 
     #[test]

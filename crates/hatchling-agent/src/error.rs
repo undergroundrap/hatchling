@@ -53,6 +53,16 @@ pub enum Error {
         source: std::io::Error,
     },
 
+    /// The connection the cell was given can't be used. The agent refuses
+    /// to run without its broker; there is no degraded mode.
+    #[error("the broker connection at descriptor {fd} is unusable: {reason}")]
+    BrokerConnection {
+        /// The inherited descriptor (`HATCHLING_CONNECTION_FD`).
+        fd: i32,
+        /// Why it can't be used.
+        reason: String,
+    },
+
     /// Reading the broker's kernel peer credentials failed. Without
     /// credentials there is nothing to authorize against, so this is
     /// fail-closed.

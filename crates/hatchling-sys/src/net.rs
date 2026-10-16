@@ -147,6 +147,52 @@ pub fn is_listening(fd: BorrowedFd<'_>) -> Result<bool, Error> {
         .map_err(|errno| net_error("read SO_ACCEPTCONN", errno.into()))
 }
 
+/// Takes ownership of the Unix stream socket this process inherited at
+/// `fd`.
+///
+/// That is the one descriptor a cell's program is given on purpose
+/// ([`keep_across_exec`](crate::keep_across_exec)). It must be an
+/// `AF_UNIX` stream socket above stderr. It is marked close-on-exec
+/// again, so nothing the program starts inherits it.
+///
+/// Call it once for a descriptor: the stream it returns owns it.
+///
+/// # Errors
+///
+/// [`Error::Net`] if `fd` is stdio, isn't open, or isn't a Unix stream
+/// socket; the descriptor is left as it was.
+pub fn inherited_unix_stream(fd: i32) -> Result<std::os::unix::net::UnixStream, Error> {
+    let refused = |why: &str| {
+        net_error(
+            "adopt the inherited connection",
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, why.to_owned()),
+        )
+    };
+    if fd <= 2 {
+        return Err(refused("stdio is not a connection"));
+    }
+    if crate::fd_flags(fd).is_none() {
+        return Err(refused("the descriptor is not open"));
+    }
+    // SAFETY: `fd` is open (checked above), and the borrow ends before
+    // anything closes it.
+    let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+    let stream = rustix::net::sockopt::get_socket_type(borrowed)
+        .is_ok_and(|kind| kind == rustix::net::SocketType::STREAM);
+    // SO_DOMAIN, not getsockname: the cell's filter allows getsockopt.
+    let unix = rustix::net::sockopt::get_socket_domain(borrowed)
+        .is_ok_and(|domain| domain == rustix::net::AddressFamily::UNIX);
+    if !(stream && unix) {
+        return Err(refused("the descriptor is not a Unix stream socket"));
+    }
+    rustix::io::fcntl_setfd(borrowed, rustix::io::FdFlags::CLOEXEC)
+        .map_err(|errno| net_error("mark the connection close-on-exec", errno.into()))?;
+    // SAFETY: `fd` is an open Unix stream socket this process inherited,
+    // and the caller hands its ownership over: nothing else here owns it.
+    let owned = unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) };
+    Ok(std::os::unix::net::UnixStream::from(owned))
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::{Read as _, Write as _};
@@ -155,6 +201,38 @@ mod tests {
     use std::os::unix::net::UnixStream;
 
     use super::*;
+
+    #[test]
+    fn only_an_inherited_unix_stream_is_adopted_and_it_closes_on_exec() {
+        use std::os::fd::IntoRawFd as _;
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let fd = theirs.into_raw_fd();
+        // SAFETY: the pair's end was just released to this raw fd, open.
+        crate::keep_across_exec(unsafe { BorrowedFd::borrow_raw(fd) }).unwrap();
+        let mut adopted = inherited_unix_stream(fd).unwrap();
+        assert_eq!(crate::fd_flags(fd), Some(libc::FD_CLOEXEC));
+        (&ours).write_all(b"hi").unwrap();
+        let mut got = [0u8; 2];
+        adopted.read_exact(&mut got).unwrap();
+        assert_eq!(&got, b"hi");
+        // Not a connection: stdio, a closed descriptor, a datagram
+        // socket, a TCP listener.
+        let refused = |fd: i32| {
+            matches!(
+                inherited_unix_stream(fd),
+                Err(Error::Net {
+                    operation: "adopt the inherited connection",
+                    ..
+                })
+            )
+        };
+        assert!(refused(0) && refused(2));
+        assert!(refused(i32::MAX - 1));
+        let (datagram, _other) = std::os::unix::net::UnixDatagram::pair().unwrap();
+        assert!(refused(std::os::fd::AsRawFd::as_raw_fd(&datagram)));
+        let tcp = loopback_listener(0).unwrap();
+        assert!(refused(std::os::fd::AsRawFd::as_raw_fd(&tcp)));
+    }
 
     #[test]
     fn a_listener_passes_over_a_unix_socket_and_serves_from_the_other_side() {
