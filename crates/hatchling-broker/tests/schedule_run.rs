@@ -50,25 +50,14 @@ use hatchling_vault::MasterKey;
 /// How long a test waits for a real run to finish.
 const RUN_DEADLINE: Duration = Duration::from_secs(60);
 
-/// Under `/tmp`, not `$TMPDIR`: the run sockets live beneath this, and a
-/// unix socket path is capped at 107 bytes, while `$TMPDIR` can be deep.
-/// A run test's base under `/tmp` (its run sockets must fit `sun_path`),
-/// removed when the test ends, pass or fail.
+/// A run test's base under `/tmp`, not `$TMPDIR`: short paths, as runs
+/// once needed for their sockets. Removed when the test ends, pass or
+/// fail.
 fn base(name: &str) -> common::TestDir {
     let base = PathBuf::from(format!("/tmp/hlsr-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
     common::TestDir::guard(base)
-}
-
-/// Releases an accept loop if broken cleanup leaves the run socket behind.
-/// Armed before assertions, so a panic cannot pin the scoped test thread.
-struct DrainPendingAccept(PathBuf);
-
-impl Drop for DrainPendingAccept {
-    fn drop(&mut self) {
-        let _ = std::os::unix::net::UnixStream::connect(&self.0);
-    }
 }
 
 fn config(base: &Path, vault_grants: &[&str]) -> Config {
@@ -261,8 +250,9 @@ fn a_scheduled_run_executes_in_its_own_cell_with_exactly_its_grants() {
     let report = &message.text;
     for line in [
         "missed=0 due=1789992060",
-        "fds=0,1,2",
-        "sock=visible",
+        "fds=0,1,2,c",
+        "sock=absent",
+        "stdin=not-socket",
         "vault:app-token=Vault(NotFound)",
         "vault:old-token=Vault(Denied)",
         "channel:local=Channel(NoMessage)",
@@ -340,16 +330,14 @@ fn a_hung_run_blocks_the_next_fire_until_the_timeout_reaps_it() {
         )
         .unwrap();
         assert_eq!(first.launched, [(id.clone(), false)]);
-        // While it hangs: its socket is owner-only, and so is its directory,
-        // except that a root broker lets the cell's group traverse it once
-        // the cell is spawned (WO-006): 0700, or 0710 after the handover,
-        // which the helper may not have reached yet.
+        // While it hangs: its directory is owner-only, and holds no
+        // socket: the run's cell has a connection of its own (WO-007).
         let dirs = run_dirs(&config.scheduler.run_root());
         assert_eq!(dirs.len(), 1);
         let dir = dirs.first().unwrap();
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode(dir) | 0o010, 0o710, "{:o}", mode(dir));
-        assert_eq!(mode(&dir.join("broker.sock")), 0o600);
+        assert_eq!(mode(dir), 0o700, "{:o}", mode(dir));
+        assert!(!dir.join("broker.sock").exists(), "a run binds no socket");
         // The next fire comes while it still runs: skipped, not stacked.
         let next = dispatch_once(
             &mut dispatcher,
@@ -487,8 +475,8 @@ fn one_run_cannot_reach_another_run_s_socket() {
         );
         assert!(
             text.lines()
-                .any(|line| line == "connect:/sock/broker.sock=reached"),
-            "its own socket is:\n{text}"
+                .any(|line| line == "connect:/sock/broker.sock=NotFound"),
+            "and it has no socket of its own, only its connection:\n{text}"
         );
         let shown = format!("{launcher:?}");
         assert!(shown.starts_with("CellLauncher { env: RunEnv {"), "{shown}");
@@ -509,7 +497,7 @@ fn one_run_cannot_reach_another_run_s_socket() {
 /// register no hook. The follow-up then fires through the same launcher,
 /// one deeper.
 #[test]
-fn a_run_asks_for_its_followup_through_its_own_socket_within_its_own_grants() {
+fn a_run_asks_for_its_followup_through_its_own_connection_within_its_own_grants() {
     if !guard_cell_available().unwrap() {
         return;
     }
@@ -747,11 +735,7 @@ fn dropping_a_running_cell_cancels_it_and_cleans_its_resources() {
                 feed: None,
             })
             .unwrap();
-        let run_dir = run_dirs(&config.scheduler.run_root())
-            .into_iter()
-            .next()
-            .unwrap();
-        let accept_rescue = DrainPendingAccept(run_dir.join("broker.sock"));
+        assert_eq!(run_dirs(&config.scheduler.run_root()).len(), 1);
         // Wait until the helper has actually constructed a cell before
         // cancellation; cancelling only the launch would miss its cleanup.
         if let Some(parent) = std::env::var_os("HATCHLING_CELL_CGROUP") {
@@ -786,7 +770,6 @@ fn dropping_a_running_cell_cancels_it_and_cleans_its_resources() {
         drop(run);
         // Correct cancellation already removed the socket. Rescue only a
         // broken destructor, after dropping the run, before scope joins.
-        drop(accept_rescue);
     });
     assert!(run_dirs(&config.scheduler.run_root()).is_empty());
 }

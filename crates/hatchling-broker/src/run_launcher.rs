@@ -1,20 +1,26 @@
 //! The scheduler's real launcher (-2): one scheduled run, one
-//! dedicated cell, one dedicated socket.
+//! dedicated cell, one dedicated connection.
 //!
-//! # The socket is the credential
+//! # The connection is the credential
 //!
 //! A run cell has the same uid mapping as the broker's agent cell, so the
 //! kernel peer gate cannot tell them apart. What separates a run is its
-//! socket.
+//! connection.
 //!
-//! - **Where it lives.** Each fire gets a fresh directory `run-<random>`
-//!   (mode `0700`) under the scheduler's run root, holding one socket
-//!   (`0600`, owner-only, bound under a `077` umask: [`bind_socket`]).
-//! - **Who can see it.** That directory is the only broker-side path the
-//!   run's cell mounts. No other run's cell, and not the agent cell,
-//!   mounts it, and it is removed when the run ends.
+//! - **How it's made.** The run's cell is connected
+//!   ([`CellConfig::connected`]): its spawn makes a socket pair, and the
+//!   cell's program holds one end. The helper that spawned it sends the
+//!   other end to the broker over a channel the broker gave it as stdin,
+//!   and keeps no copy; the cell inherits `/dev/null` as its stdin, not
+//!   that channel.
+//! - **Who can reach it.** No one else: no socket is bound for a run, and
+//!   no other process holds an end of its connection.
+//! - **Where it runs.** Each fire still gets a fresh directory
+//!   `run-<random>` (mode `0700`) under the scheduler's run root: the
+//!   helper's temporary directory, removed when the run ends.
 //! - **What it grants.** The broker serves exactly one session on it,
-//!   under a configuration cut down to the run's grants
+//!   under the run's own cell id, and under a configuration cut down to
+//!   the run's grants
 //!   ([`scoped_config`]): the schedule's grants minus any revoked at fire
 //!   time, with scheduling, skills, channel accounts, and ingress off.
 //!   The session code is the same one the agent speaks to, so every
@@ -36,7 +42,7 @@
 //! - **Time.** A run gets [`DEFAULT_RUN_TIMEOUT`] of wall-clock time,
 //!   spawn included. Past it the helper is killed through its pidfd, the
 //!   cell dies with it (the PDEATHSIG chain), and the run fails. That
-//!   bounds how long a hung run can pin its socket. The dispatcher's
+//!   bounds how long a hung run can pin its session. The dispatcher's
 //!   overlap policy already skips fires while a run is still active.
 //! - **Output.** At most [`MAX_RUN_OUTPUT_BYTES`] of UTF-8 output; more
 //!   fails the run rather than being cut into something that looks
@@ -45,7 +51,8 @@
 //!   failure report.
 
 use std::io::Read as _;
-use std::os::unix::net::UnixListener;
+use std::os::fd::{AsFd as _, OwnedFd};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -54,16 +61,16 @@ use std::thread::{JoinHandle, Scope, ScopedJoinHandle};
 use std::time::{Duration, Instant};
 
 use hatchling_channel::LocalHub;
-use hatchling_core::{LogLevel, ScheduleGrant, SocketPath};
+use hatchling_core::{CellId, LogLevel, ScheduleGrant, SocketPath};
 use hatchling_isolation::{IsolationBackend as _, Supervised};
 use hatchling_scheduler::{Dispatcher, Launcher, Run, RunRequest, Timestamp};
 use hatchling_vault::MasterKey;
 
 use crate::cell::{Process, ScheduledRun};
 use crate::{
-    ArtifactConfig, CellConfig, Config, Error, FollowupScope, GoalsAction, MemoryAction,
-    MemoryGrant, SchedulerConfig, SkillConfig, SpaceConfig, VaultGrant, bind_socket, dispatch_once,
-    serve_connection, spawn_cell,
+    AgentCell, ArtifactConfig, CellConfig, Config, Error, FollowupScope, GoalsAction, MemoryAction,
+    MemoryGrant, SchedulerConfig, SkillConfig, SpaceConfig, VaultGrant, dispatch_once,
+    serve_cell_connection, spawn_cell,
 };
 
 /// The broker subcommand the run helper runs as.
@@ -318,10 +325,11 @@ impl<'scope> Launcher for CellLauncher<'scope, '_> {
 }
 
 impl<'scope> CellLauncher<'scope, '_> {
-    /// Starts `run` in a fresh cell with its own socket, serving its
-    /// session under the configuration `scoped` makes from the run's
-    /// token and socket. Shared by scheduled runs and subagents
-    ///, so every run cell is the same proven one.
+    /// Starts `run` in a fresh cell with a connection of its own, serving
+    /// its session under the configuration `scoped` makes from the run's
+    /// token and the broker's socket path (which no run binds). Shared by
+    /// scheduled runs and subagents, so every run cell is the same proven
+    /// one.
     pub(crate) fn launch_cell(
         &self,
         label: &str,
@@ -334,14 +342,11 @@ impl<'scope> CellLauncher<'scope, '_> {
             let _ = std::fs::remove_dir_all(&run_dir);
             error
         };
-        let socket_path = run_dir.join(RUN_SOCKET_NAME);
-        let socket: SocketPath = socket_path
-            .to_string_lossy()
+        let cell_id: CellId = token
             .parse()
-            .map_err(|err| cleanup(format!("run socket path: {err}")))?;
-        let listener = bind_socket(&socket, 0o600)
-            .map_err(|err| cleanup(format!("cannot bind the run socket: {err}")))?;
-        let cell = CellConfig::for_run(
+            .map_err(|err| cleanup(format!("run cell id: {err}")))?;
+        let socket = self.config.socket.clone();
+        let mut cell = CellConfig::for_run(
             &self.env.agent_bin,
             &token,
             &socket,
@@ -349,6 +354,11 @@ impl<'scope> CellLauncher<'scope, '_> {
             run,
         )
         .map_err(|err| cleanup(format!("cannot configure the run cell: {err}")))?;
+        cell.connected = true;
+        // The helper hands the broker its end of the cell's connection on
+        // this channel, its stdin.
+        let (handoff, helper_end) = UnixStream::pair()
+            .map_err(|err| cleanup(format!("cannot make the run's handoff channel: {err}")))?;
         let (cell, cgroup) = cell
             .supervised_cgroup()
             .map_err(|err| cleanup(format!("cannot prepare the run cgroup: {err}")))?;
@@ -358,11 +368,11 @@ impl<'scope> CellLauncher<'scope, '_> {
         let key = self.key;
         let stop = Arc::new(AtomicBool::new(false));
         let session_stop = Arc::clone(&stop);
-        let session = self
-            .scope
-            .spawn(move || serve_run_session(&listener, &run_config, key, &session_stop));
+        let session = self.scope.spawn(move || {
+            serve_run_session(&handoff, cell_id, &run_config, key, &session_stop);
+        });
         let started = Instant::now();
-        let spawned = start_helper(&self.env.spawner, &spec, &run_dir);
+        let spawned = start_helper(&self.env.spawner, &spec, &run_dir, helper_end);
         let (child, output, errors) = match spawned {
             Ok(parts) => parts,
             Err(error) => {
@@ -521,13 +531,9 @@ pub(crate) fn captured(output: Vec<u8>) -> Result<String, String> {
         .map_err(|_| String::from("the run's output is not UTF-8"))
 }
 
-/// Bytes of a run directory's name: `run-` and 24 hex digits, which is
-/// 96 random bits. Short, because the run socket's path must fit a unix
-/// socket address.
+/// Bytes of a run's token, its cell id and directory name: `run-` and 24
+/// hex digits, which is 96 random bits.
 pub const RUN_TOKEN_LEN: usize = 4 + 24;
-
-/// The file name of a run's socket, inside its directory.
-pub const RUN_SOCKET_NAME: &str = "broker.sock";
 
 /// A fresh run directory name.
 fn run_token() -> Result<String, String> {
@@ -549,52 +555,66 @@ fn make_run_dir(root: &Path, token: &str) -> Result<PathBuf, String> {
 /// How often a run's session checks for its connection or its stop.
 const ACCEPT_POLL: Duration = Duration::from_millis(50);
 
-/// Serves the one session a run gets, or returns once `stop` is set
-/// without a connection: a run that never connects must not pin its
-/// session thread.
-fn serve_run_session(listener: &UnixListener, config: &Config, key: &MasterKey, stop: &AtomicBool) {
-    if let Err(error) = listener.set_nonblocking(true) {
-        tracing::warn!(%error, "scheduled run socket setup failed");
+/// Serves the one session a run gets, on the connection its helper sends
+/// on `handoff`, as the run's cell `cell_id`. Returns once `stop` is set
+/// without a connection, or the helper goes without sending one: a run
+/// that never connects must not pin its session thread.
+fn serve_run_session(
+    handoff: &UnixStream,
+    cell_id: CellId,
+    config: &Config,
+    key: &MasterKey,
+    stop: &AtomicBool,
+) {
+    if let Err(error) = handoff.set_read_timeout(Some(ACCEPT_POLL)) {
+        tracing::warn!(%error, "scheduled run handoff setup failed");
         return;
     }
-    loop {
+    let connection = loop {
         if stop.load(Ordering::Acquire) {
             return;
         }
-        match listener.accept() {
-            Ok((stream, _)) => {
-                let served = stream
-                    .set_nonblocking(false)
-                    .map_err(|source| Error::SessionIo { source })
-                    .and_then(|()| {
-                        serve_connection(&stream, config, key, &crate::Skills::default())
-                    });
-                if let Err(error) = served {
-                    tracing::debug!(%error, "scheduled run session ended");
-                }
-                return;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(ACCEPT_POLL);
-            }
+        match hatchling_sys::net::recv_fd(handoff.as_fd()) {
+            Ok(fd) => break UnixStream::from(fd),
+            Err(hatchling_sys::Error::Net { source, .. })
+                if matches!(
+                    source.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
             Err(error) => {
-                tracing::warn!(%error, "scheduled run socket accept failed");
+                tracing::debug!(%error, "scheduled run ended before its connection");
                 return;
             }
         }
+    };
+    // The cell's pid lives in the helper; the audit trail has its id.
+    let cell = AgentCell {
+        connection,
+        cell_id,
+        pid: 0,
+    };
+    if let Err(error) =
+        serve_cell_connection(&cell, config, key, &crate::Skills::default(), None, None)
+    {
+        tracing::debug!(%error, "scheduled run session ended");
     }
 }
 
 type Started = (Process, mpsc::Receiver<Vec<u8>>, JoinHandle<Vec<u8>>);
 
 /// Starts the helper under the backend's supervision, with its output
-/// captured.
-fn start_helper(spawner: &Path, spec: &str, run_dir: &Path) -> Result<Started, String> {
+/// captured and `handoff` as its stdin, for the cell's connection.
+fn start_helper(
+    spawner: &Path,
+    spec: &str,
+    run_dir: &Path,
+    handoff: UnixStream,
+) -> Result<Started, String> {
     let mut std_child = Command::new(spawner)
         .arg(AGENT_RUN_SUBCOMMAND)
         .arg(spec)
         .env("TMPDIR", run_dir)
-        .stdin(Stdio::null())
+        .stdin(Stdio::from(OwnedFd::from(handoff)))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -692,7 +712,40 @@ fn run_helper(spec: Option<&str>) -> Result<i32, Error> {
             reason: String::from("agent-run spawns scheduled run cells only"),
         });
     }
-    Ok(spawn_cell(&config, LogLevel::Error)?.wait_exit()?.code)
+    // The broker's channel comes off stdin before the cell is spawned, so
+    // the cell inherits `/dev/null` there, never the channel.
+    let handoff = if config.connected {
+        let taken = hatchling_sys::take_stdin().map_err(|source| Error::CellSpawn {
+            reason: format!("cannot take the broker's handoff channel: {source}"),
+        })?;
+        Some(UnixStream::from(taken))
+    } else {
+        None
+    };
+    let mut cell = spawn_cell(&config, LogLevel::Error)?;
+    if let Some(handoff) = handoff {
+        hand_over_connection(&handoff, cell.connection())?;
+    }
+    Ok(cell.wait_exit()?.code)
+}
+
+/// Sends the broker `connection`, the owner's end of a connected run
+/// cell's connection, on `handoff`, and keeps no copy: it is dropped
+/// once sent.
+///
+/// # Errors
+///
+/// [`Error::CellSpawn`] if the cell came without its connection, or the
+/// send fails.
+fn hand_over_connection(handoff: &UnixStream, connection: Option<UnixStream>) -> Result<(), Error> {
+    let connection = connection.ok_or_else(|| Error::CellSpawn {
+        reason: String::from("the run cell came without its connection"),
+    })?;
+    hatchling_sys::net::send_fd(handoff.as_fd(), connection.as_fd()).map_err(|source| {
+        Error::CellSpawn {
+            reason: format!("cannot hand the run's connection to the broker: {source}"),
+        }
+    })
 }
 
 #[cfg(test)]
@@ -957,7 +1010,8 @@ mod tests {
     /// A run around a helper `start_helper` started, as `launch` builds
     /// it, but with no session.
     fn helper_run(spawner: &Path, dir: &Path, timeout: Duration) -> CellRun<'static> {
-        let (child, output, errors) = start_helper(spawner, "{}", dir).unwrap();
+        let (_handoff, helper_end) = UnixStream::pair().unwrap();
+        let (child, output, errors) = start_helper(spawner, "{}", dir, helper_end).unwrap();
         CellRun {
             child,
             cgroup: None,
@@ -1102,9 +1156,15 @@ mod tests {
 
     #[test]
     fn a_helper_that_cannot_start_is_reported() {
-        let error = start_helper(Path::new("/nonexistent/spawner"), "{}", Path::new("/tmp"))
-            .err()
-            .unwrap();
+        let (_handoff, helper_end) = UnixStream::pair().unwrap();
+        let error = start_helper(
+            Path::new("/nonexistent/spawner"),
+            "{}",
+            Path::new("/tmp"),
+            helper_end,
+        )
+        .err()
+        .unwrap();
         assert!(
             error.starts_with("cannot start /nonexistent/spawner"),
             "{error}"
@@ -1153,8 +1213,8 @@ mod tests {
         assert_ne!(a, b);
         assert_eq!(a.len(), RUN_TOKEN_LEN);
         assert!(a.starts_with("run-"));
-        assert!(a.parse::<hatchling_core::CellId>().is_ok(), "{a}");
-        assert_eq!((RUN_TOKEN_LEN, RUN_SOCKET_NAME), (28, "broker.sock"));
+        assert!(a.parse::<CellId>().is_ok(), "{a}");
+        assert_eq!(RUN_TOKEN_LEN, 28);
     }
 
     #[test]
@@ -1172,28 +1232,109 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_accept_ends_the_session_without_waiting_for_stop() {
-        // A connected stream socket is no listener: accept fails with
-        // EINVAL, not WouldBlock, so the session ends at once instead of
+    fn a_helper_gone_without_a_connection_ends_the_session_without_waiting_for_stop() {
+        // The helper's end closes with nothing sent: the receive sees no
+        // fd, not a timeout, so the session ends at once instead of
         // retrying until its run stops it.
-        let (socket, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
-        let listener = UnixListener::from(std::os::fd::OwnedFd::from(socket));
+        let (handoff, helper_end) = UnixStream::pair().unwrap();
+        drop(helper_end);
         let config = config();
         let key = MasterKey::generate().unwrap();
         let stop = AtomicBool::new(false);
         let (ended, done) = mpsc::channel();
         std::thread::scope(|scope| {
             scope.spawn(|| {
-                serve_run_session(&listener, &config, &key, &stop);
+                serve_run_session(&handoff, "run-1".parse().unwrap(), &config, &key, &stop);
                 let _ = ended.send(());
             });
             let returned = done.recv_timeout(Duration::from_secs(2));
             stop.store(true, Ordering::Release);
             assert!(
                 returned.is_ok(),
-                "the session kept retrying a failed accept"
+                "the session kept waiting on a helper that was gone"
             );
         });
+    }
+
+    #[test]
+    fn a_run_session_is_served_on_the_connection_its_helper_sends() {
+        use hatchling_core::framing::{read_frame, write_frame};
+        use hatchling_core::{AgentMessage, BrokerMessage, PROTOCOL_VERSION};
+        let config = config();
+        let key = MasterKey::generate().unwrap();
+        // The second helper is slow: its connection comes after the
+        // session's first wait for it ran out, and is still served.
+        for (named, welcomed, late) in [("run-1", true, false), ("run-2", false, true)] {
+            let (handoff, helper_end) = UnixStream::pair().unwrap();
+            let (cell_end, agent) = UnixStream::pair().unwrap();
+            agent
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let stop = AtomicBool::new(false);
+            std::thread::scope(|scope| {
+                let session = scope.spawn(|| {
+                    serve_run_session(&handoff, "run-1".parse().unwrap(), &config, &key, &stop);
+                });
+                if late {
+                    std::thread::sleep(ACCEPT_POLL * 4);
+                }
+                // The helper's part: send the owner's end, keep no copy.
+                let mut cell = Some(cell_end);
+                hatchling_sys::net::send_fd(helper_end.as_fd(), cell.as_ref().unwrap().as_fd())
+                    .unwrap();
+                drop(cell.take());
+                let hello = AgentMessage::Hello {
+                    v: PROTOCOL_VERSION,
+                    cell_id: String::from(named),
+                };
+                write_frame(&agent, &serde_json::to_vec(&hello).unwrap()).unwrap();
+                let reply: BrokerMessage =
+                    serde_json::from_slice(&read_frame(&agent).unwrap()).unwrap();
+                assert_eq!(
+                    matches!(reply, BrokerMessage::Welcome { .. }),
+                    welcomed,
+                    "{named}: {reply:?}"
+                );
+                drop(agent);
+                session.join().unwrap();
+            });
+        }
+    }
+
+    #[test]
+    fn a_connected_run_cells_helper_hands_over_its_connection_alone() {
+        use std::io::{Read as _, Write as _};
+        let (handoff, broker) = UnixStream::pair().unwrap();
+        // Nothing sent must fail this test, not hang it.
+        broker
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let (cell_end, mut program) = UnixStream::pair().unwrap();
+        hand_over_connection(&handoff, Some(cell_end)).unwrap();
+        let mut received = UnixStream::from(hatchling_sys::net::recv_fd(broker.as_fd()).unwrap());
+        program.write_all(b"hi").unwrap();
+        let mut got = [0u8; 2];
+        received.read_exact(&mut got).unwrap();
+        assert_eq!(&got, b"hi");
+        // The helper kept no copy: once the broker's goes, the program
+        // sees the connection end.
+        drop(received);
+        let mut rest = Vec::new();
+        program
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        assert_eq!(program.read_to_end(&mut rest).unwrap(), 0);
+        // No connection to hand over, or nowhere to send it: refused.
+        assert!(matches!(
+            hand_over_connection(&handoff, None),
+            Err(Error::CellSpawn { reason }) if reason == "the run cell came without its connection"
+        ));
+        drop(broker);
+        let (cell_end, _program) = UnixStream::pair().unwrap();
+        assert!(matches!(
+            hand_over_connection(&handoff, Some(cell_end)),
+            Err(Error::CellSpawn { reason }) if reason.starts_with("cannot hand the run's connection")
+        ));
     }
 
     #[test]

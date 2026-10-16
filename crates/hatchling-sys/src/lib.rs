@@ -45,6 +45,7 @@ pub mod umask;
 pub use error::Error;
 pub use fds::{
     cloexec_fds_above_stderr, close_fds_above_stderr_except, fd_flags, keep_across_exec, open_fds,
+    take_stdin,
 };
 pub use idmap::IdMap;
 pub use mounts::{BindMount, MountPlan};

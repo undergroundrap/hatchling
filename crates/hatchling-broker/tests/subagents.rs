@@ -321,10 +321,11 @@ fn a_child_runs_in_its_own_cell_with_only_what_it_was_given() {
     );
     let shown = answer(&report);
     for line in [
-        // Its own cell: its id is the child's, its socket its own.
+        // Its own cell: its id is the child's, its connection its own.
         format!("cell={child} steps=4 subagent=1"),
-        String::from("fds=0,1,2"),
-        String::from("sock=visible"),
+        String::from("fds=0,1,2,c"),
+        String::from("sock=absent"),
+        String::from("stdin=not-socket"),
         String::from("model-reasoning=disabled"),
         // Narrowed: what it was given, and nothing the parent kept back.
         String::from("vault:app-token=Vault(NotFound)"),
@@ -359,8 +360,10 @@ fn siblings_cannot_reach_each_other_and_a_kill_keeps_the_childs_last_words() {
     seed(&config, &key, false);
     let parent = Parent::open(&config, key, RUN_DEADLINE);
     let first = parent.spawned("hang", 2, Vec::new());
+    // Where a socket would be, if children had them: they have only their
+    // connections (WO-007).
     let sibling_socket = config.scheduler.run_root().join(&first).join("broker.sock");
-    assert!(sibling_socket.exists(), "the first child's socket is live");
+    assert!(!sibling_socket.exists(), "a child binds no socket");
     let second = parent.spawned(
         &format!("connect:{}", sibling_socket.display()),
         2,

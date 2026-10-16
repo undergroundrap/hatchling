@@ -44,6 +44,35 @@ pub fn cloexec_fds_above_stderr() -> Result<(), Error> {
     }
 }
 
+/// Takes this process's stdin for itself: a close-on-exec copy of it,
+/// with stdin itself pointed at `/dev/null`.
+///
+/// For a helper handed a channel as its stdin, which must not pass that
+/// channel on to anything it starts: they inherit `/dev/null` instead.
+///
+/// # Errors
+///
+/// Returns [`Error::Process`] if stdin can't be copied, or `/dev/null`
+/// opened or put in its place.
+pub fn take_stdin() -> Result<std::os::fd::OwnedFd, Error> {
+    let failed = |operation: &'static str| {
+        move |source: rustix::io::Errno| Error::Process {
+            operation,
+            source: std::io::Error::from_raw_os_error(source.raw_os_error()),
+        }
+    };
+    let taken = rustix::io::fcntl_dupfd_cloexec(rustix::stdio::stdin(), 3)
+        .map_err(failed("fcntl(0, F_DUPFD_CLOEXEC)"))?;
+    let null = rustix::fs::open(
+        "/dev/null",
+        rustix::fs::OFlags::RDONLY.union(rustix::fs::OFlags::CLOEXEC),
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(failed("open /dev/null"))?;
+    rustix::stdio::dup2_stdin(&null).map_err(failed("dup2(/dev/null, 0)"))?;
+    Ok(taken)
+}
+
 /// Lets `fd` cross the next exec: clears its `FD_CLOEXEC` flag, and
 /// nothing else.
 ///
@@ -152,6 +181,54 @@ mod tests {
         unsafe {
             libc::close(fd);
         }
+    }
+
+    #[test]
+    fn taking_stdin_leaves_null_in_its_place() {
+        use std::io::{Read as _, Write as _};
+        // In a child: stdin is the test runner's otherwise.
+        let child = match fork().expect("fork") {
+            ForkResult::Parent { child } => child,
+            ForkResult::Child => {
+                let Ok((mut ours, theirs)) = std::os::unix::net::UnixStream::pair() else {
+                    exit_child(2)
+                };
+                // SAFETY: both fds are open; dup2 replaces stdin with the
+                // pair's end, which is what this test sets up.
+                if unsafe { libc::dup2(theirs.as_raw_fd(), 0) } != 0 {
+                    exit_child(3);
+                }
+                drop(theirs);
+                let Ok(taken) = take_stdin() else {
+                    exit_child(4)
+                };
+                let mut taken = std::os::unix::net::UnixStream::from(taken);
+                // The copy is the channel, close-on-exec, above stderr.
+                let flags = fd_flags(taken.as_raw_fd());
+                if taken.as_raw_fd() <= 2 || flags != Some(libc::FD_CLOEXEC) {
+                    exit_child(5);
+                }
+                let mut byte = [0u8; 1];
+                if ours.write_all(b"x").is_err() || taken.read_exact(&mut byte).is_err() {
+                    exit_child(6);
+                }
+                // Stdin now reads nothing at all.
+                let mut rest = Vec::new();
+                let stdin_empty = std::io::stdin()
+                    .read_to_end(&mut rest)
+                    .is_ok_and(|n| n == 0);
+                exit_child(if byte == *b"x" && stdin_empty { 0 } else { 7 });
+            }
+        };
+        let status = child
+            .wait_deadline(Duration::from_secs(30))
+            .expect("bounded wait");
+        assert_eq!(
+            child_exit_code(status),
+            0,
+            "2: no pair; 3: no dup2; 4: take failed; 5: the copy isn't close-on-exec above \
+             stderr; 6: the copy isn't the channel; 7: stdin isn't /dev/null"
+        );
     }
 
     #[test]

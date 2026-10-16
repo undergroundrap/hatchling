@@ -1102,21 +1102,6 @@ fn parse_scheduler(
             )));
         }
     }
-    // A run socket is `<runs>/run-<24 hex>/broker.sock`: it must fit a
-    // unix socket address (`sun_path`, 108 bytes with its NUL), or no run
-    // could ever start.
-    let longest = runs.as_os_str().len()
-        + 1
-        + crate::run_launcher::RUN_TOKEN_LEN
-        + 1
-        + crate::run_launcher::RUN_SOCKET_NAME.len();
-    if longest > MAX_SOCKET_PATH_BYTES {
-        return Err(invalid(format!(
-            "scheduler dir {} is too long: run sockets under it would be {longest} bytes, \
-             over the {MAX_SOCKET_PATH_BYTES}-byte unix socket limit",
-            root.display()
-        )));
-    }
     let (model_endpoint, model_name) = model;
     Ok(SchedulerConfig {
         root,
@@ -2918,14 +2903,10 @@ mod tests {
             ),
             (Some("https://models.example.com/v1"), Some("m-1"))
         );
-        // At the socket-path limit and one byte past it: the run socket
-        // is `<dir>.runs/run-<24 hex>/broker.sock`, 46 bytes past `<dir>`.
-        let fits = format!("/{}", "d".repeat(MAX_SOCKET_PATH_BYTES - 46 - 1));
-        assert!(parse_scheduler(Some(&fits), (None, None), Path::new("/v"), None).is_ok());
-        let over = format!("/{}", "d".repeat(MAX_SOCKET_PATH_BYTES - 46));
-        let err = parse_scheduler(Some(&over), (None, None), Path::new("/v"), None).unwrap_err();
-        assert!(format!("{err:?}").contains("too long"), "{err:?}");
-        assert_eq!(MAX_SOCKET_PATH_BYTES, 107);
+        // Runs bind no socket, so a long scheduler dir is fine: past the
+        // unix socket limit that runs once had to fit.
+        let long = format!("/{}", "d".repeat(MAX_SOCKET_PATH_BYTES));
+        assert!(parse_scheduler(Some(&long), (None, None), Path::new("/v"), None).is_ok());
         let blank = parse_scheduler(
             Some("/srv/s"),
             (Some(String::from("  ")), Some(String::new())),
