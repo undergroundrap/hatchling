@@ -21,6 +21,7 @@ import time
 QUICKSTART = "## Quickstart"
 APP = "### Using the app"
 APP_ADDRESS = re.compile(r"^Hatchling's UI: open (http://127\.0\.0\.1:\d+/#hatchling-ui=[0-9a-f]+)$", re.M)
+MACHINE_ADDRESS = re.compile(r"^Hatchling's Machine view: open (http://127\.0\.0\.1:\d+/machine\.html#hatchling-operator=[0-9a-f]+)$", re.M)
 APP_ADDRESS_WAIT_SECS = 30
 
 
@@ -80,13 +81,14 @@ def expected_answer(path):
     raise ValueError("Stand-in model has no single-line ANSWER constant")
 
 
-def app_address(read_outputs, wait=APP_ADDRESS_WAIT_SECS):
-    """The address the app's host printed, waiting for it: it runs in the
-    background, so its line can land after its block has ended."""
+def app_address(read_outputs, wait=APP_ADDRESS_WAIT_SECS, pattern=APP_ADDRESS):
+    """The address the app's host printed (`pattern` names which), waiting
+    for it: it runs in the background, so its line can land after its block
+    has ended."""
     deadline = time.monotonic() + wait
     while True:
         for output in read_outputs():
-            match = APP_ADDRESS.search(output)
+            match = pattern.search(output)
             if match:
                 return match.group(1)
         if time.monotonic() >= deadline:
@@ -169,8 +171,11 @@ def run(repo, artifacts, work, timeout, app_python=None):
     if app_python is not None:
         # The address carries the UI token: hand it over, never print it.
         address = app_address(read_outputs)
-        subprocess.run([str(app_python), str(repo / "scripts/app_end_to_end.py"), address],
-                       cwd=repo / "scripts", env=environment, check=True, timeout=300)
+        machine = app_address(read_outputs, pattern=MACHINE_ADDRESS)
+        # Its screenshots go with the logs, for a reviewer to see.
+        shots = dict(environment, HATCHLING_E2E_SCREENSHOTS=str(artifacts))
+        subprocess.run([str(app_python), str(repo / "scripts/app_end_to_end.py"), address, machine],
+                       cwd=repo / "scripts", env=shots, check=True, timeout=300)
     else:
         print("app in a browser: not checked (no --app-python)", flush=True)
     print("README quickstart: passed", flush=True)

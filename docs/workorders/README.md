@@ -55,7 +55,7 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | [019](workorder-019-approved-tools.md) | Approved tools: what a cell can run, pinned and listed | yes | QUEUED |
 | [020](workorder-020-model-reasoning-control.md) | Operator-selected model thinking mode | yes | DONE |
 | [021](workorder-021-live-frontend.md) | The UI drives a real broker | yes | DONE |
-| [022](workorder-022-operator-api.md) | An operator API, and the command center's Machine view | yes | QUEUED |
+| [022](workorder-022-operator-api.md) | An operator API, and the command center's Machine view | yes | DONE |
 | [023](workorder-023-internal-destinations.md) | Refuse internal addresses for destinations that aren't declared internal | yes | QUEUED |
 
 ## Candidates

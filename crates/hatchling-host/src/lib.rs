@@ -71,6 +71,8 @@ pub struct Settings {
     pub ui_dir: PathBuf,
     /// The port on `127.0.0.1`.
     pub port: u16,
+    /// The broker's operator socket, when the Machine view is served too.
+    pub operator_socket: Option<PathBuf>,
 }
 
 impl Settings {
@@ -81,9 +83,8 @@ impl Settings {
     /// [`Error::Missing`] for a required setting, and [`Error::Invalid`]
     /// for a relative path or a port that isn't one.
     pub fn parse(get: impl Fn(&str) -> Option<String>) -> Result<Self, Error> {
-        let absolute = |key: &'static str| -> Result<PathBuf, Error> {
-            let raw = get(key).ok_or(Error::Missing(key))?;
-            let path = PathBuf::from(&raw);
+        let absolute_path = |key: &'static str, raw: &str| -> Result<PathBuf, Error> {
+            let path = PathBuf::from(raw);
             if path.is_absolute() {
                 Ok(path)
             } else {
@@ -93,6 +94,10 @@ impl Settings {
                 })
             }
         };
+        let absolute = |key: &'static str| -> Result<PathBuf, Error> {
+            let raw = get(key).ok_or(Error::Missing(key))?;
+            absolute_path(key, &raw)
+        };
         let port = match get(environment::HATCHLING_HOST_PORT.name) {
             None => DEFAULT_PORT,
             Some(raw) => raw.trim().parse().map_err(|_| Error::Invalid {
@@ -100,38 +105,42 @@ impl Settings {
                 reason: format!("must be a port number, not {raw:?}"),
             })?,
         };
+        let operator_socket = get(environment::HATCHLING_OPERATOR_SOCKET.name)
+            .map(|raw| absolute_path("HATCHLING_OPERATOR_SOCKET", &raw))
+            .transpose()?;
         Ok(Self {
             ui_socket: absolute(environment::HATCHLING_UI_SOCKET.name)?,
             ui_dir: absolute(environment::HATCHLING_HOST_UI.name)?,
             port,
+            operator_socket,
         })
     }
 }
 
-/// Where the broker keeps the UI token for `ui_socket`: the socket's
-/// path with `.token` added.
+/// Where the broker keeps the token for `socket` (the UI's or the
+/// operator's): the socket's path with `.token` added.
 #[must_use]
-pub fn token_path(ui_socket: &Path) -> PathBuf {
-    let mut path = ui_socket.as_os_str().to_owned();
+pub fn token_path(socket: &Path) -> PathBuf {
+    let mut path = socket.as_os_str().to_owned();
     path.push(".token");
     PathBuf::from(path)
 }
 
-/// The UI token the broker minted for `ui_socket`, to put in the address
-/// the person opens.
+/// The token the broker minted for `socket`, the setting `key` names, to
+/// put in the address the person opens.
 ///
 /// # Errors
 ///
 /// [`Error::Invalid`] when it can't be read: the broker isn't running
-/// with that UI socket, or runs as another user.
-pub fn read_token(ui_socket: &Path) -> Result<String, Error> {
-    let path = token_path(ui_socket);
+/// with that socket, or runs as another user.
+pub fn read_token(socket: &Path, key: &'static str) -> Result<String, Error> {
+    let path = token_path(socket);
     std::fs::read_to_string(&path)
         .map(|token| token.trim().to_owned())
         .map_err(|error| Error::Invalid {
-            key: "HATCHLING_UI_SOCKET",
+            key,
             reason: format!(
-                "the UI token {} can't be read ({error}): is the broker running with this UI socket, as this user?",
+                "the token {} can't be read ({error}): is the broker running with this socket, as this user?",
                 path.display()
             ),
         })
@@ -143,6 +152,13 @@ pub fn read_token(ui_socket: &Path) -> Result<String, Error> {
 #[must_use]
 pub fn address(port: u16, token: &str) -> String {
     format!("http://127.0.0.1:{port}/#hatchling-ui={token}")
+}
+
+/// The Machine view's address on `port`, with the operator's `token` in
+/// the fragment as `#hatchling-operator=<token>`.
+#[must_use]
+pub fn machine_address(port: u16, token: &str) -> String {
+    format!("http://127.0.0.1:{port}/machine.html#hatchling-operator={token}")
 }
 
 /// Binds the host's listener on `127.0.0.1` only.
@@ -162,11 +178,19 @@ pub fn bind(port: u16) -> Result<TcpListener, Error> {
 pub fn handle(mut stream: TcpStream, settings: &Settings) -> Result<(), Error> {
     stream.set_read_timeout(Some(HEAD_TIMEOUT))?;
     let head = http::read_head(&mut stream)?;
-    match head.websocket_key() {
-        Some(key) => {
+    let socket = match head.websocket() {
+        Some((http::Channel::Ui, key)) => Some((&settings.ui_socket, key)),
+        Some((http::Channel::Operator, key)) => settings
+            .operator_socket
+            .as_ref()
+            .map(|socket| (socket, key)),
+        None => None,
+    };
+    match socket {
+        Some((socket, key)) => {
             http::accept_upgrade(&mut stream, key)?;
             stream.set_read_timeout(None)?;
-            bridge::bridge(stream, &settings.ui_socket)
+            bridge::bridge(stream, socket)
         }
         None => http::answer(&mut stream, &settings.ui_dir, &head),
     }
@@ -223,6 +247,22 @@ mod tests {
         ];
         let settings = parse(&both).unwrap();
         assert_eq!(settings.port, DEFAULT_PORT);
+        assert_eq!(settings.operator_socket, None);
+        let mut operated = both.to_vec();
+        operated.push(("HATCHLING_OPERATOR_SOCKET", "/run/hatchling/operator.sock"));
+        assert_eq!(
+            parse(&operated).unwrap().operator_socket,
+            Some(PathBuf::from("/run/hatchling/operator.sock"))
+        );
+        let mut relative = both.to_vec();
+        relative.push(("HATCHLING_OPERATOR_SOCKET", "operator.sock"));
+        assert!(matches!(
+            parse(&relative),
+            Err(Error::Invalid {
+                key: "HATCHLING_OPERATOR_SOCKET",
+                ..
+            })
+        ));
         assert_eq!(settings.ui_socket, PathBuf::from("/run/hatchling/ui.sock"));
         assert_eq!(settings.ui_dir, PathBuf::from("/srv/hatchling/ui"));
         let mut chosen = both.to_vec();
@@ -275,17 +315,31 @@ mod tests {
         let socket = dir.join("ui.sock");
         assert_eq!(token_path(&socket), dir.join("ui.sock.token"));
         assert!(matches!(
-            read_token(&socket),
+            read_token(&socket, "HATCHLING_UI_SOCKET"),
             Err(Error::Invalid {
                 key: "HATCHLING_UI_SOCKET",
                 ..
             })
         ));
+        assert!(matches!(
+            read_token(&socket, "HATCHLING_OPERATOR_SOCKET"),
+            Err(Error::Invalid {
+                key: "HATCHLING_OPERATOR_SOCKET",
+                ..
+            })
+        ));
         std::fs::write(token_path(&socket), "abc123\n").unwrap();
-        assert_eq!(read_token(&socket).unwrap(), "abc123");
+        assert_eq!(
+            read_token(&socket, "HATCHLING_UI_SOCKET").unwrap(),
+            "abc123"
+        );
         assert_eq!(
             address(7340, "abc123"),
             "http://127.0.0.1:7340/#hatchling-ui=abc123"
+        );
+        assert_eq!(
+            machine_address(7340, "abc123"),
+            "http://127.0.0.1:7340/machine.html#hatchling-operator=abc123"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -300,9 +354,14 @@ mod tests {
 
     /// A browser's side of the upgrade, on `stream`.
     fn upgrade(stream: &mut TcpStream) {
+        upgrade_on(stream, "/ui");
+    }
+
+    /// The opening handshake for `path`, read to its end.
+    fn upgrade_on(stream: &mut TcpStream, path: &str) {
         stream
             .write_all(
-                b"GET /ui HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+                format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n").as_bytes(),
             )
             .unwrap();
         let mut answer = Vec::new();
@@ -335,6 +394,7 @@ mod tests {
             ui_socket: socket,
             ui_dir: dir.clone(),
             port: 0,
+            operator_socket: None,
         };
         let listener = bind(0).unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -378,6 +438,7 @@ mod tests {
             ui_socket: socket,
             ui_dir: dir.clone(),
             port: 0,
+            operator_socket: None,
         };
         let listener = bind(0).unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -414,6 +475,87 @@ mod tests {
     }
 
     #[test]
+    fn the_machine_views_channel_goes_to_the_operator_socket_only_when_there_is_one() {
+        let dir = std::env::temp_dir().join(format!("hatchling-host-op-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let ui = UnixListener::bind(dir.join("ui.sock")).unwrap();
+        let operator = UnixListener::bind(dir.join("operator.sock")).unwrap();
+        let with = Settings {
+            ui_socket: dir.join("ui.sock"),
+            ui_dir: dir.clone(),
+            port: 0,
+            operator_socket: Some(dir.join("operator.sock")),
+        };
+        let listener = bind(0).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::scope(|scope| {
+            let host = scope.spawn(|| {
+                let (stream, _) = listener.accept().unwrap();
+                handle(stream, &with)
+            });
+            // It waits at most five seconds: a channel sent elsewhere fails
+            // the test instead of hanging it.
+            let fake_operator = scope.spawn(|| {
+                operator.set_nonblocking(true).unwrap();
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                let stream = loop {
+                    match operator.accept() {
+                        Ok((stream, _)) => break Some(stream),
+                        Err(_) if std::time::Instant::now() < deadline => {
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(_) => break None,
+                    }
+                }?;
+                stream.set_nonblocking(false).unwrap();
+                let heard = read_frame(&stream).unwrap();
+                write_frame(&stream, b"{\"type\":\"welcome\"}").unwrap();
+                Some(heard)
+            });
+            let mut browser = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+            browser
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            upgrade_on(&mut browser, "/operator");
+            browser.write_all(&masked(b"{\"type\":\"hello\"}")).unwrap();
+            assert_eq!(
+                fake_operator.join().unwrap().as_deref(),
+                Some(&b"{\"type\":\"hello\"}"[..]),
+                "the operator socket heard the hello"
+            );
+            assert_eq!(websocket_text(&mut browser), b"{\"type\":\"welcome\"}");
+            drop(browser);
+            let _ = host.join().unwrap();
+        });
+        // Nothing reached the UI's socket.
+        ui.set_nonblocking(true).unwrap();
+        assert!(ui.accept().is_err());
+        // Without an operator socket, /operator is no channel: a plain 404.
+        let without = Settings {
+            operator_socket: None,
+            ..with
+        };
+        let listener = bind(0).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::scope(|scope| {
+            let host = scope.spawn(|| {
+                let (stream, _) = listener.accept().unwrap();
+                handle(stream, &without)
+            });
+            let mut browser = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+            browser
+                .write_all(b"GET /operator HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n")
+                .unwrap();
+            let mut answer = String::new();
+            browser.read_to_string(&mut answer).unwrap();
+            assert!(answer.starts_with("HTTP/1.1 404 "), "{answer}");
+            assert!(host.join().unwrap().is_ok());
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_request_that_isnt_an_upgrade_gets_the_uis_files() {
         let dir = std::env::temp_dir().join(format!("hatchling-host-get-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -423,6 +565,7 @@ mod tests {
             ui_socket: dir.join("absent.sock"),
             ui_dir: dir.clone(),
             port: 0,
+            operator_socket: None,
         };
         let listener = bind(0).unwrap();
         let port = listener.local_addr().unwrap().port();

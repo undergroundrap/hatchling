@@ -1,7 +1,7 @@
 // Project-owned TypeScript AST rules: intentionally smaller than a general-purpose linter.
 import ts from 'typescript';
 import { readdirSync, readFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 /**
  * Authorization vocabulary. In the live adapter, any identifier that names
@@ -81,7 +81,11 @@ export function lintSource(path, text) {
             const source = node.moduleSpecifier.text;
             if (!source.endsWith('.js'))
                 report(node, 'Use explicit .js module extensions for native ESM.');
-            if (!path.includes('adapters/') && path !== 'src/main.ts' && source.includes('adapters/'))
+            // Each app's entry is its composition root; the Machine view's own
+            // modules may name the operator adapter's types, never its code.
+            const root = path === 'src/main.ts' || path === 'src/machine.ts';
+            const machineTypes = path.startsWith('src/machine/') && node.importClause?.isTypeOnly === true;
+            if (!path.includes('adapters/') && !root && !machineTypes && source.includes('adapters/'))
                 report(node, 'Only the composition root may import adapter implementations.');
             if (path.includes('protocol/') && /features|components|app|adapters/.test(source))
                 report(node, 'Protocol must not depend on presentation or implementations.');
@@ -95,7 +99,8 @@ export function lintSource(path, text) {
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
     const walk = directory => readdirSync(directory, { withFileTypes: true }).flatMap(entry => entry.isDirectory() ? walk(join(directory, entry.name)) : [join(directory, entry.name)]);
-    const files = walk('src').filter(path => path.endsWith('.ts'));
+    // The rules name paths with `/`, whatever the system's separator.
+    const files = walk('src').filter(path => path.endsWith('.ts')).map(path => path.split(sep).join('/'));
     const errors = files.flatMap(path => lintSource(path, readFileSync(path, 'utf8')));
     for (const error of errors)
         console.error(error);

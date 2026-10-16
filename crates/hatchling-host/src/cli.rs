@@ -9,7 +9,7 @@ use std::process::ExitCode;
 
 use hatchling_core::cli::{EX_USAGE, help_requested, render_help};
 
-use crate::{Error, Settings, address, bind, read_token, serve};
+use crate::{Error, Settings, address, bind, machine_address, read_token, serve};
 
 /// Runs the host's command line: `args` after the program's name.
 #[must_use]
@@ -40,7 +40,7 @@ pub fn help(program: &str) -> String {
     render_help(
         program,
         "| --help | -h",
-        "Serves Hatchling's UI on 127.0.0.1 and carries its channel to the broker's\nUI socket, message for message. It prints the address to open: the token in\nits fragment is what the broker asks of every UI connection, and a browser\nnever sends a fragment to a server. The host decides nothing; the broker does.",
+        "Serves Hatchling's UI on 127.0.0.1 and carries its channel to the broker's\nUI socket, message for message. It prints the address to open: the token in\nits fragment is what the broker asks of every UI connection, and a browser\nnever sends a fragment to a server. With the operator socket, it serves the\nMachine view too, at an address of its own. The host decides nothing; the\nbroker does.",
         crate::environment::ENVIRONMENT,
     )
 }
@@ -48,14 +48,24 @@ pub fn help(program: &str) -> String {
 /// Reads the settings and the token, binds, says where to go, and serves.
 fn start() -> Result<std::convert::Infallible, Error> {
     let settings = Settings::parse(|key| std::env::var(key).ok())?;
-    let token = read_token(&settings.ui_socket)?;
+    let token = read_token(&settings.ui_socket, "HATCHLING_UI_SOCKET")?;
+    let operator = settings
+        .operator_socket
+        .as_deref()
+        .map(|socket| read_token(socket, "HATCHLING_OPERATOR_SOCKET"))
+        .transpose()?;
     let listener = bind(settings.port)?;
     let port = listener.local_addr()?.port();
-    let _ = writeln!(
-        std::io::stdout().lock(),
-        "Hatchling's UI: open {}",
-        address(port, &token)
-    );
+    let mut out = std::io::stdout().lock();
+    let _ = writeln!(out, "Hatchling's UI: open {}", address(port, &token));
+    if let Some(operator) = operator {
+        let _ = writeln!(
+            out,
+            "Hatchling's Machine view: open {}",
+            machine_address(port, &operator)
+        );
+    }
+    drop(out);
     serve(&listener, &settings)
 }
 

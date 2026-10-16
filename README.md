@@ -131,6 +131,7 @@ export HATCHLING_SCHEDULER_DIR=$HATCHLING_HOME/schedules
 export HATCHLING_CHANNEL_INGRESS=$HATCHLING_HOME/ingress.sock
 export HATCHLING_API_SOCKET=$HATCHLING_HOME/api.sock
 export HATCHLING_UI_SOCKET=$HATCHLING_HOME/ui.sock   # for the app, below
+export HATCHLING_OPERATOR_SOCKET=$HATCHLING_HOME/operator.sock   # for the Machine view, below
 export HATCHLING_SCHEDULER_MODEL_ENDPOINT=http://localhost:18089/v1
 export HATCHLING_SCHEDULER_MODEL_NAME=stand-in
 export HATCHLING_EGRESS_ALLOWLIST=local-keyless:localhost:18089
@@ -175,9 +176,14 @@ HATCHLING_HOST_UI=$PWD/frontend/dist hatchling-host &
 
 ```text
 Hatchling's UI: open http://127.0.0.1:7340/#hatchling-ui=3f9c...
+Hatchling's Machine view: open http://127.0.0.1:7340/machine.html#hatchling-operator=8d21...
 ```
 
-Open that address in a browser on the same machine and say something in the main chat: the agent answers there, each message in a fresh cell, holding the API's grants. On WSL2, a browser in Windows reaches it too. While the broker runs, the address is a key to your agent: don't share it. Each broker start mints a new token, so restart the host after the broker. `HATCHLING_HOST_PORT` picks another port. CI runs this too: it opens the printed address in Chromium, sends a message and waits for the agent's answer on the page.
+Open that address in a browser on the same machine and say something in the main chat: the agent answers there, each message in a fresh cell, holding the API's grants. On WSL2, a browser in Windows reaches it too. While the broker runs, the address is a key to your agent: don't share it. Each broker start mints a new token, so restart the host after the broker. `HATCHLING_HOST_PORT` picks another port.
+
+The second address is the **Machine view**, for whoever runs the machine: the broker's version and uptime, the cells running, the connections open and the recent egress decisions, refreshed every two seconds. It reads the broker's operator socket, with a token of its own, and sees metadata only: never what anyone said, a task, a secret or a request's body. It can't act as a user, and the app's address can't open it.
+
+CI runs this too: it opens the app's address in Chromium, sends a message and waits for the agent's answer on the page, then opens the Machine view and checks it shows the app's connection and the chat's egress, and none of the message.
 
 ### Running without root
 

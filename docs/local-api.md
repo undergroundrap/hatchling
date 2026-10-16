@@ -53,6 +53,7 @@ The README's quickstart sets these, along with the broker's own required variabl
 
 `HATCHLING_OPERATOR_SOCKET` turns on a socket for the people who run the machine, apart from its users ([WO-022](workorders/workorder-022-operator-api.md)). An operator can see the machine's state there, and can't act as its users; a user can't reach it.
 
+- **Its own view.** `hatchling-host`, given `HATCHLING_OPERATOR_SOCKET`, serves the Machine view and carries its channel here: see the README's "Using the app".
 - **Its own frames.** It speaks `OperatorRequest` and `OperatorResponse` (in the schema): a `hello`, then `query` frames, each answered by one `answer` with the same `request_id`. The API and UI sockets can't decode a query, and the operator socket can't decode a user's action or `subscribe`: either ends the connection.
 - **Its own token,** minted at each start into `<socket>.token`, mode `0600`, as the UI's is. A hello without it, or with another (the UI's included), is closed without a word.
 - **Its rules:** an absolute path outside the broker socket's directory, different from the API and UI sockets; the owner's peer credentials; refused when cells run as the broker's own uid. It needs no other socket and no activity log.
