@@ -2367,7 +2367,7 @@ mod tests {
     #[test]
     fn the_egress_allowlist_is_resolved_once_and_shared_by_every_copy() {
         let allowlist = EgressAllowlist::new("internal:localhost:443");
-        assert_eq!(allowlist.raw(), "localhost:443");
+        assert_eq!(allowlist.raw(), "internal:localhost:443");
         let copy = allowlist.clone();
         let first = allowlist.resolve().unwrap();
         assert!(first.allows("localhost:443"));
@@ -2379,7 +2379,9 @@ mod tests {
             .unwrap();
         assert!(Arc::ptr_eq(&first, &from_copy));
         // A separate allowlist with the same text resolves on its own.
-        let other = EgressAllowlist::new("internal:localhost:443").resolve().unwrap();
+        let other = EgressAllowlist::new("internal:localhost:443")
+            .resolve()
+            .unwrap();
         assert!(!Arc::ptr_eq(&first, &other));
         // Nothing configured: an empty allowlist, which denies everything.
         assert!(EgressAllowlist::default().resolve().unwrap().is_empty());
@@ -2390,7 +2392,7 @@ mod tests {
         assert!(bad.resolve().is_err());
         // Debug shows what the operator wrote.
         let shown = format!("{allowlist:?}");
-        assert!(shown.contains("raw: \"localhost:443\""), "{shown}");
+        assert!(shown.contains("raw: \"internal:localhost:443\""), "{shown}");
     }
 
     #[test]
@@ -2399,14 +2401,15 @@ mod tests {
         assert_eq!(
             configured_destinations(
                 &grants,
-                " public:a.example:443, local:localhost:11434,local-keyless:localhost:8080 , b.example:80,"
+                " public:a.example:443, local:localhost:11434,local-keyless:localhost:8080 , b.example:80,internal:gw.corp:443"
             ),
             [
                 "api.example.com:443",
                 "a.example:443",
                 "localhost:11434",
                 "localhost:8080",
-                "b.example:80"
+                "b.example:80",
+                "gw.corp:443"
             ]
         );
         assert!(configured_destinations(&[], "").is_empty());

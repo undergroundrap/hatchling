@@ -14,7 +14,7 @@ hatchling_core::declare_environment! {
     HATCHLING_VAULT_KEYRING: ("optional", "Absolute vault keyring path, instead of a bare master key."),
     HATCHLING_VAULT_KEK_FILE: ("optional", "Absolute file wrapping-key path for the keyring's file tier."),
     HATCHLING_REQUIRE_HARDWARE_KEY: ("optional; default false", "Require the keyring's hardware-key tier."),
-    HATCHLING_EGRESS_ALLOWLIST: ("optional; default none", "Allowed host:port destinations and local/local-keyless qualifiers."),
+    HATCHLING_EGRESS_ALLOWLIST: ("optional; default none", "Allowed host:port destinations, with public:, local:, local-keyless: or internal: qualifiers; only internal: may resolve to a private or loopback address."),
     HATCHLING_EGRESS_GRANTS: ("optional; default none", "Comma-separated host:port destinations this agent may request."),
     HATCHLING_EGRESS_CA_BUNDLE: ("optional", "Absolute PEM bundle of additional trusted HTTPS roots."),
     HATCHLING_CHANNELS: ("optional; default local", "Comma-separated enabled channel identifiers."),

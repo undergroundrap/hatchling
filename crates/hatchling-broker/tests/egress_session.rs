@@ -160,7 +160,7 @@ fn mint_surrogate_granted_destination_succeeds() {
     let (client, root) = spawn_session(
         "mint-granted",
         real_uid(),
-        "localhost:443",
+        "internal:localhost:443",
         vec![String::from("localhost:443")],
     )
     .unwrap();
@@ -191,7 +191,7 @@ fn mint_surrogate_without_grant_is_denied() {
     let (client, root) = spawn_session(
         "mint-ungranted",
         real_uid(),
-        "localhost:443",
+        "internal:localhost:443",
         Vec::new(), // No grants.
     )
     .unwrap();
@@ -218,7 +218,7 @@ fn mint_surrogate_non_allowlisted_destination_is_denied() {
     let (client, root) = spawn_session(
         "mint-not-allowlisted",
         real_uid(),
-        "localhost:443",                       // Only localhost is allowlisted.
+        "internal:localhost:443", // Only localhost is allowlisted (internal: it is this machine).
         vec![String::from("example.com:443")], // Grant for non-allowlisted.
     )
     .unwrap();
@@ -244,7 +244,7 @@ fn egress_with_invalid_surrogate_is_denied() {
     let (client, root) = spawn_session(
         "egress-bad-surrogate",
         real_uid(),
-        "localhost:443",
+        "internal:localhost:443",
         vec![String::from("localhost:443")],
     )
     .unwrap();
@@ -275,7 +275,7 @@ fn egress_without_grant_is_denied() {
     let (client, root) = spawn_session(
         "egress-ungranted",
         real_uid(),
-        "localhost:443",
+        "internal:localhost:443",
         Vec::new(), // No grants.
     )
     .unwrap();
@@ -308,7 +308,7 @@ fn wrong_uid_gets_silent_close_before_egress() {
     let (mut client, root) = spawn_session(
         "egress-wrong-uid",
         real_uid() + 1, // Broker expects a different uid.
-        "localhost:443",
+        "internal:localhost:443",
         vec![String::from("localhost:443")],
     )
     .unwrap();

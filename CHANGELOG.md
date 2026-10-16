@@ -8,6 +8,8 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Added
 
+- `internal:host:port` in `HATCHLING_EGRESS_ALLOWLIST` (and a coding CLI's vendor API): a destination the operator means to be on their own network, allowed to resolve to a private or loopback address; otherwise an ordinary credentialed HTTPS destination (WO-023).
+
 - The Machine view, for whoever runs the machine: `hatchling-host`, given `HATCHLING_OPERATOR_SOCKET`, also serves `machine.html` and carries its channel to the broker's operator socket, printing a second address with the operator token. It shows the broker's version and uptime, the cells running, the connections open and the recent egress decisions, refreshed every two seconds, and metadata only. CI opens it in Chromium beside the app (WO-022, part 6).
 - `HATCHLING_OPERATOR_SOCKET`: a socket for the people who run the machine, apart from its users. It speaks its own frames, so a user's socket can't answer an operator's query and the operator's can't take a user's action; it has its own token in `<socket>.token`; and its one query so far, `broker`, answers with the broker's version and uptime (WO-022, part 1).
 - The operator's `cells` query: every cell running, oldest first, with its id, kind (agent, run, subagent, skill or harness), start and limits, and never its task, input or output (WO-022, part 2).
@@ -22,6 +24,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Changed
 
+- **The egress allowlist refuses internal addresses.** A destination (other than `local:`) that resolves at startup to a loopback, private, shared, link-local, unique-local, unspecified, multicast or cloud-metadata address now fails the allowlist, naming the entry and the address; an IPv4 address mapped into IPv6 counts as the IPv4 one. If one of yours is meant to be internal, write it `internal:host:port`. (WO-023)
 - **Breaking, `hatchling-broker`:** `ApiConfig` has a `ui_socket` field. The workspace version is 0.4.0.
 
 ### Fixed

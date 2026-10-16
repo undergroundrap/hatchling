@@ -471,14 +471,14 @@ mod tests {
         lookups: &Arc<std::sync::atomic::AtomicUsize>,
     ) -> Proxy<impl Fn(&str) -> Option<Zeroizing<Vec<u8>>>> {
         let lookups = Arc::clone(lookups);
-        let allowlist = Allowlist::parse_with(
-            "public:docs.example:443,internal:localhost:8443",
-            |entry| match entry {
-                "docs.example:443" => Ok(vec!["203.0.113.5:443".parse().unwrap()]),
-                other => std::net::ToSocketAddrs::to_socket_addrs(other).map(Iterator::collect),
-            },
-        )
-        .unwrap();
+        let allowlist =
+            Allowlist::parse_with("public:docs.example:443,internal:localhost:8443", |entry| {
+                match entry {
+                    "docs.example:443" => Ok(vec!["203.0.113.5:443".parse().unwrap()]),
+                    other => std::net::ToSocketAddrs::to_socket_addrs(other).map(Iterator::collect),
+                }
+            })
+            .unwrap();
         Proxy::shared(
             Arc::new(allowlist),
             TlsClient::bundled().unwrap(),

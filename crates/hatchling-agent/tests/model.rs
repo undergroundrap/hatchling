@@ -225,14 +225,15 @@ fn provider_drives_loop_with_real_tool_through_broker() {
 
 #[test]
 fn run_task_fails_closed_without_network() {
-    // localhost:9 is the discard port: allowlisted and granted, so the
+    // localhost:9 is the discard port: allowlisted (as internal:, since it
+    // is this machine) and granted, so the
     // broker mints and processes the op — but no credential is
     // configured for it, so the proxy refuses at the credential swap
     // before any network I/O. No outside network is ever touched.
     let broker = FixtureBroker::spawn(
         "model-run-task",
         BrokerBehavior::Egress {
-            allowlist: String::from("localhost:9"),
+            allowlist: String::from("internal:localhost:9"),
             grants: vec![String::from("localhost:9")],
         },
     )

@@ -895,11 +895,14 @@ fn parse_vendor(
         Allowlist::parse(raw).map_err(|source| invalid(kind.api_key(), source.to_string()))?;
     Ok(Some(Vendor {
         wire: kind.wire(),
-        destination: [hatchling_egress::LOCAL_PREFIX, hatchling_egress::INTERNAL_PREFIX]
-            .iter()
-            .find_map(|prefix| raw.strip_prefix(prefix))
-            .unwrap_or(raw)
-            .to_owned(),
+        destination: [
+            hatchling_egress::LOCAL_PREFIX,
+            hatchling_egress::INTERNAL_PREFIX,
+        ]
+        .iter()
+        .find_map(|prefix| raw.strip_prefix(prefix))
+        .unwrap_or(raw)
+        .to_owned(),
         allowlist: Arc::new(allowlist),
         tls: tls.clone(),
     }))
@@ -2019,7 +2022,9 @@ mod tests {
                 refusal(parse_vendor(kind, Some(bad), &tls)),
                 (
                     kind.api_key(),
-                    String::from("one vendor API: host:port, internal:host:port, or local:localhost:PORT")
+                    String::from(
+                        "one vendor API: host:port, internal:host:port, or local:localhost:PORT"
+                    )
                 ),
                 "{bad}"
             );
