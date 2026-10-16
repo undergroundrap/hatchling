@@ -24,6 +24,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Changed
 
+- **Breaking, the vault's files: run `hatchling-broker migrate-vault` after upgrading.** Every sealed file (the secrets, schedules, artifacts, spaces and redaction records) is now a version-2 envelope that authenticates its store and its name, so a file renamed or moved into another store fails to open, as a tampered one does. The broker refuses to start while any store holds an old envelope, naming the files; `migrate-vault` now re-seals every store, one file at a time (re-run it if it's interrupted), where before it sealed only the secrets' plaintext. **Breaking, `hatchling-vault`:** `migrate_plaintext` is `migrate`, and it, `rekey` and `SealedVault::open_in` take a `Store`. (WO-002)
 - **The egress allowlist refuses internal addresses.** A destination (other than `local:`) that resolves at startup to a loopback, private, shared, link-local, unique-local, unspecified, multicast or cloud-metadata address now fails the allowlist, naming the entry and the address; an IPv4 address mapped into IPv6 counts as the IPv4 one. If one of yours is meant to be internal, write it `internal:host:port`. (WO-023)
 - **Breaking, `hatchling-broker`:** `ApiConfig` has a `ui_socket` field. The workspace version is 0.4.0.
 

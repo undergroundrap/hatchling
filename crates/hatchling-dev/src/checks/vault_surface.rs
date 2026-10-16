@@ -23,7 +23,7 @@
 //! deliberately *outside* this scan: the ratchet keeps scanning
 //! `vault.rs` only, whose public surface is untouched by sealing —
 //! `SealedVault` composes `Vault` without adding bulk-read methods to
-//! it. Migration (`migrate_plaintext`) and rekey (`rekey`) enumerate
+//! it. Migration (`migrate`), the store check (`check`) and rekey (`rekey`) enumerate
 //! the store directory, but they are one-shot operator actions that
 //! transform files in place and never return secret material to any
 //! caller; they are not a runtime read surface, so they do not widen

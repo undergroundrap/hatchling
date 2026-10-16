@@ -129,7 +129,8 @@ impl<'k> SealedArtifactStore<'k> {
     }
 
     fn vault(&self) -> Result<SealedVault<'k>, Error> {
-        SealedVault::open(self.root, self.key).map_err(|source| Error::Vault { source })
+        SealedVault::open_in(self.root, self.key, hatchling_vault::Store::ARTIFACTS)
+            .map_err(|source| Error::Vault { source })
     }
 
     fn insert_on<T: serde::Serialize>(
@@ -1050,7 +1051,7 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&root);
         let key = MasterKey::generate().unwrap();
-        let vault = SealedVault::open(&root, &key).unwrap();
+        let vault = SealedVault::open_in(&root, &key, hatchling_vault::Store::ARTIFACTS).unwrap();
         // A JSON string is its text plus two quotes.
         let at_bound = "x".repeat(MAX_SECRET_BYTES - 2);
         assert!(write_json(&vault, "probe", &at_bound).is_ok());
@@ -1172,5 +1173,29 @@ mod tests {
             accesses.last().map(|access| access.outcome),
             Some(crate::vault_access::Outcome::Failed)
         );
+    }
+
+    #[test]
+    fn the_store_seals_under_its_own_label() {
+        let root = std::env::temp_dir().join(format!(
+            "hatchling-test-artifacts-label-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let key = MasterKey::generate().unwrap();
+        let name: SecretName = "probe".parse().unwrap();
+        let secret = Secret::new(b"p".to_vec()).unwrap();
+        SealedArtifactStore::new(&root, &key)
+            .vault()
+            .unwrap()
+            .store(&name, &secret)
+            .unwrap();
+        let own = SealedVault::open_in(&root, &key, hatchling_vault::Store::ARTIFACTS)
+            .unwrap()
+            .fetch(&name);
+        let secrets = SealedVault::open(&root, &key).unwrap().fetch(&name);
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(own.unwrap().as_bytes(), b"p");
+        assert!(secrets.is_err(), "opened under the secrets label");
     }
 }

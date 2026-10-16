@@ -83,6 +83,10 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
         .as_ref()
         .map(|_| crate::RedactionConfig::from_env(config))
         .transpose()?;
+    // Every sealed store holds current envelopes, each bound to its
+    // store and name (WO-002), or the broker stops here, naming the
+    // files `migrate-vault` must re-seal.
+    crate::check_sealed_stores(&crate::sealed_stores(config, redaction.as_ref()))?;
     let gated = match &redaction {
         Some(redaction) => crate::output_gate::build(config, redaction)?,
         None => crate::output_gate::Built {
@@ -1553,7 +1557,7 @@ mod tests {
     }
 
     /// `credential_fetcher` decrypts through the sealed vault with the
-    /// broker's key: the on-disk bytes are an `HVL1` envelope (no
+    /// broker's key: the on-disk bytes are an `HVL2` envelope (no
     /// plaintext), and the fetcher returns the cleartext credential
     /// for the mapped destination. Pins the wiring — a mutant
     /// that reads the vault unsealed (or with the wrong key) makes the
@@ -1576,7 +1580,7 @@ mod tests {
 
         // On-disk proof of sealing: versioned envelope, no plaintext.
         let raw = std::fs::read(dir.join("egress-example-com-443")).unwrap();
-        assert_eq!(raw.get(..4), Some(b"HVL1".as_slice()));
+        assert_eq!(raw.get(..4), Some(b"HVL2".as_slice()));
         assert!(
             !raw.windows(b"credential-123".len())
                 .any(|window| window == b"credential-123"),

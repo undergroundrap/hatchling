@@ -68,6 +68,29 @@ pub enum Error {
         name: hatchling_core::SecretName,
     },
 
+    /// A file is a version-1 envelope, which names neither its secret nor
+    /// its store: read only by the migration that re-seals it.
+    #[error(
+        "secret {name} is an old (v1) sealed envelope; run hatchling-broker migrate-vault to re-seal it"
+    )]
+    OldEnvelope {
+        /// The name that was looked up.
+        name: hatchling_core::SecretName,
+    },
+
+    /// A store holds files that aren't current sealed envelopes: old
+    /// (v1) envelopes, unknown versions, or plaintext. The broker refuses
+    /// to serve until `migrate-vault` has re-sealed them.
+    #[error(
+        "the {store} store holds files that aren't current sealed envelopes: {names}; run hatchling-broker migrate-vault"
+    )]
+    UnmigratedStore {
+        /// The store's label.
+        store: &'static str,
+        /// The files' names, comma-separated, sorted.
+        names: String,
+    },
+
     /// Sealing a secret failed. Defensive: sealing with a valid key
     /// and a fresh nonce cannot fail; this variant exists so the
     /// failure mode is typed instead of a panic.
