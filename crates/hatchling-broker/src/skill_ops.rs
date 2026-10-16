@@ -49,7 +49,8 @@ pub fn handle_skill_op(
     let Ok(id) = skill.parse::<SkillId>() else {
         tracing::warn!(
             cell_id = %cell_id,
-            skill = %skill,
+            // The caller chose it: logged escaped, so it can't forge a line.
+            skill = ?skill,
             "denied skill op: malformed skill id"
         );
         return SkillResult::UnknownSkill;
@@ -81,11 +82,11 @@ pub fn handle_skill_op(
             }
         },
         Err(denial @ SkillDenial::UnknownSkill { .. }) => {
-            tracing::warn!(cell_id = %cell_id, %denial, "denied skill op");
+            tracing::warn!(cell_id = %cell_id, ?denial, "denied skill op");
             SkillResult::UnknownSkill
         }
         Err(denial @ SkillDenial::UndeclaredCapability { .. }) => {
-            tracing::warn!(cell_id = %cell_id, %denial, "denied skill op");
+            tracing::warn!(cell_id = %cell_id, ?denial, "denied skill op");
             SkillResult::CapabilityDenied
         }
     }

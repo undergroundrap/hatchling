@@ -373,6 +373,16 @@ impl PinnedBinary {
     }
 }
 
+/// What a run's report says when its binary can't be read or no longer
+/// hashes to its pin; the detail stays in the broker's log.
+const BINARY_REFUSED: &str =
+    "the harness binary is unreadable or not the pinned one: it is never substituted";
+
+/// What a run's report says when the Codex host binary can't be read or
+/// no longer hashes to its pin.
+const HOST_REFUSED: &str =
+    "the Codex host binary is unreadable or not the pinned one: it is never substituted";
+
 /// Reads `path`, a regular file and not a symlink.
 fn read_regular(path: &Path) -> Result<Vec<u8>, String> {
     let meta = std::fs::symlink_metadata(path)
@@ -591,7 +601,7 @@ impl Harnesses {
         };
         let code = match binary.verified() {
             Ok(code) => code,
-            Err(reason) => return report.refused(reason),
+            Err(reason) => return report.refused_for(BINARY_REFUSED, &reason),
         };
         let scratch = match RunDirs::create() {
             Ok(dirs) => dirs,
@@ -606,7 +616,7 @@ impl Harnesses {
         };
         let host = match self.host_copy(kind) {
             Ok(host) => host,
-            Err(reason) => return report.refused(reason),
+            Err(reason) => return report.refused_for(HOST_REFUSED, &reason),
         };
         let (network, relaying) = match self.vendors.get(&kind) {
             None => (None, None),
@@ -708,12 +718,18 @@ impl Harnesses {
                 kind.secret_name()
             )
         })?;
+        // Set-up failures are the broker's, and their detail stays in its
+        // log: the report says only that the network couldn't be made.
+        let unavailable = |what: &str, error: std::io::Error| {
+            tracing::warn!(%error, what, "harness network setup failed");
+            String::from("the harness network could not be set up")
+        };
         let surrogate = crate::approval::random_hex(kind.surrogate_prefix())
             .map(Zeroizing::new)
-            .map_err(|error| format!("cannot make a surrogate key: {error}"))?;
+            .map_err(|error| unavailable("surrogate key", error))?;
         let handoff_path = dirs.base.join("relay.sock");
         let handoff = UnixListener::bind(&handoff_path)
-            .map_err(|error| format!("cannot open the relay handoff: {error}"))?;
+            .map_err(|error| unavailable("relay handoff", error))?;
         let mut tools = self.tools.clone();
         if let Some(host) = host {
             tools.push((host.dir().join(CODEX_HOST), String::from(CODEX_HOST)));
@@ -1128,12 +1144,11 @@ struct RunDirs {
 impl RunDirs {
     /// Fresh, owner-only directories under the temp dir.
     fn create() -> Result<Self, String> {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let base = std::env::temp_dir().join(format!(
-            "hatchling-harness-{}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
+        // A name no one can guess, made exclusively below: another local
+        // user can't pre-create it to block the run.
+        let name = crate::approval::random_hex("hatchling-harness-")
+            .map_err(|err| format!("cannot name the run directory: {err}"))?;
+        let base = std::env::temp_dir().join(name);
         std::fs::DirBuilder::new()
             .mode(0o700)
             .create(&base)
@@ -1184,20 +1199,22 @@ fn stage(root: &Path, paths: &[String], dirs: &RunDirs) -> Result<(), String> {
             return Err(format!("the files hold more than {MAX_SLICE_BYTES} bytes"));
         }
         for tree in [&dirs.work, &dirs.pristine] {
-            write_new(&tree.join(path), &bytes)?;
+            write_new(&tree.join(path), &bytes).map_err(|error| {
+                tracing::warn!(%error, ?path, "cannot stage a harness file");
+                format!("cannot stage {path:?}")
+            })?;
         }
     }
     Ok(())
 }
 
 /// Writes `bytes` at `path`, creating owner-only parent directories.
-fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
+fn write_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::DirBuilder::new()
             .mode(0o700)
             .recursive(true)
-            .create(parent)
-            .map_err(|err| format!("cannot stage {}: {err}", path.display()))?;
+            .create(parent)?;
     }
     std::fs::OpenOptions::new()
         .write(true)
@@ -1205,7 +1222,6 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .mode(0o600)
         .open(path)
         .and_then(|mut file| file.write_all(bytes))
-        .map_err(|err| format!("cannot stage {}: {err}", path.display()))
 }
 
 /// The harness cell for one run of `kind` on `prompt`.
@@ -1331,20 +1347,27 @@ fn read_tree(root: &Path) -> Result<Tree, String> {
     let mut pending = vec![PathBuf::new()];
     let mut total = 0_u64;
     while let Some(relative) = pending.pop() {
-        let entries = std::fs::read_dir(root.join(&relative))
-            .map_err(|err| format!("cannot read the work tree: {err}"))?;
+        // A read failure's OS detail stays in the broker's log; the report
+        // names only the work tree, or the file, in the cell's own terms.
+        let unreadable = |shown: &str, error: std::io::Error| {
+            tracing::warn!(%error, shown, "cannot read the harness work tree");
+            if shown.is_empty() {
+                String::from("cannot read the work tree")
+            } else {
+                format!("cannot read {shown}")
+            }
+        };
+        let entries = std::fs::read_dir(root.join(&relative)).map_err(|err| unreadable("", err))?;
         for entry in entries {
-            let entry = entry.map_err(|err| format!("cannot read the work tree: {err}"))?;
+            let entry = entry.map_err(|err| unreadable("", err))?;
             let name = relative.join(entry.file_name());
             let shown = name.to_string_lossy().into_owned();
-            let kind = entry
-                .file_type()
-                .map_err(|err| format!("cannot read the work tree: {err}"))?;
+            let kind = entry.file_type().map_err(|err| unreadable("", err))?;
             if kind.is_dir() {
                 pending.push(name);
             } else if kind.is_file() {
-                let bytes = std::fs::read(root.join(&name))
-                    .map_err(|err| format!("cannot read {shown}: {err}"))?;
+                let bytes =
+                    std::fs::read(root.join(&name)).map_err(|err| unreadable(&shown, err))?;
                 total = total.saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
                 tree.files.insert(shown, bytes);
             } else {
@@ -1555,6 +1578,14 @@ impl Report {
         self.outcome = HarnessOutcome::Refused;
         self.reason = Some(reason);
         self
+    }
+
+    /// Refused for a reason on the broker's side: the report says `told`,
+    /// and only the broker's log keeps `detail`, which can name host paths
+    /// and OS errors the cell must not see.
+    fn refused_for(self, told: &str, detail: &str) -> Self {
+        tracing::warn!(%detail, told, "harness run refused");
+        self.refused(String::from(told))
     }
 
     fn failed(mut self, reason: &str) -> Self {
@@ -2601,12 +2632,25 @@ mod tests {
             &harnesses,
             r#"{"task":"Go.","root":"project","paths":["a"]}"#,
         );
-        assert!(
-            field(&substituted, "/reason")
-                .as_str()
-                .unwrap()
-                .contains("never substituted")
+        // The cell is told a fixed sentence: not the binary's path, not
+        // the hashes, not an OS error. Those are in the broker's log.
+        assert_eq!(field(&substituted, "/reason"), BINARY_REFUSED);
+    }
+
+    #[test]
+    fn a_refusal_on_the_brokers_side_tells_the_cell_only_its_sentence() {
+        let scratch = Scratch::new("refused-for");
+        let path = scratch.write("bin/harness", b"stub harness");
+        let binary = PinnedBinary {
+            path,
+            sha256: CodeHash::of(b"stub harness").to_string(),
+        };
+        let report = Report::new(HarnessKind::ClaudeCode, &binary, "{}").refused_for(
+            HOST_REFUSED,
+            "/opt/codex/bin/host is unreadable: Permission denied (os error 13)",
         );
+        assert_eq!(report.outcome, HarnessOutcome::Refused);
+        assert_eq!(report.reason.as_deref(), Some(HOST_REFUSED));
     }
 
     #[test]
@@ -2781,10 +2825,9 @@ mod tests {
         assert_eq!(refused("missing"), "\"missing\" is not in the root");
         assert_eq!(refused("dir"), "\"dir\" is not a regular file");
         assert_eq!(refused("blob"), "\"blob\" is not text");
-        assert!(
-            refused("notes").starts_with("cannot stage "),
-            "staging never overwrites"
-        );
+        // Staging never overwrites, and says so in the brief's own terms:
+        // no host path, no OS error.
+        assert_eq!(refused("notes"), "cannot stage \"notes\"");
         let other = RunDirs::create().unwrap();
         assert_ne!(other.base, base);
         drop(dirs);

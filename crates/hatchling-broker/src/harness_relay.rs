@@ -803,6 +803,7 @@ fn answer(client: &TcpStream, status: u16, reason: &str) -> std::io::Result<()> 
     let text = match status {
         400 => "Bad Request",
         401 => "Unauthorized",
+        403 => "Forbidden",
         404 => "Not Found",
         413 => "Content Too Large",
         431 => "Request Header Fields Too Large",
@@ -1540,7 +1541,7 @@ mod tests {
         sent.extend_from_slice(fetch);
         let (forwarded, answer) = relay_once(&context, &sent);
         assert!(!forwarded);
-        assert!(answer.starts_with("HTTP/1.1 403 "), "{answer}");
+        assert!(answer.starts_with("HTTP/1.1 403 Forbidden\r\n"), "{answer}");
         assert!(answer.contains("a tool the vendor runs"), "{answer}");
         assert!(
             requests.recv_timeout(SOON).is_err(),

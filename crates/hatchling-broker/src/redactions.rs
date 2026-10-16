@@ -503,9 +503,9 @@ fn list((records, unreadable): &(Vec<Record>, usize)) -> String {
                 "{}  {}  {kind}  {} ({})  {}  {} bytes",
                 event.event_id,
                 when(event.at),
-                event.category,
-                event.reason,
-                event.scope,
+                printable(&event.category),
+                printable(&event.reason),
+                printable(&event.scope),
                 event.bytes
             )
         })
@@ -557,11 +557,11 @@ fn show(records: &[Record], overrides: &FileOverrides, id: &str) -> Result<Strin
     Ok([
         format!("event {}", event.event_id),
         format!("  at          {}", when(event.at)),
-        format!("  scope       {}", event.scope),
-        format!("  sender      {}", event.sender),
-        format!("  classifier  {}", event.classifier),
-        format!("  category    {}", event.category),
-        format!("  reason      {}", event.reason),
+        format!("  scope       {}", printable(&event.scope)),
+        format!("  sender      {}", printable(&event.sender)),
+        format!("  classifier  {}", printable(&event.classifier)),
+        format!("  category    {}", printable(&event.category)),
+        format!("  reason      {}", printable(&event.reason)),
         format!("  bytes       {}", event.bytes),
         format!("  sha256      {}", event.sha256),
         format!(
@@ -762,7 +762,28 @@ fn raw(
         at: now(),
         by: hatchling_sys::euid(),
     })?;
-    Ok(text)
+    Ok(escaped(&text, &['\n', '\t']))
+}
+
+/// `text` for one line of the operator's terminal: every control
+/// character shown escaped ([`escaped`]).
+fn printable(text: &str) -> String {
+    escaped(text, &[])
+}
+
+/// `text` for the operator's terminal: its control characters, terminal
+/// escape sequences among them, shown as escapes and never acted on;
+/// those in `keep` are left as they are. Someone outside chose this text.
+fn escaped(text: &str, keep: &[char]) -> String {
+    text.chars()
+        .fold(String::with_capacity(text.len()), |mut out, c| {
+            if c.is_control() && !keep.contains(&c) {
+                out.extend(c.escape_default());
+            } else {
+                out.push(c);
+            }
+            out
+        })
 }
 
 #[cfg(test)]
@@ -774,6 +795,20 @@ mod tests {
 
     use super::*;
     use crate::api_auth::tests::{Scratch, owner_config, scratch};
+
+    #[test]
+    fn text_outside_chose_is_shown_escaped_on_the_operators_terminal() {
+        let hostile = "ok\u{1b}]0;owned\u{7}\nline\tend\r";
+        assert_eq!(
+            printable(hostile),
+            "ok\\u{1b}]0;owned\\u{7}\\nline\\tend\\r"
+        );
+        assert_eq!(
+            escaped(hostile, &['\n', '\t']),
+            "ok\\u{1b}]0;owned\\u{7}\nline\tend\\r"
+        );
+        assert_eq!(printable("plain words"), "plain words");
+    }
 
     fn settings(gate: &str) -> Settings {
         Settings {

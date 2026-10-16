@@ -650,7 +650,7 @@ impl Pipeline<'_> {
         );
         tracing::info!(
             build = %record.build,
-            target = %delivery.target,
+            target = ?delivery.target,
             verdict = ?delivery.verdict,
             refusal = ?delivery.refusal,
             "artifact delivery"

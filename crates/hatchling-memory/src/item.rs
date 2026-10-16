@@ -65,7 +65,17 @@ macro_rules! define_name {
     ($(#[$meta:meta])* $name:ident, $max:expr, $what:literal) => {
         $(#[$meta])*
         #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[serde(try_from = "String")]
         pub struct $name(String);
+
+        // Read back from the store, a name is checked as one given is.
+        impl TryFrom<String> for $name {
+            type Error = Error;
+
+            fn try_from(raw: String) -> Result<Self, Self::Error> {
+                raw.parse()
+            }
+        }
 
         impl $name {
             /// The validated name, for joining onto the store root.
@@ -268,6 +278,21 @@ mod tests {
             updated_at_secs: created,
             retention,
         }
+    }
+
+    #[test]
+    fn names_read_back_are_checked_as_names_given_are() {
+        let read: MemoryId = serde_json::from_str("\"note-1\"").unwrap();
+        assert_eq!(read.as_str(), "note-1");
+        for bad in ["\"../x\"", "\"a\\nb\"", "\"a\\u0000b\"", "\"\""] {
+            assert!(serde_json::from_str::<MemoryId>(bad).is_err(), "{bad}");
+            assert!(serde_json::from_str::<ProjectName>(bad).is_err(), "{bad}");
+            assert!(serde_json::from_str::<Tag>(bad).is_err(), "{bad}");
+        }
+        assert_eq!(
+            MemoryId::try_from(String::from("ok")).unwrap().as_str(),
+            "ok"
+        );
     }
 
     #[test]
