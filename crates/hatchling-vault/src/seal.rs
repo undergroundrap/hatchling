@@ -693,6 +693,36 @@ const fn looks_like_magic(magic: &[u8]) -> bool {
     matches!(magic, [b'H', b'V', b'L', digit] if digit.is_ascii_digit())
 }
 
+/// Whether the store at `root` holds a sealed envelope of any version.
+///
+/// A store that doesn't exist holds none. Nothing is decrypted, so no key
+/// is needed: this is how a start that has no key tells a new vault from
+/// one whose key is elsewhere.
+///
+/// # Errors
+///
+/// I/O or permission errors from the store's root.
+pub fn holds_envelopes(root: &Path) -> Result<bool, Error> {
+    if !root.try_exists().map_err(|source| Error::Io { source })? {
+        return Ok(false);
+    }
+    let vault = Vault::open(root)?;
+    for entry in std::fs::read_dir(root).map_err(|source| Error::Io { source })? {
+        let Some(name) = secret_entry(entry)? else {
+            continue;
+        };
+        let mut head = vault.fetch_raw(&name, MAX_SECRET_BYTES + ENVELOPE_OVERHEAD)?;
+        let sealed = head
+            .get(..ENVELOPE_MAGIC.len())
+            .is_some_and(looks_like_magic);
+        head.zeroize();
+        if sealed {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Refuses a store that holds anything but current envelopes.
 ///
 /// Old (v1) envelopes, unknown versions and plaintext are named in the
@@ -1214,6 +1244,31 @@ mod tests {
             Err(Error::DecryptFailed { .. })
         ));
         assert_eq!(raw_bytes(&dir, &secret_name("tampered")), tampered);
+    }
+
+    #[test]
+    fn a_store_holds_envelopes_when_any_file_is_one_of_any_version() {
+        let dir = test_dir("holds");
+        let key = test_key();
+        assert!(!holds_envelopes(&dir.join("absent")).unwrap());
+        assert!(!dir.join("absent").exists(), "looking creates nothing");
+        Vault::open(&dir).unwrap();
+        assert!(!holds_envelopes(&dir).unwrap());
+        plant(&dir, "plain", b"plaintext");
+        assert!(!holds_envelopes(&dir).unwrap());
+        for (name, bytes) in [
+            ("old", seal_v1(&key, b"x")),
+            ("future", b"HVL9 not yet".to_vec()),
+        ] {
+            let alone = test_dir(&format!("holds-{name}"));
+            plant(&alone, name, &bytes);
+            assert!(holds_envelopes(&alone).unwrap(), "{name}");
+        }
+        SealedVault::open(&dir, &key)
+            .unwrap()
+            .store(&secret_name("current"), &secret(b"y"))
+            .unwrap();
+        assert!(holds_envelopes(&dir).unwrap());
     }
 
     #[test]
