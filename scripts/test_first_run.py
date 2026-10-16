@@ -11,27 +11,18 @@ spec = importlib.util.spec_from_file_location('first_run', path)
 example = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(example)
 
-class DestinationTests(unittest.TestCase):
-    def test_local_port_compatibility_and_hosted_grants(self):
-        for value, expected in [('18089', 'localhost:18089'),
-                                ('localhost:18090', 'localhost:18090'),
-                                ('openrouter.ai:443', 'openrouter.ai:443'),
-                                ('api.example.com:8443', 'api.example.com:8443')]:
-            with self.subTest(value=value):
-                self.assertEqual(example.parse_destination(value), expected)
+class UsageTests(unittest.TestCase):
+    def test_the_task_is_one_line(self):
+        self.assertTrue(example.TASK and '\n' not in example.TASK)
 
-    def test_refuses_ambiguous_or_out_of_range_destinations(self):
-        for value in ('', ':443', 'api.example.com:', '0', '65536',
-                      'api.example.com:not-a-port', 'a:b:443', '１２３'):
-            with self.subTest(value=value), self.assertRaises(ValueError):
-                example.parse_destination(value)
-
-    def test_invalid_destination_exits_usage_before_connecting(self):
-        result = subprocess.run([sys.executable, str(path), '/no-such-broker.sock', 'api.example:0'],
-                                capture_output=True, text=True, timeout=5)
-        self.assertEqual(result.returncode, 64)
-        self.assertIn('port must be between', result.stderr)
-        self.assertNotIn('Traceback', result.stderr)
+    def test_wrong_arguments_exit_usage_before_connecting(self):
+        for args in ([], ['/no-such-broker.sock', '18089']):
+            with self.subTest(args=args):
+                result = subprocess.run([sys.executable, str(path), *args],
+                                        capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 64)
+                self.assertIn('Usage: python3 docs/examples/first-run.py', result.stderr)
+                self.assertNotIn('Traceback', result.stderr)
 
 if __name__ == '__main__':
     unittest.main()
