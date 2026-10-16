@@ -1921,6 +1921,12 @@ export type OperatorAnswer = {
      * The cells running.
      */
     readonly cells: readonly (OperatorCell)[];
+} | {
+    readonly answer: 'sessions';
+    /**
+     * The connections open.
+     */
+    readonly sessions: readonly (OperatorSession)[];
 };
 /**
  * One running cell, as an operator sees it: never what it was asked.
@@ -1950,6 +1956,8 @@ export type OperatorQuery = {
     readonly query: 'broker';
 } | {
     readonly query: 'cells';
+} | {
+    readonly query: 'sessions';
 };
 /**
  * A frame the operator's client sends.
@@ -2013,6 +2021,24 @@ export type OperatorResponse = {
      */
     readonly request_id: string;
     readonly type: 'answer';
+};
+/**
+ * One open API or UI connection, as an operator sees it: when and where,
+ * never what it said.
+ */
+export type OperatorSession = {
+    /**
+     * The connection's id, as the activity log names its calls.
+     */
+    readonly connection: string;
+    /**
+     * When it was admitted, as an RFC 3339 timestamp.
+     */
+    readonly opened_at: string;
+    /**
+     * The socket it came in on.
+     */
+    readonly socket: SessionSocket;
 };
 /**
  * A read-scoped query: the vocabulary the feed reads through.
@@ -2409,6 +2435,10 @@ export type SessionResponse = VaultResult & {
 } | SubagentResult & {
     readonly kind: 'subagent';
 };
+/**
+ * The socket a session came in on.
+ */
+export type SessionSocket = 'api' | 'ui';
 /**
  * A skill operation: the agent's post-handshake skill vocabulary.
  *

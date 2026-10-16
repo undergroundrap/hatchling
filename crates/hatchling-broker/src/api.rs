@@ -39,6 +39,7 @@ use std::time::Duration;
 use hatchling_channel::LocalHub;
 use hatchling_core::PeerUid;
 use hatchling_core::framing::{read_frame_or_eof, write_frame};
+use hatchling_core::ui::operator::SessionSocket;
 use hatchling_core::ui::{
     ActionRefusal, ApiOutcome, ApiRequest, UiActionResult, UiRequest, UiResponse, negotiate,
 };
@@ -71,10 +72,12 @@ pub const API_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 /// whether its connection has ended.
 const STREAM_WAIT: Duration = Duration::from_millis(500);
 
-/// A bound socket of the API, and the provider that names its callers.
+/// A bound socket of the API, the provider that names its callers, and
+/// which socket it is, for the operator.
 struct Door {
     listener: UnixListener,
     provider: Box<dyn Provider>,
+    socket: SessionSocket,
 }
 
 /// The bound API: its socket and, when it has one, the UI's, each with
@@ -154,7 +157,11 @@ impl Api {
     #[must_use]
     pub fn new(listener: UnixListener, provider: Box<dyn Provider>, log: PathBuf) -> Self {
         Self {
-            local: Door { listener, provider },
+            local: Door {
+                listener,
+                provider,
+                socket: SessionSocket::Api,
+            },
             ui: None,
             owner: PeerUid::from_kernel(hatchling_sys::euid()),
             bus: Arc::new(Bus::starting_now()),
@@ -167,7 +174,11 @@ impl Api {
     /// `provider`.
     #[must_use]
     pub fn with_ui(mut self, listener: UnixListener, provider: Box<dyn Provider>) -> Self {
-        self.ui = Some(Door { listener, provider });
+        self.ui = Some(Door {
+            listener,
+            provider,
+            socket: SessionSocket::Ui,
+        });
         self
     }
 
@@ -204,7 +215,12 @@ impl Api {
                             Ok((stream, _)) => match self.slots.try_acquire() {
                                 Ok(slot) => {
                                     scope.spawn(move || {
-                                        self.serve_door(&stream, door.provider.as_ref(), ops);
+                                        self.serve_door(
+                                            &stream,
+                                            door.provider.as_ref(),
+                                            door.socket,
+                                            ops,
+                                        );
                                         drop(slot);
                                     });
                                 }
@@ -231,25 +247,40 @@ impl Api {
     /// Serves one caller of the API socket on `stream` until it closes,
     /// or breaks the protocol.
     pub fn serve_client(&self, stream: &UnixStream, ops: &Ops<'_>) {
-        self.serve_door(stream, self.local.provider.as_ref(), ops);
+        self.serve_door(
+            stream,
+            self.local.provider.as_ref(),
+            SessionSocket::Api,
+            ops,
+        );
     }
 
-    /// Serves one caller on `stream`, named by `provider`, until it
-    /// closes, or breaks the protocol.
-    fn serve_door(&self, stream: &UnixStream, provider: &dyn Provider, ops: &Ops<'_>) {
+    /// Serves one caller on `stream`, which came in on `socket`, named by
+    /// `provider`, until it closes, or breaks the protocol.
+    fn serve_door(
+        &self,
+        stream: &UnixStream,
+        provider: &dyn Provider,
+        socket: SessionSocket,
+        ops: &Ops<'_>,
+    ) {
         let connection =
             crate::approval::random_hex("api-").unwrap_or_else(|_| String::from("api-unnamed"));
-        let mut audit = Audit::new(self.log.clone(), connection);
-        if let Err(error) = self.session(stream, provider, ops, &mut audit) {
+        let mut audit = Audit::new(self.log.clone(), connection.clone());
+        let door = (connection.as_str(), socket);
+        if let Err(error) = self.session(stream, provider, door, ops, &mut audit) {
             tracing::info!(%error, "API connection ended");
         }
     }
 
-    /// The handshake, then the caller's requests.
+    /// The handshake, then the caller's requests; while they're served,
+    /// the connection is listed for the operator as `door`: its id and
+    /// socket.
     fn session(
         &self,
         stream: &UnixStream,
         provider: &dyn Provider,
+        door: (&str, SessionSocket),
         ops: &Ops<'_>,
         audit: &mut Audit,
     ) -> Result<(), Error> {
@@ -300,6 +331,9 @@ impl Api {
             audit.record(None, ApiRequest::Hello, ApiOutcome::Refused);
             return Ok(());
         };
+        // Listed before it is welcomed: a caller that has its welcome is
+        // already one the operator can see.
+        let _open = crate::machine::Open::start(door.0, door.1);
         send(&writer, &answer)?;
         audit.record(Some(&caller), ApiRequest::Hello, ApiOutcome::Served);
         stream.set_read_timeout(None).map_err(io)?;
@@ -932,12 +966,19 @@ mod tests {
                 // The server's end goes with the session, as it does when
                 // the API serves it: a refused caller then sees the close.
                 let worker = scope.spawn(move || {
-                    api.serve_door(&server, ui, ops);
+                    api.serve_door(&server, ui, SessionSocket::Ui, ops);
                     drop(server);
                 });
                 write(&client, &hello(token));
                 if welcomed {
                     assert!(matches!(read(&client), UiResponse::Welcome { .. }));
+                    // Admitted, it is listed for the operator.
+                    assert!(
+                        crate::machine::sessions()
+                            .iter()
+                            .any(|open| open.socket == SessionSocket::Ui),
+                        "listed while open"
+                    );
                 } else {
                     assert!(closed(&client));
                 }
@@ -1076,8 +1117,15 @@ mod tests {
             .unwrap();
         let mut audit = Audit::new(log, String::from("api-direct"));
         std::thread::scope(|scope| {
-            let worker =
-                scope.spawn(|| api.session(&server, api.local.provider.as_ref(), &ops, &mut audit));
+            let worker = scope.spawn(|| {
+                api.session(
+                    &server,
+                    api.local.provider.as_ref(),
+                    ("api-test", SessionSocket::Api),
+                    &ops,
+                    &mut audit,
+                )
+            });
             write(&client, &hello(None));
             let welcomed = matches!(read(&client), UiResponse::Welcome { .. });
             assert!(welcomed);

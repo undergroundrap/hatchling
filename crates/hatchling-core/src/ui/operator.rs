@@ -50,6 +50,9 @@ pub enum OperatorQuery {
     Broker {},
     /// The cells running now: each one's id, kind, start and limits.
     Cells {},
+    /// The API and UI connections open now: each one's socket and when it
+    /// was admitted.
+    Sessions {},
 }
 
 /// A frame the operator's client receives.
@@ -99,6 +102,35 @@ pub enum OperatorAnswer {
         /// The cells running.
         cells: Vec<OperatorCell>,
     },
+    /// [`OperatorQuery::Sessions`], oldest first.
+    Sessions {
+        /// The connections open.
+        sessions: Vec<OperatorSession>,
+    },
+}
+
+/// One open API or UI connection, as an operator sees it: when and where,
+/// never what it said.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct OperatorSession {
+    /// The connection's id, as the activity log names its calls.
+    pub connection: String,
+    /// The socket it came in on.
+    pub socket: SessionSocket,
+    /// When it was admitted, as an RFC 3339 timestamp.
+    pub opened_at: String,
+}
+
+/// The socket a session came in on.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum SessionSocket {
+    /// `HATCHLING_API_SOCKET`.
+    Api,
+    /// `HATCHLING_UI_SOCKET`.
+    Ui,
 }
 
 /// One running cell, as an operator sees it: never what it was asked.
@@ -265,6 +297,32 @@ mod tests {
         ] {
             assert_eq!(serde_json::to_value(kind).unwrap(), json!(name));
         }
+    }
+
+    #[test]
+    fn a_session_has_its_wire_shape() {
+        let sessions = OperatorAnswer::Sessions {
+            sessions: vec![OperatorSession {
+                connection: String::from("api-0f3c"),
+                socket: SessionSocket::Ui,
+                opened_at: String::from("2026-10-16T09:00:00Z"),
+            }],
+        };
+        let wire = json!({"answer": "sessions", "sessions": [{
+            "connection": "api-0f3c", "socket": "ui", "opened_at": "2026-10-16T09:00:00Z"}]});
+        assert_eq!(serde_json::to_value(&sessions).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<OperatorAnswer>(wire).unwrap(),
+            sessions
+        );
+        assert_eq!(
+            serde_json::to_value(SessionSocket::Api).unwrap(),
+            json!("api")
+        );
+        assert_eq!(
+            serde_json::from_value::<OperatorQuery>(json!({"query": "sessions"})).unwrap(),
+            OperatorQuery::Sessions {}
+        );
     }
 
     #[test]

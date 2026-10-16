@@ -4369,6 +4369,27 @@
             "cells"
           ],
           "type": "object"
+        },
+        {
+          "description": "[`OperatorQuery::Sessions`], oldest first.",
+          "properties": {
+            "answer": {
+              "const": "sessions",
+              "type": "string"
+            },
+            "sessions": {
+              "description": "The connections open.",
+              "items": {
+                "$ref": "#/$defs/OperatorSession"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "answer",
+            "sessions"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -4423,6 +4444,20 @@
           "properties": {
             "query": {
               "const": "cells",
+              "type": "string"
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The API and UI connections open now: each one's socket and when it\nwas admitted.",
+          "properties": {
+            "query": {
+              "const": "sessions",
               "type": "string"
             }
           },
@@ -4582,6 +4617,29 @@
           "type": "object"
         }
       ]
+    },
+    "OperatorSession": {
+      "description": "One open API or UI connection, as an operator sees it: when and where,\nnever what it said.",
+      "properties": {
+        "connection": {
+          "description": "The connection's id, as the activity log names its calls.",
+          "type": "string"
+        },
+        "opened_at": {
+          "description": "When it was admitted, as an RFC 3339 timestamp.",
+          "type": "string"
+        },
+        "socket": {
+          "$ref": "#/$defs/SessionSocket",
+          "description": "The socket it came in on."
+        }
+      },
+      "required": [
+        "connection",
+        "socket",
+        "opened_at"
+      ],
+      "type": "object"
     },
     "QueryOp": {
       "description": "A read-scoped query: the vocabulary the feed reads through.\n\nEvery variant reads, and nothing else is expressible here: the\nwrites live in [`GoalsOp`], a different session kind. Each query\nselects one store; every reply item is a feed item carrying its\nprovenance (which store, and its original source) from the store\nlayer.\n\n`after` resumes a paged query past the `next` cursor of the previous\nreply.",
@@ -5720,6 +5778,21 @@
             "kind"
           ],
           "type": "object"
+        }
+      ]
+    },
+    "SessionSocket": {
+      "description": "The socket a session came in on.",
+      "oneOf": [
+        {
+          "const": "api",
+          "description": "`HATCHLING_API_SOCKET`.",
+          "type": "string"
+        },
+        {
+          "const": "ui",
+          "description": "`HATCHLING_UI_SOCKET`.",
+          "type": "string"
         }
       ]
     },

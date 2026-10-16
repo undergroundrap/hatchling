@@ -11,8 +11,8 @@
 //! `<socket>.token`. A hello without it, or with another (the UI's
 //! included), is closed unanswered.
 //!
-//! Every answer is metadata: the broker's version and uptime, and the
-//! cells running ([`crate::machine`]); who talks to it later in WO-022.
+//! Every answer is metadata: the broker's version and uptime, the cells
+//! running and the API and UI connections open ([`crate::machine`]).
 //! Nothing a user said or stored is ever in one.
 
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -221,6 +221,9 @@ impl Operator {
             },
             OperatorQuery::Cells {} => OperatorAnswer::Cells {
                 cells: crate::machine::cells(),
+            },
+            OperatorQuery::Sessions {} => OperatorAnswer::Sessions {
+                sessions: crate::machine::sessions(),
             },
         }
     }
@@ -566,6 +569,27 @@ mod tests {
             );
         });
         drop(agent);
+        assert!(mine(ask()).is_empty());
+    }
+
+    #[test]
+    fn the_operator_sees_each_open_session_and_not_once_it_closes() {
+        use hatchling_core::ui::operator::SessionSocket;
+        let (operator, _socket) = operator("sessions", real_uid());
+        let mine = |answer: OperatorAnswer| -> Vec<String> {
+            let OperatorAnswer::Sessions { sessions } = answer else {
+                return Vec::new();
+            };
+            sessions
+                .into_iter()
+                .filter(|open| open.connection.starts_with("op-sessions-"))
+                .map(|open| open.connection)
+                .collect()
+        };
+        let open = crate::machine::Open::start("op-sessions-ui", SessionSocket::Ui);
+        let ask = || operator.answer(OperatorQuery::Sessions {}, Duration::ZERO);
+        assert_eq!(mine(ask()), [String::from("op-sessions-ui")]);
+        drop(open);
         assert!(mine(ask()).is_empty());
     }
 
