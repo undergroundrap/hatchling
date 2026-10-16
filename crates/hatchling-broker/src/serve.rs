@@ -8,6 +8,7 @@
 //! the operator can see it, not on the wire, where anyone can.
 
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::time::Duration;
 
 use hatchling_channel::LocalHub;
 use hatchling_core::framing::{read_frame, read_frame_or_eof, write_frame};
@@ -357,7 +358,7 @@ pub fn serve_connection_with_runs(
     // A frame-level failure means we never got a complete message: close
     // without answering. `REJECT` is only for authorized peers whose
     // complete bytes turned out to be invalid.
-    let frame = read_frame(stream)?;
+    let frame = read_hello(stream, HANDSHAKE_TIMEOUT)?;
     let hello: AgentMessage = match serde_json::from_slice(&frame) {
         Ok(hello) => hello,
         Err(e) => {
@@ -398,6 +399,33 @@ pub fn serve_connection_with_runs(
     );
 
     serve_session(stream, config, key, skills, &cell_id, creds, hub, runs)
+}
+
+/// How long an authorized peer may leave the connection silent before
+/// its hello is complete. An agent sends its hello at once; one that
+/// never does would hold a connection slot.
+pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Reads the hello frame, giving up on a peer silent for `timeout`.
+///
+/// The timeout covers each read of the hello. It is cleared once the
+/// hello is in: the session after it may idle for as long as the agent
+/// likes.
+///
+/// # Errors
+///
+/// [`Error::HandshakeIo`] when the peer stays silent, closes, or the
+/// timeout can't be set.
+fn read_hello(stream: &UnixStream, timeout: Duration) -> Result<Vec<u8>, Error> {
+    let set = |timeout| {
+        stream
+            .set_read_timeout(timeout)
+            .map_err(|source| Error::HandshakeIo { source })
+    };
+    set(Some(timeout))?;
+    let frame = read_frame(stream)?;
+    set(None)?;
+    Ok(frame)
 }
 
 /// Runs the post-handshake session: one op per frame until EOF.
@@ -1181,6 +1209,42 @@ fn reject(stream: &UnixStream, reason: &str) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_silent_peer_times_out_before_its_hello() {
+        let (_agent, broker) = UnixStream::pair().unwrap();
+        // On its own thread, so a hello read that never times out fails
+        // this test instead of hanging it.
+        let (done, result) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let started = std::time::Instant::now();
+            let read = read_hello(&broker, Duration::from_millis(100));
+            let _ = done.send((read, started.elapsed()));
+        });
+        let (read, took) = result
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the hello read never timed out");
+        assert!(
+            matches!(&read, Err(Error::HandshakeIo { source })
+                if matches!(source.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)),
+            "{read:?}"
+        );
+        assert!(took >= Duration::from_millis(100), "{took:?}");
+    }
+
+    #[test]
+    fn a_hello_in_time_is_read_and_the_session_has_no_timeout() {
+        let (agent, broker) = UnixStream::pair().unwrap();
+        write_frame(&agent, b"hello").unwrap();
+        assert_eq!(read_hello(&broker, HANDSHAKE_TIMEOUT).unwrap(), b"hello");
+        assert_eq!(broker.read_timeout().unwrap(), None);
+        // A peer that closes instead is an I/O failure too.
+        drop(agent);
+        assert!(matches!(
+            read_hello(&broker, HANDSHAKE_TIMEOUT),
+            Err(Error::HandshakeIo { .. })
+        ));
+    }
 
     /// `destination_to_secret_name` maps `host:port` to
     /// `egress-{host}-{port}` with non-alphanumerics as `-`. Pins the

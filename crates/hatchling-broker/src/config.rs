@@ -615,14 +615,7 @@ impl Config {
         let socket = get(env::HATCHLING_BROKER_SOCKET.name)
             .ok_or(Error::MissingConfig("HATCHLING_BROKER_SOCKET"))?
             .parse::<SocketPath>()?;
-        let agent_uid = get(env::HATCHLING_AGENT_UID.name)
-            .ok_or(Error::MissingConfig("HATCHLING_AGENT_UID"))?
-            .parse::<u32>()
-            .map(PeerUid::from_kernel)
-            .map_err(|_| Error::InvalidConfig {
-                key: "HATCHLING_AGENT_UID",
-                reason: String::from("expected a kernel uid as a base-10 u32"),
-            })?;
+        let agent_uid = parse_agent_uid(&get)?;
         let socket_mode = get(env::HATCHLING_BROKER_SOCKET_MODE.name)
             .map_or(Ok(DEFAULT_SOCKET_MODE), |raw| parse_socket_mode(&raw))?;
         let log_level = get(env::HATCHLING_LOG_LEVEL.name)
@@ -1438,6 +1431,44 @@ fn parse_grants(raw: Option<String>) -> Result<Vec<VaultGrant>, Error> {
 /// stack at the default size) instead of unbounded. The channel ingress
 /// has its own socket and does not count.
 pub const DEFAULT_MAX_CONNECTIONS: usize = 16;
+
+/// The `nobody` uid, which every process running as nobody shares.
+pub const NOBODY_UID: u32 = 65534;
+
+/// `HATCHLING_AGENT_UID`, which must not be `nobody` unless
+/// `HATCHLING_AGENT_ALLOW_NOBODY` says so ([`refuse_shared_agent_uid`]).
+fn parse_agent_uid(get: &impl Fn(&str) -> Option<String>) -> Result<PeerUid, Error> {
+    let agent_uid = get(env::HATCHLING_AGENT_UID.name)
+        .ok_or(Error::MissingConfig("HATCHLING_AGENT_UID"))?
+        .parse::<u32>()
+        .map(PeerUid::from_kernel)
+        .map_err(|_| Error::InvalidConfig {
+            key: "HATCHLING_AGENT_UID",
+            reason: String::from("expected a kernel uid as a base-10 u32"),
+        })?;
+    refuse_shared_agent_uid(
+        agent_uid,
+        get(env::HATCHLING_AGENT_ALLOW_NOBODY.name).as_deref(),
+    )?;
+    Ok(agent_uid)
+}
+
+/// Refuses `nobody` as the agent uid unless `allow` (the
+/// `HATCHLING_AGENT_ALLOW_NOBODY` setting) says to accept it. The broker
+/// admits an agent by its uid, so any other process running as nobody
+/// could act as the agent.
+fn refuse_shared_agent_uid(agent_uid: PeerUid, allow: Option<&str>) -> Result<(), Error> {
+    let allowed = crate::api_auth::flag(allow, "HATCHLING_AGENT_ALLOW_NOBODY")?;
+    if agent_uid.as_u32() == NOBODY_UID && !allowed {
+        return Err(Error::InvalidConfig {
+            key: "HATCHLING_AGENT_UID",
+            reason: format!(
+                "{NOBODY_UID} is nobody, which other processes share, and any of them could act                  as the agent: give cells a uid of their own, or set                  HATCHLING_AGENT_ALLOW_NOBODY=true to accept that"
+            ),
+        });
+    }
+    Ok(())
+}
 
 /// The largest cap the knob accepts. A cap is only useful if it bounds
 /// something: a typo like `1000000` fails startup instead of quietly
@@ -2650,6 +2681,57 @@ mod tests {
         vars.remove("HATCHLING_AGENT_UID");
         let err = Config::parse(lookup(&vars)).unwrap_err();
         assert!(matches!(err, Error::MissingConfig("HATCHLING_AGENT_UID")));
+    }
+
+    #[test]
+    fn nobody_is_refused_as_the_agent_uid_unless_allowed() {
+        let refused = |vars: &HashMap<&str, &str>| {
+            matches!(
+                Config::parse(lookup(vars)),
+                Err(Error::InvalidConfig { key: "HATCHLING_AGENT_UID", reason })
+                    if reason.contains("nobody") && reason.contains("HATCHLING_AGENT_ALLOW_NOBODY")
+            )
+        };
+        let mut vars = valid_vars();
+        vars.insert("HATCHLING_AGENT_UID", "65534");
+        assert!(refused(&vars), "nobody, by default");
+        for no in ["false", "0"] {
+            vars.insert("HATCHLING_AGENT_ALLOW_NOBODY", no);
+            assert!(refused(&vars), "{no}");
+        }
+        for yes in ["true", "1"] {
+            vars.insert("HATCHLING_AGENT_ALLOW_NOBODY", yes);
+            let config = Config::parse(lookup(&vars)).unwrap();
+            assert_eq!(config.agent_uid, PeerUid::from_kernel(NOBODY_UID), "{yes}");
+        }
+        // A neighbour of nobody is just a uid.
+        let mut vars = valid_vars();
+        vars.insert("HATCHLING_AGENT_UID", "65533");
+        assert!(Config::parse(lookup(&vars)).is_ok());
+        // The setting itself is strict, whatever the uid.
+        vars.insert("HATCHLING_AGENT_ALLOW_NOBODY", "yes");
+        assert!(matches!(
+            Config::parse(lookup(&vars)),
+            Err(Error::InvalidConfig {
+                key: "HATCHLING_AGENT_ALLOW_NOBODY",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn the_agent_uid_helpers_refuse_only_an_unallowed_nobody() {
+        let nobody = PeerUid::from_kernel(NOBODY_UID);
+        assert!(refuse_shared_agent_uid(nobody, None).is_err());
+        assert!(refuse_shared_agent_uid(nobody, Some("true")).is_ok());
+        assert!(refuse_shared_agent_uid(PeerUid::from_kernel(1000), None).is_ok());
+        let mut vars = valid_vars();
+        assert_eq!(
+            parse_agent_uid(&lookup(&vars)).unwrap(),
+            PeerUid::from_kernel(1000)
+        );
+        vars.insert("HATCHLING_AGENT_UID", "65534");
+        assert!(parse_agent_uid(&lookup(&vars)).is_err());
     }
 
     #[test]

@@ -4,6 +4,7 @@ hatchling_core::declare_environment! {
     pub,
     HATCHLING_BROKER_SOCKET: ("required", "Absolute Unix socket path for agent connections."),
     HATCHLING_AGENT_UID: ("required", "Only host uid allowed to connect; equals the cell's mapped uid."),
+    HATCHLING_AGENT_ALLOW_NOBODY: ("optional; default false", "Accept nobody (65534) as the agent uid: true/1 or false/0; any nobody process could act as the agent."),
     HATCHLING_BROKER_SOCKET_MODE: ("optional; default 600", "Socket permissions as an octal Unix mode."),
     HATCHLING_BROKER_MAX_CONNECTIONS: ("optional", "Maximum simultaneous broker connections."),
     HATCHLING_LOG_LEVEL: ("optional; default info", "Log verbosity: error, warn, info, debug or trace."),
