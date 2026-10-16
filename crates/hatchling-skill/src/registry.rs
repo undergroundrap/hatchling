@@ -84,15 +84,20 @@ impl FromStr for SkillId {
     ///
     /// The split is at the first `@`: admission refuses `@` in names,
     /// so that is the only decomposition a registered id can have, and
-    /// the parsed id is byte-identical to the input. A bare name, or an
-    /// empty name or version, names no skill.
+    /// the parsed id is byte-identical to the input. A bare name, an
+    /// empty name or version, or one holding a control character names no
+    /// skill.
     ///
     /// # Errors
     ///
     /// Returns [`Error::UnknownSkill`] for anything not of that form.
     fn from_str(raw: &str) -> Result<Self, Self::Err> {
         match raw.split_once('@') {
-            Some((name, version)) if !name.is_empty() && !version.is_empty() => {
+            Some((name, version))
+                if !name.is_empty()
+                    && !version.is_empty()
+                    && !raw.chars().any(char::is_control) =>
+            {
                 Ok(Self::new(name, version))
             }
             _ => Err(Error::UnknownSkill(raw.to_owned())),
@@ -424,7 +429,16 @@ mod tests {
         let id: SkillId = "a@1@2".parse().unwrap();
         assert_eq!(id, SkillId::new("a", "1@2"));
         assert_eq!(id.as_str(), "a@1@2");
-        for raw in ["web", "", "@", "@1.0.0", "web@"] {
+        for raw in [
+            "web",
+            "",
+            "@",
+            "@1.0.0",
+            "web@",
+            "web\n@1",
+            "web@1\r",
+            "w\u{1b}[2J@1",
+        ] {
             assert!(
                 matches!(raw.parse::<SkillId>(), Err(Error::UnknownSkill(ref s)) if s == raw),
                 "{raw:?} must name no skill"

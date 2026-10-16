@@ -17,6 +17,12 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 ### Fixed
 
 - The local API takes its socket's owner from the broker's own uid, rather than reading it back from the socket's path after binding (WO-021, part 1).
+- What the broker tells a cell stays generic. A coding-CLI run that fails on the broker's side (its binary unreadable or not the pinned one, a file that can't be staged, the Codex host copy, the network set-up, the work tree unreadable) now reports a fixed sentence; the host paths, the broker's process id and the OS error stay in the broker's log. A malformed hello is rejected with a fixed sentence rather than the parser's message.
+- Strings a cell or an API client chose are logged escaped, so a newline in one can't forge a log line: a refused egress destination, a malformed skill id, a refused delivery target. A skill id holding a control character names no skill.
+- The operator's `redactions` review shows control characters, terminal escape sequences among them, as escapes: the text it prints was chosen outside.
+- Memory names read back from the store are checked as names given are.
+- A coding-CLI run's directory gets a name no one can guess, so another local user can't pre-create it to block the run.
+- The coding-CLI relay's policy refusal says `403 Forbidden`, not `403 Service Unavailable`.
 
 ## [0.3.0] - 2026-10-16
 

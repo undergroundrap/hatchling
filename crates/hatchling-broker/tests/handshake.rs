@@ -179,10 +179,8 @@ fn malformed_hello_gets_reject() {
         "expected REJECT, got {reply:?}"
     );
     if let BrokerMessage::Reject { reason, .. } = reply {
-        assert!(
-            reason.contains("not a valid handshake message"),
-            "unexpected reason: {reason}"
-        );
+        // A fixed sentence: the parser's detail stays in the broker's log.
+        assert_eq!(reason, "hello is not a valid handshake message");
     }
 }
 

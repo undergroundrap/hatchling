@@ -540,7 +540,9 @@ fn handshake(stream: &UnixStream, expected: Option<&CellId>) -> Result<CellId, E
     let hello: AgentMessage = match serde_json::from_slice(&frame) {
         Ok(hello) => hello,
         Err(e) => {
-            let reason = format!("hello is not a valid handshake message: {e}");
+            // The parser's detail stays in the broker's log.
+            tracing::debug!(error = %e, "hello did not parse");
+            let reason = String::from("hello is not a valid handshake message");
             // The write may fail if the connection is already broken;
             // either way the connection ends here.
             let _ = reject(stream, &reason);
@@ -1208,7 +1210,8 @@ fn handle_egress_op(
     if !granted {
         tracing::warn!(
             cell_id = %cell_id,
-            destination = %destination,
+            // The cell chose it: logged escaped, so it can't forge a line.
+            destination = ?destination,
             "denied egress op: no grant"
         );
         return Ok(EgressResult::Denied);
