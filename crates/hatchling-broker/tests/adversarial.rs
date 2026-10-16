@@ -196,6 +196,7 @@ fn cli_spec(attack: Attack) -> Result<CellSpec, String> {
         env: vec![(String::from("HATCHLING_CELL_ID"), attack.cell_id())],
         workdir: None,
         endpoint: None,
+        connection: false,
         exposures: Vec::new(),
         tools: Vec::new(),
         relay: None,

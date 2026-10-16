@@ -43,7 +43,9 @@ mod test_socket;
 pub mod umask;
 
 pub use error::Error;
-pub use fds::{cloexec_fds_above_stderr, close_fds_above_stderr_except, fd_flags, open_fds};
+pub use fds::{
+    cloexec_fds_above_stderr, close_fds_above_stderr_except, fd_flags, keep_across_exec, open_fds,
+};
 pub use idmap::IdMap;
 pub use mounts::{BindMount, MountPlan};
 pub use namespaces::{unshare_ipc, unshare_mount, unshare_net, unshare_pid, unshare_user};

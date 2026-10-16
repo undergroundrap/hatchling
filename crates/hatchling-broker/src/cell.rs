@@ -110,6 +110,12 @@ pub struct CellConfig {
     /// Operator-delegated cgroup v2 parent. Unset uses the rlimit fallback.
     #[serde(default)]
     pub cgroup: Option<PathBuf>,
+    /// Whether the agent reaches the broker over a connection made for
+    /// this cell alone ([`CellHandle::connection`]) rather than the
+    /// broker's socket. A connected cell sees no socket, and learns
+    /// nothing about one. Set for the broker's own agent cell.
+    #[serde(default)]
+    pub connected: bool,
 }
 
 /// What every cell's program, and everything it starts, is held to.
@@ -506,6 +512,7 @@ impl CellConfig {
             harness: None,
             limits: CellLimits::parse(|key| env_value(std::env::var(key)))?,
             cgroup: cgroup_parent(&|key| env_value(std::env::var(key)))?,
+            connected: false,
         })
     }
 
@@ -753,6 +760,7 @@ impl CellConfig {
             harness: None,
             limits: CellLimits::parse(&get)?,
             cgroup: cgroup_parent(&get)?,
+            connected: false,
         })
     }
 }
@@ -797,6 +805,12 @@ impl CellHandle {
     /// without a network, or once taken.
     pub fn relay(&mut self) -> Option<std::net::TcpListener> {
         self.cell.relay()
+    }
+
+    /// The broker's end of a connected cell's connection, once: `None`
+    /// for a cell that isn't connected, or once taken.
+    pub fn connection(&mut self) -> Option<std::os::unix::net::UnixStream> {
+        self.cell.connection()
     }
 
     /// Waits for the cell to end, returning the platform's raw status
@@ -858,7 +872,9 @@ fn harness_network(config: &CellConfig) -> Option<&HarnessNetwork> {
 /// them.
 ///
 /// - **An agent cell** gets its cell id, the in-cell broker socket, the
-///   broker's in-cell uid, and the log level.
+///   broker's in-cell uid, and the log level. A connected one gets no
+///   socket: the spawn tells it where its connection is
+///   ([`hatchling_isolation::CONNECTION_FD_VAR`]).
 /// - **A skill cell** learns nothing about the broker: it has no socket
 ///   to reach, and gets no address or uid to try.
 /// - **A run cell** is an agent cell that adds exactly its run's
@@ -871,10 +887,12 @@ fn harness_network(config: &CellConfig) -> Option<&HarnessNetwork> {
 fn program_env(config: &CellConfig, log_level: LogLevel) -> (Vec<String>, Vec<(String, String)>) {
     let mut env = vec![(String::from("HATCHLING_CELL_ID"), config.cell_id.clone())];
     if !config.is_skill_cell() {
-        env.push((
-            String::from("HATCHLING_BROKER_SOCKET"),
-            config.in_cell_socket.clone(),
-        ));
+        if !config.connected {
+            env.push((
+                String::from("HATCHLING_BROKER_SOCKET"),
+                config.in_cell_socket.clone(),
+            ));
+        }
         env.push((
             String::from("HATCHLING_BROKER_UID"),
             config.broker_uid_in_cell.to_string(),
@@ -926,9 +944,12 @@ const fn log_level_name(level: LogLevel) -> &'static str {
 /// them.
 ///
 /// - **Identity:** the configured uid base and count.
-/// - **Endpoint:** agent cells only. A skill cell runs under the same
-///   uid mapping as the agent, so a reachable socket would pass the
-///   broker's peer gate and let the skill speak as the agent.
+/// - **Endpoint:** agent cells that aren't connected only. A skill cell
+///   runs under the same uid mapping as the agent, so a reachable socket
+///   would pass the broker's peer gate and let the skill speak as the
+///   agent.
+/// - **Connection:** connected agent cells only: their one way to the
+///   broker, which no other process holds an end of.
 /// - **Exposures:** [`cell_exposures`].
 /// - **Program:** the configured binary, with [`program_env`]'s argv and
 ///   environment, starting in [`cell_workdir`], under [`cell_filter`].
@@ -943,10 +964,11 @@ fn cell_spec(config: &CellConfig, log_level: LogLevel) -> CellSpec {
         argv,
         env,
         workdir: cell_workdir(config).map(String::from),
-        endpoint: (!config.is_skill_cell()).then(|| Endpoint {
+        endpoint: (!config.is_skill_cell() && !config.connected).then(|| Endpoint {
             socket: config.socket_path.clone(),
             dir: config.socket_dir.clone(),
         }),
+        connection: !config.is_skill_cell() && config.connected,
         exposures: cell_exposures(config),
         tools: harness_network(config).map_or_else(Vec::new, |network| {
             network
@@ -1693,6 +1715,33 @@ mod run_cell_tests {
             String::from("HATCHLING_BROKER_SOCKET"),
             String::from("/sock/broker.sock")
         )));
+    }
+
+    #[test]
+    fn a_connected_cell_gets_its_connection_and_no_socket() {
+        let mut cell = agent_cell();
+        cell.connected = true;
+        let (_, env) = program_env(&cell, LogLevel::Warn);
+        assert_eq!(
+            keys(&env),
+            [
+                "HATCHLING_CELL_ID",
+                "HATCHLING_BROKER_UID",
+                "HATCHLING_LOG_LEVEL"
+            ]
+        );
+        let spec = cell_spec(&cell, LogLevel::Warn);
+        assert!(spec.connection, "a connected agent cell has its connection");
+        assert_eq!(spec.endpoint, None, "and no socket");
+        // An agent cell that isn't connected reaches the socket instead.
+        let plain = cell_spec(&agent_cell(), LogLevel::Warn);
+        assert!(!plain.connection);
+        assert!(plain.endpoint.is_some());
+        // A skill cell reaches neither, whatever it says.
+        cell.skill_code = Some(PathBuf::from("/tmp/code"));
+        let skill = cell_spec(&cell, LogLevel::Warn);
+        assert!(!skill.connection);
+        assert_eq!(skill.endpoint, None);
     }
 
     #[test]

@@ -371,6 +371,7 @@ dependencies = [
  "hatchling-model",
  "hatchling-prompt",
  "hatchling-research",
+ "hatchling-sys",
  "hatchling-vault",
  "rustix",
  "serde_json",

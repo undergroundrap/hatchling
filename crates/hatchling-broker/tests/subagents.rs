@@ -677,7 +677,7 @@ fn agent_parent(
     });
     let agent = hatchling_agent::Config {
         cell_id: "cell-parent".parse().unwrap(),
-        broker_socket: socket.to_string_lossy().parse().unwrap(),
+        broker: hatchling_agent::BrokerAddress::Socket(socket.to_string_lossy().parse().unwrap()),
         broker_uid: PeerUid::from_kernel(hatchling_sys::euid()),
         log_level: LogLevel::Error,
         model_endpoint: None,

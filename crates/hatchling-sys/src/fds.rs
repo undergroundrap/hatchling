@@ -44,6 +44,22 @@ pub fn cloexec_fds_above_stderr() -> Result<(), Error> {
     }
 }
 
+/// Lets `fd` cross the next exec: clears its `FD_CLOEXEC` flag, and
+/// nothing else.
+///
+/// For the one descriptor a cell's program is given on purpose, after
+/// [`cloexec_fds_above_stderr`] marked every other one.
+///
+/// # Errors
+///
+/// Returns [`Error::Process`] if the flag can't be cleared.
+pub fn keep_across_exec(fd: BorrowedFd<'_>) -> Result<(), Error> {
+    rustix::io::fcntl_setfd(fd, rustix::io::FdFlags::empty()).map_err(|source| Error::Process {
+        operation: "fcntl(F_SETFD, 0)",
+        source: std::io::Error::from_raw_os_error(source.raw_os_error()),
+    })
+}
+
 /// Closes every fd above stderr except `keep`: afterwards only fds 0, 1
 /// and 2 and the kept ones are open in this process.
 ///
@@ -136,6 +152,51 @@ mod tests {
         unsafe {
             libc::close(fd);
         }
+    }
+
+    #[test]
+    fn a_kept_fd_loses_only_its_close_on_exec_flag() {
+        // In a child: the flag changes must not leak into the test runner.
+        let child = match fork().expect("fork") {
+            ForkResult::Parent { child } => child,
+            ForkResult::Child => {
+                let fd = inheritable();
+                if cloexec_fds_above_stderr().is_err() {
+                    exit_child(99);
+                }
+                if fd_flags(fd) != Some(libc::FD_CLOEXEC) {
+                    exit_child(2);
+                }
+                // SAFETY: `fd` is this child's own open descriptor, and it
+                // outlives the borrow.
+                let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+                if keep_across_exec(borrowed).is_err() {
+                    exit_child(3);
+                }
+                exit_child(if fd_flags(fd) == Some(0) { 0 } else { 4 });
+            }
+        };
+        let status = child
+            .wait_deadline(Duration::from_secs(30))
+            .expect("bounded wait");
+        let code = child_exit_code(status);
+        if code == 99 {
+            return;
+        }
+        assert_eq!(
+            code, 0,
+            "exit 2: not marked first; 3: the clear failed; 4: still close-on-exec"
+        );
+        // A descriptor that isn't open is an error, not a silent success.
+        // SAFETY: the borrow is only handed to fcntl, which fails with EBADF.
+        let closed = unsafe { BorrowedFd::borrow_raw(i32::MAX - 1) };
+        assert!(matches!(
+            keep_across_exec(closed),
+            Err(Error::Process {
+                operation: "fcntl(F_SETFD, 0)",
+                ..
+            })
+        ));
     }
 
     #[test]

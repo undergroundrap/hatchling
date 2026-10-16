@@ -377,6 +377,7 @@ pub(super) mod tests {
             env: Vec::new(),
             workdir: None,
             endpoint: None,
+            connection: false,
             exposures: vec![Exposure {
                 source: scratch.0.join("code"),
                 name: String::from("skill"),

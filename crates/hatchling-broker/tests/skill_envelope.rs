@@ -122,11 +122,13 @@ fn serve_skills(
 fn ready_cell(socket: &Path) -> Result<hatchling_agent::Cell<hatchling_agent::Ready>, String> {
     hatchling_agent::Cell::new(hatchling_agent::Config {
         cell_id: "cell-skill".parse().map_err(|e| format!("cell id: {e}"))?,
-        broker_socket: socket
-            .to_str()
-            .ok_or_else(|| String::from("socket path"))?
-            .parse()
-            .map_err(|e| format!("socket: {e}"))?,
+        broker: hatchling_agent::BrokerAddress::Socket(
+            socket
+                .to_str()
+                .ok_or_else(|| String::from("socket path"))?
+                .parse()
+                .map_err(|e| format!("socket: {e}"))?,
+        ),
         broker_uid: PeerUid::from_kernel(rustix::process::getuid().as_raw()),
         log_level: LogLevel::Error,
         model_endpoint: None,

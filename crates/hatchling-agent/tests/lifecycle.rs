@@ -14,7 +14,7 @@ use hatchling_agent::{Cell, Config, Error, LogLevel, PeerUid};
 fn config_for(socket_path: &str, broker_uid: u32) -> Result<Config, Error> {
     Ok(Config {
         cell_id: "cell-component".parse()?,
-        broker_socket: socket_path.parse()?,
+        broker: hatchling_agent::BrokerAddress::Socket(socket_path.parse()?),
         broker_uid: PeerUid::from_kernel(broker_uid),
         log_level: LogLevel::Error,
         model_endpoint: None,
