@@ -16,6 +16,12 @@
 //! - `HATCHLING_API_SOCKET`: the API's Unix socket, an absolute path
 //!   outside the broker socket's directory. Unset means no API. Its audit
 //!   trail is the activity log, so it needs `HATCHLING_SCHEDULER_DIR`.
+//! - `HATCHLING_UI_SOCKET`: the UI's socket, where `hatchling-host`
+//!   carries the browser's channel. The same rules as the API socket,
+//!   and one more: every caller must present the UI token
+//!   ([`TokenProvider`]), which the broker mints at each start
+//!   ([`mint_ui_token`]) into `<socket>.token`, readable by its owner
+//!   alone. A web page that can reach the host's port can't read it.
 //! - `HATCHLING_API_GRANTS`: the local caller's grants, as grant labels
 //!   (`goals:query-goals,channel-send:local`). Each must be one the owner holds.
 //!   Unset means none: the caller can follow the activity, and do only
@@ -27,6 +33,9 @@
 
 use std::collections::BTreeSet;
 use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
+
+use subtle::ConstantTimeEq as _;
 
 use hatchling_core::messages::ScheduleGrant;
 use hatchling_core::subagent::{grant_label, parse_grant_label};
@@ -42,6 +51,9 @@ use crate::{Config, Error};
 pub struct ApiConfig {
     /// The API socket, when the API is on.
     pub socket: Option<SocketPath>,
+    /// The UI socket, when the UI is on: its callers must also present
+    /// the UI token ([`TokenProvider`]).
+    pub ui_socket: Option<SocketPath>,
     /// The local caller's grants: a subset of the owner's.
     pub grants: BTreeSet<ScheduleGrant>,
 }
@@ -74,8 +86,29 @@ impl ApiConfig {
             get(env::HATCHLING_API_GRANTS.name).as_deref(),
             &held_grants(config),
         )?;
-        let socket = parse_socket(get(env::HATCHLING_API_SOCKET.name).as_deref(), config)?;
-        Ok(Self { socket, grants })
+        let socket = parse_socket(
+            get(env::HATCHLING_API_SOCKET.name).as_deref(),
+            config,
+            "HATCHLING_API_SOCKET",
+        )?;
+        let ui_socket = parse_socket(
+            get(env::HATCHLING_UI_SOCKET.name).as_deref(),
+            config,
+            "HATCHLING_UI_SOCKET",
+        )?;
+        if ui_socket.is_some() && ui_socket == socket {
+            return Err(Error::InvalidConfig {
+                key: "HATCHLING_UI_SOCKET",
+                reason: String::from(
+                    "the UI socket must differ from the API socket: each holds its callers to its own rule",
+                ),
+            });
+        }
+        Ok(Self {
+            socket,
+            ui_socket,
+            grants,
+        })
     }
 }
 
@@ -148,23 +181,24 @@ fn parse_grants(
         .collect()
 }
 
-/// The API socket: absolute, outside the cell's sight, with an activity
-/// log to audit to.
-fn parse_socket(raw: Option<&str>, config: &Config) -> Result<Option<SocketPath>, Error> {
+/// An API or UI socket, the setting `key`: absolute, outside the cell's
+/// sight, with an activity log to audit to.
+fn parse_socket(
+    raw: Option<&str>,
+    config: &Config,
+    key: &'static str,
+) -> Result<Option<SocketPath>, Error> {
     let Some(raw) = raw.map(str::trim).filter(|raw| !raw.is_empty()) else {
         return Ok(None);
     };
-    let invalid = |reason: String| Error::InvalidConfig {
-        key: "HATCHLING_API_SOCKET",
-        reason,
-    };
+    let invalid = |reason: String| Error::InvalidConfig { key, reason };
     let socket: SocketPath = raw
         .parse()
-        .map_err(|_| invalid(format!("the API socket must be an absolute path: {raw:?}")))?;
+        .map_err(|_| invalid(format!("the socket must be an absolute path: {raw:?}")))?;
     if let Some(cell_visible) = config.socket.as_path().parent() {
         if socket.as_path().starts_with(cell_visible) {
             return Err(invalid(format!(
-                "the API socket {raw:?} is inside the broker socket directory {}, which the cell mounts",
+                "the socket {raw:?} is inside the broker socket directory {}, which the cell mounts",
                 cell_visible.display()
             )));
         }
@@ -289,6 +323,84 @@ impl Provider for PeerProvider {
     }
 }
 
+/// The UI socket's provider: the socket's owner, as [`PeerProvider`]
+/// admits it, presenting the UI token the broker minted at this start.
+/// A caller with no token, or another, is not admitted.
+#[derive(Clone)]
+pub struct TokenProvider {
+    peer: PeerProvider,
+    token: ApiToken,
+}
+
+impl std::fmt::Debug for TokenProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenProvider")
+            .field("peer", &self.peer)
+            .finish_non_exhaustive()
+    }
+}
+
+impl TokenProvider {
+    /// Admits whom `peer` admits, when it presents `token`.
+    #[must_use]
+    pub const fn new(peer: PeerProvider, token: ApiToken) -> Self {
+        Self { peer, token }
+    }
+}
+
+impl Provider for TokenProvider {
+    fn identify(&self, stream: &UnixStream, token: Option<&ApiToken>) -> Option<Caller> {
+        // Compared in constant time: how long the check takes says
+        // nothing about how much of a guess was right.
+        let presented = token.map(ApiToken::expose).unwrap_or_default();
+        if !bool::from(presented.as_bytes().ct_eq(self.token.expose().as_bytes())) {
+            tracing::warn!("UI caller presented no token, or the wrong one: not admitted");
+            return None;
+        }
+        let caller = self.peer.identify(stream, None)?;
+        Some(Caller::new(format!("ui, {}", caller.label), caller.grants))
+    }
+}
+
+/// Where the UI token for `socket` is kept: the socket's path with
+/// `.token` added.
+#[must_use]
+pub fn ui_token_path(socket: &SocketPath) -> PathBuf {
+    let mut path = socket.as_path().as_os_str().to_owned();
+    path.push(".token");
+    PathBuf::from(path)
+}
+
+/// Mints a fresh UI token, and keeps it at `path` for its owner alone.
+///
+/// A token from an earlier start is removed first; the new file is then
+/// created exclusively with mode 0600, so anything planted at `path` in
+/// between, a symlink included, fails the call rather than receiving
+/// the token.
+///
+/// # Errors
+///
+/// [`Error::SocketSetup`] if the old token can't be removed or the new
+/// one can't be made or written.
+pub fn mint_ui_token(path: &Path) -> Result<ApiToken, Error> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let setup = |source| Error::SocketSetup { source };
+    let token = crate::approval::random_hex("").map_err(setup)?;
+    match std::fs::remove_file(path) {
+        Err(source) if source.kind() != std::io::ErrorKind::NotFound => return Err(setup(source)),
+        _ => {}
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(setup)?;
+    file.write_all(token.as_bytes()).map_err(setup)?;
+    Ok(ApiToken::new(token))
+}
+
 /// The caller `provider` identifies on `stream`, its grants narrowed to
 /// `held`, the owner's: whatever a provider claims, a caller never holds
 /// more than the owner.
@@ -322,7 +434,7 @@ pub(crate) mod tests {
     use super::*;
 
     /// A scratch directory, owner-only, removed when the guard drops.
-    pub(crate) struct Scratch(pub(crate) std::path::PathBuf);
+    pub(crate) struct Scratch(pub(crate) PathBuf);
 
     impl Drop for Scratch {
         fn drop(&mut self) {
@@ -354,7 +466,7 @@ pub(crate) mod tests {
     /// `local`, with scheduling on at `scheduler` when it is set. The
     /// agent is another uid, as in any real deployment.
     pub(crate) fn owner_config(scheduler: Option<&str>) -> Config {
-        let root = std::path::PathBuf::from("/nonexistent/hatchling-api-vault");
+        let root = PathBuf::from("/nonexistent/hatchling-api-vault");
         let mut config = Config {
             socket: "/tmp/hatchling-test-api-dummy/broker.sock".parse().unwrap(),
             agent_uid: PeerUid::from_kernel(real_uid().as_u32().wrapping_add(1)),
@@ -376,7 +488,7 @@ pub(crate) mod tests {
             channel_ingress: None,
             skills: crate::SkillConfig::disabled(),
             memory: crate::MemoryConfig {
-                root: std::path::PathBuf::new(),
+                root: PathBuf::new(),
                 grants: Vec::new(),
             },
             artifacts: crate::ArtifactConfig::disabled(),
@@ -385,7 +497,7 @@ pub(crate) mod tests {
         };
         config.goals.grants = vec![crate::GoalsAction::QueryGoals];
         if let Some(root) = scheduler {
-            config.scheduler.root = std::path::PathBuf::from(root);
+            config.scheduler.root = PathBuf::from(root);
         }
         config
     }
@@ -406,6 +518,110 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_ui_socket_is_held_to_the_api_sockets_rules_and_apart_from_it() {
+        let config = owner_config(Some("/srv/hatchling/schedules"));
+        let on = parse(
+            &config,
+            &[
+                ("HATCHLING_API_SOCKET", "/run/user/1000/hatchling-api.sock"),
+                ("HATCHLING_UI_SOCKET", "/run/user/1000/hatchling-ui.sock"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            on.ui_socket,
+            Some("/run/user/1000/hatchling-ui.sock".parse().unwrap())
+        );
+        // The same socket for both: refused.
+        let same = parse(
+            &config,
+            &[
+                ("HATCHLING_API_SOCKET", "/run/user/1000/hatchling.sock"),
+                ("HATCHLING_UI_SOCKET", "/run/user/1000/hatchling.sock"),
+            ],
+        );
+        assert!(reason(same, "HATCHLING_UI_SOCKET").contains("must differ"));
+        // Inside the cell's sight, or relative: refused, by its own name.
+        let inside = parse(
+            &config,
+            &[(
+                "HATCHLING_UI_SOCKET",
+                "/tmp/hatchling-test-api-dummy/ui.sock",
+            )],
+        );
+        assert!(reason(inside, "HATCHLING_UI_SOCKET").contains("which the cell mounts"));
+        let relative = parse(&config, &[("HATCHLING_UI_SOCKET", "ui.sock")]);
+        assert!(reason(relative, "HATCHLING_UI_SOCKET").contains("absolute path"));
+        // With no activity log to audit to: refused.
+        let unaudited = parse(
+            &owner_config(None),
+            &[("HATCHLING_UI_SOCKET", "/run/user/1000/hatchling-ui.sock")],
+        );
+        assert!(reason(unaudited, "HATCHLING_UI_SOCKET").contains("activity log"));
+    }
+
+    #[test]
+    fn the_ui_admits_only_its_owner_with_its_token() {
+        let (stream, _peer) = UnixStream::pair().unwrap();
+        let grants = BTreeSet::from([goals("query-goals")]);
+        let token = ApiToken::new(String::from("0123456789abcdef"));
+        let ui = TokenProvider::new(PeerProvider::new(real_uid(), grants.clone()), token.clone());
+        let caller = ui.identify(&stream, Some(&token)).unwrap();
+        assert_eq!(caller.label(), format!("ui, uid {}", real_uid()));
+        assert_eq!(caller.grants(), &grants);
+        for wrong in [
+            None,
+            Some(ApiToken::new(String::new())),
+            Some(ApiToken::new(String::from("0123456789abcdee"))),
+            Some(ApiToken::new(String::from("0123456789abcdef0"))),
+        ] {
+            assert!(ui.identify(&stream, wrong.as_ref()).is_none(), "{wrong:?}");
+        }
+        // The token alone isn't enough: the owner's credentials still are.
+        let stranger = PeerUid::from_kernel(real_uid().as_u32().wrapping_add(1));
+        let theirs = TokenProvider::new(PeerProvider::new(stranger, grants), token.clone());
+        assert!(theirs.identify(&stream, Some(&token)).is_none());
+        // Bound first: a format string inside `assert!`'s condition trips
+        // clippy 1.85's literal_string_with_formatting_args, which panics.
+        let shown = format!("{ui:?}");
+        assert!(shown.starts_with("TokenProvider"), "{shown}");
+        assert!(!shown.contains("0123456789abcdef"));
+    }
+
+    #[test]
+    fn a_ui_token_is_fresh_its_owners_alone_and_never_written_through_a_plant() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = scratch("ui-token");
+        let socket: SocketPath = dir.0.join("ui.sock").to_string_lossy().parse().unwrap();
+        let path = ui_token_path(&socket);
+        assert_eq!(path, dir.0.join("ui.sock.token"));
+        let first = mint_ui_token(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), first.expose());
+        assert!(
+            first.expose().len() >= 32,
+            "{} hex digits",
+            first.expose().len()
+        );
+        let second = mint_ui_token(&path).unwrap();
+        assert_ne!(first, second, "a new token each start");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), second.expose());
+        // Something that can't simply be removed in its place: refused,
+        // and nothing is written into it.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("inside"), b"").unwrap();
+        // Refused at the removal, not left to the exclusive create: the
+        // removal's own error comes back.
+        assert!(matches!(
+            mint_ui_token(&path),
+            Err(Error::SocketSetup { source }) if source.kind() == std::io::ErrorKind::IsADirectory
+        ));
+        assert_eq!(std::fs::read(path.join("inside")).unwrap(), b"");
+    }
+
+    #[test]
     fn the_api_is_off_unless_a_socket_is_set_and_holds_no_grant_by_default() {
         let config = owner_config(Some("/srv/hatchling/schedules"));
         assert_eq!(parse(&config, &[]).unwrap(), ApiConfig::default());
@@ -420,7 +636,7 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(
             on.socket.unwrap().as_path(),
-            std::path::Path::new("/run/user/1000/hatchling-api.sock")
+            Path::new("/run/user/1000/hatchling-api.sock")
         );
         assert!(on.grants.is_empty());
     }
@@ -620,11 +836,21 @@ pub(crate) mod tests {
         assert!(refuse_network(None, None).is_ok());
         assert!(refuse_network(Some("127.0.0.1:1"), None).is_err());
         assert!(refuse_network(Some("127.0.0.1:1"), Some("true")).is_err());
-        assert_eq!(parse_socket(None, &config).unwrap(), None);
         assert_eq!(
-            parse_socket(Some("/run/api.sock"), &config).unwrap(),
+            parse_socket(None, &config, "HATCHLING_API_SOCKET").unwrap(),
+            None
+        );
+        assert_eq!(
+            parse_socket(Some("/run/api.sock"), &config, "HATCHLING_API_SOCKET").unwrap(),
             Some("/run/api.sock".parse().unwrap())
         );
-        assert!(parse_socket(Some("/run/api.sock"), &owner_config(None)).is_err());
+        assert!(
+            parse_socket(
+                Some("/run/api.sock"),
+                &owner_config(None),
+                "HATCHLING_API_SOCKET"
+            )
+            .is_err()
+        );
     }
 }

@@ -6,6 +6,18 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ## [Unreleased]
 
+### Added
+
+- `HATCHLING_UI_SOCKET`: a second local API socket, for the frontend host to carry a browser's channel to. It serves the same protocol as `HATCHLING_API_SOCKET`, and every `hello` on it must also carry the UI token, which the broker mints at each start into `<socket>.token`, readable by its owner alone (WO-021, part 1).
+
+### Changed
+
+- **Breaking, `hatchling-broker`:** `ApiConfig` has a `ui_socket` field. The workspace version is 0.4.0.
+
+### Fixed
+
+- The local API takes its socket's owner from the broker's own uid, rather than reading it back from the socket's path after binding (WO-021, part 1).
+
 ## [0.3.0] - 2026-10-16
 
 The local-attacker release, first part. It closes what another local user could do to a running broker: a root broker that followed symlinks when it handed a cell its socket, set modes or made directories (WO-006), and agent sessions admitted by uid alone, so any process with the agent's uid could open one (WO-007). Every agent cell, the broker's own and each scheduled run's and subagent's, now reaches the broker over a connection made for it alone, and in cell mode no agent socket is bound. The broker and the agent must both be 0.3.0: a 0.2.0 agent can't use the connection a 0.3.0 cell gives it; the one `hatchling` binary is both. The broker also refuses `nobody` as the agent uid unless told otherwise. Rust API changes are marked **Breaking** below.
