@@ -532,7 +532,10 @@ mod tests {
                 .is_ok()
         );
         assert!(matches!(
-            keyring.hardware_wrap(unlocked.key(), &mut VirtualAuthenticator::without_hmac_secret()),
+            keyring.hardware_wrap(
+                unlocked.key(),
+                &mut VirtualAuthenticator::without_hmac_secret()
+            ),
             Err(Error::MissingHmacSecret)
         ));
     }

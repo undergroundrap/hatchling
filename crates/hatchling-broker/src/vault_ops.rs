@@ -576,7 +576,10 @@ mod tests {
     #[test]
     fn resealing_moves_each_existing_store_and_skips_what_is_moved() {
         let dir = crate::api_auth::tests::scratch("vault-ops-reseal");
-        let (old, new) = (MasterKey::generate().unwrap(), MasterKey::generate().unwrap());
+        let (old, new) = (
+            MasterKey::generate().unwrap(),
+            MasterKey::generate().unwrap(),
+        );
         let name: SecretName = "record".parse().unwrap();
         SealedVault::open_in(&dir.0.join("spaces"), &old, Store::SPACES)
             .unwrap()
@@ -597,9 +600,11 @@ mod tests {
         assert!(!dir.0.join("absent").exists());
         let again = reseal_stores(&stores, &old, &new).unwrap();
         assert_eq!(again.first().map(|(_, report)| report.skipped), Some(1));
-        assert!(SealedVault::open_in(&dir.0.join("spaces"), &new, Store::SPACES)
-            .unwrap()
-            .fetch(&name)
-            .is_ok());
+        assert!(
+            SealedVault::open_in(&dir.0.join("spaces"), &new, Store::SPACES)
+                .unwrap()
+                .fetch(&name)
+                .is_ok()
+        );
     }
 }

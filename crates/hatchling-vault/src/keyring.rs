@@ -514,7 +514,13 @@ impl Keyring {
     }
 
     /// The DEK wrapped under `kek` for `factor`, as the wrap `id`.
-    fn wrap_as(&self, id: String, dek: &MasterKey, kek: &Kek, factor: Factor) -> Result<Wrap, Error> {
+    fn wrap_as(
+        &self,
+        id: String,
+        dek: &MasterKey,
+        kek: &Kek,
+        factor: Factor,
+    ) -> Result<Wrap, Error> {
         let nonce = random::<NONCE_LEN>()?;
         let aad = self.aad(&id, &factor);
         let wrapped = kek
@@ -1138,12 +1144,14 @@ mod tests {
             (reloaded.tier(), reloaded.wraps(), reloaded.retiring()),
             (Tier::Totp, [again].as_slice(), Some(&retiring))
         );
-        assert!(std::fs::read_to_string(&path).unwrap().contains("\"format\": 3"));
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("\"format\": 3")
+        );
         keyring.commit(Tier::File, Vec::new(), None).unwrap();
         assert!(
-            !std::fs::read_to_string(&path)
-                .unwrap()
-                .contains("retiring"),
+            !std::fs::read_to_string(&path).unwrap().contains("retiring"),
             "no retiring key, nothing written for it"
         );
     }

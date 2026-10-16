@@ -459,7 +459,9 @@ pub fn rekey(
             Tier::Totp | Tier::HardwareKey => None,
         };
         if keyring.tier() == Tier::HardwareKey {
-            ask("Plug in every enrolled security key, press Enter, then touch each one when it flashes:")?;
+            ask(
+                "Plug in every enrolled security key, press Enter, then touch each one when it flashes:",
+            )?;
         }
         let mut keys = devices.every_key();
         let rotated = keyring
@@ -559,7 +561,12 @@ pub fn enroll_totp(
             }
             outcome => {
                 let rotated = outcome.map_err(vault_error)?;
-                finish(&mut keyring, &rotated.rotation, stores, &config.kek_file(vault))?;
+                finish(
+                    &mut keyring,
+                    &rotated.rotation,
+                    stores,
+                    &config.kek_file(vault),
+                )?;
                 return Ok(rotated.codes);
             }
         }
@@ -1044,7 +1051,12 @@ pub fn enroll_keys(
             let rotated = keyring
                 .enroll_hardware_keys(&unlocked, &mut keys)
                 .map_err(vault_error)?;
-            finish(&mut keyring, &rotated.rotation, stores, &config.kek_file(vault))?;
+            finish(
+                &mut keyring,
+                &rotated.rotation,
+                stores,
+                &config.kek_file(vault),
+            )?;
             Ok((2, rotated.codes))
         }
         "one" => {
@@ -1070,7 +1082,12 @@ pub fn enroll_keys(
             let rotated = keyring
                 .enroll_single_hardware_key(&unlocked, key, SingleKeyRisk::accepted())
                 .map_err(vault_error)?;
-            finish(&mut keyring, &rotated.rotation, stores, &config.kek_file(vault))?;
+            finish(
+                &mut keyring,
+                &rotated.rotation,
+                stores,
+                &config.kek_file(vault),
+            )?;
             Ok((1, rotated.codes))
         }
         _ => Err(stopped()),
@@ -1402,7 +1419,13 @@ mod tests {
             .as_ref()
             .map(|codes| codes.codes().map(str::to_owned).collect())
             .unwrap_or_default();
-        finish(keyring, &rotated.rotation, &secrets(vault), &config.kek_file(vault)).unwrap();
+        finish(
+            keyring,
+            &rotated.rotation,
+            &secrets(vault),
+            &config.kek_file(vault),
+        )
+        .unwrap();
         codes
     }
 
@@ -2141,8 +2164,16 @@ mod tests {
         let mut never = |_: &str| -> Result<String, Error> { Ok(String::new()) };
         let run = |action: Option<&str>, ask: Ask<'_>| {
             let mut out = Vec::new();
-            command(&vault, &config, &secrets(&vault), action, ask, &mut NoKeys, &mut out)
-                .map(|()| String::from_utf8(out).unwrap())
+            command(
+                &vault,
+                &config,
+                &secrets(&vault),
+                action,
+                ask,
+                &mut NoKeys,
+                &mut out,
+            )
+            .map(|()| String::from_utf8(out).unwrap())
         };
         unlock(&vault, &KeyringConfig::default()).unwrap();
         assert!(
@@ -3106,7 +3137,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(enrolled.0, 1);
-        assert_eq!(enrolled.1.map(|codes| codes.codes().count()), Some(10), "a new key, a new set");
+        assert_eq!(
+            enrolled.1.map(|codes| codes.codes().count()),
+            Some(10),
+            "a new key, a new set"
+        );
         assert!(asked.get(1).unwrap().contains("Type \"one key\""));
         assert_eq!(tier_of(&config), Tier::HardwareKey);
         assert_eq!(keys_of(&config).len(), 1);
@@ -3466,21 +3501,35 @@ mod tests {
 
     /// The secrets store and a spaces store beside it, each holding one
     /// record under `key`: the stores a rotation must carry together.
-    fn two_stores(scratch: &Scratch, vault: &VaultConfig, key: &MasterKey) -> Vec<(Store, PathBuf)> {
+    fn two_stores(
+        scratch: &Scratch,
+        vault: &VaultConfig,
+        key: &MasterKey,
+    ) -> Vec<(Store, PathBuf)> {
         let spaces = scratch.0.join("spaces");
         SealedVault::open_in(&spaces, key, Store::SPACES)
             .unwrap()
-            .store(&"team".parse().unwrap(), &Secret::new(b"members".to_vec()).unwrap())
+            .store(
+                &"team".parse().unwrap(),
+                &Secret::new(b"members".to_vec()).unwrap(),
+            )
             .unwrap();
-        vec![(Store::SECRETS, vault.root.clone()), (Store::SPACES, spaces)]
+        vec![
+            (Store::SECRETS, vault.root.clone()),
+            (Store::SPACES, spaces),
+        ]
     }
 
     /// Whether every store in `stores` opens under `key`.
     fn opens_all(stores: &[(Store, PathBuf)], key: &MasterKey) -> bool {
         stores.iter().all(|(store, root)| {
-            let name: SecretName = (if *store == Store::SPACES { "team" } else { "token" })
-                .parse()
-                .unwrap();
+            let name: SecretName = (if *store == Store::SPACES {
+                "team"
+            } else {
+                "token"
+            })
+            .parse()
+            .unwrap();
             SealedVault::open_in(root, key, *store)
                 .unwrap()
                 .fetch(&name)
@@ -3493,7 +3542,14 @@ mod tests {
         let (scratch, vault, config) = adopted("rekey-in-keyring");
         let old = unlock(&vault, &config).unwrap();
         let stores = two_stores(&scratch, &vault, &old);
-        let (reports, codes) = rekey(&vault, &config, &stores, &mut |_| Ok(String::new()), &mut NoKeys).unwrap();
+        let (reports, codes) = rekey(
+            &vault,
+            &config,
+            &stores,
+            &mut |_| Ok(String::new()),
+            &mut NoKeys,
+        )
+        .unwrap();
         assert_eq!(
             reports
                 .iter()
@@ -3504,18 +3560,34 @@ mod tests {
         assert!(codes.is_none(), "no codes before, none made");
         let new = unlock(&vault, &config).unwrap();
         assert!(opens_all(&stores, &new));
-        assert!(stores.iter().all(|(store, root)| SealedVault::open_in(root, &old, *store)
-            .unwrap()
-            .fetch(&"token".parse().unwrap())
-            .is_err()));
+        assert!(stores.iter().all(|(store, root)| {
+            SealedVault::open_in(root, &old, *store)
+                .unwrap()
+                .fetch(&"token".parse().unwrap())
+                .is_err()
+        }));
         assert!(!vault.key_file.exists(), "no plain key was written");
-        assert!(config.kek_file(&vault).exists(), "the file tier keeps its KEK");
+        assert!(
+            config.kek_file(&vault).exists(),
+            "the file tier keeps its KEK"
+        );
         // At the TOTP tier, the app's next code is all it takes.
         let mut app = App::new(0);
         enroll_totp(&vault, &config, &mut |prompt| Ok(app.answer(prompt))).unwrap();
         let sealed = std::fs::read(vault.root.join("token")).unwrap();
-        rekey(&vault, &config, &secrets(&vault), &mut |_| Ok(app.code(30)), &mut NoKeys).unwrap();
-        assert_ne!(std::fs::read(vault.root.join("token")).unwrap(), sealed, "re-sealed");
+        rekey(
+            &vault,
+            &config,
+            &secrets(&vault),
+            &mut |_| Ok(app.code(30)),
+            &mut NoKeys,
+        )
+        .unwrap();
+        assert_ne!(
+            std::fs::read(vault.root.join("token")).unwrap(),
+            sealed,
+            "re-sealed"
+        );
         // A later step's code (with the clock given) opens the new key.
         let later = now() + 90;
         let after = Keyring::load(config.keyring.as_deref().unwrap())
@@ -3537,7 +3609,11 @@ mod tests {
         let mut keyring = Keyring::load(config.keyring.as_deref().unwrap()).unwrap();
         let kek = Kek::from_file_key(&FileKey::new(config.kek_file(&vault)).load().unwrap());
         let unlocked = keyring.unlock_file(&kek).unwrap();
-        drop(keyring.rotate_in_place(&unlocked, Some(&kek), &mut []).unwrap());
+        drop(
+            keyring
+                .rotate_in_place(&unlocked, Some(&kek), &mut [])
+                .unwrap(),
+        );
         let refused = unlock(&vault, &config).unwrap_err().to_string();
         assert!(refused.contains("rekey-vault"), "{refused}");
         assert!(matches!(
@@ -3545,7 +3621,14 @@ mod tests {
             Err(Error::Vault { .. })
         ));
         // rekey-vault resumes it: every store moves, and the vault serves again.
-        let (reports, codes) = rekey(&vault, &config, &stores, &mut |_| Ok(String::new()), &mut NoKeys).unwrap();
+        let (reports, codes) = rekey(
+            &vault,
+            &config,
+            &stores,
+            &mut |_| Ok(String::new()),
+            &mut NoKeys,
+        )
+        .unwrap();
         assert_eq!(reports.len(), 2);
         assert!(codes.is_none());
         let new = unlock(&vault, &config).unwrap();
@@ -3559,8 +3642,20 @@ mod tests {
         )
         .unwrap();
         let keyring_bytes = std::fs::read(config.keyring.as_deref().unwrap()).unwrap();
-        assert!(rekey(&vault, &config, &stores, &mut |_| Ok(String::new()), &mut NoKeys).is_err());
-        assert_eq!(std::fs::read(config.keyring.as_deref().unwrap()).unwrap(), keyring_bytes);
+        assert!(
+            rekey(
+                &vault,
+                &config,
+                &stores,
+                &mut |_| Ok(String::new()),
+                &mut NoKeys
+            )
+            .is_err()
+        );
+        assert_eq!(
+            std::fs::read(config.keyring.as_deref().unwrap()).unwrap(),
+            keyring_bytes
+        );
         assert!(opens_all(&stores, &unlock(&vault, &config).unwrap()));
     }
 
@@ -3584,21 +3679,30 @@ mod tests {
         )
         .unwrap();
         assert!(codes.is_none());
-        assert!(!config.kek_file(&vault).exists(), "the file tier's KEK is gone");
+        assert!(
+            !config.kek_file(&vault).exists(),
+            "the file tier's KEK is gone"
+        );
         // The copies from before still unwrap the old key, which opens nothing.
         let snapshot = scratch.0.join("snapshot");
         std::fs::create_dir(&snapshot).unwrap();
         std::fs::set_permissions(&snapshot, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::fs::write(snapshot.join("keyring"), &keyring_copy).unwrap();
-        std::fs::set_permissions(snapshot.join("keyring"), std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::set_permissions(
+            snapshot.join("keyring"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
         let copied = Keyring::load(&snapshot.join("keyring")).unwrap();
         let from_copy = copied
             .unlock_file(&Kek::from_bytes(kek_copy.try_into().unwrap()))
             .unwrap();
-        assert!(stores.iter().all(|(store, root)| SealedVault::open_in(root, from_copy.key(), *store)
-            .unwrap()
-            .fetch(&"token".parse().unwrap())
-            .is_err()));
+        assert!(stores.iter().all(|(store, root)| {
+            SealedVault::open_in(root, from_copy.key(), *store)
+                .unwrap()
+                .fetch(&"token".parse().unwrap())
+                .is_err()
+        }));
         assert!(!opens_all(&stores, from_copy.key()));
         let now = unlock_asking(&vault, &config, &mut |_| Ok(app.code(30))).unwrap();
         assert!(opens_all(&stores, &now));
@@ -3613,7 +3717,9 @@ mod tests {
         let mut keyring = Keyring::load(config.keyring.as_deref().unwrap()).unwrap();
         let kek = Kek::from_file_key(&FileKey::new(kek_file.clone()).load().unwrap());
         let unlocked = keyring.unlock_file(&kek).unwrap();
-        let rotated = keyring.rotate_in_place(&unlocked, Some(&kek), &mut []).unwrap();
+        let rotated = keyring
+            .rotate_in_place(&unlocked, Some(&kek), &mut [])
+            .unwrap();
         let reports = finish(&mut keyring, &rotated.rotation, &stores, &kek_file).unwrap();
         assert_eq!(reports.len(), 2);
         assert!(kek_file.exists(), "still the file tier's way in");
@@ -3638,7 +3744,13 @@ mod tests {
             Err(Error::Vault { .. })
         ));
         assert!(keyring.rotation_pending(), "nothing finished");
-        finish(&mut keyring, &rotated.rotation, &secrets, &scratch.0.join("gone")).unwrap();
+        finish(
+            &mut keyring,
+            &rotated.rotation,
+            &secrets,
+            &scratch.0.join("gone"),
+        )
+        .unwrap();
         assert!(!keyring.rotation_pending());
     }
 

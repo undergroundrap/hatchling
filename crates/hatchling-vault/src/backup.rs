@@ -476,7 +476,10 @@ mod tests {
         let path = dir.join("keys").join("keyring");
         let mut keyring = Keyring::load(&path).unwrap();
         assert!(
-            matches!(keyring.recover(codes.get(3).unwrap()), Err(Error::UnlockFailed)),
+            matches!(
+                keyring.recover(codes.get(3).unwrap()),
+                Err(Error::UnlockFailed)
+            ),
             "the set from before the new key opens nothing"
         );
         let recovered = keyring.recover(renewed.get(3).unwrap()).unwrap();
@@ -493,7 +496,11 @@ mod tests {
         );
         let (mut new_primary, mut new_backup) =
             (VirtualAuthenticator::new(), VirtualAuthenticator::new());
-        assert_eq!(keyring.backup_codes_left(), CODE_COUNT - 1, "the code used is burned");
+        assert_eq!(
+            keyring.backup_codes_left(),
+            CODE_COUNT - 1,
+            "the code used is burned"
+        );
         let rotated = keyring
             .enroll_hardware_keys(&recovered, &mut [&mut new_primary, &mut new_backup])
             .unwrap();
@@ -574,7 +581,10 @@ mod tests {
         let before = std::fs::read(&path).unwrap();
         let other = MasterKey::generate().unwrap();
         let (wraps, codes) = keyring.fresh_backup_codes(&other).unwrap();
-        assert_eq!((wraps.len(), codes.codes().count()), (CODE_COUNT, CODE_COUNT));
+        assert_eq!(
+            (wraps.len(), codes.codes().count()),
+            (CODE_COUNT, CODE_COUNT)
+        );
         assert_eq!(std::fs::read(&path).unwrap(), before, "nothing stored");
         assert!(
             wraps

@@ -347,17 +347,33 @@ fn rekey_vault_rotates_a_keyring_vault_inside_its_keyring() {
     std::fs::create_dir_all(&vault_dir).unwrap();
     std::fs::set_permissions(&vault_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     std::fs::write(vault_dir.join("tok"), b"plaintext-secret").unwrap();
-    std::fs::set_permissions(vault_dir.join("tok"), std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::fs::set_permissions(
+        vault_dir.join("tok"),
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
     let mut env = operator_env(&scratch, "vault");
     let unset = &["HATCHLING_AGENT_BIN"];
     let made = run_broker(&["migrate-vault"], &operator_env_refs(&env), unset).unwrap();
-    assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+    assert!(
+        made.status.success(),
+        "{}",
+        String::from_utf8_lossy(&made.stderr)
+    );
     env.push((
         "HATCHLING_VAULT_KEYRING",
-        scratch.join("vault.key").join("keyring").to_string_lossy().into_owned(),
+        scratch
+            .join("vault.key")
+            .join("keyring")
+            .to_string_lossy()
+            .into_owned(),
     ));
     let adopted = run_broker(&["vault-keyring", "init"], &operator_env_refs(&env), unset).unwrap();
-    assert!(adopted.status.success(), "{}", String::from_utf8_lossy(&adopted.stderr));
+    assert!(
+        adopted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&adopted.stderr)
+    );
     let before = std::fs::read(vault_dir.join("tok")).unwrap();
     let rekeyed = run_broker(&["rekey-vault"], &operator_env_refs(&env), unset).unwrap();
     let after = std::fs::read(vault_dir.join("tok")).unwrap();
@@ -366,7 +382,11 @@ fn rekey_vault_rotates_a_keyring_vault_inside_its_keyring() {
     // keyring's key, the re-sealed file opens.
     let verified = run_broker(&["migrate-vault"], &operator_env_refs(&env), unset).unwrap();
     let _ = std::fs::remove_dir_all(&scratch);
-    assert!(rekeyed.status.success(), "{}", String::from_utf8_lossy(&rekeyed.stderr));
+    assert!(
+        rekeyed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rekeyed.stderr)
+    );
     let stdout = String::from_utf8_lossy(&rekeyed.stdout);
     assert!(
         stdout.contains("rekey-vault: secrets: re-sealed 1 under the new key"),
@@ -374,9 +394,14 @@ fn rekey_vault_rotates_a_keyring_vault_inside_its_keyring() {
     );
     assert_ne!(before, after, "re-sealed under the new key");
     assert!(!minted, "no plain key file");
-    assert!(verified.status.success(), "{}", String::from_utf8_lossy(&verified.stderr));
     assert!(
-        String::from_utf8_lossy(&verified.stdout).contains("secrets: sealed 0, re-sealed 0 old, skipped 1"),
+        verified.status.success(),
+        "{}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&verified.stdout)
+            .contains("secrets: sealed 0, re-sealed 0 old, skipped 1"),
         "the keyring's key opens the re-sealed file"
     );
 }

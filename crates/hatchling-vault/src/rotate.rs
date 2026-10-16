@@ -357,7 +357,10 @@ mod tests {
         );
         assert_ne!(after, before, "wrapped again");
         let reopened = committed.unlock_file(&kek).unwrap();
-        assert!(!reads(&dir, reopened.key()), "the store isn't re-sealed yet");
+        assert!(
+            !reads(&dir, reopened.key()),
+            "the store isn't re-sealed yet"
+        );
         let pending = committed.pending_rotation(&reopened).unwrap().unwrap();
         assert!(reads(&dir, pending.old()));
         assert!(!reads(&dir, pending.new_key()));
@@ -532,7 +535,10 @@ mod tests {
             old.expose()
         );
         assert!(open_retiring("ab", &retiring, &old).is_err());
-        assert!(open_retiring("cd", &retiring, &new).is_err(), "another vault");
+        assert!(
+            open_retiring("cd", &retiring, &new).is_err(),
+            "another vault"
+        );
         assert_eq!(retiring_aad("ab"), b"HVK1ab/retiring".to_vec());
         let damaged = Retiring {
             nonce: String::from("00"),
@@ -545,5 +551,60 @@ mod tests {
             "a fresh nonce each time"
         );
         assert_eq!(copy(&old).expose(), old.expose());
+    }
+
+    #[test]
+    fn a_rotation_begins_on_a_fresh_key_and_commits_with_the_old_one_retiring() {
+        let dir = test_dir("rotate-steps");
+        let (mut keyring, kek) = vault(&dir);
+        let unlocked = keyring.unlock_file(&kek).unwrap();
+        // begin_rotation: the unlock's key, and a fresh one; nothing written.
+        let path = dir.join("keys").join("keyring");
+        let untouched = std::fs::read(&path).unwrap();
+        let rotation = keyring.begin_rotation(&unlocked, Tier::File).unwrap();
+        assert_eq!(rotation.old().expose(), unlocked.key().expose());
+        assert_ne!(rotation.new_key().expose(), unlocked.key().expose());
+        assert_eq!(std::fs::read(&path).unwrap(), untouched);
+        let other = test_dir("rotate-steps-other");
+        let (other_ring, other_kek) = vault(&other);
+        assert!(matches!(
+            keyring.begin_rotation(&other_ring.unlock_file(&other_kek).unwrap(), Tier::File),
+            Err(Error::TierChange { .. })
+        ));
+        // commit_rotation: the wraps given, at the tier given, the old key retiring.
+        let wrap = keyring
+            .wrap(rotation.new_key(), &kek, Factor::File)
+            .unwrap();
+        let rotated = keyring
+            .commit_rotation(rotation, Tier::File, vec![wrap.clone()])
+            .unwrap();
+        assert!(rotated.codes.is_none(), "no codes before, none made");
+        assert_eq!(keyring.wraps(), [wrap].as_slice());
+        let retiring = keyring.retiring().unwrap();
+        assert_eq!(
+            open_retiring(keyring.vault_id(), retiring, rotated.rotation.new_key())
+                .unwrap()
+                .expose(),
+            unlocked.key().expose()
+        );
+        // retiring_kek: from the new key and the vault, nothing else.
+        let probe = MasterKey::generate().unwrap();
+        let sealed = seal_retiring("ab", &probe, rotated.rotation.new_key()).unwrap();
+        let nonce = unhex(&sealed.nonce).unwrap();
+        let wrapped = unhex(&sealed.wrapped).unwrap();
+        let open = |kek: &Kek| {
+            kek.cipher()
+                .decrypt(
+                    XNonce::from_slice(&nonce),
+                    Payload {
+                        msg: &wrapped,
+                        aad: &retiring_aad("ab"),
+                    },
+                )
+                .is_ok()
+        };
+        assert!(open(&retiring_kek("ab", rotated.rotation.new_key())));
+        assert!(!open(&retiring_kek("cd", rotated.rotation.new_key())));
+        assert!(!open(&retiring_kek("ab", &probe)));
     }
 }
