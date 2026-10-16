@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import unittest
 
-from readme_quickstart import expected_answer, extract, require_answer, script_for
+from readme_quickstart import app_address, expected_answer, extract, require_answer, script_for
 
 
 class QuickstartTests(unittest.TestCase):
@@ -51,6 +51,41 @@ exit 99
 """
         blocks = extract(text)
         self.assertEqual([block.commands for block in blocks], ["## shell comment\necho expected\n"])
+
+    def test_the_app_section_runs_after_the_quickstart_and_nothing_else_does(self):
+        text = """### Using the app
+```bash
+exit 98
+```
+## Quickstart
+```bash
+echo start
+```
+### Running without root
+```bash
+exit 99
+```
+### Using the app
+```bash
+echo app
+```
+## Contributing
+```bash
+exit 97
+```
+"""
+        self.assertEqual([block.commands for block in extract(text)], ["echo start\n", "echo app\n"])
+
+    def test_the_app_address_is_waited_for_and_must_be_loopback(self):
+        token = "0123456789abcdef" * 4
+        address = "http://127.0.0.1:7340/#hatchling-ui=" + token
+        reads = iter([["", ""], ["", "Hatchling's UI: open " + address + "\n"]])
+        self.assertEqual(app_address(lambda: next(reads), wait=5), address)
+        for output in ("Hatchling's UI: open http://0.0.0.0:7340/#hatchling-ui=" + token,
+                       "Hatchling's UI: open http://127.0.0.1:7340/",
+                       "log: Hatchling's UI: open " + address):
+            with self.subTest(output=output), self.assertRaises(ValueError):
+                app_address(lambda: [output], wait=0)
 
     def test_refuses_missing_empty_and_unclosed_input(self):
         inputs = ["# Other\n", "## Quickstart\ntext only\n",

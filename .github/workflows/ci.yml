@@ -158,8 +158,19 @@ jobs:
         with:
           toolchain: 1.98.1
 
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
       - name: Check quickstart runner
         run: python3 -m unittest discover -s scripts -p 'test_readme_quickstart.py' -v
+
+      - name: Install a browser for the app
+        run: |
+          python3 -m venv "$RUNNER_TEMP/app-venv"
+          "$RUNNER_TEMP/app-venv/bin/python" -m pip install -r frontend/tests/e2e/requirements.txt
+          "$RUNNER_TEMP/app-venv/bin/python" -m playwright install --with-deps chromium
 
       - name: Allow real cells
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
@@ -172,9 +183,11 @@ jobs:
           trap 'sudo rm -rf -- "$task_work"' EXIT
           sudo env "PATH=$PATH" "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" \
             "RUSTUP_TOOLCHAIN=$RUSTUP_TOOLCHAIN" \
+            "PLAYWRIGHT_BROWSERS_PATH=$HOME/.cache/ms-playwright" \
             unshare --mount --pid --fork --kill-child --mount-proc \
             python3 scripts/readme_quickstart.py "$PWD" \
-              "$RUNNER_TEMP/quickstart-logs" "$task_work"
+              "$RUNNER_TEMP/quickstart-logs" "$task_work" \
+              --app-python "$RUNNER_TEMP/app-venv/bin/python"
 
       - name: Retain the extracted commands and logs
         if: always()
