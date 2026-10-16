@@ -402,7 +402,7 @@ mod tests {
     use super::*;
 
     fn test_proxy() -> Proxy<impl Fn(&str) -> Option<Zeroizing<Vec<u8>>>> {
-        Proxy::new("localhost:443", |_dest| {
+        Proxy::new("internal:localhost:443", |_dest| {
             Some(Zeroizing::new(b"test-credential".to_vec()))
         })
         .unwrap()
@@ -428,7 +428,7 @@ mod tests {
 
     #[test]
     fn proxies_built_over_one_allowlist_share_it_but_not_their_keys() {
-        let allowlist = Arc::new(Allowlist::parse("localhost:443").unwrap());
+        let allowlist = Arc::new(Allowlist::parse("internal:localhost:443").unwrap());
         let tls = TlsClient::bundled().unwrap();
         let first = Proxy::shared(Arc::clone(&allowlist), tls.clone(), |_: &str| None).unwrap();
         let second = Proxy::shared(Arc::clone(&allowlist), tls, |_: &str| None).unwrap();
@@ -460,16 +460,33 @@ mod tests {
         ));
     }
 
+    /// The public source the mixed proxy reads: a name resolved, in the
+    /// test, to an address in a documentation range (TEST-NET-3), which
+    /// is public and leads nowhere.
+    const PUBLIC_SOURCE: &str = "docs.example:443";
+
     /// A proxy over one public source and one credentialed
     /// destination, counting credential lookups.
     fn mixed_proxy(
         lookups: &Arc<std::sync::atomic::AtomicUsize>,
     ) -> Proxy<impl Fn(&str) -> Option<Zeroizing<Vec<u8>>>> {
         let lookups = Arc::clone(lookups);
-        Proxy::new("public:localhost:443,localhost:8443", move |_dest| {
-            lookups.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Some(Zeroizing::new(b"test-credential".to_vec()))
-        })
+        let allowlist = Allowlist::parse_with(
+            "public:docs.example:443,internal:localhost:8443",
+            |entry| match entry {
+                "docs.example:443" => Ok(vec!["203.0.113.5:443".parse().unwrap()]),
+                other => std::net::ToSocketAddrs::to_socket_addrs(other).map(Iterator::collect),
+            },
+        )
+        .unwrap();
+        Proxy::shared(
+            Arc::new(allowlist),
+            TlsClient::bundled().unwrap(),
+            move |_dest: &str| {
+                lookups.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Some(Zeroizing::new(b"test-credential".to_vec()))
+            },
+        )
         .unwrap()
     }
 
@@ -491,10 +508,10 @@ mod tests {
     fn a_public_source_is_read_without_ever_consulting_the_credential_lookup() {
         let lookups = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let proxy = mixed_proxy(&lookups);
-        // Nothing listens on localhost:443 here: the read gets as far as
-        // the connection, which fails upstream, not as a denial.
+        // Nothing answers at the public source's address: the read gets
+        // as far as the connection, which fails upstream, not as a denial.
         assert!(matches!(
-            proxy.forward(1000, &get(&proxy, "localhost:443")),
+            proxy.forward(1000, &get(&proxy, PUBLIC_SOURCE)),
             Err(Error::UpstreamFailed)
         ));
         assert_eq!(lookups.load(std::sync::atomic::Ordering::SeqCst), 0);
@@ -712,7 +729,7 @@ mod tests {
         let dead = crate::local::tests::dead_addr().port();
         let lookups = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let proxy = local_proxy(
-            &format!("localhost:443,local:localhost:{dead}"),
+            &format!("internal:localhost:443,local:localhost:{dead}"),
             b"",
             &lookups,
         );
@@ -739,13 +756,13 @@ mod tests {
     fn a_public_source_is_never_written() {
         let lookups = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let proxy = mixed_proxy(&lookups);
-        let mut post = get(&proxy, "localhost:443");
+        let mut post = get(&proxy, PUBLIC_SOURCE);
         post.method = String::from("POST");
         assert!(matches!(
             proxy.forward(1000, &post),
             Err(Error::DestinationDenied)
         ));
-        let mut with_body = get(&proxy, "localhost:443");
+        let mut with_body = get(&proxy, PUBLIC_SOURCE);
         with_body.body = b"x".to_vec();
         assert!(matches!(
             proxy.forward(1000, &with_body),
@@ -775,7 +792,7 @@ mod tests {
 
     #[test]
     fn forward_rejects_destination_mismatch() {
-        let proxy = Proxy::new("localhost:443,localhost:8443", |_dest| {
+        let proxy = Proxy::new("internal:localhost:443,internal:localhost:8443", |_dest| {
             Some(Zeroizing::new(b"test-credential".to_vec()))
         })
         .unwrap();

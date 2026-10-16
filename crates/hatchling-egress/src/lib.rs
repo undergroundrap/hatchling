@@ -38,8 +38,8 @@ pub mod scrub;
 pub mod surrogate;
 
 pub use allowlist::{
-    Allowlist, LOCAL_HOST, LOCAL_KEYLESS_PREFIX, LOCAL_PREFIX, Local, PUBLIC_PREFIX,
-    is_pinned_loopback,
+    Allowlist, INTERNAL_PREFIX, LOCAL_HOST, LOCAL_KEYLESS_PREFIX, LOCAL_PREFIX, Local,
+    PUBLIC_PREFIX, is_internal, is_pinned_loopback,
 };
 pub use error::Error;
 pub use https::TlsClient;

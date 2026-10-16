@@ -1550,8 +1550,8 @@ fn refuse_egress_secret_conflicts(
 }
 
 /// Every egress destination the operator named: each egress grant, and
-/// each allowlist entry without its `public:`, `local:` or
-/// `local-keyless:` prefix. The credential lookup maps the bare
+/// each allowlist entry without its `public:`, `local:`,
+/// `local-keyless:` or `internal:` prefix. The credential lookup maps the bare
 /// destination (`localhost:11434` reads `egress-localhost-11434`), so the
 /// checks on secret names must map it bare too.
 fn configured_destinations<'a>(
@@ -1563,6 +1563,7 @@ fn configured_destinations<'a>(
             hatchling_egress::PUBLIC_PREFIX,
             hatchling_egress::LOCAL_KEYLESS_PREFIX,
             hatchling_egress::LOCAL_PREFIX,
+            hatchling_egress::INTERNAL_PREFIX,
         ]
         .iter()
         .find_map(|prefix| entry.strip_prefix(prefix))
@@ -2365,7 +2366,7 @@ mod tests {
 
     #[test]
     fn the_egress_allowlist_is_resolved_once_and_shared_by_every_copy() {
-        let allowlist = EgressAllowlist::new("localhost:443");
+        let allowlist = EgressAllowlist::new("internal:localhost:443");
         assert_eq!(allowlist.raw(), "localhost:443");
         let copy = allowlist.clone();
         let first = allowlist.resolve().unwrap();
@@ -2378,7 +2379,7 @@ mod tests {
             .unwrap();
         assert!(Arc::ptr_eq(&first, &from_copy));
         // A separate allowlist with the same text resolves on its own.
-        let other = EgressAllowlist::new("localhost:443").resolve().unwrap();
+        let other = EgressAllowlist::new("internal:localhost:443").resolve().unwrap();
         assert!(!Arc::ptr_eq(&first, &other));
         // Nothing configured: an empty allowlist, which denies everything.
         assert!(EgressAllowlist::default().resolve().unwrap().is_empty());

@@ -873,8 +873,10 @@ fn parse_pin(
     Ok(Some(binary))
 }
 
-/// A harness's vendor API: one HTTPS destination `host:port`, or
-/// one local endpoint `local:localhost:PORT`, resolved and pinned now.
+/// A harness's vendor API: one HTTPS destination `host:port` (written
+/// `internal:host:port` when it is meant to resolve inside the operator's
+/// network), or one local endpoint `local:localhost:PORT`, resolved and
+/// pinned now, under the allowlist's rules.
 fn parse_vendor(
     kind: HarnessKind,
     raw: Option<&str>,
@@ -886,14 +888,18 @@ fn parse_vendor(
     if raw.contains(',') || raw.starts_with("public:") || raw.starts_with("local-keyless:") {
         return Err(invalid(
             kind.api_key(),
-            String::from("one vendor API: host:port, or local:localhost:PORT"),
+            String::from("one vendor API: host:port, internal:host:port, or local:localhost:PORT"),
         ));
     }
     let allowlist =
         Allowlist::parse(raw).map_err(|source| invalid(kind.api_key(), source.to_string()))?;
     Ok(Some(Vendor {
         wire: kind.wire(),
-        destination: raw.strip_prefix("local:").unwrap_or(raw).to_owned(),
+        destination: [hatchling_egress::LOCAL_PREFIX, hatchling_egress::INTERNAL_PREFIX]
+            .iter()
+            .find_map(|prefix| raw.strip_prefix(prefix))
+            .unwrap_or(raw)
+            .to_owned(),
         allowlist: Arc::new(allowlist),
         tls: tls.clone(),
     }))
@@ -2013,7 +2019,7 @@ mod tests {
                 refusal(parse_vendor(kind, Some(bad), &tls)),
                 (
                     kind.api_key(),
-                    String::from("one vendor API: host:port, or local:localhost:PORT")
+                    String::from("one vendor API: host:port, internal:host:port, or local:localhost:PORT")
                 ),
                 "{bad}"
             );
@@ -2032,6 +2038,21 @@ mod tests {
             .unwrap();
         assert_eq!(claude.wire, Wire::Anthropic);
         assert_eq!(claude.destination, "localhost:1");
+        // Held to the allowlist's rule on internal addresses: a vendor that
+        // resolves inside is refused unless written internal:, then served
+        // as an ordinary HTTPS vendor under its bare name.
+        let (key, reason) = refusal(parse_vendor(kind, Some("localhost:8443"), &tls));
+        assert_eq!(key, kind.api_key());
+        assert!(
+            reason.contains("internal address") && reason.contains("internal:localhost:8443"),
+            "{reason}"
+        );
+        let internal = parse_vendor(kind, Some("internal:localhost:8443"), &tls)
+            .unwrap()
+            .unwrap();
+        assert_eq!(internal.destination, "localhost:8443");
+        assert!(internal.allowlist.allows("localhost:8443"));
+        assert!(internal.allowlist.local("localhost:8443").is_none());
     }
 
     #[test]

@@ -282,7 +282,7 @@ def run(repo, artifacts, work, mode, fixtures):
                HATCHLING_VAULT_DIR=str(state / 'vault'), HATCHLING_SCHEDULER_DIR=str(state / 'schedules'),
                HATCHLING_CHANNEL_INGRESS=str(state / 'ingress.sock'), HATCHLING_API_SOCKET=str(state / 'api.sock'),
                HATCHLING_SCHEDULER_MODEL_ENDPOINT=endpoint, HATCHLING_SCHEDULER_MODEL_NAME=model,
-               HATCHLING_EGRESS_ALLOWLIST=('local:' if mode == 'local' else '') + destination,
+               HATCHLING_EGRESS_ALLOWLIST=('local:' if mode == 'local' else 'internal:') + destination,
                HATCHLING_EGRESS_GRANTS=destination, HATCHLING_API_GRANTS='egress:' + destination + ',channel-send:local',
                NO_COLOR='1', PYTHONDONTWRITEBYTECODE='1', PYTHONUNBUFFERED='1')
     if mode == 'https':

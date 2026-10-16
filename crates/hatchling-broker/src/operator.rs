@@ -632,12 +632,12 @@ mod tests {
     /// planted, as the cell `op-planted`; returns the surrogate.
     fn planted_egress() -> String {
         use hatchling_core::{EgressOp, EgressResult, encode_secret};
-        let proxy = hatchling_egress::Proxy::new("localhost:443", |_: &str| {
+        let proxy = hatchling_egress::Proxy::new("internal:localhost:443", |_: &str| {
             Some(zeroize::Zeroizing::new(PLANTED[1].as_bytes().to_vec()))
         })
         .unwrap();
         let egress = crate::EgressConfig {
-            allowlist: crate::EgressAllowlist::new("localhost:443"),
+            allowlist: crate::EgressAllowlist::new("internal:localhost:443"),
             grants: vec![String::from("localhost:443")],
         };
         let cell_id: hatchling_core::CellId = "op-planted".parse().unwrap();
