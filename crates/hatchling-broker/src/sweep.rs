@@ -378,6 +378,14 @@ mod tests {
     }
 
     #[test]
+    fn runs_are_swept_only_where_scheduling_is_on() {
+        let dir = scratch("sweep-root");
+        let config = config_in(&dir.0);
+        assert_eq!(run_root(&config), Some(dir.0.join("schedules.runs")));
+        assert_eq!(run_root(&owner_config(None)), None);
+    }
+
+    #[test]
     fn only_a_disposable_name_is_one() {
         assert_eq!(staging_pid(&staging(123, "a1")), Some(123));
         let random = hex("a1", STAGING_RANDOM_LEN);

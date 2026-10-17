@@ -246,6 +246,35 @@ mod tests {
     }
 
     #[test]
+    fn a_look_sees_what_is_there_and_an_entry_goes_unless_kept() {
+        let dir = scratch("look");
+        let (root, outside) = (dir.0.join("root"), dir.0.join("outside"));
+        std::fs::create_dir(root.join("sub")).unwrap();
+        std::fs::write(root.join("file"), b"f").unwrap();
+        symlink(outside.join("dir"), root.join("link")).unwrap();
+        let handle = rustix::fs::open(&root, DIR_FLAGS, Mode::empty()).unwrap();
+        let this = look(&handle, c"").unwrap();
+        let sub = look(&handle, c"sub").unwrap();
+        assert!(this.directory && sub.directory);
+        assert_eq!(sub.id, DirId::of(&root.join("sub")).unwrap());
+        assert_eq!(sub.mount, this.mount, "one mount");
+        assert!(!look(&handle, c"file").unwrap().directory);
+        assert!(!look(&handle, c"link").unwrap().directory, "a symlink, not its target");
+        assert!(look(&handle, c"missing").is_err());
+        // A kept directory stays; a file or a symlink goes, its target kept.
+        assert!(!remove_entry(&handle, c"sub", this.mount, &[sub.id], 1));
+        assert!(root.join("sub").exists());
+        assert!(remove_entry(&handle, c"file", this.mount, &[], 1));
+        assert!(remove_entry(&handle, c"link", this.mount, &[], 1));
+        assert!(!root.join("file").exists() && intact(&outside));
+        assert!(!remove_entry(&handle, c"sub", this.mount, &[], MAX_DEPTH), "too deep");
+        assert!(!remove_entry(&handle, c"sub", this.mount + 1, &[], 1), "another mount");
+        assert!(remove_entry(&handle, c"sub", this.mount, &[], 1));
+        assert!(!root.join("sub").exists());
+        assert!(!remove_entry(&handle, c"missing", this.mount, &[], 1));
+    }
+
+    #[test]
     fn a_tree_goes_whole_and_its_symlinks_take_nothing_with_them() {
         let dir = scratch("whole");
         let (root, outside) = (dir.0.join("root"), dir.0.join("outside"));
