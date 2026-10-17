@@ -340,6 +340,33 @@ mod tests {
     }
 
     #[test]
+    fn the_storage_guide_lists_every_path_the_broker_is_told() {
+        let guide = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/storage.md"),
+        )
+        .unwrap();
+        let paths = crate::environment::ENVIRONMENT.iter().filter(|variable| {
+            ["_DIR", "_FILE", "_KEYRING", "_SOCKET", "_WORKSPACE", "_ROOTS"]
+                .iter()
+                .any(|suffix| variable.name.ends_with(suffix))
+                || variable.name == "HATCHLING_CHANNEL_INGRESS"
+        });
+        let mut listed = 0;
+        for variable in paths {
+            listed += 1;
+            assert!(
+                guide.contains(&format!("`{}`", variable.name)),
+                "docs/storage.md must say whether {} is your data or disposable",
+                variable.name
+            );
+        }
+        assert!(listed >= 19, "{listed}");
+        for disposable in [STAGING_PREFIX, RUN_PREFIX, ".lock`", "clean --dry-run"] {
+            assert!(guide.contains(disposable), "{disposable}");
+        }
+    }
+
+    #[test]
     fn only_a_disposable_name_is_one() {
         assert_eq!(staging_pid(&staging(123, "a1")), Some(123));
         let random = hex("a1", STAGING_RANDOM_LEN);

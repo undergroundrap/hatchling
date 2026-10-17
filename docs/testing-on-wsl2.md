@@ -214,6 +214,14 @@ Note `wsl --shutdown` also stops Docker Desktop. Reference result:
 Point `TMPDIR` for mutation runs at the ext4 disk, as section 7 says,
 and delete the scratch directory after each run.
 
+What grew it is usually build output: each workspace's `target/`, and
+any copies of it a mutation run left. Delete those first (`cargo clean`,
+or the directory), then compact; one compaction after months of gates
+took ours from 179.6 GB to 16.0 GB. Deleting files frees space inside
+the disk only, never on Windows, until it is compacted. Hatchling's own
+leftovers go with `hatchling-broker clean`; for what is safe to delete,
+and what is your data, see [What Hatchling keeps on disk](storage.md).
+
 ## Driving WSL from PowerShell
 
 Inline `wsl -- bash -c "..."` breaks on `$`, quotes and globs as they
