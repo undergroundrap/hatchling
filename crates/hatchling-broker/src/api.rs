@@ -1265,6 +1265,12 @@ mod tests {
     fn the_broker_stops_at_start_up_when_its_vault_cannot_open() {
         // The vault under `/nonexistent` cannot be opened: start-up ends
         // with an error before any socket is bound or any API opened.
-        assert!(crate::run_serve(&owner_config(None)).is_err());
+        // In this process, whose `TMPDIR` is shared: it must stop before
+        // the sweep (WO-012), at the lock or the vault, whichever comes.
+        let stopped = crate::run_serve(&owner_config(None));
+        assert!(
+            matches!(stopped, Err(Error::Vault { .. } | Error::Sweep { .. })),
+            "{stopped:?}"
+        );
     }
 }

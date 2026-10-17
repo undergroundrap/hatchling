@@ -101,7 +101,12 @@ fn broker_binary() -> std::path::PathBuf {
 /// `cargo mutants` (which exports `HATCHLING_AGENT_BIN`) the broker
 /// blocks in `spawn_cell` and never reaches `listen()`.
 fn spawn_broker(vars: &[(&str, String)]) -> std::io::Result<Child> {
+    // A starting broker sweeps its `TMPDIR` (WO-012): this test process's
+    // own, never a shared one, unless the test gives one.
+    let tmp = std::env::temp_dir().join(format!("hatchling-e2e-{}-tmp", std::process::id()));
+    std::fs::create_dir_all(&tmp)?;
     let mut command = Command::new(broker_binary());
+    command.env("TMPDIR", &tmp);
     for (key, value) in vars {
         command.env(key, value);
     }

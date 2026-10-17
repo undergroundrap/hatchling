@@ -285,6 +285,10 @@ fn supervise(
         .arg(SKILL_CELL_SUBCOMMAND)
         .arg(spec)
         .env("TMPDIR", run_dir)
+        .env(
+            crate::run_launcher::BROKER_PID_ENV,
+            crate::run_launcher::broker_pid(),
+        )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -456,7 +460,10 @@ fn run_helper(spec: Option<&str>) -> Result<i32, Error> {
             reason: String::from("skill-cell spawns skill cells only"),
         });
     }
+    let watch =
+        crate::run_launcher::watch_broker(std::env::var_os(crate::run_launcher::BROKER_PID_ENV))?;
     let mut cell = spawn_cell(&config, LogLevel::Error)?;
+    watch.exit_with_parent(1);
     if let Some(network) = config
         .harness
         .as_ref()
