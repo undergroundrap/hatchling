@@ -1244,7 +1244,7 @@ mod tests {
         );
         // Recorded by tags under the key sealed beside the kept text, and
         // by no unkeyed hash.
-        let tags = TagKey::load_or_create(&raw, &key).unwrap();
+        let tags = TagKey::load_or_create(&redaction.dir.join(RAW_DIR), &key).unwrap();
         assert_eq!(
             (event.tag.clone(), event.flagged_tag.clone()),
             (

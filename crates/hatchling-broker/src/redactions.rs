@@ -970,8 +970,6 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
     use std::time::Duration;
 
-    use hmac::Mac as _;
-
     use super::*;
     use crate::api_auth::tests::{Scratch, owner_config, scratch};
 
