@@ -625,7 +625,10 @@ mod tests {
             Err(Error::UnlockFailed)
         ));
         assert_eq!(fresh.backup_codes_left(), CODE_COUNT - 1);
-        assert!(fresh.recover(codes.get(1).unwrap()).is_ok(), "read again, it works");
+        assert!(
+            fresh.recover(codes.get(1).unwrap()).is_ok(),
+            "read again, it works"
+        );
         assert_eq!(fresh.backup_codes_left(), CODE_COUNT - 2);
     }
 }

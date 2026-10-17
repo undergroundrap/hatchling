@@ -1418,7 +1418,10 @@ mod tests {
             keyring.set_tier(Tier::Totp, vec![extra]),
             Err(Error::KeyringChanged { .. })
         ));
-        assert_eq!((keyring.tier(), keyring.wraps()), (Tier::File, before.as_slice()));
+        assert_eq!(
+            (keyring.tier(), keyring.wraps()),
+            (Tier::File, before.as_slice())
+        );
     }
 
     #[test]
@@ -1466,5 +1469,32 @@ mod tests {
             ),
             "BackupCode { verifier: \"v\", salt: \"s\" }"
         );
+    }
+
+    #[test]
+    fn a_secret_text_is_plain_json_and_a_file_hashes_a_block_at_a_time() {
+        // secret_text: the same JSON string either way.
+        let mut out = Vec::new();
+        secret_text::serialize(
+            &Zeroizing::new(String::from("6162")),
+            &mut serde_json::Serializer::new(&mut out),
+        )
+        .unwrap();
+        assert_eq!(out, b"\"6162\"");
+        let back =
+            secret_text::deserialize(&mut serde_json::Deserializer::from_str("\"6162\"")).unwrap();
+        assert_eq!(back.as_str(), "6162");
+        assert!(secret_text::deserialize(&mut serde_json::Deserializer::from_str("7")).is_err());
+        // digest_file: none for no file; the whole file, past one block.
+        let dir = test_dir("digest-file");
+        assert_eq!(digest_file(&dir.join("absent")).unwrap(), None);
+        let long: Vec<u8> = (0..10_000u32)
+            .map(|at| u8::try_from(at % 251).unwrap())
+            .collect();
+        std::fs::write(dir.join("long"), &long).unwrap();
+        assert_eq!(digest_file(&dir.join("long")).unwrap(), Some(digest(&long)));
+        std::fs::write(dir.join("empty"), b"").unwrap();
+        assert_eq!(digest_file(&dir.join("empty")).unwrap(), Some(digest(b"")));
+        assert!(digest_file(&dir).is_err(), "a directory is no file to hash");
     }
 }

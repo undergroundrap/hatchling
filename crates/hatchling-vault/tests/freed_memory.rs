@@ -51,7 +51,10 @@ fn holds_a_canary(block: &[u8]) -> bool {
     block.windows(WINDOW).any(|at| {
         at.first()
             .is_some_and(|&first| canaries.starts.get(usize::from(first)) == Some(&true))
-            && canaries.windows.iter().any(|window| window.as_slice() == at)
+            && canaries
+                .windows
+                .iter()
+                .any(|window| window.as_slice() == at)
     })
 }
 
@@ -193,7 +196,9 @@ fn unbase32(text: &str) -> Vec<u8> {
 
 #[test]
 fn the_scanner_finds_a_copy_left_behind_and_not_one_wiped() {
-    let _serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // A control: without it, a scanner that sees nothing passes everything.
     let canary = [0x5a_u8; 64];
     watch_for(&[&canary]);
@@ -204,12 +209,16 @@ fn the_scanner_finds_a_copy_left_behind_and_not_one_wiped() {
         growing.extend_from_slice(&canary);
         zeroize::Zeroize::zeroize(&mut growing);
     }));
-    assert!(!leaves_a_copy(|| drop(zeroize::Zeroizing::new(canary.to_vec()))));
+    assert!(!leaves_a_copy(|| drop(zeroize::Zeroizing::new(
+        canary.to_vec()
+    ))));
 }
 
 #[test]
 fn migrating_and_checking_a_plaintext_store_frees_no_copy_of_it() {
-    let _serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let dir = test_dir("migrate");
     let plaintext: Vec<u8> = (0..200u8).map(|at| at.wrapping_mul(37) ^ 0xa5).collect();
     let name: SecretName = "token".parse().unwrap();
@@ -244,7 +253,9 @@ fn migrating_and_checking_a_plaintext_store_frees_no_copy_of_it() {
 
 #[test]
 fn a_totp_keyring_loaded_unlocked_and_saved_frees_no_copy_of_its_seed() {
-    let _serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let dir = test_dir("totp");
     let path = dir.join("keys").join("keyring");
     let dek = MasterKey::generate().unwrap();
@@ -284,7 +295,9 @@ fn a_totp_keyring_loaded_unlocked_and_saved_frees_no_copy_of_its_seed() {
 
 #[test]
 fn recovering_with_a_backup_code_frees_no_copy_of_it() {
-    let _serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let dir = test_dir("backup");
     let path = dir.join("keys").join("keyring");
     let dek = MasterKey::generate().unwrap();
@@ -314,7 +327,9 @@ fn recovering_with_a_backup_code_frees_no_copy_of_it() {
 #[test]
 fn loading_the_key_file_frees_no_copy_of_the_key() {
     use hatchling_vault::{FileKey, KeySource as _};
-    let _serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let dir = test_dir("key-file");
     let path = dir.join("keys").join("key");
     FileKey::new(path.clone()).load_or_create().unwrap();

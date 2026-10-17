@@ -566,4 +566,43 @@ mod tests {
         assert_eq!(fetched.as_bytes(), bytes.as_slice());
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    #[test]
+    fn a_head_is_the_first_bytes_only_and_a_read_is_bounded() {
+        let dir = std::env::temp_dir().join(format!("hatchling-vault-head-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let vault = Vault::open(&dir).unwrap();
+        let name = |text: &str| -> SecretName { text.parse().unwrap() };
+        vault
+            .store_raw(&name("long"), b"HVL2 and the rest")
+            .unwrap();
+        vault.store_raw(&name("short"), b"ab").unwrap();
+        vault.store_raw(&name("empty"), b"").unwrap();
+        // fetch_head: four bytes at most, and how many.
+        assert_eq!(vault.fetch_head(&name("long")).unwrap(), (*b"HVL2", 4));
+        assert_eq!(vault.fetch_head(&name("short")).unwrap(), (*b"ab\0\0", 2));
+        assert_eq!(vault.fetch_head(&name("empty")).unwrap(), ([0; 4], 0));
+        assert!(matches!(
+            vault.fetch_head(&name("absent")),
+            Err(Error::NotFound { .. })
+        ));
+        // open_entry: the file, or NotFound for none.
+        assert!(vault.open_entry(&name("long")).is_ok());
+        assert!(matches!(
+            vault.open_entry(&name("absent")),
+            Err(Error::NotFound { .. })
+        ));
+        // read_bounded: the whole file within the bound, refused past it.
+        assert_eq!(
+            vault.read_bounded(&name("long"), 64).unwrap(),
+            b"HVL2 and the rest"
+        );
+        assert_eq!(vault.read_bounded(&name("long"), 17).unwrap().len(), 17);
+        assert!(matches!(
+            vault.read_bounded(&name("long"), 16),
+            Err(Error::TooLarge { len: 17, max: 16 })
+        ));
+        assert!(vault.read_bounded(&name("empty"), 0).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
