@@ -240,7 +240,14 @@ fn a_child() {
                 .split_whitespace()
                 .map(String::from)
                 .collect();
-            match hatchling_broker::sweep::run_clean(&config, &args) {
+            // A dry run asks `clean` itself for its report; the rest go
+            // through the command.
+            let done = if args == ["--dry-run"] {
+                hatchling_broker::sweep::clean(&config, true).map(|report| say(&report))
+            } else {
+                hatchling_broker::sweep::run_clean(&config, &args)
+            };
+            match done {
                 Ok(()) => say("clean: done"),
                 Err(error) => say(&format!("clean: {error}")),
             }
