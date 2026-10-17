@@ -116,6 +116,7 @@ fn a_broker_killed_mid_run() {
         run_root: config.scheduler.run_root(),
         timeout: Duration::from_secs(600),
     };
+    println!("child: launching a hanging run under {}", config.scheduler.run_root().display());
     std::thread::scope(|scope| {
         let launcher = CellLauncher::new(scope, &config, &key, env);
         let _run = launcher
@@ -132,6 +133,7 @@ fn a_broker_killed_mid_run() {
                 feed: None,
             })
             .unwrap();
+        println!("child: launched");
         let deadline = Instant::now() + Duration::from_secs(60);
         let run_dir = loop {
             let ready = std::fs::read_dir(config.scheduler.run_root())
@@ -162,7 +164,12 @@ fn the_next_start_sweeps_what_a_killed_broker_left_and_logs_each() {
     let base = base("killed");
     let config = config(&base);
     let mut broker = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "a_broker_killed_mid_run", "--nocapture", "--test-threads=1"])
+        .args([
+            "--exact",
+            "a_broker_killed_mid_run",
+            "--nocapture",
+            "--test-threads=1",
+        ])
         .env(CHILD, &*base)
         .stdout(Stdio::piped())
         .spawn()
@@ -171,22 +178,41 @@ fn the_next_start_sweeps_what_a_killed_broker_left_and_logs_each() {
     let (said, heard) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if let Some(dir) = line.strip_prefix(READY) {
-                let _ = said.send(PathBuf::from(dir));
-            }
+            let _ = said.send(line);
         }
     });
-    let run_dir = heard.recv_timeout(Duration::from_secs(90));
+    // Everything the child says, until it says where its run is.
+    let mut told = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(90);
+    let run_dir = loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match heard.recv_timeout(left) {
+            Ok(line) => match line.strip_prefix(READY) {
+                Some(dir) => break Some(PathBuf::from(dir)),
+                None => told.push(line),
+            },
+            Err(_) => break None,
+        }
+    };
     // Killed mid-run, however the run went: nothing cleans up after it.
     broker.kill().unwrap();
     broker.wait().unwrap();
-    let run_dir = run_dir.expect("the broker's run never staged its cell");
+    let Some(run_dir) = run_dir else {
+        unreachable!(
+            "the broker's run never staged its cell; it said {told:?}; under its run root: {:?}",
+            std::fs::read_dir(config.scheduler.run_root())
+                .map(|entries| entries.filter_map(Result::ok).map(|entry| entry.path()).collect::<Vec<_>>())
+        );
+    };
     let staging = staging_in(&run_dir).expect("the run's cell staging is left behind");
     // Its helper and cell die with it (PDEATHSIG).
     let helper = staging_pid(&staging);
     let deadline = Instant::now() + Duration::from_secs(30);
     while hatchling_sys::pid_alive(helper) {
-        assert!(Instant::now() < deadline, "the run's helper outlived its broker");
+        assert!(
+            Instant::now() < deadline,
+            "the run's helper outlived its broker"
+        );
         std::thread::sleep(Duration::from_millis(50));
     }
     assert!(run_dir.exists() && staging.exists());

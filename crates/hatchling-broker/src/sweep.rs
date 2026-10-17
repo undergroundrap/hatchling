@@ -203,7 +203,11 @@ fn remove(found: &[Leftover], keep: &[PathBuf]) -> Vec<String> {
             }
         }
     }
-    tracing::info!(removed, found = found.len(), "swept the leftovers of earlier runs");
+    tracing::info!(
+        removed,
+        found = found.len(),
+        "swept the leftovers of earlier runs"
+    );
     lines.push(format!("{removed} of {} leftover(s) removed", found.len()));
     lines
 }
@@ -371,7 +375,7 @@ mod tests {
         assert_eq!(staging_pid(&staging(123, "a1")), Some(123));
         let random = hex("a1", STAGING_RANDOM_LEN);
         for name in [
-            format!("hatchling-staging-123-{}", &random[1..]),
+            format!("hatchling-staging-123-{}", random.get(1..).unwrap()),
             format!("hatchling-staging-123-{random}0"),
             format!("hatchling-staging-123-{}", random.to_ascii_uppercase()),
             format!("hatchling-staging-0-{random}"),
@@ -459,6 +463,8 @@ mod tests {
         let ran = runs.join(run("b2"));
         std::fs::create_dir_all(ran.join("tmp")).unwrap();
         std::fs::write(ran.join("tmp").join("out"), b"o").unwrap();
+        // The lock file is made the first time it is taken.
+        drop(take_lock(&config).unwrap());
         let before = snapshot(&dir.0);
         let listed = clean_in(&config, &tmp, true).unwrap();
         assert_eq!(
@@ -499,7 +505,10 @@ mod tests {
     fn clean_and_a_second_broker_are_refused_while_one_serves() {
         let dir = scratch("sweep-busy");
         let config = config_in(&dir.0);
-        let (tmp, ran) = (dir.0.join("tmp"), config.scheduler.run_root().join(run("b2")));
+        let (tmp, ran) = (
+            dir.0.join("tmp"),
+            config.scheduler.run_root().join(run("b2")),
+        );
         std::fs::create_dir(&ran).unwrap();
         let serving = take_lock(&config).unwrap();
         let lock = lock_path(config.socket.as_path());
@@ -542,7 +551,10 @@ mod tests {
         let lines = sweep_in(&config, None, &tmp);
         assert_eq!(std::fs::read(memory.join("item")).unwrap(), b"m");
         assert!(!ran.join("scratch").exists());
-        assert_eq!(std::fs::read(config.vault.root.join("secret")).unwrap(), b"v");
+        assert_eq!(
+            std::fs::read(config.vault.root.join("secret")).unwrap(),
+            b"v"
+        );
         assert!(!other.exists());
         assert_eq!(
             lines,
@@ -577,7 +589,7 @@ mod tests {
         assert!(kept.iter().all(|dir| !dir.as_os_str().is_empty()));
         // One gone before it could be removed is left, and said so.
         let vanished = Leftover {
-            root: runs.clone(),
+            root: runs,
             name: OsString::from(run("d4")),
         };
         let lines = remove(&[vanished], &[]);

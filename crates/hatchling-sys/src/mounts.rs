@@ -998,7 +998,11 @@ pub(crate) mod tests {
     /// In a forked child: a fresh user namespace mapping this uid, and a
     /// private mount namespace. Returns the child's pid; exits 99 (the
     /// environmental skip) when namespaces are unavailable.
-    pub fn enter_private_mount_namespace() -> i32 {
+    #[allow(
+        clippy::redundant_pub_crate,
+        reason = "the tree module's tests take a mount namespace this way too"
+    )]
+    pub(crate) fn enter_private_mount_namespace() -> i32 {
         use crate::process::exit_child;
         // SAFETY: geteuid takes no args.
         let euid = unsafe { libc::geteuid() };

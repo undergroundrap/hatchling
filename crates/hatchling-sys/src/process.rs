@@ -1529,7 +1529,9 @@ mod tests {
             ForkResult::Child => exit_child(0),
         };
         let pid = child.pid().get();
-        let _ = child.wait_deadline(std::time::Duration::from_secs(10)).unwrap();
+        let _ = child
+            .wait_deadline(std::time::Duration::from_secs(10))
+            .unwrap();
         assert!(!pid_alive(pid), "reaped: gone");
     }
 

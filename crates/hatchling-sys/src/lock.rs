@@ -25,9 +25,11 @@ impl Drop for HeldLock {
 }
 
 /// Takes the lock at `path` without waiting: `None` while another holds
-/// it. A new lock file is made `0600`; one already there must be a
-/// regular file of this process's effective user, and is opened without
-/// following a symlink.
+/// it.
+///
+/// A new lock file is made `0600`; one already there must be a regular
+/// file of this process's effective user, and is opened without following
+/// a symlink.
 ///
 /// # Errors
 ///
@@ -91,7 +93,10 @@ mod tests {
         std::os::unix::fs::symlink(&elsewhere, dir.join("link.lock")).unwrap();
         assert!(matches!(
             try_lock(&dir.join("link.lock")),
-            Err(Error::Lock { operation: "open the lock", .. })
+            Err(Error::Lock {
+                operation: "open the lock",
+                ..
+            })
         ));
         assert!(!elsewhere.exists(), "never followed");
         std::fs::create_dir(dir.join("dir.lock")).unwrap();

@@ -68,7 +68,6 @@ pub use schedule_ops::{
     handle_schedule_op, held_grants,
 };
 pub mod serve;
-pub mod sweep;
 pub mod skill_cell;
 pub mod skill_invoke;
 pub mod skill_ops;
@@ -76,6 +75,7 @@ pub mod skill_run;
 pub mod skills;
 pub mod space_ops;
 pub mod subagent_ops;
+pub mod sweep;
 pub use space_ops::{EndAdmissions, MediaMeta, SealedSpaceStore, SpaceSession, handle_space_op};
 #[cfg(test)]
 mod test_socket;
