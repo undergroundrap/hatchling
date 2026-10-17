@@ -65,6 +65,10 @@ hatchling-sys.workspace = true
 hatchling-skill.workspace = true
 # Memory hygiene for credential bytes in the egress credential fetcher.
 zeroize = "1"
+# The audit log's keyed tags: HMAC-SHA-256 under a key sealed beside the
+# kept texts, so the log alone confirms no guess at what was redacted.
+hmac = "0.12"
+sha2 = "0.10"
 # Constant-time comparison of a harness relay's surrogate key.
 subtle = "2"
 thiserror = "2"

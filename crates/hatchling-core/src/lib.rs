@@ -44,7 +44,7 @@ pub use messages::{
 };
 pub use model_reasoning::ModelReasoning;
 pub use peer::{PeerCredentials, peer_credentials};
-pub use secret::{MAX_SECRET_BYTES, decode as decode_secret, encode as encode_secret};
+pub use secret::{MAX_SECRET_BYTES, SecretB64, decode as decode_secret, encode as encode_secret};
 pub use subagent::{
     ActivityEvent, ChildEnvelope, ChildFailure, ChildOutcome, ChildReport, ChildVerdict,
     SubagentEvent, SubagentOp, SubagentRefusal, SubagentResult, grant_label, parse_grant_label,

@@ -25,3 +25,5 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Content hashes: pinned inputs, the inputs hash, and the output hash.
 sha2 = "0.10"
+# Wipes the gate's copies of held secrets, in every form, when it drops them.
+zeroize = "1"

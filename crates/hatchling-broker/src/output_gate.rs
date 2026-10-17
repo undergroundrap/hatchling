@@ -38,9 +38,10 @@ use hatchling_artifact::request::sha256_hex;
 use hatchling_channel::gate::{DEFAULT_CLASSIFIER_TIMEOUT, FAILED_CATEGORY, MIN_BLOCK_CHARS};
 use hatchling_channel::{Category, Classifier, OutputGate, Request, Verdict, normalize};
 use hatchling_vault::{MAX_SECRET_BYTES, MasterKey, SealedVault, Secret, SecretName};
+use zeroize::Zeroizing;
 
 use crate::environment as env;
-use crate::redactions::{FileAudit, FileOverrides, RawOutcome, Settings};
+use crate::redactions::{FileAudit, FileOverrides, RawOutcome, Settings, TagKey};
 use crate::{Config, Error};
 
 /// The built-in rules' id, as the audit log records it.
@@ -409,16 +410,31 @@ impl Classifier for Rules<'_> {
 /// Whether `text` carries one of `secrets`: in any form the artifact gate
 /// checks, or, for a secret whose normalized form is long enough to be
 /// told apart from ordinary words, spaced or punctuated differently.
-fn holds_secret(text: &str, secrets: &[Vec<u8>]) -> bool {
-    if SecretSet::new(secrets.to_vec()).exposed_in(text.as_bytes()) {
+fn holds_secret(text: &str, secrets: &[Zeroizing<Vec<u8>>]) -> bool {
+    if SecretSet::new(secrets.iter().cloned()).exposed_in(text.as_bytes()) {
         return true;
     }
     let form = normalize(text);
     secrets
         .iter()
         .filter_map(|secret| std::str::from_utf8(secret).ok())
-        .map(normalize)
+        .map(normalized_secret)
         .any(|secret| secret.chars().count() >= MIN_BLOCK_CHARS && form.contains(secret.as_str()))
+}
+
+/// [`normalize`] of a held secret, wiped when dropped. It is made at its
+/// final size, so no copy is left behind in a freed buffer: lowercasing a
+/// character never more than doubles its bytes, and three times leaves
+/// room to spare.
+fn normalized_secret(secret: &str) -> Zeroizing<String> {
+    let mut form = Zeroizing::new(String::with_capacity(secret.len() * 3));
+    form.extend(
+        secret
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(char::to_lowercase),
+    );
+    form
 }
 
 /// The first PEM private-key block in `text`: from its `-----BEGIN...
@@ -617,7 +633,11 @@ pub struct Built {
 /// Returns [`Error::InvalidConfig`] when the redaction directory is not an
 /// owner-only directory and cannot be made one, or the categories file is
 /// invalid, and [`Error::Redaction`] when the audit log cannot be written.
-pub fn build(config: &Config, redaction: &RedactionConfig) -> Result<Built, Error> {
+pub fn build(
+    config: &Config,
+    redaction: &RedactionConfig,
+    key: &MasterKey,
+) -> Result<Built, Error> {
     if config.channel_ingress.is_none() {
         return Ok(Built {
             gate: OutputGate::disabled(),
@@ -659,6 +679,7 @@ pub fn build(config: &Config, redaction: &RedactionConfig) -> Result<Built, Erro
             worker: None,
         });
     }
+    let tags = Arc::new(TagKey::load_or_create(&redaction.dir.join(RAW_DIR), key)?);
     tracing::info!(
         dir = %redaction.dir.display(),
         categories = phrases.len(),
@@ -668,8 +689,8 @@ pub fn build(config: &Config, redaction: &RedactionConfig) -> Result<Built, Erro
     Ok(Built {
         gate: OutputGate::new(
             Arc::new(handle),
-            Arc::new(audit),
-            Arc::new(FileOverrides::new(&redaction.dir)),
+            Arc::new(audit.with_tags(Arc::clone(&tags))),
+            Arc::new(FileOverrides::new(&redaction.dir).with_tags(tags)),
             redaction.timeout,
         ),
         worker: Some((worker, phrases)),
@@ -1028,7 +1049,7 @@ mod tests {
         let (_dir, config, key) = held("gate-held");
         let values = crate::artifact_ops::held_secret_values(&config, &key, "output-gate").unwrap();
         assert_eq!(values.len(), 3);
-        assert!(values.contains(&HELD.as_bytes().to_vec()));
+        assert!(values.contains(&Zeroizing::new(HELD.as_bytes().to_vec())));
         let set = crate::artifact_ops::held_secrets(&config, &key).unwrap();
         assert!(set.exposed_in(HELD.as_bytes()));
         assert!(!set.exposed_in(b"nothing held"));
@@ -1040,11 +1061,12 @@ mod tests {
 
     #[test]
     fn a_secret_is_found_raw_encoded_or_respaced() {
-        let secrets = vec![
+        let secrets = [
             HELD.as_bytes().to_vec(),
             b"ab-cd-ef".to_vec(),
             vec![0xff, 0x00, 0x41],
-        ];
+        ]
+        .map(Zeroizing::new);
         assert!(holds_secret(HELD, &secrets));
         assert!(holds_secret("nightjar 7f3a 91c2", &secrets));
         assert!(!holds_secret("nightjar 7f3a", &secrets));
@@ -1054,6 +1076,19 @@ mod tests {
         );
         assert!(holds_secret("ab-cd-ef", &secrets));
         assert!(!holds_secret("plain text", &[]));
+    }
+
+    #[test]
+    fn a_normalized_secret_is_made_at_its_final_size() {
+        // Lowercasing grows these: İ to two characters, Ⱥ to a longer one.
+        for (at, sample) in ["Nightjar-7F3A 91c2", "İİİİ", "ȺȺȺ", "", "--"]
+            .into_iter()
+            .enumerate()
+        {
+            let form = normalized_secret(sample);
+            assert_eq!(*form, normalize(sample), "sample {at}");
+            assert_eq!(form.capacity(), sample.len() * 3, "sample {at} grew");
+        }
     }
 
     #[test]
@@ -1142,6 +1177,59 @@ mod tests {
         assert!(shown.contains("RulesHandle"), "{shown}");
     }
 
+    /// `event` is recorded by tags under the key sealed beside the kept
+    /// text, and the log holds no unkeyed hash of it.
+    fn recorded_by_tags(
+        event: &crate::redactions::Judged,
+        config: &Config,
+        redaction: &RedactionConfig,
+        key: &MasterKey,
+    ) {
+        let tags = TagKey::load_or_create(&redaction.dir.join(RAW_DIR), key).unwrap();
+        assert_eq!(
+            (event.tag.clone(), event.flagged_tag.clone()),
+            (
+                Some(tags.tag(b"the Nightjar Plan, in full")),
+                Some(tags.tag(b"nightjarplan"))
+            )
+        );
+        assert_eq!((&event.sha256, &event.flagged_sha256), (&None, &None));
+        let text = std::fs::read_to_string(redaction.dir.join(AUDIT_FILE)).unwrap();
+        for unkeyed in [
+            sha256_hex(b"the Nightjar Plan, in full"),
+            sha256_hex(b"nightjarplan"),
+        ] {
+            assert!(!text.contains(&unkeyed), "{text}");
+        }
+        let stranger = MasterKey::generate().unwrap();
+        assert!(
+            matches!(
+                build(config, redaction, &stranger),
+                Err(Error::Vault { .. })
+            ),
+            "the tag key opens only under the broker's key"
+        );
+    }
+
+    /// The operator overrides redaction `id` in every scope, by its tag,
+    /// and `gate`, whose overrides match tags under the same key, delivers
+    /// `message` on it.
+    fn overridden_by_tag(
+        gate: &OutputGate,
+        message: &Message,
+        redaction: &RedactionConfig,
+        id: &str,
+    ) {
+        crate::redactions::command(redaction, &["override", id, "--any-scope"], || {
+            unreachable!("an override needs no key")
+        })
+        .unwrap();
+        assert!(
+            gate.clear(message, "session:b").redaction().is_none(),
+            "delivered on the override"
+        );
+    }
+
     #[test]
     fn the_gate_is_built_once_at_start_and_records_its_settings() {
         let (dir, mut config, key) = held("gate-build");
@@ -1152,7 +1240,7 @@ mod tests {
             timeout: Duration::from_secs(1),
             builtins: Builtins::ALL,
         };
-        let built = build(&config, &redaction).unwrap();
+        let built = build(&config, &redaction, &key).unwrap();
         assert_eq!(built.gate.classifier_id(), None, "no ingress, no gate");
         assert!(built.worker.is_none());
         assert!(!redaction.dir.exists(), "and nothing written");
@@ -1164,7 +1252,7 @@ mod tests {
             "codename: nightjar plan\n",
         )
         .unwrap();
-        let built = build(&config, &redaction).unwrap();
+        let built = build(&config, &redaction, &key).unwrap();
         assert_eq!(built.gate.classifier_id(), Some(RULES_ID));
         let (worker, phrases) = built.worker.unwrap();
         assert_eq!(phrases.len(), 1);
@@ -1179,10 +1267,10 @@ mod tests {
         std::thread::scope(|scope| {
             scope.spawn(|| worker.serve(&rules, &raw));
             let cleared = gate.clear(&message, "session:a");
-            assert!(
-                cleared.redaction().is_some(),
-                "the operator's phrase is redacted"
-            );
+            let Some((_, id)) = cleared.redaction() else {
+                unreachable!("the operator's phrase is redacted");
+            };
+            overridden_by_tag(&gate, &message, &redaction, id);
             drop(gate);
         });
         let log = redaction.dir.join(AUDIT_FILE);
@@ -1195,9 +1283,13 @@ mod tests {
                 ..
             },
             Record::Redacted { event, raw },
+            Record::Override(_),
+            Record::Overridden { .. },
         ] = records.as_slice()
         else {
-            unreachable!("a config record, then the redaction: {records:?}");
+            unreachable!(
+                "a config record, the redaction, its override and a delivery: {records:?}"
+            );
         };
         assert_eq!(
             (
@@ -1214,12 +1306,13 @@ mod tests {
             (event.category.as_str(), *raw),
             ("codename", RawOutcome::Kept)
         );
+        recorded_by_tags(event, &config, &redaction, &key);
 
         let off = RedactionConfig {
             enabled: false,
             ..redaction
         };
-        let built = build(&config, &off).unwrap();
+        let built = build(&config, &off, &key).unwrap();
         assert_eq!(built.gate.classifier_id(), None);
         assert!(built.worker.is_none());
         let (records, _) = read_log(&log).unwrap();
@@ -1241,7 +1334,7 @@ mod tests {
 
     #[test]
     fn a_gate_that_cannot_keep_its_records_stops_the_broker() {
-        let (dir, mut config, _key) = held("gate-refused");
+        let (dir, mut config, key) = held("gate-refused");
         config.channel_ingress = Some("/tmp/hatchling-gate-refused.sock".parse().unwrap());
         let redaction = RedactionConfig {
             enabled: true,
@@ -1259,7 +1352,7 @@ mod tests {
             builtins: Builtins::ALL,
         };
         assert!(matches!(
-            build(&config, &in_a_file),
+            build(&config, &in_a_file, &key),
             Err(Error::InvalidConfig {
                 key: "HATCHLING_REDACTION_DIR",
                 ..
@@ -1273,7 +1366,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            build(&config, &redaction).is_err(),
+            build(&config, &redaction, &key).is_err(),
             "a bad categories file stops the broker"
         );
         let off = RedactionConfig {
@@ -1282,7 +1375,7 @@ mod tests {
         };
         std::fs::create_dir(off.dir.join(AUDIT_FILE)).unwrap();
         assert!(
-            matches!(build(&config, &off), Err(Error::Redaction { .. })),
+            matches!(build(&config, &off, &key), Err(Error::Redaction { .. })),
             "an unwritable log stops it"
         );
     }

@@ -19,12 +19,13 @@ use hatchling_core::ui::operator::{CellKind, EgressVerdict};
 use hatchling_core::{
     AgentMessage, BrokerMessage, CellId, ChannelResult, EgressOp, EgressResult, GoalsResult,
     HookResult, MAX_FRAME_BYTES, MemoryResult, PROTOCOL_VERSION, PeerCredentials, PeerPid,
-    QueryResult, ScheduleResult, SecretName, SessionRequest, SessionResponse, SkillResult, VaultOp,
-    VaultResult, decode_secret, encode_secret, peer_credentials,
+    QueryResult, ScheduleResult, SecretB64, SecretName, SessionRequest, SessionResponse,
+    SkillResult, VaultOp, VaultResult, decode_secret, encode_secret, peer_credentials,
 };
 use hatchling_egress::{EgressRequest, Proxy};
 use hatchling_memory::{MemoryPrincipal, SessionId};
 use hatchling_vault::{MasterKey, SealedVault, Secret};
+use zeroize::Zeroizing;
 
 use crate::cell::cgroup_parent;
 use crate::environment as env;
@@ -88,7 +89,7 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
     // files `migrate-vault` must re-seal.
     crate::check_sealed_stores(&crate::sealed_stores(config, redaction.as_ref()))?;
     let gated = match &redaction {
-        Some(redaction) => crate::output_gate::build(config, redaction)?,
+        Some(redaction) => crate::output_gate::build(config, redaction, &key)?,
         None => crate::output_gate::Built {
             gate: hatchling_channel::OutputGate::disabled(),
             worker: None,
@@ -736,10 +737,7 @@ fn serve_session(
                 tracing::info!(cell_id = %cell_id, "agent session closed");
                 return Ok(());
             };
-            let request: SessionRequest =
-                serde_json::from_slice(&frame).map_err(|e| Error::SessionProtocol {
-                    reason: format!("session request is not a valid protocol message: {e}"),
-                })?;
+            let request = request_of(&Zeroizing::new(frame))?;
             let response = match request {
                 SessionRequest::Vault(op) => SessionResponse::Vault(handle_vault_op(
                     &config.vault,
@@ -824,6 +822,18 @@ fn serve_session(
     })
 }
 
+/// The session request in `frame`. A request can carry a secret to store,
+/// so its frame is taken only as a buffer wiped when dropped.
+///
+/// # Errors
+///
+/// Returns [`Error::SessionProtocol`] for a frame that is not a request.
+fn request_of(frame: &Zeroizing<Vec<u8>>) -> Result<SessionRequest, Error> {
+    serde_json::from_slice(frame).map_err(|e| Error::SessionProtocol {
+        reason: format!("session request is not a valid protocol message: {e}"),
+    })
+}
+
 /// Encodes a session reply, guaranteeing it fits in `max` bytes.
 ///
 /// A reply that would not fit one frame is replaced by its kind's opaque
@@ -836,12 +846,25 @@ fn serve_session(
 ///
 /// # Errors
 ///
+/// The reply is made at its final size and wiped when dropped: a fetched
+/// secret leaves no copy behind in a freed buffer.
+///
+/// # Errors
+///
 /// Returns [`Error::SessionProtocol`] if a reply cannot be encoded.
-pub(crate) fn encode_reply(response: &SessionResponse, max: usize) -> Result<Vec<u8>, Error> {
+pub(crate) fn encode_reply(
+    response: &SessionResponse,
+    max: usize,
+) -> Result<Zeroizing<Vec<u8>>, Error> {
     let encode = |reply: &SessionResponse| {
-        serde_json::to_vec(reply).map_err(|e| Error::SessionProtocol {
+        let failed = |e: serde_json::Error| Error::SessionProtocol {
             reason: format!("failed to encode session response: {e}"),
-        })
+        };
+        let mut size = Counted(0);
+        serde_json::to_writer(&mut size, reply).map_err(failed)?;
+        let mut payload = Zeroizing::new(Vec::with_capacity(size.0));
+        serde_json::to_writer(&mut *payload, reply).map_err(failed)?;
+        Ok(payload)
     };
     let payload = encode(response)?;
     if payload.len() <= max {
@@ -853,6 +876,20 @@ pub(crate) fn encode_reply(response: &SessionResponse, max: usize) -> Result<Vec
         "session reply exceeds the frame bound; answering with the op's opaque error"
     );
     encode(&oversize_reply(response))
+}
+
+/// A writer that only counts what is written to it.
+struct Counted(usize);
+
+impl std::io::Write for Counted {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 += bytes.len();
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// The opaque error reply of the same kind as `response`.
@@ -1008,7 +1045,7 @@ fn vault_op_result(
         VaultOp::Store { secret_b64, .. } => {
             // `?` maps undecodable base64 to `SessionProtocol` via the
             // `From` impl: malformed request bytes end the session.
-            let bytes = decode_secret(secret_b64)?;
+            let bytes = decode_secret(secret_b64.as_str())?;
             let Ok(secret) = Secret::new(bytes) else {
                 return Ok(VaultResult::VaultError);
             };
@@ -1034,7 +1071,7 @@ fn vault_op_result(
         }
         VaultOp::Fetch { .. } => match vault.fetch(&name) {
             Ok(secret) => VaultResult::Fetched {
-                secret_b64: encode_secret(secret.as_bytes()),
+                secret_b64: SecretB64::encode(secret.as_bytes()),
             },
             Err(hatchling_vault::Error::NotFound { .. }) => VaultResult::NotFound,
             Err(source) => {
@@ -1080,7 +1117,7 @@ fn vault_op_result(
 fn credential_fetcher(
     vault_root: std::path::PathBuf,
     key: &MasterKey,
-) -> impl Fn(&str) -> Option<zeroize::Zeroizing<Vec<u8>>> + '_ {
+) -> impl Fn(&str) -> Option<Zeroizing<Vec<u8>>> + '_ {
     move |destination: &str| {
         // Map destination to vault secret name. The authorization is
         // the egress destination grant `handle_egress_op` checked
@@ -1102,7 +1139,7 @@ fn credential_fetcher(
         };
         crate::vault_access::record_broker_read(&vault_root, "egress", vec![secret_name], outcome);
         let secret = fetched?.ok()?;
-        Some(zeroize::Zeroizing::new(secret.as_bytes().to_vec()))
+        Some(Zeroizing::new(secret.as_bytes().to_vec()))
     }
 }
 
@@ -1136,7 +1173,7 @@ fn init_egress_proxy<'a>(
     egress_config: &EgressConfig,
     vault_config: &VaultConfig,
     key: &'a MasterKey,
-) -> Result<Proxy<impl Fn(&str) -> Option<zeroize::Zeroizing<Vec<u8>>> + 'a>, Error> {
+) -> Result<Proxy<impl Fn(&str) -> Option<Zeroizing<Vec<u8>>> + 'a>, Error> {
     let vault_root = vault_config.root.clone();
     let tls = egress_tls(|key| std::env::var(key).ok())?;
     let allowlist = egress_config
@@ -1226,7 +1263,7 @@ pub(crate) fn destination_to_secret_name(destination: &str) -> String {
     reason = "the credential-lookup closure type is inherent to the proxy's generic design; a named type would add indirection without clarity"
 )]
 pub(crate) fn handle_egress_op(
-    proxy: &Proxy<impl Fn(&str) -> Option<zeroize::Zeroizing<Vec<u8>>>>,
+    proxy: &Proxy<impl Fn(&str) -> Option<Zeroizing<Vec<u8>>>>,
     egress_config: &EgressConfig,
     op: &EgressOp,
     cell_id: &CellId,
@@ -1331,7 +1368,7 @@ pub(crate) fn handle_egress_op(
     reason = "the credential-lookup closure type is inherent to the proxy's generic design"
 )]
 fn mint_for(
-    proxy: &Proxy<impl Fn(&str) -> Option<zeroize::Zeroizing<Vec<u8>>>>,
+    proxy: &Proxy<impl Fn(&str) -> Option<Zeroizing<Vec<u8>>>>,
     cell_id: &CellId,
     peer_uid: u32,
     destination: &str,
@@ -1961,7 +1998,7 @@ mod tests {
         assert!(!dir.exists(), "a denial never creates the vault root");
         let store = VaultOp::Store {
             name: String::from("token"),
-            secret_b64: encode_secret(b"s3cret"),
+            secret_b64: encode_secret(b"s3cret").into(),
         };
         assert_eq!(
             handle_vault_op(&vault, &key, &store, &cell, 7).unwrap(),
@@ -2050,11 +2087,35 @@ mod reply_bound_tests {
             next: None,
         });
         let exact = serde_json::to_vec(&reply).unwrap();
-        assert_eq!(encode_reply(&reply, exact.len()).unwrap(), exact);
+        assert_eq!(*encode_reply(&reply, exact.len()).unwrap(), exact);
         assert_eq!(
-            encode_reply(&reply, exact.len() - 1).unwrap(),
+            *encode_reply(&reply, exact.len() - 1).unwrap(),
             serde_json::to_vec(&SessionResponse::Memory(MemoryResult::MemoryError)).unwrap()
         );
+    }
+
+    #[test]
+    fn a_request_is_read_from_a_wiped_frame() {
+        let store = SessionRequest::Vault(VaultOp::Store {
+            name: String::from("token"),
+            secret_b64: SecretB64::encode(b"s3cret"),
+        });
+        let frame = Zeroizing::new(serde_json::to_vec(&store).unwrap());
+        assert_eq!(request_of(&frame).unwrap(), store);
+        assert!(matches!(
+            request_of(&Zeroizing::new(b"{not a request".to_vec())),
+            Err(Error::SessionProtocol { reason }) if reason.contains("not a valid protocol message")
+        ));
+    }
+
+    #[test]
+    fn a_fetched_secret_is_encoded_at_its_final_size() {
+        let reply = SessionResponse::Vault(VaultResult::Fetched {
+            secret_b64: SecretB64::encode(&[0xAB; 3000]),
+        });
+        let payload = encode_reply(&reply, MAX_FRAME_BYTES).unwrap();
+        assert_eq!(*payload, serde_json::to_vec(&reply).unwrap());
+        assert_eq!(payload.capacity(), payload.len(), "the buffer grew");
     }
 
     #[test]
@@ -2063,7 +2124,7 @@ mod reply_bound_tests {
             assert_eq!(oversize_reply(&reply), reply);
             // With no room at all, the fallback is still the same kind.
             assert_eq!(
-                encode_reply(&reply, 0).unwrap(),
+                *encode_reply(&reply, 0).unwrap(),
                 serde_json::to_vec(&reply).unwrap()
             );
         }
@@ -2087,7 +2148,7 @@ mod reply_bound_tests {
         let payload = encode_reply(&reply, MAX_FRAME_BYTES).unwrap();
         assert!(payload.len() <= MAX_FRAME_BYTES);
         assert_eq!(
-            payload,
+            *payload,
             serde_json::to_vec(&SessionResponse::Memory(MemoryResult::MemoryError)).unwrap()
         );
     }

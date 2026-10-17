@@ -183,7 +183,7 @@ pub(crate) fn random_hex(prefix: &str) -> Result<String, std::io::Error> {
 }
 
 /// `prefix`, then each of `bytes` as two lowercase hex digits.
-fn hex_token(prefix: &str, bytes: &[u8]) -> String {
+pub(crate) fn hex_token(prefix: &str, bytes: &[u8]) -> String {
     let mut token = String::from(prefix);
     for b in bytes {
         token.push(char::from_digit(u32::from(b >> 4), 16).unwrap_or('0'));

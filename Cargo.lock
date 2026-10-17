@@ -389,6 +389,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "zeroize",
 ]
 
 [[package]]
@@ -417,9 +418,11 @@ dependencies = [
  "hatchling-space",
  "hatchling-sys",
  "hatchling-vault",
+ "hmac",
  "rustix",
  "serde",
  "serde_json",
+ "sha2",
  "subtle",
  "thiserror",
  "tracing",
@@ -458,6 +461,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]
