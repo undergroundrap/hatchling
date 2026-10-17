@@ -691,7 +691,9 @@ mod tests {
         let dir = test_dir("fido2-key-kek");
         let (keyring, _, dek) = vault(&dir);
         let (mut holder, mut other) = (VirtualAuthenticator::new(), VirtualAuthenticator::new());
-        let mut wrap = keyring.hardware_wrap(&dek, &mut holder).unwrap();
+        let mut wrap = keyring
+            .hardware_wrap(&dek, &mut holder, KeyCheck::Touch)
+            .unwrap();
         let kek = keyring
             .key_kek(&wrap, &mut [&mut other, &mut holder])
             .unwrap();
@@ -709,5 +711,135 @@ mod tests {
             keyring.key_kek(&file, &mut [&mut holder]),
             Err(Error::KeyAbsent { .. })
         ));
+    }
+
+    /// A key's credential and salt, as bytes.
+    fn answer_inputs(factor: &Factor) -> (Vec<u8>, [u8; 32]) {
+        let (credential, salt) = parts(factor);
+        (
+            unhex(&credential).unwrap(),
+            <[u8; 32]>::try_from(unhex(&salt).unwrap()).unwrap(),
+        )
+    }
+
+    #[test]
+    fn a_key_enrolled_with_its_pin_opens_the_vault_only_with_it() {
+        let dir = test_dir("fido2-pin");
+        let (mut keyring, kek, _) = vault(&dir);
+        let (mut primary, mut backup) = (
+            VirtualAuthenticator::with_pin("2468"),
+            VirtualAuthenticator::with_pin("1357"),
+        );
+        let unlocked = keyring.unlock_file(&kek).unwrap();
+        let rotated = keyring
+            .enroll_hardware_keys_checked(&unlocked, &mut [&mut primary, &mut backup], KeyCheck::Pin)
+            .unwrap();
+        settle(&mut keyring, rotated, &dir.join("vault"));
+        assert!(keyring.hardware_keys().iter().all(|key| key.check == KeyCheck::Pin));
+        // With its PIN it opens; with none, or a wrong one, it doesn't.
+        let opened = keyring.unlock_hardware_key(&mut primary).unwrap();
+        assert!(reads_the_secret(&dir, opened.key()));
+        for typed in [None, Some("0000")] {
+            primary.set_typed(typed);
+            assert!(matches!(
+                keyring.unlock_hardware_key(&mut primary),
+                Err(Error::UnlockFailed)
+            ));
+        }
+        primary.set_typed(Some("2468"));
+        // The same key's touch-only answer opens nothing.
+        let wrap = keyring
+            .wraps()
+            .iter()
+            .find(|wrap| Some(wrap.id.as_str()) == opened.opened_by())
+            .unwrap()
+            .clone();
+        let (credential, salt) = answer_inputs(&wrap.factor);
+        let touched = primary.hmac_secret(RP_ID, &credential, &salt).unwrap();
+        assert!(
+            keyring
+                .unwrap(&wrap, &kek(keyring.vault_id(), &credential, &touched))
+                .is_err()
+        );
+        // Rotating needs each key's PIN too.
+        primary.set_typed(None);
+        assert!(matches!(
+            keyring.rotate_in_place(&opened, None, &mut [&mut primary, &mut backup]),
+            Err(Error::KeyAbsent { .. })
+        ));
+        primary.set_typed(Some("2468"));
+        let rotated = keyring
+            .rotate_in_place(&opened, None, &mut [&mut primary, &mut backup])
+            .unwrap();
+        settle(&mut keyring, rotated, &dir.join("vault"));
+        assert!(reads_the_secret(
+            &dir,
+            keyring.unlock_hardware_key(&mut backup).unwrap().key()
+        ));
+        // The flag is bound to the wrap: a keyring that drops it opens nothing.
+        let path = dir.join("keys").join("keyring");
+        let mut stored: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        for wrap in stored["wraps"].as_array_mut().unwrap() {
+            wrap["factor"].as_object_mut().unwrap().remove("verified");
+        }
+        std::fs::write(&path, serde_json::to_string(&stored).unwrap()).unwrap();
+        let mut edited = Keyring::load(&path).unwrap();
+        assert!(edited.hardware_keys().iter().all(|key| key.check == KeyCheck::Touch));
+        for key in [&mut primary, &mut backup] {
+            assert!(matches!(
+                edited.unlock_hardware_key(key),
+                Err(Error::UnlockFailed)
+            ));
+        }
+
+    }
+
+    #[test]
+    fn a_key_without_a_pin_is_never_enrolled_to_ask_for_one() {
+        let dir = test_dir("fido2-no-pin");
+        let (mut keyring, kek, _) = vault(&dir);
+        let unlocked = keyring.unlock_file(&kek).unwrap();
+        let (mut plain, mut other) = (VirtualAuthenticator::new(), VirtualAuthenticator::new());
+        let err = keyring
+            .enroll_hardware_keys_checked(&unlocked, &mut [&mut plain, &mut other], KeyCheck::Pin)
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::Authenticator { reason } if reason.contains("NoVerification")),
+            "{err:?}"
+        );
+        assert_eq!(keyring.tier(), Tier::File);
+        assert_eq!((KeyCheck::of(true), KeyCheck::of(false)), (KeyCheck::Pin, KeyCheck::Touch));
+        // A key that can't verify its user says so, by default.
+        struct TouchOnly;
+        impl Authenticator for TouchOnly {
+            fn make_credential(
+                &mut self,
+                _rp_id: &str,
+                _user_id: &[u8],
+            ) -> Result<Credential, AuthenticatorError> {
+                Err(AuthenticatorError::NoUserPresence)
+            }
+            fn hmac_secret(
+                &mut self,
+                _rp_id: &str,
+                _credential_id: &[u8],
+                _salt: &[u8; 32],
+            ) -> Result<[u8; 32], AuthenticatorError> {
+                Ok([1; 32])
+            }
+        }
+        assert_eq!(
+            TouchOnly.hmac_secret_verified(RP_ID, b"c", &[0; 32]),
+            Err(AuthenticatorError::NoVerification)
+        );
+        assert_eq!(
+            answer(&mut TouchOnly, b"c", &[0; 32], KeyCheck::Touch),
+            Ok([1; 32])
+        );
+        assert_eq!(
+            answer(&mut TouchOnly, b"c", &[0; 32], KeyCheck::Pin),
+            Err(AuthenticatorError::NoVerification)
+        );
     }
 }

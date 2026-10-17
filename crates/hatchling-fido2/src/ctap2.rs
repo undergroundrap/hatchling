@@ -473,12 +473,17 @@ pub(crate) mod tests {
         }
         let said = |error: Ctap2Error| match to_authenticator_error(&error) {
             AuthenticatorError::Device(text) => text,
-            other
-            @ (AuthenticatorError::NoUserPresence | AuthenticatorError::UnknownCredential) => {
+            other @ (AuthenticatorError::NoUserPresence
+            | AuthenticatorError::UnknownCredential
+            | AuthenticatorError::NoVerification) => {
                 unreachable!("{other:?}")
             }
         };
         assert_eq!(said(Ctap2Error::Status(PIN_INVALID)), "the PIN is wrong");
+        assert_eq!(
+            to_authenticator_error(&Ctap2Error::NoPinSet),
+            AuthenticatorError::NoVerification
+        );
         for status in [PIN_BLOCKED, PIN_AUTH_BLOCKED] {
             assert!(said(Ctap2Error::Status(status)).contains("blocked"));
         }

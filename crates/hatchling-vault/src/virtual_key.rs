@@ -260,4 +260,38 @@ mod tests {
             Err(AuthenticatorError::UnknownCredential)
         );
     }
+
+    #[test]
+    fn a_verified_answer_needs_the_pin_and_differs_from_a_touch() {
+        let mut key = VirtualAuthenticator::with_pin("2468");
+        let credential = key.make_credential("rp", b"u").unwrap();
+        let salt = [3u8; 32];
+        let verified = key.hmac_secret_verified("rp", &credential.id, &salt).unwrap();
+        let touched = key.hmac_secret("rp", &credential.id, &salt).unwrap();
+        assert_ne!(verified, touched, "the verified-user secret is another");
+        assert_eq!(
+            key.hmac_secret_verified("rp", &credential.id, &salt).unwrap(),
+            verified
+        );
+        for typed in [None, Some("0000")] {
+            key.set_typed(typed);
+            assert_eq!(
+                key.hmac_secret_verified("rp", &credential.id, &salt),
+                Err(AuthenticatorError::NoVerification)
+            );
+        }
+        key.set_typed(Some("2468"));
+        key.set_present(false);
+        assert_eq!(
+            key.hmac_secret_verified("rp", &credential.id, &salt),
+            Err(AuthenticatorError::NoUserPresence)
+        );
+        let mut plain = VirtualAuthenticator::new();
+        let credential = plain.make_credential("rp", b"u").unwrap();
+        assert_eq!(
+            plain.hmac_secret_verified("rp", &credential.id, &salt),
+            Err(AuthenticatorError::NoVerification),
+            "no PIN set"
+        );
+    }
 }

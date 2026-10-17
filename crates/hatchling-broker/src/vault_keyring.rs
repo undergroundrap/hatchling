@@ -2392,7 +2392,7 @@ mod tests {
         ];
         expected.extend(
             keys.iter()
-                .map(|key| format!("  security key {}  (no label)  added {}", key.id, today())),
+                .map(|key| format!("  security key {}  (no label)  added {}  touch", key.id, today())),
         );
         assert_eq!(shown, expected.join("\n"));
         assert!(
@@ -2443,11 +2443,11 @@ mod tests {
         };
         assert_eq!(
             key_line(&migrated),
-            "ab12  YubiKey  added before the keyring kept dates"
+            "ab12  YubiKey  added before the keyring kept dates  touch"
         );
         assert_eq!(
             key_list(&[migrated.clone(), migrated]),
-            "  ab12  YubiKey  added before the keyring kept dates\n  ab12  YubiKey  added before the keyring kept dates"
+            "  ab12  YubiKey  added before the keyring kept dates  touch\n  ab12  YubiKey  added before the keyring kept dates  touch"
         );
     }
 
@@ -2986,7 +2986,7 @@ mod tests {
         assert_eq!(
             named,
             format!(
-                "vault-keyring: named the security key {first}  primary  added {}\n",
+                "vault-keyring: named the security key {first}  primary  added {}  touch\n",
                 today()
             )
         );
@@ -2999,7 +2999,7 @@ mod tests {
         assert_eq!(
             removed,
             format!(
-                "vault-keyring: removed the security key {first}  primary  added {}\n",
+                "vault-keyring: removed the security key {first}  primary  added {}  touch\n",
                 today()
             )
         );

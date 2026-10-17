@@ -699,7 +699,7 @@ mod tests {
             let credential = device.create(RP, b"u").unwrap();
             let salt = [6u8; 32];
             assert_eq!(
-                device.derive(RP, &credential.id, &salt).unwrap(),
+                device.derive(RP, &credential.id, &salt, false).unwrap(),
                 expected(&state, &credential.id, &salt)
             );
         }
@@ -742,5 +742,43 @@ mod tests {
         assert_eq!(ES256, -7);
         assert_eq!(PERMISSIONS, 3);
         assert!(PRESENCE_TIMEOUT > STEP_TIMEOUT);
+    }
+
+    #[test]
+    fn a_key_enrolled_with_its_pin_answers_only_after_it() {
+        use hatchling_vault::KeyCheck;
+        let (dir, mut keyring, kek) = keyring("pin-check");
+        let (one, two) = (SoftKey::new(), SoftKey::new());
+        let states = [one.handle(), two.handle()];
+        for state in &states {
+            state.borrow_mut().pin = Some(String::from("2468"));
+        }
+        let (mut one, mut two) = (open(one, Some("2468")), open(two, Some("2468")));
+        let unlocked = keyring.unlock_file(&kek).unwrap();
+        let rotated = keyring
+            .enroll_hardware_keys_checked(&unlocked, &mut [&mut one, &mut two], KeyCheck::Pin)
+            .unwrap();
+        keyring.finish_rotation(&rotated.rotation).unwrap();
+        let keyring = Keyring::load(&dir.join("keyring")).unwrap();
+        assert_eq!(keyring.tier(), Tier::HardwareKey);
+        for state in &states {
+            let mut right = open(SoftKey::sharing(Rc::clone(state)), Some("2468"));
+            assert!(keyring.unlock_hardware_key(&mut right).is_ok());
+            for wrong in [Some("0000"), None] {
+                let mut key = open(SoftKey::sharing(Rc::clone(state)), wrong);
+                assert!(keyring.unlock_hardware_key(&mut key).is_err(), "{wrong:?}");
+            }
+        }
+        // A key with no PIN set can't be asked for one.
+        let (fresh_dir, mut fresh, fresh_kek) = keyring("pin-unset");
+        let unlocked = fresh.unlock_file(&fresh_kek).unwrap();
+        let (mut a, mut b) = (open(SoftKey::new(), None), open(SoftKey::new(), None));
+        let err = fresh
+            .enroll_hardware_keys_checked(&unlocked, &mut [&mut a, &mut b], KeyCheck::Pin)
+            .unwrap_err();
+        let shown = format!("{err:?}");
+        assert!(shown.contains("NoVerification"), "{shown}");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&fresh_dir);
     }
 }
