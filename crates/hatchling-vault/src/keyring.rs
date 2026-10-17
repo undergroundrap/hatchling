@@ -1431,7 +1431,10 @@ mod tests {
         };
         let shown = format!("{totp:?}");
         assert!(!shown.contains(seed));
-        assert_eq!(shown, r#"Totp { seed: "[redacted]", salt: "ab", last_step: 7 }"#);
+        assert_eq!(
+            shown,
+            "Totp { seed: \"[redacted]\", salt: \"ab\", last_step: 7 }"
+        );
         let wrap = Wrap {
             id: String::from("w1"),
             factor: totp,
@@ -1440,7 +1443,8 @@ mod tests {
             nonce: String::from("00"),
             wrapped: String::from("00"),
         };
-        assert!(!format!("{wrap:?}").contains(seed));
+        let wrap_shown = format!("{wrap:?}");
+        assert!(!wrap_shown.contains(seed));
         assert_eq!(format!("{:?}", Factor::File), "File");
         assert_eq!(
             format!(
@@ -1450,7 +1454,7 @@ mod tests {
                     salt: String::from("s")
                 }
             ),
-            r#"Fido2 { credential: "c", salt: "s" }"#
+            "Fido2 { credential: \"c\", salt: \"s\" }"
         );
         assert_eq!(
             format!(
@@ -1460,7 +1464,7 @@ mod tests {
                     salt: String::from("s")
                 }
             ),
-            r#"BackupCode { verifier: "v", salt: "s" }"#
+            "BackupCode { verifier: \"v\", salt: \"s\" }"
         );
     }
 }

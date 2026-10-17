@@ -310,3 +310,19 @@ fn recovering_with_a_backup_code_frees_no_copy_of_it() {
     assert!(!Path::new(&path).with_extension("tmp").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn loading_the_key_file_frees_no_copy_of_the_key() {
+    use hatchling_vault::{FileKey, KeySource as _};
+    let _serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = test_dir("key-file");
+    let path = dir.join("keys").join("key");
+    FileKey::new(path.clone()).load_or_create().unwrap();
+    let key = std::fs::read(&path).unwrap();
+    watch_for(&[&key]);
+    assert!(
+        !leaves_a_copy(|| drop(FileKey::new(path.clone()).load().unwrap())),
+        "loading the key file"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

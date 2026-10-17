@@ -591,6 +591,10 @@ mod tests {
         let code = totp_code(&seed, later);
         let start = std::sync::Barrier::new(8);
         let opened = std::thread::scope(|scope| {
+            #[allow(
+                clippy::needless_collect,
+                reason = "every attempt starts before any is joined, or the race is no race"
+            )]
             let tries: Vec<_> = (0..8)
                 .map(|_| {
                     scope.spawn(|| {
