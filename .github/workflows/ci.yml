@@ -114,6 +114,19 @@ jobs:
           echo $$ | sudo tee /sys/fs/cgroup/hatchling-ci/runner/cgroup.procs > /dev/null
           bash scripts/check.sh
 
+      # A cell killed by seccomp hands no core to a host crash handler
+      # (WO-011). The check needs a real kernel's pipe core_pattern, which it
+      # sets for the while as root and puts back: a plain process's SIGSYS
+      # must reach its handler, and a cell's must not.
+      - name: No core reaches a crash handler
+        run: |
+          bin=$(cargo test -q --locked --all-features -p hatchling-broker --test adversarial --no-run --message-format=json \
+            | grep -o '"executable":"[^"]*adversarial[^"]*"' | tail -1 | cut -d'"' -f4)
+          cd crates/hatchling-broker
+          sudo env HATCHLING_REQUIRE_CELL=1 HATCHLING_CORE_PATTERN_TEST=1 "$bin" \
+            a_seccomp_kill_hands_no_core_to_the_hosts_crash_handler --exact
+          echo "core_pattern after: $(cat /proc/sys/kernel/core_pattern)"
+
       # The broker starts its spawner helpers (skill cells, scheduled runs,
       # subagents, harnesses) by re-running its own executable. Run the suites
       # that use them again with `hatchling` (crate hatchling-runtime) as that

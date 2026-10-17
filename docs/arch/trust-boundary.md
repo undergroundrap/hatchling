@@ -49,7 +49,7 @@ code behaving well.
 
 | Threat | Mechanism |
 | --- | --- |
-| Malicious code in a cell | seccomp-BPF syscall allowlist, namespaces; inherited descriptors closed, so a cell holds only what it was handed (an agent cell: its one broker session) |
+| Malicious code in a cell | seccomp-BPF syscall allowlist, namespaces; inherited descriptors closed, so a cell holds only what it was handed (an agent cell: its one broker session); a one-byte core limit the cell can't change, so a seccomp kill hands the host's crash handler (apport, systemd-coredump) no core and none of the cell's memory |
 | Credential exfiltration | Egress/channel credentials never enter cells (refused at startup; proxy substitutes at the boundary); fetch grants hand over only the named secret, and every sealed file is bound to its store and name, so swapping files on disk can't hand a cell a different one |
 | Copied key material: an old keyring, KEK file or backup code | `rekey-vault` and every tier enrollment move the vault to a new data key and re-seal every store under it; the backup codes are replaced and the file tier's KEK file deleted once the vault leaves that tier, so a copy taken before opens nothing. A keyring vault started without its keyring refuses to serve rather than make a key |
 | Unscoped network access | Empty network namespace by default; egress allowlist per grant |
@@ -104,7 +104,7 @@ Hatchling is pre-1.0. Before launch we reviewed our own trust boundary: who may 
 | Resources | A configured cgroup v2 delegation bounds each whole cell's tasks, memory and CPU; cleanup kills the group. Without `HATCHLING_CELL_CGROUP`, hard rlimits and the runtime bound remain, but aggregate memory and CPU are unbounded and `RLIMIT_NPROC` shares the real host uid's budget. Operators needing whole-cell bounds must delegate a group; unusable configured delegation fails closed. Disk quotas and network bandwidth limits remain outside scope. | [WO-004](../workorders/workorder-004-cell-resource-limits.md) |
 | Filesystem | The memory and goals stores still repair a directory's mode by path after checking it, rather than through a no-follow handle; only the broker's own user can write where they live. | [Candidate](../workorders/README.md#candidates) |
 | Egress | An upstream that echoes a credential back re-encoded (base64, hex) gets past the scrub, which matches its exact bytes. The upstream is the service the operator gave the credential to. | None yet |
-| Hygiene | Some copies of secrets in memory aren't wiped; the redaction audit log stores unsalted hashes; concurrent keyring edits aren't locked; the hardware-key factor doesn't ask for a PIN. A cell killed by seccomp dumps core, so the host's crash handler (apport, on Ubuntu) receives that cell's memory, including any secret it fetched. | [WO-011](../workorders/workorder-011-secret-hygiene.md) |
+| Hygiene | Some copies of secrets in memory aren't wiped; the redaction audit log stores unsalted hashes; concurrent keyring edits aren't locked; the hardware-key factor doesn't ask for a PIN. A host crash handler on a socket (`core_pattern` starting `@`, Linux 6.16 and later) isn't yet covered by the one-byte core limit below. | [WO-011](../workorders/workorder-011-secret-hygiene.md) |
 
 Found something that isn't here? Report it privately: [SECURITY.md](../../SECURITY.md).
 
