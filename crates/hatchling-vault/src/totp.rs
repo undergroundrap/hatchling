@@ -62,7 +62,8 @@ pub fn totp_code(seed: &[u8], unix_seconds: u64) -> String {
 /// RFC 4648 Base32, unpadded, as `otpauth://` URIs carry seeds.
 pub(crate) fn base32(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-    let mut out = String::new();
+    // Sized up front: a growing buffer would free copies of what it held.
+    let mut out = String::with_capacity(bytes.len() * 8 / 5 + 1);
     let (mut buffer, mut bits) = (0u32, 0u32);
     for &byte in bytes {
         buffer = (buffer << 8) | u32::from(byte);
@@ -197,7 +198,7 @@ impl Keyring {
             rotation.new_key(),
             &kek,
             Factor::Totp {
-                seed: hex(pending.seed.as_slice()),
+                seed: Zeroizing::new(hex(pending.seed.as_slice())),
                 salt: hex(&salt),
                 last_step: step,
             },

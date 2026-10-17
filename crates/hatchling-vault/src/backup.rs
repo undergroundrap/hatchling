@@ -48,30 +48,35 @@ impl std::fmt::Debug for BackupCodes {
     }
 }
 
-/// A code as shown: Base32, in groups of four.
+/// A code as shown: Base32, in groups of four. Every buffer is sized up
+/// front and the plain text wiped, so no copy of the code is freed.
 fn shown(bytes: &[u8]) -> String {
-    let text = base32(bytes);
-    let groups: Vec<&str> = text
-        .as_bytes()
-        .chunks(4)
-        .filter_map(|chunk| std::str::from_utf8(chunk).ok())
-        .collect();
-    groups.join("-")
+    let text = Zeroizing::new(base32(bytes));
+    let mut out = String::with_capacity(text.len() + text.len() / 4);
+    for (at, chunk) in text.as_bytes().chunks(4).enumerate() {
+        if at > 0 {
+            out.push('-');
+        }
+        out.extend(chunk.iter().copied().map(char::from));
+    }
+    out
 }
 
 /// A typed code back to its bytes: case, spaces and dashes ignored.
 fn read(text: &str) -> Option<Zeroizing<Vec<u8>>> {
-    let clean: Vec<u8> = text
-        .bytes()
-        .filter(|byte| !byte.is_ascii_whitespace() && *byte != b'-')
-        .map(|byte| byte.to_ascii_uppercase())
-        .collect();
+    // Sized up front and wiped: the typed code, cleaned.
+    let mut clean = Zeroizing::new(Vec::with_capacity(text.len()));
+    clean.extend(
+        text.bytes()
+            .filter(|byte| !byte.is_ascii_whitespace() && *byte != b'-')
+            .map(|byte| byte.to_ascii_uppercase()),
+    );
     if clean.len() != 24 {
         return None;
     }
     let mut out = Zeroizing::new(Vec::with_capacity(CODE_BYTES));
     let (mut buffer, mut bits) = (0u32, 0u32);
-    for byte in clean {
+    for &byte in clean.iter() {
         let value = u32::try_from(ALPHABET.iter().position(|&letter| letter == byte)?).ok()?;
         // The shift empties the low five bits and a value is under 32:
         // adding is or-ing, written so its mutants are not equivalent.

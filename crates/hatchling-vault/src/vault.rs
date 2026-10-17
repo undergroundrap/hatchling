@@ -173,20 +173,42 @@ impl Vault {
         self.read_bounded(name, max)
     }
 
+    /// The first four bytes stored under `name` (fewer for a shorter
+    /// file), and how many: what a check needs to tell an envelope from
+    /// plaintext without reading the secret itself.
+    pub(crate) fn fetch_head(&self, name: &SecretName) -> Result<([u8; 4], usize), Error> {
+        let mut file = self.open_entry(name)?;
+        let mut head = [0u8; 4];
+        let mut len = 0;
+        while let Some(rest) = head.get_mut(len..).filter(|rest| !rest.is_empty()) {
+            let read = file.read(rest).map_err(|source| Error::Io { source })?;
+            if read == 0 {
+                break;
+            }
+            len += read;
+        }
+        Ok((head, len))
+    }
+
+    /// The file stored under `name`, opened: [`Error::NotFound`] if there
+    /// is none.
+    fn open_entry(&self, name: &SecretName) -> Result<std::fs::File, Error> {
+        std::fs::File::open(self.path(name)).map_err(|source| {
+            if source.kind() == std::io::ErrorKind::NotFound {
+                Error::NotFound { name: name.clone() }
+            } else {
+                Error::Io { source }
+            }
+        })
+    }
+
     /// The bounded-read pipeline shared by [`fetch`](Self::fetch) and
     /// [`fetch_raw`](Self::fetch_raw): open with `NotFound` mapping,
     /// advisory size preflight, then a `take(max + 1)` read so growth
     /// past the bound is *detected* and rejected, never silently
     /// truncated.
     fn read_bounded(&self, name: &SecretName, max: usize) -> Result<Vec<u8>, Error> {
-        let path = self.path(name);
-        let file = std::fs::File::open(&path).map_err(|source| {
-            if source.kind() == std::io::ErrorKind::NotFound {
-                Error::NotFound { name: name.clone() }
-            } else {
-                Error::Io { source }
-            }
-        })?;
+        let file = self.open_entry(name)?;
         // Reject an already-oversized file before allocating. Advisory
         // only: the `take` below is the real bound, so a file that grows
         // between this check and the read is still caught.
@@ -204,7 +226,10 @@ impl Vault {
         // (not exactly at) the limit so growth is *detected* and rejected
         // rather than silently truncated.
         let read_limit = u64::try_from(max).unwrap_or(u64::MAX).saturating_add(1);
-        let mut bytes = Vec::new();
+        // Sized to the file, so the read never grows the buffer and frees
+        // a copy of what it held; a file that grew meanwhile still reads,
+        // and is still refused past `max`.
+        let mut bytes = Vec::with_capacity(reported + 1);
         Read::take(&file, read_limit)
             .read_to_end(&mut bytes)
             .map_err(|source| Error::Io { source })?;

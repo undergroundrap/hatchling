@@ -48,8 +48,8 @@ use std::time::{Duration, Instant};
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest as _, Sha256};
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use sha2::{Digest, Sha256};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::Error;
 use crate::seal::MasterKey;
@@ -136,7 +136,9 @@ pub enum Factor {
     /// which is stored here (`totp.rs`).
     Totp {
         /// The RFC 6238 seed, hex. Stored: this is why the tier is weaker.
-        seed: String,
+        /// Wiped when dropped.
+        #[serde(with = "secret_text")]
+        seed: Zeroizing<String>,
         /// The Argon2id salt, hex.
         salt: String,
         /// The last time step a code was accepted for: no code is
@@ -151,6 +153,26 @@ pub enum Factor {
         /// The HKDF salt, hex.
         salt: String,
     },
+}
+
+/// Serde for a secret text field: the same JSON string, held so it is
+/// wiped when dropped.
+mod secret_text {
+    use serde::{Deserialize as _, Deserializer, Serializer};
+    use zeroize::Zeroizing;
+
+    pub(super) fn serialize<S: Serializer>(
+        text: &Zeroizing<String>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(text)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Zeroizing<String>, D::Error> {
+        String::deserialize(deserializer).map(Zeroizing::new)
+    }
 }
 
 impl std::fmt::Debug for Factor {
@@ -352,10 +374,13 @@ impl Unlocked {
 /// Lower-case hex.
 pub(crate) fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
-    bytes.iter().fold(String::new(), |mut out, byte| {
-        let _ = write!(out, "{byte:02x}");
-        out
-    })
+    // Sized up front: a growing buffer would free copies of what it held.
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
 }
 
 /// Bytes from lower-case hex, or `None` if it is not.
@@ -367,13 +392,15 @@ pub(crate) fn unhex(text: &str) -> Option<Vec<u8>> {
     {
         return None;
     }
-    (0..text.len())
-        .step_by(2)
-        .map(|at| {
+    // Sized up front: a growing buffer would free copies of what it held.
+    let mut out = Vec::with_capacity(text.len() / 2);
+    for at in (0..text.len()).step_by(2) {
+        out.push(
             text.get(at..at + 2)
-                .and_then(|pair| u8::from_str_radix(pair, 16).ok())
-        })
-        .collect()
+                .and_then(|pair| u8::from_str_radix(pair, 16).ok())?,
+        );
+    }
+    Some(out)
 }
 
 /// Unix seconds now, for the time a wrap is added.
@@ -464,7 +491,10 @@ impl Keyring {
                 path: path.to_path_buf(),
             });
         }
-        let mut text = String::new();
+        // Sized to the file, so the read never grows (and frees) a copy of
+        // what it holds; wiped when dropped, as it holds a TOTP seed.
+        let size = usize::try_from(metadata.len().min(MAX_KEYRING_BYTES)).unwrap_or(0);
+        let mut text = Zeroizing::new(String::with_capacity(size + 1));
         std::fs::File::open(path)
             .map_err(load)?
             .take(MAX_KEYRING_BYTES + 1)
@@ -724,30 +754,29 @@ impl Keyring {
         })?;
         ensure_owner_only_dir(parent, owner)?;
         let _lock = EditLock::take(&self.path, owner, wait)?;
-        let on_disk = match std::fs::read(&self.path) {
-            Ok(bytes) => Some(digest(&bytes)),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
-            Err(source) => {
-                return Err(Error::KeyringLoad {
-                    path: self.path.clone(),
-                    source,
-                });
-            }
-        };
+        let on_disk = digest_file(&self.path).map_err(|source| Error::KeyringLoad {
+            path: self.path.clone(),
+            source,
+        })?;
         if on_disk != self.seen.get() {
             return Err(Error::KeyringChanged {
                 path: self.path.clone(),
             });
         }
-        let text = serde_json::to_string_pretty(&self.stored).map_err(|source| Error::Io {
+        // One buffer as large as any keyring, wiped when dropped: the text
+        // holds a TOTP seed, and a growing buffer would free copies of it.
+        let mut text = Zeroizing::new(Vec::with_capacity(
+            usize::try_from(MAX_KEYRING_BYTES).unwrap_or(0),
+        ));
+        serde_json::to_writer_pretty(&mut *text, &self.stored).map_err(|source| Error::Io {
             source: std::io::Error::other(source),
         })?;
         let temp = self
             .path
             .with_extension(format!("tmp-{}", std::process::id()));
-        write_atomically(&temp, &self.path, parent, text.as_bytes())
+        write_atomically(&temp, &self.path, parent, &text)
             .map_err(|source| Error::Io { source })?;
-        self.seen.set(Some(digest(text.as_bytes())));
+        self.seen.set(Some(digest(&text)));
         Ok(())
     }
 }
@@ -755,6 +784,27 @@ impl Keyring {
 /// SHA-256 of a keyring file's bytes.
 fn digest(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
+}
+
+/// SHA-256 of the file at `path`, or `None` if there is none. Read a
+/// small block at a time through a buffer wiped after: the file holds a
+/// TOTP seed, and a whole copy of it would be freed unwiped.
+fn digest_file(path: &Path) -> std::io::Result<Option<[u8; 32]>> {
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    let mut hasher = Sha256::new();
+    let mut block = Zeroizing::new([0u8; 4096]);
+    loop {
+        let read = file.read(block.as_mut_slice())?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(block.get(..read).unwrap_or_default());
+    }
+    Ok(Some(hasher.finalize().into()))
 }
 
 /// The keyring's edit lock, held while a save checks and writes it: an
@@ -1375,11 +1425,12 @@ mod tests {
     fn a_factors_debug_never_shows_a_totp_seed() {
         let seed = "3132333435363738393031323334353637383930";
         let totp = Factor::Totp {
-            seed: seed.to_owned(),
+            seed: Zeroizing::new(seed.to_owned()),
             salt: String::from("ab"),
             last_step: 7,
         };
         let shown = format!("{totp:?}");
+        assert!(!shown.contains(seed));
         assert_eq!(shown, r#"Totp { seed: "[redacted]", salt: "ab", last_step: 7 }"#);
         let wrap = Wrap {
             id: String::from("w1"),
