@@ -165,6 +165,17 @@ fn test_dir(name: &str) -> std::path::PathBuf {
     dir
 }
 
+/// A key-encryption key from the OS's randomness.
+#[allow(
+    clippy::unwrap_used,
+    reason = "test setup: no randomness must fail the test loudly"
+)]
+fn random_kek() -> Kek {
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).unwrap();
+    Kek::from_bytes(bytes)
+}
+
 /// Lower-case hex, as the keyring stores a seed.
 fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
@@ -259,7 +270,7 @@ fn a_totp_keyring_loaded_unlocked_and_saved_frees_no_copy_of_its_seed() {
     let dir = test_dir("totp");
     let path = dir.join("keys").join("keyring");
     let dek = MasterKey::generate().unwrap();
-    let kek = Kek::from_bytes([7; 32]);
+    let kek = random_kek();
     let mut keyring = Keyring::create(&path, &dek, &kek).unwrap();
     let from_file = keyring.unlock_file(&kek).unwrap();
     let pending = keyring.begin_totp(&from_file).unwrap();
@@ -301,7 +312,7 @@ fn recovering_with_a_backup_code_frees_no_copy_of_it() {
     let dir = test_dir("backup");
     let path = dir.join("keys").join("keyring");
     let dek = MasterKey::generate().unwrap();
-    let kek = Kek::from_bytes([7; 32]);
+    let kek = random_kek();
     let mut keyring = Keyring::create(&path, &dek, &kek).unwrap();
     let codes: Vec<String> = keyring
         .generate_backup_codes(&keyring.unlock_file(&kek).unwrap())
