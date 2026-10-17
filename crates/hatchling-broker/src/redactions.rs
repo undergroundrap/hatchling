@@ -4,24 +4,31 @@
 //! Everything lives in the owner-only redaction directory:
 //!
 //! - `audit.log`: one JSON [`Record`] per line, mode `0600`. A redaction is
-//!   recorded by hashes (SHA-256 of the message and of its normalized
-//!   flagged form) and size, never its text. Each broker start records the
-//!   gate's settings and, when they changed, what they were.
+//!   recorded by tags (HMAC-SHA-256, under the [`TagKey`], of the message
+//!   and of its normalized flagged form) and size, never its text. Without
+//!   the key, a tag confirms no guess at what was redacted. Each broker
+//!   start records the gate's settings and, when they changed, what they
+//!   were. Records from before the tags carry unkeyed SHA-256 hashes.
 //! - `overrides`: one JSON [`Override`] per line, appended by
 //!   `redactions override`: a verdict the operator marked wrong, for its
 //!   scope or every scope. The gate reads it on every flagged message.
 //! - `raw/`: when the operator opted in, each redacted message, sealed
-//!   under the master key, readable with `redactions raw`.
+//!   under the master key, readable with `redactions raw`; and, always, the
+//!   [`TagKey`], sealed the same way.
 
 use std::io::Write as _;
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use hatchling_artifact::request::sha256_hex;
 use hatchling_channel::gate::FAILED_CATEGORY;
 use hatchling_channel::{Audit, Category, Event, Failure, Overrides, Reason};
-use hatchling_vault::{MasterKey, SealedVault, SecretName};
+use hatchling_vault::{MasterKey, SealedVault, Secret, SecretName};
+use hmac::{Hmac, Mac as _};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
+use zeroize::Zeroizing;
 
 use crate::Error;
 use crate::output_gate::{RAW_DIR, RedactionConfig, RulesHandle, SECRET_CATEGORY};
@@ -34,6 +41,76 @@ pub const OVERRIDES_FILE: &str = "overrides";
 
 /// The scope an override for every scope names.
 pub const ANY_SCOPE: &str = "*";
+
+/// The [`TagKey`]'s name in the redaction store. No event id has it.
+pub const TAG_KEY_NAME: &str = "audit-tag-key";
+
+/// The key the audit log's tags are made under: random, sealed under the
+/// master key in the redaction store, wiped when dropped. The log alone
+/// confirms no guess at a redacted message, however short.
+pub struct TagKey(Zeroizing<[u8; 32]>);
+
+impl std::fmt::Debug for TagKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TagKey(..)")
+    }
+}
+
+impl TagKey {
+    /// The key in the redaction store at `raw_dir`, made and sealed there
+    /// under `key` the first time.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Vault`] when the store can't be opened, read or
+    /// written, and [`Error::Redaction`] for a stored key of the wrong size
+    /// or no randomness to make one.
+    pub fn load_or_create(raw_dir: &Path, key: &MasterKey) -> Result<Self, Error> {
+        let vault = SealedVault::open_in(raw_dir, key, hatchling_vault::Store::REDACTIONS)
+            .map_err(|source| Error::Vault { source })?;
+        let name: SecretName = TAG_KEY_NAME.parse().map_err(|_| Error::Redaction {
+            reason: String::from("the audit-tag key's name is not a record name"),
+        })?;
+        let mut bytes = Zeroizing::new([0u8; 32]);
+        match vault.fetch(&name) {
+            Ok(stored) => {
+                if stored.as_bytes().len() != bytes.len() {
+                    return Err(Error::Redaction {
+                        reason: String::from("the stored audit-tag key is not 32 bytes"),
+                    });
+                }
+                bytes.copy_from_slice(stored.as_bytes());
+            }
+            Err(hatchling_vault::Error::NotFound { .. }) => {
+                use std::io::Read as _;
+                std::fs::File::open("/dev/urandom")
+                    .and_then(|mut rng| rng.read_exact(bytes.as_mut_slice()))
+                    .map_err(|e| Error::Redaction {
+                        reason: format!("no randomness for the audit-tag key: {e}"),
+                    })?;
+                let secret = Secret::new(bytes.to_vec()).map_err(|source| Error::Vault { source })?;
+                vault
+                    .store(&name, &secret)
+                    .map_err(|source| Error::Vault { source })?;
+            }
+            Err(source) => return Err(Error::Vault { source }),
+        }
+        Ok(Self(bytes))
+    }
+
+    /// The tag of `bytes`: HMAC-SHA-256 under this key, lower-case hex.
+    #[must_use]
+    pub fn tag(&self, bytes: &[u8]) -> String {
+        // HMAC takes a key of any length; a 32-byte one is never refused.
+        <Hmac<Sha256>>::new_from_slice(self.0.as_slice()).map_or_else(
+            |_| String::new(),
+            |mut mac| {
+                mac.update(bytes);
+                crate::approval::hex_token("", &mac.finalize().into_bytes())
+            },
+        )
+    }
+}
 
 /// The gate's settings, as a config record shows them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,13 +163,42 @@ pub struct Judged {
     /// Why: `flagged`, `no-retry`, or `classifier-error`, `-panic` or
     /// `-timeout`.
     pub reason: String,
-    /// The message's SHA-256.
-    pub sha256: String,
+    /// The message's tag, under the [`TagKey`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    /// The message's unkeyed SHA-256, in a record from before the tags.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
     /// The message's size in bytes.
     pub bytes: usize,
-    /// The SHA-256 of its normalized flagged form, when there is one: what
-    /// an override names.
+    /// The tag of its normalized flagged form, when there is one: what an
+    /// override names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flagged_tag: Option<String>,
+    /// The flagged form's unkeyed SHA-256, in a record from before the
+    /// tags.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flagged_sha256: Option<String>,
+}
+
+impl Judged {
+    /// What an override of this redaction names: its flagged form's tag,
+    /// or, from before the tags, its unkeyed hash.
+    fn flagged(&self) -> Option<Flagged> {
+        self.flagged_tag
+            .clone()
+            .map(Flagged::Tag)
+            .or_else(|| self.flagged_sha256.clone().map(Flagged::Sha256))
+    }
+}
+
+/// How an override names a flagged form.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Flagged {
+    /// By its tag.
+    Tag(String),
+    /// By its unkeyed SHA-256, from before the tags.
+    Sha256(String),
 }
 
 /// An operator override: `category` with this flagged form is let through
@@ -107,10 +213,32 @@ pub struct Override {
     pub scope: String,
     /// The category it lifts.
     pub category: String,
-    /// The flagged form's SHA-256.
-    pub flagged_sha256: String,
+    /// The flagged form's tag, under the [`TagKey`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flagged_tag: Option<String>,
+    /// The flagged form's unkeyed SHA-256, in an override from before the
+    /// tags. It is still honoured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flagged_sha256: Option<String>,
     /// Who overrode it: the operator's uid.
     pub by: u32,
+}
+
+impl Override {
+    /// Whether this names `flagged`, whose tag is `tag` when there is a key.
+    fn names(&self, tag: Option<&str>, flagged: &str) -> bool {
+        tag.is_some_and(|tag| self.flagged_tag.as_deref() == Some(tag))
+            || self
+                .flagged_sha256
+                .as_deref()
+                .is_some_and(|hash| hash == sha256_hex(flagged.as_bytes()))
+    }
+
+    /// Whether this names the same flagged form as `other`.
+    fn same_form(&self, other: &Self) -> bool {
+        (self.flagged_tag.is_some() && self.flagged_tag == other.flagged_tag)
+            || (self.flagged_sha256.is_some() && self.flagged_sha256 == other.flagged_sha256)
+    }
 }
 
 /// One line of the audit log.
@@ -228,21 +356,33 @@ pub fn read_log(path: &Path) -> Result<(Vec<Record>, usize), Error> {
     Ok((records, unreadable))
 }
 
-/// The gate's audit log: hashes, sizes and categories, never text.
+/// The gate's audit log: tags, sizes and categories, never text.
 #[derive(Debug)]
 pub struct FileAudit {
     log: PathBuf,
     keeper: Option<RulesHandle>,
+    tags: Option<Arc<TagKey>>,
 }
 
 impl FileAudit {
     /// The audit log in `dir`; `keeper` seals each redacted message when
-    /// the operator opted in.
+    /// the operator opted in. It records no tag until given a key
+    /// ([`FileAudit::with_tags`]).
     #[must_use]
     pub fn new(dir: &Path, keeper: Option<RulesHandle>) -> Self {
         Self {
             log: dir.join(AUDIT_FILE),
             keeper,
+            tags: None,
+        }
+    }
+
+    /// This log, tagging what it records under `tags`.
+    #[must_use]
+    pub fn with_tags(self, tags: Arc<TagKey>) -> Self {
+        Self {
+            tags: Some(tags),
+            ..self
         }
     }
 
@@ -291,8 +431,8 @@ impl FileAudit {
     }
 }
 
-/// `event` by hashes.
-fn judged(event: &Event<'_>) -> Judged {
+/// `event` by its tags under `tags`, when there is a key.
+fn judged(event: &Event<'_>, tags: Option<&TagKey>) -> Judged {
     Judged {
         event_id: event.event_id.to_owned(),
         at: event.at,
@@ -301,9 +441,13 @@ fn judged(event: &Event<'_>) -> Judged {
         classifier: event.classifier.to_owned(),
         category: event.category.as_str().to_owned(),
         reason: String::from(reason_name(event.reason)),
-        sha256: sha256_hex(event.text.as_bytes()),
+        tag: tags.map(|key| key.tag(event.text.as_bytes())),
+        sha256: None,
         bytes: event.text.len(),
-        flagged_sha256: event.flagged.map(|form| sha256_hex(form.as_bytes())),
+        flagged_tag: event
+            .flagged
+            .and_then(|form| tags.map(|key| key.tag(form.as_bytes()))),
+        flagged_sha256: None,
     }
 }
 
@@ -319,7 +463,7 @@ impl Audit for FileAudit {
             "the output gate redacted a message"
         );
         self.record(&Record::Redacted {
-            event: judged(event),
+            event: judged(event, self.tags.as_deref()),
             raw,
         });
     }
@@ -331,7 +475,7 @@ impl Audit for FileAudit {
             "a flagged message was delivered on an operator override"
         );
         self.record(&Record::Overridden {
-            event: judged(event),
+            event: judged(event, self.tags.as_deref()),
         });
     }
 }
@@ -340,14 +484,27 @@ impl Audit for FileAudit {
 #[derive(Debug)]
 pub struct FileOverrides {
     path: PathBuf,
+    tags: Option<Arc<TagKey>>,
 }
 
 impl FileOverrides {
-    /// The overrides file in `dir`.
+    /// The overrides file in `dir`. Until given the key
+    /// ([`FileOverrides::with_tags`]) only overrides from before the tags
+    /// apply.
     #[must_use]
     pub fn new(dir: &Path) -> Self {
         Self {
             path: dir.join(OVERRIDES_FILE),
+            tags: None,
+        }
+    }
+
+    /// These overrides, matching tags made under `tags`.
+    #[must_use]
+    pub fn with_tags(self, tags: Arc<TagKey>) -> Self {
+        Self {
+            tags: Some(tags),
+            ..self
         }
     }
 
@@ -374,15 +531,15 @@ impl FileOverrides {
 
 impl Overrides for FileOverrides {
     fn allows(&self, scope: &str, category: &Category, flagged: &str) -> bool {
-        let hash = sha256_hex(flagged.as_bytes());
+        let tag = self.tags.as_ref().map(|key| key.tag(flagged.as_bytes()));
         let entries = self.entries().unwrap_or_else(|error| {
             tracing::error!(%error, "cannot read the output gate's overrides: none apply");
             Vec::new()
         });
         entries.iter().any(|entry| {
             entry.category == category.as_str()
-                && entry.flagged_sha256 == hash
                 && (entry.scope == scope || entry.scope == ANY_SCOPE)
+                && entry.names(tag.as_deref(), flagged)
         })
     }
 }
@@ -563,13 +720,14 @@ fn show(records: &[Record], overrides: &FileOverrides, id: &str) -> Result<Strin
         format!("  category    {}", printable(&event.category)),
         format!("  reason      {}", printable(&event.reason)),
         format!("  bytes       {}", event.bytes),
-        format!("  sha256      {}", event.sha256),
+        format!("  tag         {}", shown_tag(event.tag.as_ref(), event.sha256.as_ref())),
         format!(
             "  flagged     {}",
-            event
-                .flagged_sha256
-                .as_deref()
-                .unwrap_or("(the whole message)")
+            if event.flagged_tag.is_none() && event.flagged_sha256.is_none() {
+                String::from("(the whole message)")
+            } else {
+                shown_tag(event.flagged_tag.as_ref(), event.flagged_sha256.as_ref())
+            }
         ),
         format!("  text        {raw}"),
         format!(
@@ -582,6 +740,16 @@ fn show(records: &[Record], overrides: &FileOverrides, id: &str) -> Result<Strin
         ),
     ]
     .join("\n"))
+}
+
+/// A recorded tag, or the unkeyed hash a record from before the tags
+/// holds, marked as such.
+fn shown_tag(tag: Option<&String>, sha256: Option<&String>) -> String {
+    match (tag, sha256) {
+        (Some(tag), _) => tag.clone(),
+        (None, Some(hash)) => format!("sha256 {hash} (unkeyed, recorded before the tags)"),
+        (None, None) => String::from("(none)"),
+    }
 }
 
 /// Counts by category and by reason, the override deliveries, and the
@@ -663,10 +831,13 @@ fn add_override(
             "the classifier failed; nothing was judged to override",
         ));
     }
-    let flagged_sha256 = event
-        .flagged_sha256
-        .clone()
+    let flagged = event
+        .flagged()
         .ok_or_else(|| refuse("it has no flagged form"))?;
+    let (flagged_tag, flagged_sha256) = match flagged {
+        Flagged::Tag(tag) => (Some(tag), None),
+        Flagged::Sha256(hash) => (None, Some(hash)),
+    };
     let entry = Override {
         event_id: event.event_id.clone(),
         at: now(),
@@ -676,14 +847,13 @@ fn add_override(
             event.scope.clone()
         },
         category: event.category.clone(),
+        flagged_tag,
         flagged_sha256,
         by: hatchling_sys::euid(),
     };
     let overrides = FileOverrides::new(&redaction.dir);
     if overrides.entries()?.iter().any(|held| {
-        held.category == entry.category
-            && held.flagged_sha256 == entry.flagged_sha256
-            && held.scope == entry.scope
+        held.category == entry.category && held.same_form(&entry) && held.scope == entry.scope
     }) {
         return Ok(format!("{id} is already overridden in {}", entry.scope));
     }
@@ -742,6 +912,11 @@ fn raw(
     key: impl FnOnce() -> Result<MasterKey, Error>,
 ) -> Result<String, Error> {
     let (event, raw) = find(records, id).ok_or_else(|| unknown(id))?;
+    if event.event_id == TAG_KEY_NAME {
+        return Err(Error::Redaction {
+            reason: format!("{id} is the audit-tag key, not a kept text"),
+        });
+    }
     if raw != RawOutcome::Kept {
         return Err(Error::Redaction {
             reason: format!("{id}'s text was not kept"),
@@ -795,7 +970,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
     use std::time::Duration;
 
-    use hatchling_vault::Secret;
+    use hmac::Mac as _;
 
     use super::*;
     use crate::api_auth::tests::{Scratch, owner_config, scratch};
@@ -854,9 +1029,17 @@ mod tests {
         }
     }
 
-    /// One redaction of each kind, through the audit.
-    fn redactions(redaction: &RedactionConfig) {
-        let audit = FileAudit::new(&redaction.dir, None);
+    /// A tag key for `redaction`, sealed under a fresh master key.
+    fn tag_key(redaction: &RedactionConfig) -> Arc<TagKey> {
+        let key = MasterKey::generate().unwrap();
+        Arc::new(TagKey::load_or_create(&redaction.dir.join(RAW_DIR), &key).unwrap())
+    }
+
+    /// One redaction of each kind, through the audit, tagged under the key
+    /// it returns.
+    fn redactions(redaction: &RedactionConfig) -> Arc<TagKey> {
+        let tags = tag_key(redaction);
+        let audit = FileAudit::new(&redaction.dir, None).with_tags(Arc::clone(&tags));
         audit.configured(settings("on")).unwrap();
         let codename = Category::new("codename").unwrap();
         let secret = Category::new(SECRET_CATEGORY).unwrap();
@@ -868,6 +1051,7 @@ mod tests {
             ..event("red-3", &failed, None)
         });
         audit.overridden(&event("red-4", &codename, Some("nightjarplan")));
+        tags
     }
 
     #[test]
@@ -938,7 +1122,52 @@ mod tests {
     }
 
     #[test]
-    fn the_log_holds_hashes_and_sizes_never_the_text() {
+    fn the_tag_key_is_made_once_sealed_and_kept() {
+        let (_dir, redaction) = deployment("red-tag-key");
+        let raw_dir = redaction.dir.join(RAW_DIR);
+        let key = MasterKey::generate().unwrap();
+        let made = TagKey::load_or_create(&raw_dir, &key).unwrap();
+        let loaded = TagKey::load_or_create(&raw_dir, &key).unwrap();
+        assert_eq!(made.tag(b"nightjarplan"), loaded.tag(b"nightjarplan"));
+        assert_ne!(made.tag(b"nightjarplan"), made.tag(b"nightjarplans"));
+        assert_eq!(format!("{made:?}"), "TagKey(..)");
+        // The tag is HMAC-SHA-256 under the sealed key: no unkeyed hash.
+        let vault = SealedVault::open_in(&raw_dir, &key, hatchling_vault::Store::REDACTIONS).unwrap();
+        let stored = vault.fetch(&TAG_KEY_NAME.parse().unwrap()).unwrap();
+        let mut mac = <Hmac<Sha256>>::new_from_slice(stored.as_bytes()).unwrap();
+        mac.update(b"nightjarplan");
+        assert_eq!(
+            made.tag(b"nightjarplan"),
+            crate::approval::hex_token("", &mac.finalize().into_bytes())
+        );
+        assert_ne!(made.tag(b"nightjarplan"), sha256_hex(b"nightjarplan"));
+        // Another vault's key can't open it; a damaged one is refused.
+        let stranger = MasterKey::generate().unwrap();
+        assert!(matches!(
+            TagKey::load_or_create(&raw_dir, &stranger),
+            Err(Error::Vault { .. })
+        ));
+        vault
+            .store(
+                &TAG_KEY_NAME.parse().unwrap(),
+                &Secret::new(b"short".to_vec()).unwrap(),
+            )
+            .unwrap();
+        assert!(matches!(
+            TagKey::load_or_create(&raw_dir, &key),
+            Err(Error::Redaction { reason }) if reason.contains("not 32 bytes")
+        ));
+        // Without a key, nothing is tagged.
+        let codename = Category::new("codename").unwrap();
+        let untagged = judged(&event("red-1", &codename, Some("nightjarplan")), None);
+        assert_eq!(
+            (untagged.tag, untagged.flagged_tag, untagged.sha256),
+            (None, None, None)
+        );
+    }
+
+    #[test]
+    fn the_log_holds_tags_and_sizes_never_the_text_or_an_unkeyed_hash() {
         let (_dir, redaction) = deployment("red-log");
         let log = redaction.dir.join(AUDIT_FILE);
         assert_eq!(
@@ -946,9 +1175,12 @@ mod tests {
             (Vec::new(), 0),
             "no log, no records"
         );
-        redactions(&redaction);
+        let tags = redactions(&redaction);
         let text = std::fs::read_to_string(&log).unwrap();
         assert!(!text.contains("nightjar"), "{text}");
+        for unkeyed in [sha256_hex(b"the nightjar plan"), sha256_hex(b"nightjarplan")] {
+            assert!(!text.contains(&unkeyed), "{text}");
+        }
         let (records, unreadable) = read_log(&log).unwrap();
         assert_eq!((records.len(), unreadable), (5, 0));
         let Some(Record::Redacted {
@@ -968,9 +1200,11 @@ mod tests {
                 classifier: String::from("c@1"),
                 category: String::from("codename"),
                 reason: String::from("flagged"),
-                sha256: sha256_hex(b"the nightjar plan"),
+                tag: Some(tags.tag(b"the nightjar plan")),
+                sha256: None,
                 bytes: 17,
-                flagged_sha256: Some(sha256_hex(b"nightjarplan")),
+                flagged_tag: Some(tags.tag(b"nightjarplan")),
+                flagged_sha256: None,
             }
         );
         assert_eq!(*raw, RawOutcome::Off);
@@ -979,8 +1213,17 @@ mod tests {
         );
         let codename = Category::new("codename").unwrap();
         assert_eq!(
-            judged(&event("red-1", &codename, Some("nightjarplan"))),
+            judged(&event("red-1", &codename, Some("nightjarplan")), Some(&tags)),
             *recorded
+        );
+        // A record from before the tags still reads.
+        let legacy = r#"{"kind":"redacted","event_id":"red-0","at":1,"scope":"s","sender":"u","classifier":"c","category":"codename","reason":"flagged","sha256":"aa","bytes":3,"flagged_sha256":"bb","raw":"off"}"#;
+        let Ok(Record::Redacted { event: old, .. }) = serde_json::from_str::<Record>(legacy) else {
+            unreachable!("a record from before the tags must read");
+        };
+        assert_eq!(
+            (old.sha256.as_deref(), old.flagged_sha256.as_deref(), old.tag),
+            (Some("aa"), Some("bb"), None)
         );
 
         // A line that is not a record is counted, not trusted.
@@ -1067,12 +1310,14 @@ mod tests {
         let codename = Category::new("codename").unwrap();
         assert!(overrides.entries().unwrap().is_empty());
         assert!(!overrides.allows("session:a", &codename, "nightjarplan"));
+        // An override from before the tags names its form unkeyed.
         let entry = |scope: &str| Override {
             event_id: String::from("red-1"),
             at: 1,
             scope: scope.to_owned(),
             category: String::from("codename"),
-            flagged_sha256: sha256_hex(b"nightjarplan"),
+            flagged_tag: None,
+            flagged_sha256: Some(sha256_hex(b"nightjarplan")),
             by: 1,
         };
         let path = redaction.dir.join(OVERRIDES_FILE);
@@ -1089,6 +1334,23 @@ mod tests {
         assert!(!overrides.allows("session:a", &codename, "anotherform"));
         append(&path, &serde_json::to_string(&entry(ANY_SCOPE)).unwrap()).unwrap();
         assert!(overrides.allows("session:b", &codename, "nightjarplan"));
+        // One made since names it by its tag, which only the key matches.
+        let tags = tag_key(&redaction);
+        let tagged = Override {
+            flagged_tag: Some(tags.tag(b"anotherform")),
+            flagged_sha256: None,
+            ..entry("session:a")
+        };
+        append(&path, &serde_json::to_string(&tagged).unwrap()).unwrap();
+        assert!(!overrides.allows("session:a", &codename, "anotherform"));
+        let keyed = FileOverrides::new(&redaction.dir).with_tags(Arc::clone(&tags));
+        assert!(keyed.allows("session:a", &codename, "anotherform"));
+        assert!(!keyed.allows("session:b", &codename, "anotherform"));
+        assert!(keyed.allows("session:b", &codename, "nightjarplan"));
+        assert!(!keyed.allows("session:a", &codename, "yetanother"));
+        assert!(tagged.same_form(&tagged.clone()));
+        assert!(!tagged.same_form(&entry("session:a")));
+        assert!(entry("x").same_form(&entry("y")));
         std::fs::remove_file(&path).unwrap();
         std::fs::create_dir(&path).unwrap();
         assert!(
@@ -1109,7 +1371,7 @@ mod tests {
             command(&redaction, &["list"], no_key).unwrap(),
             "no redactions"
         );
-        redactions(&redaction);
+        let tags = redactions(&redaction);
         let log = read_log(&redaction.dir.join(AUDIT_FILE)).unwrap();
         let listed = list(&log);
         assert_eq!(listed.lines().count(), 4, "{listed}");
@@ -1132,7 +1394,14 @@ mod tests {
         assert_eq!(command(&redaction, &["stats"], no_key).unwrap(), counted);
         let shown = show(&log.0, &FileOverrides::new(&redaction.dir), "red-1").unwrap();
         assert!(shown.contains("  category    codename"), "{shown}");
-        assert!(shown.contains(&sha256_hex(b"nightjarplan")), "{shown}");
+        assert!(
+            shown.contains(&format!("  flagged     {}", tags.tag(b"nightjarplan"))),
+            "{shown}"
+        );
+        assert!(
+            shown.contains(&format!("  tag         {}", tags.tag(b"the nightjar plan"))),
+            "{shown}"
+        );
         assert!(
             shown.contains("not kept (HATCHLING_REDACTION_KEEP_RAW is off)"),
             "{shown}"
@@ -1177,7 +1446,7 @@ mod tests {
     fn an_override_is_appended_once_and_recorded() {
         let (_dir, redaction) = deployment("red-override");
         let no_key = || -> Result<MasterKey, Error> { unreachable!("only raw needs the key") };
-        redactions(&redaction);
+        let tags = redactions(&redaction);
         let (records, _) = read_log(&redaction.dir.join(AUDIT_FILE)).unwrap();
         for (id, why) in [
             ("red-2", "it carried a secret the broker holds"),
@@ -1197,10 +1466,18 @@ mod tests {
         let everywhere =
             command(&redaction, &["override", "red-1", "--any-scope"], no_key).unwrap();
         assert!(everywhere.contains("in *"), "{everywhere}");
-        let overrides = FileOverrides::new(&redaction.dir);
+        let overrides = FileOverrides::new(&redaction.dir).with_tags(tags);
         let codename = Category::new("codename").unwrap();
         assert!(overrides.allows("session:z", &codename, "nightjarplan"));
         assert_eq!(overrides.entries().unwrap().len(), 2);
+        assert!(
+            overrides
+                .entries()
+                .unwrap()
+                .iter()
+                .all(|entry| entry.flagged_tag.is_some() && entry.flagged_sha256.is_none()),
+            "an override names its form by tag alone"
+        );
         let (records, _) = read_log(&redaction.dir.join(AUDIT_FILE)).unwrap();
         let logged = records
             .iter()
@@ -1248,6 +1525,30 @@ mod tests {
             matches!(&refused, Err(Error::Redaction { reason }) if reason.contains("no flagged form")),
             "{refused:?}"
         );
+
+        // A redaction from before the tags is overridden by its hash.
+        let legacy = Judged {
+            event_id: String::from("red-6"),
+            tag: None,
+            sha256: Some(sha256_hex(b"the nightjar plan")),
+            flagged_tag: None,
+            flagged_sha256: Some(sha256_hex(b"kestrel")),
+            ..judged(&event("red-6", &codename, None), None)
+        };
+        FileAudit::new(&redaction.dir, None)
+            .write(&Record::Redacted {
+                event: legacy,
+                raw: RawOutcome::Off,
+            })
+            .unwrap();
+        let shown = command(&redaction, &["show", "red-6"], no_key).unwrap();
+        assert!(
+            shown.contains("(unkeyed, recorded before the tags)"),
+            "{shown}"
+        );
+        command(&redaction, &["override", "red-6"], no_key).unwrap();
+        assert!(FileOverrides::new(&redaction.dir).allows("session:a", &codename, "kestrel"));
+        assert_eq!(shown_tag(None, None), "(none)");
     }
 
     #[test]
@@ -1294,7 +1595,13 @@ mod tests {
         audit.redacted(&event("red-1", &codename, None));
         audit
             .write(&Record::Redacted {
-                event: judged(&event("red-2", &codename, None)),
+                event: judged(&event("red-2", &codename, None), None),
+                raw: RawOutcome::Kept,
+            })
+            .unwrap();
+        audit
+            .write(&Record::Redacted {
+                event: judged(&event(TAG_KEY_NAME, &codename, None), None),
                 raw: RawOutcome::Kept,
             })
             .unwrap();
@@ -1328,6 +1635,11 @@ mod tests {
             matches!(records.last(), Some(Record::RawRead { event_id, by, .. }) if event_id == "red-2" && *by == hatchling_sys::euid())
         );
         assert!(raw(&redaction, &records, "red-x", || unreachable!("not needed")).is_err());
+        let refused = raw(&redaction, &records, TAG_KEY_NAME, || unreachable!("not needed"));
+        assert!(
+            matches!(&refused, Err(Error::Redaction { reason }) if reason.contains("audit-tag key")),
+            "a forged record never reads the key out: {refused:?}"
+        );
         let shown = command(&redaction, &["show", "red-2"], || {
             unreachable!("not needed")
         })

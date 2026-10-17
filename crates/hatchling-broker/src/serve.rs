@@ -89,7 +89,7 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
     // files `migrate-vault` must re-seal.
     crate::check_sealed_stores(&crate::sealed_stores(config, redaction.as_ref()))?;
     let gated = match &redaction {
-        Some(redaction) => crate::output_gate::build(config, redaction)?,
+        Some(redaction) => crate::output_gate::build(config, redaction, &key)?,
         None => crate::output_gate::Built {
             gate: hatchling_channel::OutputGate::disabled(),
             worker: None,

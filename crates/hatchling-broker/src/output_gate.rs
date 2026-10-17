@@ -41,7 +41,7 @@ use hatchling_vault::{MAX_SECRET_BYTES, MasterKey, SealedVault, Secret, SecretNa
 use zeroize::Zeroizing;
 
 use crate::environment as env;
-use crate::redactions::{FileAudit, FileOverrides, RawOutcome, Settings};
+use crate::redactions::{FileAudit, FileOverrides, RawOutcome, Settings, TagKey};
 use crate::{Config, Error};
 
 /// The built-in rules' id, as the audit log records it.
@@ -633,7 +633,7 @@ pub struct Built {
 /// Returns [`Error::InvalidConfig`] when the redaction directory is not an
 /// owner-only directory and cannot be made one, or the categories file is
 /// invalid, and [`Error::Redaction`] when the audit log cannot be written.
-pub fn build(config: &Config, redaction: &RedactionConfig) -> Result<Built, Error> {
+pub fn build(config: &Config, redaction: &RedactionConfig, key: &MasterKey) -> Result<Built, Error> {
     if config.channel_ingress.is_none() {
         return Ok(Built {
             gate: OutputGate::disabled(),
@@ -675,6 +675,7 @@ pub fn build(config: &Config, redaction: &RedactionConfig) -> Result<Built, Erro
             worker: None,
         });
     }
+    let tags = Arc::new(TagKey::load_or_create(&redaction.dir.join(RAW_DIR), key)?);
     tracing::info!(
         dir = %redaction.dir.display(),
         categories = phrases.len(),
@@ -684,8 +685,8 @@ pub fn build(config: &Config, redaction: &RedactionConfig) -> Result<Built, Erro
     Ok(Built {
         gate: OutputGate::new(
             Arc::new(handle),
-            Arc::new(audit),
-            Arc::new(FileOverrides::new(&redaction.dir)),
+            Arc::new(audit.with_tags(Arc::clone(&tags))),
+            Arc::new(FileOverrides::new(&redaction.dir).with_tags(tags)),
             redaction.timeout,
         ),
         worker: Some((worker, phrases)),
@@ -1179,7 +1180,7 @@ mod tests {
             timeout: Duration::from_secs(1),
             builtins: Builtins::ALL,
         };
-        let built = build(&config, &redaction).unwrap();
+        let built = build(&config, &redaction, &key).unwrap();
         assert_eq!(built.gate.classifier_id(), None, "no ingress, no gate");
         assert!(built.worker.is_none());
         assert!(!redaction.dir.exists(), "and nothing written");
@@ -1191,7 +1192,7 @@ mod tests {
             "codename: nightjar plan\n",
         )
         .unwrap();
-        let built = build(&config, &redaction).unwrap();
+        let built = build(&config, &redaction, &key).unwrap();
         assert_eq!(built.gate.classifier_id(), Some(RULES_ID));
         let (worker, phrases) = built.worker.unwrap();
         assert_eq!(phrases.len(), 1);
@@ -1241,12 +1242,38 @@ mod tests {
             (event.category.as_str(), *raw),
             ("codename", RawOutcome::Kept)
         );
+        // Recorded by tags under the key sealed beside the kept text, and
+        // by no unkeyed hash.
+        let tags = TagKey::load_or_create(&raw, &key).unwrap();
+        assert_eq!(
+            (event.tag.clone(), event.flagged_tag.clone()),
+            (
+                Some(tags.tag(b"the Nightjar Plan, in full")),
+                Some(tags.tag(b"nightjarplan"))
+            )
+        );
+        assert_eq!((&event.sha256, &event.flagged_sha256), (&None, &None));
+        let text = std::fs::read_to_string(&log).unwrap();
+        for unkeyed in [
+            sha256_hex(b"the Nightjar Plan, in full"),
+            sha256_hex(b"nightjarplan"),
+        ] {
+            assert!(!text.contains(&unkeyed), "{text}");
+        }
+        let stranger = MasterKey::generate().unwrap();
+        assert!(
+            matches!(
+                build(&config, &redaction, &stranger),
+                Err(Error::Vault { .. })
+            ),
+            "the tag key opens only under the broker's key"
+        );
 
         let off = RedactionConfig {
             enabled: false,
             ..redaction
         };
-        let built = build(&config, &off).unwrap();
+        let built = build(&config, &off, &key).unwrap();
         assert_eq!(built.gate.classifier_id(), None);
         assert!(built.worker.is_none());
         let (records, _) = read_log(&log).unwrap();
@@ -1268,7 +1295,7 @@ mod tests {
 
     #[test]
     fn a_gate_that_cannot_keep_its_records_stops_the_broker() {
-        let (dir, mut config, _key) = held("gate-refused");
+        let (dir, mut config, key) = held("gate-refused");
         config.channel_ingress = Some("/tmp/hatchling-gate-refused.sock".parse().unwrap());
         let redaction = RedactionConfig {
             enabled: true,
@@ -1286,7 +1313,7 @@ mod tests {
             builtins: Builtins::ALL,
         };
         assert!(matches!(
-            build(&config, &in_a_file),
+            build(&config, &in_a_file, &key),
             Err(Error::InvalidConfig {
                 key: "HATCHLING_REDACTION_DIR",
                 ..
@@ -1300,7 +1327,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            build(&config, &redaction).is_err(),
+            build(&config, &redaction, &key).is_err(),
             "a bad categories file stops the broker"
         );
         let off = RedactionConfig {
@@ -1309,7 +1336,7 @@ mod tests {
         };
         std::fs::create_dir(off.dir.join(AUDIT_FILE)).unwrap();
         assert!(
-            matches!(build(&config, &off), Err(Error::Redaction { .. })),
+            matches!(build(&config, &off, &key), Err(Error::Redaction { .. })),
             "an unwritable log stops it"
         );
     }
