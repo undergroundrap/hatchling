@@ -565,9 +565,17 @@ fn bad_vault_root_fails_before_bind() {
 fn a_starting_broker_sweeps_leftovers_unless_one_already_serves() {
     let scratch = scratch_dir("sweep").unwrap();
     let mut env = operator_env(&scratch, "vault");
+    // The socket in a directory of its own: the scheduler's may not be
+    // inside the one the cell mounts.
+    let socket_dir = scratch.join("sock");
+    std::fs::create_dir_all(&socket_dir).unwrap();
+    let socket = socket_dir.join("broker.sock");
     for (key, value) in &mut env {
         if *key == "HATCHLING_LOG_LEVEL" {
             *value = String::from("info");
+        }
+        if *key == "HATCHLING_BROKER_SOCKET" {
+            *value = socket.to_string_lossy().into_owned();
         }
     }
     env.push((
@@ -576,7 +584,6 @@ fn a_starting_broker_sweeps_leftovers_unless_one_already_serves() {
     ));
     // The socket's path is a plain file: a start stops at bind, after
     // its lock and its sweep.
-    let socket = scratch.join("broker.sock");
     std::fs::write(&socket, b"not a socket").unwrap();
     let leftover = scratch
         .join("schedules.runs")
@@ -595,7 +602,7 @@ fn a_starting_broker_sweeps_leftovers_unless_one_already_serves() {
 
     // While another broker holds the serving lock: a start and a clean
     // are refused, and nothing is swept.
-    let serving = hatchling_sys::try_lock(&scratch.join("broker.sock.lock"))
+    let serving = hatchling_sys::try_lock(&socket_dir.join("broker.sock.lock"))
         .unwrap()
         .unwrap();
     for args in [&[][..], &["clean"]] {
