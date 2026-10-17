@@ -227,13 +227,15 @@ pub struct ScannedFile {
 /// One of the cell's resource limits, after the probe tried to lift it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HeldLimit {
-    /// `processes`, `address-space`, `file-size` or `open-files`.
+    /// `processes`, `address-space`, `file-size`, `open-files`, `core`
+    /// (lifted) or `core-lowered` (lowered to 0).
     pub name: String,
     /// The soft limit; `None` for none.
     pub soft: Option<u64>,
     /// The hard limit; `None` for none.
     pub hard: Option<u64>,
-    /// The errno of lifting both to none, or 0 if that worked.
+    /// The errno of lifting both to none (lowering both to 0 for
+    /// `core-lowered`), or 0 if that worked.
     pub raise_errno: i32,
 }
 

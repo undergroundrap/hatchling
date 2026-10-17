@@ -914,12 +914,153 @@ fn a_cell_is_held_to_its_limits_and_cannot_lift_them() -> Result<(), String> {
             held("address-space", HELD.address_space),
             held("file-size", HELD.file_size),
             held("open-files", HELD.open_files),
+            // Every cell's core limit is one byte, whatever its spec,
+            // and neither lifted nor lowered from inside.
+            held("core", Some(1)),
+            held("core-lowered", Some(1)),
         ],
     };
     if report.outcome != expected {
         return Err(format!(
             "the cell's limits: {:?}, expected {expected:?}",
             report.outcome
+        ));
+    }
+    Ok(())
+}
+
+/// Where the host's `core_pattern` is kept while
+/// [`a_seccomp_kill_hands_no_core_to_the_hosts_crash_handler`] has it, so
+/// a run killed part-way is undone by the next one.
+const SAVED_CORE_PATTERN: &str = "/run/hatchling-core-pattern.saved";
+
+/// The host's `core_pattern`.
+const CORE_PATTERN: &str = "/proc/sys/kernel/core_pattern";
+
+/// The host's `core_pattern`, set for a check and put back however it
+/// ends.
+struct CorePattern {
+    saved: String,
+}
+
+impl CorePattern {
+    /// Sets the host's `core_pattern` to `pattern`, keeping what it was in
+    /// [`SAVED_CORE_PATTERN`] first (and putting back one a killed run
+    /// left there).
+    fn set(pattern: &str) -> Result<Self, String> {
+        if let Ok(left) = std::fs::read_to_string(SAVED_CORE_PATTERN) {
+            std::fs::write(CORE_PATTERN, &left).map_err(|e| format!("restore {left:?}: {e}"))?;
+        }
+        let saved = std::fs::read_to_string(CORE_PATTERN).map_err(|e| e.to_string())?;
+        std::fs::write(SAVED_CORE_PATTERN, &saved).map_err(|e| e.to_string())?;
+        let _ = writeln!(
+            std::io::stderr(),
+            "core_pattern was {saved:?}; if this run is killed, it is in {SAVED_CORE_PATTERN}"
+        );
+        std::fs::write(CORE_PATTERN, pattern).map_err(|e| format!("set {pattern:?}: {e}"))?;
+        Ok(Self { saved })
+    }
+}
+
+impl Drop for CorePattern {
+    fn drop(&mut self) {
+        if std::fs::write(CORE_PATTERN, &self.saved).is_ok() {
+            let _ = std::fs::remove_file(SAVED_CORE_PATTERN);
+        }
+    }
+}
+
+/// How many cores the test's crash handler was given.
+fn cores_handled(log: &Path) -> usize {
+    std::fs::read_to_string(log).map_or(0, |text| text.lines().count())
+}
+
+/// Waits up to `wait` for the handler to have been given `count` cores.
+fn handled_within(log: &Path, count: usize, wait: Duration) -> bool {
+    let deadline = Instant::now() + wait;
+    loop {
+        if cores_handled(log) >= count {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// A cell killed by seccomp hands no core to the host's crash handler
+/// (WO-011): with a pipe `core_pattern` set for the check, as apport and
+/// systemd-coredump set it, a plain process's `SIGSYS` reaches the handler
+/// and a cell's doesn't. The pattern is the host's, so this runs only as
+/// root with `HATCHLING_CORE_PATTERN_TEST=1`, and puts it back after.
+fn a_seccomp_kill_hands_no_core_to_the_hosts_crash_handler() -> Result<(), String> {
+    if std::env::var("HATCHLING_CORE_PATTERN_TEST").ok().as_deref() != Some("1") {
+        let _ = writeln!(
+            std::io::stderr(),
+            "skipping the crash-handler check: it sets the host's core_pattern; set HATCHLING_CORE_PATTERN_TEST=1 as root"
+        );
+        return Ok(());
+    }
+    if hatchling_sys::euid() != 0 {
+        return Err(String::from(
+            "HATCHLING_CORE_PATTERN_TEST=1 needs root: core_pattern is the host's",
+        ));
+    }
+    if !guard_cell_available()? {
+        return Ok(());
+    }
+    let dir = test_dir("adversarial-core-pattern");
+    std::fs::create_dir_all(&*dir).map_err(|e| format!("test dir: {e}"))?;
+    let log = dir.join("cores");
+    let handler = dir.join("handler");
+    std::fs::write(
+        &handler,
+        format!(
+            "#!/bin/sh\necho \"$1 $2\" >> '{}'\ncat > /dev/null\n",
+            log.display()
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&handler, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| e.to_string())?;
+    }
+    let _pattern = CorePattern::set(&format!("|{} %P %s", handler.display()))?;
+    // The control: a plain process's SIGSYS reaches the handler, so the
+    // check below can't pass for want of one.
+    let child = match hatchling_sys::fork().map_err(|e| e.to_string())? {
+        hatchling_sys::ForkResult::Parent { child } => child,
+        hatchling_sys::ForkResult::Child => {
+            let _ = rustix::process::setrlimit(
+                rustix::process::Resource::Core,
+                rustix::process::Rlimit {
+                    current: None,
+                    maximum: None,
+                },
+            );
+            let _ = rustix::process::kill_process(
+                rustix::process::getpid(),
+                rustix::process::Signal::Sys,
+            );
+            hatchling_sys::exit_child(1)
+        }
+    };
+    let _ = child.wait_deadline(Duration::from_secs(10));
+    if !handled_within(&log, 1, Duration::from_secs(10)) {
+        return Err(String::from(
+            "the control's SIGSYS never reached the handler: the check would prove nothing",
+        ));
+    }
+    // The subject: a cell dies of SIGSYS on a denied call, and the handler
+    // gets nothing.
+    let result = spawn_cli_attack(Attack::PrivescUnshare)?;
+    assert_sigsys(&result)?;
+    if handled_within(&log, 2, Duration::from_secs(3)) {
+        return Err(format!(
+            "the cell's SIGSYS handed the host's crash handler a core: {:?}",
+            std::fs::read_to_string(&log).unwrap_or_default()
         ));
     }
     Ok(())
@@ -1371,6 +1512,10 @@ const CHECKS: &[Check] = &[
         a_cell_that_clears_its_death_signal_still_dies_with_its_supervisor,
     ),
     ("privesc_unshare_dies", privesc_unshare_dies),
+    (
+        "a_seccomp_kill_hands_no_core_to_the_hosts_crash_handler",
+        a_seccomp_kill_hands_no_core_to_the_hosts_crash_handler,
+    ),
     ("net_bind_dies", net_bind_dies),
     ("tcp_socket_dies", tcp_socket_dies),
     (

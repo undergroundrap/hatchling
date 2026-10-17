@@ -710,6 +710,19 @@ fn child_main(
     if let Err(source) = hatchling_sys::set_pdeathsig(broker_pidfd.as_fd()) {
         fail(&mut child_to_parent, format!("pdeathsig: {source}"));
     }
+    // A seccomp kill dumps core: held to one byte, no core reaches the
+    // host's crash handler, from every process of the cell. Set here,
+    // before the user namespace, where a root broker may still raise a
+    // hard limit of 0 (sudo's) to it; the cell's filter refuses any
+    // change to it later.
+    if let Err(source) = hatchling_sys::hold_core_dumps_off() {
+        fail(
+            &mut child_to_parent,
+            format!(
+                "hold core dumps off (a hard core limit of 0 can't be raised to the 1 that stops a crash handler without root): {source}"
+            ),
+        );
+    }
     if let Err(reason) = drop_inherited_groups(hatchling_sys::euid(), hatchling_sys::clear_groups)
         .map_err(|source| format!("setgroups: {source}"))
         .and_then(|()| {
