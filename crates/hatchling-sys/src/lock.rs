@@ -69,9 +69,76 @@ pub fn try_lock(path: &Path) -> Result<Option<HeldLock>, Error> {
     }
 }
 
+/// Holds a shared lock on the directory at `path`, opened without
+/// following a symlink, until dropped: a mark that the directory is in
+/// use, which [`in_use`] sees from another process.
+///
+/// # Errors
+///
+/// Returns [`Error::Lock`] if `path` isn't a directory itself, or if the
+/// lock can't be taken.
+pub fn hold_dir(path: &Path) -> Result<HeldLock, Error> {
+    let failed = |operation: &'static str| {
+        move |source: rustix::io::Errno| Error::Lock {
+            operation,
+            source: io::Error::from_raw_os_error(source.raw_os_error()),
+        }
+    };
+    let fd = rustix::fs::open(
+        path,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(failed("open the directory"))?;
+    let file = std::fs::File::from(fd);
+    rustix::fs::flock(&file, FlockOperation::NonBlockingLockShared)
+        .map_err(failed("hold the directory"))?;
+    Ok(HeldLock(file))
+}
+
+/// Whether a process holds the directory at `path` ([`hold_dir`]), or it
+/// can't be told: one that can't be opened as a directory itself, or
+/// locked, counts as in use.
+#[must_use]
+pub fn in_use(path: &Path) -> bool {
+    let Ok(fd) = rustix::fs::open(
+        path,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) else {
+        return true;
+    };
+    // Taken, the lock goes when `fd` is closed, at once.
+    rustix::fs::flock(&fd, FlockOperation::NonBlockingLockExclusive).is_err()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_held_directory_is_in_use_until_let_go() {
+        let dir = std::env::temp_dir().join(format!("hatchling-held-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("root")).unwrap();
+        let root = dir.join("root");
+        assert!(!in_use(&root), "no one holds it");
+        let held = hold_dir(&root).unwrap();
+        let another = hold_dir(&root).unwrap();
+        assert!(in_use(&root), "held");
+        drop(held);
+        assert!(in_use(&root), "still held by another");
+        drop(another);
+        assert!(!in_use(&root), "let go");
+        // What can't be told counts as in use; a symlink is never followed.
+        std::os::unix::fs::symlink(&root, dir.join("link")).unwrap();
+        assert!(in_use(&dir.join("link")) && in_use(&dir.join("missing")));
+        assert!(matches!(
+            hold_dir(&dir.join("link")),
+            Err(Error::Lock { operation: "open the directory", .. })
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn one_holder_at_a_time_and_none_after_it_lets_go() {

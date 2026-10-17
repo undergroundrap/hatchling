@@ -130,14 +130,36 @@ fn entries(root: &Path, disposable: impl Fn(&str) -> bool) -> Vec<Leftover> {
     found
 }
 
+/// Whether the directory at `path` holds only cells' staging, as a
+/// staging root does: `cell-*` directories, or nothing.
+fn only_cells(path: &Path) -> bool {
+    std::fs::read_dir(path).is_ok_and(|entries| {
+        entries.into_iter().all(|entry| {
+            entry.is_ok_and(|entry| {
+                entry.file_name().to_str().is_some_and(|name| name.starts_with("cell-"))
+                    && std::fs::symlink_metadata(entry.path()).is_ok_and(|meta| meta.is_dir())
+            })
+        })
+    })
+}
+
 /// The leftovers in `staging_root` (staging directories whose broker is
 /// gone, never this process's own) and in `run_root` (every run
 /// directory), in that order.
+///
+/// A staging directory is one by its name, its broker's pid gone, its
+/// contents (cells' staging only), and no process holding it: each of
+/// these alone keeps whatever else is in a shared temp dir from the
+/// sweep.
 #[must_use]
 pub fn leftovers(staging_root: &Path, run_root: Option<&Path>) -> Vec<Leftover> {
     let own = i32::try_from(std::process::id()).unwrap_or(0);
     let mut found = entries(staging_root, |name| {
         staging_pid(name).is_some_and(|pid| pid != own && !hatchling_sys::pid_alive(pid))
+    });
+    found.retain(|leftover| {
+        let path = leftover.path();
+        only_cells(&path) && !hatchling_sys::in_use(&path)
     });
     if let Some(run_root) = run_root {
         found.extend(entries(run_root, is_run));
@@ -460,6 +482,19 @@ mod tests {
             2,
             "its broker gone, its staging is a leftover"
         );
+        // Named as a dead broker's, but holding more than cells, or held
+        // by a process: not swept.
+        let crowded = tmp.join(staging(dead, "f6"));
+        std::fs::create_dir_all(crowded.join(format!("cell-{}", hex("a1", 32)))).unwrap();
+        std::fs::write(crowded.join("Cargo.toml"), b"").unwrap();
+        let held = tmp.join(staging(dead, "e5"));
+        std::fs::create_dir(&held).unwrap();
+        let holding = hatchling_sys::hold_dir(&held).unwrap();
+        assert_eq!(leftovers(&tmp, None).len(), 2, "neither is one");
+        assert!(!only_cells(&crowded) && only_cells(&held));
+        assert!(!only_cells(&dir.0.join("missing")));
+        drop(holding);
+        assert_eq!(leftovers(&tmp, None).len(), 3, "let go, it is");
     }
 
     #[test]

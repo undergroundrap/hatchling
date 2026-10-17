@@ -50,7 +50,7 @@ pub use fds::{
     take_stdin,
 };
 pub use idmap::IdMap;
-pub use lock::{HeldLock, try_lock};
+pub use lock::{HeldLock, hold_dir, in_use, try_lock};
 pub use mounts::{BindMount, MountPlan};
 pub use namespaces::{unshare_ipc, unshare_mount, unshare_net, unshare_pid, unshare_user};
 pub use ownership::{
