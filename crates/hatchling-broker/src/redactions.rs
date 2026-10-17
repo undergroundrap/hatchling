@@ -1369,8 +1369,19 @@ mod tests {
         );
     }
 
+    /// `shown` gives red-1's tags under `tags`: the message's and its
+    /// flagged form's.
+    fn shows_tags(shown: &str, tags: &TagKey) {
+        for line in [
+            format!("  tag         {}", tags.tag(b"the nightjar plan")),
+            format!("  flagged     {}", tags.tag(b"nightjarplan")),
+        ] {
+            assert!(shown.contains(&line), "{shown}");
+        }
+    }
+
     #[test]
-    fn the_operator_reviews_redactions_by_hash() {
+    fn the_operator_reviews_redactions_by_tag() {
         let (_dir, redaction) = deployment("red-review");
         let no_key = || -> Result<MasterKey, Error> { unreachable!("only raw needs the key") };
         assert_eq!(
@@ -1400,14 +1411,7 @@ mod tests {
         assert_eq!(command(&redaction, &["stats"], no_key).unwrap(), counted);
         let shown = show(&log.0, &FileOverrides::new(&redaction.dir), "red-1").unwrap();
         assert!(shown.contains("  category    codename"), "{shown}");
-        assert!(
-            shown.contains(&format!("  flagged     {}", tags.tag(b"nightjarplan"))),
-            "{shown}"
-        );
-        assert!(
-            shown.contains(&format!("  tag         {}", tags.tag(b"the nightjar plan"))),
-            "{shown}"
-        );
+        shows_tags(&shown, &tags);
         assert!(
             shown.contains("not kept (HATCHLING_REDACTION_KEEP_RAW is off)"),
             "{shown}"
