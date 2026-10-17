@@ -23,6 +23,8 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 - The local API reports the agent's status on the stream: *working* once a message is queued for it, with the message's first line as the detail, and *idle* when its reply arrives (WO-021, part 4).
 - `hatchling-host`, the frontend host: it serves the built UI on `127.0.0.1` (`HATCHLING_HOST_PORT`, default 7340; `HATCHLING_HOST_UI` names the build) and carries the browser's WebSocket to the broker's UI socket (`HATCHLING_UI_SOCKET`), frame for frame. It prints the address to open, with the UI token in the URL's fragment. Its WebSocket frames are read strictly: whole, masked, bounded by the broker's own frame limit, text, close, ping and pong only. Its files are named only by plain segments and served only when regular, never through a symlink. A new crate (WO-021, part 2).
 
+- [Testing code that deletes](docs/testing-destructive-code.md): how a mutant of the new removal code deleted a test machine's WSL home during WO-012, and the rules since: two independent guards per escape, tests that delete only what they made, a bubblewrap sandbox for the tests and mutation runs of such code, and canary files (WO-012).
+
 ### Changed
 
 - **One broker per socket, and its helpers end with it.** A serving broker holds a lock beside its socket (`<socket>.lock`) for its life; a second broker on the same socket refuses to start. A run's or a skill's helper process now watches the broker that started it, by pidfd, and ends, with its cell, the moment that broker does: a broker killed with `SIGKILL` used to leave its helpers and their cells running until they ended on their own (WO-012).

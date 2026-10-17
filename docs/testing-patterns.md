@@ -6,6 +6,10 @@ supplement its mutation floor and gates.
 
 ## Mutation traps
 
+- **Code that deletes or signals.** A mutant of it can do the damage the
+  code prevents, to anything the test process can reach. Give each escape
+  two independent guards, and run its tests and mutants in a sandbox:
+  see [Testing code that deletes](testing-destructive-code.md).
 - **Timer boundaries.** `Duration::ZERO` alone cannot distinguish every
   mutation of a comparison such as `<`, `<=` or `==`. Exercise equality
   and nonzero values on both sides, and prove that a wait actually waits.

@@ -163,7 +163,12 @@ Trace the failing test with `strace -f -o /tmp/x.trace ...`, then:
 ## 7. Full mutation run
 
 One machine, one pass, cargo-mutants' own baseline (it calibrates
-timeouts for this machine):
+timeouts for this machine).
+
+If the change touches code that removes files or signals processes,
+don't run this as your own user: a mutant of that code once deleted a
+test user's whole WSL home. Run it in a sandbox, as
+[Testing code that deletes](testing-destructive-code.md) describes.
 
 ```bash
 cd ~/hatchling
