@@ -23,6 +23,8 @@ struct Held {
     rp_id: String,
     id: Vec<u8>,
     secret: Zeroizing<[u8; 32]>,
+    /// The secret its answer comes from once the user is verified.
+    verified: Zeroizing<[u8; 32]>,
 }
 
 /// A software FIDO2 authenticator.
@@ -31,6 +33,10 @@ pub struct VirtualAuthenticator {
     hmac_secret: bool,
     present: bool,
     remembers: bool,
+    /// Its PIN, if one is set.
+    pin: Option<String>,
+    /// The PIN its user types when asked.
+    typed: Option<String>,
 }
 
 impl VirtualAuthenticator {
@@ -42,6 +48,8 @@ impl VirtualAuthenticator {
             hmac_secret: true,
             present: true,
             remembers: true,
+            pin: None,
+            typed: None,
         }
     }
 
@@ -54,6 +62,8 @@ impl VirtualAuthenticator {
             hmac_secret: false,
             present: true,
             remembers: true,
+            pin: None,
+            typed: None,
         }
     }
 
@@ -65,12 +75,28 @@ impl VirtualAuthenticator {
             hmac_secret: true,
             present: true,
             remembers: false,
+            pin: None,
+            typed: None,
         }
     }
 
     /// Whether someone touches the key when it asks.
     pub const fn set_present(&mut self, present: bool) {
         self.present = present;
+    }
+
+    /// A key with `pin` set, whose user types it when asked.
+    #[must_use]
+    pub fn with_pin(pin: &str) -> Self {
+        let mut key = Self::new();
+        key.pin = Some(pin.to_owned());
+        key.typed = Some(pin.to_owned());
+        key
+    }
+
+    /// What its user types when asked for the PIN: `None` for nothing.
+    pub fn set_typed(&mut self, typed: Option<&str>) {
+        self.typed = typed.map(str::to_owned);
     }
 }
 
@@ -92,11 +118,13 @@ impl Authenticator for VirtualAuthenticator {
         let no_randomness = |_| AuthenticatorError::Device(String::from("no randomness"));
         let id = random::<16>().map_err(no_randomness)?.to_vec();
         let secret = Zeroizing::new(random::<32>().map_err(no_randomness)?);
+        let verified = Zeroizing::new(random::<32>().map_err(no_randomness)?);
         if self.remembers {
             self.held.push(Held {
                 rp_id: rp_id.to_owned(),
                 id: id.clone(),
                 secret,
+                verified,
             });
         }
         Ok(Credential {
@@ -114,6 +142,35 @@ impl Authenticator for VirtualAuthenticator {
         if !self.present {
             return Err(AuthenticatorError::NoUserPresence);
         }
+        self.answer(rp_id, credential_id, salt, false)
+    }
+
+    fn hmac_secret_verified(
+        &mut self,
+        rp_id: &str,
+        credential_id: &[u8],
+        salt: &[u8; 32],
+    ) -> Result<[u8; 32], AuthenticatorError> {
+        if self.pin.is_none() || self.typed != self.pin {
+            return Err(AuthenticatorError::NoVerification);
+        }
+        if !self.present {
+            return Err(AuthenticatorError::NoUserPresence);
+        }
+        self.answer(rp_id, credential_id, salt, true)
+    }
+}
+
+impl VirtualAuthenticator {
+    /// `HMAC-SHA-256` of `salt` under the credential's secret: its
+    /// verified-user one if `verified`.
+    fn answer(
+        &self,
+        rp_id: &str,
+        credential_id: &[u8],
+        salt: &[u8; 32],
+        verified: bool,
+    ) -> Result<[u8; 32], AuthenticatorError> {
         if !self.hmac_secret {
             return Err(AuthenticatorError::Device(String::from(
                 "hmac-secret is not supported",
@@ -124,7 +181,8 @@ impl Authenticator for VirtualAuthenticator {
             .iter()
             .find(|held| held.rp_id == rp_id && held.id == credential_id)
             .ok_or(AuthenticatorError::UnknownCredential)?;
-        let mut mac = <Hmac<Sha256>>::new_from_slice(held.secret.as_slice())
+        let secret = if verified { &held.verified } else { &held.secret };
+        let mut mac = <Hmac<Sha256>>::new_from_slice(secret.as_slice())
             .map_err(|_| AuthenticatorError::Device(String::from("bad key length")))?;
         mac.update(salt);
         Ok(mac.finalize().into_bytes().into())

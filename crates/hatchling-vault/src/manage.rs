@@ -15,7 +15,7 @@
 use std::str::FromStr;
 
 use crate::Error;
-use crate::fido2::{Authenticator, SingleKeyRisk};
+use crate::fido2::{Authenticator, KeyCheck, SingleKeyRisk};
 use crate::keyring::{Factor, Keyring, Tier, Unlocked, Wrap};
 
 /// The longest label, in characters.
@@ -69,6 +69,8 @@ pub struct KeyInfo {
     /// When it was added, in Unix seconds; `None` for a key enrolled
     /// before keyrings kept dates.
     pub added: Option<u64>,
+    /// What it asks of its user each time it opens the vault.
+    pub check: KeyCheck,
 }
 
 impl KeyInfo {
@@ -77,6 +79,10 @@ impl KeyInfo {
             id: wrap.id.clone(),
             label: wrap.label().to_owned(),
             added: wrap.added(),
+            check: KeyCheck::of(matches!(
+                wrap.factor,
+                Factor::Fido2 { verified: true, .. }
+            )),
         }
     }
 }
@@ -173,13 +179,29 @@ impl Keyring {
         device: &mut dyn Authenticator,
         label: &Label,
     ) -> Result<KeyInfo, Error> {
+        self.add_hardware_key_checked(unlocked, device, label, KeyCheck::Touch)
+    }
+
+    /// [`Keyring::add_hardware_key`], the key asking its user as `check`
+    /// says each time it opens the vault.
+    ///
+    /// # Errors
+    ///
+    /// As [`Keyring::add_hardware_key`].
+    pub fn add_hardware_key_checked(
+        &mut self,
+        unlocked: &Unlocked,
+        device: &mut dyn Authenticator,
+        label: &Label,
+        check: KeyCheck,
+    ) -> Result<KeyInfo, Error> {
         if self.tier() != Tier::HardwareKey {
             return Err(Error::KeyChange {
                 reason: "keys are added to a vault at the hardware-key tier; enroll that tier first, with two keys or one and backup codes",
             });
         }
         self.authorize(unlocked, Tier::HardwareKey)?;
-        let mut wrap = self.hardware_wrap(unlocked.key(), device)?;
+        let mut wrap = self.hardware_wrap(unlocked.key(), device, check)?;
         let credential = credential_of(&wrap);
         if self
             .wraps()
@@ -503,6 +525,7 @@ mod tests {
             id: id.to_owned(),
             label: String::new(),
             added: None,
+            check: KeyCheck::Touch,
         };
         assert_eq!(
             keyring.hardware_keys(),

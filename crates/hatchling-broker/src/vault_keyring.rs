@@ -22,7 +22,8 @@ use std::rc::Rc;
 
 use hatchling_fido2::{Bus, PinPrompt};
 use hatchling_vault::{
-    Authenticator, BackupCodes, FileKey, Kek, KeyInfo, KeySource as _, Keyring, Label, MasterKey,
+    Authenticator, BackupCodes, FileKey, Kek, KeyCheck, KeyInfo, KeySource as _, Keyring, Label,
+    MasterKey,
     Protection, RekeyReport, Rotation, SingleKeyRisk, Store, Tier, Unlocked, Warning,
 };
 
@@ -39,6 +40,10 @@ pub struct KeyringConfig {
     /// The fleet policy ( phase E): only a hardware-key vault may
     /// serve, and no tier below it may be enrolled.
     pub require_hardware_key: bool,
+    /// The PIN policy (WO-011): security keys are enrolled to ask for
+    /// their PIN each time, and a hardware-key vault serves only if every
+    /// key does.
+    pub require_key_pin: bool,
 }
 
 /// A strict boolean setting: `true`/`1` or `false`/`0`, nothing else.
@@ -107,7 +112,21 @@ impl KeyringConfig {
                 get(env::HATCHLING_REQUIRE_HARDWARE_KEY.name).as_deref(),
                 "HATCHLING_REQUIRE_HARDWARE_KEY",
             )?,
+            require_key_pin: flag(
+                get(env::HATCHLING_REQUIRE_KEY_PIN.name).as_deref(),
+                "HATCHLING_REQUIRE_KEY_PIN",
+            )?,
         })
+    }
+
+    /// What a security key enrolled now asks of its user each time.
+    #[must_use]
+    pub const fn key_check(&self) -> KeyCheck {
+        if self.require_key_pin {
+            KeyCheck::Pin
+        } else {
+            KeyCheck::Touch
+        }
     }
 
     /// The file tier's KEK path: the setting, or `<vault root>.key/kek`,
@@ -338,6 +357,7 @@ pub fn unlock_asking(
         .and_then(|path| Keyring::load(path).ok());
     match (loaded, config.keyring.as_deref()) {
         (Some(mut keyring), Some(path)) if keyring.tier() == Tier::HardwareKey => {
+            pin_policy(&keyring, config)?;
             let unlocked = authorize(&mut keyring, ask, devices)?;
             mark_keyring(vault, path)?;
             settled(&keyring)?;
@@ -375,6 +395,7 @@ pub fn unlock_with(
     if config.require_hardware_key && keyring.tier() != Tier::HardwareKey {
         return Err(policy("this vault is at a lower tier"));
     }
+    pin_policy(&keyring, config)?;
     let unlocked = open(&mut keyring, vault, config, factors)?;
     mark_keyring(vault, path)?;
     settled(&keyring)?;
@@ -384,6 +405,26 @@ pub fn unlock_with(
 /// What a rotation did: each store's re-seal, and the backup codes the new
 /// key brought, if the vault had codes.
 pub type Rekeyed = (Vec<(&'static str, RekeyReport)>, Option<BackupCodes>);
+
+/// Refuses, under the PIN policy, a hardware-key vault with a key that
+/// asks only for a touch, naming it: it can be removed and added again.
+fn pin_policy(keyring: &Keyring, config: &KeyringConfig) -> Result<(), Error> {
+    if !config.require_key_pin || keyring.tier() != Tier::HardwareKey {
+        return Ok(());
+    }
+    keyring
+        .hardware_keys()
+        .iter()
+        .find(|key| key.check != KeyCheck::Pin)
+        .map_or(Ok(()), |key| {
+            Err(Error::Usage {
+                reason: format!(
+                    "the PIN policy (HATCHLING_REQUIRE_KEY_PIN) requires every security key to ask for its PIN, and {} asks only for a touch: remove it and add it again (vault-keyring remove-key, add-key)",
+                    key_line(key)
+                ),
+            })
+        })
+}
 
 /// Refuses a keyring whose rotation is unfinished: some stores may still
 /// be sealed under the retiring key, so nothing is served, migrated or
@@ -809,7 +850,11 @@ fn key_line(key: &KeyInfo) -> String {
         || String::from("added before the keyring kept dates"),
         |date| format!("added {date}"),
     );
-    format!("{}  {label}  {added}", key.id)
+    let asks = match key.check {
+        KeyCheck::Touch => "touch",
+        KeyCheck::Pin => "PIN and touch",
+    };
+    format!("{}  {label}  {added}  {asks}", key.id)
 }
 
 /// `seconds` since the epoch as a UTC date, `YYYY-MM-DD`.
@@ -882,7 +927,7 @@ pub fn add_key(
     ask("Now plug in the new security key (only it: unplug any other) and press Enter:")?;
     let device = devices.plugged_in().ok_or_else(stopped)?;
     keyring
-        .add_hardware_key(&unlocked, device, &label)
+        .add_hardware_key_checked(&unlocked, device, &label, config.key_check())
         .map_err(vault_error)
 }
 
@@ -1049,7 +1094,7 @@ pub fn enroll_keys(
             let unlocked = unlock_current(&mut keyring, vault, config, ask, devices)?;
             let mut keys = devices.every_key();
             let rotated = keyring
-                .enroll_hardware_keys(&unlocked, &mut keys)
+                .enroll_hardware_keys_checked(&unlocked, &mut keys, config.key_check())
                 .map_err(vault_error)?;
             finish(
                 &mut keyring,
@@ -1080,7 +1125,12 @@ pub fn enroll_keys(
             let unlocked = unlock_current(&mut keyring, vault, config, ask, devices)?;
             let key = devices.plugged_in().ok_or_else(stopped)?;
             let rotated = keyring
-                .enroll_single_hardware_key(&unlocked, key, SingleKeyRisk::accepted())
+                .enroll_single_hardware_key_checked(
+                    &unlocked,
+                    key,
+                    SingleKeyRisk::accepted(),
+                    config.key_check(),
+                )
                 .map_err(vault_error)?;
             finish(
                 &mut keyring,
@@ -1464,6 +1514,7 @@ mod tests {
             keyring: Some(scratch.0.join("vault.key").join("keyring")),
             kek_file: None,
             require_hardware_key: false,
+            require_key_pin: false,
         }
     }
 
@@ -2114,6 +2165,7 @@ mod tests {
         let (_plain, vault) = scratch("policy-plain");
         let required = KeyringConfig {
             require_hardware_key: true,
+            require_key_pin: false,
             ..KeyringConfig::default()
         };
         let err = unlock_with(&vault, &required, Factors::default()).unwrap_err();
@@ -2129,6 +2181,7 @@ mod tests {
         let (_scratch, vault, config) = adopted("policy-file");
         let config = KeyringConfig {
             require_hardware_key: true,
+            require_key_pin: false,
             ..config
         };
         let err = unlock_asking(&vault, &config, &mut |_| Ok(String::new())).unwrap_err();
@@ -2150,6 +2203,7 @@ mod tests {
         let (_scratch, vault, config, codes) = hardware_with_codes("policy-hardware");
         let config = KeyringConfig {
             require_hardware_key: true,
+            require_key_pin: false,
             ..config
         };
         let dek =
@@ -2385,6 +2439,7 @@ mod tests {
             id: String::from("ab12"),
             label: String::from("YubiKey"),
             added: None,
+            check: KeyCheck::Touch,
         };
         assert_eq!(
             key_line(&migrated),
@@ -3251,6 +3306,7 @@ mod tests {
         assert_eq!(tier_of(&config), Tier::HardwareKey);
         let strict = KeyringConfig {
             require_hardware_key: true,
+            require_key_pin: false,
             ..config.clone()
         };
         let mut asked = Vec::new();

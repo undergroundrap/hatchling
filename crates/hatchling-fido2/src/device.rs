@@ -17,9 +17,10 @@
 //! - **Deadlines:** an operation waiting for a touch fails closed after
 //!   [`PRESENCE_TIMEOUT`]; the vault is unchanged.
 //!
-//! A key with a PIN is asked for it only to create a credential: the PIN
-//! comes from the [`PinPrompt`], goes to the key as an encrypted hash, and
-//! is not kept.
+//! A key with a PIN is asked for it to create a credential, and to answer
+//! for one enrolled to need it ([`hatchling_vault::KeyCheck::Pin`]): the
+//! PIN comes from the [`PinPrompt`], goes to the key as an encrypted hash,
+//! and is not kept. Such an answer must carry the user-verified flag.
 
 use std::time::Duration;
 
@@ -242,8 +243,19 @@ impl<H: Hid> Device<H> {
         rp_id: &str,
         credential_id: &[u8],
         salt: &[u8; 32],
+        verified: bool,
     ) -> Result<[u8; 32], Ctap2Error> {
         let protocol = self.info.protocol();
+        // The PIN first: its token proves this request, and the key then
+        // answers under its verified-user secret.
+        let token = if verified {
+            if self.info.client_pin != Some(true) {
+                return Err(Ctap2Error::NoPinSet);
+            }
+            Some(self.pin_token(protocol, rp_id)?)
+        } else {
+            None
+        };
         let peer = self.key_agreement(protocol)?;
         let (ours, shared) = encapsulate(protocol, &peer)?;
         let salt_enc = shared.encrypt(salt)?;
@@ -256,7 +268,7 @@ impl<H: Hid> Device<H> {
             input.push((Value::int(4), Value::int(protocol.number())));
         }
         let client_data_hash = random::<32>()?;
-        let parameters = Value::map(vec![
+        let mut parameters = vec![
             (Value::int(1), Value::text(rp_id)),
             (Value::int(2), Value::Bytes(client_data_hash.to_vec())),
             (
@@ -274,11 +286,18 @@ impl<H: Hid> Device<H> {
                 Value::int(5),
                 Value::map(vec![(Value::text("up"), Value::Bool(true))]),
             ),
-        ]);
+        ];
+        if let Some(token) = &token {
+            parameters.push((
+                Value::int(6),
+                Value::Bytes(protocol.authenticate(token, &client_data_hash)),
+            ));
+            parameters.push((Value::int(7), Value::int(protocol.number())));
+        }
         let reply = command(
             &mut self.channel,
             GET_ASSERTION,
-            Some(&parameters),
+            Some(&Value::map(parameters)),
             self.presence,
         )?;
         if let Some(credential) = reply.at(1) {
@@ -299,6 +318,9 @@ impl<H: Hid> Device<H> {
             .ok_or(Ctap2Error::Malformed("no authenticator data"))?;
         let data = AuthData::parse(raw)?;
         checked(&data, rp_id)?;
+        if verified && !data.user_verified() {
+            return Err(Ctap2Error::Mismatch("it did not confirm it verified its user"));
+        }
         if let Some((_, key)) = self.made.iter().find(|(id, _)| id == credential_id) {
             let signature = reply
                 .at(3)
@@ -376,7 +398,17 @@ impl<H: Hid> Authenticator for Device<H> {
         credential_id: &[u8],
         salt: &[u8; 32],
     ) -> Result<[u8; 32], AuthenticatorError> {
-        self.derive(rp_id, credential_id, salt)
+        self.derive(rp_id, credential_id, salt, false)
+            .map_err(|error| to_authenticator_error(&error))
+    }
+
+    fn hmac_secret_verified(
+        &mut self,
+        rp_id: &str,
+        credential_id: &[u8],
+        salt: &[u8; 32],
+    ) -> Result<[u8; 32], AuthenticatorError> {
+        self.derive(rp_id, credential_id, salt, true)
             .map_err(|error| to_authenticator_error(&error))
     }
 }
