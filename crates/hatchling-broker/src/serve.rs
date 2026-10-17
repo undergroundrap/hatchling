@@ -94,7 +94,7 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
     crate::check_sealed_stores(&crate::sealed_stores(config, redaction.as_ref()))?;
     // An earlier broker killed mid-run left its cells' staging and its
     // runs' directories: none is live now, and none is your data.
-    crate::sweep::sweep_at_start(config, redaction.as_ref());
+    let _swept = crate::sweep::sweep_at_start(config, redaction.as_ref());
     let gated = match &redaction {
         Some(redaction) => crate::output_gate::build(config, redaction, &key)?,
         None => crate::output_gate::Built {

@@ -209,10 +209,21 @@ fn remove(found: &[Leftover], keep: &[PathBuf]) -> Vec<String> {
 }
 
 /// The startup sweep: a serving broker, holding its lock, removes the
-/// leftovers of earlier brokers. A failure is logged, never fatal.
-pub fn sweep_at_start(config: &Config, redaction: Option<&RedactionConfig>) {
-    let found = leftovers(&std::env::temp_dir(), run_root(config).as_deref());
-    let _ = remove(&found, &state_dirs(config, redaction));
+/// leftovers of earlier brokers; what became of each, as it logged them.
+/// A failure is logged, never fatal.
+#[must_use]
+pub fn sweep_at_start(config: &Config, redaction: Option<&RedactionConfig>) -> Vec<String> {
+    sweep_in(config, redaction, &std::env::temp_dir())
+}
+
+/// [`sweep_at_start`], with staging directories in `staging_root`.
+fn sweep_in(
+    config: &Config,
+    redaction: Option<&RedactionConfig>,
+    staging_root: &Path,
+) -> Vec<String> {
+    let found = leftovers(staging_root, run_root(config).as_deref());
+    remove(&found, &state_dirs(config, redaction))
 }
 
 /// `hatchling-broker clean [--dry-run]`: the startup sweep on demand,
@@ -224,8 +235,13 @@ pub fn sweep_at_start(config: &Config, redaction: Option<&RedactionConfig>) {
 /// Returns [`Error::BrokerBusy`] while a broker serves `config`'s
 /// socket, and the lock's or the redaction settings' errors.
 pub fn clean(config: &Config, dry_run: bool) -> Result<String, Error> {
+    clean_in(config, &std::env::temp_dir(), dry_run)
+}
+
+/// [`clean`], with staging directories in `staging_root`.
+fn clean_in(config: &Config, staging_root: &Path, dry_run: bool) -> Result<String, Error> {
     let _lock = take_lock(config)?;
-    let found = leftovers(&std::env::temp_dir(), run_root(config).as_deref());
+    let found = leftovers(staging_root, run_root(config).as_deref());
     if dry_run {
         let mut lines: Vec<String> = found
             .iter()
@@ -262,4 +278,289 @@ pub fn run_clean(config: &Config, args: &[String]) -> Result<(), Error> {
     writeln!(std::io::stdout().lock(), "{report}").map_err(|e| Error::Sweep {
         reason: format!("cannot write the report: {e}"),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::symlink;
+    use std::process::Command;
+    use std::time::Duration;
+
+    use super::*;
+    use crate::api_auth::tests::{owner_config, scratch};
+
+    /// `len` lower-case hex digits, from the two given.
+    fn hex(pair: &str, len: usize) -> String {
+        pair.repeat(len / 2)
+    }
+
+    /// A staging directory's name for `pid`.
+    fn staging(pid: i32, pair: &str) -> String {
+        format!("hatchling-staging-{pid}-{}", hex(pair, STAGING_RANDOM_LEN))
+    }
+
+    /// A run directory's name.
+    fn run(pair: &str) -> String {
+        format!("run-{}", hex(pair, RUN_RANDOM_LEN))
+    }
+
+    /// A config whose socket, vault and scheduler are all in `dir`, with
+    /// the staging root `dir/tmp` made.
+    fn config_in(dir: &Path) -> Config {
+        let mut config = owner_config(Some(&dir.join("schedules").to_string_lossy()));
+        config.socket = dir.join("broker.sock").to_str().unwrap().parse().unwrap();
+        config.vault.root = dir.join("vault");
+        std::fs::create_dir_all(dir.join("tmp")).unwrap();
+        std::fs::create_dir_all(config.scheduler.run_root()).unwrap();
+        config
+    }
+
+    /// A pid no process has: a child's, once it is reaped.
+    fn dead_pid() -> i32 {
+        let mut child = Command::new("true").spawn().unwrap();
+        child.wait().unwrap();
+        i32::try_from(child.id()).unwrap()
+    }
+
+    /// Every path under `dir`, symlinks not followed, sorted.
+    fn snapshot(dir: &Path) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        let mut pending = vec![dir.to_path_buf()];
+        while let Some(next) = pending.pop() {
+            for entry in std::fs::read_dir(&next).unwrap() {
+                let path = entry.unwrap().path();
+                if std::fs::symlink_metadata(&path).unwrap().is_dir() {
+                    pending.push(path.clone());
+                }
+                paths.push(path);
+            }
+        }
+        paths.sort();
+        paths
+    }
+
+    #[test]
+    fn only_a_disposable_name_is_one() {
+        assert_eq!(staging_pid(&staging(123, "a1")), Some(123));
+        let random = hex("a1", STAGING_RANDOM_LEN);
+        for name in [
+            format!("hatchling-staging-123-{}", &random[1..]),
+            format!("hatchling-staging-123-{random}0"),
+            format!("hatchling-staging-123-{}", random.to_ascii_uppercase()),
+            format!("hatchling-staging-0-{random}"),
+            format!("hatchling-staging-+5-{random}"),
+            format!("hatchling-staging-12a-{random}"),
+            format!("hatchling-staging--{random}"),
+            format!("hatchling-staging-99999999999-{random}"),
+            String::from("hatchling-staging-123"),
+            format!("hatchling-stage-123-{random}"),
+        ] {
+            assert_eq!(staging_pid(&name), None, "{name}");
+        }
+        assert!(is_run(&run("b2")));
+        for name in [
+            format!("run-{}", hex("b2", 22)),
+            format!("run-{}0", hex("b2", 24)),
+            format!("run-{}", hex("B2", 24)),
+            format!("runs{}", hex("b2", 24)),
+        ] {
+            assert!(!is_run(&name), "{name}");
+        }
+        assert!(lower_hex("0123456789abcdef", 16));
+        assert!(!lower_hex("0123456789abcdeg", 16) && !lower_hex("ab", 3));
+        assert_eq!(
+            lock_path(Path::new("/srv/broker.sock")),
+            PathBuf::from("/srv/broker.sock.lock")
+        );
+        let leftover = Leftover {
+            root: PathBuf::from("/srv/runs"),
+            name: OsString::from("run-1"),
+        };
+        assert_eq!(leftover.path(), PathBuf::from("/srv/runs/run-1"));
+    }
+
+    #[test]
+    fn a_live_brokers_staging_and_anything_not_disposable_is_left_alone() {
+        let dir = scratch("sweep-list");
+        let config = config_in(&dir.0);
+        let (tmp, runs) = (dir.0.join("tmp"), config.scheduler.run_root());
+        let outside = dir.0.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let mut sleeper = Command::new("sleep").arg("30").spawn().unwrap();
+        let live = i32::try_from(sleeper.id()).unwrap();
+        let own = i32::try_from(std::process::id()).unwrap();
+        let dead = dead_pid();
+        for pid in [dead, live, own] {
+            std::fs::create_dir(tmp.join(staging(pid, "a1"))).unwrap();
+        }
+        // Named as a dead broker's, but a file, or a symlink: not swept.
+        std::fs::write(tmp.join(staging(dead, "c3")), b"file").unwrap();
+        symlink(&outside, tmp.join(staging(dead, "d4"))).unwrap();
+        std::fs::create_dir(tmp.join("hatchling-staging-junk")).unwrap();
+        std::fs::create_dir(runs.join(run("b2"))).unwrap();
+        std::fs::create_dir(runs.join("not-a-run")).unwrap();
+        symlink(&outside, runs.join(run("e5"))).unwrap();
+        let found: Vec<PathBuf> = leftovers(&tmp, Some(&runs))
+            .iter()
+            .map(Leftover::path)
+            .collect();
+        assert_eq!(found, [tmp.join(staging(dead, "a1")), runs.join(run("b2"))]);
+        assert_eq!(leftovers(&tmp, None).len(), 1, "no run root, no runs");
+        assert!(leftovers(&dir.0.join("missing"), None).is_empty());
+        sleeper.kill().unwrap();
+        sleeper.wait().unwrap();
+        assert_eq!(
+            leftovers(&tmp, None).len(),
+            2,
+            "its broker gone, its staging is a leftover"
+        );
+    }
+
+    #[test]
+    fn clean_dry_run_lists_exactly_what_clean_removes_and_changes_nothing() {
+        let dir = scratch("sweep-clean");
+        let config = config_in(&dir.0);
+        let (tmp, runs) = (dir.0.join("tmp"), config.scheduler.run_root());
+        let outside = dir.0.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("file"), b"keep").unwrap();
+        let dead = tmp.join(staging(dead_pid(), "a1"));
+        let cell = dead.join(format!("cell-{}", hex("f6", 32))).join("root");
+        std::fs::create_dir_all(&cell).unwrap();
+        std::fs::write(cell.join("task"), b"t").unwrap();
+        symlink(outside.join("file"), cell.join("link")).unwrap();
+        let ran = runs.join(run("b2"));
+        std::fs::create_dir_all(ran.join("tmp")).unwrap();
+        std::fs::write(ran.join("tmp").join("out"), b"o").unwrap();
+        let before = snapshot(&dir.0);
+        let listed = clean_in(&config, &tmp, true).unwrap();
+        assert_eq!(
+            listed,
+            [
+                format!("would remove {}", dead.display()),
+                format!("would remove {}", ran.display()),
+                String::from("2 leftover(s); nothing removed"),
+            ]
+            .join("\n")
+        );
+        assert_eq!(snapshot(&dir.0), before, "a dry run changes nothing");
+        let done = clean_in(&config, &tmp, false).unwrap();
+        assert_eq!(
+            done,
+            [
+                format!("removed {}", dead.display()),
+                format!("removed {}", ran.display()),
+                String::from("2 of 2 leftover(s) removed"),
+            ]
+            .join("\n")
+        );
+        assert!(!dead.exists() && !ran.exists());
+        assert_eq!(std::fs::read(outside.join("file")).unwrap(), b"keep");
+        assert_eq!(
+            clean_in(&config, &tmp, true).unwrap(),
+            "0 leftover(s); nothing removed"
+        );
+        assert!(clean(&config, true).unwrap().ends_with("; nothing removed"));
+        assert!(run_clean(&config, &[String::from("--dry-run")]).is_ok());
+        assert!(matches!(
+            run_clean(&config, &[String::from("--force")]),
+            Err(Error::Usage { .. })
+        ));
+    }
+
+    #[test]
+    fn clean_and_a_second_broker_are_refused_while_one_serves() {
+        let dir = scratch("sweep-busy");
+        let config = config_in(&dir.0);
+        let (tmp, ran) = (dir.0.join("tmp"), config.scheduler.run_root().join(run("b2")));
+        std::fs::create_dir(&ran).unwrap();
+        let serving = take_lock(&config).unwrap();
+        let lock = lock_path(config.socket.as_path());
+        for dry_run in [true, false] {
+            assert!(matches!(
+                clean_in(&config, &tmp, dry_run),
+                Err(Error::BrokerBusy { lock: held }) if held == lock
+            ));
+        }
+        assert!(matches!(take_lock(&config), Err(Error::BrokerBusy { .. })));
+        assert!(ran.exists(), "nothing removed while one serves");
+        drop(serving);
+        assert!(clean_in(&config, &tmp, false).is_ok());
+        assert!(!ran.exists());
+        // A lock that can't be taken is an error, not a pass.
+        std::fs::remove_file(&lock).unwrap();
+        std::fs::create_dir(&lock).unwrap();
+        assert!(matches!(take_lock(&config), Err(Error::Sweep { .. })));
+    }
+
+    #[test]
+    fn a_state_directory_inside_a_leftover_or_behind_a_symlink_survives() {
+        let dir = scratch("sweep-state");
+        let mut config = config_in(&dir.0);
+        let (tmp, runs) = (dir.0.join("tmp"), config.scheduler.run_root());
+        // Memory configured inside a run's directory: kept, with the run
+        // directory above it; the rest of the run goes.
+        let ran = runs.join(run("b2"));
+        let memory = ran.join("memory");
+        std::fs::create_dir_all(&memory).unwrap();
+        std::fs::write(memory.join("item"), b"m").unwrap();
+        std::fs::write(ran.join("scratch"), b"s").unwrap();
+        config.memory.root = memory.clone();
+        // A symlink to the vault, planted in another run's directory.
+        std::fs::create_dir_all(&config.vault.root).unwrap();
+        std::fs::write(config.vault.root.join("secret"), b"v").unwrap();
+        let other = runs.join(run("c3"));
+        std::fs::create_dir(&other).unwrap();
+        symlink(&config.vault.root, other.join("vault")).unwrap();
+        let lines = sweep_in(&config, None, &tmp);
+        assert_eq!(std::fs::read(memory.join("item")).unwrap(), b"m");
+        assert!(!ran.join("scratch").exists());
+        assert_eq!(std::fs::read(config.vault.root.join("secret")).unwrap(), b"v");
+        assert!(!other.exists());
+        assert_eq!(
+            lines,
+            [
+                format!(
+                    "removed {} in part (kept a state directory, a mount, or what couldn't go)",
+                    ran.display()
+                ),
+                format!("removed {}", other.display()),
+                String::from("2 of 2 leftover(s) removed"),
+            ]
+        );
+        // Every configured state directory is kept, the redaction one too.
+        let redaction = RedactionConfig {
+            enabled: true,
+            dir: dir.0.join("red"),
+            keep_raw: false,
+            timeout: Duration::from_secs(1),
+            builtins: crate::output_gate::Builtins::ALL,
+        };
+        config.artifacts.workspace = Some(dir.0.join("workspace"));
+        let kept = state_dirs(&config, Some(&redaction));
+        for expected in [
+            &config.vault.root,
+            &memory,
+            &config.scheduler.root,
+            &redaction.dir,
+            &dir.0.join("workspace"),
+        ] {
+            assert!(kept.contains(expected), "{expected:?} in {kept:?}");
+        }
+        assert!(kept.iter().all(|dir| !dir.as_os_str().is_empty()));
+        // One gone before it could be removed is left, and said so.
+        let vanished = Leftover {
+            root: runs.clone(),
+            name: OsString::from(run("d4")),
+        };
+        let lines = remove(&[vanished], &[]);
+        assert!(lines.first().is_some_and(|line| line.starts_with("left ")));
+        assert_eq!(lines.last().unwrap(), "0 of 1 leftover(s) removed");
+        // The startup sweep runs over the real staging root.
+        assert!(
+            sweep_at_start(&config, None)
+                .last()
+                .is_some_and(|line| line.ends_with("leftover(s) removed"))
+        );
+    }
 }
