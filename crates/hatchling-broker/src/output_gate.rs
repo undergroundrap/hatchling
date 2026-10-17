@@ -1081,10 +1081,13 @@ mod tests {
     #[test]
     fn a_normalized_secret_is_made_at_its_final_size() {
         // Lowercasing grows these: İ to two characters, Ⱥ to a longer one.
-        for secret in ["Nightjar-7F3A 91c2", "İİİİ", "ȺȺȺ", "", "--"] {
-            let form = normalized_secret(secret);
-            assert_eq!(*form, normalize(secret), "{secret:?}");
-            assert_eq!(form.capacity(), secret.len() * 3, "{secret:?} grew");
+        for (at, sample) in ["Nightjar-7F3A 91c2", "İİİİ", "ȺȺȺ", "", "--"]
+            .into_iter()
+            .enumerate()
+        {
+            let form = normalized_secret(sample);
+            assert_eq!(*form, normalize(sample), "sample {at}");
+            assert_eq!(form.capacity(), sample.len() * 3, "sample {at} grew");
         }
     }
 
