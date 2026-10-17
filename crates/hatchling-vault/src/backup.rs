@@ -592,4 +592,35 @@ mod tests {
                 .all(|wrap| matches!(wrap.factor, Factor::BackupCode { .. }))
         );
     }
+
+    #[test]
+    fn two_edits_from_one_read_never_restore_a_spent_code() {
+        let dir = test_dir("backup-race");
+        let (mut keyring, kek) = vault(&dir);
+        let codes: Vec<String> = keyring
+            .generate_backup_codes(&keyring.unlock_file(&kek).unwrap())
+            .unwrap()
+            .codes()
+            .map(str::to_owned)
+            .collect();
+        let path = dir.join("keys").join("keyring");
+        // Two processes read the same keyring, each holding a code.
+        let mut first = Keyring::load(&path).unwrap();
+        let mut second = Keyring::load(&path).unwrap();
+        assert!(first.recover(codes.first().unwrap()).is_ok());
+        // The second's burn would write back the first's code: refused,
+        // and the vault stays locked to it.
+        assert!(matches!(
+            second.recover(codes.get(1).unwrap()),
+            Err(Error::KeyringChanged { .. })
+        ));
+        let mut fresh = Keyring::load(&path).unwrap();
+        assert!(matches!(
+            fresh.recover(codes.first().unwrap()),
+            Err(Error::UnlockFailed)
+        ));
+        assert_eq!(fresh.backup_codes_left(), CODE_COUNT - 1);
+        assert!(fresh.recover(codes.get(1).unwrap()).is_ok(), "read again, it works");
+        assert_eq!(fresh.backup_codes_left(), CODE_COUNT - 2);
+    }
 }

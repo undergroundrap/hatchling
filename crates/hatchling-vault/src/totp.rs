@@ -572,4 +572,39 @@ mod tests {
                 .is_ok()
         );
     }
+
+    #[test]
+    fn one_code_opens_the_vault_once_however_many_try_it_at_once() {
+        let dir = test_dir("totp-race");
+        let (mut keyring, kek) = vault(&dir);
+        let now = 1_700_000_000;
+        let from_file = keyring.unlock_file(&kek).unwrap();
+        let pending = keyring.begin_totp(&from_file).unwrap();
+        let seed = seed_of(&pending);
+        let rotated = keyring
+            .confirm_totp(&from_file, &pending, &totp_code(&seed, now), now)
+            .unwrap();
+        settle(&mut keyring, rotated, &dir.join("vault"));
+        let path = dir.join("keys").join("keyring");
+        let later = now + STEP_SECONDS;
+        let code = totp_code(&seed, later);
+        let start = std::sync::Barrier::new(8);
+        let opened = std::thread::scope(|scope| {
+            let tries: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let mut mine = Keyring::load(&path).unwrap();
+                        start.wait();
+                        mine.unlock_totp(&code, later).is_ok()
+                    })
+                })
+                .collect();
+            tries
+                .into_iter()
+                .map(|attempt| attempt.join().unwrap())
+                .filter(|opened| *opened)
+                .count()
+        });
+        assert_eq!(opened, 1, "a code is good once");
+    }
 }

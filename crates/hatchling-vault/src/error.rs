@@ -167,6 +167,23 @@ pub enum Error {
         path: PathBuf,
     },
 
+    /// Another process is changing the keyring: nothing was written.
+    #[error(
+        "the keyring {path} is being changed by another process; nothing was written: try again"
+    )]
+    KeyringBusy {
+        /// The keyring path.
+        path: PathBuf,
+    },
+
+    /// The keyring changed since it was read: nothing was written, so no
+    /// change rests on a stale copy (a spent code can't come back).
+    #[error("the keyring {path} changed since it was read; nothing was written: try again")]
+    KeyringChanged {
+        /// The keyring path.
+        path: PathBuf,
+    },
+
     /// The keyring file could not be read or written.
     #[error("keyring {path} I/O failed: {source}")]
     KeyringLoad {

@@ -39,13 +39,16 @@
 //! images) when the KEK file is kept apart, nothing against a live reader
 //! of both files. The stronger tiers are the point of the keyring.
 
+use std::cell::Cell;
 use std::io::Read as _;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::Error;
@@ -67,6 +70,8 @@ const KEY_LEN: usize = 32;
 const KEYRING_MODE: u32 = 0o600;
 /// The most a keyring file may hold; a bigger one is not a keyring.
 const MAX_KEYRING_BYTES: u64 = 1 << 20;
+/// How long a save waits for another process's edit of the keyring.
+const LOCK_WAIT: Duration = Duration::from_secs(5);
 
 /// A key-encryption key: 32 bytes, zeroized on drop, never cloned.
 #[derive(Zeroize, ZeroizeOnDrop)]
@@ -112,8 +117,9 @@ pub enum Tier {
 }
 
 /// One way of unlocking the DEK, with what that factor needs to derive
-/// its KEK again. Nothing here unlocks anything by itself.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// its KEK again. Nothing here unlocks anything by itself, except the TOTP
+/// seed, which its `Debug` never shows.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Factor {
     /// The file tier's KEK, held in a key file.
@@ -145,6 +151,32 @@ pub enum Factor {
         /// The HKDF salt, hex.
         salt: String,
     },
+}
+
+impl std::fmt::Debug for Factor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::File => f.write_str("File"),
+            Self::Fido2 { credential, salt } => f
+                .debug_struct("Fido2")
+                .field("credential", credential)
+                .field("salt", salt)
+                .finish(),
+            Self::Totp {
+                salt, last_step, ..
+            } => f
+                .debug_struct("Totp")
+                .field("seed", &"[redacted]")
+                .field("salt", salt)
+                .field("last_step", last_step)
+                .finish(),
+            Self::BackupCode { verifier, salt } => f
+                .debug_struct("BackupCode")
+                .field("verifier", verifier)
+                .field("salt", salt)
+                .finish(),
+        }
+    }
 }
 
 impl Factor {
@@ -363,6 +395,11 @@ pub(crate) fn random<const N: usize>() -> Result<[u8; N], Error> {
 pub struct Keyring {
     path: PathBuf,
     stored: Stored,
+    /// The SHA-256 of the file as this keyring last read or wrote it, or
+    /// `None` before it exists. A save goes ahead only while the file still
+    /// matches, under the edit lock: no edit rests on a stale read, so a
+    /// spent code or step can't be written back.
+    seen: Cell<Option<[u8; 32]>>,
 }
 
 impl Keyring {
@@ -393,6 +430,7 @@ impl Keyring {
                 wraps: Vec::new(),
                 retiring: None,
             },
+            seen: Cell::new(None),
         };
         let wrap = keyring.wrap(dek, kek, Factor::File)?;
         keyring.stored.wraps.push(wrap);
@@ -448,9 +486,11 @@ impl Keyring {
         if unhex(&stored.vault_id).map(|id| id.len()) != Some(16) {
             return Err(format("no vault id"));
         }
+        let seen = Cell::new(Some(digest(text.as_bytes())));
         Ok(Self {
             path: path.to_path_buf(),
             stored,
+            seen,
         })
     }
 
@@ -622,14 +662,15 @@ impl Keyring {
                 .filter(|wrap| wrap.factor.tier().is_none())
                 .cloned(),
         );
-        self.stored.tier = tier;
-        self.store_wraps(wraps)
+        let retiring = self.stored.retiring.clone();
+        self.commit(tier, wraps, retiring)
     }
 
-    /// Replaces every wrap, keeping the tier, then saves the keyring.
+    /// Replaces every wrap, keeping the tier, then saves the keyring. If
+    /// the save fails, nothing changed, here or on disk.
     pub(crate) fn store_wraps(&mut self, wraps: Vec<Wrap>) -> Result<(), Error> {
-        self.stored.wraps = wraps;
-        self.save()
+        let retiring = self.stored.retiring.clone();
+        self.commit(self.stored.tier, wraps, retiring)
     }
 
     /// The retiring DEK, while a rotation is unfinished.
@@ -664,10 +705,16 @@ impl Keyring {
         self.save_as(rustix::process::getuid().as_raw())
     }
 
+    fn save_as(&self, owner: u32) -> Result<(), Error> {
+        self.save_waiting(owner, LOCK_WAIT)
+    }
+
     /// Writes the keyring atomically: a `0600` temp file beside it,
     /// fsynced, renamed over it, and the directory fsynced. The
-    /// directory must be `0700` and owned by the broker.
-    fn save_as(&self, owner: u32) -> Result<(), Error> {
+    /// directory must be `0700` and owned by the broker. The write holds
+    /// the keyring's edit lock (waiting up to `wait` for another's), and
+    /// goes ahead only if the file is still what this keyring last saw.
+    fn save_waiting(&self, owner: u32, wait: Duration) -> Result<(), Error> {
         let parent = self.path.parent().ok_or_else(|| Error::KeyringLoad {
             path: self.path.clone(),
             source: std::io::Error::new(
@@ -676,22 +723,101 @@ impl Keyring {
             ),
         })?;
         ensure_owner_only_dir(parent, owner)?;
+        let _lock = EditLock::take(&self.path, owner, wait)?;
+        let on_disk = match std::fs::read(&self.path) {
+            Ok(bytes) => Some(digest(&bytes)),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(source) => {
+                return Err(Error::KeyringLoad {
+                    path: self.path.clone(),
+                    source,
+                });
+            }
+        };
+        if on_disk != self.seen.get() {
+            return Err(Error::KeyringChanged {
+                path: self.path.clone(),
+            });
+        }
         let text = serde_json::to_string_pretty(&self.stored).map_err(|source| Error::Io {
             source: std::io::Error::other(source),
         })?;
         let temp = self
             .path
             .with_extension(format!("tmp-{}", std::process::id()));
-        let written = write_atomically(&temp, &self.path, parent, text.as_bytes());
-        if written.is_err() {
-            let _ = std::fs::remove_file(&temp);
-        }
-        written.map_err(|source| Error::Io { source })
+        write_atomically(&temp, &self.path, parent, text.as_bytes())
+            .map_err(|source| Error::Io { source })?;
+        self.seen.set(Some(digest(text.as_bytes())));
+        Ok(())
     }
 }
 
+/// SHA-256 of a keyring file's bytes.
+fn digest(bytes: &[u8]) -> [u8; 32] {
+    Sha256::digest(bytes).into()
+}
+
+/// The keyring's edit lock, held while a save checks and writes it: an
+/// exclusive `flock` on `<keyring>.lock`, owner-only, beside it, never
+/// removed. Released when dropped.
+struct EditLock(std::fs::File);
+
+impl EditLock {
+    /// The lock for the keyring at `keyring`, waiting up to `wait` while
+    /// another process holds it.
+    fn take(keyring: &Path, owner: u32, wait: Duration) -> Result<Self, Error> {
+        use rustix::fs::{FlockOperation, Mode, OFlags};
+        let path = lock_path(keyring);
+        let failed = |source: std::io::Error| Error::KeyringLoad {
+            path: path.clone(),
+            source,
+        };
+        let fd = rustix::fs::open(
+            &path,
+            OFlags::RDWR | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::from_raw_mode(KEYRING_MODE),
+        )
+        .map_err(|source| failed(source.into()))?;
+        let file = std::fs::File::from(fd);
+        let metadata = file.metadata().map_err(failed)?;
+        if !metadata.file_type().is_file() || metadata.uid() != owner {
+            return Err(Error::InsecureKeyFile { path });
+        }
+        let deadline = Instant::now() + wait;
+        loop {
+            match rustix::fs::flock(&file, FlockOperation::NonBlockingLockExclusive) {
+                Ok(()) => return Ok(Self(file)),
+                Err(rustix::io::Errno::WOULDBLOCK) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(rustix::io::Errno::WOULDBLOCK) => {
+                    return Err(Error::KeyringBusy {
+                        path: keyring.to_path_buf(),
+                    });
+                }
+                Err(source) => return Err(failed(source.into())),
+            }
+        }
+    }
+}
+
+impl Drop for EditLock {
+    fn drop(&mut self) {
+        // Closing the file lets the lock go too; this says so first.
+        let _ = rustix::fs::flock(&self.0, rustix::fs::FlockOperation::Unlock);
+    }
+}
+
+/// Where the keyring at `keyring` keeps its edit lock.
+fn lock_path(keyring: &Path) -> PathBuf {
+    let mut name = keyring.as_os_str().to_owned();
+    name.push(".lock");
+    PathBuf::from(name)
+}
+
 /// `bytes` to `target` through `temp`: written `0600`, fsynced, renamed,
-/// and the directory fsynced so the rename is durable.
+/// and the directory fsynced so the rename is durable. If anything fails
+/// once `temp` exists, it is removed.
 fn write_atomically(temp: &Path, target: &Path, dir: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write as _;
     let mut file = std::fs::OpenOptions::new()
@@ -699,9 +825,14 @@ fn write_atomically(temp: &Path, target: &Path, dir: &Path, bytes: &[u8]) -> std
         .create_new(true)
         .mode(KEYRING_MODE)
         .open(temp)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    std::fs::rename(temp, target)?;
+    let written = file
+        .write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .and_then(|()| std::fs::rename(temp, target));
+    if written.is_err() {
+        let _ = std::fs::remove_file(temp);
+    }
+    written?;
     std::fs::File::open(dir)?.sync_all()
 }
 
@@ -1060,8 +1191,8 @@ mod tests {
         ));
         assert_eq!(
             std::fs::read_dir(&keys).unwrap().count(),
-            1,
-            "only the keyring"
+            2,
+            "only the keyring and its edit lock"
         );
         std::fs::set_permissions(&keys, std::os::unix::fs::PermissionsExt::from_mode(0o755))
             .unwrap();
@@ -1071,14 +1202,20 @@ mod tests {
         ));
         std::fs::set_permissions(&keys, std::os::unix::fs::PermissionsExt::from_mode(0o700))
             .unwrap();
-        // A rename that cannot happen (the target is a directory) cleans up its temp file.
+        // Something not a keyring where it would go: nothing is written.
         let blocked = Keyring {
             path: keys.join("blocked"),
             stored: keyring.stored.clone(),
+            seen: Cell::new(None),
         };
         std::fs::create_dir(keys.join("blocked")).unwrap();
         std::fs::create_dir(keys.join("blocked").join("x")).unwrap();
-        assert!(matches!(blocked.save(), Err(Error::Io { .. })));
+        assert!(matches!(blocked.save(), Err(Error::KeyringLoad { .. })));
+        // A rename that cannot happen (the target is a directory) cleans up
+        // its temp file.
+        let temp = keys.join("blocked.tmp-test");
+        assert!(write_atomically(&temp, &keys.join("blocked"), &keys, b"{}").is_err());
+        assert!(!temp.exists());
         assert!(!std::fs::read_dir(&keys).unwrap().any(|entry| {
             entry
                 .unwrap()
@@ -1089,6 +1226,7 @@ mod tests {
         let rootless = Keyring {
             path: PathBuf::from("/"),
             stored: keyring.stored.clone(),
+            seen: Cell::new(None),
         };
         assert!(matches!(rootless.save(), Err(Error::KeyringLoad { .. })));
         assert!(Keyring::create(Path::new("/"), &dek, &kek).is_err());
@@ -1153,6 +1291,125 @@ mod tests {
         assert!(
             !std::fs::read_to_string(&path).unwrap().contains("retiring"),
             "no retiring key, nothing written for it"
+        );
+    }
+
+    #[test]
+    fn a_save_waits_for_the_edit_lock_and_never_rests_on_a_stale_read() {
+        let dir = test_dir("keyring-lock");
+        let dek = MasterKey::generate().unwrap();
+        let kek = fresh_kek();
+        let path = dir.join("keys").join("keyring");
+        let owner = rustix::process::getuid().as_raw();
+        let keyring = Keyring::create(&path, &dek, &kek).unwrap();
+        // The lock: owner-only, beside the keyring, and kept.
+        let lock = lock_path(&path);
+        assert_eq!(lock, dir.join("keys").join("keyring.lock"));
+        assert_eq!(std::fs::metadata(&lock).unwrap().mode() & 0o777, 0o600);
+        // Held by another: a save that won't wait writes nothing.
+        let held = EditLock::take(&path, owner, Duration::ZERO).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        assert!(matches!(
+            keyring.save_waiting(owner, Duration::ZERO),
+            Err(Error::KeyringBusy { .. })
+        ));
+        assert!(matches!(
+            EditLock::take(&path, owner, Duration::ZERO),
+            Err(Error::KeyringBusy { .. })
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        // A save that waits gets it once it is let go.
+        let waiting = std::thread::scope(|scope| {
+            let saving = scope.spawn(move || keyring.save_waiting(owner, Duration::from_secs(5)));
+            std::thread::sleep(Duration::from_millis(100));
+            drop(held);
+            saving.join().unwrap()
+        });
+        assert!(waiting.is_ok());
+        // Another's write since this one read: refused, nothing written.
+        let other = Keyring::load(&path).unwrap();
+        other.save().unwrap();
+        let theirs = std::fs::read(&path).unwrap();
+        std::fs::write(&path, [theirs.as_slice(), b" "].concat()).unwrap();
+        assert!(matches!(other.save(), Err(Error::KeyringChanged { .. })));
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            [theirs.as_slice(), b" "].concat()
+        );
+        // A lock that isn't the owner's, or isn't a file, is refused.
+        assert!(matches!(
+            EditLock::take(&path, owner + 1, Duration::ZERO),
+            Err(Error::InsecureKeyFile { .. })
+        ));
+        std::fs::remove_file(&lock).unwrap();
+        std::os::unix::fs::symlink(dir.join("elsewhere"), &lock).unwrap();
+        assert!(EditLock::take(&path, owner, Duration::ZERO).is_err());
+        assert!(!dir.join("elsewhere").exists(), "never followed");
+        assert_eq!(digest(b"abc").len(), 32);
+        assert_ne!(digest(b"abc"), digest(b"abd"));
+    }
+
+    #[test]
+    fn a_failed_save_leaves_the_keyring_as_it_was() {
+        let dir = test_dir("keyring-rollback");
+        let dek = MasterKey::generate().unwrap();
+        let kek = fresh_kek();
+        let path = dir.join("keys").join("keyring");
+        let mut keyring = Keyring::create(&path, &dek, &kek).unwrap();
+        let before = keyring.wraps().to_vec();
+        std::fs::write(&path, b"changed").unwrap();
+        let extra = keyring.wrap(&dek, &kek, Factor::File).unwrap();
+        assert!(matches!(
+            keyring.store_wraps(vec![extra.clone()]),
+            Err(Error::KeyringChanged { .. })
+        ));
+        assert_eq!(keyring.wraps(), before.as_slice());
+        assert!(matches!(
+            keyring.set_tier(Tier::Totp, vec![extra]),
+            Err(Error::KeyringChanged { .. })
+        ));
+        assert_eq!((keyring.tier(), keyring.wraps()), (Tier::File, before.as_slice()));
+    }
+
+    #[test]
+    fn a_factors_debug_never_shows_a_totp_seed() {
+        let seed = "3132333435363738393031323334353637383930";
+        let totp = Factor::Totp {
+            seed: seed.to_owned(),
+            salt: String::from("ab"),
+            last_step: 7,
+        };
+        let shown = format!("{totp:?}");
+        assert_eq!(shown, r#"Totp { seed: "[redacted]", salt: "ab", last_step: 7 }"#);
+        let wrap = Wrap {
+            id: String::from("w1"),
+            factor: totp,
+            label: String::new(),
+            added: None,
+            nonce: String::from("00"),
+            wrapped: String::from("00"),
+        };
+        assert!(!format!("{wrap:?}").contains(seed));
+        assert_eq!(format!("{:?}", Factor::File), "File");
+        assert_eq!(
+            format!(
+                "{:?}",
+                Factor::Fido2 {
+                    credential: String::from("c"),
+                    salt: String::from("s")
+                }
+            ),
+            r#"Fido2 { credential: "c", salt: "s" }"#
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                Factor::BackupCode {
+                    verifier: String::from("v"),
+                    salt: String::from("s")
+                }
+            ),
+            r#"BackupCode { verifier: "v", salt: "s" }"#
         );
     }
 }
