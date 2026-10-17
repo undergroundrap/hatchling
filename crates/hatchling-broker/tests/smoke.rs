@@ -622,6 +622,7 @@ fn a_starting_broker_sweeps_leftovers_unless_one_already_serves() {
 
     // A start sweeps it, and says so, before it stops at bind.
     let started = run_broker(&[], &refs, &unset).unwrap();
+    let swept = !leftover.exists();
     let _ = std::fs::remove_dir_all(&scratch);
     assert!(!started.status.success(), "the plain file can't be bound");
     assert!(
@@ -630,5 +631,5 @@ fn a_starting_broker_sweeps_leftovers_unless_one_already_serves() {
         "{}",
         said(&started)
     );
-    assert!(!leftover.exists(), "the start swept it");
+    assert!(swept, "the start swept it");
 }
