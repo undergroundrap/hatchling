@@ -770,7 +770,7 @@ mod tests {
             }
         }
         // A key with no PIN set can't be asked for one.
-        let (fresh_dir, mut fresh, fresh_kek) = keyring("pin-unset");
+        let (fresh_dir, mut fresh, fresh_kek) = self::keyring("pin-unset");
         let unlocked = fresh.unlock_file(&fresh_kek).unwrap();
         let (mut a, mut b) = (open(SoftKey::new(), None), open(SoftKey::new(), None));
         let err = fresh

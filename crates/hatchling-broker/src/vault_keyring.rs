@@ -3029,6 +3029,17 @@ mod tests {
         ) -> Result<[u8; 32], hatchling_vault::AuthenticatorError> {
             self.0.borrow_mut().hmac_secret(rp_id, credential_id, salt)
         }
+
+        fn hmac_secret_verified(
+            &mut self,
+            rp_id: &str,
+            credential_id: &[u8],
+            salt: &[u8; 32],
+        ) -> Result<[u8; 32], hatchling_vault::AuthenticatorError> {
+            self.0
+                .borrow_mut()
+                .hmac_secret_verified(rp_id, credential_id, salt)
+        }
     }
 
     /// Software keys and which of them are plugged in, as a [`Bus`].
@@ -3057,15 +3068,18 @@ mod tests {
 
     /// `count` software keys in a tray, `plugged` of them plugged in.
     fn tray(count: usize, plugged: &[usize]) -> (SecurityKeys<Tray>, Rc<RefCell<Vec<usize>>>) {
+        tray_of(count, plugged, hatchling_vault::virtual_key::VirtualAuthenticator::new)
+    }
+
+    /// [`tray`], each key made by `make`.
+    fn tray_of(
+        count: usize,
+        plugged: &[usize],
+        make: impl Fn() -> hatchling_vault::virtual_key::VirtualAuthenticator,
+    ) -> (SecurityKeys<Tray>, Rc<RefCell<Vec<usize>>>) {
         let plugged = Rc::new(RefCell::new(plugged.to_vec()));
         let tray = Tray {
-            keys: (0..count)
-                .map(|_| {
-                    Rc::new(RefCell::new(
-                        hatchling_vault::virtual_key::VirtualAuthenticator::new(),
-                    ))
-                })
-                .collect(),
+            keys: (0..count).map(|_| Rc::new(RefCell::new(make()))).collect(),
             plugged: Rc::clone(&plugged),
             fail: None,
         };
@@ -3836,5 +3850,105 @@ mod tests {
             run_rekey(&vault, &KeyringConfig::default(), &stores),
             Err(Error::Usage { .. })
         ));
+    }
+
+    #[test]
+    fn the_pin_policy_enrolls_keys_with_their_pin_and_serves_no_key_without() {
+        use hatchling_vault::virtual_key::VirtualAuthenticator;
+        // The setting, and what a key enrolled now asks.
+        assert_eq!(KeyringConfig::default().key_check(), KeyCheck::Touch);
+        let read = |value: &str| {
+            KeyringConfig::parse(|key| {
+                (key == "HATCHLING_REQUIRE_KEY_PIN").then(|| value.to_owned())
+            })
+        };
+        assert!(read("true").unwrap().require_key_pin);
+        assert_eq!(read("1").unwrap().key_check(), KeyCheck::Pin);
+        assert!(!read("0").unwrap().require_key_pin);
+        assert!(matches!(read("maybe"), Err(Error::InvalidConfig { .. })));
+        // Under it, enroll-keys enrolls each key to ask for its PIN.
+        let (_scratch, vault, config) = adopted("pin-policy");
+        let config = KeyringConfig {
+            require_key_pin: true,
+            ..config
+        };
+        let (mut devices, _) = tray_of(2, &[0, 1], || VirtualAuthenticator::with_pin("2468"));
+        let mut asked = Vec::new();
+        let enrolled = enroll_keys(
+            &vault,
+            &config,
+            &secrets(&vault),
+            &mut answers(&["two", ""], &mut asked),
+            &mut devices,
+        )
+        .unwrap();
+        assert_eq!(enrolled.0, 2);
+        assert!(keys_of(&config).iter().all(|key| key.check == KeyCheck::Pin));
+        assert!(
+            status(&config)
+                .unwrap()
+                .lines()
+                .skip(1)
+                .all(|line| line.ends_with("PIN and touch"))
+        );
+        let keyring = Keyring::load(config.keyring.as_deref().unwrap()).unwrap();
+        assert!(pin_policy(&keyring, &config).is_ok());
+        let key = devices.every_key().into_iter().next().unwrap();
+        let dek = unlock_with(
+            &vault,
+            &config,
+            Factors {
+                authenticator: Some(&mut *key),
+                code: None,
+                backup_code: None,
+            },
+        )
+        .unwrap();
+        assert!(reads_the_secret(&vault, &dek));
+        // A vault whose keys ask only for a touch serves no longer, and says
+        // which key.
+        let (_other, touch_vault, touch_config) = adopted("pin-policy-touch");
+        let (mut touch_devices, _) = tray(2, &[0, 1]);
+        enroll_keys(
+            &touch_vault,
+            &touch_config,
+            &secrets(&touch_vault),
+            &mut answers(&["two", ""], &mut Vec::new()),
+            &mut touch_devices,
+        )
+        .unwrap();
+        let strict = KeyringConfig {
+            require_key_pin: true,
+            ..touch_config.clone()
+        };
+        let touch_key = touch_devices.every_key().into_iter().next().unwrap();
+        let refused = unlock_with(
+            &touch_vault,
+            &strict,
+            Factors {
+                authenticator: Some(&mut *touch_key),
+                code: None,
+                backup_code: None,
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            refused.contains("HATCHLING_REQUIRE_KEY_PIN") && refused.contains("asks only for a touch"),
+            "{refused}"
+        );
+        let refused_asking = unlock_asking(&touch_vault, &strict, &mut |_| Ok(String::new()))
+            .unwrap_err()
+            .to_string();
+        assert!(refused_asking.contains("HATCHLING_REQUIRE_KEY_PIN"), "{refused_asking}");
+        // The file tier is no business of the PIN policy.
+        let (_third, file_vault, file_config) = adopted("pin-policy-file");
+        let file_strict = KeyringConfig {
+            require_key_pin: true,
+            ..file_config
+        };
+        let keyring = Keyring::load(file_strict.keyring.as_deref().unwrap()).unwrap();
+        assert!(pin_policy(&keyring, &file_strict).is_ok());
+        assert!(unlock(&file_vault, &file_strict).is_ok());
     }
 }

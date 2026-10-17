@@ -713,6 +713,28 @@ mod tests {
         ));
     }
 
+    /// A key that answers for a touch only, keeping the trait's default.
+    struct TouchOnly;
+
+    impl Authenticator for TouchOnly {
+        fn make_credential(
+            &mut self,
+            _rp_id: &str,
+            _user_id: &[u8],
+        ) -> Result<Credential, AuthenticatorError> {
+            Err(AuthenticatorError::NoUserPresence)
+        }
+
+        fn hmac_secret(
+            &mut self,
+            _rp_id: &str,
+            _credential_id: &[u8],
+            _salt: &[u8; 32],
+        ) -> Result<[u8; 32], AuthenticatorError> {
+            Ok([1; 32])
+        }
+    }
+
     /// A key's credential and salt, as bytes.
     fn answer_inputs(factor: &Factor) -> (Vec<u8>, [u8; 32]) {
         let (credential, salt) = parts(factor);
@@ -758,7 +780,7 @@ mod tests {
         let touched = primary.hmac_secret(RP_ID, &credential, &salt).unwrap();
         assert!(
             keyring
-                .unwrap(&wrap, &kek(keyring.vault_id(), &credential, &touched))
+                .unwrap(&wrap, &super::kek(keyring.vault_id(), &credential, &touched))
                 .is_err()
         );
         // Rotating needs each key's PIN too.
@@ -780,11 +802,18 @@ mod tests {
         let path = dir.join("keys").join("keyring");
         let mut stored: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        for wrap in stored["wraps"].as_array_mut().unwrap() {
-            wrap["factor"].as_object_mut().unwrap().remove("verified");
+        for wrap in stored
+            .get_mut("wraps")
+            .and_then(serde_json::Value::as_array_mut)
+            .unwrap()
+        {
+            wrap.get_mut("factor")
+                .and_then(serde_json::Value::as_object_mut)
+                .unwrap()
+                .remove("verified");
         }
         std::fs::write(&path, serde_json::to_string(&stored).unwrap()).unwrap();
-        let mut edited = Keyring::load(&path).unwrap();
+        let edited = Keyring::load(&path).unwrap();
         assert!(edited.hardware_keys().iter().all(|key| key.check == KeyCheck::Touch));
         for key in [&mut primary, &mut backup] {
             assert!(matches!(
@@ -811,24 +840,6 @@ mod tests {
         assert_eq!(keyring.tier(), Tier::File);
         assert_eq!((KeyCheck::of(true), KeyCheck::of(false)), (KeyCheck::Pin, KeyCheck::Touch));
         // A key that can't verify its user says so, by default.
-        struct TouchOnly;
-        impl Authenticator for TouchOnly {
-            fn make_credential(
-                &mut self,
-                _rp_id: &str,
-                _user_id: &[u8],
-            ) -> Result<Credential, AuthenticatorError> {
-                Err(AuthenticatorError::NoUserPresence)
-            }
-            fn hmac_secret(
-                &mut self,
-                _rp_id: &str,
-                _credential_id: &[u8],
-                _salt: &[u8; 32],
-            ) -> Result<[u8; 32], AuthenticatorError> {
-                Ok([1; 32])
-            }
-        }
         assert_eq!(
             TouchOnly.hmac_secret_verified(RP_ID, b"c", &[0; 32]),
             Err(AuthenticatorError::NoVerification)
