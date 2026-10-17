@@ -325,6 +325,8 @@ pub struct CellRun<'scope> {
     session: Option<ScopedJoinHandle<'scope, ()>>,
     stop: Arc<AtomicBool>,
     run_dir: PathBuf,
+    /// Held while the run is live: a sweep leaves it alone (WO-012).
+    held: Option<hatchling_sys::HeldLock>,
     token: String,
     done: bool,
     /// Its listing for the operator, until it ends.
@@ -380,7 +382,7 @@ impl<'scope> CellLauncher<'scope, '_> {
         } else {
             CellKind::Run
         };
-        let run_dir = make_run_dir(&self.env.run_root, &token)?;
+        let (run_dir, held) = make_run_dir(&self.env.run_root, &token)?;
         let cleanup = |error: String| {
             let _ = std::fs::remove_dir_all(&run_dir);
             error
@@ -436,6 +438,7 @@ impl<'scope> CellLauncher<'scope, '_> {
             session: Some(session),
             stop,
             run_dir,
+            held: Some(held),
             token,
             done: false,
             running,
@@ -550,6 +553,7 @@ impl CellRun<'_> {
             .and_then(|handle| handle.join().ok())
             .unwrap_or_default();
         let _ = std::fs::remove_dir_all(&self.run_dir);
+        drop(self.held.take());
         // Its session is gone, so it can ask for nothing more.
         crate::schedule_ops::release_followup(&self.token);
         (output, errors)
@@ -589,13 +593,17 @@ fn run_token() -> Result<String, String> {
 }
 
 /// Makes the run's own directory, owner-only, under `root`.
-fn make_run_dir(root: &Path, token: &str) -> Result<PathBuf, String> {
+fn make_run_dir(root: &Path, token: &str) -> Result<(PathBuf, hatchling_sys::HeldLock), String> {
     hatchling_sys::ensure_private_dir(root)
         .map_err(|err| format!("cannot prepare the run root {}: {err}", root.display()))?;
     let dir = root.join(token);
     hatchling_sys::create_private_dir(&dir)
         .map_err(|err| format!("cannot make the run directory: {err}"))?;
-    Ok(dir)
+    let held = hatchling_sys::hold_dir(&dir).map_err(|err| {
+        let _ = std::fs::remove_dir(&dir);
+        format!("cannot hold the run directory: {err}")
+    })?;
+    Ok((dir, held))
 }
 
 /// How often a run's session checks for its connection or its stop.
@@ -1297,8 +1305,11 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("hatchling-test-runroot-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let dir = make_run_dir(&root, "run-abc").unwrap();
+        let (dir, held) = make_run_dir(&root, "run-abc").unwrap();
         assert_eq!(dir, root.join("run-abc"));
+        assert!(hatchling_sys::in_use(&dir), "held while the run lives");
+        drop(held);
+        assert!(!hatchling_sys::in_use(&dir));
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&root), 0o700);
         assert_eq!(mode(&dir), 0o700);

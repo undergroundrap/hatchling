@@ -162,7 +162,9 @@ pub fn leftovers(staging_root: &Path, run_root: Option<&Path>) -> Vec<Leftover> 
         only_cells(&path) && !hatchling_sys::in_use(&path)
     });
     if let Some(run_root) = run_root {
-        found.extend(entries(run_root, is_run));
+        let mut runs = entries(run_root, is_run);
+        runs.retain(|leftover| !hatchling_sys::in_use(&leftover.path()));
+        found.extend(runs);
     }
     found
 }
@@ -181,6 +183,7 @@ pub fn state_dirs(config: &Config, redaction: Option<&RedactionConfig>) -> Vec<P
         config.spaces.root.clone(),
     ];
     dirs.extend(config.artifacts.workspace.clone());
+    dirs.extend(config.vault.key_file.parent().map(Path::to_path_buf));
     dirs.extend(redaction.map(|redaction| redaction.dir.clone()));
     dirs.retain(|dir| !dir.as_os_str().is_empty());
     dirs
@@ -203,6 +206,12 @@ fn remove(found: &[Leftover], keep: &[PathBuf]) -> Vec<String> {
     for leftover in found {
         let path = leftover.path();
         let shown = path.display();
+        // Claimed for the whole removal: no process takes it meanwhile.
+        let Some(_claim) = hatchling_sys::claim_dir(&path) else {
+            tracing::warn!(path = %shown, "left a leftover: it is in use");
+            lines.push(format!("left {shown}: in use"));
+            continue;
+        };
         match hatchling_sys::remove_tree(&leftover.root, &leftover.name, &keep) {
             Ok(Removed::Whole) => {
                 removed += 1;
@@ -467,6 +476,10 @@ mod tests {
         std::fs::create_dir(tmp.join("hatchling-staging-junk")).unwrap();
         std::fs::create_dir(runs.join(run("b2"))).unwrap();
         std::fs::create_dir(runs.join("not-a-run")).unwrap();
+        // A live run's directory is held: not a leftover.
+        let live_run = runs.join(run("c3"));
+        std::fs::create_dir(&live_run).unwrap();
+        let running = hatchling_sys::hold_dir(&live_run).unwrap();
         symlink(&outside, runs.join(run("e5"))).unwrap();
         let found: Vec<PathBuf> = leftovers(&tmp, Some(&runs))
             .iter()
@@ -474,6 +487,12 @@ mod tests {
             .collect();
         assert_eq!(found, [tmp.join(staging(dead, "a1")), runs.join(run("b2"))]);
         assert_eq!(leftovers(&tmp, None).len(), 1, "no run root, no runs");
+        drop(running);
+        assert_eq!(
+            leftovers(&tmp, Some(&runs)).len(),
+            3,
+            "its run ended, it is one"
+        );
         assert!(leftovers(&dir.0.join("missing"), None).is_empty());
         sleeper.kill().unwrap();
         sleeper.wait().unwrap();
@@ -640,7 +659,7 @@ mod tests {
             name: OsString::from(run("d4")),
         };
         let lines = remove(&[vanished], &[]);
-        assert!(lines.first().is_some_and(|line| line.starts_with("left ")));
+        assert!(lines.first().is_some_and(|line| line.ends_with(": in use")));
         assert_eq!(lines.last().unwrap(), "0 of 1 leftover(s) removed");
     }
 }

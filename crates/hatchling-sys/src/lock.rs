@@ -96,20 +96,30 @@ pub fn hold_dir(path: &Path) -> Result<HeldLock, Error> {
     Ok(HeldLock(file))
 }
 
+/// Claims the directory at `path` for this process alone, opened without
+/// following a symlink, until dropped: `None` if a process holds it
+/// ([`hold_dir`]), or it can't be opened as a directory itself, or
+/// locked. Held while it is removed, no one can take it meanwhile.
+#[must_use]
+pub fn claim_dir(path: &Path) -> Option<HeldLock> {
+    let fd = rustix::fs::open(
+        path,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .ok()?;
+    let file = std::fs::File::from(fd);
+    rustix::fs::flock(&file, FlockOperation::NonBlockingLockExclusive)
+        .ok()
+        .map(|()| HeldLock(file))
+}
+
 /// Whether a process holds the directory at `path` ([`hold_dir`]), or it
 /// can't be told: one that can't be opened as a directory itself, or
 /// locked, counts as in use.
 #[must_use]
 pub fn in_use(path: &Path) -> bool {
-    let Ok(fd) = rustix::fs::open(
-        path,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    ) else {
-        return true;
-    };
-    // Taken, the lock goes when `fd` is closed, at once.
-    rustix::fs::flock(&fd, FlockOperation::NonBlockingLockExclusive).is_err()
+    claim_dir(path).is_none()
 }
 
 #[cfg(test)]
@@ -130,6 +140,13 @@ mod tests {
         assert!(in_use(&root), "still held by another");
         drop(another);
         assert!(!in_use(&root), "let go");
+        // A claim keeps everyone else out until it is dropped.
+        let claimed = claim_dir(&root).unwrap();
+        assert!(claim_dir(&root).is_none() && in_use(&root));
+        assert!(hold_dir(&root).is_err(), "no one holds it meanwhile");
+        drop(claimed);
+        assert!(claim_dir(&root).is_some());
+        assert!(claim_dir(&dir.join("missing")).is_none());
         // What can't be told counts as in use; a symlink is never followed.
         std::os::unix::fs::symlink(&root, dir.join("link")).unwrap();
         assert!(in_use(&dir.join("link")) && in_use(&dir.join("missing")));
