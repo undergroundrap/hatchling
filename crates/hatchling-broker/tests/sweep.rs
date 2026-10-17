@@ -102,7 +102,11 @@ fn who(pid: i32) -> String {
     let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
     let lines: Vec<&str> = status
         .lines()
-        .filter(|line| ["State:", "PPid:", "NSpid:"].iter().any(|key| line.starts_with(key)))
+        .filter(|line| {
+            ["State:", "PPid:", "NSpid:"]
+                .iter()
+                .any(|key| line.starts_with(key))
+        })
         .collect();
     format!("pid {pid} `{cmdline}` {lines:?}")
 }

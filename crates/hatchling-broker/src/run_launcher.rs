@@ -88,8 +88,10 @@ pub fn broker_pid() -> String {
 }
 
 /// A helper's watch on the broker that spawned it, whose pid
-/// [`BROKER_PID_ENV`] gives: a helper whose broker is already gone, or
-/// that wasn't told, refuses to start a cell. Taken before the cell is
+/// [`BROKER_PID_ENV`] gives.
+///
+/// A helper whose broker is already gone, or that wasn't told, refuses to
+/// start a cell. Taken before the cell is
 /// spawned; started ([`hatchling_sys::ParentWatch::exit_with_parent`])
 /// once it is, so the helper, and with it the cell, ends with the broker
 /// however the broker ends.
@@ -98,9 +100,7 @@ pub fn broker_pid() -> String {
 ///
 /// [`Error::CellSpawn`] if the pid is missing or isn't the helper's
 /// parent's.
-pub fn watch_broker(
-    pid: Option<std::ffi::OsString>,
-) -> Result<hatchling_sys::ParentWatch, Error> {
+pub fn watch_broker(pid: Option<std::ffi::OsString>) -> Result<hatchling_sys::ParentWatch, Error> {
     let pid = pid
         .and_then(|pid| pid.into_string().ok())
         .and_then(|pid| pid.parse().ok())

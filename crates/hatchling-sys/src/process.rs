@@ -534,12 +534,11 @@ pub fn watch_parent(parent: i32) -> Result<ParentWatch, Error> {
         source: io::Error::new(io::ErrorKind::NotFound, "it isn't this process's parent"),
     };
     let raw = Pid::from_raw(parent).ok_or_else(not_parent)?;
-    let pidfd = rustix::process::pidfd_open(raw, PidfdFlags::empty()).map_err(|source| {
-        Error::Process {
+    let pidfd =
+        rustix::process::pidfd_open(raw, PidfdFlags::empty()).map_err(|source| Error::Process {
             operation: "pidfd_open",
             source: io::Error::from_raw_os_error(source.raw_os_error()),
-        }
-    })?;
+        })?;
     // Checked after the pidfd is open: the pidfd now names this very
     // process, so a pid reused since can't pass for it.
     if rustix::process::getppid() != Some(raw) {
@@ -555,7 +554,10 @@ impl ParentWatch {
     /// makes this process multi-threaded.
     pub fn exit_with_parent(self, code: i32) {
         std::thread::spawn(move || {
-            let mut fds = [rustix::event::PollFd::new(&self.0, rustix::event::PollFlags::IN)];
+            let mut fds = [rustix::event::PollFd::new(
+                &self.0,
+                rustix::event::PollFlags::IN,
+            )];
             loop {
                 match rustix::event::poll(&mut fds, -1) {
                     Err(rustix::io::Errno::INTR) => {}
@@ -1620,7 +1622,7 @@ mod tests {
         // The test forks a parent, which forks a child that watches it and
         // holds a pipe's write end; once the parent ends, the child must,
         // and the pipe reads end-of-file.
-        let (read, write) = std::os::unix::net::UnixStream::pair().unwrap();
+        let (read, write) = UnixStream::pair().unwrap();
         let parent = match fork().unwrap() {
             ForkResult::Parent { child } => child,
             ForkResult::Child => {
@@ -1646,10 +1648,11 @@ mod tests {
         };
         drop(write);
         let _ = parent.wait_deadline(Duration::from_secs(10)).unwrap();
-        read.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+        read.set_read_timeout(Some(Duration::from_secs(30)))
+            .unwrap();
         let started = Instant::now();
         let mut buf = [0u8; 1];
-        assert_eq!(std::io::Read::read(&mut &read, &mut buf).unwrap(), 0);
+        assert_eq!(Read::read(&mut &read, &mut buf).unwrap(), 0);
         assert!(
             started.elapsed() < Duration::from_secs(30),
             "the child ended with its parent, not on its own"
@@ -1658,7 +1661,10 @@ mod tests {
         assert!(watch_parent(1).is_err());
         assert!(watch_parent(0).is_err());
         let own = i32::try_from(std::process::id()).unwrap();
-        assert!(watch_parent(own).is_err(), "this process isn't its own parent");
+        assert!(
+            watch_parent(own).is_err(),
+            "this process isn't its own parent"
+        );
     }
 
     #[test]
