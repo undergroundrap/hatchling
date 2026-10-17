@@ -270,8 +270,9 @@ fn the_next_start_sweeps_what_a_killed_broker_left_and_logs_each() {
     let run_dir = loop {
         let left = deadline.saturating_duration_since(Instant::now());
         match heard.recv_timeout(left) {
-            Ok(line) => match line.strip_prefix(READY) {
-                Some(dir) => break Some(PathBuf::from(dir)),
+            // The harness may start the line (`test a_child ... `).
+            Ok(line) => match line.split_once(READY) {
+                Some((_, dir)) => break Some(PathBuf::from(dir)),
                 None => told.push(line),
             },
             Err(_) => break None,
@@ -308,7 +309,7 @@ fn the_next_start_sweeps_what_a_killed_broker_left_and_logs_each() {
     let said = said_by("start", &base, "");
     assert!(
         said.lines()
-            .any(|line| line == format!("removed {}", run_dir.display())),
+            .any(|line| line.ends_with(&format!("removed {}", run_dir.display()))),
         "{said}"
     );
     assert!(!run_dir.exists() && !staging.exists());
