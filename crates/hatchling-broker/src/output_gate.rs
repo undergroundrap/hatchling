@@ -1174,6 +1174,7 @@ mod tests {
     /// text, and the log holds no unkeyed hash of it.
     fn recorded_by_tags(
         event: &crate::redactions::Judged,
+        config: &Config,
         redaction: &RedactionConfig,
         key: &MasterKey,
     ) {
@@ -1193,6 +1194,28 @@ mod tests {
         ] {
             assert!(!text.contains(&unkeyed), "{text}");
         }
+        let stranger = MasterKey::generate().unwrap();
+        assert!(
+            matches!(
+                build(config, redaction, &stranger),
+                Err(Error::Vault { .. })
+            ),
+            "the tag key opens only under the broker's key"
+        );
+    }
+
+    /// The operator overrides redaction `id` in every scope, by its tag,
+    /// and `gate`, whose overrides match tags under the same key, delivers
+    /// `message` on it.
+    fn overridden_by_tag(gate: &OutputGate, message: &Message, redaction: &RedactionConfig, id: &str) {
+        crate::redactions::command(redaction, &["override", id, "--any-scope"], || {
+            unreachable!("an override needs no key")
+        })
+        .unwrap();
+        assert!(
+            gate.clear(message, "session:b").redaction().is_none(),
+            "delivered on the override"
+        );
     }
 
     #[test]
@@ -1235,16 +1258,7 @@ mod tests {
             let Some((_, id)) = cleared.redaction() else {
                 unreachable!("the operator's phrase is redacted");
             };
-            // Overridden by the operator, by its tag: the gate's overrides
-            // match tags under the same key.
-            crate::redactions::command(&redaction, &["override", id, "--any-scope"], || {
-                unreachable!("an override needs no key")
-            })
-            .unwrap();
-            assert!(
-                gate.clear(&message, "session:b").redaction().is_none(),
-                "delivered on the override"
-            );
+            overridden_by_tag(&gate, &message, &redaction, id);
             drop(gate);
         });
         let log = redaction.dir.join(AUDIT_FILE);
@@ -1280,15 +1294,7 @@ mod tests {
             (event.category.as_str(), *raw),
             ("codename", RawOutcome::Kept)
         );
-        recorded_by_tags(event, &redaction, &key);
-        let stranger = MasterKey::generate().unwrap();
-        assert!(
-            matches!(
-                build(&config, &redaction, &stranger),
-                Err(Error::Vault { .. })
-            ),
-            "the tag key opens only under the broker's key"
-        );
+        recorded_by_tags(event, &config, &redaction, &key);
 
         let off = RedactionConfig {
             enabled: false,
