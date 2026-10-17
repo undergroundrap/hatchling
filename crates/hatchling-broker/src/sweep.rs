@@ -508,12 +508,9 @@ mod tests {
             clean_in(&config, &tmp, true).unwrap(),
             "0 leftover(s); nothing removed"
         );
-        assert!(clean(&config, true).unwrap().ends_with("; nothing removed"));
-        assert!(run_clean(&config, &[String::from("--dry-run")]).is_ok());
-        assert!(matches!(
-            run_clean(&config, &[String::from("--force")]),
-            Err(Error::Usage { .. })
-        ));
+        // `clean`, `run_clean` and `sweep_at_start` sweep the process's
+        // own `TMPDIR`: `tests/sweep.rs` runs them in a child whose
+        // `TMPDIR` is its own. A sweep here must never touch a shared one.
     }
 
     #[test]
@@ -610,11 +607,5 @@ mod tests {
         let lines = remove(&[vanished], &[]);
         assert!(lines.first().is_some_and(|line| line.starts_with("left ")));
         assert_eq!(lines.last().unwrap(), "0 of 1 leftover(s) removed");
-        // The startup sweep runs over the real staging root.
-        assert!(
-            sweep_at_start(&config, None)
-                .last()
-                .is_some_and(|line| line.ends_with("leftover(s) removed"))
-        );
     }
 }

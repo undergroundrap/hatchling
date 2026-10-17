@@ -1,7 +1,12 @@
-//! A broker killed mid-run leaves its run's directory, with the run's
-//! cell staging in it; the next start sweeps them, and logs each (WO-012).
+//! The sweep as the broker runs it (WO-012): a broker killed mid-run
+//! leaves its run's directory, with the run's cell staging in it, and the
+//! next start sweeps them and logs each; `hatchling-broker clean` does the
+//! same on demand.
 //!
-//! The killed broker is this test binary again, run as a child: it
+//! Every sweep here runs in a child process, this test binary again, with
+//! a `TMPDIR` of its own: a sweep lists its `TMPDIR`, and under mutation a
+//! broken filter would empty a shared one (other tests' and other
+//! workers' directories in it). The killed broker is such a child too: it
 //! launches a run whose real cell hangs, says where the run's directory
 //! is, and waits to be killed with `SIGKILL`.
 #![allow(
@@ -16,7 +21,7 @@
 )]
 mod common;
 
-use std::io::{BufRead as _, BufReader, Write as _};
+use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -30,17 +35,24 @@ use hatchling_core::{LogLevel, PeerUid};
 use hatchling_scheduler::{Launcher as _, RunRequest, Timestamp};
 use hatchling_vault::MasterKey;
 
-/// Set, to the base directory, in the child that plays the killed broker.
-const CHILD: &str = "HATCHLING_SWEEP_TEST_BROKER";
+/// In a child: what it plays, `killed` (a broker killed mid-run),
+/// `start` (the next broker's start) or `clean` (the operator's command).
+const MODE: &str = "HATCHLING_SWEEP_TEST_MODE";
 
-/// What the child prints once its run's cell staging is there.
+/// In a child: the test's base directory.
+const BASE: &str = "HATCHLING_SWEEP_TEST_BASE";
+
+/// In a `clean` child: its arguments, space-separated.
+const ARGS: &str = "HATCHLING_SWEEP_TEST_ARGS";
+
+/// What the killed broker prints once its run's cell staging is there.
 const READY: &str = "run-dir ";
 
 /// The test's base under `/tmp`, short as run paths like them.
 fn base(name: &str) -> common::TestDir {
     let base = PathBuf::from(format!("/tmp/hlsw-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
-    std::fs::create_dir_all(&base).unwrap();
+    std::fs::create_dir_all(base.join("tmp")).unwrap();
     common::TestDir::guard(base)
 }
 
@@ -80,6 +92,44 @@ fn config(base: &Path) -> Config {
     }
 }
 
+/// This test binary as a `mode` child over `base`, with `base/tmp` its
+/// `TMPDIR`.
+fn child(mode: &str, base: &Path, args: &str) -> Command {
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--exact", "a_child", "--nocapture", "--test-threads=1"])
+        .env(MODE, mode)
+        .env(BASE, base)
+        .env(ARGS, args)
+        .env("TMPDIR", base.join("tmp"))
+        .stdout(Stdio::piped());
+    command
+}
+
+/// Runs a `mode` child to its end, within a minute; what it said.
+fn said_by(mode: &str, base: &Path, args: &str) -> String {
+    let mut running = child(mode, base, args).spawn().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while running.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            let _ = running.kill();
+            let _ = running.wait();
+            unreachable!("the {mode} child never ended");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let mut out = String::new();
+    running.stdout.take().unwrap().read_to_string(&mut out).unwrap();
+    out
+}
+
+/// One line on stdout, at once: the parent reads the child's stdout.
+fn say(line: &str) {
+    let mut out = std::io::stdout().lock();
+    writeln!(out, "{line}").unwrap();
+    out.flush().unwrap();
+}
+
 /// The run's cell staging in `run_dir`, once it is there.
 fn staging_in(run_dir: &Path) -> Option<PathBuf> {
     std::fs::read_dir(run_dir)
@@ -91,6 +141,13 @@ fn staging_in(run_dir: &Path) -> Option<PathBuf> {
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| name.starts_with("hatchling-staging-"))
         })
+}
+
+/// The pid a staging directory's name carries.
+fn staging_pid(staging: &Path) -> i32 {
+    let name = staging.file_name().unwrap().to_str().unwrap();
+    let rest = name.strip_prefix("hatchling-staging-").unwrap();
+    rest.split('-').next().unwrap().parse().unwrap()
 }
 
 /// What `/proc` says of `pid`: its command line, and the status lines
@@ -111,29 +168,16 @@ fn who(pid: i32) -> String {
     format!("pid {pid} `{cmdline}` {lines:?}")
 }
 
-/// The pid a staging directory's name carries.
-fn staging_pid(staging: &Path) -> i32 {
-    let name = staging.file_name().unwrap().to_str().unwrap();
-    let rest = name.strip_prefix("hatchling-staging-").unwrap();
-    rest.split('-').next().unwrap().parse().unwrap()
+/// A pid no process has: a child's, once it is reaped.
+fn dead_pid() -> i32 {
+    let mut child = Command::new("true").spawn().unwrap();
+    child.wait().unwrap();
+    i32::try_from(child.id()).unwrap()
 }
 
-/// One line on stdout, at once: the parent reads the child's stdout.
-fn say(line: &str) {
-    let mut out = std::io::stdout().lock();
-    writeln!(out, "{line}").unwrap();
-    out.flush().unwrap();
-}
-
-/// Run only as the child: the broker that is killed. Its run's real cell
-/// hangs; it prints the run's directory once the cell's staging is in
-/// it, and waits.
-#[test]
-fn a_broker_killed_mid_run() {
-    let Some(base) = std::env::var_os(CHILD) else {
-        return;
-    };
-    let config = config(Path::new(&base));
+/// The killed broker: its run's real cell hangs; it prints the run's
+/// directory once the cell's staging is in it, and waits.
+fn killed(config: &Config) {
     let key = MasterKey::generate().unwrap();
     let env = RunEnv {
         spawner: common::spawner(),
@@ -141,12 +185,8 @@ fn a_broker_killed_mid_run() {
         run_root: config.scheduler.run_root(),
         timeout: Duration::from_secs(600),
     };
-    say(&format!(
-        "child: launching a hanging run under {}",
-        config.scheduler.run_root().display()
-    ));
     std::thread::scope(|scope| {
-        let launcher = CellLauncher::new(scope, &config, &key, env);
+        let launcher = CellLauncher::new(scope, config, &key, env);
         let _run = launcher
             .launch(RunRequest {
                 schedule_id: String::from("s"),
@@ -161,7 +201,6 @@ fn a_broker_killed_mid_run() {
                 feed: None,
             })
             .unwrap();
-        say("child: launched");
         let deadline = Instant::now() + Duration::from_secs(60);
         let run_dir = loop {
             let ready = std::fs::read_dir(config.scheduler.run_root())
@@ -181,24 +220,43 @@ fn a_broker_killed_mid_run() {
     });
 }
 
+/// Run only as a child: what [`MODE`] names, over [`BASE`].
+#[test]
+fn a_child() {
+    let (Some(mode), Some(base)) = (std::env::var_os(MODE), std::env::var_os(BASE)) else {
+        return;
+    };
+    let config = config(Path::new(&base));
+    match mode.to_str() {
+        Some("killed") => killed(&config),
+        Some("start") => {
+            for line in hatchling_broker::sweep::sweep_at_start(&config, None) {
+                say(&line);
+            }
+        }
+        Some("clean") => {
+            let args: Vec<String> = std::env::var(ARGS)
+                .unwrap_or_default()
+                .split_whitespace()
+                .map(String::from)
+                .collect();
+            match hatchling_broker::sweep::run_clean(&config, &args) {
+                Ok(()) => say("clean: done"),
+                Err(error) => say(&format!("clean: {error}")),
+            }
+        }
+        other => unreachable!("no child plays {other:?}"),
+    }
+}
+
 #[test]
 fn the_next_start_sweeps_what_a_killed_broker_left_and_logs_each() {
-    if std::env::var_os(CHILD).is_some() || !guard_cell_available().unwrap() {
+    if std::env::var_os(MODE).is_some() || !guard_cell_available().unwrap() {
         return;
     }
     let base = base("killed");
     let config = config(&base);
-    let mut broker = Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "a_broker_killed_mid_run",
-            "--nocapture",
-            "--test-threads=1",
-        ])
-        .env(CHILD, &*base)
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut broker = child("killed", &base, "").spawn().unwrap();
     let stdout = broker.stdout.take().unwrap();
     let (said, heard) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -232,23 +290,65 @@ fn the_next_start_sweeps_what_a_killed_broker_left_and_logs_each() {
         );
     };
     let staging = staging_in(&run_dir).expect("the run's cell staging is left behind");
-    // Its helper and cell die with it (PDEATHSIG).
+    // Its helper and cell die with it.
     let helper = staging_pid(&staging);
     let deadline = Instant::now() + Duration::from_secs(30);
     while hatchling_sys::pid_alive(helper) {
-        assert!(
-            Instant::now() < deadline,
-            "the run's helper outlived its broker: {}",
-            who(helper)
-        );
+        if Instant::now() >= deadline {
+            let seen = who(helper);
+            // Leave no orphan behind: its cell dies with it.
+            if let Some(pid) = rustix::process::Pid::from_raw(helper) {
+                let _ = rustix::process::kill_process(pid, rustix::process::Signal::Kill);
+            }
+            unreachable!("the run's helper outlived its broker: {seen}");
+        }
         std::thread::sleep(Duration::from_millis(50));
     }
     assert!(run_dir.exists() && staging.exists());
-    let lines = hatchling_broker::sweep::sweep_at_start(&config, None);
+    let said = said_by("start", &base, "");
     assert!(
-        lines.contains(&format!("removed {}", run_dir.display())),
-        "{lines:?}"
+        said.lines()
+            .any(|line| line == format!("removed {}", run_dir.display())),
+        "{said}"
     );
     assert!(!run_dir.exists() && !staging.exists());
     assert!(config.scheduler.run_root().exists(), "the run root stays");
+}
+
+#[test]
+fn clean_lists_then_removes_a_dead_brokers_leftovers_and_nothing_else() {
+    if std::env::var_os(MODE).is_some() {
+        return;
+    }
+    let base = base("clean");
+    let config = config(&base);
+    let tmp = base.join("tmp");
+    let random = "a1".repeat(16);
+    let dead = tmp.join(format!("hatchling-staging-{}-{random}", dead_pid()));
+    std::fs::create_dir_all(dead.join(format!("cell-{random}")).join("root")).unwrap();
+    let mut sleeper = Command::new("sleep").arg("30").spawn().unwrap();
+    let live = tmp.join(format!("hatchling-staging-{}-{random}", sleeper.id()));
+    std::fs::create_dir_all(&live).unwrap();
+    std::fs::create_dir_all(tmp.join("someone-elses")).unwrap();
+    let ran = config.scheduler.run_root().join(format!("run-{}", "b2".repeat(12)));
+    std::fs::create_dir_all(ran.join("tmp")).unwrap();
+
+    let listed = said_by("clean", &base, "--dry-run");
+    for leftover in [&dead, &ran] {
+        assert!(
+            listed.contains(&format!("would remove {}", leftover.display())),
+            "{listed}"
+        );
+        assert!(leftover.exists(), "a dry run removes nothing");
+    }
+    assert!(!listed.contains(&live.display().to_string()), "{listed}");
+    let refused = said_by("clean", &base, "--force");
+    assert!(refused.contains("clean: broker usage error"), "{refused}");
+    let cleaned = said_by("clean", &base, "");
+    assert!(cleaned.contains("clean: done"), "{cleaned}");
+    assert!(!dead.exists() && !ran.exists());
+    assert!(live.exists(), "a live broker's staging stays");
+    assert!(tmp.join("someone-elses").exists());
+    sleeper.kill().unwrap();
+    sleeper.wait().unwrap();
 }

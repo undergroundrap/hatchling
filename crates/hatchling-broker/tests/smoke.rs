@@ -14,9 +14,15 @@ use std::time::{Duration, Instant};
 /// Runs the broker binary to completion, with a watchdog: a broker
 /// regression must fail the test, never hang the suite.
 fn run_broker(args: &[&str], vars: &[(&str, &str)], unset: &[&str]) -> Result<Output, String> {
+    // A `TMPDIR` of this test process's own, unless the test gives one: a
+    // starting broker sweeps its `TMPDIR` (WO-012), and must never sweep
+    // a shared one.
+    let tmp = std::env::temp_dir().join(format!("hatchling-smoke-{}-tmp", std::process::id()));
+    std::fs::create_dir_all(&tmp).map_err(|e| format!("tmp: {e}"))?;
     let mut command = Command::new(env!("CARGO_BIN_EXE_hatchling-broker"));
     command
         .args(args)
+        .env("TMPDIR", &tmp)
         .envs(vars.iter().copied())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -55,9 +61,14 @@ fn scratch_dir(name: &str) -> std::io::Result<std::path::PathBuf> {
 /// Minimal valid broker env for operator subcommands (which never
 /// bind the socket). `HATCHLING_AGENT_BIN` is scrubbed: with it set
 /// the broker would try to spawn a cell instead of running the
-/// subcommand.
+/// subcommand. `TMPDIR` is the scratch's own: a starting broker sweeps
+/// its `TMPDIR`, and must never sweep a shared one (WO-012).
 fn operator_env(scratch: &std::path::Path, vault: &str) -> Vec<(&'static str, String)> {
     vec![
+        (
+            "TMPDIR",
+            scratch.join("tmp").to_string_lossy().into_owned(),
+        ),
         (
             "HATCHLING_BROKER_SOCKET",
             scratch.join("broker.sock").to_string_lossy().into_owned(),
