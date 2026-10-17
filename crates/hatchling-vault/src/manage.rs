@@ -79,10 +79,7 @@ impl KeyInfo {
             id: wrap.id.clone(),
             label: wrap.label().to_owned(),
             added: wrap.added(),
-            check: KeyCheck::of(matches!(
-                wrap.factor,
-                Factor::Fido2 { verified: true, .. }
-            )),
+            check: KeyCheck::of(matches!(wrap.factor, Factor::Fido2 { verified: true, .. })),
         }
     }
 }
@@ -681,6 +678,24 @@ mod tests {
                 warnings: Vec::new(),
             }
         );
+    }
+
+    #[test]
+    fn a_key_added_to_ask_for_its_pin_opens_the_vault_only_with_it() {
+        let dir = test_dir("manage-add-pin");
+        let (mut keyring, mut keys, _codes) = hardware_vault(&dir, 2, true);
+        let desk: Label = "YubiKey 5C, desk".parse().unwrap();
+        let by_first = keyring
+            .unlock_hardware_key(keys.first_mut().unwrap())
+            .unwrap();
+        let mut third = VirtualAuthenticator::with_pin("2468");
+        let added = keyring
+            .add_hardware_key_checked(&by_first, &mut third, &desk, KeyCheck::Pin)
+            .unwrap();
+        assert_eq!(added.check, KeyCheck::Pin);
+        assert!(keyring.unlock_hardware_key(&mut third).is_ok());
+        third.set_typed(Some("0000"));
+        assert!(keyring.unlock_hardware_key(&mut third).is_err());
     }
 
     #[test]

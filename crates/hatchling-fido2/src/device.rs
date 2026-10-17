@@ -319,7 +319,9 @@ impl<H: Hid> Device<H> {
         let data = AuthData::parse(raw)?;
         checked(&data, rp_id)?;
         if verified && !data.user_verified() {
-            return Err(Ctap2Error::Mismatch("it did not confirm it verified its user"));
+            return Err(Ctap2Error::Mismatch(
+                "it did not confirm it verified its user",
+            ));
         }
         if let Some((_, key)) = self.made.iter().find(|(id, _)| id == credential_id) {
             let signature = reply
@@ -766,7 +768,10 @@ mod tests {
             assert!(keyring.unlock_hardware_key(&mut right).is_ok());
             for wrong in [Some("0000"), None] {
                 let mut unverified = open(SoftKey::sharing(Rc::clone(state)), wrong);
-                assert!(keyring.unlock_hardware_key(&mut unverified).is_err(), "{wrong:?}");
+                assert!(
+                    keyring.unlock_hardware_key(&mut unverified).is_err(),
+                    "{wrong:?}"
+                );
             }
         }
         // A key with no PIN set can't be asked for one.
@@ -789,7 +794,11 @@ mod tests {
         state.borrow_mut().pin = Some(String::from("2468"));
         let mut device = open(key, Some("2468"));
         let credential = device.make_credential(RP, b"u").unwrap();
-        assert!(device.hmac_secret_verified(RP, &credential.id, &[3; 32]).is_ok());
+        assert!(
+            device
+                .hmac_secret_verified(RP, &credential.id, &[3; 32])
+                .is_ok()
+        );
         state.borrow_mut().tamper = Tamper::NoVerifiedFlag;
         assert!(matches!(
             device.hmac_secret_verified(RP, &credential.id, &[3; 32]),

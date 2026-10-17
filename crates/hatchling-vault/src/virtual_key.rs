@@ -181,7 +181,11 @@ impl VirtualAuthenticator {
             .iter()
             .find(|held| held.rp_id == rp_id && held.id == credential_id)
             .ok_or(AuthenticatorError::UnknownCredential)?;
-        let secret = if verified { &held.verified } else { &held.secret };
+        let secret = if verified {
+            &held.verified
+        } else {
+            &held.secret
+        };
         let mut mac = <Hmac<Sha256>>::new_from_slice(secret.as_slice())
             .map_err(|_| AuthenticatorError::Device(String::from("bad key length")))?;
         mac.update(salt);
@@ -266,11 +270,14 @@ mod tests {
         let mut key = VirtualAuthenticator::with_pin("2468");
         let credential = key.make_credential("rp", b"u").unwrap();
         let salt = [3u8; 32];
-        let verified = key.hmac_secret_verified("rp", &credential.id, &salt).unwrap();
+        let verified = key
+            .hmac_secret_verified("rp", &credential.id, &salt)
+            .unwrap();
         let touched = key.hmac_secret("rp", &credential.id, &salt).unwrap();
         assert_ne!(verified, touched, "the verified-user secret is another");
         assert_eq!(
-            key.hmac_secret_verified("rp", &credential.id, &salt).unwrap(),
+            key.hmac_secret_verified("rp", &credential.id, &salt)
+                .unwrap(),
             verified
         );
         for typed in [None, Some("0000")] {

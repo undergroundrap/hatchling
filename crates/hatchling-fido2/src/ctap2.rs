@@ -400,6 +400,9 @@ pub(crate) mod tests {
         let data = AuthData::parse(&bytes).unwrap();
         assert_eq!(data.rp_id_hash, [1; 32]);
         assert!(data.user_present());
+        assert!(!data.user_verified());
+        let verified = AuthData::parse(&auth_data([3; 32], FLAG_UP | FLAG_UV, None, None)).unwrap();
+        assert!(verified.user_verified());
         assert_eq!(data.credential_id.as_deref(), Some(&b"cred"[..]));
         assert_eq!(
             data.credential_key,

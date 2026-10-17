@@ -23,8 +23,7 @@ use std::rc::Rc;
 use hatchling_fido2::{Bus, PinPrompt};
 use hatchling_vault::{
     Authenticator, BackupCodes, FileKey, Kek, KeyCheck, KeyInfo, KeySource as _, Keyring, Label,
-    MasterKey,
-    Protection, RekeyReport, Rotation, SingleKeyRisk, Store, Tier, Unlocked, Warning,
+    MasterKey, Protection, RekeyReport, Rotation, SingleKeyRisk, Store, Tier, Unlocked, Warning,
 };
 
 use crate::environment as env;
@@ -2390,10 +2389,13 @@ mod tests {
                 "  ways in: 2 security keys, 10 backup code(s) left, no OS keychain (none in this build)",
             ),
         ];
-        expected.extend(
-            keys.iter()
-                .map(|key| format!("  security key {}  (no label)  added {}  touch", key.id, today())),
-        );
+        expected.extend(keys.iter().map(|key| {
+            format!(
+                "  security key {}  (no label)  added {}  touch",
+                key.id,
+                today()
+            )
+        }));
         assert_eq!(shown, expected.join("\n"));
         assert!(
             codes.iter().all(|code| !shown.contains(code.as_str())),
@@ -3068,7 +3070,11 @@ mod tests {
 
     /// `count` software keys in a tray, `plugged` of them plugged in.
     fn tray(count: usize, plugged: &[usize]) -> (SecurityKeys<Tray>, Rc<RefCell<Vec<usize>>>) {
-        tray_of(count, plugged, hatchling_vault::virtual_key::VirtualAuthenticator::new)
+        tray_of(
+            count,
+            plugged,
+            hatchling_vault::virtual_key::VirtualAuthenticator::new,
+        )
     }
 
     /// [`tray`], each key made by `make`.
@@ -3883,7 +3889,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(enrolled.0, 2);
-        assert!(keys_of(&config).iter().all(|key| key.check == KeyCheck::Pin));
+        assert!(
+            keys_of(&config)
+                .iter()
+                .all(|key| key.check == KeyCheck::Pin)
+        );
         assert!(
             status(&config)
                 .unwrap()
@@ -3934,13 +3944,17 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(
-            refused.contains("HATCHLING_REQUIRE_KEY_PIN") && refused.contains("asks only for a touch"),
+            refused.contains("HATCHLING_REQUIRE_KEY_PIN")
+                && refused.contains("asks only for a touch"),
             "{refused}"
         );
         let refused_asking = unlock_asking(&touch_vault, &strict, &mut |_| Ok(String::new()))
             .unwrap_err()
             .to_string();
-        assert!(refused_asking.contains("HATCHLING_REQUIRE_KEY_PIN"), "{refused_asking}");
+        assert!(
+            refused_asking.contains("HATCHLING_REQUIRE_KEY_PIN"),
+            "{refused_asking}"
+        );
         // The file tier is no business of the PIN policy.
         let (_third, file_vault, file_config) = adopted("pin-policy-file");
         let file_strict = KeyringConfig {

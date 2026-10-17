@@ -754,10 +754,19 @@ mod tests {
         );
         let unlocked = keyring.unlock_file(&kek).unwrap();
         let rotated = keyring
-            .enroll_hardware_keys_checked(&unlocked, &mut [&mut primary, &mut backup], KeyCheck::Pin)
+            .enroll_hardware_keys_checked(
+                &unlocked,
+                &mut [&mut primary, &mut backup],
+                KeyCheck::Pin,
+            )
             .unwrap();
         settle(&mut keyring, rotated, &dir.join("vault"));
-        assert!(keyring.hardware_keys().iter().all(|key| key.check == KeyCheck::Pin));
+        assert!(
+            keyring
+                .hardware_keys()
+                .iter()
+                .all(|key| key.check == KeyCheck::Pin)
+        );
         // With its PIN it opens; with none, or a wrong one, it doesn't.
         let opened = keyring.unlock_hardware_key(&mut primary).unwrap();
         assert!(reads_the_secret(&dir, opened.key()));
@@ -780,7 +789,10 @@ mod tests {
         let touched = primary.hmac_secret(RP_ID, &credential, &salt).unwrap();
         assert!(
             keyring
-                .unwrap(&wrap, &super::kek(keyring.vault_id(), &credential, &touched))
+                .unwrap(
+                    &wrap,
+                    &super::kek(keyring.vault_id(), &credential, &touched)
+                )
                 .is_err()
         );
         // Rotating needs each key's PIN too.
@@ -814,14 +826,18 @@ mod tests {
         }
         std::fs::write(&path, serde_json::to_string(&stored).unwrap()).unwrap();
         let edited = Keyring::load(&path).unwrap();
-        assert!(edited.hardware_keys().iter().all(|key| key.check == KeyCheck::Touch));
+        assert!(
+            edited
+                .hardware_keys()
+                .iter()
+                .all(|key| key.check == KeyCheck::Touch)
+        );
         for key in [&mut primary, &mut backup] {
             assert!(matches!(
                 edited.unlock_hardware_key(key),
                 Err(Error::UnlockFailed)
             ));
         }
-
     }
 
     #[test]
@@ -838,7 +854,10 @@ mod tests {
             "{err:?}"
         );
         assert_eq!(keyring.tier(), Tier::File);
-        assert_eq!((KeyCheck::of(true), KeyCheck::of(false)), (KeyCheck::Pin, KeyCheck::Touch));
+        assert_eq!(
+            (KeyCheck::of(true), KeyCheck::of(false)),
+            (KeyCheck::Pin, KeyCheck::Touch)
+        );
         // A key that can't verify its user says so, by default.
         assert_eq!(
             TouchOnly.hmac_secret_verified(RP_ID, b"c", &[0; 32]),

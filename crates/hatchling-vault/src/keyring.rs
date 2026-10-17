@@ -237,7 +237,9 @@ impl Factor {
     const fn kind(&self) -> &'static [u8] {
         match self {
             Self::File => b"file",
-            Self::Fido2 { verified: false, .. } => b"fido2",
+            Self::Fido2 {
+                verified: false, ..
+            } => b"fido2",
             Self::Fido2 { verified: true, .. } => b"fido2-pin",
             Self::Totp { .. } => b"totp",
             Self::BackupCode { .. } => b"backup",
@@ -911,6 +913,12 @@ mod tests {
     use super::*;
     use crate::testutil::test_dir;
     use crate::{SealedVault, Secret, SecretName};
+
+    #[test]
+    fn only_a_set_flag_is_written_to_the_file() {
+        assert!(is_false(&false));
+        assert!(!is_false(&true));
+    }
 
     fn fresh_kek() -> Kek {
         Kek::from_bytes(random::<KEY_LEN>().unwrap())
