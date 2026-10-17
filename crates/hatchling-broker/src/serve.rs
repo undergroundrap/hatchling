@@ -49,6 +49,10 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
     tracing_subscriber::fmt()
         .with_max_level(config.log_level.to_tracing())
         .init();
+    // One broker per socket: the lock beside it is held for this
+    // broker's life, before anything is written, and `clean` and a
+    // second broker are refused while it is (WO-012).
+    let _serving = crate::sweep::take_lock(config)?;
     // Load (or provision on first run) the master key before binding:
     // every secret the broker stores is sealed under this key, and a
     // key-file problem stops the broker before it serves anyone.
@@ -88,6 +92,9 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
     // store and name (WO-002), or the broker stops here, naming the
     // files `migrate-vault` must re-seal.
     crate::check_sealed_stores(&crate::sealed_stores(config, redaction.as_ref()))?;
+    // An earlier broker killed mid-run left its cells' staging and its
+    // runs' directories: none is live now, and none is your data.
+    crate::sweep::sweep_at_start(config, redaction.as_ref());
     let gated = match &redaction {
         Some(redaction) => crate::output_gate::build(config, redaction, &key)?,
         None => crate::output_gate::Built {
