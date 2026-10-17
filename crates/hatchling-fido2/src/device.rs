@@ -765,8 +765,8 @@ mod tests {
             let mut right = open(SoftKey::sharing(Rc::clone(state)), Some("2468"));
             assert!(keyring.unlock_hardware_key(&mut right).is_ok());
             for wrong in [Some("0000"), None] {
-                let mut key = open(SoftKey::sharing(Rc::clone(state)), wrong);
-                assert!(keyring.unlock_hardware_key(&mut key).is_err(), "{wrong:?}");
+                let mut unverified = open(SoftKey::sharing(Rc::clone(state)), wrong);
+                assert!(keyring.unlock_hardware_key(&mut unverified).is_err(), "{wrong:?}");
             }
         }
         // A key with no PIN set can't be asked for one.
