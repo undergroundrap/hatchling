@@ -62,7 +62,8 @@ pub fn totp_code(seed: &[u8], unix_seconds: u64) -> String {
 /// RFC 4648 Base32, unpadded, as `otpauth://` URIs carry seeds.
 pub(crate) fn base32(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-    let mut out = String::new();
+    // Sized up front: a growing buffer would free copies of what it held.
+    let mut out = String::with_capacity(bytes.len() * 8 / 5 + 1);
     let (mut buffer, mut bits) = (0u32, 0u32);
     for &byte in bytes {
         buffer = (buffer << 8) | u32::from(byte);
@@ -197,7 +198,7 @@ impl Keyring {
             rotation.new_key(),
             &kek,
             Factor::Totp {
-                seed: hex(pending.seed.as_slice()),
+                seed: Zeroizing::new(hex(pending.seed.as_slice())),
                 salt: hex(&salt),
                 last_step: step,
             },
@@ -571,5 +572,44 @@ mod tests {
                 .unlock_totp(&totp_code(&seed, later), later)
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn one_code_opens_the_vault_once_however_many_try_it_at_once() {
+        let dir = test_dir("totp-race");
+        let (mut keyring, kek) = vault(&dir);
+        let now = 1_700_000_000;
+        let from_file = keyring.unlock_file(&kek).unwrap();
+        let pending = keyring.begin_totp(&from_file).unwrap();
+        let seed = seed_of(&pending);
+        let rotated = keyring
+            .confirm_totp(&from_file, &pending, &totp_code(&seed, now), now)
+            .unwrap();
+        settle(&mut keyring, rotated, &dir.join("vault"));
+        let path = dir.join("keys").join("keyring");
+        let later = now + STEP_SECONDS;
+        let code = totp_code(&seed, later);
+        let start = std::sync::Barrier::new(8);
+        let opened = std::thread::scope(|scope| {
+            #[allow(
+                clippy::needless_collect,
+                reason = "every attempt starts before any is joined, or the race is no race"
+            )]
+            let tries: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let mut mine = Keyring::load(&path).unwrap();
+                        start.wait();
+                        mine.unlock_totp(&code, later).is_ok()
+                    })
+                })
+                .collect();
+            tries
+                .into_iter()
+                .map(|attempt| attempt.join().unwrap())
+                .filter(|opened| *opened)
+                .count()
+        });
+        assert_eq!(opened, 1, "a code is good once");
     }
 }

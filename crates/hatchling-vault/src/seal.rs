@@ -47,7 +47,7 @@ use std::path::{Path, PathBuf};
 
 use chacha20poly1305::aead::{Aead, AeadInPlace, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::vault::{Vault, ensure_owner_only_dir};
 use crate::{Error, Secret, SecretName};
@@ -261,30 +261,29 @@ impl FileKey {
         // Bounded read: one byte past the key length, so a longer file
         // is *detected* and rejected, never silently truncated. A key
         // file with trailing junk is corrupt, not "a key plus junk".
-        let read_limit = u64::try_from(MASTER_KEY_LEN)
-            .unwrap_or(u64::MAX)
-            .saturating_add(1);
-        let mut bytes = Vec::new();
-        file.take(read_limit)
-            .read_to_end(&mut bytes)
-            .map_err(|source| Error::KeyLoad {
+        // Into a fixed buffer one byte past the key, wiped when dropped: a
+        // growing one would free copies of the key.
+        let mut bytes = Zeroizing::new([0u8; MASTER_KEY_LEN + 1]);
+        let mut len = 0;
+        let mut reader = file;
+        while let Some(rest) = bytes.get_mut(len..).filter(|rest| !rest.is_empty()) {
+            let read = reader.read(rest).map_err(|source| Error::KeyLoad {
                 path: path.to_path_buf(),
                 source,
             })?;
-        if bytes.len() != MASTER_KEY_LEN {
-            let len = bytes.len();
-            // Rejected key material must not linger. (`Vec::zeroize`
-            // resets the length, so the count is captured first: the
-            // `InvalidKey` error reports how many bytes were found.)
-            bytes.zeroize();
+            if read == 0 {
+                break;
+            }
+            len += read;
+        }
+        if len != MASTER_KEY_LEN {
             return Err(Error::InvalidKey {
                 path: path.to_path_buf(),
                 len,
             });
         }
         let mut key = [0u8; MASTER_KEY_LEN];
-        key.copy_from_slice(&bytes);
-        bytes.zeroize();
+        key.copy_from_slice(bytes.get(..MASTER_KEY_LEN).unwrap_or_default());
         Ok(MasterKey::from_bytes(key))
     }
 
@@ -679,7 +678,7 @@ pub fn migrate(root: &Path, key: &MasterKey, store: Store) -> Result<MigrateRepo
                 std::mem::take(&mut bytes)
             }
         };
-        let mut plaintext = zeroize::Zeroizing::new(plaintext);
+        let mut plaintext = Zeroizing::new(plaintext);
         let envelope = seal_envelope(key, store, &name, &plaintext)?;
         plaintext.zeroize();
         bytes.zeroize();
@@ -711,9 +710,10 @@ pub fn holds_envelopes(root: &Path) -> Result<bool, Error> {
         let Some(name) = secret_entry(entry)? else {
             continue;
         };
-        let mut head = vault.fetch_raw(&name, MAX_SECRET_BYTES + ENVELOPE_OVERHEAD)?;
+        let (mut head, len) = vault.fetch_head(&name)?;
         let sealed = head
-            .get(..ENVELOPE_MAGIC.len())
+            .get(..len)
+            .and_then(|head| head.get(..ENVELOPE_MAGIC.len()))
             .is_some_and(looks_like_magic);
         head.zeroize();
         if sealed {
@@ -740,10 +740,10 @@ pub fn check(root: &Path, store: Store) -> Result<(), Error> {
         let Some(name) = secret_entry(entry)? else {
             continue;
         };
-        // The whole file is read to see its first bytes; a plaintext
-        // one is scrubbed straight after.
-        let mut head = vault.fetch_raw(&name, MAX_SECRET_BYTES + ENVELOPE_OVERHEAD)?;
-        let current = kind_of(&head) == Kind::Current;
+        // Only the first four bytes are read: a plaintext file's secret
+        // never enters memory.
+        let (mut head, len) = vault.fetch_head(&name)?;
+        let current = kind_of(head.get(..len).unwrap_or_default()) == Kind::Current;
         head.zeroize();
         if !current {
             stale.push(name.as_str().to_owned());

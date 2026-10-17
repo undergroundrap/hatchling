@@ -173,20 +173,42 @@ impl Vault {
         self.read_bounded(name, max)
     }
 
+    /// The first four bytes stored under `name` (fewer for a shorter
+    /// file), and how many: what a check needs to tell an envelope from
+    /// plaintext without reading the secret itself.
+    pub(crate) fn fetch_head(&self, name: &SecretName) -> Result<([u8; 4], usize), Error> {
+        let mut file = self.open_entry(name)?;
+        let mut head = [0u8; 4];
+        let mut len = 0;
+        while let Some(rest) = head.get_mut(len..).filter(|rest| !rest.is_empty()) {
+            let read = file.read(rest).map_err(|source| Error::Io { source })?;
+            if read == 0 {
+                break;
+            }
+            len += read;
+        }
+        Ok((head, len))
+    }
+
+    /// The file stored under `name`, opened: [`Error::NotFound`] if there
+    /// is none.
+    fn open_entry(&self, name: &SecretName) -> Result<std::fs::File, Error> {
+        std::fs::File::open(self.path(name)).map_err(|source| {
+            if source.kind() == std::io::ErrorKind::NotFound {
+                Error::NotFound { name: name.clone() }
+            } else {
+                Error::Io { source }
+            }
+        })
+    }
+
     /// The bounded-read pipeline shared by [`fetch`](Self::fetch) and
     /// [`fetch_raw`](Self::fetch_raw): open with `NotFound` mapping,
     /// advisory size preflight, then a `take(max + 1)` read so growth
     /// past the bound is *detected* and rejected, never silently
     /// truncated.
     fn read_bounded(&self, name: &SecretName, max: usize) -> Result<Vec<u8>, Error> {
-        let path = self.path(name);
-        let file = std::fs::File::open(&path).map_err(|source| {
-            if source.kind() == std::io::ErrorKind::NotFound {
-                Error::NotFound { name: name.clone() }
-            } else {
-                Error::Io { source }
-            }
-        })?;
+        let file = self.open_entry(name)?;
         // Reject an already-oversized file before allocating. Advisory
         // only: the `take` below is the real bound, so a file that grows
         // between this check and the read is still caught.
@@ -204,7 +226,10 @@ impl Vault {
         // (not exactly at) the limit so growth is *detected* and rejected
         // rather than silently truncated.
         let read_limit = u64::try_from(max).unwrap_or(u64::MAX).saturating_add(1);
-        let mut bytes = Vec::new();
+        // Sized to the file, so the read never grows the buffer and frees
+        // a copy of what it held; a file that grew meanwhile still reads,
+        // and is still refused past `max`.
+        let mut bytes = Vec::with_capacity(reported + 1);
         Read::take(&file, read_limit)
             .read_to_end(&mut bytes)
             .map_err(|source| Error::Io { source })?;
@@ -540,5 +565,44 @@ mod tests {
         let fetched = vault.fetch(&name).unwrap();
         assert_eq!(fetched.as_bytes(), bytes.as_slice());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_head_is_the_first_bytes_only_and_a_read_is_bounded() {
+        let dir = std::env::temp_dir().join(format!("hatchling-vault-head-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let vault = Vault::open(&dir).unwrap();
+        let name = |text: &str| -> SecretName { text.parse().unwrap() };
+        vault
+            .store_raw(&name("long"), b"HVL2 and the rest")
+            .unwrap();
+        vault.store_raw(&name("short"), b"ab").unwrap();
+        vault.store_raw(&name("empty"), b"").unwrap();
+        // fetch_head: four bytes at most, and how many.
+        assert_eq!(vault.fetch_head(&name("long")).unwrap(), (*b"HVL2", 4));
+        assert_eq!(vault.fetch_head(&name("short")).unwrap(), (*b"ab\0\0", 2));
+        assert_eq!(vault.fetch_head(&name("empty")).unwrap(), ([0; 4], 0));
+        assert!(matches!(
+            vault.fetch_head(&name("absent")),
+            Err(Error::NotFound { .. })
+        ));
+        // open_entry: the file, or NotFound for none.
+        assert!(vault.open_entry(&name("long")).is_ok());
+        assert!(matches!(
+            vault.open_entry(&name("absent")),
+            Err(Error::NotFound { .. })
+        ));
+        // read_bounded: the whole file within the bound, refused past it.
+        assert_eq!(
+            vault.read_bounded(&name("long"), 64).unwrap(),
+            b"HVL2 and the rest"
+        );
+        assert_eq!(vault.read_bounded(&name("long"), 17).unwrap().len(), 17);
+        assert!(matches!(
+            vault.read_bounded(&name("long"), 16),
+            Err(Error::TooLarge { len: 17, max: 16 })
+        ));
+        assert!(vault.read_bounded(&name("empty"), 0).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
