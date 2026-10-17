@@ -136,7 +136,10 @@ fn only_cells(path: &Path) -> bool {
     std::fs::read_dir(path).is_ok_and(|entries| {
         entries.into_iter().all(|entry| {
             entry.is_ok_and(|entry| {
-                entry.file_name().to_str().is_some_and(|name| name.starts_with("cell-"))
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with("cell-"))
                     && std::fs::symlink_metadata(entry.path()).is_ok_and(|meta| meta.is_dir())
             })
         })

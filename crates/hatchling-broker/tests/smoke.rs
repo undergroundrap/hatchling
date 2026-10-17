@@ -65,10 +65,7 @@ fn scratch_dir(name: &str) -> std::io::Result<std::path::PathBuf> {
 /// its `TMPDIR`, and must never sweep a shared one (WO-012).
 fn operator_env(scratch: &std::path::Path, vault: &str) -> Vec<(&'static str, String)> {
     vec![
-        (
-            "TMPDIR",
-            scratch.join("tmp").to_string_lossy().into_owned(),
-        ),
+        ("TMPDIR", scratch.join("tmp").to_string_lossy().into_owned()),
         (
             "HATCHLING_BROKER_SOCKET",
             scratch.join("broker.sock").to_string_lossy().into_owned(),

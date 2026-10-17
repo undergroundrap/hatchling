@@ -96,10 +96,11 @@ pub fn hold_dir(path: &Path) -> Result<HeldLock, Error> {
     Ok(HeldLock(file))
 }
 
-/// Claims the directory at `path` for this process alone, opened without
-/// following a symlink, until dropped: `None` if a process holds it
-/// ([`hold_dir`]), or it can't be opened as a directory itself, or
-/// locked. Held while it is removed, no one can take it meanwhile.
+/// Claims the directory at `path` for this process alone, until dropped.
+///
+/// `None` if a process holds it ([`hold_dir`]), or it can't be opened as
+/// a directory itself (a symlink isn't followed), or locked. Held while
+/// it is removed, no one can take it meanwhile.
 #[must_use]
 pub fn claim_dir(path: &Path) -> Option<HeldLock> {
     let fd = rustix::fs::open(
@@ -152,7 +153,10 @@ mod tests {
         assert!(in_use(&dir.join("link")) && in_use(&dir.join("missing")));
         assert!(matches!(
             hold_dir(&dir.join("link")),
-            Err(Error::Lock { operation: "open the directory", .. })
+            Err(Error::Lock {
+                operation: "open the directory",
+                ..
+            })
         ));
         let _ = std::fs::remove_dir_all(&dir);
     }

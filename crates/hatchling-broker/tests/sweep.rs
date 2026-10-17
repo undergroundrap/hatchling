@@ -119,7 +119,12 @@ fn said_by(mode: &str, base: &Path, args: &str) -> String {
         std::thread::sleep(Duration::from_millis(20));
     }
     let mut out = String::new();
-    running.stdout.take().unwrap().read_to_string(&mut out).unwrap();
+    running
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut out)
+        .unwrap();
     out
 }
 
@@ -338,7 +343,10 @@ fn clean_lists_then_removes_a_dead_brokers_leftovers_and_nothing_else() {
     let live = tmp.join(format!("hatchling-staging-{}-{random}", sleeper.id()));
     std::fs::create_dir_all(&live).unwrap();
     std::fs::create_dir_all(tmp.join("someone-elses")).unwrap();
-    let ran = config.scheduler.run_root().join(format!("run-{}", "b2".repeat(12)));
+    let ran = config
+        .scheduler
+        .run_root()
+        .join(format!("run-{}", "b2".repeat(12)));
     std::fs::create_dir_all(ran.join("tmp")).unwrap();
 
     let listed = said_by("clean", &base, "--dry-run");

@@ -308,7 +308,10 @@ mod tests {
         assert_eq!(sub.id, DirId::of(&root.join("sub")).unwrap());
         assert_eq!(sub.mount, this.mount, "one mount");
         assert!(!look(&handle, c"file").unwrap().directory);
-        assert!(!look(&handle, c"link").unwrap().directory, "a symlink, not its target");
+        assert!(
+            !look(&handle, c"link").unwrap().directory,
+            "a symlink, not its target"
+        );
         assert!(look(&handle, c"missing").is_err());
         // A kept directory stays; a file or a symlink goes, its target kept.
         let here = [this.id];
@@ -337,12 +340,26 @@ mod tests {
         assert!(!root.join("file").exists() && intact(&outside));
         let deep = vec![parent; MAX_DEPTH + 1];
         assert!(!remove_entry(&handle, c"sub", walk(&[]), &deep), "too deep");
-        assert!(!remove_entry(&handle, c"sub", Walk { mount: this.mount + 1, ..walk(&[]) }, &here), "another mount");
+        assert!(
+            !remove_entry(
+                &handle,
+                c"sub",
+                Walk {
+                    mount: this.mount + 1,
+                    ..walk(&[])
+                },
+                &here
+            ),
+            "another mount"
+        );
         let stranger = Walk {
             owner: owner.wrapping_add(1),
             ..walk(&[])
         };
-        assert!(!remove_entry(&handle, c"sub", stranger, &here), "another user's");
+        assert!(
+            !remove_entry(&handle, c"sub", stranger, &here),
+            "another user's"
+        );
         assert!(root.join("sub").exists());
         assert!(remove_entry(&handle, c"sub", walk(&[]), &here));
         assert!(!root.join("sub").exists());
@@ -428,7 +445,10 @@ mod tests {
             assert!(
                 matches!(
                     remove_tree(&root, OsStr::new(name), &[]),
-                    Err(Error::Removal { operation: "name the tree", .. })
+                    Err(Error::Removal {
+                        operation: "name the tree",
+                        ..
+                    })
                 ),
                 "{name:?}"
             );

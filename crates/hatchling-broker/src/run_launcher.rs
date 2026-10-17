@@ -1097,6 +1097,7 @@ mod tests {
             session: None,
             stop: Arc::new(AtomicBool::new(false)),
             run_dir: dir.to_path_buf(),
+            held: None,
             token: String::from("helper-test"),
             done: false,
             running: None,
