@@ -38,9 +38,9 @@ pub mod peercred;
 pub mod process;
 pub mod seccomp;
 pub mod sync_pipe;
-pub mod tree;
 #[cfg(test)]
 mod test_socket;
+pub mod tree;
 pub mod umask;
 
 pub use error::Error;

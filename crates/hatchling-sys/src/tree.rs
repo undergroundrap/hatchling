@@ -171,9 +171,12 @@ fn empty(dir: &OwnedFd, mount: u64, keep: &[DirId], depth: usize) -> bool {
             names.push(name.to_owned());
         }
     }
-    names
-        .iter()
-        .fold(true, |whole, name| remove_entry(dir, name, mount, keep, depth) && whole)
+    // Every entry is tried, whatever came before it.
+    let mut whole = true;
+    for name in &names {
+        whole &= remove_entry(dir, name, mount, keep, depth);
+    }
+    whole
 }
 
 /// Removes `name` in `dir`, a directory with what it may of its
@@ -216,7 +219,8 @@ mod tests {
     }
 
     fn scratch(name: &str) -> Scratch {
-        let dir = std::env::temp_dir().join(format!("hatchling-tree-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("hatchling-tree-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("root")).unwrap();
         std::fs::create_dir_all(dir.join("outside").join("dir")).unwrap();
@@ -237,7 +241,8 @@ mod tests {
 
     fn intact(outside: &Path) -> bool {
         std::fs::read(outside.join("file")).is_ok_and(|bytes| bytes == b"keep me")
-            && std::fs::read(outside.join("dir").join("inner")).is_ok_and(|bytes| bytes == b"me too")
+            && std::fs::read(outside.join("dir").join("inner"))
+                .is_ok_and(|bytes| bytes == b"me too")
     }
 
     #[test]
@@ -289,13 +294,19 @@ mod tests {
         symlink(&outside, root.join("tree")).unwrap();
         assert!(matches!(
             remove_tree(&root, OsStr::new("tree"), &[]),
-            Err(Error::Removal { operation: "open the tree", .. })
+            Err(Error::Removal {
+                operation: "open the tree",
+                ..
+            })
         ));
         symlink(&root, dir.0.join("root-link")).unwrap();
         plant(&root.join("real"), &outside);
         assert!(matches!(
             remove_tree(&dir.0.join("root-link"), OsStr::new("real"), &[]),
-            Err(Error::Removal { operation: "open the root", .. })
+            Err(Error::Removal {
+                operation: "open the root",
+                ..
+            })
         ));
         assert!(root.join("real").join("file").exists());
         assert!(matches!(
@@ -304,7 +315,10 @@ mod tests {
         ));
         assert!(matches!(
             remove_tree(&root, OsStr::new("a\0b"), &[]),
-            Err(Error::Removal { operation: "name the tree", .. })
+            Err(Error::Removal {
+                operation: "name the tree",
+                ..
+            })
         ));
         assert!(intact(&outside));
     }
