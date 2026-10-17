@@ -726,6 +726,34 @@ pub fn set_not_dumpable() -> Result<(), Error> {
     prctl_checked(libc::PR_SET_DUMPABLE, [0, 0, 0, 0], "prctl(SET_DUMPABLE)")
 }
 
+/// Holds this process, and every process it starts, to a core-file size
+/// of exactly one byte, soft and hard: a crash leaves the host no core.
+///
+/// One byte, not zero. A host whose `core_pattern` pipes cores to a crash
+/// handler (apport, systemd-coredump) never applies the limit to the
+/// pipe, except that the kernel aborts the dump when it is exactly one;
+/// and a core file smaller than a page is never written. A cell can't
+/// lift it: raising a hard limit takes `CAP_SYS_RESOURCE` in the host's
+/// user namespace, and the cell's seccomp filter refuses any change to it.
+///
+/// # Errors
+///
+/// [`Error::Process`] if the kernel refuses: a hard limit of 0 inherited
+/// from the host can't be raised to 1 without `CAP_SYS_RESOURCE`.
+pub fn hold_core_dumps_off() -> Result<(), Error> {
+    rustix::process::setrlimit(
+        rustix::process::Resource::Core,
+        rustix::process::Rlimit {
+            current: Some(1),
+            maximum: Some(1),
+        },
+    )
+    .map_err(|source| Error::Process {
+        operation: "setrlimit(RLIMIT_CORE)",
+        source: source.into(),
+    })
+}
+
 /// A limit the kernel holds a process, and every process it starts, to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Limit {
@@ -1478,6 +1506,31 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
+
+    #[test]
+    fn core_dumps_are_held_to_one_byte_and_a_zero_hard_limit_stays() {
+        use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+        let child = match fork().unwrap() {
+            ForkResult::Parent { child } => child,
+            ForkResult::Child => {
+                let held = std::panic::catch_unwind(|| {
+                    hold_core_dumps_off().unwrap();
+                    let core = getrlimit(Resource::Core);
+                    assert_eq!((core.current, core.maximum), (Some(1), Some(1)));
+                    let zero = Rlimit {
+                        current: Some(0),
+                        maximum: Some(0),
+                    };
+                    setrlimit(Resource::Core, zero).unwrap();
+                    // Only CAP_SYS_RESOURCE raises a hard limit.
+                    assert_eq!(hold_core_dumps_off().is_err(), euid() != 0);
+                });
+                exit_child(i32::from(held.is_err()));
+            }
+        };
+        let status = child.wait_deadline(Duration::from_secs(5)).unwrap();
+        assert_eq!(child_exit_code(status), 0);
+    }
 
     #[test]
     fn a_childs_fd_is_its_open_pidfd() {

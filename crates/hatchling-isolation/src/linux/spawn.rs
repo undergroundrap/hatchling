@@ -932,6 +932,17 @@ fn exec_cell_program(
     if let Err(source) = hatchling_sys::set_no_new_privs() {
         fail(&mut child_to_parent, format!("no_new_privs: {source}"));
     }
+    // A seccomp kill dumps core: held to one byte, no core reaches the
+    // host's crash handler. Set before the filter, which refuses any
+    // change to it.
+    if let Err(source) = hatchling_sys::hold_core_dumps_off() {
+        fail(
+            &mut child_to_parent,
+            format!(
+                "hold core dumps off (a hard core limit of 0 from the host can't be raised to the 1 that stops a crash handler): {source}"
+            ),
+        );
+    }
     // Set before seccomp narrows what the cell may call.
     if let Some(dir) = spec.workdir.as_deref() {
         if let Err(source) = std::env::set_current_dir(dir) {

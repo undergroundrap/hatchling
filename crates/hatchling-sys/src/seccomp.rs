@@ -321,6 +321,14 @@ enum Check {
     OneOf { arg: u32, values: Vec<u32> },
     /// The first argument (its low 32 bits) has none of `mask`'s bits.
     NoneOf { mask: u32 },
+    /// The pointer argument numbered `null` is null (a call that only
+    /// reads), or else the argument numbered `arg` (its low 32 bits) is one
+    /// of `values`.
+    OneOfOrNull {
+        arg: u32,
+        values: Vec<u32>,
+        null: u32,
+    },
     /// Never: the call always gets the refusal.
     Never,
 }
@@ -349,6 +357,11 @@ pub struct SeccompProfile {
 const CLONE_NAMESPACES: u32 = 0x7E02_0000;
 const AF_INET: u32 = 2;
 const EPERM: u32 = 1;
+/// Every `prlimit64` resource but `RLIMIT_CORE` (4): glibc and std read
+/// and set the others; the core limit, held to one byte so no core
+/// reaches a host crash handler, is neither lowered nor raised from inside
+/// a cell (`asm-generic/resource.h`, 0 to 15).
+const LIMITS_BUT_CORE: [u32; 15] = [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 const ENOTTY: u32 = 25;
 const ENOSYS: u32 = 38;
 const EAFNOSUPPORT: u32 = 97;
@@ -548,11 +561,23 @@ impl SeccompProfile {
             "lseek",
             "pread64",
             "sched_getaffinity",
-            "prlimit64",
             "statx",
         ] {
             profile.allow(name)?;
         }
+        // Reads of any limit, and changes to any but the core size, which
+        // answer EPERM: lowering it to 0 would let a pipe crash handler
+        // have the cell's memory. prlimit64(pid, resource, new, old).
+        #[cfg(target_arch = "x86_64")]
+        profile.allow_if(
+            "prlimit64",
+            Check::OneOfOrNull {
+                arg: 1,
+                values: LIMITS_BUT_CORE.to_vec(),
+                null: 2,
+            },
+            Refusal::Errno(EPERM),
+        )?;
         // Handshake I/O from the table above: without sendto/recvfrom
         // the agent cannot exchange HELLO/WELCOME, and without fcntl
         // it dies with SIGSYS during teardown (observed via strace on
@@ -755,6 +780,8 @@ enum Label {
     Kill,
     /// The argument check of the rule at this index.
     Block(usize),
+    /// The values check of the rule at this index, past its null check.
+    Values(usize),
     /// The `ERRNO` return for this errno.
     Errno(u32),
 }
@@ -809,6 +836,68 @@ const fn refusal(otherwise: Refusal) -> Label {
     }
 }
 
+/// Pushes the argument check of the rule at `index`, placing its labels:
+/// each passing value jumps to the allow, and the rule's refusal follows
+/// the last.
+fn push_rule_block(
+    index: usize,
+    rule: &Rule,
+    pending: &mut Vec<Pending>,
+    positions: &mut Vec<(Label, usize)>,
+) {
+    let otherwise = refusal(rule.otherwise);
+    match &rule.check {
+        Check::Never => {}
+        Check::OneOf { arg, values } => {
+            positions.push((Label::Block(index), pending.len()));
+            push_values(pending, *arg, values, otherwise);
+        }
+        Check::OneOfOrNull { arg, values, null } => {
+            // Null is both 32-bit halves zero; the high half is the
+            // second word (little-endian, as on every target here).
+            let low = SECCOMP_DATA_ARGS + null * 8;
+            positions.push((Label::Block(index), pending.len()));
+            pending.push(Pending::plain(BPF_LD_W_ABS, low));
+            pending.push(Pending::branch(
+                BPF_JMP_JEQ_K,
+                0,
+                Label::Next,
+                Label::Values(index),
+            ));
+            pending.push(Pending::plain(BPF_LD_W_ABS, low + 4));
+            pending.push(Pending::branch(
+                BPF_JMP_JEQ_K,
+                0,
+                Label::Allow,
+                Label::Values(index),
+            ));
+            positions.push((Label::Values(index), pending.len()));
+            push_values(pending, *arg, values, otherwise);
+        }
+        Check::NoneOf { mask } => {
+            positions.push((Label::Block(index), pending.len()));
+            pending.push(Pending::plain(BPF_LD_W_ABS, SECCOMP_DATA_ARGS));
+            pending.push(Pending::branch(
+                BPF_JMP_JSET_K,
+                *mask,
+                otherwise,
+                Label::Allow,
+            ));
+        }
+    }
+}
+
+/// Pushes a load of the argument numbered `arg` and one comparison per
+/// value: a match jumps to the allow, and past the last, `otherwise`.
+fn push_values(pending: &mut Vec<Pending>, arg: u32, values: &[u32], otherwise: Label) {
+    pending.push(Pending::plain(BPF_LD_W_ABS, SECCOMP_DATA_ARGS + arg * 8));
+    for (at, value) in values.iter().enumerate() {
+        let last = at + 1 == values.len();
+        let jf = if last { otherwise } else { Label::Next };
+        pending.push(Pending::branch(BPF_JMP_JEQ_K, *value, Label::Allow, jf));
+    }
+}
+
 /// Compiles an allowlist and its argument rules to classic BPF.
 ///
 /// Layout (all jumps forward, as classic BPF requires):
@@ -833,7 +922,9 @@ fn assemble(allowed: &[u32], rules: &[Rule]) -> Vec<SockFilter> {
     for (index, rule) in rules.iter().enumerate() {
         let target = match rule.check {
             Check::Never => refusal(rule.otherwise),
-            Check::OneOf { .. } | Check::NoneOf { .. } => Label::Block(index),
+            Check::OneOf { .. } | Check::NoneOf { .. } | Check::OneOfOrNull { .. } => {
+                Label::Block(index)
+            }
         };
         pending.push(Pending::branch(BPF_JMP_JEQ_K, rule.nr, target, Label::Next));
     }
@@ -853,29 +944,7 @@ fn assemble(allowed: &[u32], rules: &[Rule]) -> Vec<SockFilter> {
     });
     let mut positions: Vec<(Label, usize)> = Vec::new();
     for (index, rule) in rules.iter().enumerate() {
-        let otherwise = refusal(rule.otherwise);
-        match &rule.check {
-            Check::Never => {}
-            Check::OneOf { arg, values } => {
-                positions.push((Label::Block(index), pending.len()));
-                pending.push(Pending::plain(BPF_LD_W_ABS, SECCOMP_DATA_ARGS + arg * 8));
-                for (at, value) in values.iter().enumerate() {
-                    let last = at + 1 == values.len();
-                    let jf = if last { otherwise } else { Label::Next };
-                    pending.push(Pending::branch(BPF_JMP_JEQ_K, *value, Label::Allow, jf));
-                }
-            }
-            Check::NoneOf { mask } => {
-                positions.push((Label::Block(index), pending.len()));
-                pending.push(Pending::plain(BPF_LD_W_ABS, SECCOMP_DATA_ARGS));
-                pending.push(Pending::branch(
-                    BPF_JMP_JSET_K,
-                    *mask,
-                    otherwise,
-                    Label::Allow,
-                ));
-            }
-        }
+        push_rule_block(index, rule, &mut pending, &mut positions);
     }
     positions.push((Label::Allow, pending.len()));
     pending.push(Pending::plain(BPF_RET_K, SECCOMP_RET_ALLOW));
@@ -905,7 +974,11 @@ fn assemble(allowed: &[u32], rules: &[Rule]) -> Vec<SockFilter> {
         .map(|(index, step)| {
             let offset = |label: Label| match label {
                 Label::Next => 0,
-                Label::Allow | Label::Kill | Label::Block(_) | Label::Errno(_) => {
+                Label::Allow
+                | Label::Kill
+                | Label::Block(_)
+                | Label::Values(_)
+                | Label::Errno(_) => {
                     jump_offset(index, at(label))
                 }
             };
@@ -1249,9 +1322,10 @@ mod tests {
             .position(|ins| ins.code == BPF_RET_K && ins.k == SECCOMP_RET_ALLOW)
             .unwrap();
         let socket_nr = syscall_number("socket").unwrap();
+        let ruled = profile.ruled_numbers();
         for nr in profile.allowed_numbers() {
-            if nr == socket_nr {
-                continue; // routed through the AF_UNIX check instead
+            if nr == socket_nr || ruled.contains(&nr) {
+                continue; // routed through its argument check instead
             }
             let found = prog.iter().enumerate().any(|(i, ins)| {
                 ins.code == BPF_JMP_JEQ_K && ins.k == nr && i + 1 + usize::from(ins.jt) == allow_idx
@@ -1484,6 +1558,59 @@ mod tests {
 
     #[cfg(target_arch = "x86_64")]
     #[test]
+    fn no_cell_may_change_its_core_limit() {
+        let errno = |e: u32| SECCOMP_RET_ERRNO + e;
+        for profile in [
+            SeccompProfile::agent(),
+            SeccompProfile::harness(),
+            SeccompProfile::harness_cli(),
+        ] {
+            let prog = profile.unwrap().build();
+            // prlimit64(pid, resource, new, old): the resource is the
+            // second argument, and only its low 32 bits count; a new limit
+            // is the third, a pointer.
+            let new = 0x7fff_0000_1000u64;
+            for resource in 0..16u64 {
+                let expected = if resource == 4 {
+                    errno(EPERM)
+                } else {
+                    SECCOMP_RET_ALLOW
+                };
+                assert_eq!(
+                    call(&prog, "prlimit64", [0, resource, new, 0, 0, 0]),
+                    expected,
+                    "setting resource {resource}"
+                );
+                // Reading any limit, the core size's too, is allowed.
+                assert_eq!(
+                    call(&prog, "prlimit64", [0, resource, 0, 8, 0, 0]),
+                    SECCOMP_RET_ALLOW,
+                    "reading resource {resource}"
+                );
+            }
+            assert_eq!(
+                call(&prog, "prlimit64", [4, 0, new, 0, 0, 0]),
+                SECCOMP_RET_ALLOW,
+                "the first argument is the pid"
+            );
+            assert_eq!(
+                call(&prog, "prlimit64", [0, (1 << 32) | 4, new, 0, 0, 0]),
+                errno(EPERM)
+            );
+            // A pointer is null only when both halves are zero.
+            for pointer in [1u64, 1 << 32, 0x1000] {
+                assert_eq!(
+                    call(&prog, "prlimit64", [0, 4, pointer, 0, 0, 0]),
+                    errno(EPERM),
+                    "{pointer:#x} is a new limit"
+                );
+            }
+        }
+        assert_eq!(LIMITS_BUT_CORE.len(), 15);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
     fn a_cli_cell_pairs_unix_sockets_only() {
         let prog = SeccompProfile::harness_cli().unwrap().build();
         let errno = |e: u32| SECCOMP_RET_ERRNO + e;
@@ -1615,17 +1742,30 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn the_effective_rules_are_the_profiles_own_or_the_standing_af_unix_one() {
-        assert_eq!(
-            SeccompProfile::agent().unwrap().effective_rules(),
-            [Rule {
-                nr: 41,
-                check: Check::OneOf {
-                    arg: 0,
-                    values: vec![AF_UNIX],
+        let standing_socket = Rule {
+            nr: 41,
+            check: Check::OneOf {
+                arg: 0,
+                values: vec![AF_UNIX],
+            },
+            otherwise: Refusal::Kill,
+        };
+        #[cfg(target_arch = "x86_64")]
+        let agent_rules = vec![
+            standing_socket,
+            Rule {
+                nr: 302,
+                check: Check::OneOfOrNull {
+                    arg: 1,
+                    values: LIMITS_BUT_CORE.to_vec(),
+                    null: 2,
                 },
-                otherwise: Refusal::Kill,
-            }]
-        );
+                otherwise: Refusal::Errno(EPERM),
+            },
+        ];
+        #[cfg(not(target_arch = "x86_64"))]
+        let agent_rules = vec![standing_socket];
+        assert_eq!(SeccompProfile::agent().unwrap().effective_rules(), agent_rules);
         let cli = SeccompProfile::harness_cli().unwrap();
         assert_eq!(
             cli.effective_rules(),
@@ -1699,20 +1839,23 @@ mod tests {
     }
 
     #[test]
-    fn only_the_cli_profile_rules_any_call() {
-        assert!(SeccompProfile::agent().unwrap().ruled_numbers().is_empty());
-        assert!(
-            SeccompProfile::harness()
-                .unwrap()
-                .ruled_numbers()
-                .is_empty()
-        );
+    fn each_profile_rules_only_the_calls_it_names() {
+        // prlimit64: never the core limit, in every profile.
         #[cfg(target_arch = "x86_64")]
-        assert_eq!(
-            SeccompProfile::harness_cli().unwrap().ruled_numbers(),
-            // ioctl, socket, socketpair, clone, prctl, clone3.
-            vec![16, 41, 53, 56, 157, 435]
-        );
+        {
+            assert_eq!(SeccompProfile::agent().unwrap().ruled_numbers(), vec![302]);
+            assert_eq!(
+                SeccompProfile::harness().unwrap().ruled_numbers(),
+                vec![302]
+            );
+            assert_eq!(
+                SeccompProfile::harness_cli().unwrap().ruled_numbers(),
+                // ioctl, socket, socketpair, clone, prctl, prlimit64, clone3.
+                vec![16, 41, 53, 56, 157, 302, 435]
+            );
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        assert!(SeccompProfile::agent().unwrap().ruled_numbers().is_empty());
     }
 
     #[test]
@@ -1738,6 +1881,17 @@ mod tests {
                 .filter(|ins| ins.code == BPF_RET_K)
                 .map(|ins| ins.k)
                 .collect();
+            #[cfg(target_arch = "x86_64")]
+            assert_eq!(
+                returns,
+                [
+                    SECCOMP_RET_ALLOW,
+                    SECCOMP_RET_ERRNO + EPERM,
+                    SECCOMP_RET_KILL_PROCESS
+                ],
+                "allow, kill, and EPERM for the core limit alone"
+            );
+            #[cfg(not(target_arch = "x86_64"))]
             assert_eq!(
                 returns,
                 [SECCOMP_RET_ALLOW, SECCOMP_RET_KILL_PROCESS],

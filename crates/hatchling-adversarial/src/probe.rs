@@ -533,23 +533,31 @@ fn groups() -> Result<Outcome, String> {
     })
 }
 
-/// The cell's resource limits, each after trying to lift it to none.
+/// The cell's resource limits, each after trying to lift it to none; and
+/// the core limit again after trying to lower it to 0, which would let a
+/// pipe crash handler have the cell's memory.
 fn raise_limits() -> Outcome {
     use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+    let none = Rlimit {
+        current: None,
+        maximum: None,
+    };
+    let zero = Rlimit {
+        current: Some(0),
+        maximum: Some(0),
+    };
     let limits = [
-        ("processes", Resource::Nproc),
-        ("address-space", Resource::As),
-        ("file-size", Resource::Fsize),
-        ("open-files", Resource::Nofile),
+        ("processes", Resource::Nproc, none),
+        ("address-space", Resource::As, none),
+        ("file-size", Resource::Fsize, none),
+        ("open-files", Resource::Nofile, none),
+        ("core", Resource::Core, none),
+        ("core-lowered", Resource::Core, zero),
     ]
     .into_iter()
-    .map(|(name, resource)| {
-        let none = Rlimit {
-            current: None,
-            maximum: None,
-        };
+    .map(|(name, resource, target)| {
         let raise_errno =
-            setrlimit(resource, none).map_or_else(rustix::io::Errno::raw_os_error, |()| 0);
+            setrlimit(resource, target).map_or_else(rustix::io::Errno::raw_os_error, |()| 0);
         let held = getrlimit(resource);
         HeldLimit {
             name: name.to_owned(),
@@ -632,6 +640,7 @@ mod tests {
                         ("address-space", Resource::As, 1 << 40, root),
                         ("file-size", Resource::Fsize, 1 << 30, root),
                         ("open-files", Resource::Nofile, 64, false),
+                        ("core", Resource::Core, 1, root),
                     ]
                     .map(|(name, resource, value, lifted)| {
                         let held = Some(value);
@@ -648,11 +657,27 @@ mod tests {
                             raise_errno: i32::from(!lifted),
                         }
                     });
+                    // Outside a cell nothing stops lowering it.
+                    let mut limits = expected.to_vec();
+                    limits.push(HeldLimit {
+                        name: String::from("core-lowered"),
+                        soft: Some(0),
+                        hard: Some(0),
+                        raise_errno: 0,
+                    });
                     let expected = crate::Outcome::Limits {
-                        limits: expected.to_vec(),
+                        limits: limits.clone(),
                     };
+                    // The first report lowered the core limit to 0, so the
+                    // second finds it there (or lifted, as root).
+                    let core = if root { None } else { Some(0) };
+                    for held in limits.iter_mut().filter(|held| held.name == "core") {
+                        held.soft = core;
+                        held.hard = core;
+                    }
+                    let again = crate::Outcome::Limits { limits };
                     super::raise_limits() == expected
-                        && super::run_report_attack(crate::Attack::RaiseLimits) == Ok(expected)
+                        && super::run_report_attack(crate::Attack::RaiseLimits) == Ok(again)
                 });
                 exit_child(match reported {
                     Ok(true) => 0,
