@@ -13,7 +13,10 @@
 //! - a directory the caller keeps, by its device and inode (a state
 //!   directory), is left whole, with everything above it;
 //! - a directory swapped for another between being looked at and opened
-//!   is left alone.
+//!   is left alone;
+//! - no directory is entered that the walk is already in, or above: by
+//!   its identity, apart from the `.` and `..` names skipped, so the walk
+//!   can't climb out of the tree even if one of the two checks fails.
 
 use std::ffi::{CStr, CString, OsStr};
 use std::io;
@@ -146,7 +149,7 @@ pub fn remove_tree(root: &Path, name: &OsStr, keep: &[DirId]) -> Result<Removed,
     if keep.contains(&found.id) {
         return Ok(Removed::Partly);
     }
-    let whole = empty(&top, base.mount, keep, 1);
+    let whole = empty(&top, base.mount, keep, &[base.id, found.id]);
     drop(top);
     if whole && rustix::fs::unlinkat(&parent, &name, AtFlags::REMOVEDIR).is_ok() {
         Ok(Removed::Whole)
@@ -156,8 +159,9 @@ pub fn remove_tree(root: &Path, name: &OsStr, keep: &[DirId]) -> Result<Removed,
 }
 
 /// Removes what it may of everything in `dir`, on mount `mount`; whether
-/// all of it is gone.
-fn empty(dir: &OwnedFd, mount: u64, keep: &[DirId], depth: usize) -> bool {
+/// all of it is gone. `above` is every directory the walk is in, from the
+/// root down to `dir`.
+fn empty(dir: &OwnedFd, mount: u64, keep: &[DirId], above: &[DirId]) -> bool {
     let Ok(entries) = rustix::fs::Dir::read_from(dir) else {
         return false;
     };
@@ -174,21 +178,25 @@ fn empty(dir: &OwnedFd, mount: u64, keep: &[DirId], depth: usize) -> bool {
     // Every entry is tried, whatever came before it.
     let mut whole = true;
     for name in &names {
-        whole &= remove_entry(dir, name, mount, keep, depth);
+        whole &= remove_entry(dir, name, mount, keep, above);
     }
     whole
 }
 
 /// Removes `name` in `dir`, a directory with what it may of its
-/// contents; whether it is gone.
-fn remove_entry(dir: &OwnedFd, name: &CStr, mount: u64, keep: &[DirId], depth: usize) -> bool {
+/// contents; whether it is gone. `above` is as for [`empty`]: a directory
+/// in it (`.`, `..`, or any path back up) is never entered.
+fn remove_entry(dir: &OwnedFd, name: &CStr, mount: u64, keep: &[DirId], above: &[DirId]) -> bool {
     let Ok(seen) = look(dir, name) else {
         return false;
     };
     if !seen.directory {
         return rustix::fs::unlinkat(dir, name, AtFlags::empty()).is_ok();
     }
-    if seen.mount != mount || keep.contains(&seen.id) || depth >= MAX_DEPTH {
+    if above.contains(&seen.id) {
+        return false;
+    }
+    if seen.mount != mount || keep.contains(&seen.id) || above.len() > MAX_DEPTH {
         return false;
     }
     let Ok(sub) = rustix::fs::openat(dir, name, DIR_FLAGS, Mode::empty()) else {
@@ -197,7 +205,8 @@ fn remove_entry(dir: &OwnedFd, name: &CStr, mount: u64, keep: &[DirId], depth: u
     if look(&sub, c"").map(|opened| opened.id) != Ok(seen.id) {
         return false;
     }
-    let whole = empty(&sub, mount, keep, depth + 1);
+    let deeper: Vec<DirId> = above.iter().copied().chain([seen.id]).collect();
+    let whole = empty(&sub, mount, keep, &deeper);
     drop(sub);
     whole && rustix::fs::unlinkat(dir, name, AtFlags::REMOVEDIR).is_ok()
 }
@@ -262,16 +271,25 @@ mod tests {
         assert!(!look(&handle, c"link").unwrap().directory, "a symlink, not its target");
         assert!(look(&handle, c"missing").is_err());
         // A kept directory stays; a file or a symlink goes, its target kept.
-        assert!(!remove_entry(&handle, c"sub", this.mount, &[sub.id], 1));
+        let here = [this.id];
+        assert!(!remove_entry(&handle, c"sub", this.mount, &[sub.id], &here));
         assert!(root.join("sub").exists());
-        assert!(remove_entry(&handle, c"file", this.mount, &[], 1));
-        assert!(remove_entry(&handle, c"link", this.mount, &[], 1));
+        // `.` and `..` are never entered, even asked for by name: by their
+        // identity, the walk is in them.
+        let parent = DirId::of(&dir.0).unwrap();
+        assert!(!remove_entry(&handle, c".", this.mount, &[], &[parent, this.id]));
+        assert!(!remove_entry(&handle, c"..", this.mount, &[], &[parent, this.id]));
+        assert!(root.join("file").exists() && root.join("sub").exists());
+        assert!(intact(&outside), "nothing above the tree goes");
+        assert!(remove_entry(&handle, c"file", this.mount, &[], &here));
+        assert!(remove_entry(&handle, c"link", this.mount, &[], &here));
         assert!(!root.join("file").exists() && intact(&outside));
-        assert!(!remove_entry(&handle, c"sub", this.mount, &[], MAX_DEPTH), "too deep");
-        assert!(!remove_entry(&handle, c"sub", this.mount + 1, &[], 1), "another mount");
-        assert!(remove_entry(&handle, c"sub", this.mount, &[], 1));
+        let deep = vec![parent; MAX_DEPTH + 1];
+        assert!(!remove_entry(&handle, c"sub", this.mount, &[], &deep), "too deep");
+        assert!(!remove_entry(&handle, c"sub", this.mount + 1, &[], &here), "another mount");
+        assert!(remove_entry(&handle, c"sub", this.mount, &[], &here));
         assert!(!root.join("sub").exists());
-        assert!(!remove_entry(&handle, c"missing", this.mount, &[], 1));
+        assert!(!remove_entry(&handle, c"missing", this.mount, &[], &here));
     }
 
     #[test]
