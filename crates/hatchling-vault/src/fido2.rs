@@ -47,8 +47,23 @@ pub enum AuthenticatorError {
     NoUserPresence,
     /// The key does not hold that credential.
     UnknownCredential,
+    /// The key could not verify its user: no PIN is set on it, or the PIN
+    /// was not given or was refused.
+    NoVerification,
     /// Anything else the device reported.
     Device(String),
+}
+
+/// What an enrolled security key asks of its user each time it opens the
+/// vault.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyCheck {
+    /// A touch.
+    Touch,
+    /// Its PIN, and a touch. The key computes its answer under its
+    /// verified-user secret, so a client that skips the PIN gets an answer
+    /// that opens nothing.
+    Pin,
 }
 
 /// The deliberate choice to protect the vault with one security key.
@@ -94,6 +109,38 @@ pub trait Authenticator {
         credential_id: &[u8],
         salt: &[u8; 32],
     ) -> Result<[u8; 32], AuthenticatorError>;
+
+    /// [`Authenticator::hmac_secret`] after the key verified its user with
+    /// its PIN. CTAP2 computes it under the credential's other secret
+    /// (`CredRandomWithUV`), so it differs from the touch-only answer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthenticatorError::NoVerification`] if the key can't
+    /// verify its user (the default, for a key that never can), or as
+    /// [`Authenticator::hmac_secret`].
+    fn hmac_secret_verified(
+        &mut self,
+        rp_id: &str,
+        credential_id: &[u8],
+        salt: &[u8; 32],
+    ) -> Result<[u8; 32], AuthenticatorError> {
+        let _ = (rp_id, credential_id, salt);
+        Err(AuthenticatorError::NoVerification)
+    }
+}
+
+/// The key's answer for `credential_id` and `salt`, asked as `check` says.
+fn answer(
+    device: &mut dyn Authenticator,
+    credential_id: &[u8],
+    salt: &[u8; 32],
+    check: KeyCheck,
+) -> Result<[u8; 32], AuthenticatorError> {
+    match check {
+        KeyCheck::Touch => device.hmac_secret(RP_ID, credential_id, salt),
+        KeyCheck::Pin => device.hmac_secret_verified(RP_ID, credential_id, salt),
+    }
 }
 
 /// The KEK for one credential, from its `hmac-secret` output.
@@ -105,6 +152,14 @@ fn kek(vault_id: &str, credential_id: &[u8], output: &[u8; 32]) -> Kek {
     let kek = Kek::from_bytes(okm);
     okm.zeroize();
     kek
+}
+
+impl KeyCheck {
+    /// The check a wrap records: its key's PIN if `verified`.
+    #[must_use]
+    pub const fn of(verified: bool) -> Self {
+        if verified { Self::Pin } else { Self::Touch }
+    }
 }
 
 impl Keyring {
@@ -128,6 +183,21 @@ impl Keyring {
         unlocked: &Unlocked,
         keys: &mut [&mut dyn Authenticator],
     ) -> Result<Rotated, Error> {
+        self.enroll_hardware_keys_checked(unlocked, keys, KeyCheck::Touch)
+    }
+
+    /// [`Keyring::enroll_hardware_keys`], each key asking its user as
+    /// `check` says each time it opens the vault.
+    ///
+    /// # Errors
+    ///
+    /// As [`Keyring::enroll_hardware_keys`].
+    pub fn enroll_hardware_keys_checked(
+        &mut self,
+        unlocked: &Unlocked,
+        keys: &mut [&mut dyn Authenticator],
+        check: KeyCheck,
+    ) -> Result<Rotated, Error> {
         self.authorize(unlocked, Tier::HardwareKey)?;
         if keys.len() < 2 {
             return Err(Error::NeedTwoKeys);
@@ -135,7 +205,7 @@ impl Keyring {
         let rotation = self.begin_rotation(unlocked, Tier::HardwareKey)?;
         let mut wraps = Vec::with_capacity(keys.len());
         for device in keys.iter_mut() {
-            wraps.push(self.hardware_wrap(rotation.new_key(), &mut **device)?);
+            wraps.push(self.hardware_wrap(rotation.new_key(), &mut **device, check)?);
         }
         self.commit_rotation(rotation, Tier::HardwareKey, wraps)
     }
@@ -157,13 +227,29 @@ impl Keyring {
         device: &mut dyn Authenticator,
         risk: SingleKeyRisk,
     ) -> Result<Rotated, Error> {
+        self.enroll_single_hardware_key_checked(unlocked, device, risk, KeyCheck::Touch)
+    }
+
+    /// [`Keyring::enroll_single_hardware_key`], the key asking its user as
+    /// `check` says each time it opens the vault.
+    ///
+    /// # Errors
+    ///
+    /// As [`Keyring::enroll_single_hardware_key`].
+    pub fn enroll_single_hardware_key_checked(
+        &mut self,
+        unlocked: &Unlocked,
+        device: &mut dyn Authenticator,
+        risk: SingleKeyRisk,
+        check: KeyCheck,
+    ) -> Result<Rotated, Error> {
         let SingleKeyRisk(()) = risk;
         self.authorize(unlocked, Tier::HardwareKey)?;
         if self.backup_codes_left() == 0 {
             return Err(Error::NeedBackupCodes);
         }
         let rotation = self.begin_rotation(unlocked, Tier::HardwareKey)?;
-        let wrap = self.hardware_wrap(rotation.new_key(), device)?;
+        let wrap = self.hardware_wrap(rotation.new_key(), device, check)?;
         self.commit_rotation(rotation, Tier::HardwareKey, vec![wrap])
     }
 
@@ -181,16 +267,22 @@ impl Keyring {
                 format!("{} ({})", wrap.label(), wrap.id)
             },
         };
-        let Factor::Fido2 { credential, salt } = &wrap.factor else {
+        let Factor::Fido2 {
+            credential,
+            salt,
+            verified,
+        } = &wrap.factor
+        else {
             return Err(absent());
         };
+        let check = KeyCheck::of(*verified);
         let credential = unhex(credential).ok_or_else(absent)?;
         let salt = unhex(salt)
             .and_then(|salt| <[u8; 32]>::try_from(salt).ok())
             .ok_or_else(absent)?;
         keys.iter_mut()
             .find_map(|device| {
-                let mut output = device.hmac_secret(RP_ID, &credential, &salt).ok()?;
+                let mut output = answer(&mut **device, &credential, &salt, check).ok()?;
                 let kek = kek(self.vault_id(), &credential, &output);
                 output.zeroize();
                 self.unwrap(wrap, &kek).ok().map(|_| kek)
@@ -198,11 +290,13 @@ impl Keyring {
             .ok_or_else(absent)
     }
 
-    /// One credential on `key`, and `dek` wrapped under its KEK.
+    /// One credential on `key`, and `dek` wrapped under its KEK, from its
+    /// answer asked as `check` says.
     pub(crate) fn hardware_wrap(
         &self,
         dek: &MasterKey,
         device: &mut dyn Authenticator,
+        check: KeyCheck,
     ) -> Result<crate::Wrap, Error> {
         let failed = |err: AuthenticatorError| Error::Authenticator {
             reason: format!("{err:?}"),
@@ -214,9 +308,7 @@ impl Keyring {
             return Err(Error::MissingHmacSecret);
         }
         let salt = random::<32>()?;
-        let mut output = device
-            .hmac_secret(RP_ID, &credential.id, &salt)
-            .map_err(failed)?;
+        let mut output = answer(device, &credential.id, &salt, check).map_err(failed)?;
         let kek = kek(self.vault_id(), &credential.id, &output);
         output.zeroize();
         self.wrap(
@@ -225,6 +317,7 @@ impl Keyring {
             Factor::Fido2 {
                 credential: hex(&credential.id),
                 salt: hex(&salt),
+                verified: check == KeyCheck::Pin,
             },
         )
     }
@@ -244,12 +337,18 @@ impl Keyring {
         self.wraps()
             .iter()
             .find_map(|wrap| {
-                let Factor::Fido2 { credential, salt } = &wrap.factor else {
+                let Factor::Fido2 {
+                    credential,
+                    salt,
+                    verified,
+                } = &wrap.factor
+                else {
                     return None;
                 };
                 let credential = unhex(credential)?;
                 let salt = <[u8; 32]>::try_from(unhex(salt)?).ok()?;
-                let mut output = device.hmac_secret(RP_ID, &credential, &salt).ok()?;
+                let mut output =
+                    answer(device, &credential, &salt, KeyCheck::of(*verified)).ok()?;
                 let kek = kek(self.vault_id(), &credential, &output);
                 output.zeroize();
                 Some((wrap.id.as_str(), self.unwrap(wrap, &kek).ok()?))
@@ -272,7 +371,9 @@ mod tests {
     /// so a wrong kind fails the test's own assertions.
     fn parts(factor: &Factor) -> (String, String) {
         match factor {
-            Factor::Fido2 { credential, salt } => (credential.clone(), salt.clone()),
+            Factor::Fido2 {
+                credential, salt, ..
+            } => (credential.clone(), salt.clone()),
             Factor::File | Factor::Totp { .. } | Factor::BackupCode { .. } => {
                 (String::new(), String::new())
             }
@@ -521,7 +622,9 @@ mod tests {
         let (keyring, kek, _) = vault(&dir);
         let unlocked = keyring.unlock_file(&kek).unwrap();
         let mut device = VirtualAuthenticator::new();
-        let wrap = keyring.hardware_wrap(unlocked.key(), &mut device).unwrap();
+        let wrap = keyring
+            .hardware_wrap(unlocked.key(), &mut device, KeyCheck::Touch)
+            .unwrap();
         let (credential, salt) = parts(&wrap.factor);
         let credential = unhex(&credential).unwrap();
         let salt = <[u8; 32]>::try_from(unhex(&salt).unwrap()).unwrap();
@@ -534,7 +637,8 @@ mod tests {
         assert!(matches!(
             keyring.hardware_wrap(
                 unlocked.key(),
-                &mut VirtualAuthenticator::without_hmac_secret()
+                &mut VirtualAuthenticator::without_hmac_secret(),
+                KeyCheck::Touch
             ),
             Err(Error::MissingHmacSecret)
         ));
@@ -587,7 +691,9 @@ mod tests {
         let dir = test_dir("fido2-key-kek");
         let (keyring, _, dek) = vault(&dir);
         let (mut holder, mut other) = (VirtualAuthenticator::new(), VirtualAuthenticator::new());
-        let mut wrap = keyring.hardware_wrap(&dek, &mut holder).unwrap();
+        let mut wrap = keyring
+            .hardware_wrap(&dek, &mut holder, KeyCheck::Touch)
+            .unwrap();
         let kek = keyring
             .key_kek(&wrap, &mut [&mut other, &mut holder])
             .unwrap();
@@ -605,5 +711,181 @@ mod tests {
             keyring.key_kek(&file, &mut [&mut holder]),
             Err(Error::KeyAbsent { .. })
         ));
+    }
+
+    /// A key that answers for a touch only, keeping the trait's default.
+    struct TouchOnly;
+
+    impl Authenticator for TouchOnly {
+        fn make_credential(
+            &mut self,
+            _rp_id: &str,
+            _user_id: &[u8],
+        ) -> Result<Credential, AuthenticatorError> {
+            Err(AuthenticatorError::NoUserPresence)
+        }
+
+        fn hmac_secret(
+            &mut self,
+            _rp_id: &str,
+            _credential_id: &[u8],
+            _salt: &[u8; 32],
+        ) -> Result<[u8; 32], AuthenticatorError> {
+            Ok([1; 32])
+        }
+    }
+
+    /// A key's credential and salt, as bytes.
+    fn answer_inputs(factor: &Factor) -> (Vec<u8>, [u8; 32]) {
+        let (credential, salt) = parts(factor);
+        (
+            unhex(&credential).unwrap(),
+            <[u8; 32]>::try_from(unhex(&salt).unwrap()).unwrap(),
+        )
+    }
+
+    #[test]
+    fn a_key_enrolled_with_its_pin_opens_the_vault_only_with_it() {
+        let dir = test_dir("fido2-pin");
+        let (mut keyring, kek, _) = vault(&dir);
+        let (mut primary, mut backup) = (
+            VirtualAuthenticator::with_pin("2468"),
+            VirtualAuthenticator::with_pin("1357"),
+        );
+        let unlocked = keyring.unlock_file(&kek).unwrap();
+        let rotated = keyring
+            .enroll_hardware_keys_checked(
+                &unlocked,
+                &mut [&mut primary, &mut backup],
+                KeyCheck::Pin,
+            )
+            .unwrap();
+        settle(&mut keyring, rotated, &dir.join("vault"));
+        assert!(
+            keyring
+                .hardware_keys()
+                .iter()
+                .all(|key| key.check == KeyCheck::Pin)
+        );
+        // With its PIN it opens; with none, or a wrong one, it doesn't.
+        let opened = keyring.unlock_hardware_key(&mut primary).unwrap();
+        assert!(reads_the_secret(&dir, opened.key()));
+        for typed in [None, Some("0000")] {
+            primary.set_typed(typed);
+            assert!(matches!(
+                keyring.unlock_hardware_key(&mut primary),
+                Err(Error::UnlockFailed)
+            ));
+        }
+        primary.set_typed(Some("2468"));
+        // The same key's touch-only answer opens nothing.
+        let wrap = keyring
+            .wraps()
+            .iter()
+            .find(|wrap| Some(wrap.id.as_str()) == opened.opened_by())
+            .unwrap()
+            .clone();
+        let (credential, salt) = answer_inputs(&wrap.factor);
+        let touched = primary.hmac_secret(RP_ID, &credential, &salt).unwrap();
+        assert!(
+            keyring
+                .unwrap(
+                    &wrap,
+                    &super::kek(keyring.vault_id(), &credential, &touched)
+                )
+                .is_err()
+        );
+        // Rotating needs each key's PIN too.
+        primary.set_typed(None);
+        assert!(matches!(
+            keyring.rotate_in_place(&opened, None, &mut [&mut primary, &mut backup]),
+            Err(Error::KeyAbsent { .. })
+        ));
+        primary.set_typed(Some("2468"));
+        let rotated = keyring
+            .rotate_in_place(&opened, None, &mut [&mut primary, &mut backup])
+            .unwrap();
+        settle(&mut keyring, rotated, &dir.join("vault"));
+        assert!(reads_the_secret(
+            &dir,
+            keyring.unlock_hardware_key(&mut backup).unwrap().key()
+        ));
+        // The flag is bound to the wrap: a keyring that drops it opens nothing.
+        let path = dir.join("keys").join("keyring");
+        let mut stored: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        for wrap in stored
+            .get_mut("wraps")
+            .and_then(serde_json::Value::as_array_mut)
+            .unwrap()
+        {
+            wrap.get_mut("factor")
+                .and_then(serde_json::Value::as_object_mut)
+                .unwrap()
+                .remove("verified");
+        }
+        std::fs::write(&path, serde_json::to_string(&stored).unwrap()).unwrap();
+        let edited = Keyring::load(&path).unwrap();
+        assert!(
+            edited
+                .hardware_keys()
+                .iter()
+                .all(|key| key.check == KeyCheck::Touch)
+        );
+        for key in [&mut primary, &mut backup] {
+            assert!(matches!(
+                edited.unlock_hardware_key(key),
+                Err(Error::UnlockFailed)
+            ));
+        }
+        // Even the PIN answer opens no edited wrap: the PIN is in the wrap's
+        // associated data, so a key that answered alike either way would
+        // still not open a wrap that no longer asks for it.
+        let mut tried = 0;
+        for (before, after) in keyring.wraps().iter().zip(edited.wraps()) {
+            let (credential, salt) = answer_inputs(&after.factor);
+            let Ok(answer) = primary.hmac_secret_verified(RP_ID, &credential, &salt) else {
+                continue;
+            };
+            let kek = super::kek(keyring.vault_id(), &credential, &answer);
+            assert!(keyring.unwrap(before, &kek).is_ok(), "as enrolled it opens");
+            assert!(edited.unwrap(after, &kek).is_err(), "edited it doesn't");
+            tried += 1;
+        }
+        assert_eq!(tried, 1, "the primary key's one wrap");
+    }
+
+    #[test]
+    fn a_key_without_a_pin_is_never_enrolled_to_ask_for_one() {
+        let dir = test_dir("fido2-no-pin");
+        let (mut keyring, kek, _) = vault(&dir);
+        let unlocked = keyring.unlock_file(&kek).unwrap();
+        let (mut plain, mut other) = (VirtualAuthenticator::new(), VirtualAuthenticator::new());
+        let err = keyring
+            .enroll_hardware_keys_checked(&unlocked, &mut [&mut plain, &mut other], KeyCheck::Pin)
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::Authenticator { reason } if reason.contains("NoVerification")),
+            "{err:?}"
+        );
+        assert_eq!(keyring.tier(), Tier::File);
+        assert_eq!(
+            (KeyCheck::of(true), KeyCheck::of(false)),
+            (KeyCheck::Pin, KeyCheck::Touch)
+        );
+        // A key that can't verify its user says so, by default.
+        let salt = random::<32>().unwrap();
+        assert_eq!(
+            TouchOnly.hmac_secret_verified(RP_ID, b"c", &salt),
+            Err(AuthenticatorError::NoVerification)
+        );
+        assert_eq!(
+            answer(&mut TouchOnly, b"c", &salt, KeyCheck::Touch),
+            Ok([1; 32])
+        );
+        assert_eq!(
+            answer(&mut TouchOnly, b"c", &salt, KeyCheck::Pin),
+            Err(AuthenticatorError::NoVerification)
+        );
     }
 }

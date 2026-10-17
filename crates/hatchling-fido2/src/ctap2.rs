@@ -45,6 +45,8 @@ pub const PIN_REQUIRED: u8 = 0x36;
 
 /// The `up` (user present) flag in authenticator data.
 pub const FLAG_UP: u8 = 0x01;
+/// The `uv` (user verified) flag.
+pub const FLAG_UV: u8 = 0x04;
 /// The `at` (attested credential data included) flag.
 pub const FLAG_AT: u8 = 0x40;
 /// The `ed` (extension data included) flag.
@@ -74,6 +76,9 @@ pub enum Ctap2Error {
     /// The key needs its PIN, and none was given.
     #[error("this security key has a PIN, and none was given")]
     NoPin,
+    /// The key can't verify its user: it has no PIN set.
+    #[error("this security key has no PIN set, so it can't ask for one")]
+    NoPinSet,
 }
 
 /// What `authenticatorGetInfo` says, as far as this host needs it.
@@ -243,6 +248,12 @@ impl AuthData {
     pub const fn user_present(&self) -> bool {
         self.flags & FLAG_UP != 0
     }
+
+    /// Whether the key verified its user (its PIN).
+    #[must_use]
+    pub const fn user_verified(&self) -> bool {
+        self.flags & FLAG_UV != 0
+    }
 }
 
 /// What the vault hears about a failure.
@@ -261,6 +272,7 @@ pub fn to_authenticator_error(error: &Ctap2Error) -> hatchling_vault::Authentica
         Ctap2Error::Status(PIN_BLOCKED | PIN_AUTH_BLOCKED) => AuthenticatorError::Device(
             String::from("the key's PIN is blocked: unplug it and plug it in again, or reset it"),
         ),
+        Ctap2Error::NoPinSet => AuthenticatorError::NoVerification,
         Ctap2Error::Status(PIN_REQUIRED | PIN_NOT_SET | PIN_AUTH_INVALID) | Ctap2Error::NoPin => {
             AuthenticatorError::Device(String::from(
                 "this security key needs its PIN for that, and none was given",
@@ -388,6 +400,9 @@ pub(crate) mod tests {
         let data = AuthData::parse(&bytes).unwrap();
         assert_eq!(data.rp_id_hash, [1; 32]);
         assert!(data.user_present());
+        assert!(!data.user_verified());
+        let verified = AuthData::parse(&auth_data([3; 32], FLAG_UP | FLAG_UV, None, None)).unwrap();
+        assert!(verified.user_verified());
         assert_eq!(data.credential_id.as_deref(), Some(&b"cred"[..]));
         assert_eq!(
             data.credential_key,
@@ -461,12 +476,17 @@ pub(crate) mod tests {
         }
         let said = |error: Ctap2Error| match to_authenticator_error(&error) {
             AuthenticatorError::Device(text) => text,
-            other
-            @ (AuthenticatorError::NoUserPresence | AuthenticatorError::UnknownCredential) => {
+            other @ (AuthenticatorError::NoUserPresence
+            | AuthenticatorError::UnknownCredential
+            | AuthenticatorError::NoVerification) => {
                 unreachable!("{other:?}")
             }
         };
         assert_eq!(said(Ctap2Error::Status(PIN_INVALID)), "the PIN is wrong");
+        assert_eq!(
+            to_authenticator_error(&Ctap2Error::NoPinSet),
+            AuthenticatorError::NoVerification
+        );
         for status in [PIN_BLOCKED, PIN_AUTH_BLOCKED] {
             assert!(said(Ctap2Error::Status(status)).contains("blocked"));
         }

@@ -17,9 +17,10 @@
 //! - **Deadlines:** an operation waiting for a touch fails closed after
 //!   [`PRESENCE_TIMEOUT`]; the vault is unchanged.
 //!
-//! A key with a PIN is asked for it only to create a credential: the PIN
-//! comes from the [`PinPrompt`], goes to the key as an encrypted hash, and
-//! is not kept.
+//! A key with a PIN is asked for it to create a credential, and to answer
+//! for one enrolled to need it ([`hatchling_vault::KeyCheck::Pin`]): the
+//! PIN comes from the [`PinPrompt`], goes to the key as an encrypted hash,
+//! and is not kept. Such an answer must carry the user-verified flag.
 
 use std::time::Duration;
 
@@ -242,8 +243,19 @@ impl<H: Hid> Device<H> {
         rp_id: &str,
         credential_id: &[u8],
         salt: &[u8; 32],
+        verified: bool,
     ) -> Result<[u8; 32], Ctap2Error> {
         let protocol = self.info.protocol();
+        // The PIN first: its token proves this request, and the key then
+        // answers under its verified-user secret.
+        let token = if verified {
+            if self.info.client_pin != Some(true) {
+                return Err(Ctap2Error::NoPinSet);
+            }
+            Some(self.pin_token(protocol, rp_id)?)
+        } else {
+            None
+        };
         let peer = self.key_agreement(protocol)?;
         let (ours, shared) = encapsulate(protocol, &peer)?;
         let salt_enc = shared.encrypt(salt)?;
@@ -256,7 +268,7 @@ impl<H: Hid> Device<H> {
             input.push((Value::int(4), Value::int(protocol.number())));
         }
         let client_data_hash = random::<32>()?;
-        let parameters = Value::map(vec![
+        let mut parameters = vec![
             (Value::int(1), Value::text(rp_id)),
             (Value::int(2), Value::Bytes(client_data_hash.to_vec())),
             (
@@ -274,11 +286,18 @@ impl<H: Hid> Device<H> {
                 Value::int(5),
                 Value::map(vec![(Value::text("up"), Value::Bool(true))]),
             ),
-        ]);
+        ];
+        if let Some(token) = &token {
+            parameters.push((
+                Value::int(6),
+                Value::Bytes(protocol.authenticate(token, &client_data_hash)),
+            ));
+            parameters.push((Value::int(7), Value::int(protocol.number())));
+        }
         let reply = command(
             &mut self.channel,
             GET_ASSERTION,
-            Some(&parameters),
+            Some(&Value::map(parameters)),
             self.presence,
         )?;
         if let Some(credential) = reply.at(1) {
@@ -299,6 +318,11 @@ impl<H: Hid> Device<H> {
             .ok_or(Ctap2Error::Malformed("no authenticator data"))?;
         let data = AuthData::parse(raw)?;
         checked(&data, rp_id)?;
+        if verified && !data.user_verified() {
+            return Err(Ctap2Error::Mismatch(
+                "it did not confirm it verified its user",
+            ));
+        }
         if let Some((_, key)) = self.made.iter().find(|(id, _)| id == credential_id) {
             let signature = reply
                 .at(3)
@@ -376,7 +400,17 @@ impl<H: Hid> Authenticator for Device<H> {
         credential_id: &[u8],
         salt: &[u8; 32],
     ) -> Result<[u8; 32], AuthenticatorError> {
-        self.derive(rp_id, credential_id, salt)
+        self.derive(rp_id, credential_id, salt, false)
+            .map_err(|error| to_authenticator_error(&error))
+    }
+
+    fn hmac_secret_verified(
+        &mut self,
+        rp_id: &str,
+        credential_id: &[u8],
+        salt: &[u8; 32],
+    ) -> Result<[u8; 32], AuthenticatorError> {
+        self.derive(rp_id, credential_id, salt, true)
             .map_err(|error| to_authenticator_error(&error))
     }
 }
@@ -665,9 +699,9 @@ mod tests {
             let token = device.pin_token(protocol, RP).unwrap();
             assert_eq!(token.len(), 32);
             let credential = device.create(RP, b"u").unwrap();
-            let salt = [6u8; 32];
+            let salt = random::<32>().unwrap();
             assert_eq!(
-                device.derive(RP, &credential.id, &salt).unwrap(),
+                device.derive(RP, &credential.id, &salt, false).unwrap(),
                 expected(&state, &credential.id, &salt)
             );
         }
@@ -710,5 +744,68 @@ mod tests {
         assert_eq!(ES256, -7);
         assert_eq!(PERMISSIONS, 3);
         assert!(PRESENCE_TIMEOUT > STEP_TIMEOUT);
+    }
+
+    #[test]
+    fn a_key_enrolled_with_its_pin_answers_only_after_it() {
+        use hatchling_vault::KeyCheck;
+        let (dir, mut keyring, kek) = keyring("pin-check");
+        let (one, two) = (SoftKey::new(), SoftKey::new());
+        let states = [one.handle(), two.handle()];
+        for state in &states {
+            state.borrow_mut().pin = Some(String::from("2468"));
+        }
+        let (mut one, mut two) = (open(one, Some("2468")), open(two, Some("2468")));
+        let unlocked = keyring.unlock_file(&kek).unwrap();
+        let rotated = keyring
+            .enroll_hardware_keys_checked(&unlocked, &mut [&mut one, &mut two], KeyCheck::Pin)
+            .unwrap();
+        keyring.finish_rotation(&rotated.rotation).unwrap();
+        let keyring = Keyring::load(&dir.join("keyring")).unwrap();
+        assert_eq!(keyring.tier(), Tier::HardwareKey);
+        for state in &states {
+            let mut right = open(SoftKey::sharing(Rc::clone(state)), Some("2468"));
+            assert!(keyring.unlock_hardware_key(&mut right).is_ok());
+            for wrong in [Some("0000"), None] {
+                let mut unverified = open(SoftKey::sharing(Rc::clone(state)), wrong);
+                assert!(
+                    keyring.unlock_hardware_key(&mut unverified).is_err(),
+                    "{wrong:?}"
+                );
+            }
+        }
+        // A key with no PIN set can't be asked for one.
+        let (fresh_dir, mut fresh, fresh_kek) = self::keyring("pin-unset");
+        let unlocked = fresh.unlock_file(&fresh_kek).unwrap();
+        let (mut a, mut b) = (open(SoftKey::new(), None), open(SoftKey::new(), None));
+        let err = fresh
+            .enroll_hardware_keys_checked(&unlocked, &mut [&mut a, &mut b], KeyCheck::Pin)
+            .unwrap_err();
+        let shown = format!("{err:?}");
+        assert!(shown.contains("NoVerification"), "{shown}");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&fresh_dir);
+    }
+
+    #[test]
+    fn an_answer_under_the_pin_must_say_the_key_verified_its_user() {
+        let key = SoftKey::new();
+        let state = key.handle();
+        state.borrow_mut().pin = Some(String::from("2468"));
+        let mut device = open(key, Some("2468"));
+        let credential = device.make_credential(RP, b"u").unwrap();
+        let salt = random::<32>().unwrap();
+        assert!(
+            device
+                .hmac_secret_verified(RP, &credential.id, &salt)
+                .is_ok()
+        );
+        state.borrow_mut().tamper = Tamper::NoVerifiedFlag;
+        assert!(matches!(
+            device.hmac_secret_verified(RP, &credential.id, &salt),
+            Err(AuthenticatorError::Device(text)) if text.contains("verified its user")
+        ));
+        // Without the PIN, no such flag is asked for.
+        assert!(device.hmac_secret(RP, &credential.id, &salt).is_ok());
     }
 }

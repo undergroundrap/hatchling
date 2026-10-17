@@ -131,6 +131,11 @@ pub enum Factor {
         credential: String,
         /// The `hmac-secret` salt, hex: random per credential.
         salt: String,
+        /// Whether the key asks for its PIN each time ([`crate::KeyCheck`]):
+        /// its KEK comes from its verified-user answer. Bound into the
+        /// wrap's associated data, so it can't be turned off in the file.
+        #[serde(default, skip_serializing_if = "is_false")]
+        verified: bool,
     },
     /// An authenticator app's seed: its KEK is Argon2id of the seed,
     /// which is stored here (`totp.rs`).
@@ -153,6 +158,15 @@ pub enum Factor {
         /// The HKDF salt, hex.
         salt: String,
     },
+}
+
+/// Whether `value` is false: a field left out of the keyring's JSON.
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes a reference"
+)]
+const fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Serde for a secret text field: the same JSON string, held so it is
@@ -179,10 +193,15 @@ impl std::fmt::Debug for Factor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::File => f.write_str("File"),
-            Self::Fido2 { credential, salt } => f
+            Self::Fido2 {
+                credential,
+                salt,
+                verified,
+            } => f
                 .debug_struct("Fido2")
                 .field("credential", credential)
                 .field("salt", salt)
+                .field("verified", verified)
                 .finish(),
             Self::Totp {
                 salt, last_step, ..
@@ -218,7 +237,10 @@ impl Factor {
     const fn kind(&self) -> &'static [u8] {
         match self {
             Self::File => b"file",
-            Self::Fido2 { .. } => b"fido2",
+            Self::Fido2 {
+                verified: false, ..
+            } => b"fido2",
+            Self::Fido2 { verified: true, .. } => b"fido2-pin",
             Self::Totp { .. } => b"totp",
             Self::BackupCode { .. } => b"backup",
         }
@@ -892,6 +914,12 @@ mod tests {
     use crate::testutil::test_dir;
     use crate::{SealedVault, Secret, SecretName};
 
+    #[test]
+    fn only_a_set_flag_is_written_to_the_file() {
+        assert!(is_false(&false));
+        assert!(!is_false(&true));
+    }
+
     fn fresh_kek() -> Kek {
         Kek::from_bytes(random::<KEY_LEN>().unwrap())
     }
@@ -1454,10 +1482,11 @@ mod tests {
                 "{:?}",
                 Factor::Fido2 {
                     credential: String::from("c"),
-                    salt: String::from("s")
+                    salt: String::from("s"),
+                    verified: false,
                 }
             ),
-            "Fido2 { credential: \"c\", salt: \"s\" }"
+            "Fido2 { credential: \"c\", salt: \"s\", verified: false }"
         );
         assert_eq!(
             format!(

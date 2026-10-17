@@ -15,7 +15,7 @@
 use std::str::FromStr;
 
 use crate::Error;
-use crate::fido2::{Authenticator, SingleKeyRisk};
+use crate::fido2::{Authenticator, KeyCheck, SingleKeyRisk};
 use crate::keyring::{Factor, Keyring, Tier, Unlocked, Wrap};
 
 /// The longest label, in characters.
@@ -69,6 +69,8 @@ pub struct KeyInfo {
     /// When it was added, in Unix seconds; `None` for a key enrolled
     /// before keyrings kept dates.
     pub added: Option<u64>,
+    /// What it asks of its user each time it opens the vault.
+    pub check: KeyCheck,
 }
 
 impl KeyInfo {
@@ -77,6 +79,7 @@ impl KeyInfo {
             id: wrap.id.clone(),
             label: wrap.label().to_owned(),
             added: wrap.added(),
+            check: KeyCheck::of(matches!(wrap.factor, Factor::Fido2 { verified: true, .. })),
         }
     }
 }
@@ -173,13 +176,29 @@ impl Keyring {
         device: &mut dyn Authenticator,
         label: &Label,
     ) -> Result<KeyInfo, Error> {
+        self.add_hardware_key_checked(unlocked, device, label, KeyCheck::Touch)
+    }
+
+    /// [`Keyring::add_hardware_key`], the key asking its user as `check`
+    /// says each time it opens the vault.
+    ///
+    /// # Errors
+    ///
+    /// As [`Keyring::add_hardware_key`].
+    pub fn add_hardware_key_checked(
+        &mut self,
+        unlocked: &Unlocked,
+        device: &mut dyn Authenticator,
+        label: &Label,
+        check: KeyCheck,
+    ) -> Result<KeyInfo, Error> {
         if self.tier() != Tier::HardwareKey {
             return Err(Error::KeyChange {
                 reason: "keys are added to a vault at the hardware-key tier; enroll that tier first, with two keys or one and backup codes",
             });
         }
         self.authorize(unlocked, Tier::HardwareKey)?;
-        let mut wrap = self.hardware_wrap(unlocked.key(), device)?;
+        let mut wrap = self.hardware_wrap(unlocked.key(), device, check)?;
         let credential = credential_of(&wrap);
         if self
             .wraps()
@@ -503,6 +522,7 @@ mod tests {
             id: id.to_owned(),
             label: String::new(),
             added: None,
+            check: KeyCheck::Touch,
         };
         assert_eq!(
             keyring.hardware_keys(),
@@ -658,6 +678,24 @@ mod tests {
                 warnings: Vec::new(),
             }
         );
+    }
+
+    #[test]
+    fn a_key_added_to_ask_for_its_pin_opens_the_vault_only_with_it() {
+        let dir = test_dir("manage-add-pin");
+        let (mut keyring, mut keys, _codes) = hardware_vault(&dir, 2, true);
+        let desk: Label = "YubiKey 5C, desk".parse().unwrap();
+        let by_first = keyring
+            .unlock_hardware_key(keys.first_mut().unwrap())
+            .unwrap();
+        let mut third = VirtualAuthenticator::with_pin("2468");
+        let added = keyring
+            .add_hardware_key_checked(&by_first, &mut third, &desk, KeyCheck::Pin)
+            .unwrap();
+        assert_eq!(added.check, KeyCheck::Pin);
+        assert!(keyring.unlock_hardware_key(&mut third).is_ok());
+        third.set_typed(Some("0000"));
+        assert!(keyring.unlock_hardware_key(&mut third).is_err());
     }
 
     #[test]

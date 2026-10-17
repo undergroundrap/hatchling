@@ -2,9 +2,11 @@
 //! device's side, for this crate's tests: honest by default, and hostile
 //! on request ([`Tamper`]).
 //!
-//! Each credential has its own `CredRandom` (the `hmac-secret` key) and
-//! its own P-256 signing key; `hmac-secret` is `HMAC-SHA-256(CredRandom,
-//! salt)`, sent encrypted under the key agreement, as CTAP2 defines it.
+//! Each credential has its own `CredRandom` (the `hmac-secret` key), a
+//! second one for answers after its PIN is checked (`CredRandomWithUV`),
+//! and its own P-256 signing key; `hmac-secret` is `HMAC-SHA-256` of the
+//! salt under one of them, sent encrypted under the key agreement, as
+//! CTAP2 defines it.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -19,7 +21,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::cbor::{Value, decode, encode};
 use crate::ctap2::{
-    CLIENT_PIN, FLAG_AT, FLAG_ED, FLAG_UP, GET_ASSERTION, GET_INFO, MAKE_CREDENTIAL,
+    CLIENT_PIN, FLAG_AT, FLAG_ED, FLAG_UP, FLAG_UV, GET_ASSERTION, GET_INFO, MAKE_CREDENTIAL,
     NO_CREDENTIALS, PIN_AUTH_INVALID, PIN_INVALID, PIN_REQUIRED, USER_ACTION_TIMEOUT,
 };
 use crate::ctaphid::{BROADCAST, CBOR, Hid, INIT, KEEPALIVE, REPORT, TransportError, packets};
@@ -34,6 +36,8 @@ pub(crate) enum Tamper {
     OtherRp,
     /// Its replies lack the user-present flag.
     NoPresenceFlag,
+    /// Its replies under a PIN token lack the user-verified flag.
+    NoVerifiedFlag,
     /// Its assertion names another credential.
     OtherCredential,
     /// It replays its previous assertion.
@@ -57,6 +61,8 @@ pub(crate) struct Held {
     rp_id: String,
     pub(crate) id: Vec<u8>,
     pub(crate) cred_random: [u8; 32],
+    /// The secret its answers come from once the PIN is checked.
+    pub(crate) cred_random_uv: [u8; 32],
     key: EcdsaKeyPair,
 }
 
@@ -318,6 +324,7 @@ impl SoftKey {
                 rp_id,
                 id,
                 cred_random,
+                cred_random_uv: random::<32>().map_err(|_| 0x7fu8)?,
                 key,
             });
         }
@@ -364,11 +371,32 @@ impl SoftKey {
         if !state.present {
             return Err(USER_ACTION_TIMEOUT);
         }
-        let sealed = sealed_output(&mut state, parameters, held, tamper)?;
+        // A PIN token's proof over this request: the user is verified.
+        let verified = match parameters.at(6).and_then(Value::as_bytes) {
+            None => false,
+            Some(given) => {
+                let protocol = parameters
+                    .at(7)
+                    .and_then(Value::as_int)
+                    .and_then(Protocol::from_number)
+                    .ok_or(PIN_AUTH_INVALID)?;
+                let token = state.token.as_deref().ok_or(PIN_AUTH_INVALID)?;
+                if protocol.authenticate(token, client_data_hash) != given {
+                    return Err(PIN_AUTH_INVALID);
+                }
+                true
+            }
+        };
+        let sealed = sealed_output(&mut state, parameters, held, tamper, verified)?;
         let held = state.held.get(held).ok_or(NO_CREDENTIALS)?;
+        let uv = if verified && tamper != Tamper::NoVerifiedFlag {
+            FLAG_UV
+        } else {
+            0
+        };
         let data = [
             &rp_hash(tamper, &rp_id)[..],
-            &[flags(tamper, FLAG_ED)],
+            &[flags(tamper, FLAG_ED | uv)],
             &[0, 0, 0, 2],
             &encode(&Value::map(vec![(
                 Value::text("hmac-secret"),
@@ -419,6 +447,7 @@ fn sealed_output(
     parameters: &Value,
     held: usize,
     tamper: Tamper,
+    verified: bool,
 ) -> Result<Vec<u8>, u8> {
     let input = parameters
         .at(4)
@@ -437,7 +466,12 @@ fn sealed_output(
     }
     let salt = shared.decrypt(salt_enc).map_err(|_| 0x02u8)?;
     let held = state.held.get(held).ok_or(NO_CREDENTIALS)?;
-    let mut mac = <Hmac<Sha256>>::new_from_slice(&held.cred_random).map_err(|_| 0x7fu8)?;
+    let secret = if verified {
+        &held.cred_random_uv
+    } else {
+        &held.cred_random
+    };
+    let mut mac = <Hmac<Sha256>>::new_from_slice(secret).map_err(|_| 0x7fu8)?;
     mac.update(&salt);
     let output = mac.finalize().into_bytes();
     let plain = if tamper == Tamper::ShortOutput {
@@ -458,6 +492,7 @@ fn impostor(rp_id: &str, id: Vec<u8>) -> Result<Held, u8> {
         rp_id: rp_id.to_owned(),
         id,
         cred_random: random::<32>().map_err(|_| 0x7fu8)?,
+        cred_random_uv: random::<32>().map_err(|_| 0x7fu8)?,
         key: EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
             .map_err(|_| 0x7fu8)?,
     })

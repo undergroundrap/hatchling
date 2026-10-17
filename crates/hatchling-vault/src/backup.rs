@@ -524,6 +524,34 @@ mod tests {
     }
 
     #[test]
+    fn a_single_key_can_be_enrolled_to_ask_for_its_pin() {
+        use crate::KeyCheck;
+        let dir = test_dir("backup-single-pin");
+        let (mut keyring, kek) = vault(&dir);
+        let from_file = keyring.unlock_file(&kek).unwrap();
+        let _codes = keyring.generate_backup_codes(&from_file).unwrap();
+        let mut only = VirtualAuthenticator::with_pin("2468");
+        let rotated = keyring
+            .enroll_single_hardware_key_checked(
+                &from_file,
+                &mut only,
+                SingleKeyRisk::accepted(),
+                KeyCheck::Pin,
+            )
+            .unwrap();
+        let _codes = settle(&mut keyring, rotated, &dir.join("vault"));
+        assert!(
+            keyring
+                .hardware_keys()
+                .iter()
+                .all(|key| key.check == KeyCheck::Pin)
+        );
+        assert!(keyring.unlock_hardware_key(&mut only).is_ok());
+        only.set_typed(None);
+        assert!(keyring.unlock_hardware_key(&mut only).is_err());
+    }
+
+    #[test]
     fn a_single_key_needs_backup_codes_first_and_a_deliberate_choice() {
         let dir = test_dir("backup-single");
         let (mut keyring, kek) = vault(&dir);

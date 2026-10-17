@@ -50,7 +50,7 @@ pub mod vault;
 // `hatchling-core` and are re-exported here for the broker's use.
 pub use backup::BackupCodes;
 pub use error::Error;
-pub use fido2::{Authenticator, AuthenticatorError, Credential, SingleKeyRisk};
+pub use fido2::{Authenticator, AuthenticatorError, Credential, KeyCheck, SingleKeyRisk};
 pub use hatchling_core::{MAX_SECRET_BYTES, SecretName};
 pub use keyring::{Factor, Kek, Keyring, Tier, Unlocked, Wrap};
 pub use lease::KeyLease;
