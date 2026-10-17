@@ -88,7 +88,8 @@ impl TagKey {
                     .map_err(|e| Error::Redaction {
                         reason: format!("no randomness for the audit-tag key: {e}"),
                     })?;
-                let secret = Secret::new(bytes.to_vec()).map_err(|source| Error::Vault { source })?;
+                let secret =
+                    Secret::new(bytes.to_vec()).map_err(|source| Error::Vault { source })?;
                 vault
                     .store(&name, &secret)
                     .map_err(|source| Error::Vault { source })?;
@@ -720,7 +721,10 @@ fn show(records: &[Record], overrides: &FileOverrides, id: &str) -> Result<Strin
         format!("  category    {}", printable(&event.category)),
         format!("  reason      {}", printable(&event.reason)),
         format!("  bytes       {}", event.bytes),
-        format!("  tag         {}", shown_tag(event.tag.as_ref(), event.sha256.as_ref())),
+        format!(
+            "  tag         {}",
+            shown_tag(event.tag.as_ref(), event.sha256.as_ref())
+        ),
         format!(
             "  flagged     {}",
             if event.flagged_tag.is_none() && event.flagged_sha256.is_none() {
@@ -1130,7 +1134,8 @@ mod tests {
         assert_ne!(made.tag(b"nightjarplan"), made.tag(b"nightjarplans"));
         assert_eq!(format!("{made:?}"), "TagKey(..)");
         // The tag is HMAC-SHA-256 under the sealed key: no unkeyed hash.
-        let vault = SealedVault::open_in(&raw_dir, &key, hatchling_vault::Store::REDACTIONS).unwrap();
+        let vault =
+            SealedVault::open_in(&raw_dir, &key, hatchling_vault::Store::REDACTIONS).unwrap();
         let stored = vault.fetch(&TAG_KEY_NAME.parse().unwrap()).unwrap();
         let mut mac = <Hmac<Sha256>>::new_from_slice(stored.as_bytes()).unwrap();
         mac.update(b"nightjarplan");
@@ -1176,7 +1181,10 @@ mod tests {
         let tags = redactions(&redaction);
         let text = std::fs::read_to_string(&log).unwrap();
         assert!(!text.contains("nightjar"), "{text}");
-        for unkeyed in [sha256_hex(b"the nightjar plan"), sha256_hex(b"nightjarplan")] {
+        for unkeyed in [
+            sha256_hex(b"the nightjar plan"),
+            sha256_hex(b"nightjarplan"),
+        ] {
             assert!(!text.contains(&unkeyed), "{text}");
         }
         let (records, unreadable) = read_log(&log).unwrap();
@@ -1211,7 +1219,10 @@ mod tests {
         );
         let codename = Category::new("codename").unwrap();
         assert_eq!(
-            judged(&event("red-1", &codename, Some("nightjarplan")), Some(&tags)),
+            judged(
+                &event("red-1", &codename, Some("nightjarplan")),
+                Some(&tags)
+            ),
             *recorded
         );
         assert_eq!(
@@ -1224,7 +1235,11 @@ mod tests {
             unreachable!("a record from before the tags must read");
         };
         assert_eq!(
-            (old.sha256.as_deref(), old.flagged_sha256.as_deref(), old.tag),
+            (
+                old.sha256.as_deref(),
+                old.flagged_sha256.as_deref(),
+                old.tag
+            ),
             (Some("aa"), Some("bb"), None)
         );
 
@@ -1654,7 +1669,9 @@ mod tests {
             matches!(records.last(), Some(Record::RawRead { event_id, by, .. }) if event_id == "red-2" && *by == hatchling_sys::euid())
         );
         assert!(raw(&redaction, &records, "red-x", || unreachable!("not needed")).is_err());
-        let refused = raw(&redaction, &records, TAG_KEY_NAME, || unreachable!("not needed"));
+        let refused = raw(&redaction, &records, TAG_KEY_NAME, || {
+            unreachable!("not needed")
+        });
         assert!(
             matches!(&refused, Err(Error::Redaction { reason }) if reason.contains("audit-tag key")),
             "a forged record never reads the key out: {refused:?}"

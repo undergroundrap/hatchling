@@ -608,17 +608,23 @@ mod tests {
         if std::env::var_os("HATCHLING_BROKER_SOCKET").is_none() {
             assert!(super::session_uniform().is_err_and(|e| e.contains("HATCHLING_BROKER_SOCKET")));
         }
-        let path = std::env::temp_dir().join(format!("hatchling-probe-uniform-{}.sock", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "hatchling-probe-uniform-{}.sock",
+            std::process::id()
+        ));
         let _ = std::fs::remove_file(&path);
         let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
         let broker = std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
             let _hello = read_frame(&stream).unwrap();
-            let welcome = BrokerMessage::Welcome { v: PROTOCOL_VERSION };
+            let welcome = BrokerMessage::Welcome {
+                v: PROTOCOL_VERSION,
+            };
             write_frame(&stream, &serde_json::to_vec(&welcome).unwrap()).unwrap();
             let mut stored = None;
             for _ in 0..4 {
-                let request: SessionRequest = serde_json::from_slice(&read_frame(&stream).unwrap()).unwrap();
+                let request: SessionRequest =
+                    serde_json::from_slice(&read_frame(&stream).unwrap()).unwrap();
                 if let SessionRequest::Vault(VaultOp::Store { secret_b64, .. }) = request {
                     stored = Some(secret_b64.decode().unwrap().to_vec());
                 }
@@ -632,7 +638,11 @@ mod tests {
         // An attack that never connected leaves the broker waiting: this
         // connection ends its wait, so the test fails rather than hangs.
         drop(std::os::unix::net::UnixStream::connect(&path));
-        assert_eq!(broker.join().unwrap(), Some(b"x".to_vec()), "the store op carries a secret");
+        assert_eq!(
+            broker.join().unwrap(),
+            Some(b"x".to_vec()),
+            "the store op carries a secret"
+        );
         let _ = std::fs::remove_file(&path);
         let Ok(crate::Outcome::SessionUniform { responses }) = outcome else {
             unreachable!("{outcome:?}");

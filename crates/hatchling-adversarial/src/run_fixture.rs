@@ -293,12 +293,10 @@ fn ask(stream: &UnixStream, request: &SessionRequest) -> Result<String, String> 
 /// `reply` as the broker named it. A fetched secret is shown as it came,
 /// in base64, as a child that leaks it would: its `Debug` hides it.
 fn shown(reply: &SessionResponse) -> String {
-    match reply {
-        SessionResponse::Vault(VaultResult::Fetched { secret_b64 }) => {
-            format!("Vault(Fetched {{ secret_b64: {:?} }})", secret_b64.as_str())
-        }
-        other => format!("{other:?}"),
+    if let SessionResponse::Vault(VaultResult::Fetched { secret_b64 }) = reply {
+        return format!("Vault(Fetched {{ secret_b64: {:?} }})", secret_b64.as_str());
     }
+    format!("{reply:?}")
 }
 
 /// Joins the space in `target` (`<id>:<key>`), then reads the item with

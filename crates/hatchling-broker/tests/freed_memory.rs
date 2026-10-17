@@ -279,7 +279,10 @@ fn the_gates_secret_set_frees_no_copy_of_a_secret_in_any_form() {
 }
 
 #[test]
-#[allow(clippy::unwrap_used, reason = "a failed read must fail the test loudly")]
+#[allow(
+    clippy::unwrap_used,
+    reason = "a failed read must fail the test loudly"
+)]
 fn reading_the_held_secrets_frees_no_copy_of_them() {
     let _serial = SERIAL
         .lock()
@@ -297,7 +300,10 @@ fn reading_the_held_secrets_frees_no_copy_of_them() {
 }
 
 #[test]
-#[allow(clippy::unwrap_used, reason = "a failed decode must fail the test loudly")]
+#[allow(
+    clippy::unwrap_used,
+    reason = "a failed decode must fail the test loudly"
+)]
 fn a_secret_on_the_wire_frees_no_copy_of_it() {
     let _serial = SERIAL
         .lock()

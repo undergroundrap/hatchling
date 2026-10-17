@@ -69,9 +69,10 @@ pub fn fetch(stream: &UnixStream, name: &str) -> Result<Option<Vec<u8>>, Error> 
     };
     match request(stream, &op)? {
         VaultResult::Fetched { secret_b64 } => {
-            let bytes = decode_secret(secret_b64.as_str()).map_err(|error| Error::VaultProtocol {
-                reason: error.to_string(),
-            })?;
+            let bytes =
+                decode_secret(secret_b64.as_str()).map_err(|error| Error::VaultProtocol {
+                    reason: error.to_string(),
+                })?;
             Ok(Some(bytes))
         }
         VaultResult::NotFound => Ok(None),

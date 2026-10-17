@@ -633,7 +633,11 @@ pub struct Built {
 /// Returns [`Error::InvalidConfig`] when the redaction directory is not an
 /// owner-only directory and cannot be made one, or the categories file is
 /// invalid, and [`Error::Redaction`] when the audit log cannot be written.
-pub fn build(config: &Config, redaction: &RedactionConfig, key: &MasterKey) -> Result<Built, Error> {
+pub fn build(
+    config: &Config,
+    redaction: &RedactionConfig,
+    key: &MasterKey,
+) -> Result<Built, Error> {
     if config.channel_ingress.is_none() {
         return Ok(Built {
             gate: OutputGate::disabled(),
@@ -1207,7 +1211,12 @@ mod tests {
     /// The operator overrides redaction `id` in every scope, by its tag,
     /// and `gate`, whose overrides match tags under the same key, delivers
     /// `message` on it.
-    fn overridden_by_tag(gate: &OutputGate, message: &Message, redaction: &RedactionConfig, id: &str) {
+    fn overridden_by_tag(
+        gate: &OutputGate,
+        message: &Message,
+        redaction: &RedactionConfig,
+        id: &str,
+    ) {
         crate::redactions::command(redaction, &["override", id, "--any-scope"], || {
             unreachable!("an override needs no key")
         })
