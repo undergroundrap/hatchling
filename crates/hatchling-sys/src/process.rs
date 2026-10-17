@@ -1545,14 +1545,17 @@ mod tests {
         // Ended, not yet reaped: a zombie is no longer alive.
         let mut ended = std::process::Command::new("true").spawn().unwrap();
         let ended_pid = i32::try_from(ended.id()).unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = Instant::now() + Duration::from_secs(10);
         while !zombie(&std::fs::read_to_string(format!("/proc/{ended_pid}/stat")).unwrap()) {
-            assert!(std::time::Instant::now() < deadline, "it never ended");
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            assert!(Instant::now() < deadline, "it never ended");
+            std::thread::sleep(Duration::from_millis(10));
         }
         assert!(!pid_alive(ended_pid), "a zombie");
         ended.wait().unwrap();
-        assert!(zombie("12 (a) b) Z 1 2"), "the state follows the last parenthesis");
+        assert!(
+            zombie("12 (a) b) Z 1 2"),
+            "the state follows the last parenthesis"
+        );
         assert!(!zombie("12 (Z) S 1 2") && !zombie("garbage"));
     }
 

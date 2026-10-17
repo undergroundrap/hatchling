@@ -93,6 +93,20 @@ fn staging_in(run_dir: &Path) -> Option<PathBuf> {
         })
 }
 
+/// What `/proc` says of `pid`: its command line, and the status lines
+/// naming its state and parent.
+fn who(pid: i32) -> String {
+    let cmdline = std::fs::read(format!("/proc/{pid}/cmdline"))
+        .map(|bytes| String::from_utf8_lossy(&bytes).replace('\0', " "))
+        .unwrap_or_default();
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
+    let lines: Vec<&str> = status
+        .lines()
+        .filter(|line| ["State:", "PPid:", "NSpid:"].iter().any(|key| line.starts_with(key)))
+        .collect();
+    format!("pid {pid} `{cmdline}` {lines:?}")
+}
+
 /// The pid a staging directory's name carries.
 fn staging_pid(staging: &Path) -> i32 {
     let name = staging.file_name().unwrap().to_str().unwrap();
@@ -220,7 +234,8 @@ fn the_next_start_sweeps_what_a_killed_broker_left_and_logs_each() {
     while hatchling_sys::pid_alive(helper) {
         assert!(
             Instant::now() < deadline,
-            "the run's helper outlived its broker"
+            "the run's helper outlived its broker: {}",
+            who(helper)
         );
         std::thread::sleep(Duration::from_millis(50));
     }
