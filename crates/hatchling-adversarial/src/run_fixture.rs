@@ -54,7 +54,7 @@ use hatchling_core::framing::{read_frame, write_frame};
 use hatchling_core::{
     AgentMessage, ChannelOp, ChildEnvelope, ChildVerdict, HookOp, HookSource, PROTOCOL_VERSION,
     ScheduleGrant, ScheduleOp, ScheduleSpec, SessionRequest, SessionResponse, SpaceOp, SpaceResult,
-    SubagentOp, VaultOp,
+    SubagentOp, VaultOp, VaultResult,
 };
 
 fn main() -> ExitCode {
@@ -287,7 +287,18 @@ fn exchange(stream: &UnixStream, request: &SessionRequest) -> Result<SessionResp
 /// Sends one request, answering with the reply's variant as the broker
 /// named it (`Vault(NotFound)`, `Schedule(Denied)`, …).
 fn ask(stream: &UnixStream, request: &SessionRequest) -> Result<String, String> {
-    exchange(stream, request).map(|reply| format!("{reply:?}"))
+    exchange(stream, request).map(|reply| shown(&reply))
+}
+
+/// `reply` as the broker named it. A fetched secret is shown as it came,
+/// in base64, as a child that leaks it would: its `Debug` hides it.
+fn shown(reply: &SessionResponse) -> String {
+    match reply {
+        SessionResponse::Vault(VaultResult::Fetched { secret_b64 }) => {
+            format!("Vault(Fetched {{ secret_b64: {:?} }})", secret_b64.as_str())
+        }
+        other => format!("{other:?}"),
+    }
 }
 
 /// Joins the space in `target` (`<id>:<key>`), then reads the item with
@@ -318,6 +329,35 @@ mod tests {
     use hatchling_core::ScheduleResult;
 
     use super::*;
+
+    #[test]
+    fn a_fetched_secret_is_answered_as_it_came() {
+        let leaked = format!(
+            "Vault(Fetched {{ secret_b64: {:?} }})",
+            hatchling_core::encode_secret(b"s3cret")
+        );
+        let (ours, peer) = UnixStream::pair().unwrap();
+        for end in [&ours, &peer] {
+            end.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+        }
+        let answering = std::thread::spawn(move || {
+            let _asked = read_frame(&peer).unwrap();
+            let reply = SessionResponse::Vault(VaultResult::Fetched {
+                secret_b64: hatchling_core::SecretB64::encode(b"s3cret"),
+            });
+            write_frame(&peer, &serde_json::to_vec(&reply).unwrap()).unwrap();
+        });
+        let request = SessionRequest::Vault(VaultOp::Fetch {
+            name: String::from("app-token"),
+        });
+        assert_eq!(ask(&ours, &request).unwrap(), leaked);
+        answering.join().unwrap();
+        assert_eq!(
+            shown(&SessionResponse::Vault(VaultResult::NotFound)),
+            "Vault(NotFound)"
+        );
+    }
 
     #[test]
     fn only_a_socket_reads_as_one() {
