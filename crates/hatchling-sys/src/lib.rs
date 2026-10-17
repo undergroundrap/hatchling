@@ -38,6 +38,7 @@ pub mod peercred;
 pub mod process;
 pub mod seccomp;
 pub mod sync_pipe;
+pub mod tree;
 #[cfg(test)]
 mod test_socket;
 pub mod umask;
@@ -62,4 +63,5 @@ pub use process::{
 };
 pub use seccomp::{SeccompProfile, SockFilter};
 pub use sync_pipe::{ChildToParent, ParentToChild, handshake_pipes};
+pub use tree::{DirId, Removed, remove_tree};
 pub use umask::{current_umask, with_umask};

@@ -419,7 +419,7 @@ fn is_safe_target(target: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn allowlist(paths: &[&str]) -> HashSet<PathBuf> {
@@ -998,7 +998,7 @@ mod tests {
     /// In a forked child: a fresh user namespace mapping this uid, and a
     /// private mount namespace. Returns the child's pid; exits 99 (the
     /// environmental skip) when namespaces are unavailable.
-    fn enter_private_mount_namespace() -> i32 {
+    pub(crate) fn enter_private_mount_namespace() -> i32 {
         use crate::process::exit_child;
         // SAFETY: geteuid takes no args.
         let euid = unsafe { libc::geteuid() };
