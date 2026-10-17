@@ -838,6 +838,21 @@ mod tests {
                 Err(Error::UnlockFailed)
             ));
         }
+        // Even the PIN answer opens no edited wrap: the PIN is in the wrap's
+        // associated data, so a key that answered alike either way would
+        // still not open a wrap that no longer asks for it.
+        let mut tried = 0;
+        for (before, after) in keyring.wraps().iter().zip(edited.wraps()) {
+            let (credential, salt) = answer_inputs(&after.factor);
+            let Ok(answer) = primary.hmac_secret_verified(RP_ID, &credential, &salt) else {
+                continue;
+            };
+            let kek = super::kek(keyring.vault_id(), &credential, &answer);
+            assert!(keyring.unwrap(before, &kek).is_ok(), "as enrolled it opens");
+            assert!(edited.unwrap(after, &kek).is_err(), "edited it doesn't");
+            tried += 1;
+        }
+        assert_eq!(tried, 1, "the primary key's one wrap");
     }
 
     #[test]
