@@ -122,8 +122,15 @@ jobs:
         run: |
           bin=$(cargo test -q --locked --all-features -p hatchling-broker --test adversarial --no-run --message-format=json \
             | grep -o '"executable":"[^"]*adversarial[^"]*"' | tail -1 | cut -d'"' -f4)
+          # A root broker's cell runs as an unprivileged user, which can't
+          # read the runner's home: the binaries go where it can.
+          copy=$(mktemp -d /tmp/hatchling-core.XXXXXX)
+          mkdir "$copy/deps"
+          cp "$bin" "$copy/deps/adversarial"
+          cp target/debug/hatchling-probe "$copy/"
+          chmod -R a+rX "$copy"
           cd crates/hatchling-broker
-          sudo env HATCHLING_REQUIRE_CELL=1 HATCHLING_CORE_PATTERN_TEST=1 "$bin" \
+          sudo env HATCHLING_REQUIRE_CELL=1 HATCHLING_CORE_PATTERN_TEST=1 "$copy/deps/adversarial" \
             a_seccomp_kill_hands_no_core_to_the_hosts_crash_handler --exact
           echo "core_pattern after: $(cat /proc/sys/kernel/core_pattern)"
 
