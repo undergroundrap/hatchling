@@ -79,7 +79,7 @@ pub const AGENT_RUN_SUBCOMMAND: &str = "agent-run";
 
 /// Where a broker tells a helper it spawns (`agent-run`, `skill-cell`)
 /// its own pid, for the helper's watch on it (WO-012).
-pub const BROKER_PID_ENV: &str = "HATCHLING_HELPER_BROKER_PID";
+pub const BROKER_PID_ENV: &str = crate::environment::HATCHLING_HELPER_BROKER_PID.name;
 
 /// This broker's pid, as a helper's environment gives it.
 #[must_use]

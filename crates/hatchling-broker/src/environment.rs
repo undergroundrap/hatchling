@@ -41,6 +41,7 @@ hatchling_core::declare_environment! {
     HATCHLING_DEVICE_SOCKET: ("optional", "Absolute socket for paired device connections."),
     HATCHLING_AGENT_BIN: ("optional; enables cell spawning", "Absolute agent executable path; may point at hatchling."),
     HATCHLING_CELL_ID: ("required when spawning an agent", "Identity supplied to the initial agent cell."),
+    HATCHLING_HELPER_BROKER_PID: ("internal; set by the broker", "The broker a run or skill helper watches, and ends with."),
     HATCHLING_CELL_UID_BASE: ("optional", "Host uid mapped into the cell; must match HATCHLING_AGENT_UID."),
     HATCHLING_CELL_UID_COUNT: ("optional; default 1", "Number of uids mapped into the cell."),
     HATCHLING_CELL_MAX_PROCESSES: ("optional; default 4096", "Process/thread limit; positive count or unlimited; aggregate with cgroups."),
