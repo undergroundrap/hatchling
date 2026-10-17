@@ -978,9 +978,7 @@ fn assemble(allowed: &[u32], rules: &[Rule]) -> Vec<SockFilter> {
                 | Label::Kill
                 | Label::Block(_)
                 | Label::Values(_)
-                | Label::Errno(_) => {
-                    jump_offset(index, at(label))
-                }
+                | Label::Errno(_) => jump_offset(index, at(label)),
             };
             let mut ins = step.ins;
             ins.jt = offset(step.jt);
@@ -1556,6 +1554,86 @@ mod tests {
         run(prog, AUDIT_ARCH, syscall_number(name).unwrap(), args)
     }
 
+    #[test]
+    fn each_rule_block_is_its_loads_and_comparisons_in_order() {
+        let shape = |pending: &[Pending]| -> Vec<(u16, u32, Label, Label)> {
+            pending
+                .iter()
+                .map(|step| (step.ins.code, step.ins.k, step.jt, step.jf))
+                .collect()
+        };
+        // push_values: one load, then each value; the last falls to `otherwise`.
+        let mut pending = Vec::new();
+        push_values(&mut pending, 1, &[3, 5], Label::Kill);
+        assert_eq!(
+            shape(&pending),
+            [
+                (
+                    BPF_LD_W_ABS,
+                    SECCOMP_DATA_ARGS + 8,
+                    Label::Next,
+                    Label::Next
+                ),
+                (BPF_JMP_JEQ_K, 3, Label::Allow, Label::Next),
+                (BPF_JMP_JEQ_K, 5, Label::Allow, Label::Kill),
+            ]
+        );
+        // push_rule_block, a null-or-values rule: both halves of the pointer,
+        // then the values, each block placed.
+        let rule = Rule {
+            nr: 302,
+            check: Check::OneOfOrNull {
+                arg: 1,
+                values: vec![3],
+                null: 2,
+            },
+            otherwise: Refusal::Errno(EPERM),
+        };
+        let (mut pending, mut positions) = (Vec::new(), Vec::new());
+        push_rule_block(7, &rule, &mut pending, &mut positions);
+        let low = SECCOMP_DATA_ARGS + 16;
+        assert_eq!(
+            shape(&pending),
+            [
+                (BPF_LD_W_ABS, low, Label::Next, Label::Next),
+                (BPF_JMP_JEQ_K, 0, Label::Next, Label::Values(7)),
+                (BPF_LD_W_ABS, low + 4, Label::Next, Label::Next),
+                (BPF_JMP_JEQ_K, 0, Label::Allow, Label::Values(7)),
+                (
+                    BPF_LD_W_ABS,
+                    SECCOMP_DATA_ARGS + 8,
+                    Label::Next,
+                    Label::Next
+                ),
+                (BPF_JMP_JEQ_K, 3, Label::Allow, Label::Errno(EPERM)),
+            ]
+        );
+        assert_eq!(positions, [(Label::Block(7), 0), (Label::Values(7), 4)]);
+        // A rule that never passes has no block; a mask rule, two steps.
+        let (mut pending, mut positions) = (Vec::new(), Vec::new());
+        let never = Rule {
+            nr: 435,
+            check: Check::Never,
+            otherwise: Refusal::Errno(ENOSYS),
+        };
+        push_rule_block(0, &never, &mut pending, &mut positions);
+        assert!(pending.is_empty() && positions.is_empty());
+        let mask = Rule {
+            nr: 56,
+            check: Check::NoneOf { mask: 2 },
+            otherwise: Refusal::Kill,
+        };
+        push_rule_block(1, &mask, &mut pending, &mut positions);
+        assert_eq!(
+            shape(&pending),
+            [
+                (BPF_LD_W_ABS, SECCOMP_DATA_ARGS, Label::Next, Label::Next),
+                (BPF_JMP_JSET_K, 2, Label::Kill, Label::Allow),
+            ]
+        );
+        assert_eq!(positions, [(Label::Block(1), 0)]);
+    }
+
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn no_cell_may_change_its_core_limit() {
@@ -1765,7 +1843,10 @@ mod tests {
         ];
         #[cfg(not(target_arch = "x86_64"))]
         let agent_rules = vec![standing_socket];
-        assert_eq!(SeccompProfile::agent().unwrap().effective_rules(), agent_rules);
+        assert_eq!(
+            SeccompProfile::agent().unwrap().effective_rules(),
+            agent_rules
+        );
         let cli = SeccompProfile::harness_cli().unwrap();
         assert_eq!(
             cli.effective_rules(),
