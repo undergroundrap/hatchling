@@ -77,6 +77,41 @@ use crate::{
 /// The broker subcommand the run helper runs as.
 pub const AGENT_RUN_SUBCOMMAND: &str = "agent-run";
 
+/// Where a broker tells a helper it spawns (`agent-run`, `skill-cell`)
+/// its own pid, for the helper's watch on it (WO-012).
+pub const BROKER_PID_ENV: &str = "HATCHLING_HELPER_BROKER_PID";
+
+/// This broker's pid, as a helper's environment gives it.
+#[must_use]
+pub fn broker_pid() -> String {
+    std::process::id().to_string()
+}
+
+/// A helper's watch on the broker that spawned it, whose pid
+/// [`BROKER_PID_ENV`] gives: a helper whose broker is already gone, or
+/// that wasn't told, refuses to start a cell. Taken before the cell is
+/// spawned; started ([`hatchling_sys::ParentWatch::exit_with_parent`])
+/// once it is, so the helper, and with it the cell, ends with the broker
+/// however the broker ends.
+///
+/// # Errors
+///
+/// [`Error::CellSpawn`] if the pid is missing or isn't the helper's
+/// parent's.
+pub fn watch_broker(
+    pid: Option<std::ffi::OsString>,
+) -> Result<hatchling_sys::ParentWatch, Error> {
+    let pid = pid
+        .and_then(|pid| pid.into_string().ok())
+        .and_then(|pid| pid.parse().ok())
+        .ok_or_else(|| Error::CellSpawn {
+            reason: format!("a helper needs its broker's pid in {BROKER_PID_ENV}"),
+        })?;
+    hatchling_sys::watch_parent(pid).map_err(|source| Error::CellSpawn {
+        reason: format!("cannot watch the broker that started this helper: {source}"),
+    })
+}
+
 /// Wall-clock bound on one scheduled run, spawn included: ten minutes.
 ///
 /// A scheduled run is one agent task through the loop's own step budget.
@@ -625,6 +660,7 @@ fn start_helper(
         .arg(AGENT_RUN_SUBCOMMAND)
         .arg(spec)
         .env("TMPDIR", run_dir)
+        .env(BROKER_PID_ENV, broker_pid())
         .stdin(Stdio::from(OwnedFd::from(handoff)))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -733,7 +769,9 @@ fn run_helper(spec: Option<&str>) -> Result<i32, Error> {
     } else {
         None
     };
+    let watch = watch_broker(std::env::var_os(BROKER_PID_ENV))?;
     let mut cell = spawn_cell(&config, LogLevel::Error)?;
+    watch.exit_with_parent(1);
     if let Some(handoff) = handoff {
         hand_over_connection(&handoff, cell.connection())?;
     }
@@ -843,6 +881,24 @@ mod tests {
             space: None,
             feed: None,
         }
+    }
+
+    #[test]
+    fn a_helper_watches_only_the_broker_that_started_it() {
+        assert_eq!(broker_pid(), std::process::id().to_string());
+        for given in [None, Some(""), Some("abc"), Some("0"), Some("-1")] {
+            assert!(
+                matches!(
+                    watch_broker(given.map(std::ffi::OsString::from)),
+                    Err(Error::CellSpawn { .. })
+                ),
+                "{given:?}"
+            );
+        }
+        // This process isn't its own parent; the process that started it is.
+        assert!(watch_broker(Some(broker_pid().into())).is_err());
+        let parent = std::os::unix::process::parent_id().to_string();
+        assert!(watch_broker(Some(parent.into())).is_ok());
     }
 
     #[test]
