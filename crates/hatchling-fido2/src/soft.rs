@@ -36,6 +36,8 @@ pub(crate) enum Tamper {
     OtherRp,
     /// Its replies lack the user-present flag.
     NoPresenceFlag,
+    /// Its replies under a PIN token lack the user-verified flag.
+    NoVerifiedFlag,
     /// Its assertion names another credential.
     OtherCredential,
     /// It replays its previous assertion.
@@ -387,7 +389,11 @@ impl SoftKey {
         };
         let sealed = sealed_output(&mut state, parameters, held, tamper, verified)?;
         let held = state.held.get(held).ok_or(NO_CREDENTIALS)?;
-        let uv = if verified { FLAG_UV } else { 0 };
+        let uv = if verified && tamper != Tamper::NoVerifiedFlag {
+            FLAG_UV
+        } else {
+            0
+        };
         let data = [
             &rp_hash(tamper, &rp_id)[..],
             &[flags(tamper, FLAG_ED | uv)],

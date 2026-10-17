@@ -781,4 +781,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&fresh_dir);
     }
+
+    #[test]
+    fn an_answer_under_the_pin_must_say_the_key_verified_its_user() {
+        let key = SoftKey::new();
+        let state = key.handle();
+        state.borrow_mut().pin = Some(String::from("2468"));
+        let mut device = open(key, Some("2468"));
+        let credential = device.make_credential(RP, b"u").unwrap();
+        assert!(device.hmac_secret_verified(RP, &credential.id, &[3; 32]).is_ok());
+        state.borrow_mut().tamper = Tamper::NoVerifiedFlag;
+        assert!(matches!(
+            device.hmac_secret_verified(RP, &credential.id, &[3; 32]),
+            Err(AuthenticatorError::Device(text)) if text.contains("verified its user")
+        ));
+        // Without the PIN, no such flag is asked for.
+        assert!(device.hmac_secret(RP, &credential.id, &[3; 32]).is_ok());
+    }
 }
