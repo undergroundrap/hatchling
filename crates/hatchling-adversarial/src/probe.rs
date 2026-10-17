@@ -450,7 +450,12 @@ fn session_uniform() -> Result<Outcome, String> {
     let socket = broker_socket()?;
     let cell_id =
         std::env::var("HATCHLING_CELL_ID").map_err(|e| format!("HATCHLING_CELL_ID: {e}"))?;
-    let stream = UnixStream::connect(&socket).map_err(|e| format!("connect: {e}"))?;
+    uniform_replies(&socket, cell_id)
+}
+
+/// [`session_uniform`] against the broker at `socket`, as `cell_id`.
+fn uniform_replies(socket: &str, cell_id: String) -> Result<Outcome, String> {
+    let stream = UnixStream::connect(socket).map_err(|e| format!("connect: {e}"))?;
     let hello = serde_json::to_vec(&AgentMessage::Hello {
         v: PROTOCOL_VERSION,
         cell_id,
@@ -592,6 +597,52 @@ mod tests {
     }
     use super::raw_syscall_nr;
     use crate::HeldLimit;
+
+    #[test]
+    fn the_uniform_deny_attack_sends_four_ungranted_ops_and_reports_each_reply() {
+        use hatchling_core::framing::{read_frame, write_frame};
+        use hatchling_core::{
+            BrokerMessage, PROTOCOL_VERSION, SessionRequest, SessionResponse, VaultOp, VaultResult,
+        };
+        // Outside a cell there's no broker to name.
+        if std::env::var_os("HATCHLING_BROKER_SOCKET").is_none() {
+            assert!(super::session_uniform().is_err_and(|e| e.contains("HATCHLING_BROKER_SOCKET")));
+        }
+        let path = std::env::temp_dir().join(format!("hatchling-probe-uniform-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let broker = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let _hello = read_frame(&stream).unwrap();
+            let welcome = BrokerMessage::Welcome { v: PROTOCOL_VERSION };
+            write_frame(&stream, &serde_json::to_vec(&welcome).unwrap()).unwrap();
+            let mut stored = None;
+            for _ in 0..4 {
+                let request: SessionRequest = serde_json::from_slice(&read_frame(&stream).unwrap()).unwrap();
+                if let SessionRequest::Vault(VaultOp::Store { secret_b64, .. }) = request {
+                    stored = Some(secret_b64.decode().unwrap().to_vec());
+                }
+                let reply = SessionResponse::Vault(VaultResult::Denied);
+                write_frame(&stream, &serde_json::to_vec(&reply).unwrap()).unwrap();
+            }
+            drop(stream);
+            stored
+        });
+        let outcome = super::uniform_replies(path.to_str().unwrap(), String::from("cell-1"));
+        // An attack that never connected leaves the broker waiting: this
+        // connection ends its wait, so the test fails rather than hangs.
+        drop(std::os::unix::net::UnixStream::connect(&path));
+        assert_eq!(broker.join().unwrap(), Some(b"x".to_vec()), "the store op carries a secret");
+        let _ = std::fs::remove_file(&path);
+        let Ok(crate::Outcome::SessionUniform { responses }) = outcome else {
+            unreachable!("{outcome:?}");
+        };
+        assert_eq!(responses.len(), 4);
+        assert!(
+            responses.windows(2).all(|pair| pair.first() == pair.last()),
+            "{responses:?}"
+        );
+    }
 
     #[test]
     fn the_death_signal_attack_clears_it_says_so_and_reports_its_spin() {
