@@ -737,12 +737,7 @@ fn serve_session(
                 tracing::info!(cell_id = %cell_id, "agent session closed");
                 return Ok(());
             };
-            // A request can carry a secret to store: wiped once handled.
-            let frame = Zeroizing::new(frame);
-            let request: SessionRequest =
-                serde_json::from_slice(&frame).map_err(|e| Error::SessionProtocol {
-                    reason: format!("session request is not a valid protocol message: {e}"),
-                })?;
+            let request = request_of(&Zeroizing::new(frame))?;
             let response = match request {
                 SessionRequest::Vault(op) => SessionResponse::Vault(handle_vault_op(
                     &config.vault,
@@ -824,6 +819,18 @@ fn serve_session(
             let payload = encode_reply(&response, MAX_FRAME_BYTES)?;
             write_frame(stream, &payload).map_err(session_error)?;
         }
+    })
+}
+
+/// The session request in `frame`. A request can carry a secret to store,
+/// so its frame is taken only as a buffer wiped when dropped.
+///
+/// # Errors
+///
+/// Returns [`Error::SessionProtocol`] for a frame that is not a request.
+fn request_of(frame: &Zeroizing<Vec<u8>>) -> Result<SessionRequest, Error> {
+    serde_json::from_slice(frame).map_err(|e| Error::SessionProtocol {
+        reason: format!("session request is not a valid protocol message: {e}"),
     })
 }
 
@@ -2085,6 +2092,20 @@ mod reply_bound_tests {
             *encode_reply(&reply, exact.len() - 1).unwrap(),
             serde_json::to_vec(&SessionResponse::Memory(MemoryResult::MemoryError)).unwrap()
         );
+    }
+
+    #[test]
+    fn a_request_is_read_from_a_wiped_frame() {
+        let store = SessionRequest::Vault(VaultOp::Store {
+            name: String::from("token"),
+            secret_b64: SecretB64::encode(b"s3cret"),
+        });
+        let frame = Zeroizing::new(serde_json::to_vec(&store).unwrap());
+        assert_eq!(request_of(&frame).unwrap(), store);
+        assert!(matches!(
+            request_of(&Zeroizing::new(b"{not a request".to_vec())),
+            Err(Error::SessionProtocol { reason }) if reason.contains("not a valid protocol message")
+        ));
     }
 
     #[test]

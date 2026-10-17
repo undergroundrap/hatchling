@@ -1232,9 +1232,18 @@ mod tests {
         std::thread::scope(|scope| {
             scope.spawn(|| worker.serve(&rules, &raw));
             let cleared = gate.clear(&message, "session:a");
+            let Some((_, id)) = cleared.redaction() else {
+                unreachable!("the operator's phrase is redacted");
+            };
+            // Overridden by the operator, by its tag: the gate's overrides
+            // match tags under the same key.
+            crate::redactions::command(&redaction, &["override", id, "--any-scope"], || {
+                unreachable!("an override needs no key")
+            })
+            .unwrap();
             assert!(
-                cleared.redaction().is_some(),
-                "the operator's phrase is redacted"
+                gate.clear(&message, "session:b").redaction().is_none(),
+                "delivered on the override"
             );
             drop(gate);
         });
@@ -1248,9 +1257,13 @@ mod tests {
                 ..
             },
             Record::Redacted { event, raw },
+            Record::Override(_),
+            Record::Overridden { .. },
         ] = records.as_slice()
         else {
-            unreachable!("a config record, then the redaction: {records:?}");
+            unreachable!(
+                "a config record, the redaction, its override and a delivery: {records:?}"
+            );
         };
         assert_eq!(
             (
