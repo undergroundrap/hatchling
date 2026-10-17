@@ -874,16 +874,17 @@ mod tests {
             (KeyCheck::Pin, KeyCheck::Touch)
         );
         // A key that can't verify its user says so, by default.
+        let salt = random::<32>().unwrap();
         assert_eq!(
-            TouchOnly.hmac_secret_verified(RP_ID, b"c", &[0; 32]),
+            TouchOnly.hmac_secret_verified(RP_ID, b"c", &salt),
             Err(AuthenticatorError::NoVerification)
         );
         assert_eq!(
-            answer(&mut TouchOnly, b"c", &[0; 32], KeyCheck::Touch),
+            answer(&mut TouchOnly, b"c", &salt, KeyCheck::Touch),
             Ok([1; 32])
         );
         assert_eq!(
-            answer(&mut TouchOnly, b"c", &[0; 32], KeyCheck::Pin),
+            answer(&mut TouchOnly, b"c", &salt, KeyCheck::Pin),
             Err(AuthenticatorError::NoVerification)
         );
     }

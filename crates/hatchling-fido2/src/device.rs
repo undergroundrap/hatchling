@@ -699,7 +699,7 @@ mod tests {
             let token = device.pin_token(protocol, RP).unwrap();
             assert_eq!(token.len(), 32);
             let credential = device.create(RP, b"u").unwrap();
-            let salt = [6u8; 32];
+            let salt = random::<32>().unwrap();
             assert_eq!(
                 device.derive(RP, &credential.id, &salt, false).unwrap(),
                 expected(&state, &credential.id, &salt)
@@ -794,17 +794,18 @@ mod tests {
         state.borrow_mut().pin = Some(String::from("2468"));
         let mut device = open(key, Some("2468"));
         let credential = device.make_credential(RP, b"u").unwrap();
+        let salt = random::<32>().unwrap();
         assert!(
             device
-                .hmac_secret_verified(RP, &credential.id, &[3; 32])
+                .hmac_secret_verified(RP, &credential.id, &salt)
                 .is_ok()
         );
         state.borrow_mut().tamper = Tamper::NoVerifiedFlag;
         assert!(matches!(
-            device.hmac_secret_verified(RP, &credential.id, &[3; 32]),
+            device.hmac_secret_verified(RP, &credential.id, &salt),
             Err(AuthenticatorError::Device(text)) if text.contains("verified its user")
         ));
         // Without the PIN, no such flag is asked for.
-        assert!(device.hmac_secret(RP, &credential.id, &[3; 32]).is_ok());
+        assert!(device.hmac_secret(RP, &credential.id, &salt).is_ok());
     }
 }

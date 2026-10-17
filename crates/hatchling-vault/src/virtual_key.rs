@@ -269,7 +269,7 @@ mod tests {
     fn a_verified_answer_needs_the_pin_and_differs_from_a_touch() {
         let mut key = VirtualAuthenticator::with_pin("2468");
         let credential = key.make_credential("rp", b"u").unwrap();
-        let salt = [3u8; 32];
+        let salt = random::<32>().unwrap();
         let verified = key
             .hmac_secret_verified("rp", &credential.id, &salt)
             .unwrap();
