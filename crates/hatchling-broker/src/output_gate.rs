@@ -38,6 +38,7 @@ use hatchling_artifact::request::sha256_hex;
 use hatchling_channel::gate::{DEFAULT_CLASSIFIER_TIMEOUT, FAILED_CATEGORY, MIN_BLOCK_CHARS};
 use hatchling_channel::{Category, Classifier, OutputGate, Request, Verdict, normalize};
 use hatchling_vault::{MAX_SECRET_BYTES, MasterKey, SealedVault, Secret, SecretName};
+use zeroize::Zeroizing;
 
 use crate::environment as env;
 use crate::redactions::{FileAudit, FileOverrides, RawOutcome, Settings};
@@ -409,16 +410,31 @@ impl Classifier for Rules<'_> {
 /// Whether `text` carries one of `secrets`: in any form the artifact gate
 /// checks, or, for a secret whose normalized form is long enough to be
 /// told apart from ordinary words, spaced or punctuated differently.
-fn holds_secret(text: &str, secrets: &[Vec<u8>]) -> bool {
-    if SecretSet::new(secrets.to_vec()).exposed_in(text.as_bytes()) {
+fn holds_secret(text: &str, secrets: &[Zeroizing<Vec<u8>>]) -> bool {
+    if SecretSet::new(secrets.iter().cloned()).exposed_in(text.as_bytes()) {
         return true;
     }
     let form = normalize(text);
     secrets
         .iter()
         .filter_map(|secret| std::str::from_utf8(secret).ok())
-        .map(normalize)
+        .map(normalized_secret)
         .any(|secret| secret.chars().count() >= MIN_BLOCK_CHARS && form.contains(secret.as_str()))
+}
+
+/// [`normalize`] of a held secret, wiped when dropped. It is made at its
+/// final size, so no copy is left behind in a freed buffer: lowercasing a
+/// character never more than doubles its bytes, and three times leaves
+/// room to spare.
+fn normalized_secret(secret: &str) -> Zeroizing<String> {
+    let mut form = Zeroizing::new(String::with_capacity(secret.len() * 3));
+    form.extend(
+        secret
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(char::to_lowercase),
+    );
+    form
 }
 
 /// The first PEM private-key block in `text`: from its `-----BEGIN...
@@ -1028,7 +1044,7 @@ mod tests {
         let (_dir, config, key) = held("gate-held");
         let values = crate::artifact_ops::held_secret_values(&config, &key, "output-gate").unwrap();
         assert_eq!(values.len(), 3);
-        assert!(values.contains(&HELD.as_bytes().to_vec()));
+        assert!(values.contains(&Zeroizing::new(HELD.as_bytes().to_vec())));
         let set = crate::artifact_ops::held_secrets(&config, &key).unwrap();
         assert!(set.exposed_in(HELD.as_bytes()));
         assert!(!set.exposed_in(b"nothing held"));
@@ -1040,11 +1056,12 @@ mod tests {
 
     #[test]
     fn a_secret_is_found_raw_encoded_or_respaced() {
-        let secrets = vec![
+        let secrets = [
             HELD.as_bytes().to_vec(),
             b"ab-cd-ef".to_vec(),
             vec![0xff, 0x00, 0x41],
-        ];
+        ]
+        .map(Zeroizing::new);
         assert!(holds_secret(HELD, &secrets));
         assert!(holds_secret("nightjar 7f3a 91c2", &secrets));
         assert!(!holds_secret("nightjar 7f3a", &secrets));
@@ -1054,6 +1071,16 @@ mod tests {
         );
         assert!(holds_secret("ab-cd-ef", &secrets));
         assert!(!holds_secret("plain text", &[]));
+    }
+
+    #[test]
+    fn a_normalized_secret_is_made_at_its_final_size() {
+        // Lowercasing grows these: İ to two characters, Ⱥ to a longer one.
+        for secret in ["Nightjar-7F3A 91c2", "İİİİ", "ȺȺȺ", "", "--"] {
+            let form = normalized_secret(secret);
+            assert_eq!(*form, normalize(secret), "{secret:?}");
+            assert_eq!(form.capacity(), secret.len() * 3, "{secret:?} grew");
+        }
     }
 
     #[test]

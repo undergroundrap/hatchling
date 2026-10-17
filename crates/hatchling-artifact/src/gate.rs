@@ -17,11 +17,13 @@
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD_NO_PAD, URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
-/// The secrets to look for, in every form the gate checks.
+/// The secrets to look for, in every form the gate checks. Each form is
+/// wiped when the set is dropped.
 #[derive(Clone, Default)]
 pub struct SecretSet {
-    needles: Vec<Vec<u8>>,
+    needles: Vec<Zeroizing<Vec<u8>>>,
 }
 
 impl std::fmt::Debug for SecretSet {
@@ -35,17 +37,24 @@ impl std::fmt::Debug for SecretSet {
 
 impl SecretSet {
     /// The forms of `secrets` the gate looks for. An empty secret is
-    /// skipped: it matches everything and protects nothing.
+    /// skipped: it matches everything and protects nothing. Each secret
+    /// and each form is wiped when the set is dropped, and each is made at
+    /// its final size, so no copy is left behind in a freed buffer.
     #[must_use]
-    pub fn new<I: IntoIterator<Item = Vec<u8>>>(secrets: I) -> Self {
+    pub fn new<I>(secrets: I) -> Self
+    where
+        I: IntoIterator,
+        I::Item: Into<Zeroizing<Vec<u8>>>,
+    {
         let mut needles = Vec::new();
         for secret in secrets {
+            let secret: Zeroizing<Vec<u8>> = secret.into();
             if secret.is_empty() {
                 continue;
             }
-            let hex = crate::request::hex(&secret);
-            needles.push(hex.to_ascii_uppercase().into_bytes());
-            needles.push(hex.into_bytes());
+            let hex = Zeroizing::new(crate::request::hex(&secret));
+            needles.push(Zeroizing::new(hex.to_ascii_uppercase().into_bytes()));
+            needles.push(Zeroizing::new(hex.as_bytes().to_vec()));
             // Base64 of a stream containing the secret contains the base64
             // of the secret's whole 3-byte groups, at one of three
             // alignments. Only fully determined characters are kept.
@@ -56,8 +65,8 @@ impl SecretSet {
                 if aligned.is_empty() {
                     continue;
                 }
-                needles.push(STANDARD_NO_PAD.encode(aligned).into_bytes());
-                needles.push(URL_SAFE_NO_PAD.encode(aligned).into_bytes());
+                needles.push(Zeroizing::new(STANDARD_NO_PAD.encode(aligned).into_bytes()));
+                needles.push(Zeroizing::new(URL_SAFE_NO_PAD.encode(aligned).into_bytes()));
             }
             needles.push(secret);
         }

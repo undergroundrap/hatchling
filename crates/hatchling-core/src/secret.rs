@@ -14,6 +14,8 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use zeroize::Zeroizing;
 
 use crate::Error;
 
@@ -39,6 +41,58 @@ pub fn decode(payload: &str) -> Result<Vec<u8>, Error> {
     STANDARD
         .decode(payload)
         .map_err(|e| Error::InvalidSecretEncoding(e.to_string()))
+}
+
+/// A secret payload on the wire: its bytes, base64-encoded. It is wiped
+/// when dropped, and its `Debug` never shows it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SecretB64(Zeroizing<String>);
+
+impl SecretB64 {
+    /// `secret`, encoded.
+    #[must_use]
+    pub fn encode(secret: &[u8]) -> Self {
+        Self(Zeroizing::new(encode(secret)))
+    }
+
+    /// The bytes, decoded, wiped when dropped.
+    ///
+    /// # Errors
+    ///
+    /// As [`decode`].
+    pub fn decode(&self) -> Result<Zeroizing<Vec<u8>>, Error> {
+        decode(&self.0).map(Zeroizing::new)
+    }
+
+    /// The payload as it is sent.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for SecretB64 {
+    fn from(payload: String) -> Self {
+        Self(Zeroizing::new(payload))
+    }
+}
+
+impl std::fmt::Debug for SecretB64 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SecretB64(..)")
+    }
+}
+
+impl Serialize for SecretB64 {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for SecretB64 {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer).map(Self::from)
+    }
 }
 
 #[cfg(test)]
@@ -75,6 +129,19 @@ mod tests {
             matches!(err, Error::InvalidSecretEncoding(_)),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn a_secret_payload_round_trips_as_a_plain_string_and_never_shows() {
+        let payload = SecretB64::encode(b"hello");
+        assert_eq!(payload.as_str(), "aGVsbG8=");
+        assert_eq!(*payload.decode().unwrap(), b"hello");
+        let json = serde_json::to_string(&payload).unwrap();
+        assert_eq!(json, r#""aGVsbG8=""#);
+        assert_eq!(serde_json::from_str::<SecretB64>(&json).unwrap(), payload);
+        assert_eq!(SecretB64::from(String::from("aGVsbG8=")), payload);
+        assert_eq!(format!("{payload:?}"), "SecretB64(..)");
+        assert!(SecretB64::from(String::from("!!")).decode().is_err());
     }
 
     #[test]

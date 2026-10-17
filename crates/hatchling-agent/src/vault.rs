@@ -11,7 +11,7 @@ use std::os::unix::net::UnixStream;
 use hatchling_core::MAX_SECRET_BYTES;
 use hatchling_core::framing::{read_frame, write_frame};
 use hatchling_core::{
-    SecretName, SessionRequest, SessionResponse, VaultOp, VaultResult, decode_secret, encode_secret,
+    SecretB64, SecretName, SessionRequest, SessionResponse, VaultOp, VaultResult, decode_secret,
 };
 
 use crate::Error;
@@ -39,7 +39,7 @@ pub fn store(stream: &UnixStream, name: &str, secret: &[u8]) -> Result<(), Error
     }
     let op = VaultOp::Store {
         name: name.as_str().to_owned(),
-        secret_b64: encode_secret(secret),
+        secret_b64: SecretB64::encode(secret),
     };
     match request(stream, &op)? {
         VaultResult::Stored => Ok(()),
@@ -69,7 +69,7 @@ pub fn fetch(stream: &UnixStream, name: &str) -> Result<Option<Vec<u8>>, Error> 
     };
     match request(stream, &op)? {
         VaultResult::Fetched { secret_b64 } => {
-            let bytes = decode_secret(&secret_b64).map_err(|error| Error::VaultProtocol {
+            let bytes = decode_secret(secret_b64.as_str()).map_err(|error| Error::VaultProtocol {
                 reason: error.to_string(),
             })?;
             Ok(Some(bytes))

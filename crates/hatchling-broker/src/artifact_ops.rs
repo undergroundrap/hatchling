@@ -61,6 +61,7 @@ use hatchling_goals::{FeedQuery, GoalId, StatusFilter, TimeRange};
 use hatchling_memory::{MemoryPrincipal, Tag};
 use hatchling_skill::SkillId;
 use hatchling_vault::{MasterKey, SealedVault, Secret};
+use zeroize::Zeroizing;
 
 use crate::skills::SkillSet;
 use crate::{Config, Error, SkillDenial, Skills, check_skill_call};
@@ -313,6 +314,8 @@ pub fn held_secrets(config: &Config, key: &MasterKey) -> Result<SecretSet, Strin
 /// rules also normalize and look for. The read is recorded in the
 /// vault's access log as the broker's, for `purpose`.
 ///
+/// Each value is wiped when dropped.
+///
 /// # Errors
 ///
 /// As [`held_secrets`].
@@ -320,7 +323,7 @@ pub fn held_secret_values(
     config: &Config,
     key: &MasterKey,
     purpose: &str,
-) -> Result<Vec<Vec<u8>>, String> {
+) -> Result<Vec<Zeroizing<Vec<u8>>>, String> {
     let read = read_held_secrets(config, key);
     let outcome = if read.is_ok() {
         crate::vault_access::Outcome::Allowed
@@ -357,7 +360,10 @@ fn held_secret_names(config: &Config) -> BTreeSet<String> {
 }
 
 /// The held secrets' values, unrecorded.
-fn read_held_secrets(config: &Config, key: &MasterKey) -> Result<Vec<Vec<u8>>, String> {
+fn read_held_secrets(
+    config: &Config,
+    key: &MasterKey,
+) -> Result<Vec<Zeroizing<Vec<u8>>>, String> {
     let names = held_secret_names(config);
     let vault = SealedVault::open(&config.vault.root, key)
         .map_err(|e| format!("the vault could not be opened: {e}"))?;
@@ -367,7 +373,7 @@ fn read_held_secrets(config: &Config, key: &MasterKey) -> Result<Vec<Vec<u8>>, S
             .parse()
             .map_err(|_| format!("{name:?} is not a secret name"))?;
         match vault.fetch(&name) {
-            Ok(secret) => secrets.push(secret.as_bytes().to_vec()),
+            Ok(secret) => secrets.push(Zeroizing::new(secret.as_bytes().to_vec())),
             Err(hatchling_vault::Error::NotFound { .. }) => {}
             Err(e) => return Err(format!("{} could not be read: {e}", name.as_str())),
         }
@@ -1153,7 +1159,10 @@ mod tests {
             .unwrap();
         let names: Vec<String> = held_secret_names(&config).into_iter().collect();
         assert_eq!(names, ["egress-api-example-com-443", "token"]);
-        assert_eq!(read_held_secrets(&config, &key).unwrap(), [b"v".to_vec()]);
+        assert_eq!(
+            read_held_secrets(&config, &key).unwrap(),
+            [Zeroizing::new(b"v".to_vec())]
+        );
         assert!(held_secrets(&config, &key).unwrap().exposed_in(b"v"));
         let (accesses, _) = crate::vault_access::read_log(&config.vault.root).unwrap();
         let [only] = accesses.as_slice() else {

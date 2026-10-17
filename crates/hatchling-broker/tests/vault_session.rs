@@ -165,7 +165,7 @@ fn read_result(stream: &UnixStream) -> io::Result<VaultResult> {
 fn store_op(name: &str, secret: &[u8]) -> VaultOp {
     VaultOp::Store {
         name: name.to_owned(),
-        secret_b64: encode_secret(secret),
+        secret_b64: encode_secret(secret).into(),
     }
 }
 
@@ -197,7 +197,7 @@ fn granted_store_fetch_remove_roundtrip() {
     .unwrap();
     let result = read_result(&client).unwrap();
     assert!(
-        matches!(result, VaultResult::Fetched { ref secret_b64 } if secret_b64 == &encode_secret(b"super-secret")),
+        matches!(result, VaultResult::Fetched { ref secret_b64 } if secret_b64.as_str() == encode_secret(b"super-secret")),
         "unexpected result: {result:?}"
     );
 
@@ -261,7 +261,7 @@ fn stored_secret_is_sealed_on_disk_and_fetch_decrypts() {
     .unwrap();
     let result = read_result(&client).unwrap();
     assert!(
-        matches!(result, VaultResult::Fetched { ref secret_b64 } if secret_b64 == &encode_secret(secret)),
+        matches!(result, VaultResult::Fetched { ref secret_b64 } if secret_b64.as_str() == encode_secret(secret)),
         "unexpected result: {result:?}"
     );
 
@@ -365,7 +365,7 @@ fn malformed_base64_store_closes_session() {
     // bytes end the session.
     let op = VaultOp::Store {
         name: String::from("app-token"),
-        secret_b64: String::from("!!! not base64 !!!"),
+        secret_b64: String::from("!!! not base64 !!!").into(),
     };
     send_op(&client, &op).unwrap();
     let mut buf = [0u8; 64];

@@ -211,7 +211,7 @@ fn vault_mismatched_reply_is_protocol_violation() {
     let broker = FixtureBroker::spawn(
         "vault-mismatch",
         BrokerBehavior::Canned(VaultResult::Fetched {
-            secret_b64: String::from("eA=="),
+            secret_b64: String::from("eA==").into(),
         }),
     )
     .unwrap();

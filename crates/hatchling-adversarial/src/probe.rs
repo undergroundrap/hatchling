@@ -469,7 +469,7 @@ fn session_uniform() -> Result<Outcome, String> {
         }),
         SessionRequest::Vault(VaultOp::Store {
             name: String::from("ungranted-b"),
-            secret_b64: String::from("eA=="),
+            secret_b64: String::from("eA==").into(),
         }),
         SessionRequest::Egress(EgressOp::MintSurrogate {
             destination: String::from("example.com:443"),

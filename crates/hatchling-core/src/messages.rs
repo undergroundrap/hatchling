@@ -80,7 +80,8 @@ pub enum VaultOp {
         /// Validated [`SecretName`](crate::SecretName), as a string.
         name: String,
         /// Base64-encoded secret bytes.
-        secret_b64: String,
+        #[cfg_attr(feature = "schema", schemars(with = "String"))]
+        secret_b64: crate::SecretB64,
     },
     /// Fetches the secret stored under `name`.
     #[serde(rename = "fetch")]
@@ -135,7 +136,8 @@ pub enum VaultResult {
     #[serde(rename = "fetched")]
     Fetched {
         /// Base64-encoded secret bytes.
-        secret_b64: String,
+        #[cfg_attr(feature = "schema", schemars(with = "String"))]
+        secret_b64: crate::SecretB64,
     },
     /// The secret was removed (or was already absent).
     #[serde(rename = "removed")]
@@ -2408,7 +2410,7 @@ mod tests {
         // mapping each variant must keep.
         let store = VaultOp::Store {
             name: String::from("a"),
-            secret_b64: String::from("Yg=="),
+            secret_b64: String::from("Yg==").into(),
         };
         assert_eq!(store.action(), VaultAction::Store);
         assert_eq!(store.name(), "a");
@@ -2437,7 +2439,7 @@ mod tests {
         assert_eq!(serde_json::from_slice::<VaultOp>(&json).unwrap(), op);
 
         let result = VaultResult::Fetched {
-            secret_b64: String::from("aGVsbG8="),
+            secret_b64: String::from("aGVsbG8=").into(),
         };
         let json = serde_json::to_vec(&result).unwrap();
         assert_eq!(
