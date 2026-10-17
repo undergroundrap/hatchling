@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use hatchling_channel::LocalHub;
 use hatchling_core::framing::{read_frame, read_frame_or_eof, write_frame};
-use Zeroizing;
+use zeroize::Zeroizing;
 use hatchling_core::ui::operator::{CellKind, EgressVerdict};
 use hatchling_core::{
     AgentMessage, BrokerMessage, CellId, ChannelResult, EgressOp, EgressResult, GoalsResult,
