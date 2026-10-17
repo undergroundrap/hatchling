@@ -20,6 +20,34 @@ impl Drop for TestDir {
     }
 }
 
+/// Finishes `rotated` as the broker does, for a test's one store.
+///
+/// The store at `root` (the secrets store, if it exists) is re-sealed
+/// under the new key, then the retiring key dropped. Returns the new
+/// backup codes, as text.
+///
+/// # Panics
+///
+/// If a step fails: the test's vault is then broken.
+pub fn settle(keyring: &mut crate::Keyring, rotated: crate::Rotated, root: &Path) -> Vec<String> {
+    assert!(keyring.rotation_pending(), "committed, not yet finished");
+    if root.is_dir() {
+        crate::rekey(
+            root,
+            rotated.rotation.old(),
+            rotated.rotation.new_key(),
+            crate::Store::SECRETS,
+        )
+        .unwrap();
+    }
+    keyring.finish_rotation(&rotated.rotation).unwrap();
+    assert!(!keyring.rotation_pending());
+    rotated
+        .codes
+        .map(|codes| codes.codes().map(str::to_owned).collect())
+        .unwrap_or_default()
+}
+
 /// A fresh, existing, owner-only directory for `name`.
 ///
 /// # Panics

@@ -600,6 +600,9 @@ mod tests {
     #[test]
     fn the_operator_sees_the_recent_egress_decisions() {
         use hatchling_core::ui::operator::EgressVerdict;
+        let _flood = crate::machine::FLOOD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (operator, _socket) = operator("egress", real_uid());
         crate::machine::decided("op-egress-cell", "localhost:18089", EgressVerdict::Policy);
         let OperatorAnswer::Egress { decisions } =
@@ -715,6 +718,10 @@ mod tests {
     #[test]
     fn nothing_planted_reaches_an_operator_answer() {
         use hatchling_isolation::IsolationBackend as _;
+        // Its own egress decision must still be kept when it asks.
+        let _flood = crate::machine::FLOOD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (operator, _socket) = operator("planted", real_uid());
         let surrogate = planted_egress();
         let mut config = owner_config(None);

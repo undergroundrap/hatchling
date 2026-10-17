@@ -39,6 +39,7 @@ pub mod fido2;
 pub mod keyring;
 pub mod lease;
 pub mod manage;
+pub mod rotate;
 pub mod seal;
 pub mod secret;
 pub mod totp;
@@ -54,6 +55,7 @@ pub use hatchling_core::{MAX_SECRET_BYTES, SecretName};
 pub use keyring::{Factor, Kek, Keyring, Tier, Unlocked, Wrap};
 pub use lease::KeyLease;
 pub use manage::{KeyInfo, Label, MAX_LABEL_CHARS, Protection, Warning};
+pub use rotate::{Rotated, Rotation};
 pub use seal::{
     FileKey, KeySource, MasterKey, MigrateReport, RekeyReport, SealedVault, Store, check,
     holds_envelopes, migrate, rekey,

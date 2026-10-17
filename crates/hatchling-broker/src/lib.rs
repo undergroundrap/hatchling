@@ -102,6 +102,6 @@ pub use skills::{Reload, SkillSet, Skills};
 pub use subagent_ops::{Ledger, Subagents, WITHHELD, check_spawn, child_config, partial_of};
 pub use trust_roots::TrustRoots;
 pub use vault_ops::{
-    check_sealed_stores, load_master_key, migrate_vault, rekey_vault, run_migrate_vault,
-    run_rekey_vault, sealed_stores, validate_sealed_vault,
+    check_sealed_stores, load_master_key, migrate_vault, rekey_vault, reseal_stores,
+    run_migrate_vault, run_rekey_vault, sealed_stores, validate_sealed_vault,
 };

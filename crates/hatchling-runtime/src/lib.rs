@@ -36,7 +36,7 @@ Usage:
   hatchling --version             print the version
 
 Broker subcommands (run instead of serving):
-  migrate-vault, rekey-vault <new-key-file>, vault-keyring <action>,
+  migrate-vault, rekey-vault [<new-key-file>], vault-keyring <action>,
   redactions <action>, vault-audit
 
 The broker is configured by HATCHLING_* environment variables; see the

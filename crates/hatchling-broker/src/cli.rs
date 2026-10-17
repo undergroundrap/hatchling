@@ -6,7 +6,8 @@
 //!
 //! Subcommands (operator actions, run instead of serving):
 //! - `migrate-vault`: encrypt a plaintext store into sealed envelopes.
-//! - `rekey-vault <new-key-file>`: rotate the master key.
+//! - `rekey-vault [<new-key-file>]`: rotate the master key, inside the
+//!   keyring if there is one, else to the new key file.
 //! - `vault-keyring <action>`: adopt, enroll or inspect the vault keyring.
 //! - `redactions <action>`, `vault-audit`: redaction review, credential access.
 //!
@@ -52,7 +53,7 @@ pub fn main(program: &str, args: &[String]) -> ExitCode {
         Some(AGENT_RUN_SUBCOMMAND) => return agent_run_main(args.get(1).map(String::as_str)),
         Some(_) | None => {}
     }
-    match run(program, args) {
+    match run(args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             let mut stderr = std::io::stderr().lock();
@@ -73,7 +74,7 @@ pub fn help(program: &str) -> String {
     render_help(
         program,
         "[subcommand] | --help | -h",
-        "Serve agents with no subcommand. Operator subcommands:\n  migrate-vault\n  rekey-vault <new-key-file>\n  vault-keyring <action>\n    init, enroll-totp, enroll-keys, use-file-tier, backup-codes,\n    status, add-key, remove-key, label-key\n  redactions list | stats | categories\n  redactions show <id> | raw <id> | override <id> [--any-scope]\n  vault-audit [log [count]]\n\nThe broker builds and supervises the agent's cell. Internal spawner\ncommands skill-cell <spec> and agent-run <spec> are broker-owned.",
+        "Serve agents with no subcommand. Operator subcommands:\n  migrate-vault\n  rekey-vault [<new-key-file>]   (no file with a keyring)\n  vault-keyring <action>\n    init, enroll-totp, enroll-keys, use-file-tier, backup-codes,\n    status, add-key, remove-key, label-key\n  redactions list | stats | categories\n  redactions show <id> | raw <id> | override <id> [--any-scope]\n  vault-audit [log [count]]\n\nThe broker builds and supervises the agent's cell. Internal spawner\ncommands skill-cell <spec> and agent-run <spec> are broker-owned.",
         crate::environment::ENVIRONMENT,
     )
 }
@@ -83,7 +84,7 @@ fn valid_args(args: &[String]) -> bool {
     let values: Vec<&str> = args.iter().map(String::as_str).collect();
     match values.as_slice() {
         []
-        | ["migrate-vault" | "vault-audit"]
+        | ["migrate-vault" | "vault-audit" | "rekey-vault"]
         | ["rekey-vault", _]
         | [
             "vault-keyring",
@@ -107,22 +108,14 @@ fn valid_args(args: &[String]) -> bool {
 ///
 /// Propagates [`Error`] from config parsing, subcommand misuse, or the
 /// dispatched library action.
-fn run(program: &str, args: &[String]) -> Result<(), Error> {
+fn run(args: &[String]) -> Result<(), Error> {
     let config = Config::from_env()?;
     // Operator subcommands act on the vault directly and never bind
     // the socket. Anything else falls through to serving.
     match args.first().map(String::as_str) {
         Some("migrate-vault") => run_migrate_vault(&config),
-        Some("rekey-vault") => {
-            let new_key_file = args.get(1).ok_or_else(|| Error::Usage {
-                reason: format!(
-                    "rekey-vault requires a new key file path: \
-                         {program} rekey-vault <new-key-file>"
-                ),
-            })?;
-            run_rekey_vault(&config, Path::new(new_key_file))
-        }
-        Some("vault-keyring") => run_keyring(&config.vault, args.get(1).map(String::as_str)),
+        Some("rekey-vault") => run_rekey_vault(&config, args.get(1).map(Path::new)),
+        Some("vault-keyring") => run_keyring(&config, args.get(1).map(String::as_str)),
         Some(other) => run_operator(other, &config, args.iter().skip(1).cloned()),
         None => run_serve(&config),
     }
@@ -157,7 +150,7 @@ mod tests {
             &["--unknown"][..],
             &["--help", "extra"],
             &["migrate-vault", "extra"],
-            &["rekey-vault"],
+            &["rekey-vault", "a", "b"],
         ] {
             assert_eq!(
                 main("hatchling broker", &args(invalid)),
@@ -167,7 +160,7 @@ mod tests {
         let text = help("hatchling broker");
         assert!(text.starts_with("Usage: hatchling broker "));
         assert!(text.contains("migrate-vault"));
-        assert!(text.contains("rekey-vault <new-key-file>"));
+        assert!(text.contains("rekey-vault [<new-key-file>]"));
         assert!(text.contains("vault-keyring <action>"));
         for variable in crate::environment::ENVIRONMENT {
             assert!(text.contains(variable.name), "missing {}", variable.name);
@@ -182,6 +175,7 @@ mod tests {
             vec![],
             args(&["migrate-vault"]),
             args(&["rekey-vault", "/new.key"]),
+            args(&["rekey-vault"]),
             args(&["vault-keyring", "status"]),
             args(&["redactions", "show", "event"]),
             args(&["redactions", "list"]),
@@ -222,7 +216,7 @@ mod tests {
         for given in [
             args(&["bogus"]),
             args(&["migrate-vault", "extra"]),
-            args(&["rekey-vault"]),
+            args(&["rekey-vault", "/new.key", "extra"]),
             args(&["vault-keyring"]),
             args(&["vault-keyring", "bogus"]),
             args(&["redactions", "bogus"]),
@@ -236,6 +230,6 @@ mod tests {
 
     #[test]
     fn run_still_reports_missing_configuration() {
-        assert!(run("hatchling-broker", &[]).is_err());
+        assert!(run(&[]).is_err());
     }
 }

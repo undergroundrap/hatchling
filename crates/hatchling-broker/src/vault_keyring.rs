@@ -23,7 +23,7 @@ use std::rc::Rc;
 use hatchling_fido2::{Bus, PinPrompt};
 use hatchling_vault::{
     Authenticator, BackupCodes, FileKey, Kek, KeyInfo, KeySource as _, Keyring, Label, MasterKey,
-    Protection, SingleKeyRisk, Tier, Unlocked, Warning,
+    Protection, RekeyReport, Rotation, SingleKeyRisk, Store, Tier, Unlocked, Warning,
 };
 
 use crate::environment as env;
@@ -340,6 +340,7 @@ pub fn unlock_asking(
         (Some(mut keyring), Some(path)) if keyring.tier() == Tier::HardwareKey => {
             let unlocked = authorize(&mut keyring, ask, devices)?;
             mark_keyring(vault, path)?;
+            settled(&keyring)?;
             Ok(unlocked.into_key())
         }
         (loaded, _) => {
@@ -376,7 +377,115 @@ pub fn unlock_with(
     }
     let unlocked = open(&mut keyring, vault, config, factors)?;
     mark_keyring(vault, path)?;
+    settled(&keyring)?;
     Ok(unlocked.into_key())
+}
+
+/// What a rotation did: each store's re-seal, and the backup codes the new
+/// key brought, if the vault had codes.
+pub type Rekeyed = (Vec<(&'static str, RekeyReport)>, Option<BackupCodes>);
+
+/// Refuses a keyring whose rotation is unfinished: some stores may still
+/// be sealed under the retiring key, so nothing is served, migrated or
+/// read until `rekey-vault` finishes it.
+const fn settled(keyring: &Keyring) -> Result<(), Error> {
+    if keyring.rotation_pending() {
+        return Err(vault_error(hatchling_vault::Error::RotationUnfinished));
+    }
+    Ok(())
+}
+
+/// Finishes a rotation the keyring has committed (WO-003): once the vault
+/// has left the file tier its KEK file goes, every store moves from the
+/// old key to the new, and the retiring key is dropped. Each step is safe
+/// to repeat, so `rekey-vault` resumes here after a crash.
+fn finish(
+    keyring: &mut Keyring,
+    rotation: &Rotation,
+    stores: &[(Store, PathBuf)],
+    kek_file: &Path,
+) -> Result<Vec<(&'static str, RekeyReport)>, Error> {
+    if keyring.tier() != Tier::File {
+        match std::fs::remove_file(kek_file) {
+            Err(err) if err.kind() != std::io::ErrorKind::NotFound => return Err(io_error(err)),
+            _ => {}
+        }
+    }
+    let reports = crate::reseal_stores(stores, rotation.old(), rotation.new_key())?;
+    keyring.finish_rotation(rotation).map_err(vault_error)?;
+    Ok(reports)
+}
+
+/// Rotates the vault's key inside its keyring (`rekey-vault` with a
+/// keyring), or finishes a rotation a crash left unfinished.
+///
+/// Unlocks through the current tier, then wraps a fresh key for every
+/// way in at that tier: the file tier's KEK file, the TOTP tier's seed,
+/// or every enrolled security key, each plugged in and touched. Backup
+/// codes are replaced by a new set. Every store is then re-sealed under
+/// the new key, and nothing opens under the old one.
+///
+/// # Errors
+///
+/// Returns [`Error::Usage`] without a keyring path, under the fleet
+/// policy below the hardware-key tier, or if the tier needs a factor this
+/// start cannot present; or [`Error::Vault`] if the vault does not
+/// unlock, a store holds stale files, a key does not answer, or a step
+/// fails, in which case re-running finishes it.
+pub fn rekey(
+    vault: &VaultConfig,
+    config: &KeyringConfig,
+    stores: &[(Store, PathBuf)],
+    ask: Ask<'_>,
+    devices: &mut dyn Devices,
+) -> Result<Rekeyed, Error> {
+    let mut keyring = Keyring::load(config.keyring_path()?).map_err(vault_error)?;
+    if config.require_hardware_key && keyring.tier() != Tier::HardwareKey {
+        return Err(policy("this vault is at a lower tier"));
+    }
+    let unlocked = unlock_current(&mut keyring, vault, config, ask, devices)?;
+    let (rotation, codes) = if let Some(rotation) =
+        keyring.pending_rotation(&unlocked).map_err(vault_error)?
+    {
+        (rotation, None)
+    } else {
+        crate::check_sealed_stores(stores)?;
+        let file_kek = match keyring.tier() {
+            Tier::File => Some(Kek::from_file_key(
+                &FileKey::new(config.kek_file(vault))
+                    .load()
+                    .map_err(vault_error)?,
+            )),
+            Tier::Totp | Tier::HardwareKey => None,
+        };
+        if keyring.tier() == Tier::HardwareKey {
+            ask(
+                "Plug in every enrolled security key, press Enter, then touch each one when it flashes:",
+            )?;
+        }
+        let mut keys = devices.every_key();
+        let rotated = keyring
+            .rotate_in_place(&unlocked, file_kek.as_ref(), &mut keys)
+            .map_err(vault_error)?;
+        (rotated.rotation, rotated.codes)
+    };
+    let reports = finish(&mut keyring, &rotation, stores, &config.kek_file(vault))?;
+    Ok((reports, codes))
+}
+
+/// [`rekey`] at this terminal, with the keyring settings from the
+/// environment.
+///
+/// # Errors
+///
+/// A bad keyring setting, or as [`rekey`].
+pub fn run_rekey(
+    vault: &VaultConfig,
+    config: &KeyringConfig,
+    stores: &[(Store, PathBuf)],
+) -> Result<Rekeyed, Error> {
+    let (mut asking, mut devices) = terminal_operator();
+    rekey(vault, config, stores, &mut asking, &mut devices)
 }
 
 /// Adopts a keyring (`vault-keyring init`).
@@ -417,22 +526,27 @@ const CONFIRM_ATTEMPTS: usize = 3;
 /// Unlocks through the current tier (asking for a current code first if
 /// it is already TOTP), shows the `otpauth://` URI once in a prompt, and
 /// switches only when a code from the app matches. A wrong code may be
-/// tried again, up to three in all.
+/// tried again, up to three in all. The vault moves to a fresh key: every
+/// store in `stores` is re-sealed under it, and any backup codes are
+/// replaced by the new set returned.
 ///
 /// # Errors
 ///
 /// Returns [`Error::Usage`] without a keyring path or if the current tier
-/// needs a factor this build cannot present, or [`Error::Vault`] if the
-/// vault does not unlock or no code matched.
+/// needs a factor this build cannot present, or [`Error::Vault`] if a
+/// store holds stale files, the vault does not unlock, no code matched,
+/// or re-sealing fails (then `rekey-vault` finishes it).
 pub fn enroll_totp(
     vault: &VaultConfig,
     config: &KeyringConfig,
+    stores: &[(Store, PathBuf)],
     ask: Ask<'_>,
     devices: &mut dyn Devices,
-) -> Result<(), Error> {
+) -> Result<Option<BackupCodes>, Error> {
     if config.require_hardware_key {
         return Err(policy("TOTP is below it"));
     }
+    crate::check_sealed_stores(stores)?;
     let mut keyring = Keyring::load(config.keyring_path()?).map_err(vault_error)?;
     let unlocked = unlock_current(&mut keyring, vault, config, ask, devices)?;
     let pending = keyring.begin_totp(&unlocked).map_err(vault_error)?;
@@ -445,7 +559,16 @@ pub fn enroll_totp(
             Err(hatchling_vault::Error::CodeRejected) => {
                 prompt = String::from("That code did not match. Enter the next one the app shows:");
             }
-            outcome => return outcome.map_err(vault_error),
+            outcome => {
+                let rotated = outcome.map_err(vault_error)?;
+                finish(
+                    &mut keyring,
+                    &rotated.rotation,
+                    stores,
+                    &config.kek_file(vault),
+                )?;
+                return Ok(rotated.codes);
+            }
         }
     }
     Err(vault_error(hatchling_vault::Error::CodeRejected))
@@ -895,9 +1018,11 @@ pub fn label_key(
 pub fn enroll_keys(
     vault: &VaultConfig,
     config: &KeyringConfig,
+    stores: &[(Store, PathBuf)],
     ask: Ask<'_>,
     devices: &mut dyn Devices,
-) -> Result<usize, Error> {
+) -> Result<(usize, Option<BackupCodes>), Error> {
+    crate::check_sealed_stores(stores)?;
     let mut keyring = Keyring::load(config.keyring_path()?).map_err(vault_error)?;
     if keyring.tier() == Tier::HardwareKey {
         return Err(Error::Usage {
@@ -923,10 +1048,16 @@ pub fn enroll_keys(
             }
             let unlocked = unlock_current(&mut keyring, vault, config, ask, devices)?;
             let mut keys = devices.every_key();
-            keyring
+            let rotated = keyring
                 .enroll_hardware_keys(&unlocked, &mut keys)
                 .map_err(vault_error)?;
-            Ok(2)
+            finish(
+                &mut keyring,
+                &rotated.rotation,
+                stores,
+                &config.kek_file(vault),
+            )?;
+            Ok((2, rotated.codes))
         }
         "one" => {
             if keyring.backup_codes_left() == 0 {
@@ -948,10 +1079,16 @@ pub fn enroll_keys(
             }
             let unlocked = unlock_current(&mut keyring, vault, config, ask, devices)?;
             let key = devices.plugged_in().ok_or_else(stopped)?;
-            keyring
+            let rotated = keyring
                 .enroll_single_hardware_key(&unlocked, key, SingleKeyRisk::accepted())
                 .map_err(vault_error)?;
-            Ok(1)
+            finish(
+                &mut keyring,
+                &rotated.rotation,
+                stores,
+                &config.kek_file(vault),
+            )?;
+            Ok((1, rotated.codes))
         }
         _ => Err(stopped()),
     }
@@ -1034,6 +1171,7 @@ fn lowering_key(
 pub fn command(
     vault: &VaultConfig,
     config: &KeyringConfig,
+    stores: &[(Store, PathBuf)],
     action: Option<&str>,
     ask: Ask<'_>,
     devices: &mut dyn Devices,
@@ -1048,15 +1186,20 @@ pub fn command(
             );
         }
         Some("enroll-totp") => {
-            enroll_totp(vault, config, ask, devices)?;
-            let _ = writeln!(out, "vault-keyring: the vault is at the TOTP tier");
-        }
-        Some("enroll-keys") => {
-            let keys = enroll_keys(vault, config, ask, devices)?;
+            let codes = enroll_totp(vault, config, stores, ask, devices)?;
             let _ = writeln!(
                 out,
-                "vault-keyring: the vault is at the hardware-key tier with {keys} security key(s); name them with vault-keyring label-key"
+                "vault-keyring: the vault is at the TOTP tier, under a new key; every store is re-sealed"
             );
+            new_codes(out, codes.as_ref());
+        }
+        Some("enroll-keys") => {
+            let (keys, codes) = enroll_keys(vault, config, stores, ask, devices)?;
+            let _ = writeln!(
+                out,
+                "vault-keyring: the vault is at the hardware-key tier with {keys} security key(s), under a new key; every store is re-sealed. Name the keys with vault-keyring label-key"
+            );
+            new_codes(out, codes.as_ref());
         }
         Some("use-file-tier") => {
             use_file_tier(vault, config, ask, devices)?;
@@ -1111,6 +1254,19 @@ pub fn command(
     Ok(())
 }
 
+/// Shows the backup codes a new key brought, if the vault had codes.
+pub fn new_codes(out: &mut dyn Write, codes: Option<&BackupCodes>) {
+    if let Some(codes) = codes {
+        let _ = writeln!(
+            out,
+            "vault-keyring: new backup codes for the new key (the earlier set no longer works). Each works once; keep them apart from this machine:"
+        );
+        for code in codes.codes() {
+            let _ = writeln!(out, "  {code}");
+        }
+    }
+}
+
 /// The actions `vault-keyring` takes.
 pub const USAGE: &str = "usage: hatchling-broker vault-keyring <init | enroll-totp | enroll-keys | use-file-tier | backup-codes | status | add-key | remove-key | label-key>";
 
@@ -1121,12 +1277,14 @@ pub const USAGE: &str = "usage: hatchling-broker vault-keyring <init | enroll-to
 /// # Errors
 ///
 /// A bad keyring setting, or as [`command`].
-pub fn run_keyring(vault: &VaultConfig, action: Option<&str>) -> Result<(), Error> {
+pub fn run_keyring(broker: &crate::Config, action: Option<&str>) -> Result<(), Error> {
     let config = KeyringConfig::from_env()?;
+    let stores = crate::sealed_stores(broker, crate::vault_ops::redaction_config(broker)?.as_ref());
     let (mut asking, mut devices) = terminal_operator();
     command(
-        vault,
+        &broker.vault,
         &config,
+        &stores,
         action,
         &mut asking,
         &mut devices,
@@ -1236,7 +1394,7 @@ mod tests {
 
     /// [`super::enroll_totp`] with no security key reachable.
     fn enroll_totp(vault: &VaultConfig, config: &KeyringConfig, ask: Ask<'_>) -> Result<(), Error> {
-        super::enroll_totp(vault, config, ask, &mut NoKeys)
+        super::enroll_totp(vault, config, &secrets(vault), ask, &mut NoKeys).map(drop)
     }
 
     /// [`super::backup_codes`] with no security key reachable.
@@ -1246,6 +1404,34 @@ mod tests {
         ask: Ask<'_>,
     ) -> Result<BackupCodes, Error> {
         super::backup_codes(vault, config, ask, &mut NoKeys)
+    }
+
+    /// Finishes a rotation as the broker does, for the secrets store, and
+    /// returns the new backup codes as text.
+    fn settle(
+        keyring: &mut Keyring,
+        vault: &VaultConfig,
+        config: &KeyringConfig,
+        rotated: &hatchling_vault::Rotated,
+    ) -> Vec<String> {
+        let codes = rotated
+            .codes
+            .as_ref()
+            .map(|codes| codes.codes().map(str::to_owned).collect())
+            .unwrap_or_default();
+        finish(
+            keyring,
+            &rotated.rotation,
+            &secrets(vault),
+            &config.kek_file(vault),
+        )
+        .unwrap();
+        codes
+    }
+
+    /// The secrets store alone: the stores a keyring command re-seals here.
+    fn secrets(vault: &VaultConfig) -> Vec<(Store, PathBuf)> {
+        vec![(Store::SECRETS, vault.root.clone())]
     }
 
     struct Scratch(PathBuf);
@@ -1438,9 +1624,10 @@ mod tests {
         let kek = Kek::from_file_key(&FileKey::new(config.kek_file(&vault)).load().unwrap());
         let unlocked = keyring.unlock_file(&kek).unwrap();
         let (mut primary, mut backup) = (VirtualAuthenticator::new(), VirtualAuthenticator::new());
-        keyring
+        let rotated = keyring
             .enroll_hardware_keys(&unlocked, &mut [&mut primary, &mut backup])
             .unwrap();
+        settle(&mut keyring, &vault, &config, &rotated);
         assert_eq!(
             status(&config).unwrap(),
             "vault-keyring: tier hardware key, 0 backup code(s) left"
@@ -1712,9 +1899,10 @@ mod tests {
         let kek = Kek::from_file_key(&FileKey::new(config.kek_file(&vault)).load().unwrap());
         let unlocked = keyring.unlock_file(&kek).unwrap();
         let (mut primary, mut backup) = (VirtualAuthenticator::new(), VirtualAuthenticator::new());
-        keyring
+        let rotated = keyring
             .enroll_hardware_keys(&unlocked, &mut [&mut primary, &mut backup])
             .unwrap();
+        settle(&mut keyring, &vault, &config, &rotated);
         let err = enroll_totp(&vault, &config, &mut |_| Ok(String::new())).unwrap_err();
         assert!(
             matches!(&err, Error::Usage { reason } if reason.contains("stopped; nothing was changed")),
@@ -1726,19 +1914,17 @@ mod tests {
     fn hardware_with_codes(name: &str) -> (Scratch, VaultConfig, KeyringConfig, Vec<String>) {
         use hatchling_vault::virtual_key::VirtualAuthenticator;
         let (scratch, vault, config) = adopted(name);
-        let codes: Vec<String> = backup_codes(&vault, &config, &mut |_| Ok(String::new()))
-            .unwrap()
-            .codes()
-            .map(str::to_owned)
-            .collect();
+        backup_codes(&vault, &config, &mut |_| Ok(String::new())).unwrap();
         let path = config.keyring.clone().unwrap();
         let mut keyring = Keyring::load(&path).unwrap();
         let kek = Kek::from_file_key(&FileKey::new(config.kek_file(&vault)).load().unwrap());
         let unlocked = keyring.unlock_file(&kek).unwrap();
         let (mut primary, mut backup) = (VirtualAuthenticator::new(), VirtualAuthenticator::new());
-        keyring
+        let rotated = keyring
             .enroll_hardware_keys(&unlocked, &mut [&mut primary, &mut backup])
             .unwrap();
+        // The new key brings the codes to use.
+        let codes = settle(&mut keyring, &vault, &config, &rotated);
         (scratch, vault, config, codes)
     }
 
@@ -1978,8 +2164,16 @@ mod tests {
         let mut never = |_: &str| -> Result<String, Error> { Ok(String::new()) };
         let run = |action: Option<&str>, ask: Ask<'_>| {
             let mut out = Vec::new();
-            command(&vault, &config, action, ask, &mut NoKeys, &mut out)
-                .map(|()| String::from_utf8(out).unwrap())
+            command(
+                &vault,
+                &config,
+                &secrets(&vault),
+                action,
+                ask,
+                &mut NoKeys,
+                &mut out,
+            )
+            .map(|()| String::from_utf8(out).unwrap())
         };
         unlock(&vault, &KeyringConfig::default()).unwrap();
         assert!(
@@ -2011,12 +2205,14 @@ mod tests {
     #[test]
     fn the_binary_runs_the_command_with_its_environments_settings() {
         let (_scratch, vault) = scratch("run-keyring");
+        let mut broker = crate::api_auth::tests::owner_config(None);
+        broker.vault = vault;
         assert!(matches!(
-            run_keyring(&vault, Some("bogus")),
+            run_keyring(&broker, Some("bogus")),
             Err(Error::Usage { .. })
         ));
         assert!(matches!(
-            run_keyring(&vault, None),
+            run_keyring(&broker, None),
             Err(Error::Usage { .. })
         ));
     }
@@ -2070,11 +2266,7 @@ mod tests {
     ) -> (Scratch, VaultConfig, KeyringConfig, Vec<String>, Desk) {
         use hatchling_vault::virtual_key::VirtualAuthenticator;
         let (scratch, vault, config) = adopted(name);
-        let codes: Vec<String> = backup_codes(&vault, &config, &mut |_| Ok(String::new()))
-            .unwrap()
-            .codes()
-            .map(str::to_owned)
-            .collect();
+        backup_codes(&vault, &config, &mut |_| Ok(String::new())).unwrap();
         let mut keyring = Keyring::load(config.keyring.as_deref().unwrap()).unwrap();
         let kek = Kek::from_file_key(&FileKey::new(config.kek_file(&vault)).load().unwrap());
         let unlocked = keyring.unlock_file(&kek).unwrap();
@@ -2086,9 +2278,12 @@ mod tests {
             .take(enrolled)
             .map(|key| -> &mut dyn Authenticator { key })
             .collect();
-        keyring
+        let rotated = keyring
             .enroll_hardware_keys(&unlocked, &mut devices)
             .unwrap();
+        drop(devices);
+        // The new key brings the codes to use.
+        let codes = settle(&mut keyring, &vault, &config, &rotated);
         let desk = Desk {
             keys,
             plugged: Rc::new(std::cell::Cell::new(Some(0))),
@@ -2700,6 +2895,7 @@ mod tests {
             command(
                 &vault,
                 &config,
+                &secrets(&vault),
                 Some(action),
                 &mut |prompt| Ok(operator.answer(prompt)),
                 desk,
@@ -2882,24 +3078,26 @@ mod tests {
         let (_scratch, vault, config) = adopted("enroll-two");
         let (mut devices, _) = tray(2, &[0, 1]);
         let mut asked = Vec::new();
+        let kek = Kek::from_file_key(&FileKey::new(config.kek_file(&vault)).load().unwrap());
         let enrolled = enroll_keys(
             &vault,
             &config,
+            &secrets(&vault),
             &mut answers(&["two", ""], &mut asked),
             &mut devices,
         )
         .unwrap();
-        assert_eq!(enrolled, 2);
+        assert_eq!(enrolled.0, 2);
+        assert!(enrolled.1.is_none(), "no codes before, none made");
         assert_eq!(asked.len(), 2, "the file tier asks nothing to unlock");
         assert_eq!(tier_of(&config), Tier::HardwareKey);
         let keyring = Keyring::load(config.keyring.as_deref().unwrap()).unwrap();
         for mut key in devices.bus.keys().unwrap() {
             assert!(keyring.unlock_hardware_key(&mut key).is_ok());
         }
-        let kek = Kek::from_file_key(&FileKey::new(config.kek_file(&vault)).load().unwrap());
         assert!(
-            keyring.unlock_file(&kek).is_err(),
-            "no weaker way in remains"
+            keyring.unlock_file(&kek).is_err() && !config.kek_file(&vault).exists(),
+            "no weaker way in remains, and its KEK file is gone"
         );
     }
 
@@ -2911,6 +3109,7 @@ mod tests {
         let refused_without_codes = enroll_keys(
             &vault,
             &config,
+            &secrets(&vault),
             &mut answers(&["one"], &mut asked),
             &mut devices,
         );
@@ -2922,6 +3121,7 @@ mod tests {
         let declined = enroll_keys(
             &vault,
             &config,
+            &secrets(&vault),
             &mut answers(&["one", "no"], &mut asked),
             &mut devices,
         );
@@ -2931,11 +3131,17 @@ mod tests {
         let enrolled = enroll_keys(
             &vault,
             &config,
+            &secrets(&vault),
             &mut answers(&["one", "one key", ""], &mut asked),
             &mut devices,
         )
         .unwrap();
-        assert_eq!(enrolled, 1);
+        assert_eq!(enrolled.0, 1);
+        assert_eq!(
+            enrolled.1.map(|codes| codes.codes().count()),
+            Some(10),
+            "a new key, a new set"
+        );
         assert!(asked.get(1).unwrap().contains("Type \"one key\""));
         assert_eq!(tier_of(&config), Tier::HardwareKey);
         assert_eq!(keys_of(&config).len(), 1);
@@ -2949,6 +3155,7 @@ mod tests {
         let short = enroll_keys(
             &vault,
             &config,
+            &secrets(&vault),
             &mut answers(&["two", ""], &mut asked),
             &mut one,
         );
@@ -2960,6 +3167,7 @@ mod tests {
         let unknown = enroll_keys(
             &vault,
             &config,
+            &secrets(&vault),
             &mut answers(&["three"], &mut asked),
             &mut one,
         );
@@ -2970,6 +3178,7 @@ mod tests {
         let absent = enroll_keys(
             &vault,
             &config,
+            &secrets(&vault),
             &mut answers(&["one", "one key", ""], &mut asked),
             &mut none,
         );
@@ -2983,6 +3192,7 @@ mod tests {
         let again = enroll_keys(
             &hw_vault,
             &hw_config,
+            &secrets(&hw_vault),
             &mut answers(&[], &mut asked),
             &mut desk,
         );
@@ -3127,6 +3337,7 @@ mod tests {
         command(
             &vault,
             &config,
+            &secrets(&vault),
             Some("enroll-keys"),
             &mut answers(&["two", ""], &mut asked),
             &mut devices,
@@ -3138,6 +3349,7 @@ mod tests {
         command(
             &vault,
             &config,
+            &secrets(&vault),
             Some("use-file-tier"),
             &mut answers(&["yes", ""], &mut asked),
             &mut devices,
@@ -3147,7 +3359,7 @@ mod tests {
         let said = String::from_utf8(out).unwrap();
         assert_eq!(
             said,
-            "vault-keyring: the vault is at the hardware-key tier with 2 security key(s); name them with vault-keyring label-key\nvault-keyring: the vault is at the file tier; its key is in the KEK file on this machine\n"
+            "vault-keyring: the vault is at the hardware-key tier with 2 security key(s), under a new key; every store is re-sealed. Name the keys with vault-keyring label-key\nvault-keyring: the vault is at the file tier; its key is in the KEK file on this machine\n"
         );
         assert!(USAGE.contains("enroll-keys | use-file-tier"));
     }
@@ -3285,5 +3497,288 @@ mod tests {
             matches!(unwritable, Err(Error::Vault { .. })),
             "{unwritable:?}"
         );
+    }
+
+    /// The secrets store and a spaces store beside it, each holding one
+    /// record under `key`: the stores a rotation must carry together.
+    fn two_stores(
+        scratch: &Scratch,
+        vault: &VaultConfig,
+        key: &MasterKey,
+    ) -> Vec<(Store, PathBuf)> {
+        let spaces = scratch.0.join("spaces");
+        SealedVault::open_in(&spaces, key, Store::SPACES)
+            .unwrap()
+            .store(
+                &"team".parse().unwrap(),
+                &Secret::new(b"members".to_vec()).unwrap(),
+            )
+            .unwrap();
+        vec![
+            (Store::SECRETS, vault.root.clone()),
+            (Store::SPACES, spaces),
+        ]
+    }
+
+    /// Whether every store in `stores` opens under `key`.
+    fn opens_all(stores: &[(Store, PathBuf)], key: &MasterKey) -> bool {
+        stores.iter().all(|(store, root)| {
+            let name: SecretName = (if *store == Store::SPACES {
+                "team"
+            } else {
+                "token"
+            })
+            .parse()
+            .unwrap();
+            SealedVault::open_in(root, key, *store)
+                .unwrap()
+                .fetch(&name)
+                .is_ok()
+        })
+    }
+
+    #[test]
+    fn rekey_vault_rotates_inside_the_keyring_and_every_store_follows() {
+        let (scratch, vault, config) = adopted("rekey-in-keyring");
+        let old = unlock(&vault, &config).unwrap();
+        let stores = two_stores(&scratch, &vault, &old);
+        let (reports, codes) = rekey(
+            &vault,
+            &config,
+            &stores,
+            &mut |_| Ok(String::new()),
+            &mut NoKeys,
+        )
+        .unwrap();
+        assert_eq!(
+            reports
+                .iter()
+                .map(|(store, report)| (*store, report.rekeyed))
+                .collect::<Vec<_>>(),
+            [("secrets", 1), ("spaces", 1)]
+        );
+        assert!(codes.is_none(), "no codes before, none made");
+        let new = unlock(&vault, &config).unwrap();
+        assert!(opens_all(&stores, &new));
+        assert!(stores.iter().all(|(store, root)| {
+            SealedVault::open_in(root, &old, *store)
+                .unwrap()
+                .fetch(&"token".parse().unwrap())
+                .is_err()
+        }));
+        assert!(!vault.key_file.exists(), "no plain key was written");
+        assert!(
+            config.kek_file(&vault).exists(),
+            "the file tier keeps its KEK"
+        );
+        // At the TOTP tier, the app's next code is all it takes.
+        let mut app = App::new(0);
+        enroll_totp(&vault, &config, &mut |prompt| Ok(app.answer(prompt))).unwrap();
+        let sealed = std::fs::read(vault.root.join("token")).unwrap();
+        rekey(
+            &vault,
+            &config,
+            &secrets(&vault),
+            &mut |_| Ok(app.code(30)),
+            &mut NoKeys,
+        )
+        .unwrap();
+        assert_ne!(
+            std::fs::read(vault.root.join("token")).unwrap(),
+            sealed,
+            "re-sealed"
+        );
+        // A later step's code (with the clock given) opens the new key.
+        let later = now() + 90;
+        let after = Keyring::load(config.keyring.as_deref().unwrap())
+            .unwrap()
+            .unlock_totp(
+                &hatchling_vault::totp_code(app.seed.as_deref().unwrap(), later),
+                later,
+            )
+            .unwrap();
+        assert!(reads_the_secret(&vault, after.key()));
+    }
+
+    #[test]
+    fn an_unfinished_rotation_refuses_to_serve_until_rekey_vault_finishes_it() {
+        let (scratch, vault, config) = adopted("rekey-resume");
+        let old = unlock(&vault, &config).unwrap();
+        let stores = two_stores(&scratch, &vault, &old);
+        // A crash right after the keyring's commit: nothing re-sealed yet.
+        let mut keyring = Keyring::load(config.keyring.as_deref().unwrap()).unwrap();
+        let kek = Kek::from_file_key(&FileKey::new(config.kek_file(&vault)).load().unwrap());
+        let unlocked = keyring.unlock_file(&kek).unwrap();
+        drop(
+            keyring
+                .rotate_in_place(&unlocked, Some(&kek), &mut [])
+                .unwrap(),
+        );
+        let refused = unlock(&vault, &config).unwrap_err().to_string();
+        assert!(refused.contains("rekey-vault"), "{refused}");
+        assert!(matches!(
+            settled(&Keyring::load(config.keyring.as_deref().unwrap()).unwrap()),
+            Err(Error::Vault { .. })
+        ));
+        // rekey-vault resumes it: every store moves, and the vault serves again.
+        let (reports, codes) = rekey(
+            &vault,
+            &config,
+            &stores,
+            &mut |_| Ok(String::new()),
+            &mut NoKeys,
+        )
+        .unwrap();
+        assert_eq!(reports.len(), 2);
+        assert!(codes.is_none());
+        let new = unlock(&vault, &config).unwrap();
+        assert!(opens_all(&stores, &new));
+        assert!(!opens_all(&stores, &old));
+        // Again: a fresh rotation, which a stale store stops before anything is written.
+        std::fs::write(scratch.0.join("spaces").join("stale"), b"plain").unwrap();
+        std::fs::set_permissions(
+            scratch.0.join("spaces").join("stale"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        let keyring_bytes = std::fs::read(config.keyring.as_deref().unwrap()).unwrap();
+        assert!(
+            rekey(
+                &vault,
+                &config,
+                &stores,
+                &mut |_| Ok(String::new()),
+                &mut NoKeys
+            )
+            .is_err()
+        );
+        assert_eq!(
+            std::fs::read(config.keyring.as_deref().unwrap()).unwrap(),
+            keyring_bytes
+        );
+        assert!(opens_all(&stores, &unlock(&vault, &config).unwrap()));
+    }
+
+    #[test]
+    fn after_a_tier_increase_the_previous_key_material_opens_nothing() {
+        let (scratch, vault, config) = adopted("tier-up");
+        let old = unlock(&vault, &config).unwrap();
+        let stores = two_stores(&scratch, &vault, &old);
+        let keyring_path = config.keyring.clone().unwrap();
+        let (keyring_copy, kek_copy) = (
+            std::fs::read(&keyring_path).unwrap(),
+            std::fs::read(config.kek_file(&vault)).unwrap(),
+        );
+        let mut app = App::new(0);
+        let codes = super::enroll_totp(
+            &vault,
+            &config,
+            &stores,
+            &mut |prompt| Ok(app.answer(prompt)),
+            &mut NoKeys,
+        )
+        .unwrap();
+        assert!(codes.is_none());
+        assert!(
+            !config.kek_file(&vault).exists(),
+            "the file tier's KEK is gone"
+        );
+        // The copies from before still unwrap the old key, which opens nothing.
+        let snapshot = scratch.0.join("snapshot");
+        std::fs::create_dir(&snapshot).unwrap();
+        std::fs::set_permissions(&snapshot, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(snapshot.join("keyring"), &keyring_copy).unwrap();
+        std::fs::set_permissions(
+            snapshot.join("keyring"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        let copied = Keyring::load(&snapshot.join("keyring")).unwrap();
+        let from_copy = copied
+            .unlock_file(&Kek::from_bytes(kek_copy.try_into().unwrap()))
+            .unwrap();
+        assert!(stores.iter().all(|(store, root)| {
+            SealedVault::open_in(root, from_copy.key(), *store)
+                .unwrap()
+                .fetch(&"token".parse().unwrap())
+                .is_err()
+        }));
+        assert!(!opens_all(&stores, from_copy.key()));
+        let now = unlock_asking(&vault, &config, &mut |_| Ok(app.code(30))).unwrap();
+        assert!(opens_all(&stores, &now));
+    }
+
+    #[test]
+    fn finishing_a_rotation_drops_the_kek_only_off_the_file_tier() {
+        let (scratch, vault, config) = adopted("finish");
+        let old = unlock(&vault, &config).unwrap();
+        let stores = two_stores(&scratch, &vault, &old);
+        let kek_file = config.kek_file(&vault);
+        let mut keyring = Keyring::load(config.keyring.as_deref().unwrap()).unwrap();
+        let kek = Kek::from_file_key(&FileKey::new(kek_file.clone()).load().unwrap());
+        let unlocked = keyring.unlock_file(&kek).unwrap();
+        let rotated = keyring
+            .rotate_in_place(&unlocked, Some(&kek), &mut [])
+            .unwrap();
+        let reports = finish(&mut keyring, &rotated.rotation, &stores, &kek_file).unwrap();
+        assert_eq!(reports.len(), 2);
+        assert!(kek_file.exists(), "still the file tier's way in");
+        assert!(!keyring.rotation_pending());
+        assert!(opens_all(&stores, rotated.rotation.new_key()));
+        // Run again (as after a crash): nothing left to move, nothing breaks.
+        let again = finish(&mut keyring, &rotated.rotation, &stores, &kek_file).unwrap();
+        assert!(again.iter().all(|(_, report)| report.rekeyed == 0));
+        assert!(settled(&keyring).is_ok());
+        // A KEK file that can't be removed off the file tier is an error.
+        let mut app = App::new(0);
+        enroll_totp(&vault, &config, &mut |prompt| Ok(app.answer(prompt))).unwrap();
+        let mut keyring = Keyring::load(config.keyring.as_deref().unwrap()).unwrap();
+        let stuck = scratch.0.join("stuck");
+        std::fs::create_dir(&stuck).unwrap();
+        std::fs::write(stuck.join("kek"), b"x").unwrap();
+        let unlocked = keyring.unlock_totp(&app.code(30), now()).unwrap();
+        let rotated = keyring.rotate_in_place(&unlocked, None, &mut []).unwrap();
+        let secrets = secrets(&vault);
+        assert!(matches!(
+            finish(&mut keyring, &rotated.rotation, &secrets, &stuck),
+            Err(Error::Vault { .. })
+        ));
+        assert!(keyring.rotation_pending(), "nothing finished");
+        finish(
+            &mut keyring,
+            &rotated.rotation,
+            &secrets,
+            &scratch.0.join("gone"),
+        )
+        .unwrap();
+        assert!(!keyring.rotation_pending());
+    }
+
+    #[test]
+    fn new_backup_codes_are_shown_only_when_there_are_some() {
+        let mut out = Vec::new();
+        new_codes(&mut out, None);
+        assert!(out.is_empty());
+        let (_scratch, vault, config) = adopted("new-codes");
+        let codes = backup_codes(&vault, &config, &mut |_| Ok(String::new())).unwrap();
+        new_codes(&mut out, Some(&codes));
+        let shown = String::from_utf8(out).unwrap();
+        assert!(shown.starts_with("vault-keyring: new backup codes for the new key"));
+        assert_eq!(shown.lines().count(), 1 + codes.codes().count());
+        assert!(codes.codes().all(|code| shown.contains(code)));
+    }
+
+    #[test]
+    fn rekey_at_this_terminal_needs_nothing_at_the_file_tier() {
+        let (scratch, vault, config) = adopted("run-rekey");
+        let old = unlock(&vault, &config).unwrap();
+        let stores = two_stores(&scratch, &vault, &old);
+        let (reports, _) = run_rekey(&vault, &config, &stores).unwrap();
+        assert_eq!(reports.len(), 2);
+        assert!(opens_all(&stores, &unlock(&vault, &config).unwrap()));
+        assert!(matches!(
+            run_rekey(&vault, &KeyringConfig::default(), &stores),
+            Err(Error::Usage { .. })
+        ));
     }
 }

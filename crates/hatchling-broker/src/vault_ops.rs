@@ -141,33 +141,59 @@ pub fn rekey_vault(
     let new_key = FileKey::new(new_key_file.to_path_buf())
         .load_or_create()
         .map_err(|source| Error::Vault { source })?;
+    reseal_stores(stores, old_key, &new_key)
+}
+
+/// Re-seals every existing store in `stores` from `old_key` to `new_key`,
+/// each with [`hatchling_vault::rekey`] (resumable: a file already under
+/// `new_key` is skipped). Returns each store's report.
+///
+/// # Errors
+///
+/// Returns [`Error::Vault`] if a store cannot be re-sealed.
+pub fn reseal_stores(
+    stores: &[(Store, PathBuf)],
+    old_key: &MasterKey,
+    new_key: &MasterKey,
+) -> Result<Vec<(&'static str, RekeyReport)>, Error> {
     stores
         .iter()
         .filter(|(_, root)| root.is_dir())
         .map(|(store, root)| {
-            hatchling_vault::rekey(root, old_key, &new_key, *store)
+            hatchling_vault::rekey(root, old_key, new_key, *store)
                 .map(|report| (store.label(), report))
                 .map_err(|source| Error::Vault { source })
         })
         .collect()
 }
 
-/// Refuses `rekey-vault` for a vault whose key is in a keyring: the new
-/// key would be a plain file the keyring never learns of, and the next
-/// unlock would open nothing (WO-003).
-fn refuse_keyring_rekey(keyring: &KeyringConfig) -> Result<(), Error> {
-    keyring.keyring.as_deref().map_or(Ok(()), |path| {
-        Err(Error::Usage {
+/// Which way `rekey-vault` rotates: inside the keyring, which takes no
+/// key file, or to the plain key file given, which a vault without a
+/// keyring needs. Anything else is refused, and nothing is created.
+fn rekey_target<'a>(
+    keyring: &KeyringConfig,
+    new_key_file: Option<&'a Path>,
+) -> Result<Option<&'a Path>, Error> {
+    match (keyring.keyring.as_deref(), new_key_file) {
+        (Some(path), Some(file)) => Err(Error::Usage {
             reason: format!(
-                "this vault's key is in the keyring at {} (HATCHLING_VAULT_KEYRING): rekey-vault can't rotate a key inside a keyring yet, and created no key file",
-                path.display()
+                "this vault's key is in the keyring at {} (HATCHLING_VAULT_KEYRING): rekey-vault rotates it there and takes no key file; {} was not created",
+                path.display(),
+                file.display()
             ),
-        })
-    })
+        }),
+        (Some(_), None) => Ok(None),
+        (None, Some(file)) => Ok(Some(file)),
+        (None, None) => Err(Error::Usage {
+            reason: String::from(
+                "rekey-vault requires a new key file path without a keyring: hatchling-broker rekey-vault <new-key-file>",
+            ),
+        }),
+    }
 }
 
 /// The output gate's settings, when there is an ingress for it to guard.
-fn redaction_config(config: &Config) -> Result<Option<RedactionConfig>, Error> {
+pub(crate) fn redaction_config(config: &Config) -> Result<Option<RedactionConfig>, Error> {
     config
         .channel_ingress
         .as_ref()
@@ -211,13 +237,19 @@ pub fn run_migrate_vault(config: &Config) -> Result<(), Error> {
 /// # Errors
 ///
 /// Returns [`Error`] from key loading/creation or rotation.
-pub fn run_rekey_vault(config: &Config, new_key_file: &Path) -> Result<(), Error> {
-    refuse_keyring_rekey(&KeyringConfig::from_env()?)?;
-    let old_key = load_master_key(&config.vault)?;
+pub fn run_rekey_vault(config: &Config, new_key_file: Option<&Path>) -> Result<(), Error> {
+    let keyring = KeyringConfig::from_env()?;
+    let target = rekey_target(&keyring, new_key_file)?;
     let stores = sealed_stores(config, redaction_config(config)?.as_ref());
-    // Old envelopes or plaintext stop it before any store is touched.
-    check_sealed_stores(&stores)?;
-    let reports = rekey_vault(&stores, &old_key, new_key_file)?;
+    let (reports, codes) = match target {
+        None => crate::vault_keyring::run_rekey(&config.vault, &keyring, &stores)?,
+        Some(new_key_file) => {
+            let old_key = load_master_key(&config.vault)?;
+            // Old envelopes or plaintext stop it before any store is touched.
+            check_sealed_stores(&stores)?;
+            (rekey_vault(&stores, &old_key, new_key_file)?, None)
+        }
+    };
     let mut stdout = std::io::stdout().lock();
     for (store, report) in reports {
         let _ = writeln!(
@@ -226,6 +258,7 @@ pub fn run_rekey_vault(config: &Config, new_key_file: &Path) -> Result<(), Error
             report.rekeyed, report.skipped
         );
     }
+    crate::vault_keyring::new_codes(&mut stdout, codes.as_ref());
     Ok(())
 }
 
@@ -383,7 +416,7 @@ mod tests {
         let keys = dir.0.join("keys");
         std::fs::create_dir_all(&keys).unwrap();
         std::fs::set_permissions(&keys, std::fs::Permissions::from_mode(0o700)).unwrap();
-        run_rekey_vault(&config, &keys.join("second")).unwrap();
+        run_rekey_vault(&config, Some(&keys.join("second"))).unwrap();
         let second = FileKey::new(keys.join("second")).load().unwrap();
         assert!(fetch(&first).is_err(), "the old key still opens it");
         assert_eq!(fetch(&second).unwrap(), b"plaintext");
@@ -465,18 +498,24 @@ mod tests {
     }
 
     #[test]
-    fn rekey_vault_refuses_a_keyring_vault_by_name() {
-        assert!(refuse_keyring_rekey(&KeyringConfig::default()).is_ok());
+    fn rekey_vault_rotates_inside_a_keyring_and_to_a_key_file_without_one() {
+        let plain = KeyringConfig::default();
         let keyring = KeyringConfig {
             keyring: Some(PathBuf::from("/srv/hatchling/vault.key/keyring")),
             ..KeyringConfig::default()
         };
-        let refused = refuse_keyring_rekey(&keyring).unwrap_err().to_string();
+        let file = Path::new("/srv/hatchling/new.key");
+        assert_eq!(rekey_target(&plain, Some(file)).unwrap(), Some(file));
+        assert_eq!(rekey_target(&keyring, None).unwrap(), None);
+        let refused = rekey_target(&keyring, Some(file)).unwrap_err().to_string();
         assert!(
             refused.contains("/srv/hatchling/vault.key/keyring")
-                && refused.contains("HATCHLING_VAULT_KEYRING"),
+                && refused.contains("HATCHLING_VAULT_KEYRING")
+                && refused.contains("/srv/hatchling/new.key"),
             "{refused}"
         );
+        let missing = rekey_target(&plain, None).unwrap_err().to_string();
+        assert!(missing.contains("rekey-vault <new-key-file>"), "{missing}");
     }
 
     #[test]
@@ -515,7 +554,9 @@ mod tests {
         std::fs::write(&planted, b"members").unwrap();
         std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o600)).unwrap();
         let new_key = dir.0.join("new.key");
-        let refused = run_rekey_vault(&config, &new_key).unwrap_err().to_string();
+        let refused = run_rekey_vault(&config, Some(&new_key))
+            .unwrap_err()
+            .to_string();
         assert!(
             refused.contains("spaces") && refused.contains("team-7"),
             "{refused}"
@@ -529,6 +570,41 @@ mod tests {
                 .as_bytes(),
             b"kept",
             "the secrets are still under the old key"
+        );
+    }
+
+    #[test]
+    fn resealing_moves_each_existing_store_and_skips_what_is_moved() {
+        let dir = crate::api_auth::tests::scratch("vault-ops-reseal");
+        let (old, new) = (
+            MasterKey::generate().unwrap(),
+            MasterKey::generate().unwrap(),
+        );
+        let name: SecretName = "record".parse().unwrap();
+        SealedVault::open_in(&dir.0.join("spaces"), &old, Store::SPACES)
+            .unwrap()
+            .store(&name, &Secret::new(b"x".to_vec()).unwrap())
+            .unwrap();
+        let stores = [
+            (Store::SECRETS, dir.0.join("absent")),
+            (Store::SPACES, dir.0.join("spaces")),
+        ];
+        let moved = reseal_stores(&stores, &old, &new).unwrap();
+        assert_eq!(
+            moved
+                .iter()
+                .map(|(store, report)| (*store, report.rekeyed, report.skipped))
+                .collect::<Vec<_>>(),
+            [("spaces", 1, 0)]
+        );
+        assert!(!dir.0.join("absent").exists());
+        let again = reseal_stores(&stores, &old, &new).unwrap();
+        assert_eq!(again.first().map(|(_, report)| report.skipped), Some(1));
+        assert!(
+            SealedVault::open_in(&dir.0.join("spaces"), &new, Store::SPACES)
+                .unwrap()
+                .fetch(&name)
+                .is_ok()
         );
     }
 }

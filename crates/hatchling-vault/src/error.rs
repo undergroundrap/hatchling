@@ -223,6 +223,24 @@ pub enum Error {
     )]
     NeedBackupCodes,
 
+    /// A rotation of the vault's DEK is committed but not finished: the
+    /// stores may hold both keys' envelopes. Nothing is served, and no
+    /// other rotation starts, until `rekey-vault` finishes it.
+    #[error(
+        "a rotation of the vault's key is unfinished: run hatchling-broker rekey-vault to finish it"
+    )]
+    RotationUnfinished,
+
+    /// An enrolled security key did not answer, so the vault's key can't
+    /// be wrapped for it again: nothing was changed.
+    #[error(
+        "the security key {key} did not answer: plug in every enrolled key, or remove a lost one first (vault-keyring remove-key); nothing was changed"
+    )]
+    KeyAbsent {
+        /// The key: its name and wrap id, or the id alone.
+        key: String,
+    },
+
     /// The one-time code did not match during enrollment: nothing was
     /// changed. Check the code, and the device's clock.
     #[error("that code did not match; check the authenticator app's code and the device's clock")]

@@ -129,8 +129,8 @@ fn unknown_subcommand_is_usage_error() {
     );
 }
 
-/// `rekey-vault` without the new key file path is a usage error, not
-/// a rotation against a default.
+/// `rekey-vault` without a keyring and without the new key file path is a
+/// usage error, not a rotation against a default.
 #[test]
 fn rekey_vault_without_new_key_file_is_usage_error() {
     let scratch = scratch_dir("rekey-no-arg").unwrap();
@@ -335,6 +335,75 @@ fn rekey_vault_refuses_a_keyring_vault_and_writes_no_key() {
         "{stderr}"
     );
     assert!(!written, "a plain key file was written");
+}
+
+/// `rekey-vault` on a keyring vault rotates inside the keyring, through
+/// the binary: every store is re-sealed, no key file is written, and the
+/// keyring alone opens the vault after.
+#[test]
+fn rekey_vault_rotates_a_keyring_vault_inside_its_keyring() {
+    let scratch = scratch_dir("rekey-in-keyring").unwrap();
+    let vault_dir = scratch.join("vault");
+    std::fs::create_dir_all(&vault_dir).unwrap();
+    std::fs::set_permissions(&vault_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::write(vault_dir.join("tok"), b"plaintext-secret").unwrap();
+    std::fs::set_permissions(
+        vault_dir.join("tok"),
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    let mut env = operator_env(&scratch, "vault");
+    let unset = &["HATCHLING_AGENT_BIN"];
+    let made = run_broker(&["migrate-vault"], &operator_env_refs(&env), unset).unwrap();
+    assert!(
+        made.status.success(),
+        "{}",
+        String::from_utf8_lossy(&made.stderr)
+    );
+    env.push((
+        "HATCHLING_VAULT_KEYRING",
+        scratch
+            .join("vault.key")
+            .join("keyring")
+            .to_string_lossy()
+            .into_owned(),
+    ));
+    let adopted = run_broker(&["vault-keyring", "init"], &operator_env_refs(&env), unset).unwrap();
+    assert!(
+        adopted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&adopted.stderr)
+    );
+    let before = std::fs::read(vault_dir.join("tok")).unwrap();
+    let rekeyed = run_broker(&["rekey-vault"], &operator_env_refs(&env), unset).unwrap();
+    let after = std::fs::read(vault_dir.join("tok")).unwrap();
+    let minted = scratch.join("vault.key").join("key").exists();
+    // migrate-vault opens every current envelope to verify it: under the
+    // keyring's key, the re-sealed file opens.
+    let verified = run_broker(&["migrate-vault"], &operator_env_refs(&env), unset).unwrap();
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        rekeyed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rekeyed.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&rekeyed.stdout);
+    assert!(
+        stdout.contains("rekey-vault: secrets: re-sealed 1 under the new key"),
+        "{stdout}"
+    );
+    assert_ne!(before, after, "re-sealed under the new key");
+    assert!(!minted, "no plain key file");
+    assert!(
+        verified.status.success(),
+        "{}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&verified.stdout)
+            .contains("secrets: sealed 0, re-sealed 0 old, skipped 1"),
+        "the keyring's key opens the re-sealed file"
+    );
 }
 
 /// A vault adopted into a keyring, started without
