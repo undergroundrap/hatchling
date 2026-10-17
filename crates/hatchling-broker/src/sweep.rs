@@ -350,9 +350,16 @@ mod tests {
         )
         .unwrap();
         let paths = crate::environment::ENVIRONMENT.iter().filter(|variable| {
-            ["_DIR", "_FILE", "_KEYRING", "_SOCKET", "_WORKSPACE", "_ROOTS"]
-                .iter()
-                .any(|suffix| variable.name.ends_with(suffix))
+            [
+                "_DIR",
+                "_FILE",
+                "_KEYRING",
+                "_SOCKET",
+                "_WORKSPACE",
+                "_ROOTS",
+            ]
+            .iter()
+            .any(|suffix| variable.name.ends_with(suffix))
                 || variable.name == "HATCHLING_CHANNEL_INGRESS"
         });
         let mut listed = 0;

@@ -688,16 +688,25 @@ pub fn euid() -> u32 {
     unsafe { libc::geteuid() }
 }
 
-/// Whether a process with pid `pid` exists: one this process may not
-/// signal counts. A pid of 0 or below names no one process.
+/// Whether a process with pid `pid` is alive: one this process may not
+/// signal counts, and a zombie, ended but not yet reaped, doesn't. A pid
+/// of 0 or below names no one process.
 #[must_use]
 pub fn pid_alive(pid: i32) -> bool {
-    Pid::from_raw(pid).is_some_and(|pid| {
+    Pid::from_raw(pid).is_some_and(|raw| {
         matches!(
-            rustix::process::test_kill_process(pid),
+            rustix::process::test_kill_process(raw),
             Ok(()) | Err(rustix::io::Errno::PERM)
-        )
+        ) && !zombie(&std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default())
     })
+}
+
+/// Whether `/proc/<pid>/stat` text says its process is a zombie: the
+/// state after the command's closing parenthesis (which a command name
+/// may itself contain) is `Z`.
+fn zombie(stat: &str) -> bool {
+    stat.rsplit_once(") ")
+        .is_some_and(|(_, rest)| rest.starts_with('Z'))
 }
 
 /// Drops every supplementary group: `setgroups(0, NULL)`.
@@ -1533,6 +1542,18 @@ mod tests {
             .wait_deadline(std::time::Duration::from_secs(10))
             .unwrap();
         assert!(!pid_alive(pid), "reaped: gone");
+        // Ended, not yet reaped: a zombie is no longer alive.
+        let mut ended = std::process::Command::new("true").spawn().unwrap();
+        let ended_pid = i32::try_from(ended.id()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !zombie(&std::fs::read_to_string(format!("/proc/{ended_pid}/stat")).unwrap()) {
+            assert!(std::time::Instant::now() < deadline, "it never ended");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!pid_alive(ended_pid), "a zombie");
+        ended.wait().unwrap();
+        assert!(zombie("12 (a) b) Z 1 2"), "the state follows the last parenthesis");
+        assert!(!zombie("12 (Z) S 1 2") && !zombie("garbage"));
     }
 
     #[test]

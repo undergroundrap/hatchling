@@ -100,6 +100,13 @@ fn staging_pid(staging: &Path) -> i32 {
     rest.split('-').next().unwrap().parse().unwrap()
 }
 
+/// One line on stdout, at once: the parent reads the child's stdout.
+fn say(line: &str) {
+    let mut out = std::io::stdout().lock();
+    writeln!(out, "{line}").unwrap();
+    out.flush().unwrap();
+}
+
 /// Run only as the child: the broker that is killed. Its run's real cell
 /// hangs; it prints the run's directory once the cell's staging is in
 /// it, and waits.
@@ -116,7 +123,10 @@ fn a_broker_killed_mid_run() {
         run_root: config.scheduler.run_root(),
         timeout: Duration::from_secs(600),
     };
-    println!("child: launching a hanging run under {}", config.scheduler.run_root().display());
+    say(&format!(
+        "child: launching a hanging run under {}",
+        config.scheduler.run_root().display()
+    ));
     std::thread::scope(|scope| {
         let launcher = CellLauncher::new(scope, &config, &key, env);
         let _run = launcher
@@ -133,7 +143,7 @@ fn a_broker_killed_mid_run() {
                 feed: None,
             })
             .unwrap();
-        println!("child: launched");
+        say("child: launched");
         let deadline = Instant::now() + Duration::from_secs(60);
         let run_dir = loop {
             let ready = std::fs::read_dir(config.scheduler.run_root())
@@ -148,10 +158,7 @@ fn a_broker_killed_mid_run() {
             assert!(Instant::now() < deadline, "the run's cell never staged");
             std::thread::sleep(Duration::from_millis(50));
         };
-        let mut out = std::io::stdout().lock();
-        writeln!(out, "{READY}{}", run_dir.display()).unwrap();
-        out.flush().unwrap();
-        drop(out);
+        say(&format!("{READY}{}", run_dir.display()));
         std::thread::sleep(Duration::from_secs(600));
     });
 }
@@ -200,8 +207,10 @@ fn the_next_start_sweeps_what_a_killed_broker_left_and_logs_each() {
     let Some(run_dir) = run_dir else {
         unreachable!(
             "the broker's run never staged its cell; it said {told:?}; under its run root: {:?}",
-            std::fs::read_dir(config.scheduler.run_root())
-                .map(|entries| entries.filter_map(Result::ok).map(|entry| entry.path()).collect::<Vec<_>>())
+            std::fs::read_dir(config.scheduler.run_root()).map(|entries| entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .collect::<Vec<_>>())
         );
     };
     let staging = staging_in(&run_dir).expect("the run's cell staging is left behind");
