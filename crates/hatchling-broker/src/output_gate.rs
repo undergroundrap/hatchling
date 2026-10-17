@@ -1170,6 +1170,31 @@ mod tests {
         assert!(shown.contains("RulesHandle"), "{shown}");
     }
 
+    /// `event` is recorded by tags under the key sealed beside the kept
+    /// text, and the log holds no unkeyed hash of it.
+    fn recorded_by_tags(
+        event: &crate::redactions::Judged,
+        redaction: &RedactionConfig,
+        key: &MasterKey,
+    ) {
+        let tags = TagKey::load_or_create(&redaction.dir.join(RAW_DIR), key).unwrap();
+        assert_eq!(
+            (event.tag.clone(), event.flagged_tag.clone()),
+            (
+                Some(tags.tag(b"the Nightjar Plan, in full")),
+                Some(tags.tag(b"nightjarplan"))
+            )
+        );
+        assert_eq!((&event.sha256, &event.flagged_sha256), (&None, &None));
+        let text = std::fs::read_to_string(redaction.dir.join(AUDIT_FILE)).unwrap();
+        for unkeyed in [
+            sha256_hex(b"the Nightjar Plan, in full"),
+            sha256_hex(b"nightjarplan"),
+        ] {
+            assert!(!text.contains(&unkeyed), "{text}");
+        }
+    }
+
     #[test]
     fn the_gate_is_built_once_at_start_and_records_its_settings() {
         let (dir, mut config, key) = held("gate-build");
@@ -1242,24 +1267,7 @@ mod tests {
             (event.category.as_str(), *raw),
             ("codename", RawOutcome::Kept)
         );
-        // Recorded by tags under the key sealed beside the kept text, and
-        // by no unkeyed hash.
-        let tags = TagKey::load_or_create(&redaction.dir.join(RAW_DIR), &key).unwrap();
-        assert_eq!(
-            (event.tag.clone(), event.flagged_tag.clone()),
-            (
-                Some(tags.tag(b"the Nightjar Plan, in full")),
-                Some(tags.tag(b"nightjarplan"))
-            )
-        );
-        assert_eq!((&event.sha256, &event.flagged_sha256), (&None, &None));
-        let text = std::fs::read_to_string(&log).unwrap();
-        for unkeyed in [
-            sha256_hex(b"the Nightjar Plan, in full"),
-            sha256_hex(b"nightjarplan"),
-        ] {
-            assert!(!text.contains(&unkeyed), "{text}");
-        }
+        recorded_by_tags(event, &redaction, &key);
         let stranger = MasterKey::generate().unwrap();
         assert!(
             matches!(

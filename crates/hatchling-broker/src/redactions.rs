@@ -1214,6 +1214,10 @@ mod tests {
             judged(&event("red-1", &codename, Some("nightjarplan")), Some(&tags)),
             *recorded
         );
+        assert_eq!(
+            recorded.flagged(),
+            Some(Flagged::Tag(tags.tag(b"nightjarplan")))
+        );
         // A record from before the tags still reads.
         let legacy = r#"{"kind":"redacted","event_id":"red-0","at":1,"scope":"s","sender":"u","classifier":"c","category":"codename","reason":"flagged","sha256":"aa","bytes":3,"flagged_sha256":"bb","raw":"off"}"#;
         let Ok(Record::Redacted { event: old, .. }) = serde_json::from_str::<Record>(legacy) else {
@@ -1346,6 +1350,10 @@ mod tests {
         assert!(!keyed.allows("session:b", &codename, "anotherform"));
         assert!(keyed.allows("session:b", &codename, "nightjarplan"));
         assert!(!keyed.allows("session:a", &codename, "yetanother"));
+        assert!(tagged.names(Some(&tags.tag(b"anotherform")), "anotherform"));
+        assert!(!tagged.names(None, "anotherform"));
+        assert!(entry("s").names(None, "nightjarplan"));
+        assert!(!entry("s").names(Some(&tags.tag(b"nightjarplan")), "anotherform"));
         assert!(tagged.same_form(&tagged.clone()));
         assert!(!tagged.same_form(&entry("session:a")));
         assert!(entry("x").same_form(&entry("y")));
@@ -1523,8 +1531,13 @@ mod tests {
             matches!(&refused, Err(Error::Redaction { reason }) if reason.contains("no flagged form")),
             "{refused:?}"
         );
+    }
 
-        // A redaction from before the tags is overridden by its hash.
+    #[test]
+    fn a_redaction_from_before_the_tags_is_overridden_by_its_hash() {
+        let (_dir, redaction) = deployment("red-legacy");
+        let no_key = || -> Result<MasterKey, Error> { unreachable!("only raw needs the key") };
+        let codename = Category::new("codename").unwrap();
         let legacy = Judged {
             event_id: String::from("red-6"),
             tag: None,
@@ -1533,6 +1546,10 @@ mod tests {
             flagged_sha256: Some(sha256_hex(b"kestrel")),
             ..judged(&event("red-6", &codename, None), None)
         };
+        assert_eq!(
+            legacy.flagged(),
+            Some(Flagged::Sha256(sha256_hex(b"kestrel")))
+        );
         FileAudit::new(&redaction.dir, None)
             .write(&Record::Redacted {
                 event: legacy,
