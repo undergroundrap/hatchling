@@ -688,6 +688,18 @@ pub fn euid() -> u32 {
     unsafe { libc::geteuid() }
 }
 
+/// Whether a process with pid `pid` exists: one this process may not
+/// signal counts. A pid of 0 or below names no one process.
+#[must_use]
+pub fn pid_alive(pid: i32) -> bool {
+    Pid::from_raw(pid).is_some_and(|pid| {
+        matches!(
+            rustix::process::test_kill_process(pid),
+            Ok(()) | Err(rustix::io::Errno::PERM)
+        )
+    })
+}
+
 /// Drops every supplementary group: `setgroups(0, NULL)`.
 ///
 /// A root broker's cell would otherwise carry the broker's groups into
@@ -1506,6 +1518,20 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
+
+    #[test]
+    fn a_pid_is_alive_until_its_process_is_reaped() {
+        assert!(pid_alive(i32::try_from(std::process::id()).unwrap()));
+        assert!(pid_alive(1), "init, which this may not signal");
+        assert!(!pid_alive(0) && !pid_alive(-1));
+        let child = match fork().unwrap() {
+            ForkResult::Parent { child } => child,
+            ForkResult::Child => exit_child(0),
+        };
+        let pid = child.pid().get();
+        let _ = child.wait_deadline(std::time::Duration::from_secs(10)).unwrap();
+        assert!(!pid_alive(pid), "reaped: gone");
+    }
 
     #[test]
     fn core_dumps_are_held_to_one_byte_and_a_zero_hard_limit_stays() {

@@ -100,6 +100,15 @@ pub enum Error {
         reason: String,
     },
 
+    /// A lock file could not be opened or locked (`lock::try_lock`).
+    #[error("lock failed: {operation}: {source}")]
+    Lock {
+        /// Which operation failed.
+        operation: &'static str,
+        /// The underlying OS failure.
+        source: std::io::Error,
+    },
+
     /// A disposable tree could not be removed (`tree::remove_tree`).
     #[error("removal failed: {operation}: {source}")]
     Removal {
