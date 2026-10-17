@@ -412,6 +412,25 @@ mod tests {
     }
 
     #[test]
+    fn only_a_real_directory_is_listed_before_any_other_check() {
+        // The listing's own guard, without `in_use` behind it (which
+        // also refuses anything that won't open as a directory): a file
+        // or a symlink to a directory, under any name, is never listed.
+        let dir = scratch("sweep-entries");
+        let outside = dir.0.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let root = dir.0.join("root");
+        std::fs::create_dir_all(root.join("b-dir")).unwrap();
+        std::fs::write(root.join("a-file"), b"file").unwrap();
+        symlink(&outside, root.join("c-link")).unwrap();
+        let names: Vec<OsString> = entries(&root, |_| true)
+            .into_iter()
+            .map(|leftover| leftover.name)
+            .collect();
+        assert_eq!(names, [OsString::from("b-dir")]);
+    }
+
+    #[test]
     fn runs_are_swept_only_where_scheduling_is_on() {
         let dir = scratch("sweep-root");
         let config = config_in(&dir.0);
