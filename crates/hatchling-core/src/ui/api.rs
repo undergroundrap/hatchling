@@ -10,6 +10,7 @@
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use super::{UiAction, UiRequest};
 
@@ -17,16 +18,18 @@ use super::{UiAction, UiRequest};
 ///
 /// Opaque to the protocol. Its `Debug` never shows it, so no log line or
 /// panic message can carry one.
+// Its memory is wiped when it's dropped; on the wire it's a plain string.
+// (A plain comment, so the generated protocol schema doesn't change.)
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(transparent)]
-pub struct ApiToken(String);
+pub struct ApiToken(#[cfg_attr(feature = "schema", schemars(with = "String"))] Zeroizing<String>);
 
 impl ApiToken {
-    /// The token `text`.
+    /// The token `text`, taken whole: its buffer is the one wiped.
     #[must_use]
-    pub const fn new(text: String) -> Self {
-        Self(text)
+    pub fn new(text: String) -> Self {
+        Self(Zeroizing::new(text))
     }
 
     /// The token's text, for the provider that checks it.

@@ -11,6 +11,14 @@
 //!   escape can name anything outside the UI's directory; and only a
 //!   regular file is served, never one through a symlink.
 //! - **Nothing the page sent is echoed back.**
+//! - **Only requests addressed to this host:** its `Host` must be
+//!   `127.0.0.1:<port>` or `localhost:<port>`, so a page that rebinds its
+//!   own name to `127.0.0.1` (DNS rebinding) is refused.
+//! - **Only upgrades from its own pages:** a WebSocket upgrade's `Origin`
+//!   must be this host too. A browser sends it on every WebSocket, and a
+//!   page can't forge it, so another site in the user's browser can't
+//!   open a channel to the broker, reach its decoder before the token, or
+//!   take up its connections.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -70,6 +78,27 @@ impl Head {
         self.websocket_key().map(|key| (channel, key))
     }
 
+    /// Whether this request was addressed to the host on `port`: its
+    /// `Host` is `127.0.0.1:<port>` or `localhost:<port>`.
+    #[must_use]
+    pub fn addressed_to(&self, port: u16) -> bool {
+        self.header("host")
+            .is_some_and(|host| this_host(host, port))
+    }
+
+    /// Whether this request came from a page the host on `port` served:
+    /// its `Origin` is `http://127.0.0.1:<port>` or
+    /// `http://localhost:<port>`. A browser sends `Origin` on every
+    /// WebSocket upgrade; a request without one isn't from a page here.
+    #[must_use]
+    pub fn from_page_on(&self, port: u16) -> bool {
+        self.header("origin").is_some_and(|origin| {
+            origin
+                .strip_prefix("http://")
+                .is_some_and(|authority| this_host(authority, port))
+        })
+    }
+
     /// The client's WebSocket key, when this is an upgrade to one:
     /// `Upgrade: websocket`, `Connection: upgrade`, version 13, and a key.
     #[must_use]
@@ -88,6 +117,14 @@ impl Head {
         .flatten()
         .filter(|key| !key.is_empty())
     }
+}
+
+/// Whether `authority` names the host on `port`: `127.0.0.1:<port>` or
+/// `localhost:<port>`, the name in any case.
+fn this_host(authority: &str, port: u16) -> bool {
+    authority.rsplit_once(':').is_some_and(|(name, given)| {
+        given == port.to_string() && (name == "127.0.0.1" || name.eq_ignore_ascii_case("localhost"))
+    })
 }
 
 /// Reads one request's head, byte by byte up to its blank line, so
@@ -192,6 +229,16 @@ pub fn answer(writer: &mut impl Write, dir: &Path, head: &Head) -> Result<(), Er
         Some((kind, bytes)) => respond(writer, 200, "OK", kind, &bytes),
         None => respond(writer, 404, "Not Found", "text/plain", b""),
     }
+}
+
+/// Refuses a request not addressed to this host, or an upgrade not from
+/// its own pages, with a bare `403`.
+///
+/// # Errors
+///
+/// [`Error::Io`] when the answer can't be written.
+pub fn forbid(writer: &mut impl Write) -> Result<(), Error> {
+    respond(writer, 403, "Forbidden", "text/plain", b"")
 }
 
 /// Accepts the WebSocket upgrade for the client's `key`.
@@ -422,5 +469,67 @@ mod tests {
         ] {
             assert_eq!(content_type(Path::new(name)), kind, "{name}");
         }
+    }
+    #[test]
+    fn this_host_is_its_loopback_name_and_exact_port() {
+        assert!(this_host("127.0.0.1:7340", 7340));
+        assert!(this_host("LOCALHOST:7340", 7340));
+        assert!(!this_host("127.0.0.1:734", 7340));
+        assert!(!this_host("127.0.0.2:7340", 7340));
+        assert!(!this_host("localhost7340", 7340));
+    }
+
+    #[test]
+    fn a_refusal_is_a_bare_403_that_asks_to_close() {
+        let mut out = Vec::new();
+        forbid(&mut out).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.starts_with("HTTP/1.1 403 Forbidden\r\n"), "{out}");
+        assert!(out.contains("Content-Length: 0\r\n") && out.contains("Connection: close\r\n"));
+        assert!(out.ends_with("\r\n\r\n"), "no body");
+    }
+
+    #[test]
+    fn only_this_hosts_own_name_and_port_are_its_host_and_origin() {
+        let with = |host: &str, origin: Option<&str>| {
+            let origin = origin.map_or(String::new(), |origin| format!("Origin: {origin}\r\n"));
+            head(&format!("GET /ui HTTP/1.1\r\nHost: {host}\r\n{origin}\r\n")).unwrap()
+        };
+        for host in ["127.0.0.1:7340", "localhost:7340", "LocalHost:7340"] {
+            assert!(with(host, None).addressed_to(7340), "{host}");
+        }
+        for host in [
+            "127.0.0.1",
+            "127.0.0.1:7341",
+            "127.0.0.1:+7340",
+            "127.0.0.1:07340",
+            "evil.example:7340",
+            "127.0.0.1.evil.example:7340",
+            "localhost.:7340",
+            "[::1]:7340",
+            "",
+        ] {
+            assert!(!with(host, None).addressed_to(7340), "{host}");
+        }
+        let host = "127.0.0.1:7340";
+        assert!(with(host, Some("http://127.0.0.1:7340")).from_page_on(7340));
+        assert!(with(host, Some("http://localhost:7340")).from_page_on(7340));
+        for origin in [
+            "http://evil.example",
+            "http://evil.example:7340",
+            "https://127.0.0.1:7340",
+            "http://127.0.0.1:7341",
+            "http://127.0.0.1",
+            "null",
+            "",
+        ] {
+            assert!(!with(host, Some(origin)).from_page_on(7340), "{origin}");
+        }
+        assert!(!with(host, None).from_page_on(7340), "no Origin");
+        // Sent twice, a header is no header.
+        let twice =
+            head("GET /ui HTTP/1.1\r\nHost: 127.0.0.1:7340\r\nHost: evil.example:7340\r\n\r\n")
+                .unwrap();
+        assert!(!twice.addressed_to(7340));
     }
 }

@@ -22,10 +22,12 @@ libc = "0.2"
 # Safe wrappers for unshare, mount, pivot_root. Keeps the handwritten
 # unsafe surface to fork/exec/prctl only.
 # `net`: SCM_RIGHTS fd passing for a cell's relay listener.
-rustix = { version = "0.38", features = ["event", "fs", "mount", "net", "process", "stdio", "thread"] }
+rustix = { version = "0.38", features = ["event", "fs", "mount", "net", "process", "stdio", "termios", "thread"] }
 thiserror = "2"
 
 [dev-dependencies]
+# A pseudo-terminal, for the test that echo is held off on one.
+rustix = { version = "0.38", features = ["pty"] }
 # The seccomp handshake test speaks the real protocol (framing +
 # message types) so it tests the filter, not a hand-rolled byte
 # string. Test-only edge back to hatchling-core; both are reviewed in

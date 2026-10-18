@@ -15,7 +15,10 @@ the workspace-wide `unsafe_code = "deny"` intact. Features used: `net`,
 `hatchling-broker` (tests read the real kernel uid; `process` only).
 `hatchling-sys` uses `fs`, `mount`, `process` and `thread`, and `net`
 for a harness cell's relay: the listener on the cell's own
-loopback, and the `SCM_RIGHTS` handoff of its fd to the broker.
+loopback, and the `SCM_RIGHTS` handoff of its fd to the broker. Also
+`termios`, to hold a terminal's echo off while a security key's PIN
+is typed (`EchoOff`); its test opens a pseudo-terminal (`pty`, a
+dev-dependency only).
 
 ## hatchling-core
 
@@ -114,7 +117,10 @@ same project (MIT/Apache-2.0). Narrow, single-purpose use —
 no key derivation, no allocation tricks. `hatchling-model`
 uses `Zeroizing<String>` for the secrets its redactor holds so they
 can be scrubbed from every model request: the same crate and version
-already in the tree, no new features.
+already in the tree, no new features. `hatchling-core` turns on its `serde` feature, so
+an `ApiToken` (the UI's and the operator's) is a plain string on the wire
+and a `Zeroizing<String>` in memory; it adds no crate (`serde` is already
+a dependency).
 
 ## base64
 

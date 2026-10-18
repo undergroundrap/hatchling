@@ -29,7 +29,8 @@ serde_json = "1"
 # the contract crate, used by the agent (encode) and the broker (decode).
 base64 = "0.22"
 # Wipes a secret payload on the wire types when it is dropped.
-zeroize = "1"
+# `serde`: an API token on the wire is a wiped string (`ApiToken`).
+zeroize = { version = "1", features = ["serde"] }
 # JSON Schema derives for the frontend protocol, behind the
 # off-by-default `schema` feature: only hatchling-dev's codegen turns it on,
 # so no runtime binary compiles it. Reviewed: docs/dependency-review.md

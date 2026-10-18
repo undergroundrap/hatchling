@@ -269,7 +269,7 @@ impl Api {
         let mut audit = Audit::new(self.log.clone(), connection.clone());
         let door = (connection.as_str(), socket);
         if let Err(error) = self.session(stream, provider, door, ops, &mut audit) {
-            tracing::info!(%error, "API connection ended");
+            tracing::info!(?error, "API connection ended");
         }
     }
 
@@ -1272,5 +1272,23 @@ mod tests {
             matches!(stopped, Err(Error::Vault { .. } | Error::Sweep { .. })),
             "start-up must stop at the lock or the vault"
         );
+    }
+    #[test]
+    fn a_first_frame_cannot_forge_a_line_in_the_brokers_log() {
+        let dir = scratch("forge");
+        let config = config_in(&dir);
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let (api, _socket) = api_with(
+            Box::new(PeerProvider::new(real_uid(), BTreeSet::new())),
+            config.scheduler.activity_log(),
+            "forge",
+        );
+        let ops = Ops::new(&config, &key, &skills, None, Arc::clone(api.bus()));
+        let (client, server) = UnixStream::pair().unwrap();
+        write_frame(&client, br#"{"type":"x\nFORGED api admitted"}"#).unwrap();
+        drop(client);
+        let logged = crate::test_log::captured(|| api.serve_client(&server, &ops));
+        crate::test_log::assert_no_forged_line(&logged, "FORGED api admitted");
     }
 }

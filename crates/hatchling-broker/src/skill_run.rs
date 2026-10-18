@@ -59,7 +59,6 @@
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -394,9 +393,6 @@ fn supervised(std_child: &mut std::process::Child) -> Result<Process, SkillRunEr
         })
 }
 
-/// Disambiguates run directories from one broker process.
-static RUN_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
-
 /// The helper's private temp dir, removed (with anything a killed helper
 /// left in it) on drop.
 struct RunDir {
@@ -406,11 +402,11 @@ struct RunDir {
 impl RunDir {
     fn create() -> Result<Self, String> {
         use std::os::unix::fs::DirBuilderExt as _;
-        let dir = std::env::temp_dir().join(format!(
-            "hatchling-skill-run-{}-{}",
-            std::process::id(),
-            RUN_DIR_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
+        // A random name in the shared temp dir: no other user can make it
+        // first and so block the run.
+        let name = crate::approval::random_hex("hatchling-skill-run-")
+            .map_err(|err| format!("cannot name a run dir: {err}"))?;
+        let dir = std::env::temp_dir().join(name);
         // A fresh directory, never an existing one reused.
         std::fs::DirBuilder::new()
             .mode(0o700)
@@ -720,6 +716,12 @@ mod tests {
         let first = RunDir::create().unwrap();
         let second = RunDir::create().unwrap();
         assert_ne!(first.path(), second.path());
+        let name = first.path().file_name().unwrap().to_str().unwrap();
+        let random = name.strip_prefix("hatchling-skill-run-").unwrap();
+        assert!(
+            random.len() == 64 && random.bytes().all(|b| b.is_ascii_hexdigit()),
+            "a random name, never one another user can guess: {name}"
+        );
         let mode = std::fs::metadata(first.path())
             .unwrap()
             .permissions()

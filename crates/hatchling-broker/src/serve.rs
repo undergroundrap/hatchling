@@ -559,7 +559,7 @@ fn serve_cell_then_wait(
         crate::RunEnv::from_process(config),
     ) {
         Ok(()) => {}
-        Err(error) => tracing::warn!(%error, cell_id = %cell.cell_id, "agent session failed"),
+        Err(error) => tracing::warn!(?error, cell_id = %cell.cell_id, "agent session failed"),
     }
     loop {
         std::thread::park();
@@ -585,7 +585,7 @@ fn handshake(stream: &UnixStream, expected: Option<&CellId>) -> Result<CellId, E
         Ok(hello) => hello,
         Err(e) => {
             // The parser's detail stays in the broker's log.
-            tracing::debug!(error = %e, "hello did not parse");
+            tracing::debug!(error = ?e, "hello did not parse");
             let reason = String::from("hello is not a valid handshake message");
             // The write may fail if the connection is already broken;
             // either way the connection ends here.
@@ -1509,6 +1509,17 @@ fn reject(stream: &UnixStream, reason: &str) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_hello_cannot_forge_a_line_in_the_brokers_log() {
+        // The cell chose the variant name serde echoes back.
+        let (agent, broker) = UnixStream::pair().unwrap();
+        write_frame(&agent, br#"{"t":"x\nFORGED cell admitted"}"#).unwrap();
+        let logged = crate::test_log::captured(|| {
+            assert!(handshake(&broker, None).is_err());
+        });
+        crate::test_log::assert_no_forged_line(&logged, "FORGED cell admitted");
+    }
 
     #[test]
     fn a_silent_peer_times_out_before_its_hello() {
