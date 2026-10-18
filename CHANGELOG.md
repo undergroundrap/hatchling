@@ -44,6 +44,10 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Fixed
 
+- **The frontend host serves only its own pages.** It refuses a request not addressed to `127.0.0.1:<port>` or `localhost:<port>`, and a WebSocket upgrade whose `Origin` isn't one of its own pages. Before, another site open in the browser could open the UI or operator channel (it never had the token, but it reached the broker's decoder and its connection limits), and a rebound name could fetch the UI's files.
+- **A security key's PIN isn't shown as it's typed,** and is read into memory that's wiped. So are the UI and operator tokens, in the broker and in `hatchling-host`.
+- **What a client or cell sends can't forge a line in the broker's log.** An error quoting a frame the broker couldn't parse is logged escaped.
+- A skill run's directory in the temp dir has a random name, so another user can't make it first and block the run.
 - The local API takes its socket's owner from the broker's own uid, rather than reading it back from the socket's path after binding (WO-021, part 1).
 - What the broker tells a cell stays generic. A coding-CLI run that fails on the broker's side (its binary unreadable or not the pinned one, a file that can't be staged, the Codex host copy, the network set-up, the work tree unreadable) now reports a fixed sentence; the host paths, the broker's process id and the OS error stay in the broker's log. A malformed hello is rejected with a fixed sentence rather than the parser's message.
 - Strings a cell or an API client chose are logged escaped, so a newline in one can't forge a log line: a refused egress destination, a malformed skill id, a refused delivery target. A skill id holding a control character names no skill.

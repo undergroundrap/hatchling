@@ -26,8 +26,10 @@ grep -rn "bind_socket(\|UnixListener::bind\|TcpListener::bind\|loopback_listener
 | Ingress (`HATCHLING_CHANNEL_INGRESS`) | `ingress.rs` | 0600 | The broker's own uid, by peer credentials. | `ingress.rs` tests |
 | Harness relay handoff | `harness.rs`, in the run's directory | directory 0700 | The run's own spawn. | `harness_relay.rs` tests |
 | A CLI cell's relay port | inside the cell's own network namespace | none: loopback in the cell | The cell's own processes. | `a_cli_cell_hands_its_relay_listener_to_its_owner_once` |
+| Operator socket (`HATCHLING_OPERATOR_SOCKET`) | `operator.rs` | 0600 | The broker's own uid, by peer credentials, with the operator token (`<socket>.token`, minted each start, 0600); never bound when the agent runs as the broker's uid. Answers are metadata only. | `the_socket_and_its_token_are_the_owners_and_never_the_agents_uid`, `a_hello_without_the_operator_token_is_closed_unanswered`, `a_peer_that_is_not_the_owner_gets_no_byte_read` |
+| Frontend host (`hatchling-host`, `HATCHLING_HOST_PORT`, default 7340) | `hatchling-host/src/lib.rs` | TCP, 127.0.0.1 only | Requests addressed to `127.0.0.1:<port>` or `localhost:<port>`, and WebSocket upgrades from its own pages (`Origin`), so no other site in the browser and no rebound name. It carries `/ui` and `/operator` to those sockets as the broker's uid, so there the token in the first frame is the gate. | `a_request_from_another_site_is_refused_and_reaches_no_socket`, `only_this_hosts_own_name_and_port_are_its_host_and_origin`, `the_host_binds_loopback_only`; the token: the UI and operator socket rows |
 
-There are no HTTP, metrics or debug endpoints. Adding one is a new row, with its gate.
+The frontend host is the only HTTP endpoint, on loopback. There are no metrics or debug endpoints. Adding one is a new row, with its gate.
 
 ## 2. Files and directories are made safely
 
@@ -54,10 +56,10 @@ Check each hit that flows into a result, a reject reason or a report a session r
 - **Untrusted strings in log lines** are written with `?` (escaped), never `%`, so a newline can't forge a line. The activity and audit logs are JSON.
 
 ```bash
-grep -rn "= %" crates/hatchling-broker/src --include=*.rs
+grep -rnE "= %|[(,] *%[a-z_]" crates/hatchling-broker/src crates/hatchling-host/src --include=*.rs
 ```
 
-Check each `%` field for a value a cell or a client chose.
+Check each `%` field, the shorthand `%name` too, for a value a cell or a client chose: an error that quotes a frame it couldn't parse is one (serde names the unknown field or variant). Each `?` instead is proved by a test that sends a newline and finds no forged line (`crate::test_log`).
 
 ## 5. Secrets stay secret
 
