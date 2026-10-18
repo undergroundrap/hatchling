@@ -3480,8 +3480,15 @@ mod tests {
         assert_eq!(console.ask_secret("PIN?").unwrap().as_str(), "13579");
         assert_eq!(String::from_utf8(console.output.clone()).unwrap(), "PIN? ");
         let cut = console.ask_secret("PIN?").unwrap();
-        assert_eq!(cut.len(), MAX_SECRET_ANSWER, "read no further than its buffer");
-        assert!(cut.capacity() <= MAX_SECRET_ANSWER, "and the buffer never grew");
+        assert_eq!(
+            cut.len(),
+            MAX_SECRET_ANSWER,
+            "read no further than its buffer"
+        );
+        assert!(
+            cut.capacity() <= MAX_SECRET_ANSWER,
+            "and the buffer never grew"
+        );
     }
 
     #[test]
