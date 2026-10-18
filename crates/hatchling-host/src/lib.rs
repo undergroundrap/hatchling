@@ -25,6 +25,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use zeroize::Zeroizing;
+
 /// The port the host serves on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7340;
 
@@ -133,18 +135,32 @@ pub fn token_path(socket: &Path) -> PathBuf {
 ///
 /// [`Error::Invalid`] when it can't be read: the broker isn't running
 /// with that socket, or runs as another user.
-pub fn read_token(socket: &Path, key: &'static str) -> Result<String, Error> {
+pub fn read_token(socket: &Path, key: &'static str) -> Result<Zeroizing<String>, Error> {
+    use std::io::Read as _;
     let path = token_path(socket);
-    std::fs::read_to_string(&path)
-        .map(|token| token.trim().to_owned())
+    // Sized up front and trimmed in place: the only copy is the one wiped.
+    let mut token = Zeroizing::new(String::with_capacity(MAX_TOKEN_BYTES));
+    std::fs::File::open(&path)
+        .and_then(|file| {
+            file.take(u64::try_from(MAX_TOKEN_BYTES).unwrap_or(0))
+                .read_to_string(&mut token)
+        })
         .map_err(|error| Error::Invalid {
             key,
             reason: format!(
                 "the token {} can't be read ({error}): is the broker running with this socket, as this user?",
                 path.display()
             ),
-        })
+        })?;
+    let end = token.trim_end().len();
+    token.truncate(end);
+    let start = token.len() - token.trim_start().len();
+    token.drain(..start);
+    Ok(token)
 }
+
+/// The most of a token file read, in bytes: the broker writes 64.
+const MAX_TOKEN_BYTES: usize = 256;
 
 /// The address to open: the UI on `port`, with `token` in the fragment as
 /// `#hatchling-ui=<token>`, which the UI takes and clears before its own
@@ -334,9 +350,9 @@ mod tests {
                 ..
             })
         ));
-        std::fs::write(token_path(&socket), "abc123\n").unwrap();
+        std::fs::write(token_path(&socket), " abc123\n").unwrap();
         assert_eq!(
-            read_token(&socket, "HATCHLING_UI_SOCKET").unwrap(),
+            read_token(&socket, "HATCHLING_UI_SOCKET").unwrap().as_str(),
             "abc123"
         );
         assert_eq!(

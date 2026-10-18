@@ -28,3 +28,5 @@ tracing = "0.1"
 # SHA-1 of the client's key, in base64. Not a security property.
 sha1 = "0.10"
 base64 = "0.22"
+# The tokens read from the broker are held in memory that's wiped.
+zeroize = "1"

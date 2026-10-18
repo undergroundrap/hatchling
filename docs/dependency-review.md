@@ -117,7 +117,10 @@ same project (MIT/Apache-2.0). Narrow, single-purpose use —
 no key derivation, no allocation tricks. `hatchling-model`
 uses `Zeroizing<String>` for the secrets its redactor holds so they
 can be scrubbed from every model request: the same crate and version
-already in the tree, no new features.
+already in the tree, no new features. `hatchling-core` turns on its `serde` feature, so
+an `ApiToken` (the UI's and the operator's) is a plain string on the wire
+and a `Zeroizing<String>` in memory; it adds no crate (`serde` is already
+a dependency). `hatchling-host` uses it for the tokens it reads.
 
 ## base64
 
