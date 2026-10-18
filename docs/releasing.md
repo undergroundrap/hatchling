@@ -79,6 +79,8 @@ A development or test crate sets `publish = false` and stops there. A published 
    cargo login
    ```
 
+   `cargo login` shows the token on the screen as you paste it, so paste it where nothing records the screen (no screen sharing, recording or screenshot). Run all of this as the user whose Rust toolchain it is, in `bash`; a root shell has neither.
+
    ```bash
    bash scripts/publish-crates.sh
    ```
