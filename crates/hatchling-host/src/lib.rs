@@ -647,7 +647,6 @@ mod tests {
         // was a refusal: a request wrongly let through holds its bridge
         // open, and the test must fail at once, not wait on it.
         let host = {
-            let settings = settings.clone();
             let count = refused.len();
             std::thread::spawn(move || {
                 for _ in 0..count {
