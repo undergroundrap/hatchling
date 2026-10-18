@@ -346,19 +346,7 @@ impl<'scope> Launcher for CellLauncher<'scope, '_> {
     type Run = CellRun<'scope>;
 
     fn launch(&self, request: RunRequest) -> Result<CellRun<'scope>, String> {
-        let run = ScheduledRun {
-            task: request.task.clone(),
-            missed: request.missed,
-            due: request.due.as_second(),
-            model_endpoint: self.config.scheduler.model_endpoint.clone(),
-            model_name: self.config.scheduler.model_name.clone(),
-            model_reasoning: self.config.scheduler.model_reasoning,
-            depth: request.depth,
-            event: request.event.clone(),
-            max_steps: None,
-            subagent: false,
-            chat: request.chat,
-        };
+        let run = scheduled_run(self.config, &request);
         self.launch_cell(&request.schedule_id, run, |token, socket| {
             scoped_config(self.config, &request, token, socket)
         })
@@ -591,6 +579,25 @@ fn run_token() -> Result<String, String> {
     let token = crate::approval::random_hex("run-")
         .map_err(|err| format!("run entropy unavailable: {err}"))?;
     Ok(token.chars().take(RUN_TOKEN_LEN).collect())
+}
+
+/// The run cell's part of `request`, under the scheduler's model
+/// settings in `config`: what its agent is told about the run, a chat
+/// turn included.
+fn scheduled_run(config: &Config, request: &RunRequest) -> ScheduledRun {
+    ScheduledRun {
+        task: request.task.clone(),
+        missed: request.missed,
+        due: request.due.as_second(),
+        model_endpoint: config.scheduler.model_endpoint.clone(),
+        model_name: config.scheduler.model_name.clone(),
+        model_reasoning: config.scheduler.model_reasoning,
+        depth: request.depth,
+        event: request.event.clone(),
+        max_steps: None,
+        subagent: false,
+        chat: request.chat,
+    }
 }
 
 /// Removes a run's directory through `remove_tree` (WO-024): it holds
@@ -897,6 +904,24 @@ mod tests {
             feed: None,
             chat: false,
         }
+    }
+
+    #[test]
+    fn a_run_cell_is_told_what_its_request_is_a_chat_turn_included() {
+        let config = config();
+        let mut asked = request(Vec::new());
+        let run = scheduled_run(&config, &asked);
+        assert_eq!(
+            (run.task.as_str(), run.missed, run.due, run.depth),
+            ("t", false, 1_790_000_000, 3)
+        );
+        assert!(!run.chat && !run.subagent && run.max_steps.is_none());
+        assert_eq!(run.model_name, config.scheduler.model_name);
+        asked.chat = true;
+        asked.missed = true;
+        let turn = scheduled_run(&config, &asked);
+        assert!(turn.chat, "a chat turn speaks with the chat prompt");
+        assert!(turn.missed);
     }
 
     #[test]
