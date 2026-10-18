@@ -41,10 +41,12 @@ A review of every production delete and signal after that (2026-10-17) found no 
 
 ## Acceptance criteria
 
-- [ ] A rekey at the file tier keeps the KEK file, with the in-memory tier check broken, and with the on-disk check broken.
-- [ ] `bind_socket` leaves a regular file, a symlink and another user's socket at the socket path in place and refuses, with either check broken.
-- [ ] `mint_ui_token` refuses, and changes nothing, when `<socket>.token` is a symlink, a directory or another user's file.
-- [ ] A recall or a purge deletes no item that hasn't expired, with `is_expired` broken, and with the `expires_at` check broken.
+Each guard is checked on its own (its own `if`, its own function), so breaking one leaves the other standing; and each has a direct test that fails when only it is broken.
+
+- [ ] A rekey keeps the KEK file at the file tier: by its tier (`off_the_file_tier`) and by its wraps (`opens_with_the_kek_file`), each tested directly.
+- [ ] `bind_socket` refuses, and leaves in place, a regular file, a symlink or another user's socket at the socket path: a socket by its type and by its raw mode, and the owner, each tested directly.
+- [ ] `mint_ui_token` refuses, and changes nothing, when `<socket>.token` is a symlink, a directory or another user's file: a regular file by its type and by its raw mode, and the owner.
+- [ ] A recall or a purge deletes an expired item only when `past_its_ttl`, which reads the item's own TTL through other code, agrees with `is_expired`; each tested directly.
 - [ ] The five cleanups remove their directories through `remove_dir_tree`: its tests (with `remove_tree`'s) plant a bind mount and symlinks to outside data and find them untouched, and each cleanup's own test shows the bounded walk ran (a tree deeper than `MAX_DEPTH` is removed only partly, where `remove_dir_all` would take it all). `RunDirs::drop`'s exception is recorded here.
 - [ ] On a timeout, the driver kills the test's process group before it reaps the test: a test whose grandchild outlives it finds the grandchild killed, and the group kill ordered before the reap.
 - [ ] Every new guard has a hand mutant that fails its test, listed in the evidence.

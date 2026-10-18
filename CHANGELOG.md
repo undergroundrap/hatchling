@@ -6,6 +6,16 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ## [Unreleased]
 
+### Changed
+
+- **Every delete and signal stands behind two guards** (WO-024), after a mutant of WO-012's tree removal wiped a test machine. Each check is its own, so no one changed operator, or one bug, gets past both:
+  - a stale socket is unlinked only when it's a socket, by its type and its mode, and the broker's user's; another user's socket now refuses the start, naming it;
+  - a UI or operator token file is replaced only when it's a regular file of the broker's user; anything else now refuses the start, naming it;
+  - the vault's KEK file is dropped only off the file tier and with no way in through it;
+  - an expired memory item is deleted only when its own TTL agrees;
+  - a cell's staging, and a run's, a skill run's and a skill's code directories, are removed through `remove_tree`, which never enters a mount or another user's directory;
+  - `hatchling-dev` kills a timed-out process group before reaping its leader, and never after.
+
 ## [0.4.0] - 2026-10-18
 
 ### Added
