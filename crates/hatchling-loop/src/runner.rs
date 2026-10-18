@@ -199,6 +199,12 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
                     });
                 }
                 ModelAction::ToolCalls(calls) => {
+                    // The whole batch is checked before any of it runs:
+                    // an unknown or malformed call later in it must not
+                    // leave earlier calls done and unrecorded.
+                    for call in &calls {
+                        self.tools.check(call)?;
+                    }
                     let mut results = Vec::with_capacity(calls.len());
                     for call in &calls {
                         // Unknown names and schema violations stop the
@@ -550,6 +556,91 @@ mod tests {
             "{error:?}"
         );
         assert_eq!(tight.remaining(), 0);
+    }
+
+    /// A tool that counts its runs, and needs an integer `n`.
+    struct Counting(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl crate::tool::Tool for Counting {
+        fn name(&self) -> &'static str {
+            "count"
+        }
+
+        fn description(&self) -> &'static str {
+            "counts its runs"
+        }
+
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {"n": {"type": "integer"}},
+                "required": ["n"],
+            })
+        }
+
+        fn execute(&self, _arguments: serde_json::Value) -> Result<ToolOutput, Error> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(ToolOutput::Ok(serde_json::json!("counted")))
+        }
+    }
+
+    #[test]
+    fn a_batch_with_a_bad_call_runs_none_of_it() {
+        let call = |name: &str, arguments| crate::tool::ToolCall {
+            name: name.to_owned(),
+            arguments,
+        };
+        for bad in [
+            call("count", serde_json::json!({})),
+            call("count", serde_json::json!({"n": "one"})),
+            call("missing", serde_json::json!({})),
+        ] {
+            let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let mut registry = ToolRegistry::new();
+            registry.register(Box::new(Counting(Arc::clone(&runs))));
+            let model = FakeModel::new(vec![ModelAction::ToolCalls(vec![
+                call("count", serde_json::json!({"n": 1})),
+                bad.clone(),
+            ])]);
+            let error = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+                .run(&model, String::from("go"))
+                .unwrap_err();
+            assert!(
+                matches!(error, Error::InvalidArguments { .. } | Error::UnknownTool(_)),
+                "{bad:?}: {error:?}"
+            );
+            assert_eq!(
+                runs.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "{bad:?}: the good call before it never ran"
+            );
+        }
+        // A good batch runs whole.
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(Counting(Arc::clone(&runs))));
+        let model = FakeModel::new(vec![
+            ModelAction::ToolCalls(vec![
+                call("count", serde_json::json!({"n": 1})),
+                call("count", serde_json::json!({"n": 2})),
+            ]),
+            ModelAction::Text(String::from("done")),
+        ]);
+        let result = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .run(&model, String::from("go"))
+            .unwrap();
+        assert_eq!(result.answer, "done");
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert!(registry.check(&call("count", serde_json::json!({"n": 3}))).is_ok());
+        assert!(matches!(
+            registry.check(&call("count", serde_json::json!({}))),
+            Err(Error::InvalidArguments { .. })
+        ));
+        assert!(matches!(
+            registry.check(&call("nope", serde_json::json!({}))),
+            Err(Error::UnknownTool(_))
+        ));
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 2, "checking runs nothing");
     }
 
     #[test]

@@ -99,6 +99,20 @@ impl<'a> ToolRegistry<'a> {
             .collect()
     }
 
+    /// Checks a call without running it: its tool is registered, and its
+    /// arguments fit the tool's schema.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnknownTool`] when the name is not registered,
+    /// [`Error::InvalidArguments`] when validation fails.
+    pub fn check(&self, call: &ToolCall) -> Result<(), Error> {
+        let tool = self
+            .get(&call.name)
+            .ok_or_else(|| Error::UnknownTool(call.name.clone()))?;
+        validate_arguments(tool, &call.arguments)
+    }
+
     /// Validate a call's arguments against the named tool's schema,
     /// then execute it. Unknown names and schema violations stop
     /// before execution.
