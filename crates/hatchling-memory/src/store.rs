@@ -34,6 +34,19 @@ use crate::item::{
 };
 use crate::{Error, RetentionPolicy, is_expired, owner_dir};
 
+/// Whether `item` has a TTL and `now_secs` is past it: [`is_expired`]'s
+/// answer read from the item's own fields through other code. An expired
+/// item is hidden by `is_expired` alone, but deleted only when this agrees
+/// (WO-024), so one changed operator can't delete a live or kept item.
+fn past_its_ttl(item: &MemoryItem, now_secs: u64) -> bool {
+    match item.retention {
+        RetentionPolicy::Ttl { ttl_secs } => now_secs
+            .checked_sub(item.created_at_secs)
+            .is_some_and(|age| age >= ttl_secs),
+        RetentionPolicy::Keep => false,
+    }
+}
+
 /// Item file suffix. Only files with this suffix are read; everything
 /// else in the tree is ignored by scans.
 const ITEM_SUFFIX: &str = ".json";
@@ -257,7 +270,9 @@ impl MemoryStore {
             // then report absence. Best-effort: a racing purge may
             // have taken it first, and a failure here just means the
             // next recall (or purge) filters it again.
-            let _ = std::fs::remove_file(&path);
+            if past_its_ttl(&item, now_secs) {
+                let _ = std::fs::remove_file(&path);
+            }
             tracing::debug!(memory_id = %id, "expired memory item purged on recall");
             return Ok(None);
         }
@@ -290,7 +305,9 @@ impl MemoryStore {
                 continue;
             };
             if is_expired(&item, now_secs) {
-                let _ = std::fs::remove_file(&path);
+                if past_its_ttl(&item, now_secs) {
+                    let _ = std::fs::remove_file(&path);
+                }
                 continue;
             }
             if item.tags.iter().any(|t| t == tag) {
@@ -357,8 +374,11 @@ impl MemoryStore {
                 {
                     match Self::read_item(&path) {
                         Ok(Some(item)) if is_expired(&item, now_secs) => {
-                            std::fs::remove_file(&path).map_err(|source| Error::Io { source })?;
-                            purged += 1;
+                            if past_its_ttl(&item, now_secs) {
+                                std::fs::remove_file(&path)
+                                    .map_err(|source| Error::Io { source })?;
+                                purged += 1;
+                            }
                         }
                         // Live items stay; unparseable files are an
                         // operator's problem, not the purger's.
@@ -439,6 +459,30 @@ mod tests {
                 now,
             )
             .unwrap()
+    }
+
+    #[test]
+    fn past_its_ttl_is_expiry_read_from_the_items_own_fields() {
+        let item = |retention, created_at_secs| MemoryItem {
+            id: MemoryId::from_str("fact-1").unwrap(),
+            scope: MemoryScope::User,
+            content: String::from("x"),
+            tags: Vec::new(),
+            created_at_secs,
+            updated_at_secs: created_at_secs,
+            retention,
+        };
+        let ttl = item(RetentionPolicy::Ttl { ttl_secs: 100 }, 1_000);
+        assert!(!past_its_ttl(&ttl, 1_099));
+        assert!(past_its_ttl(&ttl, 1_100), "gone exactly at its deadline");
+        assert!(past_its_ttl(&ttl, 1_101));
+        assert!(!past_its_ttl(&ttl, 999), "a clock before its creation");
+        let kept = item(RetentionPolicy::Keep, 1_000);
+        assert!(!past_its_ttl(&kept, u64::MAX));
+        let zero = item(RetentionPolicy::Ttl { ttl_secs: 0 }, 1_000);
+        assert!(past_its_ttl(&zero, 1_000));
+        let far = item(RetentionPolicy::Ttl { ttl_secs: u64::MAX }, 1_000);
+        assert!(!past_its_ttl(&far, u64::MAX - 1));
     }
 
     #[test]
