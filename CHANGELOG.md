@@ -6,6 +6,8 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-18
+
 ### Added
 
 - `hatchling-broker clean [--dry-run]`: removes a dead broker's leftovers, a cell's staging directory (`$TMPDIR/hatchling-staging-<pid>-…`, whose broker is gone) and a run's directory (`<scheduler dir>.runs/run-…`), as each start now does too, and logs each. `--dry-run` lists them and removes nothing. It refuses while a broker serves the socket. It never touches your data: no symlink is followed, no mount is entered, and every configured state directory is kept whole, wherever it is. [What Hatchling keeps on disk](docs/storage.md) says which files are your data and which are disposable, and how to back up, restore and uninstall (WO-012).
@@ -171,7 +173,8 @@ The first public release. [Release notes](https://github.com/undergroundrap/hatc
 
 Published in [the trust boundary](docs/arch/trust-boundary.md#known-limitations), each with a work order and an issue.
 
-[Unreleased]: https://github.com/undergroundrap/hatchling/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/undergroundrap/hatchling/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/undergroundrap/hatchling/releases/tag/v0.4.0
 [0.3.0]: https://github.com/undergroundrap/hatchling/releases/tag/v0.3.0
 [0.2.0]: https://github.com/undergroundrap/hatchling/releases/tag/v0.2.0
 [0.1.2]: https://github.com/undergroundrap/hatchling/releases/tag/v0.1.2

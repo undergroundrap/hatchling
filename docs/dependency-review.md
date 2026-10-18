@@ -15,10 +15,13 @@ the workspace-wide `unsafe_code = "deny"` intact. Features used: `net`,
 `hatchling-broker` (tests read the real kernel uid; `process` only).
 `hatchling-sys` uses `fs`, `mount`, `process` and `thread`, and `net`
 for a harness cell's relay: the listener on the cell's own
-loopback, and the `SCM_RIGHTS` handoff of its fd to the broker. Also
+loopback, and the `SCM_RIGHTS` handoff of its fd to the broker;
+`event`, to poll a pidfd so a helper ends with its broker (WO-012); and
 `termios`, to hold a terminal's echo off while a security key's PIN
 is typed (`EchoOff`); its test opens a pseudo-terminal (`pty`, a
-dev-dependency only).
+dev-dependency only). `hatchling-vault` uses `process` (the owner
+checks' uid) and `fs`, for the keyring's edit lock: a no-follow open and
+`flock` (WO-011).
 
 ## hatchling-core
 
@@ -117,10 +120,13 @@ same project (MIT/Apache-2.0). Narrow, single-purpose use —
 no key derivation, no allocation tricks. `hatchling-model`
 uses `Zeroizing<String>` for the secrets its redactor holds so they
 can be scrubbed from every model request: the same crate and version
-already in the tree, no new features. `hatchling-core` turns on its `serde` feature, so
-an `ApiToken` (the UI's and the operator's) is a plain string on the wire
-and a `Zeroizing<String>` in memory; it adds no crate (`serde` is already
-a dependency).
+already in the tree, no new features. Since WO-011 the broker's gates
+and fetch replies, `hatchling-core`'s secret wire payload
+(`SecretB64`) and `hatchling-artifact`'s gate wipe their copies of
+held secrets with it too, the same crate and version. `hatchling-core`
+turns on its `serde` feature, so an `ApiToken` (the UI's and the
+operator's) is a plain string on the wire and a `Zeroizing<String>` in
+memory; it adds no crate (`serde` is already a dependency).
 
 ## base64
 
@@ -221,7 +227,10 @@ hand-rolled one; MIT/Apache-2.0.
 HMAC construction (RFC 2104). Used by `hatchling-egress` for
 surrogate authentication: surrogates are HMAC-SHA256 over
 (peer_uid, destination, expiry) with a per-session key, so the agent
-cannot forge or extend them.
+cannot forge or extend them. `hatchling-broker` uses it for the
+redaction audit log's tags: HMAC-SHA-256 under a random key sealed
+beside the kept texts, so the log alone confirms no guess at what was
+redacted (WO-011).
 
 ## sha1
 
@@ -238,7 +247,8 @@ rule.
 ## sha2
 
 SHA-256 implementation. Used by `hatchling-egress` as the hash
-function for the surrogate HMAC.
+function for the surrogate HMAC, and by `hatchling-broker` for the
+audit log's HMAC tags (WO-011).
 
 ## base64
 
