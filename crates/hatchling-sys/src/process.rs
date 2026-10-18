@@ -785,24 +785,39 @@ pub fn euid() -> u32 {
 }
 
 /// Whether a process with pid `pid` is alive: one this process may not
-/// signal counts, and a zombie, ended but not yet reaped, doesn't. A pid
-/// of 0 or below names no one process.
+/// signal counts, and an ended one (a zombie, or being reaped) doesn't.
+/// A pid of 0 or below names no one process.
 #[must_use]
 pub fn pid_alive(pid: i32) -> bool {
     Pid::from_raw(pid).is_some_and(|raw| {
-        matches!(
-            rustix::process::test_kill_process(raw),
-            Ok(()) | Err(rustix::io::Errno::PERM)
-        ) && !zombie(&std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default())
+        alive_by(
+            || {
+                matches!(
+                    rustix::process::test_kill_process(raw),
+                    Ok(()) | Err(rustix::io::Errno::PERM)
+                )
+            },
+            || std::fs::read_to_string(format!("/proc/{pid}/stat")),
+        )
     })
 }
 
-/// Whether `/proc/<pid>/stat` text says its process is a zombie: the
-/// state after the command's closing parenthesis (which a command name
-/// may itself contain) is `Z`.
-fn zombie(stat: &str) -> bool {
+/// Whether a process is alive, by `signalable` (it exists, as a signal
+/// probe sees it) and its `stat` text (not ended). An ended process can
+/// be reaped between the two, so a `stat` that can't be read asks
+/// `signalable` again: gone now, or there but hidden (`/proc` mounted
+/// with `hidepid`), which counts as alive.
+fn alive_by(signalable: impl Fn() -> bool, stat: impl FnOnce() -> io::Result<String>) -> bool {
+    signalable() && stat().map_or_else(|_| signalable(), |text| !ended(&text))
+}
+
+/// Whether `/proc/<pid>/stat` text says its process has ended: its state,
+/// after the command's closing parenthesis (which a command name may
+/// itself contain), is a zombie's (`Z`), or dead and being reaped (`X`;
+/// `x` on older kernels), when a signal probe can still find it.
+fn ended(stat: &str) -> bool {
     stat.rsplit_once(") ")
-        .is_some_and(|(_, rest)| rest.starts_with('Z'))
+        .is_some_and(|(_, rest)| rest.starts_with(['Z', 'X', 'x']))
 }
 
 /// Drops every supplementary group: `setgroups(0, NULL)`.
@@ -1639,20 +1654,41 @@ mod tests {
             .unwrap();
         assert!(!pid_alive(pid), "reaped: gone");
         // Ended, not yet reaped: a zombie is no longer alive.
-        let mut ended = std::process::Command::new("true").spawn().unwrap();
-        let ended_pid = i32::try_from(ended.id()).unwrap();
+        let mut quit = std::process::Command::new("true").spawn().unwrap();
+        let ended_pid = i32::try_from(quit.id()).unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
-        while !zombie(&std::fs::read_to_string(format!("/proc/{ended_pid}/stat")).unwrap()) {
+        while !ended(&std::fs::read_to_string(format!("/proc/{ended_pid}/stat")).unwrap()) {
             assert!(Instant::now() < deadline, "it never ended");
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(!pid_alive(ended_pid), "a zombie");
-        ended.wait().unwrap();
+        quit.wait().unwrap();
         assert!(
-            zombie("12 (a) b) Z 1 2"),
+            ended("12 (a) b) Z 1 2"),
             "the state follows the last parenthesis"
         );
-        assert!(!zombie("12 (Z) S 1 2") && !zombie("garbage"));
+        assert!(!ended("12 (Z) S 1 2") && !ended("garbage"));
+        // Dead and being reaped, which a signal probe can still find.
+        assert!(ended("12 (a) X 1 2"), "dead");
+        assert!(ended("12 (a) x 1 2"), "dead, as older kernels say it");
+        assert!(!ended("12 (a) R 1 2") && !ended("12 (a) D 1 2"));
+    }
+
+    #[test]
+    fn a_process_reaped_between_the_probe_and_its_stat_is_gone() {
+        let unread = || Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+        // Signalable, then reaped before `/proc/<pid>/stat` was read.
+        let probes = Cell::new(0);
+        let reaped = || {
+            probes.set(probes.get() + 1);
+            probes.get() == 1
+        };
+        assert!(!alive_by(reaped, unread), "gone, not alive");
+        // Still signalable, its `stat` hidden: alive.
+        assert!(alive_by(|| true, unread));
+        assert!(!alive_by(|| false, || Ok(String::from("7 (a) S 1"))));
+        assert!(alive_by(|| true, || Ok(String::from("7 (a) S 1"))));
+        assert!(!alive_by(|| true, || Ok(String::from("7 (a) Z 1"))));
     }
 
     #[test]
