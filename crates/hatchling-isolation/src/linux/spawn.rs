@@ -1298,7 +1298,10 @@ pub(super) mod tests {
         // depth, so what's left shows which one ran.
         let staging = Staging::create().unwrap();
         let dir = staging.path().to_path_buf();
-        std::fs::create_dir_all((0..hatchling_sys::tree::MAX_DEPTH + 2).fold(dir.clone(), |path, _| path.join("d"))).unwrap();
+        std::fs::create_dir_all(
+            (0..hatchling_sys::tree::MAX_DEPTH + 2).fold(dir.clone(), |path, _| path.join("d")),
+        )
+        .unwrap();
         drop(staging);
         assert!(dir.exists(), "removed by the walk, not remove_dir_all");
         std::fs::remove_dir_all(&dir).unwrap();

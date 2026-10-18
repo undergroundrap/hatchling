@@ -1322,11 +1322,17 @@ mod tests {
         assert_eq!(mode(&dir), 0o700);
         assert!(make_run_dir(&root, "run-abc").is_err(), "never reused");
         remove_run_dir(&dir);
-        assert!(!dir.exists() && root.exists(), "the run's directory, and only it");
+        assert!(
+            !dir.exists() && root.exists(),
+            "the run's directory, and only it"
+        );
         // Through the bounded walk: a tree deeper than it is only partly
         // removed, where remove_dir_all would take it all.
         let (deep, _held) = make_run_dir(&root, "run-def").unwrap();
-        std::fs::create_dir_all((0..hatchling_sys::tree::MAX_DEPTH + 2).fold(deep.clone(), |path, _| path.join("d"))).unwrap();
+        std::fs::create_dir_all(
+            (0..hatchling_sys::tree::MAX_DEPTH + 2).fold(deep.clone(), |path, _| path.join("d")),
+        )
+        .unwrap();
         remove_run_dir(&deep);
         assert!(deep.exists(), "removed by the walk, not remove_dir_all");
         let _ = std::fs::remove_dir_all(&root);

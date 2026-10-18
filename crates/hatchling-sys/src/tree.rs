@@ -196,10 +196,12 @@ pub fn remove_tree(root: &Path, name: &OsStr, keep: &[DirId]) -> Result<Removed,
 }
 
 /// Removes the directory at `path` through [`remove_tree`], keeping
-/// nothing: a disposable directory its caller made, such as a cell's
-/// staging or a run's directory. Its parent is the root, so a mount in it
-/// (should one ever show through) is never entered, and nothing outside
-/// it goes (WO-024).
+/// nothing.
+///
+/// For a disposable directory its caller made, such as a cell's staging
+/// or a run's directory. Its parent is the root, so a mount in it (should
+/// one ever show through) is never entered, and nothing outside it goes
+/// (WO-024).
 ///
 /// # Errors
 ///
@@ -327,7 +329,7 @@ mod tests {
     }
 
     /// A path `MAX_DEPTH + 2` directories below `top`.
-    fn deeper_than_the_walk(top: &Path) -> std::path::PathBuf {
+    fn deeper_than_the_walk(top: &Path) -> PathBuf {
         (0..MAX_DEPTH + 2).fold(top.to_path_buf(), |path, _| path.join("d"))
     }
 

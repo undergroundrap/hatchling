@@ -171,7 +171,6 @@ mod tests {
     use super::*;
     use crate::VaultConfig;
     use hatchling_core::{LogLevel, PeerUid};
-    use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
 
     fn test_path(name: &str) -> crate::test_socket::TestSocket {
         crate::test_socket::TestSocket::new(format!(
@@ -299,7 +298,10 @@ mod tests {
             "{err:?}"
         );
         assert!(
-            std::fs::symlink_metadata(&*path).unwrap().file_type().is_socket(),
+            std::fs::symlink_metadata(&*path)
+                .unwrap()
+                .file_type()
+                .is_socket(),
             "still there"
         );
         // Its owner's own broker takes it over.

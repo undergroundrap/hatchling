@@ -2351,6 +2351,10 @@ mod tests {
 
     /// A child of this process leading its own group, running `script`
     /// in `sh`, and its stdout.
+    #[allow(
+        clippy::zombie_processes,
+        reason = "the returned `Child` reaps it through its pidfd"
+    )]
     fn group_leader(script: &str) -> (Child, std::process::ChildStdout) {
         use std::os::unix::process::CommandExt as _;
         let mut spawned = std::process::Command::new("sh")
@@ -2389,8 +2393,8 @@ mod tests {
             child.wait_deadline_group(Duration::from_millis(100)),
             Err(Error::ProcessTimeout { .. })
         ));
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while pid_alive(grandchild) && std::time::Instant::now() < deadline {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while pid_alive(grandchild) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(!pid_alive(grandchild), "the group went with its leader");

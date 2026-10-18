@@ -518,7 +518,10 @@ mod tests {
         // removed, where remove_dir_all would take it all.
         let deep = VerifiedCode::write("copy", "bin/entry", b"the code").unwrap();
         let top = deep.dir().to_path_buf();
-        std::fs::create_dir_all((0..hatchling_sys::tree::MAX_DEPTH + 2).fold(top.clone(), |path, _| path.join("d"))).unwrap();
+        std::fs::create_dir_all(
+            (0..hatchling_sys::tree::MAX_DEPTH + 2).fold(top.clone(), |path, _| path.join("d")),
+        )
+        .unwrap();
         drop(deep);
         assert!(top.exists(), "removed by the walk, not remove_dir_all");
         let _ = std::fs::remove_dir_all(&top);
