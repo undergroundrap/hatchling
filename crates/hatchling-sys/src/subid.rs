@@ -53,8 +53,9 @@ impl SubRange {
     }
 }
 
-/// The first range `subid` text (`/etc/subuid` or `/etc/subgid`) grants
-/// the account named `name` with id `id`: a line `name:start:count` or
+/// The first range `subid` text grants the account `name` (id `id`).
+///
+/// `subid` is `/etc/subuid` or `/etc/subgid`: lines `name:start:count` or
 /// `id:start:count`. Comments, blank lines, malformed lines, an empty
 /// range and one that runs past `u32::MAX` are skipped.
 #[must_use]
@@ -202,7 +203,12 @@ impl Helpers {
         std::fs::write(format!("/proc/{child_pid}/setgroups"), "deny").map_err(failed)?;
         for (helper, id) in [(&self.uid, uid), (&self.gid, gid)] {
             let status = Command::new(helper)
-                .args([child_pid.to_string(), String::from("0"), id.to_string(), String::from("1")])
+                .args([
+                    child_pid.to_string(),
+                    String::from("0"),
+                    id.to_string(),
+                    String::from("1"),
+                ])
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
@@ -228,11 +234,17 @@ mod tests {
         let subid = "# comment\n\nalice:100000:65536\n1000:300000:10\nbob:x:5\ncarol:5:0\nend:4294967295:2\nwhole:4294967295:1\n";
         assert_eq!(
             range_for(subid, "alice", 1001),
-            Some(SubRange { start: 100_000, count: 65_536 })
+            Some(SubRange {
+                start: 100_000,
+                count: 65_536
+            })
         );
         assert_eq!(
             range_for(subid, "nobody-by-name", 1000),
-            Some(SubRange { start: 300_000, count: 10 }),
+            Some(SubRange {
+                start: 300_000,
+                count: 10
+            }),
             "by numeric id"
         );
         assert_eq!(range_for(subid, "bob", 2), None, "malformed");
@@ -240,20 +252,33 @@ mod tests {
         assert_eq!(range_for(subid, "end", 4), None, "runs past u32::MAX");
         assert_eq!(
             range_for(subid, "whole", 5),
-            Some(SubRange { start: u32::MAX, count: 1 }),
+            Some(SubRange {
+                start: u32::MAX,
+                count: 1
+            }),
             "ends exactly at u32::MAX"
         );
-        assert_eq!(range_for("alice:1:2:3\n", "alice", 1), None, "a fourth field");
+        assert_eq!(
+            range_for("alice:1:2:3\n", "alice", 1),
+            None,
+            "a fourth field"
+        );
         assert_eq!(range_for(subid, "dave", 6), None);
     }
 
     #[test]
     fn a_range_holds_exactly_its_ids() {
-        let range = SubRange { start: 10, count: 3 };
+        let range = SubRange {
+            start: 10,
+            count: 3,
+        };
         assert!(!range.holds(9));
         assert!(range.holds(10) && range.holds(12));
         assert!(!range.holds(13));
-        let top = SubRange { start: u32::MAX, count: 1 };
+        let top = SubRange {
+            start: u32::MAX,
+            count: 1,
+        };
         assert!(top.holds(u32::MAX) && !top.holds(u32::MAX - 1));
     }
 
@@ -269,19 +294,65 @@ mod tests {
 
     #[test]
     fn a_cell_maps_to_the_first_id_of_a_range_that_holds_nobody() {
-        let range = SubRange { start: 200_000, count: 65_536 };
-        assert!(matches!(cell_id(range, 1000, &[0, 1000, 65_534]), Ok(200_000)));
-        let refused = |range, owner, accounts: &[u32]| {
-            matches!(cell_id(range, owner, accounts), Err(Error::InvalidIdMap { .. }))
+        let range = SubRange {
+            start: 200_000,
+            count: 65_536,
         };
-        assert!(refused(SubRange { start: 0, count: 10 }, 1000, &[]), "holds 0");
-        assert!(refused(SubRange { start: 900, count: 200 }, 1000, &[]), "holds the owner");
+        assert!(matches!(
+            cell_id(range, 1000, &[0, 1000, 65_534]),
+            Ok(200_000)
+        ));
+        let refused = |range, owner, accounts: &[u32]| {
+            matches!(
+                cell_id(range, owner, accounts),
+                Err(Error::InvalidIdMap { .. })
+            )
+        };
         assert!(
-            refused(SubRange { start: 60_000, count: 10_000 }, 1000, &[65_534]),
+            refused(
+                SubRange {
+                    start: 0,
+                    count: 10
+                },
+                1000,
+                &[]
+            ),
+            "holds 0"
+        );
+        assert!(
+            refused(
+                SubRange {
+                    start: 900,
+                    count: 200
+                },
+                1000,
+                &[]
+            ),
+            "holds the owner"
+        );
+        assert!(
+            refused(
+                SubRange {
+                    start: 60_000,
+                    count: 10_000
+                },
+                1000,
+                &[65_534]
+            ),
             "holds an account"
         );
         assert!(
-            matches!(cell_id(SubRange { start: 1001, count: 5 }, 1000, &[1006]), Ok(1001)),
+            matches!(
+                cell_id(
+                    SubRange {
+                        start: 1001,
+                        count: 5
+                    },
+                    1000,
+                    &[1006]
+                ),
+                Ok(1001)
+            ),
             "neighbours on both sides are fine"
         );
     }
@@ -295,14 +366,20 @@ mod tests {
             Err(Error::InvalidIdMap { reason }) => reason,
             other => format!("{other:?}"),
         };
-        assert!(reason(&dir.join("missing")).ends_with("is missing: install the `uidmap` package (or your system's newuidmap and newgidmap)"));
+        assert!(reason(&dir.join("missing")).ends_with(
+            "is missing: install the `uidmap` package (or your system's newuidmap and newgidmap)"
+        ));
         assert!(reason(&dir).contains("isn't a regular file"));
         let mine = dir.join("mine");
         std::fs::write(&mine, b"").unwrap();
         // This test's own file: owned by root only when the test runs as
         // root, and never setuid.
         let euid = crate::process::euid();
-        assert!(reason(&mine).contains(if euid == 0 { "isn't setuid" } else { "isn't owned by root" }));
+        assert!(reason(&mine).contains(if euid == 0 {
+            "isn't setuid"
+        } else {
+            "isn't owned by root"
+        }));
         std::os::unix::fs::symlink("/bin/sh", dir.join("link")).unwrap();
         assert!(reason(&dir.join("link")).contains("isn't a regular file"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -316,17 +393,20 @@ mod tests {
         let found = (|| {
             let helpers = Helpers::standard().ok()?;
             let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
-            let group = std::fs::read_to_string("/etc/group").ok()?;
-            let euid = crate::process::euid();
-            let egid = rustix::process::getegid().as_raw();
-            let name = account_name(&passwd, euid)?;
-            let uids = range_for(&std::fs::read_to_string("/etc/subuid").ok()?, name, euid)?;
-            let gids = range_for(&std::fs::read_to_string("/etc/subgid").ok()?, name, euid)?;
-            let uid = cell_id(uids, euid, &account_ids(&passwd)).ok()?;
-            let gid = cell_id(gids, egid, &account_ids(&group)).ok()?;
+            let group_file = std::fs::read_to_string("/etc/group").ok()?;
+            let owner = crate::process::euid();
+            let primary_gid = rustix::process::getegid().as_raw();
+            let name = account_name(&passwd, owner)?;
+            let uids = range_for(&std::fs::read_to_string("/etc/subuid").ok()?, name, owner)?;
+            let gids = range_for(&std::fs::read_to_string("/etc/subgid").ok()?, name, owner)?;
+            let uid = cell_id(uids, owner, &account_ids(&passwd)).ok()?;
+            let gid = cell_id(gids, primary_gid, &account_ids(&group_file)).ok()?;
             Some((helpers, uid, gid))
         })();
-        assert!(found.is_some() || !required, "HATCHLING_REQUIRE_SUBID=1, but no usable subordinate range and helpers");
+        assert!(
+            found.is_some() || !required,
+            "HATCHLING_REQUIRE_SUBID=1, but no usable subordinate range and helpers"
+        );
         found
     }
 
@@ -369,6 +449,9 @@ mod tests {
         let refused = helpers.write_maps(other_pid, 0, 0);
         let _ = other.kill();
         let _ = other.wait();
-        assert!(matches!(refused, Err(Error::IdMapWrite { .. })), "{refused:?}");
+        assert!(
+            matches!(refused, Err(Error::IdMapWrite { .. })),
+            "{refused:?}"
+        );
     }
 }
