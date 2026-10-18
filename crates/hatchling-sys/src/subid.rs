@@ -383,7 +383,9 @@ mod tests {
         // A regular file of root's that isn't setuid: only the setuid
         // check refuses it.
         let env = Path::new("/usr/bin/env");
-        if std::fs::symlink_metadata(env).is_ok_and(|meta| meta.file_type().is_file() && meta.uid() == 0) {
+        if std::fs::symlink_metadata(env)
+            .is_ok_and(|meta| meta.file_type().is_file() && meta.uid() == 0)
+        {
             assert!(reason(env).contains("isn't setuid"), "{}", reason(env));
         }
         std::os::unix::fs::symlink("/bin/sh", dir.join("link")).unwrap();
@@ -402,7 +404,10 @@ mod tests {
             // kernel or AppArmor that refuses user namespaces leaves no
             // child to map: either way the helpers can't run here.
             let status = std::fs::read_to_string("/proc/self/status").ok()?;
-            if !status.lines().any(|line| line.split_whitespace().eq(["NoNewPrivs:", "0"])) {
+            if !status
+                .lines()
+                .any(|line| line.split_whitespace().eq(["NoNewPrivs:", "0"]))
+            {
                 return None;
             }
             let unshared = Command::new("unshare").args(["-U", "true"]).status().ok()?;
