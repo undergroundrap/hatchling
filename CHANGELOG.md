@@ -26,6 +26,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 - **A chat message is answered with the chat prompt.** The local chat path started its run with the background worker's prompt; a chat turn now says so, typed from the chat path to the agent (`HATCHLING_RUN_CHAT`), and gets the chat prompt.
 - **A batch of tool calls is checked whole before any of it runs.** An unknown tool or bad arguments later in a batch used to stop the loop after earlier calls in it had already run, unrecorded.
 - **A reply the provider cut off isn't taken as finished.** A reply with `finish_reason` `length` (the output limit) or `content_filter` is now a model failure, not a final answer.
+- **`pid_alive` no longer says a dead process is alive.** A process being reaped (state `X`) still answers a signal probe, and a zombie reaped between the probe and the read of its `/proc` stat left nothing to read; both counted as alive. Now neither does, and an unreadable stat asks the probe again, so a process hidden by `hidepid` still counts. The staging sweep relies on it, and a process-group test failed on it now and then.
 
 ## [0.4.0] - 2026-10-18
 
