@@ -28,7 +28,7 @@ zeroize = { version = "1", features = ["derive"] }
 # Directories made private at once, through handles
 # (hatchling-core already depends on it).
 hatchling-sys.workspace = true
-# Safe wrappers over Linux syscalls (getuid for vault-root ownership checks).
+# Safe wrappers over Linux syscalls (getuid for vault-root ownership checks; flock for the keyring's edit lock).
 # Keeps the workspace-wide `unsafe_code = "deny"` intact: no hand-rolled FFI.
 rustix = { version = "0.38", features = ["fs", "process"] }
 # Authenticated encryption for the sealed vault: XChaCha20-Poly1305
