@@ -38,6 +38,7 @@ pub mod ownership;
 pub mod peercred;
 pub mod process;
 pub mod seccomp;
+pub mod subid;
 pub mod sync_pipe;
 pub mod terminal;
 #[cfg(test)]
