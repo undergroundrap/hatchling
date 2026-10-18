@@ -17,8 +17,9 @@ use super::{UiAction, UiRequest};
 /// A bearer token, presented in `Hello` for a token provider.
 ///
 /// Opaque to the protocol. Its `Debug` never shows it, so no log line or
-/// panic message can carry one, and its memory is wiped when it's
-/// dropped. On the wire it's a plain string.
+/// panic message can carry one.
+// Its memory is wiped when it's dropped; on the wire it's a plain string.
+// (A plain comment, so the generated protocol schema doesn't change.)
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(transparent)]

@@ -120,7 +120,7 @@ can be scrubbed from every model request: the same crate and version
 already in the tree, no new features. `hatchling-core` turns on its `serde` feature, so
 an `ApiToken` (the UI's and the operator's) is a plain string on the wire
 and a `Zeroizing<String>` in memory; it adds no crate (`serde` is already
-a dependency). `hatchling-host` uses it for the tokens it reads.
+a dependency).
 
 ## base64
 
