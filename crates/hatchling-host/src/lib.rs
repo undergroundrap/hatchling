@@ -643,29 +643,34 @@ mod tests {
                 Some(&page),
             ),
         ];
-        std::thread::scope(|scope| {
-            let host = scope.spawn(|| {
-                for _ in 0..refused.len() {
+        // The host on a thread of its own, joined only once every answer
+        // was a refusal: a request wrongly let through holds its bridge
+        // open, and the test must fail at once, not wait on it.
+        let host = {
+            let settings = settings.clone();
+            let count = refused.len();
+            std::thread::spawn(move || {
+                for _ in 0..count {
                     let (stream, _) = listener.accept().unwrap();
                     handle(stream, &settings).unwrap();
                 }
-            });
-            for request in &refused {
-                let mut browser = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
-                browser
-                    .set_read_timeout(Some(Duration::from_secs(5)))
-                    .unwrap();
-                browser.write_all(request.as_bytes()).unwrap();
-                let mut answer = String::new();
-                browser.read_to_string(&mut answer).unwrap();
-                assert!(
-                    answer.starts_with("HTTP/1.1 403 Forbidden\r\n"),
-                    "{request:?} got {answer}"
-                );
-                assert!(answer.ends_with("\r\n\r\n"), "a refusal has no body");
-            }
-            host.join().unwrap();
-        });
+            })
+        };
+        for request in &refused {
+            let mut browser = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+            browser
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            browser.write_all(request.as_bytes()).unwrap();
+            let mut answer = String::new();
+            let read = browser.read_to_string(&mut answer);
+            assert!(
+                read.is_ok() && answer.starts_with("HTTP/1.1 403 Forbidden\r\n"),
+                "{request:?} got {answer:?}, then {read:?}"
+            );
+            assert!(answer.ends_with("\r\n\r\n"), "a refusal has no body");
+        }
+        host.join().unwrap();
         // Nothing reached either socket.
         ui.set_nonblocking(true).unwrap();
         operator.set_nonblocking(true).unwrap();
