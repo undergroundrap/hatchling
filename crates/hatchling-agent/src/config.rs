@@ -438,7 +438,10 @@ mod tests {
         assert!(matches!(run_flag(Some("1"), "K"), Ok(true)));
         for raw in ["", "true", "01", "2"] {
             assert!(
-                matches!(run_flag(Some(raw), "K"), Err(Error::InvalidConfig { key: "K", .. })),
+                matches!(
+                    run_flag(Some(raw), "K"),
+                    Err(Error::InvalidConfig { key: "K", .. })
+                ),
                 "{raw:?}"
             );
         }

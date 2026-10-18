@@ -565,12 +565,18 @@ mod tests {
 
     #[test]
     fn a_reply_is_parsed_by_how_it_finished() {
-        let parse = |reply: &str| ChatCompletionsProvider::<Canned>::parse_response(reply.as_bytes());
+        let parse =
+            |reply: &str| ChatCompletionsProvider::<Canned>::parse_response(reply.as_bytes());
         let reply = |finish: &str| {
-            format!(r#"{{"choices": [{{"finish_reason": "{finish}", "message": {{"role": "assistant", "content": "x"}}}}]}}"#)
+            format!(
+                r#"{{"choices": [{{"finish_reason": "{finish}", "message": {{"role": "assistant", "content": "x"}}}}]}}"#
+            )
         };
         assert!(matches!(parse(&reply("stop")), Ok(ModelAction::Text(text)) if text == "x"));
-        assert!(matches!(parse(&text_reply("x")), Ok(ModelAction::Text(_))), "no finish_reason");
+        assert!(
+            matches!(parse(&text_reply("x")), Ok(ModelAction::Text(_))),
+            "no finish_reason"
+        );
         for cut in ["length", "content_filter"] {
             assert!(
                 matches!(parse(&reply(cut)), Err(Error::BadResponse { reason }) if reason.contains(cut)),

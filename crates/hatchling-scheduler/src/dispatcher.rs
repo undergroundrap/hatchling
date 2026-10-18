@@ -624,12 +624,19 @@ mod tests {
         let asked = launcher.0.borrow();
         let request = asked.first().unwrap();
         assert_eq!(
-            (request.schedule_id.as_str(), request.task.as_str(), request.channel.as_str()),
+            (
+                request.schedule_id.as_str(),
+                request.task.as_str(),
+                request.channel.as_str()
+            ),
             ("sch-1", "tidy the inbox", "local")
         );
         assert_eq!((request.due, request.missed, request.depth), (due, true, 2));
         assert_eq!(request.space.as_deref(), Some("garden"));
-        assert!(!request.chat, "scheduled work speaks with the worker's prompt");
+        assert!(
+            !request.chat,
+            "scheduled work speaks with the worker's prompt"
+        );
         assert_eq!(report.launched, [(String::from("sch-1"), true)]);
         assert_eq!(dispatcher.active(), 1);
         drop(asked);
