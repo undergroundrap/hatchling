@@ -471,6 +471,25 @@ mod tests {
         }
     }
     #[test]
+    fn this_host_is_its_loopback_name_and_exact_port() {
+        assert!(this_host("127.0.0.1:7340", 7340));
+        assert!(this_host("LOCALHOST:7340", 7340));
+        assert!(!this_host("127.0.0.1:734", 7340));
+        assert!(!this_host("127.0.0.2:7340", 7340));
+        assert!(!this_host("localhost7340", 7340));
+    }
+
+    #[test]
+    fn a_refusal_is_a_bare_403_that_asks_to_close() {
+        let mut out = Vec::new();
+        forbid(&mut out).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.starts_with("HTTP/1.1 403 Forbidden\r\n"), "{out}");
+        assert!(out.contains("Content-Length: 0\r\n") && out.contains("Connection: close\r\n"));
+        assert!(out.ends_with("\r\n\r\n"), "no body");
+    }
+
+    #[test]
     fn only_this_hosts_own_name_and_port_are_its_host_and_origin() {
         let with = |host: &str, origin: Option<&str>| {
             let origin = origin.map_or(String::new(), |origin| format!("Origin: {origin}\r\n"));

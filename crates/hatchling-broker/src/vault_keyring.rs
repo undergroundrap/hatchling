@@ -3470,6 +3470,21 @@ mod tests {
     }
 
     #[test]
+    fn a_secret_answer_is_its_line_without_its_ending_and_bounded() {
+        let long = "7".repeat(MAX_SECRET_ANSWER + 10);
+        let mut console = Console {
+            input: std::io::Cursor::new(format!("13579\r\n{long}\n").into_bytes()),
+            output: Vec::new(),
+            stdin: false,
+        };
+        assert_eq!(console.ask_secret("PIN?").unwrap().as_str(), "13579");
+        assert_eq!(String::from_utf8(console.output.clone()).unwrap(), "PIN? ");
+        let cut = console.ask_secret("PIN?").unwrap();
+        assert_eq!(cut.len(), MAX_SECRET_ANSWER, "read no further than its buffer");
+        assert!(cut.capacity() <= MAX_SECRET_ANSWER, "and the buffer never grew");
+    }
+
+    #[test]
     fn the_console_asks_and_a_pin_is_only_what_was_typed() {
         let console = Rc::new(RefCell::new(Console {
             input: std::io::Cursor::new(b"2468\n\nanswer\n".to_vec()),

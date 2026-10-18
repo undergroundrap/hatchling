@@ -65,6 +65,14 @@ mod tests {
     }
 
     #[test]
+    fn stdin_is_held_exactly_when_it_is_a_terminal() {
+        // A test's stdin may or may not be a terminal; either way, echo
+        // is held off exactly when it is one.
+        let is_terminal = tcgetattr(rustix::stdio::stdin()).is_ok();
+        assert_eq!(EchoOff::on_stdin().held(), is_terminal);
+    }
+
+    #[test]
     fn echo_is_off_while_held_and_as_it_was_after_on_a_terminal_only() {
         let main = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY).unwrap();
         grantpt(&main).unwrap();
