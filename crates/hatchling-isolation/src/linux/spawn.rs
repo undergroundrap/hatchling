@@ -137,7 +137,9 @@ impl Staging {
 
 impl Drop for Staging {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
+        // Through `remove_tree`: a cell's mount, should one ever show
+        // through here, is never entered (WO-024).
+        let _ = hatchling_sys::remove_dir_tree(&self.dir);
         StagingRoot::leave();
     }
 }
@@ -1288,6 +1290,18 @@ pub(super) mod tests {
             gone
         });
         assert!(gone, "the last user out removes the root");
+    }
+
+    #[test]
+    fn a_staging_dir_goes_through_the_bounded_walk() {
+        // `remove_dir_all` would take all of this; the walk stops at its
+        // depth, so what's left shows which one ran.
+        let staging = Staging::create().unwrap();
+        let dir = staging.path().to_path_buf();
+        std::fs::create_dir_all((0..hatchling_sys::tree::MAX_DEPTH + 2).fold(dir.clone(), |path, _| path.join("d"))).unwrap();
+        drop(staging);
+        assert!(dir.exists(), "removed by the walk, not remove_dir_all");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

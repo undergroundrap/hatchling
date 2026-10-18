@@ -384,7 +384,7 @@ impl<'scope> CellLauncher<'scope, '_> {
         };
         let (run_dir, held) = make_run_dir(&self.env.run_root, &token)?;
         let cleanup = |error: String| {
-            let _ = std::fs::remove_dir_all(&run_dir);
+            remove_run_dir(&run_dir);
             error
         };
         let cell_id: CellId = token
@@ -552,7 +552,7 @@ impl CellRun<'_> {
             .take()
             .and_then(|handle| handle.join().ok())
             .unwrap_or_default();
-        let _ = std::fs::remove_dir_all(&self.run_dir);
+        remove_run_dir(&self.run_dir);
         drop(self.held.take());
         // Its session is gone, so it can ask for nothing more.
         crate::schedule_ops::release_followup(&self.token);
@@ -590,6 +590,12 @@ fn run_token() -> Result<String, String> {
     let token = crate::approval::random_hex("run-")
         .map_err(|err| format!("run entropy unavailable: {err}"))?;
     Ok(token.chars().take(RUN_TOKEN_LEN).collect())
+}
+
+/// Removes a run's directory through `remove_tree` (WO-024): it holds
+/// the helper's staging, whose mounts it never enters.
+fn remove_run_dir(dir: &Path) {
+    let _ = hatchling_sys::remove_dir_tree(dir);
 }
 
 /// Makes the run's own directory, owner-only, under `root`.
@@ -1315,6 +1321,14 @@ mod tests {
         assert_eq!(mode(&root), 0o700);
         assert_eq!(mode(&dir), 0o700);
         assert!(make_run_dir(&root, "run-abc").is_err(), "never reused");
+        remove_run_dir(&dir);
+        assert!(!dir.exists() && root.exists(), "the run's directory, and only it");
+        // Through the bounded walk: a tree deeper than it is only partly
+        // removed, where remove_dir_all would take it all.
+        let (deep, _held) = make_run_dir(&root, "run-def").unwrap();
+        std::fs::create_dir_all((0..hatchling_sys::tree::MAX_DEPTH + 2).fold(deep.clone(), |path, _| path.join("d"))).unwrap();
+        remove_run_dir(&deep);
+        assert!(deep.exists(), "removed by the walk, not remove_dir_all");
         let _ = std::fs::remove_dir_all(&root);
     }
 
