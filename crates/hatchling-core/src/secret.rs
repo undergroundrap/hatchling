@@ -127,7 +127,7 @@ mod tests {
         let err = decode("!!! not base64 !!!").unwrap_err();
         assert!(
             matches!(err, Error::InvalidSecretEncoding(_)),
-            "unexpected error: {err}"
+            "undecodable input must be InvalidSecretEncoding"
         );
     }
 

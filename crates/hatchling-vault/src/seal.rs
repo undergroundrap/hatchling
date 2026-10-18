@@ -282,8 +282,13 @@ impl FileKey {
                 len,
             });
         }
-        let mut key = [0u8; MASTER_KEY_LEN];
-        key.copy_from_slice(bytes.get(..MASTER_KEY_LEN).unwrap_or_default());
+        let key = bytes
+            .get(..MASTER_KEY_LEN)
+            .and_then(|read| <[u8; MASTER_KEY_LEN]>::try_from(read).ok())
+            .ok_or_else(|| Error::InvalidKey {
+                path: path.to_path_buf(),
+                len,
+            })?;
         Ok(MasterKey::from_bytes(key))
     }
 
