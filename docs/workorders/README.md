@@ -47,7 +47,7 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | [011](workorder-011-secret-hygiene.md) | Secret hygiene in memory and logs | yes | DONE |
 | [012](workorder-012-disposable-state-and-cleanup.md) | Separate disposable files from your data, and clean them up safely | yes | DONE |
 | [013](workorder-013-release-process.md) | A release process: signed, reproducible binaries and an SBOM | yes | QUEUED |
-| [014](workorder-014-running-without-root.md) | Run the full broker without root | yes | QUEUED |
+| [014](workorder-014-running-without-root.md) | Run the full broker without root | yes | IN-PROGRESS |
 | [015](workorder-015-root-cell-tests-in-ci.md) | Run the cell test suites as root in CI | yes | QUEUED |
 | [016](workorder-016-publish-to-crates-io.md) | Publish to crates.io, with `hatchling-runtime` as the front door | yes | CLOSED |
 | [017](workorder-017-privilege-separate-the-trusted-side.md) | Privilege-separate the trusted side: a credential keeper, an egress authority, and a spawner so the broker drops root | yes | QUEUED |

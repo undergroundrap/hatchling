@@ -187,7 +187,22 @@ CI runs this too: it opens the app's address in Chromium, sends a message and wa
 
 ### Running without root
 
-The broker runs as root so that each cell can get a uid of its own. Without privilege, Linux lets a process map only its own uid into a user namespace, so an unprivileged broker's cells run as you: still in their own namespaces, under seccomp, with no capabilities and no network. In that mode, the local API and the chat ingress refuse to start, because a cell with your uid could otherwise drive them. Making both work without root is [WO-014](docs/workorders/workorder-014-running-without-root.md).
+The broker runs as root so that each cell can get a uid of its own. Without privilege, Linux lets a process map only its own uid into a user namespace, so by default an unprivileged broker's cells run as you: still in their own namespaces, under seccomp, with no capabilities and no network. In that mode the local API, the chat ingress, the device endpoint and the operator socket refuse to start, because a cell with your uid could otherwise drive them.
+
+An unprivileged broker can give its cells a uid of their own the way rootless containers do, from a subordinate range granted to your user. If `/etc/subuid` and `/etc/subgid` have no line for you yet:
+
+```bash
+sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$USER"
+```
+
+Then point the broker at it, with the agent's uid set to the first id of your `/etc/subuid` range:
+
+```bash
+export HATCHLING_CELL_IDS=subordinate
+export HATCHLING_AGENT_UID=100000
+```
+
+Every cell then runs as that first id (and the first of your gid range), mapped by `newuidmap` and `newgidmap` from the `uidmap` package, with none of your supplementary groups. The broker refuses a range that holds root, your uid or any account's id, and map helpers that aren't root's setuid programs. Two things are still to come in [WO-014](docs/workorders/workorder-014-running-without-root.md): harness cells (a coding CLI's work tree is handed over by `chown`, which needs root, so a harness refuses to start this way), and a tested quickstart, including the AppArmor profile Ubuntu needs for a program that creates user namespaces.
 
 ### Cell limits
 

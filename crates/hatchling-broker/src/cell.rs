@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 use hatchling_core::{LogLevel, SocketPath};
 use hatchling_isolation::{
     Cell as _, CellIdentity, CellSpec, ENDPOINT_DIR, Endpoint, Exit, Exposure, Filter,
-    IsolationBackend, Limits, PROGRAM, Tool,
+    IsolationBackend, Limits, Mapping, PROGRAM, Tool,
 };
 use serde::{Deserialize, Serialize};
 
@@ -61,6 +61,13 @@ pub struct CellConfig {
     pub uid_base: u32,
     /// How many uids the map covers (in-cell `0..uid_count`).
     pub uid_count: u32,
+    /// Host gid that in-cell gid 0 maps to, when it isn't `uid_base`'s
+    /// number: a cell on the owner's subordinate ids.
+    #[serde(default)]
+    pub gid_base: Option<u32>,
+    /// Where the cell's ids come from (`HATCHLING_CELL_IDS`).
+    #[serde(default)]
+    pub ids: CellIds,
     /// Absolute host path of the agent binary to run in the cell.
     pub agent_bin: PathBuf,
     /// Cell identity handed to the agent via `HATCHLING_CELL_ID`.
@@ -116,6 +123,75 @@ pub struct CellConfig {
     /// nothing about one. Set for the broker's own agent cell.
     #[serde(default)]
     pub connected: bool,
+}
+
+/// Where cells get their uid and gid: `HATCHLING_CELL_IDS`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CellIds {
+    /// The broker's own map (`own`, the default): any uid for a root
+    /// broker, `HATCHLING_CELL_UID_BASE` or nobody's; an unprivileged
+    /// broker's own uid, which its cells then share.
+    #[default]
+    Own,
+    /// The owner's subordinate ids (`subordinate`, WO-014): the first of
+    /// its `/etc/subuid` and `/etc/subgid` ranges, mapped by
+    /// `newuidmap` and `newgidmap`, so an unprivileged broker's cells
+    /// get a uid of their own.
+    Subordinate,
+}
+
+impl CellIds {
+    /// Reads `HATCHLING_CELL_IDS` through `get`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidConfig`] for anything but `own` or `subordinate`.
+    pub fn parse(get: impl Fn(&str) -> Option<String>) -> Result<Self, Error> {
+        match get(env::HATCHLING_CELL_IDS.name).as_deref() {
+            None | Some("own") => Ok(Self::Own),
+            Some("subordinate") => Ok(Self::Subordinate),
+            Some(_) => Err(Error::InvalidConfig {
+                key: "HATCHLING_CELL_IDS",
+                reason: String::from("expected own or subordinate"),
+            }),
+        }
+    }
+}
+
+/// How to give cells a uid other than the broker's: the end of every
+/// refusal to serve a socket the agent's uid could reach.
+pub(crate) const OWN_UID_HINT: &str = "give cells a uid of their own: run the broker as root, \
+     or set HATCHLING_CELL_IDS=subordinate, with a range for this user in /etc/subuid and \
+     /etc/subgid and HATCHLING_AGENT_UID set to the first id of its /etc/subuid range";
+
+/// The identity a cell gets from `backend`: the owner's subordinate ids
+/// when `ids` says so, otherwise `count` uids from `principal` (or the
+/// backend's default).
+///
+/// # Errors
+///
+/// [`Error::InvalidConfig`] if a subordinate cell is also given a base
+/// or a count (its ranges decide them), or the backend's refusal.
+fn cell_identity(
+    backend: &impl IsolationBackend,
+    ids: CellIds,
+    principal: Option<u32>,
+    count: Option<u32>,
+) -> Result<CellIdentity, Error> {
+    match ids {
+        CellIds::Own => Ok(backend.identity(principal, count.unwrap_or(1))?),
+        CellIds::Subordinate if principal.is_some() || count.is_some() => {
+            Err(Error::InvalidConfig {
+                key: "HATCHLING_CELL_IDS",
+                reason: String::from(
+                    "subordinate cells take their uid and gid from /etc/subuid and /etc/subgid: \
+                     leave HATCHLING_CELL_UID_BASE and HATCHLING_CELL_UID_COUNT unset",
+                ),
+            })
+        }
+        CellIds::Subordinate => Ok(backend.subordinate_identity()?),
+    }
 }
 
 /// What every cell's program, and everything it starts, is held to.
@@ -502,12 +578,20 @@ impl CellConfig {
     /// validation for this broker's privilege level, or
     /// [`Error::InvalidConfig`] for a limit that doesn't parse.
     pub fn skill(cell_id: &str) -> Result<Self, Error> {
+        Self::skill_with(cell_id, |key| env_value(std::env::var(key)))
+    }
+
+    /// [`CellConfig::skill`], reading its configuration through `get`.
+    fn skill_with(cell_id: &str, get: impl Fn(&str) -> Option<String>) -> Result<Self, Error> {
         let backend = hatchling_isolation::platform();
-        let identity = backend.identity(None, 1)?;
+        let ids = CellIds::parse(&get)?;
+        let identity = cell_identity(&backend, ids, None, None)?;
         let broker_uid_in_cell = backend.broker_in_cell(&identity)?;
         Ok(Self {
             uid_base: identity.principal,
             uid_count: identity.count,
+            gid_base: (ids == CellIds::Subordinate).then_some(identity.group),
+            ids,
             agent_bin: PathBuf::new(),
             cell_id: cell_id.to_owned(),
             socket_dir: PathBuf::new(),
@@ -517,10 +601,27 @@ impl CellConfig {
             skill_code: None,
             scheduled: None,
             harness: None,
-            limits: CellLimits::parse(|key| env_value(std::env::var(key)))?,
-            cgroup: cgroup_parent(&|key| env_value(std::env::var(key)))?,
+            limits: CellLimits::parse(&get)?,
+            cgroup: cgroup_parent(&get)?,
             connected: false,
         })
+    }
+
+    /// The identity the cell runs as.
+    #[must_use]
+    pub const fn identity(&self) -> CellIdentity {
+        CellIdentity {
+            principal: self.uid_base,
+            group: match self.gid_base {
+                Some(gid) => gid,
+                None => self.uid_base,
+            },
+            count: self.uid_count,
+            mapping: match self.ids {
+                CellIds::Own => Mapping::Direct,
+                CellIds::Subordinate => Mapping::Subordinate,
+            },
+        }
     }
 
     /// A run cell for one scheduled run (-2): the agent binary at
@@ -704,6 +805,7 @@ impl CellConfig {
             });
         }
         let backend = hatchling_isolation::platform();
+        let ids = CellIds::parse(&get)?;
         let principal = match get(env::HATCHLING_CELL_UID_BASE.name) {
             Some(raw) => Some(raw.parse::<u32>().map_err(|_| Error::InvalidConfig {
                 key: "HATCHLING_CELL_UID_BASE",
@@ -711,15 +813,15 @@ impl CellConfig {
             })?),
             None => None,
         };
-        let uid_count = match get(env::HATCHLING_CELL_UID_COUNT.name) {
-            Some(raw) => raw.parse::<u32>().map_err(|_| Error::InvalidConfig {
+        let count = match get(env::HATCHLING_CELL_UID_COUNT.name) {
+            Some(raw) => Some(raw.parse::<u32>().map_err(|_| Error::InvalidConfig {
                 key: "HATCHLING_CELL_UID_COUNT",
                 reason: String::from("expected a count as a base-10 u32"),
-            })?,
-            None => 1,
+            })?),
+            None => None,
         };
-        let identity = backend.identity(principal, uid_count)?;
-        let uid_base = identity.principal;
+        let identity = cell_identity(&backend, ids, principal, count)?;
+        let (uid_base, uid_count) = (identity.principal, identity.count);
         // The peer gate compares SO_PEERCRED against HATCHLING_AGENT_UID
         // with exact equality: if the map base drifted from it, the
         // spawned agent could never authenticate. Fail closed here,
@@ -754,6 +856,8 @@ impl CellConfig {
         Ok(Self {
             uid_base,
             uid_count,
+            gid_base: (ids == CellIds::Subordinate).then_some(identity.group),
+            ids,
             agent_bin,
             cell_id,
             socket_dir,
@@ -963,7 +1067,7 @@ const fn log_level_name(level: LogLevel) -> &'static str {
 fn cell_spec(config: &CellConfig, log_level: LogLevel) -> CellSpec {
     let (argv, env) = program_env(config, log_level);
     CellSpec {
-        identity: CellIdentity::direct(config.uid_base, config.uid_count),
+        identity: config.identity(),
         program: config.agent_bin.clone(),
         argv,
         env,
@@ -1410,6 +1514,200 @@ mod tests {
             CellConfig::parse(lookup(&vars), &socket("/tmp/x/broker.sock"), base + 1).unwrap_err();
         assert!(
             matches!(err, Error::InvalidConfig { key, .. } if key == "HATCHLING_CELL_UID_BASE")
+        );
+    }
+
+    /// `HATCHLING_CELL_IDS` as `value`, nothing else.
+    fn cell_ids_set(value: &'static str) -> impl Fn(&str) -> Option<String> {
+        move |key| (key == "HATCHLING_CELL_IDS").then(|| value.to_owned())
+    }
+
+    #[test]
+    fn where_cells_get_their_ids_is_own_or_subordinate() {
+        assert_eq!(CellIds::parse(|_| None).unwrap(), CellIds::Own);
+        assert_eq!(CellIds::parse(cell_ids_set("own")).unwrap(), CellIds::Own);
+        assert_eq!(
+            CellIds::parse(cell_ids_set("subordinate")).unwrap(),
+            CellIds::Subordinate
+        );
+        for wrong in ["Subordinate", "", "subid"] {
+            assert!(
+                matches!(
+                    CellIds::parse(cell_ids_set(wrong)),
+                    Err(Error::InvalidConfig {
+                        key: "HATCHLING_CELL_IDS",
+                        ..
+                    })
+                ),
+                "{wrong:?}"
+            );
+        }
+    }
+
+    /// Every kind of cell takes the owner's subordinate ids when told
+    /// to, and a base or count beside them is refused; where the owner
+    /// has none, the choice is refused, not quietly swapped for the
+    /// broker's own map.
+    #[test]
+    fn a_subordinate_cell_takes_the_owners_ids_and_no_base() {
+        let backend = hatchling_isolation::platform();
+        assert_eq!(
+            cell_identity(&backend, CellIds::Own, None, None).unwrap(),
+            backend.identity(None, 1).unwrap()
+        );
+        assert_eq!(
+            cell_identity(&backend, CellIds::Own, Some(default_base()), Some(1)).unwrap(),
+            backend.identity(Some(default_base()), 1).unwrap()
+        );
+        for (principal, count) in [(Some(100_000), None), (None, Some(1))] {
+            assert!(matches!(
+                cell_identity(&backend, CellIds::Subordinate, principal, count),
+                Err(Error::InvalidConfig {
+                    key: "HATCHLING_CELL_IDS",
+                    ..
+                })
+            ));
+        }
+        let mut vars = valid_vars();
+        vars.insert("HATCHLING_CELL_IDS", "subordinate");
+        let Ok(owners) = backend.subordinate_identity() else {
+            assert!(matches!(
+                cell_identity(&backend, CellIds::Subordinate, None, None),
+                Err(Error::CellMap { .. })
+            ));
+            assert!(CellConfig::skill_with("skill-sub", cell_ids_set("subordinate")).is_err());
+            return;
+        };
+        assert_eq!(owners.mapping, Mapping::Subordinate);
+        assert_eq!(
+            cell_identity(&backend, CellIds::Subordinate, None, None).unwrap(),
+            owners
+        );
+        // A skill or harness cell.
+        let skill = CellConfig::skill_with("skill-sub", cell_ids_set("subordinate")).unwrap();
+        assert_eq!(skill.identity(), owners);
+        assert_eq!(
+            skill.broker_uid_in_cell,
+            backend.broker_in_cell(&owners).unwrap()
+        );
+        // The agent's cell and a run's, whose agent uid must be the
+        // subordinate one.
+        let socket = socket("/tmp/x/broker.sock");
+        let agent = CellConfig::parse(lookup(&vars), &socket, owners.principal).unwrap();
+        assert_eq!(agent.identity(), owners);
+        let err = CellConfig::parse(lookup(&vars), &socket, default_base()).unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidConfig { key, .. } if key == "HATCHLING_CELL_UID_BASE"),
+            "{err:?}"
+        );
+        vars.insert("HATCHLING_CELL_UID_BASE", "100000");
+        assert!(matches!(
+            CellConfig::parse(lookup(&vars), &socket, owners.principal),
+            Err(Error::InvalidConfig {
+                key: "HATCHLING_CELL_IDS",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_configs_identity_is_its_map_and_where_its_ids_come_from() {
+        let mut config = CellConfig::skill("ids").unwrap();
+        assert_eq!(config.ids, CellIds::Own);
+        assert_eq!(config.gid_base, None);
+        assert_eq!(
+            config.identity(),
+            CellIdentity::direct(config.uid_base, config.uid_count)
+        );
+        config.ids = CellIds::Subordinate;
+        config.uid_base = 100_000;
+        config.gid_base = Some(200_000);
+        let subordinate = CellIdentity {
+            principal: 100_000,
+            group: 200_000,
+            count: config.uid_count,
+            mapping: Mapping::Subordinate,
+        };
+        assert_eq!(config.identity(), subordinate);
+        assert_eq!(cell_spec(&config, LogLevel::Error).identity, subordinate);
+        // The spawner helpers get it whole, through serde.
+        let carried: CellConfig =
+            serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+        assert_eq!(carried.identity(), subordinate);
+        // A config written before the ids were carried is its own map.
+        let mut value = serde_json::to_value(&config).unwrap();
+        let fields = value.as_object_mut().unwrap();
+        fields.remove("ids");
+        fields.remove("gid_base");
+        let older: CellConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            older.identity(),
+            CellIdentity::direct(100_000, config.uid_count)
+        );
+    }
+
+    /// WO-014, end to end through the broker's own spawn: a skill cell on
+    /// the owner's subordinate ids runs as them, with no groups, as the
+    /// host sees it. Skips where no cell can run on them (an owner with
+    /// root, `no_new_privs`, no range), unless
+    /// `HATCHLING_REQUIRE_SUBID=1`.
+    #[test]
+    fn a_skill_cell_on_subordinate_ids_runs_as_them() {
+        let required = std::env::var("HATCHLING_REQUIRE_SUBID").is_ok_and(|v| v == "1");
+        let new_privs = std::fs::read_to_string("/proc/self/status").is_ok_and(|status| {
+            status
+                .lines()
+                .any(|line| line.split_whitespace().eq(["NoNewPrivs:", "0"]))
+        });
+        let config = new_privs
+            .then(|| CellConfig::skill_with("sub-x", cell_ids_set("subordinate")).ok())
+            .flatten();
+        let Some(mut config) = config else {
+            assert!(
+                !required,
+                "HATCHLING_REQUIRE_SUBID=1, but no subordinate cell here"
+            );
+            return;
+        };
+        let code = std::env::temp_dir().join(format!("hatchling-sub-{}", std::process::id()));
+        std::fs::create_dir_all(&code).unwrap();
+        config.agent_bin = ["/usr/bin/gnusleep", "/bin/sleep"]
+            .into_iter()
+            .map(PathBuf::from)
+            .find(|path| path.exists())
+            .unwrap();
+        config.skill_code = Some(code.clone());
+        let spawned = spawn_cell(&config, LogLevel::Error);
+        let _ = std::fs::remove_dir_all(&code);
+        let handle = match spawned {
+            Ok(handle) => handle,
+            Err(error) => {
+                assert!(!required, "HATCHLING_REQUIRE_SUBID=1 but no cell: {error}");
+                return;
+            }
+        };
+        let status = |field: &str| -> Vec<String> {
+            std::fs::read_to_string(format!("/proc/{}/status", handle.child_pid()))
+                .unwrap_or_default()
+                .lines()
+                .find_map(|line| line.strip_prefix(&format!("{field}:")))
+                .map(|value| value.split_whitespace().map(String::from).collect())
+                .unwrap_or_default()
+        };
+        let (uid, gid) = (
+            config.uid_base.to_string(),
+            config.identity().group.to_string(),
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while status("Uid") != vec![uid.clone(); 4] && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let seen = (status("Uid"), status("Gid"), status("Groups"));
+        drop(handle);
+        assert_eq!(
+            seen,
+            (vec![uid; 4], vec![gid; 4], Vec::<String>::new()),
+            "the cell's uid, gid and groups, from the host"
         );
     }
 

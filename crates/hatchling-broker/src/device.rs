@@ -116,8 +116,9 @@ pub fn open_device_endpoint(config: &Config) -> Result<Option<DeviceEndpoint>, E
             key: "HATCHLING_DEVICE_SOCKET",
             reason: format!(
                 "the device endpoint serves uid {}, the broker's own, which is also the agent's: \
-                 the cell could pose as a device",
-                config.agent_uid
+                 the cell could pose as a device; {}",
+                config.agent_uid,
+                crate::cell::OWN_UID_HINT
             ),
         });
     }
