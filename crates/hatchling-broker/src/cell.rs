@@ -1570,16 +1570,13 @@ mod tests {
         }
         let mut vars = valid_vars();
         vars.insert("HATCHLING_CELL_IDS", "subordinate");
-        let owners = match backend.subordinate_identity() {
-            Ok(owners) => owners,
-            Err(_) => {
-                assert!(matches!(
-                    cell_identity(&backend, CellIds::Subordinate, None, None),
-                    Err(Error::CellMap { .. })
-                ));
-                assert!(CellConfig::skill_with("skill-sub", cell_ids_set("subordinate")).is_err());
-                return;
-            }
+        let Ok(owners) = backend.subordinate_identity() else {
+            assert!(matches!(
+                cell_identity(&backend, CellIds::Subordinate, None, None),
+                Err(Error::CellMap { .. })
+            ));
+            assert!(CellConfig::skill_with("skill-sub", cell_ids_set("subordinate")).is_err());
+            return;
         };
         assert_eq!(owners.mapping, Mapping::Subordinate);
         assert_eq!(
@@ -1666,7 +1663,10 @@ mod tests {
             .then(|| CellConfig::skill_with("sub-x", cell_ids_set("subordinate")).ok())
             .flatten();
         let Some(mut config) = config else {
-            assert!(!required, "HATCHLING_REQUIRE_SUBID=1, but no subordinate cell here");
+            assert!(
+                !required,
+                "HATCHLING_REQUIRE_SUBID=1, but no subordinate cell here"
+            );
             return;
         };
         let code = std::env::temp_dir().join(format!("hatchling-sub-{}", std::process::id()));
@@ -1694,7 +1694,10 @@ mod tests {
                 .map(|value| value.split_whitespace().map(String::from).collect())
                 .unwrap_or_default()
         };
-        let (uid, gid) = (config.uid_base.to_string(), config.identity().group.to_string());
+        let (uid, gid) = (
+            config.uid_base.to_string(),
+            config.identity().group.to_string(),
+        );
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while status("Uid") != vec![uid.clone(); 4] && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(20));
