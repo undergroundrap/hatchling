@@ -178,6 +178,11 @@ pub fn bind(port: u16) -> Result<TcpListener, Error> {
 pub fn handle(mut stream: TcpStream, settings: &Settings) -> Result<(), Error> {
     stream.set_read_timeout(Some(HEAD_TIMEOUT))?;
     let head = http::read_head(&mut stream)?;
+    // The port the request arrived on: the configured one may be 0.
+    let port = stream.local_addr()?.port();
+    if !head.addressed_to(port) {
+        return http::forbid(&mut stream);
+    }
     let socket = match head.websocket() {
         Some((http::Channel::Ui, key)) => Some((&settings.ui_socket, key)),
         Some((http::Channel::Operator, key)) => settings
@@ -187,6 +192,7 @@ pub fn handle(mut stream: TcpStream, settings: &Settings) -> Result<(), Error> {
         None => None,
     };
     match socket {
+        Some(_) if !head.from_page_on(port) => http::forbid(&mut stream),
         Some((socket, key)) => {
             http::accept_upgrade(&mut stream, key)?;
             stream.set_read_timeout(None)?;
@@ -357,12 +363,17 @@ mod tests {
         upgrade_on(stream, "/ui");
     }
 
+    /// A browser's upgrade to `path`, from a page the host on `port`
+    /// served, as its own page sends it.
+    fn upgrade_request(path: &str, port: u16) -> String {
+        format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n")
+    }
+
     /// The opening handshake for `path`, read to its end.
     fn upgrade_on(stream: &mut TcpStream, path: &str) {
+        let port = stream.peer_addr().unwrap().port();
         stream
-            .write_all(
-                format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n").as_bytes(),
-            )
+            .write_all(upgrade_request(path, port).as_bytes())
             .unwrap();
         let mut answer = Vec::new();
         let mut byte = [0_u8; 1];
@@ -545,7 +556,7 @@ mod tests {
             });
             let mut browser = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
             browser
-                .write_all(b"GET /operator HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n")
+                .write_all(upgrade_request("/operator", port).as_bytes())
                 .unwrap();
             let mut answer = String::new();
             browser.read_to_string(&mut answer).unwrap();
@@ -576,7 +587,7 @@ mod tests {
             });
             let mut browser = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
             browser
-                .write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+                .write_all(format!("GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n").as_bytes())
                 .unwrap();
             let mut answer = String::new();
             browser.read_to_string(&mut answer).unwrap();
@@ -584,6 +595,73 @@ mod tests {
             assert!(answer.ends_with("\r\n\r\nui"));
             assert!(host.join().unwrap().is_ok());
         });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_request_from_another_site_is_refused_and_reaches_no_socket() {
+        let dir = std::env::temp_dir().join(format!("hatchling-host-site-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("index.html"), b"ui").unwrap();
+        let ui = UnixListener::bind(dir.join("ui.sock")).unwrap();
+        let operator = UnixListener::bind(dir.join("operator.sock")).unwrap();
+        let settings = Settings {
+            ui_socket: dir.join("ui.sock"),
+            ui_dir: dir.clone(),
+            port: 0,
+            operator_socket: Some(dir.join("operator.sock")),
+        };
+        let upgrade = |path: &str, host: &str, origin: Option<&str>| {
+            let origin = origin.map_or(String::new(), |origin| format!("Origin: {origin}\r\n"));
+            format!("GET {path} HTTP/1.1\r\nHost: {host}\r\n{origin}Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n")
+        };
+        let listener = bind(0).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let here = format!("127.0.0.1:{port}");
+        let page = format!("http://127.0.0.1:{port}");
+        let rebound = format!("evil.example:{port}");
+        let refused = [
+            // Another site's page, in the user's browser.
+            upgrade("/ui", &here, Some("http://evil.example")),
+            upgrade("/operator", &here, Some("http://evil.example")),
+            upgrade("/ui", &here, Some("null")),
+            // Not from a page at all: a browser always sends an Origin.
+            upgrade("/ui", &here, None),
+            // A page that rebinds its own name to 127.0.0.1.
+            upgrade("/ui", &rebound, Some(&format!("http://{rebound}"))),
+            format!("GET / HTTP/1.1\r\nHost: {rebound}\r\n\r\n"),
+            String::from("GET / HTTP/1.1\r\n\r\n"),
+            // The right page, but addressed to another port's host.
+            upgrade("/ui", &format!("127.0.0.1:{}", port.wrapping_add(1)), Some(&page)),
+        ];
+        std::thread::scope(|scope| {
+            let host = scope.spawn(|| {
+                for _ in 0..refused.len() {
+                    let (stream, _) = listener.accept().unwrap();
+                    handle(stream, &settings).unwrap();
+                }
+            });
+            for request in &refused {
+                let mut browser = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+                browser
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                browser.write_all(request.as_bytes()).unwrap();
+                let mut answer = String::new();
+                browser.read_to_string(&mut answer).unwrap();
+                assert!(
+                    answer.starts_with("HTTP/1.1 403 Forbidden\r\n"),
+                    "{request:?} got {answer}"
+                );
+                assert!(answer.ends_with("\r\n\r\n"), "a refusal has no body");
+            }
+            host.join().unwrap();
+        });
+        // Nothing reached either socket.
+        ui.set_nonblocking(true).unwrap();
+        operator.set_nonblocking(true).unwrap();
+        assert!(ui.accept().is_err() && operator.accept().is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
