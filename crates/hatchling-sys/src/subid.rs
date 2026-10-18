@@ -380,6 +380,12 @@ mod tests {
         } else {
             "isn't owned by root"
         }));
+        // A regular file of root's that isn't setuid: only the setuid
+        // check refuses it.
+        let env = Path::new("/usr/bin/env");
+        if std::fs::symlink_metadata(env).is_ok_and(|meta| meta.file_type().is_file() && meta.uid() == 0) {
+            assert!(reason(env).contains("isn't setuid"), "{}", reason(env));
+        }
         std::os::unix::fs::symlink("/bin/sh", dir.join("link")).unwrap();
         assert!(reason(&dir.join("link")).contains("isn't a regular file"));
         let _ = std::fs::remove_dir_all(&dir);
