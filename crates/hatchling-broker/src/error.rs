@@ -91,6 +91,17 @@ pub enum Error {
         owner: u32,
     },
 
+    /// Where a socket's token goes is something other than a regular file
+    /// of the broker's user. The broker never removes it.
+    #[error(
+        "the token file {} is not a regular file of this user's; remove it yourself if it's stale",
+        path.display()
+    )]
+    TokenPathNotOurs {
+        /// The offending path.
+        path: std::path::PathBuf,
+    },
+
     /// Accepting a connection failed.
     #[error("failed to accept a broker connection: {source}")]
     Accept {
