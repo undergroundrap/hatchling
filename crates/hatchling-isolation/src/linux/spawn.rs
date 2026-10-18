@@ -2585,7 +2585,7 @@ pub(super) mod tests {
         assert_eq!(seen.len(), 2, "the pid 1 and the program: {report:?}");
         assert!(
             all_settled,
-            "as uid {uid} and gid {gid}, no groups: {report:?}"
+            "the cell's ids and groups, from the host: {report:?}"
         );
         assert_eq!(
             maps,

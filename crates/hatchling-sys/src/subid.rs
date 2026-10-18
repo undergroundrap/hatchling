@@ -423,7 +423,8 @@ mod tests {
     fn refusal(result: Result<(u32, u32), Error>) -> String {
         match result {
             Err(Error::InvalidIdMap { reason }) => reason,
-            other => unreachable!("expected a refusal, got {other:?}"),
+            Ok(_) => unreachable!("expected a refusal, got the ids"),
+            Err(_) => unreachable!("expected a refusal, got another error"),
         }
     }
 
