@@ -185,22 +185,27 @@ impl Helpers {
 
     /// Writes the maps of `child_pid`, a child that just entered a new
     /// user namespace: its 0 to host `uid` and `gid`, one wide, through
-    /// the helpers. `setgroups` is set to `deny` first, as for a map the
-    /// broker writes itself, so the cell can't drop supplementary groups.
+    /// the helpers.
+    ///
+    /// `setgroups` is left as it is (`allow`), unlike a map the broker
+    /// writes itself. A cell starts with the owner's supplementary groups
+    /// (a `docker` group, say, would open the Docker socket to it), and
+    /// it must drop them; with `deny` it couldn't. `deny` exists so an
+    /// unprivileged user can't shed a group that a file denies access by;
+    /// a map the administrator granted through the helpers isn't that
+    /// case, and the kernel allows `setgroups` under one.
     ///
     /// `child_pid` must be the caller's own unreaped child, so the pid
     /// can't name another process.
     ///
     /// # Errors
     ///
-    /// [`Error::IdMapWrite`] if `setgroups` can't be denied, or a helper
-    /// can't run or refuses the map.
+    /// [`Error::IdMapWrite`] if a helper can't run or refuses the map.
     pub fn write_maps(&self, child_pid: i32, uid: u32, gid: u32) -> Result<(), Error> {
         let failed = |source: io::Error| Error::IdMapWrite {
             pid: child_pid,
             source,
         };
-        std::fs::write(format!("/proc/{child_pid}/setgroups"), "deny").map_err(failed)?;
         for (helper, id) in [(&self.uid, uid), (&self.gid, gid)] {
             let status = Command::new(helper)
                 .args([
@@ -466,7 +471,40 @@ mod tests {
     }
 
     #[test]
-    fn the_helpers_map_a_child_into_the_range_with_setgroups_denied() {
+    fn a_child_mapped_through_the_helpers_can_drop_the_owners_groups() {
+        use std::io::{Read as _, Write as _};
+        use std::os::unix::net::UnixStream;
+
+        use crate::process::{ForkResult, child_exit_code, exit_child, fork};
+
+        let Some((helpers, uid, gid)) = usable() else {
+            return;
+        };
+        let (parent_end, child_end) = UnixStream::pair().unwrap();
+        let child = match fork().unwrap() {
+            ForkResult::Parent { child } => child,
+            ForkResult::Child => {
+                // Its own user namespace, then wait for the maps, then
+                // drop every supplementary group: 0 if it could.
+                let mut byte = [0_u8; 1];
+                let dropped = crate::namespaces::unshare_user().is_ok()
+                    && (&child_end).write_all(b"u").is_ok()
+                    && (&child_end).read_exact(&mut byte).is_ok()
+                    && crate::process::clear_groups().is_ok();
+                exit_child(i32::from(!dropped));
+            }
+        };
+        let mut byte = [0_u8; 1];
+        (&parent_end).read_exact(&mut byte).unwrap();
+        let mapped = helpers.write_maps(child.pid().get(), uid, gid);
+        (&parent_end).write_all(b"m").unwrap();
+        let status = child.wait_deadline(std::time::Duration::from_secs(10));
+        mapped.unwrap();
+        assert_eq!(child_exit_code(status.unwrap()), 0, "it dropped its groups");
+    }
+
+    #[test]
+    fn the_helpers_map_a_child_into_the_range_leaving_setgroups_allowed() {
         let Some((helpers, uid, gid)) = usable() else {
             return;
         };
@@ -480,7 +518,7 @@ mod tests {
         let fields = |map: &str| map.split_whitespace().map(String::from).collect::<Vec<_>>();
         assert_eq!(fields(&uid_map), ["0", &uid.to_string(), "1"]);
         assert_eq!(fields(&gid_map), ["0", &gid.to_string(), "1"]);
-        assert_eq!(setgroups.trim(), "deny");
+        assert_eq!(setgroups.trim(), "allow", "so the cell can drop its groups");
         // The owner's own uid isn't in its range: the helper refuses it.
         let (mut other, other_pid) = in_own_user_namespace();
         let refused = helpers.write_maps(other_pid, 0, 0);
