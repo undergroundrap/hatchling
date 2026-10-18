@@ -358,6 +358,19 @@ impl<T: Transport> ChatCompletionsProvider<T> {
             .and_then(Value::as_array)
             .and_then(|choices| choices.first())
             .ok_or_else(|| bad("response has no choices"))?;
+        // A reply the provider stopped short isn't an answer: passed on,
+        // a truncated result would look finished.
+        let finish = choice.get("finish_reason").and_then(Value::as_str);
+        if finish == Some("length") {
+            return Err(bad(
+                "the model's reply was cut off at its output limit (finish_reason \"length\")",
+            ));
+        }
+        if finish == Some("content_filter") {
+            return Err(bad(
+                "the provider filtered the model's reply (finish_reason \"content_filter\")",
+            ));
+        }
         let message = choice
             .get("message")
             .ok_or_else(|| bad("choice has no message"))?;
@@ -548,6 +561,16 @@ mod tests {
             r#"{{"choices": [{{"message": {{"role": "assistant", "content": {}}}}}]}}"#,
             serde_json::to_string(text).unwrap()
         )
+    }
+
+    #[test]
+    fn a_reply_that_finished_is_an_answer() {
+        let reply = r#"{"choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "done"}}]}"#;
+        let provider = provider(Canned::ok(reply));
+        let action = provider
+            .next_action(&[Message::User(String::from("hi"))], &no_tools())
+            .unwrap();
+        assert!(matches!(action, ModelAction::Text(text) if text == "done"));
     }
 
     #[test]
@@ -815,6 +838,20 @@ mod tests {
                 r#"{"choices": [{"message": {"role": "assistant", "tool_calls": [
                     {"id": "a", "type": "function", "function": {"name": "t", "arguments": "nope"}}
                 ]}}]}"#,
+            ),
+            (
+                "cut off at the output limit",
+                r#"{"choices": [{"finish_reason": "length", "message": {"role": "assistant", "content": "the first half"}}]}"#,
+            ),
+            (
+                "tool calls cut off at the output limit",
+                r#"{"choices": [{"finish_reason": "length", "message": {"role": "assistant", "tool_calls": [
+                    {"id": "a", "type": "function", "function": {"name": "t", "arguments": "{}"}}
+                ]}}]}"#,
+            ),
+            (
+                "filtered by the provider",
+                r#"{"choices": [{"finish_reason": "content_filter", "message": {"role": "assistant", "content": "x"}}]}"#,
             ),
             (
                 "tool call with empty arguments string",
