@@ -132,9 +132,8 @@ mod tests {
 
     #[test]
     fn a_subordinate_identity_is_the_owners_cell_ids_through_the_helpers() {
-        let refusal = |reason: &str| {
-            let reason = reason.to_owned();
-            move || Err(hatchling_sys::Error::InvalidIdMap { reason })
+        let refusal = |reason: &str| hatchling_sys::Error::InvalidIdMap {
+            reason: reason.to_owned(),
         };
         assert_eq!(
             subordinate(1000, || Ok((100_000, 200_000)), || Ok(())).unwrap(),
@@ -150,10 +149,14 @@ mod tests {
             matches!(&root, Error::Identity(_)) && root.to_string().contains("root broker"),
             "{root}"
         );
-        let no_range = subordinate(1000, refusal("no range"), || Ok(())).unwrap_err();
+        let no_range = subordinate(1000, || Err(refusal("no range")), || Ok(())).unwrap_err();
         assert!(no_range.to_string().contains("no range"), "{no_range}");
-        let bad_helper = subordinate(1000, || Ok((100_000, 200_000)), refusal("not setuid"))
-            .unwrap_err();
+        let bad_helper = subordinate(
+            1000,
+            || Ok((100_000, 200_000)),
+            || Err(refusal("not setuid")),
+        )
+        .unwrap_err();
         assert!(bad_helper.to_string().contains("not setuid"), "{bad_helper}");
     }
 

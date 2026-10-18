@@ -481,7 +481,7 @@ pub(super) fn isolate(spec: &CellSpec) -> Result<LinuxCell, Error> {
             let mut parent_to_child = parent_to_child;
             let child = parent_after_fork(
                 child,
-                maps,
+                &maps,
                 &mut child_to_parent,
                 &mut parent_to_child,
                 READY_TIMEOUT,
@@ -649,9 +649,9 @@ impl MapWriter {
     }
 
     /// Writes `maps` for the unreaped child `child_pid`.
-    fn write(&self, child_pid: i32, uid: &IdMap, gid: &IdMap) -> Result<(), hatchling_sys::Error> {
+    fn write(&self, child_pid: i32, uid: IdMap, gid: IdMap) -> Result<(), hatchling_sys::Error> {
         match self {
-            Self::Broker => hatchling_sys::idmap::write_maps(child_pid, uid, gid),
+            Self::Broker => hatchling_sys::idmap::write_maps(child_pid, &uid, &gid),
             Self::Helpers(helpers) => helpers.write_maps(child_pid, uid.base(), gid.base()),
         }
     }
@@ -693,7 +693,7 @@ struct Maps {
 /// orphans) before the error is returned.
 fn parent_after_fork(
     child: Child,
-    maps: Maps,
+    maps: &Maps,
     child_to_parent: &mut ChildToParent,
     parent_to_child: &mut ParentToChild,
     ready_timeout: Duration,
@@ -726,7 +726,7 @@ fn parent_after_fork(
     }
     // The raw pid is only a `/proc` path component for the id maps —
     // never a signal target (see `ChildPid::get`).
-    if let Err(source) = maps.writer.write(child.pid().get(), &maps.uid, &maps.gid) {
+    if let Err(source) = maps.writer.write(child.pid().get(), maps.uid, maps.gid) {
         drop(child);
         return Err(Error::Identity(PlatformError::new(source)));
     }
@@ -1469,7 +1469,7 @@ pub(super) mod tests {
         let dir = make_socket_dir("ok");
         let (endpoint, principal) = endpoint_in(&dir);
         let _listener = UnixListener::bind(&endpoint.socket).unwrap();
-        hand_over_endpoint(&endpoint, principal).unwrap();
+        hand_over_endpoint(&endpoint, CellIdentity::direct(principal, 1)).unwrap();
     }
 
     #[test]
@@ -1478,7 +1478,7 @@ pub(super) mod tests {
         let dir = make_socket_dir("nonsock");
         let (endpoint, principal) = endpoint_in(&dir);
         std::fs::write(&endpoint.socket, b"not a socket").unwrap();
-        let result = hand_over_endpoint(&endpoint, principal);
+        let result = hand_over_endpoint(&endpoint, CellIdentity::direct(principal, 1));
         assert!(
             matches!(&result, Err(Error::Spawn { reason }) if reason.contains("not a socket")),
             "hand_over_endpoint must reject a non-socket, got {result:?}"
@@ -1491,7 +1491,7 @@ pub(super) mod tests {
         // socket path must fail closed.
         let dir = make_socket_dir("missing");
         let (endpoint, principal) = endpoint_in(&dir);
-        let result = hand_over_endpoint(&endpoint, principal);
+        let result = hand_over_endpoint(&endpoint, CellIdentity::direct(principal, 1));
         assert!(
             matches!(result, Err(Error::Spawn { .. })),
             "hand_over_endpoint must reject a missing socket"
@@ -1509,7 +1509,7 @@ pub(super) mod tests {
         let (endpoint, principal) = endpoint_in(&dir);
         let _listener = UnixListener::bind(&endpoint.socket).unwrap();
         std::fs::set_permissions(&*dir, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let result = hand_over_endpoint(&endpoint, principal);
+        let result = hand_over_endpoint(&endpoint, CellIdentity::direct(principal, 1));
         let mode = std::fs::symlink_metadata(&*dir).unwrap().mode() & 0o7777;
         std::fs::set_permissions(&*dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         if hatchling_sys::euid() == 0 {
@@ -1715,7 +1715,7 @@ pub(super) mod tests {
         let err = within_watchdog("parent_after_fork", move || {
             parent_after_fork(
                 child,
-                Maps {
+                &Maps {
                     writer: MapWriter::Broker,
                     uid: uid_map,
                     gid: gid_map,
@@ -1755,7 +1755,7 @@ pub(super) mod tests {
         let err = within_watchdog("parent_after_fork", move || {
             parent_after_fork(
                 child,
-                Maps {
+                &Maps {
                     writer: MapWriter::Broker,
                     uid: uid_map,
                     gid: gid_map,
@@ -1797,7 +1797,7 @@ pub(super) mod tests {
         let err = within_watchdog("parent_after_fork", move || {
             parent_after_fork(
                 child,
-                Maps {
+                &Maps {
                     writer: MapWriter::Broker,
                     uid: uid_map,
                     gid: gid_map,

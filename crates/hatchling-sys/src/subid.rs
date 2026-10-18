@@ -139,11 +139,12 @@ pub struct AccountFiles<'a> {
     pub subgid: &'a str,
 }
 
-/// The uid and gid a cell of `owner`, whose primary group is
-/// `primary_gid`, maps its root to: the first id of the owner's
-/// subordinate uid range and of its gid range, each checked by
-/// [`cell_id`]. Both ranges are the owner's: `/etc/subgid` names users,
-/// as `newgidmap` reads it.
+/// The uid and gid a cell of `owner` maps its root to.
+///
+/// They're the first ids of the owner's subordinate uid and gid ranges,
+/// each checked by [`cell_id`] (the gid against `/etc/group` and
+/// `primary_gid`, the owner's primary group). Both ranges are the
+/// owner's: `/etc/subgid` names users, as `newgidmap` reads it.
 ///
 /// # Errors
 ///
@@ -183,15 +184,15 @@ pub fn own_cell_ids() -> Result<(u32, u32), Error> {
     };
     let optional = |path: &str| std::fs::read_to_string(path).unwrap_or_default();
     let (passwd, group) = (read("/etc/passwd")?, read("/etc/group")?);
-    let (subuid, subgid) = (optional("/etc/subuid"), optional("/etc/subgid"));
+    let (uid_ranges, gid_ranges) = (optional("/etc/subuid"), optional("/etc/subgid"));
     cell_ids(
         crate::process::euid(),
         rustix::process::getegid().as_raw(),
         &AccountFiles {
             passwd: &passwd,
             group: &group,
-            subuid: &subuid,
-            subgid: &subgid,
+            subuid: &uid_ranges,
+            subgid: &gid_ranges,
         },
     )
 }
