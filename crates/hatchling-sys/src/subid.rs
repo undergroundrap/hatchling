@@ -385,12 +385,24 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Whether the real helpers are usable here: present, checked, and
-    /// this process has a subordinate range. `HATCHLING_REQUIRE_SUBID=1`
+    /// Whether the real helpers are usable here: no `no_new_privs`, user
+    /// namespaces allowed, the helpers present and checked, and a
+    /// subordinate range for this process. `HATCHLING_REQUIRE_SUBID=1`
     /// turns "no" into a failure instead of a skip.
     fn usable() -> Option<(Helpers, u32, u32)> {
         let required = std::env::var("HATCHLING_REQUIRE_SUBID").is_ok_and(|value| value == "1");
         let found = (|| {
+            // A setuid helper gains nothing under no_new_privs, and a
+            // kernel or AppArmor that refuses user namespaces leaves no
+            // child to map: either way the helpers can't run here.
+            let status = std::fs::read_to_string("/proc/self/status").ok()?;
+            if !status.lines().any(|line| line.split_whitespace().eq(["NoNewPrivs:", "0"])) {
+                return None;
+            }
+            let unshared = Command::new("unshare").args(["-U", "true"]).status().ok()?;
+            if !unshared.success() {
+                return None;
+            }
             let helpers = Helpers::standard().ok()?;
             let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
             let group_file = std::fs::read_to_string("/etc/group").ok()?;
