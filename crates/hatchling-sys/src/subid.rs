@@ -373,7 +373,8 @@ mod tests {
             ..files
         };
         assert_eq!(cell_ids(1000, 50, &by_id).unwrap(), (100_000, 200_000));
-        let without_uid_range = refusal(cell_ids(
+        // No range in either file: refused, saying how to grant one.
+        let reason = refusal(cell_ids(
             1000,
             1000,
             &AccountFiles {
@@ -382,11 +383,11 @@ mod tests {
             },
         ));
         assert!(
-            without_uid_range.contains("/etc/subuid") && without_uid_range.contains("usermod"),
-            "{without_uid_range}"
+            reason.contains("/etc/subuid") && reason.contains("usermod"),
+            "{reason}"
         );
-        assert!(without_uid_range.contains(" dana`"), "names the user: {without_uid_range}");
-        let without_gid_range = refusal(cell_ids(
+        assert!(reason.contains(" dana`"), "names the user: {reason}");
+        let reason = refusal(cell_ids(
             1000,
             1000,
             &AccountFiles {
@@ -394,7 +395,7 @@ mod tests {
                 ..files
             },
         ));
-        assert!(without_gid_range.contains("/etc/subgid"), "{without_gid_range}");
+        assert!(reason.contains("/etc/subgid"), "{reason}");
         // Each range is checked against its own accounts.
         let onto_docker = refusal(cell_ids(
             1000,
