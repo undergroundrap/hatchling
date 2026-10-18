@@ -16,7 +16,7 @@
 //! | `HATCHLING_REQUIRE_HARDWARE_KEY` | `true` or `1`: the broker starts only with a vault at the hardware-key tier (a fleet policy). Default `false`. |
 
 use std::cell::RefCell;
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read as _, Write};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -745,7 +745,14 @@ pub fn platform_keys(pin: PinPrompt) -> SecurityKeys<hatchling_fido2::linux::Hid
 struct Console<R, W> {
     input: R,
     output: W,
+    /// Whether `input` is this process's stdin, so a secret answer is
+    /// read with the terminal's echo off.
+    stdin: bool,
 }
+
+/// The most a secret answer is read to, in bytes: a CTAP2 PIN is at most
+/// 63. Its buffer is sized for it up front.
+const MAX_SECRET_ANSWER: usize = 256;
 
 impl Console<std::io::StdinLock<'static>, std::io::Stderr> {
     /// The terminal.
@@ -753,6 +760,7 @@ impl Console<std::io::StdinLock<'static>, std::io::Stderr> {
         Rc::new(RefCell::new(Self {
             input: std::io::stdin().lock(),
             output: std::io::stderr(),
+            stdin: true,
         }))
     }
 }
@@ -761,6 +769,28 @@ impl<R: BufRead, W: Write> Console<R, W> {
     /// One answer to `prompt`.
     fn ask(&mut self, prompt: &str) -> Result<String, Error> {
         ask(prompt, &mut self.input, &mut self.output)
+    }
+
+    /// One secret answer to `prompt`: not shown as it's typed (on the
+    /// terminal), and read into memory wiped when it's dropped. The read
+    /// is bounded to a buffer sized up front, so no copy is left behind
+    /// by a string that grew.
+    fn ask_secret(&mut self, prompt: &str) -> Result<zeroize::Zeroizing<String>, Error> {
+        let _ = write!(self.output, "{prompt} ");
+        let _ = self.output.flush();
+        let _echo = self.stdin.then(hatchling_sys::EchoOff::on_stdin);
+        let mut answer = zeroize::Zeroizing::new(String::with_capacity(MAX_SECRET_ANSWER));
+        let bound = u64::try_from(MAX_SECRET_ANSWER).unwrap_or(0);
+        (&mut self.input)
+            .take(bound)
+            .read_line(&mut answer)
+            .map_err(|source| Error::Vault {
+                source: hatchling_vault::Error::Io { source },
+            })?;
+        while answer.ends_with(['\r', '\n']) {
+            answer.pop();
+        }
+        Ok(answer)
     }
 }
 
@@ -776,10 +806,9 @@ fn pin_prompt<R: BufRead + 'static, W: Write + 'static>(
     Box::new(move || {
         console
             .borrow_mut()
-            .ask(PIN_PROMPT)
+            .ask_secret(PIN_PROMPT)
             .ok()
             .filter(|pin| !pin.is_empty())
-            .map(zeroize::Zeroizing::new)
     })
 }
 
@@ -3445,6 +3474,7 @@ mod tests {
         let console = Rc::new(RefCell::new(Console {
             input: std::io::Cursor::new(b"2468\n\nanswer\n".to_vec()),
             output: Vec::new(),
+            stdin: false,
         }));
         let mut pin = pin_prompt(&console);
         assert_eq!(pin().as_deref().map(String::as_str), Some("2468"));
@@ -3454,7 +3484,7 @@ mod tests {
         let shown = String::from_utf8(console.borrow().output.clone()).unwrap();
         assert!(shown.starts_with(PIN_PROMPT));
         assert!(shown.contains("Q? "));
-        drop(Console::terminal());
+        assert!(Console::terminal().borrow().stdin, "the terminal hides a PIN");
         let (_asking, devices) = terminal_operator();
         assert_eq!(devices.unreachable(), NONE_PLUGGED);
     }

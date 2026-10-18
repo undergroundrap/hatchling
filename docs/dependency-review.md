@@ -15,7 +15,10 @@ the workspace-wide `unsafe_code = "deny"` intact. Features used: `net`,
 `hatchling-broker` (tests read the real kernel uid; `process` only).
 `hatchling-sys` uses `fs`, `mount`, `process` and `thread`, and `net`
 for a harness cell's relay: the listener on the cell's own
-loopback, and the `SCM_RIGHTS` handoff of its fd to the broker.
+loopback, and the `SCM_RIGHTS` handoff of its fd to the broker. Also
+`termios`, to hold a terminal's echo off while a security key's PIN
+is typed (`EchoOff`); its test opens a pseudo-terminal (`pty`, a
+dev-dependency only).
 
 ## hatchling-core
 
