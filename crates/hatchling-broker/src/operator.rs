@@ -811,11 +811,7 @@ mod tests {
         // is logged escaped.
         let (operator, _socket) = operator("forge", real_uid());
         let (client, server) = UnixStream::pair().unwrap();
-        hatchling_core::framing::write_frame(
-            &client,
-            br#"{"type":"hello","x\nFORGED operator admitted":1}"#,
-        )
-        .unwrap();
+        write_frame(&client, br#"{"type":"hello","x\nFORGED operator admitted":1}"#).unwrap();
         drop(client);
         let logged = crate::test_log::captured(|| operator.serve_operator(&server));
         crate::test_log::assert_no_forged_line(&logged, "FORGED operator admitted");

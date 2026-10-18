@@ -1514,8 +1514,7 @@ mod tests {
     fn a_hello_cannot_forge_a_line_in_the_brokers_log() {
         // The cell chose the variant name serde echoes back.
         let (agent, broker) = UnixStream::pair().unwrap();
-        hatchling_core::framing::write_frame(&agent, br#"{"t":"x\nFORGED cell admitted"}"#)
-            .unwrap();
+        write_frame(&agent, br#"{"t":"x\nFORGED cell admitted"}"#).unwrap();
         let logged = crate::test_log::captured(|| {
             assert!(handshake(&broker, None).is_err());
         });
