@@ -1270,7 +1270,7 @@ mod tests {
         let stopped = crate::run_serve(&owner_config(None));
         assert!(
             matches!(stopped, Err(Error::Vault { .. } | Error::Sweep { .. })),
-            "{stopped:?}"
+            "start-up must stop at the lock or the vault"
         );
     }
 }
