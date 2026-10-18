@@ -1,6 +1,6 @@
 # WO-014: Run the full broker without root
 
-**Status:** QUEUED
+**Status:** IN-PROGRESS
 **Area:** `crates/hatchling-isolation` (id maps, spawn), `crates/hatchling-sys` (id maps), `crates/hatchling-broker` (config, API, ingress), `docs/`, `README.md`
 **Issue:** [#23](https://github.com/undergroundrap/hatchling/issues/23)
 **Trust boundary:** yes
