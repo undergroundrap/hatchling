@@ -35,6 +35,7 @@ The frontend host is the only HTTP endpoint, on loopback. There are no metrics o
 
 - **No ownership or mode change by path:** `chown`, `chmod` or `set_permissions` on a path the broker didn't just open without following symlinks. Use `hatchling_sys`'s handle-based helpers (`create_private_dir`, `ensure_private_dir`, `chmod_socket`, `hand_over_socket`, `share_dir_with_cell`).
 - **No predictable names in a shared directory:** anything the broker makes under the temp directory gets a random name and is created exclusively.
+- **Deletes and signals stand behind two guards** (WO-024, [Testing code that deletes](testing-destructive-code.md)): a recursive delete goes through `hatchling_sys::remove_tree` or `remove_dir_tree`; any other delete, and any group signal, has two independent checks, each with its own test. A new `remove_dir_all`, `remove_file` of a computed path, or `kill` in non-test code fails this item unless it shows both.
 
 ```bash
 grep -rn "set_permissions\|fs::chown\|lchown\|temp_dir()" crates/*/src --include=*.rs

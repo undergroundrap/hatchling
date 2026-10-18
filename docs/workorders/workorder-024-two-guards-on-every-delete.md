@@ -27,7 +27,8 @@ A review of every production delete and signal after that (2026-10-17) found no 
   - the socket path is unlinked only when it's a socket owned by the broker's user;
   - a token file is replaced only when it's a regular file owned by the broker's user (anything else refuses the start, naming the path);
   - a memory item is deleted only when its own `expires_at` is set and past, checked where the delete is made, as well as `is_expired`;
-  - the six cleanups go through `hatchling_sys::remove_tree` (no symlink followed, no mount entered, the owner checked);
+  - five of the six cleanups (`Staging::drop`, the run directory's two, `RunDir::drop`, `VerifiedCode::drop`) go through `hatchling_sys::remove_dir_tree`, a path's form of `remove_tree` (no symlink followed, no mount entered, the owner checked). Each holds, or may hold, a cell's staging, whose mounts are the threat;
+  - `harness.rs` `RunDirs::drop` stays on `remove_dir_all`: its work and scratch trees are handed to the cell's uid, which `remove_tree` (rightly, for a root broker) never enters, so the switch would leave them behind; it holds no mount, and it's a random, exclusively created 0700 directory;
   - the driver kills the group before it reaps the leader, while the group id can't be reused.
 - A test for each guard that fails when only that guard is broken, proved by a hand mutant per guard.
 - `docs/testing-destructive-code.md` and the release checklist updated where they describe these sites.
@@ -44,7 +45,7 @@ A review of every production delete and signal after that (2026-10-17) found no 
 - [ ] `bind_socket` leaves a regular file, a symlink and another user's socket at the socket path in place and refuses, with either check broken.
 - [ ] `mint_ui_token` refuses, and changes nothing, when `<socket>.token` is a symlink, a directory or another user's file.
 - [ ] A recall or a purge deletes no item that hasn't expired, with `is_expired` broken, and with the `expires_at` check broken.
-- [ ] Each of the six cleanups removes its directory through `remove_tree`; a test plants a bind mount and a symlink to outside data in one and finds both untouched after cleanup.
+- [ ] The five cleanups remove their directories through `remove_dir_tree`: its tests (with `remove_tree`'s) plant a bind mount and symlinks to outside data and find them untouched, and each cleanup's own test shows the bounded walk ran (a tree deeper than `MAX_DEPTH` is removed only partly, where `remove_dir_all` would take it all). `RunDirs::drop`'s exception is recorded here.
 - [ ] On a timeout, the driver kills the test's process group before it reaps the test: a test whose grandchild outlives it finds the grandchild killed, and the group kill ordered before the reap.
 - [ ] Every new guard has a hand mutant that fails its test, listed in the evidence.
 
