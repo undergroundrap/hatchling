@@ -807,15 +807,8 @@ pub fn pid_alive(pid: i32) -> bool {
 /// reaped between the two, so a `stat` that can't be read asks
 /// `signalable` again: gone now, or there but hidden (`/proc` mounted
 /// with `hidepid`), which counts as alive.
-fn alive_by(
-    signalable: impl Fn() -> bool,
-    stat: impl FnOnce() -> std::io::Result<String>,
-) -> bool {
-    signalable()
-        && match stat() {
-            Ok(text) => !zombie(&text),
-            Err(_) => signalable(),
-        }
+fn alive_by(signalable: impl Fn() -> bool, stat: impl FnOnce() -> io::Result<String>) -> bool {
+    signalable() && stat().map_or_else(|_| signalable(), |text| !zombie(&text))
 }
 
 /// Whether `/proc/<pid>/stat` text says its process is a zombie: the
@@ -1680,7 +1673,7 @@ mod tests {
     fn a_process_reaped_between_the_probe_and_its_stat_is_gone() {
         let unread = || Err(std::io::Error::from(std::io::ErrorKind::NotFound));
         // Signalable, then reaped before `/proc/<pid>/stat` was read.
-        let probes = std::cell::Cell::new(0);
+        let probes = Cell::new(0);
         let reaped = || {
             probes.set(probes.get() + 1);
             probes.get() == 1
