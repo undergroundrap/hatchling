@@ -289,11 +289,11 @@ mod tests {
 
     #[test]
     fn accounts_are_read_by_their_third_field() {
-        let passwd = "root:x:0:0:root:/root:/bin/bash\nocean:x:1000:1000::/home/ocean:/bin/bash\nbroken\nodd:x:notanumber:1::/:/bin/sh\n";
-        assert_eq!(account_ids(passwd), [0, 1000]);
-        assert_eq!(account_name(passwd, 1000), Some("ocean"));
-        assert_eq!(account_name(passwd, 0), Some("root"));
-        assert_eq!(account_name(passwd, 7), None);
+        let accounts = "root:x:0:0:root:/root:/bin/bash\ndana:x:1000:1000::/home/dana:/bin/bash\nbroken\nodd:x:notanumber:1::/:/bin/sh\n";
+        assert_eq!(account_ids(accounts), [0, 1000]);
+        assert_eq!(account_name(accounts, 1000), Some("dana"));
+        assert_eq!(account_name(accounts, 0), Some("root"));
+        assert_eq!(account_name(accounts, 7), None);
         assert_eq!(account_name("short:x\n", 7), None);
     }
 
@@ -387,11 +387,11 @@ mod tests {
         }));
         // A regular file of root's that isn't setuid (on every Linux):
         // only the setuid check refuses it.
-        let passwd = Path::new("/etc/passwd");
+        let roots_file = Path::new("/etc/passwd");
         assert!(
-            reason(passwd).contains("isn't setuid"),
+            reason(roots_file).contains("isn't setuid"),
             "{}",
-            reason(passwd)
+            reason(roots_file)
         );
         std::os::unix::fs::symlink("/bin/sh", dir.join("link")).unwrap();
         // Both helpers are checked: one bad one refuses the pair.
@@ -434,14 +434,14 @@ mod tests {
                 return None;
             }
             let helpers = Helpers::standard().ok()?;
-            let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
+            let account_file = std::fs::read_to_string("/etc/passwd").ok()?;
             let group_file = std::fs::read_to_string("/etc/group").ok()?;
             let owner = crate::process::euid();
             let primary_gid = rustix::process::getegid().as_raw();
-            let name = account_name(&passwd, owner)?;
+            let name = account_name(&account_file, owner)?;
             let uids = range_for(&std::fs::read_to_string("/etc/subuid").ok()?, name, owner)?;
             let gids = range_for(&std::fs::read_to_string("/etc/subgid").ok()?, name, owner)?;
-            let uid = cell_id(uids, owner, &account_ids(&passwd)).ok()?;
+            let uid = cell_id(uids, owner, &account_ids(&account_file)).ok()?;
             let gid = cell_id(gids, primary_gid, &account_ids(&group_file)).ok()?;
             Some((helpers, uid, gid))
         })();
