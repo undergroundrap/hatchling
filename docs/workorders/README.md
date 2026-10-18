@@ -24,7 +24,7 @@ The goal is a runtime a security team can approve, for one person or a whole com
 1. **What a hostile cell can do.** The cell is the adversary the design exists for, so these come first: WO-009 (a key an upstream echoes back reaches the cell; numeric IP forms pass the allowlist), WO-008 (data leaves through a vendor's URL fetching), WO-010 (a cell can cancel the owner's schedules; an API grant check passes vacuously), WO-005 (`socketpair` families and inherited groups), WO-004 (resource limits).
 2. **What another local user, or someone with disk access, can do** (v0.3.0 shipped WO-006 and WO-007; v0.4.0 takes the rest): WO-006 (a root broker follows symlinks), WO-007 (any process with the agent's uid can open a session), WO-002 (swapped vault files), WO-003 (key rotation at the keyring tiers), WO-011 (secret copies in memory and core dumps), WO-012 (crash leftovers and safe cleanup), WO-023 (an allowlisted name that resolves to an internal address).
 3. **In parallel, the first five minutes:** WO-001 (`--help`, and a quickstart CI runs) and WO-016 (`cargo install hatchling-runtime`, which also holds the crates.io names with real releases). Then seeing it work: WO-021 (the UI drives a real broker), and WO-022 (an operator API, held apart from the user's, with the command center's first screen). These come before the rest of the local-attacker work: approvals delivered to the user, and per-site prompts for the agent's web access, both need the UI.
-4. **Then what a security review asks for next:** WO-014 (running without root) and WO-017 (privilege-separating the trusted side, so a bug in the broker can't reach your keys), designed together since they share the spawner; WO-013 (the release process: signed and reproducible binaries, an SBOM, publishing from CI); and WO-015 (root cell tests in CI).
+4. **Then what a security review asks for next:** WO-024 (a second, independent guard on every delete and signal, after WO-012's test machine was wiped by a mutant); WO-014 (running without root) and WO-017 (privilege-separating the trusted side, so a bug in the broker can't reach your keys), designed together since they share the spawner; WO-013 (the release process: signed and reproducible binaries, an SBOM, publishing from CI); and WO-015 (root cell tests in CI).
 5. **What runs in a cell, by the operator's choice:** WO-018 (a coding CLI added by a manifest, OpenCode first) and WO-019 (tools approved, pinned and listed). Hatchling bundles neither: it makes adding one safe. These can start once the hostile-cell work is done.
 6. **Then integrations** for larger deployments: audit export, external secret backends, fleet configuration, and the macOS backend.
 
@@ -57,6 +57,7 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | [021](workorder-021-live-frontend.md) | The UI drives a real broker | yes | DONE |
 | [022](workorder-022-operator-api.md) | An operator API, and the command center's Machine view | yes | DONE |
 | [023](workorder-023-internal-destinations.md) | Refuse internal addresses for destinations that aren't declared internal | yes | DONE |
+| [024](workorder-024-two-guards-on-every-delete.md) | Two guards on every delete and signal | yes | IN-PROGRESS |
 
 ## Candidates
 
