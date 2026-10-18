@@ -3,7 +3,7 @@
 
 use hatchling_sys::IdMap;
 
-use crate::{CellIdentity, Error, PlatformError};
+use crate::{CellIdentity, Error, Mapping, PlatformError};
 
 /// The default id-map base: the nobody uid for a root broker (the
 /// cell's root must be unprivileged), the broker's own uid otherwise
@@ -29,7 +29,39 @@ pub(super) fn identity(
     let map = id_map(principal, count)?;
     map.validate_for_euid(euid)
         .map_err(|source| Error::Identity(PlatformError::new(source)))?;
-    Ok(CellIdentity { principal, count })
+    Ok(CellIdentity::direct(principal, count))
+}
+
+/// A cell's identity on the owner's subordinate ids: `ids` (the cell's
+/// uid and gid, see [`hatchling_sys::subid::own_cell_ids`]), one wide,
+/// granted through the helpers that `helpers` checks.
+///
+/// # Errors
+///
+/// Returns [`Error::Identity`] for a root broker, which gives each cell
+/// its own uid itself, or what `ids` or `helpers` refuses.
+pub(super) fn subordinate(
+    euid: u32,
+    ids: impl FnOnce() -> Result<(u32, u32), hatchling_sys::Error>,
+    helpers: impl FnOnce() -> Result<(), hatchling_sys::Error>,
+) -> Result<CellIdentity, Error> {
+    let refused = |source| Error::Identity(PlatformError::new(source));
+    if euid == 0 {
+        return Err(refused(hatchling_sys::Error::InvalidIdMap {
+            reason: String::from(
+                "a root broker gives each cell its own uid itself: \
+                 subordinate ids are for a broker without root",
+            ),
+        }));
+    }
+    let (principal, group) = ids().map_err(refused)?;
+    helpers().map_err(refused)?;
+    Ok(CellIdentity {
+        principal,
+        group,
+        count: 1,
+        mapping: Mapping::Subordinate,
+    })
 }
 
 /// The id map for `principal` spanning `count` uids.
@@ -95,7 +127,40 @@ mod tests {
     use super::*;
 
     const fn cell(principal: u32, count: u32) -> CellIdentity {
-        CellIdentity { principal, count }
+        CellIdentity::direct(principal, count)
+    }
+
+    #[test]
+    fn a_subordinate_identity_is_the_owners_cell_ids_through_the_helpers() {
+        let refusal = |reason: &str| hatchling_sys::Error::InvalidIdMap {
+            reason: reason.to_owned(),
+        };
+        assert_eq!(
+            subordinate(1000, || Ok((100_000, 200_000)), || Ok(())).unwrap(),
+            CellIdentity {
+                principal: 100_000,
+                group: 200_000,
+                count: 1,
+                mapping: Mapping::Subordinate,
+            }
+        );
+        let root = subordinate(0, || Ok((100_000, 200_000)), || Ok(())).unwrap_err();
+        assert!(
+            matches!(&root, Error::Identity(_)) && root.to_string().contains("root broker"),
+            "{root}"
+        );
+        let no_range = subordinate(1000, || Err(refusal("no range")), || Ok(())).unwrap_err();
+        assert!(no_range.to_string().contains("no range"), "{no_range}");
+        let bad_helper = subordinate(
+            1000,
+            || Ok((100_000, 200_000)),
+            || Err(refusal("not setuid")),
+        )
+        .unwrap_err();
+        assert!(
+            bad_helper.to_string().contains("not setuid"),
+            "{bad_helper}"
+        );
     }
 
     #[test]

@@ -9,10 +9,18 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 ### Added
 
 - `hatchling_sys::subid`, the first part of running the full broker without root (WO-014). It reads the owner's subordinate uid and gid ranges (`/etc/subuid`, `/etc/subgid`) and refuses one that holds uid 0, the owner's uid or any account's. It refuses map helpers that aren't regular, setuid files of root's. It writes a cell's maps through `newuidmap` and `newgidmap`. It leaves `setgroups` allowed, so a cell can drop the owner's supplementary groups (`deny` would make it keep them). Nothing uses it yet.
+- **Cells on the owner's subordinate ids** (WO-014, part 2). The broker can't choose them yet; that comes next.
+  - `IsolationBackend::subordinate_identity` gives a cell its own uid and gid from the owner's ranges (`subid::cell_ids`, which says how to grant a range when there's none). It refuses a root broker, an unsafe range, and helpers it can't trust.
+  - The spawner writes such a cell's maps through `newuidmap` and `newgidmap`, after checking the identity against the owner's ranges again. The cell then drops the owner's supplementary groups and checks that none is left before anything else runs; if it can't, it doesn't start.
+  - A real-cell test reads, from the host, each of the cell's processes: its uid and gid (all four of each), its groups (none) and its maps.
 
 ### Changed
 
 - **Breaking, for code built on `hatchling-broker`:** its `Error` gains `SocketPathNotOurs` and `TokenPathNotOurs` (WO-024), so the workspace moves to 0.5.0.
+- **Breaking, for code built on `hatchling-isolation` or `hatchling-sys`** (WO-014):
+  - `CellIdentity` gains `group` (the cell's own gid) and `mapping` (`Mapping::Direct` or `Mapping::Subordinate`); `CellIdentity::direct(principal, count)` builds the identity every cell had before.
+  - `hatchling_sys::share_dir_with_cell` takes the cell's gid.
+  - `subid::range_for` takes the account's name as an `Option`.
 - **Every delete and signal stands behind two guards** (WO-024), after a mutant of WO-012's tree removal wiped a test machine. Each check is its own, so no one changed operator, or one bug, gets past both:
   - a stale socket is unlinked only when it's a socket, by its type and its mode, and the broker's user's; another user's socket now refuses the start, naming it;
   - a UI or operator token file is replaced only when it's a regular file of the broker's user; anything else now refuses the start, naming it;

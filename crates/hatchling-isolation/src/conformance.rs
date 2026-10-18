@@ -277,10 +277,7 @@ mod tests {
 
     fn spec(scratch: &Scratch) -> CellSpec {
         CellSpec {
-            identity: CellIdentity {
-                principal: 1000,
-                count: 1,
-            },
+            identity: CellIdentity::direct(1000, 1),
             program: scratch.0.join("program"),
             argv: Vec::new(),
             env: Vec::new(),
@@ -432,10 +429,7 @@ mod tests {
         }
 
         fn identity(&self, _: Option<u32>, count: u32) -> Result<CellIdentity, Error> {
-            Ok(CellIdentity {
-                principal: self.principal,
-                count,
-            })
+            Ok(CellIdentity::direct(self.principal, count))
         }
 
         fn broker_in_cell(&self, _: &CellIdentity) -> Result<u32, Error> {

@@ -844,6 +844,28 @@ pub fn clear_groups() -> Result<(), Error> {
     Ok(())
 }
 
+/// The supplementary groups this process holds: none once
+/// [`clear_groups`] has dropped them.
+///
+/// # Errors
+///
+/// Returns [`Error::Process`] if they can't be read.
+pub fn supplementary_groups() -> Result<Vec<u32>, Error> {
+    let failed = |operation| Error::Process {
+        operation,
+        source: io::Error::last_os_error(),
+    };
+    // SAFETY: a size of zero asks only for the count; nothing is written
+    // through the null list.
+    let count = unsafe { libc::getgroups(0, std::ptr::null_mut()) };
+    let mut groups = vec![0; usize::try_from(count).map_err(|_| failed("getgroups(0)"))?];
+    // SAFETY: `groups` has room for `count` ids, the size passed; a
+    // group added since makes the call fail (EINVAL), never overrun.
+    let read = unsafe { libc::getgroups(count, groups.as_mut_ptr()) };
+    groups.truncate(usize::try_from(read).map_err(|_| failed("getgroups"))?);
+    Ok(groups)
+}
+
 /// Makes this process not dumpable.
 ///
 /// No core dump, and its `/proc` files, `/proc/<pid>/mem` among them,
@@ -1672,6 +1694,31 @@ mod tests {
         assert!(ended("12 (a) X 1 2"), "dead");
         assert!(ended("12 (a) x 1 2"), "dead, as older kernels say it");
         assert!(!ended("12 (a) R 1 2") && !ended("12 (a) D 1 2"));
+    }
+
+    #[test]
+    fn the_groups_are_the_kernels() {
+        // The `Groups:` line of `/proc/self/status` lists the same ids.
+        let status = std::fs::read_to_string("/proc/self/status").unwrap();
+        let listed: Vec<u32> = status
+            .lines()
+            .find_map(|line| line.strip_prefix("Groups:"))
+            .unwrap()
+            .split_whitespace()
+            .map(|id| id.parse().unwrap())
+            .collect();
+        assert_eq!(supplementary_groups().unwrap(), listed);
+        // Cleared, as only a privileged process may: none.
+        if euid() == 0 {
+            let child = match fork().unwrap() {
+                ForkResult::Parent { child } => child,
+                ForkResult::Child => exit_child(i32::from(
+                    clear_groups().is_err() || supplementary_groups().ok() != Some(Vec::new()),
+                )),
+            };
+            let status = child.wait_deadline(Duration::from_secs(10)).unwrap();
+            assert_eq!(child_exit_code(status), 0, "no groups once cleared");
+        }
     }
 
     #[test]
