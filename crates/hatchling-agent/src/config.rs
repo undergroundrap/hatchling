@@ -432,6 +432,19 @@ mod tests {
     }
 
     #[test]
+    fn a_run_flag_is_0_or_1_and_unset_is_0() {
+        assert!(matches!(run_flag(None, "K"), Ok(false)));
+        assert!(matches!(run_flag(Some("0"), "K"), Ok(false)));
+        assert!(matches!(run_flag(Some("1"), "K"), Ok(true)));
+        for raw in ["", "true", "01", "2"] {
+            assert!(
+                matches!(run_flag(Some(raw), "K"), Err(Error::InvalidConfig { key: "K", .. })),
+                "{raw:?}"
+            );
+        }
+    }
+
+    #[test]
     fn the_chat_mode_is_read_strictly() {
         let mut vars = valid_vars();
         assert!(!Config::parse(lookup(&vars)).unwrap().run_chat);
