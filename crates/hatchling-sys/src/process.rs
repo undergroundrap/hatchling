@@ -2398,7 +2398,7 @@ mod tests {
         let (quick, _out) = group_leader("exit 3");
         assert_eq!(
             child_exit_code(quick.wait_deadline_group(Duration::from_secs(10)).unwrap()),
-            Some(3)
+            3
         );
     }
 
