@@ -132,7 +132,8 @@ pub fn open_api(config: &Config, api: &ApiConfig) -> Result<Option<Api>, Error> 
             key: "HATCHLING_API_SOCKET",
             reason: format!(
                 "the API serves uid {owner}, the broker's own, which is also the agent's: \
-                 the cell could drive the API"
+                 the cell could drive the API; {}",
+                crate::cell::OWN_UID_HINT
             ),
         });
     }

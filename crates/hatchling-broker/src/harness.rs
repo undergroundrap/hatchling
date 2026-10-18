@@ -1244,6 +1244,7 @@ fn harness_cell(
     network: Option<HarnessNetwork>,
 ) -> Result<CellConfig, Error> {
     let mut cell = CellConfig::skill("harness")?;
+    harness_ids(&cell)?;
     cell.skill_code = Some(code_dir.to_path_buf());
     cell.agent_bin = code_dir.join("harness");
     cell.harness = Some(HarnessDirs {
@@ -1253,6 +1254,27 @@ fn harness_cell(
         network,
     });
     Ok(cell)
+}
+
+/// Refuses a harness cell on the owner's subordinate ids, until WO-014's
+/// part 2b: its work tree and scratch are handed to the cell's uid by
+/// chown ([`hand_over`]), which an unprivileged broker can't do, and are
+/// read back and removed after.
+///
+/// # Errors
+///
+/// [`Error::InvalidConfig`] for a cell on subordinate ids.
+fn harness_ids(cell: &CellConfig) -> Result<(), Error> {
+    if cell.ids == crate::cell::CellIds::Subordinate {
+        return Err(Error::InvalidConfig {
+            key: "HATCHLING_CELL_IDS",
+            reason: String::from(
+                "a harness can't run on subordinate ids yet: its work tree is handed to the \
+                 cell's uid by chown, which needs root (WO-014, part 2b)",
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Gives the work tree and scratch directory to `uid`, the cell's map
@@ -1829,6 +1851,21 @@ mod tests {
             .permissions()
             .mode()
             & 0o777
+    }
+
+    #[test]
+    fn a_harness_refuses_subordinate_ids_until_its_tree_can_be_handed_over() {
+        let mut cell = CellConfig::skill("harness").unwrap();
+        assert!(harness_ids(&cell).is_ok());
+        cell.ids = crate::cell::CellIds::Subordinate;
+        assert!(
+            matches!(
+                harness_ids(&cell),
+                Err(Error::InvalidConfig { key: "HATCHLING_CELL_IDS", reason })
+                    if reason.contains("part 2b")
+            ),
+            "refused, naming the work that lifts it"
+        );
     }
 
     #[test]

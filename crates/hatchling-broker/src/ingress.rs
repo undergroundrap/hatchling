@@ -187,8 +187,9 @@ pub fn open_ingress(config: &Config, gate: OutputGate) -> Result<Option<Ingress>
             key: "HATCHLING_CHANNEL_INGRESS",
             reason: format!(
                 "the ingress serves uid {}, the broker's own, which is also the agent's: \
-                 the cell could inject its own messages",
-                config.agent_uid
+                 the cell could inject its own messages; {}",
+                config.agent_uid,
+                crate::cell::OWN_UID_HINT
             ),
         });
     }
@@ -420,7 +421,7 @@ mod tests {
         let err = open_ingress(&config(real_uid(), Some(socket.clone())), off()).unwrap_err();
         assert!(
             matches!(&err, Error::InvalidConfig { key: "HATCHLING_CHANNEL_INGRESS", reason }
-                if reason.contains("also the agent's")),
+                if reason.contains("also the agent's") && reason.contains("/etc/subuid")),
             "{err:?}"
         );
         assert!(!socket.as_path().exists(), "the refused socket is unlinked");

@@ -103,7 +103,8 @@ pub fn open_operator(
             key: "HATCHLING_OPERATOR_SOCKET",
             reason: format!(
                 "the operator socket serves uid {owner}, the broker's own, which is also the agent's: \
-                 a cell could ask it"
+                 a cell could ask it; {}",
+                crate::cell::OWN_UID_HINT
             ),
         });
     }
