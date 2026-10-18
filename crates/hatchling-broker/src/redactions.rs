@@ -572,7 +572,8 @@ pub fn run_redactions(
 /// Every operator subcommand, for the broker's usage line.
 pub const SUBCOMMANDS: &str = "usage: hatchling-broker [migrate-vault | rekey-vault [<new-key-file>] | \
      vault-keyring <init | enroll-totp | backup-codes | status | add-key | remove-key | label-key> | \
-     redactions <list | show | stats | override | categories | raw> | vault-audit [log [count]]]";
+     redactions <list | show | stats | override | categories | raw> | vault-audit [log [count]] | \
+     clean [--dry-run]]";
 
 /// Runs the record-reading operator command `name` (`redactions` or
 /// `vault-audit`) with `args`, printing to stdout. Any other name
@@ -1696,7 +1697,7 @@ mod tests {
         let unknown = run_operator("nope", &config, Vec::new());
         assert!(
             matches!(&unknown, Err(Error::Usage { reason }) if reason.starts_with("unknown subcommand \"nope\"; usage: hatchling-broker [")
-                && reason.contains("| vault-audit [log [count]]]")),
+                && reason.contains("| vault-audit [log [count]] | clean [--dry-run]]")),
             "{unknown:?}"
         );
         assert!(!SUBCOMMANDS.contains("  "), "{SUBCOMMANDS}");

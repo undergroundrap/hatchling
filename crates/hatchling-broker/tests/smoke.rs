@@ -14,9 +14,15 @@ use std::time::{Duration, Instant};
 /// Runs the broker binary to completion, with a watchdog: a broker
 /// regression must fail the test, never hang the suite.
 fn run_broker(args: &[&str], vars: &[(&str, &str)], unset: &[&str]) -> Result<Output, String> {
+    // A `TMPDIR` of this test process's own, unless the test gives one: a
+    // starting broker sweeps its `TMPDIR` (WO-012), and must never sweep
+    // a shared one.
+    let tmp = std::env::temp_dir().join(format!("hatchling-smoke-{}-tmp", std::process::id()));
+    std::fs::create_dir_all(&tmp).map_err(|e| format!("tmp: {e}"))?;
     let mut command = Command::new(env!("CARGO_BIN_EXE_hatchling-broker"));
     command
         .args(args)
+        .env("TMPDIR", &tmp)
         .envs(vars.iter().copied())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -55,9 +61,11 @@ fn scratch_dir(name: &str) -> std::io::Result<std::path::PathBuf> {
 /// Minimal valid broker env for operator subcommands (which never
 /// bind the socket). `HATCHLING_AGENT_BIN` is scrubbed: with it set
 /// the broker would try to spawn a cell instead of running the
-/// subcommand.
+/// subcommand. `TMPDIR` is the scratch's own: a starting broker sweeps
+/// its `TMPDIR`, and must never sweep a shared one (WO-012).
 fn operator_env(scratch: &std::path::Path, vault: &str) -> Vec<(&'static str, String)> {
     vec![
+        ("TMPDIR", scratch.join("tmp").to_string_lossy().into_owned()),
         (
             "HATCHLING_BROKER_SOCKET",
             scratch.join("broker.sock").to_string_lossy().into_owned(),
@@ -559,4 +567,84 @@ fn bad_vault_root_fails_before_bind() {
     // Restore permissions so the scratch dir can be removed.
     std::fs::set_permissions(&vault_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     let _ = std::fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn a_starting_broker_sweeps_leftovers_unless_one_already_serves() {
+    let scratch = scratch_dir("sweep").unwrap();
+    let mut env = operator_env(&scratch, "vault");
+    // The socket in a directory of its own: the scheduler's may not be
+    // inside the one the cell mounts.
+    let socket_dir = scratch.join("sock");
+    std::fs::create_dir_all(&socket_dir).unwrap();
+    let socket = socket_dir.join("broker.sock");
+    for (key, value) in &mut env {
+        if *key == "HATCHLING_LOG_LEVEL" {
+            *value = String::from("info");
+        }
+        if *key == "HATCHLING_BROKER_SOCKET" {
+            *value = socket.to_string_lossy().into_owned();
+        }
+    }
+    env.push((
+        "HATCHLING_SCHEDULER_DIR",
+        scratch.join("schedules").to_string_lossy().into_owned(),
+    ));
+    // The socket's path is a plain file: a start stops at bind, after
+    // its lock and its sweep.
+    std::fs::write(&socket, b"not a socket").unwrap();
+    let leftover = scratch
+        .join("schedules.runs")
+        .join(format!("run-{}", "ab".repeat(12)));
+    std::fs::create_dir_all(leftover.join("tmp")).unwrap();
+    std::fs::write(leftover.join("tmp").join("out"), b"o").unwrap();
+    let refs = operator_env_refs(&env);
+    let unset = ["HATCHLING_AGENT_BIN"];
+    let said = |output: &Output| {
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+    };
+
+    // While another broker holds the serving lock: a start and a clean
+    // are refused, and nothing is swept.
+    let serving = hatchling_sys::try_lock(&socket_dir.join("broker.sock.lock"))
+        .unwrap()
+        .unwrap();
+    for args in [&[][..], &["clean"]] {
+        let refused = run_broker(args, &refs, &unset).unwrap();
+        assert!(!refused.status.success(), "{args:?}");
+        assert!(
+            said(&refused).contains("a broker is serving this socket"),
+            "{args:?}: {}",
+            said(&refused)
+        );
+    }
+    assert!(leftover.join("tmp").join("out").exists());
+    drop(serving);
+
+    // A dry run lists it and keeps it.
+    let dry = run_broker(&["clean", "--dry-run"], &refs, &unset).unwrap();
+    assert!(dry.status.success(), "{}", said(&dry));
+    assert!(
+        said(&dry).contains(&format!("would remove {}", leftover.display())),
+        "{}",
+        said(&dry)
+    );
+    assert!(leftover.exists());
+
+    // A start sweeps it, and says so, before it stops at bind.
+    let started = run_broker(&[], &refs, &unset).unwrap();
+    let swept = !leftover.exists();
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(!started.status.success(), "the plain file can't be bound");
+    assert!(
+        said(&started).contains("removed a leftover")
+            && said(&started).contains(&leftover.display().to_string()),
+        "{}",
+        said(&started)
+    );
+    assert!(swept, "the start swept it");
 }

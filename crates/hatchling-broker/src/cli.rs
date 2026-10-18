@@ -74,7 +74,7 @@ pub fn help(program: &str) -> String {
     render_help(
         program,
         "[subcommand] | --help | -h",
-        "Serve agents with no subcommand. Operator subcommands:\n  migrate-vault\n  rekey-vault [<new-key-file>]   (no file with a keyring)\n  vault-keyring <action>\n    init, enroll-totp, enroll-keys, use-file-tier, backup-codes,\n    status, add-key, remove-key, label-key\n  redactions list | stats | categories\n  redactions show <id> | raw <id> | override <id> [--any-scope]\n  vault-audit [log [count]]\n\nThe broker builds and supervises the agent's cell. Internal spawner\ncommands skill-cell <spec> and agent-run <spec> are broker-owned.",
+        "Serve agents with no subcommand. Operator subcommands:\n  migrate-vault\n  rekey-vault [<new-key-file>]   (no file with a keyring)\n  vault-keyring <action>\n    init, enroll-totp, enroll-keys, use-file-tier, backup-codes,\n    status, add-key, remove-key, label-key\n  redactions list | stats | categories\n  redactions show <id> | raw <id> | override <id> [--any-scope]\n  vault-audit [log [count]]\n  clean [--dry-run]   (a dead broker's leftovers; never your data)\n\nThe broker builds and supervises the agent's cell. Internal spawner\ncommands skill-cell <spec> and agent-run <spec> are broker-owned.",
         crate::environment::ENVIRONMENT,
     )
 }
@@ -84,7 +84,8 @@ fn valid_args(args: &[String]) -> bool {
     let values: Vec<&str> = args.iter().map(String::as_str).collect();
     match values.as_slice() {
         []
-        | ["migrate-vault" | "vault-audit" | "rekey-vault"]
+        | ["migrate-vault" | "vault-audit" | "rekey-vault" | "clean"]
+        | ["clean", "--dry-run"]
         | ["rekey-vault", _]
         | [
             "vault-keyring",
@@ -116,6 +117,7 @@ fn run(args: &[String]) -> Result<(), Error> {
         Some("migrate-vault") => run_migrate_vault(&config),
         Some("rekey-vault") => run_rekey_vault(&config, args.get(1).map(Path::new)),
         Some("vault-keyring") => run_keyring(&config, args.get(1).map(String::as_str)),
+        Some("clean") => crate::sweep::run_clean(&config, args.get(1..).unwrap_or_default()),
         Some(other) => run_operator(other, &config, args.iter().skip(1).cloned()),
         None => run_serve(&config),
     }
@@ -187,6 +189,8 @@ mod tests {
             args(&["vault-audit"]),
             args(&["vault-audit", "log"]),
             args(&["vault-audit", "log", "12"]),
+            args(&["clean"]),
+            args(&["clean", "--dry-run"]),
             args(&[SKILL_CELL_SUBCOMMAND]),
             args(&[AGENT_RUN_SUBCOMMAND, "/spec"]),
         ] {
@@ -222,6 +226,8 @@ mod tests {
             args(&["redactions", "bogus"]),
             args(&["redactions", "override", "id", "--bogus"]),
             args(&["vault-audit", "stats"]),
+            args(&["clean", "--force"]),
+            args(&["clean", "--dry-run", "extra"]),
             args(&[SKILL_CELL_SUBCOMMAND, "/spec", "extra"]),
         ] {
             assert!(!valid_args(&given), "{given:?}");

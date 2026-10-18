@@ -144,15 +144,19 @@ impl Drop for Staging {
 
 /// This process's staging root: one directory in the temp dir, made
 /// exclusively with mode 0700 and a name no one can predict, shared by
-/// the process's live cells and removed when the last one is gone.
+/// the process's live cells and removed when the last one is gone. While
+/// any is live, it is held ([`hatchling_sys::hold_dir`]): a broker's
+/// sweep of a dead broker's leftovers leaves a held root alone (WO-012).
 #[derive(Debug)]
 struct StagingRoot {
     path: Option<PathBuf>,
+    held: Option<hatchling_sys::HeldLock>,
     cells: usize,
 }
 
 static STAGING_ROOT: Mutex<StagingRoot> = Mutex::new(StagingRoot {
     path: None,
+    held: None,
     cells: 0,
 });
 
@@ -176,7 +180,14 @@ impl StagingRoot {
         } else {
             let prefix = format!("hatchling-staging-{}-", std::process::id());
             let path = create_unique(parent, &prefix, random_name)?;
+            let held = hatchling_sys::hold_dir(&path).map_err(|source| {
+                let _ = std::fs::remove_dir(&path);
+                Error::Spawn {
+                    reason: format!("cannot hold staging root {}: {source}", path.display()),
+                }
+            })?;
             root.path = Some(path.clone());
+            root.held = Some(held);
             path
         };
         root.cells += 1;
@@ -192,6 +203,7 @@ impl StagingRoot {
             if let Some(path) = root.path.take() {
                 let _ = std::fs::remove_dir(path);
             }
+            root.held = None;
         }
     }
 }
@@ -1230,6 +1242,7 @@ pub(super) mod tests {
         let scratch = staging_scratch("root");
         let state = Mutex::new(StagingRoot {
             path: None,
+            held: None,
             cells: 0,
         });
         let first = StagingRoot::enter_in(&state, &scratch).unwrap();
@@ -1240,10 +1253,13 @@ pub(super) mod tests {
         assert!(name.starts_with(&format!("hatchling-staging-{}-", std::process::id())));
         let mode = std::fs::metadata(&first).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o700);
+        assert!(hatchling_sys::in_use(&first), "held while a cell uses it");
         StagingRoot::leave_in(&state);
         assert!(first.exists(), "a live cell still holds it");
+        assert!(hatchling_sys::in_use(&first));
         StagingRoot::leave_in(&state);
         assert!(!first.exists(), "the last cell out removes it");
+        assert!(state.lock().unwrap().held.is_none(), "and lets it go");
         let third = StagingRoot::enter_in(&state, &scratch).unwrap();
         assert_ne!(third, first, "a new root, with a new name");
         StagingRoot::leave_in(&state);

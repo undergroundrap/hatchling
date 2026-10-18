@@ -22,7 +22,7 @@ libc = "0.2"
 # Safe wrappers for unshare, mount, pivot_root. Keeps the handwritten
 # unsafe surface to fork/exec/prctl only.
 # `net`: SCM_RIGHTS fd passing for a cell's relay listener.
-rustix = { version = "0.38", features = ["fs", "mount", "net", "process", "stdio", "thread"] }
+rustix = { version = "0.38", features = ["event", "fs", "mount", "net", "process", "stdio", "thread"] }
 thiserror = "2"
 
 [dev-dependencies]

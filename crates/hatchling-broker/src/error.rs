@@ -24,6 +24,23 @@ pub enum Error {
         reason: String,
     },
 
+    /// A broker serves this socket: it holds the lock beside it.
+    #[error(
+        "a broker is serving this socket (it holds {}): stop it first",
+        lock.display()
+    )]
+    BrokerBusy {
+        /// The lock the serving broker holds.
+        lock: std::path::PathBuf,
+    },
+
+    /// Sweeping the broker's leftovers failed.
+    #[error("sweep failed: {reason}")]
+    Sweep {
+        /// What failed.
+        reason: String,
+    },
+
     /// The broker was invoked with an unknown subcommand or a
     /// subcommand missing its arguments. CLI misuse fails before
     /// anything runs; usage goes to stderr at the call site.

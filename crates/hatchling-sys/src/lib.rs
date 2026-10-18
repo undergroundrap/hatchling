@@ -30,6 +30,7 @@ pub mod cgroup;
 pub mod error;
 pub mod fds;
 pub mod idmap;
+pub mod lock;
 pub mod mounts;
 pub mod namespaces;
 pub mod net;
@@ -40,6 +41,7 @@ pub mod seccomp;
 pub mod sync_pipe;
 #[cfg(test)]
 mod test_socket;
+pub mod tree;
 pub mod umask;
 
 pub use error::Error;
@@ -48,6 +50,7 @@ pub use fds::{
     take_stdin,
 };
 pub use idmap::IdMap;
+pub use lock::{HeldLock, claim_dir, hold_dir, in_use, try_lock};
 pub use mounts::{BindMount, MountPlan};
 pub use namespaces::{unshare_ipc, unshare_mount, unshare_net, unshare_pid, unshare_user};
 pub use ownership::{
@@ -56,10 +59,12 @@ pub use ownership::{
 };
 pub use peercred::{RawPeerCred, socket_peercred};
 pub use process::{
-    Child, ChildPid, ForkResult, Limit, become_cell_user, child_exit_code, clear_groups,
-    drop_capabilities, euid, exec, exit_child, fork, hold_core_dumps_off, hold_to, reap_as_init,
-    self_pidfd, set_no_new_privs, set_not_dumpable, set_pdeathsig,
+    Child, ChildPid, ForkResult, Limit, ParentWatch, become_cell_user, child_exit_code,
+    clear_groups, drop_capabilities, euid, exec, exit_child, fork, hold_core_dumps_off, hold_to,
+    pid_alive, reap_as_init, self_pidfd, set_no_new_privs, set_not_dumpable, set_pdeathsig,
+    watch_parent,
 };
 pub use seccomp::{SeccompProfile, SockFilter};
 pub use sync_pipe::{ChildToParent, ParentToChild, handshake_pipes};
+pub use tree::{DirId, Removed, remove_tree};
 pub use umask::{current_umask, with_umask};

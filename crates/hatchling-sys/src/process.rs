@@ -510,6 +510,64 @@ pub fn self_pidfd() -> Result<OwnedFd, Error> {
     })
 }
 
+/// A helper's watch on the broker that spawned it (WO-012): a pidfd on
+/// its parent, taken while that is still its parent.
+///
+/// `PR_SET_PDEATHSIG` fires when the parent *thread* that spawned a
+/// helper ends, which a broker's worker thread may do while the run it
+/// launched goes on. This watches the parent *process* instead, so a
+/// broker killed outright (`SIGKILL`) takes its helpers, and their cells,
+/// with it.
+#[derive(Debug)]
+pub struct ParentWatch(OwnedFd);
+
+/// Takes a watch on `parent`, which must still be this process's parent:
+/// one already gone (this process handed to another) is refused.
+///
+/// # Errors
+///
+/// Returns [`Error::Process`] if `parent` is no pid, if no pidfd can be
+/// opened on it, or if it isn't this process's parent.
+pub fn watch_parent(parent: i32) -> Result<ParentWatch, Error> {
+    let not_parent = || Error::Process {
+        operation: "watch the parent",
+        source: io::Error::new(io::ErrorKind::NotFound, "it isn't this process's parent"),
+    };
+    let raw = Pid::from_raw(parent).ok_or_else(not_parent)?;
+    let pidfd =
+        rustix::process::pidfd_open(raw, PidfdFlags::empty()).map_err(|source| Error::Process {
+            operation: "pidfd_open",
+            source: io::Error::from_raw_os_error(source.raw_os_error()),
+        })?;
+    // Checked after the pidfd is open: the pidfd now names this very
+    // process, so a pid reused since can't pass for it.
+    if rustix::process::getppid() != Some(raw) {
+        return Err(not_parent());
+    }
+    Ok(ParentWatch(pidfd))
+}
+
+impl ParentWatch {
+    /// Ends this process with `code` (`_exit`, nothing run on the way
+    /// out) once the parent has ended, from a thread of its own; at once,
+    /// if it already has. Start it only once forking is done: the thread
+    /// makes this process multi-threaded.
+    pub fn exit_with_parent(self, code: i32) {
+        std::thread::spawn(move || {
+            let mut fds = [rustix::event::PollFd::new(
+                &self.0,
+                rustix::event::PollFlags::IN,
+            )];
+            loop {
+                match rustix::event::poll(&mut fds, -1) {
+                    Err(rustix::io::Errno::INTR) => {}
+                    _ => exit_child(code),
+                }
+            }
+        });
+    }
+}
+
 /// Arranges for the kernel to deliver `SIGKILL` to the caller when its
 /// parent thread dies, and verifies the parent is still alive via pidfd.
 ///
@@ -686,6 +744,27 @@ pub fn exec(
 pub fn euid() -> u32 {
     // SAFETY: `geteuid` takes no arguments and always succeeds.
     unsafe { libc::geteuid() }
+}
+
+/// Whether a process with pid `pid` is alive: one this process may not
+/// signal counts, and a zombie, ended but not yet reaped, doesn't. A pid
+/// of 0 or below names no one process.
+#[must_use]
+pub fn pid_alive(pid: i32) -> bool {
+    Pid::from_raw(pid).is_some_and(|raw| {
+        matches!(
+            rustix::process::test_kill_process(raw),
+            Ok(()) | Err(rustix::io::Errno::PERM)
+        ) && !zombie(&std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default())
+    })
+}
+
+/// Whether `/proc/<pid>/stat` text says its process is a zombie: the
+/// state after the command's closing parenthesis (which a command name
+/// may itself contain) is `Z`.
+fn zombie(stat: &str) -> bool {
+    stat.rsplit_once(") ")
+        .is_some_and(|(_, rest)| rest.starts_with('Z'))
 }
 
 /// Drops every supplementary group: `setgroups(0, NULL)`.
@@ -1506,6 +1585,87 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
+
+    #[test]
+    fn a_pid_is_alive_until_its_process_is_reaped() {
+        assert!(pid_alive(i32::try_from(std::process::id()).unwrap()));
+        assert!(pid_alive(1), "init, which this may not signal");
+        assert!(!pid_alive(0) && !pid_alive(-1));
+        let child = match fork().unwrap() {
+            ForkResult::Parent { child } => child,
+            ForkResult::Child => exit_child(0),
+        };
+        let pid = child.pid().get();
+        let _ = child
+            .wait_deadline(std::time::Duration::from_secs(10))
+            .unwrap();
+        assert!(!pid_alive(pid), "reaped: gone");
+        // Ended, not yet reaped: a zombie is no longer alive.
+        let mut ended = std::process::Command::new("true").spawn().unwrap();
+        let ended_pid = i32::try_from(ended.id()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !zombie(&std::fs::read_to_string(format!("/proc/{ended_pid}/stat")).unwrap()) {
+            assert!(Instant::now() < deadline, "it never ended");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!pid_alive(ended_pid), "a zombie");
+        ended.wait().unwrap();
+        assert!(
+            zombie("12 (a) b) Z 1 2"),
+            "the state follows the last parenthesis"
+        );
+        assert!(!zombie("12 (Z) S 1 2") && !zombie("garbage"));
+    }
+
+    #[test]
+    fn a_watched_parent_takes_its_child_with_it() {
+        // The test forks a parent, which forks a child that watches it and
+        // holds a pipe's write end; once the parent ends, the child must,
+        // and the pipe reads end-of-file.
+        let (read, write) = UnixStream::pair().unwrap();
+        let parent = match fork().unwrap() {
+            ForkResult::Parent { child } => child,
+            ForkResult::Child => {
+                // SAFETY: getpid takes no arguments and always succeeds.
+                let me = unsafe { libc::getpid() };
+                match fork() {
+                    Ok(ForkResult::Child) => {
+                        drop(read);
+                        let Ok(watch) = watch_parent(me) else {
+                            exit_child(3)
+                        };
+                        watch.exit_with_parent(0);
+                        std::thread::sleep(Duration::from_secs(60));
+                        exit_child(4);
+                    }
+                    Ok(ForkResult::Parent { .. }) => {
+                        std::thread::sleep(Duration::from_millis(300));
+                        exit_child(0);
+                    }
+                    Err(_) => exit_child(5),
+                }
+            }
+        };
+        drop(write);
+        let _ = parent.wait_deadline(Duration::from_secs(10)).unwrap();
+        read.set_read_timeout(Some(Duration::from_secs(30)))
+            .unwrap();
+        let started = Instant::now();
+        let mut buf = [0u8; 1];
+        assert_eq!(Read::read(&mut &read, &mut buf).unwrap(), 0);
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "the child ended with its parent, not on its own"
+        );
+        // Not the parent: refused. No pid: refused.
+        assert!(watch_parent(1).is_err());
+        assert!(watch_parent(0).is_err());
+        let own = i32::try_from(std::process::id()).unwrap();
+        assert!(
+            watch_parent(own).is_err(),
+            "this process isn't its own parent"
+        );
+    }
 
     #[test]
     fn core_dumps_are_held_to_one_byte_and_a_zero_hard_limit_stays() {
