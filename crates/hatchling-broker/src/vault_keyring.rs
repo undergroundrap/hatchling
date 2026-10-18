@@ -22,8 +22,9 @@ use std::rc::Rc;
 
 use hatchling_fido2::{Bus, PinPrompt};
 use hatchling_vault::{
-    Authenticator, BackupCodes, FileKey, Kek, KeyCheck, KeyInfo, KeySource as _, Keyring, Label,
-    MasterKey, Protection, RekeyReport, Rotation, SingleKeyRisk, Store, Tier, Unlocked, Warning,
+    Authenticator, BackupCodes, Factor, FileKey, Kek, KeyCheck, KeyInfo, KeySource as _, Keyring,
+    Label, MasterKey, Protection, RekeyReport, Rotation, SingleKeyRisk, Store, Tier, Unlocked,
+    Warning,
 };
 
 use crate::environment as env;
@@ -435,6 +436,31 @@ const fn settled(keyring: &Keyring) -> Result<(), Error> {
     Ok(())
 }
 
+/// Whether `keyring` is off the file tier, by its tier.
+fn off_the_file_tier(keyring: &Keyring) -> bool {
+    keyring.tier() != Tier::File
+}
+
+/// Whether any of `keyring`'s ways in is through the KEK file: the same
+/// question as [`off_the_file_tier`], asked of its wraps (leaving the file
+/// tier drops the file's wrap).
+fn opens_with_the_kek_file(keyring: &Keyring) -> bool {
+    keyring
+        .wraps()
+        .iter()
+        .any(|wrap| wrap.factor == Factor::File)
+}
+
+/// Whether the KEK file may go: the vault is off the file tier, and no
+/// way in still uses the file. Each check stands on its own (WO-024), so
+/// one changed operator can't delete a key the vault still opens with.
+fn kek_file_may_go(keyring: &Keyring) -> bool {
+    if !off_the_file_tier(keyring) {
+        return false;
+    }
+    !opens_with_the_kek_file(keyring)
+}
+
 /// Finishes a rotation the keyring has committed (WO-003): once the vault
 /// has left the file tier its KEK file goes, every store moves from the
 /// old key to the new, and the retiring key is dropped. Each step is safe
@@ -445,7 +471,7 @@ fn finish(
     stores: &[(Store, PathBuf)],
     kek_file: &Path,
 ) -> Result<Vec<(&'static str, RekeyReport)>, Error> {
-    if keyring.tier() != Tier::File {
+    if kek_file_may_go(keyring) {
         match std::fs::remove_file(kek_file) {
             Err(err) if err.kind() != std::io::ErrorKind::NotFound => return Err(io_error(err)),
             _ => {}
@@ -3851,6 +3877,8 @@ mod tests {
         let rotated = keyring
             .rotate_in_place(&unlocked, Some(&kek), &mut [])
             .unwrap();
+        assert!(!off_the_file_tier(&keyring) && opens_with_the_kek_file(&keyring));
+        assert!(!kek_file_may_go(&keyring));
         let reports = finish(&mut keyring, &rotated.rotation, &stores, &kek_file).unwrap();
         assert_eq!(reports.len(), 2);
         assert!(kek_file.exists(), "still the file tier's way in");
@@ -3864,6 +3892,8 @@ mod tests {
         let mut app = App::new(0);
         enroll_totp(&vault, &config, &mut |prompt| Ok(app.answer(prompt))).unwrap();
         let mut keyring = Keyring::load(config.keyring.as_deref().unwrap()).unwrap();
+        assert!(off_the_file_tier(&keyring) && !opens_with_the_kek_file(&keyring));
+        assert!(kek_file_may_go(&keyring));
         let stuck = scratch.0.join("stuck");
         std::fs::create_dir(&stuck).unwrap();
         std::fs::write(stuck.join("kek"), b"x").unwrap();

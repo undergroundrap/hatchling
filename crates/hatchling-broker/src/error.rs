@@ -79,6 +79,29 @@ pub enum Error {
         path: SocketPath,
     },
 
+    /// The configured socket path is a socket another user owns. The
+    /// broker never unlinks it: it isn't the broker's to remove.
+    #[error(
+        "broker socket path {path} is a socket another user (uid {owner}) owns; stop what serves it, or set HATCHLING_BROKER_SOCKET to another path"
+    )]
+    SocketPathNotOurs {
+        /// The offending path.
+        path: SocketPath,
+        /// Its owner's uid.
+        owner: u32,
+    },
+
+    /// Where a socket's token goes is something other than a regular file
+    /// of the broker's user. The broker never removes it.
+    #[error(
+        "the token file {} is not a regular file of this user's; remove it yourself if it's stale",
+        path.display()
+    )]
+    TokenPathNotOurs {
+        /// The offending path.
+        path: std::path::PathBuf,
+    },
+
     /// Accepting a connection failed.
     #[error("failed to accept a broker connection: {source}")]
     Accept {

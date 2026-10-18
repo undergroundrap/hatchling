@@ -32,6 +32,8 @@
 //!   identify a network caller.
 
 use std::collections::BTreeSet;
+use std::fs::Metadata;
+use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
@@ -392,24 +394,68 @@ pub fn ui_token_path(socket: &SocketPath) -> PathBuf {
 
 /// Mints a fresh UI token, and keeps it at `path` for its owner alone.
 ///
-/// A token from an earlier start is removed first; the new file is then
-/// created exclusively with mode 0600, so anything planted at `path` in
-/// between, a symlink included, fails the call rather than receiving
-/// the token.
+/// A token from an earlier start is removed first, and only when it's a
+/// regular file of the broker's user: anything else there is refused,
+/// never removed. The new file is then created exclusively with mode
+/// 0600, so anything planted at `path` in between, a symlink included,
+/// fails the call rather than receiving the token.
 ///
 /// # Errors
 ///
 /// [`Error::SocketSetup`] if the old token can't be removed or the new
 /// one can't be made or written.
 pub fn mint_ui_token(path: &Path) -> Result<ApiToken, Error> {
+    mint_ui_token_as(path, hatchling_sys::euid())
+}
+
+/// Whether `metadata` is a regular file's, by its file type.
+fn file_by_type(metadata: &Metadata) -> bool {
+    metadata.file_type().is_file()
+}
+
+/// The file-type bits of a raw mode (`S_IFMT`).
+const MODE_TYPE: u32 = 0o170_000;
+
+/// A regular file's file-type bits (`S_IFREG`).
+const MODE_FILE: u32 = 0o100_000;
+
+/// Whether `metadata` is a regular file's, by its raw mode bits: the same
+/// fact as [`file_by_type`], read through other code.
+fn file_by_mode(metadata: &Metadata) -> bool {
+    metadata.mode() & MODE_TYPE == MODE_FILE
+}
+
+/// Removes an earlier start's token at `path`, when it's a regular file
+/// `owner` owns; nothing there is fine. Each check is its own, so no one
+/// changed operator removes anything else.
+fn clear_old_token(path: &Path, owner: u32) -> Result<(), Error> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(source) => return Err(Error::SocketSetup { source }),
+    };
+    let refused = || Error::TokenPathNotOurs {
+        path: path.to_path_buf(),
+    };
+    if !file_by_type(&metadata) {
+        return Err(refused());
+    }
+    if !file_by_mode(&metadata) {
+        return Err(refused());
+    }
+    if metadata.uid() != owner {
+        return Err(refused());
+    }
+    std::fs::remove_file(path).map_err(|source| Error::SocketSetup { source })
+}
+
+/// [`mint_ui_token`], with `owner` the uid an earlier token must have.
+fn mint_ui_token_as(path: &Path, owner: u32) -> Result<ApiToken, Error> {
     use std::io::Write as _;
     use std::os::unix::fs::OpenOptionsExt as _;
     let setup = |source| Error::SocketSetup { source };
     let token = crate::approval::random_hex("").map_err(setup)?;
-    match std::fs::remove_file(path) {
-        Err(source) if source.kind() != std::io::ErrorKind::NotFound => return Err(setup(source)),
-        _ => {}
-    }
+    clear_old_token(path, owner)?;
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -608,6 +654,44 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn only_a_regular_file_of_the_brokers_user_is_an_old_token() {
+        use std::os::unix::fs::{MetadataExt as _, symlink};
+        let dir = scratch("old-token");
+        let path = dir.0.join("ui.sock.token");
+        let file = std::fs::symlink_metadata(&dir.0).unwrap();
+        assert!(!file_by_type(&file) && !file_by_mode(&file), "a directory");
+        std::fs::write(&path, b"old").unwrap();
+        let regular = std::fs::symlink_metadata(&path).unwrap();
+        assert!(file_by_type(&regular) && file_by_mode(&regular));
+        // Another user's: refused, and left as it was.
+        let owner = regular.uid();
+        assert!(matches!(
+            clear_old_token(&path, owner.wrapping_add(1)),
+            Err(Error::TokenPathNotOurs { .. })
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), b"old");
+        assert!(mint_ui_token_as(&path, owner.wrapping_add(1)).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"old");
+        // A symlink to a file of ours: refused, and neither it nor its
+        // target goes.
+        std::fs::remove_file(&path).unwrap();
+        let target = dir.0.join("target");
+        std::fs::write(&target, b"mine").unwrap();
+        symlink(&target, &path).unwrap();
+        let link = std::fs::symlink_metadata(&path).unwrap();
+        assert!(!file_by_type(&link) && !file_by_mode(&link));
+        assert!(matches!(
+            clear_old_token(&path, owner),
+            Err(Error::TokenPathNotOurs { .. })
+        ));
+        assert!(std::fs::symlink_metadata(&path).is_ok());
+        assert_eq!(std::fs::read(&target).unwrap(), b"mine");
+        // Nothing there: nothing to clear.
+        std::fs::remove_file(&path).unwrap();
+        assert!(clear_old_token(&path, owner).is_ok());
+    }
+
+    #[test]
     fn a_ui_token_is_fresh_its_owners_alone_and_never_written_through_a_plant() {
         use std::os::unix::fs::PermissionsExt as _;
         let dir = scratch("ui-token");
@@ -631,11 +715,10 @@ pub(crate) mod tests {
         std::fs::remove_file(&path).unwrap();
         std::fs::create_dir(&path).unwrap();
         std::fs::write(path.join("inside"), b"").unwrap();
-        // Refused at the removal, not left to the exclusive create: the
-        // removal's own error comes back.
+        // Refused before any removal, not left to the exclusive create.
         assert!(matches!(
             mint_ui_token(&path),
-            Err(Error::SocketSetup { source }) if source.kind() == std::io::ErrorKind::IsADirectory
+            Err(Error::TokenPathNotOurs { path: refused }) if refused == path
         ));
         assert_eq!(std::fs::read(path.join("inside")).unwrap(), b"");
     }

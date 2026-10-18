@@ -179,14 +179,12 @@ pub fn drive(spec: &Spec<'_>) -> Result<Driven, Error> {
         }
         (stdout, stderr)
     };
-    let Ok(status) = child.wait_deadline(spec.timeout) else {
-        // The direct child is already SIGKILLed and reaped by the
-        // bounded wait; kill the rest of its process group so no
-        // rustc child outlives the driver. (`ESRCH` — group already
-        // empty — is fine. A failed group kill is tolerated here
-        // because drain collection is deadline-bounded and cannot
-        // hang on a pipe held open by a survivor.)
-        let _ = child.terminate_group();
+    let Ok(status) = child.wait_deadline_group(spec.timeout) else {
+        // The bounded wait killed the child's whole process group (so no
+        // rustc child outlives the driver) before reaping it, while the
+        // group's id was still the child's (WO-024). A failed group kill
+        // is tolerated here because drain collection is deadline-bounded
+        // and cannot hang on a pipe held open by a survivor.
         let _ = collect_drains();
         return Err(Error::ToolTimeout {
             tool: tool_name(spec),

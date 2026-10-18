@@ -195,6 +195,28 @@ pub fn remove_tree(root: &Path, name: &OsStr, keep: &[DirId]) -> Result<Removed,
     }
 }
 
+/// Removes the directory at `path` through [`remove_tree`], keeping
+/// nothing.
+///
+/// For a disposable directory its caller made, such as a cell's staging
+/// or a run's directory. Its parent is the root, so a mount in it (should
+/// one ever show through) is never entered, and nothing outside it goes
+/// (WO-024).
+///
+/// # Errors
+///
+/// As [`remove_tree`]; and [`Error::Removal`] if `path` has no parent and
+/// final name.
+pub fn remove_dir_tree(path: &Path) -> Result<Removed, Error> {
+    let (Some(root), Some(name)) = (path.parent(), path.file_name()) else {
+        return Err(Error::Removal {
+            operation: "name the tree",
+            source: io::Error::new(io::ErrorKind::InvalidInput, "no parent and name"),
+        });
+    };
+    remove_tree(root, name, &[])
+}
+
 /// Removes what it may of everything in `dir`, as `walk` keeps to;
 /// whether all of it is gone. `above` is every directory the walk is in,
 /// from the root down to `dir`.
@@ -286,6 +308,29 @@ mod tests {
         symlink(outside.join("file"), tree.join("to-file")).unwrap();
         symlink(outside.join("dir"), tree.join("a").join("to-dir")).unwrap();
         symlink("/nonexistent", tree.join("dangling")).unwrap();
+    }
+
+    #[test]
+    fn a_directory_goes_by_its_path_and_nothing_outside_it() {
+        let dir = scratch("by-path");
+        let (root, outside) = (dir.0.join("root"), dir.0.join("outside"));
+        let tree = root.join("tree");
+        plant(&tree, &outside);
+        assert!(matches!(remove_dir_tree(&tree), Ok(Removed::Whole)));
+        assert!(!tree.exists() && root.exists() && intact(&outside));
+        assert!(remove_dir_tree(Path::new("/")).is_err(), "no parent");
+        assert!(remove_dir_tree(&root.join("missing")).is_err());
+        // Bounded like the walk it goes through: a tree deeper than
+        // MAX_DEPTH is removed only partly.
+        let deep = root.join("deep");
+        std::fs::create_dir_all(deeper_than_the_walk(&deep)).unwrap();
+        assert!(matches!(remove_dir_tree(&deep), Ok(Removed::Partly)));
+        assert!(deep.exists());
+    }
+
+    /// A path `MAX_DEPTH + 2` directories below `top`.
+    fn deeper_than_the_walk(top: &Path) -> PathBuf {
+        (0..MAX_DEPTH + 2).fold(top.to_path_buf(), |path, _| path.join("d"))
     }
 
     fn intact(outside: &Path) -> bool {
