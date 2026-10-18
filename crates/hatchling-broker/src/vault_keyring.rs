@@ -3484,7 +3484,10 @@ mod tests {
         let shown = String::from_utf8(console.borrow().output.clone()).unwrap();
         assert!(shown.starts_with(PIN_PROMPT));
         assert!(shown.contains("Q? "));
-        assert!(Console::terminal().borrow().stdin, "the terminal hides a PIN");
+        assert!(
+            Console::terminal().borrow().stdin,
+            "the terminal hides a PIN"
+        );
         let (_asking, devices) = terminal_operator();
         assert_eq!(devices.unreachable(), NONE_PLUGGED);
     }

@@ -38,7 +38,10 @@ pub(crate) fn captured(f: impl FnOnce()) -> String {
 /// never at the start of a line: a newline it sent was escaped, so it
 /// forged no line of its own.
 pub(crate) fn assert_no_forged_line(logged: &str, marker: &str) {
-    assert!(logged.contains(marker), "the client's text was logged: {logged}");
+    assert!(
+        logged.contains(marker),
+        "the client's text was logged: {logged}"
+    );
     assert!(
         !logged.lines().any(|line| line.starts_with(marker)),
         "a client forged a log line: {logged}"

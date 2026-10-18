@@ -382,7 +382,9 @@ mod tests {
     /// A browser's upgrade to `path`, from a page the host on `port`
     /// served, as its own page sends it.
     fn upgrade_request(path: &str, port: u16) -> String {
-        format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n")
+        format!(
+            "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+        )
     }
 
     /// The opening handshake for `path`, read to its end.
@@ -630,7 +632,9 @@ mod tests {
         };
         let upgrade = |path: &str, host: &str, origin: Option<&str>| {
             let origin = origin.map_or(String::new(), |origin| format!("Origin: {origin}\r\n"));
-            format!("GET {path} HTTP/1.1\r\nHost: {host}\r\n{origin}Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n")
+            format!(
+                "GET {path} HTTP/1.1\r\nHost: {host}\r\n{origin}Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+            )
         };
         let listener = bind(0).unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -649,7 +653,11 @@ mod tests {
             format!("GET / HTTP/1.1\r\nHost: {rebound}\r\n\r\n"),
             String::from("GET / HTTP/1.1\r\n\r\n"),
             // The right page, but addressed to another port's host.
-            upgrade("/ui", &format!("127.0.0.1:{}", port.wrapping_add(1)), Some(&page)),
+            upgrade(
+                "/ui",
+                &format!("127.0.0.1:{}", port.wrapping_add(1)),
+                Some(&page),
+            ),
         ];
         std::thread::scope(|scope| {
             let host = scope.spawn(|| {

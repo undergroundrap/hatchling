@@ -82,7 +82,8 @@ impl Head {
     /// `Host` is `127.0.0.1:<port>` or `localhost:<port>`.
     #[must_use]
     pub fn addressed_to(&self, port: u16) -> bool {
-        self.header("host").is_some_and(|host| this_host(host, port))
+        self.header("host")
+            .is_some_and(|host| this_host(host, port))
     }
 
     /// Whether this request came from a page the host on `port` served:

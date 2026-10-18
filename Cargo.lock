@@ -545,6 +545,7 @@ dependencies = [
  "sha1",
  "thiserror",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]
@@ -960,6 +961,7 @@ checksum = "fdb5bc1ae2baa591800df16c9ca78619bf65c0488b41b96ccec5d11220d8c154"
 dependencies = [
  "bitflags 2.13.2",
  "errno",
+ "itoa",
  "libc",
  "linux-raw-sys",
  "windows-sys 0.59.0",
@@ -1477,6 +1479,7 @@ version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
 dependencies = [
+ "serde",
  "zeroize_derive",
 ]
 
