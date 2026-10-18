@@ -306,6 +306,17 @@ impl Child {
     /// Returns [`Error::Process`] if the signal cannot be sent to a
     /// still-existing group.
     pub fn terminate_group(&self) -> Result<(), Error> {
+        // Once the leader is reaped, every member may be gone and its id
+        // free to name another group: never signal it then (WO-024).
+        if self.reaped.get() {
+            return Err(Error::Process {
+                operation: "kill_process_group",
+                source: io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "the group's leader was already reaped",
+                ),
+            });
+        }
         let raw = self.pid.get();
         // SAFETY: getpgrp takes no arguments and always succeeds.
         let own_group = unsafe { libc::getpgrp() };
@@ -408,6 +419,33 @@ impl Child {
         // exactly this process via its pidfd — never a group, never a
         // reused pid — then reap (bounded), then report. (`try_wait`
         // marks the child reaped if the reap succeeds.)
+        let _ = self.terminate();
+        let _ = self.poll_once(REAP_GRACE);
+        Err(Error::ProcessTimeout {
+            operation: "child wait",
+            timeout,
+        })
+    }
+
+    /// [`wait_deadline`](Self::wait_deadline), for a child that leads its
+    /// own process group: past the deadline its whole group is killed
+    /// first, while the leader is unreaped and its id can't name another
+    /// group, and only then is the leader killed and reaped (WO-024).
+    ///
+    /// # Errors
+    ///
+    /// As [`wait_deadline`](Self::wait_deadline).
+    pub fn wait_deadline_group(&self, timeout: Duration) -> Result<i32, Error> {
+        if self.reaped.get() {
+            return Err(Error::Process {
+                operation: "wait on reaped child",
+                source: io::Error::new(io::ErrorKind::InvalidInput, "child was already reaped"),
+            });
+        }
+        if let Some(status) = self.poll_once(timeout)? {
+            return Ok(status);
+        }
+        let _ = self.terminate_group();
         let _ = self.terminate();
         let _ = self.poll_once(REAP_GRACE);
         Err(Error::ProcessTimeout {
@@ -2309,6 +2347,59 @@ mod tests {
                 "raw pid {raw} is a valid single-process target"
             );
         }
+    }
+
+    /// A child of this process leading its own group, running `script`
+    /// in `sh`, and its stdout.
+    fn group_leader(script: &str) -> (Child, std::process::ChildStdout) {
+        use std::os::unix::process::CommandExt as _;
+        let mut spawned = std::process::Command::new("sh")
+            .args(["-c", script])
+            .stdout(std::process::Stdio::piped())
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let out = spawned.stdout.take().unwrap();
+        let pid = ChildPid::new(i32::try_from(spawned.id()).unwrap()).unwrap();
+        (Child::new(pid).unwrap(), out)
+    }
+
+    #[test]
+    fn a_group_whose_leader_was_reaped_is_never_signalled() {
+        let (child, _out) = group_leader("exit 0");
+        assert!(child.wait_deadline(Duration::from_secs(10)).is_ok());
+        assert!(
+            matches!(child.terminate_group(), Err(Error::Process { .. })),
+            "its id may name another group now"
+        );
+        assert!(child.wait_deadline_group(Duration::from_secs(1)).is_err());
+    }
+
+    #[test]
+    fn a_timed_out_group_is_killed_before_its_leader_is_reaped() {
+        use std::io::BufRead as _;
+        // The leader starts a grandchild in its group, says its pid, and
+        // waits on it: past the deadline, the grandchild is killed too.
+        let (child, out) = group_leader("sleep 30 & echo $!; wait");
+        let mut line = String::new();
+        std::io::BufReader::new(out).read_line(&mut line).unwrap();
+        let grandchild: i32 = line.trim().parse().unwrap();
+        assert!(pid_alive(grandchild));
+        assert!(matches!(
+            child.wait_deadline_group(Duration::from_millis(100)),
+            Err(Error::ProcessTimeout { .. })
+        ));
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while pid_alive(grandchild) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!pid_alive(grandchild), "the group went with its leader");
+        // A clean exit is just that.
+        let (quick, _out) = group_leader("exit 3");
+        assert_eq!(
+            child_exit_code(quick.wait_deadline_group(Duration::from_secs(10)).unwrap()),
+            Some(3)
+        );
     }
 
     #[test]
