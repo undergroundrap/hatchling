@@ -8,6 +8,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Changed
 
+- **Breaking, for code built on `hatchling-broker`:** its `Error` gains `SocketPathNotOurs` and `TokenPathNotOurs` (WO-024), so the workspace moves to 0.5.0.
 - **Every delete and signal stands behind two guards** (WO-024), after a mutant of WO-012's tree removal wiped a test machine. Each check is its own, so no one changed operator, or one bug, gets past both:
   - a stale socket is unlinked only when it's a socket, by its type and its mode, and the broker's user's; another user's socket now refuses the start, naming it;
   - a UI or operator token file is replaced only when it's a regular file of the broker's user; anything else now refuses the start, naming it;
