@@ -389,6 +389,14 @@ mod tests {
             assert!(reason(env).contains("isn't setuid"), "{}", reason(env));
         }
         std::os::unix::fs::symlink("/bin/sh", dir.join("link")).unwrap();
+        // Both helpers are checked: one bad one refuses the pair.
+        assert!(Helpers::at(&mine, &mine).is_err());
+        let real = (Path::new(NEWUIDMAP), Path::new(NEWGIDMAP));
+        if check_helper(real.0).is_ok() && check_helper(real.1).is_ok() {
+            assert_eq!(Helpers::at(real.0, real.1).unwrap(), Helpers::standard().unwrap());
+            assert!(Helpers::at(real.0, &mine).is_err(), "the gid helper is checked too");
+            assert!(Helpers::at(&mine, real.1).is_err(), "and the uid helper");
+        }
         assert!(reason(&dir.join("link")).contains("isn't a regular file"));
         let _ = std::fs::remove_dir_all(&dir);
     }
