@@ -197,6 +197,7 @@ fn ready_cell_with_reasoning(
         model_context_window: None,
         model_reasoning,
         run_subagent: false,
+        run_chat: false,
     };
     Cell::new(config)
         .check_preconditions()

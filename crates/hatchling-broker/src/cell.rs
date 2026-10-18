@@ -381,6 +381,10 @@ pub struct ScheduledRun {
     /// it ended in a typed envelope.
     #[serde(default)]
     pub subagent: bool,
+    /// Whether the run answers the user's message on the local channel:
+    /// its agent then speaks with the chat prompt.
+    #[serde(default)]
+    pub chat: bool,
 }
 
 impl ScheduledRun {
@@ -404,6 +408,9 @@ impl ScheduledRun {
         }
         if self.subagent {
             env.push(("HATCHLING_RUN_SUBAGENT", String::from("1")));
+        }
+        if self.chat {
+            env.push(("HATCHLING_RUN_CHAT", String::from("1")));
         }
         if let Some(endpoint) = &self.model_endpoint {
             env.push(("HATCHLING_MODEL_ENDPOINT", endpoint.clone()));
@@ -1684,6 +1691,7 @@ mod run_cell_tests {
             }),
             max_steps: None,
             subagent: false,
+            chat: false,
         }
     }
 
@@ -1830,6 +1838,19 @@ mod run_cell_tests {
                 ("HATCHLING_MODEL_MAX_STEPS", String::from("4")),
                 ("HATCHLING_RUN_SUBAGENT", String::from("1")),
             ]
+        );
+    }
+
+    #[test]
+    fn a_chat_turns_run_says_so_and_nothing_else_does() {
+        let turn = ScheduledRun {
+            chat: true,
+            ..run()
+        };
+        assert!(turn.env().contains(&("HATCHLING_RUN_CHAT", String::from("1"))));
+        assert!(
+            !run().env().iter().any(|(name, _)| *name == "HATCHLING_RUN_CHAT"),
+            "background work speaks with the worker's prompt"
         );
     }
 

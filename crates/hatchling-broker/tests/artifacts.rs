@@ -729,6 +729,7 @@ fn artifacts_are_denied_without_a_store_and_in_a_run_session() {
         event: None,
         space: None,
         feed: None,
+        chat: false,
     };
     let run = hatchling_broker::scoped_config(
         &world.config,

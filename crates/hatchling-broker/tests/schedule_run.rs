@@ -383,6 +383,7 @@ fn run_to_end(launcher: &CellLauncher<'_, '_>, task: &str) -> Result<String, Str
             event: None,
             space: None,
             feed: None,
+            chat: false,
         })
         .unwrap();
     let deadline = Instant::now() + RUN_DEADLINE;
@@ -451,6 +452,7 @@ fn one_run_cannot_reach_another_run_s_socket() {
         event: None,
         space: None,
         feed: None,
+        chat: false,
     };
     std::thread::scope(|scope| {
         let launcher = CellLauncher::new(scope, &config, &key, env(&config, RUN_DEADLINE));
@@ -661,6 +663,7 @@ fn a_space_tasks_run_uses_its_own_space_and_nothing_outside_it() {
         event: None,
         space,
         feed: None,
+        chat: false,
     };
     std::thread::scope(|scope| {
         let launcher = CellLauncher::new(scope, &config, &key, env(&config, RUN_DEADLINE));
@@ -733,6 +736,7 @@ fn dropping_a_running_cell_cancels_it_and_cleans_its_resources() {
                 event: None,
                 space: None,
                 feed: None,
+                chat: false,
             })
             .unwrap();
         assert_eq!(run_dirs(&config.scheduler.run_root()).len(), 1);

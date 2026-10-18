@@ -680,6 +680,7 @@ mod tests {
             event: None,
             max_steps: None,
             subagent: false,
+            chat: false,
         };
         let request = hatchling_scheduler::RunRequest {
             schedule_id: String::from(PLANTED[0]),
@@ -692,6 +693,7 @@ mod tests {
             event: None,
             space: None,
             feed: None,
+            chat: false,
         };
         (run, request)
     }

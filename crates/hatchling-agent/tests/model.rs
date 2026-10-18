@@ -40,6 +40,7 @@ fn ready_cell(broker: &FixtureBroker) -> Result<Cell<Ready>, Error> {
         model_context_window: None,
         model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
         run_subagent: false,
+        run_chat: false,
     };
     Cell::new(config)
         .check_preconditions()?

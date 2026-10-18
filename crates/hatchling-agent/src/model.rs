@@ -301,6 +301,7 @@ pub fn run_command(task_args: &[String]) -> Result<String, Error> {
     };
     let max_steps = config.model_max_steps;
     let config_subagent = config.run_subagent;
+    let prompt = prompt_for(&config);
     // Best-effort: a test harness calling this twice must not panic
     // on the second init.
     let _ = tracing_subscriber::fmt()
@@ -313,17 +314,24 @@ pub fn run_command(task_args: &[String]) -> Result<String, Error> {
         .authorize()?
         .handshake()?;
     // Only the broker's run launcher starts `run`: a scheduled or hook
-    // run, or a subagent, which is background work.
-    let outcome = cell.run_task(
-        hatchling_loop::PromptKind::Worker,
-        task,
-        provider,
-        max_steps,
-    );
+    // run or a subagent, which is background work, or a chat turn,
+    // which answers the user.
+    let outcome = cell.run_task(prompt, task, provider, max_steps);
     if config_subagent {
         return subagent_report(outcome);
     }
     Ok(outcome?.answer)
+}
+
+/// The prompt a `run` speaks with: the chat prompt when the broker says
+/// it answers the user's message, the worker's for background work.
+#[must_use]
+pub const fn prompt_for(config: &Config) -> hatchling_loop::PromptKind {
+    if config.run_chat {
+        hatchling_loop::PromptKind::Chat
+    } else {
+        hatchling_loop::PromptKind::Worker
+    }
 }
 
 /// What a child run prints: how it ended, as a typed envelope.
@@ -364,6 +372,26 @@ mod tests {
             headers: Vec::new(),
             body: b"reply".to_vec(),
         }
+    }
+
+    #[test]
+    fn a_chat_turn_speaks_with_the_chat_prompt_and_background_work_the_workers() {
+        let mut config = Config {
+            cell_id: "cell-01".parse().unwrap(),
+            broker: crate::BrokerAddress::Socket("/tmp/broker.sock".parse().unwrap()),
+            broker_uid: hatchling_core::PeerUid::from_kernel(0),
+            log_level: hatchling_core::LogLevel::Info,
+            model_endpoint: None,
+            model_name: None,
+            model_max_steps: 10,
+            model_context_window: None,
+            model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
+            run_subagent: false,
+            run_chat: false,
+        };
+        assert_eq!(prompt_for(&config), hatchling_loop::PromptKind::Worker);
+        config.run_chat = true;
+        assert_eq!(prompt_for(&config), hatchling_loop::PromptKind::Chat);
     }
 
     #[test]

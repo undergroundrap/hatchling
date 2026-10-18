@@ -357,6 +357,7 @@ impl<'scope> Launcher for CellLauncher<'scope, '_> {
             event: request.event.clone(),
             max_steps: None,
             subagent: false,
+            chat: request.chat,
         };
         self.launch_cell(&request.schedule_id, run, |token, socket| {
             scoped_config(self.config, &request, token, socket)
@@ -894,6 +895,7 @@ mod tests {
             event: None,
             space: None,
             feed: None,
+            chat: false,
         }
     }
 
@@ -1137,6 +1139,7 @@ mod tests {
             event: None,
             max_steps: None,
             subagent: false,
+            chat: false,
         };
         std::thread::scope(|scope| {
             let env = RunEnv {
@@ -1287,6 +1290,7 @@ mod tests {
             event: None,
             max_steps: None,
             subagent: false,
+            chat: false,
         });
         let err = run_helper(Some(&serde_json::to_string(&skill).unwrap())).unwrap_err();
         assert!(

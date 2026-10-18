@@ -657,6 +657,7 @@ fn a_hook_fires_on_its_event_and_delivers_to_its_channel() {
             event: Some(message("local")),
             space: None,
             feed: None,
+            chat: false,
         }
     );
     world.launcher.run(0).finish(Ok("triaged 2 messages"));

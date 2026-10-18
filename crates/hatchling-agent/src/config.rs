@@ -52,6 +52,10 @@ pub struct Config {
     /// ): set by the broker for a child's run, which then reports
     /// how it ended in a typed envelope.
     pub run_subagent: bool,
+    /// Whether this agent answers the user's chat message
+    /// (`HATCHLING_RUN_CHAT`): set by the broker for a chat turn, which
+    /// then speaks with the chat prompt rather than the worker's.
+    pub run_chat: bool,
 }
 
 impl Config {
@@ -120,16 +124,8 @@ impl Config {
         let model_context_window = get(env::HATCHLING_MODEL_CONTEXT_WINDOW.name)
             .map(|raw| parse_context_window(&raw))
             .transpose()?;
-        let run_subagent = match get(env::HATCHLING_RUN_SUBAGENT.name).as_deref() {
-            None | Some("0") => false,
-            Some("1") => true,
-            Some(_) => {
-                return Err(Error::InvalidConfig {
-                    key: "HATCHLING_RUN_SUBAGENT",
-                    reason: String::from("expected 0 or 1"),
-                });
-            }
-        };
+        let run_subagent = run_flag(get(env::HATCHLING_RUN_SUBAGENT.name), "HATCHLING_RUN_SUBAGENT")?;
+        let run_chat = run_flag(get(env::HATCHLING_RUN_CHAT.name), "HATCHLING_RUN_CHAT")?;
         Ok(Self {
             cell_id,
             broker,
@@ -141,6 +137,7 @@ impl Config {
             model_max_steps,
             model_context_window,
             run_subagent,
+            run_chat,
         })
     }
 }
@@ -169,6 +166,18 @@ fn parse_context_window(raw: &str) -> Result<u32, Error> {
         reason: error.to_string(),
     })?;
     Ok(window)
+}
+
+/// A broker-set `0`/`1` flag `key`, unset meaning `0`.
+fn run_flag(value: Option<String>, key: &'static str) -> Result<bool, Error> {
+    match value.as_deref() {
+        None | Some("0") => Ok(false),
+        Some("1") => Ok(true),
+        Some(_) => Err(Error::InvalidConfig {
+            key,
+            reason: String::from("expected 0 or 1"),
+        }),
+    }
 }
 
 #[cfg(test)]
@@ -413,6 +422,23 @@ mod tests {
                     if *key == "HATCHLING_MODEL_CONTEXT_WINDOW" && got == reason),
                 "{raw:?}: {error:?}"
             );
+        }
+    }
+
+    #[test]
+    fn the_chat_mode_is_read_strictly() {
+        let mut vars = valid_vars();
+        assert!(!Config::parse(lookup(&vars)).unwrap().run_chat);
+        for (raw, expected) in [("0", false), ("1", true)] {
+            vars.insert("HATCHLING_RUN_CHAT", raw);
+            assert_eq!(Config::parse(lookup(&vars)).unwrap().run_chat, expected);
+        }
+        for raw in ["", "yes", "2"] {
+            vars.insert("HATCHLING_RUN_CHAT", raw);
+            assert!(matches!(
+                Config::parse(lookup(&vars)),
+                Err(Error::InvalidConfig { key: "HATCHLING_RUN_CHAT", .. })
+            ));
         }
     }
 

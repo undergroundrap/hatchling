@@ -84,6 +84,9 @@ pub struct RunRequest {
     /// For a feed's run, what its digest gathers: the broker
     /// generates it, read-only, instead of starting a cell.
     pub feed: Option<FeedSpec>,
+    /// Whether it answers the user's message on the local channel: its
+    /// agent then speaks with the chat prompt, not the worker's.
+    pub chat: bool,
 }
 
 /// A result that could not be delivered, kept for the user.
@@ -471,6 +474,7 @@ impl<R: Run> Dispatcher<R> {
             event: start.event.clone(),
             space: start.space.map(str::to_owned),
             feed: start.feed.cloned(),
+            chat: false,
         };
         match services.launcher.launch(request) {
             Ok(run) => {
