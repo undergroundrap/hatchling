@@ -606,7 +606,10 @@ mod tests {
                 .run(&model, String::from("go"))
                 .unwrap_err();
             assert!(
-                matches!(error, Error::InvalidArguments { .. } | Error::UnknownTool(_)),
+                matches!(
+                    error,
+                    Error::InvalidArguments { .. } | Error::UnknownTool(_)
+                ),
                 "{bad:?}: {error:?}"
             );
             assert_eq!(
@@ -631,7 +634,11 @@ mod tests {
             .unwrap();
         assert_eq!(result.answer, "done");
         assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 2);
-        assert!(registry.check(&call("count", serde_json::json!({"n": 3}))).is_ok());
+        assert!(
+            registry
+                .check(&call("count", serde_json::json!({"n": 3})))
+                .is_ok()
+        );
         assert!(matches!(
             registry.check(&call("count", serde_json::json!({}))),
             Err(Error::InvalidArguments { .. })
@@ -640,7 +647,11 @@ mod tests {
             registry.check(&call("nope", serde_json::json!({}))),
             Err(Error::UnknownTool(_))
         ));
-        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 2, "checking runs nothing");
+        assert_eq!(
+            runs.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "checking runs nothing"
+        );
     }
 
     #[test]

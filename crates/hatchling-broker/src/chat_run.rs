@@ -312,7 +312,10 @@ mod tests {
             (now, false, 0)
         );
         assert!(request.event.is_none() && request.space.is_none() && request.feed.is_none());
-        assert!(request.chat, "a chat turn: its agent speaks with the chat prompt");
+        assert!(
+            request.chat,
+            "a chat turn: its agent speaks with the chat prompt"
+        );
         drop(requests);
         // Answered, it is idle again.
         assert_eq!(chat.step(|| None, &launches, &answers, now), Step::Idle);

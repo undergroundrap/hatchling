@@ -1847,9 +1847,15 @@ mod run_cell_tests {
             chat: true,
             ..run()
         };
-        assert!(turn.env().contains(&("HATCHLING_RUN_CHAT", String::from("1"))));
         assert!(
-            !run().env().iter().any(|(name, _)| *name == "HATCHLING_RUN_CHAT"),
+            turn.env()
+                .contains(&("HATCHLING_RUN_CHAT", String::from("1")))
+        );
+        assert!(
+            !run()
+                .env()
+                .iter()
+                .any(|(name, _)| *name == "HATCHLING_RUN_CHAT"),
             "background work speaks with the worker's prompt"
         );
     }

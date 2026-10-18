@@ -124,8 +124,14 @@ impl Config {
         let model_context_window = get(env::HATCHLING_MODEL_CONTEXT_WINDOW.name)
             .map(|raw| parse_context_window(&raw))
             .transpose()?;
-        let run_subagent = run_flag(get(env::HATCHLING_RUN_SUBAGENT.name), "HATCHLING_RUN_SUBAGENT")?;
-        let run_chat = run_flag(get(env::HATCHLING_RUN_CHAT.name), "HATCHLING_RUN_CHAT")?;
+        let run_subagent = run_flag(
+            get(env::HATCHLING_RUN_SUBAGENT.name).as_deref(),
+            "HATCHLING_RUN_SUBAGENT",
+        )?;
+        let run_chat = run_flag(
+            get(env::HATCHLING_RUN_CHAT.name).as_deref(),
+            "HATCHLING_RUN_CHAT",
+        )?;
         Ok(Self {
             cell_id,
             broker,
@@ -169,8 +175,8 @@ fn parse_context_window(raw: &str) -> Result<u32, Error> {
 }
 
 /// A broker-set `0`/`1` flag `key`, unset meaning `0`.
-fn run_flag(value: Option<String>, key: &'static str) -> Result<bool, Error> {
-    match value.as_deref() {
+fn run_flag(value: Option<&str>, key: &'static str) -> Result<bool, Error> {
+    match value {
         None | Some("0") => Ok(false),
         Some("1") => Ok(true),
         Some(_) => Err(Error::InvalidConfig {
@@ -437,7 +443,10 @@ mod tests {
             vars.insert("HATCHLING_RUN_CHAT", raw);
             assert!(matches!(
                 Config::parse(lookup(&vars)),
-                Err(Error::InvalidConfig { key: "HATCHLING_RUN_CHAT", .. })
+                Err(Error::InvalidConfig {
+                    key: "HATCHLING_RUN_CHAT",
+                    ..
+                })
             ));
         }
     }
