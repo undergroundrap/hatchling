@@ -963,10 +963,7 @@ const fn log_level_name(level: LogLevel) -> &'static str {
 fn cell_spec(config: &CellConfig, log_level: LogLevel) -> CellSpec {
     let (argv, env) = program_env(config, log_level);
     CellSpec {
-        identity: CellIdentity {
-            principal: config.uid_base,
-            count: config.uid_count,
-        },
+        identity: CellIdentity::direct(config.uid_base, config.uid_count),
         program: config.agent_bin.clone(),
         argv,
         env,
@@ -1571,10 +1568,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(
             spec.identity,
-            CellIdentity {
-                principal: config.uid_base,
-                count: config.uid_count,
-            }
+            CellIdentity::direct(config.uid_base, config.uid_count)
         );
         assert_eq!(spec.program, Path::new("/bin/true"));
         assert_eq!(

@@ -99,6 +99,23 @@ pub trait IsolationBackend {
     /// Returns [`Error::Identity`] for an identity this platform refuses.
     fn identity(&self, principal: Option<u32>, count: u32) -> Result<CellIdentity, Error>;
 
+    /// The identity a cell runs as on the owner's subordinate ids: a
+    /// principal and group of its own, never the owner's or another
+    /// account's, granted through the platform's helpers
+    /// ([`Mapping::Subordinate`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Identity`] if there is none to grant: a platform
+    /// without subordinate ids (the default), a privileged owner (which
+    /// grants identities itself), no range or an unsafe one, or helpers
+    /// that can't be trusted.
+    fn subordinate_identity(&self) -> Result<CellIdentity, Error> {
+        Err(Error::Identity(PlatformError::new(std::io::Error::other(
+            "this platform has no subordinate identities",
+        ))))
+    }
+
     /// The principal the broker appears as inside a cell with
     /// `identity`: what the cell's peer check must expect.
     ///
@@ -198,14 +215,46 @@ pub struct Exit {
     pub status: i32,
 }
 
-/// The identity a cell runs as: a host principal, visible to the owner,
-/// and how many principals the cell spans from it.
+/// The identity a cell runs as: a host principal and group, visible to
+/// the owner, how many principals the cell spans from them, and how they
+/// are granted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CellIdentity {
     /// The host principal the cell's own root appears as.
     pub principal: u32,
+    /// The host group the cell's own root group appears as: the same
+    /// number as `principal` for a [`Mapping::Direct`] identity.
+    pub group: u32,
     /// How many principals, from `principal`, the cell spans.
     pub count: u32,
+    /// How the identity is granted.
+    pub mapping: Mapping,
+}
+
+impl CellIdentity {
+    /// A [`Mapping::Direct`] identity: `count` principals from
+    /// `principal`, its group the same number.
+    #[must_use]
+    pub const fn direct(principal: u32, count: u32) -> Self {
+        Self {
+            principal,
+            group: principal,
+            count,
+            mapping: Mapping::Direct,
+        }
+    }
+}
+
+/// How a cell's identity is granted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Mapping {
+    /// By the broker itself: any principal for a privileged owner, its
+    /// own for an unprivileged one.
+    #[default]
+    Direct,
+    /// By the platform's helpers, from the owner's subordinate ids: a
+    /// principal of the cell's own, granted without privilege (WO-014).
+    Subordinate,
 }
 
 /// The broker's decisions for one cell.

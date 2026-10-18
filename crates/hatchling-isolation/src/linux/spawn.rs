@@ -19,7 +19,8 @@ use hatchling_sys::{
 use super::identity::id_map;
 use super::view::{mount_plan, view};
 use crate::{
-    CONNECTION_FD_VAR, CellSpec, Endpoint, Error, Exit, Filter, Limits, PROGRAM, PlatformError,
+    CONNECTION_FD_VAR, CellIdentity, CellSpec, Endpoint, Error, Exit, Filter, Limits, Mapping,
+    PROGRAM, PlatformError,
 };
 
 /// Bound for the cell child's ready byte in [`parent_after_fork`]: the
@@ -86,16 +87,16 @@ const CELL_WAIT_DEADLINE: Duration =
 /// Returns [`Error::Spawn`] if the directory or the socket isn't what it
 /// should be, or can't be changed. Fails closed: a cell whose agent
 /// cannot reach the broker is never spawned.
-fn hand_over_endpoint(endpoint: &Endpoint, uid: u32) -> Result<(), Error> {
-    // The group goes too: the cell's gid map maps the same number
-    // (`id_map(principal)` for both maps).
-    hatchling_sys::hand_over_socket(&endpoint.socket, uid, uid).map_err(|source| Error::Spawn {
+fn hand_over_endpoint(endpoint: &Endpoint, identity: CellIdentity) -> Result<(), Error> {
+    let (uid, gid) = (identity.principal, identity.group);
+    hatchling_sys::hand_over_socket(&endpoint.socket, uid, gid).map_err(|source| Error::Spawn {
         reason: format!(
-            "cannot hand the broker socket {} to the cell (uid {uid}): {source}              (run the broker with privilege to transfer ownership, or chown it beforehand)",
+            "cannot hand the broker socket {} to the cell (uid {uid}): {source} \
+             (run the broker with privilege to transfer ownership, or chown it beforehand)",
             endpoint.socket.display()
         ),
     })?;
-    hatchling_sys::share_dir_with_cell(&endpoint.dir, uid).map_err(|source| Error::Spawn {
+    hatchling_sys::share_dir_with_cell(&endpoint.dir, uid, gid).map_err(|source| Error::Spawn {
         reason: format!(
             "cannot let the cell (uid {uid}) reach the broker socket dir {}: {source}",
             endpoint.dir.display()
@@ -413,7 +414,7 @@ pub(super) fn isolate(spec: &CellSpec) -> Result<LinuxCell, Error> {
     // broker still has its full privilege. A cell without an endpoint
     // has no socket.
     if let Some(endpoint) = &spec.endpoint {
-        hand_over_endpoint(endpoint, spec.identity.principal)?;
+        hand_over_endpoint(endpoint, spec.identity)?;
     }
     // Staging: the mount tree is built here, then pivot_rooted into.
     let staging = Staging::create()?;
@@ -423,8 +424,11 @@ pub(super) fn isolate(spec: &CellSpec) -> Result<LinuxCell, Error> {
     })?;
 
     let plan = mount_plan(view(spec)?, &new_root)?;
-    let uid_map = id_map(spec.identity.principal, spec.identity.count)?;
-    let gid_map = id_map(spec.identity.principal, spec.identity.count)?;
+    let maps = Maps {
+        writer: MapWriter::for_identity(&spec.identity)?,
+        uid: id_map(spec.identity.principal, spec.identity.count)?,
+        gid: id_map(spec.identity.group, spec.identity.count)?,
+    };
     let (child_to_parent, parent_to_child) = handshake_pipes().map_err(|source| Error::Spawn {
         reason: format!("cannot create cell handshake pipes: {source}"),
     })?;
@@ -477,8 +481,7 @@ pub(super) fn isolate(spec: &CellSpec) -> Result<LinuxCell, Error> {
             let mut parent_to_child = parent_to_child;
             let child = parent_after_fork(
                 child,
-                uid_map,
-                gid_map,
+                maps,
                 &mut child_to_parent,
                 &mut parent_to_child,
                 READY_TIMEOUT,
@@ -607,6 +610,81 @@ fn hand_out_relay(port: u16, channel: &UnixStream) -> Result<(), hatchling_sys::
     hatchling_sys::net::send_fd(channel.as_fd(), listener.as_fd())
 }
 
+/// Who writes a cell's id maps.
+#[derive(Debug)]
+enum MapWriter {
+    /// The broker itself, `setgroups` denied first: a
+    /// [`Mapping::Direct`] identity.
+    Broker,
+    /// The setuid helpers, into the owner's subordinate ids, `setgroups`
+    /// left allowed so the cell can shed the owner's groups.
+    Helpers(hatchling_sys::subid::Helpers),
+}
+
+impl MapWriter {
+    /// The writer for `identity`. A subordinate identity is checked
+    /// again against the owner's ids as they are now, and the helpers
+    /// with it, so a spec carrying any other ids is refused before the
+    /// fork, whoever built it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Identity`] if the owner's subordinate ids can't
+    /// be had now, or aren't `identity`'s.
+    fn for_identity(identity: &CellIdentity) -> Result<Self, Error> {
+        match identity.mapping {
+            Mapping::Direct => Ok(Self::Broker),
+            Mapping::Subordinate => {
+                let refused = |source| Error::Identity(PlatformError::new(source));
+                let helpers = hatchling_sys::subid::Helpers::standard().map_err(refused)?;
+                let owners = super::identity::subordinate(
+                    hatchling_sys::euid(),
+                    hatchling_sys::subid::own_cell_ids,
+                    || Ok(()),
+                );
+                the_owners(identity, owners)?;
+                Ok(Self::Helpers(helpers))
+            }
+        }
+    }
+
+    /// Writes `maps` for the unreaped child `child_pid`.
+    fn write(&self, child_pid: i32, uid: &IdMap, gid: &IdMap) -> Result<(), hatchling_sys::Error> {
+        match self {
+            Self::Broker => hatchling_sys::idmap::write_maps(child_pid, uid, gid),
+            Self::Helpers(helpers) => helpers.write_maps(child_pid, uid.base(), gid.base()),
+        }
+    }
+}
+
+/// Checks that `identity` is the owner's subordinate identity, `owners`.
+///
+/// # Errors
+///
+/// What `owners` is, or [`Error::Identity`] if `identity` isn't it.
+fn the_owners(identity: &CellIdentity, owners: Result<CellIdentity, Error>) -> Result<(), Error> {
+    let owners = owners?;
+    if *identity == owners {
+        return Ok(());
+    }
+    Err(Error::Identity(PlatformError::new(
+        hatchling_sys::Error::InvalidIdMap {
+            reason: format!(
+                "a cell asked for subordinate uid {} and gid {} ({} wide), but the owner's are uid {} and gid {}",
+                identity.principal, identity.group, identity.count, owners.principal, owners.group
+            ),
+        },
+    )))
+}
+
+/// A cell's id maps, and who writes them.
+#[derive(Debug)]
+struct Maps {
+    writer: MapWriter,
+    uid: IdMap,
+    gid: IdMap,
+}
+
 /// Parent side after fork: synchronize with the child, write the id
 /// maps, release the child into mount construction.
 ///
@@ -615,8 +693,7 @@ fn hand_out_relay(port: u16, channel: &UnixStream) -> Result<(), hatchling_sys::
 /// orphans) before the error is returned.
 fn parent_after_fork(
     child: Child,
-    uid_map: IdMap,
-    gid_map: IdMap,
+    maps: Maps,
     child_to_parent: &mut ChildToParent,
     parent_to_child: &mut ParentToChild,
     ready_timeout: Duration,
@@ -649,7 +726,7 @@ fn parent_after_fork(
     }
     // The raw pid is only a `/proc` path component for the id maps —
     // never a signal target (see `ChildPid::get`).
-    if let Err(source) = hatchling_sys::idmap::write_maps(child.pid().get(), &uid_map, &gid_map) {
+    if let Err(source) = maps.writer.write(child.pid().get(), &maps.uid, &maps.gid) {
         drop(child);
         return Err(Error::Identity(PlatformError::new(source)));
     }
@@ -776,6 +853,17 @@ fn child_main(
     parent_to_child.close_read();
     if should_exit_on_release(&released) {
         hatchling_sys::exit_child(1);
+    }
+    // A cell on the owner's subordinate ids started with the owner's
+    // supplementary groups (a `docker` group would open the Docker
+    // socket to it). Its maps are in, and the helpers left `setgroups`
+    // allowed: it drops them all now, and checks that none is left.
+    if spec.identity.mapping == Mapping::Subordinate {
+        if let Err(reason) =
+            shed_groups(hatchling_sys::clear_groups, hatchling_sys::supplementary_groups)
+        {
+            fail(&mut child_to_parent, reason);
+        }
     }
     // The relay: the cell's loopback up and one listener on its
     // port, sent to the owner while this process still holds its
@@ -1037,6 +1125,31 @@ fn hold_to_limits(limits: &Limits, grouped: bool) -> Result<(), hatchling_sys::E
 }
 
 /// Drops a root broker's supplementary groups with `clear`, which would
+/// Drops every supplementary group with `clear`, then checks with
+/// `groups` that none is left: a cell on the owner's subordinate ids
+/// must not keep the owner's.
+///
+/// # Errors
+///
+/// Why the groups can't be dropped, or which are left.
+fn shed_groups(
+    clear: impl FnOnce() -> Result<(), hatchling_sys::Error>,
+    groups: impl FnOnce() -> Result<Vec<u32>, hatchling_sys::Error>,
+) -> Result<(), String> {
+    clear().map_err(|source| {
+        format!(
+            "setgroups: the owner's groups can't be dropped ({source}); \
+             is setgroups denied in a namespace above the broker's?"
+        )
+    })?;
+    let left = groups().map_err(|source| format!("getgroups: {source}"))?;
+    if left.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("groups {left:?} are left after setgroups"))
+    }
+}
+
 /// otherwise follow the cell into its user namespace, where it couldn't
 /// drop them. The cell's child calls it before `unshare(CLONE_NEWUSER)`,
 /// with its `euid` and [`hatchling_sys::clear_groups`]. An unprivileged
@@ -1602,8 +1715,11 @@ pub(super) mod tests {
         let err = within_watchdog("parent_after_fork", move || {
             parent_after_fork(
                 child,
-                uid_map,
-                gid_map,
+                Maps {
+                    writer: MapWriter::Broker,
+                    uid: uid_map,
+                    gid: gid_map,
+                },
                 &mut c2p,
                 &mut p2c,
                 SHORT_DEADLINE,
@@ -1639,8 +1755,11 @@ pub(super) mod tests {
         let err = within_watchdog("parent_after_fork", move || {
             parent_after_fork(
                 child,
-                uid_map,
-                gid_map,
+                Maps {
+                    writer: MapWriter::Broker,
+                    uid: uid_map,
+                    gid: gid_map,
+                },
                 &mut c2p,
                 &mut p2c,
                 SHORT_DEADLINE,
@@ -1678,8 +1797,11 @@ pub(super) mod tests {
         let err = within_watchdog("parent_after_fork", move || {
             parent_after_fork(
                 child,
-                uid_map,
-                gid_map,
+                Maps {
+                    writer: MapWriter::Broker,
+                    uid: uid_map,
+                    gid: gid_map,
+                },
                 &mut c2p,
                 &mut p2c,
                 SHORT_DEADLINE,
@@ -1938,10 +2060,7 @@ pub(super) mod tests {
             return;
         }
         let spec = CellSpec {
-            identity: CellIdentity {
-                principal: hatchling_sys::euid(),
-                count: 1,
-            },
+            identity: CellIdentity::direct(hatchling_sys::euid(), 1),
             program: PathBuf::from("/bin/true"),
             argv: vec![String::from(PROGRAM)],
             env: vec![(String::from("K"), String::from("V"))],
@@ -2289,6 +2408,188 @@ pub(super) mod tests {
             running,
             "the cell had already ended, so the EOF proves nothing"
         );
+    }
+
+    #[test]
+    fn a_cell_sheds_every_group_or_does_not_start() {
+        let none = || Ok(Vec::new());
+        assert_eq!(shed_groups(|| Ok(()), none), Ok(()));
+        let denied = || {
+            Err(hatchling_sys::Error::Process {
+                operation: "setgroups(0)",
+                source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            })
+        };
+        let refused = shed_groups(denied, none).unwrap_err();
+        assert!(refused.starts_with("setgroups:"), "{refused}");
+        let left = shed_groups(|| Ok(()), || Ok(vec![999])).unwrap_err();
+        assert!(left.contains("[999]"), "{left}");
+        let unread = shed_groups(
+            || Ok(()),
+            || {
+                Err(hatchling_sys::Error::Process {
+                    operation: "getgroups",
+                    source: std::io::Error::from(std::io::ErrorKind::InvalidInput),
+                })
+            },
+        )
+        .unwrap_err();
+        assert!(unread.starts_with("getgroups:"), "{unread}");
+    }
+
+    #[test]
+    fn a_subordinate_cell_must_carry_the_owners_ids() {
+        let owners = CellIdentity {
+            principal: 100_000,
+            group: 200_000,
+            count: 1,
+            mapping: Mapping::Subordinate,
+        };
+        assert!(the_owners(&owners, Ok(owners)).is_ok());
+        for other in [
+            CellIdentity {
+                principal: 100_001,
+                ..owners
+            },
+            CellIdentity {
+                group: 200_001,
+                ..owners
+            },
+            CellIdentity { count: 2, ..owners },
+        ] {
+            let refused = the_owners(&other, Ok(owners)).unwrap_err();
+            assert!(
+                matches!(&refused, Error::Identity(_))
+                    && refused.to_string().contains("but the owner's are uid 100000"),
+                "{refused}"
+            );
+        }
+        let none = the_owners(
+            &owners,
+            Err(Error::Identity(PlatformError::new(std::io::Error::other(
+                "no range",
+            )))),
+        )
+        .unwrap_err();
+        assert!(none.to_string().contains("no range"), "{none}");
+        // A direct identity is the broker's to write.
+        assert!(matches!(
+            MapWriter::for_identity(&CellIdentity::direct(hatchling_sys::euid(), 1)),
+            Ok(MapWriter::Broker)
+        ));
+    }
+
+    /// The owner's subordinate identity, where a cell can run on it: an
+    /// unprivileged owner, no `no_new_privs` (the setuid helpers would
+    /// gain nothing), user namespaces allowed, a range and checked
+    /// helpers. `HATCHLING_REQUIRE_SUBID=1` turns "no" into a failure.
+    fn subordinate_usable() -> Option<CellIdentity> {
+        use crate::IsolationBackend as _;
+        let required = std::env::var("HATCHLING_REQUIRE_SUBID").is_ok_and(|value| value == "1");
+        let new_privs = status("NoNewPrivs").is_some_and(|value| value == "0");
+        let found = (new_privs && crate::linux::cell_available())
+            .then(|| crate::linux::Linux.subordinate_identity().ok())
+            .flatten();
+        assert!(
+            found.is_some() || !required,
+            "HATCHLING_REQUIRE_SUBID=1, but no cell can run on subordinate ids here"
+        );
+        found
+    }
+
+    /// The host pids of `pid`'s children.
+    fn children(pid: i32) -> Vec<i32> {
+        std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+            .unwrap_or_default()
+            .split_whitespace()
+            .filter_map(|child| child.parse().ok())
+            .collect()
+    }
+
+    /// A field of `/proc/<pid>/status`, as the host sees it, split.
+    fn status_of(pid: i32, field: &str) -> Vec<String> {
+        std::fs::read_to_string(format!("/proc/{pid}/status"))
+            .unwrap_or_default()
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{field}:")))
+            .map(|value| value.split_whitespace().map(String::from).collect())
+            .unwrap_or_default()
+    }
+
+    /// WO-014: a cell on the owner's subordinate ids, seen from the host.
+    /// Its reaper, its pid 1 and its program each run as the cell's uid
+    /// and gid (real, effective, saved and filesystem), with none of the
+    /// owner's groups; its maps are the helpers', one id each.
+    #[test]
+    fn a_cell_on_subordinate_ids_runs_as_them_with_no_groups() {
+        let Some(identity) = subordinate_usable() else {
+            return;
+        };
+        let scratch = Scratch::new("subordinate");
+        let (mut spec, _) = specs(&scratch);
+        spec.identity = identity;
+        spec.program = ["/usr/bin/gnusleep", "/bin/sleep"]
+            .into_iter()
+            .map(PathBuf::from)
+            .find(|path| path.exists())
+            .unwrap();
+        spec.filter = Filter::Cli;
+        spec.argv = vec![String::from(PROGRAM), String::from("60")];
+        let cell = isolate(&spec).unwrap();
+        let reaper = cell.pid();
+        let (uid, gid) = (identity.principal.to_string(), identity.group.to_string());
+        let settled = |pid: i32| {
+            status_of(pid, "Uid") == vec![uid.clone(); 4]
+                && status_of(pid, "Gid") == vec![gid.clone(); 4]
+                && status_of(pid, "Groups").is_empty()
+        };
+        // The program is the reaper's grandchild, once it has started.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut seen = Vec::new();
+        while std::time::Instant::now() < deadline {
+            seen = children(reaper)
+                .into_iter()
+                .flat_map(|init| std::iter::once(init).chain(children(init)))
+                .collect();
+            if seen.len() == 2 && settled(reaper) && seen.iter().all(|&pid| settled(pid)) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let all_settled = settled(reaper) && seen.iter().all(|&pid| settled(pid));
+        let report: Vec<_> = std::iter::once(reaper)
+            .chain(seen.iter().copied())
+            .map(|pid| {
+                (
+                    pid,
+                    status_of(pid, "Uid"),
+                    status_of(pid, "Gid"),
+                    status_of(pid, "Groups"),
+                )
+            })
+            .collect();
+        let maps: Vec<_> = ["uid_map", "gid_map", "setgroups"]
+            .iter()
+            .map(|file| {
+                std::fs::read_to_string(format!("/proc/{reaper}/{file}"))
+                    .unwrap_or_default()
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect();
+        drop(cell);
+        assert_eq!(seen.len(), 2, "the pid 1 and the program: {report:?}");
+        assert!(all_settled, "as uid {uid} and gid {gid}, no groups: {report:?}");
+        assert_eq!(
+            maps,
+            [format!("0 {uid} 1"), format!("0 {gid} 1"), String::from("allow")]
+        );
+        // A spec carrying other ids is refused before anything starts.
+        let mut forged = spec.clone();
+        forged.identity.principal += 1;
+        let refused = isolate(&forged).map(drop).unwrap_err();
+        assert!(matches!(refused, Error::Identity(_)), "{refused}");
     }
 
     #[test]

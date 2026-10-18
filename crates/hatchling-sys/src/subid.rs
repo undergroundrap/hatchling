@@ -53,13 +53,14 @@ impl SubRange {
     }
 }
 
-/// The first range `subid` text grants the account `name` (id `id`).
+/// The first range `subid` text grants the account with id `id` (and
+/// `name`, if it has one).
 ///
 /// `subid` is `/etc/subuid` or `/etc/subgid`: lines `name:start:count` or
 /// `id:start:count`. Comments, blank lines, malformed lines, an empty
 /// range and one that runs past `u32::MAX` are skipped.
 #[must_use]
-pub fn range_for(subid: &str, name: &str, id: u32) -> Option<SubRange> {
+pub fn range_for(subid: &str, name: Option<&str>, id: u32) -> Option<SubRange> {
     subid.lines().find_map(|line| {
         let mut fields = line.trim().split(':');
         let (Some(who), Some(start), Some(count), None) =
@@ -67,7 +68,7 @@ pub fn range_for(subid: &str, name: &str, id: u32) -> Option<SubRange> {
         else {
             return None;
         };
-        if who != name && who.parse::<u32>().ok() != Some(id) {
+        if Some(who) != name && who.parse::<u32>().ok() != Some(id) {
             return None;
         }
         let (start, count) = (start.parse::<u32>().ok()?, count.parse::<u32>().ok()?);
@@ -123,6 +124,76 @@ pub fn cell_id(range: SubRange, owner: u32, accounts: &[u32]) -> Result<u32, Err
         return Err(refused(format!("account id {account}")));
     }
     Ok(range.start)
+}
+
+/// The account files a cell's subordinate ids are read from, as text.
+#[derive(Debug, Clone, Copy)]
+pub struct AccountFiles<'a> {
+    /// `/etc/passwd`.
+    pub passwd: &'a str,
+    /// `/etc/group`.
+    pub group: &'a str,
+    /// `/etc/subuid`.
+    pub subuid: &'a str,
+    /// `/etc/subgid`.
+    pub subgid: &'a str,
+}
+
+/// The uid and gid a cell of `owner`, whose primary group is
+/// `primary_gid`, maps its root to: the first id of the owner's
+/// subordinate uid range and of its gid range, each checked by
+/// [`cell_id`]. Both ranges are the owner's: `/etc/subgid` names users,
+/// as `newgidmap` reads it.
+///
+/// # Errors
+///
+/// [`Error::InvalidIdMap`] if the owner has no range in either file
+/// (saying how to grant one), or a range is unsafe.
+pub fn cell_ids(owner: u32, primary_gid: u32, files: &AccountFiles<'_>) -> Result<(u32, u32), Error> {
+    let name = account_name(files.passwd, owner);
+    let missing = |file: &str| Error::InvalidIdMap {
+        reason: format!(
+            "uid {owner} has no subordinate range in {file}: grant it one of unused ids \
+             (`sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 {}`) \
+             so its cells get a uid of their own without root",
+            name.unwrap_or("<user>")
+        ),
+    };
+    let uids = range_for(files.subuid, name, owner).ok_or_else(|| missing("/etc/subuid"))?;
+    let gids = range_for(files.subgid, name, owner).ok_or_else(|| missing("/etc/subgid"))?;
+    Ok((
+        cell_id(uids, owner, &account_ids(files.passwd))?,
+        cell_id(gids, primary_gid, &account_ids(files.group))?,
+    ))
+}
+
+/// [`cell_ids`] for this process: its effective uid and gid, and the
+/// system's account files. A missing `/etc/subuid` or `/etc/subgid`
+/// holds no range.
+///
+/// # Errors
+///
+/// As [`cell_ids`], or [`Error::InvalidIdMap`] if `/etc/passwd` or
+/// `/etc/group` can't be read.
+pub fn own_cell_ids() -> Result<(u32, u32), Error> {
+    let read = |path: &str| {
+        std::fs::read_to_string(path).map_err(|source| Error::InvalidIdMap {
+            reason: format!("cannot read {path}: {source}"),
+        })
+    };
+    let optional = |path: &str| std::fs::read_to_string(path).unwrap_or_default();
+    let (passwd, group) = (read("/etc/passwd")?, read("/etc/group")?);
+    let (subuid, subgid) = (optional("/etc/subuid"), optional("/etc/subgid"));
+    cell_ids(
+        crate::process::euid(),
+        rustix::process::getegid().as_raw(),
+        &AccountFiles {
+            passwd: &passwd,
+            group: &group,
+            subuid: &subuid,
+            subgid: &subgid,
+        },
+    )
 }
 
 /// Checks that the helper at `path` is a regular file (not a symlink)
@@ -238,25 +309,25 @@ mod tests {
     fn a_range_is_found_by_name_or_id_and_must_be_sound() {
         let subid = "# comment\n\nalice:100000:65536\n1000:300000:10\nbob:x:5\ncarol:5:0\nend:4294967295:2\nwhole:4294967295:1\n";
         assert_eq!(
-            range_for(subid, "alice", 1001),
+            range_for(subid, Some("alice"), 1001),
             Some(SubRange {
                 start: 100_000,
                 count: 65_536
             })
         );
         assert_eq!(
-            range_for(subid, "nobody-by-name", 1000),
+            range_for(subid, Some("nobody-by-name"), 1000),
             Some(SubRange {
                 start: 300_000,
                 count: 10
             }),
             "by numeric id"
         );
-        assert_eq!(range_for(subid, "bob", 2), None, "malformed");
-        assert_eq!(range_for(subid, "carol", 3), None, "empty");
-        assert_eq!(range_for(subid, "end", 4), None, "runs past u32::MAX");
+        assert_eq!(range_for(subid, Some("bob"), 2), None, "malformed");
+        assert_eq!(range_for(subid, Some("carol"), 3), None, "empty");
+        assert_eq!(range_for(subid, Some("end"), 4), None, "runs past u32::MAX");
         assert_eq!(
-            range_for(subid, "whole", 5),
+            range_for(subid, Some("whole"), 5),
             Some(SubRange {
                 start: u32::MAX,
                 count: 1
@@ -264,11 +335,73 @@ mod tests {
             "ends exactly at u32::MAX"
         );
         assert_eq!(
-            range_for("alice:1:2:3\n", "alice", 1),
+            range_for("alice:1:2:3\n", Some("alice"), 1),
             None,
             "a fourth field"
         );
-        assert_eq!(range_for(subid, "dave", 6), None);
+        assert_eq!(range_for(subid, Some("dave"), 6), None);
+        // An account with no name is found by its id alone: a line with
+        // an empty name field is never its.
+        assert_eq!(range_for(":7:2\n", None, 6), None);
+        assert_eq!(
+            range_for(subid, None, 1000),
+            Some(SubRange {
+                start: 300_000,
+                count: 10
+            })
+        );
+    }
+
+    #[test]
+    fn a_cells_ids_are_the_first_of_the_owners_ranges() {
+        let files = AccountFiles {
+            passwd: "root:x:0:0::/root:/bin/sh\ndana:x:1000:1000::/home/dana:/bin/sh\n",
+            group: "root:x:0:\ndana:x:1000:\ndocker:x:999:dana\n",
+            subuid: "dana:100000:65536\n",
+            subgid: "dana:200000:65536\n",
+        };
+        assert_eq!(cell_ids(1000, 1000, &files).unwrap(), (100_000, 200_000));
+        // The gid range is the owner's, found by uid as well as by name.
+        let by_id = AccountFiles {
+            subuid: "1000:100000:65536\n",
+            subgid: "1000:200000:65536\n",
+            ..files
+        };
+        assert_eq!(cell_ids(1000, 50, &by_id).unwrap(), (100_000, 200_000));
+        let no_uids = refusal(cell_ids(1000, 1000, &AccountFiles { subuid: "", ..files }));
+        assert!(no_uids.contains("/etc/subuid") && no_uids.contains("usermod"), "{no_uids}");
+        assert!(no_uids.contains(" dana`"), "names the user: {no_uids}");
+        let no_gids = refusal(cell_ids(1000, 1000, &AccountFiles { subgid: "", ..files }));
+        assert!(no_gids.contains("/etc/subgid"), "{no_gids}");
+        // Each range is checked against its own accounts.
+        let onto_docker = refusal(cell_ids(
+            1000,
+            1000,
+            &AccountFiles {
+                subgid: "dana:999:2\n",
+                ..files
+            },
+        ));
+        assert!(onto_docker.contains("account id 999"), "{onto_docker}");
+        let onto_owner = refusal(cell_ids(
+            1000,
+            1000,
+            &AccountFiles {
+                subuid: "dana:1000:5\n",
+                ..files
+            },
+        ));
+        assert!(onto_owner.contains("owner"), "{onto_owner}");
+        let unnamed = refusal(cell_ids(1234, 1234, &files));
+        assert!(unnamed.contains("<user>"), "{unnamed}");
+    }
+
+    /// The reason of an [`Error::InvalidIdMap`]; any other result fails.
+    fn refusal(result: Result<(u32, u32), Error>) -> String {
+        match result {
+            Err(Error::InvalidIdMap { reason }) => reason,
+            other => unreachable!("expected a refusal, got {other:?}"),
+        }
     }
 
     #[test]
@@ -434,15 +567,7 @@ mod tests {
                 return None;
             }
             let helpers = Helpers::standard().ok()?;
-            let account_file = std::fs::read_to_string("/etc/passwd").ok()?;
-            let group_file = std::fs::read_to_string("/etc/group").ok()?;
-            let owner = crate::process::euid();
-            let primary_gid = rustix::process::getegid().as_raw();
-            let name = account_name(&account_file, owner)?;
-            let uids = range_for(&std::fs::read_to_string("/etc/subuid").ok()?, name, owner)?;
-            let gids = range_for(&std::fs::read_to_string("/etc/subgid").ok()?, name, owner)?;
-            let uid = cell_id(uids, owner, &account_ids(&account_file)).ok()?;
-            let gid = cell_id(gids, primary_gid, &account_ids(&group_file)).ok()?;
+            let (uid, gid) = own_cell_ids().ok()?;
             Some((helpers, uid, gid))
         })();
         assert!(

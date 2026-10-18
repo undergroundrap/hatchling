@@ -134,7 +134,8 @@ pub const fn dir_share(owner: u32, euid: u32, cell: u32) -> DirShare {
     }
 }
 
-/// Lets the cell running as `cell` traverse the socket directory at `path`.
+/// Lets the cell running as uid `cell` and gid `cell_gid` traverse the
+/// socket directory at `path`.
 ///
 /// The directory stays the broker's ([`dir_share`]): the cell can reach
 /// the socket in it, and can't add, remove or replace anything there.
@@ -144,7 +145,7 @@ pub const fn dir_share(owner: u32, euid: u32, cell: u32) -> DirShare {
 /// Returns [`Error::Ownership`] if `path` isn't a directory itself (a
 /// symlink to one included), if it belongs to anyone but the broker or
 /// the cell, if the cell couldn't traverse it, or if a change is refused.
-pub fn share_dir_with_cell(path: &Path, cell: u32) -> Result<(), Error> {
+pub fn share_dir_with_cell(path: &Path, cell: u32, cell_gid: u32) -> Result<(), Error> {
     let handle = open_dir_nofollow(path).map_err(failed("open the socket directory"))?;
     let stat = rustix::fs::fstat(&handle).map_err(failed("fstat the socket directory"))?;
     let euid = rustix::process::geteuid().as_raw();
@@ -155,7 +156,7 @@ pub fn share_dir_with_cell(path: &Path, cell: u32) -> Result<(), Error> {
             "its owner, the cell's user, can't traverse it",
         )),
         DirShare::Share => {
-            let (owner, group) = ids(euid, cell);
+            let (owner, group) = ids(euid, cell_gid);
             rustix::fs::fchown(&handle, Some(owner), Some(group))
                 .map_err(failed("chown the socket directory"))?;
             rustix::fs::fchmod(&handle, rustix::fs::Mode::from_raw_mode(0o710))
@@ -544,24 +545,25 @@ mod tests {
             .unwrap();
         let socket = dir.join("broker.sock");
         let _listener = UnixListener::bind(&socket).unwrap();
-        let cell = 65_000;
-        share_dir_with_cell(&dir, cell).unwrap();
-        hand_over_socket(&socket, cell, cell).unwrap();
+        // A gid of the cell's own, not its uid's number.
+        let (cell, cell_gid) = (65_000, 65_100);
+        share_dir_with_cell(&dir, cell, cell_gid).unwrap();
+        hand_over_socket(&socket, cell, cell_gid).unwrap();
         let dir_meta = std::fs::symlink_metadata(&dir).unwrap();
-        assert_eq!((dir_meta.uid(), dir_meta.gid()), (0, cell));
+        assert_eq!((dir_meta.uid(), dir_meta.gid()), (0, cell_gid));
         assert_eq!(dir_meta.mode() & 0o7777, 0o710);
         let socket_meta = std::fs::symlink_metadata(&socket).unwrap();
-        assert_eq!((socket_meta.uid(), socket_meta.gid()), (cell, cell));
+        assert_eq!((socket_meta.uid(), socket_meta.gid()), (cell, cell_gid));
         // A directory an earlier version gave the cell is taken back.
-        let (owner, group) = ids(cell, cell);
+        let (owner, group) = ids(cell, cell_gid);
         rustix::fs::chown(&dir, Some(owner), Some(group)).unwrap();
-        share_dir_with_cell(&dir, cell).unwrap();
+        share_dir_with_cell(&dir, cell, cell_gid).unwrap();
         let dir_meta = std::fs::symlink_metadata(&dir).unwrap();
-        assert_eq!((dir_meta.uid(), dir_meta.gid()), (0, cell));
+        assert_eq!((dir_meta.uid(), dir_meta.gid()), (0, cell_gid));
         // Anyone else's is refused.
         let (stranger, _) = ids(cell + 1, cell);
         rustix::fs::chown(&dir, Some(stranger), None).unwrap();
-        let err = share_dir_with_cell(&dir, cell).unwrap_err();
+        let err = share_dir_with_cell(&dir, cell, cell_gid).unwrap_err();
         assert!(
             matches!(
                 &err,
@@ -583,7 +585,7 @@ mod tests {
         std::os::unix::fs::symlink(dir.join("real"), dir.join("link")).unwrap();
         let euid = rustix::process::geteuid().as_raw();
         for name in ["link", "missing"] {
-            let err = share_dir_with_cell(&dir.join(name), euid).unwrap_err();
+            let err = share_dir_with_cell(&dir.join(name), euid, euid).unwrap_err();
             assert!(
                 matches!(
                     &err,
@@ -598,14 +600,14 @@ mod tests {
         // The broker's own user as the cell: kept if the owner can
         // traverse it, refused if not. (Root traverses regardless, so the
         // refusal shows only unprivileged.)
-        share_dir_with_cell(&dir.join("real"), euid).unwrap();
+        share_dir_with_cell(&dir.join("real"), euid, euid).unwrap();
         if euid != 0 {
             std::fs::set_permissions(
                 dir.join("real"),
                 std::os::unix::fs::PermissionsExt::from_mode(0o600),
             )
             .unwrap();
-            let err = share_dir_with_cell(&dir.join("real"), euid).unwrap_err();
+            let err = share_dir_with_cell(&dir.join("real"), euid, euid).unwrap_err();
             assert!(
                 matches!(
                     &err,

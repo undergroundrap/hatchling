@@ -48,6 +48,14 @@ impl IsolationBackend for Linux {
         identity::identity(hatchling_sys::euid(), principal, count)
     }
 
+    fn subordinate_identity(&self) -> Result<CellIdentity, Error> {
+        identity::subordinate(
+            hatchling_sys::euid(),
+            hatchling_sys::subid::own_cell_ids,
+            || hatchling_sys::subid::Helpers::standard().map(drop),
+        )
+    }
+
     fn broker_in_cell(&self, identity: &CellIdentity) -> Result<u32, Error> {
         identity::broker_in_cell(hatchling_sys::euid(), *identity)
     }
@@ -162,10 +170,7 @@ mod tests {
         );
         // A map that leaves the broker out: the kernel's overflow uid,
         // which is never the in-cell root.
-        let elsewhere = CellIdentity {
-            principal: euid.wrapping_add(1),
-            count: 1,
-        };
+        let elsewhere = CellIdentity::direct(euid.wrapping_add(1), 1);
         let unmapped = Linux.broker_in_cell(&elsewhere).unwrap();
         assert_eq!(unmapped, identity::broker_in_cell(euid, elsewhere).unwrap());
         assert_ne!(unmapped, 0, "an unmapped broker is not the cell's root");
