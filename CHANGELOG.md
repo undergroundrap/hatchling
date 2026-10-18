@@ -6,6 +6,10 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ## [Unreleased]
 
+### Added
+
+- `hatchling_sys::subid`, the first part of running the full broker without root (WO-014). It reads the owner's subordinate uid and gid ranges (`/etc/subuid`, `/etc/subgid`) and refuses one that holds uid 0, the owner's uid or any account's. It refuses map helpers that aren't regular, setuid files of root's. It writes a cell's maps through `newuidmap` and `newgidmap`, with `setgroups` denied first. Nothing uses it yet.
+
 ### Changed
 
 - **Breaking, for code built on `hatchling-broker`:** its `Error` gains `SocketPathNotOurs` and `TokenPathNotOurs` (WO-024), so the workspace moves to 0.5.0.
