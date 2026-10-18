@@ -118,7 +118,7 @@ pub fn load_skills(config: &SkillConfig, roots: &TrustRoots) -> LoadOutcome {
             Ok((id, admission, code)) => {
                 tracing::info!(
                     skill = %id,
-                    dir = %dir_name,
+                    dir = ?dir_name,
                     "skill admitted and registered"
                 );
                 outcome.loaded.push(LoadedSkill {
@@ -128,7 +128,7 @@ pub fn load_skills(config: &SkillConfig, roots: &TrustRoots) -> LoadOutcome {
                 });
             }
             Err(err) => {
-                tracing::error!(dir = %dir_name, %err, "skill refused");
+                tracing::error!(dir = ?dir_name, %err, "skill refused");
                 outcome.refused.push(Refusal {
                     dir_name,
                     reason: err.to_string(),

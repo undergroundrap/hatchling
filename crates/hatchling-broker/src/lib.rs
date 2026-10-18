@@ -78,6 +78,8 @@ pub mod subagent_ops;
 pub mod sweep;
 pub use space_ops::{EndAdmissions, MediaMeta, SealedSpaceStore, SpaceSession, handle_space_op};
 #[cfg(test)]
+mod test_log;
+#[cfg(test)]
 mod test_socket;
 pub mod trust_roots;
 pub mod vault_access;

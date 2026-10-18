@@ -159,7 +159,7 @@ impl Operator {
         match self.session(stream) {
             Ok(Admission::Admitted) => tracing::info!("operator connection ended"),
             Ok(Admission::Refused) => tracing::warn!("operator connection refused"),
-            Err(error) => tracing::info!(%error, "operator connection ended"),
+            Err(error) => tracing::info!(?error, "operator connection ended"),
         }
     }
 
@@ -803,5 +803,21 @@ mod tests {
         );
         assert!(operator.admits(Some(&ApiToken::new(String::from(TOKEN)))));
         assert!(!operator.admits(None));
+    }
+    #[test]
+    fn a_first_frame_cannot_forge_a_line_in_the_brokers_log() {
+        // Before the token: what a client names in its first frame (and,
+        // through the frontend host, any local process can be a client)
+        // is logged escaped.
+        let (operator, _socket) = operator("forge", real_uid());
+        let (client, server) = UnixStream::pair().unwrap();
+        hatchling_core::framing::write_frame(
+            &client,
+            br#"{"type":"hello","x\nFORGED operator admitted":1}"#,
+        )
+        .unwrap();
+        drop(client);
+        let logged = crate::test_log::captured(|| operator.serve_operator(&server));
+        crate::test_log::assert_no_forged_line(&logged, "FORGED operator admitted");
     }
 }
