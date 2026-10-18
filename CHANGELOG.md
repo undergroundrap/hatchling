@@ -21,6 +21,12 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
   - a cell's staging, and a run's, a skill run's and a skill's code directories, are removed through `remove_tree`, which never enters a mount or another user's directory;
   - `hatchling-dev` kills a timed-out process group before reaping its leader, and never after.
 
+### Fixed
+
+- **A chat message is answered with the chat prompt.** The local chat path started its run with the background worker's prompt; a chat turn now says so, typed from the chat path to the agent (`HATCHLING_RUN_CHAT`), and gets the chat prompt.
+- **A batch of tool calls is checked whole before any of it runs.** An unknown tool or bad arguments later in a batch used to stop the loop after earlier calls in it had already run, unrecorded.
+- **A reply the provider cut off isn't taken as finished.** A reply with `finish_reason` `length` (the output limit) or `content_filter` is now a model failure, not a final answer.
+
 ## [0.4.0] - 2026-10-18
 
 ### Added

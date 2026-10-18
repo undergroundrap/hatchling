@@ -137,6 +137,7 @@ fn ready_cell(socket: &Path) -> Result<hatchling_agent::Cell<hatchling_agent::Re
         model_context_window: None,
         model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
         run_subagent: false,
+        run_chat: false,
     })
     .check_preconditions()
     .and_then(hatchling_agent::Cell::connect_broker)

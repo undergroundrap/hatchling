@@ -204,6 +204,7 @@ fn killed(config: &Config) {
                 event: None,
                 space: None,
                 feed: None,
+                chat: false,
             })
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(60);

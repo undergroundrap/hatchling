@@ -120,6 +120,7 @@ fn agent(path: &str) -> Cell<Ready> {
         model_context_window: None,
         model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
         run_subagent: false,
+        run_chat: false,
     };
     Cell::new(config)
         .check_preconditions()

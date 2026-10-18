@@ -219,6 +219,7 @@ fn run_request(grants: Vec<ScheduleGrant>, depth: u32) -> RunRequest {
         event: None,
         space: None,
         feed: None,
+        chat: false,
     }
 }
 

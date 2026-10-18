@@ -689,6 +689,7 @@ fn agent_parent(
         model_context_window: None,
         model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
         run_subagent: false,
+        run_chat: false,
     };
     let cell = hatchling_agent::Cell::new(agent)
         .check_preconditions()

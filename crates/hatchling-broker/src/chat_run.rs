@@ -115,6 +115,7 @@ impl<R: Run> Chat<R> {
             event: None,
             space: None,
             feed: None,
+            chat: true,
         };
         match launcher.launch(request) {
             Ok(run) => {
@@ -311,6 +312,10 @@ mod tests {
             (now, false, 0)
         );
         assert!(request.event.is_none() && request.space.is_none() && request.feed.is_none());
+        assert!(
+            request.chat,
+            "a chat turn: its agent speaks with the chat prompt"
+        );
         drop(requests);
         // Answered, it is idle again.
         assert_eq!(chat.step(|| None, &launches, &answers, now), Step::Idle);

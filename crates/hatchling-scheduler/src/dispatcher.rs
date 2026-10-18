@@ -84,6 +84,9 @@ pub struct RunRequest {
     /// For a feed's run, what its digest gathers: the broker
     /// generates it, read-only, instead of starting a cell.
     pub feed: Option<FeedSpec>,
+    /// Whether it answers the user's message on the local channel: its
+    /// agent then speaks with the chat prompt, not the worker's.
+    pub chat: bool,
 }
 
 /// A result that could not be delivered, kept for the user.
@@ -471,6 +474,7 @@ impl<R: Run> Dispatcher<R> {
             event: start.event.clone(),
             space: start.space.map(str::to_owned),
             feed: start.feed.cloned(),
+            chat: false,
         };
         match services.launcher.launch(request) {
             Ok(run) => {
@@ -520,5 +524,125 @@ fn deliver_with_retry<D: Delivery>(delivery: &D, channel: &str, text: &str) -> R
             tracing::warn!(channel, error = %first, "scheduled delivery failed; retrying once");
             delivery.deliver(channel, text)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+
+    use super::*;
+
+    /// A store that holds nothing and keeps what is parked.
+    #[derive(Default)]
+    struct Nothing(RefCell<Vec<Parked>>);
+
+    impl Store for Nothing {
+        type Error = String;
+
+        fn load(&self) -> Result<Vec<Schedule>, String> {
+            Ok(Vec::new())
+        }
+
+        fn update(&self, _schedule: &Schedule) -> Result<bool, String> {
+            Ok(true)
+        }
+
+        fn remove(&self, _id: &str) -> Result<bool, String> {
+            Ok(true)
+        }
+
+        fn hooks(&self) -> Result<Vec<Hook>, String> {
+            Ok(Vec::new())
+        }
+
+        fn park(&self, parked: &Parked) -> Result<(), String> {
+            self.0.borrow_mut().push(parked.clone());
+            Ok(())
+        }
+    }
+
+    /// A run that never ends.
+    struct Running;
+
+    impl Run for Running {
+        fn poll(&mut self) -> Option<Result<String, String>> {
+            None
+        }
+    }
+
+    /// A launcher that keeps what it was asked to start.
+    #[derive(Default)]
+    struct Asked(RefCell<Vec<RunRequest>>);
+
+    impl Launcher for Asked {
+        type Run = Running;
+
+        fn launch(&self, request: RunRequest) -> Result<Running, String> {
+            self.0.borrow_mut().push(request);
+            Ok(Running)
+        }
+    }
+
+    struct Nowhere;
+
+    impl Delivery for Nowhere {
+        fn deliver(&self, _channel: &str, _text: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_started_run_is_asked_for_as_scheduled_work_never_a_chat_turn() {
+        let (store, launcher) = (Nothing::default(), Asked::default());
+        let (held, authenticated) = (BTreeSet::new(), BTreeSet::new());
+        let services = Services {
+            store: &store,
+            launcher: &launcher,
+            delivery: &Nowhere,
+            held: &held,
+            events: &[],
+            authenticated: &authenticated,
+        };
+        let mut dispatcher = Dispatcher::<Running>::default();
+        let mut report = TickReport::default();
+        let due = Timestamp::from_second(1_790_000_000).unwrap();
+        let start = Start {
+            id: "sch-1",
+            task: "tidy the inbox",
+            grants: &[],
+            channel: "local",
+            due,
+            missed: true,
+            depth: 2,
+            event: None,
+            space: Some("garden"),
+            feed: None,
+            kind: Kind::Schedule,
+        };
+        dispatcher.start(&start, &services, &mut report);
+        let asked = launcher.0.borrow();
+        let request = asked.first().unwrap();
+        assert_eq!(
+            (
+                request.schedule_id.as_str(),
+                request.task.as_str(),
+                request.channel.as_str()
+            ),
+            ("sch-1", "tidy the inbox", "local")
+        );
+        assert_eq!((request.due, request.missed, request.depth), (due, true, 2));
+        assert_eq!(request.space.as_deref(), Some("garden"));
+        assert!(
+            !request.chat,
+            "scheduled work speaks with the worker's prompt"
+        );
+        assert_eq!(report.launched, [(String::from("sch-1"), true)]);
+        assert_eq!(dispatcher.active(), 1);
+        drop(asked);
+        // A second start while it runs is skipped, not launched again.
+        dispatcher.start(&start, &services, &mut report);
+        assert_eq!(launcher.0.borrow().len(), 1);
+        assert_eq!(report.skipped, [String::from("sch-1")]);
     }
 }
