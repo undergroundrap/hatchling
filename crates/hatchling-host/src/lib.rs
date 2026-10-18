@@ -371,6 +371,26 @@ mod tests {
         )
     }
 
+    /// The fake broker's side of the next connection to `listener`,
+    /// within five seconds: a channel never carried fails the test
+    /// instead of hanging it.
+    fn accepted(listener: &UnixListener) -> std::os::unix::net::UnixStream {
+        listener.set_nonblocking(true).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    stream.set_nonblocking(false).unwrap();
+                    return stream;
+                }
+                Err(_) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("no channel reached the broker: {error}"),
+            }
+        }
+    }
+
     /// The opening handshake for `path`, read to its end.
     fn upgrade_on(stream: &mut TcpStream, path: &str) {
         let port = stream.peer_addr().unwrap().port();
@@ -417,7 +437,7 @@ mod tests {
                 handle(stream, &settings)
             });
             let fake_broker = scope.spawn(|| {
-                let (stream, _) = broker.accept().unwrap();
+                let stream = accepted(&broker);
                 let heard = read_frame(&stream).unwrap();
                 write_frame(&stream, b"{\"type\":\"welcome\"}").unwrap();
                 heard
@@ -461,7 +481,7 @@ mod tests {
                 handle(stream, &settings)
             });
             let fake_broker = scope.spawn(|| {
-                let (stream, _) = broker.accept().unwrap();
+                let stream = accepted(&broker);
                 stream
                     .set_read_timeout(Some(Duration::from_secs(5)))
                     .unwrap();
