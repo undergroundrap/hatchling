@@ -158,8 +158,16 @@ fn terminate_alone_would_orphan_the_grandchild() {
         "terminate() unexpectedly emptied the group — the contrast case is stale"
     );
 
-    // Clean up the orphan the contrast case deliberately created.
-    child.terminate_group().expect("terminate_group");
+    // Its leader reaped, the group may not be signalled any more
+    // (WO-024): once it empties, its id could name another group.
+    assert!(child.terminate_group().is_err());
+    // Clean up the orphan the contrast case deliberately created, by
+    // its own pid.
+    for member in group_members(pid) {
+        let _ = Command::new("kill")
+            .args(["-KILL", &member.to_string()])
+            .status();
+    }
     let deadline = Instant::now() + Duration::from_secs(10);
     assert!(
         poll_until(deadline, || group_members(pid).is_empty()),
