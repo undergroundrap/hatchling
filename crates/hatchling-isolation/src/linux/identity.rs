@@ -157,7 +157,10 @@ mod tests {
             || Err(refusal("not setuid")),
         )
         .unwrap_err();
-        assert!(bad_helper.to_string().contains("not setuid"), "{bad_helper}");
+        assert!(
+            bad_helper.to_string().contains("not setuid"),
+            "{bad_helper}"
+        );
     }
 
     #[test]

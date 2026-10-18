@@ -150,7 +150,11 @@ pub struct AccountFiles<'a> {
 ///
 /// [`Error::InvalidIdMap`] if the owner has no range in either file
 /// (saying how to grant one), or a range is unsafe.
-pub fn cell_ids(owner: u32, primary_gid: u32, files: &AccountFiles<'_>) -> Result<(u32, u32), Error> {
+pub fn cell_ids(
+    owner: u32,
+    primary_gid: u32,
+    files: &AccountFiles<'_>,
+) -> Result<(u32, u32), Error> {
     let name = account_name(files.passwd, owner);
     let missing = |file: &str| Error::InvalidIdMap {
         reason: format!(
@@ -369,11 +373,28 @@ mod tests {
             ..files
         };
         assert_eq!(cell_ids(1000, 50, &by_id).unwrap(), (100_000, 200_000));
-        let no_uids = refusal(cell_ids(1000, 1000, &AccountFiles { subuid: "", ..files }));
-        assert!(no_uids.contains("/etc/subuid") && no_uids.contains("usermod"), "{no_uids}");
-        assert!(no_uids.contains(" dana`"), "names the user: {no_uids}");
-        let no_gids = refusal(cell_ids(1000, 1000, &AccountFiles { subgid: "", ..files }));
-        assert!(no_gids.contains("/etc/subgid"), "{no_gids}");
+        let without_uid_range = refusal(cell_ids(
+            1000,
+            1000,
+            &AccountFiles {
+                subuid: "",
+                ..files
+            },
+        ));
+        assert!(
+            without_uid_range.contains("/etc/subuid") && without_uid_range.contains("usermod"),
+            "{without_uid_range}"
+        );
+        assert!(without_uid_range.contains(" dana`"), "names the user: {without_uid_range}");
+        let without_gid_range = refusal(cell_ids(
+            1000,
+            1000,
+            &AccountFiles {
+                subgid: "",
+                ..files
+            },
+        ));
+        assert!(without_gid_range.contains("/etc/subgid"), "{without_gid_range}");
         // Each range is checked against its own accounts.
         let onto_docker = refusal(cell_ids(
             1000,

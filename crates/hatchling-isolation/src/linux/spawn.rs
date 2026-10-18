@@ -859,9 +859,10 @@ fn child_main(
     // socket to it). Its maps are in, and the helpers left `setgroups`
     // allowed: it drops them all now, and checks that none is left.
     if spec.identity.mapping == Mapping::Subordinate {
-        if let Err(reason) =
-            shed_groups(hatchling_sys::clear_groups, hatchling_sys::supplementary_groups)
-        {
+        if let Err(reason) = shed_groups(
+            hatchling_sys::clear_groups,
+            hatchling_sys::supplementary_groups,
+        ) {
             fail(&mut child_to_parent, reason);
         }
     }
@@ -2460,7 +2461,9 @@ pub(super) mod tests {
             let refused = the_owners(&other, Ok(owners)).unwrap_err();
             assert!(
                 matches!(&refused, Error::Identity(_))
-                    && refused.to_string().contains("but the owner's are uid 100000"),
+                    && refused
+                        .to_string()
+                        .contains("but the owner's are uid 100000"),
                 "{refused}"
             );
         }
@@ -2580,13 +2583,20 @@ pub(super) mod tests {
             .collect();
         drop(cell);
         assert_eq!(seen.len(), 2, "the pid 1 and the program: {report:?}");
-        assert!(all_settled, "as uid {uid} and gid {gid}, no groups: {report:?}");
+        assert!(
+            all_settled,
+            "as uid {uid} and gid {gid}, no groups: {report:?}"
+        );
         assert_eq!(
             maps,
-            [format!("0 {uid} 1"), format!("0 {gid} 1"), String::from("allow")]
+            [
+                format!("0 {uid} 1"),
+                format!("0 {gid} 1"),
+                String::from("allow")
+            ]
         );
         // A spec carrying other ids is refused before anything starts.
-        let mut forged = spec.clone();
+        let mut forged = spec;
         forged.identity.principal += 1;
         let refused = isolate(&forged).map(drop).unwrap_err();
         assert!(matches!(refused, Error::Identity(_)), "{refused}");
