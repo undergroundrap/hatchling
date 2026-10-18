@@ -380,14 +380,10 @@ mod tests {
         } else {
             "isn't owned by root"
         }));
-        // A regular file of root's that isn't setuid: only the setuid
-        // check refuses it.
-        let env = Path::new("/usr/bin/env");
-        if std::fs::symlink_metadata(env)
-            .is_ok_and(|meta| meta.file_type().is_file() && meta.uid() == 0)
-        {
-            assert!(reason(env).contains("isn't setuid"), "{}", reason(env));
-        }
+        // A regular file of root's that isn't setuid (on every Linux):
+        // only the setuid check refuses it.
+        let passwd = Path::new("/etc/passwd");
+        assert!(reason(passwd).contains("isn't setuid"), "{}", reason(passwd));
         std::os::unix::fs::symlink("/bin/sh", dir.join("link")).unwrap();
         // Both helpers are checked: one bad one refuses the pair.
         assert!(Helpers::at(&mine, &mine).is_err());
