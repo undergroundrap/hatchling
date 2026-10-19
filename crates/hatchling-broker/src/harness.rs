@@ -616,6 +616,10 @@ impl Harnesses {
     }
 
     /// One run: the brief, the slice, the cell, the changes.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one run's steps, in the order they happen: the brief, the slice, the cell and its trees, the run, the changes"
+    )]
     fn run(
         &self,
         kind: HarnessKind,
@@ -1315,7 +1319,12 @@ fn harness_cell(
 /// # Errors
 ///
 /// Why they couldn't be moved.
-fn trees(runtime: &SkillRuntime, cell: &CellConfig, dirs: &RunDirs, op: TreeOp) -> Result<(), String> {
+fn trees(
+    runtime: &SkillRuntime,
+    cell: &CellConfig,
+    dirs: &RunDirs,
+    op: TreeOp,
+) -> Result<(), String> {
     match (cell.ids, op) {
         (CellIds::Own, TreeOp::Give) => hand_over(dirs, cell.uid_base),
         (CellIds::Own, TreeOp::Reclaim) => Ok(()),
