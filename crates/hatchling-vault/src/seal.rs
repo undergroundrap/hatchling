@@ -2843,7 +2843,11 @@ mod tests {
         for entry in std::fs::read_dir(&*dir).unwrap() {
             let is_key = is_key_file(&entry);
             let file = entry.unwrap().file_name();
-            assert_eq!(is_key, file == STORE_KEY_FILE || file == STORE_KEY_NEXT, "{file:?}");
+            assert_eq!(
+                is_key,
+                file == STORE_KEY_FILE || file == STORE_KEY_NEXT,
+                "{file:?}"
+            );
             seen += usize::from(is_key);
         }
         assert_eq!(seen, 2);
