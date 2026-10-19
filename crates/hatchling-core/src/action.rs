@@ -251,18 +251,22 @@ mod tests {
             json!({"extra": true}),
         ];
         for change in changes {
-            let mut changed = action.clone();
-            if let (Some(target), Some(fields)) = (changed.as_object_mut(), change.as_object()) {
+            let mut altered = action.clone();
+            if let (Some(target), Some(fields)) = (altered.as_object_mut(), change.as_object()) {
                 for (key, value) in fields {
                     target.insert(key.clone(), value.clone());
                 }
             }
-            assert_ne!(digest(&changed).unwrap(), base, "{change}");
+            assert_ne!(digest(&altered).unwrap(), base, "{change}");
         }
-        // The domain tag is hashed: a bare SHA-256 of the form differs.
-        let bare = Sha256::digest(canonical(&action).unwrap().as_bytes());
-        let bare: String = bare.iter().map(|byte| format!("{byte:02x}")).collect();
-        assert_ne!(bare, base);
+        // The domain tag is hashed: a SHA-256 of the form alone differs.
+        let untagged = Sha256::digest(canonical(&action).unwrap().as_bytes())
+            .iter()
+            .fold(String::new(), |mut hex, byte| {
+                let _ = write!(hex, "{byte:02x}");
+                hex
+            });
+        assert_ne!(untagged, base);
         assert!(digest(&json!({ "a": null })).is_err());
     }
 }

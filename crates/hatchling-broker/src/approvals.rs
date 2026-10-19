@@ -197,7 +197,73 @@ impl<A: Clone> Approvals<A> {
     pub fn propose(&self, proposal: Proposal<A>, now: i64) -> Result<Requested, Refusal> {
         let digest = action::digest(&proposal.action)?;
         let fingerprint = action::digest(&proposal.fingerprint)?;
-        let mut ledger = self.ledger();
+        self.ledger().propose(proposal, digest, fingerprint, now)
+    }
+
+    /// The owner's `decision` on request `id`, at the `revision` and with
+    /// the action `digest` they were shown, at `now`.
+    ///
+    /// # Errors
+    ///
+    /// [`DecisionRejection`], and nothing changes: no such request, a
+    /// revision or digest other than the request's, a request that lapsed,
+    /// or one already decided (the earlier decision stands).
+    pub fn decide(
+        &self,
+        id: &str,
+        revision: u64,
+        digest: &str,
+        decision: Decision,
+        now: i64,
+    ) -> Result<State, DecisionRejection> {
+        self.ledger().decide(id, revision, digest, decision, now)
+    }
+
+    /// Claims approved request `id` for its one run: the action to run,
+    /// and the claim that records how it went. `None` unless it is
+    /// approved and unclaimed, so a second claim gets nothing.
+    #[must_use]
+    pub fn claim(&self, id: &str) -> Option<(A, Claim<'_, A>)> {
+        let run = self.ledger().start(id)?;
+        Some((
+            run,
+            Claim {
+                approvals: self,
+                id: id.to_owned(),
+                done: false,
+            },
+        ))
+    }
+
+    /// Takes back request `id` while it waits or is approved and unclaimed:
+    /// what it would act on changed. Whether it was taken back.
+    pub fn withdraw(&self, id: &str) -> bool {
+        self.ledger().withdraw(id)
+    }
+
+    /// Request `id`, as it stands.
+    #[must_use]
+    pub fn get(&self, id: &str) -> Option<Request<A>> {
+        self.ledger().requests.get(id).cloned()
+    }
+
+    /// Records the end of request `id`'s run.
+    fn finish(&self, id: &str, end: State) {
+        self.ledger().finish(id, end);
+    }
+}
+
+impl<A: Clone> Ledger<A> {
+    /// [`Approvals::propose`], with the action's and the fingerprint's
+    /// digests.
+    fn propose(
+        &mut self,
+        proposal: Proposal<A>,
+        digest: String,
+        fingerprint: String,
+        now: i64,
+    ) -> Result<Requested, Refusal> {
+        let ledger = self;
         ledger.expire(now);
         if ledger.denied.contains(&fingerprint) {
             return Err(Refusal::Denied);
@@ -253,29 +319,28 @@ impl<A: Clone> Approvals<A> {
         })
     }
 
-    /// The owner's `decision` on request `id`, at the `revision` and with
-    /// the action `digest` they were shown, at `now`.
-    ///
-    /// # Errors
-    ///
-    /// [`DecisionRejection`], and nothing changes: no such request, a
-    /// revision or digest other than the request's, a request that lapsed,
-    /// or one already decided (the earlier decision stands).
-    pub fn decide(
-        &self,
+    /// [`Approvals::decide`].
+    fn decide(
+        &mut self,
         id: &str,
         revision: u64,
         digest: &str,
         decision: Decision,
         now: i64,
     ) -> Result<State, DecisionRejection> {
-        let mut ledger = self.ledger();
+        let ledger = self;
         ledger.expire(now);
         let request = ledger.requests.get_mut(id).ok_or(DecisionRejection::Unknown)?;
         match request.state {
             State::Pending => {}
             State::Expired => return Err(DecisionRejection::Expired),
-            _ => return Err(DecisionRejection::AlreadyDecided),
+            State::Approved
+            | State::Started
+            | State::Succeeded
+            | State::Failed
+            | State::OutcomeUnknown
+            | State::Denied
+            | State::Withdrawn => return Err(DecisionRejection::AlreadyDecided),
         }
         if request.revision != revision || request.digest != digest {
             return Err(DecisionRejection::StaleRevision);
@@ -294,60 +359,39 @@ impl<A: Clone> Approvals<A> {
         Ok(decided)
     }
 
-    /// Claims approved request `id` for its one run: the action to run,
-    /// and the claim that records how it went. `None` unless it is
-    /// approved and unclaimed, so a second claim gets nothing.
-    #[must_use]
-    pub fn claim(&self, id: &str) -> Option<(A, Claim<'_, A>)> {
-        let mut ledger = self.ledger();
-        let request = ledger.requests.get_mut(id)?;
+    /// Moves approved request `id` to started: its action, if it was
+    /// approved and unclaimed.
+    fn start(&mut self, id: &str) -> Option<A> {
+        let request = self.requests.get_mut(id)?;
         if request.state != State::Approved {
             return None;
         }
         request.state = State::Started;
-        Some((
-            request.run.clone(),
-            Claim {
-                approvals: self,
-                id: id.to_owned(),
-                done: false,
-            },
-        ))
+        Some(request.run.clone())
     }
 
-    /// Takes back request `id` while it waits or is approved and unclaimed:
-    /// what it would act on changed. Whether it was taken back.
-    pub fn withdraw(&self, id: &str) -> bool {
-        let mut ledger = self.ledger();
-        let Some(request) = ledger.requests.get_mut(id) else {
+    /// Moves started request `id` to `end`.
+    fn finish(&mut self, id: &str, end: State) {
+        if let Some(request) = self.requests.get_mut(id) {
+            if request.state == State::Started {
+                request.state = end;
+            }
+        }
+    }
+
+    /// [`Approvals::withdraw`].
+    fn withdraw(&mut self, id: &str) -> bool {
+        let Some(request) = self.requests.get_mut(id) else {
             return false;
         };
         if !matches!(request.state, State::Pending | State::Approved) {
             return false;
         }
         request.state = State::Withdrawn;
-        ledger.keep_decided(id);
+        self.keep_decided(id);
         true
     }
 
-    /// Request `id`, as it stands.
-    #[must_use]
-    pub fn get(&self, id: &str) -> Option<Request<A>> {
-        self.ledger().requests.get(id).cloned()
-    }
-
-    /// Records the end of request `id`'s run.
-    fn finish(&self, id: &str, end: State) {
-        let mut ledger = self.ledger();
-        if let Some(request) = ledger.requests.get_mut(id) {
-            if request.state == State::Started {
-                request.state = end;
-            }
-        }
-    }
-}
-
-impl<A> Ledger<A> {
     /// Lapses every pending request past its time.
     fn expire(&mut self, now: i64) {
         let lapsed: Vec<String> = self
@@ -476,6 +520,10 @@ mod tests {
 
     /// Two approvals racing, and two workers racing: one decision, one run.
     #[test]
+    #[expect(
+        clippy::needless_collect,
+        reason = "both threads start before either is joined: that is the race"
+    )]
     fn two_approvals_and_two_workers_give_one_run() {
         let ledger = std::sync::Arc::new(Approvals::new());
         let requested = ledger.propose(proposal("one", "t1"), 0).unwrap();
