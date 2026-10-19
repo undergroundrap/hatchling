@@ -915,6 +915,29 @@ mod tests {
         assert_eq!(budget.used, 4, "the root, then dir, its file and setgid");
     }
 
+    /// The identity guard on its own, whatever the name check does: a
+    /// directory the walk is already in (or above) is never entered again.
+    #[test]
+    fn a_directory_above_the_walk_is_never_entered_again() {
+        let scratch = scratch("chown-above");
+        let root = scratch.0.join("root");
+        std::fs::create_dir(root.join("a")).unwrap();
+        let handle = rustix::fs::open(&root, DIR_FLAGS, Mode::empty()).unwrap();
+        let here = look(&handle, c"").unwrap();
+        let below = look(&handle, c"a").unwrap();
+        let (uid, gid) = (crate::process::euid(), crate::process::egid());
+        let refused = chown_entries(
+            &handle,
+            here.mount,
+            uid,
+            gid,
+            &[here.id, below.id],
+            &mut Budget::of(10),
+        )
+        .unwrap_err();
+        assert!(refused.to_string().contains("inside itself"), "{refused}");
+    }
+
     #[test]
     fn a_tree_past_its_budget_is_refused() {
         let mut budget = Budget::of(2);
