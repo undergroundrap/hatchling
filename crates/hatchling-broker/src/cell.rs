@@ -1648,9 +1648,11 @@ mod tests {
         ) {
             (Ok(sub), Ok(owners)) => assert_eq!(sub.identity(), owners),
             (Err(_), Err(_)) => {}
-            (got, owners) => {
-                unreachable!("skill_on and the backend disagree: {got:?} / {owners:?}")
-            }
+            (got, owners) => unreachable!(
+                "skill_on and the backend disagree: config {}, backend {}",
+                got.is_ok(),
+                owners.is_ok()
+            ),
         }
         assert_eq!(CellIds::Own.name(), "own");
         assert_eq!(CellIds::Subordinate.name(), "subordinate");
