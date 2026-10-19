@@ -281,11 +281,11 @@ mod tests {
         }
     }
 
-    fn answering(answer: &str) -> Result<Scripted, String> {
-        Ok(Scripted {
+    fn answering(answer: &str) -> Scripted {
+        Scripted {
             polls: 0,
             outcome: Ok(answer.to_owned()),
-        })
+        }
     }
 
     /// Runs `text` to its end in `chat`: started, then answered.
@@ -328,9 +328,9 @@ mod tests {
     fn a_follow_ups_run_is_given_the_exchange_before_it() {
         let launches = Launches::default();
         launches.outcomes.borrow_mut().extend([
-            answering("1. Tea. 2. Coffee."),
-            answering("Coffee, then."),
-            answering("Done."),
+            Ok(answering("1. Tea. 2. Coffee.")),
+            Ok(answering("Coffee, then.")),
+            Ok(answering("Done.")),
         ]);
         let answers = Answers::default();
         let mut chat = Chat::new(vec![send_local()]);
@@ -367,10 +367,10 @@ mod tests {
                 outcome: Err(String::from("the run exited 1")),
             }),
             Err(String::from("cannot spawn")),
-            answering("the key is hunter2"),
-            answering("kept"),
-            answering("lost"),
-            answering("next"),
+            Ok(answering("the key is hunter2")),
+            Ok(answering("kept")),
+            Ok(answering("lost")),
+            Ok(answering("next")),
         ]);
         let answers = Answers::default();
         let mut chat = Chat::new(vec![send_local()]);
@@ -417,7 +417,7 @@ mod tests {
         launches
             .outcomes
             .borrow_mut()
-            .extend((0..count).map(|n| answering(&format!("a{n}"))));
+            .extend((0..count).map(|n| Ok(answering(&format!("a{n}")))));
         let answers = Answers::default();
         let mut chat = Chat::new(vec![send_local()]);
         for n in 0..count {
