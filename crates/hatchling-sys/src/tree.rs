@@ -280,17 +280,27 @@ fn chown_tree_within(path: &Path, uid: u32, gid: u32, mut budget: Budget) -> Res
     let root = rustix::fs::open(path, PATH_FLAGS | OFlags::DIRECTORY, Mode::empty())
         .map_err(changing("open the tree"))?;
     let top = look(&root, c"").map_err(changing("look at the tree"))?;
-    // Its parent is "above" it from the start, as for `remove_tree`: a
-    // `..` the name check let through is refused by its identity too, so
-    // the walk can't climb out of the tree even if one check fails.
-    let parent = rustix::fs::openat(&root, c"..", PATH_FLAGS | OFlags::DIRECTORY, Mode::empty())
-        .map_err(changing("open the tree's parent"))?;
-    let base = look(&parent, c"").map_err(changing("look at the tree's parent"))?;
+    let above = start_above(&root, top)?;
     change_dir(&root, top, uid, gid, &mut budget)?;
     let readable = rustix::fs::openat(&root, c".", DIR_FLAGS, Mode::empty())
         .map_err(changing("open the tree"))?;
-    chown_entries(&readable, top.mount, uid, gid, &[base.id, top.id], &mut budget)?;
+    chown_entries(&readable, top.mount, uid, gid, &above, &mut budget)?;
     Ok(budget.used)
+}
+
+/// What a walk from `root` (which was `top`) starts "above": the root's
+/// parent and the root, as for `remove_tree`. A `..` the name check let
+/// through is then refused by its identity too, so the walk can't climb
+/// out of the tree even if one check fails.
+///
+/// # Errors
+///
+/// [`Error::Ownership`] if the parent can't be looked at.
+fn start_above(root: &OwnedFd, top: Look) -> Result<Vec<DirId>, Error> {
+    let parent = rustix::fs::openat(root, c"..", PATH_FLAGS | OFlags::DIRECTORY, Mode::empty())
+        .map_err(changing("open the tree's parent"))?;
+    let base = look(&parent, c"").map_err(changing("look at the tree's parent"))?;
+    Ok(vec![base.id, top.id])
 }
 
 /// Sets the mode of the file open at `handle`, an `O_PATH` handle
@@ -913,6 +923,18 @@ mod tests {
         assert_eq!(mode(&root.join("setgid")), 0o644, "set-id bits gone");
         chown_entries(&handle, seen.mount, uid, gid, &[seen.id], &mut budget).unwrap();
         assert_eq!(budget.used, 4, "the root, then dir, its file and setgid");
+    }
+
+    #[test]
+    fn a_walk_starts_above_its_root_and_the_roots_parent() {
+        let scratch = scratch("chown-start");
+        let root = scratch.0.join("root");
+        let handle = rustix::fs::open(&root, DIR_FLAGS, Mode::empty()).unwrap();
+        let top = look(&handle, c"").unwrap();
+        assert_eq!(
+            start_above(&handle, top).unwrap(),
+            [DirId::of(&scratch.0).unwrap(), DirId::of(&root).unwrap()]
+        );
     }
 
     /// The identity guard on its own, whatever the name check does: a
