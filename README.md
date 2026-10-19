@@ -202,7 +202,7 @@ export HATCHLING_CELL_IDS=subordinate
 export HATCHLING_AGENT_UID=100000
 ```
 
-Every cell then runs as that first id (and the first of your gid range), mapped by `newuidmap` and `newgidmap` from the `uidmap` package, with none of your supplementary groups. The broker refuses a range that holds root, your uid or any account's id, and map helpers that aren't root's setuid programs. Two things are still to come in [WO-014](docs/workorders/workorder-014-running-without-root.md): harness cells (a coding CLI's work tree is handed over by `chown`, which needs root, so a harness refuses to start this way), and a tested quickstart, including the AppArmor profile Ubuntu needs for a program that creates user namespaces.
+Every cell then runs as that first id (and the first of your gid range), mapped by `newuidmap` and `newgidmap` from the `uidmap` package, with none of your supplementary groups. All cells share that one id, as a root broker's cells share theirs. Their namespaces keep them apart (none can signal, trace or reach another), but the kernel counts some quotas per host uid: pipe buffers, for one, so a cell that fills its pipes can leave the others' new pipes at their minimum size. The broker refuses a range that holds root, your uid or any account's id, and map helpers that aren't root's setuid programs. Two things are still to come in [WO-014](docs/workorders/workorder-014-running-without-root.md): harness cells (a coding CLI's work tree is handed over by `chown`, which needs root, so a harness refuses to start this way), and a tested quickstart, including the AppArmor profile Ubuntu needs for a program that creates user namespaces.
 
 ### Cell limits
 
