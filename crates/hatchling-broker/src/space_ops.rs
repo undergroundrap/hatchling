@@ -1022,6 +1022,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// The broker's device key is made once, sealed, and the same key on
+    /// every later read; a corrupt seed is refused, never used.
+    #[test]
+    fn the_broker_key_is_made_once_and_read_back_the_same() {
+        let root = std::env::temp_dir().join(format!(
+            "hatchling-test-spaces-broker-key-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let key = MasterKey::generate().unwrap();
+        let store = SealedSpaceStore::new(&root, &key);
+        let first = store.broker_key().unwrap().verifying_key();
+        let again = SealedSpaceStore::new(&root, &key)
+            .broker_key()
+            .unwrap()
+            .verifying_key();
+        let name = entry_secret_name(BROKER_DEVICE_KEY).unwrap();
+        let sealed = store.vault().unwrap().fetch(&name).unwrap();
+        assert_eq!(sealed.as_bytes().len(), 32);
+        store
+            .vault()
+            .unwrap()
+            .store(&name, &Secret::new(vec![7; 31]).unwrap())
+            .unwrap();
+        let corrupt = store.broker_key();
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(first, again);
+        assert!(matches!(corrupt, Err(Error::SpaceStore { .. })));
+    }
+
     #[test]
     fn the_store_seals_under_its_own_label() {
         let root = std::env::temp_dir().join(format!(
