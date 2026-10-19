@@ -263,7 +263,12 @@ fn confirmation(proposal: &ActivationProposal, requested: &Requested) -> Confirm
 /// The worker: forever, runs each approval the owner gives on `config`'s
 /// board, with the broker's `key` and `skills`, and tells the owner on
 /// `hub` how it went.
-pub fn work_forever(config: &Config, key: &MasterKey, skills: &Skills, hub: Option<&LocalHub>) -> ! {
+pub fn work_forever(
+    config: &Config,
+    key: &MasterKey,
+    skills: &Skills,
+    hub: Option<&LocalHub>,
+) -> ! {
     loop {
         let _ = run_next(config, key, skills, hub, WORKER_WAIT);
     }
@@ -281,7 +286,15 @@ pub fn run_next(
 ) -> Option<String> {
     let board = board(config);
     let id = board.next_approved(wait)?;
-    let told = run_approved(&board, &id, config, key, skills, hub, Timestamp::now().as_second());
+    let told = run_approved(
+        &board,
+        &id,
+        config,
+        key,
+        skills,
+        hub,
+        Timestamp::now().as_second(),
+    );
     tell_owner(hub, &told);
     Some(told)
 }
@@ -423,7 +436,10 @@ mod tests {
         let requested = board.propose_activation(&asked, "task-1", 100).unwrap();
         assert!(requested.new);
         let again = board.propose_activation(&asked, "task-1", 101).unwrap();
-        assert!(!again.new && again.id == requested.id, "an identical one waits");
+        assert!(
+            !again.new && again.id == requested.id,
+            "an identical one waits"
+        );
         let shown = confirmations(&bus);
         assert_eq!(shown.len(), 1, "asked once");
         let request = shown.first().unwrap();
@@ -454,11 +470,15 @@ mod tests {
             "the agent's words, whole, and only in the agent's field"
         );
         assert!(!request.summary.contains("approve"));
-        let expires = Timestamp::from_second(requested.expires_at).unwrap().to_string();
+        let expires = Timestamp::from_second(requested.expires_at)
+            .unwrap()
+            .to_string();
         assert_eq!(request.expires_at.as_deref(), Some(expires.as_str()));
         // The digest binds the whole record: another description is another
         // action.
-        let other = board.propose_activation(&proposal("act-1", "other"), "task-2", 102).unwrap();
+        let other = board
+            .propose_activation(&proposal("act-1", "other"), "task-2", 102)
+            .unwrap();
         assert_ne!(other.digest, requested.digest);
     }
 
@@ -469,13 +489,21 @@ mod tests {
         let board = empty();
         let bus = Arc::new(Bus::starting_at(1));
         board.attach(Arc::clone(&bus));
-        let approved = board.propose_activation(&proposal("act-1", "a"), "t1", 100).unwrap();
-        let denied = board.propose_activation(&proposal("act-2", "b"), "t2", 100).unwrap();
+        let approved = board
+            .propose_activation(&proposal("act-1", "a"), "t1", 100)
+            .unwrap();
+        let denied = board
+            .propose_activation(&proposal("act-2", "b"), "t2", 100)
+            .unwrap();
         assert_eq!(
             board.decide(&approved.id, 1, "00", Decision::Approve, 101),
             Err(DecisionRejection::StaleRevision)
         );
-        assert_eq!(board.next_approved(Duration::ZERO), None, "nothing approved yet");
+        assert_eq!(
+            board.next_approved(Duration::ZERO),
+            None,
+            "nothing approved yet"
+        );
         assert_eq!(
             board.decide(&approved.id, 1, &approved.digest, Decision::Approve, 101),
             Ok(State::Approved)
@@ -484,8 +512,15 @@ mod tests {
             board.decide(&denied.id, 1, &denied.digest, Decision::Deny, 101),
             Ok(State::Denied)
         );
-        assert_eq!(board.next_approved(Duration::ZERO), Some(approved.id.clone()));
-        assert_eq!(board.next_approved(Duration::ZERO), None, "a denial isn't queued");
+        assert_eq!(
+            board.next_approved(Duration::ZERO),
+            Some(approved.id.clone())
+        );
+        assert_eq!(
+            board.next_approved(Duration::ZERO),
+            None,
+            "a denial isn't queued"
+        );
         let decided: Vec<(String, Decision)> = bus
             .after(None)
             .into_iter()
@@ -504,16 +539,24 @@ mod tests {
             .collect();
         assert_eq!(
             decided,
-            [(approved.id.clone(), Decision::Approve), (denied.id, Decision::Deny)]
+            [
+                (approved.id.clone(), Decision::Approve),
+                (denied.id, Decision::Deny)
+            ]
         );
-        assert_eq!(board.approvals().get(&approved.id).map(|r| r.state), Some(State::Approved));
+        assert_eq!(
+            board.approvals().get(&approved.id).map(|r| r.state),
+            Some(State::Approved)
+        );
     }
 
     /// The worker waits for an approval, and wakes when one comes.
     #[test]
     fn the_worker_wakes_when_an_approval_comes() {
         let board = Arc::new(empty());
-        let requested = board.propose_activation(&proposal("act-1", "a"), "t1", 100).unwrap();
+        let requested = board
+            .propose_activation(&proposal("act-1", "a"), "t1", 100)
+            .unwrap();
         let waiting = {
             let board = Arc::clone(&board);
             std::thread::spawn(move || board.next_approved(Duration::from_secs(10)))
@@ -535,7 +578,9 @@ mod tests {
             revision: 1,
             decision: Decision::Deny,
         });
-        let requested = board.propose_activation(&proposal("act-1", "a"), "t1", 100).unwrap();
+        let requested = board
+            .propose_activation(&proposal("act-1", "a"), "t1", 100)
+            .unwrap();
         assert_eq!(
             board.approvals().get(&requested.id).map(|r| r.state),
             Some(State::Pending)

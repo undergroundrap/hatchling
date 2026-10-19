@@ -1533,7 +1533,10 @@ fn the_owners_approval_in_the_app_builds_exactly_what_was_proposed() {
             .any(|field| field.label == "Request hash" && field.value == proposal.request_hash)
     );
     assert_eq!(
-        request.fields.last().map(|field| (field.value.as_str(), field.source)),
+        request
+            .fields
+            .last()
+            .map(|field| (field.value.as_str(), field.source)),
         Some(("a zine", FieldSource::Agent))
     );
     // A session can't approve: the request's id is no confirmation, and the
@@ -1575,9 +1578,15 @@ fn the_owners_approval_in_the_app_builds_exactly_what_was_proposed() {
         Duration::from_secs(5),
     )
     .unwrap();
-    assert!(told.starts_with(&format!("Approved: build idea {idea}. Built art-")), "{told}");
+    assert!(
+        told.starts_with(&format!("Approved: build idea {idea}. Built art-")),
+        "{told}"
+    );
     assert_eq!(
-        board.approvals().get(&request.confirmation_id).map(|r| r.state),
+        board
+            .approvals()
+            .get(&request.confirmation_id)
+            .map(|r| r.state),
         Some(State::Succeeded)
     );
     // Built exactly as proposed, and once.
@@ -1648,7 +1657,10 @@ fn an_approval_for_an_idea_that_changed_builds_nothing() {
     .unwrap();
     assert!(told.contains("It was not built"), "{told}");
     assert_eq!(
-        board.approvals().get(&request.confirmation_id).map(|r| r.state),
+        board
+            .approvals()
+            .get(&request.confirmation_id)
+            .map(|r| r.state),
         Some(State::Failed)
     );
     assert_eq!(
