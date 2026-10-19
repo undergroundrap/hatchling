@@ -33,7 +33,7 @@ pub use error::Error;
 pub use framing::{MAX_FRAME_BYTES, PROTOCOL_VERSION, fits_one_frame};
 pub use log_level::LogLevel;
 pub use messages::{
-    ActivationInput, ActivationProposal, AgentMessage, ArtifactInput, ArtifactInspection,
+    ActivationInput, ActivationProposal, AgentMessage, ApprovalRefusal, ArtifactInput, ArtifactInspection,
     ArtifactOp, ArtifactResult, ArtifactView, BrokerMessage, BuildFailure, BuildState,
     ChannelAccount, ChannelOp, ChannelResult, ConflictEntry, DeliveryRefusal, DeliveryTarget,
     DeviceChallenge, DeviceHello, DeviceRefusal, DeviceWelcome, EGRESS_PART_BYTES, EgressOp,

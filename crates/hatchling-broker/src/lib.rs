@@ -25,6 +25,7 @@ pub use api_auth::{ApiConfig, Caller, PeerProvider, Provider};
 pub mod api_ops;
 pub mod api_stream;
 pub mod approval;
+pub mod approval_board;
 pub mod approvals;
 pub mod artifact_ops;
 pub use artifact_ops::{SealedArtifactStore, handle_artifact_op, held_secrets, is_workspace_name};

@@ -212,6 +212,7 @@ fn built(result: &ArtifactResult) -> String {
         | ArtifactResult::IdeaSaved { .. }
         | ArtifactResult::Ideas { .. }
         | ArtifactResult::ActivationProposed { .. }
+        | ArtifactResult::ApprovalRefused { .. }
         | ArtifactResult::IdeaRefused { .. }
         | ArtifactResult::Denied
         | ArtifactResult::ArtifactError) => format!("not built: {other:?}"),

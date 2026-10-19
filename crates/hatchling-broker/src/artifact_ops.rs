@@ -53,7 +53,8 @@ use hatchling_artifact::{
 };
 use hatchling_channel::{ChannelId, LocalHub, Message, SenderId};
 use hatchling_core::{
-    ArtifactInput, ArtifactOp, ArtifactResult, ArtifactView, BuildFailure, BuildState,
+    ActivationProposal, ApprovalRefusal, ArtifactInput, ArtifactOp, ArtifactResult, ArtifactView,
+    BuildFailure, BuildState,
     CapabilityName, DeliveryRefusal, DeliveryTarget, IdeaRef, IdeaRefusal, IdeaSource,
     MAX_SECRET_BYTES, SecretName,
 };
@@ -63,6 +64,7 @@ use hatchling_skill::SkillId;
 use hatchling_vault::{MasterKey, SealedVault, Secret};
 use zeroize::Zeroizing;
 
+use crate::approvals::Refusal;
 use crate::skills::SkillSet;
 use crate::{Config, Error, SkillDenial, Skills, check_skill_call};
 
@@ -863,7 +865,34 @@ impl Pipeline<'_> {
             Ok(proposal) => proposal,
             Err(reason) => return ArtifactResult::IdeaRefused { reason },
         };
-        self.save_idea(&idea, ArtifactResult::ActivationProposed { proposal })
+        let saved = self.save_idea(&idea, ArtifactResult::ActivationProposed { proposal });
+        let ArtifactResult::ActivationProposed { proposal } = saved else {
+            return saved;
+        };
+        self.ask_owner(proposal)
+    }
+
+    /// Puts the pinned `proposal` to the owner (WO-027): the proposal, or
+    /// why the owner wasn't asked.
+    fn ask_owner(&self, proposal: ActivationProposal) -> ArtifactResult {
+        let refused = |reason| ArtifactResult::ApprovalRefused {
+            proposal: proposal.clone(),
+            reason,
+        };
+        match crate::approval_board::board(self.config).propose_activation(
+            &proposal,
+            &self.scope,
+            self.now,
+        ) {
+            Ok(_) => ArtifactResult::ActivationProposed { proposal },
+            Err(Refusal::Denied) => refused(ApprovalRefusal::Denied),
+            Err(Refusal::Paused) => refused(ApprovalRefusal::Paused),
+            Err(Refusal::QueueFull) => refused(ApprovalRefusal::QueueFull),
+            Err(error @ (Refusal::Unfrozen(_) | Refusal::Entropy)) => {
+                tracing::error!(%error, "an activation could not be put to the owner");
+                refused(ApprovalRefusal::Unavailable)
+            }
+        }
     }
 
     /// Activates `activation` with `confirmation`: spends it, and builds
@@ -917,6 +946,35 @@ impl Pipeline<'_> {
         }
         result
     }
+}
+
+/// Activates `activation` with `confirmation`, which the broker minted
+/// when the owner approved it (WO-027): the broker's own run of the stored
+/// action, never a session's. The outcome is delivered, as a session's
+/// would be, in the broker's scheduler scope.
+#[must_use]
+pub(crate) fn activate_confirmed(
+    config: &Config,
+    key: &MasterKey,
+    skills: &Skills,
+    hub: Option<&LocalHub>,
+    activation: &str,
+    confirmation: &str,
+    now: i64,
+) -> ArtifactResult {
+    if !config.artifacts.enabled() {
+        return ArtifactResult::Denied;
+    }
+    Pipeline {
+        config,
+        key,
+        skills,
+        hub,
+        scope: String::from(crate::output_gate::SCHEDULER_SCOPE),
+        store: SealedArtifactStore::new(&config.artifacts.root, key),
+        now,
+    }
+    .activate(activation, confirmation)
 }
 
 /// The local channel's ingress client, as a delivery target, through the

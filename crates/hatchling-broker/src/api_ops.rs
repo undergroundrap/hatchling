@@ -190,14 +190,61 @@ impl<'a> Ops<'a> {
                     ApiOutcome::Served,
                 )
             }
-            UiAction::Decide { .. }
-            | UiAction::OpenArtifact { .. }
+            UiAction::Decide {
+                confirmation_id,
+                revision,
+                digest,
+                decision,
+            } => {
+                // Only the owner decides (WO-027): a caller holding less
+                // than every grant the owner holds can't.
+                if !caller.holds(&owner) {
+                    return refused(ActionRefusal::NotGranted);
+                }
+                self.decide(confirmation_id, *revision, digest, *decision)
+            }
+            UiAction::OpenArtifact { .. }
             | UiAction::ShareArtifact { .. }
             | UiAction::AttachArtifact { .. }
             | UiAction::SaveFile { .. }
             | UiAction::TakeControl { .. }
             | UiAction::ReturnControl { .. }
             | UiAction::StopBrowser { .. } => refused(ActionRefusal::Unavailable),
+        }
+    }
+
+    /// The owner's `decision` on a confirmation, at the `revision` and
+    /// `digest` they saw (WO-027): recorded on the broker's board, which
+    /// queues an approval for its worker and tells the stream.
+    fn decide(
+        &self,
+        confirmation_id: &str,
+        revision: u64,
+        digest: &str,
+        decision: Decision,
+    ) -> (UiActionResult, ApiOutcome) {
+        let board = crate::approval_board::board(self.config);
+        match board.decide(
+            confirmation_id,
+            revision,
+            digest,
+            decision,
+            Timestamp::now().as_second(),
+        ) {
+            Ok(_) => (
+                UiActionResult::Decided {
+                    confirmation_id: confirmation_id.to_owned(),
+                    decision,
+                },
+                ApiOutcome::Served,
+            ),
+            Err(reason) => (
+                UiActionResult::DecisionRejected {
+                    confirmation_id: confirmation_id.to_owned(),
+                    reason,
+                },
+                ApiOutcome::Refused,
+            ),
         }
     }
 
@@ -876,11 +923,6 @@ mod tests {
         );
         let id = || String::from("x");
         for action in [
-            UiAction::Decide {
-                confirmation_id: id(),
-                revision: 1,
-                decision: Decision::Approve,
-            },
             UiAction::OpenArtifact {
                 artifact_id: id(),
                 revision: 1,

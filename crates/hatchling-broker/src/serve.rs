@@ -171,6 +171,12 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
             let hub = ingress.as_ref().map(crate::ingress::Ingress::hub);
             let (key, skills) = (&key, &skills);
             scope.spawn(move || api.serve(config, key, skills, hub));
+            // The worker that runs what the owner approves in the app
+            // (WO-027): approvals come only from the owner's sockets, so
+            // it runs beside them.
+            if config.artifacts.enabled() {
+                scope.spawn(move || crate::approval_board::work_forever(config, key, skills, hub));
+            }
         }
         serve_agents(
             agents,

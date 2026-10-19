@@ -206,6 +206,9 @@ impl Api {
         hub: Option<&LocalHub>,
     ) -> ! {
         let ops = Ops::new(config, key, skills, hub, Arc::clone(&self.bus));
+        // What the owner is asked to approve, and what they decided, go
+        // out on this stream (WO-027).
+        crate::approval_board::board(config).attach(Arc::clone(&self.bus));
         std::thread::scope(|scope| {
             scope.spawn(|| Follower::new(self.log.clone()).follow(&self.bus, FOLLOW_POLL));
             for door in std::iter::once(&self.local).chain(self.ui.as_ref()) {
