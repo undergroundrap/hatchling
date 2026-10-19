@@ -663,7 +663,9 @@ fn upstream_head(
     ]);
     // One allocation at the exact size: the key is written once, into a
     // buffer wiped when dropped, and no buffer it outgrew is left behind.
-    let mut head = Zeroizing::new(Vec::with_capacity(parts.iter().map(|part| part.len()).sum()));
+    let mut head = Zeroizing::new(Vec::with_capacity(
+        parts.iter().map(|part| part.len()).sum(),
+    ));
     for part in parts {
         head.extend_from_slice(part.as_bytes());
     }
