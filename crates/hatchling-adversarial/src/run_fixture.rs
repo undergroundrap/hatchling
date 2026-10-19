@@ -364,7 +364,10 @@ mod tests {
     #[test]
     fn the_history_mode_prints_the_chat_flag_and_history_as_given() {
         let mut out = Vec::new();
-        assert_eq!(format!("{:?}", history(&mut out)), format!("{:?}", ExitCode::SUCCESS));
+        assert_eq!(
+            format!("{:?}", history(&mut out)),
+            format!("{:?}", ExitCode::SUCCESS)
+        );
         let env = |key: &str| std::env::var(key).unwrap_or_default();
         assert_eq!(
             String::from_utf8(out).unwrap(),
@@ -374,7 +377,10 @@ mod tests {
                 env("HATCHLING_RUN_HISTORY")
             )
         );
-        assert_eq!(format!("{:?}", history(&mut Full)), format!("{:?}", ExitCode::from(2)));
+        assert_eq!(
+            format!("{:?}", history(&mut Full)),
+            format!("{:?}", ExitCode::from(2))
+        );
     }
 
     #[test]

@@ -600,13 +600,13 @@ mod tests {
             assistant: String::from("1. Tea. 2. Coffee."),
         }];
         // The broker welcomes the cell, then goes: recall finds nothing.
-        let welcome = std::thread::spawn(move || {
-            read_frame(&broker).map(|_| ())?;
+        let welcome = std::thread::spawn(move || -> Result<(), String> {
+            read_frame(&broker).map_err(|e| e.to_string())?;
             let frame = serde_json::to_vec(&hatchling_core::BrokerMessage::Welcome {
                 v: hatchling_core::PROTOCOL_VERSION,
             })
-            .map_err(std::io::Error::other)?;
-            write_frame(&broker, &frame)
+            .map_err(|e| e.to_string())?;
+            write_frame(&broker, &frame).map_err(|e| e.to_string())
         });
         let cell = Cell::new(config)
             .check_preconditions()
