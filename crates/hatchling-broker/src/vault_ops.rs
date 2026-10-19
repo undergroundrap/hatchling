@@ -51,9 +51,10 @@ pub fn validate_sealed_vault(vault_config: &VaultConfig, key: &MasterKey) -> Res
 
 /// Every sealed store the broker keeps, as configured: its label and root.
 ///
-/// The secrets, artifacts and spaces always; the schedules when
-/// scheduling is on; the raw text of redaction records when there is an
-/// output gate (`redaction`).
+/// The secrets always; the schedules when scheduling is on; the
+/// artifacts and the spaces when each is on (a store that is off has no
+/// root); the raw text of redaction records when there is an output gate
+/// (`redaction`).
 #[must_use]
 pub fn sealed_stores(
     config: &Config,
@@ -63,8 +64,14 @@ pub fn sealed_stores(
     if config.scheduler.enabled() {
         stores.push((Store::SCHEDULES, config.scheduler.root.clone()));
     }
-    stores.push((Store::ARTIFACTS, config.artifacts.root.clone()));
-    stores.push((Store::SPACES, config.spaces.root.clone()));
+    for (store, root) in [
+        (Store::ARTIFACTS, &config.artifacts.root),
+        (Store::SPACES, &config.spaces.root),
+    ] {
+        if !root.as_os_str().is_empty() {
+            stores.push((store, root.clone()));
+        }
+    }
     if let Some(redaction) = redaction {
         stores.push((
             Store::REDACTIONS,
@@ -655,5 +662,24 @@ mod tests {
                 source: hatchling_vault::Error::StoreKeyRefused { store: "spaces" }
             })
         ));
+    }
+
+    /// The stores the broker keeps: the secrets always, the others only
+    /// when they're on.
+    #[test]
+    fn sealed_stores_lists_only_the_stores_that_are_on() {
+        let mut config = crate::api_auth::tests::owner_config(None);
+        let labels = |config: &Config| -> Vec<&'static str> {
+            sealed_stores(config, None)
+                .into_iter()
+                .map(|(store, _)| store.label())
+                .collect()
+        };
+        config.artifacts.root = PathBuf::new();
+        config.spaces.root = PathBuf::new();
+        assert_eq!(labels(&config), ["secrets"]);
+        config.artifacts.root = PathBuf::from("/srv/artifacts");
+        config.spaces.root = PathBuf::from("/srv/spaces");
+        assert_eq!(labels(&config), ["secrets", "artifacts", "spaces"]);
     }
 }

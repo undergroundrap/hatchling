@@ -577,6 +577,16 @@ impl Harnesses {
         self.binaries.is_empty()
     }
 
+    /// The vault secrets holding the keys of the vendors these harnesses
+    /// relay to: the only harness keys the broker may read.
+    #[must_use]
+    pub fn vendor_secret_names(&self) -> std::collections::BTreeSet<String> {
+        self.vendors
+            .keys()
+            .map(|kind| kind.secret_name().to_owned())
+            .collect()
+    }
+
     /// Handles `op` when it names a harness skill; `None` for any other
     /// skill. `runtime` starts the cells; `keys` reads a vendor key.
     #[must_use]

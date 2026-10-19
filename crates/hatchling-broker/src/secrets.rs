@@ -54,6 +54,11 @@ impl<'k> Secrets<'k> {
         purpose: &str,
         names: &[SecretName],
     ) -> Result<Vec<Option<Secret>>, Error> {
+        // A broker that started a keeper asks it: the secrets store's key
+        // is the keeper's alone.
+        if let Some(keeper) = crate::keeper::keeper() {
+            return keeper.read(purpose, names);
+        }
         let read = self.read(names);
         let outcome = match &read {
             Ok(found) if found.iter().any(Option::is_some) || found.is_empty() => Outcome::Allowed,
@@ -115,6 +120,9 @@ pub(crate) fn handle_vault_op(
     cell_id: &CellId,
     uid: u32,
 ) -> Result<VaultResult, Error> {
+    if let Some(keeper) = crate::keeper::keeper() {
+        return keeper.cell_op(op, cell_id, uid);
+    }
     let result = vault_op_result(vault_config, key, op, cell_id)?;
     // Every access is recorded. One that went ahead but cannot be
     // recorded fails closed: no secret leaves unlogged.

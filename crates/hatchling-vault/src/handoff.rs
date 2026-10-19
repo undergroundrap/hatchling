@@ -25,8 +25,9 @@ use crate::seal::{Held, Store, StoreKey, StoreKeys, WRAPPED_STORE_KEY_LEN};
 
 /// The handoff's magic.
 const MAGIC: &[u8; 4] = b"HKH1";
-/// The most stores one handoff carries.
-pub const MAX_HANDED: usize = 16;
+/// The most stores one handoff carries: enough for every store, and few
+/// enough that the longest handoff fits one protocol frame.
+pub const MAX_HANDED: usize = 8;
 /// The longest root a handoff carries, in bytes.
 pub const MAX_ROOT_BYTES: usize = 4096;
 
