@@ -6,6 +6,7 @@ import { h } from '../../components/dom.js';
 import { icon } from '../../components/icons.js';
 import { button, iconButton } from '../../components/ui.js';
 import { avatarSource } from '../context/presence.js';
+import { reviewFields } from './fields.js';
 const labels: Record<ApprovalStatus, string> = { pending: 'Pending approval', 'allowed-once': 'Allowed once', 'allowed-task': 'Allowed for this task', denied: 'Declined', expired: 'Timed out', cancelled: 'Cancelled' };
 const selected = new WeakMap<AppContext, Map<string, string>>();
 export function approvalLabel(status: ApprovalStatus): string { return labels[status]; }
@@ -62,6 +63,8 @@ export function renderTaskApprovalQueue(ctx: AppContext): HTMLElement | null {
     const header = h('header', { class: 'task-approval-heading' }, h('img', { src: avatarSource(ctx), alt: '', width: 28, height: 28 }), h('span', {}, icon('shield', 14), 'Task approval needed'), button('Approvals history', () => openHistory(ctx), { variant: 'link', id: 'open-task-approval-history' }));
     const copy = h('div', { class: 'task-approval-copy' }, h('strong', { id: `approval-title-${request.id}` }, request.title), h('p', {}, request.description));
     const card = h('section', { class: 'task-approval-card', 'data-task-approval': request.id, 'aria-labelledby': `approval-title-${request.id}`, 'aria-busy': feedback?.phase === 'submitting' || feedback?.phase === 'checking' }, header, h('div', { class: 'task-approval-request' }, h('span', { class: 'task-approval-icon' }, icon(glyph(request), 20)), copy));
+    if (request.fields?.length)
+        card.append(reviewFields(request.fields));
     const details = h('details', { class: 'task-approval-details', id: `approval-details-${request.id}` }, h('summary', { id: `approval-scope-${request.id}` }, 'Review scope', icon('chevron', 12)), h('p', { class: 'task-approval-resource' }, request.resource), h('p', {}, request.detail));
     const previousDetails = document.getElementById(details.id);
     details.open = previousDetails instanceof HTMLDetailsElement && previousDetails.open;
@@ -94,7 +97,7 @@ export function taskApprovalRecord(ctx: AppContext, request: TaskApproval): HTML
     const meta = request.status === 'pending' && feedback ? feedback.phase === 'submitting' ? 'Saving decision…' : feedback.phase === 'checking' ? 'Checking status…' : feedback.phase === 'unknown' ? 'Decision not confirmed' : 'Decision not saved' : labels[request.status];
     const details = h('details', { class: 'approval-record task-approval-record', 'data-approval': request.id, 'data-outcome': request.status, id: `approval-record-${request.id}` });
     details.append(h('summary', {}, h('span', { class: 'approval-icon' }, icon(glyph(request), 17)), h('span', { class: 'approval-copy' }, h('strong', {}, request.title), h('span', { class: 'approval-description' }, request.description), h('span', { class: 'approval-meta' }, `${meta} · ${request.time}`)), icon('chevron', 12)));
-    const report = h('div', { class: 'approval-report' }, h('p', { class: 'task-approval-resource' }, request.resource), h('p', {}, request.detail), h('p', {}, request.report));
+    const report = h('div', { class: 'approval-report' }, request.fields?.length ? reviewFields(request.fields) : null, h('p', { class: 'task-approval-resource' }, request.resource), h('p', {}, request.detail), h('p', {}, request.report));
     if (request.status === 'pending')
         report.append(button('Review in chat', () => {
             ctx.navigate('chat', request.chatId);

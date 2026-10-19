@@ -15,6 +15,14 @@
 .task-approval-copy { min-width: 0; flex: 1; }
 .task-approval-copy > strong { display: block; font-weight: 550; overflow-wrap: anywhere; font-size: calc(14px * var(--ui-scale)); }
 .task-approval-copy p { margin: 3px 0 0; color: var(--muted); overflow-wrap: anywhere; }
+/* An approval's fields (WO-027): whole, in review order, the agent's labeled; hidden characters shown. */
+.task-approval-fields { display: grid; gap: var(--space-2); margin: 10px 0 0 48px; min-width: 0; }
+.task-approval-field { display: grid; gap: 2px; min-width: 0; }
+.task-approval-field > dt { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); color: var(--muted); font-size: var(--text-xs); }
+.task-approval-field > dd { margin: 0; min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.task-approval-source { padding: 0 6px; border: 1px solid var(--border-strong); border-radius: var(--radius-pill); color: var(--text); font-size: var(--text-xs); }
+.task-approval-hidden { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--attention); }
+.approval-report .task-approval-fields { margin: 0 0 6px; }
 .task-approval-details { margin: 8px 0 10px 48px; color: var(--muted); font-size: calc(12px * var(--ui-scale)); }
 .task-approval-details > summary { display: flex; align-items: center; gap: 6px; width: fit-content; cursor: pointer; min-height: 28px; list-style: none; }
 .task-approval-details > summary::-webkit-details-marker { display: none; }

@@ -117,6 +117,25 @@ class ApprovalTests(unittest.TestCase):
         expect(self.page.locator('.approvals-panel')).to_contain_text('Allowed for this task')
         expect(self.page.locator('.task-approval-card')).to_contain_text('Run the project setup check')
 
+    def test_05b_fields_are_whole_labeled_and_show_hidden_characters(self):
+        self.scenario('multiple')
+        self.page.locator('#next-task-approval').click()
+        fields = self.page.locator('.task-approval-card .task-approval-fields')
+        expect(fields).to_be_visible()
+        labels = fields.locator('dt > span:first-child').all_inner_texts()
+        self.assertEqual(labels, ['Operation', 'Project', 'Why'])
+        agent = fields.locator('.task-approval-field.agent')
+        expect(agent.locator('.task-approval-source')).to_have_text('From the agent')
+        expect(agent.locator('.task-approval-hidden')).to_have_text('⟨U+202E⟩')
+        value = agent.locator('dd bdi')
+        expect(value).to_have_attribute('dir', 'auto')
+        # The override itself is never in the page: only its code point is.
+        self.assertNotIn('\u202e', value.inner_text())
+        self.assertIn('txt.exe', value.inner_text())
+        expect(self.page.locator('.task-approval-card [id^="approval-once-"]')).to_have_text('Allow once')
+        self.capture('06b-fields-review')
+        self.assert_no_overflow()
+
     def test_06_failed_decision_is_visible_and_retryable(self):
         self.scenario('failed')
         self.page.locator('[id^="approval-once-"]').click()
