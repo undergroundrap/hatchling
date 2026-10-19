@@ -37,7 +37,7 @@ use hatchling_core::CellId;
 use hatchling_core::messages::{ScheduleGrant, ScheduleOp};
 use hatchling_core::subagent::{ActivityEvent, SubagentEvent};
 use hatchling_core::ui::{
-    ActionRefusal, AgentState, ApiOutcome, ApiRequest, ChatAuthor, ChatMessage, UiAction,
+    ActionRefusal, AgentState, ApiOutcome, ApiRequest, ChatAuthor, ChatMessage, Decision, UiAction,
     UiActionResult, UiEventBody,
 };
 use hatchling_scheduler::{Creator, Timestamp};
@@ -190,14 +190,61 @@ impl<'a> Ops<'a> {
                     ApiOutcome::Served,
                 )
             }
-            UiAction::Decide { .. }
-            | UiAction::OpenArtifact { .. }
+            UiAction::Decide {
+                confirmation_id,
+                revision,
+                digest,
+                decision,
+            } => {
+                // Only the owner decides (WO-027): a caller holding less
+                // than every grant the owner holds can't.
+                if !caller.holds(&owner) {
+                    return refused(ActionRefusal::NotGranted);
+                }
+                self.decide(confirmation_id, *revision, digest, *decision)
+            }
+            UiAction::OpenArtifact { .. }
             | UiAction::ShareArtifact { .. }
             | UiAction::AttachArtifact { .. }
             | UiAction::SaveFile { .. }
             | UiAction::TakeControl { .. }
             | UiAction::ReturnControl { .. }
             | UiAction::StopBrowser { .. } => refused(ActionRefusal::Unavailable),
+        }
+    }
+
+    /// The owner's `decision` on a confirmation, at the `revision` and
+    /// `digest` they saw (WO-027): recorded on the broker's board, which
+    /// queues an approval for its worker and tells the stream.
+    fn decide(
+        &self,
+        confirmation_id: &str,
+        revision: u64,
+        digest: &str,
+        decision: Decision,
+    ) -> (UiActionResult, ApiOutcome) {
+        let board = crate::approval_board::board(self.config);
+        match board.decide(
+            confirmation_id,
+            revision,
+            digest,
+            decision,
+            Timestamp::now().as_second(),
+        ) {
+            Ok(_) => (
+                UiActionResult::Decided {
+                    confirmation_id: confirmation_id.to_owned(),
+                    decision,
+                },
+                ApiOutcome::Served,
+            ),
+            Err(reason) => (
+                UiActionResult::DecisionRejected {
+                    confirmation_id: confirmation_id.to_owned(),
+                    reason,
+                },
+                ApiOutcome::Refused,
+            ),
         }
     }
 
@@ -403,7 +450,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
     use hatchling_core::messages::{FeedSpec, ScheduleResult, ScheduleSpec, SkillOp, SkillResult};
-    use hatchling_core::ui::{Decision, FileContent, FileFormat, UiEvent};
+    use hatchling_core::ui::{DecisionRejection, FileContent, FileFormat, UiEvent};
 
     use super::*;
     use crate::api_auth::tests::{owner_config, scratch};
@@ -859,6 +906,46 @@ mod tests {
         );
     }
 
+    /// WO-027: only the owner decides, and a decision on a confirmation
+    /// the broker doesn't have is rejected as unknown.
+    #[test]
+    fn only_the_owner_decides_and_an_unknown_confirmation_is_rejected() {
+        let config = owner_config(Some("/srv/hatchling/schedules"));
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let ops = Ops::new(&config, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        let held: Vec<ScheduleGrant> = ops.owner_grants().into_iter().collect();
+        assert!(held.len() > 1, "{held:?}");
+        let owner = caller(&held);
+        let partial = caller(held.get(..1).unwrap_or_default());
+        let mut replies = Replies::default();
+        let decide = UiAction::Decide {
+            confirmation_id: String::from("approval-none"),
+            revision: 1,
+            digest: String::from("00"),
+            decision: Decision::Approve,
+        };
+        assert_eq!(
+            ops.handle(&partial, &decide, &mut replies),
+            (
+                UiActionResult::Refused {
+                    reason: ActionRefusal::NotGranted
+                },
+                ApiOutcome::Refused
+            )
+        );
+        assert_eq!(
+            ops.handle(&owner, &decide, &mut replies),
+            (
+                UiActionResult::DecisionRejected {
+                    confirmation_id: String::from("approval-none"),
+                    reason: DecisionRejection::Unknown,
+                },
+                ApiOutcome::Refused
+            )
+        );
+    }
+
     #[test]
     fn actions_without_a_backend_are_refused_as_unavailable() {
         let config = owner_config(Some("/srv/hatchling/schedules"));
@@ -876,11 +963,6 @@ mod tests {
         );
         let id = || String::from("x");
         for action in [
-            UiAction::Decide {
-                confirmation_id: id(),
-                revision: 1,
-                decision: Decision::Approve,
-            },
             UiAction::OpenArtifact {
                 artifact_id: id(),
                 revision: 1,

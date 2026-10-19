@@ -59,8 +59,8 @@ export const SAMPLE_EVENTS: readonly UiResponse[] = [
     sampleEvent(10, 11, sampleActivity(11, 'failed', { event: 'subagent_failed', child_id: 'child-c', failure: 'budget_exhausted', detail: 'Stopped at the step limit.', steps_spent: 10 })),
     sampleEvent(11, 12, sampleActivity(12, 'partial', { event: 'subagent_finished', child_id: 'child-d', result_hash: HASH, steps_spent: 30, verdict: 'partial' })),
     sampleEvent(12, 13, { kind: 'chat_message', chat_id: 'main', message_id: 'message-3', author: 'agent', text: HOSTILE_TEXT }),
-    sampleEvent(13, 14, { kind: 'confirmation', confirmation_id: 'confirm-1', revision: 1, chat_id: 'main', summary: 'Post the sample summary to the sample team space?', expires_at: sampleTime(600) }),
-    sampleEvent(14, 15, { kind: 'confirmation', confirmation_id: 'confirm-1', revision: 2, chat_id: 'main', summary: 'Post the shorter sample summary to the sample team space?', expires_at: sampleTime(600) }),
+    sampleEvent(13, 14, { kind: 'confirmation', confirmation_id: 'confirm-1', revision: 1, chat_id: 'main', summary: 'Post the sample summary to the sample team space?', expires_at: sampleTime(600), digest: HASH, fields: [{ label: 'Operation', value: 'Post a summary', source: 'broker' }, { label: 'Text', value: HOSTILE_TEXT, source: 'agent' }] }),
+    sampleEvent(14, 15, { kind: 'confirmation', confirmation_id: 'confirm-1', revision: 2, chat_id: 'main', summary: 'Post the shorter sample summary to the sample team space?', expires_at: sampleTime(600), digest: HASH, fields: [{ label: 'Operation', value: 'Post a summary', source: 'broker' }, { label: 'Text', value: 'The shorter sample summary.', source: 'agent' }] }),
     sampleEvent(15, 16, { kind: 'artifact', state: 'building', build_id: 'build-1', build_kind: 'document' }),
     sampleEvent(16, 17, { kind: 'schedule', outcome: 'fired', schedule_id: 'schedule-1' }),
 ];

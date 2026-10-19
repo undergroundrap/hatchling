@@ -584,6 +584,31 @@
       "description": "A bearer token, presented in `Hello` for a token provider.\n\nOpaque to the protocol. Its `Debug` never shows it, so no log line or\npanic message can carry one.",
       "type": "string"
     },
+    "ApprovalRefusal": {
+      "description": "Why a proposal wasn't put to the owner for approval (WO-027).",
+      "oneOf": [
+        {
+          "const": "denied",
+          "description": "The owner denied this action. Asking again won't change that.",
+          "type": "string"
+        },
+        {
+          "const": "paused",
+          "description": "Approval requests are paused for a while: after a denial, or\npast the hourly limit.",
+          "type": "string"
+        },
+        {
+          "const": "queue_full",
+          "description": "Too many requests are waiting for the owner, or one of this\nsession's is.",
+          "type": "string"
+        },
+        {
+          "const": "unavailable",
+          "description": "The broker couldn't make the request.",
+          "type": "string"
+        }
+      ]
+    },
     "ArtifactBody": {
       "description": "An artifact revision's content, as a surface may show it.",
       "oneOf": [
@@ -1182,6 +1207,29 @@
           "required": [
             "result",
             "proposal"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An activation was pinned, but the owner wasn't asked to approve\nit (WO-027): why. Nothing will build it.",
+          "properties": {
+            "proposal": {
+              "$ref": "#/$defs/ActivationProposal",
+              "description": "What was pinned."
+            },
+            "reason": {
+              "$ref": "#/$defs/ApprovalRefusal",
+              "description": "Why the owner wasn't asked."
+            },
+            "result": {
+              "const": "approval-refused",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "proposal",
+            "reason"
           ],
           "type": "object"
         },
@@ -2252,8 +2300,31 @@
         }
       ]
     },
+    "ConfirmationField": {
+      "description": "One field of what a confirmation asks.",
+      "properties": {
+        "label": {
+          "description": "What the field is, in the broker's words.",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/FieldSource",
+          "description": "Who stated the value."
+        },
+        "value": {
+          "description": "Its value, as plain text, whole: never cut short.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "value",
+        "source"
+      ],
+      "type": "object"
+    },
     "ConfirmationRequest": {
-      "description": "The agent asks the user to approve or deny something.",
+      "description": "The agent asks the user to approve or deny something.\n\nWhat is asked is the broker's record of one frozen action (WO-027): its\ndigest, and its fields in the order the owner reviews them, the broker's\nfirst and the agent's after, each labeled with who stated it.",
       "properties": {
         "chat_id": {
           "description": "The chat it belongs to, if any.",
@@ -2266,12 +2337,23 @@
           "description": "Stable across replays.",
           "type": "string"
         },
+        "digest": {
+          "description": "The digest of the exact action the approval would run. A decision\nnames it.",
+          "type": "string"
+        },
         "expires_at": {
           "description": "When the request lapses, RFC 3339, if it does.",
           "type": [
             "string",
             "null"
           ]
+        },
+        "fields": {
+          "description": "The action's fields, in review order.",
+          "items": {
+            "$ref": "#/$defs/ConfirmationField"
+          },
+          "type": "array"
         },
         "revision": {
           "description": "Bumped when the request changes. A decision names the revision\nit applies to, and a stale one is rejected.",
@@ -2280,14 +2362,16 @@
           "type": "integer"
         },
         "summary": {
-          "description": "What is being asked, as plain text.",
+          "description": "What is being asked, as plain text: the broker's name for the\noperation, never the agent's words.",
           "type": "string"
         }
       },
       "required": [
         "confirmation_id",
         "revision",
-        "summary"
+        "summary",
+        "digest",
+        "fields"
       ],
       "type": "object"
     },
@@ -3101,6 +3185,21 @@
         "max_items"
       ],
       "type": "object"
+    },
+    "FieldSource": {
+      "description": "Who stated a confirmation field's value.",
+      "oneOf": [
+        {
+          "const": "broker",
+          "description": "The broker: it resolved or checked the value itself.",
+          "type": "string"
+        },
+        {
+          "const": "agent",
+          "description": "The agent: words it wrote, which the action will use as they are.",
+          "type": "string"
+        }
+      ]
     },
     "FileContent": {
       "description": "A file the user adds from their device.",
@@ -7128,7 +7227,7 @@
           "type": "object"
         },
         {
-          "description": "Approve or deny a confirmation, at the revision the user saw.",
+          "description": "Approve or deny a confirmation, at the revision and the action\ndigest the user saw.",
           "properties": {
             "action": {
               "const": "decide",
@@ -7142,6 +7241,10 @@
               "$ref": "#/$defs/Decision",
               "description": "The decision."
             },
+            "digest": {
+              "description": "The digest of the action the user saw.",
+              "type": "string"
+            },
             "revision": {
               "description": "The revision the user saw.",
               "format": "uint64",
@@ -7153,6 +7256,7 @@
             "action",
             "confirmation_id",
             "revision",
+            "digest",
             "decision"
           ],
           "type": "object"

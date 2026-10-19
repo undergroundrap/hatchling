@@ -404,6 +404,10 @@ pub enum ScheduleNotice {
 }
 
 /// The agent asks the user to approve or deny something.
+///
+/// What is asked is the broker's record of one frozen action (WO-027): its
+/// digest, and its fields in the order the owner reviews them, the broker's
+/// first and the agent's after, each labeled with who stated it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ConfirmationRequest {
@@ -414,10 +418,39 @@ pub struct ConfirmationRequest {
     pub revision: u64,
     /// The chat it belongs to, if any.
     pub chat_id: Option<String>,
-    /// What is being asked, as plain text.
+    /// What is being asked, as plain text: the broker's name for the
+    /// operation, never the agent's words.
     pub summary: String,
     /// When the request lapses, RFC 3339, if it does.
     pub expires_at: Option<String>,
+    /// The digest of the exact action the approval would run. A decision
+    /// names it.
+    pub digest: String,
+    /// The action's fields, in review order.
+    pub fields: Vec<ConfirmationField>,
+}
+
+/// One field of what a confirmation asks.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ConfirmationField {
+    /// What the field is, in the broker's words.
+    pub label: String,
+    /// Its value, as plain text, whole: never cut short.
+    pub value: String,
+    /// Who stated the value.
+    pub source: FieldSource,
+}
+
+/// Who stated a confirmation field's value.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum FieldSource {
+    /// The broker: it resolved or checked the value itself.
+    Broker,
+    /// The agent: words it wrote, which the action will use as they are.
+    Agent,
 }
 
 /// A user's decision on a confirmation.
@@ -443,12 +476,15 @@ pub enum UiAction {
         /// Plain text.
         text: String,
     },
-    /// Approve or deny a confirmation, at the revision the user saw.
+    /// Approve or deny a confirmation, at the revision and the action
+    /// digest the user saw.
     Decide {
         /// The confirmation.
         confirmation_id: String,
         /// The revision the user saw.
         revision: u64,
+        /// The digest of the action the user saw.
+        digest: String,
         /// The decision.
         decision: Decision,
     },
@@ -1029,9 +1065,22 @@ mod tests {
                     chat_id: Some(String::from("main")),
                     summary: String::from("send the email"),
                     expires_at: None,
+                    digest: String::from("ab12"),
+                    fields: vec![
+                        ConfirmationField {
+                            label: String::from("To"),
+                            value: String::from("pat@example.com"),
+                            source: FieldSource::Broker,
+                        },
+                        ConfirmationField {
+                            label: String::from("Text"),
+                            value: String::from("Hello"),
+                            source: FieldSource::Agent,
+                        },
+                    ],
                 }),
             ),
-            &json!({"seq": 5, "ts": "t", "body": {"kind": "confirmation", "confirmation_id": "k1", "revision": 2, "chat_id": "main", "summary": "send the email", "expires_at": null}}),
+            &json!({"seq": 5, "ts": "t", "body": {"kind": "confirmation", "confirmation_id": "k1", "revision": 2, "chat_id": "main", "summary": "send the email", "expires_at": null, "digest": "ab12", "fields": [{"label": "To", "value": "pat@example.com", "source": "broker"}, {"label": "Text", "value": "Hello", "source": "agent"}]}}),
         );
         pinned(
             &at(
@@ -1054,10 +1103,11 @@ mod tests {
                 action: UiAction::Decide {
                     confirmation_id: String::from("k1"),
                     revision: 2,
+                    digest: String::from("ab12"),
                     decision: Decision::Approve,
                 },
             },
-            &json!({"type": "action", "request_id": "r1", "action": {"action": "decide", "confirmation_id": "k1", "revision": 2, "decision": "approve"}}),
+            &json!({"type": "action", "request_id": "r1", "action": {"action": "decide", "confirmation_id": "k1", "revision": 2, "digest": "ab12", "decision": "approve"}}),
         );
         pinned(
             &UiAction::SendMessage {

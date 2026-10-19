@@ -32,6 +32,9 @@ use hatchling_artifact::{
     TextProfile, Verdict, attribution, finding, sha256_hex,
 };
 use hatchling_broker::activation::CONFIRMATION_TTL_SECS;
+use hatchling_broker::api_stream::Bus;
+use hatchling_broker::approval_board;
+use hatchling_broker::approvals::State;
 use hatchling_broker::{
     ArtifactConfig, Config, ConfirmError, EgressConfig, GoalsAction, MemoryAction, MemoryConfig,
     MemoryGrant, SchedulerConfig, SealedArtifactStore, Skills, VaultConfig, VaultGrant,
@@ -39,6 +42,9 @@ use hatchling_broker::{
 };
 use hatchling_channel::{LocalHub, Message};
 use hatchling_core::framing::{read_frame, write_frame};
+use hatchling_core::ui::{
+    ConfirmationRequest, Decision, DecisionRejection, FieldSource, UiEventBody,
+};
 use hatchling_core::{
     ActivationProposal, AgentMessage, ArtifactInput, ArtifactInspection, ArtifactOp,
     ArtifactResult, ArtifactView, BrokerMessage, BuildFailure, BuildState, DeliveryRefusal,
@@ -212,6 +218,7 @@ fn built(result: &ArtifactResult) -> String {
         | ArtifactResult::IdeaSaved { .. }
         | ArtifactResult::Ideas { .. }
         | ArtifactResult::ActivationProposed { .. }
+        | ArtifactResult::ApprovalRefused { .. }
         | ArtifactResult::IdeaRefused { .. }
         | ArtifactResult::Denied
         | ArtifactResult::ArtifactError) => format!("not built: {other:?}"),
@@ -1491,6 +1498,232 @@ fn the_build_is_what_was_confirmed_and_nothing_else() {
         Some("Long zine")
     );
     assert_eq!(record.idea.map(|idea| idea.revision), Some(2));
+}
+
+/// The confirmation the owner's app was sent last on `bus`.
+fn last_confirmation(bus: &Bus) -> Option<ConfirmationRequest> {
+    bus.after(None).into_iter().rev().find_map(|event| {
+        if let UiEventBody::Confirmation(request) = event.body {
+            Some(request)
+        } else {
+            None
+        }
+    })
+}
+
+/// The owner's decision on `request` in the app, naming `digest`.
+fn decide(
+    board: &approval_board::Board,
+    request: &ConfirmationRequest,
+    digest: &str,
+) -> Result<State, DecisionRejection> {
+    board.decide(
+        &request.confirmation_id,
+        request.revision,
+        digest,
+        Decision::Approve,
+        NOW,
+    )
+}
+
+/// WO-027, end to end: a proposal reaches the owner's app as the broker's
+/// record; the owner's approval there runs exactly the pinned request, once,
+/// on the broker's worker; nothing a session sends approves anything.
+#[test]
+fn the_owners_approval_in_the_app_builds_exactly_what_was_proposed() {
+    if !guard_cell_available().unwrap() {
+        return;
+    }
+    let world = World::new("approve-in-app");
+    let board = approval_board::board(&world.config);
+    let bus = Arc::new(Bus::starting_at(1));
+    board.attach(Arc::clone(&bus));
+    let (idea, _) = saved(world.capture("Short zine", None));
+    let proposal = proposed(&world.propose(&idea, "page", PAGE_BUILDER, "a zine")).unwrap();
+    let request = last_confirmation(&bus).unwrap();
+    assert!(
+        request
+            .fields
+            .iter()
+            .any(|field| field.label == "Request hash" && field.value == proposal.request_hash)
+    );
+    assert_eq!(
+        request
+            .fields
+            .last()
+            .map(|field| (field.value.as_str(), field.source)),
+        Some(("a zine", FieldSource::Agent))
+    );
+    // A session can't approve: the request's id is no confirmation, and the
+    // owner's decision isn't a session op.
+    assert_eq!(
+        world.activate(&proposal.activation, &request.confirmation_id),
+        idea_refused(IdeaRefusal::NotConfirmed)
+    );
+    assert_eq!(
+        decide(&board, &request, "0000"),
+        Err(DecisionRejection::StaleRevision)
+    );
+    assert_eq!(
+        approval_board::run_next(&world.config, key(), &world.skills, None, Duration::ZERO),
+        None,
+        "nothing runs unapproved"
+    );
+    assert_eq!(
+        decide(&board, &request, &request.digest),
+        Ok(State::Approved)
+    );
+    let told = approval_board::run_next(
+        &world.config,
+        key(),
+        &world.skills,
+        None,
+        Duration::from_secs(5),
+    )
+    .unwrap();
+    assert!(
+        told.starts_with(&format!("Approved: build idea {idea}. Built art-")),
+        "{told}"
+    );
+    assert_eq!(
+        board
+            .approvals()
+            .get(&request.confirmation_id)
+            .map(|r| r.state),
+        Some(State::Succeeded)
+    );
+    // Built exactly as proposed, and once.
+    let build = told
+        .split_whitespace()
+        .find(|word| word.starts_with("art-"))
+        .unwrap()
+        .to_owned();
+    let record = world.record(&build);
+    assert_eq!(
+        hashes(record.request.inputs.iter().map(|i| (&i.name, &i.sha256))),
+        hashes(proposal.inputs.iter().map(|i| (&i.name, &i.sha256)))
+    );
+    assert_eq!(record.idea.as_ref(), Some(&proposal.idea));
+    assert_eq!(
+        decide(&board, &request, &request.digest),
+        Err(DecisionRejection::AlreadyDecided)
+    );
+    assert_eq!(
+        approval_board::run_next(&world.config, key(), &world.skills, None, Duration::ZERO),
+        None,
+        "nothing more runs"
+    );
+    assert!(
+        world
+            .summary()
+            .is_some_and(|summary| summary.state == IdeaState::Activated)
+    );
+}
+
+/// WO-027: the worker's own steps, called directly. A request that isn't
+/// approved runs nothing; the broker's activation needs a confirmation it
+/// minted; what the owner is told reaches the local chat.
+#[test]
+fn the_workers_steps_run_only_what_was_approved_and_tell_the_owner() {
+    if !guard_cell_available().unwrap() {
+        return;
+    }
+    let world = World::new("approve-steps");
+    let board = approval_board::board(&world.config);
+    let told = approval_board::run_approved(
+        &board,
+        "approval-none",
+        &world.config,
+        key(),
+        &world.skills,
+        None,
+        NOW,
+    );
+    assert_eq!(
+        told,
+        "Approval approval-none was not run: it is no longer approved."
+    );
+    let (idea, _) = saved(world.capture("Short zine", None));
+    let proposal = proposed(&world.propose(&idea, "page", PAGE_BUILDER, "a zine")).unwrap();
+    assert_eq!(
+        hatchling_broker::artifact_ops::activate_confirmed(
+            &world.config,
+            key(),
+            &world.skills,
+            None,
+            &proposal.activation,
+            "confirm-forged",
+            NOW,
+        ),
+        idea_refused(IdeaRefusal::NotConfirmed)
+    );
+    let token = world.confirm(&proposal.activation, NOW);
+    let reply = hatchling_broker::artifact_ops::activate_confirmed(
+        &world.config,
+        key(),
+        &world.skills,
+        None,
+        &proposal.activation,
+        &token,
+        NOW,
+    );
+    let record = world.record(&built(&reply));
+    assert_eq!(record.idea.as_ref(), Some(&proposal.idea));
+    let (hub, received) = hub_with_client();
+    approval_board::tell_owner(Some(&hub), "Approved: build idea x.");
+    assert!(
+        received
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|message| message.text == "Approved: build idea x.")
+    );
+}
+
+/// WO-027: an approval doesn't outlive what it approved. The idea changed
+/// after the owner approved it, so the worker builds nothing, and says so.
+#[test]
+fn an_approval_for_an_idea_that_changed_builds_nothing() {
+    if !guard_cell_available().unwrap() {
+        return;
+    }
+    let world = World::new("approve-changed");
+    let board = approval_board::board(&world.config);
+    let bus = Arc::new(Bus::starting_at(1));
+    board.attach(Arc::clone(&bus));
+    let (idea, _) = saved(world.capture("Short zine", None));
+    let proposal = proposed(&world.propose(&idea, "page", PAGE_BUILDER, "a zine")).unwrap();
+    let request = last_confirmation(&bus).unwrap();
+    board
+        .decide(
+            &request.confirmation_id,
+            request.revision,
+            &request.digest,
+            Decision::Approve,
+            NOW,
+        )
+        .unwrap();
+    assert_eq!(saved(world.refine(&idea, "Long zine")), (idea.clone(), 2));
+    let told = approval_board::run_next(
+        &world.config,
+        key(),
+        &world.skills,
+        None,
+        Duration::from_secs(5),
+    )
+    .unwrap();
+    assert!(told.contains("It was not built"), "{told}");
+    assert_eq!(
+        board
+            .approvals()
+            .get(&request.confirmation_id)
+            .map(|r| r.state),
+        Some(State::Failed)
+    );
+    assert_eq!(
+        world.activate(&proposal.activation, "confirm-anything"),
+        idea_refused(IdeaRefusal::NoProposal)
+    );
 }
 
 #[test]

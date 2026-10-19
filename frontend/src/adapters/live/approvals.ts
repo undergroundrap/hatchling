@@ -27,6 +27,13 @@ const REFUSALS: Readonly<Record<ActionRefusal, string>> = {
     not_granted: 'This connection is not allowed to take decisions, so nothing was decided.',
 };
 const rejected = (detail: string): ApprovalResult => ({ state: 'rejected', detail });
+/**
+ * The request's fields as plain text, in the broker's review order: what the
+ * broker resolved, then the agent's own words, labeled as the agent's.
+ */
+export const reviewText = (request: ConfirmationRequest): string => request.fields
+    .map((field) => field.source === 'agent' ? `From the agent, ${field.label}: ${field.value}` : `${field.label}: ${field.value}`)
+    .join('\n');
 const unknown = (detail: string): ApprovalResult => ({ state: 'unknown', detail });
 export class LiveApprovals implements TaskApprovalPort {
     readonly #client: LiveClient;
@@ -90,7 +97,7 @@ export class LiveApprovals implements TaskApprovalPort {
             scopes: ['once'],
             status,
             time: clockTime(at),
-            report: request.summary,
+            report: reviewText(request),
         };
     }
     async #dispatch(attempt: ApprovalAttempt): Promise<ApprovalResult> {

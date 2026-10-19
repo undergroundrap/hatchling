@@ -1925,6 +1925,15 @@ pub enum ArtifactResult {
         /// What was pinned.
         proposal: ActivationProposal,
     },
+    /// An activation was pinned, but the owner wasn't asked to approve
+    /// it (WO-027): why. Nothing will build it.
+    #[serde(rename = "approval-refused")]
+    ApprovalRefused {
+        /// What was pinned.
+        proposal: ActivationProposal,
+        /// Why the owner wasn't asked.
+        reason: ApprovalRefusal,
+    },
     /// The idea op was refused.
     #[serde(rename = "idea-refused")]
     IdeaRefused {
@@ -2078,6 +2087,23 @@ pub struct ActivationProposal {
     pub inputs: Vec<ActivationInput>,
     /// The pinned request's hash: its kind and every input.
     pub request_hash: String,
+}
+
+/// Why a proposal wasn't put to the owner for approval (WO-027).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalRefusal {
+    /// The owner denied this action. Asking again won't change that.
+    Denied,
+    /// Approval requests are paused for a while: after a denial, or
+    /// past the hourly limit.
+    Paused,
+    /// Too many requests are waiting for the owner, or one of this
+    /// session's is.
+    QueueFull,
+    /// The broker couldn't make the request.
+    Unavailable,
 }
 
 /// The inspector's verdict on a build's output.

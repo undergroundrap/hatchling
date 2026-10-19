@@ -175,6 +175,7 @@ mod tests {
                 action(UiAction::Decide {
                     confirmation_id: id(),
                     revision: 1,
+                    digest: id(),
                     decision: Decision::Approve,
                 }),
                 ApiRequest::Decide,
