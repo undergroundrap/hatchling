@@ -7,7 +7,7 @@ test('visible text stays whole, and plain text is one piece', () => {
     assert.deepEqual(revealSegments('Build the zine'), [{ text: 'Build the zine' }]);
     assert.deepEqual(revealSegments(''), []);
     // Ordinary right-to-left text, emoji and accents are text, not hidden.
-    for (const text of ['שלום', 'مرحبا', 'café', 'é', '👩‍', '日本語'])
+    for (const text of ['שלום', 'مرحبا', 'café', 'e\u0301', '\u{1F469}\u200D', '日本語'])
         assert.ok(revealSegments(text).every(segment => 'text' in segment || segment.hidden === 'U+200D'), text);
 });
 test('a direction override, and every other hidden character, is shown as its code point', () => {
