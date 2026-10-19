@@ -93,10 +93,16 @@ class ReleaseCases:
         self.page.locator('#message-input').fill('Change my name to '+name)
         self.page.get_by_role('button',name='Send message',exact=True).click()
         expect(self.page.locator('.agent-name')).to_have_text(name)
+        toggle=self.page.get_by_role('button',name='Show agent status',exact=True)
         for width in [390,320]:
             self.page.set_viewport_size({'width':width,'height':760})
-            if self.page.get_by_role('button',name='Show agent status',exact=True).count():
-                self.page.get_by_role('button',name='Show agent status',exact=True).click()
+            if width==390:
+                # Narrowing from 1919 past 1100 closes the status panel, but
+                # only once the page handles the resize, which can come after
+                # this call returns: wait for the toggle that replaces it,
+                # rather than counting it before it's there.
+                expect(toggle).to_be_visible()
+                toggle.click()
             # Restoring the status animates it in: measure once it's shown.
             expect(self.page.locator('.agent-status')).to_be_visible()
             expect(self.page.locator('.context-tabs')).to_be_visible()
