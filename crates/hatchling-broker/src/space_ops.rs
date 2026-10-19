@@ -401,21 +401,21 @@ impl<'k> SealedSpaceStore<'k> {
         let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
         let vault = self.vault()?;
         let name = entry_secret_name(BROKER_DEVICE_KEY)?;
-        let seed: [u8; 32] = match vault.fetch(&name) {
-            Ok(secret) => secret
-                .as_bytes()
-                .try_into()
-                .map_err(|_| Error::SpaceStore {
+        // The seed is the signing key: wiped when dropped, like the key.
+        let seed: zeroize::Zeroizing<[u8; 32]> = match vault.fetch(&name) {
+            Ok(secret) => zeroize::Zeroizing::new(secret.as_bytes().try_into().map_err(|_| {
+                Error::SpaceStore {
                     reason: String::from("the broker device key is corrupt"),
-                })?,
+                }
+            })?),
             Err(hatchling_vault::Error::NotFound { .. }) => {
-                let mut seed = [0u8; 32];
+                let mut seed = zeroize::Zeroizing::new([0u8; 32]);
                 std::fs::File::open("/dev/urandom")
-                    .and_then(|mut rng| std::io::Read::read_exact(&mut rng, &mut seed))
+                    .and_then(|mut rng| std::io::Read::read_exact(&mut rng, seed.as_mut_slice()))
                     .map_err(|source| Error::SpaceStore {
                         reason: format!("no entropy for the broker device key: {source}"),
                     })?;
-                write_raw(&vault, BROKER_DEVICE_KEY, &seed)?;
+                write_raw(&vault, BROKER_DEVICE_KEY, seed.as_slice())?;
                 seed
             }
             Err(source) => return Err(Error::Vault { source }),
@@ -1020,6 +1020,36 @@ mod tests {
             "{error:?}"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The broker's device key is made once, sealed, and the same key on
+    /// every later read; a corrupt seed is refused, never used.
+    #[test]
+    fn the_broker_key_is_made_once_and_read_back_the_same() {
+        let root = std::env::temp_dir().join(format!(
+            "hatchling-test-spaces-broker-key-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let key = MasterKey::generate().unwrap();
+        let store = SealedSpaceStore::new(&root, &key);
+        let first = store.broker_key().unwrap().verifying_key();
+        let again = SealedSpaceStore::new(&root, &key)
+            .broker_key()
+            .unwrap()
+            .verifying_key();
+        let name = entry_secret_name(BROKER_DEVICE_KEY).unwrap();
+        let sealed = store.vault().unwrap().fetch(&name).unwrap();
+        assert_eq!(sealed.as_bytes().len(), 32);
+        store
+            .vault()
+            .unwrap()
+            .store(&name, &Secret::new(vec![7; 31]).unwrap())
+            .unwrap();
+        let corrupt = store.broker_key();
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(first, again);
+        assert!(matches!(corrupt, Err(Error::SpaceStore { .. })));
     }
 
     #[test]
