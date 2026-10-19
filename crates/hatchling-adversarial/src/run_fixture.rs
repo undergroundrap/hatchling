@@ -59,7 +59,7 @@ use hatchling_core::{
 
 /// A chat turn's view of the conversation (WO-026): what it was given,
 /// as given, without connecting.
-fn history(out: &mut impl Write) -> ExitCode {
+fn history(out: &mut impl std::io::Write) -> ExitCode {
     let env = |key: &str| std::env::var(key).unwrap_or_default();
     let line = format!(
         "chat={} history={}",
