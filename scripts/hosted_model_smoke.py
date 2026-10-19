@@ -144,6 +144,12 @@ def inspect_agent(uid, key, program, agent_hash, endpoint, model, forbidden, tas
                 except (FileNotFoundError, ProcessLookupError):
                     if identified:
                         raise ValueError('Identified agent disappeared before inspection completed')
+                except PermissionError:
+                    # Another process, mid-exec or changing credentials, can be
+                    # briefly unreadable: skip it this pass. The agent, once
+                    # identified, must stay readable throughout.
+                    if identified:
+                        raise
                 finally:
                     if fd is not None:
                         os.close(fd)

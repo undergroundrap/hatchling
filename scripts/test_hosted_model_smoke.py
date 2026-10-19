@@ -7,6 +7,25 @@ from unittest.mock import Mock, patch
 import hosted_model_smoke as proof
 
 
+class InspectTests(unittest.TestCase):
+    def test_an_unreadable_process_that_is_not_the_agent_is_skipped(self):
+        stop = threading.Event()
+        observations, errors = [], []
+        process = Mock()
+        process.name = '4242'
+
+        def readlink(path):
+            stop.set()
+            raise PermissionError(13, 'Permission denied', str(path))
+
+        with patch.object(proof.Path, 'iterdir', return_value=[process]),              patch.object(proof.os, 'open', return_value=99),              patch.object(proof.os, 'close') as close,              patch.object(proof.os, 'readlink', side_effect=readlink):
+            proof.inspect_agent(1000, b'fixture-key', '/agent', 'hash', 'endpoint', 'model', [], 'task',
+                                stop, observations, errors, Mock())
+        self.assertEqual(errors, [])
+        self.assertEqual(observations, [])
+        close.assert_called_once_with(99)
+
+
 class CleanupTests(unittest.TestCase):
     def test_sanitation_io_error_and_failed_unlink_cannot_publish_unchecked_logs(self):
         with tempfile.TemporaryDirectory() as directory:
