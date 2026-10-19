@@ -331,7 +331,10 @@ mod tests {
         if ours.read_exact(&mut unshared).is_err() {
             drop(child);
             let required = std::env::var("HATCHLING_REQUIRE_CELL").is_ok_and(|v| v == "1");
-            assert!(!required, "HATCHLING_REQUIRE_CELL=1 but no user namespace here");
+            assert!(
+                !required,
+                "HATCHLING_REQUIRE_CELL=1 but no user namespace here"
+            );
             return;
         }
 

@@ -2348,7 +2348,11 @@ mod tests {
             ForkResult::Child => exit_child(i32::from(become_cell_user().is_err())),
         };
         let status = child.wait_deadline(Duration::from_secs(10)).unwrap();
-        assert_eq!(child_exit_code(status), 0, "become_cell_user as root must succeed");
+        assert_eq!(
+            child_exit_code(status),
+            0,
+            "become_cell_user as root must succeed"
+        );
     }
 
     #[test]
