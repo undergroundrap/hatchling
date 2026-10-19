@@ -233,7 +233,7 @@ pub(crate) struct StoreKey([u8; 32]);
 /// the store's key from its [`STORE_KEY_FILE`] (making one for a store
 /// that has none yet), or [`StoreKeys`], the keys a process was handed,
 /// which opens those stores and refuses every other.
-pub trait OpensStores: Send + Sync {
+pub trait OpensStores: Send + Sync + std::fmt::Debug {
     /// The key of `store`, whose files `vault` holds at `root`.
     ///
     /// # Errors
@@ -279,7 +279,7 @@ pub struct StoreKeys {
 
 struct Held {
     store: Store,
-    root: std::path::PathBuf,
+    root: PathBuf,
     key: StoreKey,
 }
 
@@ -2705,7 +2705,7 @@ mod tests {
                 let (race, master) = (race.to_path_buf(), std::sync::Arc::clone(&master));
                 std::thread::spawn(move || {
                     let name = format!("s{n}").parse::<SecretName>().unwrap();
-                    SealedVault::open(&race, &master)
+                    SealedVault::open(&race, &*master)
                         .and_then(|vault| vault.store(&name, &Secret::new(vec![1]).unwrap()))
                 })
             })
@@ -2713,7 +2713,7 @@ mod tests {
         for opener in openers {
             opener.join().unwrap().unwrap();
         }
-        let vault = SealedVault::open(&race, &master).unwrap();
+        let vault = SealedVault::open(&race, &*master).unwrap();
         for n in 0..8 {
             assert_eq!(
                 vault
