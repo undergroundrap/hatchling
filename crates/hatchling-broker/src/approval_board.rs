@@ -68,18 +68,20 @@ static BOARDS: Mutex<BTreeMap<String, Arc<Board>>> = Mutex::new(BTreeMap::new())
 /// The board of the broker `config` configures.
 #[must_use]
 pub fn board(config: &Config) -> Arc<Board> {
-    let mut boards = BOARDS.lock().unwrap_or_else(PoisonError::into_inner);
-    let board = boards
-        .entry(config.socket.as_path().display().to_string())
-        .or_insert_with(|| {
-            Arc::new(Board {
-                approvals: Approvals::new(),
-                bus: Mutex::new(None),
-                queue: Mutex::new(VecDeque::new()),
-                wake: Condvar::new(),
-            })
-        });
-    Arc::clone(board)
+    Arc::clone(
+        BOARDS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(config.socket.as_path().display().to_string())
+            .or_insert_with(|| {
+                Arc::new(Board {
+                    approvals: Approvals::new(),
+                    bus: Mutex::new(None),
+                    queue: Mutex::new(VecDeque::new()),
+                    wake: Condvar::new(),
+                })
+            }),
+    )
 }
 
 impl Board {
@@ -189,12 +191,15 @@ impl Board {
     /// The next approved request for the worker, waiting up to `wait`.
     #[must_use]
     pub fn next_approved(&self, wait: Duration) -> Option<String> {
-        let queue = self.queue.lock().unwrap_or_else(PoisonError::into_inner);
-        let (mut queue, _) = self
-            .wake
-            .wait_timeout_while(queue, wait, |queue| queue.is_empty())
-            .unwrap_or_else(PoisonError::into_inner);
-        queue.pop_front()
+        self.wake
+            .wait_timeout_while(
+                self.queue.lock().unwrap_or_else(PoisonError::into_inner),
+                wait,
+                |queue| queue.is_empty(),
+            )
+            .unwrap_or_else(PoisonError::into_inner)
+            .0
+            .pop_front()
     }
 
     /// Pushes `body` to the owner's app, if one is attached.
@@ -332,7 +337,17 @@ fn run_approved(
                 run.idea
             )
         }
-        other => {
+        other @ (ArtifactResult::BuildFailed { .. }
+        | ArtifactResult::Delivered { .. }
+        | ArtifactResult::Refused { .. }
+        | ArtifactResult::Described { .. }
+        | ArtifactResult::UnknownBuild
+        | ArtifactResult::IdeaSaved { .. }
+        | ArtifactResult::Ideas { .. }
+        | ArtifactResult::ActivationProposed { .. }
+        | ArtifactResult::ApprovalRefused { .. }
+        | ArtifactResult::IdeaRefused { .. }
+        | ArtifactResult::Denied) => {
             claim.failed();
             tracing::warn!(%id, result = ?other, "an approved activation did not build");
             format!(
