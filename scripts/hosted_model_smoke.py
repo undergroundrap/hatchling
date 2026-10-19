@@ -333,7 +333,7 @@ def run(repo, artifacts, work, mode, fixtures):
         migration = launch('migration', [str(broker_path), 'migrate-vault'])
         require(migration.wait(timeout=30) == 0, 'Vault migration failed')
         envelope = secret_file.read_bytes()
-        require(envelope.startswith(b'HVL2') and key not in envelope, 'Vault entry was not sealed')
+        require(envelope.startswith(b'HVL3') and key not in envelope, 'Vault entry was not sealed')
         require(secret_file.stat().st_mode & 0o777 == 0o600 and (state / 'vault').stat().st_mode & 0o777 == 0o700,
                 'Unsafe vault permissions')
         server = launch('model', command)
@@ -406,7 +406,7 @@ def run(repo, artifacts, work, mode, fixtures):
                     and f'destination={destination}' in line and 'method=POST' in line and 'status=200' in line
                     for line in broker_text.splitlines()) >= 2, 'Missing authenticated model forwards')
         proof = dict(mode=mode, source=source, unauthorized=auth, correct_key_models_and_chat=200,
-                     vault_envelope='HVL2', vault_mode='700', sealed_file_mode='600',
+                     vault_envelope='HVL3', vault_mode='700', sealed_file_mode='600',
                      agent_answer_arrived=True, observations=observations)
     except BaseException as error:
         failure = error
