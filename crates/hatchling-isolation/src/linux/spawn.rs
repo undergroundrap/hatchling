@@ -2114,13 +2114,13 @@ pub(super) mod tests {
     fn own_user_namespace() -> bool {
         // Both read before the namespace: in it, unmapped, they read as
         // the overflow ids.
-        let (euid, egid) = (hatchling_sys::euid(), hatchling_sys::egid());
+        let (euid, own_gid) = (hatchling_sys::euid(), hatchling_sys::egid());
         let Ok(pid) = i32::try_from(std::process::id()) else {
             return false;
         };
         hatchling_sys::unshare_user().is_ok()
             && IdMap::new(euid, 1)
-                .and_then(|map| Ok((map, IdMap::new(egid, 1)?)))
+                .and_then(|map| Ok((map, IdMap::new(own_gid, 1)?)))
                 .is_ok_and(|(map, group_map)| {
                     hatchling_sys::idmap::write_maps(pid, &map, &group_map).is_ok()
                 })

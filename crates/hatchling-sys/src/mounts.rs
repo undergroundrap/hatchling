@@ -693,7 +693,7 @@ pub(crate) mod tests {
                 let euid = unsafe { libc::geteuid() };
                 // Read now: once in its own user namespace, unmapped, it
                 // reads as the overflow gid.
-                let egid = crate::process::egid();
+                let own_gid = crate::process::egid();
                 // Unshare the user namespace first so the mount
                 // namespace unshare works unprivileged too (mirrors
                 // the cell probe in hatchling-broker's
@@ -715,7 +715,7 @@ pub(crate) mod tests {
                     exit_child(99)
                 };
                 // And its own gid, which needn't be the uid's number.
-                let Ok(group_map) = crate::idmap::IdMap::new(egid, 1) else {
+                let Ok(group_map) = crate::idmap::IdMap::new(own_gid, 1) else {
                     exit_child(99)
                 };
                 // SAFETY: getpid takes no args.
@@ -1014,7 +1014,7 @@ pub(crate) mod tests {
         // SAFETY: geteuid takes no args.
         let euid = unsafe { libc::geteuid() };
         // Read now, before the namespace (see above).
-        let egid = crate::process::egid();
+        let own_gid = crate::process::egid();
         // SAFETY: unshare(CLONE_NEWUSER) in the single-threaded
         // child.
         if unsafe { libc::unshare(libc::CLONE_NEWUSER) } != 0 {
@@ -1024,7 +1024,7 @@ pub(crate) mod tests {
         let Ok(map) = crate::idmap::IdMap::new(euid, 1) else {
             exit_child(99)
         };
-        let Ok(group_map) = crate::idmap::IdMap::new(egid, 1) else {
+        let Ok(group_map) = crate::idmap::IdMap::new(own_gid, 1) else {
             exit_child(99)
         };
         // SAFETY: getpid takes no args.
