@@ -397,7 +397,7 @@ fn assert_sigsys(result: &AttackResult) -> Result<(), String> {
     Ok(())
 }
 
-/// [`assert_sigsys`] for a catalog entry, with the one syscall the kernel
+/// [`assert_sigsys`] for a catalog entry, with the two syscalls the kernel
 /// exempts from seccomp.
 ///
 /// `uretprobe` (Linux 6.11+) exists for the kernel's own uretprobe
@@ -407,7 +407,15 @@ fn assert_sigsys(result: &AttackResult) -> Result<(), String> {
 /// dies of `SIGILL` instead of `SIGSYS`: still dead on the attack itself (the
 /// `READY` marker and nothing after it), with nothing gained. Older kernels
 /// filter it like any other number, and the probe dies of `SIGSYS`.
+///
+/// `uprobe`, on newer kernels still, is the same for the kernel's uprobe trampolines,
+/// passed through seccomp likewise, but called from anywhere else it returns
+/// `-ENXIO` and does nothing. So on such a kernel the probe survives, and
+/// passes only if its report says exactly that: the call, and `-ENXIO`.
 fn assert_denied_kills(name: &str, result: &AttackResult) -> Result<(), String> {
+    if name == "uprobe" && result.exit_code == 0 {
+        return assert_uprobe_refused(result);
+    }
     if name == "uretprobe" && result.exit_code == SIGILL_EXIT_CODE {
         let expected_marker = format!("READY {}\n", result.slug);
         let stdout = String::from_utf8_lossy(&result.stdout);
@@ -420,6 +428,65 @@ fn assert_denied_kills(name: &str, result: &AttackResult) -> Result<(), String> 
         ));
     }
     assert_sigsys(result)
+}
+
+/// A surviving `uprobe` probe's report: the marker, then one report of
+/// the call itself returning `-ENXIO`, the kernel's refusal of a caller
+/// outside its trampolines. Anything else is a hole.
+fn assert_uprobe_refused(result: &AttackResult) -> Result<(), String> {
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    let marker = format!("READY {}\n", result.slug);
+    let refused = stdout
+        .strip_prefix(&marker)
+        .and_then(|report| serde_json::from_str::<serde_json::Value>(report.trim_end()).ok())
+        .is_some_and(|report| {
+            let outcome = &report["outcome"];
+            outcome["kind"] == "syscall_survived"
+                && outcome["nr"] == 336
+                && outcome["ret"] == -i64::from(rustix::io::Errno::NXIO.raw_os_error())
+                && report["error"].is_null()
+        });
+    if refused {
+        Ok(())
+    } else {
+        Err(format!(
+            "{}: uprobe survived with stdout {stdout:?}; only its -ENXIO refusal may pass",
+            result.slug
+        ))
+    }
+}
+
+/// The `uprobe` exception is exact: a survivor passes for `uprobe` alone,
+/// and only when the kernel refused it with `-ENXIO`. Needs no cell.
+fn only_uprobe_may_survive_refused() -> Result<(), String> {
+    let result = |slug: &str, exit_code: i32, stdout: &str| AttackResult {
+        slug: slug.to_owned(),
+        exit_code,
+        stdout: stdout.as_bytes().to_vec(),
+    };
+    let report = |nr: i64, ret: i64| {
+        format!(
+            "READY seccomp-{nr}\n{{\"attack\":\"seccomp-{nr}\",\"uid\":0,\"gid\":0,\"pid\":2,\"outcome\":{{\"kind\":\"syscall_survived\",\"nr\":{nr},\"ret\":{ret}}},\"error\":null}}\n"
+        )
+    };
+    let enxio = -i64::from(rustix::io::Errno::NXIO.raw_os_error());
+    assert_denied_kills("uprobe", &result("seccomp-336", 0, &report(336, enxio)))?;
+    for (name, slug, stdout, why) in [
+        ("uprobe", "seccomp-336", report(336, 0), "a uprobe that ran must fail"),
+        ("uprobe", "seccomp-336", report(336, -1), "only -ENXIO is the kernel's refusal"),
+        ("uprobe", "seccomp-336", String::from("READY seccomp-336\n"), "a survivor with no report must fail"),
+        ("uprobe", "seccomp-336", format!("{}SURVIVED\n", report(336, enxio)), "a second report must fail"),
+        ("io_uring_setup", "seccomp-425", report(425, enxio), "no other syscall may survive"),
+    ] {
+        if assert_denied_kills(name, &result(slug, 0, &stdout)).is_ok() {
+            return Err(String::from(why));
+        }
+    }
+    assert_denied_kills(
+        "uprobe",
+        &result("seccomp-336", SIGSYS_EXIT_CODE, "READY seccomp-336\n"),
+    )
+    .map_err(|e| format!("SIGSYS must still pass for uprobe where it is filtered: {e}"))
 }
 
 /// The `uretprobe` exception is exact: `SIGILL` passes for `uretprobe` alone,
@@ -1493,6 +1560,10 @@ const CHECKS: &[Check] = &[
     (
         "only_uretprobe_may_die_of_sigill",
         only_uretprobe_may_die_of_sigill,
+    ),
+    (
+        "only_uprobe_may_survive_refused",
+        only_uprobe_may_survive_refused,
     ),
     (
         "cli_denied_syscalls_each_sigsys",
