@@ -64,6 +64,62 @@ Filled in at close.
 
 ## Notes
 
+- **Design, after mapping the vault's uses and an outside review (2026-10-19).**
+  - **What the code holds today.**
+    - One 32-byte XChaCha20-Poly1305 master key seals every store: secrets, schedules, artifacts and ideas, spaces (with the broker's device signing key), and redactions (with the audit-tag key). The stores are told apart only by associated data, with no sub-keys.
+    - The broker loads the key once and passes it to about 65 sites.
+    - Plaintext secrets inside the broker today:
+      - the egress swap;
+      - the harness vendor relay;
+      - channel account custody;
+      - `vault:fetch` to a cell;
+      - held-secret scanning: the output and artifact gates read every granted secret on each judgement.
+  - **Three claims, each with the milestone that earns it:**
+    1. *Custody separation.* The broker holds neither the vault's root key nor its unlock factors. The keeper alone gives this.
+    2. *Compromise containment.* A compromised broker can't get secrets past the keeper's own authorization. This needs the keeper plus the spawner split, which drops the broker to a user of its own.
+    3. *Controlled credential use.* The broker can't copy a credential and use it outside the approved operation. This needs the egress authority, doing typed operations bound to an account and destination, never a generic authenticated request.
+
+    A credential the broker received before step 2 can be copied and reused until the provider revokes it. No grant expiry recalls a copy.
+  - **Keys.**
+    - Each store gets its own random data key per generation, wrapped by the keeper's key. The wrap binds the vault instance, store, purpose, generation and format version, with a fresh random nonce each time.
+    - The broker receives only its own stores' keys, by an allowlisted operation, never by a derive call taking a caller's label.
+    - The keeper alone holds the root, the secrets store's key, and its own policy and audit keys.
+    - Wrapping rather than HKDF lets a key be rewrapped, rotated or retired per store.
+    - The split starts a fresh root, so a master key copied before it unlocks nothing new.
+    - Migration runs in trusted code, never with the broker given the old all-store key.
+    - What `redactions` holds is checked before its key is exported. A store the broker can decrypt it can also forge, so nothing sealed in one is evidence the keeper trusts.
+  - **Leak scanning.** The broker stops reading the whole vault to scan. It scans against the credentials it has already been given.
+    - Exported fingerprints of secret windows are rejected: overlapping windows let a known prefix reconstruct the rest, one character at a time.
+    - If unreleased secrets ever need covering, it's a bounded check at the trusted outgoing boundary, with byte budgets that survive reconnects, coarse answers, and no logging of the text.
+  - **The keeper's protocol assumes the admitted broker is hostile.**
+    - A handle selects a record the keeper owns: the secret and version, the operation, the recipient and broker incarnation, the owner's authorization, a budget, and a deadline and epoch.
+    - Issuing or widening a grant is the owner's, on a path the broker can't drive. Enrollment, recovery and factor changes are never broker operations.
+    - Release follows a fixed order:
+      1. validate the handle;
+      2. consume it atomically;
+      3. log the release durably;
+      4. only then send.
+
+      Two concurrent uses give one release. A failed log sends nothing. A partial write stays consumed.
+    - Handles in the first slice die with a keeper restart, a lock, or a new broker incarnation. Deadlines use `CLOCK_BOOTTIME`.
+    - Framing is bounded and the schemas strict. Unexpected file descriptors are refused. There are no arbitrary-label derivations and no arbitrary unwraps. An unsupported constraint fails rather than broadening.
+  - **Launch.**
+    - Peer credentials are taken when a connection is made, so a socket pair made before the broker drops its user proves nothing about the broker's final identity. The broker connects after its drop, or the channel's role comes from the trusted launch itself.
+    - Executable checks (`/proc/<pid>/exe`) are diagnostics, not authorization.
+    - A small launcher that never opens the vault starts the keeper and the spawner, and the broker is started fresh, so no process forks from one holding keys.
+    - The broker gets a fresh anonymous session keyring: an inherited keyring survives fork, exec and user namespaces. (Cells already can't reach one: `keyctl`, `add_key` and `request_key` are outside their seccomp allowlist, and the denied-syscall catalog proves each kills.)
+    - Rootless mode inverts the users: the keeper and the spawner stay as the owner, and the broker drops to a subordinate uid of its own, distinct from the cells'. Until the spawner split, a rootless keeper is a separate process of the same uid: separate memory and a smaller surface, not an OS boundary, and the docs say so.
+  - **Tests that gate the containment milestone:**
+    - a vault key asked for through a broker-store operation, relabeled, is refused;
+    - two concurrent uses of a one-release handle give one release;
+    - a failed audit write sends no byte;
+    - a retry after a partial response stays consumed;
+    - old handles are dead after a restart;
+    - a broker that stops reading keeps the keeper's memory bounded;
+    - a dummy session key planted above the launch isn't readable by the broker;
+    - the broker inherits no key-bearing memory, descriptors or owner service connections;
+    - the spawner refuses owner credentials and arbitrary privileged operations from an admitted broker;
+    - a window-fingerprint reconstruction is shown, to keep that design out.
 - **Order matters.** The keeper comes first: it forces the grant-handle abstraction the other two build on, and it's the smallest surface with the clearest threat. The egress authority is second, because it's the keeper's only plaintext consumer. The spawner is last, because it's what makes the separate users mean anything, and it's the largest change.
 - **One binary can still ship all four.** `hatchling` can start the keeper, egress authority and spawner by re-running itself under a subcommand, as the broker already does for its spawner helpers. The separation is the users, the sockets and what each process holds, not the file they're loaded from. A process may start from a larger binary and still hold nothing it shouldn't.
 - Each separated process gets the same treatment as the cell interface: typed requests, peer-credential admission, a refusal for anything else, and its own section in the trust boundary.
