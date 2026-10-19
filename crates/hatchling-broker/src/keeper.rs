@@ -144,9 +144,8 @@ impl Keeper {
             .spawn()
             .map_err(|e| failed(format!("cannot start: {e}")))?;
         drop(theirs);
-        let first = Zeroizing::new(
-            read_frame(&ours).map_err(|e| failed(format!("gave no keys: {e}")))?,
-        );
+        let first =
+            Zeroizing::new(read_frame(&ours).map_err(|e| failed(format!("gave no keys: {e}")))?);
         let keys = match first.split_first() {
             Some((0, handed)) => {
                 StoreKeys::from_bytes(handed).map_err(|source| Error::Vault { source })?
@@ -172,11 +171,7 @@ impl Keeper {
     ///
     /// Returns [`Error::Keeper`] when the keeper refuses the read or
     /// can't be reached.
-    pub fn read(
-        &self,
-        purpose: &str,
-        names: &[SecretName],
-    ) -> Result<Vec<Option<Secret>>, Error> {
+    pub fn read(&self, purpose: &str, names: &[SecretName]) -> Result<Vec<Option<Secret>>, Error> {
         let stream = self.lock()?;
         let request = Request::Read {
             purpose: purpose.to_owned(),
@@ -212,12 +207,7 @@ impl Keeper {
     /// # Errors
     ///
     /// Returns [`Error::SessionProtocol`] when the op was malformed.
-    pub fn cell_op(
-        &self,
-        op: &VaultOp,
-        cell: &CellId,
-        uid: u32,
-    ) -> Result<VaultResult, Error> {
+    pub fn cell_op(&self, op: &VaultOp, cell: &CellId, uid: u32) -> Result<VaultResult, Error> {
         let request = Request::Cell {
             op: op.clone(),
             cell: cell.to_string(),

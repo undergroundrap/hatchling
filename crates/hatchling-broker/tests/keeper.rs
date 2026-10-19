@@ -106,7 +106,10 @@ fn the_keeper_keeps_the_secrets_and_releases_only_what_is_configured() {
     let dir = scratch("serve").unwrap();
     let vault = sealed_vault(
         &dir,
-        &[("egress-localhost-18089", "credential"), ("unlisted", "kept")],
+        &[
+            ("egress-localhost-18089", "credential"),
+            ("unlisted", "kept"),
+        ],
     )
     .unwrap();
     let (child, stream) = start(&dir).unwrap();
@@ -185,7 +188,11 @@ fn the_brokers_end_reads_through_the_keeper() {
     use hatchling_broker::keeper::Keeper;
     use hatchling_core::{CellId, VaultOp, VaultResult};
     let dir = scratch("client").unwrap();
-    sealed_vault(&dir, &[("egress-localhost-18089", "credential"), ("token", "t")]).unwrap();
+    sealed_vault(
+        &dir,
+        &[("egress-localhost-18089", "credential"), ("token", "t")],
+    )
+    .unwrap();
     let mut program = Command::new(env!("CARGO_BIN_EXE_hatchling-broker"));
     program
         .envs(environment(&dir))
