@@ -32,6 +32,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Fixed
 
+- **A cell that fails while it's being set up says why, at once.** The spawner held its own copy of the pipe the cell reports on, so the report never reached its end: the broker waited out its 30-second timeout and dropped the reason ("child reported" and nothing). It now closes that copy first, and the reason (an `unshare` refused, say) arrives as soon as the cell gives up.
 - **A chat message is answered with the chat prompt.** The local chat path started its run with the background worker's prompt; a chat turn now says so, typed from the chat path to the agent (`HATCHLING_RUN_CHAT`), and gets the chat prompt.
 - **A batch of tool calls is checked whole before any of it runs.** An unknown tool or bad arguments later in a batch used to stop the loop after earlier calls in it had already run, unrecorded.
 - **A reply the provider cut off isn't taken as finished.** A reply with `finish_reason` `length` (the output limit) or `content_filter` is now a model failure, not a final answer.
