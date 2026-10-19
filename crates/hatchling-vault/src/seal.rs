@@ -3107,8 +3107,15 @@ mod tests {
         // `key_for`, called directly: each opener gives the store's key.
         let vault = Vault::open(&spaces).unwrap();
         assert_eq!(
-            master.key_for(&vault, &spaces, Store::SPACES).unwrap().key().0,
-            keys.key_for(&vault, &spaces, Store::SPACES).unwrap().key().0
+            master
+                .key_for(&vault, &spaces, Store::SPACES)
+                .unwrap()
+                .key()
+                .0,
+            keys.key_for(&vault, &spaces, Store::SPACES)
+                .unwrap()
+                .key()
+                .0
         );
         assert!(matches!(
             keys.key_for(&vault, &spaces, Store::ARTIFACTS),

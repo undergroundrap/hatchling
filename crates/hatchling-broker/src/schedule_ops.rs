@@ -1289,4 +1289,39 @@ mod tests {
         assert_eq!(own.unwrap().as_bytes(), b"p");
         assert!(secrets.is_err(), "opened under the secrets label");
     }
+
+    /// A run's follow-up is stored once; a store that fails releases the
+    /// run's claim, so the follow-up can be asked for again.
+    #[test]
+    fn request_followup_stores_once_and_a_failed_store_releases_the_claim() {
+        let root =
+            std::env::temp_dir().join(format!("hatchling-followup-direct-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let master = MasterKey::generate().unwrap();
+        let scope = FollowupScope {
+            root: root.clone(),
+            run: format!("run-followup-direct-{}", std::process::id()),
+            grants: Vec::new(),
+            channel: String::from("local"),
+            depth: 0,
+        };
+        let now = Timestamp::now();
+        let unheld = hatchling_vault::StoreKeys::unwrap(&master, &[]).unwrap();
+        let failed = request_followup(&scope, &unheld, "check again", 60, &[], now);
+        let created = request_followup(&scope, &master, "check again", 60, &[], now);
+        let taken = request_followup(&scope, &master, "check again", 60, &[], now);
+        release_followup(&scope.run);
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(matches!(failed, ScheduleResult::ScheduleError), "{failed:?}");
+        assert!(matches!(created, ScheduleResult::Created { .. }), "{created:?}");
+        assert!(
+            matches!(
+                taken,
+                ScheduleResult::Refused {
+                    reason: ScheduleRefusal::FollowupTaken
+                }
+            ),
+            "{taken:?}"
+        );
+    }
 }

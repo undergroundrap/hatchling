@@ -2330,4 +2330,20 @@ mod gate_scope_tests {
             Some(&(session.clone(), 0))
         );
     }
+
+    /// A peer that isn't the agent is turned away unanswered: the
+    /// connection ends without a byte sent.
+    #[test]
+    fn handle_connection_sends_an_unauthorized_peer_nothing() {
+        let config = crate::api_auth::tests::owner_config(None);
+        let key = MasterKey::generate().unwrap();
+        let (mut peer, broker) = UnixStream::pair().unwrap();
+        handle_connection(&broker, &config, &key, &Skills::default(), None);
+        drop(broker);
+        peer.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut seen = Vec::new();
+        std::io::Read::read_to_end(&mut peer, &mut seen).unwrap();
+        assert!(seen.is_empty(), "{seen:?}");
+    }
 }

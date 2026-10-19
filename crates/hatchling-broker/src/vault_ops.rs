@@ -627,28 +627,27 @@ mod tests {
             std::env::temp_dir().join(format!("hatchling-hand-keys-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&scratch);
         std::fs::create_dir(&scratch).unwrap();
+        let (secrets, spaces) = (scratch.join("vault"), scratch.join("spaces"));
         let stores = vec![
-            (Store::SECRETS, scratch.join("vault")),
-            (Store::SPACES, scratch.join("spaces")),
+            (Store::SECRETS, secrets.clone()),
+            (Store::SPACES, spaces.clone()),
         ];
         let master = MasterKey::generate().unwrap();
-        SealedVault::open_in(&stores[1].1, &master, Store::SPACES).unwrap();
+        SealedVault::open_in(&spaces, &master, Store::SPACES).unwrap();
         let keys = hand_store_keys(master, &stores).unwrap();
         let held: Vec<_> = keys
             .stores()
             .map(|(store, root)| (store, root.to_path_buf()))
             .collect();
         assert_eq!(held, stores);
-        assert!(SealedVault::open(&stores[0].1, &keys).is_ok());
-        assert!(SealedVault::open_in(&stores[1].1, &keys, Store::SPACES).is_ok());
+        assert!(SealedVault::open(&secrets, &keys).is_ok());
+        assert!(SealedVault::open_in(&spaces, &keys, Store::SPACES).is_ok());
         let refused = SealedVault::open_in(&scratch.join("artifacts"), &keys, Store::ARTIFACTS);
-        let other = hand_store_keys(MasterKey::generate().unwrap(), &stores[1..]);
+        let other = hand_store_keys(MasterKey::generate().unwrap(), &[(Store::SPACES, spaces)]);
         let _ = std::fs::remove_dir_all(&scratch);
         assert!(matches!(
             refused,
-            Err(hatchling_vault::Error::StoreNotHeld {
-                store: "artifacts"
-            })
+            Err(hatchling_vault::Error::StoreNotHeld { store: "artifacts" })
         ));
         assert!(matches!(
             other,
