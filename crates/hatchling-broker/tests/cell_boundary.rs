@@ -354,13 +354,9 @@ fn a_subordinate_agent_cell_handshakes_over_its_own_connection() -> Result<(), S
     if v != PROTOCOL_VERSION {
         return Err(format!("agent spoke protocol v{v}"));
     }
-    let welcome = serde_json::to_vec(&BrokerMessage::Welcome {
-        v: PROTOCOL_VERSION,
-    })
-    .map_err(|e| format!("encode WELCOME: {e}"))?;
-    write_frame(&stream, &welcome).map_err(|e| format!("write WELCOME: {e}"))?;
-    // From the host: the cell runs as the subordinate uid (its reaper
-    // settles into it alongside the agent: polled, briefly).
+    // From the host, while the agent waits for WELCOME: the cell runs as
+    // the subordinate uid (its reaper settles into it alongside the
+    // agent: polled, briefly).
     let principal = owners.principal.to_string();
     let uids = || -> Vec<String> {
         std::fs::read_to_string(format!("/proc/{}/status", handle.child_pid()))
@@ -376,6 +372,11 @@ fn a_subordinate_agent_cell_handshakes_over_its_own_connection() -> Result<(), S
         std::thread::sleep(Duration::from_millis(20));
         seen = uids();
     }
+    let welcome = serde_json::to_vec(&BrokerMessage::Welcome {
+        v: PROTOCOL_VERSION,
+    })
+    .map_err(|e| format!("encode WELCOME: {e}"))?;
+    write_frame(&stream, &welcome).map_err(|e| format!("write WELCOME: {e}"))?;
     let status = handle.wait().map_err(|e| format!("wait for cell: {e}"))?;
     let code = hatchling_sys::child_exit_code(status);
     let _ = std::fs::remove_dir_all(&dir);
