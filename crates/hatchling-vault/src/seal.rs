@@ -362,9 +362,10 @@ fn store_key(
     if vault.write_dotfile(STORE_KEY_FILE, &wrap_store_key(master, store, &key)?, false)? {
         return Ok(key);
     }
-    let wrapped = read_wrapped(vault, store, STORE_KEY_FILE)?.ok_or_else(|| Error::StoreKeyMissing {
-        store: store.label(),
-    })?;
+    let wrapped =
+        read_wrapped(vault, store, STORE_KEY_FILE)?.ok_or_else(|| Error::StoreKeyMissing {
+            store: store.label(),
+        })?;
     unwrap_store_key(master, store, &wrapped)
 }
 
@@ -606,6 +607,14 @@ pub struct SealedVault<'a> {
     key: StoreKey,
     store: Store,
     master: std::marker::PhantomData<&'a MasterKey>,
+}
+
+impl std::fmt::Debug for SealedVault<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SealedVault")
+            .field("store", &self.store.label())
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'a> SealedVault<'a> {
@@ -2225,7 +2234,13 @@ mod tests {
         assert!(matches!(err, Error::StoreKeyRefused { .. }), "got {err:?}");
         // A current envelope under another store key, in a store whose key
         // opens: verified, and refused.
-        let foreign = seal_envelope(&StoreKey::generate().unwrap(), Store::SECRETS, &secret_name("f"), b"x").unwrap();
+        let foreign = seal_envelope(
+            &StoreKey::generate().unwrap(),
+            Store::SECRETS,
+            &secret_name("f"),
+            b"x",
+        )
+        .unwrap();
         plant(&dir, "f", &foreign);
         let err = migrate(&dir, &key_a, Store::SECRETS).unwrap_err();
         assert!(matches!(err, Error::DecryptFailed { .. }), "got {err:?}");
@@ -2374,7 +2389,11 @@ mod tests {
             wrap_store_key(&new, Store::SECRETS, &next).unwrap(),
         )
         .unwrap();
-        plant(&dir, "a", &seal_envelope(&next, Store::SECRETS, &secret_name("a"), b"alpha").unwrap());
+        plant(
+            &dir,
+            "a",
+            &seal_envelope(&next, Store::SECRETS, &secret_name("a"), b"alpha").unwrap(),
+        );
         let report = rekey(&dir, &old, &new, Store::SECRETS).unwrap();
         assert_eq!(
             report,
@@ -2414,11 +2433,25 @@ mod tests {
             .unwrap()
             .store(&secret_name("a"), &secret(b"alpha"))
             .unwrap();
-        plant(&dir, "x", &seal_envelope(&StoreKey::generate().unwrap(), Store::SECRETS, &secret_name("x"), b"?").unwrap());
+        plant(
+            &dir,
+            "x",
+            &seal_envelope(
+                &StoreKey::generate().unwrap(),
+                Store::SECRETS,
+                &secret_name("x"),
+                b"?",
+            )
+            .unwrap(),
+        );
         let before = raw_bytes(&dir, &secret_name("a"));
         let err = rekey(&dir, &old, &new, Store::SECRETS).unwrap_err();
         assert!(matches!(err, Error::DecryptFailed { .. }), "got {err:?}");
-        assert_eq!(raw_bytes(&dir, &secret_name("a")), before, "nothing was re-sealed");
+        assert_eq!(
+            raw_bytes(&dir, &secret_name("a")),
+            before,
+            "nothing was re-sealed"
+        );
     }
 
     /// A rotation interrupted after every file was re-sealed, before the
@@ -2438,16 +2471,40 @@ mod tests {
             wrap_store_key(&new, Store::SECRETS, &next).unwrap(),
         )
         .unwrap();
-        plant(&dir, "a", &seal_envelope(&next, Store::SECRETS, &secret_name("a"), b"alpha").unwrap());
+        plant(
+            &dir,
+            "a",
+            &seal_envelope(&next, Store::SECRETS, &secret_name("a"), b"alpha").unwrap(),
+        );
         let report = rekey(&dir, &old, &new, Store::SECRETS).unwrap();
-        assert_eq!(report, RekeyReport { rekeyed: 0, skipped: 1 });
+        assert_eq!(
+            report,
+            RekeyReport {
+                rekeyed: 0,
+                skipped: 1
+            }
+        );
         assert!(!dir.join(STORE_KEY_NEXT).exists());
         assert_eq!(
-            SealedVault::open(&dir, &new).unwrap().fetch(&secret_name("a")).unwrap().as_bytes(),
+            SealedVault::open(&dir, &new)
+                .unwrap()
+                .fetch(&secret_name("a"))
+                .unwrap()
+                .as_bytes(),
             b"alpha"
         );
         // Finished, it verifies: a file the store's key can't open fails it.
-        plant(&dir, "x", &seal_envelope(&StoreKey::generate().unwrap(), Store::SECRETS, &secret_name("x"), b"?").unwrap());
+        plant(
+            &dir,
+            "x",
+            &seal_envelope(
+                &StoreKey::generate().unwrap(),
+                Store::SECRETS,
+                &secret_name("x"),
+                b"?",
+            )
+            .unwrap(),
+        );
         assert!(matches!(
             rekey(&dir, &old, &new, Store::SECRETS),
             Err(Error::DecryptFailed { .. })
@@ -2464,11 +2521,18 @@ mod tests {
         Vault::open(&empty).unwrap();
         assert_eq!(
             rekey(&empty, &old, &new, Store::SECRETS).unwrap(),
-            RekeyReport { rekeyed: 0, skipped: 0 }
+            RekeyReport {
+                rekeyed: 0,
+                skipped: 0
+            }
         );
         assert!(!empty.join(STORE_KEY_FILE).exists(), "rotating made no key");
         let v2 = test_dir("rekey-v2");
-        plant(&v2, "legacy", &seal_v2(&old, Store::SECRETS, "legacy", b"x"));
+        plant(
+            &v2,
+            "legacy",
+            &seal_v2(&old, Store::SECRETS, "legacy", b"x"),
+        );
         assert!(matches!(
             rekey(&v2, &old, &new, Store::SECRETS),
             Err(Error::OldEnvelope { .. })
@@ -2500,15 +2564,31 @@ mod tests {
         let wrapped = std::fs::read(dir.join(STORE_KEY_FILE)).unwrap();
         assert_eq!(wrapped.len(), WRAPPED_STORE_KEY_LEN);
         assert_eq!(wrapped.get(..4), Some(STORE_KEY_MAGIC.as_slice()));
-        assert_eq!(std::fs::metadata(dir.join(STORE_KEY_FILE)).unwrap().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(dir.join(STORE_KEY_FILE)).unwrap().mode() & 0o777,
+            0o600
+        );
         SealedVault::open(&dir, &key).unwrap();
-        assert_eq!(std::fs::read(dir.join(STORE_KEY_FILE)).unwrap(), wrapped, "kept, not remade");
+        assert_eq!(
+            std::fs::read(dir.join(STORE_KEY_FILE)).unwrap(),
+            wrapped,
+            "kept, not remade"
+        );
         assert_eq!(
             raw_bytes(&dir, &secret_name("a")).get(..4),
             Some(ENVELOPE_MAGIC.as_slice())
         );
-        let opened = open_envelope(&kept_key(&dir, &key, Store::SECRETS), Store::SECRETS, &secret_name("a"), &raw_bytes(&dir, &secret_name("a")));
-        assert_eq!(opened.unwrap().as_bytes(), b"alpha", "sealed under the kept key");
+        let opened = open_envelope(
+            &kept_key(&dir, &key, Store::SECRETS),
+            Store::SECRETS,
+            &secret_name("a"),
+            &raw_bytes(&dir, &secret_name("a")),
+        );
+        assert_eq!(
+            opened.unwrap().as_bytes(),
+            b"alpha",
+            "sealed under the kept key"
+        );
         // A race: every opener of a fresh store gets the same key.
         let race = test_dir("store-key-race");
         let master = std::sync::Arc::new(test_key());
@@ -2517,7 +2597,8 @@ mod tests {
                 let (race, master) = (race.to_path_buf(), std::sync::Arc::clone(&master));
                 std::thread::spawn(move || {
                     let name = format!("s{n}").parse::<SecretName>().unwrap();
-                    SealedVault::open(&race, &master).and_then(|vault| vault.store(&name, &Secret::new(vec![1]).unwrap()))
+                    SealedVault::open(&race, &master)
+                        .and_then(|vault| vault.store(&name, &Secret::new(vec![1]).unwrap()))
                 })
             })
             .collect();
@@ -2526,11 +2607,21 @@ mod tests {
         }
         let vault = SealedVault::open(&race, &master).unwrap();
         for n in 0..8 {
-            assert_eq!(vault.fetch(&format!("s{n}").parse().unwrap()).unwrap().as_bytes(), [1]);
+            assert_eq!(
+                vault
+                    .fetch(&format!("s{n}").parse().unwrap())
+                    .unwrap()
+                    .as_bytes(),
+                [1]
+            );
         }
         let leftovers: Vec<_> = std::fs::read_dir(&*race)
             .unwrap()
-            .filter_map(|entry| entry.ok().map(|entry| entry.file_name().to_string_lossy().into_owned()))
+            .filter_map(|entry| {
+                entry
+                    .ok()
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            })
             .filter(|name| name.ends_with(".tmp"))
             .collect();
         assert!(leftovers.is_empty(), "{leftovers:?}");
@@ -2550,12 +2641,20 @@ mod tests {
             SealedVault::open_in(&schedules, &key, Store::SCHEDULES),
             Err(Error::StoreKeyRefused { store: "schedules" })
         ));
-        for bad in [Vec::new(), vec![0u8; WRAPPED_STORE_KEY_LEN], vec![0u8; WRAPPED_STORE_KEY_LEN + 1]] {
+        for bad in [
+            Vec::new(),
+            vec![0u8; WRAPPED_STORE_KEY_LEN],
+            vec![0u8; WRAPPED_STORE_KEY_LEN + 1],
+        ] {
             std::fs::write(schedules.join(STORE_KEY_FILE), &bad).unwrap();
-            assert!(matches!(
-                SealedVault::open_in(&schedules, &key, Store::SCHEDULES),
-                Err(Error::StoreKeyMalformed { store: "schedules" })
-            ), "{} bytes", bad.len());
+            assert!(
+                matches!(
+                    SealedVault::open_in(&schedules, &key, Store::SCHEDULES),
+                    Err(Error::StoreKeyMalformed { store: "schedules" })
+                ),
+                "{} bytes",
+                bad.len()
+            );
         }
         SealedVault::open_in(&spaces, &key, Store::SPACES)
             .unwrap()
@@ -2566,11 +2665,17 @@ mod tests {
             SealedVault::open_in(&spaces, &key, Store::SPACES),
             Err(Error::StoreKeyMissing { store: "spaces" })
         ));
-        assert!(!spaces.join(STORE_KEY_FILE).exists(), "never remade over sealed files");
+        assert!(
+            !spaces.join(STORE_KEY_FILE).exists(),
+            "never remade over sealed files"
+        );
         assert!(holds_envelopes(&spaces).unwrap());
         let bare = test_dir("store-key-bare");
         SealedVault::open(&bare, &key).unwrap();
-        assert!(holds_envelopes(&bare).unwrap(), "a store with a key has held sealed data");
+        assert!(
+            holds_envelopes(&bare).unwrap(),
+            "a store with a key has held sealed data"
+        );
     }
 
     /// Version-2 envelopes, sealed under the master key, migrate into the
@@ -2581,13 +2686,25 @@ mod tests {
         let key = test_key();
         plant(&dir, "a", &seal_v2(&key, Store::SECRETS, "a", b"alpha"));
         plant(&dir, "b", &seal_v1(&key, b"beta"));
-        assert!(matches!(check(&dir, Store::SECRETS), Err(Error::UnmigratedStore { .. })));
         assert!(matches!(
-            SealedVault::open(&dir, &key).unwrap().fetch(&secret_name("a")),
+            check(&dir, Store::SECRETS),
+            Err(Error::UnmigratedStore { .. })
+        ));
+        assert!(matches!(
+            SealedVault::open(&dir, &key)
+                .unwrap()
+                .fetch(&secret_name("a")),
             Err(Error::OldEnvelope { .. })
         ));
         let report = migrate(&dir, &key, Store::SECRETS).unwrap();
-        assert_eq!(report, MigrateReport { encrypted: 0, upgraded: 2, skipped: 0 });
+        assert_eq!(
+            report,
+            MigrateReport {
+                encrypted: 0,
+                upgraded: 2,
+                skipped: 0
+            }
+        );
         check(&dir, Store::SECRETS).unwrap();
         let vault = SealedVault::open(&dir, &key).unwrap();
         assert_eq!(vault.fetch(&secret_name("a")).unwrap().as_bytes(), b"alpha");
@@ -2596,10 +2713,20 @@ mod tests {
         // another key, doesn't migrate in.
         let other = test_dir("migrate-v2-other");
         plant(&other, "a", &seal_v2(&key, Store::SPACES, "a", b"alpha"));
-        assert!(matches!(migrate(&other, &key, Store::SECRETS), Err(Error::DecryptFailed { .. })));
+        assert!(matches!(
+            migrate(&other, &key, Store::SECRETS),
+            Err(Error::DecryptFailed { .. })
+        ));
         let wrong = test_dir("migrate-v2-wrong");
-        plant(&wrong, "a", &seal_v2(&test_key(), Store::SECRETS, "a", b"alpha"));
-        assert!(matches!(migrate(&wrong, &key, Store::SECRETS), Err(Error::DecryptFailed { .. })));
+        plant(
+            &wrong,
+            "a",
+            &seal_v2(&test_key(), Store::SECRETS, "a", b"alpha"),
+        );
+        assert!(matches!(
+            migrate(&wrong, &key, Store::SECRETS),
+            Err(Error::DecryptFailed { .. })
+        ));
     }
 
     #[test]

@@ -1653,8 +1653,7 @@ mod tests {
         let again = unlock(&vault, &KeyringConfig::default()).unwrap();
         assert!(
             SealedVault::open(&vault.root, &again)
-                .unwrap()
-                .fetch(&name)
+                .and_then(|vault| vault.fetch(&name))
                 .is_ok()
         );
     }
@@ -1681,8 +1680,7 @@ mod tests {
         let dek = unlock(&vault, &config).unwrap();
         assert_eq!(
             SealedVault::open(&vault.root, &dek)
-                .unwrap()
-                .fetch(&name)
+                .and_then(|vault| vault.fetch(&name))
                 .unwrap()
                 .as_bytes(),
             b"kept"
@@ -3688,8 +3686,7 @@ mod tests {
             .parse()
             .unwrap();
             SealedVault::open_in(root, key, *store)
-                .unwrap()
-                .fetch(&name)
+                .and_then(|vault| vault.fetch(&name))
                 .is_ok()
         })
     }
@@ -3719,8 +3716,7 @@ mod tests {
         assert!(opens_all(&stores, &new));
         assert!(stores.iter().all(|(store, root)| {
             SealedVault::open_in(root, &old, *store)
-                .unwrap()
-                .fetch(&"token".parse().unwrap())
+                .and_then(|vault| vault.fetch(&"token".parse().unwrap()))
                 .is_err()
         }));
         assert!(!vault.key_file.exists(), "no plain key was written");
@@ -3856,8 +3852,7 @@ mod tests {
             .unwrap();
         assert!(stores.iter().all(|(store, root)| {
             SealedVault::open_in(root, from_copy.key(), *store)
-                .unwrap()
-                .fetch(&"token".parse().unwrap())
+                .and_then(|vault| vault.fetch(&"token".parse().unwrap()))
                 .is_err()
         }));
         assert!(!opens_all(&stores, from_copy.key()));
