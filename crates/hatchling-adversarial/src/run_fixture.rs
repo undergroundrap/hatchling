@@ -57,26 +57,30 @@ use hatchling_core::{
     SubagentOp, VaultOp, VaultResult,
 };
 
+/// A chat turn's view of the conversation (WO-026): what it was given,
+/// as given, without connecting.
+fn history(out: &mut impl Write) -> ExitCode {
+    let env = |key: &str| std::env::var(key).unwrap_or_default();
+    let line = format!(
+        "chat={} history={}",
+        env("HATCHLING_RUN_CHAT"),
+        env("HATCHLING_RUN_HISTORY")
+    );
+    if writeln!(out, "{line}").and_then(|()| out.flush()).is_ok() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(2)
+    }
+}
+
 fn main() -> ExitCode {
     let task = std::env::args().skip(2).collect::<Vec<_>>().join(" ");
     let mut out = std::io::stdout().lock();
     if task == "noconnect" {
         return ExitCode::SUCCESS;
     }
-    // A chat turn's view of the conversation (WO-026): what it was given,
-    // as given, without connecting.
     if task.starts_with("history") {
-        let env = |key: &str| std::env::var(key).unwrap_or_default();
-        let line = format!(
-            "chat={} history={}",
-            env("HATCHLING_RUN_CHAT"),
-            env("HATCHLING_RUN_HISTORY")
-        );
-        return if writeln!(out, "{line}").and_then(|()| out.flush()).is_ok() {
-            ExitCode::SUCCESS
-        } else {
-            ExitCode::from(2)
-        };
+        return history(&mut out);
     }
     if let Some(answer) = task.strip_prefix("envelope:") {
         let envelope = ChildEnvelope::Done {

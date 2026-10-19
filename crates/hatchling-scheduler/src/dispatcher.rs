@@ -633,7 +633,10 @@ mod tests {
     #[test]
     fn a_delivery_that_cant_tell_never_says_the_text_was_shown() {
         assert_eq!(Plain.deliver_verbatim("local", "hi"), Ok(false));
-        assert_eq!(Closed.deliver_verbatim("local", "hi"), Err(String::from("closed")));
+        assert_eq!(
+            Closed.deliver_verbatim("local", "hi"),
+            Err(String::from("closed"))
+        );
     }
 
     #[test]

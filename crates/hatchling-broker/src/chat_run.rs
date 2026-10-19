@@ -289,7 +289,12 @@ mod tests {
     }
 
     /// Runs `text` to its end in `chat`: started, then answered.
-    fn exchange(chat: &mut Chat<Scripted>, text: &str, launches: &Launches, answers: &Answers) -> Step {
+    fn exchange(
+        chat: &mut Chat<Scripted>,
+        text: &str,
+        launches: &Launches,
+        answers: &Answers,
+    ) -> Step {
         let now = Timestamp::now();
         assert_eq!(
             chat.step(|| Some(message(text)), launches, answers, now),
@@ -329,9 +334,18 @@ mod tests {
         ]);
         let answers = Answers::default();
         let mut chat = Chat::new(vec![send_local()]);
-        assert_eq!(exchange(&mut chat, "Two drinks?", &launches, &answers), Step::Answered);
-        assert_eq!(exchange(&mut chat, "The second one.", &launches, &answers), Step::Answered);
-        assert_eq!(exchange(&mut chat, "Thanks.", &launches, &answers), Step::Answered);
+        assert_eq!(
+            exchange(&mut chat, "Two drinks?", &launches, &answers),
+            Step::Answered
+        );
+        assert_eq!(
+            exchange(&mut chat, "The second one.", &launches, &answers),
+            Step::Answered
+        );
+        assert_eq!(
+            exchange(&mut chat, "Thanks.", &launches, &answers),
+            Step::Answered
+        );
         let first = turn("Two drinks?", "1. Tea. 2. Coffee.");
         let second = turn("The second one.", "Coffee, then.");
         assert_eq!(
@@ -360,22 +374,37 @@ mod tests {
         ]);
         let answers = Answers::default();
         let mut chat = Chat::new(vec![send_local()]);
-        assert_eq!(exchange(&mut chat, "fails", &launches, &answers), Step::Answered);
+        assert_eq!(
+            exchange(&mut chat, "fails", &launches, &answers),
+            Step::Answered
+        );
         let now = Timestamp::now();
         assert_eq!(
             chat.step(|| Some(message("unstarted")), &launches, &answers, now),
             Step::Answered
         );
         answers.replace.set(true);
-        assert_eq!(exchange(&mut chat, "the key?", &launches, &answers), Step::Answered);
+        assert_eq!(
+            exchange(&mut chat, "the key?", &launches, &answers),
+            Step::Answered
+        );
         answers.replace.set(false);
-        assert_eq!(exchange(&mut chat, "keep me", &launches, &answers), Step::Answered);
+        assert_eq!(
+            exchange(&mut chat, "keep me", &launches, &answers),
+            Step::Answered
+        );
         let refusing = Answers {
             refuse: true,
             ..Answers::default()
         };
-        assert_eq!(exchange(&mut chat, "nowhere", &launches, &refusing), Step::Undelivered);
-        assert_eq!(exchange(&mut chat, "last", &launches, &answers), Step::Answered);
+        assert_eq!(
+            exchange(&mut chat, "nowhere", &launches, &refusing),
+            Step::Undelivered
+        );
+        assert_eq!(
+            exchange(&mut chat, "last", &launches, &answers),
+            Step::Answered
+        );
         let histories = histories(&launches);
         assert_eq!(histories.last(), Some(&vec![turn("keep me", "kept")]));
         assert!(histories.iter().take(4).all(Vec::is_empty), "{histories:?}");
@@ -392,7 +421,10 @@ mod tests {
         let answers = Answers::default();
         let mut chat = Chat::new(vec![send_local()]);
         for n in 0..count {
-            assert_eq!(exchange(&mut chat, &format!("q{n}"), &launches, &answers), Step::Answered);
+            assert_eq!(
+                exchange(&mut chat, &format!("q{n}"), &launches, &answers),
+                Step::Answered
+            );
         }
         assert_eq!(chat.exchanges.len(), conversation::MAX_EXCHANGES);
         let history = chat.history();

@@ -136,7 +136,8 @@ impl Config {
             get(env::HATCHLING_RUN_CHAT.name).as_deref(),
             "HATCHLING_RUN_CHAT",
         )?;
-        let run_history = parse_run_history(get(env::HATCHLING_RUN_HISTORY.name).as_deref(), run_chat)?;
+        let run_history =
+            parse_run_history(get(env::HATCHLING_RUN_HISTORY.name).as_deref(), run_chat)?;
         Ok(Self {
             cell_id,
             broker,
@@ -468,7 +469,13 @@ mod tests {
         vars.insert("HATCHLING_RUN_HISTORY", raw);
         let refused = Config::parse(lookup(&vars)).unwrap_err();
         assert!(
-            matches!(&refused, Error::InvalidConfig { key: "HATCHLING_RUN_HISTORY", .. }),
+            matches!(
+                &refused,
+                Error::InvalidConfig {
+                    key: "HATCHLING_RUN_HISTORY",
+                    ..
+                }
+            ),
             "{refused:?}"
         );
         vars.insert("HATCHLING_RUN_CHAT", "1");
@@ -483,7 +490,10 @@ mod tests {
         vars.insert("HATCHLING_RUN_HISTORY", r#"[{"user":"q"}]"#);
         assert!(matches!(
             Config::parse(lookup(&vars)),
-            Err(Error::InvalidConfig { key: "HATCHLING_RUN_HISTORY", .. })
+            Err(Error::InvalidConfig {
+                key: "HATCHLING_RUN_HISTORY",
+                ..
+            })
         ));
         assert!(parse_run_history(None, false).unwrap().is_empty());
         assert!(parse_run_history(Some("[]"), true).unwrap().is_empty());

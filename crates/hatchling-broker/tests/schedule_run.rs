@@ -427,14 +427,19 @@ fn a_chats_next_cell_is_given_the_exchange_before_it() {
         let launcher = CellLauncher::new(scope, &config, &key, env(&config, RUN_DEADLINE));
         let mut chat = hatchling_broker::chat_run::Chat::new(vec![send()]);
         for text in ["history one", "history two"] {
-            let mut message = Some(hatchling_channel::Message {
+            let mut message = Some(Message {
                 sender: hatchling_channel::SenderId(String::from("api")),
                 channel: hatchling_channel::ChannelId::local(),
                 text: text.to_owned(),
             });
             let deadline = Instant::now() + RUN_DEADLINE;
             loop {
-                let step = chat.step(|| message.take(), &launcher, &shown, ts("2026-09-21T12:01:00Z"));
+                let step = chat.step(
+                    || message.take(),
+                    &launcher,
+                    &shown,
+                    ts("2026-09-21T12:01:00Z"),
+                );
                 if step == hatchling_broker::chat_run::Step::Answered {
                     break;
                 }

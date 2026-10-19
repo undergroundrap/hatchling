@@ -523,12 +523,16 @@ mod tests {
         assert_eq!(history.len(), 7, "{history:?}");
         assert!(matches!(history.first(), Some(Message::System(_))));
         assert!(matches!(history.get(1), Some(Message::User(text)) if text == "Two drinks?"));
-        assert!(matches!(history.get(2), Some(Message::Assistant(text)) if text == "1. Tea. 2. Coffee."));
+        assert!(
+            matches!(history.get(2), Some(Message::Assistant(text)) if text == "1. Tea. 2. Coffee.")
+        );
         assert!(matches!(history.get(3), Some(Message::User(text)) if text == "Hot?"));
         assert!(matches!(history.get(4), Some(Message::Assistant(text)) if text == "Both are."));
         assert!(matches!(history.get(5), Some(Message::User(text)) if text == "The second one."));
         assert!(matches!(history.get(6), Some(Message::RecalledMemory(_))));
-        assert!(matches!(result.history.last(), Some(Message::Assistant(text)) if text == "Coffee."));
+        assert!(
+            matches!(result.history.last(), Some(Message::Assistant(text)) if text == "Coffee.")
+        );
     }
 
     #[test]

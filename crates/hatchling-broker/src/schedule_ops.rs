@@ -893,7 +893,7 @@ mod tests {
             Ok(if request.text.contains("hunter2") {
                 hatchling_channel::Verdict::Redact {
                     category: hatchling_channel::Category::new("secret")
-                        .map_err(|e| e.to_string())?,
+                        .ok_or_else(|| String::from("a category"))?,
                     flagged: Some(String::from("hunter2")),
                 }
             } else {
@@ -913,7 +913,7 @@ mod tests {
             std::sync::Arc::new(hatchling_channel::NoOverrides),
             std::time::Duration::from_secs(2),
         ));
-        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
         let sink_seen = std::sync::Arc::clone(&seen);
         let _ = hub.attach(Box::new(move |cleared: &hatchling_channel::Cleared| {
             if let Ok(mut seen) = sink_seen.lock() {
@@ -923,13 +923,26 @@ mod tests {
         }));
         let delivery = HubDelivery::new(Some(&hub));
         assert_eq!(delivery.deliver_verbatim("local", "Coffee."), Ok(true));
-        assert_eq!(delivery.deliver_verbatim("local", "the key is hunter2"), Ok(false));
-        assert_eq!(delivery.deliver("local", "the key is hunter2 again"), Ok(()));
+        assert_eq!(
+            delivery.deliver_verbatim("local", "the key is hunter2"),
+            Ok(false)
+        );
+        assert_eq!(
+            delivery.deliver("local", "the key is hunter2 again"),
+            Ok(())
+        );
         assert!(delivery.deliver_verbatim("elsewhere", "Coffee.").is_err());
-        assert!(HubDelivery::new(None).deliver_verbatim("local", "Coffee.").is_err());
+        assert!(
+            HubDelivery::new(None)
+                .deliver_verbatim("local", "Coffee.")
+                .is_err()
+        );
         let seen = seen.lock().map(|seen| seen.clone()).unwrap_or_default();
         assert_eq!(seen.first().map(String::as_str), Some("Coffee."));
-        assert!(!seen.iter().any(|text| text.contains("hunter2")), "{seen:?}");
+        assert!(
+            !seen.iter().any(|text| text.contains("hunter2")),
+            "{seen:?}"
+        );
     }
 
     #[test]

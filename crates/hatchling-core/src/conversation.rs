@@ -36,13 +36,14 @@ pub struct ChatExchange {
 impl ChatExchange {
     /// Its text's size, both sides.
     #[must_use]
-    pub const fn bytes(&self) -> usize {
+    pub fn bytes(&self) -> usize {
         self.user.len().saturating_add(self.assistant.len())
     }
 }
 
-/// The newest of `exchanges` (oldest first) that fit the bounds, whole
-/// and oldest first: at most [`MAX_EXCHANGES`], and at most
+/// The newest of `exchanges` (oldest first) that fit the bounds.
+///
+/// Whole exchanges, oldest first: at most [`MAX_EXCHANGES`], and at most
 /// [`MAX_HISTORY_BYTES`] between them. An exchange too big to fit ends
 /// the history there, so what a run is given is always the most recent.
 #[must_use]
@@ -71,14 +72,14 @@ pub fn parse_history(raw: &str) -> Result<Vec<ChatExchange>, String> {
     if raw.len() > MAX_HISTORY_BYTES.saturating_mul(2) {
         return Err(format!("larger than {MAX_HISTORY_BYTES} bytes of turns"));
     }
-    let history: Vec<ChatExchange> =
-        serde_json::from_str(raw).map_err(|e| format!("expected a JSON array of exchanges: {e}"))?;
+    let history: Vec<ChatExchange> = serde_json::from_str(raw)
+        .map_err(|e| format!("expected a JSON array of exchanges: {e}"))?;
     if history.len() > MAX_EXCHANGES {
         return Err(format!("more than {MAX_EXCHANGES} exchanges"));
     }
-    let bytes = history
-        .iter()
-        .fold(0_usize, |sum, exchange| sum.saturating_add(exchange.bytes()));
+    let bytes = history.iter().fold(0_usize, |sum, exchange| {
+        sum.saturating_add(exchange.bytes())
+    });
     if bytes > MAX_HISTORY_BYTES {
         return Err(format!("larger than {MAX_HISTORY_BYTES} bytes of turns"));
     }
@@ -121,8 +122,14 @@ mod tests {
             exchange("q", &half),
             exchange("newest", "small"),
         ];
-        assert_eq!(recent(&sized), [sized[3].clone()]);
-        let fits = [exchange("old", "small"), exchange("q", &half), exchange("new", "a")];
+        // The newest two fit; the big one before them ends it, and the
+        // small one before that isn't given, though it would fit.
+        assert_eq!(recent(&sized), [sized[2].clone(), sized[3].clone()]);
+        let fits = [
+            exchange("old", "small"),
+            exchange("q", &half),
+            exchange("new", "a"),
+        ];
         assert_eq!(recent(&fits), fits);
         let exact = [exchange(&"y".repeat(MAX_HISTORY_BYTES - 1), "z")];
         assert_eq!(recent(&exact), exact, "exactly the bound fits");
@@ -132,7 +139,10 @@ mod tests {
 
     #[test]
     fn a_run_reads_back_only_what_a_broker_could_have_sent() {
-        let sent = recent(&[exchange("What's 2+2?", "4."), exchange("And doubled?", "8.")]);
+        let sent = recent(&[
+            exchange("What's 2+2?", "4."),
+            exchange("And doubled?", "8."),
+        ]);
         let raw = serde_json::to_string(&sent).unwrap();
         assert_eq!(parse_history(&raw).unwrap(), sent);
         assert_eq!(parse_history("[]").unwrap(), []);
@@ -145,9 +155,13 @@ mod tests {
             serde_json::to_string(&[exchange(&"y".repeat(MAX_HISTORY_BYTES), "z")]).unwrap(),
             "x".repeat(MAX_HISTORY_BYTES * 2 + 1),
         ] {
-            assert!(parse_history(&refused).is_err(), "{:.60}", refused);
+            assert!(parse_history(&refused).is_err(), "{refused:.60}");
         }
-        let exact = serde_json::to_string(&[exchange(&"y".repeat(MAX_HISTORY_BYTES - 1), "z")]).unwrap();
-        assert!(parse_history(&exact).is_ok(), "exactly the bound is accepted");
+        let exact =
+            serde_json::to_string(&[exchange(&"y".repeat(MAX_HISTORY_BYTES - 1), "z")]).unwrap();
+        assert!(
+            parse_history(&exact).is_ok(),
+            "exactly the bound is accepted"
+        );
     }
 }
