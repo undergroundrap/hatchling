@@ -440,11 +440,13 @@ fn assert_uprobe_refused(result: &AttackResult) -> Result<(), String> {
         .strip_prefix(&marker)
         .and_then(|report| serde_json::from_str::<serde_json::Value>(report.trim_end()).ok())
         .is_some_and(|report| {
-            let outcome = &report["outcome"];
-            outcome["kind"] == "syscall_survived"
-                && outcome["nr"] == 336
-                && outcome["ret"] == -i64::from(rustix::io::Errno::NXIO.raw_os_error())
-                && report["error"].is_null()
+            let refusal = serde_json::json!({
+                "kind": "syscall_survived",
+                "nr": 336,
+                "ret": -i64::from(rustix::io::Errno::NXIO.raw_os_error()),
+            });
+            report.get("outcome") == Some(&refusal)
+                && report.get("error").is_some_and(serde_json::Value::is_null)
         });
     if refused {
         Ok(())
