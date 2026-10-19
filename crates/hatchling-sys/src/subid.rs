@@ -703,9 +703,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tree);
         std::fs::create_dir_all(tree.join("inner")).unwrap();
         std::fs::write(tree.join("inner").join("file"), b"x").unwrap();
-        for dir in [tree.join("inner"), tree.clone()] {
-            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
-        }
+        // Its root searchable by anyone, so the owner can look inside
+        // once it's the cell's; the walk adds its owner's bits to that.
+        std::fs::set_permissions(tree.join("inner"), std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+        std::fs::set_permissions(&tree, std::fs::Permissions::from_mode(0o755)).unwrap();
         // A symlink to a file outside: the walk changes the link, never
         // what it points at.
         let outside =
@@ -778,7 +780,7 @@ mod tests {
             ]
         );
         assert!(given, "the tree went to the cell's ids");
-        assert_eq!(after_give, ((s, t, 0o700), (s, t, 0)));
+        assert_eq!(after_give, ((s, t, 0o755), (s, t, 0)));
         assert_eq!(
             (link_after_give.0, link_after_give.1),
             (s, t),
@@ -790,7 +792,7 @@ mod tests {
             "never what it points at"
         );
         assert!(reclaimed, "and came back");
-        assert_eq!(after_reclaim.0, (u, g, 0o700));
+        assert_eq!(after_reclaim.0, (u, g, 0o755));
         assert_eq!(after_reclaim.1, (u, g, 0o700), "searchable again");
         assert_eq!((after_reclaim.2.0, after_reclaim.2.1), (u, g));
         removed.expect("the owner can remove it all once it's back");
