@@ -708,10 +708,8 @@ mod tests {
         }
         // A symlink to a file outside: the walk changes the link, never
         // what it points at.
-        let outside = std::env::temp_dir().join(format!(
-            "hatchling-subid-outside-{}",
-            std::process::id()
-        ));
+        let outside =
+            std::env::temp_dir().join(format!("hatchling-subid-outside-{}", std::process::id()));
         std::fs::write(&outside, b"keep").unwrap();
         std::os::unix::fs::symlink(&outside, tree.join("link")).unwrap();
         // In a child of its own: a namespace, its maps, then `step` as
@@ -781,7 +779,11 @@ mod tests {
         );
         assert!(given, "the tree went to the cell's ids");
         assert_eq!(after_give, ((s, t, 0o700), (s, t, 0)));
-        assert_eq!((link_after_give.0, link_after_give.1), (s, t), "the link itself");
+        assert_eq!(
+            (link_after_give.0, link_after_give.1),
+            (s, t),
+            "the link itself"
+        );
         assert_eq!(
             (outside_after_give.0, outside_after_give.1),
             (u, g),

@@ -273,7 +273,8 @@ pub fn chown_tree(path: &Path, uid: u32, gid: u32) -> Result<u64, Error> {
 
 /// [`chown_tree`], changing at most `budget`'s entries.
 fn chown_tree_within(path: &Path, uid: u32, gid: u32, mut budget: Budget) -> Result<u64, Error> {
-    let root = rustix::fs::open(path, DIR_FLAGS, Mode::empty()).map_err(changing("open the tree"))?;
+    let root =
+        rustix::fs::open(path, DIR_FLAGS, Mode::empty()).map_err(changing("open the tree"))?;
     let top = look(&root, c"").map_err(changing("look at the tree"))?;
     change_dir(&root, top, uid, gid, &mut budget)?;
     chown_entries(&root, top.mount, uid, gid, &[top.id], &mut budget)?;
@@ -309,7 +310,13 @@ impl Budget {
 
 /// Gives the directory open at `dir`, which was `seen`, to `uid` and
 /// `gid`, with its owner's read, write and search bits; counts it.
-fn change_dir(dir: &OwnedFd, seen: Look, uid: u32, gid: u32, budget: &mut Budget) -> Result<(), Error> {
+fn change_dir(
+    dir: &OwnedFd,
+    seen: Look,
+    uid: u32,
+    gid: u32,
+    budget: &mut Budget,
+) -> Result<(), Error> {
     budget.take()?;
     let (owner, group) = crate::ownership::ids(uid, gid);
     rustix::fs::fchown(dir, Some(owner), Some(group)).map_err(changing("chown a directory"))?;
@@ -856,9 +863,15 @@ mod tests {
         }
         let (uid, gid) = (crate::process::euid(), crate::process::egid());
         // The root and its three files: four entries.
-        assert_eq!(chown_tree_within(&root, uid, gid, Budget::of(4)).unwrap(), 4);
+        assert_eq!(
+            chown_tree_within(&root, uid, gid, Budget::of(4)).unwrap(),
+            4
+        );
         let refused = chown_tree_within(&root, uid, gid, Budget::of(3)).unwrap_err();
-        assert!(refused.to_string().contains("too many entries"), "{refused}");
+        assert!(
+            refused.to_string().contains("too many entries"),
+            "{refused}"
+        );
     }
 
     #[test]
