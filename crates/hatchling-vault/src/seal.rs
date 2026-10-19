@@ -229,6 +229,107 @@ impl Keyed for MasterKey {
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub(crate) struct StoreKey([u8; 32]);
 
+/// What opens a sealed store (WO-017): the [`MasterKey`], which unwraps
+/// the store's key from its [`STORE_KEY_FILE`] (making one for a store
+/// that has none yet), or [`StoreKeys`], the keys a process was handed,
+/// which opens those stores and refuses every other.
+pub trait OpensStores: Send + Sync {
+    /// The key of `store`, whose files `vault` holds at `root`.
+    ///
+    /// # Errors
+    ///
+    /// For the master key, as [`SealedVault::open_in`]. For handed keys,
+    /// [`Error::StoreNotHeld`] when this store at this root wasn't one of
+    /// them.
+    fn key_for(&self, vault: &Vault, root: &Path, store: Store) -> Result<OpenedKey<'_>, Error>;
+}
+
+/// A store's key as an opened store holds it: unwrapped for that store
+/// alone, or borrowed from the [`StoreKeys`] it came from. Neither can be
+/// read or copied from outside this crate.
+pub struct OpenedKey<'k>(Opened<'k>);
+
+enum Opened<'k> {
+    Unwrapped(StoreKey),
+    Held(&'k StoreKey),
+}
+
+impl OpenedKey<'_> {
+    const fn key(&self) -> &StoreKey {
+        match &self.0 {
+            Opened::Unwrapped(key) => key,
+            Opened::Held(key) => key,
+        }
+    }
+}
+
+impl OpensStores for MasterKey {
+    fn key_for(&self, vault: &Vault, root: &Path, store: Store) -> Result<OpenedKey<'_>, Error> {
+        store_key(vault, root, self, store).map(|key| OpenedKey(Opened::Unwrapped(key)))
+    }
+}
+
+/// The keys of the stores a process was handed, each bound to its store
+/// and its root: what the broker holds in place of the master key
+/// (WO-017). A store opened with them is sealed under its own key; any
+/// other store, or this store at another root, is refused.
+pub struct StoreKeys {
+    held: Vec<Held>,
+}
+
+struct Held {
+    store: Store,
+    root: std::path::PathBuf,
+    key: StoreKey,
+}
+
+impl StoreKeys {
+    /// Unwraps the key of each of `stores` under `master`, opening each
+    /// store as [`SealedVault::open_in`] does: its root is made if absent,
+    /// and a store without a key is given one, once.
+    ///
+    /// # Errors
+    ///
+    /// As [`SealedVault::open_in`], for the first store that fails.
+    pub fn unwrap(master: &MasterKey, stores: &[(Store, &Path)]) -> Result<Self, Error> {
+        let mut held = Vec::with_capacity(stores.len());
+        for &(store, root) in stores {
+            let vault = Vault::open(root)?;
+            held.push(Held {
+                store,
+                root: root.to_path_buf(),
+                key: store_key(&vault, root, master, store)?,
+            });
+        }
+        Ok(Self { held })
+    }
+
+    /// The stores held, with their roots, in the order they were handed.
+    pub fn stores(&self) -> impl Iterator<Item = (Store, &Path)> {
+        self.held.iter().map(|held| (held.store, held.root.as_path()))
+    }
+}
+
+impl OpensStores for StoreKeys {
+    fn key_for(&self, _vault: &Vault, root: &Path, store: Store) -> Result<OpenedKey<'_>, Error> {
+        self.held
+            .iter()
+            .find(|held| held.store == store && held.root == root)
+            .map(|held| OpenedKey(Opened::Held(&held.key)))
+            .ok_or(Error::StoreNotHeld {
+                store: store.label(),
+            })
+    }
+}
+
+impl std::fmt::Debug for StoreKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list()
+            .entries(self.held.iter().map(|held| held.store.label()))
+            .finish()
+    }
+}
+
 impl StoreKey {
     /// A fresh key from the OS RNG.
     fn generate() -> Result<Self, Error> {
@@ -604,9 +705,8 @@ impl KeySource for FileKey {
 /// material.
 pub struct SealedVault<'a> {
     vault: Vault,
-    key: StoreKey,
+    key: OpenedKey<'a>,
     store: Store,
-    master: std::marker::PhantomData<&'a MasterKey>,
 }
 
 impl std::fmt::Debug for SealedVault<'_> {
@@ -631,7 +731,7 @@ impl<'a> SealedVault<'a> {
     /// Returns [`Error::NotADirectory`],
     /// [`Error::InsecurePermissions`], or [`Error::Io`] exactly as
     /// [`Vault::open`] does.
-    pub fn open(root: &Path, key: &'a MasterKey) -> Result<Self, Error> {
+    pub fn open<K: OpensStores + ?Sized>(root: &Path, key: &'a K) -> Result<Self, Error> {
         Self::open_in(root, key, Store::SECRETS)
     }
 
@@ -641,16 +741,15 @@ impl<'a> SealedVault<'a> {
     ///
     /// # Errors
     ///
-    /// As [`open`](Self::open).
-    pub fn open_in(root: &Path, key: &'a MasterKey, store: Store) -> Result<Self, Error> {
+    /// As [`open`](Self::open), and as [`OpensStores::key_for`].
+    pub fn open_in<K: OpensStores + ?Sized>(
+        root: &Path,
+        key: &'a K,
+        store: Store,
+    ) -> Result<Self, Error> {
         let vault = Vault::open(root)?;
-        let key = store_key(&vault, root, key, store)?;
-        Ok(Self {
-            vault,
-            key,
-            store,
-            master: std::marker::PhantomData,
-        })
+        let key = key.key_for(&vault, root, store)?;
+        Ok(Self { vault, key, store })
     }
 
     /// Stores `secret` under `name` as a sealed envelope, atomically
@@ -663,7 +762,7 @@ impl<'a> SealedVault<'a> {
     /// key and a fresh nonce cannot fail) or [`Error::Io`] on
     /// filesystem failure.
     pub fn store(&self, name: &SecretName, secret: &Secret) -> Result<(), Error> {
-        let envelope = seal_envelope(&self.key, self.store, name, secret.as_bytes())?;
+        let envelope = seal_envelope(self.key.key(), self.store, name, secret.as_bytes())?;
         self.vault.store_raw(name, &envelope)?;
         tracing::info!(secret_name = name.as_str(), "stored sealed secret");
         Ok(())
@@ -683,7 +782,7 @@ impl<'a> SealedVault<'a> {
         let envelope = self
             .vault
             .fetch_raw(name, MAX_SECRET_BYTES + ENVELOPE_OVERHEAD)?;
-        let secret = open_envelope(&self.key, self.store, name, &envelope)?;
+        let secret = open_envelope(self.key.key(), self.store, name, &envelope)?;
         tracing::debug!(secret_name = name.as_str(), "fetched sealed secret");
         Ok(secret)
     }
@@ -2882,5 +2981,74 @@ mod tests {
             read_wrapped(&vault, store, STORE_KEY_FILE),
             Err(Error::StoreKeyMalformed { store: "spaces" })
         ));
+    }
+
+    /// Handed keys open their stores, each at its root, as the master key
+    /// would, and refuse every other store; they never print.
+    #[test]
+    fn handed_keys_open_their_stores_and_refuse_any_other() {
+        let master = test_key();
+        let spaces = test_dir("handed-spaces");
+        let schedules = test_dir("handed-schedules");
+        let elsewhere = test_dir("handed-elsewhere");
+        SealedVault::open_in(&spaces, &master, Store::SPACES)
+            .unwrap()
+            .store(&secret_name("a"), &secret(b"alpha"))
+            .unwrap();
+        let keys = StoreKeys::unwrap(
+            &master,
+            &[(Store::SPACES, &spaces), (Store::SCHEDULES, &schedules)],
+        )
+        .unwrap();
+        assert_eq!(
+            keys.stores().collect::<Vec<_>>(),
+            [(Store::SPACES, &*spaces), (Store::SCHEDULES, &*schedules)]
+        );
+        // A store without a key was given one, kept in the store.
+        assert!(schedules.join(STORE_KEY_FILE).exists());
+        // What the master key sealed opens, and what is sealed opens
+        // under the master key: one key, the store's own.
+        let held = SealedVault::open_in(&spaces, &keys, Store::SPACES).unwrap();
+        assert_eq!(held.fetch(&secret_name("a")).unwrap().as_bytes(), b"alpha");
+        held.store(&secret_name("b"), &secret(b"beta")).unwrap();
+        assert_eq!(
+            SealedVault::open_in(&spaces, &master, Store::SPACES)
+                .unwrap()
+                .fetch(&secret_name("b"))
+                .unwrap()
+                .as_bytes(),
+            b"beta"
+        );
+        assert_eq!(held.key.key().0, kept_key(&spaces, &master, Store::SPACES).0);
+        assert_eq!(
+            SealedVault::open_in(&schedules, &keys, Store::SCHEDULES)
+                .unwrap()
+                .key
+                .key()
+                .0,
+            kept_key(&schedules, &master, Store::SCHEDULES).0
+        );
+        // Refused: a store at a root it wasn't handed at, a handed root as
+        // another store, and the secrets.
+        for (root, store) in [
+            (&*elsewhere, Store::SPACES),
+            (&*spaces, Store::SCHEDULES),
+            (&*schedules, Store::SECRETS),
+        ] {
+            assert!(matches!(
+                SealedVault::open_in(root, &keys, store),
+                Err(Error::StoreNotHeld { .. })
+            ));
+        }
+        assert!(matches!(
+            SealedVault::open(&spaces, &keys),
+            Err(Error::StoreNotHeld { store: "secrets" })
+        ));
+        // Another master key unwraps nothing.
+        assert!(matches!(
+            StoreKeys::unwrap(&test_key(), &[(Store::SPACES, &spaces)]),
+            Err(Error::StoreKeyRefused { store: "spaces" })
+        ));
+        assert_eq!(format!("{keys:?}"), r#"["spaces", "schedules"]"#);
     }
 }
