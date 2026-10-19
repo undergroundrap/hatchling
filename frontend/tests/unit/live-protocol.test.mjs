@@ -8,7 +8,7 @@ import { OUTPUT_PATH, SCHEMA_PATH, WIRE_PATH, WIRE_ROOTS, format, generate, type
 import { WIRE_DEFINITIONS } from '../../dist/app/adapters/live/protocol/wire.js';
 const schema = () => JSON.parse(readFileSync(new URL(`../../${SCHEMA_PATH}`, import.meta.url), 'utf8'));
 const at = (seq, body) => ({ seq, ts: `2026-10-07T02:00:${String(seq).padStart(2, '0')}Z`, body });
-const request = (id, revision) => at(0, { kind: 'confirmation', confirmation_id: id, revision, chat_id: 'main', summary: `do ${id}`, expires_at: null }).body;
+const request = (id, revision) => at(0, { kind: 'confirmation', confirmation_id: id, revision, chat_id: 'main', summary: `do ${id}`, expires_at: null, digest: `digest-${id}-${revision}`, fields: [] }).body;
 const offer = (seq, id, revision = 1) => at(seq, request(id, revision));
 const decided = (seq, id, decision = 'approve', revision = 1) => at(seq, { kind: 'confirmation_decided', confirmation_id: id, revision, decision });
 const chat = seq => at(seq, { kind: 'chat_message', chat_id: 'main', message_id: `m${seq}`, author: 'agent', text: '<script>x</script>' });
@@ -89,7 +89,7 @@ test('a confirmation shows its newest revision, and a decision names it', () => 
     assert.equal(ledger.pending()[0].revision, 2, 'an older revision does not replace a newer one');
     ledger.apply(offer(4, 'k1', 3));
     assert.deepEqual(ledger.pending().map(item => [item.confirmation_id, item.revision]), [['k1', 3], ['k2', 1]], 'first-offered order holds');
-    assert.deepEqual(ledger.decide('k1', 'approve'), { action: 'decide', confirmation_id: 'k1', revision: 3, decision: 'approve' });
+    assert.deepEqual(ledger.decide('k1', 'approve'), { action: 'decide', confirmation_id: 'k1', revision: 3, digest: 'digest-k1-3', decision: 'approve' });
     assert.equal(ledger.decide('unknown', 'deny'), undefined);
     ledger.apply(offer(5, 'k1', 3));
     assert.equal(ledger.pending()[0].revision, 3, 'the same revision again changes nothing');

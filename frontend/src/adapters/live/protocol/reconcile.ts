@@ -43,7 +43,8 @@ export class EventLedger {
         return this.#decided.get(confirmationId);
     }
     /**
-     * The action deciding a pending confirmation, at the revision on screen. A
+     * The action deciding a pending confirmation, at the revision and action
+     * digest on screen. A
      * confirmation that is not pending (decided, or never offered) gets no
      * action: a decision is never sent twice.
      */
@@ -51,6 +52,6 @@ export class EventLedger {
         const request = this.#pending.get(confirmationId);
         if (request === undefined)
             return undefined;
-        return { action: 'decide', confirmation_id: confirmationId, revision: request.revision, decision };
+        return { action: 'decide', confirmation_id: confirmationId, revision: request.revision, digest: request.digest, decision };
     }
 }

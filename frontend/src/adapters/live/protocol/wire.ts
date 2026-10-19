@@ -845,6 +845,25 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             }
         ]
     },
+    "ConfirmationField": {
+        "properties": {
+            "label": {
+                "type": "string"
+            },
+            "source": {
+                "$ref": "#/$defs/FieldSource"
+            },
+            "value": {
+                "type": "string"
+            }
+        },
+        "required": [
+            "label",
+            "value",
+            "source"
+        ],
+        "type": "object"
+    },
     "ConfirmationRequest": {
         "properties": {
             "chat_id": {
@@ -856,11 +875,20 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             "confirmation_id": {
                 "type": "string"
             },
+            "digest": {
+                "type": "string"
+            },
             "expires_at": {
                 "type": [
                     "string",
                     "null"
                 ]
+            },
+            "fields": {
+                "items": {
+                    "$ref": "#/$defs/ConfirmationField"
+                },
+                "type": "array"
             },
             "revision": {
                 "minimum": 0,
@@ -873,7 +901,9 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
         "required": [
             "confirmation_id",
             "revision",
-            "summary"
+            "summary",
+            "digest",
+            "fields"
         ],
         "type": "object"
     },
@@ -1003,6 +1033,18 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             "max_items"
         ],
         "type": "object"
+    },
+    "FieldSource": {
+        "oneOf": [
+            {
+                "const": "broker",
+                "type": "string"
+            },
+            {
+                "const": "agent",
+                "type": "string"
+            }
+        ]
     },
     "FileContent": {
         "oneOf": [
@@ -1880,6 +1922,9 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "decision": {
                         "$ref": "#/$defs/Decision"
                     },
+                    "digest": {
+                        "type": "string"
+                    },
                     "revision": {
                         "minimum": 0,
                         "type": "integer"
@@ -1889,6 +1934,7 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "action",
                     "confirmation_id",
                     "revision",
+                    "digest",
                     "decision"
                 ],
                 "type": "object"

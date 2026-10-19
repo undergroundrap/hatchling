@@ -44,7 +44,7 @@ const answer = (transport, request_id, result) => transport.deliver({ type: 'act
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const thread = adapter => adapter.getSnapshot().threads[0];
 const lane = (adapter, id) => thread(adapter).lanes.find(item => item.id === id);
-const confirmation = (seq, revision, summary = 'Post the sample summary?') => sampleEvent(seq, seq, { kind: 'confirmation', confirmation_id: 'confirm-1', revision, chat_id: 'main', summary, expires_at: null });
+const confirmation = (seq, revision, summary = 'Post the sample summary?') => sampleEvent(seq, seq, { kind: 'confirmation', confirmation_id: 'confirm-1', revision, chat_id: 'main', summary, expires_at: null, digest: `digest-${revision}`, fields: [{ label: 'Operation', value: summary, source: 'broker' }, { label: 'Text', value: 'Sample text.', source: 'agent' }] });
 const decidedEvent = (seq, decision, revision = 2) => sampleEvent(seq, seq, { kind: 'confirmation_decided', confirmation_id: 'confirm-1', revision, decision });
 // ---- A minimal DOM: enough for h() and markdown(), and nothing that parses HTML.
 class FakeNode {
@@ -379,7 +379,7 @@ test('confirmation UI: typed approve and deny, through the existing approval rev
         id: 'confirm-1', revision: 2, chatId: 'main', threadId: '', kind: 'tool', title: 'Hatchling asks before it continues',
         description: 'Post the shorter sample summary to the sample team space?', resource: 'This request expires at 09:10 UTC.',
         detail: 'Allow once answers this request as described, and only this version of it. Your answer is recorded once.',
-        scopes: ['once'], status: 'pending', time: '09:00', report: 'Post the shorter sample summary to the sample team space?',
+        scopes: ['once'], status: 'pending', time: '09:00', report: ['Operation: Post a summary', 'From the agent, Text: The shorter sample summary.'].join(String.fromCharCode(10)),
     });
     const changes = [];
     const review = new ApprovalReview(adapter.taskApprovals, () => changes.push(1), 60000);
@@ -387,7 +387,7 @@ test('confirmation UI: typed approve and deny, through the existing approval rev
     await flush();
     const sent = transport.last();
     assert.equal(sent.type, 'action');
-    assert.deepEqual(sent.action, { action: 'decide', confirmation_id: 'confirm-1', revision: 2, decision: 'approve' });
+    assert.deepEqual(sent.action, { action: 'decide', confirmation_id: 'confirm-1', revision: 2, digest: 'a'.repeat(64), decision: 'approve' });
     answer(transport, sent.request_id, { result: 'decided', confirmation_id: 'confirm-1', decision: 'approve' });
     await pending;
     assert.equal(review.state('confirm-1').phase, 'unknown', 'accepted, and waiting for the broker\'s record');
@@ -469,7 +469,7 @@ test('approvals reconcile without resending, and an older revision never replace
     transport.deliver(confirmation(2, 1, 'An older version.'));
     assert.equal(adapter.taskApprovals.getSnapshot()[0].revision, 2);
     // A confirmation that names no chat belongs to the main one.
-    transport.deliver(sampleEvent(3, 3, { kind: 'confirmation', confirmation_id: 'confirm-2', revision: 1, summary: 'A general question.' }));
+    transport.deliver(sampleEvent(3, 3, { kind: 'confirmation', confirmation_id: 'confirm-2', revision: 1, summary: 'A general question.', digest: 'digest-q', fields: [] }));
     assert.deepEqual(adapter.taskApprovals.getSnapshot().map(item => [item.id, item.chatId]), [['confirm-1', 'main'], ['confirm-2', 'main']]);
     await adapter.taskApprovals.refresh('confirm-1');
     assert.deepEqual(transport.last(), { type: 'subscribe', after_seq: 3 });
@@ -612,7 +612,7 @@ test('the runtime check accepts every typed fixture and the frames the UI sends'
     for (const frame of [SAMPLE_WELCOME, ...SAMPLE_EVENTS])
         assert.ok(isUiResponse(frame), JSON.stringify(frame));
     assert.deepEqual(decodeResponse(JSON.stringify(SAMPLE_EVENTS[2])), SAMPLE_EVENTS[2]);
-    for (const request of [{ type: 'hello', schema_version: 1, client: 'x' }, { type: 'subscribe', after_seq: null }, { type: 'subscribe' }, { type: 'action', request_id: 'r', action: { action: 'decide', confirmation_id: 'c', revision: 1, decision: 'deny' } }])
+    for (const request of [{ type: 'hello', schema_version: 1, client: 'x' }, { type: 'subscribe', after_seq: null }, { type: 'subscribe' }, { type: 'action', request_id: 'r', action: { action: 'decide', confirmation_id: 'c', revision: 1, digest: 'd', decision: 'deny' } }])
         assert.ok(isUiRequest(JSON.parse(encodeRequest(request))), JSON.stringify(request));
 });
 test('the runtime check rejects whatever the generated types would not describe', () => {

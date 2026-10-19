@@ -274,6 +274,10 @@ export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'decide' | 'ma
  */
 export type ApiToken = string;
 /**
+ * Why a proposal wasn't put to the owner for approval (WO-027).
+ */
+export type ApprovalRefusal = 'denied' | 'paused' | 'queue_full' | 'unavailable';
+/**
  * An artifact revision's content, as a surface may show it.
  */
 export type ArtifactBody = {
@@ -549,6 +553,16 @@ export type ArtifactResult = {
      */
     readonly proposal: ActivationProposal;
     readonly result: 'activation-proposed';
+} | {
+    /**
+     * What was pinned.
+     */
+    readonly proposal: ActivationProposal;
+    /**
+     * Why the owner wasn't asked.
+     */
+    readonly reason: ApprovalRefusal;
+    readonly result: 'approval-refused';
 } | {
     /**
      * Why.
@@ -1048,7 +1062,28 @@ export type ChildReport = {
  */
 export type ChildVerdict = 'ok' | 'partial';
 /**
+ * One field of what a confirmation asks.
+ */
+export type ConfirmationField = {
+    /**
+     * What the field is, in the broker's words.
+     */
+    readonly label: string;
+    /**
+     * Who stated the value.
+     */
+    readonly source: FieldSource;
+    /**
+     * Its value, as plain text, whole: never cut short.
+     */
+    readonly value: string;
+};
+/**
  * The agent asks the user to approve or deny something.
+ *
+ * What is asked is the broker's record of one frozen action (WO-027): its
+ * digest, and its fields in the order the owner reviews them, the broker's
+ * first and the agent's after, each labeled with who stated it.
  */
 export type ConfirmationRequest = {
     /**
@@ -1060,16 +1095,26 @@ export type ConfirmationRequest = {
      */
     readonly confirmation_id: string;
     /**
+     * The digest of the exact action the approval would run. A decision
+     * names it.
+     */
+    readonly digest: string;
+    /**
      * When the request lapses, RFC 3339, if it does.
      */
     readonly expires_at?: string | null;
+    /**
+     * The action's fields, in review order.
+     */
+    readonly fields: readonly (ConfirmationField)[];
     /**
      * Bumped when the request changes. A decision names the revision
      * it applies to, and a stale one is rejected.
      */
     readonly revision: number;
     /**
-     * What is being asked, as plain text.
+     * What is being asked, as plain text: the broker's name for the
+     * operation, never the agent's words.
      */
     readonly summary: string;
 };
@@ -1435,6 +1480,10 @@ export type FeedSpec = {
      */
     readonly tracking_source?: string | null;
 };
+/**
+ * Who stated a confirmation field's value.
+ */
+export type FieldSource = 'broker' | 'agent';
 /**
  * A file the user adds from their device.
  */
@@ -3001,6 +3050,10 @@ export type UiAction = {
      * The decision.
      */
     readonly decision: Decision;
+    /**
+     * The digest of the action the user saw.
+     */
+    readonly digest: string;
     /**
      * The revision the user saw.
      */

@@ -75,6 +75,29 @@ The README's quickstart sets these, along with the broker's own required variabl
 - **A run that fails** answers with a fixed sentence; why it failed is in the broker's log.
 - **A chat run sees the conversation so far** (WO-026): its message, and the last exchanges before it, up to 8 and 24 KiB, newest kept. An exchange is kept only when its answer reached you as written: a failed run's sentence, or an answer the output gate blocked or replaced, is never given back. The broker keeps the conversation in its memory, so a broker restart starts a new one, and a run can't add to it.
 
+## Approvals
+
+When the agent proposes an action that needs your yes (today: building an idea into an artifact), the broker freezes it and asks you on the stream, never in the chat (WO-027).
+
+- **The stream's `confirmation`** carries several parts:
+  - the request's `confirmation_id` and `revision`;
+  - its `digest`: SHA-256 over the action's canonical form, which binds every field of what would run;
+  - a `summary` in the broker's words;
+  - the action's `fields`, in review order. Each field has a `label`, a `value` (whole, never cut short) and a `source`: `broker` for what the broker resolved, `agent` for the agent's own words.
+- **`decide`** names the `confirmation_id`, the `revision` and the `digest` you were shown, with `approve` or `deny`.
+  - Only a caller holding every grant the owner holds can decide; anyone else gets `refused`/`not_granted`.
+  - A decision on a request that changed, lapsed (15 minutes), or was already decided is rejected with its reason.
+  - A `confirmation_decided` event follows on the stream either way.
+- **On approve, the broker runs the action it recorded, once,** on its own worker. A session can't run it, and nothing a session sends afterwards is what runs. The outcome comes back on the local chat, as the broker's.
+- **Asking is bounded:**
+  - at most 5 requests wait, one per agent session;
+  - at most 20 are made in an hour;
+  - a denied action is never asked again, however it's reworded;
+  - after a denial, new requests wait 10 minutes.
+
+  The agent is told why it couldn't ask (`approval-refused`).
+- **Requests live in the broker's memory:** a restart withdraws them, and you're asked again.
+
 ## How enums appear in JSON
 
 Every enum is *internally tagged*: one field names the variant, beside the variant's own fields. It is never a wrapper object such as `{"Cron": {...}}`.
