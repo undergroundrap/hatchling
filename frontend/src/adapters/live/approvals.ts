@@ -98,6 +98,7 @@ export class LiveApprovals implements TaskApprovalPort {
             status,
             time: clockTime(at),
             report: reviewText(request),
+            fields: request.fields,
         };
     }
     async #dispatch(attempt: ApprovalAttempt): Promise<ApprovalResult> {

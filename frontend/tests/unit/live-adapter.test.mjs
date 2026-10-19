@@ -379,7 +379,7 @@ test('confirmation UI: typed approve and deny, through the existing approval rev
         id: 'confirm-1', revision: 2, chatId: 'main', threadId: '', kind: 'tool', title: 'Hatchling asks before it continues',
         description: 'Post the shorter sample summary to the sample team space?', resource: 'This request expires at 09:10 UTC.',
         detail: 'Allow once answers this request as described, and only this version of it. Your answer is recorded once.',
-        scopes: ['once'], status: 'pending', time: '09:00', report: ['Operation: Post a summary', 'From the agent, Text: The shorter sample summary.'].join(String.fromCharCode(10)),
+        scopes: ['once'], status: 'pending', time: '09:00', report: ['Operation: Post a summary', 'From the agent, Text: The shorter sample summary.'].join(String.fromCharCode(10)), fields: [{ label: 'Operation', value: 'Post a summary', source: 'broker' }, { label: 'Text', value: 'The shorter sample summary.', source: 'agent' }],
     });
     const changes = [];
     const review = new ApprovalReview(adapter.taskApprovals, () => changes.push(1), 60000);

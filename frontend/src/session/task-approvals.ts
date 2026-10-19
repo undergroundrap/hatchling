@@ -4,6 +4,12 @@
  * Neither an optimistic click nor a lost response is an approval. */
 export type ApprovalDecision = 'once' | 'task' | 'deny';
 export type ApprovalStatus = 'pending' | 'allowed-once' | 'allowed-task' | 'denied' | 'expired' | 'cancelled';
+/** One field of what a request asks, and who stated it: the broker resolved it, or the agent wrote it. */
+export interface ReviewField {
+    readonly label: string;
+    readonly value: string;
+    readonly source: 'broker' | 'agent';
+}
 export interface TaskApproval {
     readonly id: string;
     readonly revision: number;
@@ -18,6 +24,8 @@ export interface TaskApproval {
     readonly status: ApprovalStatus;
     readonly time: string;
     readonly report: string;
+    /** The request's fields, when its source states them: shown whole, in review order. */
+    readonly fields?: readonly ReviewField[];
 }
 export interface ApprovalAttempt {
     readonly id: string;
