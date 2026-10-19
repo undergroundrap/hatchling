@@ -706,6 +706,14 @@ mod tests {
         for dir in [tree.join("inner"), tree.clone()] {
             std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
+        // A symlink to a file outside: the walk changes the link, never
+        // what it points at.
+        let outside = std::env::temp_dir().join(format!(
+            "hatchling-subid-outside-{}",
+            std::process::id()
+        ));
+        std::fs::write(&outside, b"keep").unwrap();
+        std::os::unix::fs::symlink(&outside, tree.join("link")).unwrap();
         // In a child of its own: a namespace, its maps, then `step` as
         // that namespace's root. Whether it worked, and the maps.
         let in_helper = |step: fn(&Path) -> bool| {
@@ -749,6 +757,8 @@ mod tests {
             (meta.uid(), meta.gid(), meta.mode() & 0o777)
         };
         let after_give = (host(&tree), host(&tree.join("inner")));
+        let outside_after_give = host(&outside);
+        let link_after_give = host(&tree.join("link"));
         let (reclaimed, _) = in_helper(|tree| crate::chown_tree(tree, 0, 0).is_ok());
         let after_reclaim = (
             host(&tree),
@@ -756,6 +766,7 @@ mod tests {
             host(&tree.join("inner").join("file")),
         );
         let removed = std::fs::remove_dir_all(&tree);
+        let _ = std::fs::remove_file(&outside);
         let (u, g, s, t) = (owner.0, owner.1, uid, gid);
         assert_eq!(
             maps,
@@ -770,6 +781,12 @@ mod tests {
         );
         assert!(given, "the tree went to the cell's ids");
         assert_eq!(after_give, ((s, t, 0o700), (s, t, 0)));
+        assert_eq!((link_after_give.0, link_after_give.1), (s, t), "the link itself");
+        assert_eq!(
+            (outside_after_give.0, outside_after_give.1),
+            (u, g),
+            "never what it points at"
+        );
         assert!(reclaimed, "and came back");
         assert_eq!(after_reclaim.0, (u, g, 0o700));
         assert_eq!(after_reclaim.1, (u, g, 0o700), "searchable again");
