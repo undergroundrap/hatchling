@@ -561,12 +561,12 @@ impl Drop for Subagents<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hatchling_vault::MasterKey;
     use crate::{
         ArtifactConfig, EgressConfig, GoalsConfig, MemoryConfig, SkillConfig, SpaceConfig,
         VaultConfig, VaultGrant,
     };
     use hatchling_core::{LogLevel, PeerUid, VaultAction};
+    use hatchling_vault::MasterKey;
     use std::path::PathBuf;
 
     fn config() -> Config {

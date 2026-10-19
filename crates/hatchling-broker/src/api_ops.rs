@@ -453,9 +453,9 @@ mod tests {
     use hatchling_core::ui::{DecisionRejection, FileContent, FileFormat, UiEvent};
 
     use super::*;
-    use hatchling_vault::MasterKey;
     use crate::api_auth::tests::{owner_config, scratch};
     use crate::config::{GoalsAction, SkillConfig};
+    use hatchling_vault::MasterKey;
 
     fn goals(action: &str) -> ScheduleGrant {
         ScheduleGrant::Goals {

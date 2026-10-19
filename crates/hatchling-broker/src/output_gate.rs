@@ -707,10 +707,10 @@ mod tests {
     use hatchling_core::VaultAction;
 
     use super::*;
-    use hatchling_vault::MasterKey;
     use crate::VaultGrant;
     use crate::api_auth::tests::{Scratch, owner_config, scratch};
     use crate::redactions::{AUDIT_FILE, Record, read_log};
+    use hatchling_vault::MasterKey;
 
     /// The secret the broker holds in [`held`].
     const HELD: &str = "nightjar-7f3a91c2";

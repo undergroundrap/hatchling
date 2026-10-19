@@ -322,7 +322,9 @@ impl StoreKeys {
 
     /// The stores held, with their roots, in the order they were handed.
     pub fn stores(&self) -> impl Iterator<Item = (Store, &Path)> {
-        self.held.iter().map(|held| (held.store, held.root.as_path()))
+        self.held
+            .iter()
+            .map(|held| (held.store, held.root.as_path()))
     }
 }
 
@@ -351,7 +353,11 @@ fn keep_pending(vault: &Vault, root: &Path, store: Store, pending: &[u8]) -> Res
         store: store.label(),
     };
     if let Some(kept) = read_wrapped(vault, store, STORE_KEY_FILE)? {
-        return if kept == pending { Ok(()) } else { Err(refused()) };
+        return if kept == pending {
+            Ok(())
+        } else {
+            Err(refused())
+        };
     }
     if holds_current(vault, root)? {
         return Err(Error::StoreKeyMissing {
@@ -3064,7 +3070,10 @@ mod tests {
                 .as_bytes(),
             b"beta"
         );
-        assert_eq!(held.key.key().0, kept_key(&spaces, &master, Store::SPACES).0);
+        assert_eq!(
+            held.key.key().0,
+            kept_key(&spaces, &master, Store::SPACES).0
+        );
         assert_eq!(
             SealedVault::open_in(&schedules, &keys, Store::SCHEDULES)
                 .unwrap()
@@ -3095,6 +3104,16 @@ mod tests {
             Err(Error::StoreKeyRefused { store: "spaces" })
         ));
         assert_eq!(format!("{keys:?}"), r#"["spaces", "schedules"]"#);
+        // `key_for`, called directly: each opener gives the store's key.
+        let vault = Vault::open(&spaces).unwrap();
+        assert_eq!(
+            master.key_for(&vault, &spaces, Store::SPACES).unwrap().key().0,
+            keys.key_for(&vault, &spaces, Store::SPACES).unwrap().key().0
+        );
+        assert!(matches!(
+            keys.key_for(&vault, &spaces, Store::ARTIFACTS),
+            Err(Error::StoreNotHeld { store: "artifacts" })
+        ));
     }
 
     /// A store not made yet when the keys are handed stays unmade; its
@@ -3121,7 +3140,10 @@ mod tests {
         // The first open keeps the key; the next finds it.
         let vault = SealedVault::open_in(&later, &keys, Store::ARTIFACTS).unwrap();
         vault.store(&secret_name("a"), &secret(b"alpha")).unwrap();
-        assert_eq!(vault.key.key().0, kept_key(&later, &master, Store::ARTIFACTS).0);
+        assert_eq!(
+            vault.key.key().0,
+            kept_key(&later, &master, Store::ARTIFACTS).0
+        );
         assert_eq!(
             SealedVault::open_in(&later, &keys, Store::ARTIFACTS)
                 .unwrap()

@@ -360,7 +360,10 @@ fn held_secret_names(config: &Config) -> BTreeSet<String> {
 }
 
 /// The held secrets' values, unrecorded.
-fn read_held_secrets(config: &Config, key: &dyn OpensStores) -> Result<Vec<Zeroizing<Vec<u8>>>, String> {
+fn read_held_secrets(
+    config: &Config,
+    key: &dyn OpensStores,
+) -> Result<Vec<Zeroizing<Vec<u8>>>, String> {
     let names = held_secret_names(config);
     let vault = SealedVault::open(&config.vault.root, key)
         .map_err(|e| format!("the vault could not be opened: {e}"))?;

@@ -1777,11 +1777,11 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use hatchling_vault::MasterKey;
     use crate::{
         ArtifactConfig, EgressConfig, GoalsConfig, MemoryConfig, SchedulerConfig, SkillConfig,
         SpaceConfig, VaultConfig,
     };
+    use hatchling_vault::MasterKey;
 
     /// A scratch directory, removed when dropped.
     struct Scratch(PathBuf);

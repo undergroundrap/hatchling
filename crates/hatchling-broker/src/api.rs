@@ -438,10 +438,10 @@ mod tests {
     };
 
     use super::*;
-    use hatchling_vault::MasterKey;
     use crate::api_auth::tests::{Scratch, owner_config, real_uid, scratch};
     use crate::config::{GoalsAction, SkillConfig};
     use crate::test_socket::TestSocket;
+    use hatchling_vault::MasterKey;
 
     fn goals() -> ScheduleGrant {
         ScheduleGrant::Goals {

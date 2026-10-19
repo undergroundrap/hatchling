@@ -823,9 +823,9 @@ fn hand_over_connection(handoff: &UnixStream, connection: Option<UnixStream>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hatchling_vault::MasterKey;
     use crate::{ChannelAccountSpec, EgressConfig, GoalsConfig, MemoryConfig, VaultConfig};
     use hatchling_core::{PeerUid, VaultAction};
+    use hatchling_vault::MasterKey;
     use std::os::unix::fs::PermissionsExt as _;
 
     fn config() -> Config {

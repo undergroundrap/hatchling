@@ -618,4 +618,43 @@ mod tests {
                 .is_ok()
         );
     }
+
+    /// The broker's keys hold its configured stores, and open no other;
+    /// a store whose key the master key doesn't unwrap stops the start.
+    #[test]
+    fn hand_store_keys_holds_the_configured_stores_alone() {
+        let scratch =
+            std::env::temp_dir().join(format!("hatchling-hand-keys-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir(&scratch).unwrap();
+        let stores = vec![
+            (Store::SECRETS, scratch.join("vault")),
+            (Store::SPACES, scratch.join("spaces")),
+        ];
+        let master = MasterKey::generate().unwrap();
+        SealedVault::open_in(&stores[1].1, &master, Store::SPACES).unwrap();
+        let keys = hand_store_keys(master, &stores).unwrap();
+        let held: Vec<_> = keys
+            .stores()
+            .map(|(store, root)| (store, root.to_path_buf()))
+            .collect();
+        assert_eq!(held, stores);
+        assert!(SealedVault::open(&stores[0].1, &keys).is_ok());
+        assert!(SealedVault::open_in(&stores[1].1, &keys, Store::SPACES).is_ok());
+        let refused = SealedVault::open_in(&scratch.join("artifacts"), &keys, Store::ARTIFACTS);
+        let other = hand_store_keys(MasterKey::generate().unwrap(), &stores[1..]);
+        let _ = std::fs::remove_dir_all(&scratch);
+        assert!(matches!(
+            refused,
+            Err(hatchling_vault::Error::StoreNotHeld {
+                store: "artifacts"
+            })
+        ));
+        assert!(matches!(
+            other,
+            Err(Error::Vault {
+                source: hatchling_vault::Error::StoreKeyRefused { store: "spaces" }
+            })
+        ));
+    }
 }
