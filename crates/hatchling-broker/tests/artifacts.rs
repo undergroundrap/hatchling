@@ -1639,7 +1639,10 @@ fn the_workers_steps_run_only_what_was_approved_and_tell_the_owner() {
         None,
         NOW,
     );
-    assert_eq!(told, "Approval approval-none was not run: it is no longer approved.");
+    assert_eq!(
+        told,
+        "Approval approval-none was not run: it is no longer approved."
+    );
     let (idea, _) = saved(world.capture("Short zine", None));
     let proposal = proposed(&world.propose(&idea, "page", PAGE_BUILDER, "a zine")).unwrap();
     assert_eq!(

@@ -53,9 +53,9 @@ use hatchling_artifact::{
 };
 use hatchling_channel::{ChannelId, LocalHub, Message, SenderId};
 use hatchling_core::{
-    ArtifactInput, ArtifactOp, ArtifactResult, ArtifactView,
-    BuildFailure, BuildState, CapabilityName, DeliveryRefusal, DeliveryTarget, IdeaRef,
-    IdeaRefusal, IdeaSource, MAX_SECRET_BYTES, SecretName,
+    ArtifactInput, ArtifactOp, ArtifactResult, ArtifactView, BuildFailure, BuildState,
+    CapabilityName, DeliveryRefusal, DeliveryTarget, IdeaRef, IdeaRefusal, IdeaSource,
+    MAX_SECRET_BYTES, SecretName,
 };
 use hatchling_goals::{FeedQuery, GoalId, StatusFilter, TimeRange};
 use hatchling_memory::{MemoryPrincipal, Tag};
@@ -935,9 +935,11 @@ impl Pipeline<'_> {
 }
 
 /// Activates `activation` with `confirmation`, which the broker minted
-/// when the owner approved it (WO-027): the broker's own run of the stored
-/// action, never a session's. The outcome is delivered, as a session's
-/// would be, in the broker's scheduler scope.
+/// when the owner approved it (WO-027).
+///
+/// The broker's own run of the stored action, never a session's. The
+/// outcome is delivered, as a session's would be, in the broker's
+/// scheduler scope.
 #[must_use]
 pub fn activate_confirmed(
     config: &Config,
