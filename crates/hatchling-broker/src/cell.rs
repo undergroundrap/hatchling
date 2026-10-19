@@ -1865,9 +1865,13 @@ mod tests {
                 .unwrap();
         let spec = cell_spec(&config, LogLevel::Info);
         let _ = std::fs::remove_dir_all(&dir);
+        // The broker's own map, with its group: the owner's gid for an
+        // unprivileged broker, which needn't be the uid's number.
         assert_eq!(
             spec.identity,
-            CellIdentity::direct(config.uid_base, config.uid_count)
+            hatchling_isolation::platform()
+                .identity(Some(config.uid_base), config.uid_count)
+                .unwrap()
         );
         assert_eq!(spec.program, Path::new("/bin/true"));
         assert_eq!(
