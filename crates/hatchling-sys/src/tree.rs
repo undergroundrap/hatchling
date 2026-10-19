@@ -34,6 +34,10 @@ use crate::Error;
 /// How deep [`remove_tree`] goes; anything below is kept.
 pub const MAX_DEPTH: usize = 64;
 
+/// How many entries [`chown_tree`] changes before it gives up: a tree a
+/// cell grew can't hold the walk for ever.
+pub const MAX_CHOWN_ENTRIES: u64 = 1 << 20;
+
 /// How a directory is opened: itself, never a symlink to one.
 const DIR_FLAGS: OFlags = OFlags::RDONLY
     .union(OFlags::DIRECTORY)
@@ -88,6 +92,10 @@ fn failed(operation: &'static str) -> impl Fn(rustix::io::Errno) -> Error {
 struct Look {
     /// A directory itself (not a symlink to one).
     directory: bool,
+    /// A regular file itself.
+    regular: bool,
+    /// Its permission bits, set-id bits included.
+    mode: u32,
     /// Its identity.
     id: DirId,
     /// Its mount's id, when the kernel gives one; else its device.
@@ -117,7 +125,11 @@ fn look(dir: impl AsFd, name: &CStr) -> Result<Look, rustix::io::Errno> {
         dir,
         name,
         flags,
-        StatxFlags::TYPE | StatxFlags::INO | StatxFlags::MNT_ID | StatxFlags::UID,
+        StatxFlags::TYPE
+            | StatxFlags::MODE
+            | StatxFlags::INO
+            | StatxFlags::MNT_ID
+            | StatxFlags::UID,
     )?;
     let dev = rustix::fs::makedev(stat.stx_dev_major, stat.stx_dev_minor);
     let mount = if StatxFlags::from_bits_retain(stat.stx_mask).contains(StatxFlags::MNT_ID) {
@@ -125,8 +137,11 @@ fn look(dir: impl AsFd, name: &CStr) -> Result<Look, rustix::io::Errno> {
     } else {
         dev
     };
+    let kind = FileType::from_raw_mode(u32::from(stat.stx_mode));
     Ok(Look {
-        directory: FileType::from_raw_mode(u32::from(stat.stx_mode)) == FileType::Directory,
+        directory: kind == FileType::Directory,
+        regular: kind == FileType::RegularFile,
+        mode: u32::from(stat.stx_mode) & 0o7777,
         id: DirId {
             dev,
             ino: stat.stx_ino,
@@ -215,6 +230,146 @@ pub fn remove_dir_tree(path: &Path) -> Result<Removed, Error> {
         });
     };
     remove_tree(root, name, &[])
+}
+
+/// An [`Error::Ownership`] for `operation`, from a rustix error.
+fn changing(operation: &'static str) -> impl Fn(rustix::io::Errno) -> Error {
+    move |source| Error::Ownership {
+        operation,
+        source: io::Error::from_raw_os_error(source.raw_os_error()),
+    }
+}
+
+/// An [`Error::Ownership`] for `operation` that no system call reported.
+fn refused(operation: &'static str, why: &str) -> Error {
+    Error::Ownership {
+        operation,
+        source: io::Error::new(io::ErrorKind::PermissionDenied, why.to_owned()),
+    }
+}
+
+/// Gives the directory `path`, and everything in it, to `uid` and `gid`;
+/// how many entries it changed (WO-014: a harness cell's work tree,
+/// handed to the cell's ids, and taken back after its cell is gone).
+///
+/// Nothing is followed. A symlink is changed itself. Each directory is
+/// opened without following a symlink, checked to be the one looked at,
+/// and changed through that handle, then walked; it also gets its owner's
+/// read, write and search bits, so its new owner can always go through
+/// it, whatever its last owner left. A regular file loses its set-user-ID
+/// and set-group-ID bits (the kernel clears them on a change of owner;
+/// this checks).
+///
+/// # Errors
+///
+/// [`Error::Ownership`] if `path` isn't a directory itself, or any entry
+/// can't be changed, is on another mount (by its mount id), is a
+/// directory the walk is already in, or lies deeper than [`MAX_DEPTH`],
+/// or the tree holds more than [`MAX_CHOWN_ENTRIES`] entries. The tree
+/// may then be partly changed: the caller treats it as unusable.
+pub fn chown_tree(path: &Path, uid: u32, gid: u32) -> Result<u64, Error> {
+    let root = rustix::fs::open(path, DIR_FLAGS, Mode::empty()).map_err(changing("open the tree"))?;
+    let top = look(&root, c"").map_err(changing("look at the tree"))?;
+    let mut count = 0;
+    change_dir(&root, top, uid, gid, &mut count)?;
+    chown_entries(&root, top.mount, uid, gid, &[top.id], &mut count)?;
+    Ok(count)
+}
+
+/// Gives the directory open at `dir`, which was `seen`, to `uid` and
+/// `gid`, with its owner's read, write and search bits; counts it.
+fn change_dir(dir: &OwnedFd, seen: Look, uid: u32, gid: u32, count: &mut u64) -> Result<(), Error> {
+    *count += 1;
+    if *count > MAX_CHOWN_ENTRIES {
+        return Err(refused("change the tree", "it holds too many entries"));
+    }
+    let (owner, group) = crate::ownership::ids(uid, gid);
+    rustix::fs::fchown(dir, Some(owner), Some(group)).map_err(changing("chown a directory"))?;
+    rustix::fs::fchmod(dir, Mode::from_raw_mode(seen.mode | 0o700))
+        .map_err(changing("chmod a directory"))
+}
+
+/// Gives everything in `dir` to `uid` and `gid`, as [`chown_tree`] does.
+/// `above` is every directory the walk is in, from the root down to `dir`.
+fn chown_entries(
+    dir: &OwnedFd,
+    mount: u64,
+    uid: u32,
+    gid: u32,
+    above: &[DirId],
+    count: &mut u64,
+) -> Result<(), Error> {
+    let entries = rustix::fs::Dir::read_from(dir).map_err(changing("read a directory"))?;
+    let mut names = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(changing("read a directory"))?;
+        let name = entry.file_name();
+        if name != c"." && name != c".." {
+            names.push(name.to_owned());
+        }
+    }
+    for name in &names {
+        let seen = look(dir, name).map_err(changing("look at an entry"))?;
+        if !seen.directory {
+            *count += 1;
+            if *count > MAX_CHOWN_ENTRIES {
+                return Err(refused("change the tree", "it holds too many entries"));
+            }
+            let (owner, group) = crate::ownership::ids(uid, gid);
+            rustix::fs::chownat(
+                dir,
+                name.as_c_str(),
+                Some(owner),
+                Some(group),
+                AtFlags::SYMLINK_NOFOLLOW,
+            )
+            .map_err(changing("chown an entry"))?;
+            if seen.regular {
+                strip_set_ids(dir, name, seen)?;
+            }
+            continue;
+        }
+        if above.contains(&seen.id) {
+            return Err(refused("change the tree", "a directory is inside itself"));
+        }
+        if seen.mount != mount {
+            return Err(refused("change the tree", "a directory is on another mount"));
+        }
+        if above.len() > MAX_DEPTH {
+            return Err(refused("change the tree", "it is too deep"));
+        }
+        let sub = rustix::fs::openat(dir, name.as_c_str(), DIR_FLAGS, Mode::empty())
+            .map_err(changing("open a directory"))?;
+        if look(&sub, c"").map(|opened| opened.id) != Ok(seen.id) {
+            return Err(refused("change the tree", "a directory changed under the walk"));
+        }
+        change_dir(&sub, seen, uid, gid, count)?;
+        let deeper: Vec<DirId> = above.iter().copied().chain([seen.id]).collect();
+        chown_entries(&sub, mount, uid, gid, &deeper, count)?;
+    }
+    Ok(())
+}
+
+/// Clears the set-user-ID and set-group-ID bits of the regular file
+/// `name` in `dir` if its change of owner left any, through a handle
+/// opened without following a symlink and checked to be that file.
+fn strip_set_ids(dir: &OwnedFd, name: &CStr, seen: Look) -> Result<(), Error> {
+    let now = look(dir, name).map_err(changing("look at an entry"))?;
+    if now.mode & 0o6000 == 0 {
+        return Ok(());
+    }
+    let file = rustix::fs::openat(
+        dir,
+        name,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(changing("open a file"))?;
+    if look(&file, c"").map(|opened| opened.id) != Ok(seen.id) {
+        return Err(refused("change the tree", "a file changed under the walk"));
+    }
+    rustix::fs::fchmod(&file, Mode::from_raw_mode(now.mode & !0o6000))
+        .map_err(changing("chmod a file"))
 }
 
 /// Removes what it may of everything in `dir`, as `walk` keeps to;
@@ -612,5 +767,67 @@ mod tests {
         }
         assert_eq!(code, 0, "the mounts must be left, and the rest removed");
         assert!(intact(&outside));
+    }
+
+    fn mode(path: &Path) -> u32 {
+        use std::os::unix::fs::MetadataExt as _;
+        std::fs::symlink_metadata(path).unwrap().mode() & 0o7777
+    }
+
+    fn set_mode(path: &Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    /// The whole tree changes, through no symlink, and its directories
+    /// end up searchable by their new owner: here this process's own
+    /// ids, so only the modes show it (the helper's ids, in its own
+    /// namespace, are tested in `subid`).
+    #[test]
+    fn a_tree_changes_owner_whole_and_follows_nothing() {
+        let scratch = scratch("chown");
+        let root = scratch.0.join("root");
+        let outside = scratch.0.join("outside");
+        std::fs::create_dir_all(root.join("a").join("b")).unwrap();
+        std::fs::write(root.join("a").join("b").join("file"), b"x").unwrap();
+        // Set-group-ID without group execute: a change of owner leaves it
+        // (the kernel clears it only with group execute), the walk doesn't.
+        std::fs::write(root.join("setgid"), b"x").unwrap();
+        set_mode(&root.join("setgid"), 0o2644);
+        symlink(&outside, root.join("out")).unwrap();
+        set_mode(&outside, 0o500);
+        set_mode(&root.join("a").join("b"), 0o000);
+        set_mode(&root.join("a"), 0o500);
+        let (uid, gid) = (crate::process::euid(), crate::process::egid());
+        let changed = chown_tree(&root, uid, gid);
+        set_mode(&outside, 0o700);
+        assert_eq!(changed.unwrap(), 6, "root, a, a/b, a/b/file, setgid, out");
+        assert_eq!(mode(&root.join("a")), 0o700);
+        assert_eq!(mode(&root.join("a").join("b")), 0o700);
+        assert_eq!(mode(&root.join("setgid")) & 0o6000, 0, "set-id bits go");
+        assert!(std::fs::read(root.join("a").join("b").join("file")).is_ok());
+        // The symlink's target is outside: never followed.
+        set_mode(&outside, 0o500);
+        assert!(chown_tree(&root, uid, gid).is_ok());
+        assert_eq!(mode(&outside), 0o500, "the symlink's target is left alone");
+        set_mode(&outside, 0o700);
+    }
+
+    #[test]
+    fn a_tree_too_deep_or_not_a_directory_is_refused() {
+        let scratch = scratch("chown-refused");
+        let (uid, gid) = (crate::process::euid(), crate::process::egid());
+        let file = scratch.0.join("outside").join("file");
+        assert!(chown_tree(&file, uid, gid).is_err(), "a file");
+        let link = scratch.0.join("link");
+        symlink(scratch.0.join("root"), &link).unwrap();
+        assert!(chown_tree(&link, uid, gid).is_err(), "a symlink to a directory");
+        let mut deep = scratch.0.join("root");
+        for _ in 0..=MAX_DEPTH + 1 {
+            deep.push("d");
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        let refused = chown_tree(&scratch.0.join("root"), uid, gid).unwrap_err();
+        assert!(refused.to_string().contains("too deep"), "{refused}");
     }
 }

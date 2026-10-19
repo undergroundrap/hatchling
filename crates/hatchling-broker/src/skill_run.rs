@@ -140,6 +140,12 @@ impl SkillRuntime {
         }
     }
 
+    /// The helper binary: the broker's own.
+    #[must_use]
+    pub fn spawner(&self) -> &Path {
+        &self.spawner
+    }
+
     /// The same runtime with a different bound on each run.
     #[must_use]
     pub const fn with_timeout(mut self, timeout: Duration) -> Self {

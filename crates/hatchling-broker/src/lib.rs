@@ -49,6 +49,7 @@ pub use feed_run::{FEED_TASK, FeedLauncher, FeedRun};
 pub mod goals_ops;
 pub mod harness;
 pub mod harness_relay;
+pub mod harness_tree;
 pub use harness::{HarnessKind, Harnesses};
 pub mod ingress;
 pub use ingress::{Ingress, open_ingress};
