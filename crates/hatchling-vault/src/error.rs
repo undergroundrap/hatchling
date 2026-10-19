@@ -362,7 +362,9 @@ mod tests {
                 "run vault-keyring backup-codes before enrolling a single security key",
             ),
             (
-                Error::HandoffMalformed { reason: "cut short" },
+                Error::HandoffMalformed {
+                    reason: "cut short",
+                },
                 "the store keys handed over are malformed: cut short",
             ),
             (

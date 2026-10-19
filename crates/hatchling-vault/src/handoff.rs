@@ -72,13 +72,19 @@ impl StoreKeys {
         for held in &self.held {
             let label = held.store.label().as_bytes();
             let root = root_bytes(&held.root)?;
-            bytes.push(u8::try_from(label.len()).map_err(|_| Error::HandoffMalformed {
-                reason: "a label too long",
-            })?);
+            bytes.push(
+                u8::try_from(label.len()).map_err(|_| Error::HandoffMalformed {
+                    reason: "a label too long",
+                })?,
+            );
             bytes.extend_from_slice(label);
-            bytes.extend_from_slice(&u16::try_from(root.len()).map_err(|_| Error::HandoffMalformed {
-                reason: "a root too long",
-            })?.to_be_bytes());
+            bytes.extend_from_slice(
+                &u16::try_from(root.len())
+                    .map_err(|_| Error::HandoffMalformed {
+                        reason: "a root too long",
+                    })?
+                    .to_be_bytes(),
+            );
             bytes.extend_from_slice(root);
             bytes.extend_from_slice(&held.key.0);
             match &held.pending {
@@ -162,7 +168,7 @@ struct Reader<'b>(&'b [u8]);
 
 impl<'b> Reader<'b> {
     /// The next `len` bytes.
-    fn take(&mut self, len: usize) -> Result<&'b [u8], Error> {
+    const fn take(&mut self, len: usize) -> Result<&'b [u8], Error> {
         if self.0.len() < len {
             return Err(malformed("cut short"));
         }
@@ -173,7 +179,8 @@ impl<'b> Reader<'b> {
 
     /// The next byte.
     fn byte(&mut self) -> Result<u8, Error> {
-        self.take(1).map(|taken| taken.first().copied().unwrap_or_default())
+        self.take(1)
+            .map(|taken| taken.first().copied().unwrap_or_default())
     }
 }
 
@@ -183,7 +190,8 @@ mod tests {
     use crate::{MasterKey, SealedVault, Secret};
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("hatchling-handoff-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("hatchling-handoff-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }
@@ -202,14 +210,24 @@ mod tests {
             .unwrap();
         let all = StoreKeys::unwrap(
             &master,
-            &[(Store::SECRETS, &secrets), (Store::SPACES, &spaces), (Store::ARTIFACTS, &later)],
+            &[
+                (Store::SECRETS, &secrets),
+                (Store::SPACES, &spaces),
+                (Store::ARTIFACTS, &later),
+            ],
         )
         .unwrap();
-        let bytes = all.only(&[Store::SPACES, Store::ARTIFACTS]).to_bytes().unwrap();
+        let bytes = all
+            .only(&[Store::SPACES, Store::ARTIFACTS])
+            .to_bytes()
+            .unwrap();
         let handed = StoreKeys::from_bytes(&bytes).unwrap();
         assert_eq!(
             handed.stores().collect::<Vec<_>>(),
-            [(Store::SPACES, spaces.as_path()), (Store::ARTIFACTS, later.as_path())]
+            [
+                (Store::SPACES, spaces.as_path()),
+                (Store::ARTIFACTS, later.as_path())
+            ]
         );
         assert_eq!(
             SealedVault::open_in(&spaces, &handed, Store::SPACES)
@@ -247,8 +265,11 @@ mod tests {
         let master = MasterKey::generate().unwrap();
         let root = scratch("exact");
         let later = scratch("exact-later");
-        let keys =
-            StoreKeys::unwrap(&master, &[(Store::SPACES, &root), (Store::SCHEDULES, &later)]).unwrap();
+        let keys = StoreKeys::unwrap(
+            &master,
+            &[(Store::SPACES, &root), (Store::SCHEDULES, &later)],
+        )
+        .unwrap();
         let bytes = keys.to_bytes().unwrap();
         for len in 0..bytes.len() {
             assert!(
@@ -302,7 +323,9 @@ mod tests {
         };
         assert!(matches!(
             relative.to_bytes(),
-            Err(Error::HandoffMalformed { reason: "a root that isn't absolute" })
+            Err(Error::HandoffMalformed {
+                reason: "a root that isn't absolute"
+            })
         ));
         let long = StoreKeys {
             held: vec![Held {
@@ -314,7 +337,9 @@ mod tests {
         };
         assert!(matches!(
             long.to_bytes(),
-            Err(Error::HandoffMalformed { reason: "a root too long" })
+            Err(Error::HandoffMalformed {
+                reason: "a root too long"
+            })
         ));
         let many = StoreKeys {
             held: (0..=MAX_HANDED)
@@ -328,7 +353,9 @@ mod tests {
         };
         assert!(matches!(
             many.to_bytes(),
-            Err(Error::HandoffMalformed { reason: "too many stores" })
+            Err(Error::HandoffMalformed {
+                reason: "too many stores"
+            })
         ));
         assert_eq!(Store::from_label("spaces"), Some(Store::SPACES));
         assert_eq!(Store::from_label("vault"), None);

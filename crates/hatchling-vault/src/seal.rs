@@ -173,7 +173,8 @@ const TAG_LEN: usize = 16;
 /// the allocation at `MAX_SECRET_BYTES + ENVELOPE_OVERHEAD`.
 const ENVELOPE_OVERHEAD: usize = ENVELOPE_MAGIC.len() + NONCE_LEN + TAG_LEN;
 /// A wrapped store key's exact length: magic + nonce + key + tag.
-pub(crate) const WRAPPED_STORE_KEY_LEN: usize = STORE_KEY_MAGIC.len() + NONCE_LEN + MASTER_KEY_LEN + TAG_LEN;
+pub(crate) const WRAPPED_STORE_KEY_LEN: usize =
+    STORE_KEY_MAGIC.len() + NONCE_LEN + MASTER_KEY_LEN + TAG_LEN;
 /// Master-key length in bytes (256 bits).
 const MASTER_KEY_LEN: usize = 32;
 /// Mode of the key file: owner-only.
