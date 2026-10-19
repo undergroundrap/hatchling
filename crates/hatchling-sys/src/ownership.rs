@@ -30,7 +30,7 @@ fn refused(operation: &'static str, why: &str) -> Error {
 }
 
 /// The raw ids as rustix takes them.
-const fn ids(uid: u32, gid: u32) -> (rustix::fs::Uid, rustix::fs::Gid) {
+pub(crate) const fn ids(uid: u32, gid: u32) -> (rustix::fs::Uid, rustix::fs::Gid) {
     // SAFETY: `Uid::from_raw` only wraps the u32; the unsafety is
     // rustix's marker for raw-id construction, and the value comes from
     // the validated cell identity or the process itself.

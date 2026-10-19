@@ -142,6 +142,15 @@ pub enum CellIds {
 }
 
 impl CellIds {
+    /// Its value in `HATCHLING_CELL_IDS`.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Own => "own",
+            Self::Subordinate => "subordinate",
+        }
+    }
+
     /// Reads `HATCHLING_CELL_IDS` through `get`.
     ///
     /// # Errors
@@ -579,6 +588,23 @@ impl CellConfig {
     /// [`Error::InvalidConfig`] for a limit that doesn't parse.
     pub fn skill(cell_id: &str) -> Result<Self, Error> {
         Self::skill_with(cell_id, |key| env_value(std::env::var(key)))
+    }
+
+    /// [`CellConfig::skill`], on the ids `ids` whatever
+    /// `HATCHLING_CELL_IDS` says: a choice made once, when the broker read
+    /// its configuration.
+    ///
+    /// # Errors
+    ///
+    /// As [`CellConfig::skill`].
+    pub(crate) fn skill_on(cell_id: &str, ids: CellIds) -> Result<Self, Error> {
+        Self::skill_with(cell_id, |key| {
+            if key == env::HATCHLING_CELL_IDS.name {
+                Some(ids.name().to_owned())
+            } else {
+                env_value(std::env::var(key))
+            }
+        })
     }
 
     /// [`CellConfig::skill`], reading its configuration through `get`.
@@ -1608,6 +1634,28 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn a_skill_cell_on_given_ids_ignores_the_environment() {
+        let backend = hatchling_isolation::platform();
+        let own = CellConfig::skill_on("on-own", CellIds::Own).unwrap();
+        assert_eq!(own.ids, CellIds::Own);
+        assert_eq!(own.identity(), backend.identity(None, 1).unwrap());
+        match (
+            CellConfig::skill_on("on-sub", CellIds::Subordinate),
+            backend.subordinate_identity(),
+        ) {
+            (Ok(sub), Ok(owners)) => assert_eq!(sub.identity(), owners),
+            (Err(_), Err(_)) => {}
+            (got, owners) => unreachable!(
+                "skill_on and the backend disagree: config {}, backend {}",
+                got.is_ok(),
+                owners.is_ok()
+            ),
+        }
+        assert_eq!(CellIds::Own.name(), "own");
+        assert_eq!(CellIds::Subordinate.name(), "subordinate");
     }
 
     #[test]

@@ -140,6 +140,12 @@ impl SkillRuntime {
         }
     }
 
+    /// The helper binary: the broker's own.
+    #[must_use]
+    pub fn spawner(&self) -> &Path {
+        &self.spawner
+    }
+
     /// The same runtime with a different bound on each run.
     #[must_use]
     pub const fn with_timeout(mut self, timeout: Duration) -> Self {
@@ -522,6 +528,12 @@ mod tests {
             |wait| pauses.push(wait),
         );
         (result, attempts, pauses)
+    }
+
+    #[test]
+    fn a_runtime_starts_its_spawner() {
+        let runtime = SkillRuntime::new(PathBuf::from("/opt/hatchling-broker"));
+        assert_eq!(runtime.spawner(), Path::new("/opt/hatchling-broker"));
     }
 
     #[test]

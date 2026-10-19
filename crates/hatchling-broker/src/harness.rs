@@ -62,9 +62,10 @@ use hatchling_scheduler::Timestamp;
 use hatchling_skill::CodeHash;
 use serde::{Deserialize, Serialize};
 
-use crate::cell::{HarnessDirs, HarnessNetwork};
+use crate::cell::{CellIds, HarnessDirs, HarnessNetwork};
 use crate::environment as env;
 use crate::harness_relay::{RELAY_PORT, Relay, Vendor, Wire};
+use crate::harness_tree::{TreeOp, change_trees};
 use crate::skill_cell::VerifiedCode;
 use crate::skill_run::{SkillRunError, SkillRuntime, run_cell};
 use crate::{CellConfig, Config, Error};
@@ -433,6 +434,8 @@ pub struct Harnesses {
     timeout: Duration,
     workspace: Option<PathBuf>,
     activity_log: Option<PathBuf>,
+    /// Where a harness cell's ids come from (`HATCHLING_CELL_IDS`).
+    ids: CellIds,
 }
 
 impl Harnesses {
@@ -513,6 +516,7 @@ impl Harnesses {
         let tools = parse_tools(get(TOOLS_KEY).as_deref(), !vendors.is_empty())?;
         let roots = parse_roots(get(env::HATCHLING_HARNESS_ROOTS.name).as_deref(), config)?;
         let timeout = parse_timeout(get(env::HATCHLING_HARNESS_TIMEOUT_SECS.name).as_deref())?;
+        let ids = CellIds::parse(&get)?;
         if !binaries.is_empty() {
             if roots.is_empty() {
                 return Err(invalid(
@@ -553,6 +557,7 @@ impl Harnesses {
                 .scheduler
                 .enabled()
                 .then(|| config.scheduler.activity_log()),
+            ids,
         })
     }
 
@@ -611,6 +616,10 @@ impl Harnesses {
     }
 
     /// One run: the brief, the slice, the cell, the changes.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one run's steps, in the order they happen: the brief, the slice, the cell and its trees, the run, the changes"
+    )]
     fn run(
         &self,
         kind: HarnessKind,
@@ -653,11 +662,18 @@ impl Harnesses {
                 Err(reason) => return report.refused(reason),
             },
         };
-        let cell = match harness_cell(kind, &brief.prompt(), verified.dir(), &scratch, network) {
+        let cell = match harness_cell(
+            kind,
+            &brief.prompt(),
+            verified.dir(),
+            &scratch,
+            network,
+            self.ids,
+        ) {
             Ok(cell) => cell,
             Err(error) => return report.failed(&error.to_string()),
         };
-        if let Err(reason) = hand_over(&scratch, cell.uid_base) {
+        if let Err(reason) = trees(runtime, &cell, &scratch, TreeOp::Give) {
             return report.failed(&reason);
         }
         let relay = relaying.map(|(handoff, vendor, surrogate, key)| {
@@ -692,6 +708,12 @@ impl Harnesses {
                 report.reason = Some(format!("the harness exited with status {code}"));
             }
             Err(error) => report.reason = Some(run_failure(&error)),
+        }
+        // The cell is gone by now: its helper was waited for, or killed,
+        // and its output closed.
+        if let Err(reason) = trees(runtime, &cell, &scratch, TreeOp::Reclaim) {
+            tracing::error!(%reason, "cannot take a harness's trees back");
+            return report.failed(&format!("cannot take the work tree back: {reason}"));
         }
         if let Some(question) = read_question(&scratch.scratch) {
             report.harness_said.question = Some(question);
@@ -1272,9 +1294,9 @@ fn harness_cell(
     code_dir: &Path,
     dirs: &RunDirs,
     network: Option<HarnessNetwork>,
+    ids: CellIds,
 ) -> Result<CellConfig, Error> {
-    let mut cell = CellConfig::skill("harness")?;
-    harness_ids(&cell)?;
+    let mut cell = CellConfig::skill_on("harness", ids)?;
     cell.skill_code = Some(code_dir.to_path_buf());
     cell.agent_bin = code_dir.join("harness");
     cell.harness = Some(HarnessDirs {
@@ -1286,25 +1308,33 @@ fn harness_cell(
     Ok(cell)
 }
 
-/// Refuses a harness cell on the owner's subordinate ids, until WO-014's
-/// part 2b: its work tree and scratch are handed to the cell's uid by
-/// chown ([`hand_over`]), which an unprivileged broker can't do, and are
-/// read back and removed after.
+/// Moves a harness run's work tree and scratch directory between the
+/// broker and `cell`: `Give` before the run, `Reclaim` after it.
+///
+/// A root broker gives them by chown ([`hand_over`]) and needs nothing
+/// back: it reads anything. On the owner's subordinate ids both go
+/// through the tree helper ([`change_trees`]), since the broker can
+/// neither give a file away nor read, or remove, what the cell left.
 ///
 /// # Errors
 ///
-/// [`Error::InvalidConfig`] for a cell on subordinate ids.
-fn harness_ids(cell: &CellConfig) -> Result<(), Error> {
-    if cell.ids == crate::cell::CellIds::Subordinate {
-        return Err(Error::InvalidConfig {
-            key: "HATCHLING_CELL_IDS",
-            reason: String::from(
-                "a harness can't run on subordinate ids yet: its work tree is handed to the \
-                 cell's uid by chown, which needs root (WO-014, part 2b)",
-            ),
-        });
+/// Why they couldn't be moved.
+fn trees(
+    runtime: &SkillRuntime,
+    cell: &CellConfig,
+    dirs: &RunDirs,
+    op: TreeOp,
+) -> Result<(), String> {
+    match (cell.ids, op) {
+        (CellIds::Own, TreeOp::Give) => hand_over(dirs, cell.uid_base),
+        (CellIds::Own, TreeOp::Reclaim) => Ok(()),
+        (CellIds::Subordinate, _) => change_trees(
+            runtime.spawner(),
+            op,
+            &[&dirs.work, &dirs.scratch],
+            cell.identity(),
+        ),
     }
-    Ok(())
 }
 
 /// Gives the work tree and scratch directory to `uid`, the cell's map
@@ -1888,21 +1918,6 @@ mod tests {
             .permissions()
             .mode()
             & 0o777
-    }
-
-    #[test]
-    fn a_harness_refuses_subordinate_ids_until_its_tree_can_be_handed_over() {
-        let mut cell = CellConfig::skill("harness").unwrap();
-        assert!(harness_ids(&cell).is_ok());
-        cell.ids = crate::cell::CellIds::Subordinate;
-        assert!(
-            matches!(
-                harness_ids(&cell),
-                Err(Error::InvalidConfig { key: "HATCHLING_CELL_IDS", reason })
-                    if reason.contains("part 2b")
-            ),
-            "refused, naming the work that lifts it"
-        );
     }
 
     #[test]
@@ -3060,6 +3075,7 @@ mod tests {
             Path::new("/staged/code"),
             &dirs,
             None,
+            CellIds::Own,
         )
         .unwrap();
         assert_eq!(cell.skill_code.as_deref(), Some(Path::new("/staged/code")));
@@ -3074,6 +3090,22 @@ mod tests {
             })
         );
         assert!(cell.is_harness_cell());
+    }
+
+    #[test]
+    fn a_runs_trees_move_by_chown_or_through_the_helper() {
+        let dirs = RunDirs::create().unwrap();
+        let mut cell = CellConfig::skill("harness").unwrap();
+        cell.ids = CellIds::Own;
+        let runtime = SkillRuntime::new(PathBuf::from("/nonexistent/hatchling-broker"));
+        // A root broker takes nothing back: it reads anything.
+        assert_eq!(trees(&runtime, &cell, &dirs, TreeOp::Reclaim), Ok(()));
+        // On subordinate ids, both ways go through the helper: with no
+        // helper binary, nothing moves.
+        cell.ids = CellIds::Subordinate;
+        for op in [TreeOp::Give, TreeOp::Reclaim] {
+            assert!(trees(&runtime, &cell, &dirs, op).is_err(), "{op:?}");
+        }
     }
 
     #[test]

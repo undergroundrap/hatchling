@@ -99,6 +99,18 @@ impl Deployment {
             .with_harnesses(harnesses))
     }
 
+    /// Its harnesses, their cells on the owner's subordinate ids.
+    fn skills_on_subordinate_ids(&self, timeout: &str) -> Result<Skills, String> {
+        let mut vars = self.vars(timeout);
+        vars.insert("HATCHLING_CELL_IDS", String::from("subordinate"));
+        let harnesses = Harnesses::parse(&self.config, |key| vars.get(key).cloned())
+            .map_err(|e| e.to_string())?;
+        let runtime = SkillRuntime::new(common::spawner());
+        Ok(Skills::default()
+            .with_runtime(runtime)
+            .with_harnesses(harnesses))
+    }
+
     fn file(&self, relative: &str) -> Option<String> {
         std::fs::read_to_string(self.dir.join(relative)).ok()
     }
@@ -192,6 +204,72 @@ fn claude_code_edits_its_slice_and_returns_a_patch_for_review() -> Result<(), St
         Some("old notes")
     );
     assert!(deployment.file("project/src/helper.rs").is_none());
+    Ok(())
+}
+
+/// WO-014, part 2b: a harness on the owner's subordinate ids. Its work
+/// tree and scratch go to the cell's ids through the tree helper, and
+/// come back after: the same edits come back as the same patch, and the
+/// run's directories are gone. Skips where no cell can run on subordinate
+/// ids (an owner with root, `no_new_privs`, no range), unless
+/// `HATCHLING_REQUIRE_SUBID=1`.
+#[test]
+fn a_harness_on_subordinate_ids_edits_its_slice_the_same_way() -> Result<(), String> {
+    use hatchling_isolation::IsolationBackend as _;
+    if !guard_cell_available()? {
+        return Ok(());
+    }
+    let required = std::env::var("HATCHLING_REQUIRE_SUBID").is_ok_and(|v| v == "1");
+    let new_privs = std::fs::read_to_string("/proc/self/status").is_ok_and(|status| {
+        status
+            .lines()
+            .any(|line| line.split_whitespace().eq(["NoNewPrivs:", "0"]))
+    });
+    if !new_privs
+        || hatchling_isolation::platform()
+            .subordinate_identity()
+            .is_err()
+    {
+        if required {
+            return Err(String::from(
+                "HATCHLING_REQUIRE_SUBID=1, but no subordinate cell here",
+            ));
+        }
+        return Ok(());
+    }
+    let deployment = Deployment::new("harness-subordinate")?;
+    let skills = deployment.skills_on_subordinate_ids("20")?;
+    let task = "Add a helper.
+STUB edit src/lib.rs
+STUB create src/helper.rs
+STUB remove notes.txt";
+    let report = invoke(
+        &skills,
+        "claude-code@1",
+        &brief(task, &["src/lib.rs", "notes.txt"]),
+    )?;
+    assert_eq!(field(&report, "/outcome"), "done", "{report}");
+    assert_eq!(field(&report, "/files_changed"), json!(["src/lib.rs"]));
+    assert_eq!(field(&report, "/files_added"), json!(["src/helper.rs"]));
+    assert_eq!(field(&report, "/files_removed"), json!(["notes.txt"]));
+    let patch = deployment
+        .file(&format!(
+            "workspace/{}",
+            field(&report, "/patch").as_str().unwrap()
+        ))
+        .unwrap();
+    assert!(
+        patch.contains("+// edited by the stub harness") && patch.contains("+fn created() {}"),
+        "{patch}"
+    );
+    assert_eq!(
+        deployment.file("project/src/lib.rs").as_deref(),
+        Some(
+            "pub fn a() {}
+"
+        ),
+        "nothing reached the project itself"
+    );
     Ok(())
 }
 

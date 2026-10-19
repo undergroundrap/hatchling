@@ -278,18 +278,49 @@ impl Helpers {
     ///
     /// [`Error::IdMapWrite`] if a helper can't run or refuses the map.
     pub fn write_maps(&self, child_pid: i32, uid: u32, gid: u32) -> Result<(), Error> {
+        self.run(child_pid, &[(0, uid)], &[(0, gid)])
+    }
+
+    /// Writes the maps of `child_pid` for a trusted helper that changes
+    /// files between the owner and a cell (WO-014, part 2b): its 0 to the
+    /// owner's `owner` uid and gid, its 1 to the cell's `cell` uid and gid,
+    /// each one wide, in one call per map (a map can't be extended once
+    /// written). The owner's own ids need no range: the helpers let a user
+    /// map its own uid and primary gid beside its subordinate ones.
+    /// `setgroups` stays `allow`, as for [`write_maps`](Self::write_maps).
+    ///
+    /// `child_pid` must be the caller's own unreaped child.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::IdMapWrite`] if a helper can't run or refuses the map.
+    pub fn write_helper_maps(
+        &self,
+        child_pid: i32,
+        owner: (u32, u32),
+        cell: (u32, u32),
+    ) -> Result<(), Error> {
+        self.run(
+            child_pid,
+            &[(0, owner.0), (1, cell.0)],
+            &[(0, owner.1), (1, cell.1)],
+        )
+    }
+
+    /// Runs each helper for `child_pid`: `uids` and `gids` map an id in
+    /// the namespace to a host id, one wide each.
+    fn run(&self, child_pid: i32, uids: &[(u32, u32)], gids: &[(u32, u32)]) -> Result<(), Error> {
         let failed = |source: io::Error| Error::IdMapWrite {
             pid: child_pid,
             source,
         };
-        for (helper, id) in [(&self.uid, uid), (&self.gid, gid)] {
+        for (helper, ids) in [(&self.uid, uids), (&self.gid, gids)] {
+            let ranges = ids.iter().flat_map(|&(inside, outside)| {
+                [inside.to_string(), outside.to_string(), String::from("1")]
+            });
             let status = Command::new(helper)
-                .args([
-                    child_pid.to_string(),
-                    String::from("0"),
-                    id.to_string(),
-                    String::from("1"),
-                ])
+                .arg(child_pid.to_string())
+                .args(ranges)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
@@ -650,6 +681,121 @@ mod tests {
         let status = child.wait_deadline(std::time::Duration::from_secs(10));
         mapped.unwrap();
         assert_eq!(child_exit_code(status.unwrap()), 0, "it dropped its groups");
+    }
+
+    /// The tree helper's namespace (WO-014, part 2b): the owner as 0, the
+    /// cell as 1, in one map each; in it, a tree goes to the cell's ids
+    /// and comes back, a directory the cell left unsearchable included.
+    #[test]
+    fn a_helper_mapping_owner_and_cell_hands_a_tree_over_and_back() {
+        use std::io::{Read as _, Write as _};
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        use std::os::unix::net::UnixStream;
+
+        use crate::process::{ForkResult, child_exit_code, exit_child, fork};
+
+        let Some((helpers, uid, gid)) = usable() else {
+            return;
+        };
+        let owner = (crate::process::euid(), crate::process::egid());
+        let tree =
+            std::env::temp_dir().join(format!("hatchling-subid-tree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tree);
+        std::fs::create_dir_all(tree.join("inner")).unwrap();
+        std::fs::write(tree.join("inner").join("file"), b"x").unwrap();
+        // Its root searchable by anyone, so the owner can look inside
+        // once it's the cell's; the walk adds its owner's bits to that.
+        std::fs::set_permissions(tree.join("inner"), std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+        std::fs::set_permissions(&tree, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // A symlink to a file outside: the walk changes the link, never
+        // what it points at.
+        let outside =
+            std::env::temp_dir().join(format!("hatchling-subid-outside-{}", std::process::id()));
+        std::fs::write(&outside, b"keep").unwrap();
+        std::os::unix::fs::symlink(&outside, tree.join("link")).unwrap();
+        // In a child of its own: a namespace, its maps, then `step` as
+        // that namespace's root. Whether it worked, and the maps.
+        let in_helper = |step: fn(&Path) -> bool| {
+            let (parent_end, child_end) = UnixStream::pair().unwrap();
+            let child = match fork().unwrap() {
+                ForkResult::Parent { child } => child,
+                ForkResult::Child => {
+                    let mut byte = [0_u8; 1];
+                    let done = crate::namespaces::unshare_user().is_ok()
+                        && (&child_end).write_all(b"u").is_ok()
+                        && (&child_end).read_exact(&mut byte).is_ok()
+                        && crate::become_cell_user().is_ok()
+                        && step(&tree);
+                    exit_child(i32::from(!done));
+                }
+            };
+            let mut byte = [0_u8; 1];
+            (&parent_end).read_exact(&mut byte).unwrap();
+            let pid = child.pid().get();
+            let mapped = helpers.write_helper_maps(pid, owner, (uid, gid));
+            let maps = ["uid_map", "gid_map"].map(|file| {
+                std::fs::read_to_string(format!("/proc/{pid}/{file}"))
+                    .unwrap_or_default()
+                    .split_whitespace()
+                    .map(String::from)
+                    .collect::<Vec<_>>()
+            });
+            (&parent_end).write_all(b"m").unwrap();
+            let status = child.wait_deadline(std::time::Duration::from_secs(10));
+            mapped.unwrap();
+            (child_exit_code(status.unwrap()) == 0, maps)
+        };
+        let (given, maps) = in_helper(|tree| {
+            crate::chown_tree(tree, 1, 1).is_ok()
+                // As the cell might leave it.
+                && std::fs::set_permissions(tree.join("inner"), std::fs::Permissions::from_mode(0o0))
+                    .is_ok()
+        });
+        let host = |path: &Path| {
+            let meta = std::fs::symlink_metadata(path).unwrap();
+            (meta.uid(), meta.gid(), meta.mode() & 0o777)
+        };
+        let after_give = (host(&tree), host(&tree.join("inner")));
+        let outside_after_give = host(&outside);
+        let link_after_give = host(&tree.join("link"));
+        let (reclaimed, _) = in_helper(|tree| crate::chown_tree(tree, 0, 0).is_ok());
+        let after_reclaim = (
+            host(&tree),
+            host(&tree.join("inner")),
+            host(&tree.join("inner").join("file")),
+        );
+        let removed = std::fs::remove_dir_all(&tree);
+        let _ = std::fs::remove_file(&outside);
+        let (u, g, s, t) = (owner.0, owner.1, uid, gid);
+        assert_eq!(
+            maps,
+            [
+                ["0", &u.to_string(), "1", "1", &s.to_string(), "1"]
+                    .map(String::from)
+                    .to_vec(),
+                ["0", &g.to_string(), "1", "1", &t.to_string(), "1"]
+                    .map(String::from)
+                    .to_vec(),
+            ]
+        );
+        assert!(given, "the tree went to the cell's ids");
+        assert_eq!(after_give, ((s, t, 0o755), (s, t, 0)));
+        assert_eq!(
+            (link_after_give.0, link_after_give.1),
+            (s, t),
+            "the link itself"
+        );
+        assert_eq!(
+            (outside_after_give.0, outside_after_give.1),
+            (u, g),
+            "never what it points at"
+        );
+        assert!(reclaimed, "and came back");
+        assert_eq!(after_reclaim.0, (u, g, 0o755));
+        assert_eq!(after_reclaim.1, (u, g, 0o700), "searchable again");
+        assert_eq!((after_reclaim.2.0, after_reclaim.2.1), (u, g));
+        removed.expect("the owner can remove it all once it's back");
     }
 
     #[test]
