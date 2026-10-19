@@ -123,13 +123,18 @@ pub fn start() -> Result<StoreKeys, Error> {
         .spawn()
         .map_err(|e| failed(format!("cannot start: {e}")))?;
     drop(theirs);
-    let first = Zeroizing::new(
-        read_frame(&ours).map_err(|e| failed(format!("gave no keys: {e}")))?,
-    );
+    let first =
+        Zeroizing::new(read_frame(&ours).map_err(|e| failed(format!("gave no keys: {e}")))?);
     let keys = match first.split_first() {
-        Some((0, handed)) => StoreKeys::from_bytes(handed).map_err(|source| Error::Vault { source })?,
+        Some((0, handed)) => {
+            StoreKeys::from_bytes(handed).map_err(|source| Error::Vault { source })?
+        }
         Some((1, reason)) => return Err(failed(String::from_utf8_lossy(reason).into_owned())),
-        _ => return Err(failed(String::from("its first answer was neither keys nor a reason"))),
+        _ => {
+            return Err(failed(String::from(
+                "its first answer was neither keys nor a reason",
+            )));
+        }
     };
     KEEPER
         .set(Keeper {
@@ -161,9 +166,11 @@ impl Keeper {
         let found = match ask(&stream, &request)? {
             Reply::Read { found } if found.len() == names.len() => found,
             Reply::Refused { reason } => return Err(Error::Keeper { reason }),
-            other => return Err(unexpected(&other)),
+            other @ (Reply::Read { .. } | Reply::Cell { .. } | Reply::Protocol { .. }) => {
+                return Err(unexpected(&other));
+            }
         };
-        found
+        let read = found
             .into_iter()
             .map(|found| {
                 if !found {
@@ -174,7 +181,9 @@ impl Keeper {
                     .map(Some)
                     .map_err(|source| Error::Vault { source })
             })
-            .collect()
+            .collect();
+        drop(stream);
+        read
     }
 
     /// A cell's vault op, answered by the keeper: as
@@ -390,7 +399,9 @@ fn serve(stream: &UnixStream, kept: &Kept) -> Result<(), Error> {
                     .map_err(|_| Error::SessionProtocol {
                         reason: String::from("a cell id that doesn't parse"),
                     })
-                    .and_then(|cell| handle_vault_op(&kept.config.vault, &kept.keys, &op, &cell, uid));
+                    .and_then(|cell| {
+                        handle_vault_op(&kept.config.vault, &kept.keys, &op, &cell, uid)
+                    });
                 let reply = match reply {
                     Ok(result) => Reply::Cell { result },
                     Err(Error::SessionProtocol { reason }) => Reply::Protocol { reason },
@@ -410,17 +421,27 @@ fn serve(stream: &UnixStream, kept: &Kept) -> Result<(), Error> {
 
 /// Answers one read: refused and recorded as denied unless the
 /// configuration gives `purpose` every one of `names`.
-fn answer_read(stream: &UnixStream, kept: &Kept, purpose: &str, names: &[String]) -> Result<(), Error> {
+fn answer_read(
+    stream: &UnixStream,
+    kept: &Kept,
+    purpose: &str,
+    names: &[String],
+) -> Result<(), Error> {
     let parsed: Option<Vec<SecretName>> = names.iter().map(|name| name.parse().ok()).collect();
     let Some(parsed) = parsed.filter(|parsed| kept.releases.allow(purpose, parsed)) else {
         let root: PathBuf = kept.config.vault.root.clone();
         let caller = Caller::Broker {
             purpose: purpose.to_owned(),
         };
-        if let Err(error) = crate::vault_access::record(&root, caller, "read", names.to_vec(), Outcome::Denied) {
+        if let Err(error) =
+            crate::vault_access::record(&root, caller, "read", names.to_vec(), Outcome::Denied)
+        {
             tracing::error!(%error, "a refused read not recorded");
         }
-        tracing::warn!(purpose, "refused a read the configuration doesn't give its purpose");
+        tracing::warn!(
+            purpose,
+            "refused a read the configuration doesn't give its purpose"
+        );
         return send(
             stream,
             &Reply::Refused {
@@ -511,9 +532,14 @@ mod tests {
             r#"{"request":"unwrap","store":"secrets"}"#,
             r#"{"purpose":"egress","names":["a"]}"#,
         ] {
-            assert!(serde_json::from_str::<Request>(refused).is_err(), "{refused}");
+            assert!(
+                serde_json::from_str::<Request>(refused).is_err(),
+                "{refused}"
+            );
         }
-        assert!(serde_json::from_str::<Reply>(r#"{"reply":"read","found":[true],"key":"x"}"#).is_err());
+        assert!(
+            serde_json::from_str::<Reply>(r#"{"reply":"read","found":[true],"key":"x"}"#).is_err()
+        );
         let gone = unexpected(&Reply::Protocol {
             reason: String::new(),
         });

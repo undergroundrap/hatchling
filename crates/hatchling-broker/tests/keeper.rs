@@ -16,7 +16,7 @@ use hatchling_vault::{SealedVault, Store, StoreKeys};
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("hatchling-keeper-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(dir.join("sock")).unwrap();
     dir
 }
 
@@ -25,7 +25,7 @@ fn environment(scratch: &Path) -> Vec<(&'static str, String)> {
     let path = |name: &str| scratch.join(name).to_string_lossy().into_owned();
     vec![
         ("TMPDIR", path("tmp")),
-        ("HATCHLING_BROKER_SOCKET", path("broker.sock")),
+        ("HATCHLING_BROKER_SOCKET", path("sock/broker.sock")),
         (
             "HATCHLING_AGENT_UID",
             rustix::process::getuid().as_raw().to_string(),
@@ -51,7 +51,8 @@ fn start(scratch: &Path) -> (Child, UnixStream) {
         .spawn()
         .unwrap();
     drop(theirs);
-    ours.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+    ours.set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
     (child, ours)
 }
 
@@ -81,7 +82,10 @@ fn the_keeper_keeps_the_secrets_and_releases_only_what_is_configured() {
     let vault = dir.join("vault");
     std::fs::create_dir(&vault).unwrap();
     std::fs::set_permissions(&vault, std::fs::Permissions::from_mode(0o700)).unwrap();
-    for (name, value) in [("egress-localhost-18089", "credential"), ("unlisted", "kept")] {
+    for (name, value) in [
+        ("egress-localhost-18089", "credential"),
+        ("unlisted", "kept"),
+    ] {
         std::fs::write(vault.join(name), value).unwrap();
     }
     // The operator seals them, and the vault's key is made.
@@ -91,7 +95,11 @@ fn the_keeper_keeps_the_secrets_and_releases_only_what_is_configured() {
         .env_remove("HATCHLING_AGENT_BIN")
         .output()
         .unwrap();
-    assert!(migrated.status.success(), "{}", String::from_utf8_lossy(&migrated.stderr));
+    assert!(
+        migrated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&migrated.stderr)
+    );
     let (child, stream) = start(&dir);
     let first = read_frame(&stream).unwrap();
     let (kind, handed) = first.split_first().unwrap();
@@ -101,7 +109,10 @@ fn the_keeper_keeps_the_secrets_and_releases_only_what_is_configured() {
         keys.stores().map(|(store, _)| store).collect::<Vec<_>>(),
         [Store::ARTIFACTS]
     );
-    assert!(SealedVault::open(&vault, &keys).is_err(), "the broker can open the secrets");
+    assert!(
+        SealedVault::open(&vault, &keys).is_err(),
+        "the broker can open the secrets"
+    );
     // Its memory is closed to processes of the same user.
     if rustix::process::getuid().as_raw() != 0 {
         let mem = std::fs::metadata(format!("/proc/{}/mem", child.id())).unwrap();
@@ -124,10 +135,14 @@ fn the_keeper_keeps_the_secrets_and_releases_only_what_is_configured() {
         assert!(!reply.contains("kept"), "{reply}");
     }
     let log = std::fs::read_to_string(vault.join(".access.log")).unwrap();
-    let lines = |name: &str| -> Vec<&str> { log.lines().filter(|line| line.contains(name)).collect() };
+    let lines =
+        |name: &str| -> Vec<&str> { log.lines().filter(|line| line.contains(name)).collect() };
     let released = lines("egress-localhost-18089");
     assert_eq!(released.len(), 1, "{log}");
-    assert!(released.iter().all(|line| line.contains("allowed")), "{log}");
+    assert!(
+        released.iter().all(|line| line.contains("allowed")),
+        "{log}"
+    );
     let refused = lines("unlisted");
     assert_eq!(refused.len(), 2, "{log}");
     assert!(refused.iter().all(|line| line.contains("denied")), "{log}");

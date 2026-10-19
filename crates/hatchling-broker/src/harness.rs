@@ -580,7 +580,7 @@ impl Harnesses {
     /// The vault secrets holding the keys of the vendors these harnesses
     /// relay to: the only harness keys the broker may read.
     #[must_use]
-    pub fn vendor_secret_names(&self) -> std::collections::BTreeSet<String> {
+    pub fn vendor_secret_names(&self) -> BTreeSet<String> {
         self.vendors
             .keys()
             .map(|kind| kind.secret_name().to_owned())
