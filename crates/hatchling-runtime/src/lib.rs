@@ -117,7 +117,11 @@ mod tests {
 
     #[test]
     fn the_brokers_spawner_helpers_reach_the_broker_with_their_subcommand() {
-        for helper in [SKILL_CELL_SUBCOMMAND, AGENT_RUN_SUBCOMMAND, HARNESS_TREE_SUBCOMMAND] {
+        for helper in [
+            SKILL_CELL_SUBCOMMAND,
+            AGENT_RUN_SUBCOMMAND,
+            HARNESS_TREE_SUBCOMMAND,
+        ] {
             let given = args(&[helper, "/run/spec"]);
             assert_eq!(
                 route("/usr/local/bin/hatchling", &given),
