@@ -64,6 +64,7 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 
 Not yet WOs. Each gets a full file, with a scope and acceptance criteria, before work starts:
 
+- **A uid of its own for each cell.** Cells share one uid (a root broker's, or the owner's first subordinate id). Namespaces keep them from reaching each other, but per-uid kernel accounting still crosses: a cell that grows its pipes to the per-user limit (`user_struct::pipe_bufs`) leaves the others' new pipes at the two-page minimum. Leasing each running cell an id of its own from the range would end that. The design question is reuse: an id is leased again only once every process and file of its last cell is gone.
 - **Tell cells apart for schedules.** A cell can list and cancel any schedule an agent session made, though never the owner's. Now that every session runs under the cell id the broker gave it (WO-007), record which cell made a schedule and hold list and cancel to that cell.
 - **Store directories through a handle.** The memory and goals stores still repair a directory's mode by path after checking it. Make them use `hatchling_sys::ensure_private_dir`, as the vault and scheduled runs do since WO-006.
 - **Explain failed runs.** When a scheduled run fails, the broker logs only "the run failed": the reason is sealed in the parked result, which nothing reads yet. Log the reason (with redaction), and let the owner list and read parked results through the API.
