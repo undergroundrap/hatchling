@@ -18,6 +18,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Changed
 
+- **WO-014 is done:** the full broker runs without root, its cells on the owner's subordinate ids. A broker refusing to start an endpoint with cells on its own uid now says the agent's uid follows from the range, rather than to set `HATCHLING_AGENT_UID`.
 - **Breaking, for code built on `hatchling-broker`:** its `Error` gains `SocketPathNotOurs` and `TokenPathNotOurs` (WO-024), so the workspace moves to 0.5.0.
 - **Breaking, for code built on `hatchling-isolation` or `hatchling-sys`** (WO-014):
   - `CellIdentity` gains `group` (the cell's own gid) and `mapping` (`Mapping::Direct` or `Mapping::Subordinate`); `CellIdentity::direct(principal, count)` builds the identity every cell had before.
