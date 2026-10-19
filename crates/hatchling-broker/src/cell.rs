@@ -1642,10 +1642,15 @@ mod tests {
         let own = CellConfig::skill_on("on-own", CellIds::Own).unwrap();
         assert_eq!(own.ids, CellIds::Own);
         assert_eq!(own.identity(), backend.identity(None, 1).unwrap());
-        match (CellConfig::skill_on("on-sub", CellIds::Subordinate), backend.subordinate_identity()) {
+        match (
+            CellConfig::skill_on("on-sub", CellIds::Subordinate),
+            backend.subordinate_identity(),
+        ) {
             (Ok(sub), Ok(owners)) => assert_eq!(sub.identity(), owners),
             (Err(_), Err(_)) => {}
-            (got, owners) => unreachable!("skill_on and the backend disagree: {got:?} / {owners:?}"),
+            (got, owners) => {
+                unreachable!("skill_on and the backend disagree: {got:?} / {owners:?}")
+            }
         }
         assert_eq!(CellIds::Own.name(), "own");
         assert_eq!(CellIds::Subordinate.name(), "subordinate");
