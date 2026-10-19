@@ -742,16 +742,20 @@ mod tests {
         approvals.ledger().expire(DECIDE_SECS);
         assert_eq!(approvals.get(&first.id).unwrap().state, State::Expired);
         assert_eq!(approvals.get(&second.id).unwrap().state, State::Pending);
-        {
-            let mut ledger = approvals.ledger();
-            assert_eq!(ledger.decided.len(), 1);
-            for n in 0..MAX_KEPT {
-                ledger.keep_decided(&format!("approval-x{n}"));
-            }
-            assert_eq!(ledger.decided.len(), MAX_KEPT);
-            assert!(!ledger.requests.contains_key(&first.id), "the oldest decided is forgotten");
-            assert!(ledger.requests.contains_key(&second.id), "a pending one isn't decided");
+        let mut ledger = approvals.ledger();
+        assert_eq!(ledger.decided.len(), 1);
+        for n in 0..MAX_KEPT {
+            ledger.keep_decided(&format!("approval-x{n}"));
         }
+        let (kept, forgot_first, kept_second) = (
+            ledger.decided.len(),
+            !ledger.requests.contains_key(&first.id),
+            ledger.requests.contains_key(&second.id),
+        );
+        drop(ledger);
+        assert_eq!(kept, MAX_KEPT);
+        assert!(forgot_first, "the oldest decided is forgotten");
+        assert!(kept_second, "a pending one isn't decided");
         assert_eq!(approvals.get(&second.id).unwrap().state, State::Pending);
     }
 
