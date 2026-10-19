@@ -368,7 +368,7 @@ pub(super) mod tests {
     /// and its harness twin with a writable work tree and scratch.
     pub(in crate::linux) fn specs(scratch: &Scratch) -> (CellSpec, CellSpec) {
         let skill = CellSpec {
-            identity: CellIdentity::direct(hatchling_sys::euid(), 1),
+            identity: crate::IsolationBackend::identity(&crate::linux::Linux, None, 1).unwrap(),
             program: PathBuf::from("/bin/true"),
             argv: vec![String::from(PROGRAM)],
             env: Vec::new(),

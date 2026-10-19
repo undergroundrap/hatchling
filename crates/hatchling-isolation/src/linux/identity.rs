@@ -12,24 +12,60 @@ pub(super) const fn default_principal(euid: u32) -> u32 {
     if euid == 0 { 65534 } else { euid }
 }
 
-/// The id map a cell runs under: `principal` (or the default for this
-/// broker's privilege) spanning `count` uids, validated against the
-/// broker's own uid.
+/// The identity a cell runs as under the broker's own map: `principal`
+/// (or the default for this broker's privilege) spanning `count` uids.
+/// Its group is the principal's number for a root broker, which may map
+/// any, and the broker's own gid (`egid`) otherwise: the only gid an
+/// unprivileged process may map, whatever its uid.
 ///
 /// # Errors
 ///
-/// Returns [`Error::Identity`] if the map is malformed or fails the
-/// policy for this broker's privilege.
+/// Returns [`Error::Identity`] if the identity is malformed or fails
+/// [`direct_policy`].
 pub(super) fn identity(
     euid: u32,
+    egid: u32,
     principal: Option<u32>,
     count: u32,
 ) -> Result<CellIdentity, Error> {
     let principal = principal.unwrap_or_else(|| default_principal(euid));
-    let map = id_map(principal, count)?;
-    map.validate_for_euid(euid)
-        .map_err(|source| Error::Identity(PlatformError::new(source)))?;
-    Ok(CellIdentity::direct(principal, count))
+    let identity = CellIdentity {
+        group: if euid == 0 { principal } else { egid },
+        ..CellIdentity::direct(principal, count)
+    };
+    direct_policy(euid, egid, &identity)?;
+    Ok(identity)
+}
+
+/// Checks a direct identity against what a broker with `euid` and
+/// `egid` may grant: its uid map as [`IdMap::validate_for_euid`] does,
+/// and its gid the same way. A root broker never maps the cell's root
+/// group to host group 0, and an unprivileged one maps only its own gid.
+///
+/// # Errors
+///
+/// Returns [`Error::Identity`] for a malformed map, or one this broker
+/// mustn't write.
+pub(super) fn direct_policy(euid: u32, egid: u32, identity: &CellIdentity) -> Result<(), Error> {
+    let refused = |source| Error::Identity(PlatformError::new(source));
+    id_map(identity.principal, identity.count)?
+        .validate_for_euid(euid)
+        .map_err(refused)?;
+    id_map(identity.group, identity.count)?;
+    let wrong_group = if euid == 0 {
+        (identity.group == 0).then(|| String::from("a root broker must not map the cell's root group to host group 0"))
+    } else {
+        (identity.group != egid).then(|| {
+            format!(
+                "an unprivileged broker (gid {egid}) can only map its own gid, not {}",
+                identity.group
+            )
+        })
+    };
+    match wrong_group {
+        Some(reason) => Err(refused(hatchling_sys::Error::InvalidIdMap { reason })),
+        None => Ok(()),
+    }
 }
 
 /// A cell's identity on the owner's subordinate ids: `ids` (the cell's
@@ -174,13 +210,31 @@ mod tests {
 
     #[test]
     fn an_identity_defaults_to_the_privilege_default_and_keeps_its_count() {
-        let euid = hatchling_sys::euid();
+        // A root broker: nobody's uid, and the same number for its group.
+        assert_eq!(identity(0, 0, None, 1).unwrap(), cell(65534, 1));
+        // An unprivileged broker can only map itself: its uid, and its
+        // own gid, which needn't be the uid's number.
+        assert_eq!(identity(1000, 1000, Some(1000), 1).unwrap(), cell(1000, 1));
         assert_eq!(
-            identity(euid, None, 1).unwrap(),
-            cell(default_principal(euid), 1)
+            identity(1000, 2000, None, 1).unwrap(),
+            CellIdentity {
+                group: 2000,
+                ..cell(1000, 1)
+            }
         );
-        // An unprivileged broker can only map itself.
-        assert_eq!(identity(1000, Some(1000), 1).unwrap(), cell(1000, 1));
+    }
+
+    #[test]
+    fn a_direct_identity_maps_only_what_its_broker_may() {
+        let ok = |euid, egid, identity: CellIdentity| direct_policy(euid, egid, &identity).is_ok();
+        assert!(ok(1000, 2000, CellIdentity { group: 2000, ..cell(1000, 1) }));
+        assert!(!ok(1000, 2000, cell(1000, 1)), "the uid's number isn't the gid");
+        assert!(!ok(1000, 2000, CellIdentity { group: 2000, ..cell(1001, 1) }), "another uid");
+        assert!(!ok(1000, 2000, CellIdentity { group: 2000, ..cell(1000, 2) }), "a wider map");
+        assert!(ok(0, 0, cell(65534, 1)));
+        assert!(!ok(0, 0, cell(0, 1)), "the cell's root as host root");
+        assert!(!ok(0, 0, CellIdentity { group: 0, ..cell(65534, 1) }), "host group 0");
+        assert!(!ok(0, 0, CellIdentity { group: u32::MAX, ..cell(65534, 2) }), "an overflowing group map");
     }
 
     #[test]
@@ -193,7 +247,7 @@ mod tests {
         {
             assert!(
                 matches!(
-                    identity(euid, Some(principal), count),
+                    identity(euid, euid, Some(principal), count),
                     Err(Error::Identity(_))
                 ),
                 "euid {euid} must not map {principal}+{count}"
