@@ -851,6 +851,36 @@ mod tests {
         set_mode(&outside, 0o700);
     }
 
+    /// The walk's own steps, one by one, on this process's own ids.
+    #[test]
+    fn each_step_of_the_walk_changes_what_it_names() {
+        let refusal = changing("chown an entry")(rustix::io::Errno::ACCESS);
+        assert!(
+            matches!(&refusal, Error::Ownership { operation: "chown an entry", source }
+                if source.raw_os_error() == Some(libc::EACCES)),
+            "{refusal:?}"
+        );
+        let scratch = scratch("steps");
+        let root = scratch.0.join("root");
+        std::fs::create_dir(root.join("dir")).unwrap();
+        std::fs::write(root.join("dir").join("file"), b"x").unwrap();
+        std::fs::write(root.join("setgid"), b"x").unwrap();
+        set_mode(&root.join("setgid"), 0o2644);
+        set_mode(&root, 0o500);
+        let (uid, gid) = (crate::process::euid(), crate::process::egid());
+        let handle = rustix::fs::open(&root, DIR_FLAGS, Mode::empty()).unwrap();
+        let seen = look(&handle, c"").unwrap();
+        let mut budget = Budget::of(10);
+        change_dir(&handle, seen, uid, gid, &mut budget).unwrap();
+        assert_eq!(mode(&root), 0o700, "searchable by its owner");
+        assert_eq!(budget.used, 1);
+        let setgid = look(&handle, c"setgid").unwrap();
+        strip_set_ids(&handle, c"setgid", setgid).unwrap();
+        assert_eq!(mode(&root.join("setgid")), 0o644, "set-id bits gone");
+        chown_entries(&handle, seen.mount, uid, gid, &[seen.id], &mut budget).unwrap();
+        assert_eq!(budget.used, 4, "the root, then dir, its file and setgid");
+    }
+
     #[test]
     fn a_tree_past_its_budget_is_refused() {
         let mut budget = Budget::of(2);

@@ -531,6 +531,12 @@ mod tests {
     }
 
     #[test]
+    fn a_runtime_starts_its_spawner() {
+        let runtime = SkillRuntime::new(PathBuf::from("/opt/hatchling-broker"));
+        assert_eq!(runtime.spawner(), Path::new("/opt/hatchling-broker"));
+    }
+
+    #[test]
     fn a_busy_program_is_retried_after_doubling_pauses_then_given_up() {
         let (started, attempts, pauses) = busy_then(2, Ok(7));
         assert_eq!(started.unwrap(), 7);
