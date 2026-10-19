@@ -24,7 +24,7 @@
 
 use std::ffi::{CStr, CString, OsStr};
 use std::io;
-use std::os::fd::{AsFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd as _, OwnedFd};
 use std::path::Path;
 
 use rustix::fs::{AtFlags, FileType, Mode, OFlags, StatxFlags};
@@ -43,6 +43,10 @@ const DIR_FLAGS: OFlags = OFlags::RDONLY
     .union(OFlags::DIRECTORY)
     .union(OFlags::NOFOLLOW)
     .union(OFlags::CLOEXEC);
+
+/// How an entry is opened to be changed: itself (never a symlink's
+/// target), with no permission needed on it.
+const PATH_FLAGS: OFlags = OFlags::PATH.union(OFlags::NOFOLLOW).union(OFlags::CLOEXEC);
 
 /// A directory's identity: its device and inode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -273,12 +277,25 @@ pub fn chown_tree(path: &Path, uid: u32, gid: u32) -> Result<u64, Error> {
 
 /// [`chown_tree`], changing at most `budget`'s entries.
 fn chown_tree_within(path: &Path, uid: u32, gid: u32, mut budget: Budget) -> Result<u64, Error> {
-    let root =
-        rustix::fs::open(path, DIR_FLAGS, Mode::empty()).map_err(changing("open the tree"))?;
+    let root = rustix::fs::open(path, PATH_FLAGS | OFlags::DIRECTORY, Mode::empty())
+        .map_err(changing("open the tree"))?;
     let top = look(&root, c"").map_err(changing("look at the tree"))?;
     change_dir(&root, top, uid, gid, &mut budget)?;
-    chown_entries(&root, top.mount, uid, gid, &[top.id], &mut budget)?;
+    let readable = rustix::fs::openat(&root, c".", DIR_FLAGS, Mode::empty())
+        .map_err(changing("open the tree"))?;
+    chown_entries(&readable, top.mount, uid, gid, &[top.id], &mut budget)?;
     Ok(budget.used)
+}
+
+/// Sets the mode of the file open at `handle`, an `O_PATH` handle
+/// included, through `/proc/self/fd`: that names exactly the open file,
+/// so no path is resolved again (`fchmod` refuses an `O_PATH` handle, and
+/// `fchmodat2`'s empty path is newer than the oldest kernel supported).
+fn chmod_handle(handle: &OwnedFd, mode: u32) -> rustix::io::Result<()> {
+    rustix::fs::chmod(
+        format!("/proc/self/fd/{}", handle.as_raw_fd()),
+        Mode::from_raw_mode(mode),
+    )
 }
 
 /// How many entries a walk has changed, and may.
@@ -319,9 +336,9 @@ fn change_dir(
 ) -> Result<(), Error> {
     budget.take()?;
     let (owner, group) = crate::ownership::ids(uid, gid);
-    rustix::fs::fchown(dir, Some(owner), Some(group)).map_err(changing("chown a directory"))?;
-    rustix::fs::fchmod(dir, Mode::from_raw_mode(seen.mode | 0o700))
-        .map_err(changing("chmod a directory"))
+    rustix::fs::chownat(dir, c"", Some(owner), Some(group), AtFlags::EMPTY_PATH)
+        .map_err(changing("chown a directory"))?;
+    chmod_handle(dir, seen.mode | 0o700).map_err(changing("chmod a directory"))
 }
 
 /// Gives everything in `dir` to `uid` and `gid`, as [`chown_tree`] does.
@@ -373,8 +390,13 @@ fn chown_entries(
         if above.len() > MAX_DEPTH {
             return Err(refused("change the tree", "it is too deep"));
         }
-        let sub = rustix::fs::openat(dir, name.as_c_str(), DIR_FLAGS, Mode::empty())
-            .map_err(changing("open a directory"))?;
+        let sub = rustix::fs::openat(
+            dir,
+            name.as_c_str(),
+            PATH_FLAGS | OFlags::DIRECTORY,
+            Mode::empty(),
+        )
+        .map_err(changing("open a directory"))?;
         if look(&sub, c"").map(|opened| opened.id) != Ok(seen.id) {
             return Err(refused(
                 "change the tree",
@@ -382,8 +404,11 @@ fn chown_entries(
             ));
         }
         change_dir(&sub, seen, uid, gid, budget)?;
+        // Searchable by its new owner now, whatever its last left.
+        let readable = rustix::fs::openat(&sub, c".", DIR_FLAGS, Mode::empty())
+            .map_err(changing("open a directory"))?;
         let deeper: Vec<DirId> = above.iter().copied().chain([seen.id]).collect();
-        chown_entries(&sub, mount, uid, gid, &deeper, budget)?;
+        chown_entries(&readable, mount, uid, gid, &deeper, budget)?;
     }
     Ok(())
 }
@@ -396,18 +421,12 @@ fn strip_set_ids(dir: &OwnedFd, name: &CStr, seen: Look) -> Result<(), Error> {
     if now.mode & 0o6000 == 0 {
         return Ok(());
     }
-    let file = rustix::fs::openat(
-        dir,
-        name,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(changing("open a file"))?;
+    let file = rustix::fs::openat(dir, name, PATH_FLAGS, Mode::empty())
+        .map_err(changing("open a file"))?;
     if look(&file, c"").map(|opened| opened.id) != Ok(seen.id) {
         return Err(refused("change the tree", "a file changed under the walk"));
     }
-    rustix::fs::fchmod(&file, Mode::from_raw_mode(now.mode & !0o6000))
-        .map_err(changing("chmod a file"))
+    chmod_handle(&file, now.mode & !0o6000).map_err(changing("chmod a file"))
 }
 
 /// Removes what it may of everything in `dir`, as `walk` keeps to;
@@ -874,6 +893,9 @@ mod tests {
         change_dir(&handle, seen, uid, gid, &mut budget).unwrap();
         assert_eq!(mode(&root), 0o700, "searchable by its owner");
         assert_eq!(budget.used, 1);
+        chmod_handle(&handle, 0o750).unwrap();
+        assert_eq!(mode(&root), 0o750, "through the handle");
+        chmod_handle(&handle, 0o700).unwrap();
         let setgid = look(&handle, c"setgid").unwrap();
         strip_set_ids(&handle, c"setgid", setgid).unwrap();
         assert_eq!(mode(&root.join("setgid")), 0o644, "set-id bits gone");
