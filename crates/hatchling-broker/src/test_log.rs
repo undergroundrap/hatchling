@@ -29,7 +29,13 @@ pub(crate) fn captured(f: impl FnOnce()) -> String {
         .with_ansi(false)
         .with_writer(Mutex::new(Capture(Arc::clone(&buffer))))
         .finish();
-    tracing::subscriber::with_default(subscriber, f);
+    tracing::subscriber::with_default(subscriber, || {
+        // `tracing` caches, per callsite, whether any subscriber wants
+        // it; one cached while no subscriber did (by a test on another
+        // thread) would drop this test's lines. Rebuilt with ours in place.
+        tracing::callsite::rebuild_interest_cache();
+        f();
+    });
     let logged = buffer.lock().unwrap().clone();
     String::from_utf8(logged).unwrap()
 }

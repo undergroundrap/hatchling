@@ -440,6 +440,10 @@ mod tests {
         // Scoped subscriber: no global state, no cross-test
         // interference.
         tracing::subscriber::with_default(subscriber, || {
+            // The callsite interest cache, rebuilt with this subscriber in
+            // place: one a test on another thread cached while no
+            // subscriber wanted the warning would drop it.
+            tracing::callsite::rebuild_interest_cache();
             let result = agent_loop.run(&model, "hello".to_owned()).unwrap();
             assert_eq!(result.answer, "done");
         });
