@@ -20,8 +20,8 @@
 //! The two built-ins are on by default; `HATCHLING_REDACTION_BUILTINS`
 //! names the ones to keep (`secret`, `private-key`, or `none`).
 //!
-//! The rules read the vault, which needs the master key, and the key has
-//! one owner that only lends it. So the rules run on a worker thread in the
+//! The rules read the vault, which needs the broker's store keys, and
+//! the keys have one owner that only lends them. So the rules run on a worker thread in the
 //! broker's own scope ([`RulesWorker::serve`]), borrowing the key, and the
 //! gate holds a [`RulesHandle`] that hands it work: the key is never
 //! copied or shared out.
@@ -37,7 +37,7 @@ use hatchling_artifact::SecretSet;
 use hatchling_artifact::request::sha256_hex;
 use hatchling_channel::gate::{DEFAULT_CLASSIFIER_TIMEOUT, FAILED_CATEGORY, MIN_BLOCK_CHARS};
 use hatchling_channel::{Category, Classifier, OutputGate, Request, Verdict, normalize};
-use hatchling_vault::{MAX_SECRET_BYTES, MasterKey, SealedVault, Secret, SecretName};
+use hatchling_vault::{MAX_SECRET_BYTES, OpensStores, SealedVault, Secret, SecretName};
 use zeroize::Zeroizing;
 
 use crate::environment as env;
@@ -80,7 +80,7 @@ pub struct RedactionConfig {
     /// Defaults to `<vault root>.redactions`.
     pub dir: PathBuf,
     /// `HATCHLING_REDACTION_KEEP_RAW`: keep each redacted message, sealed
-    /// under the master key. Off by default: the log holds hashes only.
+    /// under the redaction store's key. Off by default: the log holds hashes only.
     pub keep_raw: bool,
     /// `HATCHLING_REDACTION_TIMEOUT_MS`: how long the classifier may take.
     pub timeout: Duration,
@@ -336,7 +336,7 @@ pub fn load_phrases(dir: &Path) -> Result<(Vec<Phrase>, Option<String>), Error> 
 /// The built-in rules, judging with the secrets the broker holds.
 pub struct Rules<'k> {
     config: &'k Config,
-    key: &'k MasterKey,
+    key: &'k dyn OpensStores,
     builtins: Builtins,
     phrases: Vec<Phrase>,
 }
@@ -356,7 +356,7 @@ impl<'k> Rules<'k> {
     #[must_use]
     pub const fn new(
         config: &'k Config,
-        key: &'k MasterKey,
+        key: &'k dyn OpensStores,
         builtins: Builtins,
         phrases: Vec<Phrase>,
     ) -> Self {
@@ -590,7 +590,7 @@ impl RulesWorker {
 }
 
 /// Seals `text` as `event_id`'s raw record in the vault at `raw_dir`.
-fn seal_raw(raw_dir: &Path, key: &MasterKey, event_id: &str, text: &str) -> RawOutcome {
+fn seal_raw(raw_dir: &Path, key: &dyn OpensStores, event_id: &str, text: &str) -> RawOutcome {
     if text.len() > MAX_SECRET_BYTES {
         return RawOutcome::TooLarge;
     }
@@ -636,7 +636,7 @@ pub struct Built {
 pub fn build(
     config: &Config,
     redaction: &RedactionConfig,
-    key: &MasterKey,
+    key: &dyn OpensStores,
 ) -> Result<Built, Error> {
     if config.channel_ingress.is_none() {
         return Ok(Built {
@@ -710,6 +710,7 @@ mod tests {
     use crate::VaultGrant;
     use crate::api_auth::tests::{Scratch, owner_config, scratch};
     use crate::redactions::{AUDIT_FILE, Record, read_log};
+    use hatchling_vault::MasterKey;
 
     /// The secret the broker holds in [`held`].
     const HELD: &str = "nightjar-7f3a91c2";

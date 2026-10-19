@@ -127,6 +127,16 @@ pub enum Error {
         store: &'static str,
     },
 
+    /// A process was handed the keys of some stores ([`StoreKeys`]) and
+    /// asked to open another, or one at another root.
+    ///
+    /// [`StoreKeys`]: crate::StoreKeys
+    #[error("the {store} store at this path is not one this process was handed")]
+    StoreNotHeld {
+        /// The store.
+        store: &'static str,
+    },
+
     /// A store's key didn't unwrap under the master key. One generic error
     /// covers a wrong master key and a changed file, as
     /// [`DecryptFailed`](Error::DecryptFailed) does for a secret.
@@ -342,6 +352,10 @@ mod tests {
             (
                 Error::NeedBackupCodes,
                 "run vault-keyring backup-codes before enrolling a single security key",
+            ),
+            (
+                Error::StoreNotHeld { store: "spaces" },
+                "the spaces store at this path is not one this process was handed",
             ),
             (
                 Error::StoreKeyRefused { store: "secrets" },

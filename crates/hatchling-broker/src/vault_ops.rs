@@ -11,7 +11,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use hatchling_vault::{
-    FileKey, KeySource, MasterKey, MigrateReport, RekeyReport, SealedVault, Store,
+    FileKey, KeySource, MasterKey, MigrateReport, RekeyReport, SealedVault, Store, StoreKeys,
 };
 
 use crate::vault_keyring::KeyringConfig;
@@ -72,6 +72,24 @@ pub fn sealed_stores(
         ));
     }
     stores
+}
+
+/// The keys of `stores`, unwrapped under `master`, which is dropped here,
+/// zeroized: what the broker serves with (WO-017). Each store's root is
+/// made if absent, and a store without a key is given one.
+///
+/// # Errors
+///
+/// Returns [`Error::Vault`] for the first store whose key doesn't unwrap
+/// or can't be made.
+pub fn hand_store_keys(master: MasterKey, stores: &[(Store, PathBuf)]) -> Result<StoreKeys, Error> {
+    let stores: Vec<(Store, &Path)> = stores
+        .iter()
+        .map(|(store, root)| (*store, root.as_path()))
+        .collect();
+    let keys = StoreKeys::unwrap(&master, &stores);
+    drop(master);
+    keys.map_err(|source| Error::Vault { source })
 }
 
 /// Refuses to serve while any of `stores` holds stale sealed files.
@@ -599,5 +617,43 @@ mod tests {
                 .and_then(|vault| vault.fetch(&name))
                 .is_ok()
         );
+    }
+
+    /// The broker's keys hold its configured stores, and open no other;
+    /// a store whose key the master key doesn't unwrap stops the start.
+    #[test]
+    fn hand_store_keys_holds_the_configured_stores_alone() {
+        let scratch =
+            std::env::temp_dir().join(format!("hatchling-hand-keys-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir(&scratch).unwrap();
+        let (secrets, spaces) = (scratch.join("vault"), scratch.join("spaces"));
+        let stores = vec![
+            (Store::SECRETS, secrets.clone()),
+            (Store::SPACES, spaces.clone()),
+        ];
+        let master = MasterKey::generate().unwrap();
+        SealedVault::open_in(&spaces, &master, Store::SPACES).unwrap();
+        let keys = hand_store_keys(master, &stores).unwrap();
+        let held: Vec<_> = keys
+            .stores()
+            .map(|(store, root)| (store, root.to_path_buf()))
+            .collect();
+        assert_eq!(held, stores);
+        assert!(SealedVault::open(&secrets, &keys).is_ok());
+        assert!(SealedVault::open_in(&spaces, &keys, Store::SPACES).is_ok());
+        let refused = SealedVault::open_in(&scratch.join("artifacts"), &keys, Store::ARTIFACTS);
+        let other = hand_store_keys(MasterKey::generate().unwrap(), &[(Store::SPACES, spaces)]);
+        let _ = std::fs::remove_dir_all(&scratch);
+        assert!(matches!(
+            refused,
+            Err(hatchling_vault::Error::StoreNotHeld { store: "artifacts" })
+        ));
+        assert!(matches!(
+            other,
+            Err(Error::Vault {
+                source: hatchling_vault::Error::StoreKeyRefused { store: "spaces" }
+            })
+        ));
     }
 }

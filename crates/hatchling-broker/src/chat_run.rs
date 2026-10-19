@@ -197,7 +197,7 @@ fn answer_with<D: Delivery>(delivery: &D, answer: &str) -> Step {
 pub fn chat_forever<'scope, 'env>(
     scope: &'scope std::thread::Scope<'scope, 'env>,
     config: &'env crate::Config,
-    key: &'env hatchling_vault::MasterKey,
+    key: &'env dyn hatchling_vault::OpensStores,
     hub: &'env LocalHub,
     env: crate::RunEnv,
     grants: Vec<ScheduleGrant>,

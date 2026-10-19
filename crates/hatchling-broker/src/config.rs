@@ -75,8 +75,8 @@ pub struct Config {
 
 /// The artifact pipeline's configuration.
 ///
-/// The build store is a sealed vault of its own at `root`, under the
-/// broker's master key, apart from the credential vault. `workspace` is
+/// The build store is a sealed vault of its own at `root`, under its own
+/// key, apart from the credential vault. `workspace` is
 /// the operator's directory that workspace deliveries write into. Every
 /// delivery is judged by the share-review gate against `policy`; with no
 /// policy configured, the gate cannot judge, and every delivery is
@@ -117,8 +117,8 @@ impl ArtifactConfig {
 
 /// The space store's configuration.
 ///
-/// The store is a sealed vault of its own at `root`, under the broker's
-/// master key, apart from the credential vault and the other stores.
+/// The store is a sealed vault of its own at `root`, under its own key,
+/// apart from the credential vault and the other stores.
 /// `bound` is set only by [`crate::scoped_config`], for a space task's run
 /// session: that session's principal is the task run, and it may use that
 /// one space and no other.
@@ -154,8 +154,8 @@ impl SpaceConfig {
 
 /// Broker-side scheduler configuration.
 ///
-/// The schedule store is a sealed vault of its own at `root`, under the
-/// broker's master key. Config parsing keeps it apart from the credential
+/// The schedule store is a sealed vault of its own at `root`, under its
+/// own key. Config parsing keeps it apart from the credential
 /// vault, so no vault grant can ever name one of its entries.
 #[derive(Debug, Clone)]
 pub struct SchedulerConfig {

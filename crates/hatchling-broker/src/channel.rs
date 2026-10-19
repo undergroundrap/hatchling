@@ -34,7 +34,7 @@ use hatchling_channel::{
     Channel, ChannelId, Credential, LocalChannel, LocalHub, Message, SenderId,
 };
 use hatchling_core::{ChannelOp, ChannelResult};
-use hatchling_vault::{MasterKey, SealedVault};
+use hatchling_vault::{OpensStores, SealedVault};
 
 use crate::approval::{ApprovalLedger, ApprovalToken, MintError, Verdict};
 use crate::config::ChannelAccountSpec;
@@ -103,7 +103,7 @@ impl ChannelRegistry {
         enabled: &[String],
         accounts: &[ChannelAccountSpec],
         vault: &VaultConfig,
-        key: &MasterKey,
+        key: &dyn OpensStores,
         local_hub: Option<(&LocalHub, &str)>,
     ) -> Result<Self, Error> {
         let mut channels: HashMap<String, Box<dyn Channel>> = HashMap::new();
@@ -473,6 +473,7 @@ fn stamp(peer_uid: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hatchling_vault::MasterKey;
 
     /// A vault config whose root does not exist: a registry without
     /// accounts must never open it.

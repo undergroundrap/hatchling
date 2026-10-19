@@ -2,7 +2,7 @@
 //! delivery path for scheduled output.
 //!
 //! **The store is sealed and broker-private.** It is a [`SealedVault`]
-//! under the broker's master key, at its own root
+//! under its own key, at its own root
 //! (`HATCHLING_SCHEDULER_DIR`). Config parsing keeps that root apart
 //! from the credential vault's, so no vault op or grant can name an
 //! entry. A cell creates a schedule and learns its id; it lists what
@@ -52,7 +52,7 @@ use hatchling_scheduler::{
     Creator, Delivery, Dispatcher, FollowupParent, Hook, Launcher, Parked, Schedule, Services,
     Sources, Store, TickReport, Timestamp, validate, validate_followup, validate_hook,
 };
-use hatchling_vault::{MasterKey, SealedVault, Secret};
+use hatchling_vault::{OpensStores, SealedVault, Secret};
 
 use crate::config::FollowupScope;
 use crate::{Config, Error};
@@ -173,14 +173,14 @@ pub fn held_grants(config: &Config) -> BTreeSet<ScheduleGrant> {
 #[derive(Debug)]
 pub struct SealedScheduleStore<'k> {
     root: &'k Path,
-    key: &'k MasterKey,
+    key: &'k dyn OpensStores,
 }
 
 impl<'k> SealedScheduleStore<'k> {
     /// The store at `root`, sealed under `key`. Nothing is opened until
     /// an operation needs it.
     #[must_use]
-    pub const fn new(root: &'k Path, key: &'k MasterKey) -> Self {
+    pub const fn new(root: &'k Path, key: &'k dyn OpensStores) -> Self {
         Self { root, key }
     }
 
@@ -429,7 +429,7 @@ fn write_json<T: serde::Serialize>(
 /// opaquely, a backend failure. The session survives all of them.
 pub fn handle_schedule_op(
     config: &Config,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     op: &ScheduleOp,
     now: Timestamp,
     caller: Creator,
@@ -487,7 +487,7 @@ pub fn handle_schedule_op(
 #[must_use]
 pub fn list_schedules(
     config: &Config,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     grants: &BTreeSet<ScheduleGrant>,
     after: Option<&str>,
     caller: Creator,
@@ -560,7 +560,7 @@ fn summary(schedule: &Schedule) -> ScheduleSummary {
 )]
 fn create_schedule(
     config: &Config,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     when: &ScheduleSpec,
     task: &str,
     grants: &[ScheduleGrant],
@@ -603,7 +603,7 @@ fn create_schedule(
 /// subset of the creator's, as for any schedule.
 fn create_feed(
     config: &Config,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     when: &ScheduleSpec,
     channel: &str,
     feed: &FeedSpec,
@@ -654,7 +654,7 @@ fn create_feed(
 /// one-shot schedule that the dispatcher fires like any other.
 fn request_followup(
     scope: &FollowupScope,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     task: &str,
     delay_secs: u64,
     grants: &[ScheduleGrant],
@@ -713,7 +713,7 @@ fn request_followup(
 /// session: a run can neither register nor cancel a hook. A typed
 /// `Refused` names a fault in the request, including a source the broker
 /// cannot authenticate; `HookError`, opaquely, a backend failure.
-pub fn handle_hook_op(config: &Config, key: &MasterKey, op: &HookOp) -> HookResult {
+pub fn handle_hook_op(config: &Config, key: &dyn OpensStores, op: &HookOp) -> HookResult {
     if !config.scheduler.enabled() {
         return HookResult::Denied;
     }
@@ -841,7 +841,7 @@ impl Delivery for HubDelivery<'_> {
 pub fn dispatch_once<L: Launcher>(
     dispatcher: &mut Dispatcher<L::Run>,
     config: &Config,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     hub: Option<&LocalHub>,
     launcher: &L,
     now: Timestamp,
@@ -876,6 +876,7 @@ pub fn dispatch_once<L: Launcher>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hatchling_vault::MasterKey;
     use std::path::PathBuf;
 
     /// Flags any message that says "hunter2".
@@ -1287,5 +1288,49 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         assert_eq!(own.unwrap().as_bytes(), b"p");
         assert!(secrets.is_err(), "opened under the secrets label");
+    }
+
+    /// A run's follow-up is stored once; a store that fails releases the
+    /// run's claim, so the follow-up can be asked for again.
+    #[test]
+    fn request_followup_stores_once_and_a_failed_store_releases_the_claim() {
+        let root =
+            std::env::temp_dir().join(format!("hatchling-followup-direct-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let master = MasterKey::generate().unwrap();
+        let send = vec![ScheduleGrant::ChannelSend {
+            channel: String::from("local"),
+        }];
+        let scope = FollowupScope {
+            root: root.clone(),
+            run: format!("run-followup-direct-{}", std::process::id()),
+            grants: send.clone(),
+            channel: String::from("local"),
+            depth: 0,
+        };
+        let now = Timestamp::now();
+        let unheld = hatchling_vault::StoreKeys::unwrap(&master, &[]).unwrap();
+        let failed = request_followup(&scope, &unheld, "check again", 60, &send, now);
+        let created = request_followup(&scope, &master, "check again", 60, &send, now);
+        let taken = request_followup(&scope, &master, "check again", 60, &send, now);
+        release_followup(&scope.run);
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            matches!(failed, ScheduleResult::ScheduleError),
+            "{failed:?}"
+        );
+        assert!(
+            matches!(created, ScheduleResult::Created { .. }),
+            "{created:?}"
+        );
+        assert!(
+            matches!(
+                taken,
+                ScheduleResult::Refused {
+                    reason: ScheduleRefusal::FollowupTaken
+                }
+            ),
+            "{taken:?}"
+        );
     }
 }

@@ -43,7 +43,7 @@ use hatchling_core::ui::operator::SessionSocket;
 use hatchling_core::ui::{
     ActionRefusal, ApiOutcome, ApiRequest, UiActionResult, UiRequest, UiResponse, negotiate,
 };
-use hatchling_vault::MasterKey;
+use hatchling_vault::OpensStores;
 
 use crate::api_auth::{
     ApiConfig, Caller, PeerProvider, Provider, TokenProvider, admit, mint_ui_token, ui_token_path,
@@ -201,7 +201,7 @@ impl Api {
     pub fn serve(
         &self,
         config: &Config,
-        key: &MasterKey,
+        key: &dyn OpensStores,
         skills: &Skills,
         hub: Option<&LocalHub>,
     ) -> ! {
@@ -441,6 +441,7 @@ mod tests {
     use crate::api_auth::tests::{Scratch, owner_config, real_uid, scratch};
     use crate::config::{GoalsAction, SkillConfig};
     use crate::test_socket::TestSocket;
+    use hatchling_vault::MasterKey;
 
     fn goals() -> ScheduleGrant {
         ScheduleGrant::Goals {

@@ -56,7 +56,7 @@ use hatchling_space::{
     Admissions, DeviceRecord, PAGE_BYTES, PeerPin, Principal, SessionPin, SpaceRecord, SpaceTask,
     check_key, check_push, check_value, overwritten, page, served_headers,
 };
-use hatchling_vault::{MasterKey, SealedVault, Secret};
+use hatchling_vault::{OpensStores, SealedVault, Secret};
 
 use crate::schedule_ops::{SCHEDULE_ID_PREFIX, SealedScheduleStore, held_grants};
 use crate::{Config, Error};
@@ -159,14 +159,14 @@ impl Drop for EndAdmissions {
 #[derive(Debug)]
 pub struct SealedSpaceStore<'k> {
     root: &'k std::path::Path,
-    key: &'k MasterKey,
+    key: &'k dyn OpensStores,
 }
 
 impl<'k> SealedSpaceStore<'k> {
     /// The store at `root`, sealed under `key`. Nothing is opened until an
     /// operation needs it.
     #[must_use]
-    pub const fn new(root: &'k std::path::Path, key: &'k MasterKey) -> Self {
+    pub const fn new(root: &'k std::path::Path, key: &'k dyn OpensStores) -> Self {
         Self { root, key }
     }
 
@@ -546,7 +546,7 @@ fn write_json<T: serde::Serialize>(
 #[must_use]
 pub fn handle_space_op(
     config: &Config,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     session: &SpaceSession,
     op: &SpaceOp,
     now: Timestamp,
@@ -629,7 +629,7 @@ fn store_failed(error: &Error, doing: &str) -> SpaceResult {
 /// One space op's view of the session.
 struct Spaces<'a> {
     config: &'a Config,
-    key: &'a MasterKey,
+    key: &'a dyn OpensStores,
     session: &'a SpaceSession,
     store: SealedSpaceStore<'a>,
     now: Timestamp,
@@ -978,6 +978,7 @@ impl Spaces<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hatchling_vault::MasterKey;
 
     #[test]
     fn store_entry_names_are_vault_names() {

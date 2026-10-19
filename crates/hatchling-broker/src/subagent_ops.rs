@@ -47,7 +47,7 @@ use hatchling_core::{
     grant_label,
 };
 use hatchling_scheduler::{RunRequest, Timestamp};
-use hatchling_vault::MasterKey;
+use hatchling_vault::OpensStores;
 
 use crate::cell::ScheduledRun;
 use crate::run_launcher::{CellRun, RunEnd, captured};
@@ -315,7 +315,7 @@ struct Child<'scope> {
 /// running (the orphan rule).
 pub struct Subagents<'scope, 'env> {
     config: &'env Config,
-    key: &'env MasterKey,
+    key: &'env dyn OpensStores,
     launcher: Option<CellLauncher<'scope, 'env>>,
     wait_bound: Duration,
     ledger: Ledger,
@@ -340,7 +340,7 @@ impl<'scope, 'env> Subagents<'scope, 'env> {
     pub fn new(
         scope: &'scope Scope<'scope, 'env>,
         config: &'env Config,
-        key: &'env MasterKey,
+        key: &'env dyn OpensStores,
         env: Option<RunEnv>,
         run_id: String,
     ) -> Self {
@@ -566,6 +566,7 @@ mod tests {
         VaultConfig, VaultGrant,
     };
     use hatchling_core::{LogLevel, PeerUid, VaultAction};
+    use hatchling_vault::MasterKey;
     use std::path::PathBuf;
 
     fn config() -> Config {

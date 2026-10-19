@@ -41,7 +41,7 @@ use hatchling_space::{
     DeviceRecord, PeerPin, Principal, SessionPin, auth_transcript, broker_transcript, device_id,
     is_nonce, pair_transcript, parse_key, verifies,
 };
-use hatchling_vault::MasterKey;
+use hatchling_vault::OpensStores;
 
 use crate::serve::session_error;
 use crate::space_ops::{EndAdmissions, SealedSpaceStore, SpaceSession, handle_space_op, pairings};
@@ -84,7 +84,7 @@ impl DeviceEndpoint {
 
     /// Serves devices one at a time, forever. A failed connection is
     /// logged and the next one accepted.
-    pub fn serve(&self, config: &Config, key: &MasterKey) -> ! {
+    pub fn serve(&self, config: &Config, key: &dyn OpensStores) -> ! {
         loop {
             match self.listener.accept() {
                 Ok((stream, _)) => {
@@ -138,7 +138,7 @@ pub fn open_device_endpoint(config: &Config) -> Result<Option<DeviceEndpoint>, E
 pub fn serve_device(
     stream: &UnixStream,
     config: &Config,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     peer_uid: PeerUid,
 ) -> Result<(), Error> {
     let creds = peer_credentials(stream)?;
@@ -303,7 +303,7 @@ fn authenticate(
 fn serve_ops(
     stream: &UnixStream,
     config: &Config,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     creds: PeerCredentials,
     device: String,
 ) -> Result<(), Error> {
@@ -349,4 +349,37 @@ fn send<T: serde::Serialize>(stream: &UnixStream, message: &T) -> Result<(), Err
 #[must_use]
 pub fn pairing_refusals() -> Vec<hatchling_space::RefusedPairing> {
     pairings().refusals().to_vec()
+}
+
+#[cfg(test)]
+mod tests {
+    use hatchling_vault::MasterKey;
+
+    use super::*;
+
+    /// A device's session ends with its connection, and a frame that
+    /// isn't a space op ends it with a protocol error, answering nothing.
+    #[test]
+    fn serve_ops_ends_at_eof_and_refuses_a_frame_that_is_not_a_space_op() {
+        let config = crate::api_auth::tests::owner_config(None);
+        let key = MasterKey::generate().unwrap();
+        let (device, broker) = UnixStream::pair().unwrap();
+        drop(device);
+        let creds = peer_credentials(&broker).unwrap();
+        assert!(serve_ops(&broker, &config, &key, creds, String::from("dev-eof")).is_ok());
+
+        let (device, broker) = UnixStream::pair().unwrap();
+        write_frame(&device, b"not a space op").unwrap();
+        let creds = peer_credentials(&broker).unwrap();
+        let ended = serve_ops(&broker, &config, &key, creds, String::from("dev-bad"));
+        drop(broker);
+        assert!(
+            matches!(ended, Err(Error::SessionProtocol { .. })),
+            "{ended:?}"
+        );
+        device
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        assert!(read_frame_or_eof(&device).unwrap().is_none());
+    }
 }
