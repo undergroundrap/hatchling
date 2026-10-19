@@ -617,7 +617,9 @@ impl Config {
             .parse::<SocketPath>()?;
         let agent_uid = parse_agent_uid(&get, || {
             use hatchling_isolation::IsolationBackend as _;
-            Ok(hatchling_isolation::platform().subordinate_identity()?.principal)
+            Ok(hatchling_isolation::platform()
+                .subordinate_identity()?
+                .principal)
         })?;
         let socket_mode = get(env::HATCHLING_BROKER_SOCKET_MODE.name)
             .map_or(Ok(DEFAULT_SOCKET_MODE), |raw| parse_socket_mode(&raw))?;
@@ -1435,13 +1437,14 @@ fn parse_agent_uid(
     subordinate: impl FnOnce() -> Result<u32, Error>,
 ) -> Result<PeerUid, Error> {
     let agent_uid = match get(env::HATCHLING_AGENT_UID.name) {
-        Some(raw) => raw
-            .parse::<u32>()
-            .map(PeerUid::from_kernel)
-            .map_err(|_| Error::InvalidConfig {
-                key: "HATCHLING_AGENT_UID",
-                reason: String::from("expected a kernel uid as a base-10 u32"),
-            })?,
+        Some(raw) => {
+            raw.parse::<u32>()
+                .map(PeerUid::from_kernel)
+                .map_err(|_| Error::InvalidConfig {
+                    key: "HATCHLING_AGENT_UID",
+                    reason: String::from("expected a kernel uid as a base-10 u32"),
+                })?
+        }
         None if crate::cell::CellIds::parse(get)? == crate::cell::CellIds::Subordinate => {
             PeerUid::from_kernel(subordinate()?)
         }
