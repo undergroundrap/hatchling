@@ -32,7 +32,8 @@ broker speak one contract instead of duplicating it. No external deps
 beyond the reviewed set. `hatchling-model` also uses this crate for the
 shared `ModelReasoning` vocabulary, keeping agent, broker and provider
 configuration consistent without a broker dependency on the model crate
-or a new external dependency (WO-020).
+or a new external dependency (WO-020). It uses `sha2`, already reviewed for
+the workspace, for the digest an approval binds (WO-027).
 
 ## hatchling-adversarial
 
