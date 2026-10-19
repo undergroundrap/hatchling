@@ -172,7 +172,7 @@ impl CellIds {
 /// refusal to serve a socket the agent's uid could reach.
 pub(crate) const OWN_UID_HINT: &str = "give cells a uid of their own: run the broker as root, \
      or set HATCHLING_CELL_IDS=subordinate, with a range for this user in /etc/subuid and \
-     /etc/subgid and HATCHLING_AGENT_UID set to the first id of its /etc/subuid range";
+     /etc/subgid (the agent's uid is then the first id of the /etc/subuid range)";
 
 /// The identity a cell gets from `backend`: the owner's subordinate ids
 /// when `ids` says so, otherwise `count` uids from `principal` (or the

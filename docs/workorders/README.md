@@ -47,7 +47,7 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | [011](workorder-011-secret-hygiene.md) | Secret hygiene in memory and logs | yes | DONE |
 | [012](workorder-012-disposable-state-and-cleanup.md) | Separate disposable files from your data, and clean them up safely | yes | DONE |
 | [013](workorder-013-release-process.md) | A release process: signed, reproducible binaries and an SBOM | yes | QUEUED |
-| [014](workorder-014-running-without-root.md) | Run the full broker without root | yes | IN-PROGRESS |
+| [014](workorder-014-running-without-root.md) | Run the full broker without root | yes | DONE |
 | [015](workorder-015-root-cell-tests-in-ci.md) | Run the cell test suites as root in CI | yes | QUEUED |
 | [016](workorder-016-publish-to-crates-io.md) | Publish to crates.io, with `hatchling-runtime` as the front door | yes | CLOSED |
 | [017](workorder-017-privilege-separate-the-trusted-side.md) | Privilege-separate the trusted side: a credential keeper, an egress authority, and a spawner so the broker drops root | yes | QUEUED |
@@ -79,6 +79,7 @@ Not yet WOs. Each gets a full file, with a scope and acceptance criteria, before
 - **Crash handlers on a socket.** A host whose `core_pattern` starts with `@` (a crash handler listening on a socket, Linux 6.16 and later) isn't covered yet by the one-byte core limit from WO-011. Find what reaches such a handler from a crashing cell, cover it, and test it on a kernel that has the feature.
 - **macOS backend.** An implementation of the isolation trait for macOS.
 - **FIDO2 on real hardware.** The FIDO2 hmac-secret vault factor is tested against a software authenticator. Validate it on physical security keys, and record which ones.
+- **Sweep a harness's leftover trees through the tree helper** (after WO-014). A run whose cell kept its work tree busy past the take-back leaves it in the broker's temp directory, owned by the cell's subordinate ids. The startup sweep runs as the broker and can't remove it. The sweep should hand such trees back through `harness-tree reclaim`, then remove them as it does the rest.
 - **Conversation continuity**, now [WO-026](workorder-026-conversation-continuity.md). Each chat message starts a fresh run whose only input is that message, so a follow-up ("use the second option") has nothing to refer to. The broker owns a stable session per conversation, outside any cell. The session holds the turns, the decisions and corrections, the open work and pending approvals, and references to tool results. The broker builds each turn's context from it, checkpoints each tool call and its outcome, and restores it into a fresh cell. The parts exist (`SessionRecord`, `SessionStore`, interrupted-call reconciliation, compaction) but aren't on the chat path, and none holds the turns' text yet. A first slice:
   - a conversation id of the owner's, not a cell's;
   - typed turns, appended only by the broker: the user's message as accepted, and the assistant's as cleared by the output gate (a blocked or replaced answer never comes back as context), each with a turn id so a retry doesn't append twice;

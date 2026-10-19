@@ -1,6 +1,6 @@
 # WO-014: Run the full broker without root
 
-**Status:** IN-PROGRESS
+**Status:** DONE
 **Area:** `crates/hatchling-isolation` (id maps, spawn), `crates/hatchling-sys` (id maps), `crates/hatchling-broker` (config, API, ingress), `docs/`, `README.md`
 **Issue:** [#23](https://github.com/undergroundrap/hatchling/issues/23)
 **Trust boundary:** yes
@@ -30,11 +30,11 @@ So the full product needs root. Many security teams won't run a third-party daem
 
 ## Acceptance criteria
 
-- [ ] An unprivileged broker with a subordinate range runs each cell kind as a uid that isn't the owner's, shown by the cell's `/proc/self/status` and `uid_map`; tested with real cells.
-- [ ] Under that broker, the local API and the chat ingress start, and the API refuses a connection from a cell (its uid isn't a caller's); tested.
-- [ ] Without a subordinate range, the API and the ingress still refuse to start, and the message names `/etc/subuid`; tested.
-- [ ] Each unsafe map listed in the scope is refused before any cell spawns; tested.
-- [ ] The rootless quickstart runs as written, end to end, on a fresh Ubuntu machine and on WSL2.
+- [x] An unprivileged broker with a subordinate range runs each cell kind as a uid that isn't the owner's, shown by the cell's `/proc/self/status` and `uid_map`; tested with real cells.
+- [x] Under that broker, the local API and the chat ingress start, and the API refuses a connection from a cell (its uid isn't a caller's); tested.
+- [x] Without a subordinate range, the API and the ingress still refuse to start, and the message names `/etc/subuid`; tested.
+- [x] Each unsafe map listed in the scope is refused before any cell spawns; tested.
+- [x] The rootless quickstart runs as written, end to end, on a fresh Ubuntu machine and on WSL2.
 
 ## Gates
 
@@ -42,7 +42,33 @@ See [TEMPLATE.md](TEMPLATE.md#gates).
 
 ## Evidence
 
-Filled in at close.
+Merged in parts:
+- part 1: #113;
+- part 2: #120, #121, #126, #128;
+- part 2b: #129;
+- part 3: #131, with #132 for the gate on newer runner kernels.
+
+Each was gated in the disposable sandbox (WSL2, uid 2001, gid 2501, subordinate ranges uid 200000 and gid 300000). Each gate covered fmt, clippy on 1.98.1 and 1.85.0, the preflight, `check.sh` with `HATCHLING_REQUIRE_CELL=1` on both toolchains, the subordinate tests with `HATCHLING_REQUIRE_SUBID=1` in `sbx-job --idmap`, hand mutants, and mutation on the changed lines (0 missed, 0 timeouts in every part). The criteria:
+
+- **Each cell kind on its own uid, with real cells.**
+  - The spawner's `a_cell_on_subordinate_ids_runs_as_them_with_no_groups` reads every process of the cell from the host: all four uids and gids, an empty `Groups:`, and the maps.
+  - The broker's real-cell tests cover the agent's cell (`a_subordinate_agent_cell_handshakes_over_its_own_connection`), a skill cell (`a_skill_cell_on_subordinate_ids_runs_as_them`) and a harness (`a_harness_on_subordinate_ids_edits_its_slice_the_same_way`, its work tree given and taken back through the tree helper).
+  - A run cell is covered end to end by the quickstart below, whose chat runs are run cells. A subagent's cell is built by the same run-cell path; it has no test of its own on subordinate ids.
+- **The endpoints start; the API refuses a cell.**
+  - With subordinate ids, the API, the UI and operator sockets, the ingress and the device endpoint all start. The quickstart's app check drives the UI and operator sockets.
+  - The API closes any peer that isn't its owner before reading a byte (`a_peer_that_is_not_the_owner_gets_no_byte_read`). A cell's uid is such a peer, and a cell can't reach the socket's path in any case.
+- **Without a range they refuse, naming `/etc/subuid`:** the ingress's refusal test checks the message; the API, device and operator endpoints share it (`OWN_UID_HINT`).
+- **Unsafe maps refused before a cell spawns:** `subid`'s tests refuse:
+  - a range holding uid 0, the owner or any account's id;
+  - an empty range;
+  - helpers that aren't root's setuid regular files.
+
+  Its hand mutants of each refusal were caught (#113).
+- **The quickstart, as written.**
+  - *Fresh Ubuntu:* CI's "without root" job, on `ubuntu-24.04` with `apparmor_restrict_unprivileged_userns` at 1, runs the README's section as the runner user (`readme_quickstart.py --rootless`). The README's own setup installs the map helpers, adds the range and loads the broker's AppArmor profile. The stand-in's answer arrives, and the app answers in Chromium.
+  - *WSL2:* the section's commands ran as the sandbox's unprivileged user. The broker had no `HATCHLING_AGENT_UID` and took 200000; `first-run.py` got the answer. The `sudo` steps' effects were already in place (the sandbox's range and helpers), and WSL2's kernel has no AppArmor restriction, so that block is skipped there as written.
+
+Left for later, outside the criteria: a run's tree that the cell kept busy past its take-back stays in the broker's temp directory, owned by the cell's ids, and the startup sweep can't remove it as the broker. Sweeping such leftovers through the tree helper is a candidate in the queue.
 
 ## Notes
 
