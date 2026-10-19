@@ -2414,9 +2414,18 @@ mod tests {
     fn a_prefix_is_read_up_to_its_limit_and_says_if_there_is_more() {
         let scratch = Scratch::new("prefix");
         let file = scratch.write("file", b"0123456789");
-        assert_eq!(read_prefix(&file, 10).unwrap(), (b"0123456789".to_vec(), false));
-        assert_eq!(read_prefix(&file, 11).unwrap(), (b"0123456789".to_vec(), false));
-        assert_eq!(read_prefix(&file, 9).unwrap(), (b"012345678".to_vec(), true));
+        assert_eq!(
+            read_prefix(&file, 10).unwrap(),
+            (b"0123456789".to_vec(), false)
+        );
+        assert_eq!(
+            read_prefix(&file, 11).unwrap(),
+            (b"0123456789".to_vec(), false)
+        );
+        assert_eq!(
+            read_prefix(&file, 9).unwrap(),
+            (b"012345678".to_vec(), true)
+        );
         assert_eq!(read_prefix(&file, 0).unwrap(), (Vec::new(), true));
         let empty = scratch.write("empty", b"");
         assert_eq!(read_prefix(&empty, 0).unwrap(), (Vec::new(), false));
@@ -2463,7 +2472,8 @@ mod tests {
             .unwrap()
             .set_len(MAX_WORK_BYTES)
             .unwrap();
-        assert_eq!(read_tree(&exact).unwrap().files["full"].len(), 8 << 20);
+        let full = read_tree(&exact).unwrap();
+        assert_eq!(full.files.get("full").map(Vec::len), Some(8 << 20));
         std::fs::File::create(exact.join("one more"))
             .unwrap()
             .set_len(1)
