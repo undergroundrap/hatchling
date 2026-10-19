@@ -1298,18 +1298,21 @@ mod tests {
             std::env::temp_dir().join(format!("hatchling-followup-direct-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let master = MasterKey::generate().unwrap();
+        let send = vec![ScheduleGrant::ChannelSend {
+            channel: String::from("local"),
+        }];
         let scope = FollowupScope {
             root: root.clone(),
             run: format!("run-followup-direct-{}", std::process::id()),
-            grants: Vec::new(),
+            grants: send.clone(),
             channel: String::from("local"),
             depth: 0,
         };
         let now = Timestamp::now();
         let unheld = hatchling_vault::StoreKeys::unwrap(&master, &[]).unwrap();
-        let failed = request_followup(&scope, &unheld, "check again", 60, &[], now);
-        let created = request_followup(&scope, &master, "check again", 60, &[], now);
-        let taken = request_followup(&scope, &master, "check again", 60, &[], now);
+        let failed = request_followup(&scope, &unheld, "check again", 60, &send, now);
+        let created = request_followup(&scope, &master, "check again", 60, &send, now);
+        let taken = request_followup(&scope, &master, "check again", 60, &send, now);
         release_followup(&scope.run);
         let _ = std::fs::remove_dir_all(&root);
         assert!(

@@ -2340,8 +2340,7 @@ mod gate_scope_tests {
         let (mut peer, broker) = UnixStream::pair().unwrap();
         handle_connection(&broker, &config, &key, &Skills::default(), None);
         drop(broker);
-        peer.set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         let mut seen = Vec::new();
         std::io::Read::read_to_end(&mut peer, &mut seen).unwrap();
         assert!(seen.is_empty(), "{seen:?}");
