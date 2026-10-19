@@ -11,7 +11,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use hatchling_vault::{
-    FileKey, KeySource, MasterKey, MigrateReport, RekeyReport, SealedVault, Store,
+    FileKey, KeySource, MasterKey, MigrateReport, RekeyReport, SealedVault, Store, StoreKeys,
 };
 
 use crate::vault_keyring::KeyringConfig;
@@ -72,6 +72,24 @@ pub fn sealed_stores(
         ));
     }
     stores
+}
+
+/// The keys of `stores`, unwrapped under `master`, which is dropped here,
+/// zeroized: what the broker serves with (WO-017). Each store's root is
+/// made if absent, and a store without a key is given one.
+///
+/// # Errors
+///
+/// Returns [`Error::Vault`] for the first store whose key doesn't unwrap
+/// or can't be made.
+pub fn hand_store_keys(master: MasterKey, stores: &[(Store, PathBuf)]) -> Result<StoreKeys, Error> {
+    let stores: Vec<(Store, &Path)> = stores
+        .iter()
+        .map(|(store, root)| (*store, root.as_path()))
+        .collect();
+    let keys = StoreKeys::unwrap(&master, &stores);
+    drop(master);
+    keys.map_err(|source| Error::Vault { source })
 }
 
 /// Refuses to serve while any of `stores` holds stale sealed files.

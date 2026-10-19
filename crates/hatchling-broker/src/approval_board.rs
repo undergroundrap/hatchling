@@ -30,7 +30,7 @@ use hatchling_core::ui::{
 };
 use hatchling_core::{ActivationProposal, ApprovalRefusal, ArtifactResult};
 use hatchling_scheduler::{Delivery as _, Timestamp};
-use hatchling_vault::MasterKey;
+use hatchling_vault::OpensStores;
 use serde_json::json;
 
 use crate::Config;
@@ -265,7 +265,7 @@ fn confirmation(proposal: &ActivationProposal, requested: &Requested) -> Confirm
 /// `hub` how it went.
 pub fn work_forever(
     config: &Config,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     skills: &Skills,
     hub: Option<&LocalHub>,
 ) -> ! {
@@ -279,7 +279,7 @@ pub fn work_forever(
 /// owner was told, if anything was approved.
 pub fn run_next(
     config: &Config,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     skills: &Skills,
     hub: Option<&LocalHub>,
     wait: Duration,
@@ -320,7 +320,7 @@ pub fn run_approved(
     board: &Board,
     id: &str,
     config: &Config,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     skills: &Skills,
     hub: Option<&LocalHub>,
     now: i64,

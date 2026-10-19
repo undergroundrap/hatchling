@@ -25,6 +25,7 @@ use hatchling_artifact::request::sha256_hex;
 use hatchling_channel::gate::FAILED_CATEGORY;
 use hatchling_channel::{Audit, Category, Event, Failure, Overrides, Reason};
 use hatchling_vault::{MasterKey, SealedVault, Secret, SecretName};
+use hatchling_vault::OpensStores;
 use hmac::{Hmac, Mac as _};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -65,7 +66,7 @@ impl TagKey {
     /// Returns [`Error::Vault`] when the store can't be opened, read or
     /// written, and [`Error::Redaction`] for a stored key of the wrong size
     /// or no randomness to make one.
-    pub fn load_or_create(raw_dir: &Path, key: &MasterKey) -> Result<Self, Error> {
+    pub fn load_or_create(raw_dir: &Path, key: &dyn OpensStores) -> Result<Self, Error> {
         let vault = SealedVault::open_in(raw_dir, key, hatchling_vault::Store::REDACTIONS)
             .map_err(|source| Error::Vault { source })?;
         let name: SecretName = TAG_KEY_NAME.parse().map_err(|_| Error::Redaction {

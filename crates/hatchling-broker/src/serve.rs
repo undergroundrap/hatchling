@@ -24,7 +24,7 @@ use hatchling_core::{
 };
 use hatchling_egress::{EgressRequest, Proxy};
 use hatchling_memory::{MemoryPrincipal, SessionId};
-use hatchling_vault::{MasterKey, SealedVault, Secret};
+use hatchling_vault::{OpensStores, SealedVault, Secret};
 use zeroize::Zeroizing;
 
 use crate::cell::cgroup_parent;
@@ -34,8 +34,8 @@ use crate::{
     load_master_key, spawn_cell, validate_sealed_vault,
 };
 
-/// Loads the master key, validates the sealed vault, binds the listen
-/// socket, and serves agents.
+/// Loads the master key, validates the sealed vault, trades the master
+/// key for its stores' keys, binds the listen socket, and serves agents.
 ///
 /// The broker is supervised and runs until killed: `serve_forever`
 /// never returns, so neither does this. Startup failures (bad config,
@@ -91,7 +91,12 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
     // Every sealed store holds current envelopes, each bound to its
     // store and name (WO-002), or the broker stops here, naming the
     // files `migrate-vault` must re-seal.
-    crate::check_sealed_stores(&crate::sealed_stores(config, redaction.as_ref()))?;
+    let stores = crate::sealed_stores(config, redaction.as_ref());
+    crate::check_sealed_stores(&stores)?;
+    // From here the broker holds its stores' keys alone (WO-017): each is
+    // unwrapped once, now, and the master key is dropped, zeroized, before
+    // anything is served. A store it wasn't handed doesn't open.
+    let key = crate::hand_store_keys(key, &stores)?;
     // An earlier broker killed mid-run left its cells' staging and its
     // runs' directories: none is live now, and none is your data.
     let _swept = crate::sweep::sweep_at_start(config, redaction.as_ref());
@@ -157,7 +162,7 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
         Agents::Listener(&listener)
     };
     std::thread::scope(|scope| {
-        // The gate's rules borrow the one key on a thread of their own
+        // The gate's rules borrow the keys on a thread of their own
         // (see `crate::output_gate`): the gate only queues work for them.
         if let (Some((worker, phrases)), Some(redaction)) = (gated.worker, &redaction) {
             let rules = crate::Rules::new(config, &key, redaction.builtins, phrases);
@@ -277,9 +282,10 @@ impl Drop for EndScope<'_> {
 /// unauthorized peer's is, and the loop goes on accepting: a full cap
 /// never wedges it, and the next free slot admits again.
 ///
-/// `key` is the broker's single master key: every session borrows it to
-/// open the sealed vault. The borrow (not a clone) is deliberate —
-/// key material has exactly one owner. `skills` is borrowed the same
+/// `key` opens the broker's sealed stores: the keys it was handed at
+/// start, never the master key. Every session borrows it to open them.
+/// The borrow (not a clone) is deliberate — key material has exactly one
+/// owner. `skills` is borrowed the same
 /// way: the broker owns the one registry, and sessions check calls
 /// against it.
 ///
@@ -289,7 +295,7 @@ impl Drop for EndScope<'_> {
 pub fn serve_forever(
     listener: &UnixListener,
     config: &Config,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     skills: &Skills,
     ingress: Option<&crate::ingress::Ingress>,
     devices: Option<&crate::device::DeviceEndpoint>,
@@ -313,7 +319,7 @@ pub fn serve_forever(
 pub fn serve_cell_forever(
     cell: AgentCell,
     config: &Config,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     skills: &Skills,
     ingress: Option<&crate::ingress::Ingress>,
     devices: Option<&crate::device::DeviceEndpoint>,
@@ -325,14 +331,14 @@ pub fn serve_cell_forever(
 fn serve_agents(
     agents: Agents<'_>,
     config: &Config,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     skills: &Skills,
     ingress: Option<&crate::ingress::Ingress>,
     devices: Option<&crate::device::DeviceEndpoint>,
 ) -> ! {
-    // Scoped threads, not detached: the `&MasterKey` borrow crosses
+    // Scoped threads, not detached: the `&dyn OpensStores` borrow crosses
     // the thread boundary without an `Arc`, and the single-owner
-    // discipline holds — every session borrows the broker's one key.
+    // discipline holds — every session borrows the broker's one set of keys.
     // The scope never exits: the accept loop diverges.
     let slots = crate::connections::ConnectionSlots::new(config.max_connections);
     std::thread::scope(|scope| {
@@ -374,8 +380,8 @@ fn serve_agents(
                 Ok((stream, _)) => match slots.try_acquire() {
                     Ok(slot) => {
                         let config = config.clone();
-                        // `&MasterKey` is `Copy`: each thread borrows the
-                        // same single key.
+                        // `&dyn OpensStores` is `Copy`: each thread borrows the
+                        // same keys.
                         scope.spawn(move || {
                             handle_connection(&stream, &config, key, skills, hub);
                             // Free the slot before the stream closes: a
@@ -412,7 +418,7 @@ fn serve_agents(
 fn handle_connection(
     stream: &UnixStream,
     config: &Config,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     skills: &Skills,
     hub: Option<&LocalHub>,
 ) {
@@ -451,7 +457,7 @@ fn handle_connection(
 pub fn serve_connection(
     stream: &UnixStream,
     config: &Config,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     skills: &Skills,
 ) -> Result<(), Error> {
     serve_connection_with_ingress(stream, config, key, skills, None)
@@ -466,7 +472,7 @@ pub fn serve_connection(
 pub fn serve_connection_with_ingress(
     stream: &UnixStream,
     config: &Config,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     skills: &Skills,
     hub: Option<&LocalHub>,
 ) -> Result<(), Error> {
@@ -490,7 +496,7 @@ pub fn serve_connection_with_ingress(
 pub fn serve_connection_with_runs(
     stream: &UnixStream,
     config: &Config,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     skills: &Skills,
     hub: Option<&LocalHub>,
     runs: Option<crate::RunEnv>,
@@ -530,7 +536,7 @@ pub fn serve_connection_with_runs(
 pub fn serve_cell_connection(
     cell: &AgentCell,
     config: &Config,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     skills: &Skills,
     hub: Option<&LocalHub>,
     runs: Option<crate::RunEnv>,
@@ -552,7 +558,7 @@ pub fn serve_cell_connection(
 fn serve_cell_then_wait(
     cell: &AgentCell,
     config: &Config,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     skills: &Skills,
     hub: Option<&LocalHub>,
 ) -> ! {
@@ -687,7 +693,7 @@ fn read_hello(stream: &UnixStream, timeout: Duration) -> Result<Vec<u8>, Error> 
 fn serve_session(
     stream: &UnixStream,
     config: &Config,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     skills: &Skills,
     cell_id: &CellId,
     creds: PeerCredentials,
@@ -971,7 +977,7 @@ pub(crate) fn session_error(error: hatchling_core::Error) -> Error {
 /// valid base64, or [`Error::Vault`] if the vault root cannot be opened.
 fn handle_vault_op(
     vault_config: &VaultConfig,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     op: &VaultOp,
     cell_id: &CellId,
     uid: u32,
@@ -1017,7 +1023,7 @@ fn handle_vault_op(
 /// The vault op's result, before it is recorded.
 fn vault_op_result(
     vault_config: &VaultConfig,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     op: &VaultOp,
     cell_id: &CellId,
 ) -> Result<VaultResult, Error> {
@@ -1129,7 +1135,7 @@ fn vault_op_result(
 /// destination rather than failing the session.
 fn credential_fetcher(
     vault_root: std::path::PathBuf,
-    key: &MasterKey,
+    key: &dyn OpensStores,
 ) -> impl Fn(&str) -> Option<Zeroizing<Vec<u8>>> + '_ {
     move |destination: &str| {
         // Map destination to vault secret name. The authorization is
@@ -1185,7 +1191,7 @@ fn credential_fetcher(
 fn init_egress_proxy<'a>(
     egress_config: &EgressConfig,
     vault_config: &VaultConfig,
-    key: &'a MasterKey,
+    key: &'a dyn OpensStores,
 ) -> Result<Proxy<impl Fn(&str) -> Option<Zeroizing<Vec<u8>>> + 'a>, Error> {
     let vault_root = vault_config.root.clone();
     let tls = egress_tls(|key| std::env::var(key).ok())?;
@@ -1515,6 +1521,7 @@ fn reject(stream: &UnixStream, reason: &str) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hatchling_vault::MasterKey;
 
     #[test]
     fn a_hello_cannot_forge_a_line_in_the_brokers_log() {

@@ -52,7 +52,7 @@ use hatchling_scheduler::{
     Creator, Delivery, Dispatcher, FollowupParent, Hook, Launcher, Parked, Schedule, Services,
     Sources, Store, TickReport, Timestamp, validate, validate_followup, validate_hook,
 };
-use hatchling_vault::{MasterKey, SealedVault, Secret};
+use hatchling_vault::{OpensStores, SealedVault, Secret};
 
 use crate::config::FollowupScope;
 use crate::{Config, Error};
@@ -173,14 +173,14 @@ pub fn held_grants(config: &Config) -> BTreeSet<ScheduleGrant> {
 #[derive(Debug)]
 pub struct SealedScheduleStore<'k> {
     root: &'k Path,
-    key: &'k MasterKey,
+    key: &'k dyn OpensStores,
 }
 
 impl<'k> SealedScheduleStore<'k> {
     /// The store at `root`, sealed under `key`. Nothing is opened until
     /// an operation needs it.
     #[must_use]
-    pub const fn new(root: &'k Path, key: &'k MasterKey) -> Self {
+    pub const fn new(root: &'k Path, key: &'k dyn OpensStores) -> Self {
         Self { root, key }
     }
 
@@ -429,7 +429,7 @@ fn write_json<T: serde::Serialize>(
 /// opaquely, a backend failure. The session survives all of them.
 pub fn handle_schedule_op(
     config: &Config,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     op: &ScheduleOp,
     now: Timestamp,
     caller: Creator,
@@ -487,7 +487,7 @@ pub fn handle_schedule_op(
 #[must_use]
 pub fn list_schedules(
     config: &Config,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     grants: &BTreeSet<ScheduleGrant>,
     after: Option<&str>,
     caller: Creator,
@@ -560,7 +560,7 @@ fn summary(schedule: &Schedule) -> ScheduleSummary {
 )]
 fn create_schedule(
     config: &Config,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     when: &ScheduleSpec,
     task: &str,
     grants: &[ScheduleGrant],
@@ -603,7 +603,7 @@ fn create_schedule(
 /// subset of the creator's, as for any schedule.
 fn create_feed(
     config: &Config,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     when: &ScheduleSpec,
     channel: &str,
     feed: &FeedSpec,
@@ -654,7 +654,7 @@ fn create_feed(
 /// one-shot schedule that the dispatcher fires like any other.
 fn request_followup(
     scope: &FollowupScope,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     task: &str,
     delay_secs: u64,
     grants: &[ScheduleGrant],
@@ -713,7 +713,7 @@ fn request_followup(
 /// session: a run can neither register nor cancel a hook. A typed
 /// `Refused` names a fault in the request, including a source the broker
 /// cannot authenticate; `HookError`, opaquely, a backend failure.
-pub fn handle_hook_op(config: &Config, key: &MasterKey, op: &HookOp) -> HookResult {
+pub fn handle_hook_op(config: &Config, key: &dyn OpensStores, op: &HookOp) -> HookResult {
     if !config.scheduler.enabled() {
         return HookResult::Denied;
     }
@@ -841,7 +841,7 @@ impl Delivery for HubDelivery<'_> {
 pub fn dispatch_once<L: Launcher>(
     dispatcher: &mut Dispatcher<L::Run>,
     config: &Config,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     hub: Option<&LocalHub>,
     launcher: &L,
     now: Timestamp,
@@ -876,6 +876,7 @@ pub fn dispatch_once<L: Launcher>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hatchling_vault::MasterKey;
     use std::path::PathBuf;
 
     /// Flags any message that says "hunter2".

@@ -60,7 +60,7 @@ use hatchling_core::{
 use hatchling_goals::{FeedQuery, GoalId, StatusFilter, TimeRange};
 use hatchling_memory::{MemoryPrincipal, Tag};
 use hatchling_skill::SkillId;
-use hatchling_vault::{MasterKey, SealedVault, Secret};
+use hatchling_vault::{OpensStores, SealedVault, Secret};
 use zeroize::Zeroizing;
 
 use crate::skills::SkillSet;
@@ -118,14 +118,14 @@ static STORE: Mutex<()> = Mutex::new(());
 #[derive(Debug)]
 pub struct SealedArtifactStore<'k> {
     root: &'k Path,
-    key: &'k MasterKey,
+    key: &'k dyn OpensStores,
 }
 
 impl<'k> SealedArtifactStore<'k> {
     /// The store at `root`, sealed under `key`. Nothing is opened until an
     /// operation needs it.
     #[must_use]
-    pub const fn new(root: &'k Path, key: &'k MasterKey) -> Self {
+    pub const fn new(root: &'k Path, key: &'k dyn OpensStores) -> Self {
         Self { root, key }
     }
 
@@ -306,7 +306,7 @@ fn write_json<T: serde::Serialize>(
 /// # Errors
 ///
 /// Returns why the secrets could not all be read.
-pub fn held_secrets(config: &Config, key: &MasterKey) -> Result<SecretSet, String> {
+pub fn held_secrets(config: &Config, key: &dyn OpensStores) -> Result<SecretSet, String> {
     held_secret_values(config, key, "artifact-gate").map(SecretSet::new)
 }
 
@@ -321,7 +321,7 @@ pub fn held_secrets(config: &Config, key: &MasterKey) -> Result<SecretSet, Strin
 /// As [`held_secrets`].
 pub fn held_secret_values(
     config: &Config,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     purpose: &str,
 ) -> Result<Vec<Zeroizing<Vec<u8>>>, String> {
     let read = read_held_secrets(config, key);
@@ -360,7 +360,7 @@ fn held_secret_names(config: &Config) -> BTreeSet<String> {
 }
 
 /// The held secrets' values, unrecorded.
-fn read_held_secrets(config: &Config, key: &MasterKey) -> Result<Vec<Zeroizing<Vec<u8>>>, String> {
+fn read_held_secrets(config: &Config, key: &dyn OpensStores) -> Result<Vec<Zeroizing<Vec<u8>>>, String> {
     let names = held_secret_names(config);
     let vault = SealedVault::open(&config.vault.root, key)
         .map_err(|e| format!("the vault could not be opened: {e}"))?;
@@ -385,7 +385,7 @@ fn read_held_secrets(config: &Config, key: &MasterKey) -> Result<Vec<Zeroizing<V
 /// the session's local channel.
 pub fn handle_artifact_op(
     config: &Config,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     skills: &Skills,
     hub: Option<&LocalHub>,
     principal: &MemoryPrincipal,
@@ -522,7 +522,7 @@ fn current_signer(set: &SkillSet, skill: &str) -> Option<String> {
 /// local channel, store, and clock.
 struct Pipeline<'a> {
     config: &'a Config,
-    key: &'a MasterKey,
+    key: &'a dyn OpensStores,
     skills: &'a Skills,
     hub: Option<&'a LocalHub>,
     /// The session's output gate scope.
@@ -943,7 +943,7 @@ impl Pipeline<'_> {
 #[must_use]
 pub fn activate_confirmed(
     config: &Config,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     skills: &Skills,
     hub: Option<&LocalHub>,
     activation: &str,
@@ -1065,6 +1065,7 @@ fn describe_target(to: &DeliveryTarget) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hatchling_vault::MasterKey;
 
     #[test]
     fn workspace_names_are_one_plain_component() {

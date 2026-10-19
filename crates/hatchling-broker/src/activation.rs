@@ -26,7 +26,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Mutex, PoisonError};
 
-use hatchling_vault::MasterKey;
+use hatchling_vault::OpensStores;
 
 use crate::Config;
 use crate::artifact_ops::SealedArtifactStore;
@@ -73,7 +73,7 @@ pub enum ConfirmError {
 /// or [`ConfirmError::Unavailable`].
 pub fn confirm_activation(
     config: &Config,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     activation: &str,
     now: i64,
 ) -> Result<String, ConfirmError> {

@@ -65,7 +65,7 @@ use hatchling_core::ui::operator::CellKind;
 use hatchling_core::{CellId, LogLevel, ScheduleGrant, SocketPath};
 use hatchling_isolation::{IsolationBackend as _, Supervised};
 use hatchling_scheduler::{Dispatcher, Launcher, Run, RunRequest, Timestamp};
-use hatchling_vault::MasterKey;
+use hatchling_vault::OpensStores;
 
 use crate::cell::{Process, ScheduledRun};
 use crate::{
@@ -284,7 +284,7 @@ pub fn scoped_config(
 pub struct CellLauncher<'scope, 'env> {
     scope: &'scope Scope<'scope, 'env>,
     config: &'env Config,
-    key: &'env MasterKey,
+    key: &'env dyn OpensStores,
     env: RunEnv,
 }
 
@@ -302,7 +302,7 @@ impl<'scope, 'env> CellLauncher<'scope, 'env> {
     pub const fn new(
         scope: &'scope Scope<'scope, 'env>,
         config: &'env Config,
-        key: &'env MasterKey,
+        key: &'env dyn OpensStores,
         env: RunEnv,
     ) -> Self {
         Self {
@@ -632,7 +632,7 @@ fn serve_run_session(
     handoff: &UnixStream,
     cell_id: CellId,
     config: &Config,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     stop: &AtomicBool,
 ) {
     if let Err(error) = handoff.set_read_timeout(Some(ACCEPT_POLL)) {
@@ -732,7 +732,7 @@ pub fn until_next_tick(now: Timestamp) -> Duration {
 pub fn dispatch_forever<'scope, 'env>(
     scope: &'scope Scope<'scope, 'env>,
     config: &'env Config,
-    key: &'env MasterKey,
+    key: &'env dyn OpensStores,
     hub: Option<&'env LocalHub>,
     env: RunEnv,
 ) -> ! {
@@ -823,6 +823,7 @@ fn hand_over_connection(handoff: &UnixStream, connection: Option<UnixStream>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hatchling_vault::MasterKey;
     use crate::{ChannelAccountSpec, EgressConfig, GoalsConfig, MemoryConfig, VaultConfig};
     use hatchling_core::{PeerUid, VaultAction};
     use std::os::unix::fs::PermissionsExt as _;

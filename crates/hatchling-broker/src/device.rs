@@ -41,7 +41,7 @@ use hatchling_space::{
     DeviceRecord, PeerPin, Principal, SessionPin, auth_transcript, broker_transcript, device_id,
     is_nonce, pair_transcript, parse_key, verifies,
 };
-use hatchling_vault::MasterKey;
+use hatchling_vault::OpensStores;
 
 use crate::serve::session_error;
 use crate::space_ops::{EndAdmissions, SealedSpaceStore, SpaceSession, handle_space_op, pairings};
@@ -84,7 +84,7 @@ impl DeviceEndpoint {
 
     /// Serves devices one at a time, forever. A failed connection is
     /// logged and the next one accepted.
-    pub fn serve(&self, config: &Config, key: &MasterKey) -> ! {
+    pub fn serve(&self, config: &Config, key: &dyn OpensStores) -> ! {
         loop {
             match self.listener.accept() {
                 Ok((stream, _)) => {
@@ -138,7 +138,7 @@ pub fn open_device_endpoint(config: &Config) -> Result<Option<DeviceEndpoint>, E
 pub fn serve_device(
     stream: &UnixStream,
     config: &Config,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     peer_uid: PeerUid,
 ) -> Result<(), Error> {
     let creds = peer_credentials(stream)?;
@@ -303,7 +303,7 @@ fn authenticate(
 fn serve_ops(
     stream: &UnixStream,
     config: &Config,
-    key: &MasterKey,
+    key: &dyn OpensStores,
     creds: PeerCredentials,
     device: String,
 ) -> Result<(), Error> {

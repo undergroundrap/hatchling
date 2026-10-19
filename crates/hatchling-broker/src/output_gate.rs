@@ -37,7 +37,7 @@ use hatchling_artifact::SecretSet;
 use hatchling_artifact::request::sha256_hex;
 use hatchling_channel::gate::{DEFAULT_CLASSIFIER_TIMEOUT, FAILED_CATEGORY, MIN_BLOCK_CHARS};
 use hatchling_channel::{Category, Classifier, OutputGate, Request, Verdict, normalize};
-use hatchling_vault::{MAX_SECRET_BYTES, MasterKey, SealedVault, Secret, SecretName};
+use hatchling_vault::{MAX_SECRET_BYTES, OpensStores, SealedVault, Secret, SecretName};
 use zeroize::Zeroizing;
 
 use crate::environment as env;
@@ -336,7 +336,7 @@ pub fn load_phrases(dir: &Path) -> Result<(Vec<Phrase>, Option<String>), Error> 
 /// The built-in rules, judging with the secrets the broker holds.
 pub struct Rules<'k> {
     config: &'k Config,
-    key: &'k MasterKey,
+    key: &'k dyn OpensStores,
     builtins: Builtins,
     phrases: Vec<Phrase>,
 }
@@ -356,7 +356,7 @@ impl<'k> Rules<'k> {
     #[must_use]
     pub const fn new(
         config: &'k Config,
-        key: &'k MasterKey,
+        key: &'k dyn OpensStores,
         builtins: Builtins,
         phrases: Vec<Phrase>,
     ) -> Self {
@@ -590,7 +590,7 @@ impl RulesWorker {
 }
 
 /// Seals `text` as `event_id`'s raw record in the vault at `raw_dir`.
-fn seal_raw(raw_dir: &Path, key: &MasterKey, event_id: &str, text: &str) -> RawOutcome {
+fn seal_raw(raw_dir: &Path, key: &dyn OpensStores, event_id: &str, text: &str) -> RawOutcome {
     if text.len() > MAX_SECRET_BYTES {
         return RawOutcome::TooLarge;
     }
@@ -636,7 +636,7 @@ pub struct Built {
 pub fn build(
     config: &Config,
     redaction: &RedactionConfig,
-    key: &MasterKey,
+    key: &dyn OpensStores,
 ) -> Result<Built, Error> {
     if config.channel_ingress.is_none() {
         return Ok(Built {
@@ -707,6 +707,7 @@ mod tests {
     use hatchling_core::VaultAction;
 
     use super::*;
+    use hatchling_vault::MasterKey;
     use crate::VaultGrant;
     use crate::api_auth::tests::{Scratch, owner_config, scratch};
     use crate::redactions::{AUDIT_FILE, Record, read_log};

@@ -52,7 +52,7 @@ use std::time::{Duration, Instant};
 
 use hatchling_core::subagent::HarnessNetworkUse;
 use hatchling_egress::{Allowlist, TlsClient};
-use hatchling_vault::{MasterKey, SealedVault};
+use hatchling_vault::{OpensStores, SealedVault};
 use zeroize::Zeroizing;
 
 use hatchling_core::subagent::{ActivityEvent, HarnessOutcome, SubagentEvent};
@@ -1007,7 +1007,7 @@ fn parse_tools(raw: Option<&str>, networked: bool) -> Result<Vec<(PathBuf, Strin
 /// name it.
 pub fn vault_keys<'a>(
     vault_root: &'a Path,
-    key: &'a MasterKey,
+    key: &'a dyn OpensStores,
 ) -> impl Fn(HarnessKind) -> Option<Zeroizing<String>> + 'a {
     move |kind| {
         let name = kind.secret_name();
@@ -1777,6 +1777,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
+    use hatchling_vault::MasterKey;
     use crate::{
         ArtifactConfig, EgressConfig, GoalsConfig, MemoryConfig, SchedulerConfig, SkillConfig,
         SpaceConfig, VaultConfig,

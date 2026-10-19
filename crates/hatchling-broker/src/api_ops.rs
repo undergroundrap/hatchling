@@ -41,7 +41,7 @@ use hatchling_core::ui::{
     UiActionResult, UiEventBody,
 };
 use hatchling_scheduler::{Creator, Timestamp};
-use hatchling_vault::MasterKey;
+use hatchling_vault::OpensStores;
 
 use crate::api_auth::Caller;
 use crate::api_stream::Bus;
@@ -78,7 +78,7 @@ const API_CELL: &str = "api";
 /// replies are pushed to.
 pub struct Ops<'a> {
     config: &'a Config,
-    key: &'a MasterKey,
+    key: &'a dyn OpensStores,
     skills: &'a Skills,
     hub: Option<&'a LocalHub>,
     bus: Arc<Bus>,
@@ -97,7 +97,7 @@ impl<'a> Ops<'a> {
     #[must_use]
     pub const fn new(
         config: &'a Config,
-        key: &'a MasterKey,
+        key: &'a dyn OpensStores,
         skills: &'a Skills,
         hub: Option<&'a LocalHub>,
         bus: Arc<Bus>,
@@ -453,6 +453,7 @@ mod tests {
     use hatchling_core::ui::{DecisionRejection, FileContent, FileFormat, UiEvent};
 
     use super::*;
+    use hatchling_vault::MasterKey;
     use crate::api_auth::tests::{owner_config, scratch};
     use crate::config::{GoalsAction, SkillConfig};
 
