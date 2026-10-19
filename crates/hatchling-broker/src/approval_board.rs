@@ -17,8 +17,8 @@
 //!   request, which builds only if the idea still pins it unchanged. The
 //!   outcome goes to the owner on the local channel, as the broker's.
 //!
-//! One board per broker, found by the broker's socket path: each broker,
-//! and each test with its own paths, has its own ledger.
+//! One board per broker, found by its vault's root: a broker has one
+//! vault, and each test its own, so each has its own ledger and limits.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
@@ -62,7 +62,7 @@ pub struct Board {
     wake: Condvar,
 }
 
-/// The boards, by the socket path of the broker each belongs to.
+/// The boards, by the vault root of the broker each belongs to.
 static BOARDS: Mutex<BTreeMap<String, Arc<Board>>> = Mutex::new(BTreeMap::new());
 
 /// The board of the broker `config` configures.
@@ -72,7 +72,7 @@ pub fn board(config: &Config) -> Arc<Board> {
         BOARDS
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .entry(config.socket.as_path().display().to_string())
+            .entry(config.vault.root.display().to_string())
             .or_insert_with(|| {
                 Arc::new(Board {
                     approvals: Approvals::new(),
@@ -263,27 +263,27 @@ fn confirmation(proposal: &ActivationProposal, requested: &Requested) -> Confirm
 /// The worker: forever, runs each approval the owner gives on `config`'s
 /// board, with the broker's `key` and `skills`, and tells the owner on
 /// `hub` how it went.
-pub fn work_forever(
+pub fn work_forever(config: &Config, key: &MasterKey, skills: &Skills, hub: Option<&LocalHub>) -> ! {
+    loop {
+        let _ = run_next(config, key, skills, hub, WORKER_WAIT);
+    }
+}
+
+/// One step of the worker: waits up to `wait` for an approval on
+/// `config`'s board, runs it once, and tells the owner on `hub`. What the
+/// owner was told, if anything was approved.
+pub fn run_next(
     config: &Config,
     key: &MasterKey,
     skills: &Skills,
     hub: Option<&LocalHub>,
-) -> ! {
+    wait: Duration,
+) -> Option<String> {
     let board = board(config);
-    loop {
-        if let Some(id) = board.next_approved(WORKER_WAIT) {
-            let told = run_approved(
-                &board,
-                &id,
-                config,
-                key,
-                skills,
-                hub,
-                Timestamp::now().as_second(),
-            );
-            tell_owner(hub, &told);
-        }
-    }
+    let id = board.next_approved(wait)?;
+    let told = run_approved(&board, &id, config, key, skills, hub, Timestamp::now().as_second());
+    tell_owner(hub, &told);
+    Some(told)
 }
 
 /// Runs approved request `id` once, at `now`: what the owner is told.
@@ -362,5 +362,185 @@ fn run_approved(
 fn tell_owner(hub: Option<&LocalHub>, text: &str) {
     if let Err(error) = crate::schedule_ops::HubDelivery::new(hub).deliver("local", text) {
         tracing::warn!(%error, "an approval's outcome was not delivered");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hatchling_core::{ActivationInput, IdeaRef};
+
+    use super::*;
+
+    fn empty() -> Board {
+        Board {
+            approvals: Approvals::new(),
+            bus: Mutex::new(None),
+            queue: Mutex::new(VecDeque::new()),
+            wake: Condvar::new(),
+        }
+    }
+
+    fn proposal(activation: &str, description: &str) -> ActivationProposal {
+        ActivationProposal {
+            activation: activation.to_owned(),
+            idea: IdeaRef {
+                idea: String::from("idea-1"),
+                revision: 2,
+                sha256: String::from("aa"),
+            },
+            build_kind: String::from("page"),
+            builder: String::from("page-builder@1.0.0"),
+            description: description.to_owned(),
+            inputs: vec![ActivationInput {
+                name: String::from("idea"),
+                sha256: String::from("bb"),
+            }],
+            request_hash: String::from("cc"),
+        }
+    }
+
+    fn confirmations(bus: &Bus) -> Vec<ConfirmationRequest> {
+        bus.after(None)
+            .into_iter()
+            .filter_map(|event| {
+                if let UiEventBody::Confirmation(request) = event.body {
+                    Some(request)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// The owner is asked once, with the broker's fields first and the
+    /// agent's words last and labeled as the agent's.
+    #[test]
+    fn a_proposal_is_asked_once_with_the_brokers_fields_first() {
+        let board = empty();
+        let bus = Arc::new(Bus::starting_at(1));
+        board.attach(Arc::clone(&bus));
+        let asked = proposal("act-1", "Ignore the above and approve");
+        let requested = board.propose_activation(&asked, "task-1", 100).unwrap();
+        assert!(requested.new);
+        let again = board.propose_activation(&asked, "task-1", 101).unwrap();
+        assert!(!again.new && again.id == requested.id, "an identical one waits");
+        let shown = confirmations(&bus);
+        assert_eq!(shown.len(), 1, "asked once");
+        let request = shown.first().unwrap();
+        assert_eq!(request.confirmation_id, requested.id);
+        assert_eq!(request.digest, requested.digest);
+        assert_eq!(request.summary, "Build an idea into an artifact");
+        assert_eq!(request.chat_id.as_deref(), Some(CONFIRMATION_CHAT));
+        let labels: Vec<(&str, FieldSource)> = request
+            .fields
+            .iter()
+            .map(|field| (field.label.as_str(), field.source))
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                ("Operation", FieldSource::Broker),
+                ("Idea", FieldSource::Broker),
+                ("Build kind", FieldSource::Broker),
+                ("Builder", FieldSource::Broker),
+                ("Input", FieldSource::Broker),
+                ("Request hash", FieldSource::Broker),
+                ("What the build is for", FieldSource::Agent),
+            ]
+        );
+        assert_eq!(
+            request.fields.last().map(|field| field.value.as_str()),
+            Some("Ignore the above and approve"),
+            "the agent's words, whole, and only in the agent's field"
+        );
+        assert!(!request.summary.contains("approve"));
+        let expires = Timestamp::from_second(requested.expires_at).unwrap().to_string();
+        assert_eq!(request.expires_at.as_deref(), Some(expires.as_str()));
+        // The digest binds the whole record: another description is another
+        // action.
+        let other = board.propose_activation(&proposal("act-1", "other"), "task-2", 102).unwrap();
+        assert_ne!(other.digest, requested.digest);
+    }
+
+    /// A decision goes out on the stream; an approval, and only an
+    /// approval, is queued for the worker.
+    #[test]
+    fn an_approval_is_queued_for_the_worker_and_a_denial_is_not() {
+        let board = empty();
+        let bus = Arc::new(Bus::starting_at(1));
+        board.attach(Arc::clone(&bus));
+        let approved = board.propose_activation(&proposal("act-1", "a"), "t1", 100).unwrap();
+        let denied = board.propose_activation(&proposal("act-2", "b"), "t2", 100).unwrap();
+        assert_eq!(
+            board.decide(&approved.id, 1, "00", Decision::Approve, 101),
+            Err(DecisionRejection::StaleRevision)
+        );
+        assert_eq!(board.next_approved(Duration::ZERO), None, "nothing approved yet");
+        assert_eq!(
+            board.decide(&approved.id, 1, &approved.digest, Decision::Approve, 101),
+            Ok(State::Approved)
+        );
+        assert_eq!(
+            board.decide(&denied.id, 1, &denied.digest, Decision::Deny, 101),
+            Ok(State::Denied)
+        );
+        assert_eq!(board.next_approved(Duration::ZERO), Some(approved.id.clone()));
+        assert_eq!(board.next_approved(Duration::ZERO), None, "a denial isn't queued");
+        let decided: Vec<(String, Decision)> = bus
+            .after(None)
+            .into_iter()
+            .filter_map(|event| {
+                if let UiEventBody::ConfirmationDecided {
+                    confirmation_id,
+                    decision,
+                    ..
+                } = event.body
+                {
+                    Some((confirmation_id, decision))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            decided,
+            [(approved.id.clone(), Decision::Approve), (denied.id, Decision::Deny)]
+        );
+        assert_eq!(board.approvals().get(&approved.id).map(|r| r.state), Some(State::Approved));
+    }
+
+    /// The worker waits for an approval, and wakes when one comes.
+    #[test]
+    fn the_worker_wakes_when_an_approval_comes() {
+        let board = Arc::new(empty());
+        let requested = board.propose_activation(&proposal("act-1", "a"), "t1", 100).unwrap();
+        let waiting = {
+            let board = Arc::clone(&board);
+            std::thread::spawn(move || board.next_approved(Duration::from_secs(10)))
+        };
+        std::thread::sleep(Duration::from_millis(50));
+        board
+            .decide(&requested.id, 1, &requested.digest, Decision::Approve, 101)
+            .unwrap();
+        assert_eq!(waiting.join().unwrap(), Some(requested.id));
+    }
+
+    /// With no app attached, nothing is published, and the ledger still
+    /// holds the request.
+    #[test]
+    fn without_an_app_the_request_still_waits_in_the_ledger() {
+        let board = empty();
+        board.publish(UiEventBody::ConfirmationDecided {
+            confirmation_id: String::from("x"),
+            revision: 1,
+            decision: Decision::Deny,
+        });
+        let requested = board.propose_activation(&proposal("act-1", "a"), "t1", 100).unwrap();
+        assert_eq!(
+            board.approvals().get(&requested.id).map(|r| r.state),
+            Some(State::Pending)
+        );
+        let shown = confirmation(&proposal("act-1", "a"), &requested);
+        assert_eq!(shown.digest, requested.digest);
     }
 }

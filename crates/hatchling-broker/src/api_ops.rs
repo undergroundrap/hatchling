@@ -450,7 +450,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
     use hatchling_core::messages::{FeedSpec, ScheduleResult, ScheduleSpec, SkillOp, SkillResult};
-    use hatchling_core::ui::{FileContent, FileFormat, UiEvent};
+    use hatchling_core::ui::{DecisionRejection, FileContent, FileFormat, UiEvent};
 
     use super::*;
     use crate::api_auth::tests::{owner_config, scratch};
@@ -902,6 +902,46 @@ mod tests {
                     outcome: ScheduleResult::NotFound
                 },
                 ApiOutcome::Served
+            )
+        );
+    }
+
+    /// WO-027: only the owner decides, and a decision on a confirmation
+    /// the broker doesn't have is rejected as unknown.
+    #[test]
+    fn only_the_owner_decides_and_an_unknown_confirmation_is_rejected() {
+        let config = owner_config(Some("/srv/hatchling/schedules"));
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let ops = Ops::new(&config, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        let held: Vec<ScheduleGrant> = ops.owner_grants().into_iter().collect();
+        assert!(held.len() > 1, "{held:?}");
+        let owner = caller(&held);
+        let partial = caller(held.get(..1).unwrap_or_default());
+        let mut replies = Replies::default();
+        let decide = UiAction::Decide {
+            confirmation_id: String::from("approval-none"),
+            revision: 1,
+            digest: String::from("00"),
+            decision: Decision::Approve,
+        };
+        assert_eq!(
+            ops.handle(&partial, &decide, &mut replies),
+            (
+                UiActionResult::Refused {
+                    reason: ActionRefusal::NotGranted
+                },
+                ApiOutcome::Refused
+            )
+        );
+        assert_eq!(
+            ops.handle(&owner, &decide, &mut replies),
+            (
+                UiActionResult::DecisionRejected {
+                    confirmation_id: String::from("approval-none"),
+                    reason: DecisionRejection::Unknown,
+                },
+                ApiOutcome::Refused
             )
         );
     }
