@@ -16,7 +16,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use hatchling_broker::{CellConfig, Error, bind_listener, spawn_cell};
+use hatchling_broker::{CellConfig, CellIds, Error, bind_listener, spawn_cell};
 use hatchling_core::framing::{read_frame, write_frame};
 use hatchling_core::{AgentMessage, BrokerMessage, LogLevel, PROTOCOL_VERSION, PeerUid};
 
@@ -291,6 +291,101 @@ fn a_connected_cells_agent_handshakes_over_its_own_connection() -> Result<(), St
     .map_err(|e| format!("serve the cell's session: {e}"))?;
     if socket_path.exists() {
         return Err(String::from("a socket was bound for a connected cell"));
+    }
+    Ok(())
+}
+
+/// WO-014: the agent's own cell on the owner's subordinate ids, end to
+/// end. It runs as the subordinate uid, as the host sees it, and
+/// completes the real HELLO/WELCOME handshake over the connection the
+/// spawn made for it, then exits 0. The agent's peer check there
+/// expects the broker as the kernel's overflow uid, since its namespace
+/// doesn't map the broker: a wrong expectation would end the agent
+/// before it says HELLO. Skips where no cell can run on subordinate ids
+/// (an owner with root, `no_new_privs`, no range), unless
+/// `HATCHLING_REQUIRE_SUBID=1`.
+#[test]
+fn a_subordinate_agent_cell_handshakes_over_its_own_connection() -> Result<(), String> {
+    use hatchling_isolation::IsolationBackend as _;
+    if !guard_cell_available()? {
+        return Ok(());
+    }
+    let required = std::env::var("HATCHLING_REQUIRE_SUBID").is_ok_and(|v| v == "1");
+    let new_privs = std::fs::read_to_string("/proc/self/status").is_ok_and(|status| {
+        status
+            .lines()
+            .any(|line| line.split_whitespace().eq(["NoNewPrivs:", "0"]))
+    });
+    let backend = hatchling_isolation::platform();
+    let owners = match backend.subordinate_identity() {
+        Ok(owners) if new_privs => owners,
+        other => {
+            if required {
+                return Err(format!(
+                    "HATCHLING_REQUIRE_SUBID=1, but no subordinate cell here: {other:?}"
+                ));
+            }
+            return Ok(());
+        }
+    };
+    let dir = test_dir("subordinate-agent");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create test dir: {e}"))?;
+    let socket_path = dir.join("broker.sock");
+    let mut cell = cell_config(&socket_path, mapped_agent_uid())?;
+    cell.uid_base = owners.principal;
+    cell.gid_base = Some(owners.group);
+    cell.ids = CellIds::Subordinate;
+    cell.broker_uid_in_cell = backend
+        .broker_in_cell(&owners)
+        .map_err(|e| format!("the broker's place in the cell: {e}"))?;
+    cell.connected = true;
+    let mut handle = spawn_cell(&cell, LogLevel::Error).map_err(|e| format!("spawn cell: {e}"))?;
+    let stream = handle
+        .connection()
+        .ok_or_else(|| String::from("a connected cell came without its connection"))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .map_err(|e| format!("set timeout: {e}"))?;
+    // The agent speaks first: HELLO, once its peer check has passed.
+    let frame = read_frame(&stream).map_err(|e| format!("read HELLO: {e}"))?;
+    let hello: AgentMessage =
+        serde_json::from_slice(&frame).map_err(|e| format!("parse HELLO: {e}"))?;
+    let AgentMessage::Hello { v, .. } = hello;
+    if v != PROTOCOL_VERSION {
+        return Err(format!("agent spoke protocol v{v}"));
+    }
+    let welcome = serde_json::to_vec(&BrokerMessage::Welcome {
+        v: PROTOCOL_VERSION,
+    })
+    .map_err(|e| format!("encode WELCOME: {e}"))?;
+    write_frame(&stream, &welcome).map_err(|e| format!("write WELCOME: {e}"))?;
+    // From the host: the cell runs as the subordinate uid (its reaper
+    // settles into it alongside the agent: polled, briefly).
+    let principal = owners.principal.to_string();
+    let uids = || -> Vec<String> {
+        std::fs::read_to_string(format!("/proc/{}/status", handle.child_pid()))
+            .unwrap_or_default()
+            .lines()
+            .find_map(|line| line.strip_prefix("Uid:"))
+            .map(|ids| ids.split_whitespace().map(String::from).collect())
+            .unwrap_or_default()
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut seen = uids();
+    while seen != vec![principal.clone(); 4] && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+        seen = uids();
+    }
+    let status = handle.wait().map_err(|e| format!("wait for cell: {e}"))?;
+    let code = hatchling_sys::child_exit_code(status);
+    let _ = std::fs::remove_dir_all(&dir);
+    if code != 0 {
+        return Err(format!("the agent should exit 0 after its handshake, got {code}"));
+    }
+    if seen != vec![principal.clone(); 4] {
+        return Err(format!(
+            "the cell's uid, from the host: {seen:?}, not {principal} four times"
+        ));
     }
     Ok(())
 }
