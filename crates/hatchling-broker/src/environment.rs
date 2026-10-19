@@ -3,7 +3,7 @@
 hatchling_core::declare_environment! {
     pub,
     HATCHLING_BROKER_SOCKET: ("required", "Absolute agent socket when serving without a cell; a cell's agent gets its own connection."),
-    HATCHLING_AGENT_UID: ("required", "Only host uid allowed to connect; equals the cell's mapped uid."),
+    HATCHLING_AGENT_UID: ("required, unless HATCHLING_CELL_IDS=subordinate", "Only host uid allowed to connect; equals the cell's mapped uid (on subordinate ids, the first of /etc/subuid's range when unset)."),
     HATCHLING_AGENT_ALLOW_NOBODY: ("optional; default false", "Accept nobody (65534) as the agent uid: true/1 or false/0; any nobody process could act as the agent."),
     HATCHLING_BROKER_SOCKET_MODE: ("optional; default 600", "Socket permissions as an octal Unix mode."),
     HATCHLING_BROKER_MAX_CONNECTIONS: ("optional", "Maximum simultaneous broker connections."),

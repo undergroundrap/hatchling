@@ -13,6 +13,7 @@ use hatchling_core::{
 };
 
 use crate::Error;
+use crate::cell::CellIds;
 use crate::environment as env;
 
 /// Default socket mode: owner-only. The fail-closed default — the
@@ -615,7 +616,12 @@ impl Config {
         let socket = get(env::HATCHLING_BROKER_SOCKET.name)
             .ok_or(Error::MissingConfig("HATCHLING_BROKER_SOCKET"))?
             .parse::<SocketPath>()?;
-        let agent_uid = parse_agent_uid(&get)?;
+        let agent_uid = parse_agent_uid(&get, || {
+            use hatchling_isolation::IsolationBackend as _;
+            Ok(hatchling_isolation::platform()
+                .subordinate_identity()?
+                .principal)
+        })?;
         let socket_mode = get(env::HATCHLING_BROKER_SOCKET_MODE.name)
             .map_or(Ok(DEFAULT_SOCKET_MODE), |raw| parse_socket_mode(&raw))?;
         let log_level = get(env::HATCHLING_LOG_LEVEL.name)
@@ -1422,15 +1428,29 @@ pub const NOBODY_UID: u32 = 65534;
 
 /// `HATCHLING_AGENT_UID`, which must not be `nobody` unless
 /// `HATCHLING_AGENT_ALLOW_NOBODY` says so ([`refuse_shared_agent_uid`]).
-fn parse_agent_uid(get: &impl Fn(&str) -> Option<String>) -> Result<PeerUid, Error> {
-    let agent_uid = get(env::HATCHLING_AGENT_UID.name)
-        .ok_or(Error::MissingConfig("HATCHLING_AGENT_UID"))?
-        .parse::<u32>()
-        .map(PeerUid::from_kernel)
-        .map_err(|_| Error::InvalidConfig {
-            key: "HATCHLING_AGENT_UID",
-            reason: String::from("expected a kernel uid as a base-10 u32"),
-        })?;
+///
+/// With `HATCHLING_CELL_IDS=subordinate` it may be left out: the agent's
+/// uid is then the one its cells run as, the owner's first subordinate
+/// uid, which `subordinate` reads (WO-014). A value given is checked as
+/// usual, and the cell's own config refuses one that isn't that uid.
+fn parse_agent_uid(
+    get: &impl Fn(&str) -> Option<String>,
+    subordinate: impl FnOnce() -> Result<u32, Error>,
+) -> Result<PeerUid, Error> {
+    let agent_uid = match get(env::HATCHLING_AGENT_UID.name) {
+        Some(raw) => {
+            raw.parse::<u32>()
+                .map(PeerUid::from_kernel)
+                .map_err(|_| Error::InvalidConfig {
+                    key: "HATCHLING_AGENT_UID",
+                    reason: String::from("expected a kernel uid as a base-10 u32"),
+                })?
+        }
+        None if CellIds::parse(get)? == CellIds::Subordinate => {
+            PeerUid::from_kernel(subordinate()?)
+        }
+        None => return Err(Error::MissingConfig("HATCHLING_AGENT_UID")),
+    };
     refuse_shared_agent_uid(
         agent_uid,
         get(env::HATCHLING_AGENT_ALLOW_NOBODY.name).as_deref(),
@@ -1448,7 +1468,9 @@ fn refuse_shared_agent_uid(agent_uid: PeerUid, allow: Option<&str>) -> Result<()
         return Err(Error::InvalidConfig {
             key: "HATCHLING_AGENT_UID",
             reason: format!(
-                "{NOBODY_UID} is nobody, which other processes share, and any of them could act                  as the agent: give cells a uid of their own, or set                  HATCHLING_AGENT_ALLOW_NOBODY=true to accept that"
+                "{NOBODY_UID} is nobody, which other processes share, and any of them could act \
+                 as the agent: give cells a uid of their own, or set \
+                 HATCHLING_AGENT_ALLOW_NOBODY=true to accept that"
             ),
         });
     }
@@ -2715,12 +2737,48 @@ mod tests {
         assert!(refuse_shared_agent_uid(nobody, Some("true")).is_ok());
         assert!(refuse_shared_agent_uid(PeerUid::from_kernel(1000), None).is_ok());
         let mut vars = valid_vars();
+        let unused = || unreachable!("a given uid needs no lookup");
         assert_eq!(
-            parse_agent_uid(&lookup(&vars)).unwrap(),
+            parse_agent_uid(&lookup(&vars), unused).unwrap(),
             PeerUid::from_kernel(1000)
         );
         vars.insert("HATCHLING_AGENT_UID", "65534");
-        assert!(parse_agent_uid(&lookup(&vars)).is_err());
+        assert!(parse_agent_uid(&lookup(&vars), unused).is_err());
+    }
+
+    /// WO-014: on subordinate ids the agent's uid can be left out, and is
+    /// then its cells' uid; on the broker's own map it can't.
+    #[test]
+    fn the_agent_uid_is_the_cells_subordinate_uid_when_left_out() {
+        let mut vars = valid_vars();
+        vars.remove("HATCHLING_AGENT_UID");
+        assert!(matches!(
+            parse_agent_uid(&lookup(&vars), || Ok(100_000)),
+            Err(Error::MissingConfig("HATCHLING_AGENT_UID"))
+        ));
+        vars.insert("HATCHLING_CELL_IDS", "subordinate");
+        assert_eq!(
+            parse_agent_uid(&lookup(&vars), || Ok(100_000)).unwrap(),
+            PeerUid::from_kernel(100_000)
+        );
+        // No range: the lookup's refusal, not a guessed uid.
+        let refused = parse_agent_uid(&lookup(&vars), || {
+            Err(Error::InvalidConfig {
+                key: "HATCHLING_CELL_IDS",
+                reason: String::from("no range in /etc/subuid"),
+            })
+        })
+        .unwrap_err();
+        assert!(refused.to_string().contains("/etc/subuid"), "{refused}");
+        // A uid given is still the one used, and still checked.
+        vars.insert("HATCHLING_AGENT_UID", "100001");
+        assert_eq!(
+            parse_agent_uid(&lookup(&vars), || Ok(100_000)).unwrap(),
+            PeerUid::from_kernel(100_001)
+        );
+        vars.insert("HATCHLING_CELL_IDS", "sideways");
+        vars.remove("HATCHLING_AGENT_UID");
+        assert!(parse_agent_uid(&lookup(&vars), || Ok(100_000)).is_err());
     }
 
     #[test]

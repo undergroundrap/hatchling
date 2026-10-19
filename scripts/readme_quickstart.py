@@ -1,9 +1,12 @@
-"""Run the README quickstart in a disposable root PID namespace.
+"""Run the README quickstart in a disposable PID namespace.
 
-CI invokes this with unshare --mount --pid --fork --kill-child --mount-proc.
-The documented installation and account creation need a disposable machine.
-With --app-python, it also opens the address the README's app section
-prints in a browser (scripts/app_end_to_end.py, run by that interpreter).
+CI invokes this with unshare --mount --pid --fork --kill-child --mount-proc,
+as root for the quickstart. With --rootless, it runs the quickstart without
+root instead, as an unprivileged user (CI drops to one with setpriv inside
+the namespace); that section's setup uses sudo. The documented installation
+and account changes need a disposable machine. With --app-python, it also
+opens the address the README's app section prints in a browser
+(scripts/app_end_to_end.py, run by that interpreter).
 """
 
 import argparse
@@ -16,10 +19,13 @@ import shlex
 import subprocess
 import time
 
-# The sections whose shell blocks run: the quickstart up to its first
-# subsection, and the app's.
+# The sections whose shell blocks run, in that order, for each mode: the
+# quickstart up to its first subsection, or the quickstart without root;
+# then the app's.
 QUICKSTART = "## Quickstart"
+ROOTLESS = "### Quickstart without root"
 APP = "### Using the app"
+SECTIONS = {"root": (QUICKSTART, APP), "rootless": (ROOTLESS, APP)}
 APP_ADDRESS = re.compile(r"^Hatchling's UI: open (http://127\.0\.0\.1:\d+/#hatchling-ui=[0-9a-f]+)$", re.M)
 MACHINE_ADDRESS = re.compile(r"^Hatchling's Machine view: open (http://127\.0\.0\.1:\d+/machine\.html#hatchling-operator=[0-9a-f]+)$", re.M)
 APP_ADDRESS_WAIT_SECS = 30
@@ -31,12 +37,13 @@ class Block:
     commands: str
 
 
-def extract(text):
-    """Return executable fences in Quickstart, before its first subsection,
-    and in the app's subsection."""
-    blocks = []
-    active = False
-    seen = False
+def extract(text, sections=SECTIONS["root"]):
+    """Return the executable fences of `sections`, section by section in
+    that order. A section runs to the next heading of level 1 to 3, so the
+    quickstart's ends at its first subsection. The first section must have
+    a block, and no section may be named twice."""
+    found = {}
+    current = None
     fence = None
     language = None
     lines = []
@@ -44,18 +51,22 @@ def extract(text):
     for number, line in enumerate(text.splitlines(keepends=True), 1):
         if fence is not None:
             if re.fullmatch(re.escape(fence[0]) + "{" + str(len(fence)) + r",}\s*", line.strip()):
-                if active and language in {"bash", "sh", "shell"}:
+                if current is not None and language in {"bash", "sh", "shell"}:
                     commands = "".join(lines)
                     if not commands.strip():
                         raise ValueError("Quickstart contains an empty shell block")
-                    blocks.append(Block(start, commands))
+                    current.append(Block(start, commands))
                 fence = None
             else:
                 lines.append(line)
             continue
         if re.match(r"^#{1,3} ", line):
-            active = line.rstrip() in (QUICKSTART, APP) and (seen or line.rstrip() == QUICKSTART)
-            seen = seen or line.rstrip() == QUICKSTART
+            heading = line.rstrip()
+            current = None
+            if heading in sections:
+                if heading in found:
+                    raise ValueError(f"README has two {heading!r} sections")
+                current = found[heading] = []
             continue
         match = re.fullmatch(r"(`{3,}|~{3,})([\w-]*)\s*", line.strip())
         if match:
@@ -64,9 +75,9 @@ def extract(text):
             lines = []
     if fence is not None:
         raise ValueError("README has an unclosed code fence")
-    if not seen or not blocks:
-        raise ValueError("README has no executable Quickstart")
-    return blocks
+    if not found.get(sections[0]):
+        raise ValueError(f"README has no executable {sections[0]!r} section")
+    return [block for section in sections for block in found.get(section, [])]
 
 
 def expected_answer(path):
@@ -117,23 +128,31 @@ def git(repo, *args):
                                     "-C", str(repo), *args], text=True).strip()
 
 
-def run(repo, artifacts, work, timeout, app_python=None):
-    if os.geteuid() != 0 or os.getpid() != 1:
-        raise ValueError("Run as root in a disposable PID namespace (see module usage)")
+def require_runner(mode, euid, pid):
+    """Root for the quickstart, anyone else for the one without root; pid 1
+    of a disposable PID namespace either way."""
+    if pid != 1:
+        raise ValueError("Run as pid 1 of a disposable PID namespace (see module usage)")
+    if (euid == 0) != (mode == "root"):
+        raise ValueError("Run the quickstart as root, and the one without root as another user")
+
+
+def run(repo, artifacts, work, timeout, app_python=None, mode="root"):
+    require_runner(mode, os.geteuid(), os.getpid())
     if git(repo, "status", "--porcelain"):
         raise ValueError("Quickstart must test a clean committed checkout")
     if not work.is_dir() or any(work.iterdir()):
         raise ValueError("Quickstart requires an empty private work directory")
     commit = git(repo, "rev-parse", "HEAD")
     tree = git(repo, "rev-parse", "HEAD^{tree}")
-    blocks = extract((repo / "README.md").read_text(encoding="utf-8"))
+    blocks = extract((repo / "README.md").read_text(encoding="utf-8"), SECTIONS[mode])
     answer = expected_answer(repo / "docs/examples/stand-in-model.py")
     artifacts.mkdir(parents=True, exist_ok=False)
     (artifacts / "README.md").write_bytes((repo / "README.md").read_bytes())
     (artifacts / "source.txt").write_text(f"commit {commit}\ntree {tree}\n", encoding="utf-8")
     script = artifacts / "extracted.sh"
     script.write_text(script_for(blocks, artifacts), encoding="utf-8")
-    print(f"Executing {len(blocks)} README blocks from {commit}; logs: {artifacts}", flush=True)
+    print(f"Executing {len(blocks)} README blocks ({mode}) from {commit}; logs: {artifacts}", flush=True)
     # The outer namespace launcher owns cleanup. It removes this directory
     # only after the PID namespace and every service/cell have ended.
     snapshot = work / "snapshot.git"
@@ -189,12 +208,14 @@ def main():
     parser.add_argument("--timeout", type=int, default=1500)
     parser.add_argument("--app-python", type=Path,
                         help="a Python with Playwright, to open the app in a browser")
+    parser.add_argument("--rootless", action="store_true",
+                        help="run the quickstart without root, as an unprivileged user")
     args = parser.parse_args()
     try:
         if args.timeout <= 0:
             raise ValueError("Timeout must be positive")
         run(args.repo.resolve(), args.artifacts.resolve(), args.work.resolve(), args.timeout,
-            args.app_python)
+            args.app_python, "rootless" if args.rootless else "root")
     except (ValueError, OSError, subprocess.CalledProcessError,
             subprocess.TimeoutExpired) as error:
         parser.exit(1, f"README quickstart: {error}\n")

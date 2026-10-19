@@ -5,8 +5,8 @@ import subprocess
 import tempfile
 import unittest
 
-from readme_quickstart import (MACHINE_ADDRESS, app_address, expected_answer, extract,
-                               require_answer, script_for)
+from readme_quickstart import (MACHINE_ADDRESS, SECTIONS, app_address, expected_answer, extract,
+                               require_answer, require_runner, script_for)
 
 
 class QuickstartTests(unittest.TestCase):
@@ -54,11 +54,7 @@ exit 99
         self.assertEqual([block.commands for block in blocks], ["## shell comment\necho expected\n"])
 
     def test_the_app_section_runs_after_the_quickstart_and_nothing_else_does(self):
-        text = """### Using the app
-```bash
-exit 98
-```
-## Quickstart
+        text = """## Quickstart
 ```bash
 echo start
 ```
@@ -76,6 +72,48 @@ exit 97
 ```
 """
         self.assertEqual([block.commands for block in extract(text)], ["echo start\n", "echo app\n"])
+        # A section named twice is ambiguous, wherever the other one is.
+        with self.assertRaises(ValueError):
+            extract("### Using the app\n```bash\nexit 98\n```\n" + text)
+
+    def test_without_root_its_own_section_runs_then_the_apps_wherever_they_are(self):
+        text = """## Quickstart
+```bash
+exit 99
+```
+### Using the app
+```bash
+echo app
+```
+### Quickstart without root
+```bash
+echo rootless
+```
+```bash
+echo second
+```
+### Cell limits
+```bash
+exit 98
+```
+"""
+        rootless = extract(text, SECTIONS["rootless"])
+        self.assertEqual([block.commands for block in rootless],
+                         ["echo rootless\n", "echo second\n", "echo app\n"])
+        self.assertEqual([block.line for block in rootless], [11, 14, 7])
+        self.assertEqual([block.commands for block in extract(text)], ["exit 99\n", "echo app\n"])
+        for broken in (text.replace("### Quickstart without root", "### Without root"),
+                       text + "### Quickstart without root\n```bash\necho again\n```\n"):
+            with self.subTest(broken=broken[-40:]), self.assertRaises(ValueError):
+                extract(broken, SECTIONS["rootless"])
+
+    def test_each_mode_runs_as_its_user_and_as_pid_1(self):
+        require_runner("root", 0, 1)
+        require_runner("rootless", 1001, 1)
+        for mode, euid, pid in (("root", 1001, 1), ("rootless", 0, 1),
+                                ("root", 0, 2), ("rootless", 1001, 7)):
+            with self.subTest(mode=mode, euid=euid, pid=pid), self.assertRaises(ValueError):
+                require_runner(mode, euid, pid)
 
     def test_the_app_address_is_waited_for_and_must_be_loopback(self):
         token = "0123456789abcdef" * 4
