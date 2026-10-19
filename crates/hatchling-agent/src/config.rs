@@ -56,6 +56,10 @@ pub struct Config {
     /// (`HATCHLING_RUN_CHAT`): set by the broker for a chat turn, which
     /// then speaks with the chat prompt rather than the worker's.
     pub run_chat: bool,
+    /// The conversation before a chat turn's message
+    /// (`HATCHLING_RUN_HISTORY`, WO-026): the broker's record of its last
+    /// exchanges, oldest first, bounded. Empty for every other run.
+    pub run_history: Vec<hatchling_core::conversation::ChatExchange>,
 }
 
 impl Config {
@@ -132,6 +136,7 @@ impl Config {
             get(env::HATCHLING_RUN_CHAT.name).as_deref(),
             "HATCHLING_RUN_CHAT",
         )?;
+        let run_history = parse_run_history(get(env::HATCHLING_RUN_HISTORY.name).as_deref(), run_chat)?;
         Ok(Self {
             cell_id,
             broker,
@@ -144,8 +149,30 @@ impl Config {
             model_context_window,
             run_subagent,
             run_chat,
+            run_history,
         })
     }
+}
+
+/// `HATCHLING_RUN_HISTORY`: a chat turn's conversation so far, which only
+/// a chat turn may be given.
+fn parse_run_history(
+    value: Option<&str>,
+    run_chat: bool,
+) -> Result<Vec<hatchling_core::conversation::ChatExchange>, Error> {
+    let Some(raw) = value else {
+        return Ok(Vec::new());
+    };
+    if !run_chat {
+        return Err(Error::InvalidConfig {
+            key: "HATCHLING_RUN_HISTORY",
+            reason: String::from("only a chat run (HATCHLING_RUN_CHAT=1) has a conversation"),
+        });
+    }
+    hatchling_core::conversation::parse_history(raw).map_err(|reason| Error::InvalidConfig {
+        key: "HATCHLING_RUN_HISTORY",
+        reason,
+    })
 }
 
 /// The inherited connection's descriptor: decimal, above stderr.
@@ -429,6 +456,37 @@ mod tests {
                 "{raw:?}: {error:?}"
             );
         }
+    }
+
+    /// WO-026: a chat turn reads its conversation; nothing else may be
+    /// given one, and one past the bounds isn't the broker's.
+    #[test]
+    fn only_a_chat_turn_reads_a_conversation() {
+        let mut vars = valid_vars();
+        assert!(Config::parse(lookup(&vars)).unwrap().run_history.is_empty());
+        let raw = r#"[{"user":"Two drinks?","assistant":"1. Tea. 2. Coffee."}]"#;
+        vars.insert("HATCHLING_RUN_HISTORY", raw);
+        let refused = Config::parse(lookup(&vars)).unwrap_err();
+        assert!(
+            matches!(&refused, Error::InvalidConfig { key: "HATCHLING_RUN_HISTORY", .. }),
+            "{refused:?}"
+        );
+        vars.insert("HATCHLING_RUN_CHAT", "1");
+        let config = Config::parse(lookup(&vars)).unwrap();
+        assert_eq!(
+            config.run_history,
+            [hatchling_core::conversation::ChatExchange {
+                user: String::from("Two drinks?"),
+                assistant: String::from("1. Tea. 2. Coffee."),
+            }]
+        );
+        vars.insert("HATCHLING_RUN_HISTORY", r#"[{"user":"q"}]"#);
+        assert!(matches!(
+            Config::parse(lookup(&vars)),
+            Err(Error::InvalidConfig { key: "HATCHLING_RUN_HISTORY", .. })
+        ));
+        assert!(parse_run_history(None, false).unwrap().is_empty());
+        assert!(parse_run_history(Some("[]"), true).unwrap().is_empty());
     }
 
     #[test]

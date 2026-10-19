@@ -159,6 +159,7 @@ pub fn child_config(
         space: None,
         feed: None,
         chat: false,
+        history: Vec::new(),
     };
     let mut child = scoped_config(parent, &request, token, socket);
     child.scheduler = SchedulerConfig {
@@ -418,6 +419,7 @@ impl<'scope, 'env> Subagents<'scope, 'env> {
             max_steps: Some(budget),
             subagent: true,
             chat: false,
+            history: Vec::new(),
         };
         let config = self.config;
         let started = launcher.launch_cell("subagent", run, |token, socket| {

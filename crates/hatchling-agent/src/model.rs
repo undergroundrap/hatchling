@@ -388,6 +388,7 @@ mod tests {
             model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
             run_subagent: false,
             run_chat: false,
+            run_history: Vec::new(),
         };
         assert_eq!(prompt_for(&config), hatchling_loop::PromptKind::Worker);
         config.run_chat = true;

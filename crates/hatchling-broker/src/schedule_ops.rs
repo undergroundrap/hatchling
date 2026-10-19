@@ -796,6 +796,10 @@ pub const SCHEDULER_SENDER: &str = "broker:scheduler";
 
 impl Delivery for HubDelivery<'_> {
     fn deliver(&self, channel: &str, text: &str) -> Result<(), String> {
+        self.deliver_verbatim(channel, text).map(|_| ())
+    }
+
+    fn deliver_verbatim(&self, channel: &str, text: &str) -> Result<bool, String> {
         if channel != "local" {
             return Err(format!("no delivery path for channel {channel:?}"));
         }
@@ -816,9 +820,9 @@ impl Delivery for HubDelivery<'_> {
             // the flagged output.
             Err(hatchling_channel::Error::Redacted { category, event_id }) => {
                 tracing::warn!(%category, %event_id, "scheduled output was redacted");
-                Ok(())
+                Ok(false)
             }
-            other => other.map_err(|error| error.to_string()),
+            other => other.map(|()| true).map_err(|error| error.to_string()),
         }
     }
 }
@@ -873,6 +877,60 @@ pub fn dispatch_once<L: Launcher>(
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    /// Flags any message that says "hunter2".
+    struct Flags;
+
+    impl hatchling_channel::Classifier for Flags {
+        fn id(&self) -> &'static str {
+            "flags@test"
+        }
+
+        fn classify(
+            &self,
+            request: &hatchling_channel::Request<'_>,
+        ) -> Result<hatchling_channel::Verdict, String> {
+            Ok(if request.text.contains("hunter2") {
+                hatchling_channel::Verdict::Redact {
+                    category: hatchling_channel::Category::new("secret")
+                        .map_err(|e| e.to_string())?,
+                    flagged: Some(String::from("hunter2")),
+                }
+            } else {
+                hatchling_channel::Verdict::Allow
+            })
+        }
+    }
+
+    /// WO-026: the hub's delivery says the person was shown an answer as
+    /// written only when the gate let it through; its notice in the
+    /// answer's place is still a delivery, but not that answer.
+    #[test]
+    fn a_delivery_says_whether_the_person_saw_the_answer_itself() {
+        let hub = LocalHub::new(hatchling_channel::OutputGate::new(
+            std::sync::Arc::new(Flags),
+            std::sync::Arc::new(hatchling_channel::NoAudit),
+            std::sync::Arc::new(hatchling_channel::NoOverrides),
+            std::time::Duration::from_secs(2),
+        ));
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink_seen = std::sync::Arc::clone(&seen);
+        let _ = hub.attach(Box::new(move |cleared: &hatchling_channel::Cleared| {
+            if let Ok(mut seen) = sink_seen.lock() {
+                seen.push(cleared.message().text.clone());
+            }
+            Ok(())
+        }));
+        let delivery = HubDelivery::new(Some(&hub));
+        assert_eq!(delivery.deliver_verbatim("local", "Coffee."), Ok(true));
+        assert_eq!(delivery.deliver_verbatim("local", "the key is hunter2"), Ok(false));
+        assert_eq!(delivery.deliver("local", "the key is hunter2 again"), Ok(()));
+        assert!(delivery.deliver_verbatim("elsewhere", "Coffee.").is_err());
+        assert!(HubDelivery::new(None).deliver_verbatim("local", "Coffee.").is_err());
+        let seen = seen.lock().map(|seen| seen.clone()).unwrap_or_default();
+        assert_eq!(seen.first().map(String::as_str), Some("Coffee."));
+        assert!(!seen.iter().any(|text| text.contains("hunter2")), "{seen:?}");
+    }
 
     #[test]
     fn a_run_claims_one_followup_until_it_is_released() {

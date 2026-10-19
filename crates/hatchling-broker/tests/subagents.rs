@@ -690,6 +690,7 @@ fn agent_parent(
         model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
         run_subagent: false,
         run_chat: false,
+        run_history: Vec::new(),
     };
     let cell = hatchling_agent::Cell::new(agent)
         .check_preconditions()

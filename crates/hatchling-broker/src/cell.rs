@@ -470,6 +470,10 @@ pub struct ScheduledRun {
     /// its agent then speaks with the chat prompt.
     #[serde(default)]
     pub chat: bool,
+    /// For a chat run, the conversation's last exchanges, oldest first
+    /// (WO-026): the broker's record, never a cell's.
+    #[serde(default)]
+    pub history: Vec<hatchling_core::conversation::ChatExchange>,
 }
 
 impl ScheduledRun {
@@ -496,6 +500,13 @@ impl ScheduledRun {
         }
         if self.chat {
             env.push(("HATCHLING_RUN_CHAT", String::from("1")));
+            // Typed, and bounded by the chat that recorded it. Strings
+            // always encode, so nothing is ever dropped here.
+            if !self.history.is_empty() {
+                if let Ok(history) = serde_json::to_string(&self.history) {
+                    env.push(("HATCHLING_RUN_HISTORY", history));
+                }
+            }
         }
         if let Some(endpoint) = &self.model_endpoint {
             env.push(("HATCHLING_MODEL_ENDPOINT", endpoint.clone()));
@@ -2037,6 +2048,7 @@ mod run_cell_tests {
             max_steps: None,
             subagent: false,
             chat: false,
+            history: Vec::new(),
         }
     }
 
@@ -2184,6 +2196,39 @@ mod run_cell_tests {
                 ("HATCHLING_RUN_SUBAGENT", String::from("1")),
             ]
         );
+    }
+
+    /// WO-026: a chat run's history reaches its agent typed, as sent,
+    /// and no other run carries one.
+    #[test]
+    fn only_a_chat_turn_carries_its_history() {
+        let history = vec![hatchling_core::conversation::ChatExchange {
+            user: String::from("Pick a number from 1 to 10."),
+            assistant: String::from("7."),
+        }];
+        let given = |run: &ScheduledRun| {
+            run.env()
+                .into_iter()
+                .find(|(name, _)| *name == "HATCHLING_RUN_HISTORY")
+                .map(|(_, value)| value)
+        };
+        let turn = ScheduledRun {
+            chat: true,
+            history: history.clone(),
+            ..run()
+        };
+        let raw = given(&turn).unwrap();
+        assert_eq!(
+            hatchling_core::conversation::parse_history(&raw).unwrap(),
+            history
+        );
+        let first = ScheduledRun {
+            chat: true,
+            ..run()
+        };
+        assert_eq!(given(&first), None, "nothing said yet, nothing given");
+        let worker = ScheduledRun { history, ..run() };
+        assert_eq!(given(&worker), None, "only a chat turn is given one");
     }
 
     #[test]

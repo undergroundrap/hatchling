@@ -138,6 +138,7 @@ fn ready_cell(socket: &Path) -> Result<hatchling_agent::Cell<hatchling_agent::Re
         model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
         run_subagent: false,
         run_chat: false,
+        run_history: Vec::new(),
     })
     .check_preconditions()
     .and_then(hatchling_agent::Cell::connect_broker)

@@ -198,6 +198,7 @@ fn ready_cell_with_reasoning(
         model_reasoning,
         run_subagent: false,
         run_chat: false,
+        run_history: Vec::new(),
     };
     Cell::new(config)
         .check_preconditions()

@@ -63,6 +63,21 @@ fn main() -> ExitCode {
     if task == "noconnect" {
         return ExitCode::SUCCESS;
     }
+    // A chat turn's view of the conversation (WO-026): what it was given,
+    // as given, without connecting.
+    if task.starts_with("history") {
+        let env = |key: &str| std::env::var(key).unwrap_or_default();
+        let line = format!(
+            "chat={} history={}",
+            env("HATCHLING_RUN_CHAT"),
+            env("HATCHLING_RUN_HISTORY")
+        );
+        return if writeln!(out, "{line}").and_then(|()| out.flush()).is_ok() {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::from(2)
+        };
+    }
     if let Some(answer) = task.strip_prefix("envelope:") {
         let envelope = ChildEnvelope::Done {
             verdict: ChildVerdict::Ok,

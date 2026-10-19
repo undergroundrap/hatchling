@@ -461,6 +461,13 @@ impl Cell<Ready> {
             .with_memory_provider(Box::new(crate::memory_provider::BrokerMemoryProvider::new(
                 self.connection(),
             )))
+            .with_prior_turns(
+                self.config()
+                    .run_history
+                    .iter()
+                    .map(|turn| (turn.user.clone(), turn.assistant.clone()))
+                    .collect(),
+            )
             .run(model, request);
         // The orphan rule: no child outlives the run that spawned it.
         let _ = children.reap(self.connection(), hatchling_core::subagent::ORPHANED);
@@ -521,6 +528,7 @@ mod tests {
             model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
             run_subagent: false,
             run_chat: false,
+            run_history: Vec::new(),
         }
     }
 

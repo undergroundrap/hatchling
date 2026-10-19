@@ -73,7 +73,7 @@ The README's quickstart sets these, along with the broker's own required variabl
 - **One at a time,** oldest first: the next message waits for the answer to the last.
 - **The stream follows it:** an `agent_status` of `working` once a message is queued, with the message's first line as the detail, and `idle` when the answer arrives.
 - **A run that fails** answers with a fixed sentence; why it failed is in the broker's log.
-- **Each message stands alone** in this build: a chat run sees its own message, not the ones before it.
+- **A chat run sees the conversation so far** (WO-026): its message, and the last exchanges before it, up to 8 and 24 KiB, newest kept. An exchange is kept only when its answer reached you as written: a failed run's sentence, or an answer the output gate blocked or replaced, is never given back. The broker keeps the conversation in its memory, so a broker restart starts a new one, and a run can't add to it.
 
 ## How enums appear in JSON
 
