@@ -28,7 +28,7 @@
 use std::collections::HashMap;
 
 use hatchling_core::ChannelAccount;
-use hatchling_vault::{SealedVault, Secret};
+use hatchling_vault::Secret;
 
 use crate::Error;
 use crate::config::ChannelAccountSpec;
@@ -79,20 +79,33 @@ pub struct AccountBook {
 }
 
 impl AccountBook {
-    /// Loads every configured account's secret from the sealed vault
-    /// and mints its handle.
+    /// Takes every configured account's secret, read from the vault in
+    /// the order of `specs` (`None` where nothing is stored), and mints
+    /// its handle.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Vault`] if a secret cannot be fetched, and
-    /// [`Error::ChannelCustody`] for an empty secret or an unreadable
-    /// RNG. The session fails closed on any of them.
-    pub fn load(specs: &[ChannelAccountSpec], vault: &SealedVault<'_>) -> Result<Self, Error> {
+    /// Returns [`Error::Vault`] if a secret wasn't found, and
+    /// [`Error::ChannelCustody`] for an empty secret, a secret missing
+    /// from `secrets`, or an unreadable RNG. The session fails closed on
+    /// any of them.
+    pub fn load(specs: &[ChannelAccountSpec], secrets: Vec<Option<Secret>>) -> Result<Self, Error> {
+        if secrets.len() != specs.len() {
+            return Err(Error::ChannelCustody {
+                reason: format!(
+                    "{} account secrets read for {} accounts",
+                    secrets.len(),
+                    specs.len()
+                ),
+            });
+        }
         let mut book = Self::default();
-        for spec in specs {
-            let secret = vault
-                .fetch(&spec.secret)
-                .map_err(|source| Error::Vault { source })?;
+        for (spec, secret) in specs.iter().zip(secrets) {
+            let secret = secret.ok_or_else(|| Error::Vault {
+                source: hatchling_vault::Error::NotFound {
+                    name: spec.secret.clone(),
+                },
+            })?;
             book.insert(&spec.channel, &spec.label, secret)?;
         }
         Ok(book)

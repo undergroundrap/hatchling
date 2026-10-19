@@ -34,7 +34,7 @@ use hatchling_channel::{
     Channel, ChannelId, Credential, LocalChannel, LocalHub, Message, SenderId,
 };
 use hatchling_core::{ChannelOp, ChannelResult};
-use hatchling_vault::{OpensStores, SealedVault};
+use hatchling_vault::OpensStores;
 
 use crate::approval::{ApprovalLedger, ApprovalToken, MintError, Verdict};
 use crate::config::ChannelAccountSpec;
@@ -123,20 +123,13 @@ impl ChannelRegistry {
         let book = if accounts.is_empty() {
             AccountBook::default()
         } else {
-            let names = accounts
+            let names: Vec<_> = accounts
                 .iter()
-                .map(|account| account.secret.as_str().to_owned())
+                .map(|account| account.secret.clone())
                 .collect();
-            let loaded = SealedVault::open(&vault.root, key)
-                .map_err(|source| Error::Vault { source })
-                .and_then(|sealed| AccountBook::load(accounts, &sealed));
-            let outcome = if loaded.is_ok() {
-                crate::vault_access::Outcome::Allowed
-            } else {
-                crate::vault_access::Outcome::Failed
-            };
-            crate::vault_access::record_broker_read(&vault.root, "channel-account", names, outcome);
-            loaded?
+            let secrets = crate::secrets::Secrets::new(&vault.root, key)
+                .broker_read("channel-account", &names)?;
+            AccountBook::load(accounts, secrets)?
         };
         Self::assemble(channels, book)
     }

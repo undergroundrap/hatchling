@@ -52,7 +52,7 @@ use std::time::{Duration, Instant};
 
 use hatchling_core::subagent::HarnessNetworkUse;
 use hatchling_egress::{Allowlist, TlsClient};
-use hatchling_vault::{OpensStores, SealedVault};
+use hatchling_vault::OpensStores;
 use zeroize::Zeroizing;
 
 use hatchling_core::subagent::{ActivityEvent, HarnessOutcome, SubagentEvent};
@@ -1003,35 +1003,22 @@ fn parse_tools(raw: Option<&str>, networked: bool) -> Result<Vec<(PathBuf, Strin
 /// The vendor keys the broker reads for its harness relays.
 ///
 /// Each is the vault secret [`HarnessKind::secret_name`], read with the
-/// broker's own key and logged as the broker's read. No vault grant may
+/// broker's own keys and logged as the broker's read before it is used
+/// ([`crate::secrets::Secrets::broker_read`]). No vault grant may
 /// name it.
 pub fn vault_keys<'a>(
     vault_root: &'a Path,
     key: &'a dyn OpensStores,
 ) -> impl Fn(HarnessKind) -> Option<Zeroizing<String>> + 'a {
     move |kind| {
-        let name = kind.secret_name();
-        let fetched = name
+        let name = kind
+            .secret_name()
             .parse::<hatchling_core::SecretName>()
-            .ok()
-            .and_then(|secret| {
-                let vault = SealedVault::open(vault_root, key).ok()?;
-                Some(vault.fetch(&secret))
-            });
-        let outcome = match &fetched {
-            Some(Ok(_)) => crate::vault_access::Outcome::Allowed,
-            Some(Err(hatchling_vault::Error::NotFound { .. })) => {
-                crate::vault_access::Outcome::NotFound
-            }
-            Some(Err(_)) | None => crate::vault_access::Outcome::Failed,
-        };
-        crate::vault_access::record_broker_read(
-            vault_root,
-            "harness",
-            vec![name.to_owned()],
-            outcome,
-        );
-        let secret = fetched?.ok()?;
+            .ok()?;
+        let secret = crate::secrets::Secrets::new(vault_root, key)
+            .broker_read("harness", std::slice::from_ref(&name))
+            .ok()?
+            .pop()??;
         std::str::from_utf8(secret.as_bytes())
             .ok()
             .map(|text| Zeroizing::new(text.trim().to_owned()))
@@ -1777,6 +1764,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
+    use hatchling_vault::SealedVault;
     use crate::{
         ArtifactConfig, EgressConfig, GoalsConfig, MemoryConfig, SchedulerConfig, SkillConfig,
         SpaceConfig, VaultConfig,
