@@ -381,7 +381,9 @@ fn a_subordinate_agent_cell_handshakes_over_its_own_connection() -> Result<(), S
     let code = hatchling_sys::child_exit_code(status);
     let _ = std::fs::remove_dir_all(&dir);
     if code != 0 {
-        return Err(format!("the agent should exit 0 after its handshake, got {code}"));
+        return Err(format!(
+            "the agent should exit 0 after its handshake, got {code}"
+        ));
     }
     if seen != vec![principal.clone(); 4] {
         return Err(format!(
