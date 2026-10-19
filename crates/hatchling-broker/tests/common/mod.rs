@@ -329,6 +329,15 @@ pub(crate) fn probe_spawn_pipeline(stage: &Path) -> bool {
     let Ok(map) = hatchling_sys::IdMap::new(base, 1) else {
         return false;
     };
+    // Its gid: the same number for a root broker, its own gid otherwise.
+    let group = if broker_euid == 0 {
+        base
+    } else {
+        hatchling_sys::egid()
+    };
+    let Ok(group_map) = hatchling_sys::IdMap::new(group, 1) else {
+        return false;
+    };
     if map.validate_for_euid(broker_euid).is_err() {
         return false;
     }
@@ -343,7 +352,7 @@ pub(crate) fn probe_spawn_pipeline(stage: &Path) -> bool {
             let mut byte = [0u8; 1];
             let mapped = ours.read_exact(&mut byte).is_ok()
                 && byte == [1]
-                && hatchling_sys::idmap::write_maps(child.pid().get(), &map, &map).is_ok();
+                && hatchling_sys::idmap::write_maps(child.pid().get(), &map, &group_map).is_ok();
             let _ = ours.write_all(&[u8::from(mapped)]);
             drop(ours);
             let exited = matches!(

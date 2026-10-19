@@ -2118,7 +2118,10 @@ pub(super) mod tests {
         };
         hatchling_sys::unshare_user().is_ok()
             && IdMap::new(euid, 1)
-                .is_ok_and(|map| hatchling_sys::idmap::write_maps(pid, &map, &map).is_ok())
+                .and_then(|map| Ok((map, IdMap::new(hatchling_sys::egid(), 1)?)))
+                .is_ok_and(|(map, group_map)| {
+                    hatchling_sys::idmap::write_maps(pid, &map, &group_map).is_ok()
+                })
     }
 
     #[test]
