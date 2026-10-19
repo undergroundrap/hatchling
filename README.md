@@ -100,7 +100,7 @@ creates no sockets, directories or vault files. An invalid argument prints
 usage to stderr and exits 64. The broker builds the cell in which the agent
 runs; it supplies the agent's identity and configuration.
 
-**Requirements:** Linux 5.11+ with unprivileged user namespaces and seccomp-BPF (or WSL2); Rust (the pinned 1.98.1 installs itself through `rust-toolchain.toml`; the minimum supported is 1.85); a C compiler; Python 3 for the examples; Node.js 22.12+ to build the app; root, for the reason [below](#running-without-root).
+**Requirements:** Linux 5.11+ with unprivileged user namespaces and seccomp-BPF (or WSL2); Rust (the pinned 1.98.1 installs itself through `rust-toolchain.toml`; the minimum supported is 1.85); a C compiler; Python 3 for the examples; Node.js 22.12+ to build the app; root, for the reason [below](#running-without-root), or a [subordinate id range](#quickstart-without-root) for your user.
 
 Build, install the broker, the agent and the app's host, and create the user the cells run as: a system user nothing else runs as.
 
@@ -167,7 +167,7 @@ That answer took the whole path: the broker started a fresh cell as `hatchling-c
 
 The app is Hatchling's UI: chat with the agent and see what it's doing. `hatchling-host` serves it on `127.0.0.1` and carries its channel to the broker's UI socket. The host decides nothing: the broker asks every connection for the UI token it minted at start, which the host puts in the address it prints, after the `#`, the part a browser never sends to a server.
 
-Build the app and start the host, still in the clone and the root shell:
+Build the app and start the host, still in the clone and the broker's shell:
 
 ```bash
 (cd frontend && npm ci && npm run build)
@@ -189,20 +189,80 @@ CI runs this too: it opens the app's address in Chromium, sends a message and wa
 
 The broker runs as root so that each cell can get a uid of its own. Without privilege, Linux lets a process map only its own uid into a user namespace, so by default an unprivileged broker's cells run as you: still in their own namespaces, under seccomp, with no capabilities and no network. In that mode the local API, the chat ingress, the device endpoint and the operator socket refuse to start, because a cell with your uid could otherwise drive them.
 
-An unprivileged broker can give its cells a uid of their own the way rootless containers do, from a subordinate range granted to your user. If `/etc/subuid` and `/etc/subgid` have no line for you yet:
+An unprivileged broker can give its cells a uid of their own the way rootless containers do, from a subordinate range granted to your user ([WO-014](docs/workorders/workorder-014-running-without-root.md)). With `HATCHLING_CELL_IDS=subordinate`, every cell runs as the first id of your `/etc/subuid` range (and the first of your `/etc/subgid` range), mapped by `newuidmap` and `newgidmap` from the `uidmap` package, with none of your supplementary groups, and the endpoints above start. `HATCHLING_AGENT_UID` can then be left out: the broker takes that first id. If you set it, it must be that id.
+
+All cells share that one id, as a root broker's cells share theirs. Their namespaces keep them apart (none can signal, trace or reach another), but the kernel counts some quotas per host uid: pipe buffers, for one, so a cell that fills its pipes can leave the others' new pipes at their minimum size. Rootless Podman uses the same ranges, so if you run it as the same user, its containers get the same host ids as your cells: give Hatchling a user of its own. The broker refuses a range that holds root, your uid or any account's id, and map helpers that aren't root's setuid programs. A coding CLI's work tree goes to its cell, and comes back after, through a short-lived helper whose user namespace maps both you and the cell (the broker can't `chown` a file to another uid without root).
+
+### Quickstart without root
+
+The broker never runs as root here; setting up the machine for it does, once. CI runs these blocks too, as an unprivileged user on a stock Ubuntu runner with its user-namespace restriction left on, and fails unless the agent's answer arrives and the app answers in a browser.
+
+Build and install as in the quickstart:
 
 ```bash
-sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$USER"
+git clone https://github.com/undergroundrap/hatchling
+cd hatchling
+cargo build --release
+sudo install -m 755 target/release/hatchling-broker target/release/hatchling-agent target/release/hatchling-host /usr/local/bin/
 ```
 
-Then point the broker at it, with the agent's uid set to the first id of your `/etc/subuid` range:
+Install the map helpers (`uidmap` on Debian and Ubuntu; `shadow-utils` on Fedora, `shadow` on Arch), and give your user a subordinate range if it has none. The range must hold no account's id; 100000-165535 is the usual first one:
 
 ```bash
-export HATCHLING_CELL_IDS=subordinate
-export HATCHLING_AGENT_UID=100000
+sudo apt-get install -y uidmap
+me=$(id -un)
+grep -q "^$me:" /etc/subuid || sudo usermod --add-subuids 100000-165535 "$me"
+grep -q "^$me:" /etc/subgid || sudo usermod --add-subgids 100000-165535 "$me"
 ```
 
-Every cell then runs as that first id (and the first of your gid range), mapped by `newuidmap` and `newgidmap` from the `uidmap` package, with none of your supplementary groups. All cells share that one id, as a root broker's cells share theirs. Their namespaces keep them apart (none can signal, trace or reach another), but the kernel counts some quotas per host uid: pipe buffers, for one, so a cell that fills its pipes can leave the others' new pipes at their minimum size. The broker refuses a range that holds root, your uid or any account's id, and map helpers that aren't root's setuid programs. A coding CLI's work tree goes to its cell, and comes back after, through a short-lived helper whose user namespace maps both you and the cell (the broker can't `chown` a file to another uid without root). Still to come in [WO-014](docs/workorders/workorder-014-running-without-root.md): a tested quickstart, including the AppArmor profile Ubuntu needs for a program that creates user namespaces.
+Ubuntu 23.10 and later let an unprivileged program create a user namespace only if an AppArmor profile allows it. Where that restriction is on, give the broker a profile that allows it user namespaces and confines nothing else, the kind Ubuntu ships for browsers and container tools (for the `hatchling` binary, name `/usr/local/bin/hatchling` instead):
+
+```bash
+if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ]; then
+  sudo tee /etc/apparmor.d/hatchling-broker > /dev/null <<'EOF'
+abi <abi/4.0>,
+include <tunables/global>
+
+profile hatchling-broker /usr/local/bin/hatchling-broker flags=(unconfined) {
+  userns,
+}
+EOF
+  sudo apparmor_parser -r /etc/apparmor.d/hatchling-broker
+fi
+```
+
+The rest runs as you, with no `sudo`. Configure the broker as in the quickstart, with its state in your home, and no agent uid: the cells' ids come from your range.
+
+```bash
+export HATCHLING_HOME=$HOME/.local/state/hatchling
+mkdir -p -m 700 "$HATCHLING_HOME"/{sock,vault,schedules}
+export HATCHLING_CELL_IDS=subordinate   # cells run as the first id of your range
+export HATCHLING_BROKER_SOCKET=$HATCHLING_HOME/sock/broker.sock
+export HATCHLING_AGENT_BIN=/usr/local/bin/hatchling-agent
+export HATCHLING_CELL_ID=cell-01
+export HATCHLING_VAULT_DIR=$HATCHLING_HOME/vault
+export HATCHLING_SCHEDULER_DIR=$HATCHLING_HOME/schedules
+export HATCHLING_CHANNEL_INGRESS=$HATCHLING_HOME/ingress.sock
+export HATCHLING_API_SOCKET=$HATCHLING_HOME/api.sock
+export HATCHLING_UI_SOCKET=$HATCHLING_HOME/ui.sock
+export HATCHLING_OPERATOR_SOCKET=$HATCHLING_HOME/operator.sock
+export HATCHLING_SCHEDULER_MODEL_ENDPOINT=http://localhost:18089/v1
+export HATCHLING_SCHEDULER_MODEL_NAME=stand-in
+export HATCHLING_EGRESS_ALLOWLIST=local-keyless:localhost:18089
+export HATCHLING_EGRESS_GRANTS=localhost:18089
+export HATCHLING_API_GRANTS=egress:localhost:18089,channel-send:local
+```
+
+Start the stand-in model, seal the vault, start the broker, and give the agent its first task:
+
+```bash
+python3 docs/examples/stand-in-model.py 18089 &
+hatchling-broker migrate-vault
+hatchling-broker &
+python3 docs/examples/first-run.py "$HATCHLING_API_SOCKET"
+```
+
+The answer is the quickstart's, from a cell running as the first id of your range. The app works the same way: follow [Using the app](#using-the-app) in this shell.
 
 ### Cell limits
 

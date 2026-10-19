@@ -216,6 +216,113 @@ jobs:
           name: readme-quickstart
           path: ${{ runner.temp }}/quickstart-logs
 
+  # WO-014: no root. Cells run on the runner user's subordinate ids, with
+  # Ubuntu's user-namespace restriction left on: only binaries an AppArmor
+  # profile allows may create user namespaces, as on a stock desktop.
+  rootless:
+    name: without root
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: The user-namespace restriction is on
+        run: test "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = 1
+
+      # Distinct uid and gid ranges: a range used for both hides a uid read
+      # where a gid belongs.
+      - name: Give the runner distinct subordinate ranges
+        run: |
+          me=$(id -un)
+          sudo sed -i "/^$me:/d" /etc/subuid /etc/subgid
+          echo "$me:200000:65536" | sudo tee -a /etc/subuid > /dev/null
+          echo "$me:300000:65536" | sudo tee -a /etc/subgid > /dev/null
+          cat /etc/subuid /etc/subgid
+          ls -l "$(command -v newuidmap)" "$(command -v newgidmap)"
+
+      - name: Build the tests
+        env:
+          RUSTUP_TOOLCHAIN: 1.98.1
+        run: |
+          cargo build --locked --workspace --bins
+          cargo test --locked -p hatchling-sys -p hatchling-isolation -p hatchling-broker --no-run
+
+      # The tests create user namespaces from the build tree's binaries.
+      - name: Allow the build tree user namespaces
+        run: |
+          sudo tee /etc/apparmor.d/hatchling-ci-tests > /dev/null <<EOF
+          abi <abi/4.0>,
+          include <tunables/global>
+
+          profile hatchling-ci-tests $GITHUB_WORKSPACE/target/debug/** flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser -r /etc/apparmor.d/hatchling-ci-tests
+
+      - name: Cells on subordinate ids
+        env:
+          RUSTUP_TOOLCHAIN: 1.98.1
+          HATCHLING_REQUIRE_CELL: "1"
+          HATCHLING_REQUIRE_SUBID: "1"
+        run: |
+          cargo test --locked -p hatchling-sys --lib -- subid:: tree::
+          cargo test --locked -p hatchling-isolation --lib -- subordinate
+          cargo test --locked -p hatchling-broker --lib -- subordinate harness_tree::
+          cargo test --locked -p hatchling-broker --test cell_boundary --test harness -- subordinate
+
+      - name: Install a browser for the app
+        run: |
+          python3 -m venv "$RUNNER_TEMP/app-venv"
+          "$RUNNER_TEMP/app-venv/bin/python" -m pip install -r frontend/tests/e2e/requirements.txt
+          "$RUNNER_TEMP/app-venv/bin/python" -m playwright install --with-deps chromium
+
+      # The README's own setup adds the runner's range, as for a new user.
+      - name: Take the runner's ranges away again
+        run: |
+          me=$(id -un)
+          sudo sed -i "/^$me:/d" /etc/subuid /etc/subgid
+          sudo apparmor_parser -R /etc/apparmor.d/hatchling-ci-tests
+          sudo rm /etc/apparmor.d/hatchling-ci-tests
+
+      # Root makes the PID namespace (it ends every process the README
+      # starts), then drops to the runner user for the README's commands.
+      - name: Run the README commands without root
+        env:
+          RUSTUP_TOOLCHAIN: 1.98.1
+        run: |
+          task_work=$(mktemp -d "$RUNNER_TEMP/hatchling-rootless.XXXXXX")
+          trap 'sudo rm -rf -- "$task_work"' EXIT
+          sudo env "PATH=$PATH" "HOME=$HOME" "USER=$USER" "LOGNAME=$USER" \
+            "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" "CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" \
+            "RUSTUP_TOOLCHAIN=$RUSTUP_TOOLCHAIN" \
+            "PLAYWRIGHT_BROWSERS_PATH=$HOME/.cache/ms-playwright" \
+            unshare --mount --pid --fork --kill-child --mount-proc \
+            setpriv --reuid="$(id -u)" --regid="$(id -g)" --init-groups \
+            python3 scripts/readme_quickstart.py "$PWD" \
+              "$RUNNER_TEMP/rootless-logs" "$task_work" \
+              --app-python "$RUNNER_TEMP/app-venv/bin/python" --rootless
+
+      - name: Retain the extracted commands and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: readme-quickstart-rootless
+          path: ${{ runner.temp }}/rootless-logs
+
   hosted-model:
     name: hosted model (${{ matrix.mode }})
     runs-on: ubuntu-latest
