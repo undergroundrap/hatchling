@@ -932,7 +932,9 @@ mod tests {
             .unwrap()
             .store(&name, &Secret::new(b"probe".to_vec()).unwrap())
             .unwrap();
-        SealedVault::open(root, b).unwrap().fetch(&name).is_ok()
+        SealedVault::open(root, b)
+            .and_then(|vault| vault.fetch(&name))
+            .is_ok()
     }
 
     #[test]

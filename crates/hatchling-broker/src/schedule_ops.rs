@@ -1283,7 +1283,7 @@ mod tests {
         let own = SealedVault::open_in(&root, &key, hatchling_vault::Store::SCHEDULES)
             .unwrap()
             .fetch(&name);
-        let secrets = SealedVault::open(&root, &key).unwrap().fetch(&name);
+        let secrets = SealedVault::open(&root, &key).and_then(|vault| vault.fetch(&name));
         let _ = std::fs::remove_dir_all(&root);
         assert_eq!(own.unwrap().as_bytes(), b"p");
         assert!(secrets.is_err(), "opened under the secrets label");

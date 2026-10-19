@@ -674,4 +674,49 @@ mod tests {
         assert!(vault.read_bounded(&name("empty"), 0).unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// A dotfile is created once unless replaced, read within its bound,
+    /// and renamed over another; no temp file is left behind.
+    #[test]
+    fn a_dotfile_is_written_once_unless_replaced_and_read_within_its_bound() {
+        let (vault, root) = open_test_vault("dotfile");
+        let read = |file: &str| vault.read_dotfile(file, 8).unwrap();
+        assert_eq!(read(".key"), None);
+        // Without replace, the first writer's bytes stay.
+        assert!(vault.write_dotfile(".key", b"first", false).unwrap());
+        assert!(!vault.write_dotfile(".key", b"second", false).unwrap());
+        assert_eq!(read(".key").as_deref(), Some(b"first".as_slice()));
+        // With replace, the new bytes win.
+        assert!(vault.write_dotfile(".key", b"third", true).unwrap());
+        assert_eq!(read(".key").as_deref(), Some(b"third".as_slice()));
+        assert_eq!(
+            std::fs::metadata(root.join(".key"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        // Whole at the bound, refused past it.
+        assert_eq!(
+            vault.read_dotfile(".key", 5).unwrap().as_deref(),
+            Some(b"third".as_slice())
+        );
+        assert!(matches!(
+            vault.read_dotfile(".key", 4),
+            Err(Error::TooLarge { len: 5, max: 4 })
+        ));
+        // A rename moves the file over the other.
+        assert!(vault.write_dotfile(".next", b"fourth", false).unwrap());
+        vault.rename_dotfile(".next", ".key").unwrap();
+        assert_eq!(read(".next"), None);
+        assert_eq!(read(".key").as_deref(), Some(b"fourth".as_slice()));
+        assert!(matches!(
+            vault.rename_dotfile(".next", ".key"),
+            Err(Error::Io { .. })
+        ));
+        assert_eq!(read(".key").as_deref(), Some(b"fourth".as_slice()));
+        assert_no_temps(&root);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

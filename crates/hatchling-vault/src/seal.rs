@@ -2811,4 +2811,72 @@ mod tests {
             Err(Error::InsecureKeyFile { .. })
         ));
     }
+
+    /// The store-key plumbing, called directly: the associated data, the
+    /// wrapped key's file, whether a store holds current files, the key
+    /// made once and never again over them, and the key files told apart
+    /// from secrets.
+    #[test]
+    fn the_store_key_plumbing_called_directly() {
+        let key = test_key();
+        let dir = test_dir("store-key-plumbing");
+        let store = Store::SPACES;
+        let name = secret_name("n");
+        assert_eq!(store.bound(b"d", &name), b"d\0spaces\0n");
+        let vault = Vault::open(&dir).unwrap();
+        // An empty store: no key, nothing current, nothing to migrate.
+        assert_eq!(read_wrapped(&vault, store, STORE_KEY_FILE).unwrap(), None);
+        assert!(!holds_current(&vault, &dir).unwrap());
+        refuse_unmigrated(&vault, &dir).unwrap();
+        // The key is made once, then read back.
+        let made = store_key(&vault, &dir, &key, store).unwrap();
+        assert_eq!(store_key(&vault, &dir, &key, store).unwrap().0, made.0);
+        let wrapped = read_wrapped(&vault, store, STORE_KEY_FILE)
+            .unwrap()
+            .unwrap();
+        assert_eq!(wrapped.len(), WRAPPED_STORE_KEY_LEN);
+        assert_eq!(unwrap_store_key(&key, store, &wrapped).unwrap().0, made.0);
+        // The key files are key files; a secret isn't.
+        plant(&dir, "n", b"plain");
+        std::fs::write(dir.join(STORE_KEY_NEXT), b"x").unwrap();
+        let mut seen = 0;
+        for entry in std::fs::read_dir(&*dir).unwrap() {
+            let is_key = is_key_file(&entry);
+            let file = entry.unwrap().file_name();
+            assert_eq!(is_key, file == STORE_KEY_FILE || file == STORE_KEY_NEXT, "{file:?}");
+            seen += usize::from(is_key);
+        }
+        assert_eq!(seen, 2);
+        std::fs::remove_file(dir.join(STORE_KEY_NEXT)).unwrap();
+        // A plaintext file is neither current nor migrated.
+        assert!(!holds_current(&vault, &dir).unwrap());
+        assert!(matches!(
+            refuse_unmigrated(&vault, &dir),
+            Err(Error::NotSealed { .. })
+        ));
+        // A version-2 file is an older envelope.
+        plant(&dir, "n", &seal_v2(&key, store, "n", b"v2"));
+        assert!(!holds_current(&vault, &dir).unwrap());
+        assert!(matches!(
+            refuse_unmigrated(&vault, &dir),
+            Err(Error::OldEnvelope { .. })
+        ));
+        // A current file is held, and its key is never made again.
+        SealedVault::open_in(&dir, &key, store)
+            .unwrap()
+            .store(&name, &secret(b"v3"))
+            .unwrap();
+        assert!(holds_current(&vault, &dir).unwrap());
+        std::fs::remove_file(dir.join(STORE_KEY_FILE)).unwrap();
+        assert!(matches!(
+            store_key(&vault, &dir, &key, store),
+            Err(Error::StoreKeyMissing { store: "spaces" })
+        ));
+        // A key file past the wrapped size is malformed.
+        std::fs::write(dir.join(STORE_KEY_FILE), vec![0; WRAPPED_STORE_KEY_LEN + 1]).unwrap();
+        assert!(matches!(
+            read_wrapped(&vault, store, STORE_KEY_FILE),
+            Err(Error::StoreKeyMalformed { store: "spaces" })
+        ));
+    }
 }
