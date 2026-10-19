@@ -300,7 +300,11 @@ impl Helpers {
         owner: (u32, u32),
         cell: (u32, u32),
     ) -> Result<(), Error> {
-        self.run(child_pid, &[(0, owner.0), (1, cell.0)], &[(0, owner.1), (1, cell.1)])
+        self.run(
+            child_pid,
+            &[(0, owner.0), (1, cell.0)],
+            &[(0, owner.1), (1, cell.1)],
+        )
     }
 
     /// Runs each helper for `child_pid`: `uids` and `gids` map an id in
@@ -694,7 +698,8 @@ mod tests {
             return;
         };
         let owner = (crate::process::euid(), crate::process::egid());
-        let tree = std::env::temp_dir().join(format!("hatchling-subid-tree-{}", std::process::id()));
+        let tree =
+            std::env::temp_dir().join(format!("hatchling-subid-tree-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tree);
         std::fs::create_dir_all(tree.join("inner")).unwrap();
         std::fs::write(tree.join("inner").join("file"), b"x").unwrap();
@@ -703,7 +708,7 @@ mod tests {
         }
         // In a child of its own: a namespace, its maps, then `step` as
         // that namespace's root. Whether it worked, and the maps.
-        let in_helper = |step: fn(&std::path::Path) -> bool| {
+        let in_helper = |step: fn(&Path) -> bool| {
             let (parent_end, child_end) = UnixStream::pair().unwrap();
             let child = match fork().unwrap() {
                 ForkResult::Parent { child } => child,
@@ -736,10 +741,10 @@ mod tests {
         let (given, maps) = in_helper(|tree| {
             crate::chown_tree(tree, 1, 1).is_ok()
                 // As the cell might leave it.
-                && std::fs::set_permissions(tree.join("inner"), std::fs::Permissions::from_mode(0))
+                && std::fs::set_permissions(tree.join("inner"), std::fs::Permissions::from_mode(0o0))
                     .is_ok()
         });
-        let host = |path: &std::path::Path| {
+        let host = |path: &Path| {
             let meta = std::fs::symlink_metadata(path).unwrap();
             (meta.uid(), meta.gid(), meta.mode() & 0o777)
         };
@@ -755,8 +760,12 @@ mod tests {
         assert_eq!(
             maps,
             [
-                ["0", &u.to_string(), "1", "1", &s.to_string(), "1"].map(String::from).to_vec(),
-                ["0", &g.to_string(), "1", "1", &t.to_string(), "1"].map(String::from).to_vec(),
+                ["0", &u.to_string(), "1", "1", &s.to_string(), "1"]
+                    .map(String::from)
+                    .to_vec(),
+                ["0", &g.to_string(), "1", "1", &t.to_string(), "1"]
+                    .map(String::from)
+                    .to_vec(),
             ]
         );
         assert!(given, "the tree went to the cell's ids");
@@ -764,7 +773,7 @@ mod tests {
         assert!(reclaimed, "and came back");
         assert_eq!(after_reclaim.0, (u, g, 0o700));
         assert_eq!(after_reclaim.1, (u, g, 0o700), "searchable again");
-        assert_eq!((after_reclaim.2 .0, after_reclaim.2 .1), (u, g));
+        assert_eq!((after_reclaim.2.0, after_reclaim.2.1), (u, g));
         removed.expect("the owner can remove it all once it's back");
     }
 

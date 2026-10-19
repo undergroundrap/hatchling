@@ -248,11 +248,11 @@ fn refused(operation: &'static str, why: &str) -> Error {
     }
 }
 
-/// Gives the directory `path`, and everything in it, to `uid` and `gid`;
-/// how many entries it changed (WO-014: a harness cell's work tree,
-/// handed to the cell's ids, and taken back after its cell is gone).
+/// Gives the directory `path`, and everything in it, to `uid` and `gid`.
 ///
-/// Nothing is followed. A symlink is changed itself. Each directory is
+/// Returns how many entries it changed. WO-014 uses it for a harness
+/// cell's work tree, handed to the cell's ids, and taken back after its
+/// cell is gone. Nothing is followed. A symlink is changed itself. Each directory is
 /// opened without following a symlink, checked to be the one looked at,
 /// and changed through that handle, then walked; it also gets its owner's
 /// read, write and search bits, so its new owner can always go through
@@ -268,7 +268,8 @@ fn refused(operation: &'static str, why: &str) -> Error {
 /// or the tree holds more than [`MAX_CHOWN_ENTRIES`] entries. The tree
 /// may then be partly changed: the caller treats it as unusable.
 pub fn chown_tree(path: &Path, uid: u32, gid: u32) -> Result<u64, Error> {
-    let root = rustix::fs::open(path, DIR_FLAGS, Mode::empty()).map_err(changing("open the tree"))?;
+    let root =
+        rustix::fs::open(path, DIR_FLAGS, Mode::empty()).map_err(changing("open the tree"))?;
     let top = look(&root, c"").map_err(changing("look at the tree"))?;
     let mut count = 0;
     change_dir(&root, top, uid, gid, &mut count)?;
@@ -333,7 +334,10 @@ fn chown_entries(
             return Err(refused("change the tree", "a directory is inside itself"));
         }
         if seen.mount != mount {
-            return Err(refused("change the tree", "a directory is on another mount"));
+            return Err(refused(
+                "change the tree",
+                "a directory is on another mount",
+            ));
         }
         if above.len() > MAX_DEPTH {
             return Err(refused("change the tree", "it is too deep"));
@@ -341,7 +345,10 @@ fn chown_entries(
         let sub = rustix::fs::openat(dir, name.as_c_str(), DIR_FLAGS, Mode::empty())
             .map_err(changing("open a directory"))?;
         if look(&sub, c"").map(|opened| opened.id) != Ok(seen.id) {
-            return Err(refused("change the tree", "a directory changed under the walk"));
+            return Err(refused(
+                "change the tree",
+                "a directory changed under the walk",
+            ));
         }
         change_dir(&sub, seen, uid, gid, count)?;
         let deeper: Vec<DirId> = above.iter().copied().chain([seen.id]).collect();
@@ -821,7 +828,10 @@ mod tests {
         assert!(chown_tree(&file, uid, gid).is_err(), "a file");
         let link = scratch.0.join("link");
         symlink(scratch.0.join("root"), &link).unwrap();
-        assert!(chown_tree(&link, uid, gid).is_err(), "a symlink to a directory");
+        assert!(
+            chown_tree(&link, uid, gid).is_err(),
+            "a symlink to a directory"
+        );
         let mut deep = scratch.0.join("root");
         for _ in 0..=MAX_DEPTH + 1 {
             deep.push("d");

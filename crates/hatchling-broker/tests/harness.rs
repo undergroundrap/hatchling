@@ -225,7 +225,11 @@ fn a_harness_on_subordinate_ids_edits_its_slice_the_same_way() -> Result<(), Str
             .lines()
             .any(|line| line.split_whitespace().eq(["NoNewPrivs:", "0"]))
     });
-    if !new_privs || hatchling_isolation::platform().subordinate_identity().is_err() {
+    if !new_privs
+        || hatchling_isolation::platform()
+            .subordinate_identity()
+            .is_err()
+    {
         if required {
             return Err(String::from(
                 "HATCHLING_REQUIRE_SUBID=1, but no subordinate cell here",
@@ -239,7 +243,11 @@ fn a_harness_on_subordinate_ids_edits_its_slice_the_same_way() -> Result<(), Str
 STUB edit src/lib.rs
 STUB create src/helper.rs
 STUB remove notes.txt";
-    let report = invoke(&skills, "claude-code@1", &brief(task, &["src/lib.rs", "notes.txt"]))?;
+    let report = invoke(
+        &skills,
+        "claude-code@1",
+        &brief(task, &["src/lib.rs", "notes.txt"]),
+    )?;
     assert_eq!(field(&report, "/outcome"), "done", "{report}");
     assert_eq!(field(&report, "/files_changed"), json!(["src/lib.rs"]));
     assert_eq!(field(&report, "/files_added"), json!(["src/helper.rs"]));
@@ -256,8 +264,10 @@ STUB remove notes.txt";
     );
     assert_eq!(
         deployment.file("project/src/lib.rs").as_deref(),
-        Some("pub fn a() {}
-"),
+        Some(
+            "pub fn a() {}
+"
+        ),
         "nothing reached the project itself"
     );
     Ok(())

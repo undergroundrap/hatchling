@@ -52,7 +52,9 @@ pub fn main(program: &str, args: &[String]) -> ExitCode {
     match args.first().map(String::as_str) {
         Some(SKILL_CELL_SUBCOMMAND) => return skill_cell_main(args.get(1).map(String::as_str)),
         Some(AGENT_RUN_SUBCOMMAND) => return agent_run_main(args.get(1).map(String::as_str)),
-        Some(HARNESS_TREE_SUBCOMMAND) => return harness_tree_main(args.get(1..).unwrap_or_default()),
+        Some(HARNESS_TREE_SUBCOMMAND) => {
+            return harness_tree_main(args.get(1..).unwrap_or_default());
+        }
         Some(_) | None => {}
     }
     match run(args) {
@@ -97,10 +99,10 @@ fn valid_args(args: &[String]) -> bool {
         | ["redactions", "list" | "stats" | "categories"]
         | ["redactions", "show" | "raw" | "override", _]
         | ["redactions", "override", _, "--any-scope"]
-        | ["vault-audit", "log"] => true,
+        | ["vault-audit", "log"]
+        | [HARNESS_TREE_SUBCOMMAND, "give" | "reclaim", _, ..] => true,
         ["vault-audit", "log", count] => count.parse::<usize>().is_ok(),
         [SKILL_CELL_SUBCOMMAND | AGENT_RUN_SUBCOMMAND, ..] => args.len() <= 2,
-        [HARNESS_TREE_SUBCOMMAND, "give" | "reclaim", _, ..] => true,
         _ => false,
     }
 }

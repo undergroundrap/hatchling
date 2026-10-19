@@ -669,18 +669,7 @@ impl Harnesses {
             Ok(cell) => cell,
             Err(error) => return report.failed(&error.to_string()),
         };
-        // The cell's trees: given to its uid. On the owner's subordinate
-        // ids, through the tree helper (a root broker chowns them itself).
-        let handed = match cell.ids {
-            CellIds::Own => hand_over(&scratch, cell.uid_base),
-            CellIds::Subordinate => change_trees(
-                runtime.spawner(),
-                TreeOp::Give,
-                &[&scratch.work, &scratch.scratch],
-                cell.identity(),
-            ),
-        };
-        if let Err(reason) = handed {
+        if let Err(reason) = trees(runtime, &cell, &scratch, TreeOp::Give) {
             return report.failed(&reason);
         }
         let relay = relaying.map(|(handoff, vendor, surrogate, key)| {
@@ -716,20 +705,11 @@ impl Harnesses {
             }
             Err(error) => report.reason = Some(run_failure(&error)),
         }
-        // On subordinate ids, the trees are the cell's until the helper
-        // takes them back: only then can the broker read, or remove,
-        // what the cell left. The cell is gone by now (its helper was
-        // waited for, or killed, and its output closed).
-        if cell.ids == CellIds::Subordinate {
-            if let Err(reason) = change_trees(
-                runtime.spawner(),
-                TreeOp::Reclaim,
-                &[&scratch.work, &scratch.scratch],
-                cell.identity(),
-            ) {
-                tracing::error!(%reason, "cannot take a harness's trees back");
-                return report.failed(&format!("cannot take the work tree back: {reason}"));
-            }
+        // The cell is gone by now: its helper was waited for, or killed,
+        // and its output closed.
+        if let Err(reason) = trees(runtime, &cell, &scratch, TreeOp::Reclaim) {
+            tracing::error!(%reason, "cannot take a harness's trees back");
+            return report.failed(&format!("cannot take the work tree back: {reason}"));
         }
         if let Some(question) = read_question(&scratch.scratch) {
             report.harness_said.question = Some(question);
@@ -1322,6 +1302,30 @@ fn harness_cell(
         network,
     });
     Ok(cell)
+}
+
+/// Moves a harness run's work tree and scratch directory between the
+/// broker and `cell`: `Give` before the run, `Reclaim` after it.
+///
+/// A root broker gives them by chown ([`hand_over`]) and needs nothing
+/// back: it reads anything. On the owner's subordinate ids both go
+/// through the tree helper ([`change_trees`]), since the broker can
+/// neither give a file away nor read, or remove, what the cell left.
+///
+/// # Errors
+///
+/// Why they couldn't be moved.
+fn trees(runtime: &SkillRuntime, cell: &CellConfig, dirs: &RunDirs, op: TreeOp) -> Result<(), String> {
+    match (cell.ids, op) {
+        (CellIds::Own, TreeOp::Give) => hand_over(dirs, cell.uid_base),
+        (CellIds::Own, TreeOp::Reclaim) => Ok(()),
+        (CellIds::Subordinate, _) => change_trees(
+            runtime.spawner(),
+            op,
+            &[&dirs.work, &dirs.scratch],
+            cell.identity(),
+        ),
+    }
 }
 
 /// Gives the work tree and scratch directory to `uid`, the cell's map
@@ -3077,6 +3081,22 @@ mod tests {
             })
         );
         assert!(cell.is_harness_cell());
+    }
+
+    #[test]
+    fn a_runs_trees_move_by_chown_or_through_the_helper() {
+        let dirs = RunDirs::create().unwrap();
+        let mut cell = CellConfig::skill("harness").unwrap();
+        cell.ids = CellIds::Own;
+        let runtime = SkillRuntime::new(PathBuf::from("/nonexistent/hatchling-broker"));
+        // A root broker takes nothing back: it reads anything.
+        assert_eq!(trees(&runtime, &cell, &dirs, TreeOp::Reclaim), Ok(()));
+        // On subordinate ids, both ways go through the helper: with no
+        // helper binary, nothing moves.
+        cell.ids = CellIds::Subordinate;
+        for op in [TreeOp::Give, TreeOp::Reclaim] {
+            assert!(trees(&runtime, &cell, &dirs, op).is_err(), "{op:?}");
+        }
     }
 
     #[test]

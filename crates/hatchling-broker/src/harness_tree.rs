@@ -8,9 +8,9 @@
 //! namespace that maps both: the owner as its 0 and the cell as its 1. This
 //! is that helper.
 //!
-//! The broker starts itself again as `hatchling-broker harness-tree give
-//! <dir>...` (before the run) or `harness-tree reclaim <dir>...` (after
-//! it, once the cell is gone), a fresh single-threaded process: ordinary
+//! The broker starts itself again as `harness-tree give <dir>...` (before
+//! the run) or `harness-tree reclaim <dir>...` (after it, once the cell
+//! is gone), a fresh single-threaded process: ordinary
 //! Rust after a fork of the multi-threaded broker wouldn't be sound. The
 //! helper enters a user namespace of its own and says so; the broker writes
 //! its two-identity maps through `newuidmap` and `newgidmap`; the helper
@@ -220,6 +220,27 @@ mod tests {
         ] {
             assert!(parse_args(&refused).is_err(), "{refused:?}");
         }
+    }
+
+    #[test]
+    fn a_helper_with_bad_arguments_or_no_binary_changes_nothing() {
+        assert!(helper(&args(&["take", "/a"])).is_err());
+        assert_eq!(
+            format!("{:?}", harness_tree_main(&args(&[]))),
+            format!("{:?}", ExitCode::FAILURE)
+        );
+        let identity = CellIdentity::direct(hatchling_sys::euid(), 1);
+        let missing = change_trees(
+            Path::new("/nonexistent/hatchling-broker"),
+            TreeOp::Give,
+            &[Path::new("/tmp")],
+            identity,
+        )
+        .unwrap_err();
+        assert!(
+            missing.contains("cannot start") || missing.contains("newuidmap"),
+            "{missing}"
+        );
     }
 
     #[test]
