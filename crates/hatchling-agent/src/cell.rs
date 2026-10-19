@@ -583,6 +583,61 @@ mod tests {
         );
     }
 
+    /// WO-026: a chat turn's loop gives the model the conversation it was
+    /// given, before its message, each side in its own role.
+    #[test]
+    fn a_chat_turns_loop_gives_the_model_its_conversation() {
+        use hatchling_core::framing::{read_frame, write_frame};
+        use hatchling_loop::{FakeModel, Message, ModelAction};
+        use std::os::fd::IntoRawFd as _;
+        let (broker, agent) = UnixStream::pair().unwrap();
+        let mut config = config_with_socket("/no/such/dir-xyz/broker.sock");
+        config.broker = BrokerAddress::Connection(agent.into_raw_fd());
+        config.broker_uid = PeerUid::from_kernel(rustix::process::getuid().as_raw());
+        config.run_chat = true;
+        config.run_history = vec![hatchling_core::conversation::ChatExchange {
+            user: String::from("Two drinks?"),
+            assistant: String::from("1. Tea. 2. Coffee."),
+        }];
+        // The broker welcomes the cell, then goes: recall finds nothing.
+        let welcome = std::thread::spawn(move || {
+            read_frame(&broker).map(|_| ())?;
+            let frame = serde_json::to_vec(&hatchling_core::BrokerMessage::Welcome {
+                v: hatchling_core::PROTOCOL_VERSION,
+            })
+            .map_err(std::io::Error::other)?;
+            write_frame(&broker, &frame)
+        });
+        let cell = Cell::new(config)
+            .check_preconditions()
+            .and_then(Cell::connect_broker)
+            .and_then(Cell::authorize)
+            .and_then(Cell::handshake)
+            .unwrap();
+        welcome.join().unwrap().unwrap();
+        let model = FakeModel::new(vec![ModelAction::Text(String::from("Coffee."))]);
+        let result = cell
+            .run_loop_delegating(
+                hatchling_loop::PromptKind::Chat,
+                &model,
+                String::from("The second one."),
+                hatchling_loop::LoopBudget { max_steps: 3 },
+                &hatchling_model::Redactor::default(),
+                None,
+            )
+            .unwrap();
+        assert_eq!(result.answer, "Coffee.");
+        let seen = model.seen_histories();
+        let history = seen.first().unwrap();
+        assert!(matches!(history.first(), Some(Message::System(_))));
+        assert!(matches!(history.get(1), Some(Message::User(text)) if text == "Two drinks?"));
+        assert!(
+            matches!(history.get(2), Some(Message::Assistant(text)) if text == "1. Tea. 2. Coffee.")
+        );
+        assert!(matches!(history.get(3), Some(Message::User(text)) if text == "The second one."));
+        assert_eq!(history.len(), 4, "{history:?}");
+    }
+
     #[test]
     fn check_preconditions_fails_closed_when_parent_dir_missing() {
         let cell = Cell::new(config_with_socket("/no/such/dir-xyz/broker.sock"));
