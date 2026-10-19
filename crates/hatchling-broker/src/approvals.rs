@@ -730,6 +730,31 @@ mod tests {
         assert_eq!(ledger.get(&running.id).unwrap().state, State::Succeeded);
     }
 
+    /// The ledger's own steps: lapsing what is due, and keeping decided
+    /// requests to their bound, oldest forgotten first.
+    #[test]
+    fn the_ledger_lapses_what_is_due_and_forgets_the_oldest_decided() {
+        let approvals = Approvals::new();
+        let first = approvals.propose(proposal("one", "t1"), 0).unwrap();
+        let second = approvals.propose(proposal("two", "t2"), 100).unwrap();
+        approvals.ledger().expire(DECIDE_SECS - 1);
+        assert_eq!(approvals.get(&first.id).unwrap().state, State::Pending);
+        approvals.ledger().expire(DECIDE_SECS);
+        assert_eq!(approvals.get(&first.id).unwrap().state, State::Expired);
+        assert_eq!(approvals.get(&second.id).unwrap().state, State::Pending);
+        {
+            let mut ledger = approvals.ledger();
+            assert_eq!(ledger.decided.len(), 1);
+            for n in 0..MAX_KEPT {
+                ledger.keep_decided(&format!("approval-x{n}"));
+            }
+            assert_eq!(ledger.decided.len(), MAX_KEPT);
+            assert!(!ledger.requests.contains_key(&first.id), "the oldest decided is forgotten");
+            assert!(ledger.requests.contains_key(&second.id), "a pending one isn't decided");
+        }
+        assert_eq!(approvals.get(&second.id).unwrap().state, State::Pending);
+    }
+
     #[test]
     fn an_action_with_no_canonical_form_is_refused() {
         let ledger: Approvals<String> = Approvals::default();
