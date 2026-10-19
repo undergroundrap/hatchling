@@ -283,12 +283,19 @@ struct Held {
     store: Store,
     root: PathBuf,
     key: StoreKey,
+    /// For a store not made yet: its key, wrapped, for the store's first
+    /// open to keep. Made now, while the master key is at hand.
+    pending: Option<Vec<u8>>,
 }
 
 impl StoreKeys {
-    /// Unwraps the key of each of `stores` under `master`, opening each
-    /// store as [`SealedVault::open_in`] does: its root is made if absent,
-    /// and a store without a key is given one, once.
+    /// Unwraps the key of each of `stores` under `master`.
+    ///
+    /// A store that exists is opened as [`SealedVault::open_in`] opens it,
+    /// and a store there without a key is given one, once. A store whose
+    /// root doesn't exist yet is left unmade, as it would be until first
+    /// opened: its key is made and wrapped now, and kept in the store when
+    /// it is first opened, unless a key is there by then.
     ///
     /// # Errors
     ///
@@ -296,11 +303,18 @@ impl StoreKeys {
     pub fn unwrap(master: &MasterKey, stores: &[(Store, &Path)]) -> Result<Self, Error> {
         let mut held = Vec::with_capacity(stores.len());
         for &(store, root) in stores {
-            let vault = Vault::open(root)?;
+            let (key, pending) = if std::fs::symlink_metadata(root).is_ok() {
+                (store_key(&Vault::open(root)?, root, master, store)?, None)
+            } else {
+                let key = StoreKey::generate()?;
+                let wrapped = wrap_store_key(master, store, &key)?;
+                (key, Some(wrapped))
+            };
             held.push(Held {
                 store,
                 root: root.to_path_buf(),
-                key: store_key(&vault, root, master, store)?,
+                key,
+                pending,
             });
         }
         Ok(Self { held })
@@ -313,14 +327,43 @@ impl StoreKeys {
 }
 
 impl OpensStores for StoreKeys {
-    fn key_for(&self, _vault: &Vault, root: &Path, store: Store) -> Result<OpenedKey<'_>, Error> {
-        self.held
+    fn key_for(&self, vault: &Vault, root: &Path, store: Store) -> Result<OpenedKey<'_>, Error> {
+        let held = self
+            .held
             .iter()
             .find(|held| held.store == store && held.root == root)
-            .map(|held| OpenedKey(Opened::Held(&held.key)))
             .ok_or_else(|| Error::StoreNotHeld {
                 store: store.label(),
-            })
+            })?;
+        if let Some(pending) = &held.pending {
+            keep_pending(vault, root, store, pending)?;
+        }
+        Ok(OpenedKey(Opened::Held(&held.key)))
+    }
+}
+
+/// Keeps `pending`, a store's key wrapped before the store was made, as
+/// the store's key file, unless the store has one: then it must be that
+/// key. A store holding current files and no key is refused, as
+/// [`store_key`] refuses it.
+fn keep_pending(vault: &Vault, root: &Path, store: Store, pending: &[u8]) -> Result<(), Error> {
+    let refused = || Error::StoreKeyRefused {
+        store: store.label(),
+    };
+    if let Some(kept) = read_wrapped(vault, store, STORE_KEY_FILE)? {
+        return if kept == pending { Ok(()) } else { Err(refused()) };
+    }
+    if holds_current(vault, root)? {
+        return Err(Error::StoreKeyMissing {
+            store: store.label(),
+        });
+    }
+    if vault.write_dotfile(STORE_KEY_FILE, pending, false)? {
+        return Ok(());
+    }
+    match read_wrapped(vault, store, STORE_KEY_FILE)? {
+        Some(kept) if kept == pending => Ok(()),
+        _ => Err(refused()),
     }
 }
 
@@ -3006,8 +3049,8 @@ mod tests {
             keys.stores().collect::<Vec<_>>(),
             [(Store::SPACES, &*spaces), (Store::SCHEDULES, &*schedules)]
         );
-        // A store without a key was given one, kept in the store.
-        assert!(schedules.join(STORE_KEY_FILE).exists());
+        // A store not made yet stays unmade until it is first opened.
+        assert!(!schedules.exists());
         // What the master key sealed opens, and what is sealed opens
         // under the master key: one key, the store's own.
         let held = SealedVault::open_in(&spaces, &keys, Store::SPACES).unwrap();
@@ -3052,5 +3095,78 @@ mod tests {
             Err(Error::StoreKeyRefused { store: "spaces" })
         ));
         assert_eq!(format!("{keys:?}"), r#"["spaces", "schedules"]"#);
+    }
+
+    /// A store not made yet when the keys are handed stays unmade; its
+    /// first open makes it and keeps the key made for it, and a store
+    /// that got another key first is refused.
+    #[test]
+    fn a_store_made_after_the_keys_are_handed_keeps_its_key() {
+        let master = test_key();
+        let parent = test_dir("handed-later");
+        let later = parent.join("artifacts");
+        let raced = parent.join("raced");
+        let filled = parent.join("filled");
+        let keys = StoreKeys::unwrap(
+            &master,
+            &[
+                (Store::ARTIFACTS, &later),
+                (Store::SPACES, &raced),
+                (Store::SCHEDULES, &filled),
+            ],
+        )
+        .unwrap();
+        assert!(!parent.exists(), "handing the keys made a store");
+        std::fs::create_dir(&*parent).unwrap();
+        // The first open keeps the key; the next finds it.
+        let vault = SealedVault::open_in(&later, &keys, Store::ARTIFACTS).unwrap();
+        vault.store(&secret_name("a"), &secret(b"alpha")).unwrap();
+        assert_eq!(vault.key.key().0, kept_key(&later, &master, Store::ARTIFACTS).0);
+        assert_eq!(
+            SealedVault::open_in(&later, &keys, Store::ARTIFACTS)
+                .unwrap()
+                .fetch(&secret_name("a"))
+                .unwrap()
+                .as_bytes(),
+            b"alpha"
+        );
+        // Another key got there first: refused, and that key kept.
+        SealedVault::open_in(&raced, &master, Store::SPACES).unwrap();
+        let theirs = std::fs::read(raced.join(STORE_KEY_FILE)).unwrap();
+        assert!(matches!(
+            SealedVault::open_in(&raced, &keys, Store::SPACES),
+            Err(Error::StoreKeyRefused { store: "spaces" })
+        ));
+        assert_eq!(std::fs::read(raced.join(STORE_KEY_FILE)).unwrap(), theirs);
+        // Current files and no key: refused, and no key made over them.
+        SealedVault::open_in(&filled, &master, Store::SCHEDULES)
+            .unwrap()
+            .store(&secret_name("s"), &secret(b"s"))
+            .unwrap();
+        std::fs::remove_file(filled.join(STORE_KEY_FILE)).unwrap();
+        assert!(matches!(
+            SealedVault::open_in(&filled, &keys, Store::SCHEDULES),
+            Err(Error::StoreKeyMissing { store: "schedules" })
+        ));
+        assert!(!filled.join(STORE_KEY_FILE).exists());
+    }
+
+    /// `keep_pending`, called directly: kept once, found again, and a
+    /// different kept key refused.
+    #[test]
+    fn keep_pending_keeps_a_key_once_and_refuses_another() {
+        let master = test_key();
+        let dir = test_dir("keep-pending");
+        let vault = Vault::open(&dir).unwrap();
+        let key = StoreKey::generate().unwrap();
+        let pending = wrap_store_key(&master, Store::SPACES, &key).unwrap();
+        keep_pending(&vault, &dir, Store::SPACES, &pending).unwrap();
+        keep_pending(&vault, &dir, Store::SPACES, &pending).unwrap();
+        assert_eq!(kept_key(&dir, &master, Store::SPACES).0, key.0);
+        let other = wrap_store_key(&master, Store::SPACES, &StoreKey::generate().unwrap()).unwrap();
+        assert!(matches!(
+            keep_pending(&vault, &dir, Store::SPACES, &other),
+            Err(Error::StoreKeyRefused { store: "spaces" })
+        ));
     }
 }
