@@ -590,7 +590,7 @@ impl CellConfig {
         Ok(Self {
             uid_base: identity.principal,
             uid_count: identity.count,
-            gid_base: (ids == CellIds::Subordinate).then_some(identity.group),
+            gid_base: Some(identity.group),
             ids,
             agent_bin: PathBuf::new(),
             cell_id: cell_id.to_owned(),
@@ -856,7 +856,7 @@ impl CellConfig {
         Ok(Self {
             uid_base,
             uid_count,
-            gid_base: (ids == CellIds::Subordinate).then_some(identity.group),
+            gid_base: Some(identity.group),
             ids,
             agent_bin,
             cell_id,
@@ -1614,10 +1614,11 @@ mod tests {
     fn a_configs_identity_is_its_map_and_where_its_ids_come_from() {
         let mut config = CellConfig::skill("ids").unwrap();
         assert_eq!(config.ids, CellIds::Own);
-        assert_eq!(config.gid_base, None);
+        // The broker's own map, with the group it grants: the owner's gid
+        // for an unprivileged broker, which needn't be its uid's number.
         assert_eq!(
             config.identity(),
-            CellIdentity::direct(config.uid_base, config.uid_count)
+            hatchling_isolation::platform().identity(None, 1).unwrap()
         );
         config.ids = CellIds::Subordinate;
         config.uid_base = 100_000;
@@ -1864,9 +1865,13 @@ mod tests {
                 .unwrap();
         let spec = cell_spec(&config, LogLevel::Info);
         let _ = std::fs::remove_dir_all(&dir);
+        // The broker's own map, with its group: the owner's gid for an
+        // unprivileged broker, which needn't be the uid's number.
         assert_eq!(
             spec.identity,
-            CellIdentity::direct(config.uid_base, config.uid_count)
+            hatchling_isolation::platform()
+                .identity(Some(config.uid_base), config.uid_count)
+                .unwrap()
         );
         assert_eq!(spec.program, Path::new("/bin/true"));
         assert_eq!(

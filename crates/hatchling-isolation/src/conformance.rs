@@ -657,7 +657,11 @@ mod tests {
         #[cfg(target_os = "linux")]
         {
             let scratch = Scratch::new("unbuildable");
-            let unbuildable = spec(&scratch);
+            let mut unbuildable = spec(&scratch);
+            // An identity the backend grants, so the endpoint is what's
+            // refused.
+            unbuildable.identity =
+                IsolationBackend::identity(&crate::linux::Linux, None, 1).unwrap();
             let witnesses = Witnesses {
                 succeeds: PathBuf::from("/bin/true"),
                 fails: crate::linux::false_witness(),

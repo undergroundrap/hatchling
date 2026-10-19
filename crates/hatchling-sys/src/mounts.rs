@@ -691,6 +691,9 @@ pub(crate) mod tests {
                 // euid first).
                 // SAFETY: geteuid takes no args.
                 let euid = unsafe { libc::geteuid() };
+                // Read now: once in its own user namespace, unmapped, it
+                // reads as the overflow gid.
+                let own_gid = crate::process::egid();
                 // Unshare the user namespace first so the mount
                 // namespace unshare works unprivileged too (mirrors
                 // the cell probe in hatchling-broker's
@@ -711,9 +714,13 @@ pub(crate) mod tests {
                 let Ok(map) = crate::idmap::IdMap::new(base, 1) else {
                     exit_child(99)
                 };
+                // And its own gid, which needn't be the uid's number.
+                let Ok(group_map) = crate::idmap::IdMap::new(own_gid, 1) else {
+                    exit_child(99)
+                };
                 // SAFETY: getpid takes no args.
                 let self_pid = unsafe { libc::getpid() };
-                if crate::idmap::write_maps(self_pid, &map, &map).is_err() {
+                if crate::idmap::write_maps(self_pid, &map, &group_map).is_err() {
                     exit_child(99);
                 }
                 // SAFETY: unshare(CLONE_NEWNS) in the single-threaded
@@ -1006,18 +1013,23 @@ pub(crate) mod tests {
         use crate::process::exit_child;
         // SAFETY: geteuid takes no args.
         let euid = unsafe { libc::geteuid() };
+        // Read now, before the namespace (see above).
+        let own_gid = crate::process::egid();
         // SAFETY: unshare(CLONE_NEWUSER) in the single-threaded
         // child.
         if unsafe { libc::unshare(libc::CLONE_NEWUSER) } != 0 {
             exit_child(99);
         }
-        // Its own uid: the only map it may write (see above).
+        // Its own uid and gid: the only maps it may write (see above).
         let Ok(map) = crate::idmap::IdMap::new(euid, 1) else {
+            exit_child(99)
+        };
+        let Ok(group_map) = crate::idmap::IdMap::new(own_gid, 1) else {
             exit_child(99)
         };
         // SAFETY: getpid takes no args.
         let self_pid = unsafe { libc::getpid() };
-        if crate::idmap::write_maps(self_pid, &map, &map).is_err() {
+        if crate::idmap::write_maps(self_pid, &map, &group_map).is_err() {
             exit_child(99);
         }
         // SAFETY: unshare(CLONE_NEWNS) in the single-threaded

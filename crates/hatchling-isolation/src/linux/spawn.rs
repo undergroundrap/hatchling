@@ -388,6 +388,9 @@ impl LinuxCell {
     reason = "resource configuration and the fork handshake are audited together in fail-closed order"
 )]
 pub(super) fn isolate(spec: &CellSpec) -> Result<LinuxCell, Error> {
+    // The identity is checked first, whoever built the spec: nothing on
+    // the host changes for one that is refused.
+    let writer = MapWriter::for_identity(&spec.identity)?;
     // Limits precede fork and placement; the child cannot execute or fork
     // until the parent places it and sends the release byte.
     let cgroup = spec
@@ -425,7 +428,7 @@ pub(super) fn isolate(spec: &CellSpec) -> Result<LinuxCell, Error> {
 
     let plan = mount_plan(view(spec)?, &new_root)?;
     let maps = Maps {
-        writer: MapWriter::for_identity(&spec.identity)?,
+        writer,
         uid: id_map(spec.identity.principal, spec.identity.count)?,
         gid: id_map(spec.identity.group, spec.identity.count)?,
     };
@@ -622,10 +625,11 @@ enum MapWriter {
 }
 
 impl MapWriter {
-    /// The writer for `identity`. A subordinate identity is checked
-    /// again against the owner's ids as they are now, and the helpers
-    /// with it, so a spec carrying any other ids is refused before the
-    /// fork, whoever built it.
+    /// The writer for `identity`, once it is checked again here: a
+    /// direct one against what this broker may map
+    /// ([`direct_policy`](super::identity::direct_policy)), a subordinate
+    /// one against the owner's ids as they are now, and the helpers with
+    /// it. A spec carrying anything else is refused, whoever built it.
     ///
     /// # Errors
     ///
@@ -633,7 +637,14 @@ impl MapWriter {
     /// be had now, or aren't `identity`'s.
     fn for_identity(identity: &CellIdentity) -> Result<Self, Error> {
         match identity.mapping {
-            Mapping::Direct => Ok(Self::Broker),
+            Mapping::Direct => {
+                super::identity::direct_policy(
+                    hatchling_sys::euid(),
+                    hatchling_sys::egid(),
+                    identity,
+                )?;
+                Ok(Self::Broker)
+            }
             Mapping::Subordinate => {
                 let refused = |source| Error::Identity(PlatformError::new(source));
                 let helpers = hatchling_sys::subid::Helpers::standard().map_err(refused)?;
@@ -2061,7 +2072,7 @@ pub(super) mod tests {
             return;
         }
         let spec = CellSpec {
-            identity: CellIdentity::direct(hatchling_sys::euid(), 1),
+            identity: crate::IsolationBackend::identity(&crate::linux::Linux, None, 1).unwrap(),
             program: PathBuf::from("/bin/true"),
             argv: vec![String::from(PROGRAM)],
             env: vec![(String::from("K"), String::from("V"))],
@@ -2101,13 +2112,18 @@ pub(super) mod tests {
     /// In a forked child: a user namespace of its own, its uid mapped to
     /// 0, as a cell's processes have. Whether that worked.
     fn own_user_namespace() -> bool {
-        let euid = hatchling_sys::euid();
+        // Both read before the namespace: in it, unmapped, they read as
+        // the overflow ids.
+        let (euid, own_gid) = (hatchling_sys::euid(), hatchling_sys::egid());
         let Ok(pid) = i32::try_from(std::process::id()) else {
             return false;
         };
         hatchling_sys::unshare_user().is_ok()
             && IdMap::new(euid, 1)
-                .is_ok_and(|map| hatchling_sys::idmap::write_maps(pid, &map, &map).is_ok())
+                .and_then(|map| Ok((map, IdMap::new(own_gid, 1)?)))
+                .is_ok_and(|(map, group_map)| {
+                    hatchling_sys::idmap::write_maps(pid, &map, &group_map).is_ok()
+                })
     }
 
     #[test]
@@ -2475,11 +2491,39 @@ pub(super) mod tests {
         )
         .unwrap_err();
         assert!(none.to_string().contains("no range"), "{none}");
-        // A direct identity is the broker's to write.
+        // A direct identity is the broker's to write, once it passes the
+        // same policy it was built under.
+        let own = crate::IsolationBackend::identity(&crate::linux::Linux, None, 1).unwrap();
         assert!(matches!(
-            MapWriter::for_identity(&CellIdentity::direct(hatchling_sys::euid(), 1)),
+            MapWriter::for_identity(&own),
             Ok(MapWriter::Broker)
         ));
+        for forged in [
+            CellIdentity::direct(0, 1),
+            CellIdentity { group: 0, ..own },
+            CellIdentity { count: 2, ..own },
+        ] {
+            assert!(
+                matches!(MapWriter::for_identity(&forged), Err(Error::Identity(_))),
+                "{forged:?}"
+            );
+        }
+    }
+
+    /// A refused identity changes nothing on the host: the check comes
+    /// before the endpoint is handed over. With the order reversed, this
+    /// spec's missing socket would fail the hand-over first.
+    #[test]
+    fn a_refused_identity_is_refused_before_the_endpoint_is_touched() {
+        let scratch = Scratch::new("refused-first");
+        let (mut spec, _) = specs(&scratch);
+        spec.identity = CellIdentity::direct(0, 1);
+        spec.endpoint = Some(Endpoint {
+            socket: scratch.0.join("sock").join("absent.sock"),
+            dir: scratch.0.join("sock"),
+        });
+        let refused = isolate(&spec).map(drop).unwrap_err();
+        assert!(matches!(refused, Error::Identity(_)), "{refused}");
     }
 
     /// The owner's subordinate identity, where a cell can run on it: an

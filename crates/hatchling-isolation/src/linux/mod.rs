@@ -45,7 +45,12 @@ impl IsolationBackend for Linux {
     }
 
     fn identity(&self, principal: Option<u32>, count: u32) -> Result<CellIdentity, Error> {
-        identity::identity(hatchling_sys::euid(), principal, count)
+        identity::identity(
+            hatchling_sys::euid(),
+            hatchling_sys::egid(),
+            principal,
+            count,
+        )
     }
 
     fn subordinate_identity(&self) -> Result<CellIdentity, Error> {
@@ -161,7 +166,7 @@ mod tests {
         let euid = hatchling_sys::euid();
         assert_eq!(
             Linux.identity(None, 1).unwrap(),
-            identity::identity(euid, None, 1).unwrap()
+            identity::identity(euid, hatchling_sys::egid(), None, 1).unwrap()
         );
         let identity = Linux.identity(None, 1).unwrap();
         assert_eq!(
