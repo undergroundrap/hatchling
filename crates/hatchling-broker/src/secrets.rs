@@ -56,9 +56,7 @@ impl<'k> Secrets<'k> {
     ) -> Result<Vec<Option<Secret>>, Error> {
         let read = self.read(names);
         let outcome = match &read {
-            Ok(found) if found.iter().any(Option::is_some) || found.is_empty() => {
-                Outcome::Allowed
-            }
+            Ok(found) if found.iter().any(Option::is_some) || found.is_empty() => Outcome::Allowed,
             Ok(_) => Outcome::NotFound,
             Err(_) => Outcome::Failed,
         };
@@ -279,7 +277,15 @@ mod tests {
             .unwrap()
             .0
             .into_iter()
-            .map(|Access { caller, action, names, outcome, .. }| (caller, action, names, outcome))
+            .map(
+                |Access {
+                     caller,
+                     action,
+                     names,
+                     outcome,
+                     ..
+                 }| (caller, action, names, outcome),
+            )
             .collect()
     }
 
@@ -304,11 +310,13 @@ mod tests {
         assert_eq!(read.next().flatten().unwrap().as_bytes(), b"t");
         assert!(read.next().flatten().is_none());
         assert!(read.next().is_none());
-        assert!(secrets
-            .broker_read("harness", &[name("absent")])
-            .unwrap()
-            .into_iter()
-            .all(|secret| secret.is_none()));
+        assert!(
+            secrets
+                .broker_read("harness", &[name("absent")])
+                .unwrap()
+                .into_iter()
+                .all(|secret| secret.is_none())
+        );
         let unheld = StoreKeys::unwrap(&key, &[]).unwrap();
         assert!(matches!(
             Secrets::new(&root, &unheld).broker_read("scan", &[name("token")]),
@@ -327,8 +335,18 @@ mod tests {
                     vec![String::from("token"), String::from("absent")],
                     Outcome::Allowed
                 ),
-                (broker("harness"), read.clone(), vec![String::from("absent")], Outcome::NotFound),
-                (broker("scan"), read, vec![String::from("token")], Outcome::Failed),
+                (
+                    broker("harness"),
+                    read.clone(),
+                    vec![String::from("absent")],
+                    Outcome::NotFound
+                ),
+                (
+                    broker("scan"),
+                    read,
+                    vec![String::from("token")],
+                    Outcome::Failed
+                ),
             ]
         );
         // A log that can't be written: the read releases nothing.

@@ -19,8 +19,8 @@ use hatchling_core::ui::operator::{CellKind, EgressVerdict};
 use hatchling_core::{
     AgentMessage, BrokerMessage, CellId, ChannelResult, EgressOp, EgressResult, GoalsResult,
     HookResult, MAX_FRAME_BYTES, MemoryResult, PROTOCOL_VERSION, PeerCredentials, PeerPid,
-    QueryResult, ScheduleResult, SecretName, SessionRequest, SessionResponse,
-    SkillResult, VaultResult, decode_secret, encode_secret, peer_credentials,
+    QueryResult, ScheduleResult, SecretName, SessionRequest, SessionResponse, SkillResult,
+    VaultResult, decode_secret, encode_secret, peer_credentials,
 };
 use hatchling_egress::{EgressRequest, Proxy};
 use hatchling_memory::{MemoryPrincipal, SessionId};

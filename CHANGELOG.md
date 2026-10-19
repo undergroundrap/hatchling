@@ -39,6 +39,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Fixed
 
+- **A broker read of the vault that can't be recorded releases nothing** (WO-017, step 3). The broker's own reads (an egress credential, a harness vendor's key, a channel account's credential, the gates' scan of held secrets) wrote their access-log line after reading and released the secret even when the line couldn't be written. A cell's vault ops already failed closed. Now every read of the secrets store goes through one place, `hatchling_broker::secrets`, which records the read, with what it was for and whether anything was found, before returning it, and returns nothing when it can't. An egress destination or harness whose credential can't be recorded gets none; a channel account that can't be recorded stops the start; the gates block. This is also the one place the keeper will take over.
 - **A credential no longer lingers in freed memory after it's sent.**
   - The egress proxy built each model request's `Authorization: Bearer <key>` in an ordinary string that grew as it went, and dropped it unwiped. The harness relay built its vendor key's request head the same way.
   - Each now writes the key once, into a buffer allocated at the request's exact size and wiped when dropped.
