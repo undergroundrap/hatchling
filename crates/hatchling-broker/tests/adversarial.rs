@@ -474,11 +474,36 @@ fn only_uprobe_may_survive_refused() -> Result<(), String> {
     let enxio = -i64::from(rustix::io::Errno::NXIO.raw_os_error());
     assert_denied_kills("uprobe", &result("seccomp-336", 0, &report(336, enxio)))?;
     for (name, slug, stdout, why) in [
-        ("uprobe", "seccomp-336", report(336, 0), "a uprobe that ran must fail"),
-        ("uprobe", "seccomp-336", report(336, -1), "only -ENXIO is the kernel's refusal"),
-        ("uprobe", "seccomp-336", String::from("READY seccomp-336\n"), "a survivor with no report must fail"),
-        ("uprobe", "seccomp-336", format!("{}SURVIVED\n", report(336, enxio)), "a second report must fail"),
-        ("io_uring_setup", "seccomp-425", report(425, enxio), "no other syscall may survive"),
+        (
+            "uprobe",
+            "seccomp-336",
+            report(336, 0),
+            "a uprobe that ran must fail",
+        ),
+        (
+            "uprobe",
+            "seccomp-336",
+            report(336, -1),
+            "only -ENXIO is the kernel's refusal",
+        ),
+        (
+            "uprobe",
+            "seccomp-336",
+            String::from("READY seccomp-336\n"),
+            "a survivor with no report must fail",
+        ),
+        (
+            "uprobe",
+            "seccomp-336",
+            format!("{}SURVIVED\n", report(336, enxio)),
+            "a second report must fail",
+        ),
+        (
+            "io_uring_setup",
+            "seccomp-425",
+            report(425, enxio),
+            "no other syscall may survive",
+        ),
     ] {
         if assert_denied_kills(name, &result(slug, 0, &stdout)).is_ok() {
             return Err(String::from(why));
