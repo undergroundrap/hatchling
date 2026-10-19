@@ -597,6 +597,7 @@ fn scheduled_run(config: &Config, request: &RunRequest) -> ScheduledRun {
         max_steps: None,
         subagent: false,
         chat: request.chat,
+        history: request.history.clone(),
     }
 }
 
@@ -903,6 +904,7 @@ mod tests {
             space: None,
             feed: None,
             chat: false,
+            history: Vec::new(),
         }
     }
 
@@ -1165,6 +1167,7 @@ mod tests {
             max_steps: None,
             subagent: false,
             chat: false,
+            history: Vec::new(),
         };
         std::thread::scope(|scope| {
             let env = RunEnv {
@@ -1316,6 +1319,7 @@ mod tests {
             max_steps: None,
             subagent: false,
             chat: false,
+            history: Vec::new(),
         });
         let err = run_helper(Some(&serde_json::to_string(&skill).unwrap())).unwrap_err();
         assert!(

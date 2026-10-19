@@ -46,6 +46,7 @@ fn ready_cell(broker: &FixtureBroker) -> Result<Cell<Ready>, Error> {
         model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
         run_subagent: false,
         run_chat: false,
+        run_history: Vec::new(),
     };
     let cell = Cell::new(config)
         .check_preconditions()?

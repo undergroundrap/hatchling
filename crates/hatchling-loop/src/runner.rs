@@ -47,6 +47,7 @@ pub struct Loop<'t, 'r, 'm> {
     system_prompt: String,
     memory_provider: Option<Box<dyn MemoryProvider + 'm>>,
     ledger: Option<Arc<StepLedger>>,
+    prior_turns: Vec<(String, String)>,
 }
 
 impl std::fmt::Debug for Loop<'_, '_, '_> {
@@ -55,6 +56,7 @@ impl std::fmt::Debug for Loop<'_, '_, '_> {
             .field("budget", &self.budget)
             .field("system_prompt", &self.system_prompt)
             .field("memory_provider", &self.memory_provider.is_some())
+            .field("prior_turns", &self.prior_turns.len())
             .finish()
     }
 }
@@ -74,7 +76,19 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
             system_prompt: hatchling_prompt::system_prompt_for(kind),
             memory_provider: None,
             ledger: None,
+            prior_turns: Vec::new(),
         }
+    }
+
+    /// The conversation before the request, as `(user, assistant)`
+    /// exchanges, oldest first: each becomes a [`Message::User`] and a
+    /// [`Message::Assistant`], between the system prompt and the request.
+    /// Only the broker's record goes here (a chat run's history): what
+    /// the person said, and what they were shown in reply.
+    #[must_use]
+    pub fn with_prior_turns(mut self, turns: Vec<(String, String)>) -> Self {
+        self.prior_turns = turns;
+        self
     }
 
     /// Spend model turns from `ledger` instead of the budget:
@@ -149,10 +163,12 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
         request: String,
         evidence: Vec<String>,
     ) -> Result<LoopResult, Error> {
-        let mut history = vec![
-            Message::System(self.system_prompt.clone()),
-            Message::User(request),
-        ];
+        let mut history = vec![Message::System(self.system_prompt.clone())];
+        for (user, assistant) in &self.prior_turns {
+            history.push(Message::User(user.clone()));
+            history.push(Message::Assistant(assistant.clone()));
+        }
+        history.push(Message::User(request));
 
         // Recall memory at iteration start, before the first model
         // turn. Precedence is structural: the recalled block sits
@@ -480,6 +496,43 @@ mod tests {
         assert!(matches!(history.get(2), Some(Message::RecalledMemory(_))));
         assert!(matches!(history.get(3), Some(Message::Evidence(text)) if text == "first"));
         assert!(matches!(history.get(4), Some(Message::Evidence(text)) if text == "second"));
+    }
+
+    /// WO-026: the conversation so far sits between the system prompt
+    /// and the request, each side in its own role, before memory.
+    #[test]
+    fn prior_turns_come_before_the_request_in_their_own_roles() {
+        let provider = MockProvider {
+            items: vec![test_item("the user prefers tea")],
+            fail: false,
+            log: Arc::new(Mutex::new(vec![])),
+        };
+        let registry = empty_registry();
+        let agent_loop = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .with_memory_provider(Box::new(provider))
+            .with_prior_turns(vec![
+                ("Two drinks?".to_owned(), "1. Tea. 2. Coffee.".to_owned()),
+                ("Hot?".to_owned(), "Both are.".to_owned()),
+            ]);
+        let model = FakeModel::new(vec![ModelAction::Text("Coffee.".to_owned())]);
+        let result = agent_loop
+            .run(&model, "The second one.".to_owned())
+            .unwrap();
+        let seen = model.seen_histories();
+        let history = seen.first().expect("model saw one history");
+        assert_eq!(history.len(), 7, "{history:?}");
+        assert!(matches!(history.first(), Some(Message::System(_))));
+        assert!(matches!(history.get(1), Some(Message::User(text)) if text == "Two drinks?"));
+        assert!(
+            matches!(history.get(2), Some(Message::Assistant(text)) if text == "1. Tea. 2. Coffee.")
+        );
+        assert!(matches!(history.get(3), Some(Message::User(text)) if text == "Hot?"));
+        assert!(matches!(history.get(4), Some(Message::Assistant(text)) if text == "Both are."));
+        assert!(matches!(history.get(5), Some(Message::User(text)) if text == "The second one."));
+        assert!(matches!(history.get(6), Some(Message::RecalledMemory(_))));
+        assert!(
+            matches!(result.history.last(), Some(Message::Assistant(text)) if text == "Coffee.")
+        );
     }
 
     #[test]

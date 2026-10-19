@@ -682,6 +682,7 @@ mod tests {
             max_steps: None,
             subagent: false,
             chat: false,
+            history: Vec::new(),
         };
         let request = hatchling_scheduler::RunRequest {
             schedule_id: String::from(PLANTED[0]),
@@ -695,6 +696,7 @@ mod tests {
             space: None,
             feed: None,
             chat: false,
+            history: Vec::new(),
         };
         (run, request)
     }

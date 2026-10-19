@@ -14,4 +14,5 @@ hatchling_core::declare_environment! {
     HATCHLING_MODEL_CONTEXT_WINDOW: ("optional", "Declared model context window in tokens."),
     HATCHLING_RUN_SUBAGENT: ("optional; default 0", "Broker-supplied subagent mode, 0 or 1."),
     HATCHLING_RUN_CHAT: ("optional; default 0", "Broker-supplied: the run answers the user's chat message, 0 or 1."),
+    HATCHLING_RUN_HISTORY: ("optional; chat runs only", "Broker-supplied: the conversation's last exchanges, a JSON array of {user, assistant}."),
 }

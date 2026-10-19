@@ -87,6 +87,10 @@ pub struct RunRequest {
     /// Whether it answers the user's message on the local channel: its
     /// agent then speaks with the chat prompt, not the worker's.
     pub chat: bool,
+    /// For a chat run, the conversation's last exchanges, oldest first
+    /// (WO-026): only the broker's record of what the owner said and was
+    /// shown. Empty for every other run.
+    pub history: Vec<hatchling_core::conversation::ChatExchange>,
 }
 
 /// A result that could not be delivered, kept for the user.
@@ -173,6 +177,19 @@ pub trait Delivery {
     ///
     /// Returns why it could not.
     fn deliver(&self, channel: &str, text: &str) -> Result<(), String>;
+
+    /// Delivers `text` on `channel`, as [`deliver`](Self::deliver) does,
+    /// and says whether the person was shown `text` itself: `false` when
+    /// something else reached them in its place (an output gate's
+    /// notice), or when the delivery path can't tell. A chat keeps an
+    /// exchange as context only on `true` (WO-026).
+    ///
+    /// # Errors
+    ///
+    /// As [`deliver`](Self::deliver).
+    fn deliver_verbatim(&self, channel: &str, text: &str) -> Result<bool, String> {
+        self.deliver(channel, text).map(|()| false)
+    }
 }
 
 /// What one tick did, for the broker's logs and for tests.
@@ -475,6 +492,7 @@ impl<R: Run> Dispatcher<R> {
             space: start.space.map(str::to_owned),
             feed: start.feed.cloned(),
             chat: false,
+            history: Vec::new(),
         };
         match services.launcher.launch(request) {
             Ok(run) => {
@@ -590,6 +608,35 @@ mod tests {
         fn deliver(&self, _channel: &str, _text: &str) -> Result<(), String> {
             Ok(())
         }
+    }
+
+    /// Delivers everything, and says nothing more.
+    struct Plain;
+
+    impl Delivery for Plain {
+        fn deliver(&self, _channel: &str, _text: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// Refuses everything.
+    struct Closed;
+
+    impl Delivery for Closed {
+        fn deliver(&self, _channel: &str, _text: &str) -> Result<(), String> {
+            Err(String::from("closed"))
+        }
+    }
+
+    /// WO-026: a delivery path that can't tell what the person was shown
+    /// never claims they saw the text itself.
+    #[test]
+    fn a_delivery_that_cant_tell_never_says_the_text_was_shown() {
+        assert_eq!(Plain.deliver_verbatim("local", "hi"), Ok(false));
+        assert_eq!(
+            Closed.deliver_verbatim("local", "hi"),
+            Err(String::from("closed"))
+        );
     }
 
     #[test]

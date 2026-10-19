@@ -16,9 +16,19 @@
 //!
 //! What the person sees when a run fails is a fixed sentence; why it
 //! failed stays in the broker's log.
+//!
+//! The chat keeps the conversation (WO-026), and gives each run its last
+//! exchanges ([`hatchling_core::conversation`]): the message it started
+//! a run for, and the answer, once the person was shown that answer as
+//! written. A failed run, a fixed sentence, and an answer the output gate
+//! blocked or replaced are never given back. The record is the broker's
+//! and lives in its memory: a run can't write to it, and a broker
+//! restart starts a new conversation.
 
 use std::collections::BTreeSet;
 use std::time::Duration;
+
+use hatchling_core::conversation::{self, ChatExchange};
 
 use hatchling_channel::{ChannelId, LocalHub, Message};
 use hatchling_core::ScheduleGrant;
@@ -60,11 +70,14 @@ pub enum Step {
     Undelivered,
 }
 
-/// The chat's one run in flight.
+/// The chat's one run in flight, and the conversation so far.
 #[derive(Debug)]
 pub struct Chat<R> {
-    running: Option<R>,
+    /// The run in flight, and the message it answers.
+    running: Option<(R, String)>,
     grants: Vec<ScheduleGrant>,
+    /// The exchanges kept, oldest first: no more than a run is given.
+    exchanges: Vec<ChatExchange>,
 }
 
 impl<R: Run> Chat<R> {
@@ -74,7 +87,28 @@ impl<R: Run> Chat<R> {
         Self {
             running: None,
             grants,
+            exchanges: Vec::new(),
         }
+    }
+
+    /// The exchanges a run started now is given, oldest first.
+    #[must_use]
+    pub fn history(&self) -> Vec<ChatExchange> {
+        conversation::recent(&self.exchanges)
+    }
+
+    /// Keeps the exchange of `user` and `answer`, the person having been
+    /// shown `answer` as written; the oldest goes past the bound.
+    fn keep(&mut self, user: String, answer: String) {
+        self.exchanges.push(ChatExchange {
+            user,
+            assistant: answer,
+        });
+        let over = self
+            .exchanges
+            .len()
+            .saturating_sub(conversation::MAX_EXCHANGES);
+        self.exchanges.drain(..over);
     }
 
     /// One step at `now`: a running run is polled, and a finished one
@@ -90,23 +124,39 @@ impl<R: Run> Chat<R> {
         L: Launcher<Run = R>,
         D: Delivery,
     {
-        if let Some(run) = &mut self.running {
+        if let Some((run, _)) = &mut self.running {
             let Some(outcome) = run.poll() else {
                 return Step::Running;
             };
-            self.running = None;
-            let answer = outcome.unwrap_or_else(|reason| {
-                tracing::warn!(reason = ?reason, "a chat run failed");
-                String::from(CHAT_FAILED)
-            });
-            return answer_with(delivery, &answer);
+            let Some((_, user)) = self.running.take() else {
+                return Step::Idle;
+            };
+            let answer = match outcome {
+                Ok(answer) => answer,
+                Err(reason) => {
+                    tracing::warn!(reason = ?reason, "a chat run failed");
+                    return answer_with(delivery, CHAT_FAILED);
+                }
+            };
+            return match delivery.deliver_verbatim(&ChannelId::local().0, &answer) {
+                Ok(shown) => {
+                    if shown {
+                        self.keep(user, answer);
+                    }
+                    Step::Answered
+                }
+                Err(error) => {
+                    tracing::warn!(error = ?error, "a chat answer was not delivered");
+                    Step::Undelivered
+                }
+            };
         }
         let Some(message) = next() else {
             return Step::Idle;
         };
         let request = RunRequest {
             schedule_id: String::from(CHAT_LABEL),
-            task: message.text,
+            task: message.text.clone(),
             grants: self.grants.clone(),
             due: now,
             missed: false,
@@ -116,10 +166,11 @@ impl<R: Run> Chat<R> {
             space: None,
             feed: None,
             chat: true,
+            history: self.history(),
         };
         match launcher.launch(request) {
             Ok(run) => {
-                self.running = Some(run);
+                self.running = Some((run, message.text));
                 Step::Started
             }
             Err(reason) => {
@@ -204,24 +255,185 @@ mod tests {
         }
     }
 
-    /// Records each delivery; refuses them all when `refuse` is set.
+    /// Records each delivery; refuses them all when `refuse` is set, and
+    /// shows the person something else in their place when `replace` is.
     #[derive(Default)]
     struct Answers {
         delivered: RefCell<Vec<(String, String)>>,
         refuse: bool,
+        replace: std::cell::Cell<bool>,
     }
 
     impl Delivery for Answers {
         fn deliver(&self, channel: &str, text: &str) -> Result<(), String> {
+            self.deliver_verbatim(channel, text).map(|_| ())
+        }
+
+        fn deliver_verbatim(&self, channel: &str, text: &str) -> Result<bool, String> {
             self.delivered
                 .borrow_mut()
                 .push((channel.to_owned(), text.to_owned()));
             if self.refuse {
                 Err(String::from("no client"))
             } else {
-                Ok(())
+                Ok(!self.replace.get())
             }
         }
+    }
+
+    fn answering(answer: &str) -> Scripted {
+        Scripted {
+            polls: 0,
+            outcome: Ok(answer.to_owned()),
+        }
+    }
+
+    /// Runs `text` to its end in `chat`: started, then answered.
+    fn exchange(
+        chat: &mut Chat<Scripted>,
+        text: &str,
+        launches: &Launches,
+        answers: &Answers,
+    ) -> Step {
+        let now = Timestamp::now();
+        assert_eq!(
+            chat.step(|| Some(message(text)), launches, answers, now),
+            Step::Started
+        );
+        chat.step(|| None, launches, answers, now)
+    }
+
+    fn histories(launches: &Launches) -> Vec<Vec<(String, String)>> {
+        launches
+            .requests
+            .borrow()
+            .iter()
+            .map(|request| {
+                request
+                    .history
+                    .iter()
+                    .map(|turn| (turn.user.clone(), turn.assistant.clone()))
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn turn(user: &str, assistant: &str) -> (String, String) {
+        (user.to_owned(), assistant.to_owned())
+    }
+
+    /// WO-026: a follow-up's run is given the exchange before it, as the
+    /// person said it and was shown it.
+    #[test]
+    fn a_follow_ups_run_is_given_the_exchange_before_it() {
+        let launches = Launches::default();
+        launches.outcomes.borrow_mut().extend([
+            Ok(answering("1. Tea. 2. Coffee.")),
+            Ok(answering("Coffee, then.")),
+            Ok(answering("Done.")),
+        ]);
+        let answers = Answers::default();
+        let mut chat = Chat::new(vec![send_local()]);
+        assert_eq!(
+            exchange(&mut chat, "Two drinks?", &launches, &answers),
+            Step::Answered
+        );
+        assert_eq!(
+            exchange(&mut chat, "The second one.", &launches, &answers),
+            Step::Answered
+        );
+        assert_eq!(
+            exchange(&mut chat, "Thanks.", &launches, &answers),
+            Step::Answered
+        );
+        let first = turn("Two drinks?", "1. Tea. 2. Coffee.");
+        let second = turn("The second one.", "Coffee, then.");
+        assert_eq!(
+            histories(&launches),
+            [vec![], vec![first.clone()], vec![first, second]]
+        );
+        assert_eq!(chat.history().len(), 3);
+    }
+
+    /// WO-026: what the person wasn't shown as written is never given
+    /// back: a failed run's sentence, an answer the gate replaced, or one
+    /// that reached no one.
+    #[test]
+    fn only_an_answer_the_person_was_shown_is_given_back() {
+        let launches = Launches::default();
+        launches.outcomes.borrow_mut().extend([
+            Ok(Scripted {
+                polls: 0,
+                outcome: Err(String::from("the run exited 1")),
+            }),
+            Err(String::from("cannot spawn")),
+            Ok(answering("the key is hunter2")),
+            Ok(answering("kept")),
+            Ok(answering("lost")),
+            Ok(answering("next")),
+        ]);
+        let answers = Answers::default();
+        let mut chat = Chat::new(vec![send_local()]);
+        assert_eq!(
+            exchange(&mut chat, "fails", &launches, &answers),
+            Step::Answered
+        );
+        let now = Timestamp::now();
+        assert_eq!(
+            chat.step(|| Some(message("unstarted")), &launches, &answers, now),
+            Step::Answered
+        );
+        answers.replace.set(true);
+        assert_eq!(
+            exchange(&mut chat, "the key?", &launches, &answers),
+            Step::Answered
+        );
+        answers.replace.set(false);
+        assert_eq!(
+            exchange(&mut chat, "keep me", &launches, &answers),
+            Step::Answered
+        );
+        let refusing = Answers {
+            refuse: true,
+            ..Answers::default()
+        };
+        assert_eq!(
+            exchange(&mut chat, "nowhere", &launches, &refusing),
+            Step::Undelivered
+        );
+        assert_eq!(
+            exchange(&mut chat, "last", &launches, &answers),
+            Step::Answered
+        );
+        let histories = histories(&launches);
+        assert_eq!(histories.last(), Some(&vec![turn("keep me", "kept")]));
+        assert!(histories.iter().take(4).all(Vec::is_empty), "{histories:?}");
+    }
+
+    #[test]
+    fn the_chat_keeps_no_more_than_a_run_is_given() {
+        let launches = Launches::default();
+        let count = conversation::MAX_EXCHANGES + 3;
+        launches
+            .outcomes
+            .borrow_mut()
+            .extend((0..count).map(|n| Ok(answering(&format!("a{n}")))));
+        let answers = Answers::default();
+        let mut chat = Chat::new(vec![send_local()]);
+        for n in 0..count {
+            assert_eq!(
+                exchange(&mut chat, &format!("q{n}"), &launches, &answers),
+                Step::Answered
+            );
+        }
+        assert_eq!(chat.exchanges.len(), conversation::MAX_EXCHANGES);
+        let history = chat.history();
+        assert_eq!(history.len(), conversation::MAX_EXCHANGES);
+        assert_eq!(history.first().map(|turn| turn.user.as_str()), Some("q3"));
+        assert_eq!(
+            history.last().map(|turn| turn.user.clone()),
+            Some(format!("q{}", count - 1))
+        );
     }
 
     fn message(text: &str) -> Message {

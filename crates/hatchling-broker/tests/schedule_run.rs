@@ -384,6 +384,7 @@ fn run_to_end(launcher: &CellLauncher<'_, '_>, task: &str) -> Result<String, Str
             space: None,
             feed: None,
             chat: false,
+            history: Vec::new(),
         })
         .unwrap();
     let deadline = Instant::now() + RUN_DEADLINE;
@@ -394,6 +395,73 @@ fn run_to_end(launcher: &CellLauncher<'_, '_>, task: &str) -> Result<String, Str
         assert!(Instant::now() < deadline, "the run never finished");
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// Takes every answer, and says each was shown as written.
+#[derive(Default)]
+struct Shown(Mutex<Vec<String>>);
+
+impl hatchling_scheduler::Delivery for Shown {
+    fn deliver(&self, channel: &str, text: &str) -> Result<(), String> {
+        self.deliver_verbatim(channel, text).map(|_| ())
+    }
+
+    fn deliver_verbatim(&self, _channel: &str, text: &str) -> Result<bool, String> {
+        self.0.lock().unwrap().push(text.to_owned());
+        Ok(true)
+    }
+}
+
+/// WO-026, end to end: a chat's second run, a fresh real cell, is given
+/// the first exchange as the broker recorded it, typed, and nothing more.
+#[test]
+fn a_chats_next_cell_is_given_the_exchange_before_it() {
+    if !guard_cell_available().unwrap() {
+        return;
+    }
+    let base = base("history");
+    let config = config(&base, &[]);
+    let key = MasterKey::generate().unwrap();
+    let shown = Shown::default();
+    std::thread::scope(|scope| {
+        let launcher = CellLauncher::new(scope, &config, &key, env(&config, RUN_DEADLINE));
+        let mut chat = hatchling_broker::chat_run::Chat::new(vec![send()]);
+        for text in ["history one", "history two"] {
+            let mut message = Some(Message {
+                sender: hatchling_channel::SenderId(String::from("api")),
+                channel: hatchling_channel::ChannelId::local(),
+                text: text.to_owned(),
+            });
+            let deadline = Instant::now() + RUN_DEADLINE;
+            loop {
+                let step = chat.step(
+                    || message.take(),
+                    &launcher,
+                    &shown,
+                    ts("2026-09-21T12:01:00Z"),
+                );
+                if step == hatchling_broker::chat_run::Step::Answered {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "the chat run never answered");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    });
+    let shown = shown.0.lock().unwrap().clone();
+    assert_eq!(shown.first().map(String::as_str), Some("chat=1 history="));
+    let given = shown
+        .get(1)
+        .and_then(|line| line.strip_prefix("chat=1 history="))
+        .unwrap();
+    assert_eq!(
+        hatchling_core::conversation::parse_history(given).unwrap(),
+        [hatchling_core::conversation::ChatExchange {
+            user: String::from("history one"),
+            assistant: String::from("chat=1 history="),
+        }]
+    );
+    assert!(run_dirs(&config.scheduler.run_root()).is_empty());
 }
 
 #[test]
@@ -453,6 +521,7 @@ fn one_run_cannot_reach_another_run_s_socket() {
         space: None,
         feed: None,
         chat: false,
+        history: Vec::new(),
     };
     std::thread::scope(|scope| {
         let launcher = CellLauncher::new(scope, &config, &key, env(&config, RUN_DEADLINE));
@@ -664,6 +733,7 @@ fn a_space_tasks_run_uses_its_own_space_and_nothing_outside_it() {
         space,
         feed: None,
         chat: false,
+        history: Vec::new(),
     };
     std::thread::scope(|scope| {
         let launcher = CellLauncher::new(scope, &config, &key, env(&config, RUN_DEADLINE));
@@ -737,6 +807,7 @@ fn dropping_a_running_cell_cancels_it_and_cleans_its_resources() {
                 space: None,
                 feed: None,
                 chat: false,
+                history: Vec::new(),
             })
             .unwrap();
         assert_eq!(run_dirs(&config.scheduler.run_root()).len(), 1);

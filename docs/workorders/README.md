@@ -59,6 +59,7 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | [023](workorder-023-internal-destinations.md) | Refuse internal addresses for destinations that aren't declared internal | yes | DONE |
 | [024](workorder-024-two-guards-on-every-delete.md) | Two guards on every delete and signal | yes | DONE |
 | [025](workorder-025-durable-scheduled-runs.md) | Scheduled runs and their results survive a crash or a failed write | yes | QUEUED |
+| [026](workorder-026-conversation-continuity.md) | Conversation continuity: the broker keeps the chat, a cell can't write it | yes | IN-PROGRESS |
 
 ## Candidates
 
@@ -78,7 +79,7 @@ Not yet WOs. Each gets a full file, with a scope and acceptance criteria, before
 - **Crash handlers on a socket.** A host whose `core_pattern` starts with `@` (a crash handler listening on a socket, Linux 6.16 and later) isn't covered yet by the one-byte core limit from WO-011. Find what reaches such a handler from a crashing cell, cover it, and test it on a kernel that has the feature.
 - **macOS backend.** An implementation of the isolation trait for macOS.
 - **FIDO2 on real hardware.** The FIDO2 hmac-secret vault factor is tested against a software authenticator. Validate it on physical security keys, and record which ones.
-- **Conversation continuity.** Each chat message starts a fresh run whose only input is that message, so a follow-up ("use the second option") has nothing to refer to. The broker owns a stable session per conversation, outside any cell. The session holds the turns, the decisions and corrections, the open work and pending approvals, and references to tool results. The broker builds each turn's context from it, checkpoints each tool call and its outcome, and restores it into a fresh cell. The parts exist (`SessionRecord`, `SessionStore`, interrupted-call reconciliation, compaction) but aren't on the chat path, and none holds the turns' text yet. A first slice:
+- **Conversation continuity**, now [WO-026](workorder-026-conversation-continuity.md). Each chat message starts a fresh run whose only input is that message, so a follow-up ("use the second option") has nothing to refer to. The broker owns a stable session per conversation, outside any cell. The session holds the turns, the decisions and corrections, the open work and pending approvals, and references to tool results. The broker builds each turn's context from it, checkpoints each tool call and its outcome, and restores it into a fresh cell. The parts exist (`SessionRecord`, `SessionStore`, interrupted-call reconciliation, compaction) but aren't on the chat path, and none holds the turns' text yet. A first slice:
   - a conversation id of the owner's, not a cell's;
   - typed turns, appended only by the broker: the user's message as accepted, and the assistant's as cleared by the output gate (a blocked or replaced answer never comes back as context), each with a turn id so a retry doesn't append twice;
   - at launch, the last completed exchange and the new message, sent to the cell as typed messages; the cell only renders them for its provider.

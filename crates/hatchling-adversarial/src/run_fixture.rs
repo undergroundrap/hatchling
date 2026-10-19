@@ -57,11 +57,30 @@ use hatchling_core::{
     SubagentOp, VaultOp, VaultResult,
 };
 
+/// A chat turn's view of the conversation (WO-026): what it was given,
+/// as given, without connecting.
+fn history(out: &mut impl std::io::Write) -> ExitCode {
+    let env = |key: &str| std::env::var(key).unwrap_or_default();
+    let line = format!(
+        "chat={} history={}",
+        env("HATCHLING_RUN_CHAT"),
+        env("HATCHLING_RUN_HISTORY")
+    );
+    if writeln!(out, "{line}").and_then(|()| out.flush()).is_ok() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(2)
+    }
+}
+
 fn main() -> ExitCode {
     let task = std::env::args().skip(2).collect::<Vec<_>>().join(" ");
     let mut out = std::io::stdout().lock();
     if task == "noconnect" {
         return ExitCode::SUCCESS;
+    }
+    if task.starts_with("history") {
+        return history(&mut out);
     }
     if let Some(answer) = task.strip_prefix("envelope:") {
         let envelope = ChildEnvelope::Done {
@@ -327,6 +346,42 @@ mod tests {
     use hatchling_core::ScheduleResult;
 
     use super::*;
+
+    /// Takes nothing.
+    struct Full;
+
+    impl std::io::Write for Full {
+        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("full"))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// WO-026: the history mode prints what the run was given, as given.
+    #[test]
+    fn the_history_mode_prints_the_chat_flag_and_history_as_given() {
+        let mut out = Vec::new();
+        assert_eq!(
+            format!("{:?}", history(&mut out)),
+            format!("{:?}", ExitCode::SUCCESS)
+        );
+        let env = |key: &str| std::env::var(key).unwrap_or_default();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            format!(
+                "chat={} history={}\n",
+                env("HATCHLING_RUN_CHAT"),
+                env("HATCHLING_RUN_HISTORY")
+            )
+        );
+        assert_eq!(
+            format!("{:?}", history(&mut Full)),
+            format!("{:?}", ExitCode::from(2))
+        );
+    }
 
     #[test]
     fn a_fetched_secret_is_answered_as_it_came() {
