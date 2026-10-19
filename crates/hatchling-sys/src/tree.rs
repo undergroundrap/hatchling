@@ -280,10 +280,16 @@ fn chown_tree_within(path: &Path, uid: u32, gid: u32, mut budget: Budget) -> Res
     let root = rustix::fs::open(path, PATH_FLAGS | OFlags::DIRECTORY, Mode::empty())
         .map_err(changing("open the tree"))?;
     let top = look(&root, c"").map_err(changing("look at the tree"))?;
+    // Its parent is "above" it from the start, as for `remove_tree`: a
+    // `..` the name check let through is refused by its identity too, so
+    // the walk can't climb out of the tree even if one check fails.
+    let parent = rustix::fs::openat(&root, c"..", PATH_FLAGS | OFlags::DIRECTORY, Mode::empty())
+        .map_err(changing("open the tree's parent"))?;
+    let base = look(&parent, c"").map_err(changing("look at the tree's parent"))?;
     change_dir(&root, top, uid, gid, &mut budget)?;
     let readable = rustix::fs::openat(&root, c".", DIR_FLAGS, Mode::empty())
         .map_err(changing("open the tree"))?;
-    chown_entries(&readable, top.mount, uid, gid, &[top.id], &mut budget)?;
+    chown_entries(&readable, top.mount, uid, gid, &[base.id, top.id], &mut budget)?;
     Ok(budget.used)
 }
 
@@ -855,9 +861,15 @@ mod tests {
         set_mode(&outside, 0o500);
         set_mode(&root.join("a").join("b"), 0o000);
         set_mode(&root.join("a"), 0o500);
+        // The root's parent: a walk that climbed out would make it its
+        // owner's to search and write.
+        set_mode(&scratch.0, 0o555);
         let (uid, gid) = (crate::process::euid(), crate::process::egid());
         let changed = chown_tree(&root, uid, gid);
+        let parent_mode = mode(&scratch.0);
+        set_mode(&scratch.0, 0o755);
         set_mode(&outside, 0o700);
+        assert_eq!(parent_mode, 0o555, "nothing above the root is changed");
         assert_eq!(changed.unwrap(), 6, "root, a, a/b, a/b/file, setgid, out");
         assert_eq!(mode(&root.join("a")), 0o700);
         assert_eq!(mode(&root.join("a").join("b")), 0o700);
