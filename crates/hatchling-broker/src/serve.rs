@@ -2196,6 +2196,7 @@ mod gate_scope_tests {
     use hatchling_core::ChannelOp;
 
     use super::*;
+    use hatchling_vault::MasterKey;
 
     /// Flags anything holding `forbidden`, recording each scope and turn.
     #[derive(Default)]

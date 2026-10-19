@@ -229,10 +229,11 @@ impl Keyed for MasterKey {
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub(crate) struct StoreKey([u8; 32]);
 
-/// What opens a sealed store (WO-017): the [`MasterKey`], which unwraps
-/// the store's key from its [`STORE_KEY_FILE`] (making one for a store
-/// that has none yet), or [`StoreKeys`], the keys a process was handed,
-/// which opens those stores and refuses every other.
+/// What opens a sealed store (WO-017).
+///
+/// The [`MasterKey`] unwraps the store's key from its [`STORE_KEY_FILE`],
+/// making one for a store that has none yet. [`StoreKeys`], the keys a
+/// process was handed, opens those stores and refuses every other.
 pub trait OpensStores: Send + Sync + std::fmt::Debug {
     /// The key of `store`, whose files `vault` holds at `root`.
     ///
@@ -269,10 +270,11 @@ impl OpensStores for MasterKey {
     }
 }
 
-/// The keys of the stores a process was handed, each bound to its store
-/// and its root: what the broker holds in place of the master key
-/// (WO-017). A store opened with them is sealed under its own key; any
-/// other store, or this store at another root, is refused.
+/// The keys of the stores a process was handed (WO-017).
+///
+/// Each is bound to its store and its root: what the broker holds in
+/// place of the master key. A store opened with them is sealed under its
+/// own key; any other store, or this store at another root, is refused.
 pub struct StoreKeys {
     held: Vec<Held>,
 }
@@ -316,7 +318,7 @@ impl OpensStores for StoreKeys {
             .iter()
             .find(|held| held.store == store && held.root == root)
             .map(|held| OpenedKey(Opened::Held(&held.key)))
-            .ok_or(Error::StoreNotHeld {
+            .ok_or_else(|| Error::StoreNotHeld {
                 store: store.label(),
             })
     }
