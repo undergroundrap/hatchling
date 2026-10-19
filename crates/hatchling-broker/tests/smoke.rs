@@ -161,7 +161,7 @@ fn rekey_vault_without_new_key_file_is_usage_error() {
 }
 
 /// `migrate-vault` encrypts a plaintext store in place: the file that
-/// held raw bytes becomes an `HVL2` envelope, and the report says so.
+/// held raw bytes becomes an `HVL3` envelope, and the report says so.
 #[test]
 fn migrate_vault_seals_plaintext_store() {
     let scratch = scratch_dir("migrate").unwrap();
@@ -191,7 +191,7 @@ fn migrate_vault_seals_plaintext_store() {
     );
     let sealed = std::fs::read(vault_dir.join("tok")).unwrap();
     assert!(
-        sealed.starts_with(b"HVL2"),
+        sealed.starts_with(b"HVL3"),
         "migrated file is not a sealed envelope"
     );
     assert_ne!(

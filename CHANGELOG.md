@@ -21,6 +21,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Changed
 
+- **Every sealed store has its own key** (WO-017, first slice). Each store (secrets, schedules, artifacts, spaces, redactions) seals its files under a random key of its own, kept in the store's `.store-key`, wrapped under the master key and bound to the store. A key is made once, the first time the store is opened, and never made again over files sealed under it. A wrapped key copied into another store is refused. `rekey-vault` gives each store a new key, and a rerun finishes one that was interrupted. This is what lets a later slice hand the broker its own stores' keys and keep the master key out of it. Files are now `HVL3` envelopes. **Breaking, on upgrade:** stop the broker and run `hatchling-broker migrate-vault`, which re-seals `HVL2` and `HVL1` files into each store's key; until then the broker refuses to start, naming the files to re-seal. Back up `.store-key` with its store: without it the store can't be read.
 - **WO-014 is done:** the full broker runs without root, its cells on the owner's subordinate ids. A broker refusing to start an endpoint with cells on its own uid now says the agent's uid follows from the range, rather than to set `HATCHLING_AGENT_UID`.
 - **Breaking, for code built on `hatchling-broker`:** its `Error` gains `SocketPathNotOurs` and `TokenPathNotOurs` (WO-024), so the workspace moves to 0.5.0.
 - **Breaking, for code built on `hatchling-isolation` or `hatchling-sys`** (WO-014):

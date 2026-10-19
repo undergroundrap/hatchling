@@ -10,8 +10,8 @@ Deleting any of these loses credentials or history. Each lives where its setting
 
 | Setting | What is there |
 | --- | --- |
-| `HATCHLING_VAULT_DIR` | The vault: every secret, sealed under the master key. Also `.access.log`, the record of each read. |
-| `HATCHLING_VAULT_KEY_FILE` | The master key (default `<vault dir>.key/key`). Without it, or the keyring below, nothing in any store can be read. Beside it, `keyring-in-use` records that the key lives in the keyring. |
+| `HATCHLING_VAULT_DIR` | The vault: every secret, sealed under the store's own key. Also `.access.log`, the record of each read. |
+| `HATCHLING_VAULT_KEY_FILE` | The master key (default `<vault dir>.key/key`). It wraps each sealed store's own key, so without it, or the keyring below, nothing in any store can be read. Beside it, `keyring-in-use` records that the key lives in the keyring. |
 | `HATCHLING_VAULT_KEYRING` | The keyring, when the master key is wrapped by a passphrase file, TOTP or security keys. `<keyring>.lock` beside it is the edit lock, made again when needed. |
 | `HATCHLING_VAULT_KEK_FILE` | The key that opens the keyring at its file tier. |
 | `HATCHLING_SKILLS_DIR` | The signed skills the broker loads. |
@@ -24,6 +24,8 @@ Deleting any of these loses credentials or history. Each lives where its setting
 | `HATCHLING_SPACE_DIR` | Spaces, sealed. |
 | `HATCHLING_HARNESS_ROOTS` | Your projects, where a coding harness may work. Hatchling doesn't own them: a harness run changes files there as you asked it to. |
 | `HATCHLING_REDACTION_DIR` | The output gate's audit log (`audit.log`), your overrides (`overrides`), your categories (`categories`), and `raw/`: kept redacted messages and the audit log's tag key, sealed. |
+
+Every sealed store (the vault, schedules, artifacts, spaces and `raw/`) holds `.store-key`: the store's own key, wrapped under the master key. The store's files are sealed under it, so a store without its `.store-key` can't be read, even with the master key. During a `rekey-vault`, `.store-key.next` holds the new one; a rerun finishes the change.
 
 ## Disposable
 
@@ -40,7 +42,7 @@ The broker makes these as it runs and removes each when its cell or run ends. A 
 
 ## Back up and restore
 
-Back up every path under **Your data** while the broker is stopped, so no store is part-written. Keep the master key, or the keyring with what opens it, apart from the stores: the stores alone are ciphertext, and the key alone opens nothing that isn't there.
+Back up every path under **Your data** while the broker is stopped, so no store is part-written. Back up each store whole, `.store-key` included. Keep the master key, or the keyring with what opens it, apart from the stores: the stores alone are ciphertext, and the key alone opens nothing that isn't there.
 
 To restore, put each path back where its setting points, owned by the broker's user, mode `0700` for directories and `0600` for files, and start the broker. A store from before a `rekey-vault` needs the key from before it.
 

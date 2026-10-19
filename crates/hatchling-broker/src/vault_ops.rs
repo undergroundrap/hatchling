@@ -478,8 +478,7 @@ mod tests {
         let new = FileKey::new(keys.join("new")).load().unwrap();
         for (store, root) in &stores {
             let under = |key: &MasterKey| {
-                SealedVault::open_in(root, key, *store)
-                    .and_then(|vault| vault.fetch(&name))
+                SealedVault::open_in(root, key, *store).and_then(|vault| vault.fetch(&name))
             };
             assert_eq!(under(&new).unwrap().as_bytes(), store.label().as_bytes());
             assert!(

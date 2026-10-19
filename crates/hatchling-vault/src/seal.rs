@@ -2326,6 +2326,7 @@ mod tests {
         let sealed = SealedVault::open(&dir, &old).unwrap();
         sealed.store(&secret_name("a"), &secret(b"alpha")).unwrap();
         sealed.store(&secret_name("b"), &secret(b"beta")).unwrap();
+        let before = kept_key(&dir, &old, Store::SECRETS);
 
         let report = rekey(&dir, &old, &new, Store::SECRETS).unwrap();
         assert_eq!(
@@ -2346,6 +2347,14 @@ mod tests {
         // The store key was replaced, not rewrapped: the old one opens
         // nothing now, whoever holds it.
         assert!(!dir.join(STORE_KEY_NEXT).exists());
+        assert_ne!(kept_key(&dir, &new, Store::SECRETS).0, before.0);
+        for name in ["a", "b"] {
+            let name = secret_name(name);
+            assert!(matches!(
+                open_envelope(&before, Store::SECRETS, &name, &raw_bytes(&dir, &name)),
+                Err(Error::DecryptFailed { .. })
+            ));
+        }
     }
 
     #[test]
@@ -2617,12 +2626,8 @@ mod tests {
         }
         let leftovers: Vec<_> = std::fs::read_dir(&*race)
             .unwrap()
-            .filter_map(|entry| {
-                entry
-                    .ok()
-                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            })
-            .filter(|name| name.ends_with(".tmp"))
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| path.extension().is_some_and(|extension| extension == "tmp"))
             .collect();
         assert!(leftovers.is_empty(), "{leftovers:?}");
     }

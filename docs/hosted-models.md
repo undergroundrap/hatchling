@@ -65,8 +65,8 @@ python3 docs/examples/first-run.py "$HATCHLING_API_SOCKET"
 ```
 
 The import briefly creates an owner-only plaintext entry while the broker is
-stopped; migration replaces it with a sealed `HVL2` envelope, bound to its name, before startup.
-Keep the vault's master key as well as its sealed files when backing it up.
+stopped; migration replaces it with a sealed `HVL3` envelope, bound to its name, before startup.
+Keep the vault's master key as well as its sealed files (and its `.store-key`) when backing it up.
 For an existing credential, use a deliberate rotation/import procedure rather
 than overwriting a sealed entry: this example refuses an existing filename.
 
