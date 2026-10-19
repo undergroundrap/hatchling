@@ -313,7 +313,12 @@ impl Vault {
     /// With `replace`, an existing file is replaced; without, the file is
     /// created only if absent, so of two writers only one wins. Whether
     /// this call's bytes are what the file now holds.
-    pub(crate) fn write_dotfile(&self, file: &str, bytes: &[u8], replace: bool) -> Result<bool, Error> {
+    pub(crate) fn write_dotfile(
+        &self,
+        file: &str,
+        bytes: &[u8],
+        replace: bool,
+    ) -> Result<bool, Error> {
         let id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         let temp = self
             .root

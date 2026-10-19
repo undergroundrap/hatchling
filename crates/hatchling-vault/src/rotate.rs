@@ -300,9 +300,9 @@ mod tests {
     }
 
     fn reads(dir: &Path, key: &MasterKey) -> bool {
+        // A store whose key won't unwrap under `key` reads nothing.
         SealedVault::open(&dir.join("vault"), key)
-            .unwrap()
-            .fetch(&"token".parse().unwrap())
+            .and_then(|vault| vault.fetch(&"token".parse().unwrap()))
             .is_ok_and(|secret| secret.as_bytes() == b"kept")
     }
 
