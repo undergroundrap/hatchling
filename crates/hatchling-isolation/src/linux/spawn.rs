@@ -640,7 +640,7 @@ impl MapWriter {
             Mapping::Direct => {
                 super::identity::direct_policy(
                     hatchling_sys::euid(),
-                    rustix::process::getegid().as_raw(),
+                    hatchling_sys::egid(),
                     identity,
                 )?;
                 Ok(Self::Broker)
@@ -2489,7 +2489,10 @@ pub(super) mod tests {
         // A direct identity is the broker's to write, once it passes the
         // same policy it was built under.
         let own = crate::IsolationBackend::identity(&crate::linux::Linux, None, 1).unwrap();
-        assert!(matches!(MapWriter::for_identity(&own), Ok(MapWriter::Broker)));
+        assert!(matches!(
+            MapWriter::for_identity(&own),
+            Ok(MapWriter::Broker)
+        ));
         for forged in [
             CellIdentity::direct(0, 1),
             CellIdentity { group: 0, ..own },

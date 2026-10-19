@@ -784,6 +784,14 @@ pub fn euid() -> u32 {
     unsafe { libc::geteuid() }
 }
 
+/// The calling process's effective gid: the one gid an unprivileged
+/// process may map into a user namespace it creates.
+#[must_use]
+pub fn egid() -> u32 {
+    // SAFETY: `getegid` takes no arguments and always succeeds.
+    unsafe { libc::getegid() }
+}
+
 /// Whether a process with pid `pid` is alive: one this process may not
 /// signal counts, and an ended one (a zombie, or being reaped) doesn't.
 /// A pid of 0 or below names no one process.
@@ -1694,6 +1702,19 @@ mod tests {
         assert!(ended("12 (a) X 1 2"), "dead");
         assert!(ended("12 (a) x 1 2"), "dead, as older kernels say it");
         assert!(!ended("12 (a) R 1 2") && !ended("12 (a) D 1 2"));
+    }
+
+    #[test]
+    fn the_effective_gid_is_the_kernels() {
+        let status = std::fs::read_to_string("/proc/self/status").unwrap();
+        let effective: u32 = status
+            .lines()
+            .find_map(|line| line.strip_prefix("Gid:"))
+            .and_then(|ids| ids.split_whitespace().nth(1))
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(egid(), effective);
     }
 
     #[test]

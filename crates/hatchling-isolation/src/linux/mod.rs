@@ -47,7 +47,7 @@ impl IsolationBackend for Linux {
     fn identity(&self, principal: Option<u32>, count: u32) -> Result<CellIdentity, Error> {
         identity::identity(
             hatchling_sys::euid(),
-            rustix::process::getegid().as_raw(),
+            hatchling_sys::egid(),
             principal,
             count,
         )
@@ -166,7 +166,7 @@ mod tests {
         let euid = hatchling_sys::euid();
         assert_eq!(
             Linux.identity(None, 1).unwrap(),
-            identity::identity(euid, rustix::process::getegid().as_raw(), None, 1).unwrap()
+            identity::identity(euid, hatchling_sys::egid(), None, 1).unwrap()
         );
         let identity = Linux.identity(None, 1).unwrap();
         assert_eq!(

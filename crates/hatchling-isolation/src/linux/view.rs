@@ -313,7 +313,7 @@ fn shared_libraries(agent_bin: &Path) -> Result<Vec<SharedLib>, Error> {
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
-    use crate::{CellIdentity, Endpoint, Exposure, Filter};
+    use crate::{Endpoint, Exposure, Filter};
 
     /// Upper bound for one call that runs on a production deadline
     /// (`LDD_TIMEOUT`). The call returns in milliseconds; a mutant that
