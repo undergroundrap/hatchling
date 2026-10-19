@@ -2337,11 +2337,22 @@ mod tests {
         // setresgid and setresuid). As root, both calls succeed
         // (ret == 0); the inverted check would return Err on success.
         // This test only runs usefully as root; otherwise it passes
-        // vacuously (the failure-case test below covers non-root).
+        // vacuously (the failure-case test below covers non-root). In a
+        // forked child: the switch must not change the test runner's
+        // own credentials, which later tests compare with its exec's.
         if euid() != 0 {
             return;
         }
-        become_cell_user().expect("become_cell_user as root must succeed");
+        let child = match fork().expect("fork") {
+            ForkResult::Parent { child } => child,
+            ForkResult::Child => exit_child(i32::from(become_cell_user().is_err())),
+        };
+        let status = child.wait_deadline(Duration::from_secs(10)).unwrap();
+        assert_eq!(
+            child_exit_code(status),
+            0,
+            "become_cell_user as root must succeed"
+        );
     }
 
     #[test]
