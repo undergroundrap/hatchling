@@ -2,6 +2,7 @@
 //! binary as `vault-keeper`, on a socket pair, with an operator's
 //! environment.
 
+use std::io;
 use std::os::fd::{AsFd as _, AsRawFd as _};
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::os::unix::net::UnixStream;
@@ -13,11 +14,11 @@ use hatchling_core::framing::{read_frame, write_frame};
 use hatchling_vault::{SealedVault, Store, StoreKeys};
 
 /// A scratch directory of this test's own.
-fn scratch(name: &str) -> PathBuf {
+fn scratch(name: &str) -> io::Result<PathBuf> {
     let dir = std::env::temp_dir().join(format!("hatchling-keeper-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(dir.join("sock")).unwrap();
-    dir
+    std::fs::create_dir_all(dir.join("sock"))?;
+    Ok(dir)
 }
 
 /// The environment of a broker with one egress grant and artifacts on.
@@ -38,39 +39,41 @@ fn environment(scratch: &Path) -> Vec<(&'static str, String)> {
 }
 
 /// The keeper, started as the broker starts it, and the broker's end.
-fn start(scratch: &Path) -> (Child, UnixStream) {
-    let (ours, theirs) = UnixStream::pair().unwrap();
-    hatchling_sys::keep_across_exec(theirs.as_fd()).unwrap();
+fn start(scratch: &Path) -> io::Result<(Child, UnixStream)> {
+    let (ours, theirs) = UnixStream::pair()?;
+    hatchling_sys::keep_across_exec(theirs.as_fd()).map_err(io::Error::other)?;
     let child = Command::new(env!("CARGO_BIN_EXE_hatchling-broker"))
         .arg("vault-keeper")
         .envs(environment(scratch))
         .env("HATCHLING_KEEPER_FD", theirs.as_raw_fd().to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+        .spawn()?;
     drop(theirs);
-    ours.set_read_timeout(Some(Duration::from_secs(20)))
-        .unwrap();
-    (child, ours)
+    ours.set_read_timeout(Some(Duration::from_secs(20)))?;
+    Ok((child, ours))
 }
 
 /// Waits for the keeper to leave, at most 10 seconds.
-fn exits(mut child: Child) -> std::process::ExitStatus {
+fn exits(mut child: Child) -> io::Result<std::process::ExitStatus> {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            return status;
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
         }
-        assert!(Instant::now() < deadline, "the keeper didn't leave");
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            return Err(io::Error::other("the keeper didn't leave"));
+        }
         std::thread::sleep(Duration::from_millis(20));
     }
 }
 
-fn ask(stream: &UnixStream, request: &str) -> String {
-    write_frame(stream, request.as_bytes()).unwrap();
-    String::from_utf8(read_frame(stream).unwrap()).unwrap()
+/// Sends `request`, and reads the reply.
+fn ask(stream: &UnixStream, request: &str) -> io::Result<String> {
+    write_frame(stream, request.as_bytes()).map_err(io::Error::other)?;
+    let reply = read_frame(stream).map_err(io::Error::other)?;
+    String::from_utf8(reply).map_err(io::Error::other)
 }
 
 /// The keeper hands the broker every store's key but the secrets', reads
@@ -78,7 +81,7 @@ fn ask(stream: &UnixStream, request: &str) -> String {
 /// its memory closed, and leaves when the broker does.
 #[test]
 fn the_keeper_keeps_the_secrets_and_releases_only_what_is_configured() {
-    let dir = scratch("serve");
+    let dir = scratch("serve").unwrap();
     let vault = dir.join("vault");
     std::fs::create_dir(&vault).unwrap();
     std::fs::set_permissions(&vault, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -100,7 +103,7 @@ fn the_keeper_keeps_the_secrets_and_releases_only_what_is_configured() {
         "{}",
         String::from_utf8_lossy(&migrated.stderr)
     );
-    let (child, stream) = start(&dir);
+    let (child, stream) = start(&dir).unwrap();
     let first = read_frame(&stream).unwrap();
     let (kind, handed) = first.split_first().unwrap();
     assert_eq!(*kind, 0, "{}", String::from_utf8_lossy(handed));
@@ -122,7 +125,8 @@ fn the_keeper_keeps_the_secrets_and_releases_only_what_is_configured() {
     let reply = ask(
         &stream,
         r#"{"request":"read","purpose":"egress","names":["egress-localhost-18089"]}"#,
-    );
+    )
+    .unwrap();
     assert_eq!(reply, r#"{"reply":"read","found":[true]}"#);
     assert_eq!(read_frame(&stream).unwrap(), b"credential");
     // Anything else is refused.
@@ -130,7 +134,7 @@ fn the_keeper_keeps_the_secrets_and_releases_only_what_is_configured() {
         r#"{"request":"read","purpose":"egress","names":["unlisted"]}"#,
         r#"{"request":"read","purpose":"anything","names":["unlisted"]}"#,
     ] {
-        let reply = ask(&stream, refused);
+        let reply = ask(&stream, refused).unwrap();
         assert!(reply.starts_with(r#"{"reply":"refused""#), "{reply}");
         assert!(!reply.contains("kept"), "{reply}");
     }
@@ -147,14 +151,14 @@ fn the_keeper_keeps_the_secrets_and_releases_only_what_is_configured() {
     assert_eq!(refused.len(), 2, "{log}");
     assert!(refused.iter().all(|line| line.contains("denied")), "{log}");
     drop(stream);
-    assert!(exits(child).success());
+    assert!(exits(child).unwrap().success());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Started by anything but the broker, the keeper doesn't run.
 #[test]
 fn the_keeper_runs_only_as_the_broker_starts_it() {
-    let dir = scratch("alone");
+    let dir = scratch("alone").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_hatchling-broker"))
         .arg("vault-keeper")
         .envs(environment(&dir))

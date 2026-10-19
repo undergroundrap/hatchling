@@ -102,8 +102,8 @@ fn valid_args(args: &[String]) -> bool {
         | ["redactions", "show" | "raw" | "override", _]
         | ["redactions", "override", _, "--any-scope"]
         | ["vault-audit", "log"]
-        | [HARNESS_TREE_SUBCOMMAND, "give" | "reclaim", _, ..]
-        | [VAULT_KEEPER_SUBCOMMAND] => true,
+        | [HARNESS_TREE_SUBCOMMAND, "give" | "reclaim", _, ..] => true,
+        [VAULT_KEEPER_SUBCOMMAND] => args.len() == 1,
         ["vault-audit", "log", count] => count.parse::<usize>().is_ok(),
         [SKILL_CELL_SUBCOMMAND | AGENT_RUN_SUBCOMMAND, ..] => args.len() <= 2,
         _ => false,
