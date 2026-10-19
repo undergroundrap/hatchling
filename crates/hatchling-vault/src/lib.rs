@@ -57,8 +57,8 @@ pub use lease::KeyLease;
 pub use manage::{KeyInfo, Label, MAX_LABEL_CHARS, Protection, Warning};
 pub use rotate::{Rotated, Rotation};
 pub use seal::{
-    FileKey, KeySource, MasterKey, MigrateReport, RekeyReport, SealedVault, Store, check,
-    holds_envelopes, migrate, rekey,
+    FileKey, KeySource, MasterKey, MigrateReport, RekeyReport, STORE_KEY_FILE, SealedVault, Store,
+    check, holds_envelopes, migrate, rekey,
 };
 pub use secret::Secret;
 pub use totp::{PendingTotp, totp_code};

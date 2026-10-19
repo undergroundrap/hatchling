@@ -108,6 +108,32 @@ pub enum Error {
         name: hatchling_core::SecretName,
     },
 
+    /// A store's key file is missing while the store holds files sealed
+    /// under it: they can't be opened (WO-017).
+    #[error(
+        "the {store} store's key file (.store-key) is missing, so its sealed files can't be opened; restore it from the backup it was made with"
+    )]
+    StoreKeyMissing {
+        /// The store.
+        store: &'static str,
+    },
+
+    /// A store's key file isn't a wrapped store key.
+    #[error("the {store} store's key file (.store-key) is not a wrapped store key")]
+    StoreKeyMalformed {
+        /// The store.
+        store: &'static str,
+    },
+
+    /// A store's key didn't unwrap under the master key. One generic error
+    /// covers a wrong master key and a changed file, as
+    /// [`DecryptFailed`](Error::DecryptFailed) does for a secret.
+    #[error("could not unwrap the {store} store's key: wrong key, or the file was changed")]
+    StoreKeyRefused {
+        /// The store.
+        store: &'static str,
+    },
+
     /// Envelope authentication failed. One generic error covers a wrong
     /// key, tampered ciphertext, and a tampered tag alike: the three
     /// are indistinguishable by design, so no oracle leaks which one
@@ -314,6 +340,18 @@ mod tests {
             (
                 Error::NeedBackupCodes,
                 "run vault-keyring backup-codes before enrolling a single security key",
+            ),
+            (
+                Error::StoreKeyRefused { store: "secrets" },
+                "could not unwrap the secrets store's key: wrong key, or the file was changed",
+            ),
+            (
+                Error::StoreKeyMissing { store: "spaces" },
+                "the spaces store's key file (.store-key) is missing",
+            ),
+            (
+                Error::StoreKeyMalformed { store: "schedules" },
+                "the schedules store's key file (.store-key) is not a wrapped store key",
             ),
             (
                 Error::NoSuchKey,

@@ -285,6 +285,70 @@ impl Vault {
         ))
     }
 
+    /// The bytes of the dotfile `file` in this vault's root, at most
+    /// `max`: `None` if there is none. For the sealed vault's store-key
+    /// files, which no [`SecretName`] can name.
+    pub(crate) fn read_dotfile(&self, file: &str, max: usize) -> Result<Option<Vec<u8>>, Error> {
+        let opened = match std::fs::File::open(self.root.join(file)) {
+            Ok(opened) => opened,
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(source) => return Err(Error::Io { source }),
+        };
+        let mut bytes = Vec::new();
+        let limit = u64::try_from(max).unwrap_or(u64::MAX).saturating_add(1);
+        Read::take(&opened, limit)
+            .read_to_end(&mut bytes)
+            .map_err(|source| Error::Io { source })?;
+        if bytes.len() > max {
+            return Err(Error::TooLarge {
+                len: bytes.len(),
+                max,
+            });
+        }
+        Ok(Some(bytes))
+    }
+
+    /// Writes the dotfile `file` through the atomic pipeline: a `0600`
+    /// temp file, fsynced, then put in place and the directory fsynced.
+    /// With `replace`, an existing file is replaced; without, the file is
+    /// created only if absent, so of two writers only one wins. Whether
+    /// this call's bytes are what the file now holds.
+    pub(crate) fn write_dotfile(&self, file: &str, bytes: &[u8], replace: bool) -> Result<bool, Error> {
+        let id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let temp = self
+            .root
+            .join(format!("{file}.{}.{id}.tmp", std::process::id()));
+        let target = self.root.join(file);
+        let placed = Self::write_temp(&temp, bytes).and_then(|()| {
+            if replace {
+                std::fs::rename(&temp, &target).map(|()| true)
+            } else {
+                match std::fs::hard_link(&temp, &target) {
+                    Ok(()) => Ok(true),
+                    Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+                    Err(source) => Err(source),
+                }
+            }
+            .map_err(|source| Error::Io { source })
+        });
+        // After a rename the temp file is gone; after a link, or a failure,
+        // it's removed here, holding nothing a secret's name claims.
+        let _ = std::fs::remove_file(&temp);
+        let placed = placed?;
+        let dir = std::fs::File::open(&self.root).map_err(|source| Error::Io { source })?;
+        dir.sync_all().map_err(|source| Error::Io { source })?;
+        Ok(placed)
+    }
+
+    /// Renames the dotfile `from` to `to`, replacing it, and fsyncs the
+    /// directory.
+    pub(crate) fn rename_dotfile(&self, from: &str, to: &str) -> Result<(), Error> {
+        std::fs::rename(self.root.join(from), self.root.join(to))
+            .map_err(|source| Error::Io { source })?;
+        let dir = std::fs::File::open(&self.root).map_err(|source| Error::Io { source })?;
+        dir.sync_all().map_err(|source| Error::Io { source })
+    }
+
     /// Writes `bytes` to a new `0600` temp file and fsyncs it. Split
     /// out so the atomic-write sequence reads as one pipeline in
     /// [`store`](Self::store).
