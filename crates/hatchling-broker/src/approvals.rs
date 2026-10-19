@@ -423,14 +423,17 @@ impl<A: Clone> Ledger<A> {
     /// Remembers `id` as decided, forgetting the oldest past [`MAX_KEPT`].
     fn keep_decided(&mut self, id: &str) {
         self.decided.push_back(id.to_owned());
-        while self.decided.len() > MAX_KEPT {
-            if let Some(oldest) = self.decided.pop_front() {
-                let running = self.requests.get(&oldest).is_some_and(|request| {
-                    matches!(request.state, State::Approved | State::Started)
-                });
-                if !running {
-                    self.requests.remove(&oldest);
-                }
+        // One bounded drain, never a loop on the length: nothing here can
+        // spin.
+        let over = self.decided.len().saturating_sub(MAX_KEPT);
+        let oldest: Vec<String> = self.decided.drain(..over).collect();
+        for id in oldest {
+            let running = self
+                .requests
+                .get(&id)
+                .is_some_and(|request| matches!(request.state, State::Approved | State::Started));
+            if !running {
+                self.requests.remove(&id);
             }
         }
     }
