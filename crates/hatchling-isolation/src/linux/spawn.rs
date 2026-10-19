@@ -710,6 +710,10 @@ fn parent_after_fork(
     ready_timeout: Duration,
     cgroup: Option<&hatchling_sys::cgroup::CellCgroup>,
 ) -> Result<Child, Error> {
+    // The parent never writes on this pipe. Its copy of the write end,
+    // held open, would keep the report below from ever reaching EOF: a
+    // child's reason for failing would be lost to the timeout.
+    child_to_parent.close_write();
     // Wait for the child's ready byte: EOF or anything else means it
     // died or failed before the namespaces were ready. If the child
     // reported 'E' (error), include its message for diagnostics.
@@ -756,7 +760,6 @@ fn parent_after_fork(
         });
     }
     parent_to_child.close_write();
-    child_to_parent.close_write();
     Ok(child)
 }
 
@@ -1787,6 +1790,46 @@ pub(super) mod tests {
             "correct ready byte must proceed to write_maps (Identity error), got {err:?}"
         );
         assert_reaped(pid);
+    }
+
+    /// A child that fails before its namespaces are ready reports why,
+    /// and the parent reads it at once, though its own copy of the write
+    /// end was open when it forked, as the spawner's is.
+    #[test]
+    fn a_childs_early_failure_reaches_the_parent_with_its_reason() {
+        let (mut c2p, mut p2c) = handshake_pipes().unwrap();
+        let child = match hatchling_sys::fork().expect("fork") {
+            ForkResult::Parent { child } => child,
+            ForkResult::Child => fail_cell(&mut c2p, "unshare(mount): operation not permitted"),
+        };
+        let uid_map = IdMap::new(65534, 1).unwrap();
+        let gid_map = IdMap::new(65534, 1).unwrap();
+        let started = std::time::Instant::now();
+        let err = within_watchdog("parent_after_fork", move || {
+            parent_after_fork(
+                child,
+                &Maps {
+                    writer: MapWriter::Broker,
+                    uid: uid_map,
+                    gid: gid_map,
+                },
+                &mut c2p,
+                &mut p2c,
+                SHORT_DEADLINE,
+                None,
+            )
+        })
+        .expect_err("'E' from child must fail");
+        assert!(
+            matches!(err, Error::Spawn { ref reason }
+                if reason.ends_with("child reported unshare(mount): operation not permitted")),
+            "the child's reason must reach the parent, got {err:?}"
+        );
+        assert!(
+            started.elapsed() < REPORT_TIMEOUT / 2,
+            "the report must not wait out its timeout: {:?}",
+            started.elapsed()
+        );
     }
 
     #[test]

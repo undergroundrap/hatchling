@@ -298,6 +298,15 @@ jobs:
           sudo apparmor_parser -R /etc/apparmor.d/hatchling-ci-tests
           sudo rm /etc/apparmor.d/hatchling-ci-tests
 
+      # The README's shell must be unconfined, so the broker's profile
+      # attaches when it runs.
+      - name: AppArmor label of the README's shell
+        run: |
+          sudo unshare --mount --pid --fork --kill-child --mount-proc \
+            setpriv --reuid="$(id -u)" --regid="$(id -g)" --init-groups cat /proc/self/attr/current
+          echo
+          sudo aa-status | grep -iE 'unshare|setpriv|sudo|userns' || true
+
       # Root makes the PID namespace (it ends every process the README
       # starts), then drops to the runner user for the README's commands.
       - name: Run the README commands without root
