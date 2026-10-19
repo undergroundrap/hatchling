@@ -37,7 +37,7 @@ use hatchling_core::CellId;
 use hatchling_core::messages::{ScheduleGrant, ScheduleOp};
 use hatchling_core::subagent::{ActivityEvent, SubagentEvent};
 use hatchling_core::ui::{
-    ActionRefusal, AgentState, ApiOutcome, ApiRequest, ChatAuthor, ChatMessage, UiAction,
+    ActionRefusal, AgentState, ApiOutcome, ApiRequest, ChatAuthor, ChatMessage, Decision, UiAction,
     UiActionResult, UiEventBody,
 };
 use hatchling_scheduler::{Creator, Timestamp};
@@ -450,7 +450,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
     use hatchling_core::messages::{FeedSpec, ScheduleResult, ScheduleSpec, SkillOp, SkillResult};
-    use hatchling_core::ui::{Decision, FileContent, FileFormat, UiEvent};
+    use hatchling_core::ui::{FileContent, FileFormat, UiEvent};
 
     use super::*;
     use crate::api_auth::tests::{owner_config, scratch};
