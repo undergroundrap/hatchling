@@ -98,7 +98,9 @@ pub(crate) fn keeper() -> Option<&'static Keeper> {
     KEEPER.get()
 }
 
-/// Starts the keeper and takes the keys of the broker's stores from it.
+/// Starts the keeper and takes the keys of the broker's stores from it:
+/// [`Keeper::start_with`] the broker's own binary, kept as this broker's
+/// keeper.
 ///
 /// Call it once, while the broker has one thread: the keeper's end of
 /// the socket pair is the one descriptor its exec keeps, and it would be
@@ -106,46 +108,63 @@ pub(crate) fn keeper() -> Option<&'static Keeper> {
 ///
 /// # Errors
 ///
-/// Returns [`Error::Keeper`] when the keeper can't be started, refuses to
-/// start (its reason, as the keeper gave it: a key that doesn't load, a
-/// store that doesn't open), or hands over keys that don't read back.
+/// As [`Keeper::start_with`], and [`Error::Keeper`] when the broker's
+/// binary can't be found or a keeper is already running.
 pub fn start() -> Result<StoreKeys, Error> {
-    let failed = |reason: String| Error::Keeper { reason };
-    let program = std::env::current_exe()
-        .map_err(|e| failed(format!("cannot locate the broker binary: {e}")))?;
-    let (ours, theirs) =
-        UnixStream::pair().map_err(|e| failed(format!("cannot make the socket pair: {e}")))?;
-    hatchling_sys::keep_across_exec(theirs.as_fd())
-        .map_err(|e| failed(format!("cannot hand the keeper its socket: {e}")))?;
-    let child = Command::new(program)
-        .arg(VAULT_KEEPER_SUBCOMMAND)
-        .env(KEEPER_FD, theirs.as_raw_fd().to_string())
-        .spawn()
-        .map_err(|e| failed(format!("cannot start: {e}")))?;
-    drop(theirs);
-    let first =
-        Zeroizing::new(read_frame(&ours).map_err(|e| failed(format!("gave no keys: {e}")))?);
-    let keys = match first.split_first() {
-        Some((0, handed)) => {
-            StoreKeys::from_bytes(handed).map_err(|source| Error::Vault { source })?
-        }
-        Some((1, reason)) => return Err(failed(String::from_utf8_lossy(reason).into_owned())),
-        _ => {
-            return Err(failed(String::from(
-                "its first answer was neither keys nor a reason",
-            )));
-        }
-    };
-    KEEPER
-        .set(Keeper {
-            stream: Mutex::new(ours),
-            _child: child,
-        })
-        .map_err(|_| failed(String::from("a keeper is already running")))?;
+    let program = std::env::current_exe().map_err(|e| Error::Keeper {
+        reason: format!("cannot locate the broker binary: {e}"),
+    })?;
+    let (keeper, keys) = Keeper::start_with(Command::new(program))?;
+    KEEPER.set(keeper).map_err(|_| Error::Keeper {
+        reason: String::from("a keeper is already running"),
+    })?;
     Ok(keys)
 }
 
 impl Keeper {
+    /// Starts the keeper as `program`, the broker's binary with its
+    /// environment, given its subcommand and its end of a socket pair, and
+    /// takes the keys of the broker's stores from it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Keeper`] when the keeper can't be started, refuses
+    /// to start (its reason, as the keeper gave it: a key that doesn't
+    /// load, a store that doesn't open), or hands over keys that don't
+    /// read back.
+    pub fn start_with(mut program: Command) -> Result<(Self, StoreKeys), Error> {
+        let failed = |reason: String| Error::Keeper { reason };
+        let (ours, theirs) =
+            UnixStream::pair().map_err(|e| failed(format!("cannot make the socket pair: {e}")))?;
+        hatchling_sys::keep_across_exec(theirs.as_fd())
+            .map_err(|e| failed(format!("cannot hand the keeper its socket: {e}")))?;
+        let child = program
+            .arg(VAULT_KEEPER_SUBCOMMAND)
+            .env(KEEPER_FD, theirs.as_raw_fd().to_string())
+            .spawn()
+            .map_err(|e| failed(format!("cannot start: {e}")))?;
+        drop(theirs);
+        let first = Zeroizing::new(
+            read_frame(&ours).map_err(|e| failed(format!("gave no keys: {e}")))?,
+        );
+        let keys = match first.split_first() {
+            Some((0, handed)) => {
+                StoreKeys::from_bytes(handed).map_err(|source| Error::Vault { source })?
+            }
+            Some((1, reason)) => return Err(failed(String::from_utf8_lossy(reason).into_owned())),
+            _ => {
+                return Err(failed(String::from(
+                    "its first answer was neither keys nor a reason",
+                )));
+            }
+        };
+        let keeper = Self {
+            stream: Mutex::new(ours),
+            _child: child,
+        };
+        Ok((keeper, keys))
+    }
+
     /// The broker's own read of `names`, for `purpose`, answered by the
     /// keeper: as [`Secrets::broker_read`].
     ///
@@ -153,7 +172,7 @@ impl Keeper {
     ///
     /// Returns [`Error::Keeper`] when the keeper refuses the read or
     /// can't be reached.
-    pub(crate) fn read(
+    pub fn read(
         &self,
         purpose: &str,
         names: &[SecretName],
@@ -193,7 +212,7 @@ impl Keeper {
     /// # Errors
     ///
     /// Returns [`Error::SessionProtocol`] when the op was malformed.
-    pub(crate) fn cell_op(
+    pub fn cell_op(
         &self,
         op: &VaultOp,
         cell: &CellId,

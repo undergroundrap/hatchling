@@ -76,33 +76,39 @@ fn ask(stream: &UnixStream, request: &str) -> io::Result<String> {
     String::from_utf8(reply).map_err(io::Error::other)
 }
 
+/// Seals `secrets` in the vault under `dir` the way an operator does,
+/// with `migrate-vault`, which also makes the vault's key.
+fn sealed_vault(dir: &Path, secrets: &[(&str, &str)]) -> io::Result<PathBuf> {
+    let vault = dir.join("vault");
+    std::fs::create_dir(&vault)?;
+    std::fs::set_permissions(&vault, std::fs::Permissions::from_mode(0o700))?;
+    for (name, value) in secrets {
+        std::fs::write(vault.join(name), value)?;
+    }
+    let migrated = Command::new(env!("CARGO_BIN_EXE_hatchling-broker"))
+        .arg("migrate-vault")
+        .envs(environment(dir))
+        .env_remove("HATCHLING_AGENT_BIN")
+        .output()?;
+    if !migrated.status.success() {
+        return Err(io::Error::other(
+            String::from_utf8_lossy(&migrated.stderr).into_owned(),
+        ));
+    }
+    Ok(vault)
+}
+
 /// The keeper hands the broker every store's key but the secrets', reads
 /// a configured credential and refuses any other, records both, keeps
 /// its memory closed, and leaves when the broker does.
 #[test]
 fn the_keeper_keeps_the_secrets_and_releases_only_what_is_configured() {
     let dir = scratch("serve").unwrap();
-    let vault = dir.join("vault");
-    std::fs::create_dir(&vault).unwrap();
-    std::fs::set_permissions(&vault, std::fs::Permissions::from_mode(0o700)).unwrap();
-    for (name, value) in [
-        ("egress-localhost-18089", "credential"),
-        ("unlisted", "kept"),
-    ] {
-        std::fs::write(vault.join(name), value).unwrap();
-    }
-    // The operator seals them, and the vault's key is made.
-    let migrated = Command::new(env!("CARGO_BIN_EXE_hatchling-broker"))
-        .arg("migrate-vault")
-        .envs(environment(&dir))
-        .env_remove("HATCHLING_AGENT_BIN")
-        .output()
-        .unwrap();
-    assert!(
-        migrated.status.success(),
-        "{}",
-        String::from_utf8_lossy(&migrated.stderr)
-    );
+    let vault = sealed_vault(
+        &dir,
+        &[("egress-localhost-18089", "credential"), ("unlisted", "kept")],
+    )
+    .unwrap();
     let (child, stream) = start(&dir).unwrap();
     let first = read_frame(&stream).unwrap();
     let (kind, handed) = first.split_first().unwrap();
@@ -169,4 +175,53 @@ fn the_keeper_runs_only_as_the_broker_starts_it() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("only the broker starts it"), "{stderr}");
+}
+
+/// The broker's end of the keeper: a read for a purpose the
+/// configuration gives it comes back as the secret, any other is refused,
+/// and a cell's vault op is answered under the configuration's grants.
+#[test]
+fn the_brokers_end_reads_through_the_keeper() {
+    use hatchling_broker::keeper::Keeper;
+    use hatchling_core::{CellId, VaultOp, VaultResult};
+    let dir = scratch("client").unwrap();
+    sealed_vault(&dir, &[("egress-localhost-18089", "credential"), ("token", "t")]).unwrap();
+    let mut program = Command::new(env!("CARGO_BIN_EXE_hatchling-broker"));
+    program
+        .envs(environment(&dir))
+        .env("HATCHLING_VAULT_GRANTS", "fetch:token")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null());
+    let (keeper, keys) = Keeper::start_with(program).unwrap();
+    assert!(keys.stores().all(|(store, _)| store != Store::SECRETS));
+    let name = |text: &str| -> hatchling_core::SecretName { text.parse().unwrap() };
+    let mixed = keeper
+        .read("egress", &[name("egress-localhost-18089"), name("token")])
+        .map(|read| read.len());
+    assert!(
+        matches!(mixed, Err(hatchling_broker::Error::Keeper { .. })),
+        "egress read a vault grant's secret: {mixed:?}"
+    );
+    let mut read = keeper
+        .read("egress", &[name("egress-localhost-18089")])
+        .unwrap()
+        .into_iter();
+    assert_eq!(read.next().flatten().unwrap().as_bytes(), b"credential");
+    assert!(read.next().is_none());
+    let cell: CellId = "cell-keeper".parse().unwrap();
+    let fetch = |secret: &str| VaultOp::Fetch {
+        name: secret.to_owned(),
+    };
+    assert!(matches!(
+        keeper.cell_op(&fetch("token"), &cell, 1000).unwrap(),
+        VaultResult::Fetched { .. }
+    ));
+    assert_eq!(
+        keeper
+            .cell_op(&fetch("egress-localhost-18089"), &cell, 1000)
+            .unwrap(),
+        VaultResult::Denied
+    );
+    drop(keeper);
+    let _ = std::fs::remove_dir_all(&dir);
 }
