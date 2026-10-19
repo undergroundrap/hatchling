@@ -25,18 +25,18 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
 use hatchling_channel::LocalHub;
-use hatchling_core::{ActivationProposal, ArtifactResult};
 use hatchling_core::ui::{
     ConfirmationField, ConfirmationRequest, Decision, DecisionRejection, FieldSource, UiEventBody,
 };
+use hatchling_core::{ActivationProposal, ArtifactResult};
 use hatchling_scheduler::{Delivery as _, Timestamp};
 use hatchling_vault::MasterKey;
 use serde_json::json;
 
 use crate::Config;
+use crate::Skills;
 use crate::api_stream::Bus;
 use crate::approvals::{Approvals, Proposal, Refusal, Requested, State};
-use crate::Skills;
 
 /// What an approved activation runs: the broker's own record of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -148,7 +148,9 @@ impl Board {
             now,
         )?;
         if requested.new {
-            self.publish(UiEventBody::Confirmation(confirmation(proposal, &requested)));
+            self.publish(UiEventBody::Confirmation(confirmation(
+                proposal, &requested,
+            )));
         }
         Ok(requested)
     }
@@ -197,7 +199,11 @@ impl Board {
 
     /// Pushes `body` to the owner's app, if one is attached.
     fn publish(&self, body: UiEventBody) {
-        let bus = self.bus.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        let bus = self
+            .bus
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
         if let Some(bus) = bus {
             bus.push(Timestamp::now().to_string(), body);
         }
@@ -225,7 +231,10 @@ fn confirmation(proposal: &ActivationProposal, requested: &Requested) -> Confirm
         broker("Builder", proposal.builder.clone()),
     ];
     for input in &proposal.inputs {
-        fields.push(broker("Input", format!("{} (sha256 {})", input.name, input.sha256)));
+        fields.push(broker(
+            "Input",
+            format!("{} (sha256 {})", input.name, input.sha256),
+        ));
     }
     fields.push(broker("Request hash", proposal.request_hash.clone()));
     fields.push(ConfirmationField {
@@ -249,11 +258,24 @@ fn confirmation(proposal: &ActivationProposal, requested: &Requested) -> Confirm
 /// The worker: forever, runs each approval the owner gives on `config`'s
 /// board, with the broker's `key` and `skills`, and tells the owner on
 /// `hub` how it went.
-pub fn work_forever(config: &Config, key: &MasterKey, skills: &Skills, hub: Option<&LocalHub>) -> ! {
+pub fn work_forever(
+    config: &Config,
+    key: &MasterKey,
+    skills: &Skills,
+    hub: Option<&LocalHub>,
+) -> ! {
     let board = board(config);
     loop {
         if let Some(id) = board.next_approved(WORKER_WAIT) {
-            let told = run_approved(&board, &id, config, key, skills, hub, Timestamp::now().as_second());
+            let told = run_approved(
+                &board,
+                &id,
+                config,
+                key,
+                skills,
+                hub,
+                Timestamp::now().as_second(),
+            );
             tell_owner(hub, &told);
         }
     }
@@ -283,8 +305,18 @@ fn run_approved(
             );
         }
     };
-    match crate::artifact_ops::activate_confirmed(config, key, skills, hub, &run.activation, &token, now) {
-        ArtifactResult::Built { build, output_hash, .. } => {
+    match crate::artifact_ops::activate_confirmed(
+        config,
+        key,
+        skills,
+        hub,
+        &run.activation,
+        &token,
+        now,
+    ) {
+        ArtifactResult::Built {
+            build, output_hash, ..
+        } => {
             claim.succeeded();
             format!(
                 "Approved: build idea {}. Built {build} (sha256 {output_hash}).",

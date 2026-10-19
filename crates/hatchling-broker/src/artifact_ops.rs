@@ -54,9 +54,8 @@ use hatchling_artifact::{
 use hatchling_channel::{ChannelId, LocalHub, Message, SenderId};
 use hatchling_core::{
     ActivationProposal, ApprovalRefusal, ArtifactInput, ArtifactOp, ArtifactResult, ArtifactView,
-    BuildFailure, BuildState,
-    CapabilityName, DeliveryRefusal, DeliveryTarget, IdeaRef, IdeaRefusal, IdeaSource,
-    MAX_SECRET_BYTES, SecretName,
+    BuildFailure, BuildState, CapabilityName, DeliveryRefusal, DeliveryTarget, IdeaRef,
+    IdeaRefusal, IdeaSource, MAX_SECRET_BYTES, SecretName,
 };
 use hatchling_goals::{FeedQuery, GoalId, StatusFilter, TimeRange};
 use hatchling_memory::{MemoryPrincipal, Tag};
