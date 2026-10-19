@@ -127,6 +127,14 @@ pub enum Error {
         store: &'static str,
     },
 
+    /// Store keys handed from one process to another weren't exactly what
+    /// the handing process writes.
+    #[error("the store keys handed over are malformed: {reason}")]
+    HandoffMalformed {
+        /// What was wrong.
+        reason: &'static str,
+    },
+
     /// A process was handed the keys of some stores ([`StoreKeys`]) and
     /// asked to open another, or one at another root.
     ///
@@ -352,6 +360,10 @@ mod tests {
             (
                 Error::NeedBackupCodes,
                 "run vault-keyring backup-codes before enrolling a single security key",
+            ),
+            (
+                Error::HandoffMalformed { reason: "cut short" },
+                "the store keys handed over are malformed: cut short",
             ),
             (
                 Error::StoreNotHeld { store: "spaces" },
