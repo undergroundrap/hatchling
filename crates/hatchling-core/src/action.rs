@@ -164,7 +164,9 @@ mod tests {
         .to_vec();
         let positions: Vec<usize> = order.iter().map(|name| form.find(name).unwrap()).collect();
         assert!(
-            positions.windows(2).all(|pair| matches!(pair, [a, b] if a < b)),
+            positions
+                .windows(2)
+                .all(|pair| matches!(pair, [a, b] if a < b)),
             "{form}"
         );
         assert!(form.starts_with("{\"\\r\":"), "{form}");
@@ -189,8 +191,17 @@ mod tests {
     #[test]
     fn only_safe_integers_booleans_strings_arrays_and_objects_have_a_form() {
         assert_eq!(
-            canonical(&json!([true, false, 0, -1, MAX_SAFE_INTEGER, -MAX_SAFE_INTEGER, [], {}]))
-                .unwrap(),
+            canonical(&json!([
+                true,
+                false,
+                0,
+                -1,
+                MAX_SAFE_INTEGER,
+                -MAX_SAFE_INTEGER,
+                [],
+                {}
+            ]))
+            .unwrap(),
             "[true,false,0,-1,9007199254740991,-9007199254740991,[],{}]"
         );
         for refused in [
@@ -240,7 +251,10 @@ mod tests {
         .unwrap();
         let base = digest(&action).unwrap();
         assert_eq!(base.len(), 64);
-        assert!(base.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert!(
+            base.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        );
         assert_eq!(digest(&reordered).unwrap(), base);
         let changes = [
             json!({"op": "activate!"}),

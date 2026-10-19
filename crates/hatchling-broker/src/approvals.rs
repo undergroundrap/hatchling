@@ -269,7 +269,9 @@ impl<A: Clone> Ledger<A> {
             return Err(Refusal::Denied);
         }
         if let Some(waiting) = ledger.requests.values().find(|request| {
-            request.state == State::Pending && request.digest == digest && request.task == proposal.task
+            request.state == State::Pending
+                && request.digest == digest
+                && request.task == proposal.task
         }) {
             return Ok(Requested {
                 id: waiting.id.clone(),
@@ -284,11 +286,18 @@ impl<A: Clone> Ledger<A> {
             .values()
             .filter(|request| request.state == State::Pending)
             .collect();
-        let of_task = pending.iter().filter(|request| request.task == proposal.task).count();
+        let of_task = pending
+            .iter()
+            .filter(|request| request.task == proposal.task)
+            .count();
         if pending.len() >= MAX_PENDING || of_task >= MAX_PENDING_PER_TASK {
             return Err(Refusal::QueueFull);
         }
-        while ledger.made.front().is_some_and(|made| now.saturating_sub(*made) >= 3600) {
+        while ledger
+            .made
+            .front()
+            .is_some_and(|made| now.saturating_sub(*made) >= 3600)
+        {
             ledger.made.pop_front();
         }
         if now < ledger.paused_until || ledger.made.len() >= MAX_REQUESTS_PER_HOUR {
@@ -330,7 +339,10 @@ impl<A: Clone> Ledger<A> {
     ) -> Result<State, DecisionRejection> {
         let ledger = self;
         ledger.expire(now);
-        let request = ledger.requests.get_mut(id).ok_or(DecisionRejection::Unknown)?;
+        let request = ledger
+            .requests
+            .get_mut(id)
+            .ok_or(DecisionRejection::Unknown)?;
         match request.state {
             State::Pending => {}
             State::Expired => return Err(DecisionRejection::Expired),
@@ -413,10 +425,9 @@ impl<A: Clone> Ledger<A> {
         self.decided.push_back(id.to_owned());
         while self.decided.len() > MAX_KEPT {
             if let Some(oldest) = self.decided.pop_front() {
-                let running = self
-                    .requests
-                    .get(&oldest)
-                    .is_some_and(|request| matches!(request.state, State::Approved | State::Started));
+                let running = self.requests.get(&oldest).is_some_and(|request| {
+                    matches!(request.state, State::Approved | State::Started)
+                });
                 if !running {
                     self.requests.remove(&oldest);
                 }
@@ -471,8 +482,18 @@ mod tests {
         }
     }
 
-    fn approve(ledger: &Approvals<String>, requested: &Requested, now: i64) -> Result<State, DecisionRejection> {
-        ledger.decide(&requested.id, requested.revision, &requested.digest, Decision::Approve, now)
+    fn approve(
+        ledger: &Approvals<String>,
+        requested: &Requested,
+        now: i64,
+    ) -> Result<State, DecisionRejection> {
+        ledger.decide(
+            &requested.id,
+            requested.revision,
+            &requested.digest,
+            Decision::Approve,
+            now,
+        )
     }
 
     #[test]
@@ -487,7 +508,10 @@ mod tests {
             action::digest(&json!({ "op": "activate", "effect": "one", "task": "t1" })).unwrap()
         );
         assert_eq!(ledger.get(&requested.id).unwrap().state, State::Pending);
-        assert!(ledger.claim(&requested.id).is_none(), "nothing runs unapproved");
+        assert!(
+            ledger.claim(&requested.id).is_none(),
+            "nothing runs unapproved"
+        );
         assert_eq!(approve(&ledger, &requested, 1001), Ok(State::Approved));
         let (run, claim) = ledger.claim(&requested.id).unwrap();
         assert_eq!(run, "run one", "the stored action runs");
@@ -513,9 +537,15 @@ mod tests {
         let claimed = ledger.claim(&requested.id);
         assert!(claimed.is_some());
         drop(claimed);
-        assert_eq!(ledger.get(&requested.id).unwrap().state, State::OutcomeUnknown);
+        assert_eq!(
+            ledger.get(&requested.id).unwrap().state,
+            State::OutcomeUnknown
+        );
         assert!(ledger.claim(&requested.id).is_none());
-        assert_eq!(approve(&ledger, &requested, 2), Err(DecisionRejection::AlreadyDecided));
+        assert_eq!(
+            approve(&ledger, &requested, 2),
+            Err(DecisionRejection::AlreadyDecided)
+        );
     }
 
     /// Two approvals racing, and two workers racing: one decision, one run.
@@ -534,15 +564,21 @@ mod tests {
             })
             .collect();
         let decided: Vec<_> = decisions.into_iter().map(|t| t.join().unwrap()).collect();
-        assert_eq!(decided.iter().filter(|d| d.is_ok()).count(), 1, "{decided:?}");
+        assert_eq!(
+            decided.iter().filter(|d| d.is_ok()).count(),
+            1,
+            "{decided:?}"
+        );
         assert!(decided.contains(&Err(DecisionRejection::AlreadyDecided)));
         let runs: Vec<_> = (0..2)
             .map(|_| {
                 let (ledger, id) = (std::sync::Arc::clone(&ledger), requested.id.clone());
-                std::thread::spawn(move || ledger.claim(&id).map(|(run, claim)| {
-                    claim.succeeded();
-                    run
-                }))
+                std::thread::spawn(move || {
+                    ledger.claim(&id).map(|(run, claim)| {
+                        claim.succeeded();
+                        run
+                    })
+                })
             })
             .collect();
         let ran: Vec<_> = runs.into_iter().filter_map(|t| t.join().unwrap()).collect();
@@ -556,23 +592,50 @@ mod tests {
         let decide = |id: &str, revision, digest: &str| {
             ledger.decide(id, revision, digest, Decision::Approve, 1)
         };
-        assert_eq!(decide("approval-none", 1, &requested.digest), Err(DecisionRejection::Unknown));
-        assert_eq!(decide(&requested.id, 2, &requested.digest), Err(DecisionRejection::StaleRevision));
-        assert_eq!(decide(&requested.id, 1, "00"), Err(DecisionRejection::StaleRevision));
-        assert_eq!(ledger.get(&requested.id).unwrap().state, State::Pending, "nothing changed");
-        assert_eq!(decide(&requested.id, 1, &requested.digest), Ok(State::Approved));
-        assert_eq!(decide(&requested.id, 1, &requested.digest), Err(DecisionRejection::AlreadyDecided));
+        assert_eq!(
+            decide("approval-none", 1, &requested.digest),
+            Err(DecisionRejection::Unknown)
+        );
+        assert_eq!(
+            decide(&requested.id, 2, &requested.digest),
+            Err(DecisionRejection::StaleRevision)
+        );
+        assert_eq!(
+            decide(&requested.id, 1, "00"),
+            Err(DecisionRejection::StaleRevision)
+        );
+        assert_eq!(
+            ledger.get(&requested.id).unwrap().state,
+            State::Pending,
+            "nothing changed"
+        );
+        assert_eq!(
+            decide(&requested.id, 1, &requested.digest),
+            Ok(State::Approved)
+        );
+        assert_eq!(
+            decide(&requested.id, 1, &requested.digest),
+            Err(DecisionRejection::AlreadyDecided)
+        );
     }
 
     #[test]
     fn an_undecided_request_lapses_and_can_no_longer_be_approved() {
         let ledger = Approvals::new();
         let requested = ledger.propose(proposal("one", "t1"), 0).unwrap();
-        assert_eq!(approve(&ledger, &requested, DECIDE_SECS), Err(DecisionRejection::Expired));
+        assert_eq!(
+            approve(&ledger, &requested, DECIDE_SECS),
+            Err(DecisionRejection::Expired)
+        );
         assert_eq!(ledger.get(&requested.id).unwrap().state, State::Expired);
         assert!(ledger.claim(&requested.id).is_none());
         // Lapsed, it no longer holds the task's place.
-        assert!(ledger.propose(proposal("two", "t1"), DECIDE_SECS).unwrap().new);
+        assert!(
+            ledger
+                .propose(proposal("two", "t1"), DECIDE_SECS)
+                .unwrap()
+                .new
+        );
     }
 
     #[test]
@@ -582,19 +645,33 @@ mod tests {
         let again = ledger.propose(proposal("one", "t1"), 5).unwrap();
         assert_eq!((again.id.as_str(), again.new), (first.id.as_str(), false));
         assert_eq!(again.digest, first.digest);
-        assert_eq!(ledger.propose(proposal("two", "t1"), 5), Err(Refusal::QueueFull), "one per task");
+        assert_eq!(
+            ledger.propose(proposal("two", "t1"), 5),
+            Err(Refusal::QueueFull),
+            "one per task"
+        );
         for n in 2..=MAX_PENDING {
             ledger.propose(proposal("x", &format!("t{n}")), 5).unwrap();
         }
-        assert_eq!(ledger.propose(proposal("x", "t-last"), 5), Err(Refusal::QueueFull), "five in all");
+        assert_eq!(
+            ledger.propose(proposal("x", "t-last"), 5),
+            Err(Refusal::QueueFull),
+            "five in all"
+        );
         // Decided ones free their places; the hour's limit still holds.
         let ledger = Approvals::new();
         for n in 0..MAX_REQUESTS_PER_HOUR {
             let requested = ledger.propose(proposal(&format!("e{n}"), "t"), 10).unwrap();
             approve(&ledger, &requested, 11).unwrap();
         }
-        assert_eq!(ledger.propose(proposal("late", "t"), 3000), Err(Refusal::Paused));
-        assert!(ledger.propose(proposal("late", "t"), 3610).unwrap().new, "an hour on");
+        assert_eq!(
+            ledger.propose(proposal("late", "t"), 3000),
+            Err(Refusal::Paused)
+        );
+        assert!(
+            ledger.propose(proposal("late", "t"), 3610).unwrap().new,
+            "an hour on"
+        );
     }
 
     /// A denied effect stays denied, reworded or from another task or a
@@ -612,9 +689,20 @@ mod tests {
             action: json!({ "op": "activate", "effect": "one", "task": "t9", "why": "please" }),
             ..proposal("one", "t9")
         };
-        assert_eq!(ledger.propose(reworded, 10 + DENIAL_COOLDOWN_SECS + 1), Err(Refusal::Denied));
-        assert_eq!(ledger.propose(proposal("two", "t2"), 20), Err(Refusal::Paused));
-        assert!(ledger.propose(proposal("two", "t2"), 10 + DENIAL_COOLDOWN_SECS).unwrap().new);
+        assert_eq!(
+            ledger.propose(reworded, 10 + DENIAL_COOLDOWN_SECS + 1),
+            Err(Refusal::Denied)
+        );
+        assert_eq!(
+            ledger.propose(proposal("two", "t2"), 20),
+            Err(Refusal::Paused)
+        );
+        assert!(
+            ledger
+                .propose(proposal("two", "t2"), 10 + DENIAL_COOLDOWN_SECS)
+                .unwrap()
+                .new
+        );
     }
 
     #[test]
@@ -622,7 +710,10 @@ mod tests {
         let ledger = Approvals::new();
         let waiting = ledger.propose(proposal("one", "t1"), 0).unwrap();
         assert!(ledger.withdraw(&waiting.id));
-        assert_eq!(approve(&ledger, &waiting, 1), Err(DecisionRejection::AlreadyDecided));
+        assert_eq!(
+            approve(&ledger, &waiting, 1),
+            Err(DecisionRejection::AlreadyDecided)
+        );
         let approved = ledger.propose(proposal("two", "t2"), 0).unwrap();
         approve(&ledger, &approved, 1).unwrap();
         assert!(ledger.withdraw(&approved.id), "approved but unclaimed");
@@ -630,7 +721,10 @@ mod tests {
         let running = ledger.propose(proposal("three", "t3"), 0).unwrap();
         approve(&ledger, &running, 1).unwrap();
         let (_, claim) = ledger.claim(&running.id).unwrap();
-        assert!(!ledger.withdraw(&running.id), "a started run isn't taken back");
+        assert!(
+            !ledger.withdraw(&running.id),
+            "a started run isn't taken back"
+        );
         claim.succeeded();
         assert!(!ledger.withdraw("approval-none"));
         assert_eq!(ledger.get(&running.id).unwrap().state, State::Succeeded);
@@ -643,12 +737,18 @@ mod tests {
             action: json!({ "amount": 1.5 }),
             ..proposal("one", "t1")
         };
-        assert!(matches!(ledger.propose(unfrozen, 0), Err(Refusal::Unfrozen(_))));
+        assert!(matches!(
+            ledger.propose(unfrozen, 0),
+            Err(Refusal::Unfrozen(_))
+        ));
         let no_fingerprint = Proposal {
             fingerprint: json!(null),
             ..proposal("one", "t1")
         };
-        assert!(matches!(ledger.propose(no_fingerprint, 0), Err(Refusal::Unfrozen(_))));
+        assert!(matches!(
+            ledger.propose(no_fingerprint, 0),
+            Err(Refusal::Unfrozen(_))
+        ));
     }
 
     /// Decided requests are kept to a bound; a running one never goes.
@@ -661,14 +761,31 @@ mod tests {
         for n in 0..=MAX_KEPT {
             let mut ledger_time = i64::try_from(n).unwrap() * 3600;
             ledger_time += 1;
-            let requested = ledger.propose(proposal(&format!("e{n}"), "t"), ledger_time).unwrap();
-            ledger.decide(&requested.id, 1, &requested.digest, Decision::Approve, ledger_time).unwrap();
+            let requested = ledger
+                .propose(proposal(&format!("e{n}"), "t"), ledger_time)
+                .unwrap();
+            ledger
+                .decide(
+                    &requested.id,
+                    1,
+                    &requested.digest,
+                    Decision::Approve,
+                    ledger_time,
+                )
+                .unwrap();
             let (_, claim) = ledger.claim(&requested.id).unwrap();
             claim.succeeded();
             ids.push(requested.id);
         }
-        assert!(ledger.get(ids.first().unwrap()).is_none(), "the oldest decided is forgotten");
+        assert!(
+            ledger.get(ids.first().unwrap()).is_none(),
+            "the oldest decided is forgotten"
+        );
         assert!(ledger.get(ids.last().unwrap()).is_some());
-        assert_eq!(ledger.get(&running.id).unwrap().state, State::Approved, "kept while unclaimed");
+        assert_eq!(
+            ledger.get(&running.id).unwrap().state,
+            State::Approved,
+            "kept while unclaimed"
+        );
     }
 }
