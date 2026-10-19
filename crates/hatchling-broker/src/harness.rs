@@ -384,6 +384,33 @@ const BINARY_REFUSED: &str =
 const HOST_REFUSED: &str =
     "the Codex host binary is unreadable or not the pinned one: it is never substituted";
 
+/// Up to `limit` bytes of the file at `path`, and whether it holds more.
+///
+/// A file a cell wrote is never read whole: its size is the cell's to
+/// choose (up to its file-size limit, 8 GiB by default), and reading it
+/// all before checking a bound would let it exhaust the broker's memory.
+fn read_prefix(path: &Path, limit: u64) -> std::io::Result<(Vec<u8>, bool)> {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    let keep = usize::try_from(limit).unwrap_or(usize::MAX);
+    let more = bytes.len() > keep;
+    bytes.truncate(keep);
+    Ok((bytes, more))
+}
+
+/// [`read_prefix`] of `path`, a regular file and not a symlink.
+fn read_regular_prefix(path: &Path, limit: u64) -> Result<(Vec<u8>, bool), String> {
+    let meta = std::fs::symlink_metadata(path)
+        .map_err(|err| format!("{} is unreadable: {err}", path.display()))?;
+    if !meta.file_type().is_file() {
+        return Err(format!("{} is not a regular file", path.display()));
+    }
+    read_prefix(path, limit).map_err(|err| format!("{} is unreadable: {err}", path.display()))
+}
+
 /// Reads `path`, a regular file and not a symlink.
 fn read_regular(path: &Path) -> Result<Vec<u8>, String> {
     let meta = std::fs::symlink_metadata(path)
@@ -1201,13 +1228,16 @@ fn stage(root: &Path, paths: &[String], dirs: &RunDirs) -> Result<(), String> {
                 return Err(format!("{path:?} goes through a symlink"));
             }
         }
-        let bytes = read_regular(&at).map_err(|_| format!("{path:?} is not a regular file"))?;
-        if std::str::from_utf8(&bytes).is_err() {
-            return Err(format!("{path:?} is not text"));
-        }
-        total = total.saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+        let (bytes, more) = read_regular_prefix(&at, MAX_SLICE_BYTES.saturating_sub(total))
+            .map_err(|_| format!("{path:?} is not a regular file"))?;
+        total = total
+            .saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+            .saturating_add(u64::from(more));
         if total > MAX_SLICE_BYTES {
             return Err(format!("the files hold more than {MAX_SLICE_BYTES} bytes"));
+        }
+        if std::str::from_utf8(&bytes).is_err() {
+            return Err(format!("{path:?} is not text"));
         }
         for tree in [&dirs.work, &dirs.pristine] {
             write_new(&tree.join(path), &bytes).map_err(|error| {
@@ -1347,9 +1377,13 @@ fn run_failure(error: &SkillRunError) -> String {
     }
 }
 
+/// How much of the question file is read: the question's own bound, with
+/// room for whitespace before it.
+const QUESTION_READ_BYTES: u64 = 4 * 2048;
+
 /// The harness's question, if it left one.
 fn read_question(scratch: &Path) -> Option<String> {
-    let bytes = read_regular(&scratch.join(QUESTION_FILE)).ok()?;
+    let (bytes, _) = read_regular_prefix(&scratch.join(QUESTION_FILE), QUESTION_READ_BYTES).ok()?;
     let text = String::from_utf8_lossy(&bytes);
     let question = text.trim();
     (!question.is_empty()).then(|| truncate(question, MAX_QUESTION_BYTES))
@@ -1399,9 +1433,12 @@ fn read_tree(root: &Path) -> Result<Tree, String> {
             if kind.is_dir() {
                 pending.push(name);
             } else if kind.is_file() {
-                let bytes =
-                    std::fs::read(root.join(&name)).map_err(|err| unreadable(&shown, err))?;
-                total = total.saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+                let (bytes, more) =
+                    read_prefix(&root.join(&name), MAX_WORK_BYTES.saturating_sub(total))
+                        .map_err(|err| unreadable(&shown, err))?;
+                total = total
+                    .saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+                    .saturating_add(u64::from(more));
                 tree.files.insert(shown, bytes);
             } else {
                 tree.links.insert(shown);
@@ -2371,6 +2408,82 @@ mod tests {
                 .unwrap_err()
                 .starts_with("the harness binary ")
         );
+    }
+
+    #[test]
+    fn a_prefix_is_read_up_to_its_limit_and_says_if_there_is_more() {
+        let scratch = Scratch::new("prefix");
+        let file = scratch.write("file", b"0123456789");
+        assert_eq!(
+            read_prefix(&file, 10).unwrap(),
+            (b"0123456789".to_vec(), false)
+        );
+        assert_eq!(
+            read_prefix(&file, 11).unwrap(),
+            (b"0123456789".to_vec(), false)
+        );
+        assert_eq!(
+            read_prefix(&file, 9).unwrap(),
+            (b"012345678".to_vec(), true)
+        );
+        assert_eq!(read_prefix(&file, 0).unwrap(), (Vec::new(), true));
+        let empty = scratch.write("empty", b"");
+        assert_eq!(read_prefix(&empty, 0).unwrap(), (Vec::new(), false));
+        assert!(read_prefix(&scratch.join("missing"), 5).is_err());
+        assert_eq!(
+            read_regular_prefix(&file, 4).unwrap(),
+            (b"0123".to_vec(), true)
+        );
+        std::os::unix::fs::symlink(&file, scratch.join("link")).unwrap();
+        assert!(
+            read_regular_prefix(&scratch.join("link"), 4)
+                .unwrap_err()
+                .ends_with("is not a regular file")
+        );
+    }
+
+    /// A 64 GiB file, sparse, so it costs no disk: read whole, it would
+    /// take 64 GiB of the broker's memory.
+    fn huge(path: &Path) {
+        std::fs::File::create(path)
+            .unwrap()
+            .set_len(64 << 30)
+            .unwrap();
+    }
+
+    /// A cell can leave files as large as its file-size limit. The
+    /// broker reads only what each bound allows, so a huge one is
+    /// refused (or its question cut) without being read whole.
+    #[test]
+    fn a_huge_file_from_the_cell_is_never_read_whole() {
+        let scratch = Scratch::new("huge");
+        std::fs::create_dir(scratch.join("tree")).unwrap();
+        huge(&scratch.join("tree").join("big"));
+        let refused = read_tree(&scratch.join("tree")).unwrap_err();
+        assert!(refused.contains("bytes in its work tree"), "{refused}");
+        // Nor a huge file of the owner's that the cell asks to stage.
+        let dirs = RunDirs::create().unwrap();
+        let refused = stage(&scratch.join("tree"), &[String::from("big")], &dirs).unwrap_err();
+        assert!(refused.contains("hold more than"), "{refused}");
+        // Within the bound, just: still read.
+        let exact = scratch.join("exact");
+        std::fs::create_dir(&exact).unwrap();
+        std::fs::File::create(exact.join("full"))
+            .unwrap()
+            .set_len(MAX_WORK_BYTES)
+            .unwrap();
+        let full = read_tree(&exact).unwrap();
+        assert_eq!(full.files.get("full").map(Vec::len), Some(8 << 20));
+        std::fs::File::create(exact.join("one more"))
+            .unwrap()
+            .set_len(1)
+            .unwrap();
+        assert!(read_tree(&exact).is_err(), "one byte past the bound");
+        // The question: cut to its bound.
+        std::fs::create_dir(scratch.join("scratch")).unwrap();
+        huge(&scratch.join("scratch").join(QUESTION_FILE));
+        let question = read_question(&scratch.join("scratch")).unwrap();
+        assert!(question.len() <= MAX_QUESTION_BYTES);
     }
 
     #[test]
