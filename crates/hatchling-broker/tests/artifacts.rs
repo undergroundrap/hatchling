@@ -1511,6 +1511,21 @@ fn last_confirmation(bus: &Bus) -> Option<ConfirmationRequest> {
     })
 }
 
+/// The owner's decision on `request` in the app, naming `digest`.
+fn decide(
+    board: &approval_board::Board,
+    request: &ConfirmationRequest,
+    digest: &str,
+) -> Result<State, DecisionRejection> {
+    board.decide(
+        &request.confirmation_id,
+        request.revision,
+        digest,
+        Decision::Approve,
+        NOW,
+    )
+}
+
 /// WO-027, end to end: a proposal reaches the owner's app as the broker's
 /// record; the owner's approval there runs exactly the pinned request, once,
 /// on the broker's worker; nothing a session sends approves anything.
@@ -1546,13 +1561,7 @@ fn the_owners_approval_in_the_app_builds_exactly_what_was_proposed() {
         idea_refused(IdeaRefusal::NotConfirmed)
     );
     assert_eq!(
-        board.decide(
-            &request.confirmation_id,
-            request.revision,
-            "0000",
-            Decision::Approve,
-            NOW
-        ),
+        decide(&board, &request, "0000"),
         Err(DecisionRejection::StaleRevision)
     );
     assert_eq!(
@@ -1561,13 +1570,7 @@ fn the_owners_approval_in_the_app_builds_exactly_what_was_proposed() {
         "nothing runs unapproved"
     );
     assert_eq!(
-        board.decide(
-            &request.confirmation_id,
-            request.revision,
-            &request.digest,
-            Decision::Approve,
-            NOW
-        ),
+        decide(&board, &request, &request.digest),
         Ok(State::Approved)
     );
     let told = approval_board::run_next(
@@ -1602,13 +1605,7 @@ fn the_owners_approval_in_the_app_builds_exactly_what_was_proposed() {
     );
     assert_eq!(record.idea.as_ref(), Some(&proposal.idea));
     assert_eq!(
-        board.decide(
-            &request.confirmation_id,
-            request.revision,
-            &request.digest,
-            Decision::Approve,
-            NOW
-        ),
+        decide(&board, &request, &request.digest),
         Err(DecisionRejection::AlreadyDecided)
     );
     assert_eq!(
