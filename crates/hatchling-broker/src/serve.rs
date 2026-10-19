@@ -19,8 +19,8 @@ use hatchling_core::ui::operator::{CellKind, EgressVerdict};
 use hatchling_core::{
     AgentMessage, BrokerMessage, CellId, ChannelResult, EgressOp, EgressResult, GoalsResult,
     HookResult, MAX_FRAME_BYTES, MemoryResult, PROTOCOL_VERSION, PeerCredentials, PeerPid,
-    QueryResult, ScheduleResult, SecretB64, SecretName, SessionRequest, SessionResponse,
-    SkillResult, VaultOp, VaultResult, decode_secret, encode_secret, peer_credentials,
+    QueryResult, ScheduleResult, SecretName, SessionRequest, SessionResponse,
+    SkillResult, VaultResult, decode_secret, encode_secret, peer_credentials,
 };
 use hatchling_egress::{EgressRequest, Proxy};
 use hatchling_memory::{MemoryPrincipal, SessionId};
@@ -1342,7 +1342,10 @@ fn reject(stream: &UnixStream, reason: &str) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hatchling_core::VaultOp;
     use hatchling_vault::{SealedVault, Secret};
+
+    use crate::secrets::vault_op_result;
     use hatchling_vault::MasterKey;
 
     #[test]
@@ -1920,6 +1923,7 @@ mod tests {
 #[cfg(test)]
 mod reply_bound_tests {
     use super::*;
+    use hatchling_core::{SecretB64, VaultOp};
 
     const fn opaque_errors() -> [SessionResponse; 7] {
         [

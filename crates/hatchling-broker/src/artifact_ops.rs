@@ -1191,10 +1191,9 @@ mod tests {
         let names: Vec<String> = held_secret_names(&config).into_iter().collect();
         assert_eq!(names, ["egress-api-example-com-443", "token"]);
         assert_eq!(
-            read_held_secrets(&config, &key).unwrap(),
+            held_secret_values(&config, &key, "artifact-gate").unwrap(),
             [Zeroizing::new(b"v".to_vec())]
         );
-        assert!(held_secrets(&config, &key).unwrap().exposed_in(b"v"));
         let (accesses, _) = crate::vault_access::read_log(&config.vault.root).unwrap();
         let [only] = accesses.as_slice() else {
             unreachable!("only the recorded read writes: {accesses:?}");
@@ -1206,6 +1205,7 @@ mod tests {
             }
         );
         assert_eq!(only.names, names);
+        assert!(held_secrets(&config, &key).unwrap().exposed_in(b"v"));
         let wrong = MasterKey::generate().unwrap();
         assert!(held_secret_values(&config, &wrong, "output-gate").is_err());
         let (accesses, _) = crate::vault_access::read_log(&config.vault.root).unwrap();

@@ -122,17 +122,17 @@ pub(crate) fn handle_vault_op(
     // recorded fails closed: no secret leaves unlogged.
     let outcome = match result {
         VaultResult::Fetched { .. } | VaultResult::Stored | VaultResult::Removed => {
-            crate::vault_access::Outcome::Allowed
+            Outcome::Allowed
         }
-        VaultResult::NotFound => crate::vault_access::Outcome::NotFound,
-        VaultResult::Denied => crate::vault_access::Outcome::Denied,
-        VaultResult::VaultError => crate::vault_access::Outcome::Failed,
+        VaultResult::NotFound => Outcome::NotFound,
+        VaultResult::Denied => Outcome::Denied,
+        VaultResult::VaultError => Outcome::Failed,
     };
     let name = op.name().parse::<SecretName>().map_or_else(
         |_| String::from("(not a secret name)"),
         |name| name.as_str().to_owned(),
     );
-    let caller = crate::vault_access::Caller::Session {
+    let caller = Caller::Session {
         uid,
         cell: cell_id.to_string(),
     };
@@ -144,7 +144,7 @@ pub(crate) fn handle_vault_op(
         outcome,
     ) {
         Ok(()) => Ok(result),
-        Err(error) if outcome == crate::vault_access::Outcome::Allowed => {
+        Err(error) if outcome == Outcome::Allowed => {
             tracing::error!(%error, "vault op not recorded: answered as failed");
             Ok(VaultResult::VaultError)
         }
@@ -156,7 +156,7 @@ pub(crate) fn handle_vault_op(
 }
 
 /// The vault op's result, before it is recorded.
-fn vault_op_result(
+pub(crate) fn vault_op_result(
     vault_config: &VaultConfig,
     key: &dyn OpensStores,
     op: &VaultOp,
