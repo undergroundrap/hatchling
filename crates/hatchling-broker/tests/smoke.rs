@@ -296,12 +296,11 @@ fn rekey_vault_rotates_key() {
     let old_key = read_key_file(&old_key_file).unwrap();
     let new_key_bytes = read_key_file(&new_key).unwrap();
     let name: hatchling_vault::SecretName = "tok".parse().unwrap();
-    let old_err = hatchling_vault::SealedVault::open(&vault_dir, &old_key)
-        .unwrap()
-        .fetch(&name)
-        .unwrap_err();
+    // The store's key no longer unwraps under the old key, so the store
+    // doesn't open.
+    let old_err = hatchling_vault::SealedVault::open(&vault_dir, &old_key).unwrap_err();
     assert!(
-        matches!(old_err, hatchling_vault::Error::DecryptFailed { .. }),
+        matches!(old_err, hatchling_vault::Error::StoreKeyRefused { .. }),
         "old key should fail closed, got: {old_err:?}"
     );
     let secret = hatchling_vault::SealedVault::open(&vault_dir, &new_key_bytes)
