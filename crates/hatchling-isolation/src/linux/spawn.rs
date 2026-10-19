@@ -2498,9 +2498,19 @@ pub(super) mod tests {
             MapWriter::for_identity(&own),
             Ok(MapWriter::Broker)
         ));
+        // A group this broker mustn't map: host group 0 for a root
+        // broker, any but its own gid otherwise (which may itself be 0).
+        let foreign_group = if hatchling_sys::euid() == 0 {
+            0
+        } else {
+            own.group.wrapping_add(1)
+        };
         for forged in [
             CellIdentity::direct(0, 1),
-            CellIdentity { group: 0, ..own },
+            CellIdentity {
+                group: foreign_group,
+                ..own
+            },
             CellIdentity { count: 2, ..own },
         ] {
             assert!(

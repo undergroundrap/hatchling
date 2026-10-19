@@ -283,13 +283,18 @@ mod tests {
         // NotFound guard inverted (which would turn a missing
         // setgroups file into a hard error, or vice versa).
         //
-        // If user namespaces are unavailable, the child exits 99 and
-        // the test passes vacuously.
+        // The maps are this process's own uid and gid, the only ones it
+        // may map: read before the fork, as a namespace would show them
+        // as the overflow ids. If user namespaces are unavailable here
+        // (the child says so), the test skips, unless
+        // HATCHLING_REQUIRE_CELL=1; once they are, the write must work.
+        use std::io::{Read as _, Write as _};
+
         use crate::process::{ForkResult, exit_child, fork};
 
-        let uid_map = IdMap::new(1000, 1).unwrap();
-        let gid_map = IdMap::new(1000, 1).unwrap();
-        let expected_uid_map = uid_map.render();
+        let uid_map = IdMap::new(crate::process::euid(), 1).unwrap();
+        let gid_map = IdMap::new(crate::process::egid(), 1).unwrap();
+        let (mut ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
 
         let child = match fork().expect("fork for write_maps test") {
             ForkResult::Parent { child } => child,
@@ -300,6 +305,9 @@ mod tests {
                 let ret = unsafe { libc::unshare(libc::CLONE_NEWUSER) };
                 if ret != 0 {
                     exit_child(99);
+                }
+                if (&theirs).write_all(b"u").is_err() {
+                    exit_child(98);
                 }
                 // Wait for the parent: sleep in a loop until killed.
                 loop {
@@ -315,8 +323,17 @@ mod tests {
         // signal target.
         let child_pid = child.pid().get();
 
-        // Give the child a moment to unshare.
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        // Its own namespace, once it says so; nothing if it couldn't.
+        drop(theirs);
+        ours.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .unwrap();
+        let mut unshared = [0_u8; 1];
+        if ours.read_exact(&mut unshared).is_err() {
+            drop(child);
+            let required = std::env::var("HATCHLING_REQUIRE_CELL").is_ok_and(|v| v == "1");
+            assert!(!required, "HATCHLING_REQUIRE_CELL=1 but no user namespace here");
+            return;
+        }
 
         let write_result = write_maps(child_pid, &uid_map, &gid_map);
 
@@ -329,19 +346,7 @@ mod tests {
         // Clean up the child: kill-on-drop SIGKILLs and reaps.
         drop(child);
 
-        // If the child couldn't unshare (exit 99 -> but we killed it,
-        // so check the write result instead), skip. Actually, if
-        // unshare failed, write_maps would fail with ESRCH or similar
-        // because the child is gone or not in a userns. We check: if
-        // the maps don't match AND write_result is Err, it's
-        // environmental.
-        if write_result.is_err() && uid_content != expected_uid_map {
-            // Environmental: couldn't write maps (no userns support
-            // or child died). Pass vacuously.
-            return;
-        }
-
-        write_result.expect("write_maps must succeed");
+        write_result.expect("write_maps must succeed in a namespace of the child's own");
         // The kernel pretty-prints map lines with padded columns
         // (e.g. "         0       1000          1\n"), so compare the
         // parsed (inside, outside, length) triple rather than the
