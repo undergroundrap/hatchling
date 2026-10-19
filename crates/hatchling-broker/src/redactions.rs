@@ -13,7 +13,7 @@
 //!   `redactions override`: a verdict the operator marked wrong, for its
 //!   scope or every scope. The gate reads it on every flagged message.
 //! - `raw/`: when the operator opted in, each redacted message, sealed
-//!   under the master key, readable with `redactions raw`; and, always, the
+//!   under the store's key, readable with `redactions raw`; and, always, the
 //!   [`TagKey`], sealed the same way.
 
 use std::io::Write as _;
@@ -46,8 +46,8 @@ pub const ANY_SCOPE: &str = "*";
 /// The [`TagKey`]'s name in the redaction store. No event id has it.
 pub const TAG_KEY_NAME: &str = "audit-tag-key";
 
-/// The key the audit log's tags are made under: random, sealed under the
-/// master key in the redaction store, wiped when dropped. The log alone
+/// The key the audit log's tags are made under: random, sealed in the
+/// redaction store under its key, wiped when dropped. The log alone
 /// confirms no guess at a redacted message, however short.
 pub struct TagKey(Zeroizing<[u8; 32]>);
 

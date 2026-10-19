@@ -280,7 +280,7 @@ pub fn scoped_config(
 /// Launches scheduled runs as cells (see the module docs).
 ///
 /// The run sessions are threads on `scope`, the broker's own scope, so
-/// they borrow the broker's single master key rather than copying it.
+/// they borrow the broker's store keys rather than copying them.
 pub struct CellLauncher<'scope, 'env> {
     scope: &'scope Scope<'scope, 'env>,
     config: &'env Config,

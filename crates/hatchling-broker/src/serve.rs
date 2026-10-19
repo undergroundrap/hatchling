@@ -1055,7 +1055,7 @@ fn vault_op_result(
     // Authorized: only now may the vault be opened (and its root
     // created). The `0700`/owner validation runs on every op, so a
     // store tampered with mid-session fails closed on the next op.
-    // The sealed vault borrows the broker's single master key: bytes
+    // The sealed vault borrows the broker's store keys: bytes
     // on disk are ciphertext, and plaintext never touches the store.
     let vault =
         SealedVault::open(&vault_config.root, key).map_err(|source| Error::Vault { source })?;
@@ -1129,7 +1129,7 @@ fn vault_op_result(
 
 /// The credential lookup the broker hands the egress proxy: maps a
 /// destination to its vault secret name and decrypts the sealed
-/// credential with the broker's single master key. Unknown
+/// credential with the secrets store's key, which the broker holds. Unknown
 /// destinations, unparseable names, and undecryptable files all yield
 /// `None` — the proxy treats that as "no credential" and denies the
 /// destination rather than failing the session.
@@ -1142,8 +1142,8 @@ fn credential_fetcher(
         // the egress destination grant `handle_egress_op` checked
         // before we get here (and the proxy's allowlist), not a vault
         // grant: this is the broker's own read, and no vault grant may
-        // name the secret. The sealed vault borrows the broker's single
-        // master key.
+        // name the secret. The sealed vault borrows the broker's store
+        // keys.
         let secret_name = destination_to_secret_name(destination);
         let fetched = secret_name.parse::<SecretName>().ok().and_then(|name| {
             let vault = SealedVault::open(&vault_root, key).ok()?;

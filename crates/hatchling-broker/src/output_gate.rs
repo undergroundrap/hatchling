@@ -20,8 +20,8 @@
 //! The two built-ins are on by default; `HATCHLING_REDACTION_BUILTINS`
 //! names the ones to keep (`secret`, `private-key`, or `none`).
 //!
-//! The rules read the vault, which needs the master key, and the key has
-//! one owner that only lends it. So the rules run on a worker thread in the
+//! The rules read the vault, which needs the broker's store keys, and
+//! the keys have one owner that only lends them. So the rules run on a worker thread in the
 //! broker's own scope ([`RulesWorker::serve`]), borrowing the key, and the
 //! gate holds a [`RulesHandle`] that hands it work: the key is never
 //! copied or shared out.
@@ -80,7 +80,7 @@ pub struct RedactionConfig {
     /// Defaults to `<vault root>.redactions`.
     pub dir: PathBuf,
     /// `HATCHLING_REDACTION_KEEP_RAW`: keep each redacted message, sealed
-    /// under the master key. Off by default: the log holds hashes only.
+    /// under the redaction store's key. Off by default: the log holds hashes only.
     pub keep_raw: bool,
     /// `HATCHLING_REDACTION_TIMEOUT_MS`: how long the classifier may take.
     pub timeout: Duration,

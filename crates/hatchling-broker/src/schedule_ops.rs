@@ -2,7 +2,7 @@
 //! delivery path for scheduled output.
 //!
 //! **The store is sealed and broker-private.** It is a [`SealedVault`]
-//! under the broker's master key, at its own root
+//! under its own key, at its own root
 //! (`HATCHLING_SCHEDULER_DIR`). Config parsing keeps that root apart
 //! from the credential vault's, so no vault op or grant can name an
 //! entry. A cell creates a schedule and learns its id; it lists what
