@@ -268,22 +268,49 @@ fn refused(operation: &'static str, why: &str) -> Error {
 /// or the tree holds more than [`MAX_CHOWN_ENTRIES`] entries. The tree
 /// may then be partly changed: the caller treats it as unusable.
 pub fn chown_tree(path: &Path, uid: u32, gid: u32) -> Result<u64, Error> {
-    let root =
-        rustix::fs::open(path, DIR_FLAGS, Mode::empty()).map_err(changing("open the tree"))?;
+    chown_tree_within(path, uid, gid, Budget::of(MAX_CHOWN_ENTRIES))
+}
+
+/// [`chown_tree`], changing at most `budget`'s entries.
+fn chown_tree_within(path: &Path, uid: u32, gid: u32, mut budget: Budget) -> Result<u64, Error> {
+    let root = rustix::fs::open(path, DIR_FLAGS, Mode::empty()).map_err(changing("open the tree"))?;
     let top = look(&root, c"").map_err(changing("look at the tree"))?;
-    let mut count = 0;
-    change_dir(&root, top, uid, gid, &mut count)?;
-    chown_entries(&root, top.mount, uid, gid, &[top.id], &mut count)?;
-    Ok(count)
+    change_dir(&root, top, uid, gid, &mut budget)?;
+    chown_entries(&root, top.mount, uid, gid, &[top.id], &mut budget)?;
+    Ok(budget.used)
+}
+
+/// How many entries a walk has changed, and may.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Budget {
+    used: u64,
+    max: u64,
+}
+
+impl Budget {
+    /// None used, at most `max`.
+    const fn of(max: u64) -> Self {
+        Self { used: 0, max }
+    }
+
+    /// Counts one more entry.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Ownership`] once that is more than its `max`.
+    fn take(&mut self) -> Result<(), Error> {
+        self.used += 1;
+        if self.used > self.max {
+            return Err(refused("change the tree", "it holds too many entries"));
+        }
+        Ok(())
+    }
 }
 
 /// Gives the directory open at `dir`, which was `seen`, to `uid` and
 /// `gid`, with its owner's read, write and search bits; counts it.
-fn change_dir(dir: &OwnedFd, seen: Look, uid: u32, gid: u32, count: &mut u64) -> Result<(), Error> {
-    *count += 1;
-    if *count > MAX_CHOWN_ENTRIES {
-        return Err(refused("change the tree", "it holds too many entries"));
-    }
+fn change_dir(dir: &OwnedFd, seen: Look, uid: u32, gid: u32, budget: &mut Budget) -> Result<(), Error> {
+    budget.take()?;
     let (owner, group) = crate::ownership::ids(uid, gid);
     rustix::fs::fchown(dir, Some(owner), Some(group)).map_err(changing("chown a directory"))?;
     rustix::fs::fchmod(dir, Mode::from_raw_mode(seen.mode | 0o700))
@@ -298,7 +325,7 @@ fn chown_entries(
     uid: u32,
     gid: u32,
     above: &[DirId],
-    count: &mut u64,
+    budget: &mut Budget,
 ) -> Result<(), Error> {
     let entries = rustix::fs::Dir::read_from(dir).map_err(changing("read a directory"))?;
     let mut names = Vec::new();
@@ -312,10 +339,7 @@ fn chown_entries(
     for name in &names {
         let seen = look(dir, name).map_err(changing("look at an entry"))?;
         if !seen.directory {
-            *count += 1;
-            if *count > MAX_CHOWN_ENTRIES {
-                return Err(refused("change the tree", "it holds too many entries"));
-            }
+            budget.take()?;
             let (owner, group) = crate::ownership::ids(uid, gid);
             rustix::fs::chownat(
                 dir,
@@ -350,9 +374,9 @@ fn chown_entries(
                 "a directory changed under the walk",
             ));
         }
-        change_dir(&sub, seen, uid, gid, count)?;
+        change_dir(&sub, seen, uid, gid, budget)?;
         let deeper: Vec<DirId> = above.iter().copied().chain([seen.id]).collect();
-        chown_entries(&sub, mount, uid, gid, &deeper, count)?;
+        chown_entries(&sub, mount, uid, gid, &deeper, budget)?;
     }
     Ok(())
 }
@@ -818,6 +842,23 @@ mod tests {
         assert!(chown_tree(&root, uid, gid).is_ok());
         assert_eq!(mode(&outside), 0o500, "the symlink's target is left alone");
         set_mode(&outside, 0o700);
+    }
+
+    #[test]
+    fn a_tree_past_its_budget_is_refused() {
+        let mut budget = Budget::of(2);
+        assert!(budget.take().is_ok() && budget.take().is_ok());
+        assert!(budget.take().is_err(), "a third is one too many");
+        let scratch = scratch("chown-budget");
+        let root = scratch.0.join("root");
+        for name in ["a", "b", "c"] {
+            std::fs::write(root.join(name), b"x").unwrap();
+        }
+        let (uid, gid) = (crate::process::euid(), crate::process::egid());
+        // The root and its three files: four entries.
+        assert_eq!(chown_tree_within(&root, uid, gid, Budget::of(4)).unwrap(), 4);
+        let refused = chown_tree_within(&root, uid, gid, Budget::of(3)).unwrap_err();
+        assert!(refused.to_string().contains("too many entries"), "{refused}");
     }
 
     #[test]
