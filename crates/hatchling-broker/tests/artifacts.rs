@@ -1620,6 +1620,63 @@ fn the_owners_approval_in_the_app_builds_exactly_what_was_proposed() {
     );
 }
 
+/// WO-027: the worker's own steps, called directly. A request that isn't
+/// approved runs nothing; the broker's activation needs a confirmation it
+/// minted; what the owner is told reaches the local chat.
+#[test]
+fn the_workers_steps_run_only_what_was_approved_and_tell_the_owner() {
+    if !guard_cell_available().unwrap() {
+        return;
+    }
+    let world = World::new("approve-steps");
+    let board = approval_board::board(&world.config);
+    let told = approval_board::run_approved(
+        &board,
+        "approval-none",
+        &world.config,
+        key(),
+        &world.skills,
+        None,
+        NOW,
+    );
+    assert_eq!(told, "Approval approval-none was not run: it is no longer approved.");
+    let (idea, _) = saved(world.capture("Short zine", None));
+    let proposal = proposed(&world.propose(&idea, "page", PAGE_BUILDER, "a zine")).unwrap();
+    assert_eq!(
+        hatchling_broker::artifact_ops::activate_confirmed(
+            &world.config,
+            key(),
+            &world.skills,
+            None,
+            &proposal.activation,
+            "confirm-forged",
+            NOW,
+        ),
+        idea_refused(IdeaRefusal::NotConfirmed)
+    );
+    let token = world.confirm(&proposal.activation, NOW);
+    let reply = hatchling_broker::artifact_ops::activate_confirmed(
+        &world.config,
+        key(),
+        &world.skills,
+        None,
+        &proposal.activation,
+        &token,
+        NOW,
+    );
+    let record = world.record(&built(&reply));
+    assert_eq!(record.idea.as_ref(), Some(&proposal.idea));
+    let (hub, received) = hub_with_client();
+    approval_board::tell_owner(Some(&hub), "Approved: build idea x.");
+    assert!(
+        received
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|message| message.text == "Approved: build idea x.")
+    );
+}
+
 /// WO-027: an approval doesn't outlive what it approved. The idea changed
 /// after the owner approved it, so the worker builds nothing, and says so.
 #[test]

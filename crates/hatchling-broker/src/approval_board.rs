@@ -28,7 +28,7 @@ use hatchling_channel::LocalHub;
 use hatchling_core::ui::{
     ConfirmationField, ConfirmationRequest, Decision, DecisionRejection, FieldSource, UiEventBody,
 };
-use hatchling_core::{ActivationProposal, ArtifactResult};
+use hatchling_core::{ActivationProposal, ApprovalRefusal, ArtifactResult};
 use hatchling_scheduler::{Delivery as _, Timestamp};
 use hatchling_vault::MasterKey;
 use serde_json::json;
@@ -299,8 +299,24 @@ pub fn run_next(
     Some(told)
 }
 
-/// Runs approved request `id` once, at `now`: what the owner is told.
-fn run_approved(
+/// What the agent is told when its proposal wasn't put to the owner.
+#[must_use]
+pub fn refused_as(refusal: &Refusal) -> ApprovalRefusal {
+    match refusal {
+        Refusal::Denied => ApprovalRefusal::Denied,
+        Refusal::Paused => ApprovalRefusal::Paused,
+        Refusal::QueueFull => ApprovalRefusal::QueueFull,
+        Refusal::Unfrozen(_) | Refusal::Entropy => {
+            tracing::error!(error = %refusal, "an action could not be put to the owner");
+            ApprovalRefusal::Unavailable
+        }
+    }
+}
+
+/// Runs approved request `id` on `board` once, at `now`: what the owner is
+/// told. Nothing runs unless the request is approved and unclaimed.
+#[must_use]
+pub fn run_approved(
     board: &Board,
     id: &str,
     config: &Config,
@@ -372,7 +388,7 @@ fn run_approved(
 }
 
 /// Tells the owner `text` on the local channel, as the broker's.
-fn tell_owner(hub: Option<&LocalHub>, text: &str) {
+pub fn tell_owner(hub: Option<&LocalHub>, text: &str) {
     if let Err(error) = crate::schedule_ops::HubDelivery::new(hub).deliver("local", text) {
         tracing::warn!(%error, "an approval's outcome was not delivered");
     }
@@ -384,7 +400,7 @@ mod tests {
 
     use super::*;
 
-    fn empty() -> Board {
+    const fn empty() -> Board {
         Board {
             approvals: Approvals::new(),
             bus: Mutex::new(None),
@@ -566,6 +582,16 @@ mod tests {
             .decide(&requested.id, 1, &requested.digest, Decision::Approve, 101)
             .unwrap();
         assert_eq!(waiting.join().unwrap(), Some(requested.id));
+    }
+
+    #[test]
+    fn the_agent_is_told_why_the_owner_was_not_asked() {
+        assert_eq!(refused_as(&Refusal::Denied), ApprovalRefusal::Denied);
+        assert_eq!(refused_as(&Refusal::Paused), ApprovalRefusal::Paused);
+        assert_eq!(refused_as(&Refusal::QueueFull), ApprovalRefusal::QueueFull);
+        assert_eq!(refused_as(&Refusal::Entropy), ApprovalRefusal::Unavailable);
+        let unfrozen = Refusal::Unfrozen(hatchling_core::action::CanonicalError::Null);
+        assert_eq!(refused_as(&unfrozen), ApprovalRefusal::Unavailable);
     }
 
     /// With no app attached, nothing is published, and the ledger still
