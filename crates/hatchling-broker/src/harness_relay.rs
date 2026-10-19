@@ -95,6 +95,14 @@ impl Wire {
         }
     }
 
+    /// What goes before the key in its header's value.
+    const fn key_prefix(self) -> &'static str {
+        match self {
+            Self::Anthropic => "",
+            Self::OpenAi => "Bearer ",
+        }
+    }
+
     /// The key header's value for `key`.
     fn key_value(self, key: &str) -> Zeroizing<String> {
         match self {
@@ -626,33 +634,40 @@ fn upstream_head(
         .destination
         .strip_suffix(":443")
         .unwrap_or(&vendor.destination);
-    let mut head = Zeroizing::new(format!(
-        "{} {} HTTP/1.1\r\nHost: {host}\r\n",
-        request.method, request.target
-    ));
+    let length = length.to_string();
+    let mut parts: Vec<&str> = vec![
+        request.method.as_str(),
+        " ",
+        request.target.as_str(),
+        " HTTP/1.1\r\nHost: ",
+        host,
+        "\r\n",
+    ];
     for (name, value) in &request.headers {
         if !DROPPED
             .iter()
             .any(|dropped| name.eq_ignore_ascii_case(dropped))
         {
-            for part in [name.as_str(), ": ", value.as_str(), "\r\n"] {
-                head.push_str(part);
-            }
+            parts.extend([name.as_str(), ": ", value.as_str(), "\r\n"]);
         }
     }
     let wire = vendor.wire;
-    let length = length.to_string();
-    for part in [
+    parts.extend([
         wire.key_header(),
         ": ",
-        wire.key_value(key).as_str(),
+        wire.key_prefix(),
+        key,
         "\r\nAccept-Encoding: identity\r\nContent-Length: ",
         length.as_str(),
         "\r\nConnection: close\r\n\r\n",
-    ] {
-        head.push_str(part);
+    ]);
+    // One allocation at the exact size: the key is written once, into a
+    // buffer wiped when dropped, and no buffer it outgrew is left behind.
+    let mut head = Zeroizing::new(Vec::with_capacity(parts.iter().map(|part| part.len()).sum()));
+    for part in parts {
+        head.extend_from_slice(part.as_bytes());
     }
-    Zeroizing::new(head.as_bytes().to_vec())
+    head
 }
 
 /// Passes the vendor's answer back as it arrives: its head with the
@@ -1025,6 +1040,8 @@ mod tests {
         assert_eq!(Wire::OpenAi.key_header(), "authorization");
         assert_eq!(Wire::Anthropic.key_value("k").as_str(), "k");
         assert_eq!(Wire::OpenAi.key_value("k").as_str(), "Bearer k");
+        assert_eq!(Wire::Anthropic.key_prefix(), "");
+        assert_eq!(Wire::OpenAi.key_prefix(), "Bearer ");
     }
 
     #[test]
@@ -1261,6 +1278,9 @@ mod tests {
             "GET /v1/models HTTP/1.1\r\nHost: localhost:8443\r\n\
              authorization: Bearer real\r\nAccept-Encoding: identity\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
         );
+        // Allocated once, at its exact size: never grown, so no copy of the
+        // key was left behind in a buffer it outgrew.
+        assert_eq!(bytes.capacity(), bytes.len());
     }
 
     #[test]

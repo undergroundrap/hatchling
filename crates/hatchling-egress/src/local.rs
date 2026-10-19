@@ -21,6 +21,8 @@ use std::io::{BufRead, BufReader, Read, Write as _};
 use std::net::{SocketAddr, TcpStream};
 use std::time::Duration;
 
+use zeroize::Zeroizing;
+
 use crate::allowlist::is_pinned_loopback;
 use crate::proxy::{EgressRequest, EgressResponse, MAX_RESPONSE_BYTES};
 use crate::{Error, Result};
@@ -118,7 +120,14 @@ fn verify_peer(peer: &SocketAddr, pinned: &[SocketAddr]) -> Result<()> {
 /// Frames the request: the request line, the proxy's own `Host`,
 /// `Connection` and `Content-Length`, the credential if any, the
 /// agent's headers, and the body.
-pub(crate) fn request_bytes(request: &EgressRequest, credential: Option<&[u8]>) -> Result<Vec<u8>> {
+///
+/// The credential is written once, into a buffer allocated at the
+/// request's exact size and wiped when dropped: no copy of it is left in
+/// freed memory, by a reallocation or otherwise.
+pub(crate) fn request_bytes(
+    request: &EgressRequest,
+    credential: Option<&[u8]>,
+) -> Result<Zeroizing<Vec<u8>>> {
     if request
         .path
         .bytes()
@@ -136,15 +145,12 @@ pub(crate) fn request_bytes(request: &EgressRequest, credential: Option<&[u8]>) 
         request.body.len()
     );
     if let Some(credential) = credential {
-        let credential = std::str::from_utf8(credential)
-            .ok()
-            .filter(|credential| is_field_value(credential))
-            .ok_or_else(|| {
-                tracing::warn!("egress credential cannot travel in a header");
-                Error::UpstreamFailed
-            })?;
-        let _ = write!(head, "Authorization: Bearer {credential}\r\n");
+        if !std::str::from_utf8(credential).is_ok_and(is_field_value) {
+            tracing::warn!("egress credential cannot travel in a header");
+            return Err(Error::UpstreamFailed);
+        }
     }
+    let mut tail = String::new();
     for (name, value) in &request.headers {
         if UNCOMPRESSED_ONLY
             .iter()
@@ -160,13 +166,29 @@ pub(crate) fn request_bytes(request: &EgressRequest, credential: Option<&[u8]>) 
         {
             return Err(Error::InvalidSurrogate);
         }
-        let _ = write!(head, "{name}: {value}\r\n");
+        let _ = write!(tail, "{name}: {value}\r\n");
     }
-    head.push_str("\r\n");
-    let mut bytes = head.into_bytes();
+    tail.push_str("\r\n");
+    let credential = credential.map(|credential| [AUTHORIZATION, credential, CRLF]);
+    let size = head.len()
+        + credential.map_or(0, |line| line.iter().map(|part| part.len()).sum())
+        + tail.len()
+        + request.body.len();
+    let mut bytes = Zeroizing::new(Vec::with_capacity(size));
+    bytes.extend_from_slice(head.as_bytes());
+    for part in credential.iter().flatten() {
+        bytes.extend_from_slice(part);
+    }
+    bytes.extend_from_slice(tail.as_bytes());
     bytes.extend_from_slice(&request.body);
     Ok(bytes)
 }
+
+/// The credential's header, up to the credential itself.
+const AUTHORIZATION: &[u8] = b"Authorization: Bearer ";
+
+/// A header line's end.
+const CRLF: &[u8] = b"\r\n";
 
 /// An HTTP token (a header name): non-empty, visible, no separators.
 fn is_token(name: &str) -> bool {
@@ -445,12 +467,16 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert_eq!(
-            String::from_utf8(bytes).unwrap(),
+            String::from_utf8(bytes.to_vec()).unwrap(),
             "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost:11434\r\nConnection: close\r\nAccept-Encoding: identity\r\nContent-Length: 2\r\nAuthorization: Bearer local-key\r\ncontent-type: application/json\r\n\r\n{}"
         );
+        // Allocated once, at its exact size: never grown, so no copy of the
+        // credential was left behind in a buffer it outgrew.
+        assert_eq!(bytes.capacity(), bytes.len());
         let keyless = request_bytes(&request("GET", &[], b""), None).unwrap();
+        assert_eq!(keyless.capacity(), keyless.len());
         assert_eq!(
-            String::from_utf8(keyless).unwrap(),
+            String::from_utf8(keyless.to_vec()).unwrap(),
             "GET /v1/chat/completions HTTP/1.1\r\nHost: localhost:11434\r\nConnection: close\r\nAccept-Encoding: identity\r\nContent-Length: 0\r\n\r\n"
         );
     }
