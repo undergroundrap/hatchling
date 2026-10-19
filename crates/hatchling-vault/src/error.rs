@@ -68,10 +68,12 @@ pub enum Error {
         name: hatchling_core::SecretName,
     },
 
-    /// A file is a version-1 envelope, which names neither its secret nor
-    /// its store: read only by the migration that re-seals it.
+    /// A file is an older envelope: version 1, which names neither its
+    /// secret nor its store, or version 2, sealed under the master key
+    /// rather than its store's key. Read only by the migration that
+    /// re-seals it.
     #[error(
-        "secret {name} is an old (v1) sealed envelope; run hatchling-broker migrate-vault to re-seal it"
+        "secret {name} is an older sealed envelope (v1 or v2); run hatchling-broker migrate-vault to re-seal it"
     )]
     OldEnvelope {
         /// The name that was looked up.
@@ -106,6 +108,32 @@ pub enum Error {
     Malformed {
         /// The name that was looked up.
         name: hatchling_core::SecretName,
+    },
+
+    /// A store's key file is missing while the store holds files sealed
+    /// under it: they can't be opened (WO-017).
+    #[error(
+        "the {store} store's key file (.store-key) is missing, so its sealed files can't be opened; restore it from the backup it was made with"
+    )]
+    StoreKeyMissing {
+        /// The store.
+        store: &'static str,
+    },
+
+    /// A store's key file isn't a wrapped store key.
+    #[error("the {store} store's key file (.store-key) is not a wrapped store key")]
+    StoreKeyMalformed {
+        /// The store.
+        store: &'static str,
+    },
+
+    /// A store's key didn't unwrap under the master key. One generic error
+    /// covers a wrong master key and a changed file, as
+    /// [`DecryptFailed`](Error::DecryptFailed) does for a secret.
+    #[error("could not unwrap the {store} store's key: wrong key, or the file was changed")]
+    StoreKeyRefused {
+        /// The store.
+        store: &'static str,
     },
 
     /// Envelope authentication failed. One generic error covers a wrong
@@ -314,6 +342,18 @@ mod tests {
             (
                 Error::NeedBackupCodes,
                 "run vault-keyring backup-codes before enrolling a single security key",
+            ),
+            (
+                Error::StoreKeyRefused { store: "secrets" },
+                "could not unwrap the secrets store's key: wrong key, or the file was changed",
+            ),
+            (
+                Error::StoreKeyMissing { store: "spaces" },
+                "the spaces store's key file (.store-key) is missing",
+            ),
+            (
+                Error::StoreKeyMalformed { store: "schedules" },
+                "the schedules store's key file (.store-key) is not a wrapped store key",
             ),
             (
                 Error::NoSuchKey,

@@ -240,10 +240,11 @@ fn stored_secret_is_sealed_on_disk_and_fetch_decrypts() {
     send_op(&client, &store_op("app-token", secret)).unwrap();
     assert_eq!(read_result(&client).unwrap(), VaultResult::Stored);
 
-    // On-disk proof: a versioned `HVL2` envelope — magic, 24-byte
-    // nonce, ciphertext+tag — with no plaintext bytes anywhere.
+    // On-disk proof: a versioned `HVL3` envelope (sealed under the
+    // store's own key) — magic, 24-byte nonce, ciphertext+tag — with no
+    // plaintext bytes anywhere.
     let raw = std::fs::read(root.join("app-token")).unwrap();
-    assert_eq!(raw.get(..4), Some(b"HVL2".as_slice()));
+    assert_eq!(raw.get(..4), Some(b"HVL3".as_slice()));
     assert_eq!(raw.len(), 4 + 24 + secret.len() + 16);
     assert!(
         !raw.windows(secret.len()).any(|window| window == secret),

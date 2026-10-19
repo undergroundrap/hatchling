@@ -292,8 +292,7 @@ mod tests {
         let again = load_master_key(&vault).unwrap();
         assert!(
             SealedVault::open(&vault.root, &again)
-                .unwrap()
-                .fetch(&name)
+                .and_then(|vault| vault.fetch(&name))
                 .is_ok(),
             "the same key, again"
         );
@@ -374,8 +373,7 @@ mod tests {
         // Under another store's label, it does not open.
         assert!(
             SealedVault::open(&dir.0.join("spaces"), &key)
-                .unwrap()
-                .fetch(&"team-7".parse().unwrap())
+                .and_then(|vault| vault.fetch(&"team-7".parse().unwrap()))
                 .is_err()
         );
         // Scheduling off and no output gate: those two aren't kept.
@@ -402,8 +400,7 @@ mod tests {
         let name: SecretName = "tok".parse().unwrap();
         let fetch = |key: &MasterKey| {
             SealedVault::open(&config.vault.root, key)
-                .unwrap()
-                .fetch(&name)
+                .and_then(|vault| vault.fetch(&name))
                 .map(|secret| secret.as_bytes().to_vec())
         };
         // migrate-vault seals the configured store under the configured key.
@@ -481,15 +478,13 @@ mod tests {
         let new = FileKey::new(keys.join("new")).load().unwrap();
         for (store, root) in &stores {
             let under = |key: &MasterKey| {
-                SealedVault::open_in(root, key, *store)
-                    .unwrap()
-                    .fetch(&name)
+                SealedVault::open_in(root, key, *store).and_then(|vault| vault.fetch(&name))
             };
             assert_eq!(under(&new).unwrap().as_bytes(), store.label().as_bytes());
             assert!(
                 matches!(
                     under(&old),
-                    Err(hatchling_vault::Error::DecryptFailed { .. })
+                    Err(hatchling_vault::Error::StoreKeyRefused { .. })
                 ),
                 "{} still opens under the old key",
                 store.label()
@@ -564,8 +559,7 @@ mod tests {
         assert!(!new_key.exists(), "no new key was made");
         assert_eq!(
             SealedVault::open(&config.vault.root, &key)
-                .unwrap()
-                .fetch(&name)
+                .and_then(|vault| vault.fetch(&name))
                 .unwrap()
                 .as_bytes(),
             b"kept",
@@ -602,8 +596,7 @@ mod tests {
         assert_eq!(again.first().map(|(_, report)| report.skipped), Some(1));
         assert!(
             SealedVault::open_in(&dir.0.join("spaces"), &new, Store::SPACES)
-                .unwrap()
-                .fetch(&name)
+                .and_then(|vault| vault.fetch(&name))
                 .is_ok()
         );
     }

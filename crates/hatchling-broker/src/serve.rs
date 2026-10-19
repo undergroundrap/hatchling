@@ -1618,7 +1618,7 @@ mod tests {
     }
 
     /// `credential_fetcher` decrypts through the sealed vault with the
-    /// broker's key: the on-disk bytes are an `HVL2` envelope (no
+    /// broker's key: the on-disk bytes are an `HVL3` envelope (no
     /// plaintext), and the fetcher returns the cleartext credential
     /// for the mapped destination. Pins the wiring — a mutant
     /// that reads the vault unsealed (or with the wrong key) makes the
@@ -1641,7 +1641,7 @@ mod tests {
 
         // On-disk proof of sealing: versioned envelope, no plaintext.
         let raw = std::fs::read(dir.join("egress-example-com-443")).unwrap();
-        assert_eq!(raw.get(..4), Some(b"HVL2".as_slice()));
+        assert_eq!(raw.get(..4), Some(b"HVL3".as_slice()));
         assert!(
             !raw.windows(b"credential-123".len())
                 .any(|window| window == b"credential-123"),

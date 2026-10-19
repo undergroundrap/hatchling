@@ -161,7 +161,7 @@ fn rekey_vault_without_new_key_file_is_usage_error() {
 }
 
 /// `migrate-vault` encrypts a plaintext store in place: the file that
-/// held raw bytes becomes an `HVL2` envelope, and the report says so.
+/// held raw bytes becomes an `HVL3` envelope, and the report says so.
 #[test]
 fn migrate_vault_seals_plaintext_store() {
     let scratch = scratch_dir("migrate").unwrap();
@@ -191,7 +191,7 @@ fn migrate_vault_seals_plaintext_store() {
     );
     let sealed = std::fs::read(vault_dir.join("tok")).unwrap();
     assert!(
-        sealed.starts_with(b"HVL2"),
+        sealed.starts_with(b"HVL3"),
         "migrated file is not a sealed envelope"
     );
     assert_ne!(
@@ -296,12 +296,11 @@ fn rekey_vault_rotates_key() {
     let old_key = read_key_file(&old_key_file).unwrap();
     let new_key_bytes = read_key_file(&new_key).unwrap();
     let name: hatchling_vault::SecretName = "tok".parse().unwrap();
-    let old_err = hatchling_vault::SealedVault::open(&vault_dir, &old_key)
-        .unwrap()
-        .fetch(&name)
-        .unwrap_err();
+    // The store's key no longer unwraps under the old key, so the store
+    // doesn't open.
+    let old_err = hatchling_vault::SealedVault::open(&vault_dir, &old_key).unwrap_err();
     assert!(
-        matches!(old_err, hatchling_vault::Error::DecryptFailed { .. }),
+        matches!(old_err, hatchling_vault::Error::StoreKeyRefused { .. }),
         "old key should fail closed, got: {old_err:?}"
     );
     let secret = hatchling_vault::SealedVault::open(&vault_dir, &new_key_bytes)
