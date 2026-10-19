@@ -13,6 +13,7 @@ use hatchling_core::{
 };
 
 use crate::Error;
+use crate::cell::CellIds;
 use crate::environment as env;
 
 /// Default socket mode: owner-only. The fail-closed default — the
@@ -1445,7 +1446,7 @@ fn parse_agent_uid(
                     reason: String::from("expected a kernel uid as a base-10 u32"),
                 })?
         }
-        None if crate::cell::CellIds::parse(get)? == crate::cell::CellIds::Subordinate => {
+        None if CellIds::parse(get)? == CellIds::Subordinate => {
             PeerUid::from_kernel(subordinate()?)
         }
         None => return Err(Error::MissingConfig("HATCHLING_AGENT_UID")),
