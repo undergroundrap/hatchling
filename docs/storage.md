@@ -25,7 +25,7 @@ Deleting any of these loses credentials or history. Each lives where its setting
 | `HATCHLING_HARNESS_ROOTS` | Your projects, where a coding harness may work. Hatchling doesn't own them: a harness run changes files there as you asked it to. |
 | `HATCHLING_REDACTION_DIR` | The output gate's audit log (`audit.log`), your overrides (`overrides`), your categories (`categories`), and `raw/`: kept redacted messages and the audit log's tag key, sealed. |
 
-Every sealed store (the vault, schedules, artifacts, spaces and `raw/`) holds `.store-key`: the store's own key, wrapped under the master key. The store's files are sealed under it, so a store without its `.store-key` can't be read, even with the master key. During a `rekey-vault`, `.store-key.next` holds the new one; a rerun finishes the change.
+Every sealed store (the vault, schedules, artifacts, spaces and `raw/`) holds `.store-key`: the store's own key, wrapped under the master key. The store's files are sealed under it, so a store without its `.store-key` can't be read, even with the master key. During a `rekey-vault`, `.store-key.next` holds the new one; a rerun finishes the change. The broker unwraps each store's key when it starts and then drops the master key: while it serves, it holds only the keys of the stores it was configured with.
 
 ## Disposable
 

@@ -1312,8 +1312,14 @@ mod tests {
         let taken = request_followup(&scope, &master, "check again", 60, &[], now);
         release_followup(&scope.run);
         let _ = std::fs::remove_dir_all(&root);
-        assert!(matches!(failed, ScheduleResult::ScheduleError), "{failed:?}");
-        assert!(matches!(created, ScheduleResult::Created { .. }), "{created:?}");
+        assert!(
+            matches!(failed, ScheduleResult::ScheduleError),
+            "{failed:?}"
+        );
+        assert!(
+            matches!(created, ScheduleResult::Created { .. }),
+            "{created:?}"
+        );
         assert!(
             matches!(
                 taken,

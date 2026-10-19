@@ -373,7 +373,10 @@ mod tests {
         let creds = peer_credentials(&broker).unwrap();
         let ended = serve_ops(&broker, &config, &key, creds, String::from("dev-bad"));
         drop(broker);
-        assert!(matches!(ended, Err(Error::SessionProtocol { .. })), "{ended:?}");
+        assert!(
+            matches!(ended, Err(Error::SessionProtocol { .. })),
+            "{ended:?}"
+        );
         device
             .set_read_timeout(Some(std::time::Duration::from_secs(5)))
             .unwrap();
