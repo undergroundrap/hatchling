@@ -309,6 +309,9 @@ jobs:
 
       # Root makes the PID namespace (it ends every process the README
       # starts), then drops to the runner user for the README's commands.
+      # sudo leaves a hard core limit of 0, which a login session doesn't,
+      # and a cell can't raise it without root where core dumps go to a
+      # crash handler (apport here): prlimit puts the session's back.
       - name: Run the README commands without root
         env:
           RUSTUP_TOOLCHAIN: 1.98.1
@@ -320,6 +323,7 @@ jobs:
             "RUSTUP_TOOLCHAIN=$RUSTUP_TOOLCHAIN" \
             "PLAYWRIGHT_BROWSERS_PATH=$HOME/.cache/ms-playwright" \
             unshare --mount --pid --fork --kill-child --mount-proc \
+            prlimit --core=0:unlimited \
             setpriv --reuid="$(id -u)" --regid="$(id -g)" --init-groups \
             python3 scripts/readme_quickstart.py "$PWD" \
               "$RUNNER_TEMP/rootless-logs" "$task_work" \
