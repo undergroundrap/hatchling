@@ -24,6 +24,9 @@ tracing = "0.1"
 hatchling-sys.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The digest an approval binds (WO-027): SHA-256 over an action's canonical
+# form. Already reviewed for the workspace: docs/dependency-review.md
+sha2 = "0.10"
 # Standard base64 engine for the secret codec: secrets are arbitrary
 # bytes, the wire protocol is framed JSON. One engine, pinned here in
 # the contract crate, used by the agent (encode) and the broker (decode).

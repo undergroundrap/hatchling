@@ -13,6 +13,7 @@
 //! configuration, and no opinions about what runs on either end of the
 //! socket — the agent and the broker each add their own behavior.
 
+pub mod action;
 pub mod cli;
 pub mod conversation;
 pub mod error;

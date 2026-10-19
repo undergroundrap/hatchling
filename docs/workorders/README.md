@@ -60,6 +60,7 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | [024](workorder-024-two-guards-on-every-delete.md) | Two guards on every delete and signal | yes | DONE |
 | [025](workorder-025-durable-scheduled-runs.md) | Scheduled runs and their results survive a crash or a failed write | yes | QUEUED |
 | [026](workorder-026-conversation-continuity.md) | Conversation continuity: the broker keeps the chat, a cell can't write it | yes | IN-PROGRESS |
+| [027](workorder-027-approvals.md) | Approvals delivered to the owner: a frozen action, decided in the app, run by the broker | yes | IN-PROGRESS |
 
 ## Candidates
 
@@ -99,7 +100,7 @@ Not yet WOs. Each gets a full file, with a scope and acceptance criteria, before
   - memory that conflicts with a correction.
 
   Track task success, recovery, unauthorized attempts, latency and tokens, in repeated trials where the model varies.
-- **Approvals delivered to the user, with scoped grants.** Approval requests reach the user in the client, outside the conversation with the agent, so an injected agent can't argue its way to a yes; a grant can be one-time, session-, task- or time-bounded, or standing, and later requests must match its scope exactly. The broker already mints approvals through a path no agent session reaches; this adds the delivery and the scopes (and needs the live frontend, WO-021). The UI's decide action still answers `Unavailable`. Each approval binds to the exact operation it allows: the principal and task, the service, account and resource, the action and a digest of its arguments, its expiry and how many uses. The broker checks that same binding at the moment of execution, so a changed recipient or payload needs a new approval. The binding is the broker's own record of a typed action:
+- **Approvals delivered to the user, with scoped grants**, now [WO-027](workorder-027-approvals.md). Approval requests reach the user in the client, outside the conversation with the agent, so an injected agent can't argue its way to a yes; a grant can be one-time, session-, task- or time-bounded, or standing, and later requests must match its scope exactly. The broker already mints approvals through a path no agent session reaches; this adds the delivery and the scopes (and needs the live frontend, WO-021). The UI's decide action still answers `Unavailable`. Each approval binds to the exact operation it allows: the principal and task, the service, account and resource, the action and a digest of its arguments, its expiry and how many uses. The broker checks that same binding at the moment of execution, so a changed recipient or payload needs a new approval. The binding is the broker's own record of a typed action:
   - its arguments are parsed strictly (duplicate keys after unescaping, unknown fields, and inexact numbers refused) and normalized per field;
   - the record is frozen with the tool's version and the account it acts as;
   - its digest is SHA-256 over a domain tag and the action's RFC 8785 canonical JSON.
