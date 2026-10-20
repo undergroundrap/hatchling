@@ -1955,8 +1955,7 @@ mod tests {
             .unwrap();
         assert_eq!(retried.next_due, now.as_second());
         assert!(retried.ledger.occurrence.is_none());
-        assert!(!store.retry("sch-none", now).unwrap());
-        assert!(!store.mark_resolved("sch-none").unwrap());
+        assert!(!store.retry("sch-none", now).unwrap() && !store.mark_resolved("sch-none").unwrap());
     }
 
     /// Parked results (WO-025, part 2): listed with their ids, a page at

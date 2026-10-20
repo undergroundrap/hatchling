@@ -190,19 +190,12 @@ impl Launcher for Counting {
     }
 }
 
-/// A broker killed after its fire's run launched comes back with that
-/// fire of unknown outcome: held, shown to the owner, run again only when
-/// the owner retries it, and never resolved by a cell.
-#[test]
-fn a_fire_in_flight_when_the_broker_is_killed_is_held_as_unknown() {
-    if std::env::var_os(BASE).is_some() || !guard_cell_available().unwrap() {
-        return;
-    }
-    let base = base("killed");
-    let config = config(&base);
+/// Starts the killed broker over `base`, and kills it with `SIGKILL` once
+/// its fire's run is out.
+fn kill_once_running(base: &Path) {
     let mut broker = Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "a_child", "--nocapture", "--test-threads=1"])
-        .env(BASE, &*base)
+        .env(BASE, base)
         .env("TMPDIR", base.join("tmp"))
         .stdout(Stdio::piped())
         .spawn()
@@ -226,10 +219,20 @@ fn a_fire_in_flight_when_the_broker_is_killed_is_held_as_unknown() {
     };
     broker.kill().unwrap();
     broker.wait().unwrap();
-    assert!(
-        running,
-        "the killed broker never ran its fire; it said {told:?}"
-    );
+    assert!(running, "the killed broker never ran its fire; it said {told:?}");
+}
+
+/// A broker killed after its fire's run launched comes back with that
+/// fire of unknown outcome: held, shown to the owner, run again only when
+/// the owner retries it, and never resolved by a cell.
+#[test]
+fn a_fire_in_flight_when_the_broker_is_killed_is_held_as_unknown() {
+    if std::env::var_os(BASE).is_some() || !guard_cell_available().unwrap() {
+        return;
+    }
+    let base = base("killed");
+    let config = config(&base);
+    kill_once_running(&base);
 
     // The next broker's start.
     let key = key(&config);
