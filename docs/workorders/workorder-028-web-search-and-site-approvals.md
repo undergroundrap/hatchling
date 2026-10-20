@@ -60,7 +60,7 @@ Merged in parts:
 - part 2 (site grants and `web_fetch`): #151;
 - part 3 (search): #152;
 - part 4a (the app's *Allow for task*): #153;
-- part 4b (*Allow always*, kept, listed and revoked): PART4B_PR.
+- part 4b (*Allow always*, kept, listed and revoked): #154.
 
 Each was gated in the disposable sandbox (WSL2, uid 2001, gid 2501): fmt, clippy on 1.98.1 and 1.85.0, the preflight, `check.sh` with `HATCHLING_REQUIRE_CELL=1` on both toolchains, hand mutants, and mutation on the changed lines (0 missed, 0 timeouts in every Rust part); the frontend's `npm run check` at 100% coverage. The criteria:
 
