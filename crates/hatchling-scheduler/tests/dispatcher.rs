@@ -14,9 +14,9 @@ use std::rc::Rc;
 
 use hatchling_core::{HookSource, ScheduleGrant, ScheduleSpec};
 use hatchling_scheduler::{
-    Delivery, Dispatcher, FollowupParent, Hook, Launcher, MAX_FOLLOWUP_DEPTH, MISSED_GRACE_SECS,
-    Parked, Run, RunRequest, Schedule, Services, Store, TickReport, Timestamp, validate,
-    validate_followup, validate_space_task,
+    Claim, Delivery, Dispatcher, FollowupParent, Hook, Launcher, MAX_FOLLOWUP_DEPTH,
+    MISSED_GRACE_SECS, Occurrence, OccurrenceState, Parked, Run, RunRequest, Schedule, Services,
+    Store, TickReport, Timestamp, validate, validate_followup, validate_space_task,
 };
 
 /// An in-memory store.
@@ -48,6 +48,21 @@ impl MemStore {
         self.schedules.borrow().contains_key(id)
             || self.parked.borrow().iter().any(|parked| parked.schedule_id == id)
     }
+
+    /// Applies `change` to the latest record of `id` when it still holds
+    /// the fire due at `due`, moving its revision on.
+    fn change_fire(&self, id: &str, due: i64, change: impl FnOnce(&mut Schedule)) -> bool {
+        let mut schedules = self.schedules.borrow_mut();
+        let Some(stored) = schedules.get_mut(id) else {
+            return false;
+        };
+        if stored.ledger.occurrence.as_ref().map(|fire| fire.due) != Some(due) {
+            return false;
+        }
+        change(stored);
+        stored.ledger.revision += 1;
+        true
+    }
 }
 
 impl Store for MemStore {
@@ -57,15 +72,96 @@ impl Store for MemStore {
         Ok(self.schedules.borrow().values().cloned().collect())
     }
 
-    fn update(&self, schedule: &Schedule) -> Result<bool, String> {
+    fn claim_due(
+        &self,
+        id: &str,
+        revision: u64,
+        due: i64,
+        next_due: Option<i64>,
+        missed: bool,
+    ) -> Result<Claim, String> {
         if self.fails("cadence") {
             return Err(String::from("the disk is full"));
         }
         let mut schedules = self.schedules.borrow_mut();
-        Ok(schedules
-            .get_mut(&schedule.id)
-            .map(|stored| *stored = schedule.clone())
-            .is_some())
+        let Some(stored) = schedules.get_mut(id) else {
+            return Ok(Claim::NotDue);
+        };
+        if stored.ledger.revision != revision || stored.next_due != due || stored.ledger.exhausted {
+            return Ok(Claim::NotDue);
+        }
+        if stored.ledger.occurrence.is_some() {
+            return Ok(Claim::Full);
+        }
+        stored.ledger.occurrence = Some(Occurrence {
+            due,
+            missed,
+            state: OccurrenceState::Claimed,
+        });
+        match next_due {
+            Some(next) => stored.next_due = next,
+            None => stored.ledger.exhausted = true,
+        }
+        stored.ledger.revision += 1;
+        Ok(Claim::Claimed)
+    }
+
+    fn skip_due(
+        &self,
+        id: &str,
+        revision: u64,
+        due: i64,
+        next_due: Option<i64>,
+    ) -> Result<bool, String> {
+        if self.fails("cadence") {
+            return Err(String::from("the disk is full"));
+        }
+        let mut schedules = self.schedules.borrow_mut();
+        let Some(stored) = schedules.get_mut(id) else {
+            return Ok(false);
+        };
+        if stored.ledger.revision != revision || stored.next_due != due {
+            return Ok(false);
+        }
+        match next_due {
+            Some(next) => stored.next_due = next,
+            None => stored.ledger.exhausted = true,
+        }
+        stored.ledger.revision += 1;
+        Ok(true)
+    }
+
+    fn record(&self, id: &str, due: i64, state: OccurrenceState) -> Result<bool, String> {
+        Ok(self.change_fire(id, due, |stored| {
+            if let Some(fire) = stored.ledger.occurrence.as_mut() {
+                fire.state = state;
+            }
+        }))
+    }
+
+    fn resolve(&self, id: &str, due: i64, parked: Option<&Parked>) -> Result<bool, String> {
+        let holds = self
+            .schedules
+            .borrow()
+            .get(id)
+            .and_then(|stored| stored.ledger.occurrence.as_ref())
+            .is_some_and(|fire| fire.due == due);
+        if !holds {
+            return Ok(false);
+        }
+        if let Some(parked) = parked {
+            self.park(parked)?;
+        }
+        let exhausted = self.change_fire(id, due, |stored| stored.ledger.occurrence = None)
+            && self
+                .schedules
+                .borrow()
+                .get(id)
+                .is_some_and(|stored| stored.ledger.exhausted);
+        if exhausted {
+            self.schedules.borrow_mut().remove(id);
+        }
+        Ok(true)
     }
 
     fn remove(&self, id: &str) -> Result<bool, String> {

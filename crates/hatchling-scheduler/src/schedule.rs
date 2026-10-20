@@ -155,14 +155,98 @@ pub struct Schedule {
     /// Who created it (see [`Creator`]). Broker-set; never on the wire.
     #[serde(default)]
     pub creator: Creator,
+    /// Its claimed fire, until that fire is resolved (WO-025). Broker-set;
+    /// never on the wire.
+    #[serde(default)]
+    pub ledger: Ledger,
 }
 
 impl Schedule {
-    /// The next fire as a timestamp.
+    /// The next fire as a timestamp: none once a one-shot's fire is
+    /// claimed.
     #[must_use]
     pub fn due(&self) -> Option<Timestamp> {
+        if self.ledger.exhausted {
+            return None;
+        }
         Timestamp::from_second(self.next_due).ok()
     }
+}
+
+/// What a schedule's record keeps beside its definition (WO-025): its
+/// claimed fire, from the claim until the fire's result is delivered or
+/// kept for the user.
+///
+/// A record holds one unresolved fire at most. A fire is claimed in the
+/// same write that moves the cadence on, so one never happens without the
+/// other, and the run is launched only once that write is committed. While
+/// a fire's run is claimed or running, a later fire is skipped; while its
+/// result waits to be delivered, a later fire's claim is refused. So a
+/// record stays within one stored result, and nothing unresolved is ever
+/// dropped to make room.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ledger {
+    /// Moves on with every write of the record: a claim made from an
+    /// older read of it is refused.
+    #[serde(default)]
+    pub revision: u64,
+    /// A one-shot whose fire has been claimed: never due again, and
+    /// removed once that fire is resolved.
+    #[serde(default)]
+    pub exhausted: bool,
+    /// The claimed fire not yet resolved, if there is one.
+    #[serde(default)]
+    pub occurrence: Option<Occurrence>,
+}
+
+/// One fire of a schedule, from its claim until it is resolved (WO-025).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Occurrence {
+    /// When it was due, in Unix seconds: with the schedule's id, it names
+    /// the fire.
+    pub due: i64,
+    /// Whether it was claimed late, because the broker missed it.
+    pub missed: bool,
+    /// Where it has got to.
+    pub state: OccurrenceState,
+}
+
+/// Where a claimed fire has got to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "kebab-case")]
+pub enum OccurrenceState {
+    /// Claimed, and its cadence moved on. A claim doesn't prove the run
+    /// began.
+    Claimed,
+    /// Its run was started.
+    Running,
+    /// Its run ended, or never started: the result, kept until it is
+    /// delivered or parked. A result is stored before it is delivered.
+    Finished {
+        /// What the run came to.
+        outcome: Outcome,
+    },
+}
+
+/// What a fire's run came to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "kebab-case")]
+pub enum Outcome {
+    /// Its output, to deliver.
+    Output {
+        /// The output.
+        text: String,
+    },
+    /// It failed.
+    Failed {
+        /// Why.
+        reason: String,
+    },
+    /// It didn't start.
+    NotStarted {
+        /// Why.
+        reason: String,
+    },
 }
 
 /// A create, validated against the creator's grants at `now`: the
@@ -205,6 +289,7 @@ pub fn validate(
         space: None,
         feed: None,
         creator: Creator::Owner,
+        ledger: Ledger::default(),
     })
 }
 

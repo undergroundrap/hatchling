@@ -38,13 +38,13 @@ pub mod schedule;
 
 pub use cron::{CronError, CronExpr};
 pub use dispatcher::{
-    Delivery, Dispatcher, Launcher, MISSED_GRACE_SECS, Parked, Run, RunRequest, Services, Store,
-    TickReport,
+    Claim, Delivery, Dispatcher, Launcher, MISSED_GRACE_SECS, Parked, Run, RunRequest, Services,
+    Store, TickReport,
 };
 pub use hook::{Hook, Sources, validate_hook};
 pub use jiff::Timestamp;
 pub use schedule::{
     Creator, FollowupParent, MAX_FOLLOWUP_DELAY_SECS, MAX_FOLLOWUP_DEPTH, MAX_GRANTS,
-    MAX_TASK_BYTES, Schedule, Timing, effective_grants, validate, validate_followup,
-    validate_space_task,
+    MAX_TASK_BYTES, Ledger, Occurrence, OccurrenceState, Outcome, Schedule, Timing,
+    effective_grants, validate, validate_followup, validate_space_task,
 };
