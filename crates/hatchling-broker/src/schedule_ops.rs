@@ -1848,9 +1848,7 @@ mod tests {
     /// A scheduler config in a scratch directory with two hourly schedules,
     /// `sch-a` and `sch-b`, whose fires were claimed by a broker that then
     /// died: the config, its key, and the directory to keep alive.
-    fn claimed_then_died(
-        name: &str,
-    ) -> (Config, crate::api_auth::tests::Scratch, MasterKey) {
+    fn claimed_then_died(name: &str) -> (Config, crate::api_auth::tests::Scratch, MasterKey) {
         let mut config = crate::api_auth::tests::owner_config(None);
         let dir = crate::api_auth::tests::scratch(name);
         config.scheduler = crate::SchedulerConfig {
