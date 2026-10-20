@@ -140,6 +140,7 @@ const SYSCALL_TABLE: &[(&str, u32)] = &[
     ("inotify_init", 253),
     ("pkey_alloc", 330),
     ("landlock_create_ruleset", 444),
+    ("sched_setaffinity", 203),
     ("fstat", 5),
     ("poll", 7),
     ("lseek", 8),
@@ -480,14 +481,18 @@ const BROWSER_CALLS: [&str; 7] = [
 /// Calls a headless Chromium only probes for, answered with an errno it
 /// handles rather than allowed: a sandbox it can't use in a cell
 /// (`landlock_create_ruleset`), memory protection keys (`pkey_alloc`), the
-/// old inotify (`inotify_init`), and thread priorities.
+/// old inotify (`inotify_init`), thread priorities, and which CPUs a
+/// thread runs on (`sched_setaffinity`). A trace outside a cell never
+/// shows that last one: in a cell, where the priorities are refused, its
+/// processes make it instead, and were killed for it.
 #[cfg(target_arch = "x86_64")]
-const BROWSER_PROBES: [(&str, u32); 5] = [
+const BROWSER_PROBES: [(&str, u32); 6] = [
     ("landlock_create_ruleset", ENOSYS),
     ("pkey_alloc", ENOSYS),
     ("inotify_init", ENOSYS),
     ("setpriority", EPERM),
     ("getpriority", EPERM),
+    ("sched_setaffinity", EPERM),
 ];
 
 impl SeccompProfile {
@@ -1913,6 +1918,7 @@ mod tests {
             ("inotify_init", ENOSYS),
             ("setpriority", EPERM),
             ("getpriority", EPERM),
+            ("sched_setaffinity", EPERM),
         ] {
             assert_eq!(call(&prog, name, no), errno(refusal), "{name} pinned");
         }
