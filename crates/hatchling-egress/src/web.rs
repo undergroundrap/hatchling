@@ -114,7 +114,9 @@ pub enum UrlRefusal {
     BadPort,
     /// It holds a space, a control character, a backslash, or a
     /// character outside ASCII.
-    #[error("the URL holds a space, a control character, a backslash, or a character outside ASCII")]
+    #[error(
+        "the URL holds a space, a control character, a backslash, or a character outside ASCII"
+    )]
     BadCharacter,
     /// A redirect's location that is neither an absolute URL nor an
     /// absolute path.
@@ -140,10 +142,7 @@ impl WebUrl {
         }
         let origin = parse_authority(authority)?;
         let target = target.split('#').next().unwrap_or_default();
-        if target
-            .chars()
-            .any(|c| !c.is_ascii_graphic() || c == '\\')
-        {
+        if target.chars().any(|c| !c.is_ascii_graphic() || c == '\\') {
             return Err(UrlRefusal::BadCharacter);
         }
         let target = if target.starts_with('/') {
@@ -394,7 +393,11 @@ pub(crate) fn fetch_with(
         });
     };
     let body = String::from_utf8_lossy(&response.body);
-    let text = if html { html_text(&body) } else { body.into_owned() };
+    let text = if html {
+        html_text(&body)
+    } else {
+        body.into_owned()
+    };
     let (text, truncated) = bounded(text, MAX_TEXT_BYTES);
     Ok(Fetched::Page(Page {
         url: url.clone(),
@@ -443,15 +446,41 @@ const HIDDEN: [&str; 7] = [
 
 /// Elements that start a line of their own.
 const BLOCKS: [&str; 27] = [
-    "p", "div", "br", "h1", "h2", "h3", "h4", "h5", "h6", "li", "tr", "section", "article",
-    "header", "footer", "main", "nav", "aside", "ul", "ol", "table", "blockquote", "pre", "hr",
-    "title", "dt", "dd",
+    "p",
+    "div",
+    "br",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "li",
+    "tr",
+    "section",
+    "article",
+    "header",
+    "footer",
+    "main",
+    "nav",
+    "aside",
+    "ul",
+    "ol",
+    "table",
+    "blockquote",
+    "pre",
+    "hr",
+    "title",
+    "dt",
+    "dd",
 ];
 
-/// The visible text of an HTML document: tags, comments and the content
-/// of scripts, styles and the like dropped; a block's tags start a new
-/// line, a list item a `- `; character references decoded; runs of space
-/// collapsed. Not a browser's rendering: enough to read.
+/// The visible text of an HTML document.
+///
+/// Tags, comments and the content of scripts, styles and the like are
+/// dropped; a block's tags start a new line, a list item a `- `;
+/// character references are decoded; runs of space collapse. Not a
+/// browser's rendering: enough to read.
 #[must_use]
 pub fn html_text(html: &str) -> String {
     // ASCII lowercasing keeps every byte offset.
@@ -529,16 +558,13 @@ fn push_text(text: &mut String, raw: &str) {
     while let Some(amp) = rest.find('&') {
         let (before, from) = rest.split_at_checked(amp).unwrap_or((rest, ""));
         push_plain(text, before);
-        match entity(from) {
-            Some((decoded, used)) => {
-                let mut buf = [0_u8; 4];
-                push_plain(text, decoded.encode_utf8(&mut buf));
-                rest = from.get(used..).unwrap_or_default();
-            }
-            None => {
-                text.push('&');
-                rest = from.get(1..).unwrap_or_default();
-            }
+        if let Some((decoded, used)) = entity(from) {
+            let mut buf = [0_u8; 4];
+            push_plain(text, decoded.encode_utf8(&mut buf));
+            rest = from.get(used..).unwrap_or_default();
+        } else {
+            text.push('&');
+            rest = from.get(1..).unwrap_or_default();
         }
     }
     push_plain(text, rest);
@@ -623,7 +649,10 @@ mod tests {
         assert_eq!(ported.target(), "/");
         assert_eq!(ported.to_string(), "https://example.com:8443/");
         assert_eq!(url("https://example.com?q").target(), "/?q");
-        assert_eq!(url("https://xn--bcher-kva.example/").origin().host(), "xn--bcher-kva.example");
+        assert_eq!(
+            url("https://xn--bcher-kva.example/").origin().host(),
+            "xn--bcher-kva.example"
+        );
     }
 
     /// Origins differ by host, subdomain and port: one never stands for
@@ -710,13 +739,11 @@ mod tests {
         assert_eq!(from.join("../c"), Err(UrlRefusal::Relative));
     }
 
-    fn resolving_to(
-        addrs: Vec<SocketAddr>,
-    ) -> impl Fn(&str) -> std::io::Result<Vec<SocketAddr>> {
+    fn resolving_to(addrs: Vec<SocketAddr>) -> impl Fn(&str) -> std::io::Result<Vec<SocketAddr>> {
         move |_| Ok(addrs.clone())
     }
 
-    fn addr(a: u8, b: u8, c: u8, d: u8) -> SocketAddr {
+    const fn addr(a: u8, b: u8, c: u8, d: u8) -> SocketAddr {
         SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(a, b, c, d), 443))
     }
 
@@ -763,7 +790,9 @@ mod tests {
         let tls = TlsClient::with_operator_bundle(pki.ca_pem.as_bytes()).unwrap();
         let page = url(&format!("https://localhost:{}{target}", server.port()));
         let got = fetch_with(&tls, &page, resolving_to(vec![server]), |_| false);
-        let head = head.recv_timeout(Duration::from_secs(5)).unwrap_or_default();
+        let head = head
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap_or_default();
         (got, head)
     }
 
@@ -786,7 +815,10 @@ mod tests {
         assert!(!page.truncated);
         assert!(page.url.to_string().ends_with("/docs?x=1"));
         assert!(head.starts_with("GET /docs?x=1 HTTP/1.1\r\n"), "{head}");
-        assert!(!head.to_ascii_lowercase().contains("authorization"), "{head}");
+        assert!(
+            !head.to_ascii_lowercase().contains("authorization"),
+            "{head}"
+        );
     }
 
     /// Plain text passes as it is; a type that isn't text is refused.
@@ -843,13 +875,19 @@ mod tests {
         );
         assert_eq!(got, Err(FetchError::BadRedirect(UrlRefusal::NotHttps)));
         // 304 isn't a redirect: it has no page to give, and no type.
-        let (got, _) = fetched("HTTP/1.1 304 Not Modified\r\nContent-Length: 0\r\n\r\n", "/");
+        let (got, _) = fetched(
+            "HTTP/1.1 304 Not Modified\r\nContent-Length: 0\r\n\r\n",
+            "/",
+        );
         assert!(matches!(got, Err(FetchError::NotText { .. })), "{got:?}");
         let (got, _) = fetched(
             "HTTP/1.1 399 Odd\r\nLocation: /x\r\nContent-Length: 0\r\n\r\n",
             "/",
         );
-        assert!(matches!(got, Ok(Fetched::Redirect { status: 399, .. })), "{got:?}");
+        assert!(
+            matches!(got, Ok(Fetched::Redirect { status: 399, .. })),
+            "{got:?}"
+        );
         let (got, _) = fetched(
             "HTTP/1.1 400 Bad\r\nLocation: /x\r\nContent-Type: text/plain\r\nContent-Length: 0\r\n\r\n",
             "/",
@@ -876,9 +914,18 @@ mod tests {
     /// says so.
     #[test]
     fn text_is_bounded_at_a_character_boundary() {
-        assert_eq!(bounded(String::from("abc"), 3), (String::from("abc"), false));
-        assert_eq!(bounded(String::from("abcd"), 3), (String::from("abc"), true));
-        assert_eq!(bounded(String::from("a\u{e9}"), 2), (String::from("a"), true));
+        assert_eq!(
+            bounded(String::from("abc"), 3),
+            (String::from("abc"), false)
+        );
+        assert_eq!(
+            bounded(String::from("abcd"), 3),
+            (String::from("abc"), true)
+        );
+        assert_eq!(
+            bounded(String::from("a\u{e9}"), 2),
+            (String::from("a"), true)
+        );
         let size = MAX_TEXT_BYTES + 10;
         let answer = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {size}\r\n\r\n{}",
@@ -904,7 +951,10 @@ mod tests {
             "abcd"
         );
         assert_eq!(html_text("<ul><li>x</li><li>y</li></ul>"), "- x\n- y");
-        assert_eq!(html_text("1 < 2 &lt; 3 &#62; &#x41;&amp;&nbsp;z"), "1 < 2 < 3 > A& z");
+        assert_eq!(
+            html_text("1 < 2 &lt; 3 &#62; &#x41;&amp;&nbsp;z"),
+            "1 < 2 < 3 > A& z"
+        );
         assert_eq!(html_text("&bogus; &amp &#xZZ; &"), "&bogus; &amp &#xZZ; &");
         assert_eq!(html_text("a<br/>b<br>c"), "a\nb\nc");
         assert_eq!(html_text("<p>a</p>\n\n\n<p></p><p></p><p>b</p>"), "a\nb");
