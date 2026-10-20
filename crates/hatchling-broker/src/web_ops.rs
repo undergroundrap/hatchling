@@ -1295,7 +1295,12 @@ mod tests {
         assert_eq!(*asked.lock().unwrap(), [(b"k".to_vec(), String::from("q"))]);
         let failing: Searcher = Arc::new(|_: &[u8], _: &str| Err(SearchError::Empty));
         assert_eq!(
-            bounded_search(&failing, Zeroizing::new(Vec::new()), "q", Duration::from_secs(5)),
+            bounded_search(
+                &failing,
+                Zeroizing::new(Vec::new()),
+                "q",
+                Duration::from_secs(5)
+            ),
             Err(SearchError::Empty.to_string())
         );
         let slow: Searcher = Arc::new(|_: &[u8], _: &str| {
@@ -1303,8 +1308,13 @@ mod tests {
             Ok(Vec::new())
         });
         assert!(
-            bounded_search(&slow, Zeroizing::new(Vec::new()), "q", Duration::from_millis(50))
-                .is_err()
+            bounded_search(
+                &slow,
+                Zeroizing::new(Vec::new()),
+                "q",
+                Duration::from_millis(50)
+            )
+            .is_err()
         );
     }
 }

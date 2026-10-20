@@ -1087,7 +1087,11 @@ mod tests {
             Err(FetchError::Unresolved)
         );
         assert_eq!(
-            resolved("a.example:443", resolving_to(vec![public, addr(127, 0, 0, 1)]), is_internal),
+            resolved(
+                "a.example:443",
+                resolving_to(vec![public, addr(127, 0, 0, 1)]),
+                is_internal
+            ),
             Err(FetchError::Internal {
                 addr: IpAddr::V4(Ipv4Addr::LOCALHOST)
             })
