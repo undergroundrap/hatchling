@@ -507,7 +507,7 @@ impl<R: Run> Dispatcher<R> {
         }
     }
 
-    fn fire<S: Store, L: Launcher<Run = R>, D>(
+    fn fire<S: Store, L: Launcher<Run = R>, D: Delivery>(
         &mut self,
         schedule: &Schedule,
         due: Timestamp,
@@ -577,7 +577,7 @@ impl<R: Run> Dispatcher<R> {
     /// run is active, with the grants the creator still holds. A schedule
     /// run starts only on a committed claim; one that can't start is
     /// recorded as such, and parked from the store.
-    fn start<S: Store, L: Launcher<Run = R>, D>(
+    fn start<S: Store, L: Launcher<Run = R>, D: Delivery>(
         &mut self,
         start: &Start<'_>,
         services: &Services<'_, S, L, D>,
