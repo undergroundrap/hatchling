@@ -1238,35 +1238,47 @@ fn a_claim_that_landed_but_failed_launches_once_the_next_tick() {
 }
 
 /// WO-025, part 3: a claim that landed is launched only once it is
-/// written again: while that write fails, nothing is, and nothing else
-/// fires in its place.
+/// written again, and no schedule fires while it is uncertain: while that
+/// write fails, nothing is launched.
 #[test]
 fn a_landed_claim_launches_nothing_until_it_is_written_again() {
     let mut world = World::new();
-    schedule(
-        &world.store,
-        "s",
-        cron("* * * * *", "UTC"),
-        "2026-09-21T12:59:30Z",
-    );
+    for id in ["s", "t"] {
+        schedule(
+            &world.store,
+            id,
+            cron("* * * * *", "UTC"),
+            "2026-09-21T12:59:30Z",
+        );
+    }
     *world.store.fail_next.borrow_mut() = Some("landed");
     world.tick("2026-09-21T13:00:00Z");
     *world.store.fail_next.borrow_mut() = Some("record");
     let report = world.tick("2026-09-21T13:00:10Z");
     assert!(report.launched.is_empty());
-    assert_eq!(world.requests().len(), 0);
+    assert_eq!(world.requests().len(), 0, "a fire while a claim was uncertain");
     assert_eq!(
         fire_of(&world, "s").map(|fire| fire.state),
         Some(OccurrenceState::Claimed)
     );
+    assert_eq!(fire_of(&world, "t"), None);
     let report = world.tick("2026-09-21T13:01:05Z");
-    assert_eq!(report.launched, [(String::from("s"), false)]);
-    let requests = world.requests();
-    assert_eq!(requests.len(), 1);
     assert_eq!(
-        requests.first().map(|request| request.due),
-        Some(ts("2026-09-21T13:00:00Z")),
-        "the fire it claimed, not a later one"
+        report.launched,
+        [(String::from("s"), false), (String::from("t"), true)]
+    );
+    let dues: Vec<(String, Timestamp)> = world
+        .requests()
+        .into_iter()
+        .map(|request| (request.schedule_id, request.due))
+        .collect();
+    assert_eq!(
+        dues,
+        [
+            (String::from("s"), ts("2026-09-21T13:00:00Z")),
+            (String::from("t"), ts("2026-09-21T13:00:00Z")),
+        ],
+        "the fires they claimed, not later ones"
     );
 }
 

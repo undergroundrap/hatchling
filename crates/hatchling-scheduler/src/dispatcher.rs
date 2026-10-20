@@ -28,11 +28,12 @@
 //!      record that has changed since is refused.
 //!    - **A failed claim may have landed.** A store write can fail after
 //!      its new state is visible (the rename went through; the sync after
-//!      it didn't), so a failed claim is remembered as uncertain. The next
-//!      tick, before anything fires, writes it again: if it landed, that
-//!      write makes it durable, and its run is launched, once; if it
-//!      didn't, it is forgotten, and the fire is claimed afresh; if the
-//!      write fails too, it stays uncertain, and nothing is launched.
+//!      it didn't), so a failed claim is remembered as uncertain, and no
+//!      schedule fires while one is. The next tick, before anything fires,
+//!      writes it again: if it landed, that write makes it durable, and its
+//!      run is launched, once; if it didn't, it is forgotten, and the fire
+//!      is claimed afresh; if the write fails too, it stays uncertain, and
+//!      nothing is launched.
 //!    - **Overlap: skip.** If its previous run is still claimed or
 //!      active, this fire is skipped. At most one run per schedule exists
 //!      at any time, so a run slower than its interval cannot stack.
@@ -419,6 +420,11 @@ impl<R: Run> Dispatcher<R> {
         let schedules = services.store.load()?;
         self.settle(&schedules, services, &mut report);
         for schedule in &schedules {
+            if !self.uncertain.is_empty() {
+                // A claim that may have landed stops every fire until a
+                // write settles it.
+                break;
+            }
             let Some(due) = schedule.due() else {
                 continue;
             };
