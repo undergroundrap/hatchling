@@ -1381,4 +1381,62 @@ mod tests {
         dispatcher.store_ended(&services, &mut report);
         assert_eq!(dispatcher.active(), 1, "kept, to try again");
     }
+
+    /// `settle`, called directly (WO-025, part 3): a claim whose write
+    /// fails again stays uncertain and launches nothing; once the write
+    /// succeeds it launches, once, as the fire it claimed; one whose
+    /// schedule is gone is forgotten.
+    #[test]
+    fn settle_launches_a_landed_claim_once_it_is_written_again() {
+        let (held, authenticated) = (BTreeSet::new(), BTreeSet::new());
+        let mut claimed = hourly();
+        claimed.ledger.occurrence = Some(Occurrence {
+            due: due_at().as_second(),
+            missed: true,
+            state: OccurrenceState::Claimed,
+        });
+        let broken = One {
+            schedule: RefCell::new(Some(claimed.clone())),
+            broken: true,
+            ..One::default()
+        };
+        let launcher = Asked::default();
+        let mut dispatcher = Dispatcher::<Running>::default();
+        let mut report = TickReport::default();
+        dispatcher
+            .uncertain
+            .insert(String::from("sch-1"), (due_at(), true));
+        let services = Services {
+            store: &broken,
+            launcher: &launcher,
+            delivery: &Plain,
+            held: &held,
+            events: &[],
+            authenticated: &authenticated,
+        };
+        dispatcher.settle(std::slice::from_ref(&claimed), &services, &mut report);
+        assert!(launcher.0.borrow().is_empty());
+        assert_eq!(dispatcher.uncertain.len(), 1, "kept while its write fails");
+        let healthy = One {
+            schedule: RefCell::new(Some(claimed.clone())),
+            ..One::default()
+        };
+        let services = Services {
+            store: &healthy,
+            ..services
+        };
+        dispatcher.settle(std::slice::from_ref(&claimed), &services, &mut report);
+        assert_eq!(report.launched, [(String::from("sch-1"), true)]);
+        assert_eq!(
+            launcher.0.borrow().first().map(|request| request.due),
+            Some(due_at())
+        );
+        assert!(dispatcher.uncertain.is_empty());
+        dispatcher
+            .uncertain
+            .insert(String::from("sch-gone"), (due_at(), false));
+        dispatcher.settle(&[claimed], &services, &mut report);
+        assert!(dispatcher.uncertain.is_empty(), "a schedule that's gone");
+        assert_eq!(launcher.0.borrow().len(), 1);
+    }
 }
