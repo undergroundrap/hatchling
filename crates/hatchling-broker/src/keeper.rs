@@ -206,7 +206,9 @@ impl Keeper {
         let found = match reply {
             Reply::Read { found } => found,
             Reply::Refused { reason } => return Err(Error::Keeper { reason }),
-            other @ (Reply::Cell { .. } | Reply::Protocol { .. }) => return Err(unexpected(&other)),
+            other @ (Reply::Cell { .. } | Reply::Protocol { .. }) => {
+                return Err(unexpected(&other));
+            }
         };
         let mut frames = frames.into_iter();
         found
@@ -215,7 +217,9 @@ impl Keeper {
                 if !found {
                     return Ok(None);
                 }
-                let bytes = frames.next().ok_or_else(|| unexpected(&Reply::Read { found: Vec::new() }))?;
+                let bytes = frames
+                    .next()
+                    .ok_or_else(|| unexpected(&Reply::Read { found: Vec::new() }))?;
                 Secret::new(bytes.to_vec())
                     .map(Some)
                     .map_err(|source| Error::Vault { source })
@@ -618,8 +622,7 @@ mod tests {
         let (ours, theirs) = UnixStream::pair().unwrap();
         assert!(begin(&theirs, config).is_err());
         drop(theirs);
-        ours.set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
+        ours.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         assert!(read_frame_or_eof(&ours).unwrap().is_none());
     }
 
@@ -685,8 +688,14 @@ mod tests {
         });
         // An exchange that goes through is the keeper's answer.
         assert_eq!(keeper.exchange(|_| Ok(7)).unwrap(), 7);
-        let names: Vec<SecretName> = ["a", "b"].iter().map(|name| name.parse().unwrap()).collect();
-        assert!(matches!(keeper.read("egress", &names), Err(Error::Keeper { .. })));
+        let names: Vec<SecretName> = ["a", "b"]
+            .iter()
+            .map(|name| name.parse().unwrap())
+            .collect();
+        assert!(matches!(
+            keeper.read("egress", &names),
+            Err(Error::Keeper { .. })
+        ));
         // Lost: not even an exchange that needs nothing from it runs.
         assert!(keeper.exchange(|_| Ok(7)).is_err());
         let after = keeper.read("egress", &names);
@@ -694,7 +703,14 @@ mod tests {
         assert!(refused.contains("lost"), "{refused}");
         drop(keeper);
         let (request, after) = stand_in.join().unwrap();
-        assert!(String::from_utf8(request).unwrap().contains(r#""purpose":"egress""#));
-        assert!(after.is_none(), "a request was sent after the keeper was lost");
+        assert!(
+            String::from_utf8(request)
+                .unwrap()
+                .contains(r#""purpose":"egress""#)
+        );
+        assert!(
+            after.is_none(),
+            "a request was sent after the keeper was lost"
+        );
     }
 }
