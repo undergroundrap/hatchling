@@ -77,18 +77,20 @@ The README's quickstart sets these, along with the broker's own required variabl
 
 ## Approvals
 
-When the agent proposes an action that needs your yes (today: building an idea into an artifact), the broker freezes it and asks you on the stream, never in the chat (WO-027).
+When the agent proposes an action that needs your yes (building an idea into an artifact, or reading a site it hasn't been allowed), the broker freezes it and asks you on the stream, never in the chat (WO-027, WO-028).
 
 - **The stream's `confirmation`** carries several parts:
   - the request's `confirmation_id` and `revision`;
   - its `digest`: SHA-256 over the action's canonical form, which binds every field of what would run;
   - a `summary` in the broker's words;
-  - the action's `fields`, in review order. Each field has a `label`, a `value` (whole, never cut short) and a `source`: `broker` for what the broker resolved, `agent` for the agent's own words.
-- **`decide`** names the `confirmation_id`, the `revision` and the `digest` you were shown, with `approve` or `deny`.
+  - the action's `fields`, in review order. Each field has a `label`, a `value` (whole, never cut short) and a `source`: `broker` for what the broker resolved, `agent` for the agent's own words;
+  - `session`: whether it can be approved for the rest of the agent's session as well as once.
+- **`decide`** names the `confirmation_id`, the `revision` and the `digest` you were shown, with `approve`, `approve_session` (only where `session` is true; elsewhere it's rejected as `not_offered`), or `deny`.
   - Only a caller holding every grant the owner holds can decide; anyone else gets `refused`/`not_granted`.
   - A decision on a request that changed, lapsed (15 minutes), or was already decided is rejected with its reason.
   - A `confirmation_decided` event follows on the stream either way.
 - **On approve, the broker runs the action it recorded, once,** on its own worker. A session can't run it, and nothing a session sends afterwards is what runs. The outcome comes back on the local chat, as the broker's.
+- **A site** (WO-028): what's approved is the site, `https://host[:port]`; the page the agent asked for and its reason are shown as the agent's words. `approve` lets the session read that page once, and the next page on the site asks again; `approve_session` lets it read any page on the site until the session ends; `deny` refuses the site from then on, for every session, however the agent asks. The session that asked reads the page itself: nothing runs on the worker.
 - **Asking is bounded:**
   - at most 5 requests wait, one per agent session;
   - at most 20 are made in an hour;

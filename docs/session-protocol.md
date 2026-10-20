@@ -41,6 +41,7 @@ v13.
 | Artifact | `ArtifactOp` | `ArtifactResult` | v9 |
 | Space | `SpaceOp` | `SpaceResult` | v10 |
 | Subagent | `SubagentOp` | `SubagentResult` | v10 |
+| Web | `WebOp` | `WebResult` | v14 |
 
 ## v9 — Artifact ops
 
@@ -138,6 +139,27 @@ of `EGRESS_PART_BYTES` (32 KiB), within the egress proxy's bounds
 
 A body that fits goes whole, as before, with `staged` and `more` at 0.
 A session holds one staged request and one answer at most.
+
+## v14 — Web
+
+A page read through the broker, from a site the owner allows (WO-028).
+
+- **`WebOp::Fetch { url, reason }`:** the page's absolute `https` URL, and
+  why the agent wants it (at most 500 characters), shown to the owner as
+  the agent's words.
+- **`WebResult`:**
+  - `Page { url, status, text, truncated }`: the page as text, the site's
+    words;
+  - `Redirect { to }`: a redirect to another site, not followed;
+  - `Waiting { site, request }`: the owner has been asked and hasn't
+    decided; fetch again later;
+  - `Denied { site }`, `Expired { site }`: the owner said no, or didn't
+    decide in time;
+  - `Unasked { reason }`: the site couldn't be put to the owner
+    (`ApprovalRefusal`);
+  - `Refused { reason }`: the URL, the operator's refusal of the site, or
+    the read itself;
+  - `Off`: the operator hasn't turned the web on.
 
 ## Device handshake
 
