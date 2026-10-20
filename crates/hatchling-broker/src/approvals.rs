@@ -70,6 +70,8 @@ pub struct Proposal<A> {
     /// Whether the owner may approve it for the rest of the session
     /// ([`Decision::ApproveSession`]) as well as once.
     pub session: bool,
+    /// Whether the owner may approve it always ([`Decision::ApproveAlways`]).
+    pub always: bool,
 }
 
 /// Where a request is.
@@ -115,6 +117,7 @@ pub struct Request<A> {
     run: A,
     fingerprint: String,
     session: bool,
+    always: bool,
 }
 
 impl<A> Request<A> {
@@ -348,6 +351,7 @@ impl<A: Clone> Ledger<A> {
                 run: proposal.run,
                 fingerprint,
                 session: proposal.session,
+                always: proposal.always,
             },
         );
         Ok(Requested {
@@ -388,12 +392,19 @@ impl<A: Clone> Ledger<A> {
         if request.revision != revision || request.digest != digest {
             return Err(DecisionRejection::StaleRevision);
         }
-        if decision == Decision::ApproveSession && !request.session {
+        let offered = match decision {
+            Decision::ApproveSession => request.session,
+            Decision::ApproveAlways => request.always,
+            Decision::Approve | Decision::Deny => true,
+        };
+        if !offered {
             return Err(DecisionRejection::NotOffered);
         }
         let fingerprint = request.fingerprint.clone();
         let decided = match decision {
-            Decision::Approve | Decision::ApproveSession => State::Approved,
+            Decision::Approve | Decision::ApproveSession | Decision::ApproveAlways => {
+                State::Approved
+            }
             Decision::Deny => State::Denied,
         };
         request.state = decided;
@@ -518,6 +529,7 @@ mod tests {
             fingerprint: json!({ "op": "activate", "effect": effect }),
             task: task.to_owned(),
             session: false,
+            always: false,
         }
     }
 
@@ -919,6 +931,36 @@ mod tests {
         assert_eq!(
             ledger.get(&once.id).unwrap().decision,
             Some(Decision::Approve)
+        );
+    }
+
+    /// Always is offered only where the request says so, and recorded as
+    /// the owner's decision (WO-028).
+    #[test]
+    fn always_is_offered_only_where_the_request_says_so() {
+        let ledger = Approvals::new();
+        let session_only = Proposal {
+            session: true,
+            ..proposal("site", "t1")
+        };
+        let asked = ledger.propose(session_only, 0).unwrap();
+        assert_eq!(
+            ledger.decide(&asked.id, 1, &asked.digest, Decision::ApproveAlways, 1),
+            Err(DecisionRejection::NotOffered)
+        );
+        let always = Proposal {
+            session: true,
+            always: true,
+            ..proposal("kept", "t2")
+        };
+        let asked = ledger.propose(always, 0).unwrap();
+        assert_eq!(
+            ledger.decide(&asked.id, 1, &asked.digest, Decision::ApproveAlways, 1),
+            Ok(State::Approved)
+        );
+        assert_eq!(
+            ledger.get(&asked.id).unwrap().decision,
+            Some(Decision::ApproveAlways)
         );
     }
 }

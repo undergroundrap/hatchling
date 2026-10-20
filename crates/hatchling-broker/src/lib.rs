@@ -75,6 +75,7 @@ pub use schedule_ops::{
 pub mod serve;
 pub mod skill_cell;
 pub mod skill_invoke;
+pub mod site_grants;
 pub mod skill_ops;
 pub mod skill_run;
 pub mod skills;

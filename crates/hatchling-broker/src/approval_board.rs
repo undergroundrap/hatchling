@@ -168,6 +168,7 @@ impl Board {
                 fingerprint: effect,
                 task: task.to_owned(),
                 session: false,
+                always: false,
             },
             now,
         )?;
@@ -195,6 +196,7 @@ impl Board {
         url: &str,
         reason: &str,
         led: Option<(&str, usize)>,
+        always: bool,
         task: &str,
         now: i64,
     ) -> Result<Requested, Refusal> {
@@ -207,12 +209,13 @@ impl Board {
                 fingerprint: json!({ "op": "web.visit", "site": site }),
                 task: task.to_owned(),
                 session: true,
+                always,
             },
             now,
         )?;
         if requested.new {
             self.publish(UiEventBody::Confirmation(site_confirmation(
-                site, url, reason, led, &requested,
+                site, url, reason, led, always, &requested,
             )));
         }
         Ok(requested)
@@ -293,6 +296,7 @@ fn site_confirmation(
     url: &str,
     reason: &str,
     led: Option<(&str, usize)>,
+    always: bool,
     requested: &Requested,
 ) -> ConfirmationRequest {
     let field = |label: &str, value: &str, source: FieldSource| ConfirmationField {
@@ -315,7 +319,11 @@ fn site_confirmation(
                 field("Site", site, FieldSource::Broker),
                 field(
                     "What it allows",
-                    "Once: this page, now. For this task: any page on this site until the agent's session ends; in a chat, that's this answer. The site sees whatever the agent puts in a page's address.",
+                    if always {
+                        "Once: this page, now. For this task: any page on this site until the agent's session ends; in a chat, that's this answer. Always: any page on this site, in every session, until you revoke it in the app. The site sees whatever the agent puts in a page's address."
+                    } else {
+                        "Once: this page, now. For this task: any page on this site until the agent's session ends; in a chat, that's this answer. The site sees whatever the agent puts in a page's address."
+                    },
                     FieldSource::Broker,
                 ),
             ];
@@ -332,6 +340,7 @@ fn site_confirmation(
             fields
         },
         session: true,
+        always,
     }
 }
 
@@ -378,6 +387,7 @@ fn confirmation(proposal: &ActivationProposal, requested: &Requested) -> Confirm
         digest: requested.digest.clone(),
         fields,
         session: false,
+        always: false,
     }
 }
 
@@ -709,7 +719,7 @@ mod tests {
                 "https://a.example",
                 "https://a.example/x",
                 "to read it",
-                None,
+                None, false,
                 "t1",
                 100,
             )
@@ -720,7 +730,7 @@ mod tests {
                 "https://a.example",
                 "https://a.example/y",
                 "again",
-                None,
+                None, false,
                 "t1",
                 100,
             )
@@ -792,13 +802,7 @@ mod tests {
             expires_at: 1_790_000_000,
             new: true,
         };
-        let request = site_confirmation(
-            "https://a.example",
-            "https://a.example/x",
-            "to read it",
-            None,
-            &requested,
-        );
+        let request = site_confirmation("https://a.example", "https://a.example/x", "to read it", None, false, &requested);
         assert!(request.session);
         assert_eq!(request.summary, "Let the agent read a site");
         assert_eq!(

@@ -20,6 +20,7 @@ hatchling_core::declare_environment! {
     HATCHLING_EGRESS_CA_BUNDLE: ("optional", "Absolute PEM bundle of additional trusted HTTPS roots."),
     HATCHLING_WEB: ("optional; default off", "Let the agent ask to read web pages, each new site approved by the owner: off or sites."),
     HATCHLING_WEB_REFUSE: ("optional", "Comma-separated hosts the agent may never read, with every name under them."),
+    HATCHLING_WEB_GRANTS_DIR: ("optional; default off", "Absolute sealed store of the sites the owner always allows; unset, Allow always isn't offered."),
     HATCHLING_SEARCH: ("optional; default off", "Let the agent search the web through the broker: off or brave (the key is the vault secret search-brave)."),
     HATCHLING_SEARCH_LOG: ("optional; default length", "What the broker logs of each search: length, or queries for its text too."),
     HATCHLING_CHANNELS: ("optional; default local", "Comma-separated enabled channel identifiers."),
