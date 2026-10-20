@@ -1845,14 +1845,14 @@ mod tests {
         assert!(missing("sch-x").to_string().contains("record is missing"));
     }
 
-    /// The owner's operations (WO-025, part 2), on the sealed store and
-    /// through the session's op: a fire left in flight is held as of
-    /// unknown outcome; the owner marks it resolved, or retries it, and
-    /// lists and dismisses parked results; a cell can do none of it.
-    #[test]
-    fn the_owner_resolves_retries_and_dismisses() {
+    /// A scheduler config in a scratch directory with two hourly schedules,
+    /// `sch-a` and `sch-b`, whose fires were claimed by a broker that then
+    /// died: the config, its key, and the directory to keep alive.
+    fn claimed_then_died(
+        name: &str,
+    ) -> (Config, crate::api_auth::tests::Scratch, MasterKey) {
         let mut config = crate::api_auth::tests::owner_config(None);
-        let dir = crate::api_auth::tests::scratch("owner-ops");
+        let dir = crate::api_auth::tests::scratch(name);
         config.scheduler = crate::SchedulerConfig {
             root: dir.0.join("schedules"),
             ..crate::SchedulerConfig::disabled()
@@ -1888,6 +1888,16 @@ mod tests {
                 Claim::Claimed
             );
         }
+        (config, dir, master)
+    }
+
+    /// A fire left in flight is held as of unknown outcome (WO-025, part
+    /// 2): the schedule list shows it, and a cell can't resolve or retry it,
+    /// or touch parked results.
+    #[test]
+    fn a_fire_left_in_flight_is_held_and_a_cell_cant_release_it() {
+        let (config, _dir, master) = claimed_then_died("owner-held");
+        let store = SealedScheduleStore::new(&config.scheduler.root, &master);
         // Claimed, then the broker died: held, of unknown outcome, a run
         // never started.
         let vault = SealedVault::open_in(
@@ -1935,6 +1945,28 @@ mod tests {
         ] {
             assert_eq!(op(refused, Creator::Agent), ScheduleResult::Denied);
         }
+    }
+
+    /// The owner marks a fire of unknown outcome resolved, and the schedule
+    /// resumes; or retries it, and it is due now as a new attempt (WO-025,
+    /// part 2).
+    #[test]
+    fn the_owner_resolves_retries_and_dismisses() {
+        let (config, _dir, master) = claimed_then_died("owner-ops");
+        let store = SealedScheduleStore::new(&config.scheduler.root, &master);
+        assert_eq!(store.hold_in_flight().unwrap(), ["sch-a", "sch-b"]);
+        let vault = SealedVault::open_in(
+            &config.scheduler.root,
+            &master,
+            hatchling_vault::Store::SCHEDULES,
+        )
+        .unwrap();
+        let now = Timestamp::from_second(1_790_010_000).unwrap();
+        let op = |op: ScheduleOp, caller: Creator| {
+            handle_schedule_op(&config, &master, &op, now, caller)
+        };
+        let resolve = |id: &str| ScheduleOp::Resolve { id: id.to_owned() };
+        let retry = |id: &str| ScheduleOp::Retry { id: id.to_owned() };
         // Resolved: the schedule resumes, its fire gone.
         assert_eq!(
             op(resolve("sch-a"), Creator::Owner),
@@ -1955,7 +1987,9 @@ mod tests {
             .unwrap();
         assert_eq!(retried.next_due, now.as_second());
         assert!(retried.ledger.occurrence.is_none());
-        assert!(!store.retry("sch-none", now).unwrap() && !store.mark_resolved("sch-none").unwrap());
+        assert!(
+            !store.retry("sch-none", now).unwrap() && !store.mark_resolved("sch-none").unwrap()
+        );
     }
 
     /// Parked results (WO-025, part 2): listed with their ids, a page at

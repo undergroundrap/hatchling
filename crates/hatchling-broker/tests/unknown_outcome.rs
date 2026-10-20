@@ -219,7 +219,10 @@ fn kill_once_running(base: &Path) {
     };
     broker.kill().unwrap();
     broker.wait().unwrap();
-    assert!(running, "the killed broker never ran its fire; it said {told:?}");
+    assert!(
+        running,
+        "the killed broker never ran its fire; it said {told:?}"
+    );
 }
 
 /// A broker killed after its fire's run launched comes back with that
