@@ -61,7 +61,7 @@ See [TEMPLATE.md](TEMPLATE.md#gates).
 Merged in parts:
 - part 1 (claims, stored results, no drops): #146;
 - part 2 (unknown outcomes, the owner's operations): #147;
-- part 3 (failed writes at each step, a claim that may have landed, a broker killed before the launch): PART3_PR.
+- part 3 (failed writes at each step, a claim that may have landed, a broker killed before the launch): #149.
 
 Each was gated in the disposable sandbox (WSL2, uid 2001, gid 2501): fmt, clippy on 1.98.1 and 1.85.0, the preflight, `check.sh` with `HATCHLING_REQUIRE_CELL=1` on both toolchains, hand mutants, and mutation on the changed lines (0 missed, 0 timeouts in every part). The criteria:
 
