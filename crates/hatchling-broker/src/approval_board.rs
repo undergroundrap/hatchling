@@ -315,7 +315,7 @@ fn site_confirmation(
                 field("Site", site, FieldSource::Broker),
                 field(
                     "What it allows",
-                    "Once: this page, now. For this session: any page on this site until the session ends. The site sees whatever the agent puts in a page's address.",
+                    "Once: this page, now. For this task: any page on this site until the agent's session ends; in a chat, that's this answer. The site sees whatever the agent puts in a page's address.",
                     FieldSource::Broker,
                 ),
             ];
