@@ -20,7 +20,7 @@ mod common;
 use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Duration;
 
 use common::{
@@ -1212,6 +1212,26 @@ fn a_builder_identity_renders_as_verified_only_while_the_broker_vouches_for_it()
 /// When every op of a world runs, in Unix seconds.
 const NOW: i64 = 1_790_000_000;
 
+/// Held by every test that mints confirmations: the broker keeps them in
+/// one ledger for the process, and minting one drops each one expired at
+/// the minting time. The worker ([`approval_board::run_next`]) mints at
+/// the real clock, past every confirmation minted at [`NOW`], so a test
+/// that runs it would expire another test's confirmation between its
+/// minting and its use.
+static CONFIRMATIONS: RwLock<()> = RwLock::new(());
+
+/// For a test that mints confirmations at [`NOW`]: many at once.
+fn minting_at_now() -> RwLockReadGuard<'static, ()> {
+    CONFIRMATIONS.read().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// For a test that runs the worker, which mints at the real clock: alone.
+fn minting_at_the_clock() -> RwLockWriteGuard<'static, ()> {
+    CONFIRMATIONS
+        .write()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
 /// The broker-asserted principal ops run as: the test's own uid.
 fn principal() -> MemoryPrincipal {
     MemoryPrincipal {
@@ -1371,6 +1391,7 @@ fn an_idea_is_captured_developed_and_activated_only_once_confirmed() {
     if !guard_cell_available().unwrap() {
         return;
     }
+    let _confirmations = minting_at_now();
     let world = World::new("ideas");
     let (idea, first) = saved(world.capture("Launch notes", Some(IdeaSource::Chat)));
     assert!(idea.starts_with("idea-"), "{idea}");
@@ -1451,6 +1472,7 @@ fn the_build_is_what_was_confirmed_and_nothing_else() {
     if !guard_cell_available().unwrap() {
         return;
     }
+    let _confirmations = minting_at_now();
     let world = World::new("idea-bait");
     let (idea, _) = saved(world.capture("Short zine", None));
     let first = proposed(&world.propose(&idea, "page", PAGE_BUILDER, "a zine")).unwrap();
@@ -1539,6 +1561,7 @@ fn the_owners_approval_in_the_app_builds_exactly_what_was_proposed() {
     if !guard_cell_available().unwrap() {
         return;
     }
+    let _confirmations = minting_at_the_clock();
     let world = World::new("approve-in-app");
     let board = approval_board::board(&world.config);
     let bus = Arc::new(Bus::starting_at(1));
@@ -1633,6 +1656,7 @@ fn the_workers_steps_run_only_what_was_approved_and_tell_the_owner() {
     if !guard_cell_available().unwrap() {
         return;
     }
+    let _confirmations = minting_at_now();
     let world = World::new("approve-steps");
     let board = approval_board::board(&world.config);
     let told = approval_board::run_approved(
@@ -1692,6 +1716,7 @@ fn an_approval_for_an_idea_that_changed_builds_nothing() {
     if !guard_cell_available().unwrap() {
         return;
     }
+    let _confirmations = minting_at_the_clock();
     let world = World::new("approve-changed");
     let board = approval_board::board(&world.config);
     let bus = Arc::new(Bus::starting_at(1));
@@ -1736,6 +1761,7 @@ fn idea_ops_refuse_what_they_cannot_do_and_list_a_page_at_a_time() {
     if !guard_cell_available().unwrap() {
         return;
     }
+    let _confirmations = minting_at_now();
     let world = World::new("idea-refusals");
     let unknown = idea_refused(IdeaRefusal::UnknownIdea);
     assert_eq!(world.refine("idea-nonexistent", "x"), unknown);
