@@ -16,6 +16,7 @@ import { LiveClient } from './client.js';
 import type { UiTransport } from './client.js';
 import type { UiEvent } from './protocol/generated.js';
 import { LiveChatSession } from './session.js';
+import { LiveSites } from './sites.js';
 import { Surfaces } from './surfaces.js';
 const SETTINGS: Settings = { interfaceSize: 'comfortable', theme: 'system', accent: 'white', avatarAccent: '#a78c57', keepChatPanelVisible: true, language: 'English', name: 'hatchling', vibe: '', feedPrompt: '', captchaStanding: false, telemetry: false, quietStart: '22:00', quietEnd: '08:00', digestTime: '08:30', dailyAllowance: 0, allowlist: [] };
 const NOT_YET = 'Hatchling cannot do this from the app yet.';
@@ -27,6 +28,7 @@ export class LiveAdapter implements ProtocolAdapter {
     readonly #activity = new ActivityBook();
     readonly #chats = new ChatBook();
     readonly #surfaces: Surfaces;
+    readonly #sites: LiveSites;
     readonly #listeners = new Set<() => void>();
     #settings: Settings = SETTINGS;
     #clock = '';
@@ -41,6 +43,7 @@ export class LiveAdapter implements ProtocolAdapter {
         this.#client = new LiveClient(transport, name, event => this.#observe(event), token);
         this.#surfaces = new Surfaces(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.taskApprovals = new LiveApprovals(this.#client);
+        this.#sites = new LiveSites(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.chatSession = new LiveChatSession(this.#client, this.#chats, artifactId => this.#surfaces.shelf.latest(artifactId));
         this.#snapshot = this.#build();
         // Registered first, so the snapshot is current before any view hears of a change.
@@ -90,6 +93,11 @@ export class LiveAdapter implements ProtocolAdapter {
                 return this.#prefer({ interfaceSize: command.value });
             case 'settings.chat-panel':
                 return this.#prefer({ keepChatPanelVisible: command.value });
+            case 'permission.website':
+                // The broker adds a site only from the owner's Allow always on its request.
+                return command.policy === 'allow'
+                    ? { ok: false, message: "Allow a site from the agent's request for it, with Allow always." }
+                    : this.#sites.revoke(command.host);
             case 'demo.scenario':
             case 'demo.advance':
             case 'demo.reset':
@@ -127,6 +135,7 @@ export class LiveAdapter implements ProtocolAdapter {
             case 'confirmation':
             case 'confirmation_decided':
                 this.taskApprovals.observe(event);
+                this.#sites.observe(event);
                 return undefined;
             case 'artifact':
             case 'schedule':
@@ -150,7 +159,7 @@ export class LiveAdapter implements ProtocolAdapter {
     #build(): AppState {
         const threads = [...this.#activity.threads(), ...this.#surfaces.threads()];
         return {
-            websitePermissions: [],
+            websitePermissions: this.#sites.sites().map(site => ({ host: site.site, policy: 'allow' as const })),
             networkPermissions: [],
             version: 1,
             mode: 'live',

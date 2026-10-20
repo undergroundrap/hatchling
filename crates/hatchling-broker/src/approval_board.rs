@@ -61,6 +61,21 @@ pub enum Approved {
     Site(SiteVisit),
 }
 
+/// A site the agent asks to read, as the owner is asked about it (WO-028).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SiteAsk<'a> {
+    /// The site, `https://host[:port]`: what is approved.
+    pub site: &'a str,
+    /// The page the agent asked for.
+    pub url: &'a str,
+    /// Why it wants it, in its own words.
+    pub reason: &'a str,
+    /// The search that gave the page, and the result's place, when one did.
+    pub led: Option<(&'a str, usize)>,
+    /// Whether the owner may allow the site always: the broker keeps sites.
+    pub always: bool,
+}
+
 /// A site the agent asked to read (WO-028).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SiteVisit {
@@ -168,6 +183,7 @@ impl Board {
                 fingerprint: effect,
                 task: task.to_owned(),
                 session: false,
+                always: false,
             },
             now,
         )?;
@@ -179,11 +195,11 @@ impl Board {
         Ok(requested)
     }
 
-    /// Puts `site`, which task `task` asks to read `url` on for `reason`,
+    /// Puts the site `ask` names, which task `task` asks to read a page on,
     /// to the owner at `now` (WO-028): the request, and whether it was new.
     /// What is approved is the site alone; the page and the reason are
     /// shown, the reason as the agent's words, and, when one of the task's
-    /// searches gave the page, which (`led`: the search, and its place).
+    /// searches gave the page, which.
     ///
     /// # Errors
     ///
@@ -191,13 +207,17 @@ impl Board {
     /// full, or the record has no canonical form.
     pub fn propose_site(
         &self,
-        site: &str,
-        url: &str,
-        reason: &str,
-        led: Option<(&str, usize)>,
+        ask: &SiteAsk<'_>,
         task: &str,
         now: i64,
     ) -> Result<Requested, Refusal> {
+        let SiteAsk {
+            site,
+            url,
+            reason,
+            led,
+            always,
+        } = *ask;
         let requested = self.approvals.propose(
             Proposal {
                 run: Approved::Site(SiteVisit {
@@ -207,12 +227,13 @@ impl Board {
                 fingerprint: json!({ "op": "web.visit", "site": site }),
                 task: task.to_owned(),
                 session: true,
+                always,
             },
             now,
         )?;
         if requested.new {
             self.publish(UiEventBody::Confirmation(site_confirmation(
-                site, url, reason, led, &requested,
+                site, url, reason, led, always, &requested,
             )));
         }
         Ok(requested)
@@ -293,6 +314,7 @@ fn site_confirmation(
     url: &str,
     reason: &str,
     led: Option<(&str, usize)>,
+    always: bool,
     requested: &Requested,
 ) -> ConfirmationRequest {
     let field = |label: &str, value: &str, source: FieldSource| ConfirmationField {
@@ -315,7 +337,11 @@ fn site_confirmation(
                 field("Site", site, FieldSource::Broker),
                 field(
                     "What it allows",
-                    "Once: this page, now. For this task: any page on this site until the agent's session ends; in a chat, that's this answer. The site sees whatever the agent puts in a page's address.",
+                    if always {
+                        "Once: this page, now. For this task: any page on this site until the agent's session ends; in a chat, that's this answer. Always: any page on this site, in every session, until you revoke it in the app. The site sees whatever the agent puts in a page's address."
+                    } else {
+                        "Once: this page, now. For this task: any page on this site until the agent's session ends; in a chat, that's this answer. The site sees whatever the agent puts in a page's address."
+                    },
                     FieldSource::Broker,
                 ),
             ];
@@ -332,6 +358,7 @@ fn site_confirmation(
             fields
         },
         session: true,
+        always,
     }
 }
 
@@ -378,6 +405,7 @@ fn confirmation(proposal: &ActivationProposal, requested: &Requested) -> Confirm
         digest: requested.digest.clone(),
         fields,
         session: false,
+        always: false,
     }
 }
 
@@ -706,10 +734,13 @@ mod tests {
         board.attach(Arc::clone(&bus));
         let site = board
             .propose_site(
-                "https://a.example",
-                "https://a.example/x",
-                "to read it",
-                None,
+                &SiteAsk {
+                    site: "https://a.example",
+                    url: "https://a.example/x",
+                    reason: "to read it",
+                    led: None,
+                    always: false,
+                },
                 "t1",
                 100,
             )
@@ -717,10 +748,13 @@ mod tests {
         assert!(site.new);
         let again = board
             .propose_site(
-                "https://a.example",
-                "https://a.example/y",
-                "again",
-                None,
+                &SiteAsk {
+                    site: "https://a.example",
+                    url: "https://a.example/y",
+                    reason: "again",
+                    led: None,
+                    always: false,
+                },
                 "t1",
                 100,
             )
@@ -797,6 +831,7 @@ mod tests {
             "https://a.example/x",
             "to read it",
             None,
+            false,
             &requested,
         );
         assert!(request.session);

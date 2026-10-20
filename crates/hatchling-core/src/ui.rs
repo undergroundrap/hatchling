@@ -433,6 +433,10 @@ pub struct ConfirmationRequest {
     /// asks to read (WO-028).
     #[serde(default)]
     pub session: bool,
+    /// Whether it can be approved always ([`Decision::ApproveAlways`]): a
+    /// site, where the broker keeps the sites the owner allows.
+    #[serde(default)]
+    pub always: bool,
 }
 
 /// One field of what a confirmation asks.
@@ -468,8 +472,55 @@ pub enum Decision {
     /// Go ahead, and for the rest of the session: offered only where the
     /// request says so ([`ConfirmationRequest::session`]).
     ApproveSession,
+    /// Go ahead, and always, until the owner revokes it: offered only where
+    /// the request says so ([`ConfirmationRequest::always`]).
+    ApproveAlways,
     /// Do not.
     Deny,
+}
+
+/// An operation on the sites the agent is always allowed to read (WO-028).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum SiteOp {
+    /// List them.
+    List,
+    /// Revoke one: the next read of a page on it asks again.
+    Revoke {
+        /// The site, `https://host[:port]`, as listed.
+        site: String,
+    },
+}
+
+/// A site the agent is always allowed to read.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct AllowedSite {
+    /// The site, `https://host[:port]`.
+    pub site: String,
+    /// When the owner allowed it, RFC 3339.
+    pub allowed_at: String,
+}
+
+/// The result of a [`SiteOp`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum SiteResult {
+    /// The sites, in the order they were allowed.
+    Listed {
+        /// The sites.
+        sites: Vec<AllowedSite>,
+    },
+    /// The site was revoked.
+    Revoked,
+    /// No such site is allowed.
+    NotFound,
+    /// The broker keeps no sites: the operator hasn't given it a place to.
+    Off,
+    /// The broker couldn't read or change them; its log says why.
+    Failed,
 }
 
 /// A user action.
@@ -495,6 +546,12 @@ pub enum UiAction {
         digest: String,
         /// The decision.
         decision: Decision,
+    },
+    /// List or revoke the sites the agent is always allowed to read
+    /// (WO-028).
+    ManageSites {
+        /// The operation.
+        op: SiteOp,
     },
     /// Create, cancel, or follow up a schedule.
     ManageSchedule {
@@ -589,6 +646,11 @@ pub enum UiActionResult {
     Schedule {
         /// The result, as the session protocol defines it.
         outcome: ScheduleResult,
+    },
+    /// A site operation's result.
+    Sites {
+        /// The result.
+        outcome: SiteResult,
     },
     /// A skill invocation's result.
     Skill {
@@ -1090,9 +1152,10 @@ mod tests {
                         },
                     ],
                     session: false,
+                    always: false,
                 }),
             ),
-            &json!({"seq": 5, "ts": "t", "body": {"kind": "confirmation", "confirmation_id": "k1", "revision": 2, "chat_id": "main", "summary": "send the email", "expires_at": null, "digest": "ab12", "fields": [{"label": "To", "value": "pat@example.com", "source": "broker"}, {"label": "Text", "value": "Hello", "source": "agent"}], "session": false}}),
+            &json!({"seq": 5, "ts": "t", "body": {"kind": "confirmation", "confirmation_id": "k1", "revision": 2, "chat_id": "main", "summary": "send the email", "expires_at": null, "digest": "ab12", "fields": [{"label": "To", "value": "pat@example.com", "source": "broker"}, {"label": "Text", "value": "Hello", "source": "agent"}], "session": false, "always": false}}),
         );
         pinned(
             &at(

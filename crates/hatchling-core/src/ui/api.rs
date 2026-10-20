@@ -61,6 +61,8 @@ pub enum ApiRequest {
     Decide,
     /// [`UiAction::ManageSchedule`].
     ManageSchedule,
+    /// [`UiAction::ManageSites`].
+    ManageSites,
     /// [`UiAction::InvokeSkill`].
     InvokeSkill,
     /// [`UiAction::OpenArtifact`].
@@ -97,6 +99,7 @@ impl ApiRequest {
             UiAction::SendMessage { .. } => Self::SendMessage,
             UiAction::Decide { .. } => Self::Decide,
             UiAction::ManageSchedule { .. } => Self::ManageSchedule,
+            UiAction::ManageSites { .. } => Self::ManageSites,
             UiAction::InvokeSkill { .. } => Self::InvokeSkill,
             UiAction::OpenArtifact { .. } => Self::OpenArtifact,
             UiAction::ShareArtifact { .. } => Self::ShareArtifact,

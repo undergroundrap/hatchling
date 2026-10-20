@@ -85,12 +85,13 @@ When the agent proposes an action that needs your yes (building an idea into an 
   - a `summary` in the broker's words;
   - the action's `fields`, in review order. Each field has a `label`, a `value` (whole, never cut short) and a `source`: `broker` for what the broker resolved, `agent` for the agent's own words;
   - `session`: whether it can be approved for the rest of the agent's session as well as once.
-- **`decide`** names the `confirmation_id`, the `revision` and the `digest` you were shown, with `approve`, `approve_session` (only where `session` is true; elsewhere it's rejected as `not_offered`), or `deny`.
+- **`decide`** names the `confirmation_id`, the `revision` and the `digest` you were shown, with `approve`, `approve_session` (only where `session` is true), `approve_always` (only where `always` is true), or `deny`. A decision the request doesn't offer is rejected as `not_offered`.
   - Only a caller holding every grant the owner holds can decide; anyone else gets `refused`/`not_granted`.
   - A decision on a request that changed, lapsed (15 minutes), or was already decided is rejected with its reason.
   - A `confirmation_decided` event follows on the stream either way.
 - **On approve, the broker runs the action it recorded, once,** on its own worker. A session can't run it, and nothing a session sends afterwards is what runs. The outcome comes back on the local chat, as the broker's.
-- **A site** (WO-028): what's approved is the site, `https://host[:port]`; the page the agent asked for and its reason are shown as the agent's words. `approve` lets the session read that page once, and the next page on the site asks again; `approve_session` (the app's *Allow for task*) lets it read any page on the site until the agent's session ends, which in a chat is that answer; `deny` refuses the site from then on, for every session, however the agent asks. The session that asked reads the page itself: nothing runs on the worker. When one of the session's searches gave the page, the card says which result it was (`Found by`, the broker's) and shows the search (`The search`, the agent's words).
+- **A site** (WO-028): what's approved is the site, `https://host[:port]`; the page the agent asked for and its reason are shown as the agent's words. `approve` lets the session read that page once, and the next page on the site asks again; `approve_session` (the app's *Allow for task*) lets it read any page on the site until the agent's session ends, which in a chat is that answer; `approve_always` (offered when the broker keeps sites, `HATCHLING_WEB_GRANTS_DIR`) keeps the site, sealed, and every session reads it without asking until you revoke it; `deny` refuses the site from then on, for every session, however the agent asks. The session that asked reads the page itself: nothing runs on the worker. When one of the session's searches gave the page, the card says which result it was (`Found by`, the broker's) and shows the search (`The search`, the agent's words).
+- **The sites you always allow** are yours alone to see and change: `manage_sites` with `list` (each site, and when you allowed it) or `revoke` (the next page on it asks again; a session that holds the site for itself keeps it until it ends). A caller holding less than every grant you hold is refused (`not_granted`), and no session op reaches them. `off` means the broker keeps no sites.
 - **Asking is bounded:**
   - at most 5 requests wait, one per agent session;
   - at most 20 are made in an hour;
@@ -122,6 +123,7 @@ Variant names are `snake_case` for the `Ui*` types, and kebab-case for the sched
 | `UiRequest::Subscribe` | `{"type":"subscribe","after_seq":null}` |
 | `UiRequest::Action` | `{"type":"action","request_id":"r1","action":{"action":"manage_schedule","op":{"op":"list"}}}` |
 | `UiAction::ManageSchedule` | `{"action":"manage_schedule","op":{"op":"cancel","id":"sch-1"}}` |
+| `UiAction::ManageSites` | `{"action":"manage_sites","op":{"op":"revoke","site":"https://a.example"}}` |
 | `ScheduleOp::Create` | `{"op":"create","when":{"every":"cron","expr":"0 9 * * 1-5","tz":"Europe/Berlin"},"task":"Summarize my open goals.","grants":[{"grant":"goals","action":"query-goals"},{"grant":"channel-send","channel":"local"}],"channel":"local"}` |
 | `ScheduleOp::List` | `{"op":"list","after":"sch-1"}` |
 | `ScheduleOp::Cancel` | `{"op":"cancel","id":"sch-1"}` |

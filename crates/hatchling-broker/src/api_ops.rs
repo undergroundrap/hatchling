@@ -190,6 +190,19 @@ impl<'a> Ops<'a> {
                     ApiOutcome::Served,
                 )
             }
+            UiAction::ManageSites { op } => {
+                // The owner's alone (WO-028): a caller holding less than
+                // every grant the owner holds can't list or revoke a site.
+                if !caller.holds(&owner) {
+                    return refused(ActionRefusal::NotGranted);
+                }
+                (
+                    UiActionResult::Sites {
+                        outcome: crate::site_grants::handle_site_op(self.config, self.key, op),
+                    },
+                    ApiOutcome::Served,
+                )
+            }
             UiAction::Decide {
                 confirmation_id,
                 revision,
@@ -909,6 +922,46 @@ mod tests {
                 ApiOutcome::Served
             )
         );
+    }
+
+    /// WO-028: only the owner lists or revokes the sites the agent is
+    /// always allowed to read.
+    #[test]
+    fn only_the_owner_manages_the_allowed_sites() {
+        let config = owner_config(Some("/srv/hatchling/schedules"));
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let ops = Ops::new(&config, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        let held: Vec<ScheduleGrant> = ops.owner_grants().into_iter().collect();
+        let owner = caller(&held);
+        let partial = caller(held.get(..1).unwrap_or_default());
+        let mut replies = Replies::default();
+        for op in [
+            hatchling_core::ui::SiteOp::List,
+            hatchling_core::ui::SiteOp::Revoke {
+                site: String::from("https://a.example"),
+            },
+        ] {
+            let manage = UiAction::ManageSites { op };
+            assert_eq!(
+                ops.handle(&partial, &manage, &mut replies),
+                (
+                    UiActionResult::Refused {
+                        reason: ActionRefusal::NotGranted
+                    },
+                    ApiOutcome::Refused
+                )
+            );
+            assert_eq!(
+                ops.handle(&owner, &manage, &mut replies),
+                (
+                    UiActionResult::Sites {
+                        outcome: hatchling_core::ui::SiteResult::Off
+                    },
+                    ApiOutcome::Served
+                )
+            );
+        }
     }
 
     /// WO-027: only the owner decides, and a decision on a confirmation

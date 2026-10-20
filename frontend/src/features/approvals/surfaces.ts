@@ -7,7 +7,7 @@ import { icon } from '../../components/icons.js';
 import { button, iconButton } from '../../components/ui.js';
 import { avatarSource } from '../context/presence.js';
 import { reviewFields } from './fields.js';
-const labels: Record<ApprovalStatus, string> = { pending: 'Pending approval', 'allowed-once': 'Allowed once', 'allowed-task': 'Allowed for this task', denied: 'Declined', expired: 'Timed out', cancelled: 'Cancelled' };
+const labels: Record<ApprovalStatus, string> = { pending: 'Pending approval', 'allowed-once': 'Allowed once', 'allowed-task': 'Allowed for this task', 'allowed-always': 'Always allowed', denied: 'Declined', expired: 'Timed out', cancelled: 'Cancelled' };
 const selected = new WeakMap<AppContext, Map<string, string>>();
 export function approvalLabel(status: ApprovalStatus): string { return labels[status]; }
 function glyph(request: TaskApproval): IconName { return request.kind === 'network' ? 'globe' : request.kind === 'tool' ? 'code' : 'link'; }
@@ -39,6 +39,8 @@ function decisionActions(ctx: AppContext, request: TaskApproval): HTMLElement {
         });
     };
     actions.append(button('Deny', () => decide('deny'), { id: `approval-deny-${request.id}`, disabled: offline || blocked || busy }));
+    if (request.scopes.includes('always'))
+        actions.append(button('Allow always', () => decide('always'), { id: `approval-always-${request.id}`, disabled: offline || blocked || busy }));
     if (request.scopes.includes('task'))
         actions.append(button('Allow for task', () => decide('task'), { id: `approval-task-${request.id}`, disabled: offline || blocked || busy }));
     if (request.scopes.includes('once'))

@@ -112,6 +112,8 @@ impl Store {
     pub const SPACES: Self = Self("spaces");
     /// The raw text of redaction records.
     pub const REDACTIONS: Self = Self("redactions");
+    /// The sites the owner always allows the agent to read (WO-028).
+    pub const SITES: Self = Self("sites");
 
     /// The store's label.
     #[must_use]
@@ -128,6 +130,7 @@ impl Store {
             Self::ARTIFACTS,
             Self::SPACES,
             Self::REDACTIONS,
+            Self::SITES,
         ]
         .into_iter()
         .find(|store| store.0 == label)

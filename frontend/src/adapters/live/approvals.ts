@@ -1,8 +1,8 @@
 // The approval cards, from the broker's confirmations . The UI's
 // existing approval surface (TaskApprovalPort) offers Allow once and Deny,
-// and Allow for task where the request offers it (a site the agent asks to
-// read, WO-028): its grant lasts for the agent's session, which is its
-// task. Each becomes the typed `decide` action at the revision the user saw.
+// and Allow for task and Allow always where the request offers them (a
+// site the agent asks to read, WO-028): the first lasts for the agent's
+// session, which is its task, the second until the owner revokes it. Each becomes the typed `decide` action at the revision the user saw.
 //
 // A decision is checked again at dispatch, against the confirmation as the
 // broker last stated it, not against the card that was drawn: one that is no
@@ -85,8 +85,9 @@ export class LiveApprovals implements TaskApprovalPort {
     }
     #card(request: ConfirmationRequest, at: string): TaskApproval {
         const decision = this.#client.decision(request.confirmation_id);
-        const status: ApprovalStatus = decision === 'approve' ? 'allowed-once' : decision === 'approve_session' ? 'allowed-task' : decision === 'deny' ? 'denied' : this.#closed.get(request.confirmation_id) ?? 'pending';
+        const status: ApprovalStatus = decision === 'approve' ? 'allowed-once' : decision === 'approve_session' ? 'allowed-task' : decision === 'approve_always' ? 'allowed-always' : decision === 'deny' ? 'denied' : this.#closed.get(request.confirmation_id) ?? 'pending';
         const forTask = request.session === true;
+        const always = request.always === true;
         const expires = typeof request.expires_at === 'string' ? clockTime(request.expires_at) : '';
         return {
             id: request.confirmation_id,
@@ -97,10 +98,13 @@ export class LiveApprovals implements TaskApprovalPort {
             title: 'Hatchling asks before it continues',
             description: request.summary,
             resource: expires === '' ? 'This request does not expire.' : `This request expires at ${expires} UTC.`,
-            detail: forTask
-                ? "Allow once answers this request as described, and only this version of it. Allow for task also answers every request like it until the agent's session ends; in a chat, that's this answer. Your answer is recorded once."
-                : 'Allow once answers this request as described, and only this version of it. Your answer is recorded once.',
-            scopes: forTask ? ['once', 'task'] : ['once'],
+            detail: [
+                'Allow once answers this request as described, and only this version of it.',
+                forTask ? "Allow for task also answers every request like it until the agent's session ends; in a chat, that's this answer." : '',
+                always ? 'Allow always answers every request like it, in every session, until you revoke it in Permissions.' : '',
+                'Your answer is recorded once.',
+            ].filter(part => part !== '').join(' '),
+            scopes: [...(['once'] as const), ...(forTask ? (['task'] as const) : []), ...(always ? (['always'] as const) : [])],
             status,
             time: clockTime(at),
             report: reviewText(request),
@@ -108,11 +112,14 @@ export class LiveApprovals implements TaskApprovalPort {
         };
     }
     async #dispatch(attempt: ApprovalAttempt): Promise<ApprovalResult> {
-        if (attempt.decision === 'task' && this.#seen.get(attempt.requestId)?.request.session !== true)
+        const offered = this.#seen.get(attempt.requestId)?.request;
+        if (attempt.decision === 'task' && offered?.session !== true)
             return rejected('Allowing a whole task is not offered. Choose Allow once or Deny.');
+        if (attempt.decision === 'always' && offered?.always !== true)
+            return rejected('Allowing always is not offered. Choose another answer.');
         if (this.#sending.has(attempt.requestId))
             return unknown('An answer to this request is already on its way. Check its status instead of answering again.');
-        const action = this.#client.decide(attempt.requestId, attempt.decision === 'once' ? 'approve' : attempt.decision === 'task' ? 'approve_session' : 'deny');
+        const action = this.#client.decide(attempt.requestId, attempt.decision === 'once' ? 'approve' : attempt.decision === 'task' ? 'approve_session' : attempt.decision === 'always' ? 'approve_always' : 'deny');
         if (action?.action !== 'decide' || this.#closed.has(attempt.requestId))
             return rejected('This request is no longer waiting for an answer.');
         if (action.revision !== attempt.revision)
@@ -141,6 +148,7 @@ export class LiveApprovals implements TaskApprovalPort {
                 return rejected(REFUSALS[result.reason]);
             case 'message_accepted':
             case 'schedule':
+            case 'sites':
             case 'skill':
             case 'artifact_opened':
             case 'artifact_shared':

@@ -67,6 +67,7 @@ pub fn sealed_stores(
     for (store, root) in [
         (Store::ARTIFACTS, &config.artifacts.root),
         (Store::SPACES, &config.spaces.root),
+        (Store::SITES, &config.web.grants),
     ] {
         if !root.as_os_str().is_empty() {
             stores.push((store, root.clone()));
@@ -681,5 +682,7 @@ mod tests {
         config.artifacts.root = PathBuf::from("/srv/artifacts");
         config.spaces.root = PathBuf::from("/srv/spaces");
         assert_eq!(labels(&config), ["secrets", "artifacts", "spaces"]);
+        config.web.grants = PathBuf::from("/srv/sites");
+        assert_eq!(labels(&config), ["secrets", "artifacts", "spaces", "sites"]);
     }
 }

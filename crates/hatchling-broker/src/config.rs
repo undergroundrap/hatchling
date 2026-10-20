@@ -513,6 +513,10 @@ pub struct WebConfig {
     pub search: bool,
     /// What the broker logs of each search (`HATCHLING_SEARCH_LOG`).
     pub search_log: SearchLog,
+    /// Where the broker keeps the sites the owner always allows
+    /// (`HATCHLING_WEB_GRANTS_DIR`, a sealed store); empty, and *Allow
+    /// always* isn't offered.
+    pub grants: PathBuf,
 }
 
 /// What the broker logs of each search (WO-028).
@@ -527,13 +531,14 @@ pub enum SearchLog {
 impl WebConfig {
     /// The web off: nothing is fetched, and nothing is asked.
     #[must_use]
-    pub const fn off() -> Self {
+    pub fn off() -> Self {
         Self {
             enabled: false,
             refused: Vec::new(),
             attended: false,
             search: false,
             search_log: SearchLog::Length,
+            grants: PathBuf::new(),
         }
     }
 
@@ -611,12 +616,29 @@ fn parse_web(get: &impl Fn(&str) -> Option<String>) -> Result<WebConfig, Error> 
             });
         }
     };
+    let grants = match get(env::HATCHLING_WEB_GRANTS_DIR.name)
+        .as_deref()
+        .map(str::trim)
+    {
+        None | Some("") => PathBuf::new(),
+        Some(raw) => {
+            let path = PathBuf::from(raw);
+            if !path.is_absolute() {
+                return Err(Error::InvalidConfig {
+                    key: "HATCHLING_WEB_GRANTS_DIR",
+                    reason: format!("must be an absolute path: {}", path.display()),
+                });
+            }
+            path
+        }
+    };
     Ok(WebConfig {
         enabled,
         refused,
         attended: true,
         search,
         search_log,
+        grants,
     })
 }
 
@@ -3726,6 +3748,33 @@ mod web_config_tests {
             "HATCHLING_SEARCH_LOG" => log.map(str::to_owned),
             _ => None,
         })
+    }
+
+    /// The allowed sites' store is off unless the operator gives it an
+    /// absolute directory.
+    #[test]
+    fn the_allowed_sites_store_is_an_absolute_directory_or_off() {
+        let parse = |raw: Option<&str>| {
+            super::parse_web(&|key: &str| match key {
+                "HATCHLING_WEB_GRANTS_DIR" => raw.map(str::to_owned),
+                _ => None,
+            })
+        };
+        for off in [None, Some(""), Some("  ")] {
+            assert!(parse(off).unwrap().grants.as_os_str().is_empty(), "{off:?}");
+        }
+        assert_eq!(
+            parse(Some("/srv/hatchling/sites")).unwrap().grants,
+            std::path::PathBuf::from("/srv/hatchling/sites")
+        );
+        assert!(matches!(
+            parse(Some("relative/sites")),
+            Err(Error::InvalidConfig {
+                key: "HATCHLING_WEB_GRANTS_DIR",
+                ..
+            })
+        ));
+        assert!(WebConfig::off().grants.as_os_str().is_empty());
     }
 
     /// Search is off unless the operator chooses Brave; a query's text is

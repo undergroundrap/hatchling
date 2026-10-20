@@ -45,7 +45,7 @@ use hatchling_vault::OpensStores;
 use zeroize::Zeroizing;
 
 use crate::Config;
-use crate::approval_board::{Board, board, refused_as, site_action};
+use crate::approval_board::{Board, SiteAsk, board, refused_as, site_action};
 use crate::approvals::{Refusal, State};
 
 /// The longest a session with a person there waits for the owner to decide
@@ -201,7 +201,7 @@ pub fn handle_web_op(
     op: &WebOp,
 ) -> WebResult {
     match op {
-        WebOp::Fetch { url, reason } => fetch(config, web, url, reason),
+        WebOp::Fetch { url, reason } => fetch(config, keys, web, url, reason),
         WebOp::Search { query } => search(config, keys, web, query),
     }
 }
@@ -281,7 +281,13 @@ fn bounded_search(
 }
 
 /// Reads the page at `url`, which the agent wants for `reason`.
-fn fetch(config: &Config, web: &mut WebSession, url: &str, reason: &str) -> WebResult {
+fn fetch(
+    config: &Config,
+    keys: &dyn OpensStores,
+    web: &mut WebSession,
+    url: &str,
+    reason: &str,
+) -> WebResult {
     if !config.web.enabled {
         return WebResult::Off;
     }
@@ -297,17 +303,18 @@ fn fetch(config: &Config, web: &mut WebSession, url: &str, reason: &str) -> WebR
     if config.web.refuses(url.origin().host()) {
         return refused(String::from("the operator refuses this site"));
     }
-    if let Err(answer) = allow(config, web, &url, reason) {
+    if let Err(answer) = allow(config, keys, web, &url, reason) {
         return answer;
     }
     read(web, url)
 }
 
-/// `Ok` when the session may read `url`'s site now: it holds the site, or
-/// the owner allows it, once or for the session. Otherwise what the agent
-/// is told.
+/// `Ok` when the session may read `url`'s site now: it holds the site, the
+/// owner always allows it, or the owner allows it now, once, for the
+/// session, or always. Otherwise what the agent is told.
 fn allow(
     config: &Config,
+    keys: &dyn OpensStores,
     web: &mut WebSession,
     url: &WebUrl,
     reason: &str,
@@ -317,24 +324,45 @@ fn allow(
         return Ok(());
     }
     let site = origin.to_string();
+    let grants = crate::site_grants::SiteGrants::of(config, keys);
+    if let Some(grants) = &grants {
+        match grants.holds(&site) {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(error) => {
+                tracing::error!(%error, "the allowed sites couldn't be read: the owner is asked");
+            }
+        }
+    }
     let board = board(config);
     let found = board
         .approvals()
         .find(&web.task, &site_action(&site), State::Approved);
-    let id = found.map_or_else(|| ask_owner(&board, web, url, reason, &site), Ok)?;
-    let session = board
+    let always = grants.is_some();
+    let id = found.map_or_else(|| ask_owner(&board, web, url, reason, &site, always), Ok)?;
+    let decision = board
         .approvals()
         .get(&id)
-        .and_then(|request| request.decision)
-        == Some(Decision::ApproveSession);
+        .and_then(|request| request.decision);
     let Some((_, claim)) = board.approvals().claim(&id) else {
         return Err(refused(String::from(
             "the site's approval was already used: fetch again to ask again",
         )));
     };
     claim.succeeded();
-    if session {
-        web.sites.insert(origin.clone());
+    match decision {
+        Some(Decision::ApproveSession) => {
+            web.sites.insert(origin.clone());
+        }
+        Some(Decision::ApproveAlways) => {
+            web.sites.insert(origin.clone());
+            if let Some(grants) = &grants {
+                if let Err(error) = grants.allow(&site, Timestamp::now().as_second()) {
+                    tracing::error!(%error, %site, "an always-allowed site wasn't kept: this session holds it");
+                }
+            }
+        }
+        Some(Decision::Approve | Decision::Deny) | None => {}
     }
     Ok(())
 }
@@ -348,14 +376,18 @@ fn ask_owner(
     url: &WebUrl,
     reason: &str,
     site: &str,
+    always: bool,
 ) -> Result<String, WebResult> {
     let now = Timestamp::now().as_second();
     let requested = board
         .propose_site(
-            site,
-            &url.to_string(),
-            reason,
-            web.led_to(url),
+            &SiteAsk {
+                site,
+                url: &url.to_string(),
+                reason,
+                led: web.led_to(url),
+                always,
+            },
             &web.task,
             now,
         )
@@ -795,6 +827,17 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(10), "waited out");
     }
 
+    /// Asking for `site`, for its page `url`, with no search behind it.
+    const fn asking<'a>(site: &'a str, url: &'a str) -> SiteAsk<'a> {
+        SiteAsk {
+            site,
+            url,
+            reason: "why",
+            led: None,
+            always: false,
+        }
+    }
+
     /// A wait ends with the owner's yes, their no, a lapse, or a request
     /// that is no longer open.
     #[test]
@@ -802,7 +845,7 @@ mod tests {
         let site = "https://a.example";
         let board = board(&web_config("ends"));
         let no = board
-            .propose_site(site, "https://a.example/", "why", None, "t", 0)
+            .propose_site(&asking(site, "https://a.example/"), "t", 0)
             .unwrap();
         board
             .decide(&no.id, 1, &no.digest, Decision::Deny, 1)
@@ -815,14 +858,11 @@ mod tests {
         );
         let board = crate::approval_board::board(&web_config("lapses"));
         let lapsing = board
-            .propose_site(site, "https://a.example/", "why", None, "t", 0)
+            .propose_site(&asking(site, "https://a.example/"), "t", 0)
             .unwrap();
         // Proposing past its time lapses it.
         let _ = board.propose_site(
-            "https://b.example",
-            "https://b.example/",
-            "why",
-            None,
+            &asking("https://b.example", "https://b.example/"),
             "t9",
             10_000,
         );
@@ -838,7 +878,7 @@ mod tests {
         ));
         let board = crate::approval_board::board(&web_config("approved"));
         let yes = board
-            .propose_site(site, "https://a.example/", "why", None, "t", 0)
+            .propose_site(&asking(site, "https://a.example/"), "t", 0)
             .unwrap();
         board
             .decide(&yes.id, 1, &yes.digest, Decision::Approve, 1)
@@ -979,13 +1019,13 @@ mod tests {
         let (fetcher, _) = scripted(Vec::new());
         let web = unattended("t", &fetcher);
         let url = WebUrl::parse("https://a.example/x").unwrap();
-        let waiting = ask_owner(&board, &web, &url, "why", "https://a.example");
+        let waiting = ask_owner(&board, &web, &url, "why", "https://a.example", false);
         let Err(WebResult::Waiting { request, .. }) = waiting else {
             unreachable!("{waiting:?}");
         };
         let other = WebUrl::parse("https://b.example/").unwrap();
         assert_eq!(
-            ask_owner(&board, &web, &other, "why", "https://b.example"),
+            ask_owner(&board, &web, &other, "why", "https://b.example", false),
             Err(WebResult::Unasked {
                 reason: ApprovalRefusal::QueueFull
             }),
@@ -1002,7 +1042,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            ask_owner(&board, &web, &url, "why", "https://a.example"),
+            ask_owner(&board, &web, &url, "why", "https://a.example", false),
             Err(WebResult::Denied {
                 site: String::from("https://a.example")
             })
@@ -1024,7 +1064,7 @@ mod tests {
             Duration::from_secs(5),
             fetcher,
         );
-        let approved = ask_owner(&board, &attended, &url, "why", "https://a.example");
+        let approved = ask_owner(&board, &attended, &url, "why", "https://a.example", false);
         assert!(
             matches!(approved, Ok(ref id) if id.starts_with("approval-")),
             "{approved:?}"
@@ -1316,5 +1356,124 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    /// Always: the owner's yes is kept, every session reads the site without
+    /// asking, and once the owner revokes it the next session asks again.
+    /// Offered only where the broker keeps sites.
+    #[test]
+    fn always_is_kept_for_every_session_until_revoked() {
+        let (mut config, scratch, master) = search_config("always", None);
+        config.web.grants = scratch.0.join("sites");
+        let bus = Arc::new(crate::api_stream::Bus::starting_at(1));
+        board(&config).attach(Arc::clone(&bus));
+        let (fetcher, asked) = scripted(vec![
+            page("https://a.example/one", "1"),
+            page("https://a.example/two", "2"),
+        ]);
+        let mut web = unattended("t", &fetcher);
+        let answer = handle_web_op(&config, &master, &mut web, &fetch("https://a.example/one"));
+        assert!(waiting(&answer, "https://a.example"), "{answer:?}");
+        let offered = bus.after(None).into_iter().any(|event| {
+            matches!(event.body, hatchling_core::ui::UiEventBody::Confirmation(ref request) if request.always)
+        });
+        assert!(offered, "always offered where sites are kept");
+        owner_decides(&config, "t", "https://a.example", Decision::ApproveAlways);
+        let answer = handle_web_op(&config, &master, &mut web, &fetch("https://a.example/one"));
+        assert!(matches!(answer, WebResult::Page { .. }), "{answer:?}");
+        assert!(web.holds(&origin("https://a.example/")));
+        let mut other = unattended("t2", &fetcher);
+        let answer = handle_web_op(
+            &config,
+            &master,
+            &mut other,
+            &fetch("https://a.example/two"),
+        );
+        assert!(
+            matches!(answer, WebResult::Page { .. }),
+            "another session: {answer:?}"
+        );
+        assert_eq!(asked.lock().unwrap().len(), 2);
+        let revoke = hatchling_core::ui::SiteOp::Revoke {
+            site: String::from("https://a.example"),
+        };
+        assert_eq!(
+            crate::site_grants::handle_site_op(&config, &master, &revoke),
+            hatchling_core::ui::SiteResult::Revoked
+        );
+        let mut third = unattended("t3", &fetcher);
+        let answer = handle_web_op(
+            &config,
+            &master,
+            &mut third,
+            &fetch("https://a.example/two"),
+        );
+        assert!(waiting(&answer, "https://a.example"), "revoked: {answer:?}");
+        // The session that chose always holds it until it ends; one that
+        // read it through the kept grant asks again.
+        let answer = handle_web_op(&config, &master, &mut web, &fetch("https://a.example/two"));
+        assert!(matches!(answer, WebResult::Page { .. }), "{answer:?}");
+        let answer = handle_web_op(
+            &config,
+            &master,
+            &mut other,
+            &fetch("https://a.example/two"),
+        );
+        assert!(waiting(&answer, "https://a.example"), "{answer:?}");
+    }
+
+    /// Without a store for sites, always isn't offered, and the owner can't
+    /// choose it; with one the broker can't read, the owner is asked.
+    #[test]
+    fn always_is_not_offered_without_a_store() {
+        let (config, _scratch, master) = search_config("no-always", None);
+        let bus = Arc::new(crate::api_stream::Bus::starting_at(1));
+        board(&config).attach(Arc::clone(&bus));
+        let (fetcher, _) = scripted(Vec::new());
+        let mut web = unattended("t", &fetcher);
+        let _ = handle_web_op(&config, &master, &mut web, &fetch("https://a.example/"));
+        let offered: Vec<bool> = bus
+            .after(None)
+            .into_iter()
+            .filter_map(|event| {
+                if let hatchling_core::ui::UiEventBody::Confirmation(request) = event.body {
+                    Some(request.always)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(offered, [false]);
+        let board = board(&config);
+        let id = board
+            .approvals()
+            .find("t", &site_action("https://a.example"), State::Pending)
+            .unwrap();
+        let digest = board.approvals().get(&id).unwrap().digest;
+        assert_eq!(
+            board.decide(
+                &id,
+                1,
+                &digest,
+                Decision::ApproveAlways,
+                Timestamp::now().as_second()
+            ),
+            Err(hatchling_core::ui::DecisionRejection::NotOffered)
+        );
+        let (mut unreadable, scratch, master) = search_config("unreadable-sites", None);
+        unreadable.web.grants = scratch.0.join("sites");
+        crate::site_grants::SiteGrants::of(&unreadable, &master)
+            .unwrap()
+            .allow("https://a.example", 1)
+            .unwrap();
+        let stranger = hatchling_vault::MasterKey::generate().unwrap();
+        let mut web = unattended("t", &fetcher);
+        let answer = handle_web_op(
+            &unreadable,
+            &stranger,
+            &mut web,
+            &fetch("https://a.example/"),
+        );
+        assert!(waiting(&answer, "https://a.example"), "{answer:?}");
     }
 }

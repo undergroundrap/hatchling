@@ -73,6 +73,7 @@ pub use schedule_ops::{
     handle_schedule_op, held_grants,
 };
 pub mod serve;
+pub mod site_grants;
 pub mod skill_cell;
 pub mod skill_invoke;
 pub mod skill_ops;

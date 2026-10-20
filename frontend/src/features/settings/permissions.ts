@@ -54,6 +54,8 @@ export function permissionsTab(ctx: AppContext, nav: SettingsNavigation): HTMLEl
     return root;
 }
 function websites(ctx: AppContext, nav: SettingsNavigation): HTMLElement {
+    if (ctx.state.mode === 'live')
+        return liveWebsites(ctx, nav);
     const group = h('div', { class: 'settings-group reference-list website-permissions' });
     for (const item of ctx.state.websitePermissions) {
         const control = h('select', { 'aria-label': `Permission for ${item.host}`, class: 'website-policy' }, ...(['allow', 'ask', 'block'] as const).map(value => h('option', { value, selected: item.policy === value }, value === 'allow' ? 'Allow' : value === 'ask' ? 'Ask' : 'Block')));
@@ -69,6 +71,16 @@ function websites(ctx: AppContext, nav: SettingsNavigation): HTMLElement {
         group.append(h('div', { class: 'reference-setting-row website-permission' }, h('span', { class: 'website-icon' }, icon('globe', 18)), h('span', { class: 'setting-row-copy' }, item.host), control));
     }
     return h('div', { class: 'settings-stack' }, h('section', {}, h('h3', { class: 'settings-section-title' }, "Websites you've allowed"), group));
+}
+/** The sites Hatchling's broker keeps: added only by Allow always on a request, revoked here. */
+function liveWebsites(ctx: AppContext, nav: SettingsNavigation): HTMLElement {
+    const group = h('div', { class: 'settings-group reference-list website-permissions' });
+    for (const item of ctx.state.websitePermissions) {
+        const revoke = button('Revoke', () => ctx.dialogs.confirm(`Revoke ${item.host}?`, 'The agent asks you again the next time it wants a page on this site. A task you already allowed it for keeps it until the task ends.', () => { void ctx.run({ type: 'permission.website', host: item.host, policy: 'ask' }, true).then(nav.refresh); }, { label: 'Revoke site' }), { variant: 'ghost' });
+        group.append(h('div', { class: 'reference-setting-row website-permission' }, h('span', { class: 'website-icon' }, icon('globe', 18)), h('span', { class: 'setting-row-copy' }, item.host), revoke));
+    }
+    const empty = h('p', { class: 'settings-note' }, 'No sites yet. When the agent asks to read a site, choose Allow always on its request to keep it here.');
+    return h('div', { class: 'settings-stack' }, h('section', {}, h('h3', { class: 'settings-section-title' }, "Websites you've allowed"), ctx.state.websitePermissions.length ? group : empty));
 }
 function network(ctx: AppContext, nav: SettingsNavigation): HTMLElement {
     const group = h('div', { class: 'settings-group reference-list network-permissions' });
