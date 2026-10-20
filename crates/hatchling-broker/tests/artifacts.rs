@@ -179,8 +179,12 @@ impl World {
         SealedArtifactStore::new(&self.config.artifacts.root, key())
     }
 
+    /// The stored record of `build`; a `build` that is [`built`]'s
+    /// description of a failed reply fails here, saying what came back.
     fn record(&self, build: &str) -> BuildRecord {
-        self.store().get(build).unwrap().unwrap()
+        let record = self.store().get(build).unwrap();
+        assert!(record.is_some(), "no record of {build}");
+        record.unwrap()
     }
 }
 
