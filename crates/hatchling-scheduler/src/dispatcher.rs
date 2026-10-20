@@ -26,6 +26,13 @@
 //!      exhausted), and its run is launched only once that write is
 //!      committed. A claim that fails launches nothing; one read from a
 //!      record that has changed since is refused.
+//!    - **A failed claim may have landed.** A store write can fail after
+//!      its new state is visible (the rename went through; the sync after
+//!      it didn't), so a failed claim is remembered as uncertain. The next
+//!      tick, before anything fires, writes it again: if it landed, that
+//!      write makes it durable, and its run is launched, once; if it
+//!      didn't, it is forgotten, and the fire is claimed afresh; if the
+//!      write fails too, it stays uncertain, and nothing is launched.
 //!    - **Overlap: skip.** If its previous run is still claimed or
 //!      active, this fire is skipped. At most one run per schedule exists
 //!      at any time, so a run slower than its interval cannot stack.
@@ -337,15 +344,20 @@ struct Start<'a> {
     kind: Kind,
 }
 
-/// The dispatcher's state: the runs in flight, one per schedule at most.
+/// The dispatcher's state: the runs in flight, one per schedule at most,
+/// and the claims whose write failed but may have landed.
 pub struct Dispatcher<R> {
     active: HashMap<String, Active<R>>,
+    /// A schedule's fire whose claim failed, by when it was due and
+    /// whether it was missed: settled the next tick (WO-025).
+    uncertain: HashMap<String, (Timestamp, bool)>,
 }
 
 impl<R> Default for Dispatcher<R> {
     fn default() -> Self {
         Self {
             active: HashMap::new(),
+            uncertain: HashMap::new(),
         }
     }
 }
@@ -404,14 +416,16 @@ impl<R: Run> Dispatcher<R> {
         // What finished is delivered before anything fires, so a schedule
         // whose last fire just ended can claim its next one.
         deliver_stored(services, &mut report)?;
-        for schedule in services.store.load()? {
+        let schedules = services.store.load()?;
+        self.settle(&schedules, services, &mut report);
+        for schedule in &schedules {
             let Some(due) = schedule.due() else {
                 continue;
             };
             if due > now {
                 continue;
             }
-            self.fire(&schedule, due, now, services, &mut report);
+            self.fire(schedule, due, now, services, &mut report);
         }
         deliver_stored(services, &mut report)?;
         let mut events: Vec<HookSource> = Vec::new();
@@ -620,7 +634,54 @@ impl<R: Run> Dispatcher<R> {
                 report.refused.push(id);
             }
             Err(error) => {
-                tracing::error!(schedule = %id, %error, "the fire could not be claimed: nothing launched");
+                tracing::error!(schedule = %id, %error, "the fire's claim failed, and may have landed: nothing launched until the next tick settles it");
+                self.uncertain.insert(id, (due, missed));
+            }
+        }
+    }
+
+    /// Settles each claim whose write failed (WO-025): writes it again.
+    /// One that landed is then durable, and its run is launched, once; one
+    /// that didn't land, or whose schedule is gone, is forgotten; one
+    /// whose write fails again stays uncertain, and nothing is launched.
+    fn settle<S: Store, L: Launcher<Run = R>, D: Delivery>(
+        &mut self,
+        schedules: &[Schedule],
+        services: &Services<'_, S, L, D>,
+        report: &mut TickReport,
+    ) {
+        for (id, (due, missed)) in std::mem::take(&mut self.uncertain) {
+            let Some(schedule) = schedules.iter().find(|schedule| schedule.id == id) else {
+                continue;
+            };
+            match services
+                .store
+                .record(&id, due.as_second(), OccurrenceState::Claimed)
+            {
+                Ok(true) => self.start(
+                    &Start {
+                        id: &id,
+                        task: &schedule.task,
+                        grants: &schedule.grants,
+                        channel: &schedule.channel,
+                        due,
+                        missed,
+                        depth: schedule.depth,
+                        event: None,
+                        space: schedule.space.as_deref(),
+                        feed: schedule.feed.as_ref(),
+                        kind: Kind::Schedule,
+                    },
+                    services,
+                    report,
+                ),
+                Ok(false) => {
+                    tracing::warn!(schedule = %id, "a failed claim did not land: the fire is claimed afresh");
+                }
+                Err(error) => {
+                    tracing::error!(schedule = %id, %error, "a failed claim could not be settled: still nothing launched");
+                    self.uncertain.insert(id, (due, missed));
+                }
             }
         }
     }

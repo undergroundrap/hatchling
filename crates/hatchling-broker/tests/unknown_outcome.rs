@@ -3,9 +3,14 @@
 //!
 //! The killed broker is this test binary again, as a child: it stores a due
 //! schedule, ticks the real dispatcher once, so the fire is claimed and its
-//! run launched in a real cell whose program hangs, says so, and waits to
-//! be killed with `SIGKILL`. Then the parent does what the next broker's
+//! run launched in a real cell whose program hangs (or, killed between the
+//! two, the fire claimed and its launch not yet made), says so, and waits
+//! to be killed with `SIGKILL`. Then the parent does what the next broker's
 //! start does, and looks at what the owner sees.
+//!
+//! Also here: a claim whose store write fails at each of its steps, through
+//! the vault's injected failures, is launched once, never twice, and never
+//! on the tick its write failed.
 #![allow(
     clippy::unwrap_used,
     reason = "fixtures: a failed setup must fail the calling test loudly"
@@ -38,10 +43,21 @@ use hatchling_scheduler::{
     validate,
 };
 use hatchling_vault::MasterKey;
+use hatchling_vault::fault::Step;
 
 /// In a child: the test's base directory; the child plays the killed
 /// broker.
 const BASE: &str = "HATCHLING_UNKNOWN_TEST_BASE";
+
+/// In a child: where the killed broker is killed, [`LAUNCHED`] or
+/// [`CLAIMED`].
+const MODE: &str = "HATCHLING_UNKNOWN_TEST_MODE";
+
+/// Killed with its fire's run launched.
+const LAUNCHED: &str = "launched";
+
+/// Killed with its fire claimed, before its launch.
+const CLAIMED: &str = "claimed";
 
 /// What the killed broker prints once its fire is claimed and running:
 /// nothing the test harness prints (its `running 1 test` among them).
@@ -152,12 +168,39 @@ fn killed(config: &Config) {
             .and_then(|stored| stored.ledger.occurrence)
             .map(|fire| fire.state);
         assert_eq!(state, Some(OccurrenceState::Running));
-        let mut out = std::io::stdout().lock();
-        writeln!(out, "{READY}").unwrap();
-        out.flush().unwrap();
-        drop(out);
+        say_ready();
         std::thread::sleep(Duration::from_secs(600));
     });
+}
+
+/// Says it is about to launch, and never does: its broker is killed
+/// first.
+struct Stalling;
+
+impl Launcher for Stalling {
+    type Run = Endless;
+
+    fn launch(&self, _request: RunRequest) -> Result<Endless, String> {
+        say_ready();
+        std::thread::sleep(Duration::from_secs(600));
+        Err(String::from("its broker was meant to be killed by now"))
+    }
+}
+
+/// Tells the parent the fire is where it should be killed.
+fn say_ready() {
+    let mut out = std::io::stdout().lock();
+    writeln!(out, "{READY}").unwrap();
+    out.flush().unwrap();
+}
+
+/// The broker killed between its fire's claim and its launch.
+fn killed_before_launch(config: &Config) {
+    let key = key(config);
+    let store = SealedScheduleStore::new(&config.scheduler.root, &key);
+    assert!(store.insert(&hourly()).unwrap());
+    let mut dispatcher = Dispatcher::default();
+    let _ = dispatch_once(&mut dispatcher, config, &key, None, &Stalling, at(FIRST));
 }
 
 /// Run only as a child: the killed broker, over [`BASE`].
@@ -166,7 +209,12 @@ fn a_child() {
     let Some(base) = std::env::var_os(BASE) else {
         return;
     };
-    killed(&config(Path::new(&base)));
+    let config = config(Path::new(&base));
+    if std::env::var(MODE).as_deref() == Ok(CLAIMED) {
+        killed_before_launch(&config);
+    } else {
+        killed(&config);
+    }
 }
 
 /// Counts what it is asked to start; its runs never end.
@@ -191,11 +239,12 @@ impl Launcher for Counting {
 }
 
 /// Starts the killed broker over `base`, and kills it with `SIGKILL` once
-/// its fire's run is out.
-fn kill_once_running(base: &Path) {
+/// its fire is where `mode` says.
+fn kill_once_ready(base: &Path, mode: &str) {
     let mut broker = Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "a_child", "--nocapture", "--test-threads=1"])
         .env(BASE, base)
+        .env(MODE, mode)
         .env("TMPDIR", base.join("tmp"))
         .stdout(Stdio::piped())
         .spawn()
@@ -235,7 +284,7 @@ fn a_fire_in_flight_when_the_broker_is_killed_is_held_as_unknown() {
     }
     let base = base("killed");
     let config = config(&base);
-    kill_once_running(&base);
+    kill_once_ready(&base, LAUNCHED);
 
     // The next broker's start.
     let key = key(&config);
@@ -313,4 +362,100 @@ fn a_fire_in_flight_when_the_broker_is_killed_is_held_as_unknown() {
     .unwrap();
     assert_eq!(report.launched, [(String::from("sch-hang"), false)]);
     assert_eq!(launcher.0.borrow().len(), 1);
+}
+
+/// The fire the store holds for the one schedule in `config`'s store.
+fn stored_fire(config: &Config, key: &MasterKey) -> Option<hatchling_scheduler::Occurrence> {
+    SealedScheduleStore::new(&config.scheduler.root, key)
+        .load()
+        .unwrap()
+        .into_iter()
+        .next()
+        .and_then(|stored| stored.ledger.occurrence)
+}
+
+/// A broker killed after its fire's claim committed and before its run
+/// launched comes back with that fire of unknown outcome, not started:
+/// held, never run again on its own.
+#[test]
+fn a_fire_claimed_when_the_broker_is_killed_is_held_as_not_started() {
+    if std::env::var_os(BASE).is_some() {
+        return;
+    }
+    let base = base("claimed");
+    let config = config(&base);
+    kill_once_ready(&base, CLAIMED);
+
+    let key = key(&config);
+    assert_eq!(
+        stored_fire(&config, &key).map(|fire| fire.state),
+        Some(OccurrenceState::Claimed)
+    );
+    assert_eq!(
+        hatchling_broker::run_launcher::hold_in_flight(&config, &key),
+        ["sch-hang"]
+    );
+    let fire = stored_fire(&config, &key).unwrap();
+    assert_eq!(fire.due, FIRST);
+    assert_eq!(fire.state, OccurrenceState::Unknown { started: false });
+    let launcher = Counting::default();
+    let mut dispatcher = Dispatcher::default();
+    let report = dispatch_once(&mut dispatcher, &config, &key, None, &launcher, at(NEXT)).unwrap();
+    assert_eq!(report.held, ["sch-hang"]);
+    assert!(launcher.0.borrow().is_empty(), "run again on its own");
+}
+
+/// A claim whose store write fails at `step` launches nothing on that
+/// tick; the next tick launches the fire it claimed, once; and no later
+/// tick launches it again. Returns whether the failed claim had landed.
+fn claim_failing_at(step: Step) -> bool {
+    let base = base(&format!("{step:?}"));
+    let config = config(&base);
+    let key = key(&config);
+    let store = SealedScheduleStore::new(&config.scheduler.root, &key);
+    assert!(store.insert(&hourly()).unwrap());
+    let launcher = Counting::default();
+    let mut dispatcher = Dispatcher::default();
+
+    hatchling_vault::fault::fail_next(step);
+    let report =
+        dispatch_once(&mut dispatcher, &config, &key, None, &launcher, at(FIRST)).unwrap();
+    assert!(report.launched.is_empty(), "{step:?}: launched on its failed claim");
+    let landed = stored_fire(&config, &key).is_some();
+
+    for later in [FIRST + 30, FIRST + 90, FIRST + 150] {
+        dispatch_once(&mut dispatcher, &config, &key, None, &launcher, at(later)).unwrap();
+    }
+    let dues: Vec<i64> = launcher
+        .0
+        .borrow()
+        .iter()
+        .map(|request| request.due.as_second())
+        .collect();
+    assert_eq!(dues, [FIRST], "{step:?}: not launched once, as its fire");
+    assert_eq!(
+        stored_fire(&config, &key).map(|fire| (fire.due, fire.state)),
+        Some((FIRST, OccurrenceState::Running)),
+        "{step:?}"
+    );
+    landed
+}
+
+/// WO-025, part 3: a claim's store write failing at each of its steps
+/// launches its fire once, the next tick, and never twice. Failing before
+/// its rename, nothing landed; failing after it, at the directory's sync,
+/// the claim is visible but may not be durable, and is written again
+/// before its run launches.
+#[test]
+fn a_claim_failing_at_each_write_step_launches_once() {
+    if std::env::var_os(BASE).is_some() {
+        return;
+    }
+    for step in [Step::TempWrite, Step::TempSync, Step::Rename] {
+        assert!(!claim_failing_at(step), "{step:?}: a claim landed");
+    }
+    assert!(
+        claim_failing_at(Step::DirSync),
+        "the claim failing at the directory's sync didn't land"
+    );
 }
