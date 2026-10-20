@@ -61,7 +61,7 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | [025](workorder-025-durable-scheduled-runs.md) | Scheduled runs and their results survive a crash or a failed write | yes | DONE |
 | [026](workorder-026-conversation-continuity.md) | Conversation continuity: the broker keeps the chat, a cell can't write it | yes | IN-PROGRESS |
 | [027](workorder-027-approvals.md) | Approvals delivered to the owner: a frozen action, decided in the app, run by the broker | yes | IN-PROGRESS |
-| [028](workorder-028-web-search-and-site-approvals.md) | Web search through the broker, and each new site approved by the owner | yes | QUEUED |
+| [028](workorder-028-web-search-and-site-approvals.md) | Web search through the broker, and each new site approved by the owner | yes | IN PROGRESS |
 
 ## Candidates
 
