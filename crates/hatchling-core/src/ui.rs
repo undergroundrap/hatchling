@@ -1152,9 +1152,10 @@ mod tests {
                         },
                     ],
                     session: false,
+                    always: false,
                 }),
             ),
-            &json!({"seq": 5, "ts": "t", "body": {"kind": "confirmation", "confirmation_id": "k1", "revision": 2, "chat_id": "main", "summary": "send the email", "expires_at": null, "digest": "ab12", "fields": [{"label": "To", "value": "pat@example.com", "source": "broker"}, {"label": "Text", "value": "Hello", "source": "agent"}], "session": false}}),
+            &json!({"seq": 5, "ts": "t", "body": {"kind": "confirmation", "confirmation_id": "k1", "revision": 2, "chat_id": "main", "summary": "send the email", "expires_at": null, "digest": "ab12", "fields": [{"label": "To", "value": "pat@example.com", "source": "broker"}, {"label": "Text", "value": "Hello", "source": "agent"}], "session": false, "always": false}}),
         );
         pinned(
             &at(
