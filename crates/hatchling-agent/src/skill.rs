@@ -286,4 +286,22 @@ mod tests {
         );
         assert_silent(&broker);
     }
+
+    /// `request_frame`, called directly: a reply of another kind, a web
+    /// reply among them, is a protocol violation.
+    #[test]
+    fn request_frame_refuses_a_reply_of_another_kind() {
+        for reply in [
+            SessionResponse::Web(hatchling_core::WebResult::Off),
+            SessionResponse::Vault(hatchling_core::VaultResult::VaultError),
+        ] {
+            let (agent, _broker) = answer_once(reply);
+            assert!(matches!(
+                request_frame(&agent, b"{}"),
+                Err(Error::SkillProtocol { .. })
+            ));
+        }
+        let (agent, _broker) = answer_once(SessionResponse::Skill(SkillResult::SkillError));
+        assert_eq!(request_frame(&agent, b"{}").unwrap(), SkillResult::SkillError);
+    }
 }

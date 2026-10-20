@@ -711,46 +711,12 @@ mod tests {
             .unwrap();
         assert!(!again.new, "one request per site and session");
         assert_eq!(again.id, site.id);
-        let asked: Vec<ConfirmationRequest> = bus
+        let asked = bus
             .after(None)
             .into_iter()
-            .filter_map(|event| {
-                if let UiEventBody::Confirmation(request) = event.body {
-                    Some(request)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        let [request] = asked.as_slice() else {
-            unreachable!("asked {} times", asked.len());
-        };
-        assert!(request.session);
-        assert_eq!(request.summary, "Let the agent read a site");
-        let fields: Vec<(&str, &str, FieldSource)> = request
-            .fields
-            .iter()
-            .map(|field| (field.label.as_str(), field.value.as_str(), field.source))
-            .collect();
-        assert_eq!(
-            fields.first().copied(),
-            Some(("Operation", "Read pages from a site", FieldSource::Broker))
-        );
-        assert_eq!(
-            fields.get(1).copied(),
-            Some(("Site", "https://a.example", FieldSource::Broker))
-        );
-        assert_eq!(
-            fields.get(3..).map(<[_]>::to_vec),
-            Some(vec![
-                (
-                    "Page it asked for",
-                    "https://a.example/x",
-                    FieldSource::Agent
-                ),
-                ("Why it wants it", "to read it", FieldSource::Agent),
-            ])
-        );
+            .filter(|event| matches!(event.body, UiEventBody::Confirmation(_)))
+            .count();
+        assert_eq!(asked, 1, "asked once");
         assert_eq!(
             board.decide(&site.id, 1, &site.digest, Decision::ApproveSession, 101),
             Ok(State::Approved)
@@ -795,6 +761,54 @@ mod tests {
         assert_eq!(
             site_action("https://a.example"),
             json!({ "format": 1, "op": "web.visit", "site": "https://a.example" })
+        );
+    }
+
+    /// What the owner is shown for a site: the site in the broker's words,
+    /// what each choice allows, then the page and the reason as the
+    /// agent's; and that it can be approved for the session.
+    #[test]
+    fn a_sites_confirmation_shows_the_site_then_the_agents_words() {
+        let requested = Requested {
+            id: String::from("approval-1"),
+            revision: 1,
+            digest: String::from("ab"),
+            expires_at: 1_790_000_000,
+            new: true,
+        };
+        let request =
+            site_confirmation("https://a.example", "https://a.example/x", "to read it", &requested);
+        assert!(request.session);
+        assert_eq!(request.summary, "Let the agent read a site");
+        assert_eq!(
+            (request.confirmation_id.as_str(), request.revision, request.digest.as_str()),
+            ("approval-1", 1, "ab")
+        );
+        assert_eq!(request.chat_id.as_deref(), Some(CONFIRMATION_CHAT));
+        assert!(request.expires_at.is_some());
+        let fields: Vec<(&str, &str, FieldSource)> = request
+            .fields
+            .iter()
+            .map(|field| (field.label.as_str(), field.value.as_str(), field.source))
+            .collect();
+        assert_eq!(
+            fields.first().copied(),
+            Some(("Operation", "Read pages from a site", FieldSource::Broker))
+        );
+        assert_eq!(
+            fields.get(1).copied(),
+            Some(("Site", "https://a.example", FieldSource::Broker))
+        );
+        assert_eq!(
+            fields.get(2).map(|field| (field.0, field.2)),
+            Some(("What it allows", FieldSource::Broker))
+        );
+        assert_eq!(
+            fields.get(3..).map(<[_]>::to_vec),
+            Some(vec![
+                ("Page it asked for", "https://a.example/x", FieldSource::Agent),
+                ("Why it wants it", "to read it", FieldSource::Agent),
+            ])
         );
     }
 

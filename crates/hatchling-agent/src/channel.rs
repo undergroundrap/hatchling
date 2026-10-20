@@ -254,3 +254,47 @@ fn frame_error(error: hatchling_core::Error) -> Error {
         reason: error.to_string(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Answers one request with `reply`.
+    fn answer_once(reply: SessionResponse) -> UnixStream {
+        let (agent, broker) = UnixStream::pair().unwrap();
+        for end in [&agent, &broker] {
+            end.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+        }
+        std::thread::spawn(move || {
+            if read_frame(&broker).is_ok() {
+                let _ = write_frame(&broker, &serde_json::to_vec(&reply).unwrap());
+            }
+        });
+        agent
+    }
+
+    /// `request`, called directly: the channel's reply comes back, and a
+    /// reply of another kind, a web reply among them, is a protocol
+    /// violation.
+    #[test]
+    fn request_takes_a_channel_reply_and_refuses_another_kind() {
+        let op = ChannelOp::Accounts {
+            channel: String::from("local"),
+        };
+        let agent = answer_once(SessionResponse::Channel(ChannelResult::NoMessage));
+        let client = ChannelClient::new(&agent, ChannelId::local());
+        assert_eq!(client.request(&op).unwrap(), ChannelResult::NoMessage);
+        for reply in [
+            SessionResponse::Web(hatchling_core::WebResult::Off),
+            SessionResponse::Skill(hatchling_core::SkillResult::SkillError),
+        ] {
+            let agent = answer_once(reply);
+            let client = ChannelClient::new(&agent, ChannelId::local());
+            assert!(matches!(
+                client.request(&op),
+                Err(Error::ChannelProtocol { .. })
+            ));
+        }
+    }
+}

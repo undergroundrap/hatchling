@@ -734,7 +734,12 @@ fn serve_session(
     let space_session = crate::space_ops::SpaceSession::for_session(config, &creds, &session_id);
     // The session's web: the sites the owner allows it for the session,
     // forgotten when it ends (WO-028).
-    let mut web = crate::web_ops::WebSession::new(config, &gate_scope);
+    let web_tls = if config.web.enabled {
+        Some(egress_tls(|key| std::env::var(key).ok())?)
+    } else {
+        None
+    };
+    let mut web = crate::web_ops::WebSession::new(config, &gate_scope, web_tls);
     let _admissions = crate::space_ops::EndAdmissions(space_session.pin.session.clone());
 
     // The session's children live in the session's own scope:

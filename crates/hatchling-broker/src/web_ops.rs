@@ -31,6 +31,7 @@ use std::time::{Duration, Instant};
 
 use hatchling_core::ui::Decision;
 use hatchling_core::{WebOp, WebResult};
+use hatchling_egress::TlsClient;
 use hatchling_egress::web::{FetchError, Fetched, Origin, WebUrl};
 use hatchling_scheduler::Timestamp;
 
@@ -81,9 +82,9 @@ impl std::fmt::Debug for WebSession {
 impl WebSession {
     /// The web of the session the broker knows as `task`, under `config`:
     /// it waits for the owner only when a person is there, and reads with
-    /// the egress proxy's roots once it first reads.
+    /// `tls`, the egress proxy's roots (none while the web is off).
     #[must_use]
-    pub fn new(config: &Config, task: &str) -> Self {
+    pub fn new(config: &Config, task: &str, tls: Option<TlsClient>) -> Self {
         Self {
             task: task.to_owned(),
             sites: BTreeSet::new(),
@@ -93,7 +94,10 @@ impl WebSession {
                 Duration::ZERO
             },
             deadline: FETCH_DEADLINE,
-            fetcher: None,
+            fetcher: tls.map(|tls| {
+                let fetcher: Fetcher = Arc::new(move |url| hatchling_egress::web::fetch(&tls, url));
+                fetcher
+            }),
         }
     }
 
@@ -114,19 +118,6 @@ impl WebSession {
     #[must_use]
     pub fn holds(&self, site: &Origin) -> bool {
         self.sites.contains(site)
-    }
-
-    /// The fetcher: the one given, or, the first time, one over the egress
-    /// proxy's roots.
-    fn fetcher(&mut self) -> Result<Fetcher, String> {
-        if let Some(fetcher) = &self.fetcher {
-            return Ok(Arc::clone(fetcher));
-        }
-        let tls = crate::serve::egress_tls(|key| std::env::var(key).ok())
-            .map_err(|error| format!("the broker's HTTPS roots couldn't be loaded: {error}"))?;
-        let fetcher: Fetcher = Arc::new(move |url| hatchling_egress::web::fetch(&tls, url));
-        self.fetcher = Some(Arc::clone(&fetcher));
-        Ok(fetcher)
     }
 }
 
@@ -265,9 +256,8 @@ fn decided(board: &Board, id: &str, site: &str, wait: Duration) -> Result<(), We
 /// Reads `url`, following redirects on its site, within the session's
 /// deadline.
 fn read(web: &mut WebSession, mut url: WebUrl) -> WebResult {
-    let fetcher = match web.fetcher() {
-        Ok(fetcher) => fetcher,
-        Err(reason) => return refused(reason),
+    let Some(fetcher) = web.fetcher.clone() else {
+        return WebResult::Off;
     };
     let until = Instant::now() + web.deadline;
     for _ in 0..=MAX_REDIRECTS {
@@ -793,18 +783,78 @@ mod tests {
     }
 
     /// A session waits for the owner only with a person there, and reads
-    /// with the egress proxy's roots.
+    /// with the TLS client it was given, or not at all.
     #[test]
     fn a_session_waits_only_with_a_person_there() {
         let mut config = web_config("new");
         config.web.attended = true;
-        let mut web = WebSession::new(&config, "t");
+        let web = WebSession::new(&config, "t", Some(TlsClient::bundled().unwrap()));
         assert_eq!(web.wait, WAIT_FOR_OWNER);
         assert_eq!(web.deadline, FETCH_DEADLINE);
-        assert!(web.fetcher().is_ok());
-        assert!(web.fetcher.is_some(), "kept");
+        assert!(web.fetcher.is_some());
+        let shown = format!("{web:?}");
+        assert!(shown.starts_with("WebSession { task: \"t\""), "{shown}");
         config.web.attended = false;
-        assert_eq!(WebSession::new(&config, "t").wait, Duration::ZERO);
-        assert!(format!("{web:?}").starts_with("WebSession { task: \"t\""));
+        let mut off = WebSession::new(&config, "t", None);
+        assert_eq!(off.wait, Duration::ZERO);
+        // With no TLS client, a site it holds still reads nothing.
+        off.sites.insert(origin("https://a.example/"));
+        let (_, answer) = ask(&config, off, &fetch("https://a.example/"));
+        assert_eq!(answer, WebResult::Off);
+    }
+
+    /// `ask_owner`, called directly: a new site is asked and waited for;
+    /// a refused one is told as refused, and a full board as unasked.
+    #[test]
+    fn ask_owner_puts_the_site_to_the_owner() {
+        let config = web_config("ask");
+        let board = board(&config);
+        let (fetcher, _) = scripted(Vec::new());
+        let web = unattended("t", &fetcher);
+        let url = WebUrl::parse("https://a.example/x").unwrap();
+        let waiting = ask_owner(&board, &web, &url, "why", "https://a.example");
+        let Err(WebResult::Waiting { request, .. }) = waiting else {
+            unreachable!("{waiting:?}");
+        };
+        let other = WebUrl::parse("https://b.example/").unwrap();
+        assert_eq!(
+            ask_owner(&board, &web, &other, "why", "https://b.example"),
+            Err(WebResult::Unasked {
+                reason: ApprovalRefusal::QueueFull
+            }),
+            "one waits per session"
+        );
+        let digest = board.approvals().get(&request).unwrap().digest;
+        board
+            .decide(&request, 1, &digest, Decision::Deny, Timestamp::now().as_second())
+            .unwrap();
+        assert_eq!(
+            ask_owner(&board, &web, &url, "why", "https://a.example"),
+            Err(WebResult::Denied {
+                site: String::from("https://a.example")
+            })
+        );
+        let config = web_config("ask-yes");
+        let board = crate::approval_board::board(&config);
+        let owner = config.clone();
+        std::thread::spawn(move || {
+            for _ in 0..100 {
+                if board_has_pending(&owner, "t2", "https://a.example") {
+                    owner_decides(&owner, "t2", "https://a.example", Decision::Approve);
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let attended = WebSession::with("t2", Duration::from_secs(10), Duration::from_secs(5), fetcher);
+        let approved = ask_owner(&board, &attended, &url, "why", "https://a.example");
+        assert!(matches!(approved, Ok(ref id) if id.starts_with("approval-")), "{approved:?}");
+    }
+
+    fn board_has_pending(config: &Config, task: &str, site: &str) -> bool {
+        board(config)
+            .approvals()
+            .find(task, &site_action(site), State::Pending)
+            .is_some()
     }
 }
