@@ -133,18 +133,6 @@ pub fn record(
         })
 }
 
-/// Records an access the broker cannot let go unlogged: a failure to
-/// write is traced as an error, and the broker carries on (its own reads
-/// keep the gates working).
-pub fn record_broker_read(root: &Path, purpose: &str, names: Vec<String>, outcome: Outcome) {
-    let caller = Caller::Broker {
-        purpose: purpose.to_owned(),
-    };
-    if let Err(error) = record(root, caller, "read", names, outcome) {
-        tracing::error!(%error, purpose, "cannot record the broker's own vault read");
-    }
-}
-
 /// Every access the log under `root` holds, and how many lines did not
 /// parse. No log is no accesses.
 ///
@@ -399,12 +387,16 @@ mod tests {
             Outcome::Allowed,
         )
         .unwrap();
-        record_broker_read(
+        record(
             &dir.0,
-            "egress",
+            Caller::Broker {
+                purpose: String::from("egress"),
+            },
+            "read",
             vec![String::from("egress-x-1")],
             Outcome::NotFound,
-        );
+        )
+        .unwrap();
         let path = dir.0.join(ACCESS_LOG);
         assert_eq!(
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
@@ -459,7 +451,18 @@ mod tests {
             read_log(&dir.0),
             Err(Error::VaultAccessLog { .. })
         ));
-        record_broker_read(&dir.0, "egress", Vec::new(), Outcome::Allowed);
+        assert!(matches!(
+            record(
+                &dir.0,
+                Caller::Broker {
+                    purpose: String::from("egress"),
+                },
+                "read",
+                Vec::new(),
+                Outcome::Allowed,
+            ),
+            Err(Error::VaultAccessLog { .. })
+        ));
         assert!(now() > 1_700_000_000);
     }
 

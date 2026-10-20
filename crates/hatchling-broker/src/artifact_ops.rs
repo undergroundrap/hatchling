@@ -324,15 +324,21 @@ pub fn held_secret_values(
     key: &dyn OpensStores,
     purpose: &str,
 ) -> Result<Vec<Zeroizing<Vec<u8>>>, String> {
-    let read = read_held_secrets(config, key);
-    let outcome = if read.is_ok() {
-        crate::vault_access::Outcome::Allowed
-    } else {
-        crate::vault_access::Outcome::Failed
-    };
-    let names = held_secret_names(config).into_iter().collect();
-    crate::vault_access::record_broker_read(&config.vault.root, purpose, names, outcome);
-    read
+    let names = held_secret_names(config)
+        .into_iter()
+        .map(|name| {
+            name.parse::<SecretName>()
+                .map_err(|_| format!("{name:?} is not a secret name"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let read = crate::secrets::Secrets::new(&config.vault.root, key)
+        .broker_read(purpose, &names)
+        .map_err(|e| format!("the held secrets could not be read: {e}"))?;
+    Ok(read
+        .into_iter()
+        .flatten()
+        .map(|secret| Zeroizing::new(secret.as_bytes().to_vec()))
+        .collect())
 }
 
 /// Every secret name the configuration names.
@@ -357,28 +363,6 @@ fn held_secret_names(config: &Config) -> BTreeSet<String> {
             .map(|destination| crate::serve::destination_to_secret_name(destination)),
     );
     names
-}
-
-/// The held secrets' values, unrecorded.
-fn read_held_secrets(
-    config: &Config,
-    key: &dyn OpensStores,
-) -> Result<Vec<Zeroizing<Vec<u8>>>, String> {
-    let names = held_secret_names(config);
-    let vault = SealedVault::open(&config.vault.root, key)
-        .map_err(|e| format!("the vault could not be opened: {e}"))?;
-    let mut secrets = Vec::with_capacity(names.len());
-    for name in &names {
-        let name: SecretName = name
-            .parse()
-            .map_err(|_| format!("{name:?} is not a secret name"))?;
-        match vault.fetch(&name) {
-            Ok(secret) => secrets.push(Zeroizing::new(secret.as_bytes().to_vec())),
-            Err(hatchling_vault::Error::NotFound { .. }) => {}
-            Err(e) => return Err(format!("{} could not be read: {e}", name.as_str())),
-        }
-    }
-    Ok(secrets)
 }
 
 /// Handles one [`ArtifactOp`] at `now` (Unix seconds).
@@ -1207,10 +1191,9 @@ mod tests {
         let names: Vec<String> = held_secret_names(&config).into_iter().collect();
         assert_eq!(names, ["egress-api-example-com-443", "token"]);
         assert_eq!(
-            read_held_secrets(&config, &key).unwrap(),
+            held_secret_values(&config, &key, "artifact-gate").unwrap(),
             [Zeroizing::new(b"v".to_vec())]
         );
-        assert!(held_secrets(&config, &key).unwrap().exposed_in(b"v"));
         let (accesses, _) = crate::vault_access::read_log(&config.vault.root).unwrap();
         let [only] = accesses.as_slice() else {
             unreachable!("only the recorded read writes: {accesses:?}");
@@ -1222,6 +1205,7 @@ mod tests {
             }
         );
         assert_eq!(only.names, names);
+        assert!(held_secrets(&config, &key).unwrap().exposed_in(b"v"));
         let wrong = MasterKey::generate().unwrap();
         assert!(held_secret_values(&config, &wrong, "output-gate").is_err());
         let (accesses, _) = crate::vault_access::read_log(&config.vault.root).unwrap();

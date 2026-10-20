@@ -19,16 +19,17 @@ use hatchling_core::ui::operator::{CellKind, EgressVerdict};
 use hatchling_core::{
     AgentMessage, BrokerMessage, CellId, ChannelResult, EgressOp, EgressResult, GoalsResult,
     HookResult, MAX_FRAME_BYTES, MemoryResult, PROTOCOL_VERSION, PeerCredentials, PeerPid,
-    QueryResult, ScheduleResult, SecretB64, SecretName, SessionRequest, SessionResponse,
-    SkillResult, VaultOp, VaultResult, decode_secret, encode_secret, peer_credentials,
+    QueryResult, ScheduleResult, SecretName, SessionRequest, SessionResponse, SkillResult,
+    VaultResult, decode_secret, encode_secret, peer_credentials,
 };
 use hatchling_egress::{EgressRequest, Proxy};
 use hatchling_memory::{MemoryPrincipal, SessionId};
-use hatchling_vault::{OpensStores, SealedVault, Secret};
+use hatchling_vault::OpensStores;
 use zeroize::Zeroizing;
 
 use crate::cell::cgroup_parent;
 use crate::environment as env;
+use crate::secrets::{Secrets, handle_vault_op};
 use crate::{
     CellConfig, Config, EgressConfig, Error, SkillRuntime, Skills, VaultConfig, bind_listener,
     load_master_key, spawn_cell, validate_sealed_vault,
@@ -954,179 +955,6 @@ pub(crate) fn session_error(error: hatchling_core::Error) -> Error {
     }
 }
 
-/// Authorizes and executes one vault op, producing the reply.
-///
-/// The grant check fires before the vault is touched: an op the broker
-/// holds no grant for never reaches the filesystem, so ungranted names
-/// cannot be probed for existence. Denials and invalid names both answer
-/// `Denied` — the agent learns nothing beyond "no".
-///
-/// The vault itself is opened here, after name validation and grant
-/// authorization: opening (which creates the root when absent) is a
-/// filesystem side effect, and it happens only for ops the peer is
-/// allowed to perform.
-///
-/// Backend failures (filesystem errors, oversize values) collapse to the
-/// opaque `VaultError` reply: the session survives them, and the agent
-/// learns that the op failed, not why. Only malformed request bytes
-/// (undecodable base64) end the session — those are protocol violations.
-///
-/// # Errors
-///
-/// Returns [`Error::SessionProtocol`] if the op's secret payload is not
-/// valid base64, or [`Error::Vault`] if the vault root cannot be opened.
-fn handle_vault_op(
-    vault_config: &VaultConfig,
-    key: &dyn OpensStores,
-    op: &VaultOp,
-    cell_id: &CellId,
-    uid: u32,
-) -> Result<VaultResult, Error> {
-    let result = vault_op_result(vault_config, key, op, cell_id)?;
-    // Every access is recorded. One that went ahead but cannot be
-    // recorded fails closed: no secret leaves unlogged.
-    let outcome = match result {
-        VaultResult::Fetched { .. } | VaultResult::Stored | VaultResult::Removed => {
-            crate::vault_access::Outcome::Allowed
-        }
-        VaultResult::NotFound => crate::vault_access::Outcome::NotFound,
-        VaultResult::Denied => crate::vault_access::Outcome::Denied,
-        VaultResult::VaultError => crate::vault_access::Outcome::Failed,
-    };
-    let name = op.name().parse::<SecretName>().map_or_else(
-        |_| String::from("(not a secret name)"),
-        |name| name.as_str().to_owned(),
-    );
-    let caller = crate::vault_access::Caller::Session {
-        uid,
-        cell: cell_id.to_string(),
-    };
-    match crate::vault_access::record(
-        &vault_config.root,
-        caller,
-        &op.action().to_string(),
-        vec![name],
-        outcome,
-    ) {
-        Ok(()) => Ok(result),
-        Err(error) if outcome == crate::vault_access::Outcome::Allowed => {
-            tracing::error!(%error, "vault op not recorded: answered as failed");
-            Ok(VaultResult::VaultError)
-        }
-        Err(error) => {
-            tracing::error!(%error, "vault op not recorded");
-            Ok(result)
-        }
-    }
-}
-
-/// The vault op's result, before it is recorded.
-fn vault_op_result(
-    vault_config: &VaultConfig,
-    key: &dyn OpensStores,
-    op: &VaultOp,
-    cell_id: &CellId,
-) -> Result<VaultResult, Error> {
-    // Defense in depth: the agent's bytes are untrusted even though the
-    // agent validates names client-side. A name that fails parsing can
-    // never match a grant, so it is denied like any other ungranted op.
-    let Ok(name) = op.name().parse::<SecretName>() else {
-        tracing::warn!(
-            cell_id = %cell_id,
-            action = %op.action(),
-            "vault op with invalid secret name"
-        );
-        return Ok(VaultResult::Denied);
-    };
-    let granted = vault_config
-        .grants
-        .iter()
-        .any(|grant| grant.action == op.action() && grant.name == name);
-    if !granted {
-        tracing::warn!(
-            cell_id = %cell_id,
-            action = %op.action(),
-            secret_name = name.as_str(),
-            "denied vault op: no grant"
-        );
-        return Ok(VaultResult::Denied);
-    }
-
-    // Authorized: only now may the vault be opened (and its root
-    // created). The `0700`/owner validation runs on every op, so a
-    // store tampered with mid-session fails closed on the next op.
-    // The sealed vault borrows the broker's store keys: bytes
-    // on disk are ciphertext, and plaintext never touches the store.
-    let vault =
-        SealedVault::open(&vault_config.root, key).map_err(|source| Error::Vault { source })?;
-
-    let result = match op {
-        VaultOp::Store { secret_b64, .. } => {
-            // `?` maps undecodable base64 to `SessionProtocol` via the
-            // `From` impl: malformed request bytes end the session.
-            let bytes = decode_secret(secret_b64.as_str())?;
-            let Ok(secret) = Secret::new(bytes) else {
-                return Ok(VaultResult::VaultError);
-            };
-            match vault.store(&name, &secret) {
-                Ok(()) => {
-                    tracing::info!(
-                        cell_id = %cell_id,
-                        secret_name = name.as_str(),
-                        "stored secret"
-                    );
-                    VaultResult::Stored
-                }
-                Err(source) => {
-                    tracing::error!(
-                        cell_id = %cell_id,
-                        secret_name = name.as_str(),
-                        %source,
-                        "vault store failed"
-                    );
-                    VaultResult::VaultError
-                }
-            }
-        }
-        VaultOp::Fetch { .. } => match vault.fetch(&name) {
-            Ok(secret) => VaultResult::Fetched {
-                secret_b64: SecretB64::encode(secret.as_bytes()),
-            },
-            Err(hatchling_vault::Error::NotFound { .. }) => VaultResult::NotFound,
-            Err(source) => {
-                tracing::error!(
-                    cell_id = %cell_id,
-                    secret_name = name.as_str(),
-                    %source,
-                    "vault fetch failed"
-                );
-                VaultResult::VaultError
-            }
-        },
-        VaultOp::Remove { .. } => match vault.remove(&name) {
-            Ok(()) => {
-                tracing::info!(
-                    cell_id = %cell_id,
-                    secret_name = name.as_str(),
-                    "removed secret"
-                );
-                VaultResult::Removed
-            }
-            Err(hatchling_vault::Error::NotFound { .. }) => VaultResult::NotFound,
-            Err(source) => {
-                tracing::error!(
-                    cell_id = %cell_id,
-                    secret_name = name.as_str(),
-                    %source,
-                    "vault remove failed"
-                );
-                VaultResult::VaultError
-            }
-        },
-    };
-    Ok(result)
-}
-
 /// The credential lookup the broker hands the egress proxy: maps a
 /// destination to its vault secret name and decrypts the sealed
 /// credential with the secrets store's key, which the broker holds. Unknown
@@ -1144,20 +972,13 @@ fn credential_fetcher(
         // grant: this is the broker's own read, and no vault grant may
         // name the secret. The sealed vault borrows the broker's store
         // keys.
-        let secret_name = destination_to_secret_name(destination);
-        let fetched = secret_name.parse::<SecretName>().ok().and_then(|name| {
-            let vault = SealedVault::open(&vault_root, key).ok()?;
-            Some(vault.fetch(&name))
-        });
-        let outcome = match &fetched {
-            Some(Ok(_)) => crate::vault_access::Outcome::Allowed,
-            Some(Err(hatchling_vault::Error::NotFound { .. })) => {
-                crate::vault_access::Outcome::NotFound
-            }
-            Some(Err(_)) | None => crate::vault_access::Outcome::Failed,
-        };
-        crate::vault_access::record_broker_read(&vault_root, "egress", vec![secret_name], outcome);
-        let secret = fetched?.ok()?;
+        let name = destination_to_secret_name(destination)
+            .parse::<SecretName>()
+            .ok()?;
+        let secret = Secrets::new(&vault_root, key)
+            .broker_read("egress", std::slice::from_ref(&name))
+            .ok()?
+            .pop()??;
         Some(Zeroizing::new(secret.as_bytes().to_vec()))
     }
 }
@@ -1521,6 +1342,10 @@ fn reject(stream: &UnixStream, reason: &str) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hatchling_core::VaultOp;
+    use hatchling_vault::{SealedVault, Secret};
+
+    use crate::secrets::vault_op_result;
     use hatchling_vault::MasterKey;
 
     #[test]
@@ -2098,6 +1923,7 @@ mod tests {
 #[cfg(test)]
 mod reply_bound_tests {
     use super::*;
+    use hatchling_core::{SecretB64, VaultOp};
 
     const fn opaque_errors() -> [SessionResponse; 7] {
         [

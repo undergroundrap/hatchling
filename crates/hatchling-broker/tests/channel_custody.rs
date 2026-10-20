@@ -180,7 +180,11 @@ impl Vault {
             })
             .collect();
         let sealed = SealedVault::open(&self.config.root, &self.key).unwrap();
-        AccountBook::load(&specs, &sealed)
+        let secrets = specs
+            .iter()
+            .map(|spec| sealed.fetch(&spec.secret).ok())
+            .collect();
+        AccountBook::load(&specs, secrets)
     }
 }
 
