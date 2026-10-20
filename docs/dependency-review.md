@@ -21,7 +21,7 @@ loopback, and the `SCM_RIGHTS` handoff of its fd to the broker;
 is typed (`EchoOff`); its test opens a pseudo-terminal (`pty`, a
 dev-dependency only). `hatchling-vault` uses `process` (the owner
 checks' uid) and `fs`, for the keyring's edit lock: a no-follow open and
-`flock` (WO-011).
+`flock` (WO-011). `hatchling-browser`, the browser cell's controller, uses `pipe` (the DevTools pipe it hands Chromium), `fs` (made non-blocking) and `event` (polled with a deadline, so no wait on the browser is unbounded).
 
 ## hatchling-core
 

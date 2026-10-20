@@ -237,6 +237,10 @@ const SYSCALL_TABLE: &[(&str, u32)] = &[
     ("getresuid", 118),
     ("getresgid", 120),
     ("statfs", 137),
+    ("fstatfs", 138),
+    ("link", 86),
+    ("waitid", 247),
+    ("pidfd_send_signal", 424),
     ("sched_getparam", 143),
     ("sched_getscheduler", 145),
     ("prctl", 157),
@@ -466,9 +470,13 @@ const CLI_CALLS: [&str; 61] = [
 /// any of them it is killed, or a child of it is and it hangs. Messages
 /// with descriptors between its own processes (`sendmsg`, `recvmsg`, over
 /// `AF_UNIX`, the only family that carries them), the event loop's waits,
-/// and its shared memory (`memfd_create`, `mremap`, `fallocate`).
+/// its shared memory (`memfd_create`, `mremap`, `fallocate`), what
+/// filesystem an open file is on (`fstatfs`), which fontconfig asks of its
+/// cache once the cell has fonts, and the controller's wait for the
+/// browser, and its kill, through its pidfd (`waitid`,
+/// `pidfd_send_signal`: no more than `kill`, which the cell has, can do).
 #[cfg(target_arch = "x86_64")]
-const BROWSER_CALLS: [&str; 7] = [
+const BROWSER_CALLS: [&str; 10] = [
     "epoll_wait",
     "recvmsg",
     "sendmsg",
@@ -476,23 +484,29 @@ const BROWSER_CALLS: [&str; 7] = [
     "fallocate",
     "memfd_create",
     "mremap",
+    "fstatfs",
+    "waitid",
+    "pidfd_send_signal",
 ];
 
 /// Calls a headless Chromium only probes for, answered with an errno it
 /// handles rather than allowed: a sandbox it can't use in a cell
 /// (`landlock_create_ruleset`), memory protection keys (`pkey_alloc`), the
-/// old inotify (`inotify_init`), thread priorities, and which CPUs a
-/// thread runs on (`sched_setaffinity`). A trace outside a cell never
-/// shows that last one: in a cell, where the priorities are refused, its
-/// processes make it instead, and were killed for it.
+/// old inotify (`inotify_init`), thread priorities, which CPUs a thread
+/// runs on (`sched_setaffinity`), and a hard link (`link`). A trace
+/// outside a cell never shows `sched_setaffinity`: in a cell, where the
+/// priorities are refused, its processes make it instead, and were killed
+/// for it. fontconfig makes `link` to lock its cache: refused, it locks
+/// with a directory instead, as it does on a filesystem without links.
 #[cfg(target_arch = "x86_64")]
-const BROWSER_PROBES: [(&str, u32); 6] = [
+const BROWSER_PROBES: [(&str, u32); 7] = [
     ("landlock_create_ruleset", ENOSYS),
     ("pkey_alloc", ENOSYS),
     ("inotify_init", ENOSYS),
     ("setpriority", EPERM),
     ("getpriority", EPERM),
     ("sched_setaffinity", EPERM),
+    ("link", EPERM),
 ];
 
 impl SeccompProfile {
@@ -1919,6 +1933,7 @@ mod tests {
             ("setpriority", EPERM),
             ("getpriority", EPERM),
             ("sched_setaffinity", EPERM),
+            ("link", EPERM),
         ] {
             assert_eq!(call(&prog, name, no), errno(refusal), "{name} pinned");
         }
