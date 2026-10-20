@@ -1555,6 +1555,29 @@ mod tests {
         // Delivered: the exhausted one-shot goes with its fire.
         assert!(store.resolve("sch-once", due, None).unwrap());
         assert!(store.load().unwrap().is_empty());
+        // The store's parts, called directly.
+        let cadence = once("sch-cadence");
+        assert!(store.insert(&cadence).unwrap());
+        assert!(
+            store
+                .skip_due("sch-cadence", 0, cadence.next_due, Some(cadence.next_due + 60))
+                .unwrap()
+        );
+        assert!(!store.skip_due("sch-cadence", 0, cadence.next_due, None).unwrap(), "stale");
+        let vault = SealedVault::open_in(&root, &master, hatchling_vault::Store::SCHEDULES).unwrap();
+        let latest = SealedScheduleStore::latest(&vault, "sch-cadence").unwrap().unwrap();
+        assert_eq!(latest.next_due, cadence.next_due + 60);
+        assert!(SealedScheduleStore::latest(&vault, "sch-none").unwrap().is_none());
+        assert!(
+            SealedScheduleStore::change_fire(&vault, "sch-cadence", 1, |_| {})
+                .unwrap()
+                .is_none(),
+            "no such fire"
+        );
+        assert!(SealedScheduleStore::keep_parked(&vault, &parked(0)).is_err(), "still full");
+        assert!(SealedScheduleStore::drop_schedule(&vault, "sch-cadence").unwrap());
+        assert!(!SealedScheduleStore::drop_schedule(&vault, "sch-cadence").unwrap());
+        assert!(missing("sch-x").to_string().contains("record is missing"));
         // An index entry whose record is gone is an error, not a schedule
         // that quietly stopped existing.
         assert!(store.insert(&once("sch-lost")).unwrap());

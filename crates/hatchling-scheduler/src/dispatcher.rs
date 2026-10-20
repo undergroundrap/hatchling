@@ -970,4 +970,259 @@ mod tests {
         assert_eq!(launcher.0.borrow().len(), 1);
         assert_eq!(report.skipped, [String::from("sch-1")]);
     }
+
+    /// A store of one schedule at most, for the dispatcher's parts.
+    #[derive(Default)]
+    struct One {
+        schedule: RefCell<Option<Schedule>>,
+        parked: RefCell<Vec<Parked>>,
+        /// Whether every change fails.
+        broken: bool,
+    }
+
+    impl Store for One {
+        type Error = String;
+
+        fn load(&self) -> Result<Vec<Schedule>, String> {
+            Ok(self.schedule.borrow().iter().cloned().collect())
+        }
+
+        fn claim_due(
+            &self,
+            _id: &str,
+            _revision: u64,
+            due: i64,
+            next_due: Option<i64>,
+            missed: bool,
+        ) -> Result<Claim, String> {
+            if self.broken {
+                return Err(String::from("broken"));
+            }
+            let mut held = self.schedule.borrow_mut();
+            let Some(stored) = held.as_mut() else {
+                return Ok(Claim::NotDue);
+            };
+            stored.ledger.occurrence = Some(Occurrence {
+                due,
+                missed,
+                state: OccurrenceState::Claimed,
+            });
+            match next_due {
+                Some(next) => stored.next_due = next,
+                None => stored.ledger.exhausted = true,
+            }
+            Ok(Claim::Claimed)
+        }
+
+        fn skip_due(
+            &self,
+            _id: &str,
+            _revision: u64,
+            _due: i64,
+            next_due: Option<i64>,
+        ) -> Result<bool, String> {
+            let mut held = self.schedule.borrow_mut();
+            if let (Some(stored), Some(next)) = (held.as_mut(), next_due) {
+                stored.next_due = next;
+            }
+            Ok(true)
+        }
+
+        fn record(&self, _id: &str, _due: i64, state: OccurrenceState) -> Result<bool, String> {
+            if self.broken {
+                return Err(String::from("broken"));
+            }
+            let mut held = self.schedule.borrow_mut();
+            let Some(fire) = held.as_mut().and_then(|stored| stored.ledger.occurrence.as_mut()) else {
+                return Ok(false);
+            };
+            fire.state = state;
+            Ok(true)
+        }
+
+        fn resolve(&self, _id: &str, _due: i64, parked: Option<&Parked>) -> Result<bool, String> {
+            if let Some(parked) = parked {
+                self.parked.borrow_mut().push(parked.clone());
+            }
+            let mut held = self.schedule.borrow_mut();
+            if let Some(stored) = held.as_mut() {
+                stored.ledger.occurrence = None;
+            }
+            Ok(true)
+        }
+
+        fn remove(&self, _id: &str) -> Result<bool, String> {
+            Ok(self.schedule.borrow_mut().take().is_some())
+        }
+
+        fn hooks(&self) -> Result<Vec<Hook>, String> {
+            Ok(Vec::new())
+        }
+
+        fn park(&self, parked: &Parked) -> Result<(), String> {
+            self.parked.borrow_mut().push(parked.clone());
+            Ok(())
+        }
+    }
+
+    /// A run that has ended with `outcome`.
+    struct Done(Option<Result<String, String>>);
+
+    impl Run for Done {
+        fn poll(&mut self) -> Option<Result<String, String>> {
+            self.0.take()
+        }
+    }
+
+    /// Starts a run that ends at once with "done".
+    struct Quick;
+
+    impl Launcher for Quick {
+        type Run = Done;
+
+        fn launch(&self, _request: RunRequest) -> Result<Done, String> {
+            Ok(Done(Some(Ok(String::from("done")))))
+        }
+    }
+
+    fn due_at() -> Timestamp {
+        Timestamp::from_second(1_790_000_000).unwrap()
+    }
+
+    /// An hourly schedule due at [`due_at`], delivering on `local`.
+    fn hourly() -> Schedule {
+        let send = ScheduleGrant::ChannelSend {
+            channel: String::from("local"),
+        };
+        let mut schedule = crate::validate(
+            String::from("sch-1"),
+            hatchling_core::ScheduleSpec::Cron {
+                expr: String::from("0 * * * *"),
+                tz: String::from("UTC"),
+            },
+            String::from("tidy the inbox"),
+            vec![send.clone()],
+            String::from("local"),
+            &BTreeSet::from([send]),
+            Timestamp::from_second(1_789_990_000).unwrap(),
+        )
+        .unwrap();
+        schedule.next_due = due_at().as_second();
+        schedule
+    }
+
+    /// The dispatcher's parts, called directly (WO-025): a fire claims
+    /// before it starts and skips while its last run is out; what ends is
+    /// stored, and kept in memory while the store refuses it; a stored
+    /// result is delivered, or parked when it can't be; a result with no
+    /// record to wait in is delivered at once.
+    #[test]
+    fn the_parts_claim_store_and_deliver() {
+        let send = ScheduleGrant::ChannelSend {
+            channel: String::from("local"),
+        };
+        let held = BTreeSet::from([send]);
+        let authenticated = BTreeSet::new();
+        let store = One {
+            schedule: RefCell::new(Some(hourly())),
+            ..One::default()
+        };
+        let services = Services {
+            store: &store,
+            launcher: &Quick,
+            delivery: &Plain,
+            held: &held,
+            events: &[],
+            authenticated: &authenticated,
+        };
+        let mut dispatcher = Dispatcher::<Done>::default();
+        let mut report = TickReport::default();
+        // fire: claimed, then started.
+        let schedule = hourly();
+        dispatcher.fire(&schedule, due_at(), due_at(), &services, &mut report);
+        assert_eq!(report.launched, [(String::from("sch-1"), false)]);
+        // fire again while it is out: skipped, nothing launched.
+        let claimed = store.load().unwrap().into_iter().next().unwrap();
+        dispatcher.fire(&claimed, due_at(), due_at(), &services, &mut report);
+        assert_eq!(report.skipped, [String::from("sch-1")]);
+        assert_eq!(report.launched.len(), 1);
+        // store_finished: the run's result goes into the record.
+        let events = dispatcher.store_finished(&services, &mut report);
+        assert_eq!(events.len(), 1);
+        assert_eq!(dispatcher.active(), 0);
+        let stored = store.load().unwrap().into_iter().next().unwrap();
+        assert!(matches!(
+            stored.ledger.occurrence,
+            Some(Occurrence {
+                state: OccurrenceState::Finished { .. },
+                ..
+            })
+        ));
+        // deliver_stored: delivered, and resolved.
+        deliver_stored(&services, &mut report).unwrap();
+        assert_eq!(report.delivered, [String::from("sch-1")]);
+        assert!(store.load().unwrap().iter().all(|s| s.ledger.occurrence.is_none()));
+        // undelivered: failures are parked with their reasons.
+        let park = |text: &str, reason: String| Parked {
+            schedule_id: String::from("sch-1"),
+            channel: String::from("local"),
+            text: text.to_owned(),
+            due: 0,
+            reason,
+        };
+        let failed = Outcome::Failed {
+            reason: String::from("it broke"),
+        };
+        let unstarted = Outcome::NotStarted {
+            reason: String::from("no cell"),
+        };
+        let output = Outcome::Output {
+            text: String::from("ok"),
+        };
+        assert_eq!(
+            undelivered(&failed, "local", &services, &park).map(|p| p.reason),
+            Some(String::from("the run failed"))
+        );
+        assert_eq!(
+            undelivered(&unstarted, "local", &services, &park).map(|p| p.reason),
+            Some(String::from("the run did not start"))
+        );
+        assert_eq!(undelivered(&output, "local", &services, &park), None);
+        assert!(undelivered(&output, "elsewhere", &services, &park).is_some());
+        // deliver_now: no record to wait in: delivered at once.
+        let active = Active::<Done> {
+            run: None,
+            channel: String::from("local"),
+            due: due_at(),
+            kind: Kind::Hook,
+            ended: None,
+        };
+        let mut now_report = TickReport::default();
+        deliver_now("hook-1", &active, &output, &services, &mut now_report);
+        assert_eq!(now_report.delivered, [String::from("hook-1")]);
+        deliver_now("hook-1", &active, &failed, &services, &mut now_report);
+        assert_eq!(now_report.parked, [String::from("hook-1")]);
+        // store_ended: a result the store refuses stays in memory.
+        let broken = One {
+            schedule: RefCell::new(Some(hourly())),
+            broken: true,
+            ..One::default()
+        };
+        let services = Services {
+            store: &broken,
+            ..services
+        };
+        dispatcher.active.insert(
+            String::from("sch-1"),
+            Active {
+                run: None,
+                channel: String::from("local"),
+                due: due_at(),
+                kind: Kind::Schedule,
+                ended: Some(output),
+            },
+        );
+        dispatcher.store_ended(&services, &mut report);
+        assert_eq!(dispatcher.active(), 1, "kept, to try again");
+    }
 }
