@@ -226,11 +226,17 @@ fn a_fire_in_flight_when_the_broker_is_killed_is_held_as_unknown() {
 
     // The next broker's start.
     let key = key(&config);
-    assert_eq!(
-        hatchling_broker::run_launcher::hold_in_flight(&config, &key),
-        ["sch-hang"]
-    );
     let store = SealedScheduleStore::new(&config.scheduler.root, &key);
+    let before = store.load().map(|all| {
+        all.into_iter()
+            .map(|stored| (stored.id, stored.ledger))
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(
+        store.hold_in_flight().map_err(|error| error.to_string()),
+        Ok(vec![String::from("sch-hang")]),
+        "the store held: {before:?}"
+    );
     let fire = store
         .load()
         .unwrap()
