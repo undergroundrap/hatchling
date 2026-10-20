@@ -138,8 +138,10 @@ impl Vault {
     /// cleanup in one place.
     fn store_inner(&self, target: &Path, temp: &Path, bytes: &[u8]) -> Result<(), Error> {
         Self::write_temp(temp, bytes)?;
+        crate::fault::at(crate::fault::Step::Rename)?;
         std::fs::rename(temp, target).map_err(|source| Error::Io { source })?;
         // Sync the directory so the rename itself is durable.
+        crate::fault::at(crate::fault::Step::DirSync)?;
         let dir = std::fs::File::open(&self.root).map_err(|source| Error::Io { source })?;
         dir.sync_all().map_err(|source| Error::Io { source })?;
         Ok(())
@@ -365,8 +367,10 @@ impl Vault {
             .mode(SECRET_FILE_MODE)
             .open(temp)
             .map_err(|source| Error::Io { source })?;
+        crate::fault::at(crate::fault::Step::TempWrite)?;
         file.write_all(bytes)
             .map_err(|source| Error::Io { source })?;
+        crate::fault::at(crate::fault::Step::TempSync)?;
         file.sync_all().map_err(|source| Error::Io { source })?;
         Ok(())
     }
@@ -412,6 +416,58 @@ mod tests {
             let name = file_name.to_string_lossy();
             assert!(!name.ends_with(".tmp"), "orphaned temp file: {name}");
         }
+    }
+
+    /// The atomic write's parts, called directly: `write_temp` writes the
+    /// bytes to a new file and never reuses one that exists; `store_inner`
+    /// writes its temp and renames it over the entry.
+    #[test]
+    fn write_temp_and_store_inner_write_then_rename() {
+        let (vault, root) = open_test_vault("write-parts");
+        let name = secret_name("parts");
+        let temp = vault.temp_path(&name);
+        Vault::write_temp(&temp, b"first").unwrap();
+        assert_eq!(std::fs::read(&temp).unwrap(), b"first");
+        assert!(
+            Vault::write_temp(&temp, b"again").is_err(),
+            "an existing temp is never reused"
+        );
+        std::fs::remove_file(&temp).unwrap();
+        let target = vault.path(&name);
+        vault.store_inner(&target, &temp, b"second").unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"second");
+        assert!(!temp.exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A failure injected at each step of the atomic write (WO-025): before
+    /// the rename, the entry is as it was; at the directory's sync, after
+    /// the rename, the new entry is already in place.
+    #[cfg(feature = "fault-injection")]
+    #[test]
+    fn a_failed_write_changes_the_entry_only_from_its_rename() {
+        use crate::fault::{Step, fail_next};
+        let (vault, root) = open_test_vault("write-faults");
+        let name = secret_name("faults");
+        let target = vault.path(&name);
+        let cases: [(Step, &[u8]); 4] = [
+            (Step::TempWrite, b"old"),
+            (Step::TempSync, b"old"),
+            (Step::Rename, b"old"),
+            (Step::DirSync, b"new"),
+        ];
+        for (step, after) in cases {
+            std::fs::write(&target, b"old").unwrap();
+            let temp = vault.temp_path(&name);
+            fail_next(step);
+            assert!(
+                vault.store_inner(&target, &temp, b"new").is_err(),
+                "{step:?}"
+            );
+            assert_eq!(std::fs::read(&target).unwrap(), after, "{step:?}");
+            let _ = std::fs::remove_file(&temp);
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -26,8 +26,10 @@ struct MemStore {
     hooks: RefCell<Vec<Hook>>,
     parked: RefCell<Vec<Parked>>,
     /// The next write this store fails, by its role (WO-025): `cadence`
-    /// for the write that moves a schedule to its next fire, `park` for
-    /// the one that keeps an undelivered result.
+    /// for the write that moves a schedule to its next fire, `landed` for
+    /// a claim that is written and then fails (its sync did), `record` for
+    /// the write that moves a claimed fire on, `park` for the one that
+    /// keeps an undelivered result.
     fail_next: RefCell<Option<&'static str>>,
     /// Whether the place for parked results is full: every park fails
     /// while it is.
@@ -110,6 +112,9 @@ impl Store for MemStore {
             None => stored.ledger.exhausted = true,
         }
         stored.ledger.revision += 1;
+        if self.fails("landed") {
+            return Err(String::from("the claim was written, but its sync failed"));
+        }
         Ok(Claim::Claimed)
     }
 
@@ -139,6 +144,9 @@ impl Store for MemStore {
     }
 
     fn record(&self, id: &str, due: i64, state: OccurrenceState) -> Result<bool, String> {
+        if self.fails("record") {
+            return Err(String::from("the disk is full"));
+        }
         Ok(self.change_fire(id, due, |stored| {
             if let Some(fire) = stored.ledger.occurrence.as_mut() {
                 fire.state = state;
@@ -473,7 +481,7 @@ fn the_dispatcher_debugs_its_run_count() {
     let mut world = World::new();
     assert_eq!(
         format!("{:?}", world.dispatcher),
-        "Dispatcher { active: 0 }"
+        "Dispatcher { active: 0, uncertain: 0 }"
     );
     schedule(
         &world.store,
@@ -484,7 +492,7 @@ fn the_dispatcher_debugs_its_run_count() {
     world.tick("2026-09-21T13:00:00Z");
     assert_eq!(
         format!("{:?}", world.dispatcher),
-        "Dispatcher { active: 1 }"
+        "Dispatcher { active: 1, uncertain: 0 }"
     );
 }
 
@@ -1181,4 +1189,137 @@ fn a_fire_left_in_flight_holds_its_schedule_as_unknown() {
     assert!(report.launched.is_empty());
     assert_eq!(world.requests().len(), 1, "never run again on its own");
     assert_eq!(world.next_due("s").as_deref(), Some("2026-09-21T15:00:00Z"));
+}
+
+/// The fire of `id`, as the store holds it.
+fn fire_of(world: &World, id: &str) -> Option<Occurrence> {
+    world
+        .store
+        .schedules
+        .borrow()
+        .get(id)
+        .and_then(|stored| stored.ledger.occurrence.clone())
+}
+
+/// WO-025, part 3: a claim written whose write then failed (its sync did)
+/// launches nothing that tick; the next tick writes it again, and launches
+/// its run once, as the fire it claimed.
+#[test]
+fn a_claim_that_landed_but_failed_launches_once_the_next_tick() {
+    let mut world = World::new();
+    schedule(
+        &world.store,
+        "s",
+        cron("0 * * * *", "UTC"),
+        "2026-09-21T12:00:00Z",
+    );
+    *world.store.fail_next.borrow_mut() = Some("landed");
+    let report = world.tick("2026-09-21T13:00:00Z");
+    assert!(report.launched.is_empty());
+    assert_eq!(world.requests().len(), 0);
+    let report = world.tick("2026-09-21T13:00:30Z");
+    assert_eq!(report.launched, [(String::from("s"), false)]);
+    let requests = world.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests.first().map(|request| request.due),
+        Some(ts("2026-09-21T13:00:00Z"))
+    );
+    assert_eq!(
+        fire_of(&world, "s").map(|fire| fire.state),
+        Some(OccurrenceState::Running)
+    );
+    world.launcher.run(0).finish(Ok("done"));
+    for minute in 1..4 {
+        world.tick(&format!("2026-09-21T13:0{minute}:00Z"));
+    }
+    assert_eq!(world.requests().len(), 1, "launched once");
+    assert_eq!(world.next_due("s").as_deref(), Some("2026-09-21T14:00:00Z"));
+}
+
+/// WO-025, part 3: a claim that landed is launched only once it is
+/// written again, and no schedule fires while it is uncertain: while that
+/// write fails, nothing is launched.
+#[test]
+fn a_landed_claim_launches_nothing_until_it_is_written_again() {
+    let mut world = World::new();
+    for id in ["s", "t"] {
+        schedule(
+            &world.store,
+            id,
+            cron("* * * * *", "UTC"),
+            "2026-09-21T12:59:30Z",
+        );
+    }
+    *world.store.fail_next.borrow_mut() = Some("landed");
+    world.tick("2026-09-21T13:00:00Z");
+    *world.store.fail_next.borrow_mut() = Some("record");
+    let report = world.tick("2026-09-21T13:00:10Z");
+    assert!(report.launched.is_empty());
+    assert_eq!(
+        world.requests().len(),
+        0,
+        "a fire while a claim was uncertain"
+    );
+    assert_eq!(
+        fire_of(&world, "s").map(|fire| fire.state),
+        Some(OccurrenceState::Claimed)
+    );
+    assert_eq!(fire_of(&world, "t"), None);
+    let report = world.tick("2026-09-21T13:01:05Z");
+    assert_eq!(
+        report.launched,
+        [(String::from("s"), false), (String::from("t"), true)]
+    );
+    let dues: Vec<(String, Timestamp)> = world
+        .requests()
+        .into_iter()
+        .map(|request| (request.schedule_id, request.due))
+        .collect();
+    assert_eq!(
+        dues,
+        [
+            (String::from("s"), ts("2026-09-21T13:00:00Z")),
+            (String::from("t"), ts("2026-09-21T13:00:00Z")),
+        ],
+        "the fires they claimed, not later ones"
+    );
+}
+
+/// WO-025, part 3: a failed claim that didn't land is forgotten, and the
+/// fire is claimed afresh the next tick, once.
+#[test]
+fn a_failed_claim_that_did_not_land_is_claimed_afresh() {
+    let mut world = World::new();
+    schedule(
+        &world.store,
+        "s",
+        cron("0 * * * *", "UTC"),
+        "2026-09-21T12:00:00Z",
+    );
+    *world.store.fail_next.borrow_mut() = Some("cadence");
+    let report = world.tick("2026-09-21T13:00:00Z");
+    assert!(report.launched.is_empty());
+    let report = world.tick("2026-09-21T13:00:30Z");
+    assert_eq!(report.launched, [(String::from("s"), false)]);
+    assert_eq!(world.requests().len(), 1);
+}
+
+/// WO-025, part 3: a landed claim whose schedule is cancelled before it
+/// settles is forgotten: nothing is launched.
+#[test]
+fn a_landed_claim_whose_schedule_is_cancelled_launches_nothing() {
+    let mut world = World::new();
+    schedule(
+        &world.store,
+        "s",
+        cron("0 * * * *", "UTC"),
+        "2026-09-21T12:00:00Z",
+    );
+    *world.store.fail_next.borrow_mut() = Some("landed");
+    world.tick("2026-09-21T13:00:00Z");
+    world.store.remove("s").unwrap();
+    let report = world.tick("2026-09-21T13:00:30Z");
+    assert!(report.launched.is_empty());
+    assert_eq!(world.requests().len(), 0);
 }

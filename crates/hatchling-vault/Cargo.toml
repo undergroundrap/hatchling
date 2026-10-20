@@ -68,3 +68,6 @@ subtle = "2"
 # A software FIDO2 authenticator, for tests only. Off by default:
 # no real build carries a software key that could unlock the vault.
 virtual-authenticator = []
+# Failures injected into the atomic write's steps, for tests only (WO-025):
+# a store that fails before or after its rename. Off by default.
+fault-injection = []

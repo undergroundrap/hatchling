@@ -58,7 +58,7 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | [022](workorder-022-operator-api.md) | An operator API, and the command center's Machine view | yes | DONE |
 | [023](workorder-023-internal-destinations.md) | Refuse internal addresses for destinations that aren't declared internal | yes | DONE |
 | [024](workorder-024-two-guards-on-every-delete.md) | Two guards on every delete and signal | yes | DONE |
-| [025](workorder-025-durable-scheduled-runs.md) | Scheduled runs and their results survive a crash or a failed write | yes | QUEUED |
+| [025](workorder-025-durable-scheduled-runs.md) | Scheduled runs and their results survive a crash or a failed write | yes | DONE |
 | [026](workorder-026-conversation-continuity.md) | Conversation continuity: the broker keeps the chat, a cell can't write it | yes | IN-PROGRESS |
 | [027](workorder-027-approvals.md) | Approvals delivered to the owner: a frozen action, decided in the app, run by the broker | yes | IN-PROGRESS |
 | [028](workorder-028-web-search-and-site-approvals.md) | Web search through the broker, and each new site approved by the owner | yes | QUEUED |
@@ -77,7 +77,7 @@ Not yet WOs. Each gets a full file, with a scope and acceptance criteria, before
 - **Crash dumps sent to a socket.** Since Linux 6.16, a `core_pattern` of `@<path>` hands a crashing process's core to a collector over a Unix socket. That path doesn't honor the one-byte core limit every cell is held to (WO-011), so on such a host a crashing cell's memory would reach the collector, and could outlive the cell. Pipe and file patterns still honor the limit. The fix: refuse to start cells while `core_pattern` names a socket, unless the operator opts in, and test it on a 6.16+ kernel. Neither the WSL2 kernel (6.6) nor the CI runners' (6.8) has the socket path.
 - **Tell cells apart for schedules.** A cell can list and cancel any schedule an agent session made, though never the owner's. Now that every session runs under the cell id the broker gave it (WO-007), record which cell made a schedule and hold list and cancel to that cell.
 - **Store directories through a handle.** The memory and goals stores still repair a directory's mode by path after checking it. Make them use `hatchling_sys::ensure_private_dir`, as the vault and scheduled runs do since WO-006.
-- **Explain failed runs.** When a scheduled run fails, the broker logs only "the run failed": the reason is sealed in the parked result, which nothing reads yet. Log the reason (with redaction), and let the owner list and read parked results through the API.
+- **Explain failed runs.** When a scheduled run fails, the broker logs only "the run failed". The owner can read the reason in the parked result through the API since WO-025 (`list-parked`); the log still doesn't say it. Log the reason, with redaction.
 - **Crash handlers on a socket.** A host whose `core_pattern` starts with `@` (a crash handler listening on a socket, Linux 6.16 and later) isn't covered yet by the one-byte core limit from WO-011. Find what reaches such a handler from a crashing cell, cover it, and test it on a kernel that has the feature.
 - **macOS backend.** An implementation of the isolation trait for macOS.
 - **FIDO2 on real hardware.** The FIDO2 hmac-secret vault factor is tested against a software authenticator. Validate it on physical security keys, and record which ones.
