@@ -367,6 +367,19 @@ pub enum Filter {
     /// Its cell also gets the null, zero and random devices, and a view
     /// of its own processes.
     Cli,
+    /// Those, plus what a headless browser needs (WO-029): messages with
+    /// descriptors between its own processes, and shared memory. Its cell
+    /// is a CLI cell's in every other way.
+    Browser,
+}
+
+impl Filter {
+    /// Whether the cell runs a program with processes of its own: it gets
+    /// the null, zero and random devices, and a view of its processes.
+    #[must_use]
+    pub const fn runs_processes(self) -> bool {
+        matches!(self, Self::Cli | Self::Browser)
+    }
 }
 
 /// Everything one cell sees, as [`IsolationBackend::view`] reports it.

@@ -62,7 +62,7 @@ pub fn check_view(spec: &CellSpec, view: &CellView) -> Result<(), String> {
             view.relay, spec.relay
         ));
     }
-    let cli = spec.filter == Filter::Cli;
+    let cli = spec.filter.runs_processes();
     if view.processes != cli {
         return Err(String::from(
             "the cell's own processes are seen exactly when it is a CLI cell",

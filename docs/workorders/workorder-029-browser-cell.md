@@ -1,6 +1,6 @@
 # WO-029: A browser cell: a real browser the agent drives, in a cell of its own, reaching only what the broker lets through
 
-**Status:** QUEUED
+**Status:** IN PROGRESS (part 1a: the browser cell's profile)
 **Area:** `crates/hatchling-browser` (new: the controller that runs in the cell), `crates/hatchling-broker` (the browser session, the proxy, site grants, the UI stream), `crates/hatchling-isolation` (the browser cell's profile), `crates/hatchling-agent` (the tools), `crates/hatchling-core` (the ops; `ui` already has the browser surfaces), `frontend/` (the live browser view)
 **Issue:** none yet
 **Trust boundary:** yes
@@ -68,6 +68,8 @@ Filled in at close.
 4. **The owner in the app:** frames, the action log, and taking and returning control, in the live frontend.
 
 ## Notes
+
+- **What the cell lets Chromium do, measured.** A traced headless run (`--no-sandbox --no-zygote --disable-gpu --disable-dev-shm-usage`) made 90 distinct calls; 15 were outside the CLI profile. Leaving each out in a real cell in turn: seven are needed (without `sendmsg`, `recvmsg`, `epoll_wait`, `ppoll`, `fallocate` or `memfd_create` it is killed; without `mremap` a child is, and the browser hangs waiting for it); five are probes it handles as errors; two (`fstatfs`, `link`) aren't needed. That a dead child hangs the browser is why every wait the controller makes is bounded.
 
 - **Name the threat, then the mechanism.**
   - *A page's script reaching the owner's network* (the router, a printer, cloud metadata): the cell has no network, and the proxy refuses internal addresses and anything but `https`.

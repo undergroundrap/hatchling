@@ -90,7 +90,7 @@ pub(super) fn view(spec: &CellSpec) -> Result<CellView, Error> {
             origin: Origin::Runtime,
         });
     }
-    let cli = spec.filter == Filter::Cli;
+    let cli = spec.filter.runs_processes();
     if cli {
         for device in DEVICES {
             entries.push(ViewEntry {

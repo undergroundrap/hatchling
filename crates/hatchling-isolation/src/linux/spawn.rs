@@ -1084,6 +1084,7 @@ fn exec_cell_program(
 /// every other program gets the agent's.
 fn seccomp_profile(filter: Filter) -> Result<SeccompProfile, hatchling_sys::Error> {
     match filter {
+        Filter::Browser => SeccompProfile::browser(),
         Filter::Cli => SeccompProfile::harness_cli(),
         Filter::WorkTree => SeccompProfile::harness(),
         Filter::Program => SeccompProfile::agent(),
@@ -2275,6 +2276,100 @@ pub(super) mod tests {
         );
         let status = child.wait_deadline(SHORT_DEADLINE).unwrap();
         assert_eq!(hatchling_sys::child_exit_code(status), 0);
+    }
+
+    /// The headless Chromium a browser test runs, from
+    /// `HATCHLING_TEST_BROWSER`: none, and the test is skipped, unless
+    /// `HATCHLING_REQUIRE_BROWSER=1` makes that a failure.
+    fn test_browser() -> Option<PathBuf> {
+        let browser = std::env::var_os("HATCHLING_TEST_BROWSER").map(PathBuf::from);
+        assert!(
+            browser.is_some() || std::env::var_os("HATCHLING_REQUIRE_BROWSER").is_none(),
+            "HATCHLING_REQUIRE_BROWSER is set, but HATCHLING_TEST_BROWSER isn't"
+        );
+        browser
+    }
+
+    /// A spec that runs `browser` headless in a cell held to `filter`,
+    /// printing the DOM of `page` to `/work/dom` and its errors to
+    /// `/work/err`. Chromium finds its files beside its binary, so its
+    /// directory is the cell's `/browser`; the binary is also a tool, which
+    /// binds the libraries it links.
+    fn browser_spec(scratch: &Scratch, browser: &Path, filter: Filter, page: &str) -> CellSpec {
+        let (_, mut spec) = specs(scratch);
+        spec.filter = filter;
+        spec.program = PathBuf::from("/bin/bash");
+        spec.exposures.push(crate::Exposure {
+            source: browser.parent().unwrap().to_owned(),
+            name: String::from("browser"),
+            writable: false,
+            label: "browser",
+        });
+        spec.tools.push(crate::Tool {
+            source: browser.to_owned(),
+            name: String::from("browser-libs"),
+        });
+        let name = browser.file_name().unwrap().to_str().unwrap();
+        spec.argv = vec![
+            String::from(PROGRAM),
+            String::from("-c"),
+            format!(
+                "exec /browser/{name} --headless --no-sandbox --no-zygote --disable-gpu \
+                 --disable-dev-shm-usage --user-data-dir=/scratch/profile \
+                 --dump-dom '{page}' >/work/dom 2>/work/err"
+            ),
+        ];
+        spec.env = vec![
+            (String::from("HOME"), String::from("/scratch")),
+            (String::from("TMPDIR"), String::from("/scratch")),
+        ];
+        spec.workdir = Some(String::from("/work"));
+        spec
+    }
+
+    /// WO-029: a real Chromium runs in a browser cell, page script and all;
+    /// in a CLI cell, the same browser is killed by the filter, so the
+    /// browser profile is what lets it run.
+    #[test]
+    fn a_real_browser_runs_in_a_browser_cell_and_not_in_a_cli_cell() {
+        if !crate::linux::cell_available() {
+            return;
+        }
+        let Some(browser) = test_browser() else {
+            return;
+        };
+        let page = "data:text/html,<p id=x>static</p><script>document.getElementById(\"x\").textContent=\"scripted\"</script>";
+        let scratch = Scratch::new("browser");
+        let spec = browser_spec(&scratch, &browser, Filter::Browser, page);
+        let mut cell = isolate(&spec).unwrap();
+        let exit = cell.wait().unwrap();
+        let dom = std::fs::read_to_string(scratch.0.join("work/dom")).unwrap_or_default();
+        let err = std::fs::read_to_string(scratch.0.join("work/err")).unwrap_or_default();
+        assert_eq!(exit.code, 0, "the browser cell: {err}");
+        assert!(dom.contains("<p id=\"x\">scripted</p>"), "the page's script ran: {dom}");
+        let scratch = Scratch::new("browser-cli");
+        let spec = browser_spec(&scratch, &browser, Filter::Cli, page);
+        let mut cell = isolate(&spec).unwrap();
+        let exit = cell.wait().unwrap();
+        let dom = std::fs::read_to_string(scratch.0.join("work/dom")).unwrap_or_default();
+        assert_ne!(exit.code, 0, "a CLI cell kills the browser");
+        assert!(!dom.contains("scripted"), "{dom}");
+    }
+
+    #[test]
+    fn a_browser_cell_runs_processes_and_gets_its_own_profile() {
+        assert!(Filter::Browser.runs_processes());
+        assert!(Filter::Cli.runs_processes());
+        assert!(!Filter::WorkTree.runs_processes());
+        assert!(!Filter::Program.runs_processes());
+        assert_eq!(
+            seccomp_profile(Filter::Browser).unwrap().build(),
+            SeccompProfile::browser().unwrap().build()
+        );
+        assert_ne!(
+            seccomp_profile(Filter::Browser).unwrap().build(),
+            seccomp_profile(Filter::Cli).unwrap().build()
+        );
     }
 
     #[test]
