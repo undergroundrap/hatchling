@@ -166,7 +166,7 @@ Use these established terms consistently:
 | Permission decision saving | **Saving your decision**; disable repeated actions |
 | Permission response uncertain | **Decision not confirmed** → Check status, not a replay |
 
-A task approval that carries the request's fields (WO-027) lists them in the card, above the scope: what the broker resolved first, then the agent's own words, each agent field labeled **From the agent**. Values are inert text, isolated for direction, whole (they wrap, never truncate), and every hidden or direction-control character is shown as its code point (`⟨U+202E⟩`). Agent text never becomes a button, a label or a notification.
+A task approval that carries the request's fields (WO-027) lists them in the card, above the scope: what the broker resolved first, then the agent's own words, each agent field labeled **From the agent**. Values are inert text, isolated for direction, whole (they wrap, never truncate), and every hidden or direction-control character is shown as its code point (`⟨U+202E⟩`). Agent text never becomes a button, a label or a notification. A site the agent asks to read (WO-028) may also offer **Allow for task** (until the agent's session ends) and **Allow always** (kept until revoked under Permissions → Websites); a request offers only the scopes it states, and the app refuses any other before sending.
 
 Keep uncertainty explicit. “Dismiss” is not “Cancel the original action.” Permission approval is never silently queued while offline. A purchase must open the existing complete quote; generic Allow does not bypass purchase review. Expired requests stay in history without live approval controls.
 

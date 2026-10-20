@@ -42,6 +42,8 @@ const replay = (transport, frames = SAMPLE_EVENTS) => {
 };
 const answer = (transport, request_id, result) => transport.deliver({ type: 'action_result', request_id, result });
 const flush = () => new Promise(resolve => setImmediate(resolve));
+// The actions the app sent besides the allowed sites' list, which it asks for each time it connects.
+const sentActions = transport => transport.sent.filter(frame => frame.type === 'action' && !(frame.action.action === 'manage_sites' && frame.action.op.op === 'list'));
 const thread = adapter => adapter.getSnapshot().threads[0];
 const lane = (adapter, id) => thread(adapter).lanes.find(item => item.id === id);
 const confirmation = (seq, revision, summary = 'Post the sample summary?') => sampleEvent(seq, seq, { kind: 'confirmation', confirmation_id: 'confirm-1', revision, chat_id: 'main', summary, expires_at: null, digest: `digest-${revision}`, fields: [{ label: 'Operation', value: summary, source: 'broker' }, { label: 'Text', value: 'Sample text.', source: 'agent' }] });
@@ -438,6 +440,76 @@ test('a site offers Allow for task, sent as approve_session and shown as allowed
     answer(third.transport, 'a2', { result: 'decision_rejected', confirmation_id: 'confirm-1', reason: 'not_offered' });
     assert.deepEqual(await rejected, { state: 'rejected', detail: 'This request can only be approved once, so nothing was decided.' });
 });
+test('a site that can be kept offers Allow always, sent as approve_always and shown as always allowed', async () => {
+    const { transport, adapter } = connected();
+    transport.deliver(sampleEvent(1, 1, { kind: 'confirmation', confirmation_id: 'confirm-1', revision: 1, chat_id: 'main', summary: 'Let the agent read a site', expires_at: null, digest: 'digest-1', fields: [{ label: 'Site', value: 'https://a.example', source: 'broker' }], session: true, always: true }));
+    const [card] = adapter.taskApprovals.getSnapshot();
+    assert.deepEqual(card.scopes, ['once', 'task', 'always']);
+    assert.match(card.detail, /Allow always answers every request like it, in every session, until you revoke it in Permissions\./);
+    const pending = adapter.taskApprovals.respond({ id: 'attempt-always', requestId: 'confirm-1', revision: 1, decision: 'always' });
+    await flush();
+    assert.deepEqual(transport.last().action, { action: 'decide', confirmation_id: 'confirm-1', revision: 1, digest: 'digest-1', decision: 'approve_always' });
+    answer(transport, 'attempt-always', { result: 'decided', confirmation_id: 'confirm-1', decision: 'approve_always' });
+    assert.deepEqual(await pending, { state: 'accepted', detail: 'Hatchling recorded your answer.' });
+    transport.deliver(decidedEvent(2, 'approve_always', 1));
+    assert.equal(adapter.taskApprovals.getSnapshot()[0].status, 'allowed-always');
+    // Deciding always asks the broker for its list again.
+    assert.deepEqual(transport.last().action, { action: 'manage_sites', op: { op: 'list' } });
+    // Where it isn't offered, it's refused before anything is sent.
+    const other = connected();
+    other.transport.deliver(sampleEvent(1, 1, { kind: 'confirmation', confirmation_id: 'confirm-1', revision: 1, chat_id: 'main', summary: 'Let the agent read a site', expires_at: null, digest: 'digest-1', fields: [], session: true }));
+    assert.deepEqual(other.adapter.taskApprovals.getSnapshot()[0].scopes, ['once', 'task']);
+    const before = other.transport.sent.length;
+    assert.match((await other.adapter.taskApprovals.respond({ id: 'a1', requestId: 'confirm-1', revision: 1, decision: 'always' })).detail, /Allowing always is not offered/);
+    assert.equal(other.transport.sent.length, before, 'nothing sent');
+});
+test('allowed sites: the broker\'s list, loaded on connecting; revoked by the owner, and listed again', async () => {
+    const { transport, adapter } = connected();
+    const listing = transport.sent.find(frame => frame.type === 'action' && frame.action.action === 'manage_sites');
+    assert.deepEqual(listing?.action, { action: 'manage_sites', op: { op: 'list' } }, 'asked for on connecting');
+    assert.deepEqual(adapter.getSnapshot().websitePermissions, [], 'empty until the broker answers');
+    answer(transport, listing.request_id, { result: 'sites', outcome: { result: 'listed', sites: [{ site: 'https://a.example', allowed_at: '2026-10-20T08:00:00Z' }] } });
+    await flush();
+    assert.deepEqual(adapter.getSnapshot().websitePermissions, [{ host: 'https://a.example', policy: 'allow' }]);
+    assert.deepEqual(await adapter.execute({ type: 'permission.website', host: 'https://b.example', policy: 'allow' }), { ok: false, message: "Allow a site from the agent's request for it, with Allow always." });
+    const revoking = adapter.execute({ type: 'permission.website', host: 'https://a.example', policy: 'ask' });
+    await flush();
+    const revoke = transport.last();
+    assert.deepEqual(revoke.action, { action: 'manage_sites', op: { op: 'revoke', site: 'https://a.example' } });
+    answer(transport, revoke.request_id, { result: 'sites', outcome: { result: 'revoked' } });
+    await flush();
+    const relisting = transport.last();
+    assert.deepEqual(relisting.action, { action: 'manage_sites', op: { op: 'list' } });
+    answer(transport, relisting.request_id, { result: 'sites', outcome: { result: 'listed', sites: [] } });
+    assert.deepEqual(await revoking, { ok: true, message: 'Revoked. The agent asks again the next time it wants a page on this site.' });
+    assert.deepEqual(adapter.getSnapshot().websitePermissions, []);
+    // Every other answer is told as what it is; only revoked and not found list again.
+    for (const [outcome, ok, words, relists] of [
+        [{ result: 'sites', outcome: { result: 'not_found' } }, false, /no longer allowed/, true],
+        [{ result: 'sites', outcome: { result: 'off' } }, false, /keeps no allowed sites/, false],
+        [{ result: 'sites', outcome: { result: 'failed' } }, false, /nothing was revoked/, false],
+        [{ result: 'sites', outcome: { result: 'listed', sites: [] } }, false, /nothing was revoked/, false],
+        [{ result: 'refused', reason: 'not_granted' }, false, /may not change the allowed sites/, false],
+        [{ result: 'decided', confirmation_id: 'c', decision: 'approve' }, false, /not confirmed/, false],
+    ]) {
+        const pending = adapter.execute({ type: 'permission.website', host: 'https://a.example', policy: 'block' });
+        await flush();
+        answer(transport, transport.last().request_id, outcome);
+        await flush();
+        if (relists) {
+            assert.deepEqual(transport.last().action.op, { op: 'list' });
+            answer(transport, transport.last().request_id, { result: 'refused', reason: 'unavailable' });
+        }
+        const settled = await pending;
+        assert.equal(settled.ok, ok);
+        assert.match(settled.message, words);
+    }
+    // A list the broker didn't give leaves the last one as it was.
+    assert.deepEqual(adapter.getSnapshot().websitePermissions, []);
+    // Offline, nothing is sent and the owner is told.
+    adapter.dispose();
+    assert.equal((await adapter.execute({ type: 'permission.website', host: 'https://a.example', policy: 'ask' })).ok, false);
+});
 test('a decision is re-validated at dispatch, against the broker\'s latest state, not the card that was drawn', async () => {
     const { transport, adapter } = connected();
     transport.deliver(confirmation(1, 1));
@@ -522,7 +594,7 @@ test('sending: the typed send_message action under the UI\'s request id, with ho
     await flush();
     // The app's main chat is the broker's local channel on the wire.
     assert.deepEqual(transport.last(), { type: 'action', request_id: 'send-1', action: { action: 'send_message', chat_id: 'local', text: 'Hello' } });
-    assert.equal(transport.sent.filter(frame => frame.type === 'action').length, 1);
+    assert.equal(sentActions(transport).length, 1);
     answer(transport, 'send-1', { result: 'message_accepted', message_id: 'message-10' });
     assert.deepEqual(await sending, { state: 'accepted', messageId: 'message-10' });
     assert.deepEqual(await adapter.chatSession.checkDelivery('send-1'), { state: 'accepted', messageId: 'message-10' });
@@ -601,7 +673,7 @@ test('the snapshot is honest: only what the broker said, display preferences kep
     }
     assert.equal(heard, 4);
     assert.equal(adapter.getSnapshot().revision, revision + 4);
-    assert.equal(transport.sent.filter(frame => frame.type === 'action').length, 0, 'preferences never reach the broker');
+    assert.equal(sentActions(transport).length, 0, 'preferences never reach the broker');
     // Events no view shows yet still move the clock, and nothing else.
     replay(transport, SAMPLE_EVENTS.slice(14));
     assert.equal(adapter.getSnapshot().clock, sampleTime(17));
