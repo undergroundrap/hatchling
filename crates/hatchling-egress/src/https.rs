@@ -138,13 +138,27 @@ pub(crate) fn forward(
     request: &EgressRequest,
     credential: Option<&[u8]>,
 ) -> Result<EgressResponse> {
-    let host = request
-        .destination
+    let bytes = crate::local::request_bytes(request, credential)?;
+    send(tls, pinned, &request.destination, &bytes)
+}
+
+/// Sends the framed request `bytes` over HTTPS to one of `pinned`, the
+/// addresses of `destination` (`host:port`), and reads the answer.
+///
+/// # Errors
+///
+/// As [`forward`].
+pub(crate) fn send(
+    tls: &TlsClient,
+    pinned: &[SocketAddr],
+    destination: &str,
+    bytes: &[u8],
+) -> Result<EgressResponse> {
+    let host = destination
         .rsplit_once(':')
         .map(|(host, _)| host)
         .ok_or(Error::InvalidSurrogate)?;
     let name = ServerName::try_from(host.to_owned()).map_err(|_| Error::InvalidSurrogate)?;
-    let bytes = crate::local::request_bytes(request, credential)?;
     let tcp = connect(pinned)?;
     tcp.set_read_timeout(Some(IO_TIMEOUT))
         .and_then(|()| tcp.set_write_timeout(Some(IO_TIMEOUT)))
@@ -155,10 +169,10 @@ pub(crate) fn forward(
     })?;
     let mut stream = StreamOwned::new(connection, tcp);
     stream
-        .write_all(&bytes)
+        .write_all(bytes)
         .and_then(|()| stream.flush())
         .map_err(|error| {
-            tracing::warn!(%error, destination = %request.destination, "egress TLS request failed");
+            tracing::warn!(%error, %destination, "egress TLS request failed");
             Error::UpstreamFailed
         })?;
     crate::local::read_response(stream)

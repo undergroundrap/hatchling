@@ -356,6 +356,7 @@ fn unexpected(reply: &Reply) -> Error {
 #[derive(Debug, Default)]
 struct Releases {
     egress: BTreeSet<String>,
+    search: BTreeSet<String>,
     harness: BTreeSet<String>,
     accounts: BTreeSet<String>,
     held: BTreeSet<String>,
@@ -371,6 +372,11 @@ impl Releases {
                 .iter()
                 .map(|destination| crate::serve::destination_to_secret_name(destination))
                 .collect(),
+            search: if config.web.search {
+                BTreeSet::from([String::from(crate::web_ops::SEARCH_KEY)])
+            } else {
+                BTreeSet::new()
+            },
             harness,
             accounts: config
                 .channel_accounts
@@ -385,6 +391,7 @@ impl Releases {
     fn allow(&self, purpose: &str, names: &[SecretName]) -> bool {
         let given = match purpose {
             "egress" => &self.egress,
+            "search" => &self.search,
             "harness" => &self.harness,
             "channel-account" => &self.accounts,
             _ => return false,
@@ -746,6 +753,13 @@ mod tests {
         assert!(!rules.allow("harness", &names(&["harness-codex-cli"])));
         assert!(rules.allow("channel-account", &names(&["mail-work"])));
         assert!(!rules.allow("channel-account", &names(&["token"])));
+        // Search's key, only while search is on (WO-028).
+        assert!(!rules.allow("search", &names(&["search-brave"])));
+        config.web.search = true;
+        let searching = Releases::of(&config, BTreeSet::new());
+        assert!(searching.allow("search", &names(&["search-brave"])));
+        assert!(!searching.allow("search", &names(&["token"])));
+        assert!(!searching.allow("egress", &names(&["search-brave"])));
         // The gates scan: they read nothing by name.
         for gate in ["artifact-gate", "output-gate"] {
             assert!(Releases::scans(gate));

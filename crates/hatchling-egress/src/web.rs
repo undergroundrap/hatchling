@@ -343,13 +343,7 @@ pub(crate) fn fetch_with(
     internal: impl Fn(IpAddr) -> bool,
 ) -> Result<Fetched, FetchError> {
     let destination = url.origin.destination();
-    let addrs = resolve(&destination).map_err(|_| FetchError::Unresolved)?;
-    if addrs.is_empty() {
-        return Err(FetchError::Unresolved);
-    }
-    if let Some(addr) = addrs.iter().map(SocketAddr::ip).find(|ip| internal(*ip)) {
-        return Err(FetchError::Internal { addr });
-    }
+    let addrs = resolved(&destination, resolve, internal)?;
     let request = EgressRequest {
         method: String::from("GET"),
         destination,
@@ -406,6 +400,23 @@ pub(crate) fn fetch_with(
         text,
         truncated,
     }))
+}
+
+/// The addresses `destination` resolves to with `resolve`, refused when
+/// it resolves to none, or to any that `internal` says is internal.
+pub(crate) fn resolved(
+    destination: &str,
+    resolve: impl Fn(&str) -> std::io::Result<Vec<SocketAddr>>,
+    internal: impl Fn(IpAddr) -> bool,
+) -> Result<Vec<SocketAddr>, FetchError> {
+    let addrs = resolve(destination).map_err(|_| FetchError::Unresolved)?;
+    if addrs.is_empty() {
+        return Err(FetchError::Unresolved);
+    }
+    if let Some(addr) = addrs.iter().map(SocketAddr::ip).find(|ip| internal(*ip)) {
+        return Err(FetchError::Internal { addr });
+    }
+    Ok(addrs)
 }
 
 /// Whether a content type is readable: `Some(true)` for HTML, `Some(false)`

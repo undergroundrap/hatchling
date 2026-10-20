@@ -200,7 +200,7 @@ fn is_token(name: &str) -> bool {
 
 /// A header value: no control character but tab, so no line break can
 /// smuggle in a header or a second request.
-fn is_field_value(value: &str) -> bool {
+pub(crate) fn is_field_value(value: &str) -> bool {
     !value
         .bytes()
         .any(|byte| byte.is_ascii_control() && byte != b'\t')

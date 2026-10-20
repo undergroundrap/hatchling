@@ -43,7 +43,7 @@ pub use messages::{
     MemoryResult, ParkedSummary, QueryOp, QueryResult, ScheduleGrant, ScheduleKind, ScheduleOp,
     ScheduleRefusal, ScheduleResult, ScheduleSpec, ScheduleSummary, SessionRequest,
     SessionResponse, SkillOp, SkillResult, SpaceOp, SpaceRefusal, SpaceResult, SyncChange,
-    SyncItem, VaultAction, VaultOp, VaultResult, WebOp, WebResult,
+    SyncItem, VaultAction, VaultOp, VaultResult, WebHit, WebOp, WebResult,
 };
 pub use model_reasoning::ModelReasoning;
 pub use peer::{PeerCredentials, peer_credentials};

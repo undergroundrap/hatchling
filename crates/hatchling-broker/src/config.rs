@@ -508,6 +508,12 @@ pub struct WebConfig {
     /// there (the agent's own session, a chat). A scheduled run's don't: it
     /// asks, and goes on without the page.
     pub attended: bool,
+    /// Whether the agent may search, through Brave Search, with the key the
+    /// broker keeps (`HATCHLING_SEARCH=brave`).
+    pub search: bool,
+    /// Whether each search's text is logged, not only its length: the
+    /// owner's opt-in (`HATCHLING_SEARCH_LOG=queries`).
+    pub log_queries: bool,
 }
 
 impl WebConfig {
@@ -518,6 +524,8 @@ impl WebConfig {
             enabled: false,
             refused: Vec::new(),
             attended: false,
+            search: false,
+            log_queries: false,
         }
     }
 
@@ -535,8 +543,9 @@ impl WebConfig {
 }
 
 /// Parses the web settings: `HATCHLING_WEB` (`off`, the default, or
-/// `sites`) and `HATCHLING_WEB_REFUSE` (comma-separated hosts, each a name
-/// of ASCII labels).
+/// `sites`), `HATCHLING_WEB_REFUSE` (comma-separated hosts, each a name of
+/// ASCII labels), `HATCHLING_SEARCH` (`off`, the default, or `brave`) and
+/// `HATCHLING_SEARCH_LOG` (`length`, the default, or `queries`).
 fn parse_web(get: &impl Fn(&str) -> Option<String>) -> Result<WebConfig, Error> {
     let web = get(env::HATCHLING_WEB.name);
     let refuse = get(env::HATCHLING_WEB_REFUSE.name);
@@ -571,10 +580,32 @@ fn parse_web(get: &impl Fn(&str) -> Option<String>) -> Result<WebConfig, Error> 
         }
         refused.push(host.to_owned());
     }
+    let search = match get(env::HATCHLING_SEARCH.name).as_deref().map(str::trim) {
+        None | Some("" | "off") => false,
+        Some("brave") => true,
+        Some(other) => {
+            return Err(Error::InvalidConfig {
+                key: "HATCHLING_SEARCH",
+                reason: format!("must be off or brave, not {other:?}"),
+            });
+        }
+    };
+    let log_queries = match get(env::HATCHLING_SEARCH_LOG.name).as_deref().map(str::trim) {
+        None | Some("" | "length") => false,
+        Some("queries") => true,
+        Some(other) => {
+            return Err(Error::InvalidConfig {
+                key: "HATCHLING_SEARCH_LOG",
+                reason: format!("must be length or queries, not {other:?}"),
+            });
+        }
+    };
     Ok(WebConfig {
         enabled,
         refused,
         attended: true,
+        search,
+        log_queries,
     })
 }
 
@@ -1743,6 +1774,19 @@ fn refuse_harness_secret_grants(vault_grants: Vec<VaultGrant>) -> Result<Vec<Vau
                 ),
             });
         }
+    }
+    if let Some(grant) = vault_grants
+        .iter()
+        .find(|grant| grant.name.as_str() == crate::web_ops::SEARCH_KEY)
+    {
+        return Err(Error::InvalidConfig {
+            key: "HATCHLING_VAULT_GRANTS",
+            reason: format!(
+                "grant {}:{} names the search provider's key, which only the broker reads",
+                grant.action,
+                grant.name.as_str()
+            ),
+        });
     }
     if let Some(grant) = vault_grants
         .iter()
@@ -3662,6 +3706,54 @@ mod web_config_tests {
             "HATCHLING_WEB_REFUSE" => refuse.map(str::to_owned),
             _ => None,
         })
+    }
+
+    /// The search settings from `search` and `log`.
+    fn parse_search(search: Option<&str>, log: Option<&str>) -> Result<WebConfig, Error> {
+        super::parse_web(&|key: &str| match key {
+            "HATCHLING_SEARCH" => search.map(str::to_owned),
+            "HATCHLING_SEARCH_LOG" => log.map(str::to_owned),
+            _ => None,
+        })
+    }
+
+    /// Search is off unless the operator chooses Brave; a query's text is
+    /// logged only on the owner's opt-in; no grant may name the key.
+    #[test]
+    fn search_is_off_unless_chosen_and_its_text_logged_only_when_asked() {
+        for off in [None, Some(""), Some("off")] {
+            assert!(!parse_search(off, None).unwrap().search, "{off:?}");
+        }
+        assert!(parse_search(Some(" brave "), None).unwrap().search);
+        for length in [None, Some(""), Some("length")] {
+            assert!(!parse_search(None, length).unwrap().log_queries, "{length:?}");
+        }
+        assert!(parse_search(None, Some("queries")).unwrap().log_queries);
+        assert!(!WebConfig::off().search);
+        assert!(!WebConfig::off().log_queries);
+        assert!(matches!(
+            parse_search(Some("google"), None),
+            Err(Error::InvalidConfig {
+                key: "HATCHLING_SEARCH",
+                ..
+            })
+        ));
+        assert!(matches!(
+            parse_search(None, Some("all")),
+            Err(Error::InvalidConfig {
+                key: "HATCHLING_SEARCH_LOG",
+                ..
+            })
+        ));
+        let grant = super::VaultGrant {
+            action: hatchling_core::VaultAction::Fetch,
+            name: crate::web_ops::SEARCH_KEY.parse().unwrap(),
+        };
+        let refused = super::refuse_harness_secret_grants(vec![grant]);
+        assert!(
+            matches!(&refused, Err(Error::InvalidConfig { key: "HATCHLING_VAULT_GRANTS", reason }) if reason.contains("search provider's key")),
+            "{refused:?}"
+        );
     }
 
     /// The web is off unless the operator says `sites`; the refused hosts

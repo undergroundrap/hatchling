@@ -182,7 +182,8 @@ impl Board {
     /// Puts `site`, which task `task` asks to read `url` on for `reason`,
     /// to the owner at `now` (WO-028): the request, and whether it was new.
     /// What is approved is the site alone; the page and the reason are
-    /// shown, the reason as the agent's words.
+    /// shown, the reason as the agent's words, and, when one of the task's
+    /// searches gave the page, which (`led`: the search, and its place).
     ///
     /// # Errors
     ///
@@ -193,6 +194,7 @@ impl Board {
         site: &str,
         url: &str,
         reason: &str,
+        led: Option<(&str, usize)>,
         task: &str,
         now: i64,
     ) -> Result<Requested, Refusal> {
@@ -210,7 +212,7 @@ impl Board {
         )?;
         if requested.new {
             self.publish(UiEventBody::Confirmation(site_confirmation(
-                site, url, reason, &requested,
+                site, url, reason, led, &requested,
             )));
         }
         Ok(requested)
@@ -290,6 +292,7 @@ fn site_confirmation(
     site: &str,
     url: &str,
     reason: &str,
+    led: Option<(&str, usize)>,
     requested: &Requested,
 ) -> ConfirmationRequest {
     let field = |label: &str, value: &str, source: FieldSource| ConfirmationField {
@@ -306,17 +309,28 @@ fn site_confirmation(
             .ok()
             .map(|at| at.to_string()),
         digest: requested.digest.clone(),
-        fields: vec![
-            field("Operation", "Read pages from a site", FieldSource::Broker),
-            field("Site", site, FieldSource::Broker),
-            field(
-                "What it allows",
-                "Once: this page, now. For this session: any page on this site until the session ends. The site sees whatever the agent puts in a page's address.",
-                FieldSource::Broker,
-            ),
-            field("Page it asked for", url, FieldSource::Agent),
-            field("Why it wants it", reason, FieldSource::Agent),
-        ],
+        fields: {
+            let mut fields = vec![
+                field("Operation", "Read pages from a site", FieldSource::Broker),
+                field("Site", site, FieldSource::Broker),
+                field(
+                    "What it allows",
+                    "Once: this page, now. For this session: any page on this site until the session ends. The site sees whatever the agent puts in a page's address.",
+                    FieldSource::Broker,
+                ),
+            ];
+            if let Some((query, place)) = led {
+                fields.push(field(
+                    "Found by",
+                    &format!("result {place} of a search the agent ran this session"),
+                    FieldSource::Broker,
+                ));
+                fields.push(field("The search", query, FieldSource::Agent));
+            }
+            fields.push(field("Page it asked for", url, FieldSource::Agent));
+            fields.push(field("Why it wants it", reason, FieldSource::Agent));
+            fields
+        },
         session: true,
     }
 }
@@ -695,6 +709,7 @@ mod tests {
                 "https://a.example",
                 "https://a.example/x",
                 "to read it",
+                None,
                 "t1",
                 100,
             )
@@ -705,6 +720,7 @@ mod tests {
                 "https://a.example",
                 "https://a.example/y",
                 "again",
+                None,
                 "t1",
                 100,
             )
@@ -780,6 +796,7 @@ mod tests {
             "https://a.example",
             "https://a.example/x",
             "to read it",
+            None,
             &requested,
         );
         assert!(request.session);
