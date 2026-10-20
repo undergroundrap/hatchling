@@ -788,12 +788,13 @@ fn a_followup_chain_fires_one_link_at_a_time_and_terminates() {
         let now = Timestamp::from_second(due.unwrap()).unwrap();
         let report = dispatch_once(&mut dispatcher, &config, key, None, &launcher, now).unwrap();
         assert_eq!(report.launched, [(id.clone(), false)]);
-        assert_eq!(report.removed, [id], "a follow-up is a one-shot");
         assert_eq!(dispatcher.active(), 1, "never two links at once");
         request = launcher.last();
         assert_eq!(request.depth, links + 1);
         launcher.finish(usize::try_from(links).unwrap(), "link done");
-        let _ = dispatch_once(&mut dispatcher, &config, key, None, &launcher, now).unwrap();
+        let report = dispatch_once(&mut dispatcher, &config, key, None, &launcher, now).unwrap();
+        // A follow-up is a one-shot: it goes once its fire is resolved.
+        assert_eq!(report.removed, [id], "a follow-up is a one-shot");
         links += 1;
     }
     assert_eq!(links, MAX_FOLLOWUP_DEPTH);

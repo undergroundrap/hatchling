@@ -1,6 +1,6 @@
 # WO-025: Scheduled runs and their results survive a crash or a failed write
 
-**Status:** QUEUED
+**Status:** IN PROGRESS (part 1: claims, stored results, no drops)
 **Area:** `crates/hatchling-scheduler` (dispatcher, `Store`), `crates/hatchling-broker` (`schedule_ops.rs`, `run_launcher.rs`, startup), `docs/`
 **Issue:** [#118](https://github.com/undergroundrap/hatchling/issues/118)
 **Trust boundary:** yes (a scheduled run acts with its creator's grants; running one twice repeats its effects)

@@ -14,9 +14,9 @@ use std::rc::Rc;
 
 use hatchling_core::{HookSource, ScheduleGrant, ScheduleSpec};
 use hatchling_scheduler::{
-    Delivery, Dispatcher, FollowupParent, Hook, Launcher, MAX_FOLLOWUP_DEPTH, MISSED_GRACE_SECS,
-    Parked, Run, RunRequest, Schedule, Services, Store, TickReport, Timestamp, validate,
-    validate_followup, validate_space_task,
+    Claim, Delivery, Dispatcher, FollowupParent, Hook, Launcher, MAX_FOLLOWUP_DEPTH,
+    MISSED_GRACE_SECS, Occurrence, OccurrenceState, Parked, Run, RunRequest, Schedule, Services,
+    Store, TickReport, Timestamp, validate, validate_followup, validate_space_task,
 };
 
 /// An in-memory store.
@@ -25,6 +25,51 @@ struct MemStore {
     schedules: RefCell<BTreeMap<String, Schedule>>,
     hooks: RefCell<Vec<Hook>>,
     parked: RefCell<Vec<Parked>>,
+    /// The next write this store fails, by its role (WO-025): `cadence`
+    /// for the write that moves a schedule to its next fire, `park` for
+    /// the one that keeps an undelivered result.
+    fail_next: RefCell<Option<&'static str>>,
+    /// Whether the place for parked results is full: every park fails
+    /// while it is.
+    full: RefCell<bool>,
+}
+
+impl MemStore {
+    /// Whether the next write of `role` fails, which it does once.
+    fn fails(&self, role: &'static str) -> bool {
+        let mut fail = self.fail_next.borrow_mut();
+        if *fail == Some(role) {
+            *fail = None;
+            return true;
+        }
+        false
+    }
+
+    /// Whether the store still accounts for a fire of `id`: its
+    /// schedule, or a result kept for the user.
+    fn accounts_for(&self, id: &str) -> bool {
+        self.schedules.borrow().contains_key(id)
+            || self
+                .parked
+                .borrow()
+                .iter()
+                .any(|parked| parked.schedule_id == id)
+    }
+
+    /// Applies `change` to the latest record of `id` when it still holds
+    /// the fire due at `due`, moving its revision on.
+    fn change_fire(&self, id: &str, due: i64, change: impl FnOnce(&mut Schedule)) -> bool {
+        let mut schedules = self.schedules.borrow_mut();
+        let Some(stored) = schedules.get_mut(id) else {
+            return false;
+        };
+        if stored.ledger.occurrence.as_ref().map(|fire| fire.due) != Some(due) {
+            return false;
+        }
+        change(stored);
+        stored.ledger.revision += 1;
+        true
+    }
 }
 
 impl Store for MemStore {
@@ -34,12 +79,96 @@ impl Store for MemStore {
         Ok(self.schedules.borrow().values().cloned().collect())
     }
 
-    fn update(&self, schedule: &Schedule) -> Result<bool, String> {
+    fn claim_due(
+        &self,
+        id: &str,
+        revision: u64,
+        due: i64,
+        next_due: Option<i64>,
+        missed: bool,
+    ) -> Result<Claim, String> {
+        if self.fails("cadence") {
+            return Err(String::from("the disk is full"));
+        }
         let mut schedules = self.schedules.borrow_mut();
-        Ok(schedules
-            .get_mut(&schedule.id)
-            .map(|stored| *stored = schedule.clone())
-            .is_some())
+        let Some(stored) = schedules.get_mut(id) else {
+            return Ok(Claim::NotDue);
+        };
+        if stored.ledger.revision != revision || stored.next_due != due || stored.ledger.exhausted {
+            return Ok(Claim::NotDue);
+        }
+        if stored.ledger.occurrence.is_some() {
+            return Ok(Claim::Full);
+        }
+        stored.ledger.occurrence = Some(Occurrence {
+            due,
+            missed,
+            state: OccurrenceState::Claimed,
+        });
+        match next_due {
+            Some(next) => stored.next_due = next,
+            None => stored.ledger.exhausted = true,
+        }
+        stored.ledger.revision += 1;
+        Ok(Claim::Claimed)
+    }
+
+    fn skip_due(
+        &self,
+        id: &str,
+        revision: u64,
+        due: i64,
+        next_due: Option<i64>,
+    ) -> Result<bool, String> {
+        if self.fails("cadence") {
+            return Err(String::from("the disk is full"));
+        }
+        let mut schedules = self.schedules.borrow_mut();
+        let Some(stored) = schedules.get_mut(id) else {
+            return Ok(false);
+        };
+        if stored.ledger.revision != revision || stored.next_due != due {
+            return Ok(false);
+        }
+        match next_due {
+            Some(next) => stored.next_due = next,
+            None => stored.ledger.exhausted = true,
+        }
+        stored.ledger.revision += 1;
+        Ok(true)
+    }
+
+    fn record(&self, id: &str, due: i64, state: OccurrenceState) -> Result<bool, String> {
+        Ok(self.change_fire(id, due, |stored| {
+            if let Some(fire) = stored.ledger.occurrence.as_mut() {
+                fire.state = state;
+            }
+        }))
+    }
+
+    fn resolve(&self, id: &str, due: i64, parked: Option<&Parked>) -> Result<bool, String> {
+        let holds = self
+            .schedules
+            .borrow()
+            .get(id)
+            .and_then(|stored| stored.ledger.occurrence.as_ref())
+            .is_some_and(|fire| fire.due == due);
+        if !holds {
+            return Ok(false);
+        }
+        if let Some(parked) = parked {
+            self.park(parked)?;
+        }
+        let exhausted = self.change_fire(id, due, |stored| stored.ledger.occurrence = None)
+            && self
+                .schedules
+                .borrow()
+                .get(id)
+                .is_some_and(|stored| stored.ledger.exhausted);
+        if exhausted {
+            self.schedules.borrow_mut().remove(id);
+        }
+        Ok(true)
     }
 
     fn remove(&self, id: &str) -> Result<bool, String> {
@@ -51,6 +180,9 @@ impl Store for MemStore {
     }
 
     fn park(&self, parked: &Parked) -> Result<(), String> {
+        if self.fails("park") || *self.full.borrow() {
+            return Err(String::from("the disk is full"));
+        }
         self.parked.borrow_mut().push(parked.clone());
         Ok(())
     }
@@ -294,7 +426,7 @@ fn a_space_tasks_run_is_bound_to_its_space_and_holds_only_what_is_still_held() {
     world.held = BTreeSet::from([send("local")]);
     let report = world.tick("2026-09-21T12:00:01Z");
     assert_eq!(report.launched, [(String::from("sch-t"), false)]);
-    assert_eq!(report.removed, ["sch-t"], "a one-shot");
+    assert_eq!(world.next_due("sch-t"), None, "a one-shot");
     let request = world.requests().first().cloned().unwrap();
     assert_eq!(request.space.as_deref(), Some("spc-1"));
     assert_eq!(request.grants, [send("local")]);
@@ -353,10 +485,15 @@ fn a_one_shot_fires_once_and_is_removed() {
     );
     let report = world.tick("2026-10-01T09:00:00Z");
     assert_eq!(report.launched, [(String::from("once"), false)]);
+    // Its fire is claimed, and it is due no more; it stays, with that
+    // fire, until the fire's result is resolved (WO-025).
+    assert!(report.removed.is_empty());
+    assert_eq!(world.next_due("once"), None);
+    world.launcher.run(0).finish(Ok("done"));
+    let report = world.tick("2026-10-01T09:01:00Z");
+    assert_eq!(report.delivered, ["once"]);
     assert_eq!(report.removed, ["once"]);
     assert!(world.store.schedules.borrow().is_empty());
-    world.launcher.run(0).finish(Ok("done"));
-    assert_eq!(world.tick("2026-10-01T09:01:00Z").delivered, ["once"]);
     assert_eq!(world.tick("2026-10-02T09:00:00Z"), TickReport::default());
     assert_eq!(world.launcher.requests.borrow().len(), 1);
 }
@@ -838,16 +975,155 @@ fn a_followup_chain_runs_one_link_at_a_time_and_ends_at_the_bound() {
         now = Timestamp::from_second(next.next_due).unwrap();
         let report = world.tick(&now.to_string());
         assert_eq!(report.launched, [(next.id.clone(), false)]);
-        assert_eq!(report.removed, std::slice::from_ref(&next.id));
         assert_eq!(world.requests().last().unwrap().depth, depth + 1);
         assert_eq!(world.dispatcher.active(), 1);
         let index = world.requests().len() - 1;
         world.launcher.run(index).finish(Ok("link"));
-        world.tick(&now.to_string());
+        let report = world.tick(&now.to_string());
+        assert_eq!(report.removed, std::slice::from_ref(&next.id));
         assert_eq!(world.dispatcher.active(), 0);
         depth = next.depth;
     }
     assert_eq!(depth, MAX_FOLLOWUP_DEPTH);
     assert_eq!(world.requests().len(), 5);
     assert!(world.store.schedules.borrow().is_empty());
+}
+
+/// WO-025, window 1: a one-shot whose run hasn't finished when the
+/// dispatcher is rebuilt over the same store (a broker that died) is still
+/// accounted for in the store, not forgotten as it started.
+#[test]
+fn a_one_shot_still_running_when_the_broker_dies_is_accounted_for() {
+    let mut world = World::new();
+    schedule(
+        &world.store,
+        "once",
+        ScheduleSpec::Once {
+            at: String::from("2026-10-01T09:00"),
+            tz: String::from("UTC"),
+        },
+        "2026-09-21T12:00:00Z",
+    );
+    assert_eq!(
+        world.tick("2026-10-01T09:00:00Z").launched,
+        [(String::from("once"), false)]
+    );
+    // The broker dies: its dispatcher and its runs are gone; the store
+    // stays.
+    world.dispatcher = Dispatcher::default();
+    world.launcher = FakeLauncher::default();
+    assert!(
+        world.store.accounts_for("once"),
+        "a started one-shot left no trace in the store"
+    );
+}
+
+/// WO-025, window 2: a fire whose cadence write fails is launched once, not
+/// again once its run has finished and the old due time is still due.
+#[test]
+fn a_failed_cadence_write_never_launches_an_occurrence_twice() {
+    let mut world = World::new();
+    schedule(
+        &world.store,
+        "s",
+        cron("0 * * * *", "UTC"),
+        "2026-09-21T12:00:00Z",
+    );
+    *world.store.fail_next.borrow_mut() = Some("cadence");
+    world.tick("2026-09-21T13:00:00Z");
+    for minute in 1..4 {
+        if let Some(run) = world.launcher.runs.borrow().last() {
+            run.finish(Ok("done"));
+        }
+        world.tick(&format!("2026-09-21T13:0{minute}:00Z"));
+    }
+    assert_eq!(
+        world.requests().len(),
+        1,
+        "the 13:00 occurrence ran more than once"
+    );
+}
+
+/// WO-025, window 3: an output whose delivery fails twice and whose
+/// parking fails too is not lost: a later tick, with delivery and the
+/// store healthy, delivers it or keeps it.
+#[test]
+fn an_output_that_cannot_be_delivered_or_parked_is_kept_for_later() {
+    let mut world = World::new();
+    world.delivery.fail = 2;
+    schedule(
+        &world.store,
+        "s",
+        cron("0 * * * *", "UTC"),
+        "2026-09-21T12:00:00Z",
+    );
+    world.tick("2026-09-21T13:00:00Z");
+    world.launcher.run(0).finish(Ok("the summary"));
+    *world.store.fail_next.borrow_mut() = Some("park");
+    world.tick("2026-09-21T13:01:00Z");
+    world.tick("2026-09-21T13:02:00Z");
+    let delivered = world
+        .delivery
+        .delivered
+        .borrow()
+        .iter()
+        .any(|(_, text)| text == "the summary");
+    let kept = world
+        .store
+        .parked
+        .borrow()
+        .iter()
+        .any(|parked| parked.text == "the summary");
+    assert!(delivered || kept, "the output was lost");
+}
+
+/// WO-025: a result that can be neither delivered nor parked holds its
+/// schedule's next fire, loudly, rather than make room by dropping it; once
+/// it is delivered, the schedule fires again.
+#[test]
+fn a_result_that_waits_holds_its_schedules_next_fire() {
+    let mut world = World::new();
+    world.delivery.fail = 100;
+    schedule(
+        &world.store,
+        "s",
+        cron("0 * * * *", "UTC"),
+        "2026-09-21T12:00:00Z",
+    );
+    world.tick("2026-09-21T13:00:00Z");
+    world.launcher.run(0).finish(Ok("the summary"));
+    *world.store.full.borrow_mut() = true;
+    world.tick("2026-09-21T13:01:00Z");
+    let report = world.tick("2026-09-21T14:00:00Z");
+    assert_eq!(report.refused, ["s"]);
+    assert!(report.launched.is_empty());
+    let waiting = world
+        .store
+        .schedules
+        .borrow()
+        .get("s")
+        .and_then(|stored| stored.ledger.occurrence.clone());
+    assert!(
+        matches!(
+            waiting,
+            Some(Occurrence {
+                state: OccurrenceState::Finished { .. },
+                ..
+            })
+        ),
+        "{waiting:?}"
+    );
+    world.delivery.fail = 0;
+    *world.store.full.borrow_mut() = false;
+    let report = world.tick("2026-09-21T14:01:00Z");
+    assert_eq!(report.delivered, ["s"]);
+    assert_eq!(report.launched, [(String::from("s"), true)]);
+    assert!(
+        world
+            .delivery
+            .delivered
+            .borrow()
+            .iter()
+            .any(|(_, text)| text == "the summary")
+    );
 }
