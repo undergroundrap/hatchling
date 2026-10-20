@@ -27,6 +27,7 @@ use std::process::ExitCode;
 use hatchling_core::cli::{EX_USAGE, help_requested, render_help};
 
 use crate::harness_tree::{HARNESS_TREE_SUBCOMMAND, harness_tree_main};
+use crate::keeper::{VAULT_KEEPER_SUBCOMMAND, vault_keeper_main};
 use crate::skill_run::{SKILL_CELL_SUBCOMMAND, skill_cell_main};
 use crate::vault_keyring::run_keyring;
 use crate::{AGENT_RUN_SUBCOMMAND, agent_run_main, run_operator};
@@ -55,6 +56,7 @@ pub fn main(program: &str, args: &[String]) -> ExitCode {
         Some(HARNESS_TREE_SUBCOMMAND) => {
             return harness_tree_main(args.get(1..).unwrap_or_default());
         }
+        Some(VAULT_KEEPER_SUBCOMMAND) => return vault_keeper_main(),
         Some(_) | None => {}
     }
     match run(args) {
@@ -78,7 +80,7 @@ pub fn help(program: &str) -> String {
     render_help(
         program,
         "[subcommand] | --help | -h",
-        "Serve agents with no subcommand. Operator subcommands:\n  migrate-vault\n  rekey-vault [<new-key-file>]   (no file with a keyring)\n  vault-keyring <action>\n    init, enroll-totp, enroll-keys, use-file-tier, backup-codes,\n    status, add-key, remove-key, label-key\n  redactions list | stats | categories\n  redactions show <id> | raw <id> | override <id> [--any-scope]\n  vault-audit [log [count]]\n  clean [--dry-run]   (a dead broker's leftovers; never your data)\n\nThe broker builds and supervises the agent's cell. Internal spawner\ncommands skill-cell <spec>, agent-run <spec> and harness-tree are\nbroker-owned.",
+        "Serve agents with no subcommand. Operator subcommands:\n  migrate-vault\n  rekey-vault [<new-key-file>]   (no file with a keyring)\n  vault-keyring <action>\n    init, enroll-totp, enroll-keys, use-file-tier, backup-codes,\n    status, add-key, remove-key, label-key\n  redactions list | stats | categories\n  redactions show <id> | raw <id> | override <id> [--any-scope]\n  vault-audit [log [count]]\n  clean [--dry-run]   (a dead broker's leftovers; never your data)\n\nThe broker builds and supervises the agent's cell. Internal spawner\ncommands skill-cell <spec>, agent-run <spec>, harness-tree and\nvault-keeper are broker-owned.",
         crate::environment::ENVIRONMENT,
     )
 }
@@ -101,6 +103,7 @@ fn valid_args(args: &[String]) -> bool {
         | ["redactions", "override", _, "--any-scope"]
         | ["vault-audit", "log"]
         | [HARNESS_TREE_SUBCOMMAND, "give" | "reclaim", _, ..] => true,
+        [VAULT_KEEPER_SUBCOMMAND] => args.len() == 1,
         ["vault-audit", "log", count] => count.parse::<usize>().is_ok(),
         [SKILL_CELL_SUBCOMMAND | AGENT_RUN_SUBCOMMAND, ..] => args.len() <= 2,
         _ => false,

@@ -577,6 +577,16 @@ impl Harnesses {
         self.binaries.is_empty()
     }
 
+    /// The vault secrets holding the keys of the vendors these harnesses
+    /// relay to: the only harness keys the broker may read.
+    #[must_use]
+    pub fn vendor_secret_names(&self) -> BTreeSet<String> {
+        self.vendors
+            .keys()
+            .map(|kind| kind.secret_name().to_owned())
+            .collect()
+    }
+
     /// Handles `op` when it names a harness skill; `None` for any other
     /// skill. `runtime` starts the cells; `keys` reads a vendor key.
     #[must_use]
@@ -2196,6 +2206,11 @@ mod tests {
         assert_eq!(
             networked.vendors.keys().copied().collect::<Vec<_>>(),
             [HarnessKind::ClaudeCode]
+        );
+        // Only a relayed vendor's key is one the broker may read.
+        assert_eq!(
+            networked.vendor_secret_names(),
+            BTreeSet::from([String::from("harness-claude-code")])
         );
         assert_eq!(networked.tools.len(), 1);
         let mut binaryless = vars.clone();

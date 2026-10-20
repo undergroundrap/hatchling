@@ -119,6 +119,20 @@ impl Store {
         self.0
     }
 
+    /// The store `label` names, if it names one.
+    #[must_use]
+    pub fn from_label(label: &str) -> Option<Self> {
+        [
+            Self::SECRETS,
+            Self::SCHEDULES,
+            Self::ARTIFACTS,
+            Self::SPACES,
+            Self::REDACTIONS,
+        ]
+        .into_iter()
+        .find(|store| store.0 == label)
+    }
+
     /// The associated data an envelope of `name` in this store carries.
     fn associated(self, name: &SecretName) -> Vec<u8> {
         self.bound(DOMAIN, name)
@@ -159,7 +173,8 @@ const TAG_LEN: usize = 16;
 /// the allocation at `MAX_SECRET_BYTES + ENVELOPE_OVERHEAD`.
 const ENVELOPE_OVERHEAD: usize = ENVELOPE_MAGIC.len() + NONCE_LEN + TAG_LEN;
 /// A wrapped store key's exact length: magic + nonce + key + tag.
-const WRAPPED_STORE_KEY_LEN: usize = STORE_KEY_MAGIC.len() + NONCE_LEN + MASTER_KEY_LEN + TAG_LEN;
+pub(crate) const WRAPPED_STORE_KEY_LEN: usize =
+    STORE_KEY_MAGIC.len() + NONCE_LEN + MASTER_KEY_LEN + TAG_LEN;
 /// Master-key length in bytes (256 bits).
 const MASTER_KEY_LEN: usize = 32;
 /// Mode of the key file: owner-only.
@@ -227,7 +242,7 @@ impl Keyed for MasterKey {
 /// store is sealed under. Zeroized on drop and never cloned, as the
 /// master key is.
 #[derive(Zeroize, ZeroizeOnDrop)]
-pub(crate) struct StoreKey([u8; 32]);
+pub(crate) struct StoreKey(pub(crate) [u8; 32]);
 
 /// What opens a sealed store (WO-017).
 ///
@@ -276,16 +291,16 @@ impl OpensStores for MasterKey {
 /// place of the master key. A store opened with them is sealed under its
 /// own key; any other store, or this store at another root, is refused.
 pub struct StoreKeys {
-    held: Vec<Held>,
+    pub(crate) held: Vec<Held>,
 }
 
-struct Held {
-    store: Store,
-    root: PathBuf,
-    key: StoreKey,
+pub(crate) struct Held {
+    pub(crate) store: Store,
+    pub(crate) root: PathBuf,
+    pub(crate) key: StoreKey,
     /// For a store not made yet: its key, wrapped, for the store's first
     /// open to keep. Made now, while the master key is at hand.
-    pending: Option<Vec<u8>>,
+    pub(crate) pending: Option<Vec<u8>>,
 }
 
 impl StoreKeys {

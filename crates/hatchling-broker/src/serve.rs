@@ -32,11 +32,11 @@ use crate::environment as env;
 use crate::secrets::{Secrets, handle_vault_op};
 use crate::{
     CellConfig, Config, EgressConfig, Error, SkillRuntime, Skills, VaultConfig, bind_listener,
-    load_master_key, spawn_cell, validate_sealed_vault,
+    spawn_cell,
 };
 
-/// Loads the master key, validates the sealed vault, trades the master
-/// key for its stores' keys, binds the listen socket, and serves agents.
+/// Starts the vault keeper, which loads the master key and hands the
+/// broker its stores' keys, binds the listen socket, and serves agents.
 ///
 /// The broker is supervised and runs until killed: `serve_forever`
 /// never returns, so neither does this. Startup failures (bad config,
@@ -44,8 +44,8 @@ use crate::{
 ///
 /// # Errors
 ///
-/// Propagates [`Error`] from key loading, vault validation, cell
-/// spawn, or socket setup.
+/// Propagates [`Error`] from the keeper's start (key loading, vault
+/// validation), cell spawn, or socket setup.
 pub fn run_serve(config: &Config) -> Result<(), Error> {
     tracing_subscriber::fmt()
         .with_max_level(config.log_level.to_tracing())
@@ -54,15 +54,12 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
     // broker's life, before anything is written, and `clean` and a
     // second broker are refused while it is (WO-012).
     let _serving = crate::sweep::take_lock(config)?;
-    // Load (or provision on first run) the master key before binding:
-    // every secret the broker stores is sealed under this key, and a
-    // key-file problem stops the broker before it serves anyone.
-    let key = load_master_key(&config.vault)?;
-    // Fail fast on a misconfigured vault: sessions re-open the sealed
-    // root on every op (re-validating 0700/owner), but a bad root
-    // should stop the broker before it binds, not on the first agent
-    // connection.
-    validate_sealed_vault(&config.vault, &key)?;
+    // The vault keeper starts first, while the broker has one thread
+    // (WO-017): it loads (or provisions on first run) the master key,
+    // checks the stores, and hands the broker the keys of its own stores.
+    // The master key and the secrets store's key stay with the keeper; a
+    // key or store problem stops the broker before it serves anyone.
+    let key = crate::keeper::start()?;
     // Load skills before binding, before any session can name one:
     // each is verified, pinned, and registered, or refused loudly on
     // its own. A broken skill never stops the broker; it never runs.
@@ -94,10 +91,6 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
     // files `migrate-vault` must re-seal.
     let stores = crate::sealed_stores(config, redaction.as_ref());
     crate::check_sealed_stores(&stores)?;
-    // From here the broker holds its stores' keys alone (WO-017): each is
-    // unwrapped once, now, and the master key is dropped, zeroized, before
-    // anything is served. A store it wasn't handed doesn't open.
-    let key = crate::hand_store_keys(key, &stores)?;
     // An earlier broker killed mid-run left its cells' staging and its
     // runs' directories: none is live now, and none is your data.
     let _swept = crate::sweep::sweep_at_start(config, redaction.as_ref());

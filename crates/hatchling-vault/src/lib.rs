@@ -36,6 +36,7 @@
 pub mod backup;
 pub mod error;
 pub mod fido2;
+pub mod handoff;
 pub mod keyring;
 pub mod lease;
 pub mod manage;

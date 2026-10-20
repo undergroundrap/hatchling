@@ -261,6 +261,14 @@ pub enum Error {
         reason: String,
     },
 
+    /// The vault keeper, which holds the master key and the secrets
+    /// store's key, couldn't be started, refused, or couldn't be reached.
+    #[error("vault keeper: {reason}")]
+    Keeper {
+        /// What happened.
+        reason: String,
+    },
+
     /// The vault's access log could not be read or written.
     #[error("vault access log: {reason}")]
     VaultAccessLog {

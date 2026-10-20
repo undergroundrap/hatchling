@@ -342,7 +342,7 @@ pub fn held_secret_values(
 }
 
 /// Every secret name the configuration names.
-fn held_secret_names(config: &Config) -> BTreeSet<String> {
+pub(crate) fn held_secret_names(config: &Config) -> BTreeSet<String> {
     let mut names: BTreeSet<String> = config
         .vault
         .grants

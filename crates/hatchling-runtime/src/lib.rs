@@ -23,6 +23,7 @@ use std::path::Path;
 
 use hatchling_broker::AGENT_RUN_SUBCOMMAND;
 use hatchling_broker::harness_tree::HARNESS_TREE_SUBCOMMAND;
+use hatchling_broker::keeper::VAULT_KEEPER_SUBCOMMAND;
 use hatchling_broker::skill_run::SKILL_CELL_SUBCOMMAND;
 use hatchling_isolation::PROGRAM;
 
@@ -80,9 +81,12 @@ pub fn route<'a>(argv0: &str, args: &'a [String]) -> Route<'a> {
     match args.first().map(String::as_str) {
         Some("broker") => Route::Broker(rest),
         Some("agent") => Route::Agent(rest),
-        Some(SKILL_CELL_SUBCOMMAND | AGENT_RUN_SUBCOMMAND | HARNESS_TREE_SUBCOMMAND) => {
-            Route::Broker(args)
-        }
+        Some(
+            SKILL_CELL_SUBCOMMAND
+            | AGENT_RUN_SUBCOMMAND
+            | HARNESS_TREE_SUBCOMMAND
+            | VAULT_KEEPER_SUBCOMMAND,
+        ) => Route::Broker(args),
         Some("--help" | "-h" | "help") if args.len() == 1 => Route::Help,
         Some("--version" | "-V") if args.len() == 1 => Route::Version,
         Some(_) | None => Route::Usage,
@@ -121,6 +125,7 @@ mod tests {
             SKILL_CELL_SUBCOMMAND,
             AGENT_RUN_SUBCOMMAND,
             HARNESS_TREE_SUBCOMMAND,
+            VAULT_KEEPER_SUBCOMMAND,
         ] {
             let given = args(&[helper, "/run/spec"]);
             assert_eq!(
