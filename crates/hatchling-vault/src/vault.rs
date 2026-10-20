@@ -460,7 +460,10 @@ mod tests {
             std::fs::write(&target, b"old").unwrap();
             let temp = vault.temp_path(&name);
             fail_next(step);
-            assert!(vault.store_inner(&target, &temp, b"new").is_err(), "{step:?}");
+            assert!(
+                vault.store_inner(&target, &temp, b"new").is_err(),
+                "{step:?}"
+            );
             assert_eq!(std::fs::read(&target).unwrap(), after, "{step:?}");
             let _ = std::fs::remove_file(&temp);
         }
