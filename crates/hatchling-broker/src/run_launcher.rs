@@ -1082,7 +1082,11 @@ mod tests {
             ..request(Vec::new())
         };
         broker.web.attended = false;
-        assert!(scoped_config(&broker, &chat, "run-1", run_socket()).web.attended);
+        assert!(
+            scoped_config(&broker, &chat, "run-1", run_socket())
+                .web
+                .attended
+        );
     }
 
     #[test]

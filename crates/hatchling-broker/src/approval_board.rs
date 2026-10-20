@@ -691,11 +691,23 @@ mod tests {
         let bus = Arc::new(Bus::starting_at(1));
         board.attach(Arc::clone(&bus));
         let site = board
-            .propose_site("https://a.example", "https://a.example/x", "to read it", "t1", 100)
+            .propose_site(
+                "https://a.example",
+                "https://a.example/x",
+                "to read it",
+                "t1",
+                100,
+            )
             .unwrap();
         assert!(site.new);
         let again = board
-            .propose_site("https://a.example", "https://a.example/y", "again", "t1", 100)
+            .propose_site(
+                "https://a.example",
+                "https://a.example/y",
+                "again",
+                "t1",
+                100,
+            )
             .unwrap();
         assert!(!again.new, "one request per site and session");
         assert_eq!(again.id, site.id);
@@ -731,7 +743,11 @@ mod tests {
         assert_eq!(
             fields.get(3..).map(<[_]>::to_vec),
             Some(vec![
-                ("Page it asked for", "https://a.example/x", FieldSource::Agent),
+                (
+                    "Page it asked for",
+                    "https://a.example/x",
+                    FieldSource::Agent
+                ),
                 ("Why it wants it", "to read it", FieldSource::Agent),
             ])
         );
@@ -742,10 +758,21 @@ mod tests {
         assert_eq!(board.next_approved(Duration::ZERO), None, "not queued");
         let config = crate::api_auth::tests::owner_config(None);
         let key = hatchling_vault::MasterKey::generate().unwrap();
-        let told = run_approved(&board, &site.id, &config, &key, &Skills::default(), None, 102);
+        let told = run_approved(
+            &board,
+            &site.id,
+            &config,
+            &key,
+            &Skills::default(),
+            None,
+            102,
+        );
         assert_eq!(
             told,
-            format!("Approval {} was not run: it is not the worker's to run.", site.id)
+            format!(
+                "Approval {} was not run: it is not the worker's to run.",
+                site.id
+            )
         );
         assert_eq!(
             board.approvals().get(&site.id).map(|request| request.state),
@@ -756,7 +783,13 @@ mod tests {
             .propose_activation(&proposal("act-1", "a"), "t2", 100)
             .unwrap();
         assert_eq!(
-            board.decide(&activation.id, 1, &activation.digest, Decision::ApproveSession, 101),
+            board.decide(
+                &activation.id,
+                1,
+                &activation.digest,
+                Decision::ApproveSession,
+                101
+            ),
             Err(DecisionRejection::NotOffered)
         );
         assert_eq!(

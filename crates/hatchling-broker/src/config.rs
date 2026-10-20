@@ -551,7 +551,12 @@ fn parse_web(get: &impl Fn(&str) -> Option<String>) -> Result<WebConfig, Error> 
         }
     };
     let mut refused = Vec::new();
-    for host in refuse.as_deref().unwrap_or_default().split(',').map(str::trim) {
+    for host in refuse
+        .as_deref()
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+    {
         if host.is_empty() {
             continue;
         }
