@@ -618,7 +618,7 @@ mod tests {
         let (ours, theirs) = UnixStream::pair().unwrap();
         assert!(begin(&theirs, config).is_err());
         drop(theirs);
-        ours.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        ours.set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
         assert!(read_frame_or_eof(&ours).unwrap().is_none());
     }
@@ -648,7 +648,7 @@ mod tests {
         };
         let (ours, theirs) = UnixStream::pair().unwrap();
         theirs
-            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
         let egress = String::from("egress-api-example-com-443");
         answer_read(&ours, &kept, "egress", std::slice::from_ref(&egress)).unwrap();
@@ -669,7 +669,7 @@ mod tests {
     fn an_exchange_that_breaks_off_loses_the_keeper() {
         let (ours, theirs) = UnixStream::pair().unwrap();
         theirs
-            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
         let keeper = Keeper {
             stream: Mutex::new(ours),
@@ -683,8 +683,12 @@ mod tests {
             let after = read_frame_or_eof(&theirs).unwrap();
             (request, after)
         });
+        // An exchange that goes through is the keeper's answer.
+        assert_eq!(keeper.exchange(|_| Ok(7)).unwrap(), 7);
         let names: Vec<SecretName> = ["a", "b"].iter().map(|name| name.parse().unwrap()).collect();
         assert!(matches!(keeper.read("egress", &names), Err(Error::Keeper { .. })));
+        // Lost: not even an exchange that needs nothing from it runs.
+        assert!(keeper.exchange(|_| Ok(7)).is_err());
         let after = keeper.read("egress", &names);
         let refused = format!("{after:?}");
         assert!(refused.contains("lost"), "{refused}");
