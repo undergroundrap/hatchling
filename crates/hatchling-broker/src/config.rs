@@ -3644,6 +3644,15 @@ mod memory_config_tests {
         ));
     }
 
+}
+
+#[cfg(test)]
+mod web_config_tests {
+    use std::collections::HashMap;
+
+    use super::{Config, WebConfig, parse_web};
+    use crate::Error;
+
     /// The web is off unless the operator says `sites`; the refused hosts
     /// are names of lowercase ASCII labels, each refusing itself and every
     /// name under it (WO-028).

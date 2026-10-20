@@ -446,7 +446,8 @@ mod paging_tests {
                 | SessionRequest::Hook(_)
                 | SessionRequest::Artifact(_)
                 | SessionRequest::Space(_)
-                | SessionRequest::Subagent(_) => None,
+                | SessionRequest::Subagent(_)
+                | SessionRequest::Web(_) => None,
             })
             .collect()
     }
