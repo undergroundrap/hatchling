@@ -1596,12 +1596,26 @@ mod tests {
         .unwrap();
         let due = cadence.next_due;
         assert!(store.insert(&cadence).unwrap());
-        assert!(store.skip_due("sch-cadence", 0, due, Some(due + 60)).unwrap());
-        assert!(!store.skip_due("sch-cadence", 0, due, None).unwrap(), "stale");
-        let vault = SealedVault::open_in(&root, &master, hatchling_vault::Store::SCHEDULES).unwrap();
-        let latest = SealedScheduleStore::latest(&vault, "sch-cadence").unwrap().unwrap();
+        assert!(
+            store
+                .skip_due("sch-cadence", 0, due, Some(due + 60))
+                .unwrap()
+        );
+        assert!(
+            !store.skip_due("sch-cadence", 0, due, None).unwrap(),
+            "stale"
+        );
+        let vault =
+            SealedVault::open_in(&root, &master, hatchling_vault::Store::SCHEDULES).unwrap();
+        let latest = SealedScheduleStore::latest(&vault, "sch-cadence")
+            .unwrap()
+            .unwrap();
         assert_eq!(latest.next_due, due + 60);
-        assert!(SealedScheduleStore::latest(&vault, "sch-none").unwrap().is_none());
+        assert!(
+            SealedScheduleStore::latest(&vault, "sch-none")
+                .unwrap()
+                .is_none()
+        );
         let unchanged = SealedScheduleStore::change_fire(&vault, "sch-cadence", 1, |_| {});
         assert!(unchanged.unwrap().is_none(), "no such fire");
         let parked = Parked {
