@@ -141,6 +141,7 @@ export class LiveApprovals implements TaskApprovalPort {
                 return rejected(REFUSALS[result.reason]);
             case 'message_accepted':
             case 'schedule':
+            case 'sites':
             case 'skill':
             case 'artifact_opened':
             case 'artifact_shared':
