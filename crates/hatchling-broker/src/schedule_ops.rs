@@ -1844,4 +1844,148 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         assert!(missing("sch-x").to_string().contains("record is missing"));
     }
+
+    /// The owner's operations (WO-025, part 2), on the sealed store and
+    /// through the session's op: a fire left in flight is held as of
+    /// unknown outcome; the owner marks it resolved, or retries it, and
+    /// lists and dismisses parked results; a cell can do none of it.
+    #[test]
+    fn the_owner_resolves_retries_and_dismisses() {
+        let mut config = crate::api_auth::tests::owner_config(None);
+        let dir = crate::api_auth::tests::scratch("owner-ops");
+        config.scheduler = crate::SchedulerConfig {
+            root: dir.0.join("schedules"),
+            ..crate::SchedulerConfig::disabled()
+        };
+        let master = MasterKey::generate().unwrap();
+        let store = SealedScheduleStore::new(&config.scheduler.root, &master);
+        let send = ScheduleGrant::ChannelSend {
+            channel: String::from("local"),
+        };
+        let hourly = |id: &str| {
+            let mut schedule = validate(
+                id.to_owned(),
+                ScheduleSpec::Cron {
+                    expr: String::from("0 * * * *"),
+                    tz: String::from("UTC"),
+                },
+                String::from("tidy the inbox"),
+                vec![send.clone()],
+                String::from("local"),
+                &BTreeSet::from([send.clone()]),
+                Timestamp::from_second(1_790_000_000).unwrap(),
+            )
+            .unwrap();
+            schedule.next_due = 1_790_002_800;
+            schedule
+        };
+        for id in ["sch-a", "sch-b"] {
+            assert!(store.insert(&hourly(id)).unwrap());
+            assert_eq!(
+                store
+                    .claim_due(id, 0, 1_790_002_800, Some(1_790_006_400), false)
+                    .unwrap(),
+                Claim::Claimed
+            );
+        }
+        // Claimed, then the broker died: held, of unknown outcome, a run
+        // never started.
+        let vault =
+            SealedVault::open_in(&config.scheduler.root, &master, hatchling_vault::Store::SCHEDULES)
+                .unwrap();
+        assert_eq!(store.hold_in_flight().unwrap(), ["sch-a", "sch-b"]);
+        assert_eq!(
+            SealedScheduleStore::unknown_fire(&vault, "sch-a").unwrap(),
+            Some(1_790_002_800)
+        );
+        let listed = list_schedules(&config, &master, &held_grants(&config), None, Creator::Owner);
+        let ScheduleResult::Listed { schedules, .. } = listed else {
+            unreachable!("{listed:?}");
+        };
+        assert_eq!(
+            schedules.first().and_then(|shown| shown.held),
+            Some(HeldFire {
+                due: 1_790_002_800,
+                started: false
+            })
+        );
+        let now = Timestamp::from_second(1_790_010_000).unwrap();
+        let op = |op: ScheduleOp, caller: Creator| handle_schedule_op(&config, &master, &op, now, caller);
+        let resolve = |id: &str| ScheduleOp::Resolve { id: id.to_owned() };
+        let retry = |id: &str| ScheduleOp::Retry { id: id.to_owned() };
+        // A cell can do none of it.
+        for refused in [
+            resolve("sch-a"),
+            retry("sch-a"),
+            ScheduleOp::ListParked { after: None },
+            ScheduleOp::Dismiss {
+                id: String::from("parked-0"),
+            },
+        ] {
+            assert_eq!(op(refused, Creator::Agent), ScheduleResult::Denied);
+        }
+        // Resolved: the schedule resumes, its fire gone.
+        assert_eq!(op(resolve("sch-a"), Creator::Owner), ScheduleResult::Resolved);
+        assert_eq!(op(resolve("sch-a"), Creator::Owner), ScheduleResult::NotFound);
+        assert_eq!(SealedScheduleStore::unknown_fire(&vault, "sch-a").unwrap(), None);
+        // Retried: due now, as a new attempt.
+        assert_eq!(op(retry("sch-b"), Creator::Owner), ScheduleResult::Retried);
+        let retried = SealedScheduleStore::latest(&vault, "sch-b").unwrap().unwrap();
+        assert_eq!(retried.next_due, now.as_second());
+        assert!(retried.ledger.occurrence.is_none());
+        assert!(!store.retry("sch-none", now).unwrap());
+        assert!(!store.mark_resolved("sch-none").unwrap());
+        // Parked results: listed with their ids, and dismissed.
+        let parked = Parked {
+            schedule_id: String::from("sch-a"),
+            channel: String::from("local"),
+            text: String::from("kept"),
+            due: 1,
+            reason: String::from("a test"),
+        };
+        store.park(&parked).unwrap();
+        store.park(&parked).unwrap();
+        assert_eq!(
+            store
+                .parked_with_ids()
+                .unwrap()
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>(),
+            ["parked-0", "parked-1"]
+        );
+        let listed = op(ScheduleOp::ListParked { after: None }, Creator::Owner);
+        let ScheduleResult::Parked { parked: shown, next } = listed else {
+            unreachable!("{listed:?}");
+        };
+        assert_eq!(shown.len(), 2);
+        assert_eq!(shown.first().map(|one| one.text.as_str()), Some("kept"));
+        assert_eq!(next, None);
+        let after = list_parked(&config, &master, Some("parked-0"));
+        let ScheduleResult::Parked { parked: rest, .. } = after else {
+            unreachable!("{after:?}");
+        };
+        assert_eq!(rest.first().map(|one| one.id.as_str()), Some("parked-1"));
+        let dismiss = ScheduleOp::Dismiss {
+            id: String::from("parked-0"),
+        };
+        assert_eq!(op(dismiss.clone(), Creator::Owner), ScheduleResult::Dismissed);
+        assert_eq!(op(dismiss, Creator::Owner), ScheduleResult::NotFound);
+        assert!(!store.dismiss("parked-9").unwrap());
+        assert_eq!(store.parked().unwrap().len(), 1);
+        assert_eq!(
+            owned(Ok(true), ScheduleResult::Resolved, "test"),
+            ScheduleResult::Resolved
+        );
+        assert_eq!(
+            owned(
+                Err(Error::ScheduleStore {
+                    reason: String::new()
+                }),
+                ScheduleResult::Resolved,
+                "test"
+            ),
+            ScheduleResult::ScheduleError
+        );
+    }
 }

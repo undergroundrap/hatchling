@@ -1144,3 +1144,37 @@ fn a_result_that_waits_holds_its_schedules_next_fire() {
             .any(|(_, text)| text == "the summary")
     );
 }
+
+/// WO-025, part 2: a fire a broker left claimed or running is of unknown
+/// outcome once the next broker holds it: its schedule's later fires are
+/// held, and nothing runs, until the owner resolves it.
+#[test]
+fn a_fire_left_in_flight_holds_its_schedule_as_unknown() {
+    let mut world = World::new();
+    schedule(
+        &world.store,
+        "s",
+        cron("0 * * * *", "UTC"),
+        "2026-09-21T12:00:00Z",
+    );
+    world.tick("2026-09-21T13:00:00Z");
+    // The broker dies with the run out; the next one holds the fire.
+    world.dispatcher = Dispatcher::default();
+    assert_eq!(world.store.hold_in_flight().unwrap(), ["s"]);
+    assert_eq!(world.store.hold_in_flight().unwrap(), Vec::<String>::new(), "held once");
+    let held = world
+        .store
+        .schedules
+        .borrow()
+        .get("s")
+        .and_then(|stored| stored.ledger.occurrence.clone());
+    assert_eq!(
+        held.map(|fire| fire.state),
+        Some(OccurrenceState::Unknown { started: true })
+    );
+    let report = world.tick("2026-09-21T14:00:00Z");
+    assert_eq!(report.held, ["s"]);
+    assert!(report.launched.is_empty());
+    assert_eq!(world.requests().len(), 1, "never run again on its own");
+    assert_eq!(world.next_due("s").as_deref(), Some("2026-09-21T15:00:00Z"));
+}
