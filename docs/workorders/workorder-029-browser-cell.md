@@ -1,6 +1,6 @@
 # WO-029: A browser cell: a real browser the agent drives, in a cell of its own, reaching only what the broker lets through
 
-**Status:** IN PROGRESS (part 1a: the browser cell's profile)
+**Status:** IN PROGRESS (part 1a, the browser cell's profile, done; part 1b: the controller)
 **Area:** `crates/hatchling-browser` (new: the controller that runs in the cell), `crates/hatchling-broker` (the browser session, the proxy, site grants, the UI stream), `crates/hatchling-isolation` (the browser cell's profile), `crates/hatchling-agent` (the tools), `crates/hatchling-core` (the ops; `ui` already has the browser surfaces), `frontend/` (the live browser view)
 **Issue:** none yet
 **Trust boundary:** yes
@@ -17,11 +17,11 @@ The UI already has the browser's surfaces, from WO-021: sessions, frames, the ac
 
 **In scope:**
 
-- **A browser cell.** Chromium, headless, in a cell of its own: no vault, no project files, no session of the agent's, a profile in the cell's own temporary storage that goes with it.
+- **A browser cell.** Chromium, headless, in a cell of its own: no vault, no project files, no session of the agent's, a profile in the cell's own temporary storage that goes with it. It has a resource group (WO-004's cgroup) or it doesn't start: its memory and processes are bounded as a whole, not only per process.
   - **The operator's binary, pinned.** `HATCHLING_BROWSER` names its path and its SHA-256, which is checked before every start. Hatchling bundles no browser.
   - **A controller in the cell** (`hatchling-browser`, Hatchling's own) drives Chromium over the DevTools protocol on a pipe, never a port. It takes the broker's commands on the cell's one connection, and answers with page snapshots.
-- **The browser's only way out is the broker.** The cell has no network. Chromium's proxy is a forwarder in the cell, onto the cell's connection to the broker. The broker serves an HTTPS `CONNECT` proxy over it:
-  - `https` only, the default port unless the grant names one;
+- **The browser's only way out is the broker.** The cell has no network but its own loopback, and on it one listener, the cell's relay, which the broker holds and the cell keeps no copy of. Chromium's proxy is that listener, so nothing in the cell forwards anything. The broker serves an HTTPS `CONNECT` proxy on it:
+  - `CONNECT` only, to `https`, the default port unless the grant names one; any other request, such as one a page sends to the listener itself, is refused;
   - each host resolved when it's connected to, refused if any address it resolves to is internal (WO-023), and the connection pinned to the addresses checked;
   - TLS end to end between the browser and the site: the broker never sees plaintext, and the browser's certificate checks stay on;
   - every connection logged with its origin, in the egress log the Machine view shows (WO-022);
@@ -77,5 +77,14 @@ Filled in at close.
   - *The agent typing a secret into a page:* the cell holds no secret, and typed text is scanned against the ones the broker holds.
   - *A compromised renderer reaching the rest of the machine:* the cell (namespaces, seccomp, limits) is the boundary; Chromium's own sandbox, where it can run inside the cell, is a second layer, not the one relied on.
 - **Why a page's other requests aren't held back.** Almost every page loads from origins it doesn't name in its address: a CDN, fonts, an API. Asking the owner about each would make prompts nobody reads, and a site the owner granted already has whatever the agent gives it, including the power to send it on. What holding them back would stop is a compromised renderer moving one granted site's data to another public origin. The proxy logs every origin, so that's visible; a strict mode that allows only granted origins is a candidate, for those who'd trade breakage for it.
+- **What a compromised renderer finds in the cell.** Chromium runs without its own sandbox, so a renderer exploit can open any file the cell can and talk to every process in it, the controller included. So the cell holds nothing worth taking:
+  - in its filesystem: the browser's directory (read-only), the profile in the cell's temporary storage, its work directory, and a `/proc` of its own processes; a test lists the mounts;
+  - in a process's arguments or environment: no secret and no token. The cell's connection to the broker is a descriptor it was started with;
+  - in Chromium's descriptors: only 0 to 4. The controller marks every descriptor close-on-exec, puts the DevTools pipe on 3 and 4, and keeps its own connection to the broker from crossing; a test lists them.
+
+  And `file://` is never navigated to: a site grant is for an `https` origin.
+- **Bounded as a whole.** A page can fill memory with files it never maps (`memfd_create`, `fallocate`), which no per-process limit counts, and start processes up to the cell's limit. So a browser cell needs its resource group: without one configured it isn't started, rather than started with less.
+- **Chromium's own seccomp layer, if it can run.** Its sandbox is two layers: namespaces, which a cell may never make, and a `seccomp` filter on its renderers, which can only narrow what the cell allows. Whether the second runs without the first is measured in part 1. If it does, the browser profile allows `seccomp` to add a filter, and nothing else: not `SECCOMP_FILTER_FLAG_NEW_LISTENER`, which would make a process the judge of another's calls. Either way the cell is the boundary.
 - **Why the controller isn't trusted.** It runs beside page code, so a renderer exploit can reach it. Navigation grants are enforced where the controller asks the broker, which keeps an honest agent honest; the boundary against a compromised cell is the proxy, which the cell can't bypass, and which allows no more than any page's requests already could.
+- **Signed-in profiles, later: one cell per profile.** Without its own sandbox, Chromium can't keep one site's renderer from another's, so the sign-in WO puts each signed-in profile in a cell of its own. That rebuilds site isolation at the kernel instead of in the browser. A profile is what the cell holds, not a host name: its grants include the sites its sign-in goes through (an identity provider, its scripts), and two profiles never share a cell. Signing in through a shared provider leaves that provider's session in each cell that used it, which is a reason to keep a profile's grants narrow.
 - **Order.** After WO-028, whose site grants this reuses; before the browser's sign-in profiles.

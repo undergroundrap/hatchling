@@ -4,7 +4,7 @@
 //! structural one: nothing above stderr crosses the exec, whatever
 //! anyone forgot to mark.
 
-use std::os::fd::{AsRawFd, BorrowedFd};
+use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
 
 use crate::Error;
 
@@ -54,7 +54,7 @@ pub fn cloexec_fds_above_stderr() -> Result<(), Error> {
 ///
 /// Returns [`Error::Process`] if stdin can't be copied, or `/dev/null`
 /// opened or put in its place.
-pub fn take_stdin() -> Result<std::os::fd::OwnedFd, Error> {
+pub fn take_stdin() -> Result<OwnedFd, Error> {
     let failed = |operation: &'static str| {
         move |source: rustix::io::Errno| Error::Process {
             operation,
@@ -87,6 +87,57 @@ pub fn keep_across_exec(fd: BorrowedFd<'_>) -> Result<(), Error> {
         operation: "fcntl(F_SETFD, 0)",
         source: std::io::Error::from_raw_os_error(source.raw_os_error()),
     })
+}
+
+/// Puts `fds` on the descriptor numbers `first`, `first + 1`, and so on,
+/// in order, each open across the next exec.
+///
+/// For a program that is handed descriptors at fixed numbers: Chromium's
+/// `--remote-debugging-pipe` reads fd 3 and writes fd 4. For a forked child about to exec. Whatever was open at a target number
+/// is closed, so the caller must neither use nor drop a handle that named
+/// one afterwards. A source may itself sit on another's target: each is
+/// first copied above every target, close-on-exec, and only then are the
+/// copies put in place, and closed.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidExecArg`] if `first` is a stdio number (those
+/// aren't this function's to replace) or the targets run past the largest
+/// descriptor number, and [`Error::Process`] if a copy or a placement
+/// fails.
+pub fn place_across_exec(fds: &[BorrowedFd<'_>], first: i32) -> Result<(), Error> {
+    let invalid = |reason: &str| Error::InvalidExecArg {
+        reason: reason.to_owned(),
+    };
+    if first <= 2 {
+        return Err(invalid("descriptors are placed above stderr"));
+    }
+    let above = i32::try_from(fds.len())
+        .ok()
+        .and_then(|count| first.checked_add(count))
+        .ok_or_else(|| invalid("too many descriptors to place"))?;
+    let copies = fds
+        .iter()
+        .map(|fd| {
+            rustix::io::fcntl_dupfd_cloexec(fd, above).map_err(|source| Error::Process {
+                operation: "fcntl(F_DUPFD_CLOEXEC)",
+                source: std::io::Error::from_raw_os_error(source.raw_os_error()),
+            })
+        })
+        .collect::<Result<Vec<OwnedFd>, Error>>()?;
+    for (target, copy) in (first..above).zip(&copies) {
+        // SAFETY: dup2 onto a descriptor number. It closes whatever was
+        // open there, which the caller's contract covers, and the new
+        // descriptor is left to the exec; no memory is touched.
+        let placed = unsafe { libc::dup2(copy.as_raw_fd(), target) };
+        if placed != target {
+            return Err(Error::Process {
+                operation: "dup2",
+                source: std::io::Error::last_os_error(),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Closes every fd above stderr except `keep`: afterwards only fds 0, 1
@@ -162,6 +213,7 @@ pub fn fd_flags(fd: i32) -> Option<i32> {
 
 #[cfg(test)]
 mod tests {
+    use std::os::fd::{AsFd as _, IntoRawFd as _};
     use std::time::Duration;
 
     use super::*;
@@ -274,6 +326,143 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    /// Whether `fd` is the far end of `peer`: a byte written there arrives.
+    fn reaches(fd: i32, peer: &mut std::os::unix::net::UnixStream) -> bool {
+        use std::io::Read as _;
+        let byte = [0x5a_u8];
+        // SAFETY: writes one byte from a live buffer to an open fd.
+        let wrote = unsafe { libc::write(fd, byte.as_ptr().cast(), 1) };
+        let mut got = [0u8; 1];
+        wrote == 1 && peer.read_exact(&mut got).is_ok() && got == byte
+    }
+
+    /// `stream`, moved above every number a test places on: a pair's ends
+    /// are the lowest free numbers, which may be the targets.
+    fn high(stream: std::os::unix::net::UnixStream) -> std::os::unix::net::UnixStream {
+        let moved = rustix::io::fcntl_dupfd_cloexec(&stream, 100).expect("dup above the targets");
+        drop(stream);
+        std::os::unix::net::UnixStream::from(moved)
+    }
+
+    /// Runs `body` in a forked child and returns its exit code.
+    fn in_child(body: impl FnOnce() -> i32) -> i32 {
+        let child = match fork().expect("fork") {
+            ForkResult::Parent { child } => child,
+            ForkResult::Child => exit_child(body()),
+        };
+        let status = child
+            .wait_deadline(Duration::from_secs(30))
+            .expect("bounded wait");
+        child_exit_code(status)
+    }
+
+    #[test]
+    fn placed_fds_sit_on_their_numbers_in_order_and_cross_the_exec() {
+        let code = in_child(|| {
+            let (Ok((a, a_end)), Ok((b, b_end))) = (
+                std::os::unix::net::UnixStream::pair(),
+                std::os::unix::net::UnixStream::pair(),
+            ) else {
+                return 2;
+            };
+            let (mut a, mut b) = (high(a), high(b));
+            if place_across_exec(&[a_end.as_fd(), b_end.as_fd()], 3).is_err() {
+                return 3;
+            }
+            // The originals may have been on 3 or 4 and were replaced:
+            // let go of them without closing a placed descriptor.
+            let _replaced = a_end.into_raw_fd();
+            let _replaced = b_end.into_raw_fd();
+            if fd_flags(3) != Some(0) || fd_flags(4) != Some(0) {
+                return 4;
+            }
+            if !reaches(3, &mut a) || !reaches(4, &mut b) {
+                return 5;
+            }
+            0
+        });
+        assert_eq!(
+            code, 0,
+            "2: no pairs; 3: placing failed; 4: not inheritable; 5: not in order"
+        );
+    }
+
+    #[test]
+    fn a_source_on_another_sources_target_is_not_lost() {
+        let code = in_child(|| {
+            let (Ok((a, a_end)), Ok((b, b_end))) = (
+                std::os::unix::net::UnixStream::pair(),
+                std::os::unix::net::UnixStream::pair(),
+            ) else {
+                return 2;
+            };
+            let (mut a, mut b) = (high(a), high(b));
+            // `a_end` on 4 and `b_end` on 3, then placed swapped: a one-step
+            // placement would put `a_end` on 3 over `b_end` and then copy
+            // it to 4 as well.
+            // SAFETY: dup2 of an open fd onto a number this child gives up.
+            let on4 = unsafe { libc::dup2(a_end.as_raw_fd(), 4) };
+            // SAFETY: as above.
+            let on3 = unsafe { libc::dup2(b_end.as_raw_fd(), 3) };
+            if (on4, on3) != (4, 3) {
+                return 3;
+            }
+            let _replaced = a_end.into_raw_fd();
+            let _replaced = b_end.into_raw_fd();
+            // SAFETY: 4 is open in this child, and stays open for the call.
+            let on4 = unsafe { BorrowedFd::borrow_raw(4) };
+            // SAFETY: as is 3.
+            let on3 = unsafe { BorrowedFd::borrow_raw(3) };
+            if place_across_exec(&[on4, on3], 3).is_err() {
+                return 4;
+            }
+            if !reaches(3, &mut a) || !reaches(4, &mut b) {
+                return 5;
+            }
+            0
+        });
+        assert_eq!(
+            code, 0,
+            "2: no pairs; 3: no setup; 4: placing failed; 5: a source was lost"
+        );
+    }
+
+    #[test]
+    fn stdio_is_not_placed_over_and_the_copies_are_closed() {
+        for first in [0, 1, 2] {
+            assert!(
+                matches!(
+                    place_across_exec(&[], first),
+                    Err(Error::InvalidExecArg { .. })
+                ),
+                "{first}"
+            );
+        }
+        assert!(place_across_exec(&[], i32::MAX).is_ok());
+        assert!(matches!(
+            place_across_exec(&[std::io::stdout().as_fd()], i32::MAX),
+            Err(Error::InvalidExecArg { .. })
+        ));
+        let code = in_child(|| {
+            let Ok((a, a_end)) = std::os::unix::net::UnixStream::pair() else {
+                return 2;
+            };
+            let _peer = high(a);
+            let before: std::collections::BTreeSet<i32> = open_fds(1024).into_iter().collect();
+            if place_across_exec(&[a_end.as_fd()], 3).is_err() {
+                return 3;
+            }
+            // Nothing new but fd 3: the copy made above the targets, on the
+            // lowest free number, is gone.
+            let after: std::collections::BTreeSet<i32> = open_fds(1024).into_iter().collect();
+            if after.difference(&before).any(|&fd| fd != 3) {
+                return 4;
+            }
+            0
+        });
+        assert_eq!(code, 0, "2: no pair; 3: placing failed; 4: a copy leaked");
     }
 
     #[test]
