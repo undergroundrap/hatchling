@@ -3141,18 +3141,15 @@ mod tests {
                 "{refused:?}"
             );
         }
-        let refused = refuse_harness_secret_grants(vec![grant(
+        let record = refuse_harness_secret_grants(vec![grant(
             VaultAction::Fetch,
             crate::keeper::RELEASED_RECORD,
         )]);
-        assert!(
-            matches!(
-                &refused,
-                Err(Error::InvalidConfig { key: "HATCHLING_VAULT_GRANTS", reason })
-                    if reason.contains("record of what it has released")
-            ),
-            "{refused:?}"
-        );
+        assert!(matches!(
+            &record,
+            Err(Error::InvalidConfig { key: "HATCHLING_VAULT_GRANTS", reason })
+                if reason.contains("record of what it has released")
+        ));
     }
 
     #[test]
