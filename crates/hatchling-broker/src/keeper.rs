@@ -53,7 +53,7 @@ use crate::{Config, Error, RedactionConfig};
 pub const VAULT_KEEPER_SUBCOMMAND: &str = "vault-keeper";
 
 /// The setting that names the keeper's end of the socket pair.
-const KEEPER_FD: &str = "HATCHLING_KEEPER_FD";
+const KEEPER_FD: &str = crate::environment::HATCHLING_KEEPER_FD.name;
 
 /// What the broker asks the keeper.
 #[derive(Debug, Serialize, Deserialize)]
@@ -319,7 +319,19 @@ pub fn vault_keeper_main() -> ExitCode {
         Some(Err(error)) => return refuse_to_run(&error.to_string()),
         None => return refuse_to_run("only the broker starts it"),
     };
-    let state = match begin(&stream) {
+    let begun = hatchling_sys::set_not_dumpable()
+        .map_err(|source| Error::Keeper {
+            reason: format!("cannot keep its memory to itself: {source}"),
+        })
+        .and_then(|()| Config::from_env())
+        .and_then(|config| {
+            let _ = tracing_subscriber::fmt()
+                .with_writer(std::io::stderr)
+                .with_max_level(config.log_level.to_tracing())
+                .try_init();
+            begin(&stream, config)
+        });
+    let state = match begun {
         Ok(state) => state,
         Err(error) => {
             let mut reason = vec![1];
@@ -348,17 +360,10 @@ struct Kept {
     releases: Releases,
 }
 
-/// The keeper's start: the configuration, every store's key, the broker's
-/// handed over, the master key dropped.
-fn begin(stream: &UnixStream) -> Result<Kept, Error> {
-    hatchling_sys::set_not_dumpable().map_err(|source| Error::Keeper {
-        reason: format!("cannot keep its memory to itself: {source}"),
-    })?;
-    let config = Config::from_env()?;
-    let _ = tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_max_level(config.log_level.to_tracing())
-        .try_init();
+/// The keeper's start under `config`: every store's key, the broker's
+/// handed over on `stream`, the master key dropped. A start that fails
+/// hands nothing over.
+fn begin(stream: &UnixStream, config: Config) -> Result<Kept, Error> {
     let redaction = config
         .channel_ingress
         .as_ref()
@@ -553,5 +558,70 @@ mod tests {
             reason: String::new(),
         });
         assert!(gone.to_string().contains("(protocol)"), "{gone}");
+    }
+
+    /// No keeper runs in a process that didn't start one; one the broker
+    /// can't reach says so; and the keeper refuses to run unless the
+    /// broker started it.
+    #[test]
+    fn the_keeper_runs_only_when_started_and_says_why_not() {
+        assert!(keeper().is_none());
+        assert!(
+            keeper_gone("closed")
+                .to_string()
+                .contains("cannot be reached: closed")
+        );
+        let failure = format!("{:?}", ExitCode::FAILURE);
+        assert_eq!(format!("{:?}", refuse_to_run("a reason")), failure);
+        assert_eq!(format!("{:?}", vault_keeper_main()), failure);
+    }
+
+    /// A start whose key doesn't load hands the broker nothing.
+    #[test]
+    fn a_keeper_that_cannot_start_hands_nothing_over() {
+        let config = crate::api_auth::tests::owner_config(None);
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        assert!(begin(&theirs, config).is_err());
+        drop(theirs);
+        ours.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        assert!(read_frame_or_eof(&ours).unwrap().is_none());
+    }
+
+    /// A read the configuration gives its purpose is answered, found or
+    /// not, and recorded; any other is refused and recorded as denied.
+    #[test]
+    fn answer_read_answers_only_what_the_configuration_gives() {
+        let mut config = crate::api_auth::tests::owner_config(None);
+        let dir = crate::api_auth::tests::scratch("keeper-answer");
+        config.vault.root = dir.0.join("vault");
+        config.egress.grants = vec![String::from("api.example.com:443")];
+        let master = hatchling_vault::MasterKey::generate().unwrap();
+        hatchling_vault::SealedVault::open(&config.vault.root, &master)
+            .unwrap()
+            .store(
+                &"unlisted".parse().unwrap(),
+                &Secret::new(b"kept".to_vec()).unwrap(),
+            )
+            .unwrap();
+        let keys = StoreKeys::unwrap(&master, &[(Store::SECRETS, &config.vault.root)]).unwrap();
+        let releases = Releases::of(&config, BTreeSet::new());
+        let kept = Kept {
+            config,
+            keys,
+            releases,
+        };
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let egress = String::from("egress-api-example-com-443");
+        answer_read(&ours, &kept, "egress", std::slice::from_ref(&egress)).unwrap();
+        let reply = read_frame(&theirs).unwrap();
+        assert_eq!(reply, br#"{"reply":"read","found":[false]}"#);
+        answer_read(&ours, &kept, "egress", &[String::from("unlisted")]).unwrap();
+        let reply = String::from_utf8(read_frame(&theirs).unwrap()).unwrap();
+        assert!(reply.starts_with(r#"{"reply":"refused""#), "{reply}");
+        assert!(!reply.contains("kept"), "{reply}");
+        let (accesses, _) = crate::vault_access::read_log(&kept.config.vault.root).unwrap();
+        let outcomes: Vec<_> = accesses.iter().map(|access| access.outcome).collect();
+        assert_eq!(outcomes, [Outcome::NotFound, Outcome::Denied]);
     }
 }

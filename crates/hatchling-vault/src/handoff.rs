@@ -254,9 +254,9 @@ mod tests {
             SealedVault::open(&secrets, &handed),
             Err(Error::StoreNotHeld { store: "secrets" })
         ));
-        for dir in [secrets, spaces, later] {
-            let _ = std::fs::remove_dir_all(dir);
-        }
+        let _ = std::fs::remove_dir_all(&secrets);
+        let _ = std::fs::remove_dir_all(&spaces);
+        let _ = std::fs::remove_dir_all(&later);
     }
 
     /// Anything but exactly what was written is refused: every
@@ -361,5 +361,25 @@ mod tests {
         assert_eq!(Store::from_label("spaces"), Some(Store::SPACES));
         assert_eq!(Store::from_label("vault"), None);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The reader's parts, called directly: a root is handed only when
+    /// absolute and short enough, a byte is read until none is left, and
+    /// each refusal says why.
+    #[test]
+    fn the_handoff_parts_called_directly() {
+        assert_eq!(root_bytes(Path::new("/srv/spaces")).unwrap(), b"/srv/spaces");
+        assert!(matches!(
+            root_bytes(Path::new("spaces")),
+            Err(Error::HandoffMalformed { reason: "a root that isn't absolute" })
+        ));
+        assert!(matches!(
+            malformed("cut short"),
+            Error::HandoffMalformed { reason: "cut short" }
+        ));
+        let mut reader = Reader(&[7, 9]);
+        assert_eq!(reader.byte().unwrap(), 7);
+        assert_eq!(reader.byte().unwrap(), 9);
+        assert!(matches!(reader.byte(), Err(Error::HandoffMalformed { reason: "cut short" })));
     }
 }

@@ -2207,6 +2207,11 @@ mod tests {
             networked.vendors.keys().copied().collect::<Vec<_>>(),
             [HarnessKind::ClaudeCode]
         );
+        // Only a relayed vendor's key is one the broker may read.
+        assert_eq!(
+            networked.vendor_secret_names(),
+            BTreeSet::from([String::from("harness-claude-code")])
+        );
         assert_eq!(networked.tools.len(), 1);
         let mut binaryless = vars.clone();
         binaryless.insert(
