@@ -203,6 +203,16 @@ pub trait Store {
     /// results: then the fire stays as it was, and its result with it.
     fn resolve(&self, id: &str, due: i64, parked: Option<&Parked>) -> Result<bool, Self::Error>;
 
+    /// Marks every fire left claimed or running as of unknown outcome
+    /// ([`OccurrenceState::Unknown`]): what a broker does once, as it
+    /// starts, before its first tick, when no run of its own is in flight.
+    /// Returns the schedules it held.
+    ///
+    /// # Errors
+    ///
+    /// Returns the backend's error.
+    fn hold_in_flight(&self) -> Result<Vec<String>, Self::Error>;
+
     /// Removes a schedule. Returns whether it existed.
     ///
     /// # Errors
@@ -287,6 +297,9 @@ pub struct TickReport {
     pub refused_events: Vec<HookSource>,
     /// Claims refused: the schedule's last result still waits (WO-025).
     pub refused: Vec<String>,
+    /// Fires held: the schedule's last fire is of unknown outcome, until
+    /// the owner resolves or retries it (WO-025).
+    pub held: Vec<String>,
 }
 
 /// What a run in flight was started for.
@@ -543,6 +556,24 @@ impl<R: Run> Dispatcher<R> {
         // A one-shot has no fire after its own, and is exhausted.
         let next = timing.next_after(now).map(Timestamp::as_second);
         let revision = schedule.ledger.revision;
+        let unknown = matches!(
+            schedule.ledger.occurrence,
+            Some(Occurrence {
+                state: OccurrenceState::Unknown { .. },
+                ..
+            })
+        );
+        if unknown {
+            tracing::warn!(schedule = %id, "its last fire's outcome is unknown: this fire is held until the owner resolves or retries it");
+            if let Err(error) = services
+                .store
+                .skip_due(&id, revision, due.as_second(), next)
+            {
+                tracing::error!(schedule = %id, %error, "a held fire's cadence not moved on");
+            }
+            report.held.push(id);
+            return;
+        }
         let running = matches!(
             schedule.ledger.occurrence,
             Some(Occurrence {
@@ -844,6 +875,10 @@ mod tests {
             Ok(true)
         }
 
+        fn hold_in_flight(&self) -> Result<Vec<String>, String> {
+            Ok(Vec::new())
+        }
+
         fn remove(&self, _id: &str) -> Result<bool, String> {
             Ok(true)
         }
@@ -1052,6 +1087,25 @@ mod tests {
                 stored.ledger.occurrence = None;
             }
             Ok(true)
+        }
+
+        fn hold_in_flight(&self) -> Result<Vec<String>, String> {
+            let mut held = self.schedule.borrow_mut();
+            let Some(stored) = held.as_mut() else {
+                return Ok(Vec::new());
+            };
+            let Some(fire) = stored.ledger.occurrence.as_mut() else {
+                return Ok(Vec::new());
+            };
+            let started = match fire.state {
+                OccurrenceState::Claimed => false,
+                OccurrenceState::Running => true,
+                OccurrenceState::Finished { .. } | OccurrenceState::Unknown { .. } => {
+                    return Ok(Vec::new());
+                }
+            };
+            fire.state = OccurrenceState::Unknown { started };
+            Ok(vec![stored.id.clone()])
         }
 
         fn remove(&self, _id: &str) -> Result<bool, String> {

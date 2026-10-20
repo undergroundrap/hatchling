@@ -3661,6 +3661,25 @@
         }
       ]
     },
+    "HeldFire": {
+      "description": "A schedule's fire of unknown outcome: claimed or running when a broker\nstopped (WO-025). It holds the schedule until the owner resolves or\nretries it.",
+      "properties": {
+        "due": {
+          "description": "When it was due, in Unix seconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "started": {
+          "description": "Whether its run had been started.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "due",
+        "started"
+      ],
+      "type": "object"
+    },
     "HookOp": {
       "description": "A hook operation: the agent's vocabulary for the\nbroker-owned hook registry.\n\nAs for schedules, there is no list or read op: the registry is\nbroker-private. Hooks are created and cancelled through the\npeer-authorized session only, never from a scheduled run's session.",
       "oneOf": [
@@ -4838,6 +4857,45 @@
       ],
       "type": "object"
     },
+    "ParkedSummary": {
+      "description": "A result that couldn't be delivered, kept for the owner (WO-025).",
+      "properties": {
+        "channel": {
+          "description": "The channel it was for.",
+          "type": "string"
+        },
+        "due": {
+          "description": "When its fire was due, in Unix seconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "id": {
+          "description": "Its id, for `Dismiss`.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why it was parked.",
+          "type": "string"
+        },
+        "schedule_id": {
+          "description": "The schedule (or hook) it came from.",
+          "type": "string"
+        },
+        "text": {
+          "description": "The run's output, or what went wrong, bounded.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "schedule_id",
+        "channel",
+        "due",
+        "reason",
+        "text"
+      ],
+      "type": "object"
+    },
     "QueryOp": {
       "description": "A read-scoped query: the vocabulary the feed reads through.\n\nEvery variant reads, and nothing else is expressible here: the\nwrites live in [`GoalsOp`], a different session kind. Each query\nselects one store; every reply item is a feed item carrying its\nprovenance (which store, and its original source) from the store\nlayer.\n\n`after` resumes a paged query past the `next` cursor of the previous\nreply.",
       "oneOf": [
@@ -5345,6 +5403,80 @@
             "grants"
           ],
           "type": "object"
+        },
+        {
+          "description": "Mark a schedule's fire of unknown outcome resolved: the owner's\nword, after looking at what it did (WO-025). The schedule resumes\nits cadence; a one-shot is done. The owner's alone.",
+          "properties": {
+            "id": {
+              "description": "The schedule id.",
+              "type": "string"
+            },
+            "op": {
+              "const": "resolve",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Run a schedule's fire of unknown outcome again, as a new attempt:\nit is due now, and runs as any fire does, under the grants the\ncreator holds then (WO-025). The owner's alone.",
+          "properties": {
+            "id": {
+              "description": "The schedule id.",
+              "type": "string"
+            },
+            "op": {
+              "const": "retry",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "List the results that couldn't be delivered, kept for the owner, a\npage at a time, oldest first. The owner's alone.",
+          "properties": {
+            "after": {
+              "description": "Resume after this parked result: a previous page's `next`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "op": {
+              "const": "list-parked",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Dismiss a parked result, once the owner has read it. The owner's\nalone.",
+          "properties": {
+            "id": {
+              "description": "The parked result's id, as `ListParked` gave it.",
+              "type": "string"
+            },
+            "op": {
+              "const": "dismiss",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "id"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -5536,6 +5668,73 @@
             "result"
           ],
           "type": "object"
+        },
+        {
+          "description": "The schedule's fire of unknown outcome is marked resolved.",
+          "properties": {
+            "result": {
+              "const": "resolved",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The schedule's fire of unknown outcome is due again, as a new\nattempt.",
+          "properties": {
+            "result": {
+              "const": "retried",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "One page of the parked results.",
+          "properties": {
+            "next": {
+              "description": "The `after` that resumes the list; absent on its last page.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "parked": {
+              "description": "The parked results, oldest first.",
+              "items": {
+                "$ref": "#/$defs/ParkedSummary"
+              },
+              "type": "array"
+            },
+            "result": {
+              "const": "parked",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "parked"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The parked result is dismissed.",
+          "properties": {
+            "result": {
+              "const": "dismissed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -5603,6 +5802,17 @@
             "$ref": "#/$defs/ScheduleGrant"
           },
           "type": "array"
+        },
+        "held": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HeldFire"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Its fire of unknown outcome, when it has one: the schedule is held\nuntil the owner resolves or retries it (WO-025)."
         },
         "id": {
           "description": "The id, for `Cancel`.",

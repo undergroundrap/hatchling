@@ -37,12 +37,13 @@ pub use messages::{
     ArtifactInspection, ArtifactOp, ArtifactResult, ArtifactView, BrokerMessage, BuildFailure,
     BuildState, ChannelAccount, ChannelOp, ChannelResult, ConflictEntry, DeliveryRefusal,
     DeliveryTarget, DeviceChallenge, DeviceHello, DeviceRefusal, DeviceWelcome, EGRESS_PART_BYTES,
-    EgressOp, EgressResult, FeedSpec, GoalsOp, GoalsResult, HookOp, HookResult, HookSource,
-    IdeaRef, IdeaRefusal, IdeaSource, IdeaState, IdeaSummary, InspectionFinding, InspectionVerdict,
-    MAX_SKILL_INPUT_BYTES, MAX_SKILL_OUTPUT_BYTES, MediaHeader, MemoryOp, MemoryResult, QueryOp,
-    QueryResult, ScheduleGrant, ScheduleKind, ScheduleOp, ScheduleRefusal, ScheduleResult,
-    ScheduleSpec, ScheduleSummary, SessionRequest, SessionResponse, SkillOp, SkillResult, SpaceOp,
-    SpaceRefusal, SpaceResult, SyncChange, SyncItem, VaultAction, VaultOp, VaultResult,
+    EgressOp, EgressResult, FeedSpec, GoalsOp, GoalsResult, HeldFire, HookOp, HookResult,
+    HookSource, IdeaRef, IdeaRefusal, IdeaSource, IdeaState, IdeaSummary, InspectionFinding,
+    InspectionVerdict, MAX_SKILL_INPUT_BYTES, MAX_SKILL_OUTPUT_BYTES, MediaHeader, MemoryOp,
+    MemoryResult, ParkedSummary, QueryOp, QueryResult, ScheduleGrant, ScheduleKind, ScheduleOp,
+    ScheduleRefusal, ScheduleResult, ScheduleSpec, ScheduleSummary, SessionRequest,
+    SessionResponse, SkillOp, SkillResult, SpaceOp, SpaceRefusal, SpaceResult, SyncChange,
+    SyncItem, VaultAction, VaultOp, VaultResult,
 };
 pub use model_reasoning::ModelReasoning;
 pub use peer::{PeerCredentials, peer_credentials};

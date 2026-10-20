@@ -226,6 +226,15 @@ pub enum OccurrenceState {
         /// What the run came to.
         outcome: Outcome,
     },
+    /// Claimed or running when the broker stopped: whether its run began,
+    /// ended, or acted is not known. It is never marked succeeded, never
+    /// described as failed before doing anything, and never run again on
+    /// its own: it holds its schedule until the owner marks it resolved
+    /// or retries it as a new attempt.
+    Unknown {
+        /// Whether its run had been started.
+        started: bool,
+    },
 }
 
 /// What a fire's run came to.

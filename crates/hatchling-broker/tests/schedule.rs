@@ -547,7 +547,11 @@ fn created_id(result: ScheduleResult) -> String {
         | ScheduleResult::Listed { .. }
         | ScheduleResult::Refused { .. }
         | ScheduleResult::Denied
-        | ScheduleResult::ScheduleError) => format!("not created: {other:?}"),
+        | ScheduleResult::ScheduleError
+        | ScheduleResult::Resolved
+        | ScheduleResult::Retried
+        | ScheduleResult::Parked { .. }
+        | ScheduleResult::Dismissed) => format!("not created: {other:?}"),
     }
 }
 

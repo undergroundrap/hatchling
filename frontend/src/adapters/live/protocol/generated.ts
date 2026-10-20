@@ -1631,6 +1631,21 @@ export type HarnessNetworkUse = {
  */
 export type HarnessOutcome = 'done' | 'needs_clarification' | 'failed' | 'timed_out' | 'refused';
 /**
+ * A schedule's fire of unknown outcome: claimed or running when a broker
+ * stopped (WO-025). It holds the schedule until the owner resolves or
+ * retries it.
+ */
+export type HeldFire = {
+    /**
+     * When it was due, in Unix seconds.
+     */
+    readonly due: number;
+    /**
+     * Whether its run had been started.
+     */
+    readonly started: boolean;
+};
+/**
  * A hook operation: the agent's vocabulary for the
  * broker-owned hook registry.
  *
@@ -2125,6 +2140,35 @@ export type OperatorSession = {
     readonly socket: SessionSocket;
 };
 /**
+ * A result that couldn't be delivered, kept for the owner (WO-025).
+ */
+export type ParkedSummary = {
+    /**
+     * The channel it was for.
+     */
+    readonly channel: string;
+    /**
+     * When its fire was due, in Unix seconds.
+     */
+    readonly due: number;
+    /**
+     * Its id, for `Dismiss`.
+     */
+    readonly id: string;
+    /**
+     * Why it was parked.
+     */
+    readonly reason: string;
+    /**
+     * The schedule (or hook) it came from.
+     */
+    readonly schedule_id: string;
+    /**
+     * The run's output, or what went wrong, bounded.
+     */
+    readonly text: string;
+};
+/**
  * A read-scoped query: the vocabulary the feed reads through.
  *
  * Every variant reads, and nothing else is expressible here: the
@@ -2351,6 +2395,30 @@ export type ScheduleOp = {
      * The follow-up run's task. Untrusted text, as for `Create`.
      */
     readonly task: string;
+} | {
+    /**
+     * The schedule id.
+     */
+    readonly id: string;
+    readonly op: 'resolve';
+} | {
+    /**
+     * The schedule id.
+     */
+    readonly id: string;
+    readonly op: 'retry';
+} | {
+    /**
+     * Resume after this parked result: a previous page's `next`.
+     */
+    readonly after?: string | null;
+    readonly op: 'list-parked';
+} | {
+    /**
+     * The parked result's id, as `ListParked` gave it.
+     */
+    readonly id: string;
+    readonly op: 'dismiss';
 };
 /**
  * Why a create was refused. Each names a fault in the request itself,
@@ -2390,6 +2458,22 @@ export type ScheduleResult = {
     readonly result: 'denied';
 } | {
     readonly result: 'schedule-error';
+} | {
+    readonly result: 'resolved';
+} | {
+    readonly result: 'retried';
+} | {
+    /**
+     * The `after` that resumes the list; absent on its last page.
+     */
+    readonly next?: string | null;
+    /**
+     * The parked results, oldest first.
+     */
+    readonly parked: readonly (ParkedSummary)[];
+    readonly result: 'parked';
+} | {
+    readonly result: 'dismissed';
 };
 /**
  * When a schedule fires. Every form names an IANA timezone explicitly:
@@ -2434,6 +2518,11 @@ export type ScheduleSummary = {
      * The grants a run holds.
      */
     readonly grants: readonly (ScheduleGrant)[];
+    /**
+     * Its fire of unknown outcome, when it has one: the schedule is held
+     * until the owner resolves or retries it (WO-025).
+     */
+    readonly held?: HeldFire | null;
     /**
      * The id, for `Cancel`.
      */

@@ -536,6 +536,37 @@ pub enum ScheduleOp {
         /// The capabilities it may use: a subset of this run's.
         grants: Vec<ScheduleGrant>,
     },
+    /// Mark a schedule's fire of unknown outcome resolved: the owner's
+    /// word, after looking at what it did (WO-025). The schedule resumes
+    /// its cadence; a one-shot is done. The owner's alone.
+    #[serde(rename = "resolve")]
+    Resolve {
+        /// The schedule id.
+        id: String,
+    },
+    /// Run a schedule's fire of unknown outcome again, as a new attempt:
+    /// it is due now, and runs as any fire does, under the grants the
+    /// creator holds then (WO-025). The owner's alone.
+    #[serde(rename = "retry")]
+    Retry {
+        /// The schedule id.
+        id: String,
+    },
+    /// List the results that couldn't be delivered, kept for the owner, a
+    /// page at a time, oldest first. The owner's alone.
+    #[serde(rename = "list-parked")]
+    ListParked {
+        /// Resume after this parked result: a previous page's `next`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after: Option<String>,
+    },
+    /// Dismiss a parked result, once the owner has read it. The owner's
+    /// alone.
+    #[serde(rename = "dismiss")]
+    Dismiss {
+        /// The parked result's id, as `ListParked` gave it.
+        id: String,
+    },
 }
 
 /// What a feed digest gathers: the user's own tuning, as rules.
@@ -815,6 +846,55 @@ pub enum ScheduleResult {
     /// The store backend failed. Deliberately opaque.
     #[serde(rename = "schedule-error")]
     ScheduleError,
+    /// The schedule's fire of unknown outcome is marked resolved.
+    #[serde(rename = "resolved")]
+    Resolved,
+    /// The schedule's fire of unknown outcome is due again, as a new
+    /// attempt.
+    #[serde(rename = "retried")]
+    Retried,
+    /// One page of the parked results.
+    #[serde(rename = "parked")]
+    Parked {
+        /// The parked results, oldest first.
+        parked: Vec<ParkedSummary>,
+        /// The `after` that resumes the list; absent on its last page.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next: Option<String>,
+    },
+    /// The parked result is dismissed.
+    #[serde(rename = "dismissed")]
+    Dismissed,
+}
+
+/// A result that couldn't be delivered, kept for the owner (WO-025).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ParkedSummary {
+    /// Its id, for `Dismiss`.
+    pub id: String,
+    /// The schedule (or hook) it came from.
+    pub schedule_id: String,
+    /// The channel it was for.
+    pub channel: String,
+    /// When its fire was due, in Unix seconds.
+    pub due: i64,
+    /// Why it was parked.
+    pub reason: String,
+    /// The run's output, or what went wrong, bounded.
+    pub text: String,
+}
+
+/// A schedule's fire of unknown outcome: claimed or running when a broker
+/// stopped (WO-025). It holds the schedule until the owner resolves or
+/// retries it.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct HeldFire {
+    /// When it was due, in Unix seconds.
+    pub due: i64,
+    /// Whether its run had been started.
+    pub started: bool,
 }
 
 /// What a schedule list shows of one schedule: enough to inspect
@@ -834,6 +914,10 @@ pub struct ScheduleSummary {
     pub grants: Vec<ScheduleGrant>,
     /// The next fire, in Unix seconds, broker clock.
     pub next_due: i64,
+    /// Its fire of unknown outcome, when it has one: the schedule is held
+    /// until the owner resolves or retries it (WO-025).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<HeldFire>,
 }
 
 /// What a schedule's runs are.
@@ -2833,6 +2917,7 @@ mod tests {
                     channel: String::from("local"),
                 }],
                 next_due: 1_790_000_000,
+                held: None,
             }],
             next: Some(String::from("sch-1")),
         };
