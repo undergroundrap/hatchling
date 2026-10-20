@@ -324,6 +324,19 @@ pub fn held_secret_values(
     key: &dyn OpensStores,
     purpose: &str,
 ) -> Result<Vec<Zeroizing<Vec<u8>>>, String> {
+    // A broker that started a keeper asks it what to scan for: the
+    // secrets a cell has had, never every one the configuration names.
+    if let Some(keeper) = crate::keeper::keeper() {
+        return keeper
+            .scan(purpose)
+            .map(|values| {
+                values
+                    .iter()
+                    .map(|secret| Zeroizing::new(secret.as_bytes().to_vec()))
+                    .collect()
+            })
+            .map_err(|e| format!("the held secrets could not be read: {e}"));
+    }
     let names = held_secret_names(config)
         .into_iter()
         .map(|name| {

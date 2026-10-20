@@ -1654,6 +1654,19 @@ fn refuse_harness_secret_grants(vault_grants: Vec<VaultGrant>) -> Result<Vec<Vau
             });
         }
     }
+    if let Some(grant) = vault_grants
+        .iter()
+        .find(|grant| grant.name.as_str() == crate::keeper::RELEASED_RECORD)
+    {
+        return Err(Error::InvalidConfig {
+            key: "HATCHLING_VAULT_GRANTS",
+            reason: format!(
+                "grant {}:{} names the vault keeper's record of what it has released",
+                grant.action,
+                grant.name.as_str()
+            ),
+        });
+    }
     Ok(vault_grants)
 }
 
@@ -3128,6 +3141,18 @@ mod tests {
                 "{refused:?}"
             );
         }
+        let refused = refuse_harness_secret_grants(vec![grant(
+            VaultAction::Fetch,
+            crate::keeper::RELEASED_RECORD,
+        )]);
+        assert!(
+            matches!(
+                &refused,
+                Err(Error::InvalidConfig { key: "HATCHLING_VAULT_GRANTS", reason })
+                    if reason.contains("record of what it has released")
+            ),
+            "{refused:?}"
+        );
     }
 
     #[test]
