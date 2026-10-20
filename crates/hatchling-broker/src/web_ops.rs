@@ -330,7 +330,7 @@ fn allow(
             Ok(true) => return Ok(()),
             Ok(false) => {}
             Err(error) => {
-                tracing::error!(%error, "the allowed sites couldn't be read: the owner is asked")
+                tracing::error!(%error, "the allowed sites couldn't be read: the owner is asked");
             }
         }
     }
