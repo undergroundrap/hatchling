@@ -256,6 +256,23 @@ mod tests {
         assert!(grants.allow("https://new.example", 2).is_ok(), "room for one");
     }
 
+    /// The store's parts, called directly: an empty store reads as no
+    /// sites, and what is written is what is read.
+    #[test]
+    fn the_stores_parts() {
+        let (config, _scratch, key) = kept("parts");
+        let grants = SiteGrants::of(&config, &key).unwrap();
+        let vault = grants.vault().unwrap();
+        assert_eq!(SiteGrants::read(&vault).unwrap(), []);
+        let one = vec![Kept {
+            site: String::from("https://a.example"),
+            allowed_at: 7,
+        }];
+        SiteGrants::write(&vault, &one).unwrap();
+        assert_eq!(SiteGrants::read(&vault).unwrap(), one);
+        assert_eq!(SiteGrants::name().unwrap().as_str(), ENTRY);
+    }
+
     /// [`MAX_SITES`] of the longest sites still fit one sealed entry.
     #[test]
     fn the_longest_sites_fit_one_entry() {

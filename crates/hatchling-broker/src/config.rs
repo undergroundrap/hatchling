@@ -531,7 +531,7 @@ pub enum SearchLog {
 impl WebConfig {
     /// The web off: nothing is fetched, and nothing is asked.
     #[must_use]
-    pub const fn off() -> Self {
+    pub fn off() -> Self {
         Self {
             enabled: false,
             refused: Vec::new(),

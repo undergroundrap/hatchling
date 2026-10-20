@@ -45,7 +45,7 @@ use hatchling_vault::OpensStores;
 use zeroize::Zeroizing;
 
 use crate::Config;
-use crate::approval_board::{Board, board, refused_as, site_action};
+use crate::approval_board::{Board, SiteAsk, board, refused_as, site_action};
 use crate::approvals::{Refusal, State};
 
 /// The longest a session with a person there waits for the owner to decide
@@ -376,11 +376,13 @@ fn ask_owner(
     let now = Timestamp::now().as_second();
     let requested = board
         .propose_site(
-            site,
-            &url.to_string(),
-            reason,
-            web.led_to(url),
-            always,
+            &SiteAsk {
+                site,
+                url: &url.to_string(),
+                reason,
+                led: web.led_to(url),
+                always,
+            },
             &web.task,
             now,
         )
@@ -820,6 +822,17 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(10), "waited out");
     }
 
+    /// Asking for `site`, for its page `url`, with no search behind it.
+    fn asking<'a>(site: &'a str, url: &'a str) -> SiteAsk<'a> {
+        SiteAsk {
+            site,
+            url,
+            reason: "why",
+            led: None,
+            always: false,
+        }
+    }
+
     /// A wait ends with the owner's yes, their no, a lapse, or a request
     /// that is no longer open.
     #[test]
@@ -827,7 +840,7 @@ mod tests {
         let site = "https://a.example";
         let board = board(&web_config("ends"));
         let no = board
-            .propose_site(site, "https://a.example/", "why", None, false, "t", 0)
+            .propose_site(&asking(site, "https://a.example/"), "t", 0)
             .unwrap();
         board
             .decide(&no.id, 1, &no.digest, Decision::Deny, 1)
@@ -840,18 +853,10 @@ mod tests {
         );
         let board = crate::approval_board::board(&web_config("lapses"));
         let lapsing = board
-            .propose_site(site, "https://a.example/", "why", None, false, "t", 0)
+            .propose_site(&asking(site, "https://a.example/"), "t", 0)
             .unwrap();
         // Proposing past its time lapses it.
-        let _ = board.propose_site(
-            "https://b.example",
-            "https://b.example/",
-            "why",
-            None,
-            false,
-            "t9",
-            10_000,
-        );
+        let _ = board.propose_site(&asking("https://b.example", "https://b.example/"), "t9", 10_000);
         assert_eq!(
             decided(&board, &lapsing.id, site, Duration::from_secs(5)),
             Err(WebResult::Expired {
@@ -864,7 +869,7 @@ mod tests {
         ));
         let board = crate::approval_board::board(&web_config("approved"));
         let yes = board
-            .propose_site(site, "https://a.example/", "why", None, false, "t", 0)
+            .propose_site(&asking(site, "https://a.example/"), "t", 0)
             .unwrap();
         board
             .decide(&yes.id, 1, &yes.digest, Decision::Approve, 1)
