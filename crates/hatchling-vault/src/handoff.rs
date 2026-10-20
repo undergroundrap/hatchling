@@ -368,18 +368,30 @@ mod tests {
     /// each refusal says why.
     #[test]
     fn the_handoff_parts_called_directly() {
-        assert_eq!(root_bytes(Path::new("/srv/spaces")).unwrap(), b"/srv/spaces");
+        assert_eq!(
+            root_bytes(Path::new("/srv/spaces")).unwrap(),
+            b"/srv/spaces"
+        );
         assert!(matches!(
             root_bytes(Path::new("spaces")),
-            Err(Error::HandoffMalformed { reason: "a root that isn't absolute" })
+            Err(Error::HandoffMalformed {
+                reason: "a root that isn't absolute"
+            })
         ));
         assert!(matches!(
             malformed("cut short"),
-            Error::HandoffMalformed { reason: "cut short" }
+            Error::HandoffMalformed {
+                reason: "cut short"
+            }
         ));
         let mut reader = Reader(&[7, 9]);
         assert_eq!(reader.byte().unwrap(), 7);
         assert_eq!(reader.byte().unwrap(), 9);
-        assert!(matches!(reader.byte(), Err(Error::HandoffMalformed { reason: "cut short" })));
+        assert!(matches!(
+            reader.byte(),
+            Err(Error::HandoffMalformed {
+                reason: "cut short"
+            })
+        ));
     }
 }

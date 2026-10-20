@@ -36,7 +36,9 @@ use std::os::fd::{AsFd as _, AsRawFd as _};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitCode};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 use hatchling_core::framing::{read_frame, read_frame_or_eof, write_frame};
 use hatchling_core::{CellId, SecretName, VaultOp, VaultResult};
@@ -85,10 +87,19 @@ enum Reply {
 #[derive(Debug)]
 pub struct Keeper {
     stream: Mutex<UnixStream>,
+    /// Set once an exchange broke off (the keeper didn't answer in time,
+    /// answered out of turn, or went): a late answer could otherwise be
+    /// read as the next request's, so no request is sent again.
+    lost: AtomicBool,
     /// Kept so the keeper isn't left a zombie; it leaves when the broker
     /// does.
     _child: Child,
 }
+
+/// How long the broker waits for each of the keeper's answers once it
+/// has started. Answers are local and quick; one this late means a keeper
+/// that is stuck, and every request after it fails rather than waits.
+const ANSWER_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The broker's keeper, once started.
 static KEEPER: OnceLock<Keeper> = OnceLock::new();
@@ -157,8 +168,11 @@ impl Keeper {
                 )));
             }
         };
+        ours.set_read_timeout(Some(ANSWER_TIMEOUT))
+            .map_err(|e| failed(format!("cannot bound its answers: {e}")))?;
         let keeper = Self {
             stream: Mutex::new(ours),
+            lost: AtomicBool::new(false),
             _child: child,
         };
         Ok((keeper, keys))
@@ -172,32 +186,41 @@ impl Keeper {
     /// Returns [`Error::Keeper`] when the keeper refuses the read or
     /// can't be reached.
     pub fn read(&self, purpose: &str, names: &[SecretName]) -> Result<Vec<Option<Secret>>, Error> {
-        let stream = self.lock()?;
         let request = Request::Read {
             purpose: purpose.to_owned(),
             names: names.iter().map(|name| name.as_str().to_owned()).collect(),
         };
-        let found = match ask(&stream, &request)? {
-            Reply::Read { found } if found.len() == names.len() => found,
-            Reply::Refused { reason } => return Err(Error::Keeper { reason }),
-            other @ (Reply::Read { .. } | Reply::Cell { .. } | Reply::Protocol { .. }) => {
-                return Err(unexpected(&other));
+        let (reply, frames) = self.exchange(|stream| {
+            let reply = ask(stream, &request)?;
+            let mut frames = Vec::new();
+            if let Reply::Read { found } = &reply {
+                if found.len() != names.len() {
+                    return Err(unexpected(&reply));
+                }
+                for _ in found.iter().filter(|found| **found) {
+                    frames.push(Zeroizing::new(read_frame(stream).map_err(keeper_gone)?));
+                }
             }
+            Ok((reply, frames))
+        })?;
+        let found = match reply {
+            Reply::Read { found } => found,
+            Reply::Refused { reason } => return Err(Error::Keeper { reason }),
+            other @ (Reply::Cell { .. } | Reply::Protocol { .. }) => return Err(unexpected(&other)),
         };
-        let read = found
+        let mut frames = frames.into_iter();
+        found
             .into_iter()
             .map(|found| {
                 if !found {
                     return Ok(None);
                 }
-                let bytes = Zeroizing::new(read_frame(&stream).map_err(keeper_gone)?);
+                let bytes = frames.next().ok_or_else(|| unexpected(&Reply::Read { found: Vec::new() }))?;
                 Secret::new(bytes.to_vec())
                     .map(Some)
                     .map_err(|source| Error::Vault { source })
             })
-            .collect();
-        drop(stream);
-        read
+            .collect()
     }
 
     /// A cell's vault op, answered by the keeper: as
@@ -213,11 +236,10 @@ impl Keeper {
             cell: cell.to_string(),
             uid,
         };
-        let reply = self.lock().and_then(|stream| ask(&stream, &request));
-        match reply {
+        match self.exchange(|stream| ask(stream, &request)) {
             Ok(Reply::Cell { result }) => Ok(result),
             Ok(Reply::Protocol { reason }) => Err(Error::SessionProtocol { reason }),
-            Ok(other) => {
+            Ok(other @ (Reply::Read { .. } | Reply::Refused { .. })) => {
                 tracing::error!(error = %unexpected(&other), "vault op failed at the keeper");
                 Ok(VaultResult::VaultError)
             }
@@ -228,10 +250,23 @@ impl Keeper {
         }
     }
 
-    fn lock(&self) -> Result<std::sync::MutexGuard<'_, UnixStream>, Error> {
-        self.stream.lock().map_err(|_| Error::Keeper {
+    /// Runs one exchange with the keeper, alone. An exchange that breaks
+    /// off loses the keeper: every request after it fails at once.
+    fn exchange<T>(&self, run: impl FnOnce(&UnixStream) -> Result<T, Error>) -> Result<T, Error> {
+        let stream = self.stream.lock().map_err(|_| Error::Keeper {
             reason: String::from("an earlier request to it panicked"),
-        })
+        })?;
+        if self.lost.load(Ordering::SeqCst) {
+            return Err(Error::Keeper {
+                reason: String::from("lost: an earlier exchange broke off"),
+            });
+        }
+        let outcome = run(&stream);
+        if outcome.is_err() {
+            self.lost.store(true, Ordering::SeqCst);
+        }
+        drop(stream);
+        outcome
     }
 }
 
@@ -612,6 +647,9 @@ mod tests {
             releases,
         };
         let (ours, theirs) = UnixStream::pair().unwrap();
+        theirs
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
         let egress = String::from("egress-api-example-com-443");
         answer_read(&ours, &kept, "egress", std::slice::from_ref(&egress)).unwrap();
         let reply = read_frame(&theirs).unwrap();
@@ -623,5 +661,36 @@ mod tests {
         let (accesses, _) = crate::vault_access::read_log(&kept.config.vault.root).unwrap();
         let outcomes: Vec<_> = accesses.iter().map(|access| access.outcome).collect();
         assert_eq!(outcomes, [Outcome::NotFound, Outcome::Denied]);
+    }
+
+    /// A keeper that answers a read out of step is lost: the broker sends
+    /// it nothing more, and every request after fails at once.
+    #[test]
+    fn an_exchange_that_breaks_off_loses_the_keeper() {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        theirs
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let keeper = Keeper {
+            stream: Mutex::new(ours),
+            lost: AtomicBool::new(false),
+            _child: Command::new("true").spawn().unwrap(),
+        };
+        let stand_in = std::thread::spawn(move || {
+            let request = read_frame(&theirs).unwrap();
+            // Two names asked for, one answered for.
+            write_frame(&theirs, br#"{"reply":"read","found":[true]}"#).unwrap();
+            let after = read_frame_or_eof(&theirs).unwrap();
+            (request, after)
+        });
+        let names: Vec<SecretName> = ["a", "b"].iter().map(|name| name.parse().unwrap()).collect();
+        assert!(matches!(keeper.read("egress", &names), Err(Error::Keeper { .. })));
+        let after = keeper.read("egress", &names);
+        let refused = format!("{after:?}");
+        assert!(refused.contains("lost"), "{refused}");
+        drop(keeper);
+        let (request, after) = stand_in.join().unwrap();
+        assert!(String::from_utf8(request).unwrap().contains(r#""purpose":"egress""#));
+        assert!(after.is_none(), "a request was sent after the keeper was lost");
     }
 }
