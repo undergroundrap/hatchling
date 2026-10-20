@@ -54,10 +54,11 @@ use crate::{Config, Error, RedactionConfig};
 /// by the broker.
 pub const VAULT_KEEPER_SUBCOMMAND: &str = "vault-keeper";
 
-/// The secret, in the secrets store, recording the name of every secret
-/// a cell has been given or has stored: the secrets a gate scans for.
-/// Sealed under the secrets store's key, so only the keeper writes it, and
-/// no grant may name it.
+/// The secret recording what cells have had: the secrets a gate scans for.
+///
+/// It holds the name of every secret a cell has been given or has stored.
+/// It is sealed in the secrets store under that store's key, so only the
+/// keeper writes it, and no grant may name it.
 pub const RELEASED_RECORD: &str = "keeper-released";
 
 /// The setting that names the keeper's end of the socket pair.
@@ -404,7 +405,9 @@ impl Releases {
         self.held
             .iter()
             .filter(|name| {
-                released.contains(*name) || self.accounts.contains(*name) || self.egress.contains(*name)
+                released.contains(*name)
+                    || self.accounts.contains(*name)
+                    || self.egress.contains(*name)
             })
             .filter_map(|name| name.parse().ok())
             .collect()
@@ -498,12 +501,12 @@ fn begin(stream: &UnixStream, config: Config) -> Result<Kept, Error> {
     frame.push(0);
     frame.extend_from_slice(&handed);
     write_frame(stream, &frame).map_err(keeper_gone)?;
-    let releases = Releases::of(&config, harness);
+    let rules = Releases::of(&config, harness);
     let released = read_released(&config, &keys)?;
     Ok(Kept {
         config,
         keys,
-        releases,
+        releases: rules,
         released,
     })
 }
@@ -735,34 +738,37 @@ mod tests {
             secret: "mail-work".parse().unwrap(),
         }];
         let harness = BTreeSet::from([String::from("harness-claude-code")]);
-        let releases = Releases::of(&config, harness);
+        let rules = Releases::of(&config, harness);
         let egress = "egress-api-example-com-443";
-        assert!(releases.allow("egress", &names(&[egress])));
-        assert!(!releases.allow("egress", &names(&[egress, "token"])));
-        assert!(releases.allow("harness", &names(&["harness-claude-code"])));
-        assert!(!releases.allow("harness", &names(&["harness-codex-cli"])));
-        assert!(releases.allow("channel-account", &names(&["mail-work"])));
-        assert!(!releases.allow("channel-account", &names(&["token"])));
+        assert!(rules.allow("egress", &names(&[egress])));
+        assert!(!rules.allow("egress", &names(&[egress, "token"])));
+        assert!(rules.allow("harness", &names(&["harness-claude-code"])));
+        assert!(!rules.allow("harness", &names(&["harness-codex-cli"])));
+        assert!(rules.allow("channel-account", &names(&["mail-work"])));
+        assert!(!rules.allow("channel-account", &names(&["token"])));
         // The gates scan: they read nothing by name.
         for gate in ["artifact-gate", "output-gate"] {
             assert!(Releases::scans(gate));
-            assert!(!releases.allow(gate, &names(&["token"])));
+            assert!(!rules.allow(gate, &names(&["token"])));
         }
         assert!(!Releases::scans("egress"));
         // A gate scans for the broker's own credentials, and for a held
         // secret only once a cell has had it.
         let scanned = |released: &[&str]| -> Vec<String> {
             let released = released.iter().map(|name| (*name).to_owned()).collect();
-            releases
+            rules
                 .scan_set(&released)
                 .iter()
                 .map(|name| name.as_str().to_owned())
                 .collect()
         };
         assert_eq!(scanned(&[]), [egress, "mail-work"]);
-        assert_eq!(scanned(&["token", "harness-claude-code"]), [egress, "mail-work", "token"]);
-        assert!(!releases.allow("scan", &names(&["token"])));
-        assert!(releases.allow("egress", &[]));
+        assert_eq!(
+            scanned(&["token", "harness-claude-code"]),
+            [egress, "mail-work", "token"]
+        );
+        assert!(!rules.allow("scan", &names(&["token"])));
+        assert!(rules.allow("egress", &[]));
     }
 
     /// The protocol reads exactly its own shapes: an unknown field or
@@ -931,12 +937,18 @@ mod tests {
         let master = hatchling_vault::MasterKey::generate().unwrap();
         hatchling_vault::SealedVault::open(&config.vault.root, &master)
             .unwrap()
-            .store(&"token".parse().unwrap(), &Secret::new(b"t".to_vec()).unwrap())
+            .store(
+                &"token".parse().unwrap(),
+                &Secret::new(b"t".to_vec()).unwrap(),
+            )
             .unwrap();
         let fetch = |name: &str| VaultOp::Fetch {
             name: name.to_owned(),
         };
-        assert_eq!(releases_to_cell(&config, &fetch("token")).as_deref(), Some("token"));
+        assert_eq!(
+            releases_to_cell(&config, &fetch("token")).as_deref(),
+            Some("token")
+        );
         assert_eq!(releases_to_cell(&config, &fetch("other")), None);
         let remove = VaultOp::Remove {
             name: String::from("old"),
@@ -952,9 +964,14 @@ mod tests {
             released: BTreeSet::new(),
         };
         let (ours, theirs) = UnixStream::pair().unwrap();
-        theirs.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        theirs
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         answer_scan(&ours, &kept, "output-gate").unwrap();
-        assert_eq!(read_frame(&theirs).unwrap(), br#"{"reply":"scan","count":0}"#);
+        assert_eq!(
+            read_frame(&theirs).unwrap(),
+            br#"{"reply":"scan","count":0}"#
+        );
         record_release(&mut kept, "token").unwrap();
         record_release(&mut kept, "token").unwrap();
         assert_eq!(
@@ -962,7 +979,10 @@ mod tests {
             BTreeSet::from([String::from("token")])
         );
         answer_scan(&ours, &kept, "output-gate").unwrap();
-        assert_eq!(read_frame(&theirs).unwrap(), br#"{"reply":"scan","count":1}"#);
+        assert_eq!(
+            read_frame(&theirs).unwrap(),
+            br#"{"reply":"scan","count":1}"#
+        );
         assert_eq!(read_frame(&theirs).unwrap(), b"t");
         answer_scan(&ours, &kept, "egress").unwrap();
         let reply = String::from_utf8(read_frame(&theirs).unwrap()).unwrap();
