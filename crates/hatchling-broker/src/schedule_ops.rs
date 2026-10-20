@@ -45,8 +45,8 @@ use std::sync::{Mutex, PoisonError};
 
 use hatchling_channel::{ChannelId, LocalHub, Message, SenderId};
 use hatchling_core::{
-    FeedSpec, HookOp, HookResult, HookSource, MAX_SECRET_BYTES, ScheduleGrant, ScheduleKind,
-    HeldFire, ParkedSummary, ScheduleOp, ScheduleRefusal, ScheduleResult, ScheduleSpec,
+    FeedSpec, HeldFire, HookOp, HookResult, HookSource, MAX_SECRET_BYTES, ParkedSummary,
+    ScheduleGrant, ScheduleKind, ScheduleOp, ScheduleRefusal, ScheduleResult, ScheduleSpec,
     ScheduleSummary, SecretName,
 };
 use hatchling_scheduler::{
@@ -884,15 +884,19 @@ fn summary(schedule: &Schedule) -> ScheduleSummary {
         channel: schedule.channel.clone(),
         grants: schedule.grants.clone(),
         next_due: schedule.next_due,
-        held: schedule.ledger.occurrence.as_ref().and_then(|fire| match fire.state {
-            OccurrenceState::Unknown { started } => Some(HeldFire {
-                due: fire.due,
-                started,
+        held: schedule
+            .ledger
+            .occurrence
+            .as_ref()
+            .and_then(|fire| match fire.state {
+                OccurrenceState::Unknown { started } => Some(HeldFire {
+                    due: fire.due,
+                    started,
+                }),
+                OccurrenceState::Claimed
+                | OccurrenceState::Running
+                | OccurrenceState::Finished { .. } => None,
             }),
-            OccurrenceState::Claimed
-            | OccurrenceState::Running
-            | OccurrenceState::Finished { .. } => None,
-        }),
     }
 }
 

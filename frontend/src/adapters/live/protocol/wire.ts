@@ -1229,6 +1229,21 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             }
         ]
     },
+    "HeldFire": {
+        "properties": {
+            "due": {
+                "type": "integer"
+            },
+            "started": {
+                "type": "boolean"
+            }
+        },
+        "required": [
+            "due",
+            "started"
+        ],
+        "type": "object"
+    },
     "ImageType": {
         "oneOf": [
             {
@@ -1261,6 +1276,37 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
         "required": [
             "media_type",
             "base64"
+        ],
+        "type": "object"
+    },
+    "ParkedSummary": {
+        "properties": {
+            "channel": {
+                "type": "string"
+            },
+            "due": {
+                "type": "integer"
+            },
+            "id": {
+                "type": "string"
+            },
+            "reason": {
+                "type": "string"
+            },
+            "schedule_id": {
+                "type": "string"
+            },
+            "text": {
+                "type": "string"
+            }
+        },
+        "required": [
+            "id",
+            "schedule_id",
+            "channel",
+            "due",
+            "reason",
+            "text"
         ],
         "type": "object"
     },
@@ -1558,6 +1604,72 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "grants"
                 ],
                 "type": "object"
+            },
+            {
+                "properties": {
+                    "id": {
+                        "type": "string"
+                    },
+                    "op": {
+                        "const": "resolve",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "op",
+                    "id"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "id": {
+                        "type": "string"
+                    },
+                    "op": {
+                        "const": "retry",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "op",
+                    "id"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "after": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "op": {
+                        "const": "list-parked",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "op"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "id": {
+                        "type": "string"
+                    },
+                    "op": {
+                        "const": "dismiss",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "op",
+                    "id"
+                ],
+                "type": "object"
             }
         ]
     },
@@ -1723,6 +1835,67 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "result"
                 ],
                 "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "resolved",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "retried",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "next": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "parked": {
+                        "items": {
+                            "$ref": "#/$defs/ParkedSummary"
+                        },
+                        "type": "array"
+                    },
+                    "result": {
+                        "const": "parked",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "parked"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "dismissed",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
             }
         ]
     },
@@ -1780,6 +1953,16 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "$ref": "#/$defs/ScheduleGrant"
                 },
                 "type": "array"
+            },
+            "held": {
+                "anyOf": [
+                    {
+                        "$ref": "#/$defs/HeldFire"
+                    },
+                    {
+                        "type": "null"
+                    }
+                ]
             },
             "id": {
                 "type": "string"

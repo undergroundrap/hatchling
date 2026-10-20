@@ -565,7 +565,10 @@ impl<R: Run> Dispatcher<R> {
         );
         if unknown {
             tracing::warn!(schedule = %id, "its last fire's outcome is unknown: this fire is held until the owner resolves or retries it");
-            if let Err(error) = services.store.skip_due(&id, revision, due.as_second(), next) {
+            if let Err(error) = services
+                .store
+                .skip_due(&id, revision, due.as_second(), next)
+            {
                 tracing::error!(schedule = %id, %error, "a held fire's cadence not moved on");
             }
             report.held.push(id);
