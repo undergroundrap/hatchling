@@ -49,8 +49,9 @@ use hatchling_core::{
     ScheduleOp, ScheduleRefusal, ScheduleResult, ScheduleSpec, ScheduleSummary, SecretName,
 };
 use hatchling_scheduler::{
-    Creator, Delivery, Dispatcher, FollowupParent, Hook, Launcher, Parked, Schedule, Services,
-    Sources, Store, TickReport, Timestamp, validate, validate_followup, validate_hook,
+    Claim, Creator, Delivery, Dispatcher, FollowupParent, Hook, Launcher, Occurrence,
+    OccurrenceState, Parked, Schedule, Services, Sources, Store, TickReport, Timestamp, validate,
+    validate_followup, validate_hook,
 };
 use hatchling_vault::{OpensStores, SealedVault, Secret};
 
@@ -60,7 +61,9 @@ use crate::{Config, Error};
 /// Most schedules the store keeps.
 pub const MAX_SCHEDULES: usize = 64;
 
-/// Most parked results the store keeps. Past it the oldest is dropped,
+/// Most parked results the store keeps. Past it a result isn't parked:
+/// it stays in its schedule's record, and that schedule's next fire is
+/// refused until it is resolved (WO-025). Nothing kept is dropped,
 /// loudly.
 pub const MAX_PARKED: usize = 64;
 
@@ -284,6 +287,81 @@ impl<'k> SealedScheduleStore<'k> {
     }
 }
 
+impl SealedScheduleStore<'_> {
+    /// The latest record of `id`, when the index still names it.
+    fn latest(vault: &SealedVault<'_>, id: &str) -> Result<Option<Schedule>, Error> {
+        let index: Vec<String> = read_json(vault, INDEX)?.unwrap_or_default();
+        if !index.iter().any(|stored| stored == id) {
+            return Ok(None);
+        }
+        read_json(vault, &entry_name(id))?.map_or_else(|| Err(missing(id)), |stored| Ok(Some(stored)))
+    }
+
+    /// Applies `change` to the latest record of `id` when it still holds
+    /// the fire due at `due`, and keeps it with its revision moved on.
+    /// Returns the record as kept, or `None` when that fire isn't the
+    /// schedule's any more.
+    fn change_fire(
+        vault: &SealedVault<'_>,
+        id: &str,
+        due: i64,
+        change: impl FnOnce(&mut Schedule),
+    ) -> Result<Option<Schedule>, Error> {
+        let Some(mut stored) = Self::latest(vault, id)? else {
+            return Ok(None);
+        };
+        if stored.ledger.occurrence.as_ref().map(|fire| fire.due) != Some(due) {
+            return Ok(None);
+        }
+        change(&mut stored);
+        stored.ledger.revision = stored.ledger.revision.saturating_add(1);
+        write_json(vault, &entry_name(id), &stored)?;
+        Ok(Some(stored))
+    }
+
+    /// Keeps `parked` for the user, unless the store is full: nothing
+    /// kept is dropped to make room.
+    fn keep_parked(vault: &SealedVault<'_>, parked: &Parked) -> Result<(), Error> {
+        let mut index: Vec<String> = read_json(vault, PARKED_INDEX)?.unwrap_or_default();
+        if index.len() >= MAX_PARKED {
+            return Err(Error::ScheduleStore {
+                reason: format!("{MAX_PARKED} parked results are kept already: none is dropped"),
+            });
+        }
+        let next = index
+            .iter()
+            .filter_map(|name| name.strip_prefix("parked-")?.parse::<u64>().ok())
+            .max()
+            .map_or(0, |last| last.saturating_add(1));
+        let name = format!("parked-{next}");
+        let mut kept = parked.clone();
+        kept.text = bounded(&parked.text);
+        write_json(vault, &name, &kept)?;
+        index.push(name);
+        write_json(vault, PARKED_INDEX, &index)
+    }
+
+    /// Removes `id` from the index, then its record.
+    fn drop_schedule(vault: &SealedVault<'_>, id: &str) -> Result<bool, Error> {
+        let mut index: Vec<String> = read_json(vault, INDEX)?.unwrap_or_default();
+        let Some(position) = index.iter().position(|stored| stored == id) else {
+            return Ok(false);
+        };
+        index.remove(position);
+        write_json(vault, INDEX, &index)?;
+        let _ = vault.remove(&secret_name(&entry_name(id))?);
+        Ok(true)
+    }
+}
+
+/// A schedule the index names whose record is missing: an error, never a
+/// schedule that silently stopped existing (WO-025).
+fn missing(id: &str) -> Error {
+    Error::ScheduleStore {
+        reason: format!("schedule {id} is in the index but its record is missing"),
+    }
+}
+
 impl Store for SealedScheduleStore<'_> {
     type Error = Error;
 
@@ -293,32 +371,103 @@ impl Store for SealedScheduleStore<'_> {
         let index: Vec<String> = read_json(&vault, INDEX)?.unwrap_or_default();
         index
             .iter()
-            .filter_map(|id| read_json(&vault, &entry_name(id)).transpose())
+            .map(|id| read_json(&vault, &entry_name(id))?.ok_or_else(|| missing(id)))
             .collect()
     }
 
-    fn update(&self, schedule: &Schedule) -> Result<bool, Error> {
+    fn claim_due(
+        &self,
+        id: &str,
+        revision: u64,
+        due: i64,
+        next_due: Option<i64>,
+        missed: bool,
+    ) -> Result<Claim, Error> {
         let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
         let vault = self.vault()?;
-        let index: Vec<String> = read_json(&vault, INDEX)?.unwrap_or_default();
-        if !index.contains(&schedule.id) {
+        let Some(mut stored) = Self::latest(&vault, id)? else {
+            return Ok(Claim::NotDue);
+        };
+        if stored.ledger.revision != revision || stored.next_due != due || stored.ledger.exhausted {
+            return Ok(Claim::NotDue);
+        }
+        if stored.ledger.occurrence.is_some() {
+            return Ok(Claim::Full);
+        }
+        stored.ledger.occurrence = Some(Occurrence {
+            due,
+            missed,
+            state: OccurrenceState::Claimed,
+        });
+        match next_due {
+            Some(next) => stored.next_due = next,
+            None => stored.ledger.exhausted = true,
+        }
+        stored.ledger.revision = stored.ledger.revision.saturating_add(1);
+        write_json(&vault, &entry_name(id), &stored)?;
+        Ok(Claim::Claimed)
+    }
+
+    fn skip_due(
+        &self,
+        id: &str,
+        revision: u64,
+        due: i64,
+        next_due: Option<i64>,
+    ) -> Result<bool, Error> {
+        let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
+        let vault = self.vault()?;
+        let Some(mut stored) = Self::latest(&vault, id)? else {
+            return Ok(false);
+        };
+        if stored.ledger.revision != revision || stored.next_due != due {
             return Ok(false);
         }
-        write_json(&vault, &entry_name(&schedule.id), schedule)?;
+        match next_due {
+            Some(next) => stored.next_due = next,
+            None => stored.ledger.exhausted = true,
+        }
+        stored.ledger.revision = stored.ledger.revision.saturating_add(1);
+        write_json(&vault, &entry_name(id), &stored)?;
+        Ok(true)
+    }
+
+    fn record(&self, id: &str, due: i64, state: OccurrenceState) -> Result<bool, Error> {
+        let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
+        let vault = self.vault()?;
+        let changed = Self::change_fire(&vault, id, due, |stored| {
+            if let Some(fire) = stored.ledger.occurrence.as_mut() {
+                fire.state = state;
+            }
+        })?;
+        Ok(changed.is_some())
+    }
+
+    fn resolve(&self, id: &str, due: i64, parked: Option<&Parked>) -> Result<bool, Error> {
+        let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
+        let vault = self.vault()?;
+        let holds = Self::latest(&vault, id)?
+            .and_then(|stored| stored.ledger.occurrence)
+            .is_some_and(|fire| fire.due == due);
+        if !holds {
+            return Ok(false);
+        }
+        // Kept for the user first: a crash after it parks the result
+        // twice, never loses it.
+        if let Some(parked) = parked {
+            Self::keep_parked(&vault, parked)?;
+        }
+        let resolved = Self::change_fire(&vault, id, due, |stored| stored.ledger.occurrence = None)?;
+        if resolved.is_some_and(|stored| stored.ledger.exhausted) {
+            Self::drop_schedule(&vault, id)?;
+        }
         Ok(true)
     }
 
     fn remove(&self, id: &str) -> Result<bool, Error> {
         let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
         let vault = self.vault()?;
-        let mut index: Vec<String> = read_json(&vault, INDEX)?.unwrap_or_default();
-        let Some(position) = index.iter().position(|stored| stored == id) else {
-            return Ok(false);
-        };
-        index.remove(position);
-        write_json(&vault, INDEX, &index)?;
-        let _ = vault.remove(&secret_name(&entry_name(id))?);
-        Ok(true)
+        Self::drop_schedule(&vault, id)
     }
 
     fn hooks(&self) -> Result<Vec<Hook>, Error> {
@@ -334,23 +483,7 @@ impl Store for SealedScheduleStore<'_> {
     fn park(&self, parked: &Parked) -> Result<(), Error> {
         let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
         let vault = self.vault()?;
-        let mut index: Vec<String> = read_json(&vault, PARKED_INDEX)?.unwrap_or_default();
-        while index.len() >= MAX_PARKED {
-            let oldest = index.remove(0);
-            tracing::warn!(parked = %oldest, "parked results full: dropping the oldest");
-            let _ = vault.remove(&secret_name(&oldest)?);
-        }
-        let next = index
-            .iter()
-            .filter_map(|name| name.strip_prefix("parked-")?.parse::<u64>().ok())
-            .max()
-            .map_or(0, |last| last.saturating_add(1));
-        let name = format!("parked-{next}");
-        let mut kept = parked.clone();
-        kept.text = bounded(&parked.text);
-        write_json(&vault, &name, &kept)?;
-        index.push(name);
-        write_json(&vault, PARKED_INDEX, &index)
+        Self::keep_parked(&vault, parked)
     }
 }
 
@@ -1012,6 +1145,7 @@ mod tests {
             space: None,
             feed: None,
             creator: Creator::Agent,
+            ledger: hatchling_scheduler::Ledger::default(),
         };
         let shown = summary(&schedule);
         assert_eq!(
