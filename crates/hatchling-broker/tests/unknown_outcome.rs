@@ -234,17 +234,9 @@ fn a_fire_in_flight_when_the_broker_is_killed_is_held_as_unknown() {
             .collect::<Vec<_>>()
     });
     assert_eq!(
-        store.hold_in_flight().map_err(|error| error.to_string()),
-        Ok(vec![String::from("sch-hang")]),
-        "the store held: {before:?}; on disk: {:?}; base: {:?}",
-        std::fs::read_dir(&config.scheduler.root).map(|entries| entries
-            .filter_map(Result::ok)
-            .map(|entry| entry.file_name())
-            .collect::<Vec<_>>()),
-        std::fs::read_dir(&*base).map(|entries| entries
-            .filter_map(Result::ok)
-            .map(|entry| entry.file_name())
-            .collect::<Vec<_>>())
+        hatchling_broker::run_launcher::hold_in_flight(&config, &key),
+        ["sch-hang"],
+        "the store held: {before:?}"
     );
     let fire = store
         .load()

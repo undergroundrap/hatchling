@@ -159,5 +159,8 @@ The API's caller grants (`HATCHLING_API_GRANTS`) are written as labels: `kind:fi
   - Nothing says how many other schedules exist.
   - A caller with no grants at all is refused `not_granted`. With the scheduler off, the answer is `denied`.
 - **Cancelling** needs the owner's whole grant set, since a cancel can undo any schedule.
+- **A fire of unknown outcome** (WO-025): a run a broker had claimed or started when it stopped is never run again on its own. The next broker holds it, and `list` shows it on its schedule as `held` (`{"due":…,"started":true}`); the schedule's later fires are held until the owner acts. `{"op":"resolve","id":"sch-1"}` marks it resolved, after looking at what it did, and the schedule resumes; `{"op":"retry","id":"sch-1"}` runs it again now, as a new attempt under the grants the creator holds then.
+- **Parked results:** a result that couldn't be delivered is kept for the owner. `{"op":"list-parked"}` lists them, a page at a time, oldest first, each with its `id`; `{"op":"dismiss","id":"parked-0"}` removes one. At 64 kept, a result isn't parked: it stays with its schedule, whose next fire is refused until it is delivered, or a dismissal makes room to park it.
+- `resolve`, `retry`, `list-parked` and `dismiss` are the owner's alone: they need the owner's whole grant set here, and a cell's session is refused them (`denied`).
 
 Every refusal is typed: the reason names what was wrong with the request, and never anything the caller couldn't already see.

@@ -1935,6 +1935,22 @@ mod tests {
         assert!(retried.ledger.occurrence.is_none());
         assert!(!store.retry("sch-none", now).unwrap());
         assert!(!store.mark_resolved("sch-none").unwrap());
+    }
+
+    /// Parked results (WO-025, part 2): listed with their ids, a page at
+    /// a time, and dismissed, by the owner alone.
+    #[test]
+    fn the_owner_lists_and_dismisses_parked_results() {
+        let mut config = crate::api_auth::tests::owner_config(None);
+        let dir = crate::api_auth::tests::scratch("owner-parked");
+        config.scheduler = crate::SchedulerConfig {
+            root: dir.0.join("schedules"),
+            ..crate::SchedulerConfig::disabled()
+        };
+        let master = MasterKey::generate().unwrap();
+        let store = SealedScheduleStore::new(&config.scheduler.root, &master);
+        let now = Timestamp::from_second(1_790_010_000).unwrap();
+        let op = |op: ScheduleOp, caller: Creator| handle_schedule_op(&config, &master, &op, now, caller);
         // Parked results: listed with their ids, and dismissed.
         let parked = Parked {
             schedule_id: String::from("sch-a"),
