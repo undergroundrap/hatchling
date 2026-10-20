@@ -293,7 +293,7 @@ mod tests {
     fn request_frame_refuses_a_reply_of_another_kind() {
         for reply in [
             SessionResponse::Web(hatchling_core::WebResult::Off),
-            SessionResponse::Vault(hatchling_core::VaultResult::VaultError),
+            SessionResponse::Vault(VaultResult::VaultError),
         ] {
             let (agent, _broker) = answer_once(reply);
             assert!(matches!(
@@ -302,6 +302,9 @@ mod tests {
             ));
         }
         let (agent, _broker) = answer_once(SessionResponse::Skill(SkillResult::SkillError));
-        assert_eq!(request_frame(&agent, b"{}").unwrap(), SkillResult::SkillError);
+        assert_eq!(
+            request_frame(&agent, b"{}").unwrap(),
+            SkillResult::SkillError
+        );
     }
 }

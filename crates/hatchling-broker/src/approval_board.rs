@@ -776,12 +776,20 @@ mod tests {
             expires_at: 1_790_000_000,
             new: true,
         };
-        let request =
-            site_confirmation("https://a.example", "https://a.example/x", "to read it", &requested);
+        let request = site_confirmation(
+            "https://a.example",
+            "https://a.example/x",
+            "to read it",
+            &requested,
+        );
         assert!(request.session);
         assert_eq!(request.summary, "Let the agent read a site");
         assert_eq!(
-            (request.confirmation_id.as_str(), request.revision, request.digest.as_str()),
+            (
+                request.confirmation_id.as_str(),
+                request.revision,
+                request.digest.as_str()
+            ),
             ("approval-1", 1, "ab")
         );
         assert_eq!(request.chat_id.as_deref(), Some(CONFIRMATION_CHAT));
@@ -806,7 +814,11 @@ mod tests {
         assert_eq!(
             fields.get(3..).map(<[_]>::to_vec),
             Some(vec![
-                ("Page it asked for", "https://a.example/x", FieldSource::Agent),
+                (
+                    "Page it asked for",
+                    "https://a.example/x",
+                    FieldSource::Agent
+                ),
                 ("Why it wants it", "to read it", FieldSource::Agent),
             ])
         );

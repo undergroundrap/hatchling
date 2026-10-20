@@ -255,7 +255,7 @@ fn decided(board: &Board, id: &str, site: &str, wait: Duration) -> Result<(), We
 
 /// Reads `url`, following redirects on its site, within the session's
 /// deadline.
-fn read(web: &mut WebSession, mut url: WebUrl) -> WebResult {
+fn read(web: &WebSession, mut url: WebUrl) -> WebResult {
     let Some(fetcher) = web.fetcher.clone() else {
         return WebResult::Off;
     };
@@ -826,7 +826,13 @@ mod tests {
         );
         let digest = board.approvals().get(&request).unwrap().digest;
         board
-            .decide(&request, 1, &digest, Decision::Deny, Timestamp::now().as_second())
+            .decide(
+                &request,
+                1,
+                &digest,
+                Decision::Deny,
+                Timestamp::now().as_second(),
+            )
             .unwrap();
         assert_eq!(
             ask_owner(&board, &web, &url, "why", "https://a.example"),
@@ -834,9 +840,8 @@ mod tests {
                 site: String::from("https://a.example")
             })
         );
-        let config = web_config("ask-yes");
-        let board = crate::approval_board::board(&config);
-        let owner = config.clone();
+        let owner = web_config("ask-yes");
+        let board = crate::approval_board::board(&owner);
         std::thread::spawn(move || {
             for _ in 0..100 {
                 if board_has_pending(&owner, "t2", "https://a.example") {
@@ -846,9 +851,17 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(50));
             }
         });
-        let attended = WebSession::with("t2", Duration::from_secs(10), Duration::from_secs(5), fetcher);
+        let attended = WebSession::with(
+            "t2",
+            Duration::from_secs(10),
+            Duration::from_secs(5),
+            fetcher,
+        );
         let approved = ask_owner(&board, &attended, &url, "why", "https://a.example");
-        assert!(matches!(approved, Ok(ref id) if id.starts_with("approval-")), "{approved:?}");
+        assert!(
+            matches!(approved, Ok(ref id) if id.starts_with("approval-")),
+            "{approved:?}"
+        );
     }
 
     fn board_has_pending(config: &Config, task: &str, site: &str) -> bool {

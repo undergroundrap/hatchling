@@ -1387,7 +1387,10 @@ mod tests {
     /// Each approval refusal has its own words.
     #[test]
     fn each_approval_refusal_has_its_words() {
-        assert_eq!(approval_refusal_text(ApprovalRefusal::Denied), "the owner said no");
+        assert_eq!(
+            approval_refusal_text(ApprovalRefusal::Denied),
+            "the owner said no"
+        );
         assert_eq!(
             approval_refusal_text(ApprovalRefusal::Paused),
             "requests to the owner are paused for a while"
