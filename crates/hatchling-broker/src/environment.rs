@@ -18,6 +18,8 @@ hatchling_core::declare_environment! {
     HATCHLING_EGRESS_ALLOWLIST: ("optional; default none", "Allowed host:port destinations, with public:, local:, local-keyless: or internal: qualifiers; only internal: may resolve to a private or loopback address."),
     HATCHLING_EGRESS_GRANTS: ("optional; default none", "Comma-separated host:port destinations this agent may request."),
     HATCHLING_EGRESS_CA_BUNDLE: ("optional", "Absolute PEM bundle of additional trusted HTTPS roots."),
+    HATCHLING_WEB: ("optional; default off", "Let the agent ask to read web pages, each new site approved by the owner: off or sites."),
+    HATCHLING_WEB_REFUSE: ("optional", "Comma-separated hosts the agent may never read, with every name under them."),
     HATCHLING_CHANNELS: ("optional; default local", "Comma-separated enabled channel identifiers."),
     HATCHLING_CHANNEL_ACCOUNTS: ("optional", "Channel account credentials as channel:label=secret-name."),
     HATCHLING_CHANNEL_INGRESS: ("optional", "Absolute local-channel ingress socket, outside the cell's socket directory."),

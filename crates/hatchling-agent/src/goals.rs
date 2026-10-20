@@ -137,7 +137,8 @@ pub fn query(stream: &UnixStream, op: &QueryOp) -> Result<QueryPage, Error> {
         | SessionResponse::Hook(_)
         | SessionResponse::Artifact(_)
         | SessionResponse::Space(_)
-        | SessionResponse::Subagent(_)) => Err(wrong_kind(query_name(op), &other)),
+        | SessionResponse::Subagent(_)
+        | SessionResponse::Web(_)) => Err(wrong_kind(query_name(op), &other)),
     }
 }
 
@@ -232,7 +233,8 @@ fn write(stream: &UnixStream, op: &GoalsOp) -> Result<GoalsResult, Error> {
         | SessionResponse::Hook(_)
         | SessionResponse::Artifact(_)
         | SessionResponse::Space(_)
-        | SessionResponse::Subagent(_)) => Err(wrong_kind(action_name(op), &other)),
+        | SessionResponse::Subagent(_)
+        | SessionResponse::Web(_)) => Err(wrong_kind(action_name(op), &other)),
     }
 }
 

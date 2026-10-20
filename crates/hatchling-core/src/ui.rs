@@ -428,6 +428,11 @@ pub struct ConfirmationRequest {
     pub digest: String,
     /// The action's fields, in review order.
     pub fields: Vec<ConfirmationField>,
+    /// Whether it can be approved for the rest of the session
+    /// ([`Decision::ApproveSession`]) as well as once: a site the agent
+    /// asks to read (WO-028).
+    #[serde(default)]
+    pub session: bool,
 }
 
 /// One field of what a confirmation asks.
@@ -460,6 +465,9 @@ pub enum FieldSource {
 pub enum Decision {
     /// Go ahead.
     Approve,
+    /// Go ahead, and for the rest of the session: offered only where the
+    /// request says so ([`ConfirmationRequest::session`]).
+    ApproveSession,
     /// Do not.
     Deny,
 }
@@ -668,6 +676,9 @@ pub enum DecisionRejection {
     Expired,
     /// It was already decided. The earlier decision stands.
     AlreadyDecided,
+    /// The request doesn't offer that decision: approving for the session
+    /// what can only be approved once.
+    NotOffered,
 }
 
 /// Why an action was refused before anything ran.
@@ -1078,9 +1089,10 @@ mod tests {
                             source: FieldSource::Agent,
                         },
                     ],
+                    session: false,
                 }),
             ),
-            &json!({"seq": 5, "ts": "t", "body": {"kind": "confirmation", "confirmation_id": "k1", "revision": 2, "chat_id": "main", "summary": "send the email", "expires_at": null, "digest": "ab12", "fields": [{"label": "To", "value": "pat@example.com", "source": "broker"}, {"label": "Text", "value": "Hello", "source": "agent"}]}}),
+            &json!({"seq": 5, "ts": "t", "body": {"kind": "confirmation", "confirmation_id": "k1", "revision": 2, "chat_id": "main", "summary": "send the email", "expires_at": null, "digest": "ab12", "fields": [{"label": "To", "value": "pat@example.com", "source": "broker"}, {"label": "Text", "value": "Hello", "source": "agent"}], "session": false}}),
         );
         pinned(
             &at(
@@ -1108,6 +1120,15 @@ mod tests {
                 },
             },
             &json!({"type": "action", "request_id": "r1", "action": {"action": "decide", "confirmation_id": "k1", "revision": 2, "digest": "ab12", "decision": "approve"}}),
+        );
+        pinned(
+            &UiAction::Decide {
+                confirmation_id: String::from("k1"),
+                revision: 2,
+                digest: String::from("ab12"),
+                decision: Decision::ApproveSession,
+            },
+            &json!({"action": "decide", "confirmation_id": "k1", "revision": 2, "digest": "ab12", "decision": "approve_session"}),
         );
         pinned(
             &UiAction::SendMessage {

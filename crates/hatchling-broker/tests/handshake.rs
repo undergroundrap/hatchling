@@ -80,6 +80,7 @@ fn test_config(name: &str, socket: &str, agent_uid: u32) -> Result<Config, Strin
         },
         artifacts: hatchling_broker::ArtifactConfig::disabled(),
         spaces: hatchling_broker::SpaceConfig::disabled(),
+        web: hatchling_broker::WebConfig::off(),
         goals: hatchling_broker::GoalsConfig::disabled(),
     })
 }

@@ -15,6 +15,8 @@ use crate::Error;
 /// path; a peer speaking anything else is a protocol violation, not a
 /// negotiation.
 ///
+/// v14 adds the web session (`WebOp` / `WebResult`, WO-028): a page
+/// read through the broker, from a site the owner allows.
 /// v13 carries egress bodies larger than a frame in parts
 /// (`EgressOp::Stage` / `EgressResult::Staged` for a request,
 /// `EgressOp::Read` / `EgressResult::Part` for an answer), with
@@ -33,7 +35,7 @@ use crate::Error;
 /// (`EgressOp` / `EgressResult`). v2 adds the post-handshake vault
 /// session (`VaultOp` / `VaultResult`). v1 peers fail closed at the
 /// version check, in both directions.
-pub const PROTOCOL_VERSION: u16 = 13;
+pub const PROTOCOL_VERSION: u16 = 14;
 
 /// Largest single frame accepted, in bytes. Bounds allocation against a
 /// malicious or broken peer before any heap grows.

@@ -104,6 +104,7 @@ fn config(name: &str) -> (Base, Config) {
             device_socket: None,
         },
         goals: GoalsConfig::disabled(),
+        web: hatchling_broker::WebConfig::off(),
     };
     (Base(base), config)
 }

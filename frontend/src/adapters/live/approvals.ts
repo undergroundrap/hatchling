@@ -17,6 +17,7 @@ const REJECTIONS: Readonly<Record<DecisionRejection, string>> = {
     stale_revision: 'This request changed after it was shown. Review the new version before deciding.',
     expired: 'This request expired before the decision arrived, so nothing was decided.',
     already_decided: 'This request was already decided.',
+    not_offered: 'This request can only be approved once, so nothing was decided.',
 };
 /** What a broker rejection says about the request itself. */
 const CLOSES: Readonly<Partial<Record<DecisionRejection, ApprovalStatus>>> = { unknown: 'cancelled', expired: 'expired' };

@@ -78,6 +78,7 @@ fn broker(name: &str) -> TestSocket {
         },
         artifacts: hatchling_broker::ArtifactConfig::disabled(),
         spaces: hatchling_broker::SpaceConfig::disabled(),
+        web: hatchling_broker::WebConfig::off(),
         goals: hatchling_broker::GoalsConfig::disabled(),
     };
     let listener = bind_listener(&config).unwrap();

@@ -1776,7 +1776,7 @@ mod tests {
     use super::*;
     use crate::{
         ArtifactConfig, EgressConfig, GoalsConfig, MemoryConfig, SchedulerConfig, SkillConfig,
-        SpaceConfig, VaultConfig,
+        SpaceConfig, VaultConfig, WebConfig,
     };
     use hatchling_vault::MasterKey;
     use hatchling_vault::SealedVault;
@@ -1856,6 +1856,7 @@ mod tests {
                 ..ArtifactConfig::disabled()
             },
             spaces: SpaceConfig::disabled(),
+            web: WebConfig::off(),
             goals: GoalsConfig::disabled(),
         }
     }

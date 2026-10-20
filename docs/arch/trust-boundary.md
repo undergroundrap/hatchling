@@ -80,6 +80,18 @@ A model vendor's API can fetch on the caller's behalf: an image or a document na
 
 **What it costs.** A harness configured to use its vendor's web search or fetch gets those requests refused with a 403 that says why; turn them off in the harness. A new vendor feature that fetches stays refused until it's reviewed and added here.
 
+## Reading the web (WO-028)
+
+An agent that can read the web can be steered by what it reads, and can carry what it knows out in the address it asks for. So the cell never reaches the web: it asks the broker for a page (`web_fetch`), and the broker decides (`crates/hatchling-broker/src/web_ops.rs`, `crates/hatchling-egress/src/web.rs`).
+
+- **Off unless the operator turns it on** (`HATCHLING_WEB=sites`), and a host the operator refuses (`HATCHLING_WEB_REFUSE`), with every name under it, is never asked for.
+- **Each site is the owner's to allow.** A site is an origin: `https`, a host and a port, never a subdomain or another port. A page on a site the session doesn't hold is put to the owner in the app, outside the conversation, with the page and the agent's reason labeled as the agent's. The owner allows it once or for the session, or refuses it for the broker's life. Nothing is fetched until they say yes, and nothing a page says can approve anything.
+- **No internal address.** The URL is parsed strictly (no user name or password, no IP address, a host in ASCII), the host is resolved when it's fetched, and it's refused if any address it resolves to is internal, before a connection. The connection goes only to the addresses checked.
+- **One bounded read.** A `GET` with no credential, 1 MiB at most, 60 seconds for the read with its redirects on the same site; a redirect to another site is returned, for the agent to ask for. HTML is reduced to its text, and other types than text are refused.
+- **What comes back is data.** The page reaches the model inside the tool result's envelope, labeled as data, never instructions.
+
+**What a granted site can still do.** It receives whatever the agent puts in a page's address, so a session grant is a window for that site to learn what the agent read. The prompt says so, and *once* keeps the window to one page.
+
 ## What the boundary does NOT cover
 
 - **The host kernel.** A kernel vulnerability is the host's

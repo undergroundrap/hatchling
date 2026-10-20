@@ -558,6 +558,7 @@ pub(crate) mod tests {
             },
             artifacts: crate::ArtifactConfig::disabled(),
             spaces: crate::SpaceConfig::disabled(),
+            web: crate::WebConfig::off(),
             goals: crate::GoalsConfig::disabled(),
         };
         config.goals.grants = vec![crate::GoalsAction::QueryGoals];

@@ -368,7 +368,8 @@ fn request(stream: &UnixStream, op: &MemoryOp) -> Result<MemoryResult, Error> {
         | SessionResponse::Hook(_)
         | SessionResponse::Artifact(_)
         | SessionResponse::Space(_)
-        | SessionResponse::Subagent(_) => Err(Error::MemoryProtocol {
+        | SessionResponse::Subagent(_)
+        | SessionResponse::Web(_) => Err(Error::MemoryProtocol {
             reason: String::from("broker gave a goals or query reply to a memory op"),
         }),
     }
@@ -445,7 +446,8 @@ mod paging_tests {
                 | SessionRequest::Hook(_)
                 | SessionRequest::Artifact(_)
                 | SessionRequest::Space(_)
-                | SessionRequest::Subagent(_) => None,
+                | SessionRequest::Subagent(_)
+                | SessionRequest::Web(_) => None,
             })
             .collect()
     }

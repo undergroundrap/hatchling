@@ -209,6 +209,7 @@ fn session(root: &Path, skills: Arc<Skills>) -> R<UnixStream> {
         },
         artifacts: hatchling_broker::ArtifactConfig::disabled(),
         spaces: hatchling_broker::SpaceConfig::disabled(),
+        web: hatchling_broker::WebConfig::off(),
         goals: hatchling_broker::GoalsConfig::disabled(),
     };
     let key = hatchling_vault::MasterKey::generate().map_err(err)?;
@@ -253,7 +254,8 @@ fn invoke(stream: &UnixStream, skill: &str) -> R<SkillResult> {
         | SessionResponse::Hook(_)
         | SessionResponse::Artifact(_)
         | SessionResponse::Space(_)
-        | SessionResponse::Subagent(_) => Err(String::from("not a skill reply")),
+        | SessionResponse::Subagent(_)
+        | SessionResponse::Web(_) => Err(String::from("not a skill reply")),
     }
 }
 

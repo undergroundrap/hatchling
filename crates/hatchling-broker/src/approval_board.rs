@@ -17,6 +17,11 @@
 //!   request, which builds only if the idea still pins it unchanged. The
 //!   outcome goes to the owner on the local channel, as the broker's.
 //!
+//! A site the agent asks to read (WO-028) is put to the owner on the same
+//! board ([`Board::propose_site`]), under the same limits, and offers
+//! approval for the session as well as once. Nothing runs it: the session
+//! that asked reads the decision and fetches.
+//!
 //! One board per broker, found by its vault's root: a broker has one
 //! vault, and each test its own, so each has its own ledger and limits.
 
@@ -47,6 +52,22 @@ pub struct ActivationRun {
     pub idea: String,
 }
 
+/// What an approval is for: the broker's own record of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Approved {
+    /// An activation, which the worker runs.
+    Activation(ActivationRun),
+    /// A site the agent may read, which the session that asked reads.
+    Site(SiteVisit),
+}
+
+/// A site the agent asked to read (WO-028).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SiteVisit {
+    /// The site, as the owner sees it: `https://host[:port]`.
+    pub site: String,
+}
+
 /// How long the worker waits for an approval before looking again.
 pub const WORKER_WAIT: Duration = Duration::from_secs(1);
 
@@ -56,7 +77,7 @@ pub const CONFIRMATION_CHAT: &str = "main";
 /// One broker's approvals.
 #[derive(Debug)]
 pub struct Board {
-    approvals: Approvals<ActivationRun>,
+    approvals: Approvals<Approved>,
     bus: Mutex<Option<Arc<Bus>>>,
     queue: Mutex<VecDeque<String>>,
     wake: Condvar,
@@ -92,7 +113,7 @@ impl Board {
 
     /// The ledger.
     #[must_use]
-    pub const fn approvals(&self) -> &Approvals<ActivationRun> {
+    pub const fn approvals(&self) -> &Approvals<Approved> {
         &self.approvals
     }
 
@@ -139,13 +160,14 @@ impl Board {
         });
         let requested = self.approvals.propose(
             Proposal {
-                run: ActivationRun {
+                run: Approved::Activation(ActivationRun {
                     activation: proposal.activation.clone(),
                     idea: proposal.idea.idea.clone(),
-                },
+                }),
                 action,
                 fingerprint: effect,
                 task: task.to_owned(),
+                session: false,
             },
             now,
         )?;
@@ -157,9 +179,46 @@ impl Board {
         Ok(requested)
     }
 
+    /// Puts `site`, which task `task` asks to read `url` on for `reason`,
+    /// to the owner at `now` (WO-028): the request, and whether it was new.
+    /// What is approved is the site alone; the page and the reason are
+    /// shown, the reason as the agent's words.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal`]: the owner said no to this site, requests are paused or
+    /// full, or the record has no canonical form.
+    pub fn propose_site(
+        &self,
+        site: &str,
+        url: &str,
+        reason: &str,
+        task: &str,
+        now: i64,
+    ) -> Result<Requested, Refusal> {
+        let requested = self.approvals.propose(
+            Proposal {
+                run: Approved::Site(SiteVisit {
+                    site: site.to_owned(),
+                }),
+                action: site_action(site),
+                fingerprint: json!({ "op": "web.visit", "site": site }),
+                task: task.to_owned(),
+                session: true,
+            },
+            now,
+        )?;
+        if requested.new {
+            self.publish(UiEventBody::Confirmation(site_confirmation(
+                site, url, reason, &requested,
+            )));
+        }
+        Ok(requested)
+    }
+
     /// The owner's `decision` on request `id`, at the `revision` and
-    /// `digest` they were shown, at `now`. An approval is queued for the
-    /// worker, and the decision goes out on the stream.
+    /// `digest` they were shown, at `now`. An approved activation is queued
+    /// for the worker, and the decision goes out on the stream.
     ///
     /// # Errors
     ///
@@ -178,7 +237,11 @@ impl Board {
             revision,
             decision,
         });
-        if decided == State::Approved {
+        let activation = self
+            .approvals
+            .get(id)
+            .is_some_and(|request| matches!(request.run(), Approved::Activation(_)));
+        if decided == State::Approved && activation {
             self.queue
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -212,6 +275,49 @@ impl Board {
         if let Some(bus) = bus {
             bus.push(Timestamp::now().to_string(), body);
         }
+    }
+}
+
+/// The record a site's approval binds: the site alone (WO-028).
+#[must_use]
+pub fn site_action(site: &str) -> serde_json::Value {
+    json!({ "format": 1, "op": "web.visit", "site": site })
+}
+
+/// The confirmation the owner is shown for reading `site`: the broker's
+/// fields first, then the agent's words.
+fn site_confirmation(
+    site: &str,
+    url: &str,
+    reason: &str,
+    requested: &Requested,
+) -> ConfirmationRequest {
+    let field = |label: &str, value: &str, source: FieldSource| ConfirmationField {
+        label: label.to_owned(),
+        value: value.to_owned(),
+        source,
+    };
+    ConfirmationRequest {
+        confirmation_id: requested.id.clone(),
+        revision: requested.revision,
+        chat_id: Some(String::from(CONFIRMATION_CHAT)),
+        summary: String::from("Let the agent read a site"),
+        expires_at: Timestamp::from_second(requested.expires_at)
+            .ok()
+            .map(|at| at.to_string()),
+        digest: requested.digest.clone(),
+        fields: vec![
+            field("Operation", "Read pages from a site", FieldSource::Broker),
+            field("Site", site, FieldSource::Broker),
+            field(
+                "What it allows",
+                "Once: this page, now. For this session: any page on this site until the session ends. The site sees whatever the agent puts in a page's address.",
+                FieldSource::Broker,
+            ),
+            field("Page it asked for", url, FieldSource::Agent),
+            field("Why it wants it", reason, FieldSource::Agent),
+        ],
+        session: true,
     }
 }
 
@@ -257,6 +363,7 @@ fn confirmation(proposal: &ActivationProposal, requested: &Requested) -> Confirm
             .map(|at| at.to_string()),
         digest: requested.digest.clone(),
         fields,
+        session: false,
     }
 }
 
@@ -325,7 +432,16 @@ pub fn run_approved(
     hub: Option<&LocalHub>,
     now: i64,
 ) -> String {
-    let Some((run, claim)) = board.approvals().claim(id) else {
+    let site = board
+        .approvals()
+        .get(id)
+        .is_some_and(|request| matches!(request.run(), Approved::Site(_)));
+    if site {
+        // A site is read by the session that asked, never by the worker,
+        // and its approval is left for that session.
+        return format!("Approval {id} was not run: it is not the worker's to run.");
+    }
+    let Some((Approved::Activation(run), claim)) = board.approvals().claim(id) else {
         return format!("Approval {id} was not run: it is no longer approved.");
     };
     let token = match crate::activation::confirm_activation(config, key, &run.activation, now) {
@@ -563,6 +679,148 @@ mod tests {
         assert_eq!(
             board.approvals().get(&approved.id).map(|r| r.state),
             Some(State::Approved)
+        );
+    }
+
+    /// A site is asked with what it allows, can be approved for the
+    /// session, and is never the worker's: not queued, and left approved
+    /// for the session that asked when the worker is handed it (WO-028).
+    #[test]
+    fn a_site_is_asked_and_left_for_its_session() {
+        let board = empty();
+        let bus = Arc::new(Bus::starting_at(1));
+        board.attach(Arc::clone(&bus));
+        let site = board
+            .propose_site(
+                "https://a.example",
+                "https://a.example/x",
+                "to read it",
+                "t1",
+                100,
+            )
+            .unwrap();
+        assert!(site.new);
+        let again = board
+            .propose_site(
+                "https://a.example",
+                "https://a.example/y",
+                "again",
+                "t1",
+                100,
+            )
+            .unwrap();
+        assert!(!again.new, "one request per site and session");
+        assert_eq!(again.id, site.id);
+        let asked = bus
+            .after(None)
+            .into_iter()
+            .filter(|event| matches!(event.body, UiEventBody::Confirmation(_)))
+            .count();
+        assert_eq!(asked, 1, "asked once");
+        assert_eq!(
+            board.decide(&site.id, 1, &site.digest, Decision::ApproveSession, 101),
+            Ok(State::Approved)
+        );
+        assert_eq!(board.next_approved(Duration::ZERO), None, "not queued");
+        let config = crate::api_auth::tests::owner_config(None);
+        let key = hatchling_vault::MasterKey::generate().unwrap();
+        let told = run_approved(
+            &board,
+            &site.id,
+            &config,
+            &key,
+            &Skills::default(),
+            None,
+            102,
+        );
+        assert_eq!(
+            told,
+            format!(
+                "Approval {} was not run: it is not the worker's to run.",
+                site.id
+            )
+        );
+        assert_eq!(
+            board.approvals().get(&site.id).map(|request| request.state),
+            Some(State::Approved),
+            "left for its session"
+        );
+        let activation = board
+            .propose_activation(&proposal("act-1", "a"), "t2", 100)
+            .unwrap();
+        assert_eq!(
+            board.decide(
+                &activation.id,
+                1,
+                &activation.digest,
+                Decision::ApproveSession,
+                101
+            ),
+            Err(DecisionRejection::NotOffered)
+        );
+        assert_eq!(
+            site_action("https://a.example"),
+            json!({ "format": 1, "op": "web.visit", "site": "https://a.example" })
+        );
+    }
+
+    /// What the owner is shown for a site: the site in the broker's words,
+    /// what each choice allows, then the page and the reason as the
+    /// agent's; and that it can be approved for the session.
+    #[test]
+    fn a_sites_confirmation_shows_the_site_then_the_agents_words() {
+        let requested = Requested {
+            id: String::from("approval-1"),
+            revision: 1,
+            digest: String::from("ab"),
+            expires_at: 1_790_000_000,
+            new: true,
+        };
+        let request = site_confirmation(
+            "https://a.example",
+            "https://a.example/x",
+            "to read it",
+            &requested,
+        );
+        assert!(request.session);
+        assert_eq!(request.summary, "Let the agent read a site");
+        assert_eq!(
+            (
+                request.confirmation_id.as_str(),
+                request.revision,
+                request.digest.as_str()
+            ),
+            ("approval-1", 1, "ab")
+        );
+        assert_eq!(request.chat_id.as_deref(), Some(CONFIRMATION_CHAT));
+        assert!(request.expires_at.is_some());
+        let fields: Vec<(&str, &str, FieldSource)> = request
+            .fields
+            .iter()
+            .map(|field| (field.label.as_str(), field.value.as_str(), field.source))
+            .collect();
+        assert_eq!(
+            fields.first().copied(),
+            Some(("Operation", "Read pages from a site", FieldSource::Broker))
+        );
+        assert_eq!(
+            fields.get(1).copied(),
+            Some(("Site", "https://a.example", FieldSource::Broker))
+        );
+        assert_eq!(
+            fields.get(2).map(|field| (field.0, field.2)),
+            Some(("What it allows", FieldSource::Broker))
+        );
+        assert_eq!(
+            fields.get(3..).map(<[_]>::to_vec),
+            Some(vec![
+                (
+                    "Page it asked for",
+                    "https://a.example/x",
+                    FieldSource::Agent
+                ),
+                ("Why it wants it", "to read it", FieldSource::Agent),
+            ])
         );
     }
 

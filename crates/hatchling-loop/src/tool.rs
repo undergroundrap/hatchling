@@ -21,7 +21,7 @@ pub struct ToolCall {
 }
 
 /// The result of executing a tool.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolOutput {
     /// Execution succeeded; the value goes back to the model.
     Ok(Value),

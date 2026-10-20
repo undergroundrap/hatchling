@@ -4,7 +4,7 @@
 /** The frontend protocol version this build speaks. */
 export const UI_SCHEMA_VERSION = 4;
 /** The broker session protocol version the schema was generated at. */
-export const SESSION_PROTOCOL_VERSION = 13;
+export const SESSION_PROTOCOL_VERSION = 14;
 /** The mismatch sentence when this frontend is the newer side. */
 export const INCOMPATIBLE_FRONTEND_NEWER = 'frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update';
 /** The mismatch sentence when the backend is the newer side. */
@@ -1113,6 +1113,12 @@ export type ConfirmationRequest = {
      */
     readonly revision: number;
     /**
+     * Whether it can be approved for the rest of the session
+     * ([`Decision::ApproveSession`]) as well as once: a site the agent
+     * asks to read (WO-028).
+     */
+    readonly session?: boolean;
+    /**
      * What is being asked, as plain text: the broker's name for the
      * operation, never the agent's words.
      */
@@ -1167,11 +1173,11 @@ export type ControlRefusal = 'unknown_session' | 'finished' | 'switching' | 'not
 /**
  * A user's decision on a confirmation.
  */
-export type Decision = 'approve' | 'deny';
+export type Decision = 'approve' | 'approve_session' | 'deny';
 /**
  * Why a decision was not recorded.
  */
-export type DecisionRejection = 'unknown' | 'stale_revision' | 'expired' | 'already_decided';
+export type DecisionRejection = 'unknown' | 'stale_revision' | 'expired' | 'already_decided' | 'not_offered';
 /**
  * Why a delivery was refused.
  */
@@ -2576,6 +2582,8 @@ export type SessionRequest = VaultOp & {
     readonly kind: 'space';
 } | SubagentOp & {
     readonly kind: 'subagent';
+} | WebOp & {
+    readonly kind: 'web';
 };
 /**
  * The broker's reply to one [`SessionRequest`].
@@ -2607,6 +2615,8 @@ export type SessionResponse = VaultResult & {
     readonly kind: 'space';
 } | SubagentResult & {
     readonly kind: 'subagent';
+} | WebResult & {
+    readonly kind: 'web';
 };
 /**
  * The socket a session came in on.
@@ -3644,4 +3654,89 @@ export type VaultResult = {
     readonly r: 'denied';
 } | {
     readonly r: 'vault-error';
+};
+/**
+ * A web operation (WO-028): a page read through the broker, from a site
+ * the owner allows.
+ *
+ * A site is an origin: `https`, a host and a port. A page from a site the
+ * session hasn't been allowed is put to the owner first, in the app; the
+ * agent is told it's waiting, and nothing is fetched until the owner
+ * says yes.
+ */
+export type WebOp = {
+    readonly op: 'fetch';
+    /**
+     * Why the agent wants it. Shown to the owner when the site needs
+     * their approval, labeled as the agent's words.
+     */
+    readonly reason: string;
+    /**
+     * The page's absolute `https` URL.
+     */
+    readonly url: string;
+};
+/**
+ * The broker's reply to one [`WebOp`].
+ */
+export type WebResult = {
+    readonly result: 'page';
+    /**
+     * The HTTP status.
+     */
+    readonly status: number;
+    /**
+     * Its text: HTML reduced to what it shows, other text as it is.
+     */
+    readonly text: string;
+    /**
+     * Whether the text was cut short.
+     */
+    readonly truncated: boolean;
+    /**
+     * The URL it was read from.
+     */
+    readonly url: string;
+} | {
+    readonly result: 'redirect';
+    /**
+     * Where it leads.
+     */
+    readonly to: string;
+} | {
+    /**
+     * The approval request.
+     */
+    readonly request: string;
+    readonly result: 'waiting';
+    /**
+     * The site, as the owner sees it.
+     */
+    readonly site: string;
+} | {
+    readonly result: 'denied';
+    /**
+     * The site.
+     */
+    readonly site: string;
+} | {
+    readonly result: 'expired';
+    /**
+     * The site.
+     */
+    readonly site: string;
+} | {
+    /**
+     * Why.
+     */
+    readonly reason: ApprovalRefusal;
+    readonly result: 'unasked';
+} | {
+    /**
+     * Why, in the broker's words.
+     */
+    readonly reason: string;
+    readonly result: 'refused';
+} | {
+    readonly result: 'off';
 };

@@ -289,6 +289,7 @@ mod tests {
             },
             artifacts: crate::ArtifactConfig::disabled(),
             spaces: crate::SpaceConfig::disabled(),
+            web: crate::WebConfig::off(),
             goals: crate::GoalsConfig::disabled(),
         }
     }

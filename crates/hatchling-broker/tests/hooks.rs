@@ -99,6 +99,7 @@ fn config(base: &Base, ingress: bool) -> Config {
         },
         artifacts: hatchling_broker::ArtifactConfig::disabled(),
         spaces: hatchling_broker::SpaceConfig::disabled(),
+        web: hatchling_broker::WebConfig::off(),
         goals: hatchling_broker::GoalsConfig::disabled(),
     }
 }

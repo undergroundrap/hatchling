@@ -127,6 +127,7 @@ impl World {
             },
             goals: hatchling_broker::GoalsConfig::disabled(),
             spaces: hatchling_broker::SpaceConfig::disabled(),
+            web: hatchling_broker::WebConfig::off(),
         };
         Self {
             base,

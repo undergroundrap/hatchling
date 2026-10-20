@@ -563,7 +563,7 @@ mod tests {
     use super::*;
     use crate::{
         ArtifactConfig, EgressConfig, GoalsConfig, MemoryConfig, SkillConfig, SpaceConfig,
-        VaultConfig, VaultGrant,
+        VaultConfig, VaultGrant, WebConfig,
     };
     use hatchling_core::{LogLevel, PeerUid, VaultAction};
     use hatchling_vault::MasterKey;
@@ -603,6 +603,7 @@ mod tests {
             },
             artifacts: ArtifactConfig::disabled(),
             spaces: SpaceConfig::disabled(),
+            web: WebConfig::off(),
             goals: GoalsConfig::disabled(),
         }
     }

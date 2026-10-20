@@ -117,6 +117,7 @@ pub(crate) fn broker_config(socket: &Path, agent_uid: u32) -> Result<Config, Str
         },
         artifacts: hatchling_broker::ArtifactConfig::disabled(),
         spaces: hatchling_broker::SpaceConfig::disabled(),
+        web: hatchling_broker::WebConfig::off(),
         goals: hatchling_broker::GoalsConfig::disabled(),
     })
 }

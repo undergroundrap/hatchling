@@ -894,6 +894,9 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "minimum": 0,
                 "type": "integer"
             },
+            "session": {
+                "type": "boolean"
+            },
             "summary": {
                 "type": "string"
             }
@@ -938,6 +941,10 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "string"
             },
             {
+                "const": "approve_session",
+                "type": "string"
+            },
+            {
                 "const": "deny",
                 "type": "string"
             }
@@ -959,6 +966,10 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             },
             {
                 "const": "already_decided",
+                "type": "string"
+            },
+            {
+                "const": "not_offered",
                 "type": "string"
             }
         ]
