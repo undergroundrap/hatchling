@@ -230,5 +230,41 @@ fn the_brokers_end_reads_through_the_keeper() {
         VaultResult::Denied
     );
     drop(keeper);
+    // The cell's fetch was recorded: a new keeper's gates scan for it.
+    let mut program = Command::new(env!("CARGO_BIN_EXE_hatchling-broker"));
+    program
+        .envs(environment(&dir))
+        .env("HATCHLING_VAULT_GRANTS", "fetch:token")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null());
+    let (keeper, _) = Keeper::start_with(program).unwrap();
+    let scanned: Vec<Vec<u8>> = keeper
+        .scan("output-gate")
+        .unwrap()
+        .iter()
+        .map(|secret| secret.as_bytes().to_vec())
+        .collect();
+    assert!(scanned.contains(&b"t".to_vec()), "{} values", scanned.len());
+    assert!(scanned.contains(&b"credential".to_vec()));
+    drop(keeper);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A gate scans for a held secret only once a cell has had it.
+#[test]
+fn a_gate_scans_only_for_what_a_cell_has_had() {
+    use hatchling_broker::keeper::Keeper;
+    let dir = scratch("scan").unwrap();
+    sealed_vault(&dir, &[("token", "never-given")]).unwrap();
+    let mut program = Command::new(env!("CARGO_BIN_EXE_hatchling-broker"));
+    program
+        .envs(environment(&dir))
+        .env("HATCHLING_VAULT_GRANTS", "fetch:token")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null());
+    let (keeper, _) = Keeper::start_with(program).unwrap();
+    assert!(keeper.scan("output-gate").unwrap().is_empty());
+    assert!(keeper.scan("egress").is_err());
+    drop(keeper);
     let _ = std::fs::remove_dir_all(&dir);
 }

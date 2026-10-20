@@ -54,6 +54,13 @@ use crate::{Config, Error, RedactionConfig};
 /// by the broker.
 pub const VAULT_KEEPER_SUBCOMMAND: &str = "vault-keeper";
 
+/// The secret recording what cells have had: the secrets a gate scans for.
+///
+/// It holds the name of every secret a cell has been given or has stored.
+/// It is sealed in the secrets store under that store's key, so only the
+/// keeper writes it, and no grant may name it.
+pub const RELEASED_RECORD: &str = "keeper-released";
+
 /// The setting that names the keeper's end of the socket pair.
 const KEEPER_FD: &str = crate::environment::HATCHLING_KEEPER_FD.name;
 
@@ -65,6 +72,9 @@ enum Request {
     Read { purpose: String, names: Vec<String> },
     /// A cell's vault op, from the cell `cell` whose peer uid is `uid`.
     Cell { op: VaultOp, cell: String, uid: u32 },
+    /// The values a gate scans outgoing text for, for `purpose`: the
+    /// keeper chooses them.
+    Scan { purpose: String },
 }
 
 /// What the keeper answers.
@@ -76,6 +86,9 @@ enum Reply {
     Read { found: Vec<bool> },
     /// A cell op's result.
     Cell { result: VaultResult },
+    /// How many values a scan holds. Each follows in a frame of its own:
+    /// its bytes, raw.
+    Scan { count: usize },
     /// The cell's request was malformed: its session ends.
     Protocol { reason: String },
     /// Refused: not a read the configuration gives the purpose, or one
@@ -206,7 +219,7 @@ impl Keeper {
         let found = match reply {
             Reply::Read { found } => found,
             Reply::Refused { reason } => return Err(Error::Keeper { reason }),
-            other @ (Reply::Cell { .. } | Reply::Protocol { .. }) => {
+            other @ (Reply::Cell { .. } | Reply::Protocol { .. } | Reply::Scan { .. }) => {
                 return Err(unexpected(&other));
             }
         };
@@ -227,6 +240,40 @@ impl Keeper {
             .collect()
     }
 
+    /// The values a gate scans outgoing text for, for `purpose`, as the
+    /// keeper chooses them: the held secrets a cell has been given or has
+    /// stored, and the broker's own credentials.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Keeper`] when the keeper refuses the scan or can't
+    /// be reached.
+    pub fn scan(&self, purpose: &str) -> Result<Vec<Secret>, Error> {
+        let request = Request::Scan {
+            purpose: purpose.to_owned(),
+        };
+        let (reply, frames) = self.exchange(|stream| {
+            let reply = ask(stream, &request)?;
+            let mut frames = Vec::new();
+            if let Reply::Scan { count } = &reply {
+                for _ in 0..*count {
+                    frames.push(Zeroizing::new(read_frame(stream).map_err(keeper_gone)?));
+                }
+            }
+            Ok((reply, frames))
+        })?;
+        match reply {
+            Reply::Scan { .. } => frames
+                .into_iter()
+                .map(|bytes| Secret::new(bytes.to_vec()).map_err(|source| Error::Vault { source }))
+                .collect(),
+            Reply::Refused { reason } => Err(Error::Keeper { reason }),
+            other @ (Reply::Read { .. } | Reply::Cell { .. } | Reply::Protocol { .. }) => {
+                Err(unexpected(&other))
+            }
+        }
+    }
+
     /// A cell's vault op, answered by the keeper: as
     /// [`handle_vault_op`]. The keeper can't be reached: the op failed,
     /// and the session goes on.
@@ -243,7 +290,7 @@ impl Keeper {
         match self.exchange(|stream| ask(stream, &request)) {
             Ok(Reply::Cell { result }) => Ok(result),
             Ok(Reply::Protocol { reason }) => Err(Error::SessionProtocol { reason }),
-            Ok(other @ (Reply::Read { .. } | Reply::Refused { .. })) => {
+            Ok(other @ (Reply::Read { .. } | Reply::Refused { .. } | Reply::Scan { .. })) => {
                 tracing::error!(error = %unexpected(&other), "vault op failed at the keeper");
                 Ok(VaultResult::VaultError)
             }
@@ -296,6 +343,7 @@ fn unexpected(reply: &Reply) -> Error {
     let kind = match reply {
         Reply::Read { .. } => "read",
         Reply::Cell { .. } => "cell",
+        Reply::Scan { .. } => "scan",
         Reply::Protocol { .. } => "protocol",
         Reply::Refused { .. } => "refused",
     };
@@ -339,10 +387,30 @@ impl Releases {
             "egress" => &self.egress,
             "harness" => &self.harness,
             "channel-account" => &self.accounts,
-            "artifact-gate" | "output-gate" => &self.held,
             _ => return false,
         };
         names.iter().all(|name| given.contains(name.as_str()))
+    }
+
+    /// Whether `purpose` is a gate's, which scans rather than reads.
+    fn scans(purpose: &str) -> bool {
+        matches!(purpose, "artifact-gate" | "output-gate")
+    }
+
+    /// What a gate scans for: the held secrets a cell has been given or
+    /// has stored (`released`), and the channel accounts' and egress
+    /// destinations' credentials, which the broker handles itself. A held
+    /// secret no cell has had isn't one a cell can leak.
+    fn scan_set(&self, released: &BTreeSet<String>) -> Vec<SecretName> {
+        self.held
+            .iter()
+            .filter(|name| {
+                released.contains(*name)
+                    || self.accounts.contains(*name)
+                    || self.egress.contains(*name)
+            })
+            .filter_map(|name| name.parse().ok())
+            .collect()
     }
 }
 
@@ -379,7 +447,8 @@ pub fn vault_keeper_main() -> ExitCode {
             return refuse_to_run(&error.to_string());
         }
     };
-    match serve(&stream, &state) {
+    let mut state = state;
+    match serve(&stream, &mut state) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => refuse_to_run(&error.to_string()),
     }
@@ -397,6 +466,9 @@ struct Kept {
     /// The secrets store's key: the only one it keeps.
     keys: StoreKeys,
     releases: Releases,
+    /// The secrets a cell has been given or has stored
+    /// ([`RELEASED_RECORD`]).
+    released: BTreeSet<String>,
 }
 
 /// The keeper's start under `config`: every store's key, the broker's
@@ -429,16 +501,78 @@ fn begin(stream: &UnixStream, config: Config) -> Result<Kept, Error> {
     frame.push(0);
     frame.extend_from_slice(&handed);
     write_frame(stream, &frame).map_err(keeper_gone)?;
-    let releases = Releases::of(&config, harness);
+    let rules = Releases::of(&config, harness);
+    let released = read_released(&config, &keys)?;
     Ok(Kept {
         config,
         keys,
-        releases,
+        releases: rules,
+        released,
     })
 }
 
+/// The released record, as the secrets store holds it: none yet is none.
+///
+/// # Errors
+///
+/// Returns [`Error::Vault`] when it can't be read, and [`Error::Keeper`]
+/// when it isn't a list of names: a record that doesn't read stops the
+/// keeper, rather than leave the gates scanning for less.
+fn read_released(config: &Config, keys: &StoreKeys) -> Result<BTreeSet<String>, Error> {
+    let name: SecretName = RELEASED_RECORD.parse().map_err(|_| Error::Keeper {
+        reason: String::from("the released record's name doesn't parse"),
+    })?;
+    let vault = hatchling_vault::SealedVault::open(&config.vault.root, keys)
+        .map_err(|source| Error::Vault { source })?;
+    match vault.fetch(&name) {
+        Ok(record) => serde_json::from_slice(record.as_bytes()).map_err(|e| Error::Keeper {
+            reason: format!("the released record doesn't read: {e}"),
+        }),
+        Err(hatchling_vault::Error::NotFound { .. }) => Ok(BTreeSet::new()),
+        Err(source) => Err(Error::Vault { source }),
+    }
+}
+
+/// Records `name` as released, and keeps the record, before the cell is
+/// given it or stores it. A record that can't be kept releases nothing.
+fn record_release(kept: &mut Kept, name: &str) -> Result<(), Error> {
+    if kept.released.contains(name) {
+        return Ok(());
+    }
+    let mut released = kept.released.clone();
+    released.insert(name.to_owned());
+    let record = serde_json::to_vec(&released).map_err(|e| Error::Keeper {
+        reason: format!("cannot write the released record: {e}"),
+    })?;
+    let secret = Secret::new(record).map_err(|source| Error::Vault { source })?;
+    let record_name: SecretName = RELEASED_RECORD.parse().map_err(|_| Error::Keeper {
+        reason: String::from("the released record's name doesn't parse"),
+    })?;
+    hatchling_vault::SealedVault::open(&kept.config.vault.root, &kept.keys)
+        .and_then(|vault| vault.store(&record_name, &secret))
+        .map_err(|source| Error::Vault { source })?;
+    kept.released = released;
+    Ok(())
+}
+
+/// The name a cell's op would release, when the configuration grants it:
+/// a fetch's or a store's. A removal releases nothing.
+fn releases_to_cell(config: &Config, op: &VaultOp) -> Option<String> {
+    let action = op.action();
+    if !matches!(op, VaultOp::Fetch { .. } | VaultOp::Store { .. }) {
+        return None;
+    }
+    let name = op.name();
+    config
+        .vault
+        .grants
+        .iter()
+        .any(|grant| grant.action == action && grant.name.as_str() == name)
+        .then(|| name.to_owned())
+}
+
 /// Answers the broker until it goes.
-fn serve(stream: &UnixStream, kept: &Kept) -> Result<(), Error> {
+fn serve(stream: &UnixStream, kept: &mut Kept) -> Result<(), Error> {
     while let Some(frame) = read_frame_or_eof(stream).map_err(keeper_gone)? {
         let frame = Zeroizing::new(frame);
         let request: Request = serde_json::from_slice(&frame).map_err(|e| Error::Keeper {
@@ -446,7 +580,20 @@ fn serve(stream: &UnixStream, kept: &Kept) -> Result<(), Error> {
         })?;
         match request {
             Request::Read { purpose, names } => answer_read(stream, kept, &purpose, &names)?,
+            Request::Scan { purpose } => answer_scan(stream, kept, &purpose)?,
             Request::Cell { op, cell, uid } => {
+                if let Some(name) = releases_to_cell(&kept.config, &op) {
+                    if let Err(error) = record_release(kept, &name) {
+                        tracing::error!(%error, "a release not recorded: the op is refused");
+                        send(
+                            stream,
+                            &Reply::Cell {
+                                result: VaultResult::VaultError,
+                            },
+                        )?;
+                        continue;
+                    }
+                }
                 let reply = cell
                     .parse::<CellId>()
                     .map_err(|_| Error::SessionProtocol {
@@ -524,6 +671,42 @@ fn answer_read(
     }
 }
 
+/// Answers one scan: the values of the scan set, for a gate's purpose
+/// alone, read and recorded as [`Secrets::broker_read`] does.
+fn answer_scan(stream: &UnixStream, kept: &Kept, purpose: &str) -> Result<(), Error> {
+    if !Releases::scans(purpose) {
+        tracing::warn!(purpose, "refused a scan for a purpose that isn't a gate's");
+        return send(
+            stream,
+            &Reply::Refused {
+                reason: format!("{purpose:?} doesn't scan"),
+            },
+        );
+    }
+    let names = kept.releases.scan_set(&kept.released);
+    match Secrets::new(&kept.config.vault.root, &kept.keys).broker_read(purpose, &names) {
+        Ok(read) => {
+            let values: Vec<&Secret> = read.iter().flatten().collect();
+            send(
+                stream,
+                &Reply::Scan {
+                    count: values.len(),
+                },
+            )?;
+            for secret in values {
+                write_frame(stream, secret.as_bytes()).map_err(keeper_gone)?;
+            }
+            Ok(())
+        }
+        Err(error) => send(
+            stream,
+            &Reply::Refused {
+                reason: error.to_string(),
+            },
+        ),
+    }
+}
+
 fn send(stream: &UnixStream, reply: &Reply) -> Result<(), Error> {
     let bytes = Zeroizing::new(serde_json::to_vec(reply).map_err(|e| Error::Keeper {
         reason: format!("cannot write an answer: {e}"),
@@ -555,20 +738,37 @@ mod tests {
             secret: "mail-work".parse().unwrap(),
         }];
         let harness = BTreeSet::from([String::from("harness-claude-code")]);
-        let releases = Releases::of(&config, harness);
+        let rules = Releases::of(&config, harness);
         let egress = "egress-api-example-com-443";
-        assert!(releases.allow("egress", &names(&[egress])));
-        assert!(!releases.allow("egress", &names(&[egress, "token"])));
-        assert!(releases.allow("harness", &names(&["harness-claude-code"])));
-        assert!(!releases.allow("harness", &names(&["harness-codex-cli"])));
-        assert!(releases.allow("channel-account", &names(&["mail-work"])));
-        assert!(!releases.allow("channel-account", &names(&["token"])));
+        assert!(rules.allow("egress", &names(&[egress])));
+        assert!(!rules.allow("egress", &names(&[egress, "token"])));
+        assert!(rules.allow("harness", &names(&["harness-claude-code"])));
+        assert!(!rules.allow("harness", &names(&["harness-codex-cli"])));
+        assert!(rules.allow("channel-account", &names(&["mail-work"])));
+        assert!(!rules.allow("channel-account", &names(&["token"])));
+        // The gates scan: they read nothing by name.
         for gate in ["artifact-gate", "output-gate"] {
-            assert!(releases.allow(gate, &names(&["token", egress, "mail-work"])));
-            assert!(!releases.allow(gate, &names(&["harness-claude-code"])));
+            assert!(Releases::scans(gate));
+            assert!(!rules.allow(gate, &names(&["token"])));
         }
-        assert!(!releases.allow("scan", &names(&["token"])));
-        assert!(releases.allow("egress", &[]));
+        assert!(!Releases::scans("egress"));
+        // A gate scans for the broker's own credentials, and for a held
+        // secret only once a cell has had it.
+        let scanned = |released: &[&str]| -> Vec<String> {
+            let released = released.iter().map(|name| (*name).to_owned()).collect();
+            rules
+                .scan_set(&released)
+                .iter()
+                .map(|name| name.as_str().to_owned())
+                .collect()
+        };
+        assert_eq!(scanned(&[]), [egress, "mail-work"]);
+        assert_eq!(
+            scanned(&["token", "harness-claude-code"]),
+            [egress, "mail-work", "token"]
+        );
+        assert!(!rules.allow("scan", &names(&["token"])));
+        assert!(rules.allow("egress", &[]));
     }
 
     /// The protocol reads exactly its own shapes: an unknown field or
@@ -648,6 +848,7 @@ mod tests {
             config,
             keys,
             releases,
+            released: BTreeSet::new(),
         };
         let (ours, theirs) = UnixStream::pair().unwrap();
         theirs
@@ -712,5 +913,79 @@ mod tests {
             after.is_none(),
             "a request was sent after the keeper was lost"
         );
+    }
+
+    /// A release is recorded, sealed in the secrets store, before the cell
+    /// has it, once; the record reads back; a scan answers with the scan
+    /// set's values, for a gate alone; only a granted fetch or store
+    /// releases anything.
+    #[test]
+    fn a_release_is_recorded_and_a_gate_scans_for_it() {
+        let mut config = crate::api_auth::tests::owner_config(None);
+        let dir = crate::api_auth::tests::scratch("keeper-released");
+        config.vault.root = dir.0.join("vault");
+        config.vault.grants = vec![
+            crate::VaultGrant {
+                action: hatchling_core::VaultAction::Fetch,
+                name: "token".parse().unwrap(),
+            },
+            crate::VaultGrant {
+                action: hatchling_core::VaultAction::Remove,
+                name: "old".parse().unwrap(),
+            },
+        ];
+        let master = hatchling_vault::MasterKey::generate().unwrap();
+        hatchling_vault::SealedVault::open(&config.vault.root, &master)
+            .unwrap()
+            .store(
+                &"token".parse().unwrap(),
+                &Secret::new(b"t".to_vec()).unwrap(),
+            )
+            .unwrap();
+        let fetch = |name: &str| VaultOp::Fetch {
+            name: name.to_owned(),
+        };
+        assert_eq!(
+            releases_to_cell(&config, &fetch("token")).as_deref(),
+            Some("token")
+        );
+        assert_eq!(releases_to_cell(&config, &fetch("other")), None);
+        let remove = VaultOp::Remove {
+            name: String::from("old"),
+        };
+        assert_eq!(releases_to_cell(&config, &remove), None);
+        let keys = StoreKeys::unwrap(&master, &[(Store::SECRETS, &config.vault.root)]).unwrap();
+        assert!(read_released(&config, &keys).unwrap().is_empty());
+        let releases = Releases::of(&config, BTreeSet::new());
+        let mut kept = Kept {
+            config,
+            keys,
+            releases,
+            released: BTreeSet::new(),
+        };
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        theirs
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        answer_scan(&ours, &kept, "output-gate").unwrap();
+        assert_eq!(
+            read_frame(&theirs).unwrap(),
+            br#"{"reply":"scan","count":0}"#
+        );
+        record_release(&mut kept, "token").unwrap();
+        record_release(&mut kept, "token").unwrap();
+        assert_eq!(
+            read_released(&kept.config, &kept.keys).unwrap(),
+            BTreeSet::from([String::from("token")])
+        );
+        answer_scan(&ours, &kept, "output-gate").unwrap();
+        assert_eq!(
+            read_frame(&theirs).unwrap(),
+            br#"{"reply":"scan","count":1}"#
+        );
+        assert_eq!(read_frame(&theirs).unwrap(), b"t");
+        answer_scan(&ours, &kept, "egress").unwrap();
+        let reply = String::from_utf8(read_frame(&theirs).unwrap()).unwrap();
+        assert!(reply.starts_with(r#"{"reply":"refused""#), "{reply}");
     }
 }
