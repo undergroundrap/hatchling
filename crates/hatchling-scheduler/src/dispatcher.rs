@@ -1171,6 +1171,31 @@ mod tests {
                 .iter()
                 .all(|s| s.ledger.occurrence.is_none())
         );
+    }
+
+    /// The dispatcher's parts that park and keep, called directly
+    /// (WO-025): a failure is parked with its reason, an output delivered
+    /// where `channel-send` is held and parked where it isn't; a result
+    /// with no record to wait in is delivered or parked at once; a result
+    /// the store refuses stays in memory, to try again.
+    #[test]
+    fn the_parts_park_and_keep_what_cannot_go() {
+        let send = ScheduleGrant::ChannelSend {
+            channel: String::from("local"),
+        };
+        let held = BTreeSet::from([send]);
+        let authenticated = BTreeSet::new();
+        let store = One::default();
+        let services = Services {
+            store: &store,
+            launcher: &Quick,
+            delivery: &Plain,
+            held: &held,
+            events: &[],
+            authenticated: &authenticated,
+        };
+        let mut dispatcher = Dispatcher::<Done>::default();
+        let mut report = TickReport::default();
         // undelivered: failures are parked with their reasons.
         let park = |text: &str, reason: String| Parked {
             schedule_id: String::from("sch-1"),
