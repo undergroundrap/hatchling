@@ -622,8 +622,8 @@ mod tests {
     }
 
     #[test]
-    fn an_action_finds_its_element_in_the_isolated_world_and_acts_through_input() {
-        let (mut session, seen) = fake();
+    fn an_element_is_found_in_the_isolated_world_by_index() {
+        let (mut session, _seen) = fake();
         assert_eq!(session.element(0, "box", ""), Err(BrowserFailure::NoPage));
         session.open("http://a.test/").unwrap();
         // The element step: its centre, an element that's gone, a choice.
@@ -648,6 +648,12 @@ mod tests {
             session.evaluate("S", 7, "window.scrollBy(0, 1)"),
             Ok(Value::Null)
         );
+    }
+
+    #[test]
+    fn an_action_acts_through_the_browsers_input() {
+        let (mut session, seen) = fake();
+        session.open("http://a.test/").unwrap();
         // A click: pressed and released at the centre, and the navigation
         // it starts waited for.
         assert_eq!(session.act(0, &PageAction::Click), Ok(snapshot()));
