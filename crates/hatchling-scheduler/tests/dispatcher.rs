@@ -29,6 +29,9 @@ struct MemStore {
     /// for the write that moves a schedule to its next fire, `park` for
     /// the one that keeps an undelivered result.
     fail_next: RefCell<Option<&'static str>>,
+    /// Whether the place for parked results is full: every park fails
+    /// while it is.
+    full: RefCell<bool>,
 }
 
 impl MemStore {
@@ -177,7 +180,7 @@ impl Store for MemStore {
     }
 
     fn park(&self, parked: &Parked) -> Result<(), String> {
-        if self.fails("park") {
+        if self.fails("park") || *self.full.borrow() {
             return Err(String::from("the disk is full"));
         }
         self.parked.borrow_mut().push(parked.clone());
@@ -1089,9 +1092,8 @@ fn a_result_that_waits_holds_its_schedules_next_fire() {
     );
     world.tick("2026-09-21T13:00:00Z");
     world.launcher.run(0).finish(Ok("the summary"));
-    *world.store.fail_next.borrow_mut() = Some("park");
+    *world.store.full.borrow_mut() = true;
     world.tick("2026-09-21T13:01:00Z");
-    *world.store.fail_next.borrow_mut() = Some("park");
     let report = world.tick("2026-09-21T14:00:00Z");
     assert_eq!(report.refused, ["s"]);
     assert!(report.launched.is_empty());
@@ -1107,6 +1109,7 @@ fn a_result_that_waits_holds_its_schedules_next_fire() {
         "{waiting:?}"
     );
     world.delivery.fail = 0;
+    *world.store.full.borrow_mut() = false;
     let report = world.tick("2026-09-21T14:01:00Z");
     assert_eq!(report.delivered, ["s"]);
     assert_eq!(report.launched, [(String::from("s"), true)]);
