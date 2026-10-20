@@ -1073,3 +1073,49 @@ fn an_output_that_cannot_be_delivered_or_parked_is_kept_for_later() {
         .any(|parked| parked.text == "the summary");
     assert!(delivered || kept, "the output was lost");
 }
+
+/// WO-025: a result that can be neither delivered nor parked holds its
+/// schedule's next fire, loudly, rather than make room by dropping it; once
+/// it is delivered, the schedule fires again.
+#[test]
+fn a_result_that_waits_holds_its_schedules_next_fire() {
+    let mut world = World::new();
+    world.delivery.fail = 100;
+    schedule(
+        &world.store,
+        "s",
+        cron("0 * * * *", "UTC"),
+        "2026-09-21T12:00:00Z",
+    );
+    world.tick("2026-09-21T13:00:00Z");
+    world.launcher.run(0).finish(Ok("the summary"));
+    *world.store.fail_next.borrow_mut() = Some("park");
+    world.tick("2026-09-21T13:01:00Z");
+    *world.store.fail_next.borrow_mut() = Some("park");
+    let report = world.tick("2026-09-21T14:00:00Z");
+    assert_eq!(report.refused, ["s"]);
+    assert!(report.launched.is_empty());
+    let waiting = world.store.schedules.borrow()["s"].ledger.occurrence.clone();
+    assert!(
+        matches!(
+            waiting,
+            Some(Occurrence {
+                state: OccurrenceState::Finished { .. },
+                ..
+            })
+        ),
+        "{waiting:?}"
+    );
+    world.delivery.fail = 0;
+    let report = world.tick("2026-09-21T14:01:00Z");
+    assert_eq!(report.delivered, ["s"]);
+    assert_eq!(report.launched, [(String::from("s"), true)]);
+    assert!(
+        world
+            .delivery
+            .delivered
+            .borrow()
+            .iter()
+            .any(|(_, text)| text == "the summary")
+    );
+}

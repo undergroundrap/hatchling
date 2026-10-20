@@ -1471,4 +1471,90 @@ mod tests {
             "{taken:?}"
         );
     }
+
+    /// The sealed store claims a due fire once and refuses a stale claim,
+    /// moves the claimed fire through its states, keeps a parked result
+    /// unless it is full (and then drops nothing), lets an exhausted
+    /// one-shot go once its fire is resolved, and reports an index entry
+    /// whose record is missing (WO-025).
+    #[test]
+    fn the_sealed_store_claims_records_and_resolves_fires() {
+        let root = std::env::temp_dir().join(format!("hatchling-claims-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let master = MasterKey::generate().unwrap();
+        let store = SealedScheduleStore::new(&root, &master);
+        let send = ScheduleGrant::ChannelSend {
+            channel: String::from("local"),
+        };
+        let once = |id: &str| {
+            validate(
+                id.to_owned(),
+                hatchling_core::ScheduleSpec::Once {
+                    at: String::from("2026-10-01T09:00"),
+                    tz: String::from("UTC"),
+                },
+                String::from("tidy the inbox"),
+                vec![send.clone()],
+                String::from("local"),
+                &BTreeSet::from([send.clone()]),
+                Timestamp::from_second(1_790_000_000).unwrap(),
+            )
+            .unwrap()
+        };
+        let created = once("sch-once");
+        let due = created.next_due;
+        assert!(store.insert(&created).unwrap());
+        assert_eq!(
+            store.claim_due("sch-once", 1, due, None, false).unwrap(),
+            Claim::NotDue,
+            "a claim from a stale read"
+        );
+        assert_eq!(
+            store.claim_due("sch-once", 0, due, None, false).unwrap(),
+            Claim::Claimed
+        );
+        assert_eq!(
+            store.claim_due("sch-once", 1, due, None, false).unwrap(),
+            Claim::NotDue,
+            "claimed once"
+        );
+        let stored = store.load().unwrap().into_iter().next().unwrap();
+        assert!(stored.ledger.exhausted);
+        assert_eq!(stored.due(), None);
+        assert!(store.record("sch-once", due, OccurrenceState::Running).unwrap());
+        assert!(
+            !store.record("sch-once", due + 1, OccurrenceState::Running).unwrap(),
+            "not its fire"
+        );
+        let parked = |n: usize| Parked {
+            schedule_id: format!("sch-{n}"),
+            channel: String::from("local"),
+            text: String::from("kept"),
+            due: 0,
+            reason: String::from("a test"),
+        };
+        for n in 0..MAX_PARKED {
+            store.park(&parked(n)).unwrap();
+        }
+        assert!(store.park(&parked(MAX_PARKED)).is_err(), "full");
+        let kept = store.parked().unwrap();
+        assert_eq!(kept.len(), MAX_PARKED);
+        assert_eq!(kept.first().map(|parked| parked.schedule_id.as_str()), Some("sch-0"));
+        // A fire whose result can't be parked stays, with the schedule.
+        assert!(store.resolve("sch-once", due, Some(&parked(99))).is_err());
+        assert_eq!(store.load().unwrap().len(), 1);
+        // Delivered: the exhausted one-shot goes with its fire.
+        assert!(store.resolve("sch-once", due, None).unwrap());
+        assert!(store.load().unwrap().is_empty());
+        // An index entry whose record is gone is an error, not a schedule
+        // that quietly stopped existing.
+        assert!(store.insert(&once("sch-lost")).unwrap());
+        SealedVault::open_in(&root, &master, hatchling_vault::Store::SCHEDULES)
+            .unwrap()
+            .remove(&secret_name(&entry_name("sch-lost")).unwrap())
+            .unwrap();
+        let lost = store.load();
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(matches!(lost, Err(Error::ScheduleStore { .. })), "{lost:?}");
+    }
 }
