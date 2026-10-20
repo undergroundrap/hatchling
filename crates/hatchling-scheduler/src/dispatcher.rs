@@ -376,6 +376,9 @@ impl<R: Run> Dispatcher<R> {
     {
         let mut report = TickReport::default();
         let finished = self.store_finished(services, &mut report);
+        // What finished is delivered before anything fires, so a schedule
+        // whose last fire just ended can claim its next one.
+        deliver_stored(services, &mut report)?;
         for schedule in services.store.load()? {
             let Some(due) = schedule.due() else {
                 continue;

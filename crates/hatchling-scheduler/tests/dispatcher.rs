@@ -419,7 +419,7 @@ fn a_space_tasks_run_is_bound_to_its_space_and_holds_only_what_is_still_held() {
     world.held = BTreeSet::from([send("local")]);
     let report = world.tick("2026-09-21T12:00:01Z");
     assert_eq!(report.launched, [(String::from("sch-t"), false)]);
-    assert_eq!(report.removed, ["sch-t"], "a one-shot");
+    assert_eq!(world.next_due("sch-t"), None, "a one-shot");
     let request = world.requests().first().cloned().unwrap();
     assert_eq!(request.space.as_deref(), Some("spc-1"));
     assert_eq!(request.grants, [send("local")]);
@@ -478,10 +478,15 @@ fn a_one_shot_fires_once_and_is_removed() {
     );
     let report = world.tick("2026-10-01T09:00:00Z");
     assert_eq!(report.launched, [(String::from("once"), false)]);
+    // Its fire is claimed, and it is due no more; it stays, with that
+    // fire, until the fire's result is resolved (WO-025).
+    assert!(report.removed.is_empty());
+    assert_eq!(world.next_due("once"), None);
+    world.launcher.run(0).finish(Ok("done"));
+    let report = world.tick("2026-10-01T09:01:00Z");
+    assert_eq!(report.delivered, ["once"]);
     assert_eq!(report.removed, ["once"]);
     assert!(world.store.schedules.borrow().is_empty());
-    world.launcher.run(0).finish(Ok("done"));
-    assert_eq!(world.tick("2026-10-01T09:01:00Z").delivered, ["once"]);
     assert_eq!(world.tick("2026-10-02T09:00:00Z"), TickReport::default());
     assert_eq!(world.launcher.requests.borrow().len(), 1);
 }
@@ -963,12 +968,12 @@ fn a_followup_chain_runs_one_link_at_a_time_and_ends_at_the_bound() {
         now = Timestamp::from_second(next.next_due).unwrap();
         let report = world.tick(&now.to_string());
         assert_eq!(report.launched, [(next.id.clone(), false)]);
-        assert_eq!(report.removed, std::slice::from_ref(&next.id));
         assert_eq!(world.requests().last().unwrap().depth, depth + 1);
         assert_eq!(world.dispatcher.active(), 1);
         let index = world.requests().len() - 1;
         world.launcher.run(index).finish(Ok("link"));
-        world.tick(&now.to_string());
+        let report = world.tick(&now.to_string());
+        assert_eq!(report.removed, std::slice::from_ref(&next.id));
         assert_eq!(world.dispatcher.active(), 0);
         depth = next.depth;
     }
