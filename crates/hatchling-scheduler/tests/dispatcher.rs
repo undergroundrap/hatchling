@@ -46,7 +46,11 @@ impl MemStore {
     /// schedule, or a result kept for the user.
     fn accounts_for(&self, id: &str) -> bool {
         self.schedules.borrow().contains_key(id)
-            || self.parked.borrow().iter().any(|parked| parked.schedule_id == id)
+            || self
+                .parked
+                .borrow()
+                .iter()
+                .any(|parked| parked.schedule_id == id)
     }
 
     /// Applies `change` to the latest record of `id` when it still holds

@@ -481,7 +481,7 @@ impl<R: Run> Dispatcher<R> {
             };
             if active.kind == Kind::Hook {
                 if let Some(active) = self.active.remove(&id) {
-                    deliver_now(&id, &active, outcome, services, report);
+                    deliver_now(&id, &active, &outcome, services, report);
                 }
                 continue;
             }
@@ -500,7 +500,7 @@ impl<R: Run> Dispatcher<R> {
                     // Cancelled while it ran: there is no record to keep
                     // the result in, so it is delivered or parked now.
                     if let Some(active) = self.active.remove(&id) {
-                        deliver_now(&id, &active, outcome, services, report);
+                        deliver_now(&id, &active, &outcome, services, report);
                     }
                 }
                 Err(error) => {
@@ -540,14 +540,20 @@ impl<R: Run> Dispatcher<R> {
         );
         if running || self.active.contains_key(&id) {
             tracing::warn!(schedule = %id, "previous run still active: fire skipped");
-            if let Err(error) = services.store.skip_due(&id, revision, due.as_second(), next) {
+            if let Err(error) = services
+                .store
+                .skip_due(&id, revision, due.as_second(), next)
+            {
                 tracing::error!(schedule = %id, %error, "a skipped fire's cadence not moved on");
             }
             report.skipped.push(id);
             return;
         }
         let missed = now.as_second() >= due.as_second().saturating_add(MISSED_GRACE_SECS);
-        match services.store.claim_due(&id, revision, due.as_second(), next, missed) {
+        match services
+            .store
+            .claim_due(&id, revision, due.as_second(), next, missed)
+        {
             Ok(Claim::Claimed) => self.start(
                 &Start {
                     id: &id,
@@ -735,7 +741,7 @@ fn undelivered<S, L, D: Delivery>(
 fn deliver_now<R, S: Store, L, D: Delivery>(
     id: &str,
     active: &Active<R>,
-    outcome: Outcome,
+    outcome: &Outcome,
     services: &Services<'_, S, L, D>,
     report: &mut TickReport,
 ) {
@@ -746,7 +752,7 @@ fn deliver_now<R, S: Store, L, D: Delivery>(
         due: active.due.as_second(),
         reason,
     };
-    match undelivered(&outcome, &active.channel, services, &parked) {
+    match undelivered(outcome, &active.channel, services, &parked) {
         None => report.delivered.push(id.to_owned()),
         Some(parked) => {
             tracing::warn!(schedule = %id, reason = %parked.reason, "scheduled result parked");

@@ -61,9 +61,11 @@ use crate::{Config, Error};
 /// Most schedules the store keeps.
 pub const MAX_SCHEDULES: usize = 64;
 
-/// Most parked results the store keeps. Past it a result isn't parked:
-/// it stays in its schedule's record, and that schedule's next fire is
-/// refused until it is resolved (WO-025). Nothing kept is dropped,
+/// Most parked results the store keeps.
+///
+/// Past it a result isn't parked: it stays in its schedule's record, and
+/// that schedule's next fire is refused until it is resolved (WO-025).
+/// Nothing kept is dropped,
 /// loudly.
 pub const MAX_PARKED: usize = 64;
 
@@ -294,7 +296,8 @@ impl SealedScheduleStore<'_> {
         if !index.iter().any(|stored| stored == id) {
             return Ok(None);
         }
-        read_json(vault, &entry_name(id))?.map_or_else(|| Err(missing(id)), |stored| Ok(Some(stored)))
+        read_json(vault, &entry_name(id))?
+            .map_or_else(|| Err(missing(id)), |stored| Ok(Some(stored)))
     }
 
     /// Applies `change` to the latest record of `id` when it still holds
@@ -457,7 +460,8 @@ impl Store for SealedScheduleStore<'_> {
         if let Some(parked) = parked {
             Self::keep_parked(&vault, parked)?;
         }
-        let resolved = Self::change_fire(&vault, id, due, |stored| stored.ledger.occurrence = None)?;
+        let resolved =
+            Self::change_fire(&vault, id, due, |stored| stored.ledger.occurrence = None)?;
         if resolved.is_some_and(|stored| stored.ledger.exhausted) {
             Self::drop_schedule(&vault, id)?;
         }
