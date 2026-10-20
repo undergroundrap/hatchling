@@ -495,6 +495,24 @@
         }
       ]
     },
+    "AllowedSite": {
+      "description": "A site the agent is always allowed to read.",
+      "properties": {
+        "allowed_at": {
+          "description": "When the owner allowed it, RFC 3339.",
+          "type": "string"
+        },
+        "site": {
+          "description": "The site, `https://host[:port]`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "site",
+        "allowed_at"
+      ],
+      "type": "object"
+    },
     "ApiOutcome": {
       "description": "How the API answered one call.",
       "oneOf": [
@@ -536,6 +554,11 @@
         {
           "const": "manage_schedule",
           "description": "[`UiAction::ManageSchedule`].",
+          "type": "string"
+        },
+        {
+          "const": "manage_sites",
+          "description": "[`UiAction::ManageSites`].",
           "type": "string"
         },
         {
@@ -2326,6 +2349,11 @@
     "ConfirmationRequest": {
       "description": "The agent asks the user to approve or deny something.\n\nWhat is asked is the broker's record of one frozen action (WO-027): its\ndigest, and its fields in the order the owner reviews them, the broker's\nfirst and the agent's after, each labeled with who stated it.",
       "properties": {
+        "always": {
+          "default": false,
+          "description": "Whether it can be approved always ([`Decision::ApproveAlways`]): a\nsite, where the broker keeps the sites the owner allows.",
+          "type": "boolean"
+        },
         "chat_id": {
           "description": "The chat it belongs to, if any.",
           "type": [
@@ -2503,6 +2531,11 @@
         {
           "const": "approve_session",
           "description": "Go ahead, and for the rest of the session: offered only where the\nrequest says so ([`ConfirmationRequest::session`]).",
+          "type": "string"
+        },
+        {
+          "const": "approve_always",
+          "description": "Go ahead, and always, until the owner revokes it: offered only where\nthe request says so ([`ConfirmationRequest::always`]).",
           "type": "string"
         },
         {
@@ -6246,6 +6279,120 @@
         }
       ]
     },
+    "SiteOp": {
+      "description": "An operation on the sites the agent is always allowed to read (WO-028).",
+      "oneOf": [
+        {
+          "description": "List them.",
+          "properties": {
+            "op": {
+              "const": "list",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Revoke one: the next read of a page on it asks again.",
+          "properties": {
+            "op": {
+              "const": "revoke",
+              "type": "string"
+            },
+            "site": {
+              "description": "The site, `https://host[:port]`, as listed.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "site"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SiteResult": {
+      "description": "The result of a [`SiteOp`].",
+      "oneOf": [
+        {
+          "description": "The sites, in the order they were allowed.",
+          "properties": {
+            "result": {
+              "const": "listed",
+              "type": "string"
+            },
+            "sites": {
+              "description": "The sites.",
+              "items": {
+                "$ref": "#/$defs/AllowedSite"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "result",
+            "sites"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The site was revoked.",
+          "properties": {
+            "result": {
+              "const": "revoked",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "No such site is allowed.",
+          "properties": {
+            "result": {
+              "const": "not_found",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The broker keeps no sites: the operator hasn't given it a place to.",
+          "properties": {
+            "result": {
+              "const": "off",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The broker couldn't read or change them; its log says why.",
+          "properties": {
+            "result": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "SkillOp": {
       "description": "A skill operation: the agent's post-handshake skill vocabulary.\n\nOne op, one action: invoke one registered skill, exercising one\ncapability it declared, on one input. The broker owns the registry;\nthe agent names a skill and the broker decides. There is no list or\ndescribe op: the agent learns which skills exist from its\nconfiguration, not by asking the broker to enumerate them.\n\nPublic because the skill protocol is a cross-crate contract.",
       "oneOf": [
@@ -7515,6 +7662,24 @@
           "type": "object"
         },
         {
+          "description": "List or revoke the sites the agent is always allowed to read\n(WO-028).",
+          "properties": {
+            "action": {
+              "const": "manage_sites",
+              "type": "string"
+            },
+            "op": {
+              "$ref": "#/$defs/SiteOp",
+              "description": "The operation."
+            }
+          },
+          "required": [
+            "action",
+            "op"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Create, cancel, or follow up a schedule.",
           "properties": {
             "action": {
@@ -7804,6 +7969,24 @@
             },
             "result": {
               "const": "schedule",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "outcome"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A site operation's result.",
+          "properties": {
+            "outcome": {
+              "$ref": "#/$defs/SiteResult",
+              "description": "The result."
+            },
+            "result": {
+              "const": "sites",
               "type": "string"
             }
           },

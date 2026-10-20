@@ -335,6 +335,21 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             }
         ]
     },
+    "AllowedSite": {
+        "properties": {
+            "allowed_at": {
+                "type": "string"
+            },
+            "site": {
+                "type": "string"
+            }
+        },
+        "required": [
+            "site",
+            "allowed_at"
+        ],
+        "type": "object"
+    },
     "ApiOutcome": {
         "oneOf": [
             {
@@ -367,6 +382,10 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             },
             {
                 "const": "manage_schedule",
+                "type": "string"
+            },
+            {
+                "const": "manage_sites",
                 "type": "string"
             },
             {
@@ -866,6 +885,9 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
     },
     "ConfirmationRequest": {
         "properties": {
+            "always": {
+                "type": "boolean"
+            },
             "chat_id": {
                 "type": [
                     "string",
@@ -942,6 +964,10 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             },
             {
                 "const": "approve_session",
+                "type": "string"
+            },
+            {
+                "const": "approve_always",
                 "type": "string"
             },
             {
@@ -1998,6 +2024,109 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
         ],
         "type": "object"
     },
+    "SiteOp": {
+        "oneOf": [
+            {
+                "properties": {
+                    "op": {
+                        "const": "list",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "op"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "op": {
+                        "const": "revoke",
+                        "type": "string"
+                    },
+                    "site": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "op",
+                    "site"
+                ],
+                "type": "object"
+            }
+        ]
+    },
+    "SiteResult": {
+        "oneOf": [
+            {
+                "properties": {
+                    "result": {
+                        "const": "listed",
+                        "type": "string"
+                    },
+                    "sites": {
+                        "items": {
+                            "$ref": "#/$defs/AllowedSite"
+                        },
+                        "type": "array"
+                    }
+                },
+                "required": [
+                    "result",
+                    "sites"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "revoked",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "not_found",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "off",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "failed",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            }
+        ]
+    },
     "SkillOp": {
         "oneOf": [
             {
@@ -2130,6 +2259,22 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "revision",
                     "digest",
                     "decision"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
+                        "const": "manage_sites",
+                        "type": "string"
+                    },
+                    "op": {
+                        "$ref": "#/$defs/SiteOp"
+                    }
+                },
+                "required": [
+                    "action",
+                    "op"
                 ],
                 "type": "object"
             },
@@ -2382,6 +2527,22 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     },
                     "result": {
                         "const": "schedule",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "outcome"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "outcome": {
+                        "$ref": "#/$defs/SiteResult"
+                    },
+                    "result": {
+                        "const": "sites",
                         "type": "string"
                     }
                 },

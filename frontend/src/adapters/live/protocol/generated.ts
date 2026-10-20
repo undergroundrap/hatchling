@@ -258,6 +258,19 @@ export type AgentMessage = {
  */
 export type AgentState = 'idle' | 'working' | 'awaiting_approval' | 'paused' | 'stalled';
 /**
+ * A site the agent is always allowed to read.
+ */
+export type AllowedSite = {
+    /**
+     * When the owner allowed it, RFC 3339.
+     */
+    readonly allowed_at: string;
+    /**
+     * The site, `https://host[:port]`.
+     */
+    readonly site: string;
+};
+/**
  * How the API answered one call.
  */
 export type ApiOutcome = 'served' | 'refused';
@@ -265,7 +278,7 @@ export type ApiOutcome = 'served' | 'refused';
  * What one API call asked for: the request's kind, never its content
  * (a message's text, a file, a schedule's task).
  */
-export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'decide' | 'manage_schedule' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser';
+export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser';
 /**
  * A bearer token, presented in `Hello` for a token provider.
  *
@@ -1087,6 +1100,11 @@ export type ConfirmationField = {
  */
 export type ConfirmationRequest = {
     /**
+     * Whether it can be approved always ([`Decision::ApproveAlways`]): a
+     * site, where the broker keeps the sites the owner allows.
+     */
+    readonly always?: boolean;
+    /**
      * The chat it belongs to, if any.
      */
     readonly chat_id?: string | null;
@@ -1173,7 +1191,7 @@ export type ControlRefusal = 'unknown_session' | 'finished' | 'switching' | 'not
 /**
  * A user's decision on a confirmation.
  */
-export type Decision = 'approve' | 'approve_session' | 'deny';
+export type Decision = 'approve' | 'approve_session' | 'approve_always' | 'deny';
 /**
  * Why a decision was not recorded.
  */
@@ -2623,6 +2641,36 @@ export type SessionResponse = VaultResult & {
  */
 export type SessionSocket = 'api' | 'ui';
 /**
+ * An operation on the sites the agent is always allowed to read (WO-028).
+ */
+export type SiteOp = {
+    readonly op: 'list';
+} | {
+    readonly op: 'revoke';
+    /**
+     * The site, `https://host[:port]`, as listed.
+     */
+    readonly site: string;
+};
+/**
+ * The result of a [`SiteOp`].
+ */
+export type SiteResult = {
+    readonly result: 'listed';
+    /**
+     * The sites.
+     */
+    readonly sites: readonly (AllowedSite)[];
+} | {
+    readonly result: 'revoked';
+} | {
+    readonly result: 'not_found';
+} | {
+    readonly result: 'off';
+} | {
+    readonly result: 'failed';
+};
+/**
  * A skill operation: the agent's post-handshake skill vocabulary.
  *
  * One op, one action: invoke one registered skill, exercising one
@@ -3158,6 +3206,12 @@ export type UiAction = {
      */
     readonly revision: number;
 } | {
+    readonly action: 'manage_sites';
+    /**
+     * The operation.
+     */
+    readonly op: SiteOp;
+} | {
     readonly action: 'manage_schedule';
     /**
      * The schedule operation, as the session protocol defines it.
@@ -3279,6 +3333,12 @@ export type UiActionResult = {
      */
     readonly outcome: ScheduleResult;
     readonly result: 'schedule';
+} | {
+    /**
+     * The result.
+     */
+    readonly outcome: SiteResult;
+    readonly result: 'sites';
 } | {
     /**
      * The result, as the session protocol defines it.

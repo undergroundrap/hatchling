@@ -1387,9 +1387,12 @@ mod tests {
         let mut third = unattended("t3", &fetcher);
         let answer = handle_web_op(&config, &master, &mut third, &fetch("https://a.example/two"));
         assert!(waiting(&answer, "https://a.example"), "revoked: {answer:?}");
-        // The session that held it keeps it until it ends.
-        let answer = handle_web_op(&config, &master, &mut other, &fetch("https://a.example/two"));
+        // The session that chose always holds it until it ends; one that
+        // read it through the kept grant asks again.
+        let answer = handle_web_op(&config, &master, &mut web, &fetch("https://a.example/two"));
         assert!(matches!(answer, WebResult::Page { .. }), "{answer:?}");
+        let answer = handle_web_op(&config, &master, &mut other, &fetch("https://a.example/two"));
+        assert!(waiting(&answer, "https://a.example"), "{answer:?}");
     }
 
     /// Without a store for sites, always isn't offered, and the owner can't

@@ -9,8 +9,9 @@
 //!   subdomain, another port, or another site.
 //! - **Bounded:** at most [`MAX_SITES`]; past that a new one is refused, and
 //!   nothing is dropped to make room.
-//! - **Revoking one** takes effect at the next read: a session that held the
-//!   site for itself keeps it until it ends, as *Allow for task* promised.
+//! - **Revoking one** takes effect at the next read. Only a session that
+//!   holds the site for itself (it chose *Allow for task*, or *Allow
+//!   always*) keeps it until it ends.
 
 use std::path::Path;
 use std::sync::{Mutex, PoisonError};

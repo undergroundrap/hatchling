@@ -22,6 +22,7 @@ Deleting any of these loses credentials or history. Each lives where its setting
 | `HATCHLING_ARTIFACT_DIR` | Built artifacts and their build records, sealed. |
 | `HATCHLING_ARTIFACT_WORKSPACE` | What the agent delivered to your workspace. |
 | `HATCHLING_SPACE_DIR` | Spaces, sealed. |
+| `HATCHLING_WEB_GRANTS_DIR` | The sites you always allow the agent to read, sealed (WO-028). |
 | `HATCHLING_HARNESS_ROOTS` | Your projects, where a coding harness may work. Hatchling doesn't own them: a harness run changes files there as you asked it to. |
 | `HATCHLING_REDACTION_DIR` | The output gate's audit log (`audit.log`), your overrides (`overrides`), your categories (`categories`), and `raw/`: kept redacted messages and the audit log's tag key, sealed. |
 
