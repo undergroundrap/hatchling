@@ -118,9 +118,8 @@ impl WebSession {
     #[must_use]
     pub fn new(config: &Config, task: &str, tls: Option<TlsClient>) -> Self {
         let searcher = tls.clone().filter(|_| config.web.search).map(|tls| {
-            let searcher: Searcher = Arc::new(move |key, query| {
-                hatchling_egress::search::brave(&tls, key, query)
-            });
+            let searcher: Searcher =
+                Arc::new(move |key, query| hatchling_egress::search::brave(&tls, key, query));
             searcher
         });
         Self {
@@ -216,7 +215,7 @@ fn search(config: &Config, keys: &dyn OpensStores, web: &mut WebSession, query: 
         return WebResult::Off;
     };
     let chars = query.chars().count();
-    if config.web.log_queries {
+    if config.web.search_log == crate::SearchLog::Queries {
         tracing::info!(task = %web.task, chars, query, "web search");
     } else {
         tracing::info!(task = %web.task, chars, "web search");
@@ -250,11 +249,10 @@ fn search_key(config: &Config, keys: &dyn OpensStores) -> Result<Zeroizing<Vec<u
     let read = crate::secrets::Secrets::new(&config.vault.root, keys)
         .broker_read("search", std::slice::from_ref(&name))
         .map_err(|error| format!("the search key couldn't be read: {error}"))?;
-    let secret = read
-        .into_iter()
-        .next()
-        .flatten()
-        .ok_or_else(|| format!("no search key is stored: keep it in the vault as {SEARCH_KEY}"))?;
+    let secret =
+        read.into_iter().next().flatten().ok_or_else(|| {
+            format!("no search key is stored: keep it in the vault as {SEARCH_KEY}")
+        })?;
     Ok(Zeroizing::new(secret.as_bytes().to_vec()))
 }
 
@@ -353,7 +351,14 @@ fn ask_owner(
 ) -> Result<String, WebResult> {
     let now = Timestamp::now().as_second();
     let requested = board
-        .propose_site(site, &url.to_string(), reason, web.led_to(url), &web.task, now)
+        .propose_site(
+            site,
+            &url.to_string(),
+            reason,
+            web.led_to(url),
+            &web.task,
+            now,
+        )
         .map_err(|refusal| match refusal {
             Refusal::Denied => WebResult::Denied {
                 site: site.to_owned(),
@@ -1035,7 +1040,14 @@ mod tests {
 
     /// A config with search on, over a real vault in a scratch directory
     /// holding `key` as the search key when given.
-    fn search_config(name: &str, key: Option<&[u8]>) -> (Config, crate::api_auth::tests::Scratch, hatchling_vault::MasterKey) {
+    fn search_config(
+        name: &str,
+        key: Option<&[u8]>,
+    ) -> (
+        Config,
+        crate::api_auth::tests::Scratch,
+        hatchling_vault::MasterKey,
+    ) {
         let scratch = crate::api_auth::tests::scratch(&format!("web-search-{name}"));
         let mut config = web_config(name);
         config.vault.root = scratch.0.join("vault");
@@ -1063,7 +1075,10 @@ mod tests {
 
     /// Answers every search with `hits`, recording the key and query each
     /// was given.
-    fn scripted_search(hits: Vec<Hit>) -> (Searcher, Arc<Mutex<Vec<(Vec<u8>, String)>>>) {
+    /// The key and query of each search a scripted searcher was asked.
+    type Asked = Arc<Mutex<Vec<(Vec<u8>, String)>>>;
+
+    fn scripted_search(hits: Vec<Hit>) -> (Searcher, Asked) {
         let asked = Arc::new(Mutex::new(Vec::new()));
         let log = Arc::clone(&asked);
         let searcher: Searcher = Arc::new(move |key: &[u8], query: &str| {
@@ -1123,8 +1138,11 @@ mod tests {
             web.led_to(&WebUrl::parse("https://blog.example/b").unwrap()),
             Some(("rust changelog", 2))
         );
-        assert_eq!(web.led_to(&WebUrl::parse("https://other.example/").unwrap()), None);
-        config.web.log_queries = true;
+        assert_eq!(
+            web.led_to(&WebUrl::parse("https://other.example/").unwrap()),
+            None
+        );
+        config.web.search_log = crate::SearchLog::Queries;
         let logged = crate::test_log::captured(|| {
             let _ = handle_web_op(&config, &master, &mut web, &search("second query"));
         });
@@ -1158,7 +1176,8 @@ mod tests {
             WebResult::Off
         );
         let (config, _scratch, master) = search_config("fails", Some(b"k"));
-        let failing: Searcher = Arc::new(|_: &[u8], _: &str| Err(SearchError::Status { status: 429 }));
+        let failing: Searcher =
+            Arc::new(|_: &[u8], _: &str| Err(SearchError::Status { status: 429 }));
         let mut web = unattended("t", &fetcher).searching(failing);
         assert_eq!(
             handle_web_op(&config, &master, &mut web, &search("q")),
@@ -1219,7 +1238,10 @@ mod tests {
             .flatten()
             .map(|field| (field.label, field.value, field.source))
             .collect();
-        let found = fields.iter().position(|field| field.0 == "Found by").unwrap();
+        let found = fields
+            .iter()
+            .position(|field| field.0 == "Found by")
+            .unwrap();
         assert_eq!(
             fields.get(found..found + 2).map(<[_]>::to_vec),
             Some(vec![
@@ -1255,6 +1277,34 @@ mod tests {
         assert_eq!(
             web.led_to(&WebUrl::parse("https://r0.example/").unwrap()),
             Some(("q", 1))
+        );
+    }
+
+    /// `bounded_search`, called directly: the searcher's answer, its error
+    /// as text, or a give-up past the deadline.
+    #[test]
+    fn bounded_search_answers_or_gives_up() {
+        let (searcher, asked) = scripted_search(vec![hit("https://a.example/", "A")]);
+        let found = bounded_search(
+            &searcher,
+            Zeroizing::new(b"k".to_vec()),
+            "q",
+            Duration::from_secs(5),
+        );
+        assert_eq!(found, Ok(vec![hit("https://a.example/", "A")]));
+        assert_eq!(*asked.lock().unwrap(), [(b"k".to_vec(), String::from("q"))]);
+        let failing: Searcher = Arc::new(|_: &[u8], _: &str| Err(SearchError::Empty));
+        assert_eq!(
+            bounded_search(&failing, Zeroizing::new(Vec::new()), "q", Duration::from_secs(5)),
+            Err(SearchError::Empty.to_string())
+        );
+        let slow: Searcher = Arc::new(|_: &[u8], _: &str| {
+            std::thread::sleep(Duration::from_secs(3));
+            Ok(Vec::new())
+        });
+        assert!(
+            bounded_search(&slow, Zeroizing::new(Vec::new()), "q", Duration::from_millis(50))
+                .is_err()
         );
     }
 }

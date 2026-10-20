@@ -123,8 +123,8 @@ pub(crate) fn brave_at(
         .filter(|key| !key.is_empty() && crate::local::is_field_value(key))
         .ok_or(SearchError::BadKey)?;
     let destination = origin.destination();
-    let addrs = crate::web::resolved(&destination, resolve, internal)
-        .map_err(SearchError::Unreachable)?;
+    let addrs =
+        crate::web::resolved(&destination, resolve, internal).map_err(SearchError::Unreachable)?;
     let request = EgressRequest {
         method: String::from("GET"),
         destination: destination.clone(),
@@ -231,8 +231,17 @@ mod tests {
             .unwrap()
             .origin()
             .clone();
-        let got = brave_at(&tls, &origin, key, query, move |_| Ok(vec![server]), |_| false);
-        let head = head.recv_timeout(Duration::from_secs(5)).unwrap_or_default();
+        let got = brave_at(
+            &tls,
+            &origin,
+            key,
+            query,
+            move |_| Ok(vec![server]),
+            |_| false,
+        );
+        let head = head
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap_or_default();
         (got, head)
     }
 
@@ -274,12 +283,20 @@ mod tests {
             ]
         );
         assert!(
-            head.starts_with("GET /res/v1/web/search?q=rust%201.98%20%26%20m%C3%A1s&count=10 HTTP/1.1\r\n"),
+            head.starts_with(
+                "GET /res/v1/web/search?q=rust%201.98%20%26%20m%C3%A1s&count=10 HTTP/1.1\r\n"
+            ),
             "{head}"
         );
-        assert!(head.contains("\r\nX-Subscription-Token: k-123\r\n"), "{head}");
+        assert!(
+            head.contains("\r\nX-Subscription-Token: k-123\r\n"),
+            "{head}"
+        );
         assert!(head.contains("\r\nAccept: application/json\r\n"), "{head}");
-        assert!(!head.to_ascii_lowercase().contains("authorization"), "{head}");
+        assert!(
+            !head.to_ascii_lowercase().contains("authorization"),
+            "{head}"
+        );
     }
 
     /// No `web` in the answer is no results; a status other than 200, an
@@ -314,11 +331,15 @@ mod tests {
     #[test]
     fn refusals_come_before_the_request() {
         let tls = TlsClient::bundled().unwrap();
-        let origin = WebUrl::parse("https://search.example/").unwrap().origin().clone();
+        let origin = WebUrl::parse("https://search.example/")
+            .unwrap()
+            .origin()
+            .clone();
         let never = |_: &str| -> std::io::Result<Vec<SocketAddr>> {
             Err(std::io::Error::other("not resolved"))
         };
-        let search = |key: &[u8], query: &str| brave_at(&tls, &origin, key, query, never, |_| false);
+        let search =
+            |key: &[u8], query: &str| brave_at(&tls, &origin, key, query, never, |_| false);
         assert_eq!(search(b"k", "   "), Err(SearchError::Empty));
         assert_eq!(
             search(b"k", &"q".repeat(MAX_QUERY_CHARS + 1)),

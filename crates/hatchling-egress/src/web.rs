@@ -1064,4 +1064,33 @@ mod tests {
         assert_eq!(tidy("\n\n a \n\n\n b \n\n"), "a\n\nb");
         assert_eq!(tidy(""), "");
     }
+
+    /// `resolved`, called directly: the addresses, or why there are none
+    /// to use.
+    #[test]
+    fn resolved_returns_the_addresses_or_why_not() {
+        let public = addr(93, 184, 215, 14);
+        assert_eq!(
+            resolved("a.example:443", resolving_to(vec![public]), is_internal),
+            Ok(vec![public])
+        );
+        assert_eq!(
+            resolved("a.example:443", resolving_to(Vec::new()), is_internal),
+            Err(FetchError::Unresolved)
+        );
+        assert_eq!(
+            resolved(
+                "a.example:443",
+                |_| Err(std::io::Error::other("no")),
+                is_internal
+            ),
+            Err(FetchError::Unresolved)
+        );
+        assert_eq!(
+            resolved("a.example:443", resolving_to(vec![public, addr(127, 0, 0, 1)]), is_internal),
+            Err(FetchError::Internal {
+                addr: IpAddr::V4(Ipv4Addr::LOCALHOST)
+            })
+        );
+    }
 }

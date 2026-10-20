@@ -511,9 +511,17 @@ pub struct WebConfig {
     /// Whether the agent may search, through Brave Search, with the key the
     /// broker keeps (`HATCHLING_SEARCH=brave`).
     pub search: bool,
-    /// Whether each search's text is logged, not only its length: the
-    /// owner's opt-in (`HATCHLING_SEARCH_LOG=queries`).
-    pub log_queries: bool,
+    /// What the broker logs of each search (`HATCHLING_SEARCH_LOG`).
+    pub search_log: SearchLog,
+}
+
+/// What the broker logs of each search (WO-028).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchLog {
+    /// Its session and its length: the default.
+    Length,
+    /// Its text too: the owner's opt-in.
+    Queries,
 }
 
 impl WebConfig {
@@ -525,7 +533,7 @@ impl WebConfig {
             refused: Vec::new(),
             attended: false,
             search: false,
-            log_queries: false,
+            search_log: SearchLog::Length,
         }
     }
 
@@ -590,9 +598,12 @@ fn parse_web(get: &impl Fn(&str) -> Option<String>) -> Result<WebConfig, Error> 
             });
         }
     };
-    let log_queries = match get(env::HATCHLING_SEARCH_LOG.name).as_deref().map(str::trim) {
-        None | Some("" | "length") => false,
-        Some("queries") => true,
+    let search_log = match get(env::HATCHLING_SEARCH_LOG.name)
+        .as_deref()
+        .map(str::trim)
+    {
+        None | Some("" | "length") => SearchLog::Length,
+        Some("queries") => SearchLog::Queries,
         Some(other) => {
             return Err(Error::InvalidConfig {
                 key: "HATCHLING_SEARCH_LOG",
@@ -605,7 +616,7 @@ fn parse_web(get: &impl Fn(&str) -> Option<String>) -> Result<WebConfig, Error> 
         refused,
         attended: true,
         search,
-        log_queries,
+        search_log,
     })
 }
 
@@ -3696,7 +3707,7 @@ mod memory_config_tests {
 mod web_config_tests {
     use std::collections::HashMap;
 
-    use super::{Config, WebConfig};
+    use super::{Config, SearchLog, WebConfig};
     use crate::Error;
 
     /// The web settings from `web` and `refuse`.
@@ -3726,11 +3737,17 @@ mod web_config_tests {
         }
         assert!(parse_search(Some(" brave "), None).unwrap().search);
         for length in [None, Some(""), Some("length")] {
-            assert!(!parse_search(None, length).unwrap().log_queries, "{length:?}");
+            assert!(
+                parse_search(None, length).unwrap().search_log == SearchLog::Length,
+                "{length:?}"
+            );
         }
-        assert!(parse_search(None, Some("queries")).unwrap().log_queries);
+        assert_eq!(
+            parse_search(None, Some("queries")).unwrap().search_log,
+            SearchLog::Queries
+        );
         assert!(!WebConfig::off().search);
-        assert!(!WebConfig::off().log_queries);
+        assert_eq!(WebConfig::off().search_log, SearchLog::Length);
         assert!(matches!(
             parse_search(Some("google"), None),
             Err(Error::InvalidConfig {

@@ -811,4 +811,14 @@ pub(crate) mod tests {
             (Duration::from_secs(5), Duration::from_secs(300))
         );
     }
+
+    /// `is_field_value`, called directly: no control character but tab.
+    #[test]
+    fn a_field_value_holds_no_line_break() {
+        assert!(is_field_value("Bearer abc\tdef ~!"));
+        assert!(is_field_value(""));
+        for bad in ["a\r\nb", "a\nb", "a\rb", "a\u{0}b", "a\u{7f}b"] {
+            assert!(!is_field_value(bad), "{bad:?}");
+        }
+    }
 }

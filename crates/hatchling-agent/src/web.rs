@@ -142,7 +142,12 @@ mod tests {
         let (agent, broker) = pair();
         drop(broker);
         assert!(matches!(
-            request(&agent, WebOp::Search { query: String::new() }),
+            request(
+                &agent,
+                WebOp::Search {
+                    query: String::new()
+                }
+            ),
             Err(Error::WebIo { .. })
         ));
     }
