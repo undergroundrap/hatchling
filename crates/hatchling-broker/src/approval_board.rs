@@ -826,7 +826,14 @@ mod tests {
             expires_at: 1_790_000_000,
             new: true,
         };
-        let request = site_confirmation("https://a.example", "https://a.example/x", "to read it", None, false, &requested);
+        let request = site_confirmation(
+            "https://a.example",
+            "https://a.example/x",
+            "to read it",
+            None,
+            false,
+            &requested,
+        );
         assert!(request.session);
         assert_eq!(request.summary, "Let the agent read a site");
         assert_eq!(

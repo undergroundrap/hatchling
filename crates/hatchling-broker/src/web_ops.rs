@@ -329,7 +329,9 @@ fn allow(
         match grants.holds(&site) {
             Ok(true) => return Ok(()),
             Ok(false) => {}
-            Err(error) => tracing::error!(%error, "the allowed sites couldn't be read: the owner is asked"),
+            Err(error) => {
+                tracing::error!(%error, "the allowed sites couldn't be read: the owner is asked")
+            }
         }
     }
     let board = board(config);
@@ -338,7 +340,10 @@ fn allow(
         .find(&web.task, &site_action(&site), State::Approved);
     let always = grants.is_some();
     let id = found.map_or_else(|| ask_owner(&board, web, url, reason, &site, always), Ok)?;
-    let decision = board.approvals().get(&id).and_then(|request| request.decision);
+    let decision = board
+        .approvals()
+        .get(&id)
+        .and_then(|request| request.decision);
     let Some((_, claim)) = board.approvals().claim(&id) else {
         return Err(refused(String::from(
             "the site's approval was already used: fetch again to ask again",
@@ -856,7 +861,11 @@ mod tests {
             .propose_site(&asking(site, "https://a.example/"), "t", 0)
             .unwrap();
         // Proposing past its time lapses it.
-        let _ = board.propose_site(&asking("https://b.example", "https://b.example/"), "t9", 10_000);
+        let _ = board.propose_site(
+            &asking("https://b.example", "https://b.example/"),
+            "t9",
+            10_000,
+        );
         assert_eq!(
             decided(&board, &lapsing.id, site, Duration::from_secs(5)),
             Err(WebResult::Expired {
@@ -1374,8 +1383,16 @@ mod tests {
         assert!(matches!(answer, WebResult::Page { .. }), "{answer:?}");
         assert!(web.holds(&origin("https://a.example/")));
         let mut other = unattended("t2", &fetcher);
-        let answer = handle_web_op(&config, &master, &mut other, &fetch("https://a.example/two"));
-        assert!(matches!(answer, WebResult::Page { .. }), "another session: {answer:?}");
+        let answer = handle_web_op(
+            &config,
+            &master,
+            &mut other,
+            &fetch("https://a.example/two"),
+        );
+        assert!(
+            matches!(answer, WebResult::Page { .. }),
+            "another session: {answer:?}"
+        );
         assert_eq!(asked.lock().unwrap().len(), 2);
         let revoke = hatchling_core::ui::SiteOp::Revoke {
             site: String::from("https://a.example"),
@@ -1385,13 +1402,23 @@ mod tests {
             hatchling_core::ui::SiteResult::Revoked
         );
         let mut third = unattended("t3", &fetcher);
-        let answer = handle_web_op(&config, &master, &mut third, &fetch("https://a.example/two"));
+        let answer = handle_web_op(
+            &config,
+            &master,
+            &mut third,
+            &fetch("https://a.example/two"),
+        );
         assert!(waiting(&answer, "https://a.example"), "revoked: {answer:?}");
         // The session that chose always holds it until it ends; one that
         // read it through the kept grant asks again.
         let answer = handle_web_op(&config, &master, &mut web, &fetch("https://a.example/two"));
         assert!(matches!(answer, WebResult::Page { .. }), "{answer:?}");
-        let answer = handle_web_op(&config, &master, &mut other, &fetch("https://a.example/two"));
+        let answer = handle_web_op(
+            &config,
+            &master,
+            &mut other,
+            &fetch("https://a.example/two"),
+        );
         assert!(waiting(&answer, "https://a.example"), "{answer:?}");
     }
 
@@ -1424,7 +1451,13 @@ mod tests {
             .unwrap();
         let digest = board.approvals().get(&id).unwrap().digest;
         assert_eq!(
-            board.decide(&id, 1, &digest, Decision::ApproveAlways, Timestamp::now().as_second()),
+            board.decide(
+                &id,
+                1,
+                &digest,
+                Decision::ApproveAlways,
+                Timestamp::now().as_second()
+            ),
             Err(hatchling_core::ui::DecisionRejection::NotOffered)
         );
         let (mut unreadable, scratch, master) = search_config("unreadable-sites", None);
@@ -1435,7 +1468,12 @@ mod tests {
             .unwrap();
         let stranger = hatchling_vault::MasterKey::generate().unwrap();
         let mut web = unattended("t", &fetcher);
-        let answer = handle_web_op(&unreadable, &stranger, &mut web, &fetch("https://a.example/"));
+        let answer = handle_web_op(
+            &unreadable,
+            &stranger,
+            &mut web,
+            &fetch("https://a.example/"),
+        );
         assert!(waiting(&answer, "https://a.example"), "{answer:?}");
     }
 }

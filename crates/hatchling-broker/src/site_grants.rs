@@ -16,8 +16,8 @@
 use std::path::Path;
 use std::sync::{Mutex, PoisonError};
 
-use hatchling_core::ui::{AllowedSite, SiteOp, SiteResult};
 use hatchling_core::SecretName;
+use hatchling_core::ui::{AllowedSite, SiteOp, SiteResult};
 use hatchling_scheduler::Timestamp;
 use hatchling_vault::{OpensStores, SealedVault, Secret, Store};
 use serde::{Deserialize, Serialize};
@@ -87,8 +87,8 @@ impl<'k> SiteGrants<'k> {
     fn write(vault: &SealedVault<'_>, kept: &[Kept]) -> Result<(), String> {
         let bytes = serde_json::to_vec(kept)
             .map_err(|error| format!("the allowed sites don't encode: {error}"))?;
-        let secret = Secret::new(bytes)
-            .map_err(|error| format!("the allowed sites don't fit: {error}"))?;
+        let secret =
+            Secret::new(bytes).map_err(|error| format!("the allowed sites don't fit: {error}"))?;
         vault
             .store(&Self::name()?, &secret)
             .map_err(|error| format!("the allowed sites can't be written: {error}"))
@@ -233,7 +233,8 @@ mod tests {
         // Sealed under the sites store, and kept across opens.
         let again = SiteGrants::of(&config, &key).unwrap();
         assert!(again.holds("https://b.example:8443").unwrap());
-        assert!(format!("{again:?}").starts_with("SiteGrants { root: "));
+        let shown = format!("{again:?}");
+        assert!(shown.starts_with("SiteGrants { root: "), "{shown}");
     }
 
     /// At most [`MAX_SITES`]: past that a new one is refused, and nothing
@@ -250,11 +251,17 @@ mod tests {
             .collect();
         SiteGrants::write(&grants.vault().unwrap(), &kept).unwrap();
         assert!(grants.allow("https://new.example", 2).is_err());
-        assert!(grants.allow("https://s0.example", 2).is_ok(), "one kept already");
+        assert!(
+            grants.allow("https://s0.example", 2).is_ok(),
+            "one kept already"
+        );
         assert_eq!(grants.list().unwrap().len(), MAX_SITES);
         kept.pop();
         SiteGrants::write(&grants.vault().unwrap(), &kept).unwrap();
-        assert!(grants.allow("https://new.example", 2).is_ok(), "room for one");
+        assert!(
+            grants.allow("https://new.example", 2).is_ok(),
+            "room for one"
+        );
     }
 
     /// The store's parts, called directly: an empty store reads as no
@@ -285,7 +292,11 @@ mod tests {
             })
             .collect();
         let bytes = serde_json::to_vec(&kept).unwrap();
-        assert!(bytes.len() <= hatchling_core::MAX_SECRET_BYTES, "{}", bytes.len());
+        assert!(
+            bytes.len() <= hatchling_core::MAX_SECRET_BYTES,
+            "{}",
+            bytes.len()
+        );
     }
 
     /// The owner's operations: listed with when, revoked, not found; off
