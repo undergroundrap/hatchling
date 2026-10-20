@@ -15,9 +15,7 @@ use std::time::Duration;
 
 use hatchling_sys::{BindMount, Child, ChildPid, MountPlan};
 
-use crate::{
-    CellSpec, CellView, ENDPOINT_DIR, Error, Origin, PROGRAM, PlatformError, ViewEntry,
-};
+use crate::{CellSpec, CellView, ENDPOINT_DIR, Error, Origin, PROGRAM, PlatformError, ViewEntry};
 
 /// The devices a CLI cell writes, at their own paths.
 pub(super) const DEVICES: [&str; 3] = ["/dev/null", "/dev/zero", "/dev/urandom"];

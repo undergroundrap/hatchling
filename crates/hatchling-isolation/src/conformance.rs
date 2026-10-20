@@ -11,9 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::{
-    Cell, CellSpec, CellView, ENDPOINT_DIR, IsolationBackend, Origin, PROGRAM, ViewEntry,
-};
+use crate::{Cell, CellSpec, CellView, ENDPOINT_DIR, IsolationBackend, Origin, PROGRAM, ViewEntry};
 
 /// Programs that end in a known way on the platform under test.
 #[derive(Debug, Clone)]
