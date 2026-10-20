@@ -11,9 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::{
-    Cell, CellSpec, CellView, ENDPOINT_DIR, Filter, IsolationBackend, Origin, PROGRAM, ViewEntry,
-};
+use crate::{Cell, CellSpec, CellView, ENDPOINT_DIR, IsolationBackend, Origin, PROGRAM, ViewEntry};
 
 /// Programs that end in a known way on the platform under test.
 #[derive(Debug, Clone)]
@@ -62,7 +60,7 @@ pub fn check_view(spec: &CellSpec, view: &CellView) -> Result<(), String> {
             view.relay, spec.relay
         ));
     }
-    let cli = spec.filter == Filter::Cli;
+    let cli = spec.filter.runs_processes();
     if view.processes != cli {
         return Err(String::from(
             "the cell's own processes are seen exactly when it is a CLI cell",

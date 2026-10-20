@@ -15,9 +15,7 @@ use std::time::Duration;
 
 use hatchling_sys::{BindMount, Child, ChildPid, MountPlan};
 
-use crate::{
-    CellSpec, CellView, ENDPOINT_DIR, Error, Filter, Origin, PROGRAM, PlatformError, ViewEntry,
-};
+use crate::{CellSpec, CellView, ENDPOINT_DIR, Error, Origin, PROGRAM, PlatformError, ViewEntry};
 
 /// The devices a CLI cell writes, at their own paths.
 pub(super) const DEVICES: [&str; 3] = ["/dev/null", "/dev/zero", "/dev/urandom"];
@@ -90,7 +88,7 @@ pub(super) fn view(spec: &CellSpec) -> Result<CellView, Error> {
             origin: Origin::Runtime,
         });
     }
-    let cli = spec.filter == Filter::Cli;
+    let cli = spec.filter.runs_processes();
     if cli {
         for device in DEVICES {
             entries.push(ViewEntry {

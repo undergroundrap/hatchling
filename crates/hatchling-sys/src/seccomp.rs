@@ -127,6 +127,19 @@ const SYSCALL_TABLE: &[(&str, u32)] = &[
     // /usr/include/x86_64-linux-gnu/asm/unistd_64.h; x86_64-only until
     // aarch64 numbers are verified against kernel headers.
     ("fstatat", 262),
+    // The browser's (WO-029), from the x86_64 kernel headers.
+    ("epoll_wait", 232),
+    ("recvmsg", 47),
+    ("sendmsg", 46),
+    ("ppoll", 271),
+    ("fallocate", 285),
+    ("memfd_create", 319),
+    ("mremap", 25),
+    ("setpriority", 141),
+    ("getpriority", 140),
+    ("inotify_init", 253),
+    ("pkey_alloc", 330),
+    ("landlock_create_ruleset", 444),
     ("fstat", 5),
     ("poll", 7),
     ("lseek", 8),
@@ -447,6 +460,36 @@ const CLI_CALLS: [&str; 61] = [
     "epoll_pwait2",
 ];
 
+/// The calls a headless Chromium makes beyond the CLI profile's (WO-029),
+/// found by tracing it and then leaving each out in a real cell: without
+/// any of them it is killed, or a child of it is and it hangs. Messages
+/// with descriptors between its own processes (`sendmsg`, `recvmsg`, over
+/// `AF_UNIX`, the only family that carries them), the event loop's waits,
+/// and its shared memory (`memfd_create`, `mremap`, `fallocate`).
+#[cfg(target_arch = "x86_64")]
+const BROWSER_CALLS: [&str; 7] = [
+    "epoll_wait",
+    "recvmsg",
+    "sendmsg",
+    "ppoll",
+    "fallocate",
+    "memfd_create",
+    "mremap",
+];
+
+/// Calls a headless Chromium only probes for, answered with an errno it
+/// handles rather than allowed: a sandbox it can't use in a cell
+/// (`landlock_create_ruleset`), memory protection keys (`pkey_alloc`), the
+/// old inotify (`inotify_init`), and thread priorities.
+#[cfg(target_arch = "x86_64")]
+const BROWSER_PROBES: [(&str, u32); 5] = [
+    ("landlock_create_ruleset", ENOSYS),
+    ("pkey_alloc", ENOSYS),
+    ("inotify_init", ENOSYS),
+    ("setpriority", EPERM),
+    ("getpriority", EPERM),
+];
+
 impl SeccompProfile {
     /// Allows a syscall by name when `check` passes; otherwise it gets
     /// `otherwise`.
@@ -628,6 +671,36 @@ impl SeccompProfile {
             "renameat2",
         ] {
             profile.allow(name)?;
+        }
+        Ok(profile)
+    }
+
+    /// The browser cell's profile (WO-029): the CLI profile, with its
+    /// argument checks unchanged, plus the calls a headless Chromium was
+    /// traced making ([`BROWSER_CALLS`]), and its probes answered with an
+    /// errno ([`BROWSER_PROBES`]).
+    ///
+    /// Chromium's own sandbox needs namespaces and `seccomp`, which no cell
+    /// may use, so it runs without it: the cell is the boundary. Still
+    /// nothing that mounts, traces, makes namespaces, loads code into the
+    /// kernel, reaches another process's memory, or opens a socket of any
+    /// family but `AF_UNIX` and `AF_INET`. Descriptors passed with
+    /// `sendmsg` reach only a socket the cell holds; the broker reads its
+    /// end of the cell's connection without taking descriptors.
+    ///
+    /// # Errors
+    ///
+    /// As [`SeccompProfile::agent`].
+    pub fn browser() -> Result<Self, Error> {
+        let mut profile = Self::harness_cli()?;
+        #[cfg(target_arch = "x86_64")]
+        {
+            for name in BROWSER_CALLS {
+                profile.allow(name)?;
+            }
+            for (name, errno) in BROWSER_PROBES {
+                profile.allow_if(name, Check::Never, Refusal::Errno(errno))?;
+            }
         }
         Ok(profile)
     }
@@ -1814,6 +1887,64 @@ mod tests {
             call(&prog, "ioctl", [1, 0x1_0000_5413, 0, 0, 0, 0]),
             SECCOMP_RET_ALLOW,
             "the high half is not the request"
+        );
+    }
+
+    /// WO-029: the browser profile allows what Chromium was traced needing,
+    /// answers its probes with an errno, and is otherwise the CLI profile,
+    /// argument checks and all; the CLI profile kills the browser's calls.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn the_browser_profile_decides_each_call_as_designed() {
+        let prog = SeccompProfile::browser().unwrap().build();
+        let cli = SeccompProfile::harness_cli().unwrap().build();
+        let no = [0u64; 6];
+        let errno = |e: u32| SECCOMP_RET_ERRNO + e;
+        for name in BROWSER_CALLS {
+            assert_eq!(call(&prog, name, no), SECCOMP_RET_ALLOW, "{name}");
+            assert_eq!(call(&cli, name, no), SECCOMP_RET_KILL_PROCESS, "cli {name}");
+        }
+        for (name, refusal) in BROWSER_PROBES {
+            assert_eq!(call(&prog, name, no), errno(refusal), "{name}");
+        }
+        for (name, refusal) in [
+            ("landlock_create_ruleset", ENOSYS),
+            ("pkey_alloc", ENOSYS),
+            ("inotify_init", ENOSYS),
+            ("setpriority", EPERM),
+            ("getpriority", EPERM),
+        ] {
+            assert_eq!(call(&prog, name, no), errno(refusal), "{name} pinned");
+        }
+        // The CLI profile's own calls and checks, unchanged.
+        for name in ["read", "vfork", "wait4", "epoll_pwait2"] {
+            assert_eq!(call(&prog, name, no), SECCOMP_RET_ALLOW, "{name}");
+        }
+        for nr in [101, 165, 272, 308, 321, 298, 310, 425, 323, 155, 161, 317] {
+            assert_eq!(
+                run(&prog, AUDIT_ARCH, nr, no),
+                SECCOMP_RET_KILL_PROCESS,
+                "{nr}"
+            );
+        }
+        for (family, action) in [
+            (AF_UNIX, SECCOMP_RET_ALLOW),
+            (AF_INET, SECCOMP_RET_ALLOW),
+            (10, errno(EAFNOSUPPORT)),
+            (16, errno(EAFNOSUPPORT)),
+        ] {
+            let args = [u64::from(family), 1, 0, 0, 0, 0];
+            assert_eq!(call(&prog, "socket", args), action, "family {family}");
+        }
+        assert_eq!(
+            call(&prog, "clone", [0x003D_0F00 + 0x1000_0000, 0, 0, 0, 0, 0]),
+            SECCOMP_RET_KILL_PROCESS,
+            "a namespace flag"
+        );
+        assert_eq!(
+            call(&prog, "prctl", [38, 0, 0, 0, 0, 0]),
+            errno(EPERM),
+            "PR_SET_NO_NEW_PRIVS"
         );
     }
 
