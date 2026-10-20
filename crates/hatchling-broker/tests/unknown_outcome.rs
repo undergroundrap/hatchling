@@ -30,7 +30,9 @@ use hatchling_broker::{
     CellLauncher, Config, EgressConfig, GoalsConfig, MemoryConfig, RunEnv, SchedulerConfig,
     SealedScheduleStore, SpaceConfig, VaultConfig, dispatch_once, handle_schedule_op,
 };
-use hatchling_core::{HeldFire, LogLevel, PeerUid, ScheduleGrant, ScheduleOp, ScheduleResult, ScheduleSpec};
+use hatchling_core::{
+    HeldFire, LogLevel, PeerUid, ScheduleGrant, ScheduleOp, ScheduleResult, ScheduleSpec,
+};
 use hatchling_scheduler::{
     Creator, Dispatcher, Launcher, OccurrenceState, Run, RunRequest, Store as _, Timestamp,
     validate,
@@ -139,7 +141,8 @@ fn killed(config: &Config) {
     std::thread::scope(|scope| {
         let launcher = CellLauncher::new(scope, config, &key, env);
         let mut dispatcher = Dispatcher::default();
-        let report = dispatch_once(&mut dispatcher, config, &key, None, &launcher, at(FIRST)).unwrap();
+        let report =
+            dispatch_once(&mut dispatcher, config, &key, None, &launcher, at(FIRST)).unwrap();
         assert_eq!(report.launched, [(String::from("sch-hang"), false)]);
         let state = store
             .load()
@@ -223,7 +226,10 @@ fn a_fire_in_flight_when_the_broker_is_killed_is_held_as_unknown() {
     };
     broker.kill().unwrap();
     broker.wait().unwrap();
-    assert!(running, "the killed broker never ran its fire; it said {told:?}");
+    assert!(
+        running,
+        "the killed broker never ran its fire; it said {told:?}"
+    );
 
     // The next broker's start.
     let key = key(&config);
@@ -253,10 +259,19 @@ fn a_fire_in_flight_when_the_broker_is_killed_is_held_as_unknown() {
     let mut dispatcher = Dispatcher::default();
     let report = dispatch_once(&mut dispatcher, &config, &key, None, &launcher, at(NEXT)).unwrap();
     assert_eq!(report.held, ["sch-hang"]);
-    assert!(launcher.0.borrow().is_empty(), "a fire of unknown outcome ran again");
+    assert!(
+        launcher.0.borrow().is_empty(),
+        "a fire of unknown outcome ran again"
+    );
 
     // The owner sees it.
-    let listed = handle_schedule_op(&config, &key, &ScheduleOp::List { after: None }, at(NEXT), Creator::Owner);
+    let listed = handle_schedule_op(
+        &config,
+        &key,
+        &ScheduleOp::List { after: None },
+        at(NEXT),
+        Creator::Owner,
+    );
     let ScheduleResult::Listed { schedules, .. } = listed else {
         unreachable!("not listed: {listed:?}");
     };
@@ -281,8 +296,15 @@ fn a_fire_in_flight_when_the_broker_is_killed_is_held_as_unknown() {
         handle_schedule_op(&config, &key, &retry, at(NEXT + 60), Creator::Owner),
         ScheduleResult::Retried
     );
-    let report =
-        dispatch_once(&mut dispatcher, &config, &key, None, &launcher, at(NEXT + 60)).unwrap();
+    let report = dispatch_once(
+        &mut dispatcher,
+        &config,
+        &key,
+        None,
+        &launcher,
+        at(NEXT + 60),
+    )
+    .unwrap();
     assert_eq!(report.launched, [(String::from("sch-hang"), false)]);
     assert_eq!(launcher.0.borrow().len(), 1);
 }

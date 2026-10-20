@@ -1890,15 +1890,24 @@ mod tests {
         }
         // Claimed, then the broker died: held, of unknown outcome, a run
         // never started.
-        let vault =
-            SealedVault::open_in(&config.scheduler.root, &master, hatchling_vault::Store::SCHEDULES)
-                .unwrap();
+        let vault = SealedVault::open_in(
+            &config.scheduler.root,
+            &master,
+            hatchling_vault::Store::SCHEDULES,
+        )
+        .unwrap();
         assert_eq!(store.hold_in_flight().unwrap(), ["sch-a", "sch-b"]);
         assert_eq!(
             SealedScheduleStore::unknown_fire(&vault, "sch-a").unwrap(),
             Some(1_790_002_800)
         );
-        let listed = list_schedules(&config, &master, &held_grants(&config), None, Creator::Owner);
+        let listed = list_schedules(
+            &config,
+            &master,
+            &held_grants(&config),
+            None,
+            Creator::Owner,
+        );
         let ScheduleResult::Listed { schedules, .. } = listed else {
             unreachable!("{listed:?}");
         };
@@ -1910,7 +1919,9 @@ mod tests {
             })
         );
         let now = Timestamp::from_second(1_790_010_000).unwrap();
-        let op = |op: ScheduleOp, caller: Creator| handle_schedule_op(&config, &master, &op, now, caller);
+        let op = |op: ScheduleOp, caller: Creator| {
+            handle_schedule_op(&config, &master, &op, now, caller)
+        };
         let resolve = |id: &str| ScheduleOp::Resolve { id: id.to_owned() };
         let retry = |id: &str| ScheduleOp::Retry { id: id.to_owned() };
         // A cell can do none of it.
@@ -1925,12 +1936,23 @@ mod tests {
             assert_eq!(op(refused, Creator::Agent), ScheduleResult::Denied);
         }
         // Resolved: the schedule resumes, its fire gone.
-        assert_eq!(op(resolve("sch-a"), Creator::Owner), ScheduleResult::Resolved);
-        assert_eq!(op(resolve("sch-a"), Creator::Owner), ScheduleResult::NotFound);
-        assert_eq!(SealedScheduleStore::unknown_fire(&vault, "sch-a").unwrap(), None);
+        assert_eq!(
+            op(resolve("sch-a"), Creator::Owner),
+            ScheduleResult::Resolved
+        );
+        assert_eq!(
+            op(resolve("sch-a"), Creator::Owner),
+            ScheduleResult::NotFound
+        );
+        assert_eq!(
+            SealedScheduleStore::unknown_fire(&vault, "sch-a").unwrap(),
+            None
+        );
         // Retried: due now, as a new attempt.
         assert_eq!(op(retry("sch-b"), Creator::Owner), ScheduleResult::Retried);
-        let retried = SealedScheduleStore::latest(&vault, "sch-b").unwrap().unwrap();
+        let retried = SealedScheduleStore::latest(&vault, "sch-b")
+            .unwrap()
+            .unwrap();
         assert_eq!(retried.next_due, now.as_second());
         assert!(retried.ledger.occurrence.is_none());
         assert!(!store.retry("sch-none", now).unwrap());
@@ -1950,7 +1972,9 @@ mod tests {
         let master = MasterKey::generate().unwrap();
         let store = SealedScheduleStore::new(&config.scheduler.root, &master);
         let now = Timestamp::from_second(1_790_010_000).unwrap();
-        let op = |op: ScheduleOp, caller: Creator| handle_schedule_op(&config, &master, &op, now, caller);
+        let op = |op: ScheduleOp, caller: Creator| {
+            handle_schedule_op(&config, &master, &op, now, caller)
+        };
         // Parked results: listed with their ids, and dismissed.
         let parked = Parked {
             schedule_id: String::from("sch-a"),
@@ -1971,7 +1995,11 @@ mod tests {
             ["parked-0", "parked-1"]
         );
         let listed = op(ScheduleOp::ListParked { after: None }, Creator::Owner);
-        let ScheduleResult::Parked { parked: shown, next } = listed else {
+        let ScheduleResult::Parked {
+            parked: shown,
+            next,
+        } = listed
+        else {
             unreachable!("{listed:?}");
         };
         assert_eq!(shown.len(), 2);
@@ -1985,7 +2013,10 @@ mod tests {
         let dismiss = ScheduleOp::Dismiss {
             id: String::from("parked-0"),
         };
-        assert_eq!(op(dismiss.clone(), Creator::Owner), ScheduleResult::Dismissed);
+        assert_eq!(
+            op(dismiss.clone(), Creator::Owner),
+            ScheduleResult::Dismissed
+        );
         assert_eq!(op(dismiss, Creator::Owner), ScheduleResult::NotFound);
         assert!(!store.dismiss("parked-9").unwrap());
         assert_eq!(store.parked().unwrap().len(), 1);

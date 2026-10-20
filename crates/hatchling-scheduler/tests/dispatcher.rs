@@ -1161,7 +1161,11 @@ fn a_fire_left_in_flight_holds_its_schedule_as_unknown() {
     // The broker dies with the run out; the next one holds the fire.
     world.dispatcher = Dispatcher::default();
     assert_eq!(world.store.hold_in_flight().unwrap(), ["s"]);
-    assert_eq!(world.store.hold_in_flight().unwrap(), Vec::<String>::new(), "held once");
+    assert_eq!(
+        world.store.hold_in_flight().unwrap(),
+        Vec::<String>::new(),
+        "held once"
+    );
     let held = world
         .store
         .schedules
