@@ -326,8 +326,7 @@ mod tests {
         };
         assert_eq!(handle_site_op(&config, &key, &revoke), SiteResult::Revoked);
         assert_eq!(handle_site_op(&config, &key, &revoke), SiteResult::NotFound);
-        let mut off = config.clone();
-        off.web.grants = std::path::PathBuf::new();
+        let off = crate::api_auth::tests::owner_config(None);
         assert!(SiteGrants::of(&off, &key).is_none());
         assert_eq!(handle_site_op(&off, &key, &SiteOp::List), SiteResult::Off);
         // Another key can't open the sealed store.

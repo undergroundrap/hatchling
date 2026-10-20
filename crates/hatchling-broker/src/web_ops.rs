@@ -828,7 +828,7 @@ mod tests {
     }
 
     /// Asking for `site`, for its page `url`, with no search behind it.
-    fn asking<'a>(site: &'a str, url: &'a str) -> SiteAsk<'a> {
+    const fn asking<'a>(site: &'a str, url: &'a str) -> SiteAsk<'a> {
         SiteAsk {
             site,
             url,
