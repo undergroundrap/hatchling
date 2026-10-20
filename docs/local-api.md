@@ -90,7 +90,7 @@ When the agent proposes an action that needs your yes (building an idea into an 
   - A decision on a request that changed, lapsed (15 minutes), or was already decided is rejected with its reason.
   - A `confirmation_decided` event follows on the stream either way.
 - **On approve, the broker runs the action it recorded, once,** on its own worker. A session can't run it, and nothing a session sends afterwards is what runs. The outcome comes back on the local chat, as the broker's.
-- **A site** (WO-028): what's approved is the site, `https://host[:port]`; the page the agent asked for and its reason are shown as the agent's words. `approve` lets the session read that page once, and the next page on the site asks again; `approve_session` lets it read any page on the site until the session ends; `deny` refuses the site from then on, for every session, however the agent asks. The session that asked reads the page itself: nothing runs on the worker.
+- **A site** (WO-028): what's approved is the site, `https://host[:port]`; the page the agent asked for and its reason are shown as the agent's words. `approve` lets the session read that page once, and the next page on the site asks again; `approve_session` lets it read any page on the site until the session ends; `deny` refuses the site from then on, for every session, however the agent asks. The session that asked reads the page itself: nothing runs on the worker. When one of the session's searches gave the page, the card says which result it was (`Found by`, the broker's) and shows the search (`The search`, the agent's words).
 - **Asking is bounded:**
   - at most 5 requests wait, one per agent session;
   - at most 20 are made in an hour;

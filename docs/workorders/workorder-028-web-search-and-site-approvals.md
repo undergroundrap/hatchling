@@ -1,6 +1,6 @@
 # WO-028: Web search through the broker, and each new site approved by the owner
 
-**Status:** IN PROGRESS (part 1: the fetch; part 2: site grants and `web_fetch`)
+**Status:** IN PROGRESS (part 1: the fetch; part 2: site grants and `web_fetch`; part 3: search)
 **Area:** `crates/hatchling-core` (the search and fetch ops, `ui`), `crates/hatchling-broker` (a search provider at egress, site grants, the approvals board), `crates/hatchling-egress` (per-origin grants), `crates/hatchling-agent` (the tools), `frontend/` (the site prompt)
 **Issue:** none yet
 **Trust boundary:** yes
@@ -61,7 +61,7 @@ Filled in at close.
 
 1. **The fetch** (`hatchling_egress::web`): the strict URL and origin, a fetch resolved and checked per request and pinned to what it resolved to, one bounded `GET` with no credential, redirects returned and never followed, HTML reduced to its text. No tool and no grants yet: nothing calls it.
 2. **Site grants and `web_fetch`:** the session op and the agent's tool; the approvals board's second kind of action (a site), with once, this session, and never (a denial); the operator's switch and refusals; a deadline on the whole fetch (the proxy bounds each read, not their sum); the untrusted-data envelope on what comes back.
-3. **Search:** the provider at egress, its key from the vault, `web_search`, the query records, and "which result led here" in the prompt.
+3. **Search:** Brave Search, asked by the broker with its key from the vault (released by the keeper for search alone, never named by a grant), `web_search`, the query records, and "which result led here" in the prompt.
 4. **The app and stored grants:** the site prompt's "this session" choice in the app; "always for this project", stored, listed and revoked in the app (Hatchling has no project yet: a space, or the owner's whole broker, is decided then).
 
 ## Notes
