@@ -734,7 +734,7 @@ fn serve_session(
     let space_session = crate::space_ops::SpaceSession::for_session(config, &creds, &session_id);
     // The session's web: the sites the owner allows it for the session,
     // forgotten when it ends (WO-028).
-    let web_tls = if config.web.enabled {
+    let web_tls = if config.web.enabled || config.web.search {
         Some(egress_tls(|key| std::env::var(key).ok())?)
     } else {
         None
@@ -837,7 +837,7 @@ fn serve_session(
                 }
                 SessionRequest::Subagent(op) => SessionResponse::Subagent(subagents.handle(&op)),
                 SessionRequest::Web(op) => {
-                    SessionResponse::Web(crate::web_ops::handle_web_op(config, &mut web, &op))
+                    SessionResponse::Web(crate::web_ops::handle_web_op(config, key, &mut web, &op))
                 }
             };
             let payload = encode_reply(&response, MAX_FRAME_BYTES)?;

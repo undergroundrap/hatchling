@@ -95,8 +95,8 @@ pub mod web_ops;
 pub use config::{
     ArtifactConfig, ChannelAccountSpec, Config, DEFAULT_MAX_CONNECTIONS, EgressAllowlist,
     EgressConfig, FollowupScope, GoalsAction, GoalsConfig, MAX_MAX_CONNECTIONS, MemoryAction,
-    MemoryConfig, MemoryGrant, SchedulerConfig, SkillConfig, SpaceConfig, VaultConfig, VaultGrant,
-    WebConfig,
+    MemoryConfig, MemoryGrant, SchedulerConfig, SearchLog, SkillConfig, SpaceConfig, VaultConfig,
+    VaultGrant, WebConfig,
 };
 pub use error::Error;
 pub use goals_ops::{handle_goals_op, handle_query_op};

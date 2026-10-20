@@ -3656,6 +3656,24 @@ export type VaultResult = {
     readonly r: 'vault-error';
 };
 /**
+ * One search result: the provider's words about a page, untrusted.
+ */
+export type WebHit = {
+    /**
+     * What the provider says of it.
+     */
+    readonly snippet: string;
+    /**
+     * The page's title.
+     */
+    readonly title: string;
+    /**
+     * The page's URL: reading it is a [`WebOp::Fetch`], which needs its
+     * site's approval like any other.
+     */
+    readonly url: string;
+};
+/**
  * A web operation (WO-028): a page read through the broker, from a site
  * the owner allows.
  *
@@ -3675,6 +3693,12 @@ export type WebOp = {
      * The page's absolute `https` URL.
      */
     readonly url: string;
+} | {
+    readonly op: 'search';
+    /**
+     * What to search for. It leaves to the provider.
+     */
+    readonly query: string;
 };
 /**
  * The broker's reply to one [`WebOp`].
@@ -3697,6 +3721,12 @@ export type WebResult = {
      * The URL it was read from.
      */
     readonly url: string;
+} | {
+    readonly result: 'results';
+    /**
+     * The results, best first.
+     */
+    readonly results: readonly (WebHit)[];
 } | {
     readonly result: 'redirect';
     /**

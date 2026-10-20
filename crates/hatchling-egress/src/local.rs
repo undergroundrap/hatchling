@@ -200,7 +200,7 @@ fn is_token(name: &str) -> bool {
 
 /// A header value: no control character but tab, so no line break can
 /// smuggle in a header or a second request.
-fn is_field_value(value: &str) -> bool {
+pub(crate) fn is_field_value(value: &str) -> bool {
     !value
         .bytes()
         .any(|byte| byte.is_ascii_control() && byte != b'\t')
@@ -810,5 +810,15 @@ pub(crate) mod tests {
             (CONNECT_TIMEOUT, IO_TIMEOUT),
             (Duration::from_secs(5), Duration::from_secs(300))
         );
+    }
+
+    /// `is_field_value`, called directly: no control character but tab.
+    #[test]
+    fn a_field_value_holds_no_line_break() {
+        assert!(is_field_value("Bearer abc\tdef ~!"));
+        assert!(is_field_value(""));
+        for bad in ["a\r\nb", "a\nb", "a\rb", "a\u{0}b", "a\u{7f}b"] {
+            assert!(!is_field_value(bad), "{bad:?}");
+        }
     }
 }

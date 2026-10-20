@@ -147,9 +147,13 @@ A page read through the broker, from a site the owner allows (WO-028).
 - **`WebOp::Fetch { url, reason }`:** the page's absolute `https` URL, and
   why the agent wants it (at most 500 characters), shown to the owner as
   the agent's words.
+- **`WebOp::Search { query }`:** a web search through the provider the
+  operator chose (at most 400 characters); the broker holds the key.
 - **`WebResult`:**
   - `Page { url, status, text, truncated }`: the page as text, the site's
     words;
+  - `Results { results }`: a search's results, at most 10, each a
+    `WebHit { title, url, snippet }`, the provider's words;
   - `Redirect { to }`: a redirect to another site, not followed;
   - `Waiting { site, request }`: the owner has been asked and hasn't
     decided; fetch again later;
@@ -159,7 +163,7 @@ A page read through the broker, from a site the owner allows (WO-028).
     (`ApprovalRefusal`);
   - `Refused { reason }`: the URL, the operator's refusal of the site, or
     the read itself;
-  - `Off`: the operator hasn't turned the web on.
+  - `Off`: the operator hasn't turned this on (pages, or search).
 
 ## Device handshake
 

@@ -35,6 +35,7 @@ pub mod policy;
 pub mod proxy;
 pub mod relay;
 pub mod scrub;
+pub mod search;
 pub mod surrogate;
 pub mod web;
 

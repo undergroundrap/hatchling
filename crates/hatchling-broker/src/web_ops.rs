@@ -19,21 +19,30 @@
 //!   one to another site is returned, for the agent to ask for that site.
 //! - **The whole read is bounded** by [`FETCH_DEADLINE`], over the proxy's
 //!   bounds on each read and on the page.
+//! - **Search** (`HATCHLING_SEARCH=brave`) runs on the broker, with the
+//!   provider's key from the vault ([`SEARCH_KEY`], which no grant may
+//!   name): the cell never holds it. Each query is logged with its session
+//!   and length, and its text only when the owner opts in
+//!   (`HATCHLING_SEARCH_LOG=queries`). The session remembers its results,
+//!   so the owner asked for a site sees which result led there.
 //!
 //! What comes back is the site's words. The agent's loop gives every tool
 //! result to the model as data, never instructions, so a page that says
 //! it's approved approves nothing: only the owner's decision does.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use hatchling_core::ui::Decision;
-use hatchling_core::{WebOp, WebResult};
+use hatchling_core::{SecretName, WebHit, WebOp, WebResult};
 use hatchling_egress::TlsClient;
+use hatchling_egress::search::{Hit, SearchError};
 use hatchling_egress::web::{FetchError, Fetched, Origin, WebUrl};
 use hatchling_scheduler::Timestamp;
+use hatchling_vault::OpensStores;
+use zeroize::Zeroizing;
 
 use crate::Config;
 use crate::approval_board::{Board, board, refused_as, site_action};
@@ -56,8 +65,28 @@ pub const MAX_REDIRECTS: usize = 5;
 /// How often a waiting session looks at the owner's decision.
 const POLL: Duration = Duration::from_millis(200);
 
+/// The vault secret holding the search provider's key. The broker reads it
+/// for search; no vault grant may name it, so no cell can.
+pub const SEARCH_KEY: &str = "search-brave";
+
+/// The most search results a session remembers, to tell the owner which
+/// one led to a site.
+pub const MAX_FOUND: usize = 100;
+
 /// Reads one page.
 pub type Fetcher = Arc<dyn Fn(&WebUrl) -> Result<Fetched, FetchError> + Send + Sync>;
+
+/// Runs one search, with the provider's key.
+pub type Searcher = Arc<dyn Fn(&[u8], &str) -> Result<Vec<Hit>, SearchError> + Send + Sync>;
+
+/// A search result the session was given: its URL, the search, and its
+/// place in the results, from 1.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Found {
+    url: String,
+    query: String,
+    rank: usize,
+}
 
 /// One session's web: the sites it holds for the session, and how it
 /// reads.
@@ -67,6 +96,8 @@ pub struct WebSession {
     wait: Duration,
     deadline: Duration,
     fetcher: Option<Fetcher>,
+    searcher: Option<Searcher>,
+    found: VecDeque<Found>,
 }
 
 impl std::fmt::Debug for WebSession {
@@ -81,10 +112,16 @@ impl std::fmt::Debug for WebSession {
 
 impl WebSession {
     /// The web of the session the broker knows as `task`, under `config`:
-    /// it waits for the owner only when a person is there, and reads with
-    /// `tls`, the egress proxy's roots (none while the web is off).
+    /// it waits for the owner only when a person is there, and reads and
+    /// searches with `tls`, the egress proxy's roots (none while both are
+    /// off).
     #[must_use]
     pub fn new(config: &Config, task: &str, tls: Option<TlsClient>) -> Self {
+        let searcher = tls.clone().filter(|_| config.web.search).map(|tls| {
+            let searcher: Searcher =
+                Arc::new(move |key, query| hatchling_egress::search::brave(&tls, key, query));
+            searcher
+        });
         Self {
             task: task.to_owned(),
             sites: BTreeSet::new(),
@@ -98,6 +135,8 @@ impl WebSession {
                 let fetcher: Fetcher = Arc::new(move |url| hatchling_egress::web::fetch(&tls, url));
                 fetcher
             }),
+            searcher,
+            found: VecDeque::new(),
         }
     }
 
@@ -111,7 +150,16 @@ impl WebSession {
             wait,
             deadline,
             fetcher: Some(fetcher),
+            searcher: None,
+            found: VecDeque::new(),
         }
+    }
+
+    /// This session, searching with `searcher`.
+    #[must_use]
+    pub fn searching(mut self, searcher: Searcher) -> Self {
+        self.searcher = Some(searcher);
+        self
     }
 
     /// Whether the session holds `site`.
@@ -119,11 +167,121 @@ impl WebSession {
     pub fn holds(&self, site: &Origin) -> bool {
         self.sites.contains(site)
     }
+
+    /// Remembers that the search for `query` gave `url` at `rank`, keeping
+    /// the last [`MAX_FOUND`].
+    fn remember(&mut self, url: String, query: &str, rank: usize) {
+        if self.found.len() >= MAX_FOUND {
+            self.found.pop_front();
+        }
+        self.found.push_back(Found {
+            url,
+            query: query.to_owned(),
+            rank,
+        });
+    }
+
+    /// The latest search that gave `url`, and its place in the results.
+    fn led_to(&self, url: &WebUrl) -> Option<(&str, usize)> {
+        let url = url.to_string();
+        self.found
+            .iter()
+            .rev()
+            .find(|found| found.url == url)
+            .map(|found| (found.query.as_str(), found.rank))
+    }
 }
 
-/// Answers `op` for the session `web`, under `config`.
-pub fn handle_web_op(config: &Config, web: &mut WebSession, op: &WebOp) -> WebResult {
-    let WebOp::Fetch { url, reason } = op;
+/// Answers `op` for the session `web`, under `config`, reading the search
+/// key with `keys`.
+pub fn handle_web_op(
+    config: &Config,
+    keys: &dyn OpensStores,
+    web: &mut WebSession,
+    op: &WebOp,
+) -> WebResult {
+    match op {
+        WebOp::Fetch { url, reason } => fetch(config, web, url, reason),
+        WebOp::Search { query } => search(config, keys, web, query),
+    }
+}
+
+/// Searches for `query`: the results, remembered by the session.
+fn search(config: &Config, keys: &dyn OpensStores, web: &mut WebSession, query: &str) -> WebResult {
+    if !config.web.search {
+        return WebResult::Off;
+    }
+    let Some(searcher) = web.searcher.clone() else {
+        return WebResult::Off;
+    };
+    let chars = query.chars().count();
+    if config.web.search_log == crate::SearchLog::Queries {
+        tracing::info!(task = %web.task, chars, query, "web search");
+    } else {
+        tracing::info!(task = %web.task, chars, "web search");
+    }
+    let key = match search_key(config, keys) {
+        Ok(key) => key,
+        Err(reason) => return refused(reason),
+    };
+    let hits = match bounded_search(&searcher, key, query, web.deadline) {
+        Ok(hits) => hits,
+        Err(reason) => return refused(reason),
+    };
+    let mut results = Vec::with_capacity(hits.len());
+    for (place, hit) in hits.into_iter().enumerate() {
+        let url = hit.url.to_string();
+        web.remember(url.clone(), query, place + 1);
+        results.push(WebHit {
+            title: hit.title,
+            url,
+            snippet: hit.snippet,
+        });
+    }
+    WebResult::Results { results }
+}
+
+/// The search provider's key, the broker's own read of [`SEARCH_KEY`].
+fn search_key(config: &Config, keys: &dyn OpensStores) -> Result<Zeroizing<Vec<u8>>, String> {
+    let name: SecretName = SEARCH_KEY
+        .parse()
+        .map_err(|_| String::from("the search key's name is invalid"))?;
+    let read = crate::secrets::Secrets::new(&config.vault.root, keys)
+        .broker_read("search", std::slice::from_ref(&name))
+        .map_err(|error| format!("the search key couldn't be read: {error}"))?;
+    let secret =
+        read.into_iter().next().flatten().ok_or_else(|| {
+            format!("no search key is stored: keep it in the vault as {SEARCH_KEY}")
+        })?;
+    Ok(Zeroizing::new(secret.as_bytes().to_vec()))
+}
+
+/// Runs `searcher` for `query` with `key`, giving up after `deadline`.
+fn bounded_search(
+    searcher: &Searcher,
+    key: Zeroizing<Vec<u8>>,
+    query: &str,
+    deadline: Duration,
+) -> Result<Vec<Hit>, String> {
+    let (sender, receiver) = mpsc::channel();
+    let searcher = Arc::clone(searcher);
+    let query = query.to_owned();
+    std::thread::spawn(move || {
+        let _ = sender.send(searcher(&key, &query));
+    });
+    receiver.recv_timeout(deadline).map_or_else(
+        |_| {
+            Err(format!(
+                "the search took longer than {} seconds",
+                FETCH_DEADLINE.as_secs()
+            ))
+        },
+        |answer| answer.map_err(|error| error.to_string()),
+    )
+}
+
+/// Reads the page at `url`, which the agent wants for `reason`.
+fn fetch(config: &Config, web: &mut WebSession, url: &str, reason: &str) -> WebResult {
     if !config.web.enabled {
         return WebResult::Off;
     }
@@ -193,7 +351,14 @@ fn ask_owner(
 ) -> Result<String, WebResult> {
     let now = Timestamp::now().as_second();
     let requested = board
-        .propose_site(site, &url.to_string(), reason, &web.task, now)
+        .propose_site(
+            site,
+            &url.to_string(),
+            reason,
+            web.led_to(url),
+            &web.task,
+            now,
+        )
         .map_err(|refusal| match refusal {
             Refusal::Denied => WebResult::Denied {
                 site: site.to_owned(),
@@ -385,7 +550,8 @@ mod tests {
         let (config, op) = (config.clone(), op.clone());
         std::thread::spawn(move || {
             let mut web = web;
-            let answer = handle_web_op(&config, &mut web, &op);
+            let keys = hatchling_vault::MasterKey::generate().unwrap();
+            let answer = handle_web_op(&config, &keys, &mut web, &op);
             let _ = sender.send((web, answer));
         });
         receiver
@@ -636,7 +802,7 @@ mod tests {
         let site = "https://a.example";
         let board = board(&web_config("ends"));
         let no = board
-            .propose_site(site, "https://a.example/", "why", "t", 0)
+            .propose_site(site, "https://a.example/", "why", None, "t", 0)
             .unwrap();
         board
             .decide(&no.id, 1, &no.digest, Decision::Deny, 1)
@@ -649,13 +815,14 @@ mod tests {
         );
         let board = crate::approval_board::board(&web_config("lapses"));
         let lapsing = board
-            .propose_site(site, "https://a.example/", "why", "t", 0)
+            .propose_site(site, "https://a.example/", "why", None, "t", 0)
             .unwrap();
         // Proposing past its time lapses it.
         let _ = board.propose_site(
             "https://b.example",
             "https://b.example/",
             "why",
+            None,
             "t9",
             10_000,
         );
@@ -671,7 +838,7 @@ mod tests {
         ));
         let board = crate::approval_board::board(&web_config("approved"));
         let yes = board
-            .propose_site(site, "https://a.example/", "why", "t", 0)
+            .propose_site(site, "https://a.example/", "why", None, "t", 0)
             .unwrap();
         board
             .decide(&yes.id, 1, &yes.digest, Decision::Approve, 1)
@@ -869,5 +1036,285 @@ mod tests {
             .approvals()
             .find(task, &site_action(site), State::Pending)
             .is_some()
+    }
+
+    /// A config with search on, over a real vault in a scratch directory
+    /// holding `key` as the search key when given.
+    fn search_config(
+        name: &str,
+        key: Option<&[u8]>,
+    ) -> (
+        Config,
+        crate::api_auth::tests::Scratch,
+        hatchling_vault::MasterKey,
+    ) {
+        let scratch = crate::api_auth::tests::scratch(&format!("web-search-{name}"));
+        let mut config = web_config(name);
+        config.vault.root = scratch.0.join("vault");
+        config.web.search = true;
+        let master = hatchling_vault::MasterKey::generate().unwrap();
+        let vault = hatchling_vault::SealedVault::open(&config.vault.root, &master).unwrap();
+        if let Some(key) = key {
+            vault
+                .store(
+                    &SEARCH_KEY.parse().unwrap(),
+                    &hatchling_vault::Secret::new(key.to_vec()).unwrap(),
+                )
+                .unwrap();
+        }
+        (config, scratch, master)
+    }
+
+    fn hit(url: &str, title: &str) -> Hit {
+        Hit {
+            title: title.to_owned(),
+            url: WebUrl::parse(url).unwrap(),
+            snippet: format!("about {title}"),
+        }
+    }
+
+    /// Answers every search with `hits`, recording the key and query each
+    /// was given.
+    /// The key and query of each search a scripted searcher was asked.
+    type Asked = Arc<Mutex<Vec<(Vec<u8>, String)>>>;
+
+    fn scripted_search(hits: Vec<Hit>) -> (Searcher, Asked) {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&asked);
+        let searcher: Searcher = Arc::new(move |key: &[u8], query: &str| {
+            log.lock().unwrap().push((key.to_vec(), query.to_owned()));
+            Ok(hits.clone())
+        });
+        (searcher, asked)
+    }
+
+    fn search(query: &str) -> WebOp {
+        WebOp::Search {
+            query: query.to_owned(),
+        }
+    }
+
+    /// A search runs with the key the vault holds, the results come back
+    /// as the provider's words, and the session remembers them; the query's
+    /// text is logged only when the owner opts in.
+    #[test]
+    fn a_search_runs_with_the_brokers_key_and_is_remembered() {
+        let (mut config, _scratch, master) = search_config("runs", Some(b"k-brave"));
+        let (searcher, asked) = scripted_search(vec![
+            hit("https://docs.example/a", "A"),
+            hit("https://blog.example/b", "B"),
+        ]);
+        let (fetcher, _) = scripted(Vec::new());
+        let mut web = unattended("t", &fetcher).searching(searcher);
+        let mut answer = WebResult::Off;
+        let logged = crate::test_log::captured(|| {
+            answer = handle_web_op(&config, &master, &mut web, &search("rust changelog"));
+        });
+        assert_eq!(
+            answer,
+            WebResult::Results {
+                results: vec![
+                    WebHit {
+                        title: String::from("A"),
+                        url: String::from("https://docs.example/a"),
+                        snippet: String::from("about A"),
+                    },
+                    WebHit {
+                        title: String::from("B"),
+                        url: String::from("https://blog.example/b"),
+                        snippet: String::from("about B"),
+                    },
+                ]
+            }
+        );
+        assert_eq!(
+            *asked.lock().unwrap(),
+            [(b"k-brave".to_vec(), String::from("rust changelog"))]
+        );
+        assert!(logged.contains("web search"), "{logged}");
+        assert!(logged.contains("chars=14"), "{logged}");
+        assert!(!logged.contains("rust changelog"), "{logged}");
+        assert_eq!(
+            web.led_to(&WebUrl::parse("https://blog.example/b").unwrap()),
+            Some(("rust changelog", 2))
+        );
+        assert_eq!(
+            web.led_to(&WebUrl::parse("https://other.example/").unwrap()),
+            None
+        );
+        config.web.search_log = crate::SearchLog::Queries;
+        let logged = crate::test_log::captured(|| {
+            let _ = handle_web_op(&config, &master, &mut web, &search("second query"));
+        });
+        assert!(logged.contains("second query"), "{logged}");
+    }
+
+    /// Search is off unless the operator chose it; with no key stored, or a
+    /// search that fails or runs too long, it's refused with why.
+    #[test]
+    fn a_search_is_off_or_refused_with_why() {
+        let (mut config, _scratch, master) = search_config("refused", None);
+        let (fetcher, _) = scripted(Vec::new());
+        let (searcher, asked) = scripted_search(Vec::new());
+        let mut web = unattended("t", &fetcher).searching(Arc::clone(&searcher));
+        assert_eq!(
+            handle_web_op(&config, &master, &mut web, &search("q")),
+            WebResult::Refused {
+                reason: format!("no search key is stored: keep it in the vault as {SEARCH_KEY}")
+            }
+        );
+        assert!(asked.lock().unwrap().is_empty(), "searched with no key");
+        let mut without = unattended("t", &fetcher);
+        assert_eq!(
+            handle_web_op(&config, &master, &mut without, &search("q")),
+            WebResult::Off,
+            "no searcher"
+        );
+        config.web.search = false;
+        assert_eq!(
+            handle_web_op(&config, &master, &mut web, &search("q")),
+            WebResult::Off
+        );
+        let (config, _scratch, master) = search_config("fails", Some(b"k"));
+        let failing: Searcher =
+            Arc::new(|_: &[u8], _: &str| Err(SearchError::Status { status: 429 }));
+        let mut web = unattended("t", &fetcher).searching(failing);
+        assert_eq!(
+            handle_web_op(&config, &master, &mut web, &search("q")),
+            WebResult::Refused {
+                reason: SearchError::Status { status: 429 }.to_string()
+            }
+        );
+        let slow: Searcher = Arc::new(|_: &[u8], _: &str| {
+            std::thread::sleep(Duration::from_secs(3));
+            Ok(Vec::new())
+        });
+        let mut web = WebSession::with("t", Duration::ZERO, Duration::from_millis(100), fetcher)
+            .searching(slow);
+        let started = Instant::now();
+        assert_eq!(
+            handle_web_op(&config, &master, &mut web, &search("q")),
+            WebResult::Refused {
+                reason: format!(
+                    "the search took longer than {} seconds",
+                    FETCH_DEADLINE.as_secs()
+                )
+            }
+        );
+        assert!(started.elapsed() < Duration::from_secs(3), "waited for it");
+        let unreadable = web_config("unreadable");
+        assert!(matches!(
+            search_key(&unreadable, &master),
+            Err(reason) if reason.starts_with("the search key couldn't be read")
+        ));
+    }
+
+    /// The owner asked for a site a search led to is told which result,
+    /// and the search, as the agent's words.
+    #[test]
+    fn the_owner_is_told_which_search_result_led_there() {
+        let (config, _scratch, master) = search_config("led", Some(b"k"));
+        let bus = Arc::new(crate::api_stream::Bus::starting_at(1));
+        board(&config).attach(Arc::clone(&bus));
+        let (searcher, _) = scripted_search(vec![
+            hit("https://docs.example/a", "A"),
+            hit("https://blog.example/b", "B"),
+        ]);
+        let (fetcher, _) = scripted(Vec::new());
+        let mut web = unattended("t", &fetcher).searching(searcher);
+        let _ = handle_web_op(&config, &master, &mut web, &search("rust changelog"));
+        let (_, answer) = ask(&config, web, &fetch("https://blog.example/b"));
+        assert!(waiting(&answer, "https://blog.example"), "{answer:?}");
+        let fields: Vec<(String, String, hatchling_core::ui::FieldSource)> = bus
+            .after(None)
+            .into_iter()
+            .filter_map(|event| {
+                if let hatchling_core::ui::UiEventBody::Confirmation(request) = event.body {
+                    Some(request.fields)
+                } else {
+                    None
+                }
+            })
+            .flatten()
+            .map(|field| (field.label, field.value, field.source))
+            .collect();
+        let found = fields
+            .iter()
+            .position(|field| field.0 == "Found by")
+            .unwrap();
+        assert_eq!(
+            fields.get(found..found + 2).map(<[_]>::to_vec),
+            Some(vec![
+                (
+                    String::from("Found by"),
+                    String::from("result 2 of a search the agent ran this session"),
+                    hatchling_core::ui::FieldSource::Broker,
+                ),
+                (
+                    String::from("The search"),
+                    String::from("rust changelog"),
+                    hatchling_core::ui::FieldSource::Agent,
+                ),
+            ])
+        );
+    }
+
+    /// A session remembers the last [`MAX_FOUND`] results, the latest
+    /// first.
+    #[test]
+    fn a_session_remembers_its_latest_results() {
+        let (fetcher, _) = scripted(Vec::new());
+        let mut web = unattended("t", &fetcher);
+        let first = WebUrl::parse("https://first.example/").unwrap();
+        web.remember(first.to_string(), "old", 1);
+        web.remember(first.to_string(), "new", 3);
+        assert_eq!(web.led_to(&first), Some(("new", 3)));
+        for n in 0..MAX_FOUND {
+            web.remember(format!("https://r{n}.example/"), "q", n + 1);
+        }
+        assert_eq!(web.found.len(), MAX_FOUND);
+        assert_eq!(web.led_to(&first), None, "forgotten");
+        assert_eq!(
+            web.led_to(&WebUrl::parse("https://r0.example/").unwrap()),
+            Some(("q", 1))
+        );
+    }
+
+    /// `bounded_search`, called directly: the searcher's answer, its error
+    /// as text, or a give-up past the deadline.
+    #[test]
+    fn bounded_search_answers_or_gives_up() {
+        let (searcher, asked) = scripted_search(vec![hit("https://a.example/", "A")]);
+        let found = bounded_search(
+            &searcher,
+            Zeroizing::new(b"k".to_vec()),
+            "q",
+            Duration::from_secs(5),
+        );
+        assert_eq!(found, Ok(vec![hit("https://a.example/", "A")]));
+        assert_eq!(*asked.lock().unwrap(), [(b"k".to_vec(), String::from("q"))]);
+        let failing: Searcher = Arc::new(|_: &[u8], _: &str| Err(SearchError::Empty));
+        assert_eq!(
+            bounded_search(
+                &failing,
+                Zeroizing::new(Vec::new()),
+                "q",
+                Duration::from_secs(5)
+            ),
+            Err(SearchError::Empty.to_string())
+        );
+        let slow: Searcher = Arc::new(|_: &[u8], _: &str| {
+            std::thread::sleep(Duration::from_secs(3));
+            Ok(Vec::new())
+        });
+        assert!(
+            bounded_search(
+                &slow,
+                Zeroizing::new(Vec::new()),
+                "q",
+                Duration::from_millis(50)
+            )
+            .is_err()
+        );
     }
 }

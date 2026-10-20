@@ -442,6 +442,9 @@ impl Cell<Ready> {
             self.connection(),
         )));
         registry.register(Box::new(crate::tools::WebFetchTool::new(self.connection())));
+        registry.register(Box::new(crate::tools::WebSearchTool::new(
+            self.connection(),
+        )));
         registry.register(Box::new(crate::tools::SpawnSubagentTool::new(
             self.connection(),
             std::sync::Arc::clone(&ledger),

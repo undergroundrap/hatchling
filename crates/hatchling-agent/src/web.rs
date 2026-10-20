@@ -18,10 +18,32 @@ use crate::Error;
 /// [`Error::WebIo`] when the session fails; [`Error::WebProtocol`] when
 /// the broker's reply isn't a web reply.
 pub fn fetch(stream: &UnixStream, url: &str, reason: &str) -> Result<WebResult, Error> {
-    let request = SessionRequest::Web(WebOp::Fetch {
-        url: url.to_owned(),
-        reason: reason.to_owned(),
-    });
+    request(
+        stream,
+        WebOp::Fetch {
+            url: url.to_owned(),
+            reason: reason.to_owned(),
+        },
+    )
+}
+
+/// Asks the broker to search the web for `query`.
+///
+/// # Errors
+///
+/// As [`fetch`].
+pub fn search(stream: &UnixStream, query: &str) -> Result<WebResult, Error> {
+    request(
+        stream,
+        WebOp::Search {
+            query: query.to_owned(),
+        },
+    )
+}
+
+/// Sends `op` and reads the broker's web reply.
+fn request(stream: &UnixStream, op: WebOp) -> Result<WebResult, Error> {
+    let request = SessionRequest::Web(op);
     let payload = serde_json::to_vec(&request).map_err(|error| Error::WebProtocol {
         reason: format!("failed to encode the web op: {error}"),
     })?;
@@ -97,6 +119,37 @@ mod tests {
                 reason: String::from("why"),
             })
         );
+    }
+
+    /// A search asks the broker, and its web reply comes back.
+    #[test]
+    fn a_search_asks_the_broker() {
+        let (agent, broker) = pair();
+        let serve = std::thread::spawn(move || {
+            let asked: SessionRequest =
+                serde_json::from_slice(&read_frame(&broker).unwrap()).unwrap();
+            let reply = SessionResponse::Web(WebResult::Off);
+            write_frame(&broker, &serde_json::to_vec(&reply).unwrap()).unwrap();
+            asked
+        });
+        assert_eq!(search(&agent, "rust").unwrap(), WebResult::Off);
+        assert_eq!(
+            serve.join().unwrap(),
+            SessionRequest::Web(WebOp::Search {
+                query: String::from("rust"),
+            })
+        );
+        let (agent, broker) = pair();
+        drop(broker);
+        assert!(matches!(
+            request(
+                &agent,
+                WebOp::Search {
+                    query: String::new()
+                }
+            ),
+            Err(Error::WebIo { .. })
+        ));
     }
 
     /// Another kind of reply, a reply that isn't one, and a closed session

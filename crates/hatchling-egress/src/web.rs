@@ -343,13 +343,7 @@ pub(crate) fn fetch_with(
     internal: impl Fn(IpAddr) -> bool,
 ) -> Result<Fetched, FetchError> {
     let destination = url.origin.destination();
-    let addrs = resolve(&destination).map_err(|_| FetchError::Unresolved)?;
-    if addrs.is_empty() {
-        return Err(FetchError::Unresolved);
-    }
-    if let Some(addr) = addrs.iter().map(SocketAddr::ip).find(|ip| internal(*ip)) {
-        return Err(FetchError::Internal { addr });
-    }
+    let addrs = resolved(&destination, resolve, internal)?;
     let request = EgressRequest {
         method: String::from("GET"),
         destination,
@@ -406,6 +400,23 @@ pub(crate) fn fetch_with(
         text,
         truncated,
     }))
+}
+
+/// The addresses `destination` resolves to with `resolve`, refused when
+/// it resolves to none, or to any that `internal` says is internal.
+pub(crate) fn resolved(
+    destination: &str,
+    resolve: impl Fn(&str) -> std::io::Result<Vec<SocketAddr>>,
+    internal: impl Fn(IpAddr) -> bool,
+) -> Result<Vec<SocketAddr>, FetchError> {
+    let addrs = resolve(destination).map_err(|_| FetchError::Unresolved)?;
+    if addrs.is_empty() {
+        return Err(FetchError::Unresolved);
+    }
+    if let Some(addr) = addrs.iter().map(SocketAddr::ip).find(|ip| internal(*ip)) {
+        return Err(FetchError::Internal { addr });
+    }
+    Ok(addrs)
 }
 
 /// Whether a content type is readable: `Some(true)` for HTML, `Some(false)`
@@ -1052,5 +1063,38 @@ mod tests {
         assert_eq!(entity("&verylongname;"), None);
         assert_eq!(tidy("\n\n a \n\n\n b \n\n"), "a\n\nb");
         assert_eq!(tidy(""), "");
+    }
+
+    /// `resolved`, called directly: the addresses, or why there are none
+    /// to use.
+    #[test]
+    fn resolved_returns_the_addresses_or_why_not() {
+        let public = addr(93, 184, 215, 14);
+        assert_eq!(
+            resolved("a.example:443", resolving_to(vec![public]), is_internal),
+            Ok(vec![public])
+        );
+        assert_eq!(
+            resolved("a.example:443", resolving_to(Vec::new()), is_internal),
+            Err(FetchError::Unresolved)
+        );
+        assert_eq!(
+            resolved(
+                "a.example:443",
+                |_| Err(std::io::Error::other("no")),
+                is_internal
+            ),
+            Err(FetchError::Unresolved)
+        );
+        assert_eq!(
+            resolved(
+                "a.example:443",
+                resolving_to(vec![public, addr(127, 0, 0, 1)]),
+                is_internal
+            ),
+            Err(FetchError::Internal {
+                addr: IpAddr::V4(Ipv4Addr::LOCALHOST)
+            })
+        );
     }
 }
