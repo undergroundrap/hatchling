@@ -3767,10 +3767,11 @@ mod web_config_tests {
             name: crate::web_ops::SEARCH_KEY.parse().unwrap(),
         };
         let refused = super::refuse_harness_secret_grants(vec![grant]);
-        assert!(
-            matches!(&refused, Err(Error::InvalidConfig { key: "HATCHLING_VAULT_GRANTS", reason }) if reason.contains("search provider's key")),
-            "{refused:?}"
-        );
+        assert!(matches!(
+            &refused,
+            Err(Error::InvalidConfig { key: "HATCHLING_VAULT_GRANTS", reason })
+                if reason.contains("search provider's key")
+        ));
     }
 
     /// The web is off unless the operator says `sites`; the refused hosts
