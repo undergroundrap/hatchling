@@ -45,6 +45,9 @@ jobs:
       HATCHLING_REQUIRE_CELL: "1"
       HATCHLING_REQUIRE_CGROUP: "1"
       HATCHLING_TEST_CGROUP: /sys/fs/cgroup/hatchling-ci/cells
+      # The browser cell's tests must run here too (WO-029), on the pinned
+      # headless Chromium the next steps install.
+      HATCHLING_REQUIRE_BROWSER: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -105,6 +108,19 @@ jobs:
           sudo mkdir "$cg/runner" "$cg/cells"
           sudo chown "$(id -u):$(id -g)" "$cg" "$cg/cgroup.procs" "$cg/cgroup.subtree_control"
           sudo chown -R "$(id -u):$(id -g)" "$cg/runner" "$cg/cells"
+
+      # The browser cell's tests run a real headless Chromium: the build
+      # the frontend's pinned Playwright installs (Chrome for Testing
+      # 143.0.7499.4), with its libraries, its binary checked against the
+      # SHA-256 the cell tests were measured with.
+      - name: Install the pinned headless Chromium
+        run: |
+          python3 -m venv "$RUNNER_TEMP/browser-venv"
+          "$RUNNER_TEMP/browser-venv/bin/python" -m pip install -r frontend/tests/e2e/requirements.txt
+          "$RUNNER_TEMP/browser-venv/bin/python" -m playwright install --with-deps chromium-headless-shell
+          shell=$(find "$HOME/.cache/ms-playwright" -path '*chrome-headless-shell-linux64/chrome-headless-shell' -type f)
+          echo "20ffc88be1c6f7dc8351bebfaca965ff9a07617bddf696f0b67ef85e5868b29a  $shell" | sha256sum --check
+          echo "HATCHLING_TEST_BROWSER=$shell" >> "$GITHUB_ENV"
 
       - name: Run gate
         run: |
