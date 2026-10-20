@@ -1564,7 +1564,7 @@ mod tests {
             .unwrap();
         let lost = store.load();
         let _ = std::fs::remove_dir_all(&root);
-        assert!(matches!(lost, Err(Error::ScheduleStore { .. })), "{lost:?}");
+        assert!(matches!(lost, Err(Error::ScheduleStore { .. })));
     }
 
     /// The sealed store's parts, called directly (WO-025): a skip moves a
