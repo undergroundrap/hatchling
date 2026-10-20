@@ -418,9 +418,11 @@ fn claim_failing_at(step: Step) -> bool {
     let mut dispatcher = Dispatcher::default();
 
     hatchling_vault::fault::fail_next(step);
-    let report =
-        dispatch_once(&mut dispatcher, &config, &key, None, &launcher, at(FIRST)).unwrap();
-    assert!(report.launched.is_empty(), "{step:?}: launched on its failed claim");
+    let report = dispatch_once(&mut dispatcher, &config, &key, None, &launcher, at(FIRST)).unwrap();
+    assert!(
+        report.launched.is_empty(),
+        "{step:?}: launched on its failed claim"
+    );
     let landed = stored_fire(&config, &key).is_some();
 
     for later in [FIRST + 30, FIRST + 90, FIRST + 150] {

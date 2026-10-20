@@ -481,7 +481,7 @@ fn the_dispatcher_debugs_its_run_count() {
     let mut world = World::new();
     assert_eq!(
         format!("{:?}", world.dispatcher),
-        "Dispatcher { active: 0 }"
+        "Dispatcher { active: 0, uncertain: 0 }"
     );
     schedule(
         &world.store,
@@ -492,7 +492,7 @@ fn the_dispatcher_debugs_its_run_count() {
     world.tick("2026-09-21T13:00:00Z");
     assert_eq!(
         format!("{:?}", world.dispatcher),
-        "Dispatcher { active: 1 }"
+        "Dispatcher { active: 1, uncertain: 0 }"
     );
 }
 
@@ -1256,7 +1256,11 @@ fn a_landed_claim_launches_nothing_until_it_is_written_again() {
     *world.store.fail_next.borrow_mut() = Some("record");
     let report = world.tick("2026-09-21T13:00:10Z");
     assert!(report.launched.is_empty());
-    assert_eq!(world.requests().len(), 0, "a fire while a claim was uncertain");
+    assert_eq!(
+        world.requests().len(),
+        0,
+        "a fire while a claim was uncertain"
+    );
     assert_eq!(
         fire_of(&world, "s").map(|fire| fire.state),
         Some(OccurrenceState::Claimed)

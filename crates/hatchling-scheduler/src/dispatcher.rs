@@ -367,6 +367,7 @@ impl<R> std::fmt::Debug for Dispatcher<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Dispatcher")
             .field("active", &self.active.len())
+            .field("uncertain", &self.uncertain.len())
             .finish()
     }
 }
