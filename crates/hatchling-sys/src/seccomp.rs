@@ -482,8 +482,9 @@ const BROWSER_CALLS: [&str; 7] = [
 /// handles rather than allowed: a sandbox it can't use in a cell
 /// (`landlock_create_ruleset`), memory protection keys (`pkey_alloc`), the
 /// old inotify (`inotify_init`), thread priorities, and which CPUs a
-/// thread runs on (`sched_setaffinity`, which it makes on some machines
-/// and not others: CI's runners, not the WSL2 box it was first traced on).
+/// thread runs on (`sched_setaffinity`). A trace outside a cell never
+/// shows that last one: in a cell, where the priorities are refused, its
+/// processes make it instead, and were killed for it.
 #[cfg(target_arch = "x86_64")]
 const BROWSER_PROBES: [(&str, u32); 6] = [
     ("landlock_create_ruleset", ENOSYS),
