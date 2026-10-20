@@ -41,8 +41,9 @@ use hatchling_vault::MasterKey;
 /// broker.
 const BASE: &str = "HATCHLING_UNKNOWN_TEST_BASE";
 
-/// What the killed broker prints once its fire is claimed and running.
-const READY: &str = "running ";
+/// What the killed broker prints once its fire is claimed and running:
+/// nothing the test harness prints (its `running 1 test` among them).
+const READY: &str = "unknown-outcome-test: fire running";
 
 /// The schedule's first fire, and the next an hour on.
 const FIRST: i64 = 1_790_002_800;
@@ -149,7 +150,7 @@ fn killed(config: &Config) {
             .map(|fire| fire.state);
         assert_eq!(state, Some(OccurrenceState::Running));
         let mut out = std::io::stdout().lock();
-        writeln!(out, "{READY}sch-hang").unwrap();
+        writeln!(out, "{READY}").unwrap();
         out.flush().unwrap();
         drop(out);
         std::thread::sleep(Duration::from_secs(600));
