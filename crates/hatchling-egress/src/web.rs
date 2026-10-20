@@ -985,4 +985,72 @@ mod tests {
         assert_eq!(readable("application/pdf"), None);
         assert_eq!(readable(""), None);
     }
+
+    /// The parser's parts, called directly.
+    #[test]
+    fn the_parsers_parts() {
+        assert_eq!(strip_prefix_ignore_case("HtTpS://x", "https://"), Some("x"));
+        assert_eq!(strip_prefix_ignore_case("http://x", "https://"), None);
+        assert_eq!(strip_prefix_ignore_case("http", "https://"), None);
+        let origin = parse_authority("Example.com:8443").unwrap();
+        assert_eq!((origin.host(), origin.port()), ("example.com", 8443));
+        assert_eq!(origin.to_string(), "https://example.com:8443");
+        assert_eq!(parse_authority("example.com").unwrap().port(), 443);
+        assert_eq!(parse_authority("[::1]:443"), Err(UrlRefusal::IpLiteral));
+        assert_eq!(parse_authority("10.0.0.1"), Err(UrlRefusal::IpLiteral));
+        assert_eq!(parse_authority(""), Err(UrlRefusal::BadHost));
+        assert_eq!(parse_port("65535"), Ok(65535));
+        assert_eq!(parse_port("1"), Ok(1));
+        for bad in ["0", "65536", "", "-1", "8o"] {
+            assert_eq!(parse_port(bad), Err(UrlRefusal::BadPort), "{bad}");
+        }
+        assert!(valid_label("a-b1"));
+        assert!(valid_label(&"a".repeat(63)));
+        for bad in ["", "-a", "a-", "A", "a_b", "a b"] {
+            assert!(!valid_label(bad), "{bad}");
+        }
+        assert!(!valid_label(&"a".repeat(64)));
+        assert!(numeric_label("127"));
+        assert!(numeric_label("0x7F"));
+        assert!(!numeric_label("com"));
+        assert!(!numeric_label("0xzz"));
+        assert!(!numeric_label("1a"));
+    }
+
+    /// The text extractor's parts, called directly.
+    #[test]
+    fn the_text_extractors_parts() {
+        let mut text = String::from("a");
+        assert_eq!(skip_markup("<p>b", 0, &mut text), 3);
+        assert_eq!(text, "a\n");
+        let mut text = String::new();
+        assert_eq!(skip_markup("< b", 0, &mut text), 1);
+        assert_eq!(text, "<");
+        let mut text = String::from("x");
+        assert_eq!(skip_markup("<li>", 0, &mut text), 4);
+        assert_eq!(text, "x\n- ");
+        let mut text = String::new();
+        assert_eq!(skip_markup("<!-- c -->d", 0, &mut text), 10);
+        assert_eq!(skip_markup("<style>p</style>d", 0, &mut text), 16);
+        assert_eq!(text, "");
+        let mut text = String::new();
+        push_text(&mut text, "a &amp; b&lt;");
+        assert_eq!(text, "a & b<");
+        let mut text = String::new();
+        push_plain(&mut text, "  a \t\n b\u{1}");
+        assert_eq!(text, "a b");
+        assert_eq!(entity("&amp;x"), Some(('&', 5)));
+        assert_eq!(entity("&#65;"), Some(('A', 5)));
+        assert_eq!(entity("&#x263A;"), Some(('\u{263a}', 8)));
+        assert_eq!(entity("&#X41;"), Some(('A', 6)));
+        assert_eq!(entity("&quot;&apos;&gt;"), Some(('"', 6)));
+        assert_eq!(entity("&apos;"), Some(('\'', 6)));
+        assert_eq!(entity("&gt;"), Some(('>', 4)));
+        assert_eq!(entity("&nbsp;"), Some(('\u{a0}', 6)));
+        assert_eq!(entity("&#xD800;"), None, "a surrogate is no character");
+        assert_eq!(entity("&amp"), None);
+        assert_eq!(entity("&verylongname;"), None);
+        assert_eq!(tidy("\n\n a \n\n\n b \n\n"), "a\n\nb");
+        assert_eq!(tidy(""), "");
+    }
 }
