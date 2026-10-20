@@ -25,6 +25,29 @@ struct MemStore {
     schedules: RefCell<BTreeMap<String, Schedule>>,
     hooks: RefCell<Vec<Hook>>,
     parked: RefCell<Vec<Parked>>,
+    /// The next write this store fails, by its role (WO-025): `cadence`
+    /// for the write that moves a schedule to its next fire, `park` for
+    /// the one that keeps an undelivered result.
+    fail_next: RefCell<Option<&'static str>>,
+}
+
+impl MemStore {
+    /// Whether the next write of `role` fails, which it does once.
+    fn fails(&self, role: &'static str) -> bool {
+        let mut fail = self.fail_next.borrow_mut();
+        if *fail == Some(role) {
+            *fail = None;
+            return true;
+        }
+        false
+    }
+
+    /// Whether the store still accounts for a fire of `id`: its
+    /// schedule, or a result kept for the user.
+    fn accounts_for(&self, id: &str) -> bool {
+        self.schedules.borrow().contains_key(id)
+            || self.parked.borrow().iter().any(|parked| parked.schedule_id == id)
+    }
 }
 
 impl Store for MemStore {
@@ -35,6 +58,9 @@ impl Store for MemStore {
     }
 
     fn update(&self, schedule: &Schedule) -> Result<bool, String> {
+        if self.fails("cadence") {
+            return Err(String::from("the disk is full"));
+        }
         let mut schedules = self.schedules.borrow_mut();
         Ok(schedules
             .get_mut(&schedule.id)
@@ -51,6 +77,9 @@ impl Store for MemStore {
     }
 
     fn park(&self, parked: &Parked) -> Result<(), String> {
+        if self.fails("park") {
+            return Err(String::from("the disk is full"));
+        }
         self.parked.borrow_mut().push(parked.clone());
         Ok(())
     }
@@ -850,4 +879,92 @@ fn a_followup_chain_runs_one_link_at_a_time_and_ends_at_the_bound() {
     assert_eq!(depth, MAX_FOLLOWUP_DEPTH);
     assert_eq!(world.requests().len(), 5);
     assert!(world.store.schedules.borrow().is_empty());
+}
+
+/// WO-025, window 1: a one-shot whose run hasn't finished when the
+/// dispatcher is rebuilt over the same store (a broker that died) is still
+/// accounted for in the store, not forgotten as it started.
+#[test]
+fn a_one_shot_still_running_when_the_broker_dies_is_accounted_for() {
+    let mut world = World::new();
+    schedule(
+        &world.store,
+        "once",
+        ScheduleSpec::Once {
+            at: String::from("2026-10-01T09:00"),
+            tz: String::from("UTC"),
+        },
+        "2026-09-21T12:00:00Z",
+    );
+    assert_eq!(
+        world.tick("2026-10-01T09:00:00Z").launched,
+        [(String::from("once"), false)]
+    );
+    // The broker dies: its dispatcher and its runs are gone; the store
+    // stays.
+    world.dispatcher = Dispatcher::default();
+    world.launcher = FakeLauncher::default();
+    assert!(
+        world.store.accounts_for("once"),
+        "a started one-shot left no trace in the store"
+    );
+}
+
+/// WO-025, window 2: a fire whose cadence write fails is launched once, not
+/// again once its run has finished and the old due time is still due.
+#[test]
+fn a_failed_cadence_write_never_launches_an_occurrence_twice() {
+    let mut world = World::new();
+    schedule(
+        &world.store,
+        "s",
+        cron("0 * * * *", "UTC"),
+        "2026-09-21T12:00:00Z",
+    );
+    *world.store.fail_next.borrow_mut() = Some("cadence");
+    world.tick("2026-09-21T13:00:00Z");
+    for minute in 1..4 {
+        if let Some(run) = world.launcher.runs.borrow().last() {
+            run.finish(Ok("done"));
+        }
+        world.tick(&format!("2026-09-21T13:0{minute}:00Z"));
+    }
+    assert_eq!(
+        world.requests().len(),
+        1,
+        "the 13:00 occurrence ran more than once"
+    );
+}
+
+/// WO-025, window 3: an output whose delivery fails twice and whose
+/// parking fails too is not lost: a later tick, with delivery and the
+/// store healthy, delivers it or keeps it.
+#[test]
+fn an_output_that_cannot_be_delivered_or_parked_is_kept_for_later() {
+    let mut world = World::new();
+    world.delivery.fail = 2;
+    schedule(
+        &world.store,
+        "s",
+        cron("0 * * * *", "UTC"),
+        "2026-09-21T12:00:00Z",
+    );
+    world.tick("2026-09-21T13:00:00Z");
+    world.launcher.run(0).finish(Ok("the summary"));
+    *world.store.fail_next.borrow_mut() = Some("park");
+    world.tick("2026-09-21T13:01:00Z");
+    world.tick("2026-09-21T13:02:00Z");
+    let delivered = world
+        .delivery
+        .delivered
+        .borrow()
+        .iter()
+        .any(|(_, text)| text == "the summary");
+    let kept = world
+        .store
+        .parked
+        .borrow()
+        .iter()
+        .any(|parked| parked.text == "the summary");
+    assert!(delivered || kept, "the output was lost");
 }
