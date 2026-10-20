@@ -70,7 +70,7 @@ use hatchling_vault::OpensStores;
 use crate::cell::{Process, ScheduledRun};
 use crate::{
     AgentCell, ArtifactConfig, CellConfig, Config, Error, FollowupScope, GoalsAction, MemoryAction,
-    MemoryGrant, SchedulerConfig, SkillConfig, SpaceConfig, WebConfig, VaultGrant, dispatch_once,
+    MemoryGrant, SchedulerConfig, SkillConfig, SpaceConfig, VaultGrant, dispatch_once,
     serve_cell_connection, spawn_cell,
 };
 
@@ -849,7 +849,9 @@ fn hand_over_connection(handoff: &UnixStream, connection: Option<UnixStream>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ChannelAccountSpec, EgressConfig, GoalsConfig, MemoryConfig, VaultConfig};
+    use crate::{
+        ChannelAccountSpec, EgressConfig, GoalsConfig, MemoryConfig, VaultConfig, WebConfig,
+    };
     use hatchling_core::{PeerUid, VaultAction};
     use hatchling_vault::MasterKey;
     use std::os::unix::fs::PermissionsExt as _;
@@ -1065,6 +1067,22 @@ mod tests {
         // With spaces off at the broker, the task's run has none either.
         let off = scoped_config(&config(), &task, "run-1", run_socket());
         assert!(!off.spaces.enabled());
+    }
+
+    /// Only a chat run's asks for a site wait for the owner: a scheduled
+    /// run's don't (WO-028).
+    #[test]
+    fn only_a_chat_run_waits_for_the_owner() {
+        let mut broker = config();
+        broker.web.attended = true;
+        let scheduled = scoped_config(&broker, &request(Vec::new()), "run-1", run_socket());
+        assert!(!scheduled.web.attended);
+        let chat = RunRequest {
+            chat: true,
+            ..request(Vec::new())
+        };
+        broker.web.attended = false;
+        assert!(scoped_config(&broker, &chat, "run-1", run_socket()).web.attended);
     }
 
     #[test]

@@ -682,6 +682,89 @@ mod tests {
         );
     }
 
+    /// A site is asked with what it allows, can be approved for the
+    /// session, and is never the worker's: not queued, and left approved
+    /// for the session that asked when the worker is handed it (WO-028).
+    #[test]
+    fn a_site_is_asked_and_left_for_its_session() {
+        let board = empty();
+        let bus = Arc::new(Bus::starting_at(1));
+        board.attach(Arc::clone(&bus));
+        let site = board
+            .propose_site("https://a.example", "https://a.example/x", "to read it", "t1", 100)
+            .unwrap();
+        assert!(site.new);
+        let again = board
+            .propose_site("https://a.example", "https://a.example/y", "again", "t1", 100)
+            .unwrap();
+        assert!(!again.new, "one request per site and session");
+        assert_eq!(again.id, site.id);
+        let asked: Vec<ConfirmationRequest> = bus
+            .after(None)
+            .into_iter()
+            .filter_map(|event| {
+                if let UiEventBody::Confirmation(request) = event.body {
+                    Some(request)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let [request] = asked.as_slice() else {
+            unreachable!("asked {} times", asked.len());
+        };
+        assert!(request.session);
+        assert_eq!(request.summary, "Let the agent read a site");
+        let fields: Vec<(&str, &str, FieldSource)> = request
+            .fields
+            .iter()
+            .map(|field| (field.label.as_str(), field.value.as_str(), field.source))
+            .collect();
+        assert_eq!(
+            fields.first().copied(),
+            Some(("Operation", "Read pages from a site", FieldSource::Broker))
+        );
+        assert_eq!(
+            fields.get(1).copied(),
+            Some(("Site", "https://a.example", FieldSource::Broker))
+        );
+        assert_eq!(
+            fields.get(3..).map(<[_]>::to_vec),
+            Some(vec![
+                ("Page it asked for", "https://a.example/x", FieldSource::Agent),
+                ("Why it wants it", "to read it", FieldSource::Agent),
+            ])
+        );
+        assert_eq!(
+            board.decide(&site.id, 1, &site.digest, Decision::ApproveSession, 101),
+            Ok(State::Approved)
+        );
+        assert_eq!(board.next_approved(Duration::ZERO), None, "not queued");
+        let config = crate::api_auth::tests::owner_config(None);
+        let key = hatchling_vault::MasterKey::generate().unwrap();
+        let told = run_approved(&board, &site.id, &config, &key, &Skills::default(), None, 102);
+        assert_eq!(
+            told,
+            format!("Approval {} was not run: it is not the worker's to run.", site.id)
+        );
+        assert_eq!(
+            board.approvals().get(&site.id).map(|request| request.state),
+            Some(State::Approved),
+            "left for its session"
+        );
+        let activation = board
+            .propose_activation(&proposal("act-1", "a"), "t2", 100)
+            .unwrap();
+        assert_eq!(
+            board.decide(&activation.id, 1, &activation.digest, Decision::ApproveSession, 101),
+            Err(DecisionRejection::NotOffered)
+        );
+        assert_eq!(
+            site_action("https://a.example"),
+            json!({ "format": 1, "op": "web.visit", "site": "https://a.example" })
+        );
+    }
+
     /// The worker waits for an approval, and wakes when one comes.
     #[test]
     fn the_worker_wakes_when_an_approval_comes() {

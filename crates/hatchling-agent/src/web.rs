@@ -80,12 +80,16 @@ mod tests {
     fn a_fetch_asks_the_broker_and_returns_its_reply() {
         let (agent, broker) = pair();
         let serve = std::thread::spawn(move || {
-            let asked: SessionRequest = serde_json::from_slice(&read_frame(&broker).unwrap()).unwrap();
+            let asked: SessionRequest =
+                serde_json::from_slice(&read_frame(&broker).unwrap()).unwrap();
             let reply = SessionResponse::Web(WebResult::Off);
             write_frame(&broker, &serde_json::to_vec(&reply).unwrap()).unwrap();
             asked
         });
-        assert_eq!(fetch(&agent, "https://a.example/", "why").unwrap(), WebResult::Off);
+        assert_eq!(
+            fetch(&agent, "https://a.example/", "why").unwrap(),
+            WebResult::Off
+        );
         assert_eq!(
             serve.join().unwrap(),
             SessionRequest::Web(WebOp::Fetch {

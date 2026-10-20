@@ -270,7 +270,9 @@ impl<A: Clone> Approvals<A> {
         self.ledger()
             .requests
             .values()
-            .find(|request| request.state == state && request.digest == digest && request.task == task)
+            .find(|request| {
+                request.state == state && request.digest == digest && request.task == task
+            })
             .map(|request| request.id.clone())
     }
 
@@ -874,8 +876,15 @@ mod tests {
         };
         let action = offered.action.clone();
         let site = ledger.propose(offered, 0).unwrap();
-        assert_eq!(ledger.find("t2", &action, State::Approved), None, "not approved yet");
-        assert_eq!(ledger.find("t2", &action, State::Pending), Some(site.id.clone()));
+        assert_eq!(
+            ledger.find("t2", &action, State::Approved),
+            None,
+            "not approved yet"
+        );
+        assert_eq!(
+            ledger.find("t2", &action, State::Pending),
+            Some(site.id.clone())
+        );
         assert_eq!(
             ledger.decide(&site.id, 1, &site.digest, Decision::ApproveSession, 1),
             Ok(State::Approved)
@@ -883,10 +892,23 @@ mod tests {
         let request = ledger.get(&site.id).unwrap();
         assert_eq!(request.decision, Some(Decision::ApproveSession));
         assert_eq!(request.run(), "run site");
-        assert_eq!(ledger.find("t2", &action, State::Approved), Some(site.id.clone()));
-        assert_eq!(ledger.find("t9", &action, State::Approved), None, "another task's");
-        assert_eq!(ledger.find("t2", &json!({ "op": "other" }), State::Approved), None);
-        assert_eq!(ledger.find("t2", &json!({ "n": 1.5 }), State::Approved), None);
+        assert_eq!(
+            ledger.find("t2", &action, State::Approved),
+            Some(site.id.clone())
+        );
+        assert_eq!(
+            ledger.find("t9", &action, State::Approved),
+            None,
+            "another task's"
+        );
+        assert_eq!(
+            ledger.find("t2", &json!({ "op": "other" }), State::Approved),
+            None
+        );
+        assert_eq!(
+            ledger.find("t2", &json!({ "n": 1.5 }), State::Approved),
+            None
+        );
         let (_, claim) = ledger.claim(&site.id).unwrap();
         claim.succeeded();
         assert_eq!(ledger.find("t2", &action, State::Approved), None, "claimed");

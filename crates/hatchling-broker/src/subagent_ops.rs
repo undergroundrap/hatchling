@@ -562,8 +562,8 @@ impl Drop for Subagents<'_, '_> {
 mod tests {
     use super::*;
     use crate::{
-        ArtifactConfig, EgressConfig, GoalsConfig, MemoryConfig, SkillConfig, SpaceConfig, WebConfig,
-        VaultConfig, VaultGrant,
+        ArtifactConfig, EgressConfig, GoalsConfig, MemoryConfig, SkillConfig, SpaceConfig,
+        VaultConfig, VaultGrant, WebConfig,
     };
     use hatchling_core::{LogLevel, PeerUid, VaultAction};
     use hatchling_vault::MasterKey;

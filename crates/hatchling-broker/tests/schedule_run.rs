@@ -35,8 +35,8 @@ use std::time::{Duration, Instant};
 use common::{guard_cell_available, mapped_agent_uid, run_fixture_binary};
 use hatchling_broker::{
     CellLauncher, Config, EgressConfig, GoalsConfig, MemoryConfig, RunEnv, SchedulerConfig,
-    SealedScheduleStore, SpaceConfig, WebConfig, SpaceSession, VaultConfig, VaultGrant, dispatch_once,
-    handle_schedule_op, handle_space_op,
+    SealedScheduleStore, SpaceConfig, SpaceSession, VaultConfig, VaultGrant, WebConfig,
+    dispatch_once, handle_schedule_op, handle_space_op,
 };
 use hatchling_channel::{LocalHub, Message};
 use hatchling_core::{

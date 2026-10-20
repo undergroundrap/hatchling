@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 use common::{guard_cell_available, mapped_agent_uid, run_fixture_binary};
 use hatchling_broker::{
     CellLauncher, Config, EgressConfig, GoalsConfig, MemoryConfig, RunEnv, SchedulerConfig,
-    SpaceConfig, WebConfig, VaultConfig,
+    SpaceConfig, VaultConfig, WebConfig,
 };
 use hatchling_core::{LogLevel, PeerUid};
 use hatchling_scheduler::{Launcher as _, RunRequest, Timestamp};

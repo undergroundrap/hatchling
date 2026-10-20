@@ -537,8 +537,10 @@ impl WebConfig {
 /// Parses the web settings: `HATCHLING_WEB` (`off`, the default, or
 /// `sites`) and `HATCHLING_WEB_REFUSE` (comma-separated hosts, each a name
 /// of ASCII labels).
-fn parse_web(web: Option<&str>, refuse: Option<&str>) -> Result<WebConfig, Error> {
-    let enabled = match web.map(str::trim) {
+fn parse_web(get: &impl Fn(&str) -> Option<String>) -> Result<WebConfig, Error> {
+    let web = get(env::HATCHLING_WEB.name);
+    let refuse = get(env::HATCHLING_WEB_REFUSE.name);
+    let enabled = match web.as_deref().map(str::trim) {
         None | Some("" | "off") => false,
         Some("sites") => true,
         Some(other) => {
@@ -549,7 +551,7 @@ fn parse_web(web: Option<&str>, refuse: Option<&str>) -> Result<WebConfig, Error
         }
     };
     let mut refused = Vec::new();
-    for host in refuse.unwrap_or_default().split(',').map(str::trim) {
+    for host in refuse.as_deref().unwrap_or_default().split(',').map(str::trim) {
         if host.is_empty() {
             continue;
         }
@@ -791,10 +793,6 @@ impl Config {
         // spaces ; each a root directory (empty means off).
         let (memory, goals, scheduler, artifacts, spaces) =
             parse_stores(&get, &vault_dir, &socket)?;
-        let web = parse_web(
-            get(env::HATCHLING_WEB.name).as_deref(),
-            get(env::HATCHLING_WEB_REFUSE.name).as_deref(),
-        )?;
         Ok(Self {
             socket,
             agent_uid,
@@ -821,7 +819,7 @@ impl Config {
             scheduler,
             artifacts,
             spaces,
-            web,
+            web: parse_web(&get)?,
         })
     }
 }
@@ -3643,15 +3641,23 @@ mod memory_config_tests {
             })
         ));
     }
-
 }
 
 #[cfg(test)]
 mod web_config_tests {
     use std::collections::HashMap;
 
-    use super::{Config, WebConfig, parse_web};
+    use super::{Config, WebConfig};
     use crate::Error;
+
+    /// The web settings from `web` and `refuse`.
+    fn parse_web(web: Option<&str>, refuse: Option<&str>) -> Result<WebConfig, Error> {
+        super::parse_web(&|key: &str| match key {
+            "HATCHLING_WEB" => web.map(str::to_owned),
+            "HATCHLING_WEB_REFUSE" => refuse.map(str::to_owned),
+            _ => None,
+        })
+    }
 
     /// The web is off unless the operator says `sites`; the refused hosts
     /// are names of lowercase ASCII labels, each refusing itself and every
@@ -3662,7 +3668,11 @@ mod web_config_tests {
             let web = parse_web(off, None).unwrap();
             assert!(!web.enabled, "{off:?}");
         }
-        let on = parse_web(Some("sites"), Some(" blocked.example, ,tracker.example.net ")).unwrap();
+        let on = parse_web(
+            Some("sites"),
+            Some(" blocked.example, ,tracker.example.net "),
+        )
+        .unwrap();
         assert!(on.enabled);
         assert!(on.attended, "the broker's own session has its person there");
         assert_eq!(on.refused, ["blocked.example", "tracker.example.net"]);
@@ -3676,21 +3686,40 @@ mod web_config_tests {
         assert!(!WebConfig::off().attended);
         for bad in ["on", "all", "true"] {
             assert!(
-                matches!(parse_web(Some(bad), None), Err(Error::InvalidConfig { key: "HATCHLING_WEB", .. })),
+                matches!(
+                    parse_web(Some(bad), None),
+                    Err(Error::InvalidConfig {
+                        key: "HATCHLING_WEB",
+                        ..
+                    })
+                ),
                 "{bad}"
             );
         }
-        for bad in ["Blocked.example", "a.example:443", "1.2.3.4", "a.example/x", "*.example", "user@a.example"] {
+        for bad in [
+            "Blocked.example",
+            "a.example:443",
+            "1.2.3.4",
+            "a.example/x",
+            "*.example",
+            "user@a.example",
+        ] {
             assert!(
                 matches!(
                     parse_web(Some("sites"), Some(bad)),
-                    Err(Error::InvalidConfig { key: "HATCHLING_WEB_REFUSE", .. })
+                    Err(Error::InvalidConfig {
+                        key: "HATCHLING_WEB_REFUSE",
+                        ..
+                    })
                 ),
                 "{bad}"
             );
         }
         let vars: HashMap<&str, &str> = HashMap::from([
-            ("HATCHLING_BROKER_SOCKET", "/tmp/hatchling-web-config/broker.sock"),
+            (
+                "HATCHLING_BROKER_SOCKET",
+                "/tmp/hatchling-web-config/broker.sock",
+            ),
             ("HATCHLING_AGENT_UID", "4242"),
             ("HATCHLING_VAULT_DIR", "/srv/hatchling/vault"),
             ("HATCHLING_WEB", "sites"),

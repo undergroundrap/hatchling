@@ -157,33 +157,26 @@ pub fn handle_web_op(config: &Config, web: &mut WebSession, op: &WebOp) -> WebRe
 /// `Ok` when the session may read `url`'s site now: it holds the site, or
 /// the owner allows it, once or for the session. Otherwise what the agent
 /// is told.
-fn allow(config: &Config, web: &mut WebSession, url: &WebUrl, reason: &str) -> Result<(), WebResult> {
+fn allow(
+    config: &Config,
+    web: &mut WebSession,
+    url: &WebUrl,
+    reason: &str,
+) -> Result<(), WebResult> {
     let origin = url.origin();
     if web.holds(origin) {
         return Ok(());
     }
     let site = origin.to_string();
     let board = board(config);
-    let id = match board
+    let found = board
         .approvals()
-        .find(&web.task, &site_action(&site), State::Approved)
-    {
-        Some(id) => id,
-        None => {
-            let now = Timestamp::now().as_second();
-            let requested = board
-                .propose_site(&site, &url.to_string(), reason, &web.task, now)
-                .map_err(|refusal| match refusal {
-                    Refusal::Denied => WebResult::Denied { site: site.clone() },
-                    other => WebResult::Unasked {
-                        reason: refused_as(&other),
-                    },
-                })?;
-            decided(&board, &requested.id, &site, web.wait)?;
-            requested.id
-        }
-    };
-    let session = board.approvals().get(&id).and_then(|request| request.decision)
+        .find(&web.task, &site_action(&site), State::Approved);
+    let id = found.map_or_else(|| ask_owner(&board, web, url, reason, &site), Ok)?;
+    let session = board
+        .approvals()
+        .get(&id)
+        .and_then(|request| request.decision)
         == Some(Decision::ApproveSession);
     let Some((_, claim)) = board.approvals().claim(&id) else {
         return Err(refused(String::from(
@@ -195,6 +188,34 @@ fn allow(config: &Config, web: &mut WebSession, url: &WebUrl, reason: &str) -> R
         web.sites.insert(origin.clone());
     }
     Ok(())
+}
+
+/// Puts `site` to the owner for `web`'s session, which asks to read `url`
+/// for `reason`, and waits for the decision as long as the session does:
+/// the approved request's id, or what the agent is told.
+fn ask_owner(
+    board: &Board,
+    web: &WebSession,
+    url: &WebUrl,
+    reason: &str,
+    site: &str,
+) -> Result<String, WebResult> {
+    let now = Timestamp::now().as_second();
+    let requested = board
+        .propose_site(site, &url.to_string(), reason, &web.task, now)
+        .map_err(|refusal| match refusal {
+            Refusal::Denied => WebResult::Denied {
+                site: site.to_owned(),
+            },
+            refusal @ (Refusal::Paused
+            | Refusal::QueueFull
+            | Refusal::Unfrozen(_)
+            | Refusal::Entropy) => WebResult::Unasked {
+                reason: refused_as(&refusal),
+            },
+        })?;
+    decided(board, &requested.id, site, web.wait)?;
+    Ok(requested.id)
 }
 
 /// Waits up to `wait` for the owner to approve request `id` for `site`:
@@ -266,7 +287,9 @@ fn read(web: &mut WebSession, mut url: WebUrl) -> WebResult {
             Err(reason) => return refused(reason),
         }
     }
-    refused(format!("the site redirected more than {MAX_REDIRECTS} times"))
+    refused(format!(
+        "the site redirected more than {MAX_REDIRECTS} times"
+    ))
 }
 
 /// Reads `url` with `fetcher`, giving up at `until`. A read given up on
@@ -280,13 +303,15 @@ fn bounded(fetcher: &Fetcher, url: &WebUrl, until: Instant) -> Result<Fetched, S
         let _ = sender.send(fetcher(&page));
     });
     let left = until.saturating_duration_since(Instant::now());
-    match receiver.recv_timeout(left) {
-        Ok(fetched) => fetched.map_err(|error| error.to_string()),
-        Err(_) => Err(format!(
-            "the site took longer than {} seconds",
-            FETCH_DEADLINE.as_secs()
-        )),
-    }
+    receiver.recv_timeout(left).map_or_else(
+        |_| {
+            Err(format!(
+                "the site took longer than {} seconds",
+                FETCH_DEADLINE.as_secs()
+            ))
+        },
+        |answer| answer.map_err(|error| error.to_string()),
+    )
 }
 
 /// A refusal, in the broker's words.
@@ -321,7 +346,10 @@ mod tests {
         let log = Arc::clone(&asked);
         let fetcher: Fetcher = Arc::new(move |url: &WebUrl| {
             log.lock().unwrap().push(url.to_string());
-            pages.get(&url.to_string()).cloned().ok_or(FetchError::Failed)
+            pages
+                .get(&url.to_string())
+                .cloned()
+                .ok_or(FetchError::Failed)
         });
         (fetcher, asked)
     }
@@ -426,7 +454,10 @@ mod tests {
         let mut web = unattended("t", &fetcher);
         for (url, reason) in [
             ("http://a.example/", "only absolute https URLs are read"),
-            ("https://1.2.3.4/", "an IP address is refused: name the site"),
+            (
+                "https://1.2.3.4/",
+                "an IP address is refused: name the site",
+            ),
             ("https://blocked.example/", "the operator refuses this site"),
             (
                 "https://deep.blocked.example/x",
@@ -631,7 +662,13 @@ mod tests {
             .propose_site(site, "https://a.example/", "why", "t", 0)
             .unwrap();
         // Proposing past its time lapses it.
-        let _ = board.propose_site("https://b.example", "https://b.example/", "why", "t9", 10_000);
+        let _ = board.propose_site(
+            "https://b.example",
+            "https://b.example/",
+            "why",
+            "t9",
+            10_000,
+        );
         assert_eq!(
             decided(&board, &lapsing.id, site, Duration::from_secs(5)),
             Err(WebResult::Expired {

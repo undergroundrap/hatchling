@@ -1776,7 +1776,7 @@ mod tests {
     use super::*;
     use crate::{
         ArtifactConfig, EgressConfig, GoalsConfig, MemoryConfig, SchedulerConfig, SkillConfig,
-        SpaceConfig, WebConfig, VaultConfig,
+        SpaceConfig, VaultConfig, WebConfig,
     };
     use hatchling_vault::MasterKey;
     use hatchling_vault::SealedVault;

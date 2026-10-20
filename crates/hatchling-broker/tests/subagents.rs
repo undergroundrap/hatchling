@@ -27,8 +27,8 @@ use std::time::{Duration, Instant};
 
 use common::{guard_cell_available, mapped_agent_uid, run_fixture_binary};
 use hatchling_broker::{
-    Config, EgressConfig, GoalsConfig, MemoryConfig, RunEnv, SchedulerConfig, Skills, SpaceConfig, WebConfig,
-    VaultConfig, VaultGrant, serve_connection_with_runs,
+    Config, EgressConfig, GoalsConfig, MemoryConfig, RunEnv, SchedulerConfig, Skills, SpaceConfig,
+    VaultConfig, VaultGrant, WebConfig, serve_connection_with_runs,
 };
 use hatchling_core::framing::{read_frame, write_frame};
 use hatchling_core::subagent::{MAX_CHILD_STEPS, ORPHANED};
