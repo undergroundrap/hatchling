@@ -388,6 +388,7 @@ impl LinuxCell {
     reason = "resource configuration and the fork handshake are audited together in fail-closed order"
 )]
 pub(super) fn isolate(spec: &CellSpec) -> Result<LinuxCell, Error> {
+    bounded_as_a_whole(spec)?;
     // The identity is checked first, whoever built the spec: nothing on
     // the host changes for one that is refused.
     let writer = MapWriter::for_identity(&spec.identity)?;
@@ -611,6 +612,33 @@ fn hand_out_relay(port: u16, channel: &UnixStream) -> Result<(), hatchling_sys::
     hatchling_sys::net::loopback_up()?;
     let listener = hatchling_sys::net::loopback_listener(port)?;
     hatchling_sys::net::send_fd(channel.as_fd(), listener.as_fd())
+}
+
+/// A browser cell is bounded as a whole, or it isn't started (WO-029): a
+/// resource group, holding its memory and its processes. A page can fill
+/// memory with files it never maps (`memfd_create`, `fallocate`), which
+/// no per-process limit counts, so the per-process limits alone aren't a
+/// bound. Every other cell may run without one.
+///
+/// # Errors
+///
+/// [`Error::Spawn`], naming what is missing, before anything is made.
+fn bounded_as_a_whole(spec: &CellSpec) -> Result<(), Error> {
+    if spec.filter != Filter::Browser {
+        return Ok(());
+    }
+    let missing = if spec.cgroup.is_none() {
+        "a resource group (a delegated cgroup)"
+    } else if spec.limits.memory.is_none() {
+        "a memory limit"
+    } else if spec.limits.processes.is_none() {
+        "a process limit"
+    } else {
+        return Ok(());
+    };
+    Err(Error::Spawn {
+        reason: format!("a browser cell needs {missing}, and has none"),
+    })
 }
 
 /// Who writes a cell's id maps.
@@ -2290,6 +2318,26 @@ pub(super) mod tests {
         browser
     }
 
+    /// A resource group for a browser test's cell, in the delegation
+    /// `HATCHLING_TEST_CGROUP` names: none, and the test is skipped, unless
+    /// `HATCHLING_REQUIRE_CGROUP=1` makes that a failure.
+    fn test_group() -> Option<hatchling_sys::cgroup::CellCgroup> {
+        let Some(base) = std::env::var_os("HATCHLING_TEST_CGROUP") else {
+            assert!(
+                !std::env::var("HATCHLING_REQUIRE_CGROUP").is_ok_and(|value| value == "1"),
+                "HATCHLING_REQUIRE_CGROUP=1 but no delegation"
+            );
+            return None;
+        };
+        Some(
+            hatchling_sys::cgroup::CellCgroup::create(
+                Path::new(&base),
+                hatchling_sys::cgroup::CgroupLimits::default(),
+            )
+            .unwrap(),
+        )
+    }
+
     /// A spec that runs `browser` headless in a cell held to `filter`,
     /// printing the DOM of `page` to `/work/dom` and its errors to
     /// `/work/err`. Chromium finds its files beside its binary, so its
@@ -2298,6 +2346,8 @@ pub(super) mod tests {
     fn browser_spec(scratch: &Scratch, browser: &Path, filter: Filter, page: &str) -> CellSpec {
         let (_, mut spec) = specs(scratch);
         spec.filter = filter;
+        spec.limits.memory = Some(2 << 30);
+        spec.limits.processes = Some(512);
         spec.program = PathBuf::from("/bin/bash");
         spec.exposures.push(crate::Exposure {
             source: browser.parent().unwrap().to_owned(),
@@ -2338,11 +2388,16 @@ pub(super) mod tests {
         let Some(browser) = test_browser() else {
             return;
         };
+        let Some(mut group) = test_group() else {
+            return;
+        };
         let page = "data:text/html,<p id=x>static</p><script>document.getElementById(%22x%22).textContent=%22scripted%22</script>";
         let scratch = Scratch::new("browser");
-        let spec = browser_spec(&scratch, &browser, Filter::Browser, page);
+        let mut spec = browser_spec(&scratch, &browser, Filter::Browser, page);
+        spec.cgroup = Some(group.path().to_owned());
         let cell = isolate(&spec).unwrap();
         let exit = cell.wait().unwrap();
+        group.finish().unwrap();
         let dom = std::fs::read_to_string(scratch.0.join("work/dom")).unwrap_or_default();
         let err = std::fs::read_to_string(scratch.0.join("work/err")).unwrap_or_default();
         assert_eq!(exit.code, 0, "the browser cell: {err}");
@@ -2357,6 +2412,47 @@ pub(super) mod tests {
         let dom = std::fs::read_to_string(scratch.0.join("work/dom")).unwrap_or_default();
         assert_ne!(exit.code, 0, "a CLI cell kills the browser");
         assert!(!dom.contains("scripted"), "{dom}");
+    }
+
+    /// WO-029: a browser cell without a resource group, or one without a
+    /// memory or a process limit, is refused before anything is made; the
+    /// same spec as a CLI cell isn't.
+    #[test]
+    fn a_browser_cell_is_bounded_as_a_whole_or_not_started() {
+        let scratch = Scratch::new("browser-bounds");
+        let (_, mut spec) = specs(&scratch);
+        spec.filter = Filter::Browser;
+        spec.limits.memory = Some(1 << 30);
+        spec.limits.processes = Some(256);
+        let refused = |spec: &CellSpec| match bounded_as_a_whole(spec) {
+            Err(Error::Spawn { reason }) => reason,
+            other => format!("not refused: {other:?}"),
+        };
+        assert_eq!(
+            refused(&spec),
+            "a browser cell needs a resource group (a delegated cgroup), and has none"
+        );
+        assert!(
+            matches!(isolate(&spec), Err(Error::Spawn { .. })),
+            "isolate checks it"
+        );
+        spec.cgroup = Some(PathBuf::from("/sys/fs/cgroup/hatchling-test"));
+        assert!(bounded_as_a_whole(&spec).is_ok());
+        spec.limits.memory = None;
+        assert_eq!(
+            refused(&spec),
+            "a browser cell needs a memory limit, and has none"
+        );
+        spec.limits.memory = Some(1 << 30);
+        spec.limits.processes = None;
+        assert_eq!(
+            refused(&spec),
+            "a browser cell needs a process limit, and has none"
+        );
+        spec.cgroup = None;
+        spec.limits.memory = None;
+        spec.filter = Filter::Cli;
+        assert!(bounded_as_a_whole(&spec).is_ok(), "only a browser cell");
     }
 
     #[test]
