@@ -16,7 +16,7 @@ use std::time::Duration;
 use hatchling_sys::{BindMount, Child, ChildPid, MountPlan};
 
 use crate::{
-    CellSpec, CellView, ENDPOINT_DIR, Error, Filter, Origin, PROGRAM, PlatformError, ViewEntry,
+    CellSpec, CellView, ENDPOINT_DIR, Error, Origin, PROGRAM, PlatformError, ViewEntry,
 };
 
 /// The devices a CLI cell writes, at their own paths.

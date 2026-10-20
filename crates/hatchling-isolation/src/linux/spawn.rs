@@ -2338,18 +2338,21 @@ pub(super) mod tests {
         let Some(browser) = test_browser() else {
             return;
         };
-        let page = "data:text/html,<p id=x>static</p><script>document.getElementById(\"x\").textContent=\"scripted\"</script>";
+        let page = "data:text/html,<p id=x>static</p><script>document.getElementById(%22x%22).textContent=%22scripted%22</script>";
         let scratch = Scratch::new("browser");
         let spec = browser_spec(&scratch, &browser, Filter::Browser, page);
-        let mut cell = isolate(&spec).unwrap();
+        let cell = isolate(&spec).unwrap();
         let exit = cell.wait().unwrap();
         let dom = std::fs::read_to_string(scratch.0.join("work/dom")).unwrap_or_default();
         let err = std::fs::read_to_string(scratch.0.join("work/err")).unwrap_or_default();
         assert_eq!(exit.code, 0, "the browser cell: {err}");
-        assert!(dom.contains("<p id=\"x\">scripted</p>"), "the page's script ran: {dom}");
+        assert!(
+            dom.contains("<p id=\"x\">scripted</p>"),
+            "the page's script ran: {dom}"
+        );
         let scratch = Scratch::new("browser-cli");
         let spec = browser_spec(&scratch, &browser, Filter::Cli, page);
-        let mut cell = isolate(&spec).unwrap();
+        let cell = isolate(&spec).unwrap();
         let exit = cell.wait().unwrap();
         let dom = std::fs::read_to_string(scratch.0.join("work/dom")).unwrap_or_default();
         assert_ne!(exit.code, 0, "a CLI cell kills the browser");
