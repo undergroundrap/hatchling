@@ -1489,7 +1489,7 @@ mod tests {
         let once = |id: &str| {
             validate(
                 id.to_owned(),
-                hatchling_core::ScheduleSpec::Once {
+                ScheduleSpec::Once {
                     at: String::from("2026-10-01T09:00"),
                     tz: String::from("UTC"),
                 },
@@ -1521,9 +1521,15 @@ mod tests {
         let stored = store.load().unwrap().into_iter().next().unwrap();
         assert!(stored.ledger.exhausted);
         assert_eq!(stored.due(), None);
-        assert!(store.record("sch-once", due, OccurrenceState::Running).unwrap());
         assert!(
-            !store.record("sch-once", due + 1, OccurrenceState::Running).unwrap(),
+            store
+                .record("sch-once", due, OccurrenceState::Running)
+                .unwrap()
+        );
+        assert!(
+            !store
+                .record("sch-once", due + 1, OccurrenceState::Running)
+                .unwrap(),
             "not its fire"
         );
         let parked = |n: usize| Parked {
@@ -1539,7 +1545,10 @@ mod tests {
         assert!(store.park(&parked(MAX_PARKED)).is_err(), "full");
         let kept = store.parked().unwrap();
         assert_eq!(kept.len(), MAX_PARKED);
-        assert_eq!(kept.first().map(|parked| parked.schedule_id.as_str()), Some("sch-0"));
+        assert_eq!(
+            kept.first().map(|parked| parked.schedule_id.as_str()),
+            Some("sch-0")
+        );
         // A fire whose result can't be parked stays, with the schedule.
         assert!(store.resolve("sch-once", due, Some(&parked(99))).is_err());
         assert_eq!(store.load().unwrap().len(), 1);

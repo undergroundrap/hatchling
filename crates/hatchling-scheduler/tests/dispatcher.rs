@@ -1097,7 +1097,10 @@ fn a_result_that_waits_holds_its_schedules_next_fire() {
     let report = world.tick("2026-09-21T14:00:00Z");
     assert_eq!(report.refused, ["s"]);
     assert!(report.launched.is_empty());
-    let waiting = world.store.schedules.borrow()["s"].ledger.occurrence.clone();
+    let waiting = world.store.schedules.borrow()["s"]
+        .ledger
+        .occurrence
+        .clone();
     assert!(
         matches!(
             waiting,
