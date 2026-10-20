@@ -48,7 +48,7 @@ Every crate has a row below: `hatchling-dev audit` fails the gate if one doesn't
 | `hatchling-isolation` | Cell lifecycle and the `IsolationBackend` trait. Platform-neutral API; Linux backend implements namespaces + seccomp. |
 | `hatchling-sys` | Low-level syscall wrappers (seccomp, namespaces, mounts, process and fd handling). The only crate allowed `unsafe`. |
 | `hatchling-vault` | Secret storage. Credentials never leave this crate's boundary except via the egress proxy. |
-| `hatchling-egress` | The egress proxy: the only component that touches the network for a cell. Allowlist with pinned DNS, surrogate tokens, credential substitution. |
+| `hatchling-egress` | The egress proxy: the only component that touches the network for a cell. Allowlist with pinned DNS, surrogate tokens, credential substitution. A web page read by origin (`web`), resolved and checked per fetch, as text. |
 | `hatchling-adversarial` | *Not published.* Attack simulations used in testing. Proves the isolation holds. |
 
 ## Capabilities

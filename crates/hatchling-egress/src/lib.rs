@@ -36,6 +36,7 @@ pub mod proxy;
 pub mod relay;
 pub mod scrub;
 pub mod surrogate;
+pub mod web;
 
 pub use allowlist::{
     Allowlist, INTERNAL_PREFIX, LOCAL_HOST, LOCAL_KEYLESS_PREFIX, LOCAL_PREFIX, Local,
