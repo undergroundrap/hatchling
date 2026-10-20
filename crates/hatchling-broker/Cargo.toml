@@ -96,7 +96,7 @@ harness = false
 rustix = { version = "0.38", features = ["fs", "process", "pipe", "stdio"] }
 # Operator CLI tests verify sealed envelopes through the vault API; the
 # keyring tests unlock with the vault's software FIDO2 key.
-hatchling-vault = { path = "../hatchling-vault", features = ["virtual-authenticator"] }
+hatchling-vault = { path = "../hatchling-vault", features = ["virtual-authenticator", "fault-injection"] }
 # Memory component tests exercise the broker's memory ops through the store API.
 hatchling-memory = { path = "../hatchling-memory" }
 # Cell boundary tests spawn the real agent binary (built by

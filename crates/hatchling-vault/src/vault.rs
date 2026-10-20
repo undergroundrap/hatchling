@@ -138,8 +138,10 @@ impl Vault {
     /// cleanup in one place.
     fn store_inner(&self, target: &Path, temp: &Path, bytes: &[u8]) -> Result<(), Error> {
         Self::write_temp(temp, bytes)?;
+        crate::fault::at(crate::fault::Step::Rename)?;
         std::fs::rename(temp, target).map_err(|source| Error::Io { source })?;
         // Sync the directory so the rename itself is durable.
+        crate::fault::at(crate::fault::Step::DirSync)?;
         let dir = std::fs::File::open(&self.root).map_err(|source| Error::Io { source })?;
         dir.sync_all().map_err(|source| Error::Io { source })?;
         Ok(())
@@ -365,8 +367,10 @@ impl Vault {
             .mode(SECRET_FILE_MODE)
             .open(temp)
             .map_err(|source| Error::Io { source })?;
+        crate::fault::at(crate::fault::Step::TempWrite)?;
         file.write_all(bytes)
             .map_err(|source| Error::Io { source })?;
+        crate::fault::at(crate::fault::Step::TempSync)?;
         file.sync_all().map_err(|source| Error::Io { source })?;
         Ok(())
     }

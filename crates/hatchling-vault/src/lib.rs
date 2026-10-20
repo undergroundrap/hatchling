@@ -35,6 +35,7 @@
 
 pub mod backup;
 pub mod error;
+pub mod fault;
 pub mod fido2;
 pub mod handoff;
 pub mod keyring;
