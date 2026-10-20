@@ -409,6 +409,35 @@ test('confirmation UI: typed approve and deny, through the existing approval rev
     other.transport.deliver(decidedEvent(2, 'deny', 1));
     assert.deepEqual(other.adapter.taskApprovals.getSnapshot().map(item => [item.status, item.resource]), [['denied', 'This request does not expire.']]);
 });
+test('a site offers Allow for task, sent as approve_session and shown as allowed for the task', async () => {
+    const { transport, adapter } = connected();
+    const site = sampleEvent(1, 1, { kind: 'confirmation', confirmation_id: 'confirm-1', revision: 1, chat_id: 'main', summary: 'Let the agent read a site', expires_at: null, digest: 'digest-1', fields: [{ label: 'Site', value: 'https://a.example', source: 'broker' }], session: true });
+    transport.deliver(site);
+    const [card] = adapter.taskApprovals.getSnapshot();
+    assert.deepEqual(card.scopes, ['once', 'task']);
+    assert.match(card.detail, /Allow for task also answers every request like it until the agent's session ends; in a chat, that's this answer/);
+    const pending = adapter.taskApprovals.respond({ id: 'attempt-task', requestId: 'confirm-1', revision: 1, decision: 'task' });
+    await flush();
+    assert.deepEqual(transport.last().action, { action: 'decide', confirmation_id: 'confirm-1', revision: 1, digest: 'digest-1', decision: 'approve_session' });
+    answer(transport, 'attempt-task', { result: 'decided', confirmation_id: 'confirm-1', decision: 'approve_session' });
+    assert.deepEqual(await pending, { state: 'accepted', detail: 'Hatchling recorded your answer.' });
+    transport.deliver(decidedEvent(2, 'approve_session', 1));
+    assert.equal(adapter.taskApprovals.getSnapshot()[0].status, 'allowed-task');
+    // A request that doesn't offer it still refuses it, before anything is sent.
+    const other = connected();
+    other.transport.deliver(confirmation(1, 1));
+    const sent = other.transport.sent.length;
+    assert.match((await other.adapter.taskApprovals.respond({ id: 'a1', requestId: 'confirm-1', revision: 1, decision: 'task' })).detail, /not offered/);
+    assert.equal(other.transport.sent.length, sent, 'nothing sent');
+    assert.deepEqual(other.adapter.taskApprovals.getSnapshot()[0].scopes, ['once']);
+    // The broker's rejection of a decision it doesn't offer has its words.
+    const third = connected();
+    third.transport.deliver(site);
+    const rejected = third.adapter.taskApprovals.respond({ id: 'a2', requestId: 'confirm-1', revision: 1, decision: 'task' });
+    await flush();
+    answer(third.transport, 'a2', { result: 'decision_rejected', confirmation_id: 'confirm-1', reason: 'not_offered' });
+    assert.deepEqual(await rejected, { state: 'rejected', detail: 'This request can only be approved once, so nothing was decided.' });
+});
 test('a decision is re-validated at dispatch, against the broker\'s latest state, not the card that was drawn', async () => {
     const { transport, adapter } = connected();
     transport.deliver(confirmation(1, 1));
