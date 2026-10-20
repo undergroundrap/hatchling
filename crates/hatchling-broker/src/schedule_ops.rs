@@ -1555,29 +1555,6 @@ mod tests {
         // Delivered: the exhausted one-shot goes with its fire.
         assert!(store.resolve("sch-once", due, None).unwrap());
         assert!(store.load().unwrap().is_empty());
-        // The store's parts, called directly.
-        let cadence = once("sch-cadence");
-        assert!(store.insert(&cadence).unwrap());
-        assert!(
-            store
-                .skip_due("sch-cadence", 0, cadence.next_due, Some(cadence.next_due + 60))
-                .unwrap()
-        );
-        assert!(!store.skip_due("sch-cadence", 0, cadence.next_due, None).unwrap(), "stale");
-        let vault = SealedVault::open_in(&root, &master, hatchling_vault::Store::SCHEDULES).unwrap();
-        let latest = SealedScheduleStore::latest(&vault, "sch-cadence").unwrap().unwrap();
-        assert_eq!(latest.next_due, cadence.next_due + 60);
-        assert!(SealedScheduleStore::latest(&vault, "sch-none").unwrap().is_none());
-        assert!(
-            SealedScheduleStore::change_fire(&vault, "sch-cadence", 1, |_| {})
-                .unwrap()
-                .is_none(),
-            "no such fire"
-        );
-        assert!(SealedScheduleStore::keep_parked(&vault, &parked(0)).is_err(), "still full");
-        assert!(SealedScheduleStore::drop_schedule(&vault, "sch-cadence").unwrap());
-        assert!(!SealedScheduleStore::drop_schedule(&vault, "sch-cadence").unwrap());
-        assert!(missing("sch-x").to_string().contains("record is missing"));
         // An index entry whose record is gone is an error, not a schedule
         // that quietly stopped existing.
         assert!(store.insert(&once("sch-lost")).unwrap());
@@ -1588,5 +1565,57 @@ mod tests {
         let lost = store.load();
         let _ = std::fs::remove_dir_all(&root);
         assert!(matches!(lost, Err(Error::ScheduleStore { .. })), "{lost:?}");
+    }
+
+    /// The sealed store's parts, called directly (WO-025): a skip moves a
+    /// fresh record's cadence on and refuses a stale one; the latest
+    /// record is read under the index; a change to a fire that isn't the
+    /// record's does nothing; a parked result is kept; a schedule is
+    /// dropped once; a missing record says so.
+    #[test]
+    fn the_sealed_stores_parts_called_directly() {
+        let root = std::env::temp_dir().join(format!("hatchling-parts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let master = MasterKey::generate().unwrap();
+        let store = SealedScheduleStore::new(&root, &master);
+        let send = ScheduleGrant::ChannelSend {
+            channel: String::from("local"),
+        };
+        let cadence = validate(
+            String::from("sch-cadence"),
+            ScheduleSpec::Once {
+                at: String::from("2026-10-01T09:00"),
+                tz: String::from("UTC"),
+            },
+            String::from("tidy the inbox"),
+            vec![send.clone()],
+            String::from("local"),
+            &BTreeSet::from([send]),
+            Timestamp::from_second(1_790_000_000).unwrap(),
+        )
+        .unwrap();
+        let due = cadence.next_due;
+        assert!(store.insert(&cadence).unwrap());
+        assert!(store.skip_due("sch-cadence", 0, due, Some(due + 60)).unwrap());
+        assert!(!store.skip_due("sch-cadence", 0, due, None).unwrap(), "stale");
+        let vault = SealedVault::open_in(&root, &master, hatchling_vault::Store::SCHEDULES).unwrap();
+        let latest = SealedScheduleStore::latest(&vault, "sch-cadence").unwrap().unwrap();
+        assert_eq!(latest.next_due, due + 60);
+        assert!(SealedScheduleStore::latest(&vault, "sch-none").unwrap().is_none());
+        let unchanged = SealedScheduleStore::change_fire(&vault, "sch-cadence", 1, |_| {});
+        assert!(unchanged.unwrap().is_none(), "no such fire");
+        let parked = Parked {
+            schedule_id: String::from("sch-cadence"),
+            channel: String::from("local"),
+            text: String::from("kept"),
+            due,
+            reason: String::from("a test"),
+        };
+        SealedScheduleStore::keep_parked(&vault, &parked).unwrap();
+        assert_eq!(store.parked().unwrap(), [parked]);
+        assert!(SealedScheduleStore::drop_schedule(&vault, "sch-cadence").unwrap());
+        assert!(!SealedScheduleStore::drop_schedule(&vault, "sch-cadence").unwrap());
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(missing("sch-x").to_string().contains("record is missing"));
     }
 }

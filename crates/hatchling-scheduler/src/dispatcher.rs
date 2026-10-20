@@ -1033,7 +1033,10 @@ mod tests {
                 return Err(String::from("broken"));
             }
             let mut held = self.schedule.borrow_mut();
-            let Some(fire) = held.as_mut().and_then(|stored| stored.ledger.occurrence.as_mut()) else {
+            let Some(fire) = held
+                .as_mut()
+                .and_then(|stored| stored.ledger.occurrence.as_mut())
+            else {
                 return Ok(false);
             };
             fire.state = state;
@@ -1161,7 +1164,13 @@ mod tests {
         // deliver_stored: delivered, and resolved.
         deliver_stored(&services, &mut report).unwrap();
         assert_eq!(report.delivered, [String::from("sch-1")]);
-        assert!(store.load().unwrap().iter().all(|s| s.ledger.occurrence.is_none()));
+        assert!(
+            store
+                .load()
+                .unwrap()
+                .iter()
+                .all(|s| s.ledger.occurrence.is_none())
+        );
         // undelivered: failures are parked with their reasons.
         let park = |text: &str, reason: String| Parked {
             schedule_id: String::from("sch-1"),
