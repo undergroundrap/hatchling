@@ -46,7 +46,8 @@ use std::sync::{Mutex, PoisonError};
 use hatchling_channel::{ChannelId, LocalHub, Message, SenderId};
 use hatchling_core::{
     FeedSpec, HookOp, HookResult, HookSource, MAX_SECRET_BYTES, ScheduleGrant, ScheduleKind,
-    ScheduleOp, ScheduleRefusal, ScheduleResult, ScheduleSpec, ScheduleSummary, SecretName,
+    HeldFire, ParkedSummary, ScheduleOp, ScheduleRefusal, ScheduleResult, ScheduleSpec,
+    ScheduleSummary, SecretName,
 };
 use hatchling_scheduler::{
     Claim, Creator, Delivery, Dispatcher, FollowupParent, Hook, Launcher, Occurrence,
@@ -253,6 +254,98 @@ impl<'k> SealedScheduleStore<'k> {
         write_json(&vault, INDEX, &index)?;
         let _ = vault.remove(&secret_name(&entry_name(id))?);
         Ok(true)
+    }
+
+    /// Marks the fire of unknown outcome on `id` resolved, as the owner
+    /// says (WO-025): the schedule resumes its cadence, and a one-shot is
+    /// done. Returns whether `id` held such a fire.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error`] on a backend failure.
+    pub fn mark_resolved(&self, id: &str) -> Result<bool, Error> {
+        let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
+        let vault = self.vault()?;
+        let Some(due) = Self::unknown_fire(&vault, id)? else {
+            return Ok(false);
+        };
+        let resolved =
+            Self::change_fire(&vault, id, due, |stored| stored.ledger.occurrence = None)?;
+        if resolved.is_some_and(|stored| stored.ledger.exhausted) {
+            Self::drop_schedule(&vault, id)?;
+        }
+        Ok(true)
+    }
+
+    /// Retries the fire of unknown outcome on `id` as a new attempt
+    /// (WO-025): it is due `now`, and the dispatcher claims and runs it as
+    /// any fire, under the grants the creator holds then. Returns whether
+    /// `id` held such a fire.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error`] on a backend failure.
+    pub fn retry(&self, id: &str, now: Timestamp) -> Result<bool, Error> {
+        let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
+        let vault = self.vault()?;
+        let Some(due) = Self::unknown_fire(&vault, id)? else {
+            return Ok(false);
+        };
+        let retried = Self::change_fire(&vault, id, due, |stored| {
+            stored.ledger.occurrence = None;
+            stored.ledger.exhausted = false;
+            stored.next_due = now.as_second();
+        })?;
+        Ok(retried.is_some())
+    }
+
+    /// Dismisses the parked result `id`. Returns whether it was kept.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error`] on a backend failure.
+    pub fn dismiss(&self, id: &str) -> Result<bool, Error> {
+        let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
+        let vault = self.vault()?;
+        let mut index: Vec<String> = read_json(&vault, PARKED_INDEX)?.unwrap_or_default();
+        let Some(position) = index.iter().position(|kept| kept == id) else {
+            return Ok(false);
+        };
+        index.remove(position);
+        write_json(&vault, PARKED_INDEX, &index)?;
+        let _ = vault.remove(&secret_name(id)?);
+        Ok(true)
+    }
+
+    /// The parked results with their ids, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error`] on a backend failure.
+    pub fn parked_with_ids(&self) -> Result<Vec<(String, Parked)>, Error> {
+        let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
+        let vault = self.vault()?;
+        let index: Vec<String> = read_json(&vault, PARKED_INDEX)?.unwrap_or_default();
+        index
+            .iter()
+            .filter_map(|name| {
+                read_json::<Parked>(&vault, name)
+                    .transpose()
+                    .map(|parked| parked.map(|parked| (name.clone(), parked)))
+            })
+            .collect()
+    }
+
+    /// The due time of the fire of unknown outcome on `id`, if it has one.
+    fn unknown_fire(vault: &SealedVault<'_>, id: &str) -> Result<Option<i64>, Error> {
+        Ok(Self::latest(vault, id)?
+            .and_then(|stored| stored.ledger.occurrence)
+            .and_then(|fire| match fire.state {
+                OccurrenceState::Unknown { .. } => Some(fire.due),
+                OccurrenceState::Claimed
+                | OccurrenceState::Running
+                | OccurrenceState::Finished { .. } => None,
+            }))
     }
 
     /// Removes a hook. Returns whether it existed.
@@ -468,6 +561,30 @@ impl Store for SealedScheduleStore<'_> {
         Ok(true)
     }
 
+    fn hold_in_flight(&self) -> Result<Vec<String>, Error> {
+        let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
+        let vault = self.vault()?;
+        let index: Vec<String> = read_json(&vault, INDEX)?.unwrap_or_default();
+        let mut held = Vec::new();
+        for id in &index {
+            let mut stored: Schedule =
+                read_json(&vault, &entry_name(id))?.ok_or_else(|| missing(id))?;
+            let Some(fire) = stored.ledger.occurrence.as_mut() else {
+                continue;
+            };
+            let started = match fire.state {
+                OccurrenceState::Claimed => false,
+                OccurrenceState::Running => true,
+                OccurrenceState::Finished { .. } | OccurrenceState::Unknown { .. } => continue,
+            };
+            fire.state = OccurrenceState::Unknown { started };
+            stored.ledger.revision = stored.ledger.revision.saturating_add(1);
+            write_json(&vault, &entry_name(id), &stored)?;
+            held.push(id.clone());
+        }
+        Ok(held)
+    }
+
     fn remove(&self, id: &str) -> Result<bool, Error> {
         let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
         let vault = self.vault()?;
@@ -586,6 +703,30 @@ pub fn handle_schedule_op(
         ScheduleOp::List { after } => {
             list_schedules(config, key, &held_grants(config), after.as_deref(), caller)
         }
+        ScheduleOp::Resolve { .. }
+        | ScheduleOp::Retry { .. }
+        | ScheduleOp::ListParked { .. }
+        | ScheduleOp::Dismiss { .. }
+            if caller != Creator::Owner || !config.scheduler.enabled() =>
+        {
+            ScheduleResult::Denied
+        }
+        ScheduleOp::Resolve { id } => owned(
+            SealedScheduleStore::new(&config.scheduler.root, key).mark_resolved(id),
+            ScheduleResult::Resolved,
+            "resolve",
+        ),
+        ScheduleOp::Retry { id } => owned(
+            SealedScheduleStore::new(&config.scheduler.root, key).retry(id, now),
+            ScheduleResult::Retried,
+            "retry",
+        ),
+        ScheduleOp::Dismiss { id } => owned(
+            SealedScheduleStore::new(&config.scheduler.root, key).dismiss(id),
+            ScheduleResult::Dismissed,
+            "dismiss",
+        ),
+        ScheduleOp::ListParked { after } => list_parked(config, key, after.as_deref()),
         ScheduleOp::Create { .. } | ScheduleOp::CreateFeed { .. } | ScheduleOp::Cancel { .. }
             if !config.scheduler.enabled() =>
         {
@@ -611,6 +752,62 @@ pub fn handle_schedule_op(
                     ScheduleResult::ScheduleError
                 }
             }
+        }
+    }
+}
+
+/// `done` when the owner's operation found its target, `NotFound` when it
+/// didn't, and an opaque error when the store failed.
+fn owned(outcome: Result<bool, Error>, done: ScheduleResult, what: &str) -> ScheduleResult {
+    match outcome {
+        Ok(true) => done,
+        Ok(false) => ScheduleResult::NotFound,
+        Err(error) => {
+            tracing::error!(%error, operation = what, "schedule store failed");
+            ScheduleResult::ScheduleError
+        }
+    }
+}
+
+/// One page of the parked results, oldest first, after `after`, bounded
+/// as every multi-item reply is ([`hatchling_memory::paging`]).
+fn list_parked(config: &Config, key: &dyn OpensStores, after: Option<&str>) -> ScheduleResult {
+    let parked = match SealedScheduleStore::new(&config.scheduler.root, key).parked_with_ids() {
+        Ok(parked) => parked,
+        Err(error) => {
+            tracing::error!(%error, "schedule store failed on the parked list");
+            return ScheduleResult::ScheduleError;
+        }
+    };
+    let mut shown: Vec<ParkedSummary> = parked
+        .into_iter()
+        .skip_while(|(id, _)| after.is_some_and(|after| id.as_str() != after))
+        .skip(usize::from(after.is_some()))
+        .map(|(id, parked)| ParkedSummary {
+            id,
+            schedule_id: parked.schedule_id,
+            channel: parked.channel,
+            due: parked.due,
+            reason: parked.reason,
+            text: parked.text,
+        })
+        .collect();
+    let records = shown.iter().map(|one| {
+        serde_json::to_string(one)
+            .map(|json| (json, one.id.clone()))
+            .map_err(|_| hatchling_memory::Error::Corrupt)
+    });
+    match hatchling_memory::paging::page(records, hatchling_memory::paging::PAGE_BUDGET_BYTES) {
+        Ok(page) => {
+            shown.truncate(page.items_json.len());
+            ScheduleResult::Parked {
+                parked: shown,
+                next: page.next,
+            }
+        }
+        Err(error) => {
+            tracing::error!(%error, "the parked list could not be paged");
+            ScheduleResult::ScheduleError
         }
     }
 }
@@ -687,6 +884,15 @@ fn summary(schedule: &Schedule) -> ScheduleSummary {
         channel: schedule.channel.clone(),
         grants: schedule.grants.clone(),
         next_due: schedule.next_due,
+        held: schedule.ledger.occurrence.as_ref().and_then(|fire| match fire.state {
+            OccurrenceState::Unknown { started } => Some(HeldFire {
+                due: fire.due,
+                started,
+            }),
+            OccurrenceState::Claimed
+            | OccurrenceState::Running
+            | OccurrenceState::Finished { .. } => None,
+        }),
     }
 }
 
@@ -1161,6 +1367,7 @@ mod tests {
                 channel: String::from("local"),
                 grants: schedule.grants.clone(),
                 next_due: 42,
+                held: None,
             }
         );
         assert!(!serde_json::to_string(&shown).unwrap().contains("task text"));
@@ -1206,6 +1413,7 @@ mod tests {
             channel: String::from("local"),
             grants: Vec::new(),
             next_due: 0,
+            held: None,
         };
         let cost = |summary: &ScheduleSummary| {
             hatchling_memory::reply_encoded_len(serde_json::to_string(summary).unwrap().as_bytes())

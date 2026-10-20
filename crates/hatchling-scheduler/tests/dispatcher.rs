@@ -171,6 +171,23 @@ impl Store for MemStore {
         Ok(true)
     }
 
+    fn hold_in_flight(&self) -> Result<Vec<String>, String> {
+        let mut held = Vec::new();
+        for stored in self.schedules.borrow_mut().values_mut() {
+            if let Some(fire) = stored.ledger.occurrence.as_mut() {
+                let started = match fire.state {
+                    OccurrenceState::Claimed => false,
+                    OccurrenceState::Running => true,
+                    OccurrenceState::Finished { .. } | OccurrenceState::Unknown { .. } => continue,
+                };
+                fire.state = OccurrenceState::Unknown { started };
+                stored.ledger.revision += 1;
+                held.push(stored.id.clone());
+            }
+        }
+        Ok(held)
+    }
+
     fn remove(&self, id: &str) -> Result<bool, String> {
         Ok(self.schedules.borrow_mut().remove(id).is_some())
     }

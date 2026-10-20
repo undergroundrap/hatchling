@@ -319,9 +319,13 @@ fn schedule_needs(op: &ScheduleOp, owner: &BTreeSet<ScheduleGrant>) -> BTreeSet<
             });
             grants
         }
-        ScheduleOp::Cancel { .. } | ScheduleOp::Followup { .. } | ScheduleOp::List { .. } => {
-            owner.clone()
-        }
+        ScheduleOp::Cancel { .. }
+        | ScheduleOp::Followup { .. }
+        | ScheduleOp::List { .. }
+        | ScheduleOp::Resolve { .. }
+        | ScheduleOp::Retry { .. }
+        | ScheduleOp::ListParked { .. }
+        | ScheduleOp::Dismiss { .. } => owner.clone(),
     }
 }
 

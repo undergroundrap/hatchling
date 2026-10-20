@@ -41,7 +41,7 @@ pub use messages::{
     IdeaRef, IdeaRefusal, IdeaSource, IdeaState, IdeaSummary, InspectionFinding, InspectionVerdict,
     MAX_SKILL_INPUT_BYTES, MAX_SKILL_OUTPUT_BYTES, MediaHeader, MemoryOp, MemoryResult, QueryOp,
     QueryResult, ScheduleGrant, ScheduleKind, ScheduleOp, ScheduleRefusal, ScheduleResult,
-    ScheduleSpec, ScheduleSummary, SessionRequest, SessionResponse, SkillOp, SkillResult, SpaceOp,
+    ScheduleSpec, ScheduleSummary, ParkedSummary, HeldFire, SessionRequest, SessionResponse, SkillOp, SkillResult, SpaceOp,
     SpaceRefusal, SpaceResult, SyncChange, SyncItem, VaultAction, VaultOp, VaultResult,
 };
 pub use model_reasoning::ModelReasoning;

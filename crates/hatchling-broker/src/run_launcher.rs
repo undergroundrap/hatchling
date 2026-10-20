@@ -741,6 +741,11 @@ pub fn dispatch_forever<'scope, 'env>(
     let launcher =
         crate::feed_run::FeedLauncher::new(config, CellLauncher::new(scope, config, key, env));
     let mut dispatcher = Dispatcher::default();
+    // Fires an earlier broker left claimed or running are of unknown
+    // outcome now: each holds its schedule until the owner resolves or
+    // retries it, and none is run again on its own (WO-025). A hold that
+    // fails leaves them claimed or running, which the dispatcher skips.
+    hold_in_flight(config, key);
     loop {
         std::thread::sleep(until_next_tick(Timestamp::now()));
         match dispatch_once(
@@ -753,6 +758,24 @@ pub fn dispatch_forever<'scope, 'env>(
         ) {
             Ok(report) => tracing::debug!(?report, "scheduler tick"),
             Err(error) => tracing::error!(%error, "scheduler tick failed"),
+        }
+    }
+}
+
+/// Marks the fires an earlier broker left in flight as of unknown outcome,
+/// and says which.
+pub fn hold_in_flight(config: &Config, key: &dyn OpensStores) -> Vec<String> {
+    use hatchling_scheduler::Store as _;
+    match crate::SealedScheduleStore::new(&config.scheduler.root, key).hold_in_flight() {
+        Ok(held) => {
+            for id in &held {
+                tracing::warn!(schedule = %id, "a fire left in flight by an earlier broker: outcome unknown, held for the owner");
+            }
+            held
+        }
+        Err(error) => {
+            tracing::error!(%error, "fires left in flight could not be held");
+            Vec::new()
         }
     }
 }
