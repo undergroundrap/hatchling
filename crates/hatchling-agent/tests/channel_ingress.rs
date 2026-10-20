@@ -103,6 +103,7 @@ fn broker_config(name: &str) -> BrokerConfig {
         },
         artifacts: hatchling_broker::ArtifactConfig::disabled(),
         spaces: hatchling_broker::SpaceConfig::disabled(),
+        web: hatchling_broker::WebConfig::off(),
         goals: GoalsConfig::disabled(),
     }
 }

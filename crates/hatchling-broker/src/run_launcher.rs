@@ -70,7 +70,7 @@ use hatchling_vault::OpensStores;
 use crate::cell::{Process, ScheduledRun};
 use crate::{
     AgentCell, ArtifactConfig, CellConfig, Config, Error, FollowupScope, GoalsAction, MemoryAction,
-    MemoryGrant, SchedulerConfig, SkillConfig, SpaceConfig, VaultGrant, dispatch_once,
+    MemoryGrant, SchedulerConfig, SkillConfig, SpaceConfig, WebConfig, VaultGrant, dispatch_once,
     serve_cell_connection, spawn_cell,
 };
 
@@ -187,6 +187,9 @@ pub fn scoped_config(
     let mut run = config.clone();
     run.socket = socket;
     run.max_connections = 1;
+    // A chat has its person there to decide on a site (WO-028); a
+    // scheduled run asks, and goes on without the page.
+    run.web.attended = request.chat;
     run.vault.grants = grants
         .iter()
         .filter_map(|grant| match grant {
@@ -901,6 +904,7 @@ mod tests {
             },
             artifacts: ArtifactConfig::disabled(),
             spaces: SpaceConfig::disabled(),
+            web: WebConfig::off(),
             goals: GoalsConfig {
                 root: PathBuf::from("/srv/hatchling/goals"),
                 grants: vec![GoalsAction::GoalCreate, GoalsAction::QueryGoals],

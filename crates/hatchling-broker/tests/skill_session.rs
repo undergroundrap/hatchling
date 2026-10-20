@@ -148,6 +148,7 @@ fn spawn_session(root: &Path, skills: SkillConfig) -> io::Result<UnixStream> {
         },
         artifacts: hatchling_broker::ArtifactConfig::disabled(),
         spaces: hatchling_broker::SpaceConfig::disabled(),
+        web: hatchling_broker::WebConfig::off(),
         goals: hatchling_broker::GoalsConfig::disabled(),
     };
     let loaded = Skills::load(&config.skills).map_err(io::Error::other)?;
@@ -198,7 +199,8 @@ fn invoke(stream: &UnixStream, skill: &str, capability: &str) -> io::Result<Skil
         | SessionResponse::Hook(_)
         | SessionResponse::Artifact(_)
         | SessionResponse::Space(_)
-        | SessionResponse::Subagent(_) => Err(io::Error::new(
+        | SessionResponse::Subagent(_)
+        | SessionResponse::Web(_) => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "broker gave a non-skill reply to a skill op",
         )),

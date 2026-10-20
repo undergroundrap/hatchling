@@ -67,6 +67,9 @@ pub struct Proposal<A> {
     pub fingerprint: Value,
     /// The task that proposed it, as the broker knows it.
     pub task: String,
+    /// Whether the owner may approve it for the rest of the session
+    /// ([`Decision::ApproveSession`]) as well as once.
+    pub session: bool,
 }
 
 /// Where a request is.
@@ -107,8 +110,19 @@ pub struct Request<A> {
     pub expires_at: i64,
     /// Where it is.
     pub state: State,
+    /// The owner's decision, once there is one.
+    pub decision: Option<Decision>,
     run: A,
     fingerprint: String,
+    session: bool,
+}
+
+impl<A> Request<A> {
+    /// The action it would run.
+    #[must_use]
+    pub const fn run(&self) -> &A {
+        &self.run
+    }
 }
 
 /// What a proposal got.
@@ -247,6 +261,19 @@ impl<A: Clone> Approvals<A> {
         self.ledger().requests.get(id).cloned()
     }
 
+    /// The id of a request task `task` made for `action` that is in
+    /// `state`: say, one the owner approved while its task wasn't waiting,
+    /// and nothing has claimed yet.
+    #[must_use]
+    pub fn find(&self, task: &str, action: &Value, state: State) -> Option<String> {
+        let digest = action::digest(action).ok()?;
+        self.ledger()
+            .requests
+            .values()
+            .find(|request| request.state == state && request.digest == digest && request.task == task)
+            .map(|request| request.id.clone())
+    }
+
     /// Records the end of request `id`'s run.
     fn finish(&self, id: &str, end: State) {
         self.ledger().finish(id, end);
@@ -315,8 +342,10 @@ impl<A: Clone> Ledger<A> {
                 task: proposal.task,
                 expires_at,
                 state: State::Pending,
+                decision: None,
                 run: proposal.run,
                 fingerprint,
+                session: proposal.session,
             },
         );
         Ok(Requested {
@@ -357,12 +386,16 @@ impl<A: Clone> Ledger<A> {
         if request.revision != revision || request.digest != digest {
             return Err(DecisionRejection::StaleRevision);
         }
+        if decision == Decision::ApproveSession && !request.session {
+            return Err(DecisionRejection::NotOffered);
+        }
         let fingerprint = request.fingerprint.clone();
         let decided = match decision {
-            Decision::Approve => State::Approved,
+            Decision::Approve | Decision::ApproveSession => State::Approved,
             Decision::Deny => State::Denied,
         };
         request.state = decided;
+        request.decision = Some(decision);
         if decided == State::Denied {
             ledger.denied.insert(fingerprint);
             ledger.paused_until = now.saturating_add(DENIAL_COOLDOWN_SECS);
@@ -482,6 +515,7 @@ mod tests {
             action: json!({ "op": "activate", "effect": effect, "task": task }),
             fingerprint: json!({ "op": "activate", "effect": effect }),
             task: task.to_owned(),
+            session: false,
         }
     }
 
@@ -818,6 +852,51 @@ mod tests {
             ledger.get(&running.id).unwrap().state,
             State::Approved,
             "kept while unclaimed"
+        );
+    }
+
+    /// A request approves for the session only where it offers that; the
+    /// decision is kept on it; a request is found by its task, its action
+    /// and its state, so one approved while its task wasn't waiting is
+    /// found until it is claimed (WO-028).
+    #[test]
+    fn a_session_approval_is_offered_kept_and_found_until_claimed() {
+        let ledger = Approvals::new();
+        let once = ledger.propose(proposal("once", "t1"), 0).unwrap();
+        assert_eq!(
+            ledger.decide(&once.id, 1, &once.digest, Decision::ApproveSession, 1),
+            Err(DecisionRejection::NotOffered)
+        );
+        assert_eq!(ledger.get(&once.id).unwrap().state, State::Pending);
+        let offered = Proposal {
+            session: true,
+            ..proposal("site", "t2")
+        };
+        let action = offered.action.clone();
+        let site = ledger.propose(offered, 0).unwrap();
+        assert_eq!(ledger.find("t2", &action, State::Approved), None, "not approved yet");
+        assert_eq!(ledger.find("t2", &action, State::Pending), Some(site.id.clone()));
+        assert_eq!(
+            ledger.decide(&site.id, 1, &site.digest, Decision::ApproveSession, 1),
+            Ok(State::Approved)
+        );
+        let request = ledger.get(&site.id).unwrap();
+        assert_eq!(request.decision, Some(Decision::ApproveSession));
+        assert_eq!(request.run(), "run site");
+        assert_eq!(ledger.find("t2", &action, State::Approved), Some(site.id.clone()));
+        assert_eq!(ledger.find("t9", &action, State::Approved), None, "another task's");
+        assert_eq!(ledger.find("t2", &json!({ "op": "other" }), State::Approved), None);
+        assert_eq!(ledger.find("t2", &json!({ "n": 1.5 }), State::Approved), None);
+        let (_, claim) = ledger.claim(&site.id).unwrap();
+        claim.succeeded();
+        assert_eq!(ledger.find("t2", &action, State::Approved), None, "claimed");
+        assert_eq!(
+            ledger.decide(&once.id, 1, &once.digest, Decision::Approve, 2),
+            Ok(State::Approved)
+        );
+        assert_eq!(
+            ledger.get(&once.id).unwrap().decision,
+            Some(Decision::Approve)
         );
     }
 }

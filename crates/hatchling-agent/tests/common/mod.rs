@@ -293,6 +293,7 @@ fn serve(listener: UnixListener, behavior: BrokerBehavior, vault_root: Option<Pa
             },
             artifacts: hatchling_broker::ArtifactConfig::disabled(),
             spaces: hatchling_broker::SpaceConfig::disabled(),
+            web: hatchling_broker::WebConfig::off(),
             goals: hatchling_broker::GoalsConfig::disabled(),
         };
         // The broker's single master key, borrowed by the sealed vault
@@ -344,6 +345,7 @@ fn serve(listener: UnixListener, behavior: BrokerBehavior, vault_root: Option<Pa
             memory,
             artifacts: hatchling_broker::ArtifactConfig::disabled(),
             spaces: hatchling_broker::SpaceConfig::disabled(),
+            web: hatchling_broker::WebConfig::off(),
             goals,
         };
         let Ok(key) = hatchling_vault::MasterKey::generate() else {
@@ -393,6 +395,7 @@ fn serve(listener: UnixListener, behavior: BrokerBehavior, vault_root: Option<Pa
             memory: MemoryConfig { root, grants },
             artifacts: hatchling_broker::ArtifactConfig::disabled(),
             spaces: hatchling_broker::SpaceConfig::disabled(),
+            web: hatchling_broker::WebConfig::off(),
             goals: hatchling_broker::GoalsConfig::disabled(),
         };
         let Ok(key) = hatchling_vault::MasterKey::generate() else {
@@ -455,6 +458,7 @@ fn serve(listener: UnixListener, behavior: BrokerBehavior, vault_root: Option<Pa
             },
             artifacts: hatchling_broker::ArtifactConfig::disabled(),
             spaces: hatchling_broker::SpaceConfig::disabled(),
+            web: hatchling_broker::WebConfig::off(),
             goals: hatchling_broker::GoalsConfig::disabled(),
         };
         let Ok(key) = hatchling_vault::MasterKey::generate() else {

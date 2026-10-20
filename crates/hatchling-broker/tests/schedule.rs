@@ -93,6 +93,7 @@ fn config(name: &str, scheduler: bool) -> Config {
         },
         artifacts: hatchling_broker::ArtifactConfig::disabled(),
         spaces: hatchling_broker::SpaceConfig::disabled(),
+        web: hatchling_broker::WebConfig::off(),
         goals: GoalsConfig {
             root: PathBuf::from("/nonexistent/hatchling-goals"),
             grants: vec![GoalsAction::GoalCreate],
@@ -180,7 +181,8 @@ fn op(stream: &UnixStream, op: ScheduleOp) -> io::Result<ScheduleResult> {
         | SessionResponse::Hook(_)
         | SessionResponse::Artifact(_)
         | SessionResponse::Space(_)
-        | SessionResponse::Subagent(_)) => {
+        | SessionResponse::Subagent(_)
+        | SessionResponse::Web(_)) => {
             Err(io::Error::other(format!("not a schedule reply: {other:?}")))
         }
     }

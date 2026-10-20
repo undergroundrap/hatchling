@@ -68,6 +68,7 @@ fn config(base: &Path) -> Config {
         },
         artifacts: hatchling_broker::ArtifactConfig::disabled(),
         spaces: hatchling_broker::SpaceConfig::disabled(),
+        web: hatchling_broker::WebConfig::off(),
         goals: GoalsConfig {
             root: base.join("goals"),
             grants: vec![GoalsAction::QueryGoals, GoalsAction::QueryTracking],

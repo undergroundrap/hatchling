@@ -97,6 +97,7 @@ fn spawn_session_full(
         },
         artifacts: hatchling_broker::ArtifactConfig::disabled(),
         spaces: hatchling_broker::SpaceConfig::disabled(),
+        web: hatchling_broker::WebConfig::off(),
         goals: hatchling_broker::GoalsConfig::disabled(),
     };
     // The broker's single master key, borrowed by the session thread
@@ -157,7 +158,8 @@ fn send_op(stream: &UnixStream, op: &ChannelOp) -> io::Result<ChannelResult> {
         | SessionResponse::Hook(_)
         | SessionResponse::Artifact(_)
         | SessionResponse::Space(_)
-        | SessionResponse::Subagent(_) => Err(io::Error::new(
+        | SessionResponse::Subagent(_)
+        | SessionResponse::Web(_) => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "broker gave a non-channel reply to a channel op",
         )),

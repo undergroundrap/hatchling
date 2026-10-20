@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 use common::{guard_cell_available, mapped_agent_uid, run_fixture_binary};
 use hatchling_broker::{
     CellLauncher, Config, EgressConfig, GoalsConfig, MemoryConfig, RunEnv, SchedulerConfig,
-    SpaceConfig, VaultConfig,
+    SpaceConfig, WebConfig, VaultConfig,
 };
 use hatchling_core::{LogLevel, PeerUid};
 use hatchling_scheduler::{Launcher as _, RunRequest, Timestamp};
@@ -88,6 +88,7 @@ fn config(base: &Path) -> Config {
         },
         artifacts: hatchling_broker::ArtifactConfig::disabled(),
         spaces: SpaceConfig::disabled(),
+        web: WebConfig::off(),
         goals: GoalsConfig::disabled(),
     }
 }

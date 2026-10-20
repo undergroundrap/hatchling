@@ -732,6 +732,9 @@ fn serve_session(
     // principal and its kernel-attested peer, which every space admission
     // is pinned to. Its admissions end with it, however it ends.
     let space_session = crate::space_ops::SpaceSession::for_session(config, &creds, &session_id);
+    // The session's web: the sites the owner allows it for the session,
+    // forgotten when it ends (WO-028).
+    let mut web = crate::web_ops::WebSession::new(config, &gate_scope);
     let _admissions = crate::space_ops::EndAdmissions(space_session.pin.session.clone());
 
     // The session's children live in the session's own scope:
@@ -828,6 +831,9 @@ fn serve_session(
                     ))
                 }
                 SessionRequest::Subagent(op) => SessionResponse::Subagent(subagents.handle(&op)),
+                SessionRequest::Web(op) => {
+                    SessionResponse::Web(crate::web_ops::handle_web_op(config, &mut web, &op))
+                }
             };
             let payload = encode_reply(&response, MAX_FRAME_BYTES)?;
             write_frame(stream, &payload).map_err(session_error)?;
@@ -926,6 +932,9 @@ const fn oversize_reply(response: &SessionResponse) -> SessionResponse {
         SessionResponse::Space(_) => {
             SessionResponse::Space(hatchling_core::SpaceResult::SpaceError)
         }
+        SessionResponse::Web(_) => SessionResponse::Web(hatchling_core::WebResult::Refused {
+            reason: String::new(),
+        }),
     }
 }
 

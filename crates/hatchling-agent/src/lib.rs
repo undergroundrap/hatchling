@@ -35,6 +35,7 @@ pub mod subagent;
 mod test_socket;
 pub mod tools;
 pub mod vault;
+pub mod web;
 
 pub use cell::{BrokerConnected, Cell, Configured, PeerAuthorized, PreconditionsChecked, Ready};
 pub use channel::ChannelClient;

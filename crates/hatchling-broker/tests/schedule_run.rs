@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 use common::{guard_cell_available, mapped_agent_uid, run_fixture_binary};
 use hatchling_broker::{
     CellLauncher, Config, EgressConfig, GoalsConfig, MemoryConfig, RunEnv, SchedulerConfig,
-    SealedScheduleStore, SpaceConfig, SpaceSession, VaultConfig, VaultGrant, dispatch_once,
+    SealedScheduleStore, SpaceConfig, WebConfig, SpaceSession, VaultConfig, VaultGrant, dispatch_once,
     handle_schedule_op, handle_space_op,
 };
 use hatchling_channel::{LocalHub, Message};
@@ -99,6 +99,7 @@ fn config(base: &Path, vault_grants: &[&str]) -> Config {
         },
         artifacts: hatchling_broker::ArtifactConfig::disabled(),
         spaces: SpaceConfig::disabled(),
+        web: WebConfig::off(),
         goals: GoalsConfig::disabled(),
     }
 }

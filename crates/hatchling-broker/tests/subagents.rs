@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 
 use common::{guard_cell_available, mapped_agent_uid, run_fixture_binary};
 use hatchling_broker::{
-    Config, EgressConfig, GoalsConfig, MemoryConfig, RunEnv, SchedulerConfig, Skills, SpaceConfig,
+    Config, EgressConfig, GoalsConfig, MemoryConfig, RunEnv, SchedulerConfig, Skills, SpaceConfig, WebConfig,
     VaultConfig, VaultGrant, serve_connection_with_runs,
 };
 use hatchling_core::framing::{read_frame, write_frame};
@@ -105,6 +105,7 @@ fn config(base: &Path) -> Config {
         },
         artifacts: hatchling_broker::ArtifactConfig::disabled(),
         spaces: SpaceConfig::disabled(),
+        web: WebConfig::off(),
         goals: GoalsConfig::disabled(),
     }
 }

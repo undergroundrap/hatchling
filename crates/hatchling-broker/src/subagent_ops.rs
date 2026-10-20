@@ -562,7 +562,7 @@ impl Drop for Subagents<'_, '_> {
 mod tests {
     use super::*;
     use crate::{
-        ArtifactConfig, EgressConfig, GoalsConfig, MemoryConfig, SkillConfig, SpaceConfig,
+        ArtifactConfig, EgressConfig, GoalsConfig, MemoryConfig, SkillConfig, SpaceConfig, WebConfig,
         VaultConfig, VaultGrant,
     };
     use hatchling_core::{LogLevel, PeerUid, VaultAction};
@@ -603,6 +603,7 @@ mod tests {
             },
             artifacts: ArtifactConfig::disabled(),
             spaces: SpaceConfig::disabled(),
+            web: WebConfig::off(),
             goals: GoalsConfig::disabled(),
         }
     }

@@ -242,6 +242,7 @@ fn holding(name: &str, key: &MasterKey) -> (Scratch, Config) {
         artifacts: ArtifactConfig::disabled(),
         goals: hatchling_broker::GoalsConfig::disabled(),
         spaces: hatchling_broker::SpaceConfig::disabled(),
+        web: hatchling_broker::WebConfig::off(),
     };
     (dir, config)
 }

@@ -86,6 +86,7 @@ fn spawn_session(
         },
         artifacts: hatchling_broker::ArtifactConfig::disabled(),
         spaces: hatchling_broker::SpaceConfig::disabled(),
+        web: hatchling_broker::WebConfig::off(),
         goals: hatchling_broker::GoalsConfig::disabled(),
     };
     // The broker's single master key, borrowed by the session thread
@@ -155,7 +156,8 @@ fn read_result(stream: &UnixStream) -> io::Result<VaultResult> {
         | SessionResponse::Hook(_)
         | SessionResponse::Artifact(_)
         | SessionResponse::Space(_)
-        | SessionResponse::Subagent(_) => Err(io::Error::new(
+        | SessionResponse::Subagent(_)
+        | SessionResponse::Web(_) => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "broker gave a goals or query reply to a vault op",
         )),

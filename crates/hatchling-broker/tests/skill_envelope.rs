@@ -108,6 +108,7 @@ fn serve_skills(
         },
         artifacts: hatchling_broker::ArtifactConfig::disabled(),
         spaces: hatchling_broker::SpaceConfig::disabled(),
+        web: hatchling_broker::WebConfig::off(),
         goals: hatchling_broker::GoalsConfig::disabled(),
     };
     let key = hatchling_vault::MasterKey::generate().map_err(|e| format!("key: {e}"))?;

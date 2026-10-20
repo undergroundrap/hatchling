@@ -329,6 +329,21 @@ pub enum Error {
         event_id: String,
     },
 
+    /// I/O failed during a web operation (WO-028).
+    #[error("web operation I/O failed: {source}")]
+    WebIo {
+        /// The underlying I/O failure.
+        source: std::io::Error,
+    },
+
+    /// The broker's reply to a web op was not a well-formed
+    /// [`WebResult`](hatchling_core::WebResult). Fail-closed.
+    #[error("web protocol violation: {reason}")]
+    WebProtocol {
+        /// What was wrong with the broker's bytes.
+        reason: String,
+    },
+
     /// I/O failed during a skill operation.
     #[error("skill operation I/O failed: {source}")]
     SkillIo {
