@@ -8,16 +8,27 @@
 //!
 //! One tick:
 //!
-//! 1. **Finished runs are delivered.** Each run that has finished since
-//!    the last tick has its output delivered to its schedule's channel,
-//!    if the creator still holds `channel-send` on it. A failed delivery
-//!    is logged and retried once. If the retry fails too, the output is
-//!    parked in the store for the user. Nothing is dropped silently.
+//! 1. **Finished runs are stored, then delivered** (WO-025). Each run
+//!    that has finished since the last tick has its result stored in its
+//!    schedule's record first; one the store can't take yet stays in
+//!    memory and is tried again. Then every stored result is delivered
+//!    from the store to its schedule's channel, if the creator still
+//!    holds `channel-send` on it. A failed delivery is logged and retried
+//!    once. If the retry fails too, the output is parked for the user. A
+//!    result is resolved only once it is delivered or kept: one that can
+//!    be neither stays stored, for a later tick, and holds its schedule's
+//!    next fire. Nothing is dropped. Delivery is at least once: a result
+//!    delivered whose resolution then fails is delivered again.
 //! 2. **Due schedules fire.** For each schedule whose `next_due` has
 //!    come:
-//!    - **Overlap: skip.** If its previous run is still active, this fire
-//!      is skipped. At most one run per schedule exists at any time, so
-//!      a run slower than its interval cannot stack.
+//!    - **Claimed before it starts.** The fire is claimed in the same
+//!      store write that moves the cadence on (or marks a one-shot
+//!      exhausted), and its run is launched only once that write is
+//!      committed. A claim that fails launches nothing; one read from a
+//!      record that has changed since is refused.
+//!    - **Overlap: skip.** If its previous run is still claimed or
+//!      active, this fire is skipped. At most one run per schedule exists
+//!      at any time, so a run slower than its interval cannot stack.
 //!    - **Missed fires: once, flagged.** If the fire is more than
 //!      [`MISSED_GRACE_SECS`] late (the broker was down), it fires once,
 //!      with `missed: true` in the run request, and not once per missed
@@ -27,8 +38,9 @@
 //!      the run's to use.
 //!
 //!    Either way, the schedule then moves to its next fire after `now`,
-//!    resuming its cadence. A one-shot schedule is removed. A follow-up
-//!    is a one-shot like any other, so a chain runs one link at a time.
+//!    resuming its cadence. A one-shot is removed once its fire is
+//!    resolved. A follow-up is a one-shot like any other, so a chain runs
+//!    one link at a time.
 //! 3. **Events fire hooks.** An event is a [`HookSource`] the
 //!    broker asserts:
 //!    - **From outside the dispatcher,** only a channel message that
