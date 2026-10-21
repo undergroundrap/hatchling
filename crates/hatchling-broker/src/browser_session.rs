@@ -16,7 +16,7 @@ use hatchling_skill::CodeHash;
 
 use crate::Error;
 use crate::browser_proxy::RELAY_PORT;
-use crate::cell::{BrowserDirs, CellLimits, env_value};
+use crate::cell::{BrowserDirs, CellLimits};
 use crate::environment as env;
 
 /// A browser cell's memory, as a whole: 2 GiB.
@@ -37,16 +37,6 @@ pub struct BrowserSettings {
 }
 
 impl BrowserSettings {
-    /// The settings in the broker's environment: `None` when no browser
-    /// is configured.
-    ///
-    /// # Errors
-    ///
-    /// As [`BrowserSettings::parse`].
-    pub fn from_env() -> Result<Option<Self>, Error> {
-        Self::parse(|key| env_value(std::env::var(key)))
-    }
-
     /// The settings `get` names: `None` when no browser is configured.
     ///
     /// # Errors

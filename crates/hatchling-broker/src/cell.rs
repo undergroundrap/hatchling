@@ -1384,6 +1384,8 @@ mod tests {
         );
         assert_eq!(spec.argv, [String::from(PROGRAM)]);
         assert_eq!(spec.workdir, None);
+        let browser = cell.browser.as_ref().unwrap();
+        assert_eq!(browser_env(&cell, browser, LogLevel::Error), spec.env);
         let env: Vec<(&str, &str)> = spec
             .env
             .iter()
