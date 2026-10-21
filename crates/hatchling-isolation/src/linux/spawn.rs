@@ -2466,8 +2466,14 @@ done < /proc/self/mountinfo
         let size = std::num::NonZeroU64::new(1 << 20).unwrap();
         let (code, out) = probe_scratch(Some(size));
         assert_eq!(code, 0, "{out}");
-        assert!(out.contains("there\n") && out.contains("read:hello\n"), "{out}");
-        assert!(!out.contains("big:0\n"), "2 MiB doesn't fit in 1 MiB: {out}");
+        assert!(
+            out.contains("there\n") && out.contains("read:hello\n"),
+            "{out}"
+        );
+        assert!(
+            !out.contains("big:0\n"),
+            "2 MiB doesn't fit in 1 MiB: {out}"
+        );
         let mount = out
             .lines()
             .find(|line| line.starts_with("mount:"))

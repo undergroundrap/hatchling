@@ -392,8 +392,14 @@ impl MountPlan {
             })?;
             // `uid`/`gid` are read in the cell's namespace: the cell's user.
             let options = format!("size={bytes},mode=0700,uid=0,gid=0");
-            rustix::mount::mount("tmpfs", SCRATCH, "tmpfs", TMPFS_ROOT_FLAGS, options.as_str())
-                .map_err(mount_err("mount(scratch)"))?;
+            rustix::mount::mount(
+                "tmpfs",
+                SCRATCH,
+                "tmpfs",
+                TMPFS_ROOT_FLAGS,
+                options.as_str(),
+            )
+            .map_err(mount_err("mount(scratch)"))?;
         }
         // The root itself goes read-only last: nothing in-cell is
         // writable afterwards.
