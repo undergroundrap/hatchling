@@ -344,6 +344,21 @@ pub enum Error {
         reason: String,
     },
 
+    /// I/O failed during a browser operation (WO-029).
+    #[error("browser operation I/O failed: {source}")]
+    BrowserIo {
+        /// The underlying I/O failure.
+        source: std::io::Error,
+    },
+
+    /// The broker's reply to a browser op was not a well-formed
+    /// [`BrowserResult`](hatchling_core::BrowserResult). Fail-closed.
+    #[error("browser protocol violation: {reason}")]
+    BrowserProtocol {
+        /// What was wrong with the broker's bytes.
+        reason: String,
+    },
+
     /// I/O failed during a skill operation.
     #[error("skill operation I/O failed: {source}")]
     SkillIo {
