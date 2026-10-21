@@ -230,11 +230,29 @@ fn send(connection: &UnixStream, command: &BrowserCommand) -> BrowserReply {
 fn page(reply: BrowserReply) -> PageSnapshot {
     match reply {
         BrowserReply::Page { snapshot } => snapshot,
-        other @ (BrowserReply::Failed { .. } | BrowserReply::Closed) => PageSnapshot {
+        other @ (BrowserReply::Failed { .. }
+        | BrowserReply::Closed
+        | BrowserReply::Frame { .. }) => PageSnapshot {
             text: format!("not a page: {other:?}"),
             ..PageSnapshot::default()
         },
     }
+}
+
+/// A picture of the page open on `connection`: a JPEG, whose first bytes
+/// are `/9j/` in base64, with a page in it, small enough for one frame.
+fn pictured(connection: &UnixStream) {
+    let frame = send(connection, &BrowserCommand::Frame);
+    let jpeg = match &frame {
+        BrowserReply::Frame { jpeg } => jpeg.clone(),
+        other
+        @ (BrowserReply::Page { .. } | BrowserReply::Failed { .. } | BrowserReply::Closed) => {
+            format!("not a frame: {other:?}")
+        }
+    };
+    let pictured = jpeg.starts_with("/9j/") && jpeg.len() > 1000;
+    assert!(pictured, "{}", jpeg.chars().take(80).collect::<String>());
+    assert!(hatchling_core::fits_one_frame(&frame));
 }
 
 /// The id of the element `role` named `name`.
@@ -298,6 +316,7 @@ fn the_controller_drives_a_real_browser_in_a_cell_through_the_relay_alone() {
         "{}; the proxy saw {proxied:?}",
         start.text
     );
+    pictured(&connection);
     assert_eq!(start.title, "Start");
     assert!(
         start.text.contains("Start page") && start.text.contains("waiting"),

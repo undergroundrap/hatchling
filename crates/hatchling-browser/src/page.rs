@@ -30,6 +30,10 @@ pub const LOAD: Duration = Duration::from_secs(30);
 /// How long, after an action, a navigation it started has to show itself.
 pub const SETTLE: Duration = Duration::from_millis(500);
 
+/// The JPEG qualities a frame is tried at, best first, until it's within
+/// [`hatchling_core::browser::MAX_FRAME_JPEG_BASE64`].
+pub const FRAME_QUALITIES: [u8; 4] = [60, 40, 25, 15];
+
 /// The snapshot, read in the isolated world. It keeps the elements it
 /// names in that world's own global, for the actions that follow.
 const SNAPSHOT_JS: &str = include_str!("snapshot.js");
@@ -72,6 +76,12 @@ impl Session {
             BrowserCommand::Snapshot => self.snapshot(),
             BrowserCommand::Act { element, action } => self.act(element, &action),
             BrowserCommand::Scroll { down } => self.scroll(down),
+            BrowserCommand::Frame => {
+                return match self.frame() {
+                    Ok(jpeg) => BrowserReply::Frame { jpeg },
+                    Err(failure) => BrowserReply::Failed { failure },
+                };
+            }
             BrowserCommand::Close => {
                 self.close();
                 return BrowserReply::Closed;
@@ -334,6 +344,45 @@ impl Session {
     }
 }
 
+impl Session {
+    /// A picture of what the page's viewport shows, at half size, at the
+    /// best of [`FRAME_QUALITIES`] within the frame's bound.
+    fn frame(&mut self) -> Result<String, BrowserFailure> {
+        let session = self.page_session()?;
+        let metrics = self
+            .call(Some(&session), "Page.getLayoutMetrics", json!({}))
+            .map_err(gone_or(BrowserFailure::NotPossible))?;
+        let at = |field: &str| {
+            metrics
+                .pointer(&format!("/cssVisualViewport/{field}"))
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0)
+        };
+        let (width, height) = hatchling_core::browser::VIEWPORT;
+        let clip = json!({
+            "x": at("pageX"),
+            "y": at("pageY"),
+            "width": width,
+            "height": height,
+            "scale": 0.5,
+        });
+        for quality in FRAME_QUALITIES {
+            let shot = self
+                .call(
+                    Some(&session),
+                    "Page.captureScreenshot",
+                    json!({"format": "jpeg", "quality": quality, "clip": clip}),
+                )
+                .map_err(gone_or(BrowserFailure::NotPossible))?;
+            let jpeg = text(&shot, "data")?;
+            if jpeg.len() <= hatchling_core::browser::MAX_FRAME_JPEG_BASE64 {
+                return Ok(jpeg);
+            }
+        }
+        Err(BrowserFailure::NotPossible)
+    }
+}
+
 impl Drop for Session {
     fn drop(&mut self) {
         self.close();
@@ -429,6 +478,24 @@ mod tests {
             "Page.getFrameTree" => (json!({"frameTree": {"frame": {"id": "F"}}}), Vec::new()),
             "Page.createIsolatedWorld" => (json!({"executionContextId": 7}), Vec::new()),
             "Runtime.evaluate" => (evaluated(&param("expression")), Vec::new()),
+            "Page.getLayoutMetrics" => (
+                json!({"cssVisualViewport": {"pageX": 0.0, "pageY": 400.0}}),
+                Vec::new(),
+            ),
+            "Page.captureScreenshot" => {
+                let quality = request
+                    .pointer("/params/quality")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default();
+                // Past the bound above 25; exactly at it, at 25.
+                let bound = hatchling_core::browser::MAX_FRAME_JPEG_BASE64;
+                let data = match quality {
+                    26.. => "A".repeat(bound + 1),
+                    25 => format!("/9j/{}", "A".repeat(bound - 4)),
+                    _ => String::from("/9j/4AAQ"),
+                };
+                (json!({ "data": data }), Vec::new())
+            }
             // A click starts a navigation, which loads.
             "Input.dispatchMouseEvent" if param("type") == "mouseReleased" => (
                 json!({}),
@@ -539,6 +606,55 @@ mod tests {
             }],
             truncated: false,
         }
+    }
+
+    #[test]
+    fn a_frame_is_the_viewport_at_half_size_at_the_best_quality_that_fits() {
+        let (mut session, seen) = fake();
+        assert_eq!(
+            session.handle(BrowserCommand::Frame),
+            BrowserReply::Failed {
+                failure: BrowserFailure::NoPage
+            },
+            "no page, no frame"
+        );
+        let _ = session.handle(BrowserCommand::Open {
+            url: String::from("http://a.test/"),
+        });
+        let at_the_bound = format!(
+            "/9j/{}",
+            "A".repeat(hatchling_core::browser::MAX_FRAME_JPEG_BASE64 - 4)
+        );
+        assert_eq!(
+            session.handle(BrowserCommand::Frame),
+            BrowserReply::Frame {
+                jpeg: at_the_bound.clone()
+            },
+            "exactly at the bound is within it"
+        );
+        let shots = sent(&seen, "Page.captureScreenshot");
+        let qualities: Vec<u64> = shots
+            .iter()
+            .filter_map(|shot| shot.pointer("/params/quality").and_then(Value::as_u64))
+            .collect();
+        assert_eq!(qualities, [60, 40, 25], "stepped down until it fit");
+        let clip = shots
+            .last()
+            .and_then(|shot| shot.pointer("/params/clip"))
+            .cloned();
+        assert_eq!(
+            clip,
+            Some(json!({"x": 0.0, "y": 400.0, "width": 1280, "height": 800, "scale": 0.5})),
+            "what the viewport shows, scrolled as it is"
+        );
+        assert!(
+            shots
+                .iter()
+                .all(|shot| shot.pointer("/params/format") == Some(&json!("jpeg")))
+        );
+        assert_eq!(session.frame(), Ok(at_the_bound), "again, directly");
+        session.close();
+        assert_eq!(session.frame(), Err(BrowserFailure::NoPage), "closed");
     }
 
     #[test]

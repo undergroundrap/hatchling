@@ -21,6 +21,15 @@ pub const MAX_LABEL_CHARS: usize = 120;
 /// The most characters the agent may type in one action.
 pub const MAX_TYPED_CHARS: usize = 4096;
 
+/// The page's viewport, in CSS pixels, width and height: what a
+/// [`BrowserCommand::Frame`] shows, at half size.
+pub const VIEWPORT: (u32, u32) = (1280, 800);
+
+/// The most base64 a frame's JPEG may be: room is left in one frame for
+/// the event that carries it on to the owner's app, which a frame too big
+/// for would end.
+pub const MAX_FRAME_JPEG_BASE64: usize = 60 * 1024;
+
 /// A command to the browser cell.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "command", rename_all = "snake_case")]
@@ -46,6 +55,9 @@ pub enum BrowserCommand {
         /// Down, or up.
         down: bool,
     },
+    /// A picture of the page as it is now, for the owner to watch. The
+    /// reply is [`BrowserReply::Frame`].
+    Frame,
     /// Close the page and the browser. The reply is [`BrowserReply::Closed`].
     Close,
 }
@@ -106,6 +118,13 @@ pub enum BrowserReply {
     Page {
         /// What it shows.
         snapshot: PageSnapshot,
+    },
+    /// A picture of the page, what its viewport shows at half size: a
+    /// JPEG, as standard base64, at most [`MAX_FRAME_JPEG_BASE64`]. The page's pixels, untrusted like the rest: the broker checks
+    /// it's a JPEG before anyone sees it.
+    Frame {
+        /// The JPEG's bytes, standard base64.
+        jpeg: String,
     },
     /// The command wasn't done.
     Failed {

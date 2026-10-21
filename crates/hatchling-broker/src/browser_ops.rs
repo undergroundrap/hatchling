@@ -295,6 +295,15 @@ impl BrowserSession {
                 self.close();
                 BrowserResult::Closed
             }
+            // A picture for an agent's command: the controller answered
+            // out of turn, and isn't trusted with another.
+            Ok(BrowserReply::Frame { .. }) => {
+                tracing::warn!("the browser answered out of turn: closed");
+                self.close();
+                BrowserResult::Failed {
+                    failure: BrowserFailure::BrowserGone,
+                }
+            }
             Err(reason) => {
                 tracing::warn!(%reason, "the browser takes no more commands: closed");
                 self.close();
@@ -561,6 +570,9 @@ mod tests {
                     },
                 },
                 BrowserCommand::Close => BrowserReply::Closed,
+                BrowserCommand::Frame => BrowserReply::Frame {
+                    jpeg: String::from("/9j/"),
+                },
                 BrowserCommand::Snapshot
                 | BrowserCommand::Act { .. }
                 | BrowserCommand::Scroll { .. } => BrowserReply::Page {
@@ -987,6 +999,23 @@ mod tests {
             3,
             "ended with the session"
         );
+    }
+
+    #[test]
+    fn a_picture_where_a_page_was_due_closes_the_browser() {
+        let config = web_config("browser-out-of-turn");
+        let fake = Fake::default();
+        let (sessions, _) = ask(&config, session("t", &fake), &open("https://a.example/"));
+        owner_decides(&config, "t", "https://a.example", Decision::ApproveSession);
+        let (mut sessions, _) = ask(&config, sessions, &open("https://a.example/"));
+        assert_eq!(
+            sessions.1.command(&BrowserCommand::Frame),
+            BrowserResult::Failed {
+                failure: BrowserFailure::BrowserGone
+            }
+        );
+        assert!(!sessions.1.is_open());
+        assert_eq!(fake.log.lock().unwrap().finished, 1);
     }
 
     #[test]
