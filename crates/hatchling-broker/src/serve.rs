@@ -75,6 +75,9 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
         operator_roots = tls.operator_roots(),
         "egress TLS roots loaded"
     );
+    // The browser, if the operator set one up (WO-029): checked now, so a
+    // bad setting stops the broker here, not on the agent's first page.
+    crate::browser_ops::configure_from_env(spawner.clone())?;
     let skills = Skills::load(&config.skills)?
         .with_runtime(SkillRuntime::new(spawner))
         .with_harnesses(crate::harness::Harnesses::from_env(config)?.with_tls(&tls));
@@ -740,6 +743,9 @@ fn serve_session(
         None
     };
     let mut web = crate::web_ops::WebSession::new(config, &gate_scope, web_tls);
+    // The session's browser (WO-029): started on its first page, closed
+    // when the session ends.
+    let mut browser = crate::browser_ops::BrowserSession::new(crate::browser_ops::configured());
     let _admissions = crate::space_ops::EndAdmissions(space_session.pin.session.clone());
 
     // The session's children live in the session's own scope:
@@ -839,6 +845,9 @@ fn serve_session(
                 SessionRequest::Web(op) => {
                     SessionResponse::Web(crate::web_ops::handle_web_op(config, key, &mut web, &op))
                 }
+                SessionRequest::Browser(op) => SessionResponse::Browser(
+                    crate::browser_ops::handle_browser_op(config, key, &mut web, &mut browser, &op),
+                ),
             };
             let payload = encode_reply(&response, MAX_FRAME_BYTES)?;
             write_frame(stream, &payload).map_err(session_error)?;
@@ -940,6 +949,11 @@ const fn oversize_reply(response: &SessionResponse) -> SessionResponse {
         SessionResponse::Web(_) => SessionResponse::Web(hatchling_core::WebResult::Refused {
             reason: String::new(),
         }),
+        SessionResponse::Browser(_) => {
+            SessionResponse::Browser(hatchling_core::BrowserResult::Refused {
+                reason: String::new(),
+            })
+        }
     }
 }
 

@@ -159,7 +159,8 @@ fn send_op(stream: &UnixStream, op: &ChannelOp) -> io::Result<ChannelResult> {
         | SessionResponse::Artifact(_)
         | SessionResponse::Space(_)
         | SessionResponse::Subagent(_)
-        | SessionResponse::Web(_) => Err(io::Error::new(
+        | SessionResponse::Web(_)
+        | SessionResponse::Browser(_) => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "broker gave a non-channel reply to a channel op",
         )),

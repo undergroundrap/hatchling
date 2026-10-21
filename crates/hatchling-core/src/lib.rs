@@ -35,16 +35,17 @@ pub use framing::{MAX_FRAME_BYTES, PROTOCOL_VERSION, fits_one_frame};
 pub use log_level::LogLevel;
 pub use messages::{
     ActivationInput, ActivationProposal, AgentMessage, ApprovalRefusal, ArtifactInput,
-    ArtifactInspection, ArtifactOp, ArtifactResult, ArtifactView, BrokerMessage, BuildFailure,
-    BuildState, ChannelAccount, ChannelOp, ChannelResult, ConflictEntry, DeliveryRefusal,
-    DeliveryTarget, DeviceChallenge, DeviceHello, DeviceRefusal, DeviceWelcome, EGRESS_PART_BYTES,
-    EgressOp, EgressResult, FeedSpec, GoalsOp, GoalsResult, HeldFire, HookOp, HookResult,
-    HookSource, IdeaRef, IdeaRefusal, IdeaSource, IdeaState, IdeaSummary, InspectionFinding,
-    InspectionVerdict, MAX_SKILL_INPUT_BYTES, MAX_SKILL_OUTPUT_BYTES, MediaHeader, MemoryOp,
-    MemoryResult, ParkedSummary, QueryOp, QueryResult, ScheduleGrant, ScheduleKind, ScheduleOp,
-    ScheduleRefusal, ScheduleResult, ScheduleSpec, ScheduleSummary, SessionRequest,
-    SessionResponse, SkillOp, SkillResult, SpaceOp, SpaceRefusal, SpaceResult, SyncChange,
-    SyncItem, VaultAction, VaultOp, VaultResult, WebHit, WebOp, WebResult,
+    ArtifactInspection, ArtifactOp, ArtifactResult, ArtifactView, BrokerMessage, BrowserOp,
+    BrowserResult, BuildFailure, BuildState, ChannelAccount, ChannelOp, ChannelResult,
+    ConflictEntry, DeliveryRefusal, DeliveryTarget, DeviceChallenge, DeviceHello, DeviceRefusal,
+    DeviceWelcome, EGRESS_PART_BYTES, EgressOp, EgressResult, FeedSpec, GoalsOp, GoalsResult,
+    HeldFire, HookOp, HookResult, HookSource, IdeaRef, IdeaRefusal, IdeaSource, IdeaState,
+    IdeaSummary, InspectionFinding, InspectionVerdict, MAX_SKILL_INPUT_BYTES,
+    MAX_SKILL_OUTPUT_BYTES, MediaHeader, MemoryOp, MemoryResult, ParkedSummary, QueryOp,
+    QueryResult, ScheduleGrant, ScheduleKind, ScheduleOp, ScheduleRefusal, ScheduleResult,
+    ScheduleSpec, ScheduleSummary, SessionRequest, SessionResponse, SkillOp, SkillResult, SpaceOp,
+    SpaceRefusal, SpaceResult, SyncChange, SyncItem, VaultAction, VaultOp, VaultResult, WebHit,
+    WebOp, WebResult,
 };
 pub use model_reasoning::ModelReasoning;
 pub use peer::{PeerCredentials, peer_credentials};

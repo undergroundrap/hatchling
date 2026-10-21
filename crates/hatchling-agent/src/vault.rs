@@ -169,7 +169,8 @@ fn request(stream: &UnixStream, op: &VaultOp) -> Result<VaultResult, Error> {
         | SessionResponse::Artifact(_)
         | SessionResponse::Space(_)
         | SessionResponse::Subagent(_)
-        | SessionResponse::Web(_) => Err(Error::VaultProtocol {
+        | SessionResponse::Web(_)
+        | SessionResponse::Browser(_) => Err(Error::VaultProtocol {
             reason: String::from("broker gave a goals or query reply to a vault op"),
         }),
     }

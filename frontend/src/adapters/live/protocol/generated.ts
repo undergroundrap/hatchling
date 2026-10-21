@@ -4,7 +4,7 @@
 /** The frontend protocol version this build speaks. */
 export const UI_SCHEMA_VERSION = 4;
 /** The broker session protocol version the schema was generated at. */
-export const SESSION_PROTOCOL_VERSION = 14;
+export const SESSION_PROTOCOL_VERSION = 15;
 /** The mismatch sentence when this frontend is the newer side. */
 export const INCOMPATIBLE_FRONTEND_NEWER = 'frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update';
 /** The mismatch sentence when the backend is the newer side. */
@@ -744,6 +744,10 @@ export type BrowserAction = {
     readonly session_id: string;
 };
 /**
+ * Why a command wasn't done.
+ */
+export type BrowserFailure = 'no_page' | 'unknown_element' | 'not_possible' | 'timeout' | 'load_failed' | 'browser_gone' | 'bad_command';
+/**
  * A snapshot of the page.
  */
 export type BrowserFrame = {
@@ -767,6 +771,109 @@ export type BrowserFrame = {
      * The page's title. Untrusted text.
      */
     readonly title: string;
+};
+/**
+ * A browser operation (WO-029): the agent driving a real browser, in a
+ * cell of its own, through the broker.
+ *
+ * Every session is strict: the browser reaches only the sites the
+ * session holds. Opening a page on a site it doesn't hold is put to the
+ * owner first, as a [`WebOp::Fetch`] is, and a site allowed for one is
+ * allowed for the other. A page's own requests to other sites are refused
+ * and listed with its snapshot.
+ */
+export type BrowserOp = {
+    readonly op: 'open';
+    /**
+     * Why the agent wants it. Shown to the owner when the site needs
+     * their approval, labeled as the agent's words.
+     */
+    readonly reason: string;
+    /**
+     * The page's absolute `https` URL.
+     */
+    readonly url: string;
+} | {
+    readonly op: 'read';
+} | {
+    /**
+     * What to do to it. Text to type is refused if it holds a secret
+     * the broker keeps.
+     */
+    readonly action: PageAction;
+    /**
+     * The element's id, from the last snapshot.
+     */
+    readonly element: number;
+    readonly op: 'act';
+} | {
+    /**
+     * Down, or up.
+     */
+    readonly down: boolean;
+    readonly op: 'scroll';
+} | {
+    readonly op: 'close';
+};
+/**
+ * The broker's reply to one [`BrowserOp`].
+ */
+export type BrowserResult = {
+    /**
+     * Sites the session doesn't hold that the browser was refused,
+     * for this page or an earlier one: a page may need some of them
+     * to show.
+     */
+    readonly refused: readonly (string)[];
+    readonly result: 'page';
+    /**
+     * What it shows, and what can be acted on.
+     */
+    readonly snapshot: PageSnapshot;
+} | {
+    /**
+     * The approval request.
+     */
+    readonly request: string;
+    readonly result: 'waiting';
+    /**
+     * The site, as the owner sees it.
+     */
+    readonly site: string;
+} | {
+    readonly result: 'denied';
+    /**
+     * The site.
+     */
+    readonly site: string;
+} | {
+    readonly result: 'expired';
+    /**
+     * The site.
+     */
+    readonly site: string;
+} | {
+    /**
+     * Why.
+     */
+    readonly reason: ApprovalRefusal;
+    readonly result: 'unasked';
+} | {
+    /**
+     * Why.
+     */
+    readonly failure: BrowserFailure;
+    readonly result: 'failed';
+} | {
+    /**
+     * Why, in a sentence.
+     */
+    readonly reason: string;
+    readonly result: 'refused';
+} | {
+    readonly result: 'closed';
+} | {
+    readonly result: 'off';
 };
 /**
  * A browser session, as the UI shows it. Its control state is not here:
@@ -1865,6 +1972,11 @@ export type InspectionFinding = {
  */
 export type InspectionVerdict = 'pass' | 'fail';
 /**
+ * The keys an action may press: the ones a form needs, and nothing that
+ * reaches the browser's own shortcuts.
+ */
+export type Key = 'enter' | 'tab' | 'escape' | 'backspace' | 'arrow_up' | 'arrow_down' | 'arrow_left' | 'arrow_right';
+/**
  * One response header the broker sets on served media.
  */
 export type MediaHeader = {
@@ -2162,6 +2274,75 @@ export type OperatorSession = {
      * The socket it came in on.
      */
     readonly socket: SessionSocket;
+};
+/**
+ * What to do to an element.
+ */
+export type PageAction = {
+    readonly action: 'click';
+} | {
+    readonly action: 'type';
+    /**
+     * At most [`MAX_TYPED_CHARS`] characters.
+     */
+    readonly text: string;
+} | {
+    readonly action: 'key';
+    /**
+     * The key.
+     */
+    readonly key: Key;
+} | {
+    readonly action: 'choose';
+    /**
+     * The option's text, as the snapshot showed it.
+     */
+    readonly option: string;
+};
+/**
+ * An element the agent can act on.
+ */
+export type PageElement = {
+    /**
+     * Its id, for an action: valid until the next snapshot.
+     */
+    readonly id: number;
+    /**
+     * What it says, at most [`MAX_LABEL_CHARS`]. A password field's
+     * value is never here.
+     */
+    readonly name: string;
+    /**
+     * What it is: `link`, `button`, `textbox`, `password`, `checkbox`,
+     * `list` and so on.
+     */
+    readonly role: string;
+};
+/**
+ * A page, as the agent sees it: its text and the elements it can act
+ * on. Untrusted: everything here came from the page.
+ */
+export type PageSnapshot = {
+    /**
+     * What can be acted on, at most [`MAX_ELEMENTS`].
+     */
+    readonly elements: readonly (PageElement)[];
+    /**
+     * Its visible text, at most [`MAX_TEXT_CHARS`].
+     */
+    readonly text: string;
+    /**
+     * Its title.
+     */
+    readonly title: string;
+    /**
+     * Whether the text or the elements were cut to fit.
+     */
+    readonly truncated: boolean;
+    /**
+     * Where the page is.
+     */
+    readonly url: string;
 };
 /**
  * A result that couldn't be delivered, kept for the owner (WO-025).
@@ -2602,6 +2783,8 @@ export type SessionRequest = VaultOp & {
     readonly kind: 'subagent';
 } | WebOp & {
     readonly kind: 'web';
+} | BrowserOp & {
+    readonly kind: 'browser';
 };
 /**
  * The broker's reply to one [`SessionRequest`].
@@ -2635,6 +2818,8 @@ export type SessionResponse = VaultResult & {
     readonly kind: 'subagent';
 } | WebResult & {
     readonly kind: 'web';
+} | BrowserResult & {
+    readonly kind: 'browser';
 };
 /**
  * The socket a session came in on.
