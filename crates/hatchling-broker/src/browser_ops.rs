@@ -861,7 +861,7 @@ mod tests {
                     },
                 },
                 BrowserCommand::Close => BrowserReply::Closed,
-                BrowserCommand::Frame => BrowserReply::Frame {
+                BrowserCommand::Frame | BrowserCommand::Input { .. } => BrowserReply::Frame {
                     jpeg: String::from("/9j/"),
                 },
                 BrowserCommand::Snapshot

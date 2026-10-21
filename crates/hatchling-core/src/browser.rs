@@ -58,8 +58,47 @@ pub enum BrowserCommand {
     /// A picture of the page as it is now, for the owner to watch. The
     /// reply is [`BrowserReply::Frame`].
     Frame,
+    /// The owner's own input, while they drive: done through the
+    /// browser's input, as a person's would be. The reply is a picture of
+    /// the page after it, [`BrowserReply::Frame`].
+    Input {
+        /// What the owner did.
+        input: OwnerInput,
+    },
     /// Close the page and the browser. The reply is [`BrowserReply::Closed`].
     Close,
+}
+
+/// What the owner does to the page, from the app, while they drive it.
+/// Where the page's focus is, or at a point of its viewport: the owner
+/// sees a picture, not the page's elements.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "input", rename_all = "snake_case")]
+pub enum OwnerInput {
+    /// A left click at a point of the viewport, in CSS pixels from its
+    /// top left: within [`VIEWPORT`].
+    Click {
+        /// Across.
+        x: u32,
+        /// Down.
+        y: u32,
+    },
+    /// Type `text` where the page's focus is, as keystrokes would.
+    Type {
+        /// At most [`MAX_TYPED_CHARS`] characters.
+        text: String,
+    },
+    /// Press one key where the page's focus is.
+    Key {
+        /// The key.
+        key: Key,
+    },
+    /// Scroll the page by most of a screen.
+    Scroll {
+        /// Down, or up.
+        down: bool,
+    },
 }
 
 /// What to do to an element.
@@ -330,6 +369,33 @@ mod tests {
             json!({"command": "scroll", "down": true})
         );
         assert_eq!(wire(&BrowserCommand::Close), json!({"command": "close"}));
+        assert_eq!(
+            wire(&BrowserCommand::Input {
+                input: OwnerInput::Click { x: 10, y: 20 }
+            }),
+            json!({"command": "input", "input": {"input": "click", "x": 10, "y": 20}})
+        );
+        for (input, shape) in [
+            (
+                OwnerInput::Type {
+                    text: String::from("hi"),
+                },
+                json!({"input": "type", "text": "hi"}),
+            ),
+            (
+                OwnerInput::Key { key: Key::Tab },
+                json!({"input": "key", "key": "tab"}),
+            ),
+            (
+                OwnerInput::Scroll { down: false },
+                json!({"input": "scroll", "down": false}),
+            ),
+        ] {
+            assert_eq!(wire(&input), shape);
+        }
+        let negative: Result<OwnerInput, _> =
+            serde_json::from_value(json!({"input": "click", "x": -1, "y": 0}));
+        assert!(negative.is_err(), "no point left of the viewport");
         assert_eq!(
             wire(&BrowserReply::Failed {
                 failure: BrowserFailure::UnknownElement

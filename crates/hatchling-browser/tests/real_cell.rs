@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use hatchling_core::browser::{
-    BrowserCommand, BrowserFailure, BrowserReply, Key, PageAction, PageSnapshot,
+    BrowserCommand, BrowserFailure, BrowserReply, Key, OwnerInput, PageAction, PageSnapshot,
 };
 use hatchling_core::framing::{read_frame, write_frame};
 use hatchling_isolation::{
@@ -47,6 +47,14 @@ const START: &str = r#"<!doctype html><title>Start</title>
 <a href="/next">Next page</a>"#;
 
 const NEXT: &str = "<!doctype html><title>Next</title><p>Second page</p>";
+
+/// A page the owner drives by points of the viewport: a field over its
+/// top left quarter, a link over its bottom right one.
+const OWNER: &str = r#"<!doctype html><title>Owner</title>
+<style>body { margin: 0 } input, a { position: fixed; width: 640px; height: 400px }</style>
+<input aria-label="Field" style="left: 0; top: 0" oninput="document.getElementById('echo').textContent = 'echo: ' + this.value">
+<a href="/next" style="left: 640px; top: 400px">Away</a>
+<p id="echo" style="position: fixed; left: 700px; top: 10px"></p>"#;
 
 /// Whether `name`'s requirement makes a missing prerequisite a failure.
 fn required(name: &str) -> bool {
@@ -210,6 +218,7 @@ fn answer(mut stream: std::net::TcpStream, seen: &Mutex<Vec<String>>) {
     let (status, body) = match target.strip_prefix(&format!("http://{HOST}")) {
         Some("/") => ("200 OK", START),
         Some("/next") => ("200 OK", NEXT),
+        Some("/owner") => ("200 OK", OWNER),
         _ => ("404 Not Found", "not here"),
     };
     let _ = write!(
@@ -242,8 +251,17 @@ fn page(reply: BrowserReply) -> PageSnapshot {
 /// A picture of the page open on `connection`: a JPEG, whose first bytes
 /// are `/9j/` in base64, with a page in it, small enough for one frame.
 fn pictured(connection: &UnixStream) {
-    let frame = send(connection, &BrowserCommand::Frame);
-    let jpeg = match &frame {
+    is_picture(&send(connection, &BrowserCommand::Frame));
+}
+
+/// The owner's `input` on `connection`, answered with a picture.
+fn owner(connection: &UnixStream, input: OwnerInput) {
+    is_picture(&send(connection, &BrowserCommand::Input { input }));
+}
+
+/// That `frame` is a picture of a page, small enough for one frame.
+fn is_picture(frame: &BrowserReply) {
+    let jpeg = match frame {
         BrowserReply::Frame { jpeg } => jpeg.clone(),
         other
         @ (BrowserReply::Page { .. } | BrowserReply::Failed { .. } | BrowserReply::Closed) => {
@@ -252,7 +270,51 @@ fn pictured(connection: &UnixStream) {
     };
     let pictured = jpeg.starts_with("/9j/") && jpeg.len() > 1000;
     assert!(pictured, "{}", jpeg.chars().take(80).collect::<String>());
-    assert!(hatchling_core::fits_one_frame(&frame));
+    assert!(hatchling_core::fits_one_frame(frame));
+}
+
+/// The owner drives the browser on `connection`: a click on a point, text
+/// and a key where the focus is, a scroll, each answered with a picture.
+/// It ends on [`NEXT`].
+fn owner_drives(connection: &UnixStream) {
+    let driven = page(send(
+        connection,
+        &BrowserCommand::Open {
+            url: format!("http://{HOST}/owner"),
+        },
+    ));
+    assert_eq!(driven.title, "Owner", "{}", driven.text);
+    owner(connection, OwnerInput::Click { x: 100, y: 100 });
+    owner(
+        connection,
+        OwnerInput::Type {
+            text: String::from("by hand"),
+        },
+    );
+    owner(
+        connection,
+        OwnerInput::Key {
+            key: Key::Backspace,
+        },
+    );
+    owner(connection, OwnerInput::Scroll { down: true });
+    let typed = page(send(connection, &BrowserCommand::Snapshot));
+    assert!(typed.text.contains("echo: by han"), "{}", typed.text);
+    assert_eq!(
+        send(
+            connection,
+            &BrowserCommand::Input {
+                input: OwnerInput::Click { x: 1280, y: 0 }
+            }
+        ),
+        BrowserReply::Failed {
+            failure: BrowserFailure::NotPossible
+        },
+        "outside the viewport"
+    );
+    owner(connection, OwnerInput::Click { x: 900, y: 600 });
+    let away = page(send(connection, &BrowserCommand::Snapshot));
+    assert_eq!(away.url, format!("http://{HOST}/next"), "{}", away.text);
 }
 
 /// The id of the element `role` named `name`.
@@ -422,6 +484,7 @@ fn the_controller_drives_a_real_browser_in_a_cell_through_the_relay_alone() {
         send(&connection, &BrowserCommand::Scroll { down: true }),
         BrowserReply::Page { .. }
     ));
+    owner_drives(&connection);
     // A command it doesn't know is answered, not obeyed.
     let unknown = serde_json::json!({"command": "evaluate", "script": "1"});
     write_frame(&connection, &serde_json::to_vec(&unknown).unwrap()).unwrap();
