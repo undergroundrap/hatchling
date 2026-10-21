@@ -1238,12 +1238,10 @@ fn cell_spec(config: &CellConfig, log_level: LogLevel) -> CellSpec {
         argv,
         env,
         workdir: cell_workdir(config).map(String::from),
-        endpoint: (!config.is_skill_cell() && !config.connected && !config.is_browser_cell()).then(
-            || Endpoint {
-                socket: config.socket_path.clone(),
-                dir: config.socket_dir.clone(),
-            },
-        ),
+        endpoint: (!config.is_skill_cell() && !config.connected).then(|| Endpoint {
+            socket: config.socket_path.clone(),
+            dir: config.socket_dir.clone(),
+        }),
         connection: !config.is_skill_cell() && config.connected,
         exposures: cell_exposures(config),
         tools: config.browser.as_ref().map_or_else(
