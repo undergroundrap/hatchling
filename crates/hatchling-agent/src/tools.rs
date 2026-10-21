@@ -582,6 +582,58 @@ impl Tool for BrowserActTool<'_> {
     }
 }
 
+/// Asks the owner for a site the browser was refused, which the page
+/// needs (WO-029).
+pub struct BrowserAllowTool<'s> {
+    stream: &'s UnixStream,
+}
+
+impl<'s> BrowserAllowTool<'s> {
+    /// Build over the broker session.
+    #[must_use]
+    pub const fn new(stream: &'s UnixStream) -> Self {
+        Self { stream }
+    }
+}
+
+impl Tool for BrowserAllowTool<'_> {
+    fn name(&self) -> &'static str {
+        "browser_allow"
+    }
+
+    fn description(&self) -> &'static str {
+        "Ask the owner to allow a site the browser was refused, one of the page's refused_sites, when the page needs it: its fonts, its scripts, its data. The owner sees your reason. Once it's allowed, open the page again to load what it needed. Only ask for what the page needs."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "site": {
+                    "type": "string",
+                    "description": "The site, exactly as refused_sites named it."
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Why the page needs it, for the owner to read: at most 500 characters."
+                }
+            },
+            "required": ["site", "reason"],
+            "additionalProperties": false
+        })
+    }
+
+    fn execute(&self, arguments: Value) -> Result<ToolOutput, LoopError> {
+        let site = string_argument(self.name(), &arguments, "site")?;
+        let reason = string_argument(self.name(), &arguments, "reason")?;
+        Ok(browser_answer(crate::browser::allow(
+            self.stream,
+            site,
+            reason,
+        )))
+    }
+}
+
 /// Closes the browser (WO-029).
 pub struct BrowserCloseTool<'s> {
     stream: &'s UnixStream,
@@ -658,7 +710,7 @@ fn browser_output(result: BrowserResult) -> ToolOutput {
                     page.insert(String::from("refused_sites"), json!(refused));
                     page.insert(
                         String::from("note"),
-                        json!("the browser was refused these sites, which you haven't been allowed: the page may look incomplete without them"),
+                        json!("the browser was refused these sites, which you haven't been allowed: the page may look incomplete without them; ask for one it needs with browser_allow"),
                     );
                 }
             }
@@ -668,6 +720,10 @@ fn browser_output(result: BrowserResult) -> ToolOutput {
             "waiting": site,
             "request": request,
             "note": "the owner has been asked to allow this site; open it again later",
+        })),
+        BrowserResult::Allowed { site } => ToolOutput::Ok(json!({
+            "allowed": site,
+            "note": "open the page again to load what it needed",
         })),
         BrowserResult::Closed => ToolOutput::Ok(json!({ "closed": true })),
         BrowserResult::Denied { site } => ToolOutput::Err(format!("the owner said no to {site}")),
@@ -1904,7 +1960,7 @@ mod tests {
     #[test]
     fn the_browser_tools_are_named_described_and_shaped() {
         let (agent, _) = socket_pair();
-        let tools: [(&dyn Tool, &str, &str, &[&str]); 4] = [
+        let tools: [(&dyn Tool, &str, &str, &[&str]); 5] = [
             (
                 &BrowserOpenTool::new(&agent),
                 "browser_open",
@@ -1928,6 +1984,12 @@ mod tests {
                 "browser_close",
                 "Close the browser",
                 &[],
+            ),
+            (
+                &BrowserAllowTool::new(&agent),
+                "browser_allow",
+                "refused_sites",
+                &["site", "reason"],
             ),
         ];
         for (tool, name, says, required) in tools {
@@ -2100,6 +2162,37 @@ mod tests {
                 reason: String::from("garbled"),
             })),
             ToolOutput::Err(String::from("browser protocol violation: garbled"))
+        );
+    }
+
+    #[test]
+    fn browser_allow_asks_for_a_refused_site() {
+        let (output, op) = browse(
+            &|agent| Box::new(BrowserAllowTool::new(agent)),
+            json!({ "site": "cdn.example:443", "reason": "its fonts" }),
+            BrowserResult::Allowed {
+                site: String::from("cdn.example:443"),
+            },
+        );
+        assert_eq!(
+            op,
+            hatchling_core::BrowserOp::Allow {
+                site: String::from("cdn.example:443"),
+                reason: String::from("its fonts"),
+            }
+        );
+        assert_eq!(
+            output,
+            ToolOutput::Ok(json!({
+                "allowed": "cdn.example:443",
+                "note": "open the page again to load what it needed",
+            }))
+        );
+        let (agent, _) = socket_pair();
+        assert!(
+            BrowserAllowTool::new(&agent)
+                .execute(json!({ "site": "cdn.example:443" }))
+                .is_err()
         );
     }
 

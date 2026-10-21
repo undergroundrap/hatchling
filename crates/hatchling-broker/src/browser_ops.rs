@@ -8,10 +8,11 @@
 //!   task, or always. A site allowed for one is allowed for the other.
 //! - **Every session is strict.** The cell's proxy admits only the sites
 //!   the session holds ([`Sites`]). What a page asks of another site is
-//!   refused, and listed with the page.
-//! - **Once is one visit.** A site allowed once is held while the browser
-//!   stays on it, and revoked, its tunnels closed, when the browser opens
-//!   another site.
+//!   refused, and listed with the page; the agent may ask the owner for
+//!   one of those ([`BrowserOp::Allow`]), as for a page's site.
+//! - **Once is one visit.** A site allowed once, a page's or one a page
+//!   needed, is held while the browser stays on the site it's visiting,
+//!   and revoked, its tunnels closed, when the browser opens another.
 //! - **Typed text is checked:** text that holds a secret the broker keeps
 //!   is refused before it reaches the page.
 //! - **Bounded:** one browser per session, at most [`MAX_BROWSERS`] in
@@ -217,7 +218,10 @@ pub struct BrowserSession {
     browsers: Option<Arc<dyn Browsers>>,
     browser: Option<Box<dyn Browser>>,
     sites: Sites,
-    /// The sites held for one visit.
+    /// The site the browser is visiting, as `host:port`.
+    visit: Option<String>,
+    /// The sites held for this visit: its own, if it was allowed once, and
+    /// any a page of it needed that was allowed once.
     once: BTreeSet<String>,
 }
 
@@ -225,6 +229,7 @@ impl std::fmt::Debug for BrowserSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BrowserSession")
             .field("open", &self.browser.is_some())
+            .field("visit", &self.visit)
             .field("once", &self.once)
             .finish_non_exhaustive()
     }
@@ -239,8 +244,19 @@ impl BrowserSession {
             browsers,
             browser: None,
             sites: Sites::default(),
+            visit: None,
             once: BTreeSet::new(),
         }
+    }
+
+    /// Leaves the visit: every site held only for it is revoked, and its
+    /// tunnels closed.
+    fn leave(&mut self) {
+        for site in std::mem::take(&mut self.once) {
+            let closed = self.sites.revoke(&site);
+            tracing::debug!(%site, closed, "a site held once is left");
+        }
+        self.visit = None;
     }
 
     /// The sites the session's browser may reach.
@@ -331,6 +347,7 @@ pub fn handle_browser_op(
             })
         }
         BrowserOp::Scroll { down } => browser.command(&BrowserCommand::Scroll { down: *down }),
+        BrowserOp::Allow { site, reason } => allow_site(config, keys, web, browser, site, reason),
         BrowserOp::Close => {
             browser.close();
             BrowserResult::Closed
@@ -362,30 +379,23 @@ fn open(
         return refused("the operator refuses this site");
     }
     let destination = url.origin().destination();
-    // On the site of this visit, the browser stays: it was allowed once,
-    // for the visit, and isn't asked for again until it's left.
-    if !browser.once.contains(&destination) {
+    let same_visit = browser.visit.as_deref() == Some(destination.as_str());
+    // On the site it's visiting, the browser stays: a site allowed once,
+    // for the visit, isn't asked for again until it's left.
+    if !(same_visit && browser.once.contains(&destination)) {
         if let Err(answer) = crate::web_ops::allow(config, keys, web, &url, reason) {
             return from_web(answer);
         }
     }
+    // Allowed: only now is the visit left, if this is another site.
+    if !same_visit {
+        browser.leave();
+    }
     browser.sites.grant(&destination);
-    // A site held once is held for this visit: the browser is leaving the
-    // others.
-    let leaving: Vec<String> = browser
-        .once
-        .iter()
-        .filter(|site| **site != destination)
-        .cloned()
-        .collect();
-    for site in &leaving {
-        let closed = browser.sites.revoke(site);
-        browser.once.remove(site);
-        tracing::debug!(%site, closed, "a site held once is left");
-    }
     if !web.holds(url.origin()) {
-        browser.once.insert(destination);
+        browser.once.insert(destination.clone());
     }
+    browser.visit = Some(destination);
     if browser.browser.is_none() {
         let Some(browsers) = browser.browsers.clone() else {
             return BrowserResult::Off;
@@ -402,6 +412,51 @@ fn open(
     browser.command(&BrowserCommand::Open {
         url: url.to_string(),
     })
+}
+
+/// Asks the owner, for `reason`, to allow `site`, one the browser was
+/// refused for a page of this visit: allowed once, it's held for the
+/// visit.
+fn allow_site(
+    config: &Config,
+    keys: &dyn OpensStores,
+    web: &mut WebSession,
+    browser: &mut BrowserSession,
+    site: &str,
+    reason: &str,
+) -> BrowserResult {
+    if reason.chars().count() > crate::web_ops::MAX_REASON_CHARS {
+        return refused(&format!(
+            "the reason is longer than {} characters",
+            crate::web_ops::MAX_REASON_CHARS
+        ));
+    }
+    // Only what a page asked for: anything else is a page to open.
+    let host = browser
+        .sites
+        .refused()
+        .iter()
+        .any(|refused| refused == site)
+        .then(|| site.strip_suffix(":443"))
+        .flatten();
+    let Some(url) = host.and_then(|host| WebUrl::parse(&format!("https://{host}/")).ok()) else {
+        return refused(
+            "only a site the browser was refused can be asked for: open a page with browser_open",
+        );
+    };
+    if config.web.refuses(url.origin().host()) {
+        return refused("the operator refuses this site");
+    }
+    if let Err(answer) = crate::web_ops::allow(config, keys, web, &url, reason) {
+        return from_web(answer);
+    }
+    browser.sites.grant(site);
+    if !web.holds(url.origin()) {
+        browser.once.insert(site.to_owned());
+    }
+    BrowserResult::Allowed {
+        site: site.to_owned(),
+    }
 }
 
 /// A fresh browser cell's id.
@@ -655,6 +710,190 @@ mod tests {
             "held for the task, past a visit elsewhere"
         );
         assert_eq!(fake.log.lock().unwrap().started.len(), 1, "one browser");
+    }
+
+    fn allow(site: &str) -> BrowserOp {
+        BrowserOp::Allow {
+            site: site.to_owned(),
+            reason: String::from("the page's fonts come from there"),
+        }
+    }
+
+    /// A session of the task `t` whose browser is on `https://a.example/`,
+    /// held for the task, and was refused `cdn.example:443` for it.
+    fn on_a_page(config: &Config, fake: &Fake) -> (WebSession, BrowserSession) {
+        let (sessions, _) = ask(config, session("t", fake), &open("https://a.example/"));
+        owner_decides(config, "t", "https://a.example", Decision::ApproveSession);
+        let (sessions, answer) = ask(config, sessions, &open("https://a.example/"));
+        assert_eq!(answer, page("https://a.example/"));
+        assert!(!sessions.1.sites().admit("cdn.example:443"));
+        sessions
+    }
+
+    #[test]
+    fn a_site_a_page_was_refused_is_put_to_the_owner_and_held_for_the_visit() {
+        let config = web_config("browser-allow-site");
+        let fake = Fake::default();
+        let sessions = on_a_page(&config, &fake);
+        let (sessions, answer) = ask(&config, sessions, &allow("cdn.example:443"));
+        let asked =
+            matches!(&answer, BrowserResult::Waiting { site, .. } if site == "https://cdn.example");
+        assert!(asked, "{answer:?}");
+        assert!(
+            !sessions.1.sites().holds("cdn.example:443"),
+            "not before the owner says"
+        );
+        owner_decides(&config, "t", "https://cdn.example", Decision::Approve);
+        let (sessions, answer) = ask(&config, sessions, &allow("cdn.example:443"));
+        assert_eq!(
+            answer,
+            BrowserResult::Allowed {
+                site: String::from("cdn.example:443")
+            }
+        );
+        assert!(sessions.1.sites().holds("cdn.example:443"));
+        assert!(sessions.1.sites().refused().is_empty(), "no longer refused");
+        // The page again, on the same visit: the site stays.
+        let (sessions, answer) = ask(&config, sessions, &open("https://a.example/"));
+        assert_eq!(answer, page("https://a.example/"));
+        assert!(
+            sessions.1.sites().holds("cdn.example:443"),
+            "held for the visit"
+        );
+        // Another site: the visit is left, and what was held once for it.
+        let (sessions, _) = ask(&config, sessions, &open("https://b.example/"));
+        owner_decides(&config, "t", "https://b.example", Decision::ApproveSession);
+        let (sessions, answer) = ask(&config, sessions, &open("https://b.example/"));
+        assert_eq!(answer, page("https://b.example/"));
+        assert!(
+            !sessions.1.sites().holds("cdn.example:443"),
+            "left with the visit"
+        );
+        assert!(
+            sessions.1.sites().holds("a.example:443"),
+            "held for the task"
+        );
+        // A page still waiting on the owner leaves nothing.
+        assert!(!sessions.1.sites().admit("fonts.example:443"));
+        let (sessions, _) = ask(&config, sessions, &allow("fonts.example:443"));
+        owner_decides(&config, "t", "https://fonts.example", Decision::Approve);
+        let (sessions, _) = ask(&config, sessions, &allow("fonts.example:443"));
+        let (sessions, answer) = ask(&config, sessions, &open("https://c.example/"));
+        let waiting = matches!(answer, BrowserResult::Waiting { .. });
+        assert!(waiting, "{answer:?}");
+        assert!(
+            sessions.1.sites().holds("fonts.example:443"),
+            "still on b's visit"
+        );
+    }
+
+    #[test]
+    fn a_site_held_for_the_task_outlives_the_visit() {
+        let config = web_config("browser-allow-task");
+        let fake = Fake::default();
+        let sessions = on_a_page(&config, &fake);
+        let (sessions, _) = ask(&config, sessions, &allow("cdn.example:443"));
+        owner_decides(
+            &config,
+            "t",
+            "https://cdn.example",
+            Decision::ApproveSession,
+        );
+        let (sessions, answer) = ask(&config, sessions, &allow("cdn.example:443"));
+        assert!(
+            matches!(answer, BrowserResult::Allowed { .. }),
+            "{answer:?}"
+        );
+        let (sessions, _) = ask(&config, sessions, &open("https://b.example/"));
+        owner_decides(&config, "t", "https://b.example", Decision::Approve);
+        let (sessions, _) = ask(&config, sessions, &open("https://b.example/"));
+        assert!(
+            sessions.1.sites().holds("cdn.example:443"),
+            "held for the task"
+        );
+    }
+
+    #[test]
+    fn only_a_site_the_browser_was_refused_can_be_asked_for() {
+        let mut config = web_config("browser-allow-refused");
+        config.web.refused = vec![String::from("blocked.example")];
+        let fake = Fake::default();
+        let sessions = on_a_page(&config, &fake);
+        assert!(!sessions.1.sites().admit("blocked.example:443"));
+        let only = refused(
+            "only a site the browser was refused can be asked for: open a page with browser_open",
+        );
+        let mut sessions = sessions;
+        for (op, expected) in [
+            (allow("elsewhere.example:443"), only.clone()),
+            (allow("cdn.example"), only),
+            (
+                allow("blocked.example:443"),
+                refused("the operator refuses this site"),
+            ),
+            (
+                BrowserOp::Allow {
+                    site: String::from("cdn.example:443"),
+                    reason: "x".repeat(crate::web_ops::MAX_REASON_CHARS + 1),
+                },
+                refused("the reason is longer than 500 characters"),
+            ),
+        ] {
+            let answer;
+            (sessions, answer) = ask(&config, sessions, &op);
+            assert_eq!(answer, expected, "{op:?}");
+        }
+        assert!(!crate::web_ops::tests::board_has_pending(
+            &config,
+            "t",
+            "https://elsewhere.example"
+        ));
+        assert!(!sessions.1.sites().holds("cdn.example:443"));
+    }
+
+    #[test]
+    fn leaving_a_visit_revokes_only_what_was_held_for_it() {
+        let fake = Fake::default();
+        let (_, mut browser) = session("t", &fake);
+        for site in ["a.example:443", "cdn.example:443", "b.example:443"] {
+            browser.sites.grant(site);
+        }
+        browser.visit = Some(String::from("a.example:443"));
+        browser.once = ["a.example:443", "cdn.example:443"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        browser.leave();
+        assert!(!browser.sites.holds("a.example:443"));
+        assert!(!browser.sites.holds("cdn.example:443"));
+        assert!(browser.sites.holds("b.example:443"), "held for the task");
+        assert!(browser.visit.is_none() && browser.once.is_empty());
+    }
+
+    #[test]
+    fn allowing_a_site_no_page_asked_for_is_refused_unasked() {
+        let config = web_config("browser-allow-direct");
+        let keys = MasterKey::generate().unwrap();
+        let fake = Fake::default();
+        let (mut web, mut browser) = session("t", &fake);
+        assert_eq!(
+            allow_site(
+                &config,
+                &keys,
+                &mut web,
+                &mut browser,
+                "cdn.example:443",
+                "fonts"
+            ),
+            refused(
+                "only a site the browser was refused can be asked for: open a page with browser_open"
+            )
+        );
+        assert!(!crate::web_ops::tests::board_has_pending(
+            &config,
+            "t",
+            "https://cdn.example"
+        ));
     }
 
     #[test]

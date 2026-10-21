@@ -2352,6 +2352,16 @@ pub enum BrowserOp {
         /// Down, or up.
         down: bool,
     },
+    /// Ask the owner to allow a site the browser was refused, which a page
+    /// asked for: one of the last page's `refused`.
+    #[serde(rename = "allow")]
+    Allow {
+        /// The site, as the page's `refused` named it (`host:port`).
+        site: String,
+        /// Why the page needs it. Shown to the owner, labeled as the
+        /// agent's words.
+        reason: String,
+    },
     /// Close the browser: its cell, profile and files go with it.
     #[serde(rename = "close")]
     Close,
@@ -2413,6 +2423,12 @@ pub enum BrowserResult {
     Refused {
         /// Why, in a sentence.
         reason: String,
+    },
+    /// The site is allowed: open the page again, to load what it needed.
+    #[serde(rename = "allowed")]
+    Allowed {
+        /// The site.
+        site: String,
     },
     /// The browser is closed.
     #[serde(rename = "closed")]

@@ -181,6 +181,10 @@ session holds.
 - **`BrowserOp::Act { element, action }`:** act on an element of the last
   snapshot (`PageAction`: click, type, a key, a choice). Text to type that
   holds a secret the broker keeps is refused, and never reaches the page.
+- **`BrowserOp::Allow { site, reason }`:** ask the owner to allow a site the
+  browser was refused, one of the last page's `refused`, which the page
+  needs. It's put to the owner as a page's site is, and a site allowed once
+  is held for the visit.
 - **`BrowserOp::Scroll { down }`**, **`BrowserOp::Close`**: scroll, or close
   the browser and end its cell.
 - **`BrowserResult`:**
@@ -192,6 +196,8 @@ session holds.
   - `Refused { reason }`: refused before the browser: the URL, the
     operator's refusal of the site, typed text holding a secret, or a
     browser that couldn't start;
+  - `Allowed { site }`: the site is allowed; open the page again to load
+    what it needed;
   - `Closed`: the browser is closed;
   - `Off`: the operator hasn't set up a browser.
 

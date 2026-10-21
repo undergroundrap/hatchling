@@ -1766,6 +1766,29 @@
           "type": "object"
         },
         {
+          "description": "Ask the owner to allow a site the browser was refused, which a page\nasked for: one of the last page's `refused`.",
+          "properties": {
+            "op": {
+              "const": "allow",
+              "type": "string"
+            },
+            "reason": {
+              "description": "Why the page needs it. Shown to the owner, labeled as the\nagent's words.",
+              "type": "string"
+            },
+            "site": {
+              "description": "The site, as the page's `refused` named it (`host:port`).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "site",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Close the browser: its cell, profile and files go with it.",
           "properties": {
             "op": {
@@ -1919,6 +1942,24 @@
           "required": [
             "result",
             "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The site is allowed: open the page again, to load what it needed.",
+          "properties": {
+            "result": {
+              "const": "allowed",
+              "type": "string"
+            },
+            "site": {
+              "description": "The site.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "site"
           ],
           "type": "object"
         },
