@@ -71,7 +71,38 @@ impl Origin {
     pub fn destination(&self) -> String {
         format!("{}:{}", self.host, self.port)
     }
+
+    /// The site an HTTP `CONNECT` names, `host:port`, held to the rules a
+    /// URL's authority is (WO-029): a name of ASCII labels, never an IP
+    /// address, no user, and a port, which a `CONNECT` always names.
+    ///
+    /// # Errors
+    ///
+    /// The [`UrlRefusal`] that says why it isn't one: too long, a user, a
+    /// character outside the graphic ASCII ones or a backslash, no port or
+    /// a bad one, an IP address, or a bad host.
+    pub fn from_authority(authority: &str) -> Result<Self, UrlRefusal> {
+        if authority.len() > MAX_HOST_BYTES + MAX_PORT_SUFFIX_BYTES {
+            return Err(UrlRefusal::TooLong);
+        }
+        if authority.contains('@') {
+            return Err(UrlRefusal::Userinfo);
+        }
+        if authority
+            .chars()
+            .any(|c| !c.is_ascii_graphic() || c == '\\')
+        {
+            return Err(UrlRefusal::BadCharacter);
+        }
+        if !authority.contains(':') {
+            return Err(UrlRefusal::BadPort);
+        }
+        parse_authority(authority)
+    }
 }
+
+/// The most a `:port` adds to a host: `:65535`.
+const MAX_PORT_SUFFIX_BYTES: usize = 6;
 
 impl fmt::Display for Origin {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -404,7 +435,15 @@ pub(crate) fn fetch_with(
 
 /// The addresses `destination` resolves to with `resolve`, refused when
 /// it resolves to none, or to any that `internal` says is internal.
-pub(crate) fn resolved(
+///
+/// What a connection to a site is then pinned to, here and in a browser
+/// cell's proxy (WO-029).
+///
+/// # Errors
+///
+/// [`FetchError::Unresolved`] when it resolves to nothing, or the lookup
+/// fails; [`FetchError::Internal`] naming the first internal address.
+pub fn resolved(
     destination: &str,
     resolve: impl Fn(&str) -> std::io::Result<Vec<SocketAddr>>,
     internal: impl Fn(IpAddr) -> bool,
@@ -1067,6 +1106,43 @@ mod tests {
 
     /// `resolved`, called directly: the addresses, or why there are none
     /// to use.
+    /// WO-029: a `CONNECT`'s `host:port`, held to a URL authority's rules,
+    /// with the port required.
+    #[test]
+    fn a_connect_authority_is_a_named_site_with_a_port() {
+        let origin = Origin::from_authority("Example.COM:443").unwrap();
+        assert_eq!((origin.host(), origin.port()), ("example.com", 443));
+        assert_eq!(origin.destination(), "example.com:443");
+        assert_eq!(Origin::from_authority("a.test:8443").unwrap().port(), 8443);
+        for (authority, refusal) in [
+            ("a.test", UrlRefusal::BadPort),
+            ("a.test:", UrlRefusal::BadPort),
+            ("a.test:0", UrlRefusal::BadPort),
+            ("a.test:65536", UrlRefusal::BadPort),
+            ("user@a.test:443", UrlRefusal::Userinfo),
+            ("[::1]:443", UrlRefusal::IpLiteral),
+            ("10.0.0.1:443", UrlRefusal::IpLiteral),
+            ("a b.test:443", UrlRefusal::BadCharacter),
+            ("a\\b.test:443", UrlRefusal::BadCharacter),
+            ("caf\u{e9}.test:443", UrlRefusal::BadCharacter),
+            ("-a.test:443", UrlRefusal::BadHost),
+            (":443", UrlRefusal::BadHost),
+        ] {
+            assert_eq!(
+                Origin::from_authority(authority),
+                Err(refusal),
+                "{authority}"
+            );
+        }
+        // The longest name and port is still one; a byte more isn't.
+        let label = "a".repeat(63);
+        let longest = format!("{label}.{label}.{label}.{}:65535", "a".repeat(61));
+        assert_eq!(longest.len(), MAX_HOST_BYTES + MAX_PORT_SUFFIX_BYTES);
+        assert!(Origin::from_authority(&longest).is_ok(), "{longest}");
+        let over = format!("a{longest}");
+        assert_eq!(Origin::from_authority(&over), Err(UrlRefusal::TooLong));
+    }
+
     #[test]
     fn resolved_returns_the_addresses_or_why_not() {
         let public = addr(93, 184, 215, 14);
