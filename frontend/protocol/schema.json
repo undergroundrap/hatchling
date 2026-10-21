@@ -1977,6 +1977,19 @@
           "type": "object"
         },
         {
+          "description": "The owner stopped the browser: it stays stopped for this session.",
+          "properties": {
+            "result": {
+              "const": "stopped",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        },
+        {
           "description": "The operator hasn't set up a browser.",
           "properties": {
             "result": {

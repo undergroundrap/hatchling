@@ -135,6 +135,8 @@ struct Held {
     refused: BTreeSet<String>,
     open: Vec<Open>,
     next: u64,
+    /// Sealed: nothing is granted again.
+    sealed: bool,
 }
 
 /// An open tunnel, as revoking its site closes it.
@@ -151,11 +153,32 @@ impl Sites {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Grants `destination`: no longer one the session was refused.
+    /// Grants `destination`: no longer one the session was refused. Once
+    /// the sites are sealed, nothing is granted.
     pub fn grant(&self, destination: &str) {
         let mut held = self.held();
+        if held.sealed {
+            return;
+        }
         held.refused.remove(destination);
         held.granted.insert(destination.to_owned());
+    }
+
+    /// Seals the session's sites, as the owner's stop does: every one
+    /// revoked and every tunnel closed, both ways, now, and none granted
+    /// again, whatever is in flight. How many tunnels it closed.
+    #[must_use]
+    pub fn seal(&self) -> usize {
+        let mut held = self.held();
+        held.sealed = true;
+        held.granted.clear();
+        let closing = std::mem::take(&mut held.open);
+        drop(held);
+        for open in &closing {
+            let _ = open.client.shutdown(Shutdown::Both);
+            let _ = open.site.shutdown(Shutdown::Both);
+        }
+        closing.len()
     }
 
     /// Revokes `destination`, and closes every tunnel open to it, both
@@ -1096,6 +1119,23 @@ mod tests {
         assert_eq!(sites.revoke("mixed.test:443"), 0, "ended, so not held");
         // Revoked between admission and its connection: never registered.
         assert!(sites.opened("site.test:443", &client, &site).is_none());
+    }
+
+    #[test]
+    fn a_sealed_session_reaches_nothing_again() {
+        let sites = granted();
+        let (client, _browser) = pair();
+        let (site, _far) = pair();
+        let first = sites.opened("site.test:443", &client, &site).unwrap();
+        let second = sites.opened("mixed.test:443", &client, &site).unwrap();
+        assert_eq!(sites.seal(), 2, "every open tunnel closed");
+        assert!(!sites.holds("site.test:443") && !sites.holds("mixed.test:443"));
+        sites.grant("site.test:443");
+        assert!(!sites.holds("site.test:443"), "nothing granted after");
+        assert!(!sites.admit("site.test:443"));
+        assert!(sites.opened("site.test:443", &client, &site).is_none());
+        drop((first, second));
+        assert_eq!(sites.seal(), 0, "nothing left to close");
     }
 
     #[test]

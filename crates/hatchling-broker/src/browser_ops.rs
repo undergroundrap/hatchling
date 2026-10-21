@@ -15,20 +15,28 @@
 //!   and revoked, its tunnels closed, when the browser opens another.
 //! - **Typed text is checked:** text that holds a secret the broker keeps
 //!   is refused before it reaches the page.
+//! - **The owner watches, and may stop it** ([`crate::browser_board`]):
+//!   each op is shown in the app, the session, the action in the owner's
+//!   words (never the text typed) and a frame of the page after it. A
+//!   browser the owner stops stays stopped for the session.
 //! - **Bounded:** one browser per session, at most [`MAX_BROWSERS`] in
 //!   all, each for at most its lifetime; it ends with the session.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use hatchling_core::browser::{BrowserCommand, BrowserFailure, BrowserReply, PageAction};
+use hatchling_core::browser::{
+    BrowserCommand, BrowserFailure, BrowserReply, PageAction, PageSnapshot,
+};
+use hatchling_core::ui::BrowserState;
 use hatchling_core::{BrowserOp, BrowserResult, SessionResponse, WebResult};
 use hatchling_egress::web::WebUrl;
 use hatchling_vault::OpensStores;
 
+use crate::browser_board::BrowserBoard;
 use crate::browser_cell::{BrowserCell, BrowserLauncher};
 use crate::browser_proxy::{Route, Sites};
 use crate::browser_session::BrowserSettings;
@@ -38,6 +46,10 @@ use crate::{CellIds, Config, Error};
 
 /// Most browsers running at once, across every session.
 pub const MAX_BROWSERS: usize = 4;
+
+/// The most characters of what the owner is told of an action, or of what
+/// a browser is for.
+pub const MAX_NARRATION_CHARS: usize = 240;
 
 /// How long one browser lives: past it, it takes no more commands, and
 /// the next page starts another.
@@ -223,6 +235,27 @@ pub struct BrowserSession {
     /// The sites held for this visit: its own, if it was allowed once, and
     /// any a page of it needed that was allowed once.
     once: BTreeSet<String>,
+    /// The owner's view of the session's browsers.
+    board: Option<Arc<BrowserBoard>>,
+    /// The browser as the owner sees it, while one runs.
+    shown: Option<Shown>,
+    /// The owner stopped the session's browser: it stays stopped.
+    stopped: bool,
+}
+
+/// A browser as the owner sees it.
+#[derive(Debug)]
+struct Shown {
+    /// Its session in the app: its cell's id.
+    id: String,
+    /// What it's for: the agent's reason when it opened its first page.
+    title: String,
+    /// The last frame shown.
+    frame: u64,
+    /// The last page's elements, by id: their role and name.
+    elements: BTreeMap<u32, (String, String)>,
+    /// Set when the owner stops it.
+    stopped: Arc<AtomicBool>,
 }
 
 impl std::fmt::Debug for BrowserSession {
@@ -231,6 +264,8 @@ impl std::fmt::Debug for BrowserSession {
             .field("open", &self.browser.is_some())
             .field("visit", &self.visit)
             .field("once", &self.once)
+            .field("shown", &self.shown)
+            .field("stopped", &self.stopped)
             .finish_non_exhaustive()
     }
 }
@@ -246,7 +281,183 @@ impl BrowserSession {
             sites: Sites::default(),
             visit: None,
             once: BTreeSet::new(),
+            board: None,
+            shown: None,
+            stopped: false,
         }
+    }
+
+    /// This session, shown to the owner on `board`, who may stop it.
+    #[must_use]
+    pub fn with_board(mut self, board: Arc<BrowserBoard>) -> Self {
+        self.board = Some(board);
+        self
+    }
+
+    /// Whether the owner has stopped the session's browser. The first time
+    /// it's seen, the browser is closed, as cancelled.
+    fn owner_stopped(&mut self) -> bool {
+        if !self.stopped
+            && self
+                .shown
+                .as_ref()
+                .is_some_and(|shown| shown.stopped.load(Ordering::SeqCst))
+        {
+            self.stopped = true;
+            self.end(BrowserState::Cancelled);
+        }
+        self.stopped
+    }
+
+    /// A browser started in the cell `id`, for `reason`: shown to the
+    /// owner, who may stop it from now on.
+    fn shown_as(&mut self, id: String, reason: &str) {
+        let stopped = self.board.as_ref().map_or_else(
+            || Arc::new(AtomicBool::new(false)),
+            |board| board.begin(&id, self.sites.clone()),
+        );
+        self.shown = Some(Shown {
+            id,
+            title: reason.chars().take(MAX_NARRATION_CHARS).collect(),
+            frame: 0,
+            elements: BTreeMap::new(),
+            stopped,
+        });
+    }
+
+    /// What the owner is told of `op`, before it's done: in their words,
+    /// never the text typed.
+    fn narrate(&self, op: &BrowserOp) -> String {
+        let named = |element: u32| {
+            self.shown
+                .as_ref()
+                .and_then(|shown| shown.elements.get(&element))
+                .map_or_else(
+                    || format!("element {element}"),
+                    |(role, name)| format!("{role} \"{name}\""),
+                )
+        };
+        let said = match op {
+            BrowserOp::Open { url, .. } => format!("Opened {url}"),
+            BrowserOp::Read => String::from("Read the page"),
+            BrowserOp::Act { element, action } => match action {
+                PageAction::Click => format!("Clicked {}", named(*element)),
+                PageAction::Type { text } => format!(
+                    "Typed {} characters into {}",
+                    text.chars().count(),
+                    named(*element)
+                ),
+                PageAction::Key { key } => format!("Pressed {key:?} in {}", named(*element)),
+                PageAction::Choose { option } => {
+                    format!("Chose \"{option}\" in {}", named(*element))
+                }
+            },
+            BrowserOp::Scroll { down: true } => String::from("Scrolled down"),
+            BrowserOp::Scroll { down: false } => String::from("Scrolled up"),
+            BrowserOp::Allow { site, .. } => format!("Asked the owner to allow {site}"),
+            BrowserOp::Close => String::from("Closed the browser"),
+        };
+        said.chars().take(MAX_NARRATION_CHARS).collect()
+    }
+
+    /// Shows the owner what `narration` did, from `result`: the session,
+    /// the action, and a frame of the page when they're watching.
+    fn report(&mut self, narration: String, result: &BrowserResult) {
+        let (Some(board), Some(shown)) = (self.board.clone(), self.shown.as_ref()) else {
+            return;
+        };
+        let id = shown.id.clone();
+        let (step, confirmed) = match result {
+            BrowserResult::Page { snapshot, .. } => (narration.clone(), snapshot.title.clone()),
+            BrowserResult::Failed { .. } => (format!("{narration}: it didn't work"), String::new()),
+            BrowserResult::Allowed { .. } => (narration.clone(), String::new()),
+            BrowserResult::Waiting { .. }
+            | BrowserResult::Denied { .. }
+            | BrowserResult::Expired { .. }
+            | BrowserResult::Unasked { .. }
+            | BrowserResult::Refused { .. }
+            | BrowserResult::Closed
+            | BrowserResult::Stopped
+            | BrowserResult::Off => return,
+        };
+        board.act(&id, narration);
+        self.show(&board, BrowserState::Running, step, confirmed);
+        let BrowserResult::Page { snapshot, .. } = result else {
+            return;
+        };
+        self.remember(snapshot);
+        if board.watching() {
+            self.frame(&board, &snapshot.title);
+        }
+    }
+
+    /// Keeps the elements of `snapshot`, to name them to the owner.
+    fn remember(&mut self, snapshot: &PageSnapshot) {
+        if let Some(shown) = self.shown.as_mut() {
+            shown.elements = snapshot
+                .elements
+                .iter()
+                .map(|element| (element.id, (element.role.clone(), element.name.clone())))
+                .collect();
+        }
+    }
+
+    /// Shows the session as it is now: `state`, at `step`, having last
+    /// confirmed `confirmed`.
+    fn show(&self, board: &BrowserBoard, state: BrowserState, step: String, confirmed: String) {
+        let Some(shown) = self.shown.as_ref() else {
+            return;
+        };
+        let site = self
+            .visit
+            .as_deref()
+            .map(|visit| visit.strip_suffix(":443").unwrap_or(visit))
+            .unwrap_or_default()
+            .to_owned();
+        board.show(hatchling_core::ui::BrowserSession {
+            session_id: shown.id.clone(),
+            chat_id: None,
+            title: shown.title.clone(),
+            site,
+            state,
+            step,
+            last_confirmed: confirmed,
+        });
+    }
+
+    /// Takes a frame of the page, titled `title`, and shows it.
+    fn frame(&mut self, board: &BrowserBoard, title: &str) {
+        let Some(browser) = self.browser.as_mut() else {
+            return;
+        };
+        let Ok(BrowserReply::Frame { jpeg }) = browser.command(&BrowserCommand::Frame) else {
+            return;
+        };
+        if let Some(shown) = self.shown.as_mut() {
+            shown.frame += 1;
+            board.frame(&shown.id, shown.frame, title, &jpeg);
+        }
+    }
+
+    /// The browser, if one runs, closed and shown to the owner as `state`;
+    /// the board forgets it.
+    fn end(&mut self, state: BrowserState) {
+        if let Some(browser) = self.browser.take() {
+            browser.finish();
+        }
+        if let (Some(board), Some(shown)) = (self.board.clone(), self.shown.as_ref()) {
+            let step = match state {
+                BrowserState::Cancelled => String::from("Stopped by the owner"),
+                BrowserState::Failed => String::from("The browser stopped working"),
+                BrowserState::Queued
+                | BrowserState::Running
+                | BrowserState::Parked
+                | BrowserState::Completed => String::from("Closed"),
+            };
+            self.show(&board, state, step, String::new());
+            board.end(&shown.id);
+        }
+        self.shown = None;
     }
 
     /// Leaves the visit: every site held only for it is revoked, and its
@@ -292,21 +503,21 @@ impl BrowserSession {
             }
             Ok(BrowserReply::Failed { failure }) => BrowserResult::Failed { failure },
             Ok(BrowserReply::Closed) => {
-                self.close();
+                self.end(BrowserState::Completed);
                 BrowserResult::Closed
             }
             // A picture for an agent's command: the controller answered
             // out of turn, and isn't trusted with another.
             Ok(BrowserReply::Frame { .. }) => {
                 tracing::warn!("the browser answered out of turn: closed");
-                self.close();
+                self.end(BrowserState::Failed);
                 BrowserResult::Failed {
                     failure: BrowserFailure::BrowserGone,
                 }
             }
             Err(reason) => {
                 tracing::warn!(%reason, "the browser takes no more commands: closed");
-                self.close();
+                self.end(BrowserState::Failed);
                 BrowserResult::Failed {
                     failure: BrowserFailure::BrowserGone,
                 }
@@ -316,9 +527,7 @@ impl BrowserSession {
 
     /// Closes the browser, if it's running. The sites stay the session's.
     fn close(&mut self) {
-        if let Some(browser) = self.browser.take() {
-            browser.finish();
-        }
+        self.end(BrowserState::Completed);
     }
 }
 
@@ -341,6 +550,23 @@ pub fn handle_browser_op(
     if browser.browsers.is_none() {
         return BrowserResult::Off;
     }
+    if browser.owner_stopped() {
+        return BrowserResult::Stopped;
+    }
+    let narration = browser.narrate(op);
+    let result = answer(config, keys, web, browser, op);
+    browser.report(narration, &result);
+    result
+}
+
+/// `op`, done for the session's browser `browser`.
+fn answer(
+    config: &Config,
+    keys: &dyn OpensStores,
+    web: &mut WebSession,
+    browser: &mut BrowserSession,
+    op: &BrowserOp,
+) -> BrowserResult {
     match op {
         BrowserOp::Open { url, reason } => open(config, keys, web, browser, url, reason),
         BrowserOp::Read => browser.command(&BrowserCommand::Snapshot),
@@ -409,9 +635,16 @@ fn open(
         let Some(browsers) = browser.browsers.clone() else {
             return BrowserResult::Off;
         };
-        let started = cell_id().and_then(|cell_id| browsers.start(&cell_id, browser.sites.clone()));
+        let started = cell_id().and_then(|cell_id| {
+            browsers
+                .start(&cell_id, browser.sites.clone())
+                .map(|started| (cell_id, started))
+        });
         match started {
-            Ok(started) => browser.browser = Some(started),
+            Ok((cell_id, started)) => {
+                browser.browser = Some(started);
+                browser.shown_as(cell_id, reason);
+            }
             Err(reason) => {
                 tracing::warn!(%reason, "the browser couldn't start");
                 return refused("the browser couldn't start");
@@ -542,7 +775,7 @@ mod tests {
     #[derive(Clone, Default)]
     struct Fake {
         log: Arc<Mutex<Log>>,
-        broken: Arc<std::sync::atomic::AtomicBool>,
+        broken: Arc<AtomicBool>,
         refuse_start: bool,
     }
 
@@ -906,6 +1139,246 @@ mod tests {
             "t",
             "https://cdn.example"
         ));
+    }
+
+    /// A session of the task `t`, its browser started by `fake`, shown on
+    /// a board an app watches through `bus`.
+    fn watched(
+        fake: &Fake,
+    ) -> (
+        (WebSession, BrowserSession),
+        Arc<BrowserBoard>,
+        Arc<crate::api_stream::Bus>,
+    ) {
+        let board = Arc::new(BrowserBoard::default());
+        let bus = Arc::new(crate::api_stream::Bus::starting_now());
+        board.attach(Arc::clone(&bus));
+        let (web, browser) = session("t", fake);
+        ((web, browser.with_board(Arc::clone(&board))), board, bus)
+    }
+
+    /// What `bus` carried, from the event after `after` on.
+    fn carried_after(
+        bus: &crate::api_stream::Bus,
+        after: usize,
+    ) -> Vec<hatchling_core::ui::UiEventBody> {
+        bus.wait_after(None, Duration::ZERO)
+            .into_iter()
+            .skip(after)
+            .map(|event| event.body)
+            .collect()
+    }
+
+    /// The browser `sessions` shows the owner: its session in the app.
+    fn shown_id(sessions: &(WebSession, BrowserSession)) -> String {
+        sessions
+            .1
+            .shown
+            .as_ref()
+            .map(|shown| shown.id.clone())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn the_owner_sees_each_op_and_a_frame_of_its_page() {
+        use hatchling_core::ui::{Actor, BrowserAction, UiEventBody};
+        let config = web_config("browser-watched");
+        let fake = Fake::default();
+        let (sessions, board, bus) = watched(&fake);
+        let (sessions, _) = ask(&config, sessions, &open("https://a.example/x"));
+        assert!(
+            carried_after(&bus, 0).is_empty(),
+            "nothing before the browser"
+        );
+        owner_decides(&config, "t", "https://a.example", Decision::ApproveSession);
+        let (sessions, _) = ask(&config, sessions, &open("https://a.example/x"));
+        let id = shown_id(&sessions);
+        assert!(id.starts_with("browser-"), "{id}");
+        let shown = carried_after(&bus, 0);
+        assert_eq!(
+            shown.first(),
+            Some(&UiEventBody::BrowserAction(BrowserAction {
+                session_id: id.clone(),
+                by: Actor::Agent,
+                narration: String::from("Opened https://a.example/x"),
+            }))
+        );
+        assert_eq!(
+            shown.get(1),
+            Some(&UiEventBody::BrowserSession(
+                hatchling_core::ui::BrowserSession {
+                    session_id: id.clone(),
+                    chat_id: None,
+                    title: String::from("to check the order's status"),
+                    site: String::from("a.example"),
+                    state: BrowserState::Running,
+                    step: String::from("Opened https://a.example/x"),
+                    last_confirmed: String::new(),
+                }
+            ))
+        );
+        let Some(UiEventBody::BrowserFrame(frame)) = shown.get(2) else {
+            unreachable!("{shown:?}");
+        };
+        assert_eq!(
+            (frame.session_id.as_str(), frame.sequence),
+            (id.as_str(), 1)
+        );
+        assert_eq!(shown.len(), 3);
+        // Each op after: its own frame, numbered on.
+        let (sessions, _) = ask(&config, sessions, &BrowserOp::Scroll { down: true });
+        let next = carried_after(&bus, 3);
+        let Some(UiEventBody::BrowserFrame(frame)) = next.get(2) else {
+            unreachable!("{next:?}");
+        };
+        assert_eq!(frame.sequence, 2);
+        // Closed: shown completed, and nothing left to stop.
+        let (sessions, _) = ask(&config, sessions, &BrowserOp::Close);
+        let closed = carried_after(&bus, 6);
+        let finished = matches!(
+            closed.last(),
+            Some(UiEventBody::BrowserSession(session)) if session.state == BrowserState::Completed
+        );
+        assert!(finished, "{closed:?}");
+        assert_eq!(
+            board.stop(&id),
+            Err(hatchling_core::ui::ControlRefusal::UnknownSession)
+        );
+        drop(sessions);
+    }
+
+    #[test]
+    fn a_stop_is_seen_once_and_kept() {
+        let fake = Fake::default();
+        let (_, mut browser) = session("t", &fake);
+        assert!(!browser.owner_stopped(), "nothing to stop");
+        browser.browser = Some(Box::new(fake.clone()));
+        browser.shown_as(String::from("browser-s"), "why");
+        assert!(!browser.owner_stopped(), "not stopped");
+        if let Some(shown) = browser.shown.as_ref() {
+            shown.stopped.store(true, Ordering::SeqCst);
+        }
+        assert!(browser.owner_stopped());
+        assert!(!browser.is_open(), "closed when it's seen");
+        assert!(browser.shown.is_none());
+        assert!(browser.owner_stopped(), "and kept");
+        assert_eq!(fake.log.lock().unwrap().finished, 1, "closed once");
+    }
+
+    #[test]
+    fn the_owner_is_told_each_action_in_their_words_never_the_text_typed() {
+        let fake = Fake::default();
+        let (_, mut browser) = session("t", &fake);
+        browser.shown_as(String::from("browser-n"), "why");
+        if let Some(shown) = browser.shown.as_mut() {
+            shown
+                .elements
+                .insert(3, (String::from("textbox"), String::from("Search")));
+        }
+        let act = |action: PageAction| BrowserOp::Act { element: 3, action };
+        for (op, said) in [
+            (open("https://a.example/"), "Opened https://a.example/"),
+            (BrowserOp::Read, "Read the page"),
+            (act(PageAction::Click), "Clicked textbox \"Search\""),
+            (
+                act(PageAction::Type {
+                    text: String::from("hunter2"),
+                }),
+                "Typed 7 characters into textbox \"Search\"",
+            ),
+            (
+                act(PageAction::Key {
+                    key: hatchling_core::browser::Key::Enter,
+                }),
+                "Pressed Enter in textbox \"Search\"",
+            ),
+            (
+                act(PageAction::Choose {
+                    option: String::from("Blue"),
+                }),
+                "Chose \"Blue\" in textbox \"Search\"",
+            ),
+            (
+                BrowserOp::Act {
+                    element: 9,
+                    action: PageAction::Click,
+                },
+                "Clicked element 9",
+            ),
+            (BrowserOp::Scroll { down: true }, "Scrolled down"),
+            (BrowserOp::Scroll { down: false }, "Scrolled up"),
+            (
+                allow("cdn.example:443"),
+                "Asked the owner to allow cdn.example:443",
+            ),
+            (BrowserOp::Close, "Closed the browser"),
+        ] {
+            assert_eq!(browser.narrate(&op), said);
+        }
+        let long = open(&format!("https://a.example/{}", "x".repeat(400)));
+        assert_eq!(browser.narrate(&long).chars().count(), MAX_NARRATION_CHARS);
+    }
+
+    #[test]
+    fn a_browser_the_owner_stops_stays_stopped() {
+        use hatchling_core::ui::UiEventBody;
+        let config = web_config("browser-stopped");
+        let fake = Fake::default();
+        let (sessions, board, bus) = watched(&fake);
+        let (sessions, _) = ask(&config, sessions, &open("https://a.example/"));
+        owner_decides(&config, "t", "https://a.example", Decision::ApproveSession);
+        let (sessions, _) = ask(&config, sessions, &open("https://a.example/"));
+        let id = shown_id(&sessions);
+        assert_eq!(board.stop(&id), Ok(()));
+        assert!(!sessions.1.sites().holds("a.example:443"), "sealed at once");
+        let (sessions, answer) = ask(&config, sessions, &BrowserOp::Read);
+        assert_eq!(answer, BrowserResult::Stopped);
+        assert!(!sessions.1.is_open());
+        assert_eq!(fake.log.lock().unwrap().finished, 1);
+        let cancelled = carried_after(&bus, 0).into_iter().any(|body| {
+            matches!(body, UiEventBody::BrowserSession(session) if session.state == BrowserState::Cancelled)
+        });
+        assert!(cancelled, "shown as stopped");
+        // It stays stopped: no browser is started again.
+        let (sessions, answer) = ask(&config, sessions, &open("https://a.example/"));
+        assert_eq!(answer, BrowserResult::Stopped);
+        assert_eq!(fake.log.lock().unwrap().started.len(), 1);
+        drop(sessions);
+    }
+
+    #[test]
+    fn no_frame_is_taken_when_no_app_watches_and_a_broken_browser_is_shown_failed() {
+        use hatchling_core::ui::UiEventBody;
+        let config = web_config("browser-unwatched");
+        let fake = Fake::default();
+        let board = Arc::new(BrowserBoard::default());
+        let (web, browser) = session("t", &fake);
+        let sessions = (web, browser.with_board(Arc::clone(&board)));
+        let (sessions, _) = ask(&config, sessions, &open("https://a.example/"));
+        owner_decides(&config, "t", "https://a.example", Decision::ApproveSession);
+        let (sessions, _) = ask(&config, sessions, &open("https://a.example/"));
+        let frames = fake
+            .log
+            .lock()
+            .unwrap()
+            .commands
+            .iter()
+            .filter(|command| **command == BrowserCommand::Frame)
+            .count();
+        assert_eq!(frames, 0, "nobody watching: no frame");
+        drop(sessions);
+
+        let (sessions, _, bus) = watched(&fake);
+        let (sessions, _) = ask(&config, sessions, &open("https://a.example/"));
+        owner_decides(&config, "t", "https://a.example", Decision::ApproveSession);
+        let (sessions, _) = ask(&config, sessions, &open("https://a.example/"));
+        fake.broken.store(true, Ordering::SeqCst);
+        let (sessions, _) = ask(&config, sessions, &BrowserOp::Read);
+        let failed = carried_after(&bus, 0).into_iter().any(|body| {
+            matches!(body, UiEventBody::BrowserSession(session) if session.state == BrowserState::Failed)
+        });
+        assert!(failed, "shown as failed");
+        drop(sessions);
     }
 
     #[test]
