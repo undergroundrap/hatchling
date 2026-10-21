@@ -14,6 +14,7 @@
 //! socket — the agent and the broker each add their own behavior.
 
 pub mod action;
+pub mod browser;
 pub mod cli;
 pub mod conversation;
 pub mod error;

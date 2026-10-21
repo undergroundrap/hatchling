@@ -1,0 +1,28 @@
+[package]
+name = "hatchling-browser"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+authors.workspace = true
+repository.workspace = true
+description = "The controller a Hatchling browser cell runs: a headless Chromium driven over its DevTools pipe."
+
+[lints]
+workspace = true
+
+[dependencies]
+# The browser cell's protocol, and its framing.
+hatchling-core.workspace = true
+# Starting the browser: fork, the pipe placed on fds 3 and 4, exec; and
+# the inherited connection to the broker.
+hatchling-sys.workspace = true
+# The DevTools pipe: made, made non-blocking, polled with a deadline.
+rustix = { version = "0.38", features = ["event", "fs", "pipe"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+# The controller in a real browser cell.
+hatchling-isolation = { path = "../hatchling-isolation" }

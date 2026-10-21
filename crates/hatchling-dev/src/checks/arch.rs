@@ -66,6 +66,13 @@ pub const MODULE_MAP: &str = "docs/arch/module-map.md";
 /// The crate that runs inside a cell.
 pub const CELL_CRATE: &str = "hatchling-agent";
 
+/// The crate a browser cell runs: the controller that drives its
+/// browser (WO-029).
+pub const BROWSER_CRATE: &str = "hatchling-browser";
+
+/// Every crate that runs inside a cell, each held to the cell side.
+pub const CELL_CRATES: [&str; 2] = [CELL_CRATE, BROWSER_CRATE];
+
 /// Crates that hold keys, the network or the cell machinery. The cell
 /// crate must never depend on one, directly or through another crate.
 pub const TRUSTED_SIDE: [&str; 6] = [
@@ -121,9 +128,9 @@ fn map_rows(map: &str) -> Vec<&str> {
         .collect()
 }
 
-/// The cell crate's dependencies, followed through every member crate,
+/// Each cell crate's dependencies, followed through every member crate,
 /// never reach the trusted side. Dev-dependencies don't count: a test may
-/// stand up a broker.
+/// stand up a broker, or a real cell.
 fn check_cell_side(root: &Path) -> Result<Vec<Finding>, crate::Error> {
     let mut graph = std::collections::BTreeMap::new();
     for member in members(root)? {
@@ -136,30 +143,32 @@ fn check_cell_side(root: &Path) -> Result<Vec<Finding>, crate::Error> {
         graph.insert(member.name, deps);
     }
     let mut findings = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
-    // Each entry: a crate, and the chain of dependencies that reached it.
-    let mut stack = vec![vec![CELL_CRATE.to_owned()]];
-    while let Some(chain) = stack.pop() {
-        let Some(name) = chain.last() else {
-            continue;
-        };
-        if !seen.insert(name.clone()) {
-            continue;
-        }
-        if TRUSTED_SIDE.contains(&name.as_str()) {
-            findings.push(Finding::new(
-                "arch",
-                format!(
-                    "`{CELL_CRATE}` depends on `{name}`, which holds keys, the network or the cell machinery: {}",
-                    chain.join(" -> ")
-                ),
-            ));
-            continue;
-        }
-        for dep in graph.get(name).into_iter().flatten() {
-            let mut next = chain.clone();
-            next.push(dep.clone());
-            stack.push(next);
+    for cell_crate in CELL_CRATES {
+        let mut seen = std::collections::BTreeSet::new();
+        // Each entry: a crate, and the chain of dependencies that reached it.
+        let mut stack = vec![vec![cell_crate.to_owned()]];
+        while let Some(chain) = stack.pop() {
+            let Some(name) = chain.last() else {
+                continue;
+            };
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            if TRUSTED_SIDE.contains(&name.as_str()) {
+                findings.push(Finding::new(
+                    "arch",
+                    format!(
+                        "`{cell_crate}` depends on `{name}`, which holds keys, the network or the cell machinery: {}",
+                        chain.join(" -> ")
+                    ),
+                ));
+                continue;
+            }
+            for dep in graph.get(name).into_iter().flatten() {
+                let mut next = chain.clone();
+                next.push(dep.clone());
+                stack.push(next);
+            }
         }
     }
     Ok(findings)
@@ -634,6 +643,36 @@ mod tests {
             "",
         );
         assert!(check_cell_side(&root).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_browser_controller_is_held_to_the_cell_side_too() {
+        let root = synthetic_root("cell-side-browser");
+        add_crate(
+            &root,
+            BROWSER_CRATE,
+            "middle = \"1\"\n",
+            "",
+            "hatchling-isolation = \"1\"\n",
+        );
+        add_crate(&root, "middle", "hatchling-egress = \"1\"\n", "", "");
+        add_crate(&root, CELL_CRATE, "hatchling-core = \"1\"\n", "", "");
+        let found = messages(&check_cell_side(&root).unwrap());
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(
+            found.iter().all(|m| m
+                .starts_with("`hatchling-browser` depends on `hatchling-egress`")
+                && m.ends_with("hatchling-browser -> middle -> hatchling-egress")),
+            "{found:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        // Both cell crates reaching the same trusted crate: one finding each.
+        let root = synthetic_root("cell-side-both");
+        add_crate(&root, BROWSER_CRATE, "hatchling-vault = \"1\"\n", "", "");
+        add_crate(&root, CELL_CRATE, "hatchling-vault = \"1\"\n", "", "");
+        let found = messages(&check_cell_side(&root).unwrap());
+        assert_eq!(found.len(), 2, "{found:?}");
         let _ = std::fs::remove_dir_all(&root);
     }
 

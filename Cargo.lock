@@ -431,6 +431,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "hatchling-browser"
+version = "0.5.0"
+dependencies = [
+ "hatchling-core",
+ "hatchling-isolation",
+ "hatchling-sys",
+ "rustix",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "hatchling-builders"
 version = "0.5.0"
 dependencies = [

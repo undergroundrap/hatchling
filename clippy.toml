@@ -1,3 +1,7 @@
 # Tests — and only tests — may use `unwrap`/`expect`. Nowhere else.
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
+
+# Names written as they are, not as code, in docs: the defaults, and the
+# browser's protocol (WO-029).
+doc-valid-idents = ["DevTools", ".."]
