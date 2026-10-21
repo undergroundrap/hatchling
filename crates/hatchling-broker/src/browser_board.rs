@@ -15,13 +15,28 @@
 //! none granted again, so it reaches nothing more even while the agent's
 //! op is in flight. The agent's next op closes it, and the agent is told
 //! the owner stopped it.
+//!
+//! The owner can take control, and hand it back. Control moves only as
+//! [`Control::after`] allows, the table the app applies too, and each move
+//! is published as its handoff:
+//!
+//! - **Taking it**, only from the agent: `Takeover`, then `Granted` once
+//!   no op of the agent's is in flight, at once or when the op ends. The
+//!   agent's ops are refused while the owner drives or control changes
+//!   hands.
+//! - **Handing it back**, only from the latest frame the owner saw:
+//!   `HandBack`, then `Resumed` once the agent has looked at the page
+//!   afresh, with the frame it took. Its next op isn't done: it's told the
+//!   page changed under it, and given the page as it is now.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use hatchling_core::browser::MAX_FRAME_JPEG_BASE64;
-use hatchling_core::ui::{Actor, BrowserAction, BrowserFrame, BrowserSession, ControlRefusal};
+use hatchling_core::ui::{
+    Actor, BrowserAction, BrowserFrame, BrowserSession, Control, ControlRefusal, Handoff,
+};
 use hatchling_core::ui::{ImageType, InlineImage, UiEvent, UiEventBody, UiResponse};
 use hatchling_scheduler::Timestamp;
 
@@ -52,11 +67,39 @@ pub struct BrowserBoard {
     sessions: Mutex<BTreeMap<String, Watched>>,
 }
 
-/// A browser the owner can stop.
+/// A browser the owner can stop, and drive.
 #[derive(Debug)]
 struct Watched {
     sites: Sites,
     stopped: Arc<AtomicBool>,
+    /// Who drives it.
+    control: Control,
+    /// The latest frame shown of it.
+    latest: u64,
+    /// Whether an op of the agent's is in flight.
+    acting: bool,
+}
+
+/// What the owner does to a browser from the app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnerAct<'a> {
+    /// Take control of it.
+    Take(&'a str),
+    /// Hand it back, from the frame seen.
+    Return(&'a str, u64),
+    /// Stop it.
+    Stop(&'a str),
+}
+
+/// What the agent's next op may do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Turn {
+    /// Act: the agent drives.
+    Act,
+    /// Nothing: the owner drives, or control is passing to them.
+    Wait,
+    /// Look at the page afresh first: the owner has handed it back.
+    Resume,
 }
 
 impl BrowserBoard {
@@ -86,6 +129,9 @@ impl BrowserBoard {
                 Watched {
                     sites,
                     stopped: Arc::clone(&stopped),
+                    control: Control::Agent,
+                    latest: 0,
+                    acting: false,
                 },
             );
         stopped
@@ -121,6 +167,116 @@ impl BrowserBoard {
         Ok(())
     }
 
+    /// The owner takes control of the browser `session_id`, from the
+    /// agent: `Takeover`, then `Granted` at once if no op of the agent's is
+    /// in flight, or when it ends.
+    ///
+    /// # Errors
+    ///
+    /// [`ControlRefusal::UnknownSession`] for a browser there isn't;
+    /// [`ControlRefusal::Finished`] for one stopped;
+    /// [`ControlRefusal::Switching`] while control changes hands;
+    /// [`ControlRefusal::NotAllowed`] when the owner already drives.
+    pub fn take(&self, session_id: &str) -> Result<(), ControlRefusal> {
+        let mut sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+        let watched = sessions
+            .get_mut(session_id)
+            .ok_or(ControlRefusal::UnknownSession)?;
+        Self::open_to_control(watched, Control::Agent)?;
+        self.hand(session_id, watched, Handoff::Takeover);
+        if !watched.acting {
+            self.hand(session_id, watched, Handoff::Granted);
+        }
+        drop(sessions);
+        Ok(())
+    }
+
+    /// The owner hands the browser `session_id` back, from frame `seen`,
+    /// which must be the latest shown: `HandBack`, and `Resumed` when the
+    /// agent has looked afresh.
+    ///
+    /// # Errors
+    ///
+    /// As [`BrowserBoard::take`], with [`ControlRefusal::NotAllowed`] when
+    /// the agent drives, and [`ControlRefusal::StaleFrame`] when `seen`
+    /// isn't the latest frame.
+    pub fn hand_back(&self, session_id: &str, seen: u64) -> Result<(), ControlRefusal> {
+        let mut sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+        let watched = sessions
+            .get_mut(session_id)
+            .ok_or(ControlRefusal::UnknownSession)?;
+        Self::open_to_control(watched, Control::User)?;
+        if seen != watched.latest {
+            return Err(ControlRefusal::StaleFrame);
+        }
+        self.hand(session_id, watched, Handoff::HandBack);
+        drop(sessions);
+        Ok(())
+    }
+
+    /// Whether `watched` may be handed over from `from`, where it must be.
+    fn open_to_control(watched: &Watched, from: Control) -> Result<(), ControlRefusal> {
+        if watched.stopped.load(Ordering::SeqCst) {
+            return Err(ControlRefusal::Finished);
+        }
+        match watched.control {
+            Control::ToUser | Control::ToAgent => Err(ControlRefusal::Switching),
+            current if current == from => Ok(()),
+            Control::Agent | Control::User => Err(ControlRefusal::NotAllowed),
+        }
+    }
+
+    /// Moves `watched` by `handoff`, if the table allows it, and tells the
+    /// app, at the latest frame.
+    fn hand(&self, session_id: &str, watched: &mut Watched, handoff: Handoff) {
+        if let Some(next) = watched.control.after(handoff) {
+            watched.control = next;
+            self.publish(UiEventBody::BrowserControl {
+                session_id: session_id.to_owned(),
+                handoff,
+                frame_sequence: watched.latest,
+            });
+        }
+    }
+
+    /// What the agent's next op on `session_id` may do. One that may act
+    /// or resume is in flight until [`BrowserBoard::done`].
+    pub(crate) fn turn(&self, session_id: &str) -> Turn {
+        let mut sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(watched) = sessions.get_mut(session_id) else {
+            return Turn::Act;
+        };
+        let turn = match watched.control {
+            Control::Agent => Turn::Act,
+            Control::ToAgent => Turn::Resume,
+            Control::User | Control::ToUser => Turn::Wait,
+        };
+        watched.acting = turn != Turn::Wait;
+        drop(sessions);
+        turn
+    }
+
+    /// The agent's op on `session_id` is done: a takeover asked for while
+    /// it was in flight is granted now.
+    pub(crate) fn done(&self, session_id: &str) {
+        let mut sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(watched) = sessions.get_mut(session_id) {
+            watched.acting = false;
+            if watched.control == Control::ToUser {
+                self.hand(session_id, watched, Handoff::Granted);
+            }
+        }
+    }
+
+    /// The agent has looked at `session_id`'s page afresh, after the owner
+    /// handed it back: it drives again, from the latest frame.
+    pub(crate) fn resumed(&self, session_id: &str) {
+        let mut sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(watched) = sessions.get_mut(session_id) {
+            self.hand(session_id, watched, Handoff::Resumed);
+        }
+    }
+
     /// Shows `session` as it is now.
     pub(crate) fn show(&self, session: BrowserSession) {
         self.publish(UiEventBody::BrowserSession(session));
@@ -143,27 +299,37 @@ impl BrowserBoard {
             tracing::warn!(session = session_id, "a frame that isn't a JPEG: not shown");
             return false;
         };
-        self.publish(UiEventBody::BrowserFrame(BrowserFrame {
+        let shown = self.publish(UiEventBody::BrowserFrame(BrowserFrame {
             session_id: session_id.to_owned(),
             sequence,
             captured_at: Timestamp::now().to_string(),
             title: title.to_owned(),
             image: Some(image),
         }));
-        true
+        if shown {
+            if let Some(watched) = self
+                .sessions
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get_mut(session_id)
+            {
+                watched.latest = sequence;
+            }
+        }
+        shown
     }
 
     /// Pushes `body` to the owner's app, if one is attached and the stream
     /// can carry it: as the stream sends it, numbered as high as a number
-    /// goes, it fits one frame.
-    fn publish(&self, body: UiEventBody) {
+    /// goes, it fits one frame. Whether it was pushed.
+    fn publish(&self, body: UiEventBody) -> bool {
         let bus = self
             .bus
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
         let Some(bus) = bus else {
-            return;
+            return false;
         };
         let ts = Timestamp::now().to_string();
         let sent = UiResponse::Event(UiEvent {
@@ -173,11 +339,13 @@ impl BrowserBoard {
         });
         if !hatchling_core::fits_one_frame(&sent) {
             tracing::warn!("a browser event too big for the app's stream: not shown");
-            return;
+            return false;
         }
-        if let UiResponse::Event(event) = sent {
-            bus.push(ts, event.body);
-        }
+        let UiResponse::Event(event) = sent else {
+            return false;
+        };
+        bus.push(ts, event.body);
+        true
     }
 }
 
@@ -343,6 +511,174 @@ mod tests {
         board.end("browser-a");
         assert_eq!(board.stop("browser-a"), Err(ControlRefusal::UnknownSession));
         assert_eq!(board.stop("browser-z"), Err(ControlRefusal::UnknownSession));
+    }
+
+    /// The handoffs `bus` carried for `session_id`, with their frames.
+    fn handoffs(bus: &Bus) -> Vec<(Handoff, u64)> {
+        carried(bus)
+            .into_iter()
+            .filter_map(|body| {
+                if let UiEventBody::BrowserControl {
+                    handoff,
+                    frame_sequence,
+                    ..
+                } = body
+                {
+                    Some((handoff, frame_sequence))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_owner_takes_control_from_the_agent_and_hands_it_back_from_the_latest_frame() {
+        let (board, bus) = watched();
+        let _stopped = board.begin("browser-c", Sites::default());
+        let jpeg = encoded(&[0xFF, 0xD8, 0xFF, 0xE0]);
+        assert!(board.frame("browser-c", 1, "A", &jpeg));
+        assert_eq!(board.turn("browser-c"), Turn::Act);
+        board.done("browser-c");
+        // Taken while the agent's idle: granted at once.
+        assert_eq!(board.take("browser-c"), Ok(()));
+        assert_eq!(
+            handoffs(&bus),
+            [(Handoff::Takeover, 1), (Handoff::Granted, 1)]
+        );
+        assert_eq!(board.turn("browser-c"), Turn::Wait, "the agent waits");
+        assert_eq!(board.take("browser-c"), Err(ControlRefusal::NotAllowed));
+        // Handed back only from the latest frame.
+        assert_eq!(
+            board.hand_back("browser-c", 0),
+            Err(ControlRefusal::StaleFrame)
+        );
+        assert_eq!(board.hand_back("browser-c", 1), Ok(()));
+        assert_eq!(
+            board.hand_back("browser-c", 1),
+            Err(ControlRefusal::Switching)
+        );
+        assert_eq!(board.take("browser-c"), Err(ControlRefusal::Switching));
+        assert_eq!(board.turn("browser-c"), Turn::Resume, "look afresh first");
+        assert!(board.frame("browser-c", 2, "A", &jpeg));
+        board.resumed("browser-c");
+        board.done("browser-c");
+        assert_eq!(
+            handoffs(&bus),
+            [
+                (Handoff::Takeover, 1),
+                (Handoff::Granted, 1),
+                (Handoff::HandBack, 1),
+                (Handoff::Resumed, 2),
+            ],
+            "resumed from the frame the agent took"
+        );
+        assert_eq!(board.turn("browser-c"), Turn::Act);
+        assert_eq!(
+            board.hand_back("browser-c", 2),
+            Err(ControlRefusal::NotAllowed)
+        );
+    }
+
+    /// A browser at `control`, at frame 3.
+    fn at(control: Control) -> Watched {
+        Watched {
+            sites: Sites::default(),
+            stopped: Arc::new(AtomicBool::new(false)),
+            control,
+            latest: 3,
+            acting: false,
+        }
+    }
+
+    #[test]
+    fn control_moves_only_from_where_it_must_be_and_never_once_stopped() {
+        use ControlRefusal::{Finished, NotAllowed, Switching};
+        for (control, from, expected) in [
+            (Control::Agent, Control::Agent, Ok(())),
+            (Control::User, Control::User, Ok(())),
+            (Control::User, Control::Agent, Err(NotAllowed)),
+            (Control::Agent, Control::User, Err(NotAllowed)),
+            (Control::ToUser, Control::Agent, Err(Switching)),
+            (Control::ToAgent, Control::User, Err(Switching)),
+        ] {
+            assert_eq!(
+                BrowserBoard::open_to_control(&at(control), from),
+                expected,
+                "at {control:?}, from {from:?}"
+            );
+        }
+        let stopped = at(Control::Agent);
+        stopped.stopped.store(true, Ordering::SeqCst);
+        assert_eq!(
+            BrowserBoard::open_to_control(&stopped, Control::Agent),
+            Err(Finished)
+        );
+    }
+
+    #[test]
+    fn a_handoff_moves_control_as_the_table_allows_and_tells_the_app_at_the_latest_frame() {
+        let (board, bus) = watched();
+        let mut browser = at(Control::Agent);
+        board.hand("browser-h", &mut browser, Handoff::HandBack);
+        assert_eq!(browser.control, Control::Agent, "the table refuses it");
+        assert!(handoffs(&bus).is_empty(), "and the app isn't told");
+        board.hand("browser-h", &mut browser, Handoff::Takeover);
+        assert_eq!(browser.control, Control::ToUser);
+        assert_eq!(handoffs(&bus), [(Handoff::Takeover, 3)]);
+    }
+
+    #[test]
+    fn a_takeover_during_the_agents_op_is_granted_when_it_ends() {
+        let (board, bus) = watched();
+        let _stopped = board.begin("browser-d", Sites::default());
+        assert_eq!(board.turn("browser-d"), Turn::Act);
+        assert_eq!(board.take("browser-d"), Ok(()));
+        assert_eq!(
+            handoffs(&bus),
+            [(Handoff::Takeover, 0)],
+            "not while it acts"
+        );
+        assert_eq!(board.turn("browser-d"), Turn::Wait);
+        board.done("browser-d");
+        assert_eq!(
+            handoffs(&bus),
+            [(Handoff::Takeover, 0), (Handoff::Granted, 0)]
+        );
+    }
+
+    #[test]
+    fn control_is_refused_for_a_browser_there_isnt_or_that_was_stopped() {
+        let (board, _) = watched();
+        assert_eq!(board.take("browser-z"), Err(ControlRefusal::UnknownSession));
+        assert_eq!(
+            board.hand_back("browser-z", 0),
+            Err(ControlRefusal::UnknownSession)
+        );
+        assert_eq!(
+            board.turn("browser-z"),
+            Turn::Act,
+            "an unwatched browser acts"
+        );
+        let _stopped = board.begin("browser-e", Sites::default());
+        assert_eq!(board.stop("browser-e"), Ok(()));
+        assert_eq!(board.take("browser-e"), Err(ControlRefusal::Finished));
+        assert_eq!(
+            board.hand_back("browser-e", 0),
+            Err(ControlRefusal::Finished)
+        );
+    }
+
+    #[test]
+    fn a_frame_too_big_for_the_stream_isnt_the_latest() {
+        let (board, bus) = watched();
+        let _stopped = board.begin("browser-f", Sites::default());
+        assert!(board.frame("browser-f", 1, "A", &encoded(&[0xFF, 0xD8, 0xFF])));
+        // A title too long for one frame with it: not shown, not the latest.
+        let long = "t".repeat(hatchling_core::framing::MAX_FRAME_BYTES);
+        assert!(!board.frame("browser-f", 2, &long, &encoded(&[0xFF, 0xD8, 0xFF])));
+        assert_eq!(board.take("browser-f"), Ok(()));
+        assert_eq!(handoffs(&bus).first(), Some(&(Handoff::Takeover, 1)));
     }
 
     #[test]

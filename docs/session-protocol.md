@@ -201,6 +201,10 @@ session holds.
   - `Closed`: the browser is closed;
   - `Stopped`: the owner stopped the browser, from the app; it stays
     stopped for the session;
+  - `OwnerDriving`: the owner is driving the browser, or taking it, from
+    the app; nothing was done;
+  - `HandedBack { snapshot, refused }`: the owner drove the browser and
+    handed it back; what was asked wasn't done, and this is the page now;
   - `Off`: the operator hasn't set up a browser.
 
 ## Device handshake

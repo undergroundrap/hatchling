@@ -892,6 +892,18 @@ export type BrowserResult = {
 } | {
     readonly result: 'stopped';
 } | {
+    readonly result: 'owner_driving';
+} | {
+    /**
+     * As [`BrowserResult::Page`]'s.
+     */
+    readonly refused: readonly (string)[];
+    readonly result: 'handed_back';
+    /**
+     * The page as it is now.
+     */
+    readonly snapshot: PageSnapshot;
+} | {
     readonly result: 'off';
 };
 /**

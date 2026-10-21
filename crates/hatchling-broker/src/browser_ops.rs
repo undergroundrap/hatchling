@@ -19,6 +19,11 @@
 //!   each op is shown in the app, the session, the action in the owner's
 //!   words (never the text typed) and a frame of the page after it. A
 //!   browser the owner stops stays stopped for the session.
+//! - **The owner may take it over, and hand it back.** While they drive,
+//!   or control changes hands, the agent's ops do nothing
+//!   ([`BrowserResult::OwnerDriving`]). Handed back, the agent's next op
+//!   looks at the page afresh instead, and is answered with it
+//!   ([`BrowserResult::HandedBack`]): the page may have changed under it.
 //! - **Bounded:** one browser per session, at most [`MAX_BROWSERS`] in
 //!   all, each for at most its lifetime; it ends with the session.
 
@@ -36,7 +41,7 @@ use hatchling_core::{BrowserOp, BrowserResult, SessionResponse, WebResult};
 use hatchling_egress::web::WebUrl;
 use hatchling_vault::OpensStores;
 
-use crate::browser_board::BrowserBoard;
+use crate::browser_board::{BrowserBoard, Turn};
 use crate::browser_cell::{BrowserCell, BrowserLauncher};
 use crate::browser_proxy::{Route, Sites};
 use crate::browser_session::BrowserSettings;
@@ -294,6 +299,47 @@ impl BrowserSession {
         self
     }
 
+    /// What the agent's next op may do: the owner may be driving.
+    fn turn(&self) -> Turn {
+        match (self.board.as_ref(), self.shown.as_ref()) {
+            (Some(board), Some(shown)) => board.turn(&shown.id),
+            _ => Turn::Act,
+        }
+    }
+
+    /// The agent's op is done.
+    fn done(&self) {
+        if let (Some(board), Some(shown)) = (self.board.as_ref(), self.shown.as_ref()) {
+            board.done(&shown.id);
+        }
+    }
+
+    /// The owner handed the browser back: the agent looks at the page
+    /// afresh, takes a frame of it, and drives again. The page as it is
+    /// now.
+    fn resume(&mut self) -> BrowserResult {
+        let looked = self.command(&BrowserCommand::Snapshot);
+        let result = if let BrowserResult::Page { snapshot, refused } = looked {
+            self.remember(&snapshot);
+            if let (Some(board), Some(shown)) = (self.board.clone(), self.shown.as_ref()) {
+                board.act(
+                    &shown.id,
+                    String::from("Looked at the page again, after the owner handed it back"),
+                );
+                if board.watching() {
+                    self.frame(&board, &snapshot.title);
+                }
+            }
+            BrowserResult::HandedBack { snapshot, refused }
+        } else {
+            looked
+        };
+        if let (Some(board), Some(shown)) = (self.board.as_ref(), self.shown.as_ref()) {
+            board.resumed(&shown.id);
+        }
+        result
+    }
+
     /// Whether the owner has stopped the session's browser. The first time
     /// it's seen, the browser is closed, as cancelled.
     fn owner_stopped(&mut self) -> bool {
@@ -378,6 +424,8 @@ impl BrowserSession {
             | BrowserResult::Refused { .. }
             | BrowserResult::Closed
             | BrowserResult::Stopped
+            | BrowserResult::OwnerDriving
+            | BrowserResult::HandedBack { .. }
             | BrowserResult::Off => return,
         };
         board.act(&id, narration);
@@ -553,9 +601,19 @@ pub fn handle_browser_op(
     if browser.owner_stopped() {
         return BrowserResult::Stopped;
     }
+    match browser.turn() {
+        Turn::Wait => return BrowserResult::OwnerDriving,
+        Turn::Resume => {
+            let result = browser.resume();
+            browser.done();
+            return result;
+        }
+        Turn::Act => {}
+    }
     let narration = browser.narrate(op);
     let result = answer(config, keys, web, browser, op);
     browser.report(narration, &result);
+    browser.done();
     result
 }
 
@@ -1263,6 +1321,100 @@ mod tests {
         assert!(browser.shown.is_none());
         assert!(browser.owner_stopped(), "and kept");
         assert_eq!(fake.log.lock().unwrap().finished, 1, "closed once");
+    }
+
+    #[test]
+    fn handed_back_the_agent_looks_afresh_and_a_broken_look_is_its_failure() {
+        let fake = Fake::default();
+        let (_, mut browser) = session("t", &fake);
+        browser.browser = Some(Box::new(fake.clone()));
+        assert_eq!(
+            browser.resume(),
+            BrowserResult::HandedBack {
+                snapshot: PageSnapshot::default(),
+                refused: Vec::new(),
+            }
+        );
+        assert_eq!(
+            fake.log.lock().unwrap().commands,
+            [BrowserCommand::Snapshot],
+            "a look, and no frame with nobody watching"
+        );
+        fake.broken.store(true, Ordering::SeqCst);
+        assert_eq!(
+            browser.resume(),
+            BrowserResult::Failed {
+                failure: BrowserFailure::BrowserGone,
+            }
+        );
+    }
+
+    #[test]
+    fn the_agent_waits_while_the_owner_drives_and_looks_afresh_when_handed_back() {
+        use hatchling_core::ui::{Handoff, UiEventBody};
+        let config = web_config("browser-control");
+        let fake = Fake::default();
+        let (sessions, board, bus) = watched(&fake);
+        let (sessions, _) = ask(&config, sessions, &open("https://a.example/"));
+        owner_decides(&config, "t", "https://a.example", Decision::ApproveSession);
+        let (sessions, _) = ask(&config, sessions, &open("https://a.example/"));
+        let id = shown_id(&sessions);
+        assert_eq!(board.take(&id), Ok(()));
+        let commands_before = fake.log.lock().unwrap().commands.len();
+        let (sessions, answer) = ask(&config, sessions, &BrowserOp::Scroll { down: true });
+        assert_eq!(answer, BrowserResult::OwnerDriving);
+        assert_eq!(
+            fake.log.lock().unwrap().commands.len(),
+            commands_before,
+            "nothing reached the browser"
+        );
+        // Handed back from the latest frame: the next op looks afresh.
+        assert_eq!(board.hand_back(&id, 1), Ok(()));
+        let (sessions, answer) = ask(&config, sessions, &BrowserOp::Scroll { down: true });
+        let looked = matches!(answer, BrowserResult::HandedBack { .. });
+        assert!(looked, "{answer:?}");
+        let sent: Vec<BrowserCommand> = fake
+            .log
+            .lock()
+            .unwrap()
+            .commands
+            .iter()
+            .skip(commands_before)
+            .cloned()
+            .collect();
+        assert_eq!(
+            sent,
+            [BrowserCommand::Snapshot, BrowserCommand::Frame],
+            "a fresh look and a frame, not the scroll"
+        );
+        let handoffs: Vec<(Handoff, u64)> = carried_after(&bus, 0)
+            .into_iter()
+            .filter_map(|body| {
+                if let UiEventBody::BrowserControl {
+                    handoff,
+                    frame_sequence,
+                    ..
+                } = body
+                {
+                    Some((handoff, frame_sequence))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            handoffs,
+            [
+                (Handoff::Takeover, 1),
+                (Handoff::Granted, 1),
+                (Handoff::HandBack, 1),
+                (Handoff::Resumed, 2),
+            ]
+        );
+        // The agent drives again.
+        let (sessions, answer) = ask(&config, sessions, &BrowserOp::Scroll { down: true });
+        assert_eq!(answer, page(""));
+        drop(sessions);
     }
 
     #[test]
