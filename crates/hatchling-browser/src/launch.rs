@@ -89,6 +89,9 @@ pub fn chromium_args(profile: &Path, proxy: Option<u16>) -> Vec<String> {
     .into_iter()
     .map(String::from)
     .collect();
+    // A viewport of a known size, so a frame always shows the same.
+    let (width, height) = hatchling_core::browser::VIEWPORT;
+    args.push(format!("--window-size={width},{height}"));
     args.push(format!("--user-data-dir={}", profile.display()));
     if let Some(port) = proxy {
         args.push(format!("--proxy-server=http://127.0.0.1:{port}"));
@@ -288,6 +291,7 @@ mod tests {
             "--proxy-bypass-list=<-loopback>",
             "--user-data-dir=/scratch/profile",
             "--webrtc-ip-handling-policy=disable_non_proxied_udp",
+            "--window-size=1280,800",
         ] {
             assert!(args.iter().any(|arg| arg == wanted), "{wanted}");
         }
