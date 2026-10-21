@@ -27,6 +27,7 @@
 #![warn(missing_docs)]
 
 pub mod cgroup;
+pub mod copy;
 pub mod error;
 pub mod fds;
 pub mod idmap;
@@ -46,6 +47,7 @@ mod test_socket;
 pub mod tree;
 pub mod umask;
 
+pub use copy::{TreeEntry, TreeLimits, copy_tree};
 pub use error::Error;
 pub use fds::{
     cloexec_fds_above_stderr, close_fds_above_stderr_except, fd_flags, keep_across_exec, open_fds,

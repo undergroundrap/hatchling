@@ -109,6 +109,18 @@ pub enum Error {
         source: std::io::Error,
     },
 
+    /// A tree could not be walked or copied (`copy::copy_tree`): an
+    /// entry refused, past a bound, or an operation that failed.
+    #[error("copy failed at {path:?}: {operation}: {source}")]
+    Copy {
+        /// Which operation failed.
+        operation: &'static str,
+        /// The entry, relative to the tree (empty: the tree itself).
+        path: String,
+        /// The underlying failure, or why the entry was refused.
+        source: std::io::Error,
+    },
+
     /// A disposable tree could not be removed (`tree::remove_tree`).
     #[error("removal failed: {operation}: {source}")]
     Removal {

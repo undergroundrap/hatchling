@@ -3,17 +3,17 @@
 //! with.
 //!
 //! Hatchling bundles no browser. The operator names one
-//! (`HATCHLING_BROWSER`) and its SHA-256 (`HATCHLING_BROWSER_SHA256`),
-//! and the binary is hashed again before every start: one that no longer
-//! matches is never started. The controller
+//! (`HATCHLING_BROWSER`) and the digest of its whole bundle, its
+//! directory (`HATCHLING_BROWSER_SHA256`), and the browser runs from a
+//! snapshot of the bundle checked against it as it's copied
+//! ([`crate::browser_bundle`]): a bundle that isn't the pinned one is never
+//! started. The controller
 //! (`HATCHLING_BROWSER_CONTROLLER`) is Hatchling's own program, like the
 //! agent's binary. Fonts (`HATCHLING_BROWSER_FONTS`) are a host directory
 //! the cell sees read-only; without them the browser can't lay out text.
 
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
-
-use hatchling_skill::CodeHash;
 
 use crate::Error;
 use crate::browser_proxy::RELAY_PORT;
@@ -144,52 +144,30 @@ impl BrowserSettings {
         &self.controller
     }
 
-    /// Whether the browser binary still hashes to its pin: read now, a
-    /// regular file and not a symlink. Called before every start.
+    /// The browser's bundle: its directory.
+    #[must_use]
+    pub fn bundle(&self) -> &Path {
+        self.browser.parent().unwrap_or_else(|| Path::new("/"))
+    }
+
+    /// A verified snapshot of the browser's bundle: copied now, and kept
+    /// only if its digest is the pin ([`crate::browser_bundle`]).
     ///
     /// # Errors
     ///
-    /// A sentence for the log: the browser is unreadable, a symlink, or no
-    /// longer the pinned one.
-    pub fn verified(&self) -> Result<(), String> {
-        let meta = std::fs::symlink_metadata(&self.browser).map_err(|err| {
-            format!(
-                "the browser {} is unreadable: {err}",
-                self.browser.display()
-            )
-        })?;
-        if !meta.file_type().is_file() {
-            return Err(format!(
-                "the browser {} is not a regular file",
-                self.browser.display()
-            ));
-        }
-        let bytes = std::fs::read(&self.browser).map_err(|err| {
-            format!(
-                "the browser {} is unreadable: {err}",
-                self.browser.display()
-            )
-        })?;
-        let actual = CodeHash::of(&bytes).to_string();
-        if actual == self.sha256 {
-            Ok(())
-        } else {
-            Err(format!(
-                "the browser's SHA-256 is {actual}, not the pinned {}: it is never started",
-                self.sha256
-            ))
-        }
+    /// A sentence for the operator: the bundle couldn't be copied, or
+    /// isn't the pinned one, and is never started.
+    pub fn snapshot(&self) -> Result<crate::browser_bundle::Snapshot, String> {
+        crate::browser_bundle::Snapshot::take(self.bundle(), &self.sha256)
     }
 
-    /// A browser cell's own part, with the relay handed over at
-    /// `handoff`, and NSS's modules as the host has them now.
+    /// A browser cell's own part: the browser from the snapshot of its
+    /// bundle at `snapshot`, the relay handed over at `handoff`, and NSS's
+    /// modules as the host has them now.
     #[must_use]
-    pub fn dirs(&self, handoff: PathBuf) -> BrowserDirs {
+    pub fn dirs(&self, snapshot: &Path, handoff: PathBuf) -> BrowserDirs {
         BrowserDirs {
-            browser_dir: self
-                .browser
-                .parent()
-                .map_or_else(PathBuf::new, Path::to_path_buf),
+            browser_dir: snapshot.to_path_buf(),
             browser_name: self
                 .browser
                 .file_name()
@@ -286,7 +264,7 @@ mod tests {
         );
         let no_fonts: Vec<_> = full().into_iter().take(3).collect();
         assert_eq!(parse(&no_fonts).unwrap().unwrap().fonts, None);
-        let dirs = settings.dirs(PathBuf::from("/run/h.sock"));
+        let dirs = settings.dirs(Path::new("/run/snapshot"), PathBuf::from("/run/h.sock"));
         assert_eq!(dirs.nss, nss_modules(Path::is_file), "as the host has them");
         assert_eq!(
             BrowserDirs {
@@ -294,7 +272,7 @@ mod tests {
                 ..dirs.clone()
             },
             BrowserDirs {
-                browser_dir: PathBuf::from("/opt/chrome"),
+                browser_dir: PathBuf::from("/run/snapshot"),
                 browser_name: String::from("chrome-headless-shell"),
                 fonts: Some(PathBuf::from("/usr/share/fonts")),
                 nss: Vec::new(),
@@ -304,8 +282,9 @@ mod tests {
         );
         assert_eq!(
             dirs.browser(),
-            Path::new("/opt/chrome/chrome-headless-shell")
+            Path::new("/run/snapshot/chrome-headless-shell")
         );
+        assert_eq!(settings.bundle(), Path::new("/opt/chrome"));
     }
 
     #[test]
@@ -397,30 +376,38 @@ mod tests {
     }
 
     #[test]
-    fn a_browser_is_started_only_while_it_hashes_to_its_pin() {
+    fn a_browser_runs_only_from_a_snapshot_of_its_pinned_bundle() {
         let dir =
             std::env::temp_dir().join(format!("hatchling-browser-pin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let binary = dir.join("chrome");
-        std::fs::write(&binary, b"the pinned browser").unwrap();
-        let pinned = CodeHash::of(b"the pinned browser").to_string();
-        let settings = |path: &Path, sha: &str| BrowserSettings {
-            browser: path.to_owned(),
+        std::fs::write(dir.join("chrome"), b"the pinned browser").unwrap();
+        std::fs::write(dir.join("icudtl.dat"), b"icu").unwrap();
+        let pinned = crate::browser_bundle::digest(&dir).unwrap();
+        let settings = |sha: &str| BrowserSettings {
+            browser: dir.join("chrome"),
             sha256: sha.to_owned(),
             controller: PathBuf::from("/c"),
             fonts: None,
         };
-        assert_eq!(settings(&binary, &pinned).verified(), Ok(()));
-        std::fs::write(&binary, b"another browser").unwrap();
-        let changed = settings(&binary, &pinned).verified().unwrap_err();
+        assert_eq!(settings(&pinned).bundle(), dir);
+        let snapshot = settings(&pinned).snapshot().unwrap();
+        assert_eq!(
+            std::fs::read(snapshot.dir().join("icudtl.dat")).unwrap(),
+            b"icu"
+        );
+        // Not the executable alone: any file of the bundle that changes
+        // makes it another bundle, never started.
+        std::fs::write(dir.join("icudtl.dat"), b"ICU").unwrap();
+        let changed = settings(&pinned).snapshot().unwrap_err();
         assert!(changed.contains("it is never started"), "{changed}");
         assert!(changed.contains(&pinned), "{changed}");
-        let link = dir.join("link");
-        std::os::unix::fs::symlink(&binary, &link).unwrap();
-        let symlink = settings(&link, &pinned).verified().unwrap_err();
-        assert!(symlink.contains("not a regular file"), "{symlink}");
-        let missing = settings(&dir.join("gone"), &pinned).verified().unwrap_err();
-        assert!(missing.contains("unreadable"), "{missing}");
+        // The snapshot made before is the bundle as it was checked.
+        assert_eq!(
+            std::fs::read(snapshot.dir().join("icudtl.dat")).unwrap(),
+            b"icu"
+        );
+        drop(snapshot);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
