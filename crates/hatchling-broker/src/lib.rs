@@ -29,6 +29,7 @@ pub mod approval_board;
 pub mod approvals;
 pub mod artifact_ops;
 pub mod browser_proxy;
+pub mod browser_session;
 pub use artifact_ops::{SealedArtifactStore, handle_artifact_op, held_secrets, is_workspace_name};
 pub mod cell;
 pub use cell::{CellConfig, CellHandle, CellIds, CellLimits, ScheduledRun, spawn_cell};

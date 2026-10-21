@@ -111,6 +111,11 @@ pub struct CellConfig {
     /// write in exactly those two directories.
     #[serde(default)]
     pub harness: Option<HarnessDirs>,
+    /// A browser cell's own part (WO-029). `None` for every other cell.
+    /// A browser cell learns nothing about the broker but its own
+    /// connection: no socket, no broker uid.
+    #[serde(default)]
+    pub browser: Option<BrowserDirs>,
     /// What the cell's program, and everything it starts, is held to.
     #[serde(default)]
     pub limits: CellLimits,
@@ -430,6 +435,41 @@ pub struct HarnessNetwork {
     pub env: Vec<(String, String)>,
 }
 
+/// A browser cell's own part (WO-029): where its browser, fonts and
+/// scratch directory are, and its relay.
+///
+/// In the cell the browser's directory is `/browser` and its fonts
+/// `/fonts`, both read-only, and `/scratch` (the profile, the font cache,
+/// its home and temp) the one writable directory. The cell's program is
+/// the controller, which drives the browser over a pipe and the broker
+/// over the cell's connection; its only network is the relay, which the
+/// broker serves as a `CONNECT` proxy ([`crate::browser_proxy`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserDirs {
+    /// The host directory holding the browser, bound at `/browser`.
+    pub browser_dir: PathBuf,
+    /// The browser's file name in that directory.
+    pub browser_name: String,
+    /// The host directory of fonts bound at `/fonts`, if any. Without
+    /// fonts the browser's renderer can't lay out text.
+    pub fonts: Option<PathBuf>,
+    /// The host directory bound at `/scratch`.
+    pub scratch: PathBuf,
+    /// The relay's port on the cell's own loopback.
+    pub relay: u16,
+    /// The unix socket, in the broker's private run directory, where the
+    /// spawner hands the cell's relay listener to the broker.
+    pub handoff: PathBuf,
+}
+
+impl BrowserDirs {
+    /// The browser binary's host path.
+    #[must_use]
+    pub fn browser(&self) -> PathBuf {
+        self.browser_dir.join(&self.browser_name)
+    }
+}
+
 /// One scheduled run, as its cell receives it (-2).
 ///
 /// Typed rather than free-form: a run cell can receive only these
@@ -638,6 +678,7 @@ impl CellConfig {
             skill_code: None,
             scheduled: None,
             harness: None,
+            browser: None,
             limits: CellLimits::parse(&get)?,
             cgroup: cgroup_parent(&get)?,
             connected: false,
@@ -709,6 +750,39 @@ impl CellConfig {
     #[must_use]
     pub const fn is_harness_cell(&self) -> bool {
         self.harness.is_some()
+    }
+
+    /// Whether this is a browser cell (WO-029).
+    #[must_use]
+    pub const fn is_browser_cell(&self) -> bool {
+        self.browser.is_some()
+    }
+
+    /// A browser cell (WO-029), `cell_id`, on the ids `ids`: `controller`
+    /// is its program, `dirs` its browser, fonts, scratch and relay, held
+    /// to `limits` in the delegated group under `cgroup`. A browser cell
+    /// is bounded as a whole or not started, so the group is required, and
+    /// so are a memory and a process limit (the isolation refuses it
+    /// without them).
+    ///
+    /// # Errors
+    ///
+    /// As [`CellConfig::skill`].
+    pub fn browser(
+        cell_id: &str,
+        ids: CellIds,
+        controller: PathBuf,
+        dirs: BrowserDirs,
+        limits: CellLimits,
+        cgroup: PathBuf,
+    ) -> Result<Self, Error> {
+        let mut cell = Self::skill_on(cell_id, ids)?;
+        cell.agent_bin = controller;
+        cell.browser = Some(dirs);
+        cell.connected = true;
+        cell.limits = limits;
+        cell.cgroup = Some(cgroup);
+        Ok(cell)
     }
 
     /// Reads and validates cell configuration from the environment.
@@ -906,6 +980,7 @@ impl CellConfig {
             skill_code: None,
             scheduled: None,
             harness: None,
+            browser: None,
             limits: CellLimits::parse(&get)?,
             cgroup: cgroup_parent(&get)?,
             connected: false,
@@ -999,6 +1074,9 @@ fn cell_workdir(config: &CellConfig) -> Option<&'static str> {
 /// class, another harness cell's adds the file calls it needs to
 /// edit its work tree, and every other cell gets the agent's.
 const fn cell_filter(config: &CellConfig) -> Filter {
+    if config.browser.is_some() {
+        return Filter::Browser;
+    }
     match &config.harness {
         Some(HarnessDirs {
             network: Some(_), ..
@@ -1015,6 +1093,51 @@ fn harness_network(config: &CellConfig) -> Option<&HarnessNetwork> {
         .as_ref()
         .and_then(|harness| harness.network.as_ref())
 }
+
+/// A browser cell's controller's environment: its cell id and log level,
+/// the scratch directory as its home and temp, and where its browser, its
+/// relay and its fonts are in the cell. Nothing about the broker but the
+/// connection the spawn names ([`hatchling_isolation::CONNECTION_FD_VAR`]).
+fn browser_env(
+    config: &CellConfig,
+    browser: &BrowserDirs,
+    log_level: LogLevel,
+) -> Vec<(String, String)> {
+    let mut env = vec![
+        (String::from("HATCHLING_CELL_ID"), config.cell_id.clone()),
+        (
+            String::from("HATCHLING_LOG_LEVEL"),
+            String::from(log_level_name(log_level)),
+        ),
+        (String::from("HOME"), String::from(IN_CELL_SCRATCH)),
+        (String::from("TMPDIR"), String::from(IN_CELL_SCRATCH)),
+        (
+            String::from("HATCHLING_BROWSER"),
+            format!("{IN_CELL_BROWSER}/{}", browser.browser_name),
+        ),
+        (
+            String::from("HATCHLING_BROWSER_PROXY_PORT"),
+            browser.relay.to_string(),
+        ),
+    ];
+    if browser.fonts.is_some() {
+        env.push((
+            String::from("HATCHLING_BROWSER_FONTS"),
+            String::from(IN_CELL_FONTS),
+        ));
+    }
+    env
+}
+
+/// Where a browser cell sees its browser's directory.
+const IN_CELL_BROWSER: &str = "/browser";
+
+/// Where a browser cell sees its fonts.
+const IN_CELL_FONTS: &str = "/fonts";
+
+/// The tool name a browser cell's browser binary is bound under, so the
+/// libraries it links are bound too.
+const BROWSER_LIBS: &str = "browser-libs";
 
 /// The cell program's environment and argv, exactly as it runs with
 /// them.
@@ -1033,6 +1156,12 @@ fn harness_network(config: &CellConfig) -> Option<&HarnessNetwork> {
 ///   arguments. Nothing else: no vault, no broker, no host
 ///   variable.
 fn program_env(config: &CellConfig, log_level: LogLevel) -> (Vec<String>, Vec<(String, String)>) {
+    if let Some(browser) = &config.browser {
+        return (
+            vec![String::from(PROGRAM)],
+            browser_env(config, browser, log_level),
+        );
+    }
     let mut env = vec![(String::from("HATCHLING_CELL_ID"), config.cell_id.clone())];
     if !config.is_skill_cell() {
         if !config.connected {
@@ -1115,17 +1244,31 @@ fn cell_spec(config: &CellConfig, log_level: LogLevel) -> CellSpec {
         }),
         connection: !config.is_skill_cell() && config.connected,
         exposures: cell_exposures(config),
-        tools: harness_network(config).map_or_else(Vec::new, |network| {
-            network
-                .tools
-                .iter()
-                .map(|(source, name)| Tool {
-                    source: source.clone(),
-                    name: name.clone(),
+        tools: config.browser.as_ref().map_or_else(
+            || {
+                harness_network(config).map_or_else(Vec::new, |network| {
+                    network
+                        .tools
+                        .iter()
+                        .map(|(source, name)| Tool {
+                            source: source.clone(),
+                            name: name.clone(),
+                        })
+                        .collect()
                 })
-                .collect()
-        }),
-        relay: harness_network(config).map(|network| network.relay),
+            },
+            |browser| {
+                vec![Tool {
+                    source: browser.browser(),
+                    name: String::from(BROWSER_LIBS),
+                }]
+            },
+        ),
+        relay: config
+            .browser
+            .as_ref()
+            .map(|browser| browser.relay)
+            .or_else(|| harness_network(config).map(|network| network.relay)),
         filter: cell_filter(config),
         limits: config.limits.into(),
         cgroup: config.cgroup.clone(),
@@ -1157,6 +1300,28 @@ fn cell_exposures(config: &CellConfig) -> Vec<Exposure> {
             });
         }
     }
+    if let Some(browser) = &config.browser {
+        exposures.push(Exposure {
+            source: browser.browser_dir.clone(),
+            name: String::from("browser"),
+            writable: false,
+            label: "browser dir",
+        });
+        if let Some(fonts) = &browser.fonts {
+            exposures.push(Exposure {
+                source: fonts.clone(),
+                name: String::from("fonts"),
+                writable: false,
+                label: "fonts dir",
+            });
+        }
+        exposures.push(Exposure {
+            source: browser.scratch.clone(),
+            name: String::from("scratch"),
+            writable: true,
+            label: "browser scratch dir",
+        });
+    }
     exposures
 }
 
@@ -1164,6 +1329,159 @@ fn cell_exposures(config: &CellConfig) -> Vec<Exposure> {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    /// A browser cell under `base`: its browser (a copy of `/bin/true`),
+    /// fonts and scratch directories made there.
+    fn browser_cell_at(base: &Path) -> CellConfig {
+        let (browser_dir, fonts, scratch) = (
+            base.join("browser"),
+            base.join("fonts"),
+            base.join("scratch"),
+        );
+        for dir in [&browser_dir, &fonts, &scratch] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::copy("/bin/true", browser_dir.join("chrome")).unwrap();
+        let dirs = BrowserDirs {
+            browser_dir,
+            browser_name: String::from("chrome"),
+            fonts: Some(fonts),
+            scratch,
+            relay: crate::browser_proxy::RELAY_PORT,
+            handoff: base.join("relay.sock"),
+        };
+        let cell = CellConfig::browser(
+            "browser-view",
+            CellIds::Own,
+            PathBuf::from("/bin/true"),
+            dirs,
+            crate::browser_session::browser_limits(),
+            base.join("group"),
+        )
+        .unwrap();
+        assert!(cell.is_browser_cell() && !cell.is_skill_cell() && !cell.is_harness_cell());
+        cell
+    }
+
+    #[test]
+    fn a_browser_cell_runs_its_controller_connected_and_bounded() {
+        let base =
+            std::env::temp_dir().join(format!("hatchling-browser-spec-{}", std::process::id()));
+        let cell = browser_cell_at(&base);
+        let spec = cell_spec(&cell, LogLevel::Error);
+        assert_eq!(spec.filter, Filter::Browser);
+        assert!(spec.connection, "its own connection");
+        assert!(spec.endpoint.is_none(), "no socket");
+        assert_eq!(spec.relay, Some(crate::browser_proxy::RELAY_PORT));
+        assert_eq!(spec.cgroup, Some(base.join("group")));
+        assert_eq!(
+            spec.limits.memory,
+            Some(crate::browser_session::BROWSER_MEMORY)
+        );
+        assert_eq!(
+            spec.limits.processes,
+            Some(crate::browser_session::BROWSER_PROCESSES)
+        );
+        assert_eq!(spec.argv, [String::from(PROGRAM)]);
+        assert_eq!(spec.workdir, None);
+        let browser = cell.browser.as_ref().unwrap();
+        assert_eq!(browser_env(&cell, browser, LogLevel::Error), spec.env);
+        let env: Vec<(&str, &str)> = spec
+            .env
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect();
+        assert_eq!(
+            env,
+            [
+                ("HATCHLING_CELL_ID", "browser-view"),
+                ("HATCHLING_LOG_LEVEL", "error"),
+                ("HOME", "/scratch"),
+                ("TMPDIR", "/scratch"),
+                ("HATCHLING_BROWSER", "/browser/chrome"),
+                ("HATCHLING_BROWSER_PROXY_PORT", "8118"),
+                ("HATCHLING_BROWSER_FONTS", "/fonts"),
+            ]
+        );
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// WO-029: what a browser cell sees, from its spec, as the backend
+    /// would build it: its controller, its browser and fonts read-only, its
+    /// scratch directory the one writable directory, the browser's
+    /// libraries, the devices a process-running cell writes, and nothing
+    /// else. No broker socket, no vault, nothing of a home; and its
+    /// controller learns nothing of the broker but its connection.
+    #[test]
+    fn a_browser_cell_sees_its_browser_fonts_and_scratch_and_nothing_else() {
+        let base =
+            std::env::temp_dir().join(format!("hatchling-browser-view-{}", std::process::id()));
+        let cell = browser_cell_at(&base);
+        let spec = cell_spec(&cell, LogLevel::Error);
+        let view = hatchling_isolation::platform().view(&spec).unwrap();
+        let seen: Vec<(String, hatchling_isolation::Origin, bool)> = view
+            .entries
+            .iter()
+            .filter(|entry| {
+                !matches!(
+                    entry.origin,
+                    hatchling_isolation::Origin::Runtime | hatchling_isolation::Origin::Device
+                )
+            })
+            .map(|entry| (entry.name.clone(), entry.origin, entry.writable))
+            .collect();
+        let program = PROGRAM.trim_start_matches('/');
+        assert_eq!(
+            seen,
+            [
+                (
+                    String::from(program),
+                    hatchling_isolation::Origin::Program,
+                    false
+                ),
+                (
+                    String::from("browser"),
+                    hatchling_isolation::Origin::Granted,
+                    false
+                ),
+                (
+                    String::from("fonts"),
+                    hatchling_isolation::Origin::Granted,
+                    false
+                ),
+                (
+                    String::from("scratch"),
+                    hatchling_isolation::Origin::Granted,
+                    true
+                ),
+                (
+                    String::from("browser-libs"),
+                    hatchling_isolation::Origin::Tool,
+                    false
+                ),
+            ]
+        );
+        for entry in &view.entries {
+            let writable_ok = !entry.writable
+                || entry.name == "scratch"
+                || entry.origin == hatchling_isolation::Origin::Device;
+            assert!(
+                writable_ok,
+                "only scratch and the devices are writable: {entry:?}"
+            );
+            assert!(
+                entry.origin != hatchling_isolation::Origin::Endpoint,
+                "no broker socket: {entry:?}"
+            );
+            assert!(
+                !entry.source.starts_with("/home") && !entry.source.starts_with("/root"),
+                "nothing of a home: {entry:?}"
+            );
+        }
+        assert_eq!(view.relay, Some(crate::browser_proxy::RELAY_PORT));
+        assert!(view.processes, "it sees its own processes");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
 
     fn socket(path: &str) -> SocketPath {
         path.parse().unwrap()
