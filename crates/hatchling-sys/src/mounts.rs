@@ -18,9 +18,11 @@
 //!
 //! A real CLI's cell also gets the null, zero and random devices,
 //! writable and without `NODEV` (a `NODEV` device cannot be opened), and a
-//! `/proc` of its own processes ([`MountPlan::with_proc`]).
+//! `/proc` of its own processes ([`MountPlan::with_proc`]), and a private
+//! writable `tmpfs` at `/scratch` ([`MountPlan::with_scratch`]).
 
 use std::collections::HashSet;
+use std::num::NonZeroU64;
 use std::path::{Component, Path, PathBuf};
 
 use crate::Error;
@@ -115,7 +117,13 @@ pub struct MountPlan {
     binds: Vec<BindMount>,
     /// Whether the new root gets a procfs of the cell's own processes.
     proc: bool,
+    /// The size, in bytes, of a private `tmpfs` at the new root's
+    /// [`SCRATCH`], if it gets one.
+    scratch: Option<NonZeroU64>,
 }
+
+/// Where a plan's private `tmpfs` is mounted, relative to the new root.
+pub const SCRATCH: &str = "scratch";
 
 impl MountPlan {
     /// Builds and validates a plan.
@@ -177,6 +185,7 @@ impl MountPlan {
             new_root,
             binds,
             proc: false,
+            scratch: None,
         })
     }
 
@@ -198,6 +207,35 @@ impl MountPlan {
     #[must_use]
     pub const fn has_proc(&self) -> bool {
         self.proc
+    }
+
+    /// The same plan, with a private `tmpfs` of at most `bytes` at the new
+    /// root's [`SCRATCH`]: the one writable place no host path backs.
+    ///
+    /// It belongs to the cell's user, mode `0700`, `NOSUID|NODEV`. Its
+    /// pages are the cell's memory, so a resource group bounds them too,
+    /// and it is gone with the cell's mount namespace, however the cell
+    /// ends: nothing written there reaches the host or outlives the cell.
+    /// A size, never zero: a `tmpfs` of `size=0` is unbounded.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidMountPlan`] if a bind is already planned at
+    /// [`SCRATCH`]: the place is the `tmpfs`'s alone.
+    pub fn with_scratch(mut self, bytes: NonZeroU64) -> Result<Self, Error> {
+        if self.binds.iter().any(|bind| bind.target == SCRATCH) {
+            return Err(Error::InvalidMountPlan {
+                reason: format!("{SCRATCH} is bound already; it can't also be the scratch tmpfs"),
+            });
+        }
+        self.scratch = Some(bytes);
+        Ok(self)
+    }
+
+    /// The size of the plan's scratch `tmpfs`, if it gets one.
+    #[must_use]
+    pub const fn scratch(&self) -> Option<NonZeroU64> {
+        self.scratch
     }
 
     /// The staging directory that becomes the new root.
@@ -346,6 +384,16 @@ impl MountPlan {
             })?;
             rustix::mount::mount("proc", "proc", "proc", PROC_FLAGS, "subset=pid")
                 .map_err(mount_err("mount(proc)"))?;
+        }
+        if let Some(bytes) = self.scratch {
+            std::fs::create_dir(SCRATCH).map_err(|source| Error::Mount {
+                operation: "mkdir(scratch)",
+                source,
+            })?;
+            // `uid`/`gid` are read in the cell's namespace: the cell's user.
+            let options = format!("size={bytes},mode=0700,uid=0,gid=0");
+            rustix::mount::mount("tmpfs", SCRATCH, "tmpfs", TMPFS_ROOT_FLAGS, options.as_str())
+                .map_err(mount_err("mount(scratch)"))?;
         }
         // The root itself goes read-only last: nothing in-cell is
         // writable afterwards.
@@ -607,6 +655,42 @@ pub(crate) mod tests {
         }
         assert!(is_char_device(Path::new("/dev/null")));
         assert!(!is_char_device(Path::new("/nonexistent/device")));
+    }
+
+    #[test]
+    fn a_scratch_tmpfs_is_planned_only_when_asked_and_never_over_a_bind() {
+        let allowed = allowlist(&["/etc/passwd"]);
+        let plan = MountPlan::new(
+            PathBuf::from("/tmp/root"),
+            &allowed,
+            vec![bind("/etc/passwd", "etc/passwd", false)],
+        )
+        .unwrap();
+        assert_eq!(plan.scratch(), None, "no scratch unless asked");
+        let size = NonZeroU64::new(1 << 20).unwrap();
+        let with = plan.with_scratch(size).unwrap();
+        assert_eq!(with.scratch(), Some(size));
+        assert!(!with.has_proc(), "one doesn't bring the other");
+        // A bind at the scratch's place is a plan of its own (a harness
+        // cell binds its scratch directory there), but then no tmpfs.
+        let allowed = allowlist(&["/tmp"]);
+        let bound = MountPlan::new(
+            PathBuf::from("/tmp/root"),
+            &allowed,
+            vec![bind("/tmp", SCRATCH, true)],
+        )
+        .unwrap();
+        assert!(matches!(
+            bound.with_scratch(size),
+            Err(Error::InvalidMountPlan { .. })
+        ));
+        let beside = MountPlan::new(
+            PathBuf::from("/tmp/root"),
+            &allowed,
+            vec![bind("/tmp", "scratch2", true)],
+        )
+        .unwrap();
+        assert!(beside.with_scratch(size).is_ok());
     }
 
     #[test]

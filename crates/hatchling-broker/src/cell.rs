@@ -1129,6 +1129,7 @@ fn cell_spec(config: &CellConfig, log_level: LogLevel) -> CellSpec {
         filter: cell_filter(config),
         limits: config.limits.into(),
         cgroup: config.cgroup.clone(),
+        scratch: None,
     }
 }
 

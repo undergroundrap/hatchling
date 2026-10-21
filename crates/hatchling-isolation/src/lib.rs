@@ -49,6 +49,7 @@ pub mod conformance;
 #[cfg(target_os = "linux")]
 pub mod linux;
 
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -294,6 +295,11 @@ pub struct CellSpec {
     /// The delegated parent for this cell's resource group, if configured.
     /// The cell itself never sees this host path.
     pub cgroup: Option<PathBuf>,
+    /// A private writable `tmpfs` at `/scratch` of at most this many
+    /// bytes, if any: the one writable place no host path backs. Its pages
+    /// are the cell's memory, which the resource group bounds, and it is
+    /// gone with the cell, however the cell ends.
+    pub scratch: Option<NonZeroU64>,
 }
 
 /// What a cell's program, and everything it starts, is held to.
@@ -392,6 +398,8 @@ pub struct CellView {
     /// Whether the cell sees its own processes: none of the
     /// host's, and no other cell's.
     pub processes: bool,
+    /// The size of the cell's private scratch `tmpfs`, if it has one.
+    pub scratch: Option<NonZeroU64>,
 }
 
 /// One host path a cell sees.
