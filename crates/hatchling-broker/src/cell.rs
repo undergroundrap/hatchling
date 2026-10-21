@@ -455,6 +455,10 @@ pub struct BrowserDirs {
     /// The host directory of fonts bound at `/fonts`, if any. Without
     /// fonts the browser's renderer can't lay out text.
     pub fonts: Option<PathBuf>,
+    /// The libraries NSS opens when the browser starts TLS, not when it's
+    /// linked, so they aren't among the libraries it links: each bound at
+    /// its own host path, with what it links.
+    pub nss: Vec<PathBuf>,
     /// The relay's port on the cell's own loopback.
     pub relay: u16,
     /// The unix socket, in the broker's private run directory, where the
@@ -1258,10 +1262,16 @@ fn cell_spec(config: &CellConfig, log_level: LogLevel) -> CellSpec {
                 })
             },
             |browser| {
-                vec![Tool {
+                let modules = browser.nss.iter().map(|module| Tool {
+                    source: module.clone(),
+                    name: module.to_string_lossy().trim_start_matches('/').to_owned(),
+                });
+                std::iter::once(Tool {
                     source: browser.browser(),
                     name: String::from(BROWSER_LIBS),
-                }]
+                })
+                .chain(modules)
+                .collect()
             },
         ),
         relay: config
@@ -1340,6 +1350,7 @@ mod tests {
             browser_dir,
             browser_name: String::from("chrome"),
             fonts: Some(fonts),
+            nss: Vec::new(),
             relay: crate::browser_proxy::RELAY_PORT,
             handoff: base.join("relay.sock"),
         };
@@ -1368,6 +1379,33 @@ mod tests {
         assert_eq!(spec.relay, Some(crate::browser_proxy::RELAY_PORT));
         assert_eq!(spec.cgroup, Some(base.join("group")));
         assert_eq!(spec.scratch, Some(crate::browser_session::BROWSER_SCRATCH));
+        assert_eq!(
+            spec.tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            [BROWSER_LIBS],
+            "the browser, and no NSS module the dirs don't name"
+        );
+        let mut with_nss = cell.clone();
+        if let Some(browser) = with_nss.browser.as_mut() {
+            browser.nss = vec![PathBuf::from("/usr/lib/libsoftokn3.so")];
+        }
+        let tools = cell_spec(&with_nss, LogLevel::Error).tools;
+        assert_eq!(
+            tools
+                .iter()
+                .map(|tool| (tool.source.as_path(), tool.name.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                (base.join("browser").join("chrome").as_path(), BROWSER_LIBS),
+                (
+                    Path::new("/usr/lib/libsoftokn3.so"),
+                    "usr/lib/libsoftokn3.so"
+                )
+            ],
+            "each module bound at its own path"
+        );
         assert_eq!(
             spec.limits.memory,
             Some(crate::browser_session::BROWSER_MEMORY)

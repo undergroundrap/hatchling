@@ -99,7 +99,7 @@ fn started_as_the_cell_program_it_is_the_agent() {
 fn the_brokers_spawner_helpers_reach_the_broker() {
     // The broker re-runs its own executable with these; with no spec,
     // each helper refuses in its own words, which only the broker has.
-    for helper in ["skill-cell", "agent-run"] {
+    for helper in ["skill-cell", "agent-run", "browser-cell"] {
         let out = hatchling(None, &[helper]).expect("hatchling runs");
         assert_eq!(out.status.code(), Some(1), "{helper}");
         let err = stderr(&out);

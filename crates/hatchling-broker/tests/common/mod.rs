@@ -166,6 +166,13 @@ pub(crate) fn agent_binary() -> Result<PathBuf, String> {
     find_binary("hatchling-agent", "HATCHLING_AGENT_BIN")
 }
 
+/// Path to the compiled `hatchling-browser` binary: the controller a
+/// browser cell runs.
+#[allow(dead_code, reason = "shared test helper: used by only one test target")]
+pub(crate) fn browser_controller_binary() -> Result<PathBuf, String> {
+    find_binary("hatchling-browser", "HATCHLING_BROWSER_CONTROLLER_BIN")
+}
+
 /// Path to the compiled `hatchling-probe` binary (the
 /// adversarial probe).
 #[allow(dead_code, reason = "shared test helper: used by only one test target")]

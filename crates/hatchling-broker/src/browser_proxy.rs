@@ -828,6 +828,8 @@ mod tests {
         let (site, _) = echo_site();
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let addr = listener.local_addr().unwrap();
+        // The test keeps the port: freed, another test could be given it.
+        let kept = listener.try_clone().unwrap();
         let proxy = BrowserProxy::start(
             listener,
             "browser-proxy-stopped",
@@ -835,8 +837,21 @@ mod tests {
             Instant::now() + Duration::from_secs(120),
         );
         assert_eq!(proxy.finish(), ProxyCount::default());
-        // Its listener is gone with its thread.
-        assert!(TcpStream::connect(addr).is_err());
+        // A connection made now is left for whoever else holds the port:
+        // the stopped proxy never takes it.
+        let _late = TcpStream::connect(addr).unwrap();
+        kept.set_nonblocking(true).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let taken = loop {
+            match kept.accept() {
+                Ok(_) => break true,
+                Err(_) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => break false,
+            }
+        };
+        assert!(taken, "the stopped proxy took a connection");
         // A deadline already past serves nothing either.
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let late = BrowserProxy::start(listener, "browser-proxy-late", route(site), Instant::now());

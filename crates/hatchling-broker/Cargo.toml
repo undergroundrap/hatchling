@@ -116,3 +116,8 @@ hatchling-prompt = { path = "../hatchling-prompt" }
 # The delivery test builds a research run's report through the
 # artifact pipeline.
 hatchling-research = { path = "../hatchling-research" }
+# The browser cell's test serves a site with a certificate made fresh on
+# each run, in memory, signed with ring (rustls's backend), so no private
+# key is ever committed. Tests only: the broker itself holds no TLS.
+ring = "0.17"
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std"] }

@@ -38,7 +38,7 @@ const isString = (value: unknown): value is string => typeof value === 'string';
 const isCount = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 0;
 const isLimit = (value: unknown): boolean => value === null || value === undefined || isCount(value);
 const LIMITS = ['processes', 'address_space', 'file_size', 'open_files', 'memory', 'cpu_millis'] as const;
-const KINDS = ['agent', 'run', 'subagent', 'skill', 'harness'];
+const KINDS = ['agent', 'run', 'subagent', 'skill', 'harness', 'browser'];
 const SOCKETS = ['api', 'ui'];
 const VERDICTS = ['allowed', 'no_grant', 'not_allowed', 'bad_surrogate', 'policy', 'failed'];
 function isLimits(value: unknown): value is CellLimits {

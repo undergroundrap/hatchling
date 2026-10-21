@@ -83,7 +83,7 @@ pub const STDERR_KEEP: u64 = 16 * 1024;
 
 /// Bound on reaping the helper after it was killed: the kill is already
 /// in flight, so anything past this is a wedged kernel, not a skill.
-const REAP_AFTER_KILL: Duration = Duration::from_secs(5);
+pub(crate) const REAP_AFTER_KILL: Duration = Duration::from_secs(5);
 
 /// The pauses between attempts to start a program the kernel reports
 /// busy: about half a second in all.
@@ -108,7 +108,7 @@ const BUSY_PAUSES: [Duration; 8] = [
 /// is refused because the program is busy (`ETXTBSY`); after the last
 /// pause that refusal is returned as it is. Any other outcome, success
 /// or another error, returns at once.
-fn retry_while_busy<T>(
+pub(crate) fn retry_while_busy<T>(
     mut attempt: impl FnMut() -> std::io::Result<T>,
     mut pause: impl FnMut(Duration),
 ) -> std::io::Result<T> {
@@ -401,12 +401,12 @@ fn supervised(std_child: &mut std::process::Child) -> Result<Process, SkillRunEr
 
 /// The helper's private temp dir, removed (with anything a killed helper
 /// left in it) on drop.
-struct RunDir {
+pub(crate) struct RunDir {
     dir: PathBuf,
 }
 
 impl RunDir {
-    fn create() -> Result<Self, String> {
+    pub(crate) fn create() -> Result<Self, String> {
         use std::os::unix::fs::DirBuilderExt as _;
         // A random name in the shared temp dir: no other user can make it
         // first and so block the run.
@@ -421,7 +421,7 @@ impl RunDir {
         Ok(Self { dir })
     }
 
-    fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.dir
     }
 }
@@ -478,10 +478,10 @@ fn run_helper(spec: Option<&str>) -> Result<i32, Error> {
     Ok(cell.wait_exit()?.code)
 }
 
-/// Hands a real CLI's relay listener to the broker, at the unix
-/// socket in the broker's private run directory, and keeps no copy. The
-/// cell dies with this helper if it cannot.
-fn hand_relay_over(cell: &mut CellHandle, handoff: &Path) -> Result<(), Error> {
+/// Hands a cell's relay listener (a real CLI's, or a browser's) to the
+/// broker, at the unix socket in the broker's private run directory, and
+/// keeps no copy. The cell dies with this helper if it cannot.
+pub(crate) fn hand_relay_over(cell: &mut CellHandle, handoff: &Path) -> Result<(), Error> {
     let failed = |reason: String| Error::Usage {
         reason: format!("cannot hand the relay to the broker: {reason}"),
     };

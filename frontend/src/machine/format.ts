@@ -50,6 +50,7 @@ const KINDS: Readonly<Record<CellKind, string>> = {
     subagent: 'Subagent',
     skill: 'Skill',
     harness: 'Coding CLI',
+    browser: 'Browser',
 };
 /** What a cell is for, in a word or two. */
 export function kind(cell: CellKind): string {

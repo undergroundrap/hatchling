@@ -827,7 +827,7 @@ export type CapabilityName = string;
 /**
  * What a cell is for.
  */
-export type CellKind = 'agent' | 'run' | 'subagent' | 'skill' | 'harness';
+export type CellKind = 'agent' | 'run' | 'subagent' | 'skill' | 'harness' | 'browser';
 /**
  * The limits a cell is held to; `None` is unlimited, or the broker's own
  * bound. Memory and CPU apply only under a cgroup.
