@@ -885,6 +885,13 @@ mod tests {
             Some((refusal(400, "Bad Request", EgressVerdict::NotAllowed), None))
         );
         drop(stream);
+        // The site accepts on its own thread: wait for the one it was
+        // opened to, then make sure no other followed.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while taken.load(Ordering::SeqCst) < 1 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::thread::sleep(Duration::from_millis(100));
         assert_eq!(taken.load(Ordering::SeqCst), 1, "only the one opened");
     }
 
@@ -953,20 +960,21 @@ mod tests {
         assert!(!tunnel(&far, &context));
         drop(far);
         assert!(drained(&near).starts_with(b"HTTP/1.1 405"));
-        // The loop: stopped, it returns at once, whatever the deadline.
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let stop = AtomicBool::new(true);
-        let started = Instant::now();
-        serve(
-            &listener,
-            &context,
-            Instant::now() + Duration::from_secs(60),
-            &stop,
-        );
-        assert!(started.elapsed() < Duration::from_secs(5));
-        // Past its deadline, likewise.
-        let stop = AtomicBool::new(false);
-        serve(&listener, &context, Instant::now(), &stop);
+        // The loop, on a thread of its own so that one that never returns
+        // fails here rather than hanging: stopped, it returns at once,
+        // whatever the deadline; past its deadline, likewise.
+        let returns = |stopped: bool, deadline: Instant| {
+            let (done, finished) = std::sync::mpsc::channel();
+            let context = Arc::clone(&context);
+            std::thread::spawn(move || {
+                let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+                serve(&listener, &context, deadline, &AtomicBool::new(stopped));
+                let _ = done.send(());
+            });
+            finished.recv_timeout(Duration::from_secs(5)).is_ok()
+        };
+        assert!(returns(true, Instant::now() + Duration::from_secs(60)), "stopped");
+        assert!(returns(false, Instant::now()), "past its deadline");
         assert_eq!(context.tunnelled.load(Ordering::SeqCst), 0);
         assert_eq!(
             refusal(400, "Bad Request", EgressVerdict::NotAllowed),
