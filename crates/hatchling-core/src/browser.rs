@@ -25,6 +25,11 @@ pub const MAX_TYPED_CHARS: usize = 4096;
 /// [`BrowserCommand::Frame`] shows, at half size.
 pub const VIEWPORT: (u32, u32) = (1280, 800);
 
+/// The most base64 a frame's JPEG may be: room is left in one frame for
+/// the event that carries it on to the owner's app, which a frame too big
+/// for would end.
+pub const MAX_FRAME_JPEG_BASE64: usize = 60 * 1024;
+
 /// A command to the browser cell.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "command", rename_all = "snake_case")]
@@ -115,8 +120,7 @@ pub enum BrowserReply {
         snapshot: PageSnapshot,
     },
     /// A picture of the page, what its viewport shows at half size: a
-    /// JPEG, as standard base64, small enough that the reply fits one
-    /// frame. The page's pixels, untrusted like the rest: the broker checks
+    /// JPEG, as standard base64, at most [`MAX_FRAME_JPEG_BASE64`]. The page's pixels, untrusted like the rest: the broker checks
     /// it's a JPEG before anyone sees it.
     Frame {
         /// The JPEG's bytes, standard base64.

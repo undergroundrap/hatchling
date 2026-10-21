@@ -30,8 +30,8 @@ pub const LOAD: Duration = Duration::from_secs(30);
 /// How long, after an action, a navigation it started has to show itself.
 pub const SETTLE: Duration = Duration::from_millis(500);
 
-/// The JPEG qualities a frame is tried at, best first, until its reply
-/// fits one frame.
+/// The JPEG qualities a frame is tried at, best first, until it's within
+/// [`hatchling_core::browser::MAX_FRAME_JPEG_BASE64`].
 pub const FRAME_QUALITIES: [u8; 4] = [60, 40, 25, 15];
 
 /// The snapshot, read in the isolated world. It keeps the elements it
@@ -346,7 +346,7 @@ impl Session {
 
 impl Session {
     /// A picture of what the page's viewport shows, at half size, at the
-    /// best of [`FRAME_QUALITIES`] whose reply fits one frame.
+    /// best of [`FRAME_QUALITIES`] within the frame's bound.
     fn frame(&mut self) -> Result<String, BrowserFailure> {
         let session = self.page_session()?;
         let metrics = self
@@ -375,7 +375,7 @@ impl Session {
                 )
                 .map_err(gone_or(BrowserFailure::NotPossible))?;
             let jpeg = text(&shot, "data")?;
-            if hatchling_core::fits_one_frame(&BrowserReply::Frame { jpeg: jpeg.clone() }) {
+            if jpeg.len() <= hatchling_core::browser::MAX_FRAME_JPEG_BASE64 {
                 return Ok(jpeg);
             }
         }
@@ -487,10 +487,12 @@ mod tests {
                     .pointer("/params/quality")
                     .and_then(Value::as_u64)
                     .unwrap_or_default();
-                let data = if quality > 25 {
-                    "A".repeat(hatchling_core::framing::MAX_FRAME_BYTES)
-                } else {
-                    String::from("/9j/4AAQ")
+                // Past the bound above 25; exactly at it, at 25.
+                let bound = hatchling_core::browser::MAX_FRAME_JPEG_BASE64;
+                let data = match quality {
+                    26.. => "A".repeat(bound + 1),
+                    25 => format!("/9j/{}", "A".repeat(bound - 4)),
+                    _ => String::from("/9j/4AAQ"),
                 };
                 (json!({ "data": data }), Vec::new())
             }
@@ -619,11 +621,16 @@ mod tests {
         let _ = session.handle(BrowserCommand::Open {
             url: String::from("http://a.test/"),
         });
+        let at_the_bound = format!(
+            "/9j/{}",
+            "A".repeat(hatchling_core::browser::MAX_FRAME_JPEG_BASE64 - 4)
+        );
         assert_eq!(
             session.handle(BrowserCommand::Frame),
             BrowserReply::Frame {
-                jpeg: String::from("/9j/4AAQ")
-            }
+                jpeg: at_the_bound.clone()
+            },
+            "exactly at the bound is within it"
         );
         let shots = sent(&seen, "Page.captureScreenshot");
         let qualities: Vec<u64> = shots
@@ -645,11 +652,7 @@ mod tests {
                 .iter()
                 .all(|shot| shot.pointer("/params/format") == Some(&json!("jpeg")))
         );
-        assert_eq!(
-            session.frame(),
-            Ok(String::from("/9j/4AAQ")),
-            "again, directly"
-        );
+        assert_eq!(session.frame(), Ok(at_the_bound), "again, directly");
         session.close();
         assert_eq!(session.frame(), Err(BrowserFailure::NoPage), "closed");
     }
