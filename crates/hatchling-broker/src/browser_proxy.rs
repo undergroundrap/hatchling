@@ -10,6 +10,13 @@
 //!   plain request aimed at the listener included, is refused.
 //! - **A site by name,** held to the rules a URL's authority is
 //!   ([`Origin::from_authority`]): no IP address, no user.
+//! - **Only a site the session holds** ([`Sites`]), checked **before** its
+//!   name is resolved: a name never granted never reaches a resolver, so a
+//!   secret spelled into one can't leave as a lookup. Every session is
+//!   strict (WO-029): what a page loads from another site is held to the
+//!   same grants as where it is, and the sites it was refused are kept for
+//!   the owner to see. A site revoked loses the tunnels it had open, not
+//!   only new ones.
 //! - **Resolved for each connection, and refused if any address it
 //!   resolves to is internal** (WO-023's [`is_internal`]); the connection
 //!   is then made to the addresses checked, never a fresh lookup.
@@ -19,14 +26,15 @@
 //!   decisions the operator's Machine view shows, and its byte counts in
 //!   the broker's log.
 //!
-//! What this doesn't decide is which sites a page may load: navigation
-//! grants are part 3. A page's requests to any public site are allowed and
-//! recorded here, as the work order sets out.
+//! What a `CONNECT` proxy can check is the site and port a tunnel goes to,
+//! never the method, path or body inside it: those are the browser's, in
+//! TLS. Which sites a session holds is the broker's to decide (part 3).
 
+use std::collections::BTreeSet;
 use std::io::{BufRead as _, BufReader, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs as _};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -58,6 +66,9 @@ pub const MAX_LIVE: u32 = 64;
 /// Most connections past [`MAX_LIVE`] told why at once; past them too, a
 /// connection is dropped unanswered.
 pub const MAX_BUSY: u32 = 64;
+/// Most sites one session keeps as refused, for the owner to see; past
+/// them a refused site is still refused, but not kept.
+pub const MAX_REFUSED_SITES: usize = 64;
 /// How long a connection refused for [`MAX_LIVE`] has to send its request
 /// before it's answered anyway.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -108,6 +119,129 @@ impl Route {
     }
 }
 
+/// The sites one browser session may reach (WO-029: every session is
+/// strict).
+///
+/// The broker grants and revokes them; the proxy admits a
+/// `CONNECT` only to a site the session holds, before its name is
+/// resolved, and a site revoked loses the tunnels it had open. A site is
+/// `host:port`, as [`Origin::destination`] gives it. Clones share one set.
+#[derive(Debug, Clone, Default)]
+pub struct Sites(Arc<Mutex<Held>>);
+
+#[derive(Debug, Default)]
+struct Held {
+    granted: BTreeSet<String>,
+    refused: BTreeSet<String>,
+    open: Vec<Open>,
+    next: u64,
+}
+
+/// An open tunnel, as revoking its site closes it.
+#[derive(Debug)]
+struct Open {
+    id: u64,
+    destination: String,
+    client: TcpStream,
+    site: TcpStream,
+}
+
+impl Sites {
+    fn held(&self) -> MutexGuard<'_, Held> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Grants `destination`: no longer one the session was refused.
+    pub fn grant(&self, destination: &str) {
+        let mut held = self.held();
+        held.refused.remove(destination);
+        held.granted.insert(destination.to_owned());
+    }
+
+    /// Revokes `destination`, and closes every tunnel open to it, both
+    /// ways: how many it closed.
+    #[must_use]
+    pub fn revoke(&self, destination: &str) -> usize {
+        let mut held = self.held();
+        held.granted.remove(destination);
+        let (closing, kept): (Vec<Open>, Vec<Open>) = std::mem::take(&mut held.open)
+            .into_iter()
+            .partition(|open| open.destination == destination);
+        held.open = kept;
+        drop(held);
+        for open in &closing {
+            let _ = open.client.shutdown(Shutdown::Both);
+            let _ = open.site.shutdown(Shutdown::Both);
+        }
+        closing.len()
+    }
+
+    /// Whether the session holds `destination`.
+    #[must_use]
+    pub fn holds(&self, destination: &str) -> bool {
+        self.held().granted.contains(destination)
+    }
+
+    /// The sites the session was refused and doesn't hold since, in order:
+    /// at most [`MAX_REFUSED_SITES`].
+    #[must_use]
+    pub fn refused(&self) -> Vec<String> {
+        self.held().refused.iter().cloned().collect()
+    }
+
+    /// Whether `destination` is admitted. One that isn't is kept as
+    /// refused, while there's room.
+    fn admit(&self, destination: &str) -> bool {
+        let mut held = self.held();
+        if held.granted.contains(destination) {
+            return true;
+        }
+        if held.refused.len() < MAX_REFUSED_SITES {
+            held.refused.insert(destination.to_owned());
+        }
+        false
+    }
+
+    /// The tunnel from `client` to `site`, for `destination`, registered so
+    /// a revoke can close it: `None` if the session no longer holds the
+    /// site, or the tunnel can't be held to close.
+    fn opened(&self, destination: &str, client: &TcpStream, site: &TcpStream) -> Option<Opened> {
+        let (client, site) = (client.try_clone().ok()?, site.try_clone().ok()?);
+        let id = {
+            let mut held = self.held();
+            if !held.granted.contains(destination) {
+                return None;
+            }
+            let id = held.next;
+            held.next = id.wrapping_add(1);
+            held.open.push(Open {
+                id,
+                destination: destination.to_owned(),
+                client,
+                site,
+            });
+            id
+        };
+        Some(Opened {
+            sites: self.clone(),
+            id,
+        })
+    }
+}
+
+/// A tunnel's registration with its session's [`Sites`], removed when the
+/// tunnel ends.
+struct Opened {
+    sites: Sites,
+    id: u64,
+}
+
+impl Drop for Opened {
+    fn drop(&mut self) {
+        self.sites.held().open.retain(|open| open.id != self.id);
+    }
+}
+
 /// What a browser cell's proxy did.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ProxyCount {
@@ -130,6 +264,7 @@ pub struct BrowserProxy {
 struct Context {
     cell_id: String,
     route: Route,
+    sites: Sites,
     tunnelled: AtomicU32,
     refused: AtomicU32,
     live: AtomicU32,
@@ -146,14 +281,22 @@ impl Drop for Live {
 }
 
 impl BrowserProxy {
-    /// Serves `listener`, the relay of the browser cell `cell_id`, until
-    /// [`BrowserProxy::finish`] or `deadline`.
+    /// Serves `listener`, the relay of the browser cell `cell_id`, to the
+    /// `sites` its session holds, until [`BrowserProxy::finish`] or
+    /// `deadline`.
     #[must_use]
-    pub fn start(listener: TcpListener, cell_id: &str, route: Route, deadline: Instant) -> Self {
+    pub fn start(
+        listener: TcpListener,
+        cell_id: &str,
+        route: Route,
+        sites: Sites,
+        deadline: Instant,
+    ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let context = Arc::new(Context {
             cell_id: cell_id.to_owned(),
             route,
+            sites,
             tunnelled: AtomicU32::new(0),
             refused: AtomicU32::new(0),
             live: AtomicU32::new(0),
@@ -279,25 +422,21 @@ fn tunnel(client: &TcpStream, context: &Context) -> bool {
         return false;
     }
     let mut reader = BufReader::new(client);
-    let (destination, opened) =
-        match read_connect(&mut reader).and_then(|authority| open(&authority, &context.route)) {
-            Ok(opened) => opened,
-            Err((refused, named)) => {
-                if let Some(destination) = &named {
-                    crate::machine::decided(&context.cell_id, destination, refused.verdict);
-                }
-                tracing::info!(
-                    cell = %context.cell_id,
-                    destination = named.as_deref().unwrap_or("-"),
-                    status = refused.status,
-                    reason = refused.reason,
-                    "browser connection refused"
-                );
-                let _ = answer(client, refused.status, refused.reason);
-                let _ = client.shutdown(Shutdown::Write);
-                return false;
-            }
-        };
+    let (destination, opened) = match read_connect(&mut reader)
+        .and_then(|authority| open(&authority, &context.route, &context.sites))
+    {
+        Ok(opened) => opened,
+        Err((refused, named)) => {
+            refuse(client, context, refused, named.as_deref());
+            return false;
+        }
+    };
+    // Revoked since it was admitted: the revoke wins.
+    let Some(_open) = context.sites.opened(&destination, client, &opened) else {
+        let revoked = refusal(403, "Forbidden", EgressVerdict::NoGrant);
+        refuse(client, context, revoked, Some(&destination));
+        return false;
+    };
     crate::machine::decided(&context.cell_id, &destination, EgressVerdict::Allowed);
     // Whatever the browser sent after its request is the tunnel's first
     // bytes.
@@ -312,6 +451,23 @@ fn tunnel(client: &TcpStream, context: &Context) -> bool {
         "browser connection"
     );
     true
+}
+
+/// Answers `client` with `refused`, and records it with the site it names,
+/// if it got as far as naming one.
+fn refuse(client: &TcpStream, context: &Context, refused: Refusal, named: Option<&str>) {
+    if let Some(destination) = named {
+        crate::machine::decided(&context.cell_id, destination, refused.verdict);
+    }
+    tracing::info!(
+        cell = %context.cell_id,
+        destination = named.unwrap_or("-"),
+        status = refused.status,
+        reason = refused.reason,
+        "browser connection refused"
+    );
+    let _ = answer(client, refused.status, refused.reason);
+    let _ = client.shutdown(Shutdown::Write);
 }
 
 /// A refusal, and the destination it names, if the request got as far as
@@ -374,10 +530,10 @@ fn read_line(reader: &mut BufReader<&TcpStream>) -> Option<String> {
     String::from_utf8(line).ok()
 }
 
-/// The connection to the site `authority` names: checked, resolved,
-/// refused if internal, then made to the addresses checked. The site, as
-/// `host:port`, and the connection.
-fn open(authority: &str, route: &Route) -> Result<(String, TcpStream), Refused> {
+/// The connection to the site `authority` names: checked, admitted if
+/// `sites` holds it, then resolved, refused if internal, and made to the
+/// addresses checked. The site, as `host:port`, and the connection.
+fn open(authority: &str, route: &Route, sites: &Sites) -> Result<(String, TcpStream), Refused> {
     let origin = Origin::from_authority(authority)
         .map_err(|_| (refusal(400, "Bad Request", EgressVerdict::NotAllowed), None))?;
     let destination = origin.destination();
@@ -385,6 +541,10 @@ fn open(authority: &str, route: &Route) -> Result<(String, TcpStream), Refused> 
         |status, reason, verdict| (refusal(status, reason, verdict), Some(destination.clone()));
     if origin.port() != HTTPS_PORT {
         return Err(named(403, "Forbidden", EgressVerdict::NotAllowed));
+    }
+    // Before the name is resolved: a lookup is itself a way out.
+    if !sites.admit(&destination) {
+        return Err(named(403, "Forbidden", EgressVerdict::NoGrant));
     }
     let addrs = resolved(
         &destination,
@@ -519,15 +679,36 @@ mod tests {
         )
     }
 
-    /// A proxy on its own loopback listener, for the cell `cell`.
-    fn proxy(site: SocketAddr, cell: &str) -> (BrowserProxy, SocketAddr) {
+    /// The test's sites, each granted: the route's four, so its other
+    /// checks are reached.
+    fn granted() -> Sites {
+        let sites = Sites::default();
+        for site in [
+            "site.test:443",
+            "intranet.test:443",
+            "mixed.test:443",
+            "nowhere.test:443",
+        ] {
+            sites.grant(site);
+        }
+        sites
+    }
+
+    /// A proxy on its own loopback listener, for the cell `cell`, holding
+    /// `sites`.
+    fn proxy_holding(site: SocketAddr, cell: &str, sites: Sites) -> (BrowserProxy, SocketAddr) {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let addr = listener.local_addr().unwrap();
         let deadline = Instant::now() + Duration::from_secs(120);
         (
-            BrowserProxy::start(listener, cell, route(site), deadline),
+            BrowserProxy::start(listener, cell, route(site), sites, deadline),
             addr,
         )
+    }
+
+    /// A proxy for the cell `cell`, holding every test site.
+    fn proxy(site: SocketAddr, cell: &str) -> (BrowserProxy, SocketAddr) {
+        proxy_holding(site, cell, granted())
     }
 
     /// Sends `request` to the proxy; its answer's status line, and the
@@ -578,12 +759,10 @@ mod tests {
 
     #[test]
     fn a_connect_to_a_public_site_is_tunnelled_as_it_is_and_recorded() {
-        let _deciding = DECIDING
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _deciding = DECIDING.lock().unwrap_or_else(PoisonError::into_inner);
         let _flood = crate::machine::FLOOD
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(PoisonError::into_inner);
         let (site, taken) = echo_site();
         let cell = "browser-proxy-tunnel";
         let (proxy, addr) = proxy(site, cell);
@@ -698,12 +877,10 @@ mod tests {
 
     #[test]
     fn anything_but_a_connect_to_a_public_https_site_is_refused_unconnected() {
-        let _deciding = DECIDING
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _deciding = DECIDING.lock().unwrap_or_else(PoisonError::into_inner);
         let _flood = crate::machine::FLOOD
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(PoisonError::into_inner);
         let (site, taken) = echo_site();
         let cell = "browser-proxy-refused";
         let (proxy, addr) = proxy(site, cell);
@@ -824,6 +1001,124 @@ mod tests {
     }
 
     #[test]
+    fn a_site_the_session_doesnt_hold_is_refused_before_its_name_is_looked_up() {
+        let _deciding = DECIDING.lock().unwrap_or_else(PoisonError::into_inner);
+        let _flood = crate::machine::FLOOD
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let (site, taken) = echo_site();
+        // A route that records every name it's asked to look up.
+        let asked = Arc::new(Mutex::new(Vec::<String>::new()));
+        let lookups = Arc::clone(&asked);
+        let looked_up = Route::with(
+            move |destination| {
+                lookups.lock().unwrap().push(destination.to_owned());
+                Ok(vec![site])
+            },
+            |_| false,
+        );
+        let sites = Sites::default();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let cell = "browser-proxy-strict";
+        let proxy = BrowserProxy::start(
+            listener,
+            cell,
+            looked_up,
+            sites.clone(),
+            Instant::now() + Duration::from_secs(120),
+        );
+        // A secret spelled into a name the session doesn't hold.
+        let (status, _) = ask(addr, b"CONNECT secret-1234.site.test:443 HTTP/1.1\r\n\r\n");
+        assert_eq!(status, "HTTP/1.1 403 Forbidden");
+        assert!(asked.lock().unwrap().is_empty(), "never looked up");
+        assert_eq!(taken.load(Ordering::SeqCst), 0, "never reached");
+        assert_eq!(sites.refused(), ["secret-1234.site.test:443"]);
+        assert_eq!(
+            decisions(cell),
+            [(
+                String::from("secret-1234.site.test:443"),
+                EgressVerdict::NoGrant
+            )]
+        );
+        // Granted, it's tunnelled, and no longer kept as refused.
+        sites.grant("secret-1234.site.test:443");
+        assert!(sites.holds("secret-1234.site.test:443"));
+        assert!(sites.refused().is_empty());
+        let (status, _) = ask(addr, b"CONNECT secret-1234.site.test:443 HTTP/1.1\r\n\r\n");
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+        assert_eq!(
+            asked.lock().unwrap().as_slice(),
+            ["secret-1234.site.test:443"]
+        );
+        let _ = proxy.finish();
+    }
+
+    #[test]
+    fn a_revoked_site_loses_its_open_tunnels() {
+        let (site, _) = echo_site();
+        let sites = granted();
+        let (proxy, addr) = proxy_holding(site, "browser-proxy-revoked", sites.clone());
+        let (status, mut stream) = ask(addr, b"CONNECT site.test:443 HTTP/1.1\r\n\r\n");
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+        stream.write_all(b"ping").unwrap();
+        let mut echoed = [0u8; 4];
+        stream.read_exact(&mut echoed).unwrap();
+        assert_eq!(&echoed, b"ping");
+        assert_eq!(sites.revoke("site.test:443"), 1, "the open tunnel closed");
+        // The tunnel carries nothing more: the browser's end sees it close.
+        let _ = stream.write_all(b"pong");
+        let mut rest = Vec::new();
+        let ended = stream.read_to_end(&mut rest);
+        assert!(rest.is_empty(), "{rest:?}");
+        let quiet = matches!(&ended, Err(error) if matches!(
+            error.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ));
+        assert!(!quiet, "closed, not just quiet: {ended:?}");
+        let (status, _) = ask(addr, b"CONNECT site.test:443 HTTP/1.1\r\n\r\n");
+        assert_eq!(status, "HTTP/1.1 403 Forbidden", "nor opens a new one");
+        let _ = proxy.finish();
+    }
+
+    #[test]
+    fn a_tunnel_is_held_to_close_only_while_its_site_is() {
+        let sites = granted();
+        let (client, _browser) = pair();
+        let (site, _far) = pair();
+        let first = sites.opened("site.test:443", &client, &site).unwrap();
+        let second = sites.opened("site.test:443", &client, &site).unwrap();
+        let other = sites.opened("mixed.test:443", &client, &site).unwrap();
+        // One ended: it's no longer held, and the other still is.
+        drop(first);
+        assert_eq!(sites.revoke("site.test:443"), 1);
+        drop((second, other));
+        assert_eq!(sites.revoke("mixed.test:443"), 0, "ended, so not held");
+        // Revoked between admission and its connection: never registered.
+        assert!(sites.opened("site.test:443", &client, &site).is_none());
+    }
+
+    #[test]
+    fn the_sites_refused_are_kept_up_to_a_bound() {
+        let sites = Sites::default();
+        for n in 0..=MAX_REFUSED_SITES {
+            let site = format!("site-{n:03}.test:443");
+            assert!(!sites.admit(&site));
+        }
+        let refused = sites.refused();
+        assert_eq!(refused.len(), MAX_REFUSED_SITES);
+        assert_eq!(
+            refused.first().map(String::as_str),
+            Some("site-000.test:443")
+        );
+        let past = format!("site-{MAX_REFUSED_SITES:03}.test:443");
+        assert!(!refused.contains(&past), "past the bound, not kept");
+        sites.grant("site-000.test:443");
+        assert!(sites.admit("site-000.test:443"));
+        assert_eq!(sites.refused().len(), MAX_REFUSED_SITES - 1);
+    }
+
+    #[test]
     fn a_stopped_proxy_takes_nothing_more() {
         let (site, _) = echo_site();
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
@@ -834,6 +1129,7 @@ mod tests {
             listener,
             "browser-proxy-stopped",
             route(site),
+            granted(),
             Instant::now() + Duration::from_secs(120),
         );
         assert_eq!(proxy.finish(), ProxyCount::default());
@@ -854,7 +1150,13 @@ mod tests {
         assert!(taken, "the stopped proxy took a connection");
         // A deadline already past serves nothing either.
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let late = BrowserProxy::start(listener, "browser-proxy-late", route(site), Instant::now());
+        let late = BrowserProxy::start(
+            listener,
+            "browser-proxy-late",
+            route(site),
+            granted(),
+            Instant::now(),
+        );
         assert_eq!(late.finish(), ProxyCount::default());
         let _ = Route::public();
     }
@@ -928,14 +1230,15 @@ mod tests {
     fn a_site_is_opened_at_the_addresses_checked_or_refused_by_name() {
         let (site, taken) = echo_site();
         let route = route(site);
-        let (destination, stream) = open("Site.Test:443", &route).unwrap();
+        let sites = granted();
+        let (destination, stream) = open("Site.Test:443", &route, &sites).unwrap();
         assert_eq!(destination, "site.test:443");
         assert_eq!(
             stream.peer_addr().unwrap(),
             site,
             "pinned to the address checked"
         );
-        let refused = |authority: &str| open(authority, &route).err();
+        let refused = |authority: &str| open(authority, &route, &sites).err();
         assert_eq!(
             refused("intranet.test:443"),
             Some((
@@ -970,6 +1273,48 @@ mod tests {
         }
         std::thread::sleep(Duration::from_millis(100));
         assert_eq!(taken.load(Ordering::SeqCst), 1, "only the one opened");
+    }
+
+    #[test]
+    fn a_refusal_is_answered_and_recorded_with_the_site_it_names() {
+        let _deciding = DECIDING.lock().unwrap_or_else(PoisonError::into_inner);
+        let _flood = crate::machine::FLOOD
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let cell = "browser-proxy-refuse";
+        let context = Context {
+            cell_id: String::from(cell),
+            route: Route::public(),
+            sites: Sites::default(),
+            tunnelled: AtomicU32::new(0),
+            refused: AtomicU32::new(0),
+            live: AtomicU32::new(0),
+        };
+        let (near, far) = pair();
+        let forbidden = refusal(403, "Forbidden", EgressVerdict::NoGrant);
+        refuse(&far, &context, forbidden, Some("refused.test:443"));
+        drop(far);
+        assert_eq!(
+            drained(&near),
+            b"HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+        );
+        // One that named no site is answered, and recorded with none.
+        let (near, far) = pair();
+        refuse(
+            &far,
+            &context,
+            refusal(400, "Bad Request", EgressVerdict::NotAllowed),
+            None,
+        );
+        drop(far);
+        assert_eq!(
+            drained(&near),
+            b"HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+        );
+        assert_eq!(
+            decisions(cell),
+            [(String::from("refused.test:443"), EgressVerdict::NoGrant)]
+        );
     }
 
     #[test]
@@ -1042,6 +1387,7 @@ mod tests {
         let context = Arc::new(Context {
             cell_id: String::from("browser-proxy-loop"),
             route: route(site),
+            sites: granted(),
             tunnelled: AtomicU32::new(0),
             refused: AtomicU32::new(0),
             live: AtomicU32::new(0),
