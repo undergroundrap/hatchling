@@ -52,6 +52,7 @@ pub enum BrowserCommand {
 
 /// What to do to an element.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum PageAction {
     /// Click it.
@@ -76,6 +77,7 @@ pub enum PageAction {
 /// The keys an action may press: the ones a form needs, and nothing that
 /// reaches the browser's own shortcuts.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Key {
     /// Enter.
@@ -116,6 +118,7 @@ pub enum BrowserReply {
 
 /// Why a command wasn't done.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum BrowserFailure {
     /// There's no page yet: open one first.
@@ -139,6 +142,7 @@ pub enum BrowserFailure {
 /// A page, as the agent sees it: its text and the elements it can act
 /// on. Untrusted: everything here came from the page.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PageSnapshot {
     /// Where the page is.
     pub url: String,
@@ -154,6 +158,7 @@ pub struct PageSnapshot {
 
 /// An element the agent can act on.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PageElement {
     /// Its id, for an action: valid until the next snapshot.
     pub id: u32,
@@ -210,10 +215,25 @@ impl PageSnapshot {
     /// escapes, can be within the character bounds and past the frame.
     #[must_use]
     pub fn fitted(self) -> Self {
+        self.fitted_in(|snapshot| {
+            crate::fits_one_frame(&BrowserReply::Page {
+                snapshot: snapshot.clone(),
+            })
+        })
+    }
+
+    /// This snapshot [`bounded`](Self::bounded), then cut as
+    /// [`fitted`](Self::fitted) cuts it until `fits` says it fits: for a
+    /// message that carries a snapshot with more beside it. Past the text
+    /// and the elements there's nothing more to cut, and it's given as it
+    /// is.
+    #[must_use]
+    pub fn fitted_in(self, fits: impl Fn(&Self) -> bool) -> Self {
         let mut snapshot = self.bounded();
-        while !crate::fits_one_frame(&BrowserReply::Page {
-            snapshot: snapshot.clone(),
-        }) {
+        while !fits(&snapshot) {
+            if snapshot.text.is_empty() && snapshot.elements.is_empty() {
+                break;
+            }
             snapshot.truncated = true;
             if snapshot.text.is_empty() {
                 let keep = snapshot.elements.len() / 2;
@@ -232,6 +252,38 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
+
+    #[test]
+    fn a_snapshot_is_fitted_to_what_carries_it_and_cut_no_further_than_empty() {
+        let page = PageSnapshot {
+            url: String::from("https://a.example/"),
+            title: String::from("A"),
+            text: "abcdefgh".repeat(4),
+            elements: (0..8)
+                .map(|id| PageElement {
+                    id,
+                    role: String::from("link"),
+                    name: format!("link {id}"),
+                })
+                .collect(),
+            truncated: false,
+        };
+        // Fits as it is: nothing cut.
+        assert_eq!(page.clone().fitted_in(|_| true), page);
+        // Fits once its text is at most 8 characters: the text is halved,
+        // the elements kept.
+        let fitted = page.clone().fitted_in(|s| s.text.chars().count() <= 8);
+        assert_eq!(fitted.text, "abcdefgh");
+        assert_eq!(fitted.elements.len(), 8);
+        assert!(fitted.truncated);
+        // Fits with at most 2 elements: the text goes first, then halves.
+        let fitted = page.clone().fitted_in(|s| s.elements.len() <= 2);
+        assert_eq!((fitted.text.as_str(), fitted.elements.len()), ("", 2));
+        // Never fits: cut to nothing, and given back rather than looping.
+        let fitted = page.fitted_in(|_| false);
+        assert!(fitted.text.is_empty() && fitted.elements.is_empty());
+        assert_eq!(fitted.url, "https://a.example/", "the page is still named");
+    }
 
     fn wire<T: Serialize>(value: &T) -> Value {
         serde_json::to_value(value).unwrap()

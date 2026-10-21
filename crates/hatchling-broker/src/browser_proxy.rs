@@ -191,7 +191,7 @@ impl Sites {
 
     /// Whether `destination` is admitted. One that isn't is kept as
     /// refused, while there's room.
-    fn admit(&self, destination: &str) -> bool {
+    pub(crate) fn admit(&self, destination: &str) -> bool {
         let mut held = self.held();
         if held.granted.contains(destination) {
             return true;

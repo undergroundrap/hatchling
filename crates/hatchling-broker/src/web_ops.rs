@@ -312,7 +312,7 @@ fn fetch(
 /// `Ok` when the session may read `url`'s site now: it holds the site, the
 /// owner always allows it, or the owner allows it now, once, for the
 /// session, or always. Otherwise what the agent is told.
-fn allow(
+pub(crate) fn allow(
     config: &Config,
     keys: &dyn OpensStores,
     web: &mut WebSession,
@@ -507,7 +507,11 @@ const fn refused(reason: String) -> WebResult {
 }
 
 #[cfg(test)]
-mod tests {
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "crate-visible on purpose: the browser's tests ask for sites as these do"
+)]
+pub(crate) mod tests {
     use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::sync::Mutex;
@@ -519,7 +523,7 @@ mod tests {
 
     /// A config with the web on, and a board of its own: boards are kept
     /// by vault root, and each test's limits and denials are its own.
-    fn web_config(name: &str) -> Config {
+    pub(crate) fn web_config(name: &str) -> Config {
         let mut config = crate::api_auth::tests::owner_config(None);
         config.vault.root = PathBuf::from(format!("/nonexistent/hatchling-web-{name}"));
         config.web.enabled = true;
@@ -592,7 +596,7 @@ mod tests {
     }
 
     /// The owner's `decision` on the request `task` has waiting for `site`.
-    fn owner_decides(config: &Config, task: &str, site: &str, decision: Decision) {
+    pub(crate) fn owner_decides(config: &Config, task: &str, site: &str, decision: Decision) {
         let board = board(config);
         let id = board
             .approvals()
@@ -1071,7 +1075,7 @@ mod tests {
         );
     }
 
-    fn board_has_pending(config: &Config, task: &str, site: &str) -> bool {
+    pub(crate) fn board_has_pending(config: &Config, task: &str, site: &str) -> bool {
         board(config)
             .approvals()
             .find(task, &site_action(site), State::Pending)

@@ -239,7 +239,8 @@ fn request(stream: &UnixStream, op: &EgressOp) -> Result<EgressResult, Error> {
         | SessionResponse::Artifact(_)
         | SessionResponse::Space(_)
         | SessionResponse::Subagent(_)
-        | SessionResponse::Web(_) => Err(Error::EgressProtocol {
+        | SessionResponse::Web(_)
+        | SessionResponse::Browser(_) => Err(Error::EgressProtocol {
             reason: String::from("broker gave a goals or query reply to an egress op"),
         }),
     }

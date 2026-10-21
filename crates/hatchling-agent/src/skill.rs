@@ -118,7 +118,8 @@ fn request_frame(stream: &UnixStream, payload: &[u8]) -> Result<SkillResult, Err
         | SessionResponse::Artifact(_)
         | SessionResponse::Space(_)
         | SessionResponse::Subagent(_)
-        | SessionResponse::Web(_) => Err(Error::SkillProtocol {
+        | SessionResponse::Web(_)
+        | SessionResponse::Browser(_) => Err(Error::SkillProtocol {
             reason: String::from("broker gave a goals or query reply to a skill op"),
         }),
     }

@@ -182,7 +182,8 @@ fn op(stream: &UnixStream, op: ScheduleOp) -> io::Result<ScheduleResult> {
         | SessionResponse::Artifact(_)
         | SessionResponse::Space(_)
         | SessionResponse::Subagent(_)
-        | SessionResponse::Web(_)) => {
+        | SessionResponse::Web(_)
+        | SessionResponse::Browser(_)) => {
             Err(io::Error::other(format!("not a schedule reply: {other:?}")))
         }
     }

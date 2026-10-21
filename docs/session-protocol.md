@@ -42,6 +42,7 @@ v13.
 | Space | `SpaceOp` | `SpaceResult` | v10 |
 | Subagent | `SubagentOp` | `SubagentResult` | v10 |
 | Web | `WebOp` | `WebResult` | v14 |
+| Browser | `BrowserOp` | `BrowserResult` | v15 |
 
 ## v9 — Artifact ops
 
@@ -164,6 +165,35 @@ A page read through the broker, from a site the owner allows (WO-028).
   - `Refused { reason }`: the URL, the operator's refusal of the site, or
     the read itself;
   - `Off`: the operator hasn't turned this on (pages, or search).
+
+## v15 — Browser
+
+A real browser the agent drives, in a cell of its own, through the broker
+(WO-029). Every session is strict: the browser reaches only the sites the
+session holds.
+
+- **`BrowserOp::Open { url, reason }`:** open the page, starting the
+  session's browser if there is none. Its site is allowed as a
+  `WebOp::Fetch`'s is, and a site allowed for one is allowed for the
+  other. A site allowed once is held for that visit: when the browser opens
+  another site, it's revoked, and its connections closed.
+- **`BrowserOp::Read`:** the page as it is now.
+- **`BrowserOp::Act { element, action }`:** act on an element of the last
+  snapshot (`PageAction`: click, type, a key, a choice). Text to type that
+  holds a secret the broker keeps is refused, and never reaches the page.
+- **`BrowserOp::Scroll { down }`**, **`BrowserOp::Close`**: scroll, or close
+  the browser and end its cell.
+- **`BrowserResult`:**
+  - `Page { snapshot, refused }`: the page's text and the elements it can
+    be acted on through (`PageSnapshot`), the page's words; and the sites
+    the session doesn't hold that the browser was refused;
+  - `Waiting`, `Denied`, `Expired`, `Unasked`: as for `WebResult`;
+  - `Failed { failure }`: the browser couldn't do it (`BrowserFailure`);
+  - `Refused { reason }`: refused before the browser: the URL, the
+    operator's refusal of the site, typed text holding a secret, or a
+    browser that couldn't start;
+  - `Closed`: the browser is closed;
+  - `Off`: the operator hasn't set up a browser.
 
 ## Device handshake
 
