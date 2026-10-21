@@ -51,6 +51,22 @@ pub fn act(stream: &UnixStream, element: u32, action: PageAction) -> Result<Brow
     request(stream, BrowserOp::Act { element, action })
 }
 
+/// Asks the owner to allow `site`, which the browser was refused for the
+/// page, for `reason`.
+///
+/// # Errors
+///
+/// As [`open`].
+pub fn allow(stream: &UnixStream, site: &str, reason: &str) -> Result<BrowserResult, Error> {
+    request(
+        stream,
+        BrowserOp::Allow {
+            site: site.to_owned(),
+            reason: reason.to_owned(),
+        },
+    )
+}
+
 /// Closes the browser.
 ///
 /// # Errors
@@ -139,7 +155,7 @@ mod tests {
     /// back.
     #[test]
     fn each_op_asks_the_broker_and_returns_its_reply() {
-        let calls: [(Call, BrowserOp); 5] = [
+        let calls: [(Call, BrowserOp); 6] = [
             (
                 |stream| open(stream, "https://a.example/", "why"),
                 BrowserOp::Open {
@@ -157,6 +173,13 @@ mod tests {
                 BrowserOp::Act {
                     element: 7,
                     action: PageAction::Click,
+                },
+            ),
+            (
+                |stream| allow(stream, "cdn.example:443", "fonts"),
+                BrowserOp::Allow {
+                    site: String::from("cdn.example:443"),
+                    reason: String::from("fonts"),
                 },
             ),
             (close, BrowserOp::Close),

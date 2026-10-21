@@ -813,6 +813,17 @@ export type BrowserOp = {
     readonly down: boolean;
     readonly op: 'scroll';
 } | {
+    readonly op: 'allow';
+    /**
+     * Why the page needs it. Shown to the owner, labeled as the
+     * agent's words.
+     */
+    readonly reason: string;
+    /**
+     * The site, as the page's `refused` named it (`host:port`).
+     */
+    readonly site: string;
+} | {
     readonly op: 'close';
 };
 /**
@@ -870,6 +881,12 @@ export type BrowserResult = {
      */
     readonly reason: string;
     readonly result: 'refused';
+} | {
+    readonly result: 'allowed';
+    /**
+     * The site.
+     */
+    readonly site: string;
 } | {
     readonly result: 'closed';
 } | {
