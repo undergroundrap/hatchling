@@ -16,6 +16,7 @@
 //! credentials) lives in [`hatchling_core`]; the names are re-exported
 //! here so the agent's public API is unchanged by the extraction.
 
+pub mod browser;
 pub mod cell;
 pub mod channel;
 pub mod cli;

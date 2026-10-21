@@ -445,6 +445,18 @@ impl Cell<Ready> {
         registry.register(Box::new(crate::tools::WebSearchTool::new(
             self.connection(),
         )));
+        registry.register(Box::new(crate::tools::BrowserOpenTool::new(
+            self.connection(),
+        )));
+        registry.register(Box::new(crate::tools::BrowserReadTool::new(
+            self.connection(),
+        )));
+        registry.register(Box::new(crate::tools::BrowserActTool::new(
+            self.connection(),
+        )));
+        registry.register(Box::new(crate::tools::BrowserCloseTool::new(
+            self.connection(),
+        )));
         registry.register(Box::new(crate::tools::SpawnSubagentTool::new(
             self.connection(),
             std::sync::Arc::clone(&ledger),
