@@ -439,8 +439,10 @@ pub struct HarnessNetwork {
 /// scratch directory are, and its relay.
 ///
 /// In the cell the browser's directory is `/browser` and its fonts
-/// `/fonts`, both read-only, and `/scratch` (the profile, the font cache,
-/// its home and temp) the one writable directory. The cell's program is
+/// `/fonts`, both read-only. `/scratch` (the profile, the font cache, its
+/// home and temp) is the cell's private `tmpfs`, of
+/// [`crate::browser_session::BROWSER_SCRATCH`]: no host path backs it, and
+/// it is gone with the cell, however the cell ends. The cell's program is
 /// the controller, which drives the browser over a pipe and the broker
 /// over the cell's connection; its only network is the relay, which the
 /// broker serves as a `CONNECT` proxy ([`crate::browser_proxy`]).
@@ -453,8 +455,6 @@ pub struct BrowserDirs {
     /// The host directory of fonts bound at `/fonts`, if any. Without
     /// fonts the browser's renderer can't lay out text.
     pub fonts: Option<PathBuf>,
-    /// The host directory bound at `/scratch`.
-    pub scratch: PathBuf,
     /// The relay's port on the cell's own loopback.
     pub relay: u16,
     /// The unix socket, in the broker's private run directory, where the
@@ -759,7 +759,7 @@ impl CellConfig {
     }
 
     /// A browser cell (WO-029), `cell_id`, on the ids `ids`: `controller`
-    /// is its program, `dirs` its browser, fonts, scratch and relay, held
+    /// is its program, `dirs` its browser, fonts and relay, held
     /// to `limits` in the delegated group under `cgroup`. A browser cell
     /// is bounded as a whole or not started, so the group is required, and
     /// so are a memory and a process limit (the isolation refuses it
@@ -1272,7 +1272,10 @@ fn cell_spec(config: &CellConfig, log_level: LogLevel) -> CellSpec {
         filter: cell_filter(config),
         limits: config.limits.into(),
         cgroup: config.cgroup.clone(),
-        scratch: None,
+        scratch: config
+            .browser
+            .as_ref()
+            .map(|_| crate::browser_session::BROWSER_SCRATCH),
     }
 }
 
@@ -1316,12 +1319,6 @@ fn cell_exposures(config: &CellConfig) -> Vec<Exposure> {
                 label: "fonts dir",
             });
         }
-        exposures.push(Exposure {
-            source: browser.scratch.clone(),
-            name: String::from("scratch"),
-            writable: true,
-            label: "browser scratch dir",
-        });
     }
     exposures
 }
@@ -1331,15 +1328,11 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
-    /// A browser cell under `base`: its browser (a copy of `/bin/true`),
-    /// fonts and scratch directories made there.
+    /// A browser cell under `base`: its browser (a copy of `/bin/true`)
+    /// and fonts directories made there.
     fn browser_cell_at(base: &Path) -> CellConfig {
-        let (browser_dir, fonts, scratch) = (
-            base.join("browser"),
-            base.join("fonts"),
-            base.join("scratch"),
-        );
-        for dir in [&browser_dir, &fonts, &scratch] {
+        let (browser_dir, fonts) = (base.join("browser"), base.join("fonts"));
+        for dir in [&browser_dir, &fonts] {
             std::fs::create_dir_all(dir).unwrap();
         }
         std::fs::copy("/bin/true", browser_dir.join("chrome")).unwrap();
@@ -1347,7 +1340,6 @@ mod tests {
             browser_dir,
             browser_name: String::from("chrome"),
             fonts: Some(fonts),
-            scratch,
             relay: crate::browser_proxy::RELAY_PORT,
             handoff: base.join("relay.sock"),
         };
@@ -1375,6 +1367,7 @@ mod tests {
         assert!(spec.endpoint.is_none(), "no socket");
         assert_eq!(spec.relay, Some(crate::browser_proxy::RELAY_PORT));
         assert_eq!(spec.cgroup, Some(base.join("group")));
+        assert_eq!(spec.scratch, Some(crate::browser_session::BROWSER_SCRATCH));
         assert_eq!(
             spec.limits.memory,
             Some(crate::browser_session::BROWSER_MEMORY)
@@ -1408,10 +1401,10 @@ mod tests {
     }
 
     /// WO-029: what a browser cell sees, from its spec, as the backend
-    /// would build it: its controller, its browser and fonts read-only, its
-    /// scratch directory the one writable directory, the browser's
-    /// libraries, the devices a process-running cell writes, and nothing
-    /// else. No broker socket, no vault, nothing of a home; and its
+    /// would build it: its controller, its browser and fonts read-only, the
+    /// browser's libraries, the devices a process-running cell writes, and
+    /// its private scratch `tmpfs`, and nothing else: no host path it can
+    /// write. No broker socket, no vault, nothing of a home; and its
     /// controller learns nothing of the broker but its connection.
     #[test]
     fn a_browser_cell_sees_its_browser_fonts_and_scratch_and_nothing_else() {
@@ -1451,11 +1444,6 @@ mod tests {
                     false
                 ),
                 (
-                    String::from("scratch"),
-                    hatchling_isolation::Origin::Granted,
-                    true
-                ),
-                (
                     String::from("browser-libs"),
                     hatchling_isolation::Origin::Tool,
                     false
@@ -1463,13 +1451,9 @@ mod tests {
             ]
         );
         for entry in &view.entries {
-            let writable_ok = !entry.writable
-                || entry.name == "scratch"
-                || entry.origin == hatchling_isolation::Origin::Device;
-            assert!(
-                writable_ok,
-                "only scratch and the devices are writable: {entry:?}"
-            );
+            let writable_ok =
+                !entry.writable || entry.origin == hatchling_isolation::Origin::Device;
+            assert!(writable_ok, "only the devices are writable: {entry:?}");
             assert!(
                 entry.origin != hatchling_isolation::Origin::Endpoint,
                 "no broker socket: {entry:?}"
@@ -1480,6 +1464,7 @@ mod tests {
             );
         }
         assert_eq!(view.relay, Some(crate::browser_proxy::RELAY_PORT));
+        assert_eq!(view.scratch, Some(crate::browser_session::BROWSER_SCRATCH));
         assert!(view.processes, "it sees its own processes");
         std::fs::remove_dir_all(&base).unwrap();
     }
@@ -2421,6 +2406,10 @@ mod run_cell_tests {
         let plain = cell_spec(&agent_cell(), LogLevel::Warn);
         assert!(!plain.connection);
         assert!(plain.endpoint.is_some());
+        assert_eq!(
+            plain.scratch, None,
+            "only a browser cell has a scratch tmpfs"
+        );
         // A skill cell reaches neither, whatever it says.
         cell.skill_code = Some(PathBuf::from("/tmp/code"));
         let skill = cell_spec(&cell, LogLevel::Warn);
