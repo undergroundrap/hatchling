@@ -803,7 +803,10 @@ mod tests {
         let mut first = waiting.first().unwrap();
         first.set_read_timeout(Some(BUSY_TIMEOUT * 3)).unwrap();
         let _ = first.read_to_string(&mut told);
-        assert!(told.starts_with("HTTP/1.1 503 Too Many Connections"), "{told}");
+        assert!(
+            told.starts_with("HTTP/1.1 503 Too Many Connections"),
+            "{told}"
+        );
         drop(waiting);
         // One closed gives its place back.
         drop(open);
@@ -1047,7 +1050,10 @@ mod tests {
             });
             finished.recv_timeout(Duration::from_secs(5)).is_ok()
         };
-        assert!(returns(true, Instant::now() + Duration::from_secs(60)), "stopped");
+        assert!(
+            returns(true, Instant::now() + Duration::from_secs(60)),
+            "stopped"
+        );
         assert!(returns(false, Instant::now()), "past its deadline");
         assert_eq!(context.tunnelled.load(Ordering::SeqCst), 0);
         assert_eq!(
