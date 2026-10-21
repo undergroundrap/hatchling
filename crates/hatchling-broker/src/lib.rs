@@ -28,6 +28,7 @@ pub mod approval;
 pub mod approval_board;
 pub mod approvals;
 pub mod artifact_ops;
+pub mod browser_board;
 pub mod browser_bundle;
 pub mod browser_cell;
 pub mod browser_ops;

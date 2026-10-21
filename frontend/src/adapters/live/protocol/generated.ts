@@ -890,6 +890,8 @@ export type BrowserResult = {
 } | {
     readonly result: 'closed';
 } | {
+    readonly result: 'stopped';
+} | {
     readonly result: 'off';
 };
 /**

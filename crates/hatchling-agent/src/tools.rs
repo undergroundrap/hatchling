@@ -726,6 +726,9 @@ fn browser_output(result: BrowserResult) -> ToolOutput {
             "note": "open the page again to load what it needed",
         })),
         BrowserResult::Closed => ToolOutput::Ok(json!({ "closed": true })),
+        BrowserResult::Stopped => ToolOutput::Err(String::from(
+            "the owner stopped the browser: don't use it again unless they ask",
+        )),
         BrowserResult::Denied { site } => ToolOutput::Err(format!("the owner said no to {site}")),
         BrowserResult::Expired { site } => ToolOutput::Err(format!(
             "the owner didn't decide on {site} in time; open it again to ask again"
@@ -2254,6 +2257,7 @@ mod tests {
                 "no such thing",
             ),
             (BrowserResult::Off, "hasn't set one up"),
+            (BrowserResult::Stopped, "the owner stopped the browser"),
         ] {
             let ToolOutput::Err(text) = browser_output(result) else {
                 unreachable!("{says}");

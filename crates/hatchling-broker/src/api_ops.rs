@@ -216,13 +216,39 @@ impl<'a> Ops<'a> {
                 }
                 self.decide(confirmation_id, *revision, digest, *decision)
             }
+            UiAction::StopBrowser { session_id } => {
+                // Only the owner stops the agent's browser (WO-029).
+                if !caller.holds(&owner) {
+                    return refused(ActionRefusal::NotGranted);
+                }
+                self.stop_browser(session_id)
+            }
             UiAction::OpenArtifact { .. }
             | UiAction::ShareArtifact { .. }
             | UiAction::AttachArtifact { .. }
             | UiAction::SaveFile { .. }
             | UiAction::TakeControl { .. }
-            | UiAction::ReturnControl { .. }
-            | UiAction::StopBrowser { .. } => refused(ActionRefusal::Unavailable),
+            | UiAction::ReturnControl { .. } => refused(ActionRefusal::Unavailable),
+        }
+    }
+
+    /// The owner stops the agent's browser `session_id` (WO-029): its sites
+    /// sealed now, and the browser closed at the agent's next op.
+    fn stop_browser(&self, session_id: &str) -> (UiActionResult, ApiOutcome) {
+        match crate::browser_board::board(self.config).stop(session_id) {
+            Ok(()) => (
+                UiActionResult::BrowserStopped {
+                    session_id: session_id.to_owned(),
+                },
+                ApiOutcome::Served,
+            ),
+            Err(reason) => (
+                UiActionResult::ControlRefused {
+                    session_id: session_id.to_owned(),
+                    reason,
+                },
+                ApiOutcome::Refused,
+            ),
         }
     }
 
@@ -467,7 +493,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
     use hatchling_core::messages::{FeedSpec, ScheduleResult, ScheduleSpec, SkillOp, SkillResult};
-    use hatchling_core::ui::{DecisionRejection, FileContent, FileFormat, UiEvent};
+    use hatchling_core::ui::{ControlRefusal, DecisionRejection, FileContent, FileFormat, UiEvent};
 
     use super::*;
     use crate::api_auth::tests::{owner_config, scratch};
@@ -844,6 +870,75 @@ mod tests {
     }
 
     #[test]
+    fn only_the_owner_stops_a_browser_and_only_one_that_runs() {
+        let dir = scratch("stop-browser");
+        let mut config = owner_config(Some(&dir.0.join("schedules").to_string_lossy()));
+        config.goals.grants = vec![GoalsAction::QueryGoals, GoalsAction::GoalCreate];
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let ops = Ops::new(&config, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        let owner = caller(&[goals("query-goals"), goals("goal-create"), local_send()]);
+        let narrow = caller(&[goals("query-goals"), local_send()]);
+        let mut replies = Replies::default();
+        let sites = crate::browser_proxy::Sites::default();
+        sites.grant("a.example:443");
+        let board = crate::browser_board::board(&config);
+        let stopped = board.begin("browser-api", sites.clone());
+        let stop = |id: &str| UiAction::StopBrowser {
+            session_id: id.to_owned(),
+        };
+        assert_eq!(
+            ops.handle(&narrow, &stop("browser-api"), &mut replies),
+            (
+                UiActionResult::Refused {
+                    reason: ActionRefusal::NotGranted,
+                },
+                ApiOutcome::Refused,
+            ),
+            "only the owner"
+        );
+        assert!(!stopped.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(
+            ops.handle(&owner, &stop("browser-api"), &mut replies),
+            (
+                UiActionResult::BrowserStopped {
+                    session_id: String::from("browser-api"),
+                },
+                ApiOutcome::Served,
+            )
+        );
+        assert!(stopped.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(!sites.holds("a.example:443"), "sealed");
+        for (id, reason) in [
+            ("browser-api", ControlRefusal::Finished),
+            ("browser-none", ControlRefusal::UnknownSession),
+        ] {
+            assert_eq!(
+                ops.handle(&owner, &stop(id), &mut replies),
+                (
+                    UiActionResult::ControlRefused {
+                        session_id: id.to_owned(),
+                        reason,
+                    },
+                    ApiOutcome::Refused,
+                )
+            );
+        }
+        board.end("browser-api");
+        // The owner's stop itself, for a browser that has ended.
+        assert_eq!(
+            ops.stop_browser("browser-api"),
+            (
+                UiActionResult::ControlRefused {
+                    session_id: String::from("browser-api"),
+                    reason: ControlRefusal::UnknownSession,
+                },
+                ApiOutcome::Refused,
+            )
+        );
+    }
+
+    #[test]
     fn each_action_runs_only_within_the_callers_grants() {
         let dir = scratch("grants");
         let mut config = owner_config(Some(&dir.0.join("schedules").to_string_lossy()));
@@ -1045,7 +1140,6 @@ mod tests {
                 session_id: id(),
                 frame_sequence: 1,
             },
-            UiAction::StopBrowser { session_id: id() },
         ] {
             assert_eq!(
                 ops.handle(&owner, &action, &mut replies),

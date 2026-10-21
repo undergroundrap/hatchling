@@ -1,0 +1,355 @@
+//! The owner's view of the agent's browser (WO-029, part 4): what the
+//! broker tells the owner's app about each browser, and the owner's stop.
+//!
+//! A browser cell is one session in the app's browser view (WO-021), by its
+//! cell id. As the agent drives it, the broker publishes on the app's
+//! stream: the session (its site, where it stands, the step it's on), each
+//! action in the owner's words, for the action log, and a frame of the
+//! page after each one, a picture checked to be a JPEG. Everything that
+//! came from the page is untrusted text, and the app shows it as such.
+//! Nothing is published that the stream couldn't carry in one frame: an
+//! event too big would end the app's stream, and stay to end it again.
+//!
+//! The owner can stop a browser, whoever drives it. Its sites are sealed
+//! at once ([`Sites::seal`]): every one revoked, every tunnel closed, and
+//! none granted again, so it reaches nothing more even while the agent's
+//! op is in flight. The agent's next op closes it, and the agent is told
+//! the owner stopped it.
+
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+
+use hatchling_core::browser::MAX_FRAME_JPEG_BASE64;
+use hatchling_core::ui::{Actor, BrowserAction, BrowserFrame, BrowserSession, ControlRefusal};
+use hatchling_core::ui::{ImageType, InlineImage, UiEvent, UiEventBody, UiResponse};
+use hatchling_scheduler::Timestamp;
+
+use crate::Config;
+use crate::api_stream::Bus;
+use crate::browser_proxy::Sites;
+
+/// The boards, by the vault root of the broker each belongs to.
+static BOARDS: Mutex<BTreeMap<String, Arc<BrowserBoard>>> = Mutex::new(BTreeMap::new());
+
+/// The browser board of the broker `config` configures.
+#[must_use]
+pub fn board(config: &Config) -> Arc<BrowserBoard> {
+    Arc::clone(
+        BOARDS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(config.vault.root.display().to_string())
+            .or_insert_with(|| Arc::new(BrowserBoard::default())),
+    )
+}
+
+/// The browsers the owner can see and stop, and the stream they're shown
+/// on.
+#[derive(Debug, Default)]
+pub struct BrowserBoard {
+    bus: Mutex<Option<Arc<Bus>>>,
+    sessions: Mutex<BTreeMap<String, Watched>>,
+}
+
+/// A browser the owner can stop.
+#[derive(Debug)]
+struct Watched {
+    sites: Sites,
+    stopped: Arc<AtomicBool>,
+}
+
+impl BrowserBoard {
+    /// Shows the browsers to the owner's app on `bus`.
+    pub fn attach(&self, bus: Arc<Bus>) {
+        *self.bus.lock().unwrap_or_else(PoisonError::into_inner) = Some(bus);
+    }
+
+    /// Whether an app is attached to watch: frames are taken only then.
+    #[must_use]
+    pub fn watching(&self) -> bool {
+        self.bus
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some()
+    }
+
+    /// The browser `session_id` begins, reaching `sites`: the owner may
+    /// stop it. What its session reads to learn it was stopped.
+    pub(crate) fn begin(&self, session_id: &str, sites: Sites) -> Arc<AtomicBool> {
+        let stopped = Arc::new(AtomicBool::new(false));
+        self.sessions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                session_id.to_owned(),
+                Watched {
+                    sites,
+                    stopped: Arc::clone(&stopped),
+                },
+            );
+        stopped
+    }
+
+    /// The browser `session_id` has ended: there's nothing to stop.
+    pub(crate) fn end(&self, session_id: &str) {
+        self.sessions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(session_id);
+    }
+
+    /// The owner stops the browser `session_id`: its sites sealed now, and
+    /// the browser closed at the agent's next op.
+    ///
+    /// # Errors
+    ///
+    /// [`ControlRefusal::UnknownSession`] for a browser there isn't, or
+    /// that has ended; [`ControlRefusal::Finished`] for one already
+    /// stopped.
+    pub fn stop(&self, session_id: &str) -> Result<(), ControlRefusal> {
+        let sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+        let watched = sessions
+            .get(session_id)
+            .ok_or(ControlRefusal::UnknownSession)?;
+        if watched.stopped.swap(true, Ordering::SeqCst) {
+            return Err(ControlRefusal::Finished);
+        }
+        let closed = watched.sites.seal();
+        drop(sessions);
+        tracing::info!(session = session_id, closed, "the owner stopped a browser");
+        Ok(())
+    }
+
+    /// Shows `session` as it is now.
+    pub(crate) fn show(&self, session: BrowserSession) {
+        self.publish(UiEventBody::BrowserSession(session));
+    }
+
+    /// Logs the agent's action on `session_id`, in the owner's words.
+    pub(crate) fn act(&self, session_id: &str, narration: String) {
+        self.publish(UiEventBody::BrowserAction(BrowserAction {
+            session_id: session_id.to_owned(),
+            by: Actor::Agent,
+            narration,
+        }));
+    }
+
+    /// Shows frame `sequence` of `session_id`'s page, titled `title`, from
+    /// `jpeg`, which the cell sent: only if it's a JPEG within the bound.
+    /// Whether it was shown.
+    pub(crate) fn frame(&self, session_id: &str, sequence: u64, title: &str, jpeg: &str) -> bool {
+        let Some(image) = jpeg_image(jpeg) else {
+            tracing::warn!(session = session_id, "a frame that isn't a JPEG: not shown");
+            return false;
+        };
+        self.publish(UiEventBody::BrowserFrame(BrowserFrame {
+            session_id: session_id.to_owned(),
+            sequence,
+            captured_at: Timestamp::now().to_string(),
+            title: title.to_owned(),
+            image: Some(image),
+        }));
+        true
+    }
+
+    /// Pushes `body` to the owner's app, if one is attached and the stream
+    /// can carry it: as the stream sends it, numbered as high as a number
+    /// goes, it fits one frame.
+    fn publish(&self, body: UiEventBody) {
+        let bus = self
+            .bus
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let Some(bus) = bus else {
+            return;
+        };
+        let ts = Timestamp::now().to_string();
+        let sent = UiResponse::Event(UiEvent {
+            seq: u64::MAX,
+            ts: ts.clone(),
+            body,
+        });
+        if !hatchling_core::fits_one_frame(&sent) {
+            tracing::warn!("a browser event too big for the app's stream: not shown");
+            return;
+        }
+        if let UiResponse::Event(event) = sent {
+            bus.push(ts, event.body);
+        }
+    }
+}
+
+/// `base64` as an inline JPEG, if it's at most [`MAX_FRAME_JPEG_BASE64`]
+/// and standard base64 of a JPEG (it begins `FF D8 FF`).
+fn jpeg_image(base64: &str) -> Option<InlineImage> {
+    use base64::Engine as _;
+    if base64.len() > MAX_FRAME_JPEG_BASE64 {
+        return None;
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(base64)
+        .ok()?;
+    bytes.starts_with(&[0xFF, 0xD8, 0xFF]).then(|| InlineImage {
+        media_type: ImageType::Jpeg,
+        base64: base64.to_owned(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use base64::Engine as _;
+    use hatchling_core::ui::BrowserState;
+
+    use super::*;
+
+    fn encoded(bytes: &[u8]) -> String {
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+
+    /// A board watched through a bus of its own.
+    fn watched() -> (BrowserBoard, Arc<Bus>) {
+        let board = BrowserBoard::default();
+        let bus = Arc::new(Bus::starting_now());
+        board.attach(Arc::clone(&bus));
+        (board, bus)
+    }
+
+    /// What `bus` has carried.
+    fn carried(bus: &Bus) -> Vec<UiEventBody> {
+        bus.wait_after(None, Duration::ZERO)
+            .into_iter()
+            .map(|event| event.body)
+            .collect()
+    }
+
+    #[test]
+    fn a_frame_is_shown_only_if_its_a_jpeg_within_the_bound() {
+        let jpeg = encoded(&[0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3]);
+        assert_eq!(
+            jpeg_image(&jpeg),
+            Some(InlineImage {
+                media_type: ImageType::Jpeg,
+                base64: jpeg.clone()
+            })
+        );
+        for refused in [
+            encoded(b"<svg onload=alert(1)>"),
+            encoded(&[0x89, b'P', b'N', b'G']),
+            String::from("/9j/ not base64 \"'><"),
+            encoded(&[&[0xFF_u8, 0xD8, 0xFF][..], &vec![0; MAX_FRAME_JPEG_BASE64]].concat()),
+        ] {
+            assert_eq!(
+                jpeg_image(&refused),
+                None,
+                "{}",
+                refused.chars().take(40).collect::<String>()
+            );
+        }
+        let (board, bus) = watched();
+        assert!(board.frame("browser-a", 1, "A", &jpeg));
+        assert!(!board.frame("browser-a", 2, "A", &encoded(b"GIF89a")));
+        let shown = carried(&bus);
+        assert_eq!(shown.len(), 1, "only the JPEG");
+        let Some(UiEventBody::BrowserFrame(frame)) = shown.first() else {
+            unreachable!("{shown:?}");
+        };
+        assert_eq!(
+            (
+                frame.session_id.as_str(),
+                frame.sequence,
+                frame.title.as_str()
+            ),
+            ("browser-a", 1, "A")
+        );
+    }
+
+    #[test]
+    fn sessions_and_actions_reach_the_app_once_one_watches() {
+        let unwatched = BrowserBoard::default();
+        assert!(!unwatched.watching());
+        unwatched.act("browser-a", String::from("Opened a page"));
+        let (board, bus) = watched();
+        assert!(board.watching());
+        let session = BrowserSession {
+            session_id: String::from("browser-a"),
+            chat_id: None,
+            title: String::from("check the order"),
+            site: String::from("a.example"),
+            state: BrowserState::Running,
+            step: String::from("Opened https://a.example/"),
+            last_confirmed: String::from("A"),
+        };
+        board.show(session.clone());
+        board.act("browser-a", String::from("Clicked button \"Go\""));
+        assert_eq!(
+            carried(&bus),
+            [
+                UiEventBody::BrowserSession(session),
+                UiEventBody::BrowserAction(BrowserAction {
+                    session_id: String::from("browser-a"),
+                    by: Actor::Agent,
+                    narration: String::from("Clicked button \"Go\""),
+                }),
+            ]
+        );
+    }
+
+    #[test]
+    fn nothing_the_stream_couldnt_carry_is_published() {
+        let (board, bus) = watched();
+        // A page's title, a site and a step are the page's: one could be
+        // made as long as a frame.
+        let session = |title: String| BrowserSession {
+            session_id: String::from("browser-a"),
+            chat_id: None,
+            title,
+            site: String::from("a.example"),
+            state: BrowserState::Running,
+            step: String::new(),
+            last_confirmed: String::new(),
+        };
+        board.show(session(
+            "x".repeat(hatchling_core::framing::MAX_FRAME_BYTES),
+        ));
+        assert!(carried(&bus).is_empty(), "too big: not shown");
+        board.show(session(String::from("fits")));
+        assert_eq!(carried(&bus).len(), 1);
+        // A frame at its bound, as the stream sends it, still fits.
+        let mut at_bound = vec![0xFF_u8, 0xD8, 0xFF];
+        at_bound.resize(MAX_FRAME_JPEG_BASE64 / 4 * 3, 0);
+        let jpeg = encoded(&at_bound);
+        assert!(jpeg.len() <= MAX_FRAME_JPEG_BASE64);
+        assert!(board.frame("browser-a", 1, &"t".repeat(120), &jpeg));
+        assert_eq!(carried(&bus).len(), 2, "a frame at its bound is shown");
+    }
+
+    #[test]
+    fn the_owner_stops_a_browser_once_and_its_sites_are_sealed() {
+        let board = BrowserBoard::default();
+        let sites = Sites::default();
+        sites.grant("a.example:443");
+        let stopped = board.begin("browser-a", sites.clone());
+        assert!(!stopped.load(Ordering::SeqCst));
+        assert_eq!(board.stop("browser-a"), Ok(()));
+        assert!(stopped.load(Ordering::SeqCst), "its session is told");
+        assert!(!sites.holds("a.example:443"), "revoked now");
+        sites.grant("b.example:443");
+        assert!(!sites.holds("b.example:443"), "and none granted after");
+        assert_eq!(board.stop("browser-a"), Err(ControlRefusal::Finished));
+        board.end("browser-a");
+        assert_eq!(board.stop("browser-a"), Err(ControlRefusal::UnknownSession));
+        assert_eq!(board.stop("browser-z"), Err(ControlRefusal::UnknownSession));
+    }
+
+    #[test]
+    fn a_broker_has_one_board() {
+        let config = crate::web_ops::tests::web_config("browser-board");
+        assert!(Arc::ptr_eq(&board(&config), &board(&config)));
+        let other = crate::web_ops::tests::web_config("browser-board-other");
+        assert!(!Arc::ptr_eq(&board(&config), &board(&other)));
+    }
+}

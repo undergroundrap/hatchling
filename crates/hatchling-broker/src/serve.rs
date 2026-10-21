@@ -745,7 +745,8 @@ fn serve_session(
     let mut web = crate::web_ops::WebSession::new(config, &gate_scope, web_tls);
     // The session's browser (WO-029): started on its first page, closed
     // when the session ends.
-    let mut browser = crate::browser_ops::BrowserSession::new(crate::browser_ops::configured());
+    let mut browser = crate::browser_ops::BrowserSession::new(crate::browser_ops::configured())
+        .with_board(crate::browser_board::board(config));
     let _admissions = crate::space_ops::EndAdmissions(space_session.pin.session.clone());
 
     // The session's children live in the session's own scope:

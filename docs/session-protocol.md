@@ -199,6 +199,8 @@ session holds.
   - `Allowed { site }`: the site is allowed; open the page again to load
     what it needed;
   - `Closed`: the browser is closed;
+  - `Stopped`: the owner stopped the browser, from the app; it stays
+    stopped for the session;
   - `Off`: the operator hasn't set up a browser.
 
 ## Device handshake

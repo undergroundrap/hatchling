@@ -2433,6 +2433,9 @@ pub enum BrowserResult {
     /// The browser is closed.
     #[serde(rename = "closed")]
     Closed,
+    /// The owner stopped the browser: it stays stopped for this session.
+    #[serde(rename = "stopped")]
+    Stopped,
     /// The operator hasn't set up a browser.
     #[serde(rename = "off")]
     Off,
