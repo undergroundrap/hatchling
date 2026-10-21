@@ -53,6 +53,9 @@ pub struct Cdp {
     to: OwnedFd,
     from: OwnedFd,
     read: Vec<u8>,
+    /// How much of `read` is known to hold no NUL. Each byte is looked at
+    /// once, however small the pieces a message arrives in.
+    scanned: usize,
     next_id: u64,
     events: VecDeque<Value>,
     broken: bool,
@@ -75,6 +78,7 @@ impl Cdp {
             to,
             from,
             read: Vec::new(),
+            scanned: 0,
             next_id: 0,
             events: VecDeque::new(),
             broken: false,
@@ -181,12 +185,16 @@ impl Cdp {
             return Err(CdpError::Gone);
         }
         loop {
-            if let Some(end) = self.read.iter().position(|&byte| byte == 0) {
+            let unseen = self.read.get(self.scanned..).unwrap_or_default();
+            if let Some(at) = unseen.iter().position(|&byte| byte == 0) {
+                let end = self.scanned + at;
                 let rest = self.read.split_off(end + 1);
                 let message = std::mem::replace(&mut self.read, rest);
+                self.scanned = 0;
                 return serde_json::from_slice(message.get(..end).unwrap_or_default())
                     .map_err(|_| self.unreadable());
             }
+            self.scanned = self.read.len();
             if self.read.len() > MAX_MESSAGE_BYTES {
                 return Err(self.unreadable());
             }
@@ -411,6 +419,24 @@ mod tests {
             Err(CdpError::Gone),
             "and stays gone"
         );
+    }
+
+    #[test]
+    fn each_byte_read_is_looked_at_once_however_the_message_arrives() {
+        let (mut cdp, _reads, mut writes) = connected();
+        writes.write_all(br#"{"method":"#).unwrap();
+        let briefly = Instant::now() + Duration::from_millis(100);
+        assert_eq!(cdp.event(briefly, |_| true), Err(CdpError::Timeout));
+        assert_eq!(cdp.scanned, 10, "the part read holds no end");
+        writes.write_all(br#""A"}"#).unwrap();
+        writes.write_all(b"\0").unwrap();
+        writes.write_all(br#"{"method":"B"}"#).unwrap();
+        writes.write_all(b"\0").unwrap();
+        let first = cdp.event(soon(), |_| true).unwrap();
+        assert_eq!(method(&first), "A");
+        assert_eq!(cdp.scanned, 0, "what follows is unseen");
+        let second = cdp.event(soon(), |_| true).unwrap();
+        assert_eq!(method(&second), "B");
     }
 
     #[test]
