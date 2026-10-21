@@ -10,6 +10,7 @@
 //! agent's binary. Fonts (`HATCHLING_BROWSER_FONTS`) are a host directory
 //! the cell sees read-only; without them the browser can't lay out text.
 
+use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 
 use hatchling_skill::CodeHash;
@@ -25,6 +26,13 @@ pub const BROWSER_MEMORY: u64 = 2 * 1024 * 1024 * 1024;
 /// A browser cell's processes, threads included: a browser runs several
 /// processes of many threads each.
 pub const BROWSER_PROCESSES: u64 = 512;
+
+/// A browser cell's private scratch `tmpfs`: its profile, its caches and
+/// its temporary files, 512 MiB, within [`BROWSER_MEMORY`].
+pub const BROWSER_SCRATCH: NonZeroU64 = match NonZeroU64::new(512 * 1024 * 1024) {
+    Some(bytes) => bytes,
+    None => NonZeroU64::MIN,
+};
 
 /// The operator's browser settings: the pinned browser, the controller,
 /// and the fonts.
@@ -142,10 +150,10 @@ impl BrowserSettings {
         }
     }
 
-    /// A browser cell's own part, with its scratch directory `scratch`
-    /// and the relay handed over at `handoff`.
+    /// A browser cell's own part, with the relay handed over at
+    /// `handoff`.
     #[must_use]
-    pub fn dirs(&self, scratch: PathBuf, handoff: PathBuf) -> BrowserDirs {
+    pub fn dirs(&self, handoff: PathBuf) -> BrowserDirs {
         BrowserDirs {
             browser_dir: self
                 .browser
@@ -158,7 +166,6 @@ impl BrowserSettings {
                 .unwrap_or_default()
                 .to_owned(),
             fonts: self.fonts.clone(),
-            scratch,
             relay: RELAY_PORT,
             handoff,
         }
@@ -247,14 +254,13 @@ mod tests {
         );
         let no_fonts: Vec<_> = full().into_iter().take(3).collect();
         assert_eq!(parse(&no_fonts).unwrap().unwrap().fonts, None);
-        let dirs = settings.dirs(PathBuf::from("/run/s"), PathBuf::from("/run/h.sock"));
+        let dirs = settings.dirs(PathBuf::from("/run/h.sock"));
         assert_eq!(
             dirs,
             BrowserDirs {
                 browser_dir: PathBuf::from("/opt/chrome"),
                 browser_name: String::from("chrome-headless-shell"),
                 fonts: Some(PathBuf::from("/usr/share/fonts")),
-                scratch: PathBuf::from("/run/s"),
                 relay: RELAY_PORT,
                 handoff: PathBuf::from("/run/h.sock"),
             }
@@ -352,6 +358,11 @@ mod tests {
         let limits = browser_limits();
         assert_eq!(limits.memory, Some(2 << 30));
         assert_eq!(limits.processes, Some(512));
+        assert_eq!(BROWSER_SCRATCH.get(), 512 << 20);
+        assert!(
+            BROWSER_SCRATCH.get() < BROWSER_MEMORY,
+            "within the cell's memory"
+        );
         assert_eq!(limits.file_size, CellLimits::default().file_size);
         assert_eq!(limits.open_files, CellLimits::default().open_files);
     }
