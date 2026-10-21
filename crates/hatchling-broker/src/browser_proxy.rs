@@ -55,6 +55,12 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_TUNNEL_BYTES: u64 = 268_435_456;
 /// Most tunnels open at once: a browser opens several per site.
 pub const MAX_LIVE: u32 = 64;
+/// Most connections past [`MAX_LIVE`] told why at once; past them too, a
+/// connection is dropped unanswered.
+pub const MAX_BUSY: u32 = 64;
+/// How long a connection refused for [`MAX_LIVE`] has to send its request
+/// before it's answered anyway.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 /// How often the accept loop looks for a stop.
 const POLL: Duration = Duration::from_millis(20);
 /// One piece of a tunnel's copy.
@@ -189,7 +195,8 @@ impl Drop for BrowserProxy {
 }
 
 /// Serves `listener` until `stop` or `deadline`: each connection on its
-/// own thread, at most [`MAX_LIVE`] at once.
+/// own thread, at most [`MAX_LIVE`] tunnels at once. Past them, up to
+/// [`MAX_BUSY`] more are told so; past those, a connection is dropped.
 fn serve(listener: &TcpListener, context: &Arc<Context>, deadline: Instant, stop: &AtomicBool) {
     if listener.set_nonblocking(true).is_err() {
         return;
@@ -197,15 +204,23 @@ fn serve(listener: &TcpListener, context: &Arc<Context>, deadline: Instant, stop
     while !stop.load(Ordering::SeqCst) && Instant::now() < deadline {
         match listener.accept() {
             Ok((client, _)) => {
-                if context.live.load(Ordering::SeqCst) >= MAX_LIVE {
+                let live = context.live.load(Ordering::SeqCst);
+                if live >= MAX_LIVE + MAX_BUSY {
                     context.refused.fetch_add(1, Ordering::SeqCst);
-                    let _ = answer(&client, 503, "Too Many Connections");
+                    drop(client);
                     continue;
                 }
                 context.live.fetch_add(1, Ordering::SeqCst);
+                let busy = live >= MAX_LIVE;
                 let live = Live(Arc::clone(context));
                 std::thread::spawn(move || {
-                    let counter = if tunnel(&client, &live.0) {
+                    let tunnelled = if busy {
+                        refuse_busy(&client);
+                        false
+                    } else {
+                        tunnel(&client, &live.0)
+                    };
+                    let counter = if tunnelled {
                         &live.0.tunnelled
                     } else {
                         &live.0.refused
@@ -219,6 +234,21 @@ fn serve(listener: &TcpListener, context: &Arc<Context>, deadline: Instant, stop
             Err(_) => return,
         }
     }
+}
+
+/// Answers a connection past [`MAX_LIVE`] with `503`, once its request is
+/// read: a socket closed with its request unread is reset, and a reset can
+/// reach the browser before the answer does.
+fn refuse_busy(client: &TcpStream) {
+    let set = client
+        .set_read_timeout(Some(BUSY_TIMEOUT))
+        .and_then(|()| client.set_write_timeout(Some(BUSY_TIMEOUT)));
+    if set.is_err() {
+        return;
+    }
+    let _ = read_connect(&mut BufReader::new(client));
+    let _ = answer(client, 503, "Too Many Connections");
+    let _ = client.shutdown(Shutdown::Write);
 }
 
 /// Why a request isn't tunnelled: its status, its reason, and what the
@@ -264,6 +294,7 @@ fn tunnel(client: &TcpStream, context: &Context) -> bool {
                     "browser connection refused"
                 );
                 let _ = answer(client, refused.status, refused.reason);
+                let _ = client.shutdown(Shutdown::Write);
                 return false;
             }
         };
@@ -746,6 +777,34 @@ mod tests {
             .collect();
         let (status, _) = ask(addr, b"CONNECT site.test:443 HTTP/1.1\r\n\r\n");
         assert_eq!(status, "HTTP/1.1 503 Too Many Connections");
+        // The busy ones told why are bounded too: past them, a connection
+        // is dropped unanswered. These send nothing, so each holds its
+        // place until its request times out.
+        let waiting: Vec<TcpStream> = (0..MAX_BUSY)
+            .map(|_| TcpStream::connect(addr).unwrap())
+            .collect();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while proxy.context.live.load(Ordering::SeqCst) < MAX_LIVE + MAX_BUSY
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // Its write may meet the drop: neither it nor the read may fail
+        // the test, only an answer.
+        let mut dropped = TcpStream::connect(addr).unwrap();
+        dropped
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let _ = dropped.write_all(b"CONNECT site.test:443 HTTP/1.1\r\n\r\n");
+        let mut heard = Vec::new();
+        let _ = dropped.read_to_end(&mut heard);
+        assert!(heard.is_empty(), "dropped unanswered: {heard:?}");
+        let mut told = String::new();
+        let mut first = waiting.first().unwrap();
+        first.set_read_timeout(Some(BUSY_TIMEOUT * 3)).unwrap();
+        let _ = first.read_to_string(&mut told);
+        assert!(told.starts_with("HTTP/1.1 503 Too Many Connections"), "{told}");
+        drop(waiting);
         // One closed gives its place back.
         drop(open);
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -893,6 +952,21 @@ mod tests {
         }
         std::thread::sleep(Duration::from_millis(100));
         assert_eq!(taken.load(Ordering::SeqCst), 1, "only the one opened");
+    }
+
+    #[test]
+    fn a_busy_connection_is_answered_once_its_request_is_read() {
+        let (mut near, far) = pair();
+        near.write_all(b"CONNECT site.test:443 HTTP/1.1\r\n\r\n")
+            .unwrap();
+        refuse_busy(&far);
+        let mut told = String::new();
+        near.read_to_string(&mut told).unwrap();
+        assert_eq!(
+            told,
+            "HTTP/1.1 503 Too Many Connections\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+            "the whole answer, then the end"
+        );
     }
 
     #[test]
