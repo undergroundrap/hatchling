@@ -304,6 +304,7 @@ mod tests {
             filter: Filter::WorkTree,
             limits: crate::Limits::default(),
             cgroup: None,
+            scratch: None,
         }
     }
 
@@ -322,6 +323,7 @@ mod tests {
         CellView {
             relay: None,
             processes: false,
+            scratch: None,
             entries: vec![
                 entry(
                     scratch.canonical("sock"),

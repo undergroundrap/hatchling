@@ -2157,6 +2157,7 @@ pub(super) mod tests {
             filter: Filter::Program,
             limits: HELD,
             cgroup: None,
+            scratch: None,
         };
         in_child("1: no error; 2: not held to its limits", || {
             let before = limits_now();
@@ -2412,6 +2413,78 @@ pub(super) mod tests {
         let dom = std::fs::read_to_string(scratch.0.join("work/dom")).unwrap_or_default();
         assert_ne!(exit.code, 0, "a CLI cell kills the browser");
         assert!(!dom.contains("scripted"), "{dom}");
+    }
+
+    /// What a cell's script says about `/scratch`, from bash builtins
+    /// alone (a cell holds no other program): whether it's there, what a
+    /// file written there reads back as, whether 2 MiB fits, and its mount
+    /// line.
+    const SCRATCH_PROBE: &str = r#"exec > /work/out 2>&1
+if [ -d /scratch ]; then echo "there"; else echo "absent"; fi
+echo hello > /scratch/a 2>/dev/null && read -r back < /scratch/a && echo "read:$back"
+printf '%*s' 2097152 '' > /scratch/big 2>/dev/null; echo "big:$?"
+while read -r line; do
+    case "$line" in *" /scratch "*) echo "mount:$line" ;; esac
+done < /proc/self/mountinfo
+"#;
+
+    /// Runs [`SCRATCH_PROBE`] in a CLI cell with a scratch `tmpfs` of
+    /// `size`, or none: its exit code and what it wrote.
+    fn probe_scratch(size: Option<std::num::NonZeroU64>) -> (i32, String) {
+        let host = Scratch::new("scratch-tmpfs");
+        let (mut spec, _) = specs(&host);
+        let work = host.0.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        spec.exposures.push(crate::Exposure {
+            source: work.clone(),
+            name: String::from("work"),
+            writable: true,
+            label: "work",
+        });
+        spec.filter = Filter::Cli;
+        spec.program = PathBuf::from("/bin/bash");
+        spec.argv = vec![
+            String::from(PROGRAM),
+            String::from("-c"),
+            String::from(SCRATCH_PROBE),
+        ];
+        spec.scratch = size;
+        let cell = isolate(&spec).unwrap();
+        let exit = cell.wait().unwrap();
+        let out = std::fs::read_to_string(work.join("out")).unwrap_or_default();
+        (exit.code, out)
+    }
+
+    /// A cell's private scratch `tmpfs`: there only when the spec asks,
+    /// writable by the cell, bounded by its size, `nosuid,nodev` and the
+    /// cell's alone (mode `0700`). No host path backs it.
+    #[test]
+    fn a_cell_gets_a_private_bounded_scratch_only_when_asked() {
+        if !crate::linux::cell_available() {
+            return;
+        }
+        let size = std::num::NonZeroU64::new(1 << 20).unwrap();
+        let (code, out) = probe_scratch(Some(size));
+        assert_eq!(code, 0, "{out}");
+        assert!(
+            out.contains("there\n") && out.contains("read:hello\n"),
+            "{out}"
+        );
+        assert!(
+            !out.contains("big:0\n"),
+            "2 MiB doesn't fit in 1 MiB: {out}"
+        );
+        let mount = out
+            .lines()
+            .find(|line| line.starts_with("mount:"))
+            .unwrap_or_default();
+        for wanted in ["tmpfs", "nosuid", "nodev", "size=1024k", "mode=700"] {
+            assert!(mount.contains(wanted), "{wanted}: {mount}");
+        }
+        let (code, out) = probe_scratch(None);
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains("absent\n"), "{out}");
+        assert!(!out.contains("mount:"), "{out}");
     }
 
     /// WO-029: a browser cell without a resource group, or one without a

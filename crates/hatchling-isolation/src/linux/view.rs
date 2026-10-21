@@ -104,6 +104,7 @@ pub(super) fn view(spec: &CellSpec) -> Result<CellView, Error> {
         entries,
         relay: spec.relay,
         processes: cli,
+        scratch: spec.scratch,
     })
 }
 
@@ -126,6 +127,7 @@ pub(super) fn mount_plan(view: CellView, new_root: &Path) -> Result<MountPlan, E
         .map(|entry| entry.source.clone())
         .collect();
     let processes = view.processes;
+    let scratch = view.scratch;
     let binds = view
         .entries
         .into_iter()
@@ -139,6 +141,10 @@ pub(super) fn mount_plan(view: CellView, new_root: &Path) -> Result<MountPlan, E
         .collect();
     MountPlan::new(new_root.to_path_buf(), &allowlist, binds)
         .map(|plan| if processes { plan.with_proc() } else { plan })
+        .and_then(|plan| match scratch {
+            Some(bytes) => plan.with_scratch(bytes),
+            None => Ok(plan),
+        })
         .map_err(|source| Error::View(PlatformError::new(source)))
 }
 
@@ -384,6 +390,7 @@ pub(super) mod tests {
             filter: Filter::Program,
             limits: crate::Limits::default(),
             cgroup: None,
+            scratch: None,
         };
         let mut harness = skill.clone();
         for name in ["work", "scratch"] {
