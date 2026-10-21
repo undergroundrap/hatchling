@@ -1,6 +1,6 @@
 # WO-029: A browser cell: a real browser the agent drives, in a cell of its own, reaching only what the broker lets through
 
-**Status:** IN PROGRESS (part 1a, the browser cell's profile, done; part 1b: the controller)
+**Status:** IN PROGRESS (part 1, the cell and the controller, done; part 2: the proxy)
 **Area:** `crates/hatchling-browser` (new: the controller that runs in the cell), `crates/hatchling-broker` (the browser session, the proxy, site grants, the UI stream), `crates/hatchling-isolation` (the browser cell's profile), `crates/hatchling-agent` (the tools), `crates/hatchling-core` (the ops; `ui` already has the browser surfaces), `frontend/` (the live browser view)
 **Issue:** none yet
 **Trust boundary:** yes
