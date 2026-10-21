@@ -209,6 +209,8 @@ pub enum CellKind {
     Skill,
     /// A coding CLI (a harness).
     Harness,
+    /// A browser the agent drives (WO-029).
+    Browser,
 }
 
 /// The limits a cell is held to; `None` is unlimited, or the broker's own
@@ -341,6 +343,7 @@ mod tests {
             (CellKind::Subagent, "subagent"),
             (CellKind::Skill, "skill"),
             (CellKind::Harness, "harness"),
+            (CellKind::Browser, "browser"),
         ] {
             assert_eq!(serde_json::to_value(kind).unwrap(), json!(name));
         }

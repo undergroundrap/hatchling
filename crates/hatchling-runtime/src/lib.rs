@@ -10,8 +10,8 @@
 //!
 //! Two invocations don't name a subcommand, because the broker makes
 //! them itself:
-//! - The broker starts its spawner helpers (`skill-cell`, `agent-run`)
-//!   by re-running its own executable, which is `hatchling` here.
+//! - The broker starts its spawner helpers (`skill-cell`, `agent-run`,
+//!   `browser-cell`) by re-running its own executable, which is `hatchling` here.
 //! - A cell runs its program as `/agent`, so `hatchling` started under
 //!   that name is the agent. Point `HATCHLING_AGENT_BIN` at `hatchling`
 //!   and the one binary serves both sides.
@@ -22,6 +22,7 @@
 use std::path::Path;
 
 use hatchling_broker::AGENT_RUN_SUBCOMMAND;
+use hatchling_broker::browser_cell::BROWSER_CELL_SUBCOMMAND;
 use hatchling_broker::harness_tree::HARNESS_TREE_SUBCOMMAND;
 use hatchling_broker::keeper::VAULT_KEEPER_SUBCOMMAND;
 use hatchling_broker::skill_run::SKILL_CELL_SUBCOMMAND;
@@ -84,6 +85,7 @@ pub fn route<'a>(argv0: &str, args: &'a [String]) -> Route<'a> {
         Some(
             SKILL_CELL_SUBCOMMAND
             | AGENT_RUN_SUBCOMMAND
+            | BROWSER_CELL_SUBCOMMAND
             | HARNESS_TREE_SUBCOMMAND
             | VAULT_KEEPER_SUBCOMMAND,
         ) => Route::Broker(args),
@@ -124,6 +126,7 @@ mod tests {
         for helper in [
             SKILL_CELL_SUBCOMMAND,
             AGENT_RUN_SUBCOMMAND,
+            BROWSER_CELL_SUBCOMMAND,
             HARNESS_TREE_SUBCOMMAND,
             VAULT_KEEPER_SUBCOMMAND,
         ] {

@@ -30,7 +30,7 @@ test('limits are worded, and unset ones left out', () => {
     assert.deepEqual(limits({}), []);
 });
 test('kinds, sockets and verdicts have their words', () => {
-    assert.deepEqual(['agent', 'run', 'subagent', 'skill', 'harness'].map(kind), ['Agent', 'Run', 'Subagent', 'Skill', 'Coding CLI']);
+    assert.deepEqual(['agent', 'run', 'subagent', 'skill', 'harness', 'browser'].map(kind), ['Agent', 'Run', 'Subagent', 'Skill', 'Coding CLI', 'Browser']);
     assert.deepEqual(['api', 'ui'].map(socket), ['Local API', 'App']);
     assert.deepEqual(verdict('allowed'), { label: 'Allowed', tone: 'success' });
     assert.deepEqual(verdict('failed'), { label: 'Failed', tone: 'attention' });

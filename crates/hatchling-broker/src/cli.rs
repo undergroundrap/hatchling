@@ -26,6 +26,7 @@ use std::process::ExitCode;
 
 use hatchling_core::cli::{EX_USAGE, help_requested, render_help};
 
+use crate::browser_cell::{BROWSER_CELL_SUBCOMMAND, browser_cell_main};
 use crate::harness_tree::{HARNESS_TREE_SUBCOMMAND, harness_tree_main};
 use crate::keeper::{VAULT_KEEPER_SUBCOMMAND, vault_keeper_main};
 use crate::skill_run::{SKILL_CELL_SUBCOMMAND, skill_cell_main};
@@ -49,9 +50,13 @@ pub fn main(program: &str, args: &[String]) -> ExitCode {
         return ExitCode::from(EX_USAGE);
     }
     // The spawner helpers: fresh, single-threaded processes the broker
-    // starts for one skill cell or one scheduled run, before any config.
+    // starts for one skill cell, one scheduled run or one browser cell,
+    // before any config.
     match args.first().map(String::as_str) {
         Some(SKILL_CELL_SUBCOMMAND) => return skill_cell_main(args.get(1).map(String::as_str)),
+        Some(BROWSER_CELL_SUBCOMMAND) => {
+            return browser_cell_main(args.get(1).map(String::as_str));
+        }
         Some(AGENT_RUN_SUBCOMMAND) => return agent_run_main(args.get(1).map(String::as_str)),
         Some(HARNESS_TREE_SUBCOMMAND) => {
             return harness_tree_main(args.get(1..).unwrap_or_default());
@@ -80,7 +85,7 @@ pub fn help(program: &str) -> String {
     render_help(
         program,
         "[subcommand] | --help | -h",
-        "Serve agents with no subcommand. Operator subcommands:\n  migrate-vault\n  rekey-vault [<new-key-file>]   (no file with a keyring)\n  vault-keyring <action>\n    init, enroll-totp, enroll-keys, use-file-tier, backup-codes,\n    status, add-key, remove-key, label-key\n  redactions list | stats | categories\n  redactions show <id> | raw <id> | override <id> [--any-scope]\n  vault-audit [log [count]]\n  clean [--dry-run]   (a dead broker's leftovers; never your data)\n\nThe broker builds and supervises the agent's cell. Internal spawner\ncommands skill-cell <spec>, agent-run <spec>, harness-tree and\nvault-keeper are broker-owned.",
+        "Serve agents with no subcommand. Operator subcommands:\n  migrate-vault\n  rekey-vault [<new-key-file>]   (no file with a keyring)\n  vault-keyring <action>\n    init, enroll-totp, enroll-keys, use-file-tier, backup-codes,\n    status, add-key, remove-key, label-key\n  redactions list | stats | categories\n  redactions show <id> | raw <id> | override <id> [--any-scope]\n  vault-audit [log [count]]\n  clean [--dry-run]   (a dead broker's leftovers; never your data)\n\nThe broker builds and supervises the agent's cell. Internal spawner\ncommands skill-cell <spec>, agent-run <spec>, browser-cell <spec>,\nharness-tree and vault-keeper are broker-owned.",
         crate::environment::ENVIRONMENT,
     )
 }
@@ -105,7 +110,10 @@ fn valid_args(args: &[String]) -> bool {
         | [HARNESS_TREE_SUBCOMMAND, "give" | "reclaim", _, ..] => true,
         [VAULT_KEEPER_SUBCOMMAND] => args.len() == 1,
         ["vault-audit", "log", count] => count.parse::<usize>().is_ok(),
-        [SKILL_CELL_SUBCOMMAND | AGENT_RUN_SUBCOMMAND, ..] => args.len() <= 2,
+        [
+            SKILL_CELL_SUBCOMMAND | AGENT_RUN_SUBCOMMAND | BROWSER_CELL_SUBCOMMAND,
+            ..,
+        ] => args.len() <= 2,
         _ => false,
     }
 }
@@ -143,7 +151,11 @@ mod tests {
     fn the_spawner_helpers_refuse_without_a_spec() {
         // Each helper is reached before any configuration is read, and
         // fails closed when the broker didn't hand it a cell spec.
-        for helper in [SKILL_CELL_SUBCOMMAND, AGENT_RUN_SUBCOMMAND] {
+        for helper in [
+            SKILL_CELL_SUBCOMMAND,
+            AGENT_RUN_SUBCOMMAND,
+            BROWSER_CELL_SUBCOMMAND,
+        ] {
             assert_eq!(
                 main("hatchling-broker", &args(&[helper])),
                 ExitCode::FAILURE

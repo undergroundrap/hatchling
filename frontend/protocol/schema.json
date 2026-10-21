@@ -1814,6 +1814,11 @@
           "const": "harness",
           "description": "A coding CLI (a harness).",
           "type": "string"
+        },
+        {
+          "const": "browser",
+          "description": "A browser the agent drives (WO-029).",
+          "type": "string"
         }
       ]
     },

@@ -50,7 +50,7 @@ pub const MAX_RESPONSE_BYTES: u64 = 67_108_864;
 /// for minutes before its first token.
 const IO_TIMEOUT: Duration = Duration::from_secs(300);
 /// How long the cell has to hand its listener over.
-const HANDOFF_TIMEOUT: Duration = Duration::from_secs(60);
+pub(crate) const HANDOFF_TIMEOUT: Duration = Duration::from_secs(60);
 /// Most connections the relay serves at once.
 const MAX_LIVE: u32 = 16;
 /// Most request-body bytes one run's connections hold between them: 64
@@ -272,7 +272,7 @@ impl Drop for Share<'_> {
 }
 
 /// Waits on `handoff` for the cell's listener, until `deadline` or `stop`.
-fn receive(
+pub(crate) fn receive(
     handoff: &UnixListener,
     deadline: Instant,
     stop: &AtomicBool,

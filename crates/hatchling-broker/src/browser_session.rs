@@ -34,6 +34,37 @@ pub const BROWSER_SCRATCH: NonZeroU64 = match NonZeroU64::new(512 * 1024 * 1024)
     None => NonZeroU64::MIN,
 };
 
+/// The libraries NSS opens when it starts, by name, not when the browser
+/// is linked: its software token and the crypto that loads. Without them
+/// the browser can't start TLS, and aborts.
+const NSS_MODULES: [&str; 2] = ["libsoftokn3.so", "libfreeblpriv3.so"];
+
+/// Where the host's libraries are, in the order they're looked in.
+const LIBRARY_DIRS: [&str; 4] = [
+    "/usr/lib/x86_64-linux-gnu",
+    "/lib/x86_64-linux-gnu",
+    "/usr/lib64",
+    "/usr/lib",
+];
+
+/// NSS's modules, in the first of [`LIBRARY_DIRS`] that holds NSS itself
+/// (`libnss3.so`), where NSS looks for them first: each one `is_file`
+/// finds there.
+fn nss_modules(is_file: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
+    LIBRARY_DIRS
+        .iter()
+        .map(Path::new)
+        .find(|dir| is_file(&dir.join("libnss3.so")))
+        .map(|dir| {
+            NSS_MODULES
+                .iter()
+                .map(|module| dir.join(module))
+                .filter(|module| is_file(module))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// The operator's browser settings: the pinned browser, the controller,
 /// and the fonts.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,7 +182,7 @@ impl BrowserSettings {
     }
 
     /// A browser cell's own part, with the relay handed over at
-    /// `handoff`.
+    /// `handoff`, and NSS's modules as the host has them now.
     #[must_use]
     pub fn dirs(&self, handoff: PathBuf) -> BrowserDirs {
         BrowserDirs {
@@ -166,6 +197,7 @@ impl BrowserSettings {
                 .unwrap_or_default()
                 .to_owned(),
             fonts: self.fonts.clone(),
+            nss: nss_modules(Path::is_file),
             relay: RELAY_PORT,
             handoff,
         }
@@ -255,12 +287,17 @@ mod tests {
         let no_fonts: Vec<_> = full().into_iter().take(3).collect();
         assert_eq!(parse(&no_fonts).unwrap().unwrap().fonts, None);
         let dirs = settings.dirs(PathBuf::from("/run/h.sock"));
+        assert_eq!(dirs.nss, nss_modules(Path::is_file), "as the host has them");
         assert_eq!(
-            dirs,
+            BrowserDirs {
+                nss: Vec::new(),
+                ..dirs.clone()
+            },
             BrowserDirs {
                 browser_dir: PathBuf::from("/opt/chrome"),
                 browser_name: String::from("chrome-headless-shell"),
                 fonts: Some(PathBuf::from("/usr/share/fonts")),
+                nss: Vec::new(),
                 relay: RELAY_PORT,
                 handoff: PathBuf::from("/run/h.sock"),
             }
@@ -268,6 +305,40 @@ mod tests {
         assert_eq!(
             dirs.browser(),
             Path::new("/opt/chrome/chrome-headless-shell")
+        );
+    }
+
+    #[test]
+    fn nss_modules_come_from_where_nss_is() {
+        let host = |files: &'static [&'static str]| {
+            move |path: &Path| files.iter().any(|file| path == Path::new(file))
+        };
+        assert_eq!(
+            nss_modules(host(&[
+                "/usr/lib/libnss3.so",
+                "/usr/lib/libsoftokn3.so",
+                "/usr/lib/libfreeblpriv3.so",
+                "/usr/lib64/libsoftokn3.so",
+            ])),
+            [
+                PathBuf::from("/usr/lib/libsoftokn3.so"),
+                PathBuf::from("/usr/lib/libfreeblpriv3.so")
+            ],
+            "beside NSS, not wherever a module is"
+        );
+        assert_eq!(
+            nss_modules(host(&[
+                "/usr/lib/x86_64-linux-gnu/libnss3.so",
+                "/usr/lib/x86_64-linux-gnu/libsoftokn3.so",
+                "/usr/lib/libnss3.so",
+                "/usr/lib/libfreeblpriv3.so",
+            ])),
+            [PathBuf::from("/usr/lib/x86_64-linux-gnu/libsoftokn3.so")],
+            "the first directory with NSS, and only the modules it has"
+        );
+        assert!(
+            nss_modules(host(&["/usr/lib/libsoftokn3.so"])).is_empty(),
+            "no NSS, no modules"
         );
     }
 
