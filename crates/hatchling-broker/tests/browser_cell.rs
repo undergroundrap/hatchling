@@ -33,7 +33,7 @@ use std::time::Duration;
 
 use hatchling_broker::CellIds;
 use hatchling_broker::browser_cell::BrowserLauncher;
-use hatchling_broker::browser_proxy::Route;
+use hatchling_broker::browser_proxy::{Route, Sites};
 use hatchling_broker::browser_session::BrowserSettings;
 use hatchling_broker::machine;
 use hatchling_core::browser::{BrowserCommand, BrowserFailure, BrowserReply};
@@ -48,6 +48,9 @@ const HOST: &str = "hatchling.test";
 
 /// The site as the browser's `CONNECT` names it.
 const DESTINATION: &str = "hatchling.test:443";
+
+/// A site the session never holds.
+const UNGRANTED: &str = "elsewhere.test";
 
 /// Whether `name`'s requirement makes a missing prerequisite a failure.
 fn required(name: &str) -> bool {
@@ -271,7 +274,9 @@ fn a_browser_cell_reaches_a_site_only_through_the_broker_and_refuses_a_bad_certi
         Duration::from_secs(300),
     );
     let cell_id = "browser-launch";
-    let mut cell = launcher.start(cell_id).unwrap();
+    let sites = Sites::default();
+    sites.grant(DESTINATION);
+    let mut cell = launcher.start(cell_id, sites.clone()).unwrap();
     assert!(
         machine::cells()
             .iter()
@@ -290,6 +295,21 @@ fn a_browser_cell_reaches_a_site_only_through_the_broker_and_refuses_a_bad_certi
             failure: BrowserFailure::LoadFailed
         }
     );
+    // A site the session doesn't hold: refused before its name is looked
+    // up, and kept for the owner to see.
+    let reply = cell
+        .command(&BrowserCommand::Open {
+            url: format!("https://{UNGRANTED}/"),
+        })
+        .unwrap();
+    assert_eq!(
+        reply,
+        BrowserReply::Failed {
+            failure: BrowserFailure::LoadFailed
+        }
+    );
+    let ungranted = format!("{UNGRANTED}:443");
+    assert_eq!(sites.refused(), [ungranted]);
     let count = cell.finish();
     stop.store(true, Ordering::SeqCst);
     serving.join().unwrap();
@@ -315,7 +335,7 @@ fn a_browser_cell_reaches_a_site_only_through_the_broker_and_refuses_a_bad_certi
     let asked = std::mem::take(&mut *asked.lock().unwrap());
     assert!(
         asked.iter().all(|destination| destination == DESTINATION),
-        "the browser asked for nothing of its own: {asked:?}"
+        "nothing else was looked up, the ungranted site included: {asked:?}"
     );
     assert!(
         machine::decisions()

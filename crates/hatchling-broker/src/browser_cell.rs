@@ -35,7 +35,7 @@ use hatchling_core::framing::{read_frame, write_frame};
 use hatchling_core::ui::operator::CellKind;
 use hatchling_isolation::{IsolationBackend as _, Supervised as _};
 
-use crate::browser_proxy::{BrowserProxy, ProxyCount, Route};
+use crate::browser_proxy::{BrowserProxy, ProxyCount, Route, Sites};
 use crate::browser_session::{BrowserSettings, browser_limits};
 use crate::cell::Process;
 use crate::harness_relay::HANDOFF_TIMEOUT;
@@ -89,15 +89,15 @@ impl BrowserLauncher {
         }
     }
 
-    /// Starts the browser cell `cell_id`, once its browser is checked
-    /// against the pin.
+    /// Starts the browser cell `cell_id`, reaching only the `sites` its
+    /// session holds, once its browser is checked against the pin.
     ///
     /// # Errors
     ///
     /// A sentence for the broker's log: the browser isn't the pinned one,
     /// the cell couldn't be made or started, or it didn't hand its
     /// connection and relay over in time. Nothing is left running.
-    pub fn start(&self, cell_id: &str) -> Result<BrowserCell, String> {
+    pub fn start(&self, cell_id: &str, sites: Sites) -> Result<BrowserCell, String> {
         self.settings.verified()?;
         let run_dir = RunDir::create()?;
         let handoff_path = run_dir.path().join("relay.sock");
@@ -138,7 +138,7 @@ impl BrowserLauncher {
             return Err(helper.failed(&format!("the browser cell's connection: {error}")));
         }
         let deadline = Instant::now() + self.lifetime;
-        let proxy = BrowserProxy::start(listener, cell_id, self.route.clone(), deadline);
+        let proxy = BrowserProxy::start(listener, cell_id, self.route.clone(), sites, deadline);
         Ok(BrowserCell {
             commands: Commands::new(connection, deadline),
             proxy: Some(proxy),
@@ -253,12 +253,39 @@ fn exchange(connection: &UnixStream, command: &BrowserCommand) -> Result<Browser
 
 /// The controller's connection, which the helper sends on `channel`.
 fn receive_connection(channel: &UnixStream) -> Result<UnixStream, String> {
-    channel
-        .set_read_timeout(Some(HANDOFF_TIMEOUT))
-        .map_err(|error| format!("the browser cell's handoff: {error}"))?;
-    hatchling_sys::net::recv_fd(channel.as_fd())
-        .map(UnixStream::from)
-        .map_err(|error| format!("the browser cell's connection never came: {error}"))
+    receive_within(channel, HANDOFF_TIMEOUT, hatchling_sys::net::recv_fd)
+}
+
+/// The connection `receive` takes off `channel` within `timeout`. A wait
+/// that's interrupted is waited again, for what's left: a wait with a
+/// timeout returns `EINTR` once the broker is stopped and continued, with
+/// no handler at all (`signal(7)`), and the helper, still handing over,
+/// mustn't be killed for it.
+fn receive_within(
+    channel: &UnixStream,
+    timeout: Duration,
+    mut receive: impl FnMut(std::os::fd::BorrowedFd<'_>) -> Result<OwnedFd, hatchling_sys::Error>,
+) -> Result<UnixStream, String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(String::from(
+                "the browser cell's connection never came: the wait was interrupted until it ran out",
+            ));
+        }
+        channel
+            .set_read_timeout(Some(left))
+            .map_err(|error| format!("the browser cell's handoff: {error}"))?;
+        match receive(channel.as_fd()) {
+            Ok(fd) => return Ok(UnixStream::from(fd)),
+            Err(hatchling_sys::Error::Net { source, .. })
+                if source.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => {
+                return Err(format!("the browser cell's connection never came: {error}"));
+            }
+        }
+    }
 }
 
 /// A browser cell's helper, under the backend's supervision. Dropped, it's
@@ -488,7 +515,7 @@ mod tests {
     #[test]
     fn a_browser_that_isnt_the_pinned_one_is_never_started() {
         let (launcher, dir) = launcher("pin", Some(&"0".repeat(64)), "/nonexistent-group");
-        let refused = launcher.start("browser-pin").unwrap_err();
+        let refused = launcher.start("browser-pin", Sites::default()).unwrap_err();
         assert!(refused.contains("not the pinned"), "{refused}");
         assert!(!listed("browser-pin"));
         std::fs::remove_dir_all(dir).unwrap();
@@ -497,7 +524,9 @@ mod tests {
     #[test]
     fn a_browser_cell_without_its_group_is_never_started() {
         let (launcher, dir) = launcher("group", None, "/nonexistent-group");
-        let refused = launcher.start("browser-group").unwrap_err();
+        let refused = launcher
+            .start("browser-group", Sites::default())
+            .unwrap_err();
         assert!(refused.contains("HATCHLING_CELL_CGROUP"), "{refused}");
         assert!(!listed("browser-group"), "unlisted once it's refused");
         std::fs::remove_dir_all(dir).unwrap();
@@ -654,6 +683,54 @@ mod tests {
             refused.starts_with("cannot start /nonexistent/hatchling-broker"),
             "{refused}"
         );
+    }
+
+    /// What an interrupted wait gives.
+    fn interrupted() -> hatchling_sys::Error {
+        hatchling_sys::Error::Net {
+            operation: "receive fd",
+            source: std::io::Error::from(std::io::ErrorKind::Interrupted),
+        }
+    }
+
+    #[test]
+    fn an_interrupted_wait_for_the_connection_waits_again() {
+        let (channel, _helper) = UnixStream::pair().unwrap();
+        let (cell_end, _controller) = UnixStream::pair().unwrap();
+        let mut sent = Some(OwnedFd::from(cell_end));
+        let mut waits = 0;
+        let received = receive_within(&channel, Duration::from_secs(60), |_| {
+            waits += 1;
+            if waits < 3 {
+                Err(interrupted())
+            } else {
+                sent.take().ok_or_else(interrupted)
+            }
+        });
+        assert!(received.is_ok(), "{received:?}");
+        assert_eq!(waits, 3);
+        // Interrupted until the time runs out: it's given up, not waited
+        // for forever.
+        let started = Instant::now();
+        let refused = receive_within(&channel, Duration::from_millis(50), |_| Err(interrupted()))
+            .unwrap_err();
+        assert!(
+            refused.ends_with("the wait was interrupted until it ran out"),
+            "{refused}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(10));
+        // Any other failure is the helper's, at once.
+        let mut waits = 0;
+        let refused = receive_within(&channel, Duration::from_secs(60), |_| {
+            waits += 1;
+            Err(hatchling_sys::Error::Net {
+                operation: "receive fd",
+                source: std::io::Error::other("no fd was sent"),
+            })
+        })
+        .unwrap_err();
+        assert_eq!(waits, 1);
+        assert!(refused.contains("no fd was sent"), "{refused}");
     }
 
     #[test]
