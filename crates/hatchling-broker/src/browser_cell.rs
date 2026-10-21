@@ -26,6 +26,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -35,6 +36,7 @@ use hatchling_core::framing::{read_frame, write_frame};
 use hatchling_core::ui::operator::CellKind;
 use hatchling_isolation::{IsolationBackend as _, Supervised as _};
 
+use crate::browser_bundle::Snapshot;
 use crate::browser_proxy::{BrowserProxy, ProxyCount, Route, Sites};
 use crate::browser_session::{BrowserSettings, browser_limits};
 use crate::cell::Process;
@@ -54,7 +56,8 @@ pub const REPLY_TIMEOUT: Duration = Duration::from_secs(90);
 /// helper is killed.
 pub const CLOSE_GRACE: Duration = Duration::from_secs(10);
 
-/// What browser cells start from: the broker's settings, chosen once.
+/// What browser cells start from: the broker's settings, chosen once, and
+/// the snapshot of the browser's bundle, made once.
 #[derive(Debug, Clone)]
 pub struct BrowserLauncher {
     spawner: PathBuf,
@@ -63,6 +66,7 @@ pub struct BrowserLauncher {
     cgroup: PathBuf,
     route: Route,
     lifetime: Duration,
+    snapshot: Arc<Mutex<Option<Arc<Snapshot>>>>,
 }
 
 impl BrowserLauncher {
@@ -71,7 +75,7 @@ impl BrowserLauncher {
     /// its own under the delegated `cgroup`. A cell's sites are found by
     /// `route`, and it lives at most `lifetime`.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         spawner: PathBuf,
         settings: BrowserSettings,
         ids: CellIds,
@@ -86,11 +90,52 @@ impl BrowserLauncher {
             cgroup,
             route,
             lifetime,
+            snapshot: Arc::new(Mutex::new(None)),
         }
     }
 
+    /// The snapshot of the browser's bundle: made and checked the first
+    /// time, and the same one after.
+    ///
+    /// # Errors
+    ///
+    /// As [`BrowserSettings::snapshot`]: the next start tries again.
+    pub fn snapshot(&self) -> Result<Arc<Snapshot>, String> {
+        let mut kept = self
+            .snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(snapshot) = kept.as_ref() {
+            return Ok(Arc::clone(snapshot));
+        }
+        let snapshot = Arc::new(self.settings.snapshot()?);
+        *kept = Some(Arc::clone(&snapshot));
+        drop(kept);
+        Ok(snapshot)
+    }
+
+    /// The cell `cell_id`: the controller, running the browser from
+    /// `snapshot`, never from the operator's directory, with its relay
+    /// handed over at `handoff`.
+    fn cell_config(
+        &self,
+        cell_id: &str,
+        snapshot: &Snapshot,
+        handoff: PathBuf,
+    ) -> Result<CellConfig, String> {
+        CellConfig::browser(
+            cell_id,
+            self.ids,
+            self.settings.controller().to_path_buf(),
+            self.settings.dirs(snapshot.dir(), handoff),
+            browser_limits(),
+            self.cgroup.clone(),
+        )
+        .map_err(|error| error.to_string())
+    }
+
     /// Starts the browser cell `cell_id`, reaching only the `sites` its
-    /// session holds, once its browser is checked against the pin.
+    /// session holds, from the snapshot of the pinned bundle.
     ///
     /// # Errors
     ///
@@ -98,20 +143,12 @@ impl BrowserLauncher {
     /// the cell couldn't be made or started, or it didn't hand its
     /// connection and relay over in time. Nothing is left running.
     pub fn start(&self, cell_id: &str, sites: Sites) -> Result<BrowserCell, String> {
-        self.settings.verified()?;
+        let snapshot = self.snapshot()?;
         let run_dir = RunDir::create()?;
         let handoff_path = run_dir.path().join("relay.sock");
         let handoff = UnixListener::bind(&handoff_path)
             .map_err(|error| format!("cannot make the relay handoff: {error}"))?;
-        let config = CellConfig::browser(
-            cell_id,
-            self.ids,
-            self.settings.controller().to_path_buf(),
-            self.settings.dirs(handoff_path),
-            browser_limits(),
-            self.cgroup.clone(),
-        )
-        .map_err(|error| error.to_string())?;
+        let config = self.cell_config(cell_id, &snapshot, handoff_path)?;
         let running = crate::machine::Running::start(cell_id, CellKind::Browser, &config.limits);
         let (config, group) = config
             .supervised_cgroup()
@@ -146,6 +183,7 @@ impl BrowserLauncher {
             _group: group,
             _running: running,
             _run_dir: run_dir,
+            _snapshot: snapshot,
         })
     }
 }
@@ -161,6 +199,7 @@ pub struct BrowserCell {
     _group: Option<hatchling_sys::cgroup::CellCgroup>,
     _running: crate::machine::Running,
     _run_dir: RunDir,
+    _snapshot: Arc<Snapshot>,
 }
 
 impl std::fmt::Debug for BrowserCell {
@@ -485,7 +524,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let browser = dir.join("chrome");
         std::fs::write(&browser, b"not a browser").unwrap();
-        let actual = hatchling_skill::CodeHash::of(b"not a browser").to_string();
+        let actual = crate::browser_bundle::digest(&dir).unwrap();
         let settings = BrowserSettings::parse(|key| match key {
             "HATCHLING_BROWSER" => Some(browser.display().to_string()),
             "HATCHLING_BROWSER_SHA256" => Some(sha256.unwrap_or(&actual).to_owned()),
@@ -519,6 +558,37 @@ mod tests {
         assert!(refused.contains("not the pinned"), "{refused}");
         assert!(!listed("browser-pin"));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_launcher_snapshots_its_bundle_once() {
+        let (kept, dir) = launcher("once", None, "/nonexistent-group");
+        let first = kept.snapshot().unwrap();
+        std::fs::write(dir.join("chrome"), b"changed after").unwrap();
+        let second = kept.snapshot().unwrap();
+        assert!(Arc::ptr_eq(&first, &second), "the same snapshot");
+        assert_eq!(
+            std::fs::read(second.dir().join("chrome")).unwrap(),
+            b"not a browser",
+            "as it was checked"
+        );
+        // One that couldn't be made is tried again at the next start.
+        let (refusing, refused_dir) = launcher("again", Some(&"0".repeat(64)), "/x");
+        assert!(refusing.snapshot().is_err());
+        assert!(refusing.snapshot().is_err());
+        assert!(refusing.snapshot.lock().unwrap().is_none(), "nothing kept");
+        // A cell runs the browser from the snapshot, never from the
+        // operator's directory.
+        let config = kept
+            .cell_config("browser-once", &first, PathBuf::from("/run/relay.sock"))
+            .unwrap();
+        let dirs = config.browser.unwrap();
+        assert_eq!(dirs.browser_dir, first.dir());
+        assert_ne!(dirs.browser_dir, dir);
+        assert_eq!(dirs.browser(), first.dir().join("chrome"));
+        drop((first, second, kept));
+        std::fs::remove_dir_all(dir).unwrap();
+        std::fs::remove_dir_all(refused_dir).unwrap();
     }
 
     #[test]

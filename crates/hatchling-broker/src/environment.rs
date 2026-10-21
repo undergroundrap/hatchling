@@ -76,7 +76,7 @@ hatchling_core::declare_environment! {
     HATCHLING_HARNESS_ROOTS: ("required with a configured harness", "Permitted host roots for harness work trees."),
     HATCHLING_HARNESS_TIMEOUT_SECS: ("optional", "Harness execution deadline in seconds."),
     HATCHLING_BROWSER: ("optional; paired with its SHA256", "Absolute pinned headless browser executable path (WO-029); unset, no browser sessions. Needs HATCHLING_CELL_CGROUP."),
-    HATCHLING_BROWSER_SHA256: ("required with BROWSER", "SHA-256 of the configured browser executable, checked before every start."),
+    HATCHLING_BROWSER_SHA256: ("required with BROWSER", "Digest of the browser's whole bundle, its directory (hatchling-broker browser-digest <browser>); checked as it's copied."),
     HATCHLING_BROWSER_CONTROLLER: ("required with BROWSER", "Absolute path of the hatchling-browser controller a browser cell runs."),
     HATCHLING_BROWSER_FONTS: ("optional", "Absolute host fonts directory a browser cell sees read-only."),
     HATCHLING_OUTPUT_GATE: ("optional; default on", "Local-channel output review, on or off."),

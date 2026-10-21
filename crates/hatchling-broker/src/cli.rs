@@ -26,6 +26,7 @@ use std::process::ExitCode;
 
 use hatchling_core::cli::{EX_USAGE, help_requested, render_help};
 
+use crate::browser_bundle::{BROWSER_DIGEST_SUBCOMMAND, browser_digest_main};
 use crate::browser_cell::{BROWSER_CELL_SUBCOMMAND, browser_cell_main};
 use crate::harness_tree::{HARNESS_TREE_SUBCOMMAND, harness_tree_main};
 use crate::keeper::{VAULT_KEEPER_SUBCOMMAND, vault_keeper_main};
@@ -57,6 +58,10 @@ pub fn main(program: &str, args: &[String]) -> ExitCode {
         Some(BROWSER_CELL_SUBCOMMAND) => {
             return browser_cell_main(args.get(1).map(String::as_str));
         }
+        // The operator's, and like the helpers it reads no configuration.
+        Some(BROWSER_DIGEST_SUBCOMMAND) => {
+            return browser_digest_main(args.get(1).map(String::as_str));
+        }
         Some(AGENT_RUN_SUBCOMMAND) => return agent_run_main(args.get(1).map(String::as_str)),
         Some(HARNESS_TREE_SUBCOMMAND) => {
             return harness_tree_main(args.get(1..).unwrap_or_default());
@@ -85,7 +90,7 @@ pub fn help(program: &str) -> String {
     render_help(
         program,
         "[subcommand] | --help | -h",
-        "Serve agents with no subcommand. Operator subcommands:\n  migrate-vault\n  rekey-vault [<new-key-file>]   (no file with a keyring)\n  vault-keyring <action>\n    init, enroll-totp, enroll-keys, use-file-tier, backup-codes,\n    status, add-key, remove-key, label-key\n  redactions list | stats | categories\n  redactions show <id> | raw <id> | override <id> [--any-scope]\n  vault-audit [log [count]]\n  clean [--dry-run]   (a dead broker's leftovers; never your data)\n\nThe broker builds and supervises the agent's cell. Internal spawner\ncommands skill-cell <spec>, agent-run <spec>, browser-cell <spec>,\nharness-tree and vault-keeper are broker-owned.",
+        "Serve agents with no subcommand. Operator subcommands:\n  migrate-vault\n  rekey-vault [<new-key-file>]   (no file with a keyring)\n  vault-keyring <action>\n    init, enroll-totp, enroll-keys, use-file-tier, backup-codes,\n    status, add-key, remove-key, label-key\n  redactions list | stats | categories\n  redactions show <id> | raw <id> | override <id> [--any-scope]\n  vault-audit [log [count]]\n  clean [--dry-run]   (a dead broker's leftovers; never your data)\n  browser-digest <browser>   (the digest HATCHLING_BROWSER_SHA256 pins)\n\nThe broker builds and supervises the agent's cell. Internal spawner\ncommands skill-cell <spec>, agent-run <spec>, browser-cell <spec>,\nharness-tree and vault-keeper are broker-owned.",
         crate::environment::ENVIRONMENT,
     )
 }
@@ -97,7 +102,7 @@ fn valid_args(args: &[String]) -> bool {
         []
         | ["migrate-vault" | "vault-audit" | "rekey-vault" | "clean"]
         | ["clean", "--dry-run"]
-        | ["rekey-vault", _]
+        | ["rekey-vault" | BROWSER_DIGEST_SUBCOMMAND, _]
         | [
             "vault-keyring",
             "init" | "enroll-totp" | "enroll-keys" | "use-file-tier" | "backup-codes" | "status"
@@ -184,6 +189,15 @@ mod tests {
         assert!(text.contains("migrate-vault"));
         assert!(text.contains("rekey-vault [<new-key-file>]"));
         assert!(text.contains("vault-keyring <action>"));
+        assert!(text.contains("browser-digest <browser>"));
+        // The digest is the operator's to ask for before any setting.
+        assert_eq!(
+            main(
+                "hatchling broker",
+                &args(&[BROWSER_DIGEST_SUBCOMMAND, "/nonexistent/chrome"])
+            ),
+            ExitCode::FAILURE
+        );
         for variable in crate::environment::ENVIRONMENT {
             assert!(text.contains(variable.name), "missing {}", variable.name);
             assert!(text.contains(variable.requirement));
@@ -213,6 +227,7 @@ mod tests {
             args(&["clean", "--dry-run"]),
             args(&[SKILL_CELL_SUBCOMMAND]),
             args(&[AGENT_RUN_SUBCOMMAND, "/spec"]),
+            args(&[BROWSER_DIGEST_SUBCOMMAND, "/opt/chrome/chrome"]),
         ] {
             assert!(valid_args(&given), "{given:?}");
         }
@@ -239,6 +254,8 @@ mod tests {
         }
         for given in [
             args(&["bogus"]),
+            args(&[BROWSER_DIGEST_SUBCOMMAND]),
+            args(&[BROWSER_DIGEST_SUBCOMMAND, "/a", "/b"]),
             args(&["migrate-vault", "extra"]),
             args(&["rekey-vault", "/new.key", "extra"]),
             args(&["vault-keyring"]),

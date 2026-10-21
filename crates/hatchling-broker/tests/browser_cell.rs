@@ -38,7 +38,6 @@ use hatchling_broker::browser_session::BrowserSettings;
 use hatchling_broker::machine;
 use hatchling_core::browser::{BrowserCommand, BrowserFailure, BrowserReply};
 use hatchling_core::ui::operator::{CellKind, EgressVerdict};
-use hatchling_skill::CodeHash;
 use ring::rand::SystemRandom;
 use ring::signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, KeyPair as _};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -87,10 +86,10 @@ fn prerequisites() -> Option<(PathBuf, PathBuf, PathBuf)> {
     Some((browser, controller, group))
 }
 
-/// The settings for `browser`, pinned to what it is now, driven by
-/// `controller`, with the host's fonts.
+/// The settings for `browser`, pinned to its bundle as it is now, driven
+/// by `controller`, with the host's fonts.
 fn settings(browser: &Path, controller: &Path) -> BrowserSettings {
-    let sha256 = CodeHash::of(&std::fs::read(browser).unwrap()).to_string();
+    let sha256 = hatchling_broker::browser_bundle::digest(browser.parent().unwrap()).unwrap();
     BrowserSettings::parse(|key| match key {
         "HATCHLING_BROWSER" => Some(browser.display().to_string()),
         "HATCHLING_BROWSER_SHA256" => Some(sha256.clone()),
