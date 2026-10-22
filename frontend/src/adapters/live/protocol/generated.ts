@@ -278,7 +278,7 @@ export type ApiOutcome = 'served' | 'refused';
  * What one API call asked for: the request's kind, never its content
  * (a message's text, a file, a schedule's task).
  */
-export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_credentials';
+export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins';
 /**
  * A bearer token, presented in `Hello` for a token provider.
  *
@@ -1332,76 +1332,6 @@ export type Control = 'agent' | 'user' | 'to_user' | 'to_agent';
  * Why a control action was refused.
  */
 export type ControlRefusal = 'unknown_session' | 'finished' | 'switching' | 'not_allowed' | 'stale_frame';
-/**
- * An operation on the sign-ins the broker fills for a signed-in profile
- * (WO-030): the owner's alone.
- */
-export type CredentialOp = {
-    readonly op: 'list';
-} | {
-    /**
-     * What the owner calls it.
-     */
-    readonly label: string;
-    readonly op: 'store';
-    /**
-     * The exact origin it's filled on, `https://host[:port]`: one of
-     * the profile's sites.
-     */
-    readonly origin: string;
-    /**
-     * The password.
-     */
-    readonly password: Concealed;
-    /**
-     * The profile it signs in, as listed.
-     */
-    readonly profile_id: string;
-    /**
-     * The username.
-     */
-    readonly username: Concealed;
-} | {
-    /**
-     * The sign-in, as listed.
-     */
-    readonly credential_id: string;
-    readonly op: 'delete';
-};
-/**
- * Why a sign-in wasn't kept.
- */
-export type CredentialRefusal = 'no_profile' | 'bad_origin' | 'not_the_profiles' | 'bad_label' | 'no_password' | 'too_long' | 'full';
-/**
- * The result of a [`CredentialOp`].
- */
-export type CredentialResult = {
-    /**
-     * The sign-ins.
-     */
-    readonly credentials: readonly (SiteCredential)[];
-    readonly result: 'listed';
-} | {
-    /**
-     * The sign-in, as listed.
-     */
-    readonly credential: SiteCredential;
-    readonly result: 'stored';
-} | {
-    readonly result: 'deleted';
-} | {
-    readonly result: 'not_found';
-} | {
-    /**
-     * Why.
-     */
-    readonly reason: CredentialRefusal;
-    readonly result: 'refused';
-} | {
-    readonly result: 'off';
-} | {
-    readonly result: 'failed';
-};
 /**
  * A user's decision on a confirmation.
  */
@@ -3005,6 +2935,76 @@ export type SessionResponse = VaultResult & {
  */
 export type SessionSocket = 'api' | 'ui';
 /**
+ * An operation on the sign-ins the broker fills for a signed-in profile
+ * (WO-030): the owner's alone.
+ */
+export type SignInOp = {
+    readonly op: 'list';
+} | {
+    /**
+     * What the owner calls it.
+     */
+    readonly label: string;
+    readonly op: 'store';
+    /**
+     * The exact origin it's filled on, `https://host[:port]`: one of
+     * the profile's sites.
+     */
+    readonly origin: string;
+    /**
+     * The password.
+     */
+    readonly password: Concealed;
+    /**
+     * The profile it signs in, as listed.
+     */
+    readonly profile_id: string;
+    /**
+     * The username.
+     */
+    readonly username: Concealed;
+} | {
+    readonly op: 'delete';
+    /**
+     * The sign-in, as listed.
+     */
+    readonly sign_in_id: string;
+};
+/**
+ * Why a sign-in wasn't kept.
+ */
+export type SignInRefusal = 'no_profile' | 'bad_origin' | 'not_the_profiles' | 'bad_label' | 'no_password' | 'too_long' | 'full';
+/**
+ * The result of a [`SignInOp`].
+ */
+export type SignInResult = {
+    readonly result: 'listed';
+    /**
+     * The sign-ins.
+     */
+    readonly sign_ins: readonly (SiteSignIn)[];
+} | {
+    readonly result: 'stored';
+    /**
+     * The sign-in, as listed.
+     */
+    readonly sign_in: SiteSignIn;
+} | {
+    readonly result: 'deleted';
+} | {
+    readonly result: 'not_found';
+} | {
+    /**
+     * Why.
+     */
+    readonly reason: SignInRefusal;
+    readonly result: 'refused';
+} | {
+    readonly result: 'off';
+} | {
+    readonly result: 'failed';
+};
+/**
  * A signed-in profile: a site the owner signed in to, with the sites its
  * sign-in went through.
  */
@@ -3029,32 +3029,6 @@ export type SignedInProfile = {
      * Its sites, `host:port`, the one signed in on first.
      */
     readonly sites: readonly (string)[];
-};
-/**
- * A sign-in the broker keeps, as the owner's app is told it: its label and
- * where it's filled, never its username or password.
- */
-export type SiteCredential = {
-    /**
-     * When it was kept, RFC 3339.
-     */
-    readonly created_at: string;
-    /**
-     * Its id.
-     */
-    readonly credential_id: string;
-    /**
-     * What the owner calls it.
-     */
-    readonly label: string;
-    /**
-     * The exact origin it's filled on.
-     */
-    readonly origin: string;
-    /**
-     * The profile it signs in.
-     */
-    readonly profile_id: string;
 };
 /**
  * An operation on the sites the agent is always allowed to read (WO-028).
@@ -3085,6 +3059,32 @@ export type SiteResult = {
     readonly result: 'off';
 } | {
     readonly result: 'failed';
+};
+/**
+ * A sign-in the broker keeps, as the owner's app is told it: its label and
+ * where it's filled, never its username or password.
+ */
+export type SiteSignIn = {
+    /**
+     * When it was kept, RFC 3339.
+     */
+    readonly created_at: string;
+    /**
+     * What the owner calls it.
+     */
+    readonly label: string;
+    /**
+     * The exact origin it's filled on.
+     */
+    readonly origin: string;
+    /**
+     * The profile it signs in.
+     */
+    readonly profile_id: string;
+    /**
+     * Its id.
+     */
+    readonly sign_in_id: string;
 };
 /**
  * A skill operation: the agent's post-handshake skill vocabulary.
@@ -3736,11 +3736,11 @@ export type UiAction = {
      */
     readonly op: ProfileOp;
 } | {
-    readonly action: 'manage_credentials';
+    readonly action: 'manage_sign_ins';
     /**
      * The operation.
      */
-    readonly op: CredentialOp;
+    readonly op: SignInOp;
 };
 /**
  * What an action did.
@@ -3895,8 +3895,8 @@ export type UiActionResult = {
     /**
      * The result.
      */
-    readonly outcome: CredentialResult;
-    readonly result: 'credentials';
+    readonly outcome: SignInResult;
+    readonly result: 'sign_ins';
 } | {
     readonly result: 'input_done';
     /**

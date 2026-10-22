@@ -18,9 +18,7 @@ use std::path::Path;
 use std::sync::{Mutex, PoisonError};
 
 use hatchling_core::SecretName;
-use hatchling_core::ui::{
-    Concealed, SignInOp, SignInRefusal, SignInResult, SiteSignIn,
-};
+use hatchling_core::ui::{Concealed, SignInOp, SignInRefusal, SignInResult, SiteSignIn};
 use hatchling_egress::web::WebUrl;
 use hatchling_vault::{OpensStores, SealedVault, Secret, Store};
 use serde::{Deserialize, Serialize};
@@ -455,19 +453,9 @@ mod tests {
                 &good,
                 SignInRefusal::BadOrigin,
             ),
-            (
-                "http://a.example",
-                "Work",
-                &good,
-                SignInRefusal::BadOrigin,
-            ),
+            ("http://a.example", "Work", &good, SignInRefusal::BadOrigin),
             ("https://a.example", " ", &good, SignInRefusal::BadLabel),
-            (
-                "https://a.example",
-                "a\nb",
-                &good,
-                SignInRefusal::BadLabel,
-            ),
+            ("https://a.example", "a\nb", &good, SignInRefusal::BadLabel),
             (
                 "https://a.example",
                 "Work",
@@ -627,7 +615,10 @@ mod tests {
             &key,
             &store_op(&profile.id, "https://a.example", "Work", "pw"),
         );
-        let SignInResult::Stored { sign_in: credential } = stored else {
+        let SignInResult::Stored {
+            sign_in: credential,
+        } = stored
+        else {
             unreachable!("{stored:?}");
         };
         assert_eq!(credential.origin, "https://a.example");
@@ -671,10 +662,7 @@ mod tests {
             &key,
             &store_op(&profile.id, "https://a.example", "Work", "pw"),
         );
-        assert!(
-            matches!(again, SignInResult::Stored { .. }),
-            "{again:?}"
-        );
+        assert!(matches!(again, SignInResult::Stored { .. }), "{again:?}");
         let delete = ProfileOp::Delete {
             profile_id: profile.id,
         };
@@ -736,10 +724,7 @@ mod tests {
             Ok(1),
             "an entry already gone is no failure"
         );
-        assert_eq!(
-            Credentials::read_index(&vault),
-            Ok(vec![listed("cred-b")])
-        );
+        assert_eq!(Credentials::read_index(&vault), Ok(vec![listed("cred-b")]));
         assert_eq!(Credentials::drop_where(&vault, |_| false), Ok(0));
         let corrupt = Secret::new(b"not json".to_vec()).unwrap();
         vault

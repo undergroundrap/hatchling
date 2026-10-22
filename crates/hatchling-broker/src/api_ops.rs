@@ -38,7 +38,7 @@ use hatchling_core::messages::{ScheduleGrant, ScheduleOp};
 use hatchling_core::subagent::{ActivityEvent, SubagentEvent};
 use hatchling_core::ui::{
     ActionRefusal, AgentState, ApiOutcome, ApiRequest, ChatAuthor, ChatMessage, ControlRefusal,
-    SignInOp, Decision, Handoff, ProfileOp, ProfileResult, SiteOp, UiAction, UiActionResult,
+    Decision, Handoff, ProfileOp, ProfileResult, SignInOp, SiteOp, UiAction, UiActionResult,
     UiEventBody,
 };
 use hatchling_scheduler::{Creator, Timestamp};
@@ -207,9 +207,7 @@ impl<'a> Ops<'a> {
             UiAction::ManageProfiles { op } => {
                 self.owned(caller.holds(&owner), Owned::Profiles(op))
             }
-            UiAction::ManageSignIns { op } => {
-                self.owned(caller.holds(&owner), Owned::SignIns(op))
-            }
+            UiAction::ManageSignIns { op } => self.owned(caller.holds(&owner), Owned::SignIns(op)),
             UiAction::Decide {
                 confirmation_id,
                 revision,
@@ -1465,9 +1463,7 @@ mod tests {
         let owner = caller(&[goals("query-goals"), goals("goal-create"), local_send()]);
         let narrow = caller(&[goals("query-goals"), local_send()]);
         let mut replies = Replies::default();
-        let list = UiAction::ManageSignIns {
-            op: SignInOp::List,
-        };
+        let list = UiAction::ManageSignIns { op: SignInOp::List };
         assert_eq!(ops.handle(&narrow, &list, &mut replies), not_granted());
         let listed = |outcome| (UiActionResult::SignIns { outcome }, ApiOutcome::Served);
         assert_eq!(

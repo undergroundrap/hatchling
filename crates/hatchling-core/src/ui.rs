@@ -1809,7 +1809,9 @@ mod tests {
         let results = [
             (
                 UiActionResult::SignIns {
-                    outcome: SignInResult::Stored { sign_in: credential },
+                    outcome: SignInResult::Stored {
+                        sign_in: credential,
+                    },
                 },
                 json!({"result": "sign_ins", "outcome": {"result": "stored", "sign_in": {
                     "sign_in_id": "cred-1", "profile_id": "profile-1", "origin": "https://a.example",
