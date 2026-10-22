@@ -251,7 +251,10 @@ mod tests {
     fn the_operators_authorities_reach_the_browser_only_as_keys() {
         let fd = (CONNECTION_FD, "3");
         let browser = (BROWSER, "/browser/chrome-headless-shell");
-        assert!(config(&[fd, browser]).unwrap().ca_keys.is_empty(), "none unless named");
+        assert!(
+            config(&[fd, browser]).unwrap().ca_keys.is_empty(),
+            "none unless named"
+        );
         let one = "j5vFg5J9HEaJMQfN82FoLOYU6/odDW9zY6eNDAkYxGE=";
         let two = "9X/sES7PZwM7Uktzn+dmq1vHdqK/qYvHY75DLPN9xiU=";
         let both = format!("{one},{two}");
@@ -272,7 +275,10 @@ mod tests {
             );
         }
         assert!(is_key(one) && is_key(two));
-        assert!(!is_key("--disable-web-security=AAAAAAAAAAAAAAAAAAAAAAAAA="), "never a flag");
+        assert!(
+            !is_key("--disable-web-security=AAAAAAAAAAAAAAAAAAAAAAAAA="),
+            "never a flag"
+        );
     }
 
     #[test]

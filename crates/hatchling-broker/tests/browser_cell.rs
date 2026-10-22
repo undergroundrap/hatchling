@@ -9,6 +9,13 @@
 //! reach it through the proxy, and refuse it: the site sees the browser's
 //! hello, for that name, and never a finished handshake.
 //!
+//! A second site, trusted through the operator's certificate authority
+//! (`HATCHLING_BROWSER_CA`), loads a page whose script reaches for what a
+//! strict session must never reach: an internal address, a loopback port, a
+//! site the session doesn't hold, a UDP peer. Each gets nothing, and the
+//! controller, asked directly past the broker's own checks, can't open plain
+//! `http`, an internal address or a redirect away either.
+//!
 //! Needs a cell, a delegated resource group (`HATCHLING_TEST_CGROUP`), a
 //! Chromium (`HATCHLING_TEST_BROWSER`) and the built controller; each is
 //! skipped without, unless its `HATCHLING_REQUIRE_*` makes that a failure.
@@ -23,7 +30,7 @@
 )]
 mod common;
 
-use std::io::Write as _;
+use std::io::{BufRead as _, Read as _, Write as _};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -89,12 +96,19 @@ fn prerequisites() -> Option<(PathBuf, PathBuf, PathBuf)> {
 /// The settings for `browser`, pinned to its bundle as it is now, driven
 /// by `controller`, with the host's fonts.
 fn settings(browser: &Path, controller: &Path) -> BrowserSettings {
+    settings_trusting(browser, controller, None)
+}
+
+/// [`settings`], and the operator's certificate authorities in the PEM file
+/// `ca`, if one is named.
+fn settings_trusting(browser: &Path, controller: &Path, ca: Option<&Path>) -> BrowserSettings {
     let sha256 = hatchling_broker::browser_bundle::digest(browser.parent().unwrap()).unwrap();
     BrowserSettings::parse(|key| match key {
         "HATCHLING_BROWSER" => Some(browser.display().to_string()),
         "HATCHLING_BROWSER_SHA256" => Some(sha256.clone()),
         "HATCHLING_BROWSER_CONTROLLER" => Some(controller.display().to_string()),
         "HATCHLING_BROWSER_FONTS" => Some(String::from("/usr/share/fonts")),
+        "HATCHLING_BROWSER_CA" => ca.map(|ca| ca.display().to_string()),
         _ => None,
     })
     .unwrap()
@@ -185,6 +199,153 @@ struct Seen {
 
 /// The finished handshake's ending: the browser trusted the site.
 const TRUSTED: &str = "the handshake finished";
+
+/// The page the trusted site serves at `/`: its script reaches for what a
+/// strict session must never reach, and writes what came of each.
+const PROBE: &str = r#"<!doctype html><title>Probe</title>
+<p id="r">waiting</p>
+<script>
+// Once the page has loaded: what it reaches for doesn't hold up its load.
+const seen = {};
+const note = (what, how) => {
+  seen[what] = how;
+  document.getElementById('r').textContent =
+    Object.keys(seen).sort().map(key => key + ': ' + seen[key]).join('; ');
+};
+const reach = (what, url) => fetch(url, { mode: 'no-cors' }).then(() => note(what, 'reached'), () => note(what, 'refused'));
+window.addEventListener('load', () => {
+const image = new Image();
+image.onload = () => note('image', 'reached');
+image.onerror = () => note('image', 'refused');
+image.src = 'https://elsewhere.test/pixel.png';
+const script = document.createElement('script');
+script.onload = () => note('script', 'reached');
+script.onerror = () => note('script', 'refused');
+script.src = 'https://elsewhere.test/script.js';
+document.body.append(script);
+reach('internal', 'https://10.0.0.1/');
+reach('loopback', 'https://127.0.0.1:9/');
+reach('ungranted', 'https://elsewhere.test/fetch');
+const peer = new RTCPeerConnection({ iceServers: [{ urls: 'stun:203.0.113.7:3478' }] });
+peer.createDataChannel('probe');
+let udp = 0;
+peer.onicecandidate = event => {
+  if (event.candidate && / udp /i.test(event.candidate.candidate)) { udp += 1; }
+  if (!event.candidate) { note('udp candidates', String(udp)); }
+};
+peer.createOffer().then(offer => peer.setLocalDescription(offer));
+setTimeout(() => note('udp candidates', String(udp) + ' (timed out)'), 8000);
+});
+</script>"#;
+
+/// The trusted site, on 127.0.0.1 with `certificate` and its `key`: it
+/// serves [`PROBE`] at `/`, a redirect to an ungranted site at `/away`, and
+/// nothing else, and records each request's first line in `requests`, until
+/// `stop`.
+fn trusted_site(
+    certificate: Vec<u8>,
+    key: Vec<u8>,
+    stop: &Arc<AtomicBool>,
+    requests: &Arc<Mutex<Vec<String>>>,
+) -> (SocketAddr, JoinHandle<()>) {
+    let config = Arc::new(
+        rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![CertificateDer::from(certificate)],
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key)),
+        )
+        .unwrap(),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let (stop, requests) = (Arc::clone(stop), Arc::clone(requests));
+    let serving = std::thread::spawn(move || {
+        while !stop.load(Ordering::SeqCst) {
+            match listener.accept() {
+                Ok((tcp, _)) => {
+                    let (config, requests) = (Arc::clone(&config), Arc::clone(&requests));
+                    std::thread::spawn(move || serve(&config, tcp, &requests));
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(20)),
+            }
+        }
+    });
+    (addr, serving)
+}
+
+/// One connection to the trusted site: its request answered.
+fn serve(config: &Arc<rustls::ServerConfig>, mut tcp: TcpStream, requests: &Mutex<Vec<String>>) {
+    if tcp.set_nonblocking(false).is_err()
+        || tcp.set_read_timeout(Some(Duration::from_secs(10))).is_err()
+    {
+        return;
+    }
+    let Ok(mut tls) = rustls::ServerConnection::new(Arc::clone(config)) else {
+        return;
+    };
+    let mut stream = rustls::Stream::new(&mut tls, &mut tcp);
+    let mut reader = std::io::BufReader::new(&mut stream);
+    let mut line = String::new();
+    if reader.read_line(&mut line).is_err() || line.is_empty() {
+        return;
+    }
+    let mut header = String::new();
+    while reader.read_line(&mut header).is_ok_and(|read| read > 2) {
+        header.clear();
+    }
+    let path = line
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or_default()
+        .to_owned();
+    requests.lock().unwrap().push(line.trim_end().to_owned());
+    let response = match path.as_str() {
+        "/" => format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{PROBE}",
+            PROBE.len()
+        ),
+        "/away" => String::from(
+            "HTTP/1.1 302 Found\r\nlocation: https://elsewhere.test/landed\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+        ),
+        _ => {
+            String::from("HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+        }
+    };
+    drop(reader);
+    let _ = stream.write_all(response.as_bytes());
+    let _ = stream.flush();
+    tls.send_close_notify();
+    let _ = tls.complete_io(&mut tcp);
+    let mut rest = Vec::new();
+    let _ = tcp.read_to_end(&mut rest);
+}
+
+/// `certificate` as a PEM file in `dir`: what an operator names.
+fn pem(dir: &Path, certificate: &[u8]) -> PathBuf {
+    use base64::Engine as _;
+    let body = base64::engine::general_purpose::STANDARD.encode(certificate);
+    let lines: Vec<&str> = body
+        .as_bytes()
+        .chunks(64)
+        .map(|chunk| std::str::from_utf8(chunk).unwrap())
+        .collect();
+    let path = dir.join("ca.pem");
+    std::fs::write(
+        &path,
+        format!(
+            "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
+            lines.join("\n")
+        ),
+    )
+    .unwrap();
+    path
+}
 
 /// The site, on 127.0.0.1 with a self-signed certificate, recording each
 /// connection in `seen` until `stop`.
@@ -343,5 +504,167 @@ fn a_browser_cell_reaches_a_site_only_through_the_broker_and_refuses_a_bad_certi
                 && decision.destination == DESTINATION
                 && decision.verdict == EgressVerdict::Allowed),
         "the tunnel is in the egress log"
+    );
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one session's steps, in order, then what each side saw of them"
+)]
+fn a_page_in_a_real_browser_reaches_only_the_sites_its_session_holds() {
+    let Some((browser, controller, group)) = prerequisites() else {
+        return;
+    };
+    // The site's key is the operator's authority: the browser trusts it.
+    let (certificate, key) = self_signed();
+    let scratch =
+        std::env::temp_dir().join(format!("hatchling-browser-reach-{}", std::process::id()));
+    std::fs::create_dir_all(&scratch).unwrap();
+    let ca = pem(&scratch, &certificate);
+    let stop = Arc::new(AtomicBool::new(false));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let (addr, serving) = trusted_site(certificate, key, &stop, &requests);
+    let asked = Arc::new(Mutex::new(Vec::<String>::new()));
+    let route = {
+        let asked = Arc::clone(&asked);
+        Route::with(
+            move |destination| {
+                asked.lock().unwrap().push(destination.to_owned());
+                if destination == DESTINATION {
+                    Ok(vec![addr])
+                } else {
+                    Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+                }
+            },
+            |_| false,
+        )
+    };
+    let launcher = BrowserLauncher::new(
+        common::spawner(),
+        settings_trusting(&browser, &controller, Some(&ca)),
+        CellIds::default(),
+        group,
+        route,
+        Duration::from_secs(300),
+    );
+    let cell_id = "browser-reach";
+    let sites = Sites::default();
+    sites.grant(DESTINATION);
+    let mut cell = launcher.start(cell_id, sites.clone()).unwrap();
+    let page = |reply: BrowserReply| match reply {
+        BrowserReply::Page { snapshot } => snapshot,
+        other @ (BrowserReply::Failed { .. }
+        | BrowserReply::Closed
+        | BrowserReply::Frame { .. }
+        | BrowserReply::Cookies { .. }
+        | BrowserReply::CookiesSet) => hatchling_core::browser::PageSnapshot {
+            text: format!("not a page: {other:?}"),
+            ..hatchling_core::browser::PageSnapshot::default()
+        },
+    };
+
+    // The granted site loads: the operator's authority vouches for it.
+    let start = page(
+        cell.command(&BrowserCommand::Open {
+            url: format!("https://{HOST}/"),
+        })
+        .unwrap(),
+    );
+    if start.title != "Probe" {
+        let _ = writeln!(
+            std::io::stdout(),
+            "the page didn't load; the site served {:?}, the proxy refused {:?}",
+            requests.lock().unwrap(),
+            sites.refused()
+        );
+    }
+    assert_eq!(start.title, "Probe", "{}", start.text);
+    // Its script's reaching ends: each refused, and no UDP candidate.
+    let mut shown = String::new();
+    for _ in 0..40 {
+        std::thread::sleep(Duration::from_millis(250));
+        shown = page(cell.command(&BrowserCommand::Snapshot).unwrap()).text;
+        if shown.contains("udp candidates") && shown.matches("refused").count() >= 5 {
+            break;
+        }
+    }
+    for wanted in [
+        "image: refused",
+        "script: refused",
+        "internal: refused",
+        "loopback: refused",
+        "ungranted: refused",
+        "udp candidates: 0",
+    ] {
+        assert!(shown.contains(wanted), "{wanted} in {shown}");
+    }
+    // Asked directly, past the broker's own checks on an agent's op: the
+    // proxy refuses plain http, an internal address and a redirect away.
+    for url in [
+        format!("http://{HOST}/"),
+        String::from("https://10.0.0.1/"),
+        format!("https://127.0.0.1:{}/", addr.port()),
+    ] {
+        let reply = cell
+            .command(&BrowserCommand::Open { url: url.clone() })
+            .unwrap();
+        let loaded = matches!(&reply, BrowserReply::Page { snapshot } if snapshot.title == "Probe");
+        assert!(!loaded, "{url} loaded: {reply:?}");
+    }
+    let away = cell
+        .command(&BrowserCommand::Open {
+            url: format!("https://{HOST}/away"),
+        })
+        .unwrap();
+    // Where the redirect led is the browser's own error page: the site it
+    // names is refused, and never looked up (below).
+    let _ = writeln!(std::io::stdout(), "the redirect away: {away:?}");
+    let count = cell.finish();
+    stop.store(true, Ordering::SeqCst);
+    serving.join().unwrap();
+    std::fs::remove_dir_all(&scratch).unwrap();
+
+    // What each side saw.
+    let requests = std::mem::take(&mut *requests.lock().unwrap());
+    let _ = writeln!(std::io::stdout(), "the site served: {requests:?}");
+    assert!(
+        requests.iter().any(|line| line.starts_with("GET / ")),
+        "{requests:?}"
+    );
+    assert!(
+        requests.iter().any(|line| line.starts_with("GET /away ")),
+        "{requests:?}"
+    );
+    assert!(
+        requests.iter().all(|line| line.starts_with("GET / ")
+            || line.starts_with("GET /away ")
+            || line.starts_with("GET /favicon.ico ")),
+        "the site saw only what was asked of it: {requests:?}"
+    );
+    let asked = std::mem::take(&mut *asked.lock().unwrap());
+    assert!(
+        asked.iter().all(|destination| destination == DESTINATION),
+        "no other name was looked up: {asked:?}"
+    );
+    let refused = sites.refused();
+    assert!(
+        refused.contains(&String::from("elsewhere.test:443")),
+        "{refused:?}"
+    );
+    assert!(
+        !refused
+            .iter()
+            .any(|site| site.starts_with("10.") || site.starts_with("127.")),
+        "an address is refused before it's a site the owner could be asked for: {refused:?}"
+    );
+    assert!(count.refused >= 3, "{count:?}");
+    assert!(
+        machine::decisions()
+            .iter()
+            .filter(|decision| decision.cell_id == cell_id
+                && decision.verdict == EgressVerdict::Allowed)
+            .all(|decision| decision.destination == DESTINATION),
+        "only the granted site was let through"
     );
 }

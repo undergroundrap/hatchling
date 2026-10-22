@@ -313,7 +313,9 @@ mod tests {
         let direct = chromium_args(Path::new("/p"), None, &[]);
         assert!(!direct.iter().any(|arg| arg.starts_with("--proxy")));
         assert!(
-            !args.iter().any(|arg| arg.starts_with("--ignore-certificate")),
+            !args
+                .iter()
+                .any(|arg| arg.starts_with("--ignore-certificate")),
             "no authority of the operator's, nothing trusted beside the browser's own"
         );
         let keys = [
@@ -327,7 +329,10 @@ mod tests {
             .collect();
         assert_eq!(
             named,
-            [&format!("--ignore-certificate-errors-spki-list={}", keys.join(","))]
+            [&format!(
+                "--ignore-certificate-errors-spki-list={}",
+                keys.join(",")
+            )]
         );
     }
 }

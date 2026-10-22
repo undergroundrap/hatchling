@@ -239,7 +239,8 @@ fn ca_keys(path: &Path) -> Result<Vec<String>, Error> {
     if u64::try_from(pem.len()).map_or(true, |len| len > MAX_BROWSER_CA_BYTES) {
         return Err(invalid(key, "is past 64 KiB"));
     }
-    let certificates = pem_certificates(&pem).ok_or_else(|| invalid(key, "holds a certificate that isn't base64"))?;
+    let certificates = pem_certificates(&pem)
+        .ok_or_else(|| invalid(key, "holds a certificate that isn't base64"))?;
     if certificates.is_empty() {
         return Err(invalid(key, "holds no certificate"));
     }
@@ -248,7 +249,9 @@ fn ca_keys(path: &Path) -> Result<Vec<String>, Error> {
     }
     certificates
         .iter()
-        .map(|der| ca_key(der).ok_or_else(|| invalid(key, "holds a certificate that doesn't parse")))
+        .map(|der| {
+            ca_key(der).ok_or_else(|| invalid(key, "holds a certificate that doesn't parse"))
+        })
         .collect()
 }
 
@@ -268,7 +271,11 @@ fn pem_certificates(pem: &str) -> Option<Vec<Vec<u8>>> {
             .chars()
             .filter(|c| !c.is_ascii_whitespace())
             .collect();
-        certificates.push(base64::engine::general_purpose::STANDARD.decode(body).ok()?);
+        certificates.push(
+            base64::engine::general_purpose::STANDARD
+                .decode(body)
+                .ok()?,
+        );
         rest = after.get(end + END.len()..)?;
     }
     Some(certificates)
@@ -407,22 +414,65 @@ mod tests {
         let settings = parse(&vars).unwrap().unwrap();
         assert_eq!(settings.ca_keys, [EC_CA_KEY, RSA_CA_KEY]);
         let dirs = settings.dirs(Path::new("/run/snapshot"), PathBuf::from("/run/h.sock"));
-        assert_eq!(dirs.ca_keys, [EC_CA_KEY, RSA_CA_KEY], "the cell is told the keys alone");
-        assert!(parse(&full()).unwrap().unwrap().ca_keys.is_empty(), "none unless named");
+        assert_eq!(
+            dirs.ca_keys,
+            [EC_CA_KEY, RSA_CA_KEY],
+            "the cell is told the keys alone"
+        );
+        assert!(
+            parse(&full()).unwrap().unwrap().ca_keys.is_empty(),
+            "none unless named"
+        );
         // Not a certificate: a truncated one, another element, nothing.
         let ec = der(EC_CA);
-        for broken in [&ec[..ec.len() / 2], &ec[1..], &[0x30, 0x00][..], &[][..], &[0x30, 0x84, 0, 0, 0, 1][..]] {
+        for broken in [
+            ec.get(..ec.len() / 2).unwrap(),
+            ec.get(1..).unwrap(),
+            &[0x30, 0x00][..],
+            &[][..],
+            &[0x30, 0x84, 0, 0, 0, 1][..],
+        ] {
             assert_eq!(ca_key(broken), None, "{broken:?}");
         }
         let element = der_element(&[0x04, 0x02, 0xaa, 0xbb, 0x05], 0x04).unwrap();
-        assert_eq!(element, (&[0xaa, 0xbb][..], &[0x04, 0x02, 0xaa, 0xbb][..], &[0x05][..]));
+        assert_eq!(
+            element,
+            (
+                &[0xaa, 0xbb][..],
+                &[0x04, 0x02, 0xaa, 0xbb][..],
+                &[0x05][..]
+            )
+        );
         assert_eq!(der_element(&[0x04, 0x02, 0xaa], 0x04), None, "short");
         let long = [&[0x04, 0x81, 0x80][..], &[0u8; 0x80][..]].concat();
-        assert_eq!(der_element(&long, 0x04).map(|(content, _, _)| content.len()), Some(0x80));
         assert_eq!(
-            base64::engine::general_purpose::STANDARD.decode(EC_CA_KEY).map(|key| key.len()),
+            der_element(&long, 0x04).map(|(content, _, _)| content.len()),
+            Some(0x80)
+        );
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(EC_CA_KEY)
+                .map(|key| key.len()),
             Ok(32)
         );
+    }
+
+    #[test]
+    fn a_file_of_authorities_is_read_to_their_keys() {
+        let (_scratch, path) = pem_file(
+            "direct",
+            &format!(
+                "{RSA_CA}
+{EC_CA}
+"
+            ),
+        );
+        assert_eq!(
+            ca_keys(&path).unwrap(),
+            [RSA_CA_KEY, EC_CA_KEY],
+            "in the file's order"
+        );
+        assert!(ca_keys(Path::new("/nonexistent/ca.pem")).is_err());
     }
 
     #[test]
@@ -436,12 +486,26 @@ mod tests {
         };
         let key = "HATCHLING_BROWSER_CA";
         assert_eq!(refused_with("none", "no pem here").0, key);
-        assert!(refused_with("none2", "no pem here").1.contains("no certificate"));
-        assert!(refused_with("bad64", "-----BEGIN CERTIFICATE-----\n!!\n-----END CERTIFICATE-----\n").1.contains("base64"));
         assert!(
-            refused_with("notcert", "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n")
+            refused_with("none2", "no pem here")
                 .1
-                .contains("doesn't parse")
+                .contains("no certificate")
+        );
+        assert!(
+            refused_with(
+                "bad64",
+                "-----BEGIN CERTIFICATE-----\n!!\n-----END CERTIFICATE-----\n"
+            )
+            .1
+            .contains("base64")
+        );
+        assert!(
+            refused_with(
+                "notcert",
+                "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n"
+            )
+            .1
+            .contains("doesn't parse")
         );
         let nine = format!("{EC_CA}\n").repeat(MAX_BROWSER_CAS + 1);
         assert!(refused_with("nine", &nine).1.contains("more than 8"));
@@ -450,11 +514,23 @@ mod tests {
         let mut vars = full();
         let path = path.display().to_string();
         vars.push(("HATCHLING_BROWSER_CA", &path));
-        assert_eq!(parse(&vars).unwrap().unwrap().ca_keys.len(), MAX_BROWSER_CAS);
-        let big = format!("{EC_CA}\n{}", " ".repeat(usize::try_from(MAX_BROWSER_CA_BYTES).unwrap()));
+        assert_eq!(
+            parse(&vars).unwrap().unwrap().ca_keys.len(),
+            MAX_BROWSER_CAS
+        );
+        let big = format!(
+            "{EC_CA}\n{}",
+            " ".repeat(usize::try_from(MAX_BROWSER_CA_BYTES).unwrap())
+        );
         assert!(refused_with("big", &big).1.contains("64 KiB"));
         assert_eq!(
-            refused(&[full(), vec![("HATCHLING_BROWSER_CA", "/nonexistent/ca.pem")]].concat()),
+            refused(
+                &[
+                    full(),
+                    vec![("HATCHLING_BROWSER_CA", "/nonexistent/ca.pem")]
+                ]
+                .concat()
+            ),
             (key, String::from("can't be read"))
         );
         assert_eq!(
@@ -613,6 +689,7 @@ mod tests {
             sha256: sha.to_owned(),
             controller: PathBuf::from("/c"),
             fonts: None,
+            ca_keys: Vec::new(),
         };
         assert_eq!(settings(&pinned).bundle(), dir);
         let snapshot = settings(&pinned).snapshot().unwrap();
