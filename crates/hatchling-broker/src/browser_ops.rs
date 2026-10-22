@@ -1817,7 +1817,10 @@ mod tests {
         // Another profile's sign-in for the same site is never this one's.
         let other = crate::browser_profiles::Profiles::of(&config, &keys)
             .unwrap()
-            .keep(&[String::from("b.example:443"), String::from("a.example:443")], 1)
+            .keep(
+                &[String::from("b.example:443"), String::from("a.example:443")],
+                1,
+            )
             .unwrap();
         let theirs = crate::browser_credentials::SignIn {
             username: Concealed::new(String::from("other@a.example")),
@@ -1995,7 +1998,10 @@ mod tests {
         );
         assert_eq!(shown.url, "https://a.example/?u=[hidden]");
         assert_eq!(shown.title, "[hidden]");
-        assert_eq!(shown.text, "[hidden] and abc and [hidden]", "three characters: left; four: hidden");
+        assert_eq!(
+            shown.text, "[hidden] and abc and [hidden]",
+            "three characters: left; four: hidden"
+        );
         assert_eq!(
             shown.elements.first().map(|element| element.name.as_str()),
             Some("[hidden]")
