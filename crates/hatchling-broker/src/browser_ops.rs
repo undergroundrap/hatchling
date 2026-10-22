@@ -1485,7 +1485,7 @@ mod tests {
             &open("https://b.example/"),
         );
         let asked = matches!(answer, BrowserResult::Waiting { .. });
-        assert!(asked, "{answer:?}");
+        assert!(asked, "put to the owner first");
         assert!(browser.is_open());
         assert_eq!(browser.profile.as_deref(), Some(profile.id.as_str()));
         assert_eq!(fake.log.lock().unwrap().finished, 0);
@@ -1537,7 +1537,7 @@ mod tests {
             &open("https://a.example/"),
         );
         let asked = matches!(answer, BrowserResult::Waiting { .. });
-        assert!(asked, "{answer:?}");
+        assert!(asked, "put to the owner first");
         owner_decides(&config, "t", "https://a.example", Decision::Approve);
         let answer = handle_browser_op(
             &config,
