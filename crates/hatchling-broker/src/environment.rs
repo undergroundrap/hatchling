@@ -79,6 +79,7 @@ hatchling_core::declare_environment! {
     HATCHLING_BROWSER_SHA256: ("required with BROWSER", "Digest of the browser's whole bundle, its directory (hatchling-broker browser-digest <browser>); checked as it's copied."),
     HATCHLING_BROWSER_CONTROLLER: ("required with BROWSER", "Absolute path of the hatchling-browser controller a browser cell runs."),
     HATCHLING_BROWSER_FONTS: ("optional", "Absolute host fonts directory a browser cell sees read-only."),
+    HATCHLING_BROWSER_CA: ("optional", "Absolute PEM file of up to 8 certificate authorities the browser trusts beside its own: an internal or corporate CA."),
     HATCHLING_OUTPUT_GATE: ("optional; default on", "Local-channel output review, on or off."),
     HATCHLING_REDACTION_KEEP_RAW: ("optional; default false", "Keep encrypted original output for operator review: true/1 or false/0."),
     HATCHLING_REDACTION_TIMEOUT_MS: ("optional", "Output review deadline in milliseconds."),

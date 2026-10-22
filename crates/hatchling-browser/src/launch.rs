@@ -67,8 +67,11 @@ pub struct Browser {
 ///   only through the proxy, and loopback too goes to the proxy.
 /// - No background traffic of its own: no updates, no sync, no first-run
 ///   pages.
+/// - A site whose chain holds one of `ca_keys`, the operator's certificate
+///   authorities by their keys, loads as if its root were the browser's
+///   own.
 #[must_use]
-pub fn chromium_args(profile: &Path, proxy: Option<u16>) -> Vec<String> {
+pub fn chromium_args(profile: &Path, proxy: Option<u16>, ca_keys: &[String]) -> Vec<String> {
     let mut args: Vec<String> = [
         "--headless",
         "--no-sandbox",
@@ -93,6 +96,12 @@ pub fn chromium_args(profile: &Path, proxy: Option<u16>) -> Vec<String> {
     let (width, height) = hatchling_core::browser::VIEWPORT;
     args.push(format!("--window-size={width},{height}"));
     args.push(format!("--user-data-dir={}", profile.display()));
+    if !ca_keys.is_empty() {
+        args.push(format!(
+            "--ignore-certificate-errors-spki-list={}",
+            ca_keys.join(",")
+        ));
+    }
     if let Some(port) = proxy {
         args.push(format!("--proxy-server=http://127.0.0.1:{port}"));
         // Chromium sends loopback around a proxy unless told not to.
@@ -282,7 +291,7 @@ mod tests {
 
     #[test]
     fn chromium_is_held_to_the_proxy_and_its_pipe() {
-        let args = chromium_args(Path::new("/scratch/profile"), Some(8080));
+        let args = chromium_args(Path::new("/scratch/profile"), Some(8080), &[]);
         for wanted in [
             "--remote-debugging-pipe",
             "--no-sandbox",
@@ -301,7 +310,24 @@ mod tests {
                 .any(|arg| arg.starts_with("--remote-debugging-port"))
         );
         assert_eq!(args.last().map(String::as_str), Some("about:blank"));
-        let direct = chromium_args(Path::new("/p"), None);
+        let direct = chromium_args(Path::new("/p"), None, &[]);
         assert!(!direct.iter().any(|arg| arg.starts_with("--proxy")));
+        assert!(
+            !args.iter().any(|arg| arg.starts_with("--ignore-certificate")),
+            "no authority of the operator's, nothing trusted beside the browser's own"
+        );
+        let keys = [
+            String::from("j5vFg5J9HEaJMQfN82FoLOYU6/odDW9zY6eNDAkYxGE="),
+            String::from("9X/sES7PZwM7Uktzn+dmq1vHdqK/qYvHY75DLPN9xiU="),
+        ];
+        let trusting = chromium_args(Path::new("/p"), Some(8080), &keys);
+        let named: Vec<&String> = trusting
+            .iter()
+            .filter(|arg| arg.starts_with("--ignore-certificate"))
+            .collect();
+        assert_eq!(
+            named,
+            [&format!("--ignore-certificate-errors-spki-list={}", keys.join(","))]
+        );
     }
 }

@@ -48,6 +48,9 @@ pub const PROFILE: &str = "HATCHLING_BROWSER_PROFILE";
 /// `/etc/fonts`, so the controller writes the font configuration itself,
 /// naming this directory alone.
 pub const FONTS: &str = "HATCHLING_BROWSER_FONTS";
+/// The operator's certificate authorities, by their keys' SHA-256 in
+/// standard base64, comma-separated: the browser trusts a chain holding one.
+pub const CA_KEYS: &str = "HATCHLING_BROWSER_CA_KEYS";
 
 /// What the controller is started with.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +65,8 @@ pub struct Config {
     pub profile: PathBuf,
     /// The fonts directory, if the cell has one.
     pub fonts: Option<PathBuf>,
+    /// The operator's certificate authorities, by their keys.
+    pub ca_keys: Vec<String>,
     /// The cell's temporary directory: the font configuration and its
     /// cache are written here.
     pub tmp: PathBuf,
@@ -135,6 +140,12 @@ impl Config {
                     .ok_or_else(|| invalid(FONTS, "not an absolute plain path"))
             })
             .transpose()?;
+        let ca_keys: Vec<String> = get(CA_KEYS)
+            .map(|keys| keys.split(',').map(str::to_owned).collect())
+            .unwrap_or_default();
+        if !ca_keys.iter().all(|key| is_key(key)) {
+            return Err(invalid(CA_KEYS, "not keys' SHA-256 in base64"));
+        }
         if !plain(Path::new(&tmp)) {
             return Err(invalid("TMPDIR", "not a plain path"));
         }
@@ -155,10 +166,22 @@ impl Config {
             proxy,
             profile,
             fonts,
+            ca_keys,
             tmp: PathBuf::from(tmp),
             env,
         })
     }
+}
+
+/// Whether `key` is a SHA-256 in standard base64: 43 of its characters and
+/// one `=`. Nothing else reaches the browser's command line.
+fn is_key(key: &str) -> bool {
+    key.len() == 44
+        && key.ends_with('=')
+        && key
+            .bytes()
+            .take(43)
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'+' || byte == b'/')
 }
 
 /// Whether `path` is one a font configuration can name as it is: no
@@ -194,7 +217,7 @@ pub fn run(config: &Config) -> Result<(), RunError> {
     }
     let browser = launch(&Launch {
         program: config.browser.clone(),
-        args: chromium_args(&config.profile, config.proxy),
+        args: chromium_args(&config.profile, config.proxy, &config.ca_keys),
         env: config.env.clone(),
     })?;
     serve::serve(&connection, Session::new(browser))?;
@@ -222,6 +245,34 @@ mod tests {
             Ok(_) => ("not refused", ""),
             Err(_) => ("refused otherwise", ""),
         }
+    }
+
+    #[test]
+    fn the_operators_authorities_reach_the_browser_only_as_keys() {
+        let fd = (CONNECTION_FD, "3");
+        let browser = (BROWSER, "/browser/chrome-headless-shell");
+        assert!(config(&[fd, browser]).unwrap().ca_keys.is_empty(), "none unless named");
+        let one = "j5vFg5J9HEaJMQfN82FoLOYU6/odDW9zY6eNDAkYxGE=";
+        let two = "9X/sES7PZwM7Uktzn+dmq1vHdqK/qYvHY75DLPN9xiU=";
+        let both = format!("{one},{two}");
+        let named = config(&[fd, browser, (CA_KEYS, &both)]).unwrap();
+        assert_eq!(named.ca_keys, [one, two]);
+        for bad in [
+            "",
+            "short=",
+            "j5vFg5J9HEaJMQfN82FoLOYU6/odDW9zY6eNDAkYxGE",
+            "j5vFg5J9HEaJMQfN82FoLOYU6/odDW9zY6eNDAkYxG==",
+            "j5vFg5J9HEaJMQfN82FoLOYU6/odDW9zY6eNDAkYxG -=",
+            "j5vFg5J9HEaJMQfN82FoLOYU6/odDW9zY6eNDAkYx,G=",
+        ] {
+            assert_eq!(
+                refused(&[fd, browser, (CA_KEYS, bad)]),
+                (CA_KEYS, "not keys' SHA-256 in base64"),
+                "{bad:?}"
+            );
+        }
+        assert!(is_key(one) && is_key(two));
+        assert!(!is_key("--disable-web-security=AAAAAAAAAAAAAAAAAAAAAAAAA="), "never a flag");
     }
 
     #[test]

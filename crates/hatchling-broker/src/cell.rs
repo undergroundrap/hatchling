@@ -459,6 +459,9 @@ pub struct BrowserDirs {
     /// linked, so they aren't among the libraries it links: each bound at
     /// its own host path, with what it links.
     pub nss: Vec<PathBuf>,
+    /// The operator's certificate authorities the browser trusts beside its
+    /// own, by their keys' SHA-256 in standard base64.
+    pub ca_keys: Vec<String>,
     /// The relay's port on the cell's own loopback.
     pub relay: u16,
     /// The unix socket, in the broker's private run directory, where the
@@ -1130,6 +1133,12 @@ fn browser_env(
             String::from(IN_CELL_FONTS),
         ));
     }
+    if !browser.ca_keys.is_empty() {
+        env.push((
+            String::from("HATCHLING_BROWSER_CA_KEYS"),
+            browser.ca_keys.join(","),
+        ));
+    }
     env
 }
 
@@ -1351,6 +1360,7 @@ mod tests {
             browser_name: String::from("chrome"),
             fonts: Some(fonts),
             nss: Vec::new(),
+            ca_keys: vec![String::from("j5vFg5J9HEaJMQfN82FoLOYU6/odDW9zY6eNDAkYxGE=")],
             relay: crate::browser_proxy::RELAY_PORT,
             handoff: base.join("relay.sock"),
         };
@@ -1433,6 +1443,10 @@ mod tests {
                 ("HATCHLING_BROWSER", "/browser/chrome"),
                 ("HATCHLING_BROWSER_PROXY_PORT", "8118"),
                 ("HATCHLING_BROWSER_FONTS", "/fonts"),
+                (
+                    "HATCHLING_BROWSER_CA_KEYS",
+                    "j5vFg5J9HEaJMQfN82FoLOYU6/odDW9zY6eNDAkYxGE="
+                ),
             ]
         );
         std::fs::remove_dir_all(&base).unwrap();
