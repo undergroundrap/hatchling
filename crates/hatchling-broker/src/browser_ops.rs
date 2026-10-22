@@ -34,7 +34,8 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use hatchling_core::browser::{
-    BrowserCommand, BrowserFailure, BrowserReply, PageAction, PageSnapshot,
+    BrowserCommand, BrowserFailure, BrowserReply, Cookie, MAX_COOKIE_PAGE_BYTES, PageAction,
+    PageSnapshot,
 };
 use hatchling_core::ui::BrowserState;
 use hatchling_core::{BrowserOp, BrowserResult, SessionResponse, WebResult};
@@ -48,6 +49,9 @@ use crate::browser_session::BrowserSettings;
 use crate::cell::cgroup_parent;
 use crate::web_ops::WebSession;
 use crate::{CellIds, Config, Error};
+
+/// The most pages of cookies a jar is read in: past them, it isn't kept.
+const MAX_JAR_PAGES: usize = 64;
 
 /// Most browsers running at once, across every session.
 pub const MAX_BROWSERS: usize = 4;
@@ -251,6 +255,8 @@ pub struct BrowserSession {
     shown: Option<Shown>,
     /// The owner stopped the session's browser: it stays stopped.
     stopped: bool,
+    /// The signed-in profile the running browser holds (WO-030), if one.
+    profile: Option<String>,
 }
 
 /// A browser as the owner sees it.
@@ -292,6 +298,29 @@ impl BrowserSession {
             board: None,
             shown: None,
             stopped: false,
+            profile: None,
+        }
+    }
+
+    /// Keeps the running browser's session as its profile's, if it runs
+    /// one (WO-030): its cookies read out, and sealed, only its sites'.
+    fn keep_jar(&self, config: &Config, keys: &dyn OpensStores) {
+        let (Some(profile), Some(driven)) = (self.profile.as_ref(), self.browser.as_ref()) else {
+            return;
+        };
+        let Some(profiles) = crate::browser_profiles::Profiles::of(config, keys) else {
+            return;
+        };
+        let kept = read_jar(driven).and_then(|jar| {
+            profiles.keep_jar(
+                profile,
+                jar,
+                hatchling_scheduler::Timestamp::now().as_second(),
+            )
+        });
+        match kept {
+            Ok(dropped) => tracing::info!(%profile, dropped, "a signed-in session is kept"),
+            Err(error) => tracing::warn!(%profile, %error, "a signed-in session can't be kept"),
         }
     }
 
@@ -341,6 +370,51 @@ impl BrowserSession {
             board.resumed(&shown.id);
         }
         result
+    }
+
+    /// The profile the owner kept the running browser's sign-in as
+    /// (WO-030), if they did: its session is kept from now on.
+    fn adopt_profile(&mut self) {
+        if self.profile.is_some() || !self.is_open() {
+            return;
+        }
+        if let (Some(board), Some(shown)) = (self.board.as_ref(), self.shown.as_ref()) {
+            self.profile = board.profile_of(&shown.id).map(|(profile, _)| profile);
+        }
+    }
+
+    /// The browser just started runs `profile` (WO-030): its kept session
+    /// is restored before the first page opens, and the owner's view knows
+    /// it.
+    fn signed_in(
+        &mut self,
+        config: &Config,
+        keys: &dyn OpensStores,
+        profile: &crate::browser_profiles::Profile,
+    ) {
+        self.profile = Some(profile.id.clone());
+        if let (Some(board), Some(shown)) = (self.board.as_ref(), self.shown.as_ref()) {
+            board.profiled(&shown.id, &profile.id);
+        }
+        let Some(profiles) = crate::browser_profiles::Profiles::of(config, keys) else {
+            return;
+        };
+        let restored = self
+            .browser
+            .as_ref()
+            .ok_or_else(|| String::from("no browser"))
+            .and_then(|driven| {
+                let jar = profiles.jar(&profile.id)?;
+                set_jar(driven, &jar).map(|()| jar.len())
+            });
+        match restored {
+            Ok(cookies) => {
+                tracing::info!(profile = %profile.id, cookies, "a signed-in session is restored");
+            }
+            Err(error) => {
+                tracing::warn!(profile = %profile.id, %error, "a signed-in session can't be restored");
+            }
+        }
     }
 
     /// Whether the owner has stopped the session's browser. The first time
@@ -522,6 +596,7 @@ impl BrowserSession {
             board.end(&shown.id);
         }
         self.shown = None;
+        self.profile = None;
     }
 
     /// Leaves the visit: every site held only for it is revoked, and its
@@ -663,8 +738,14 @@ fn answer(
     browser: &mut BrowserSession,
     op: &BrowserOp,
 ) -> BrowserResult {
+    // A page opened or acted on may sign in further: a signed-in browser's
+    // session is kept after each, so it outlives however the session ends.
     match op {
-        BrowserOp::Open { url, reason } => open(config, keys, web, browser, url, reason),
+        BrowserOp::Open { url, reason } => {
+            let opened = open(config, keys, web, browser, url, reason);
+            browser.keep_jar(config, keys);
+            opened
+        }
         BrowserOp::Read => browser.command(&BrowserCommand::Snapshot),
         BrowserOp::Act { element, action } => {
             if let PageAction::Type { text } = action {
@@ -672,14 +753,17 @@ fn answer(
                     return refusal;
                 }
             }
-            browser.command(&BrowserCommand::Act {
+            let acted = browser.command(&BrowserCommand::Act {
                 element: *element,
                 action: action.clone(),
-            })
+            });
+            browser.keep_jar(config, keys);
+            acted
         }
         BrowserOp::Scroll { down } => browser.command(&BrowserCommand::Scroll { down: *down }),
         BrowserOp::Allow { site, reason } => allow_site(config, keys, web, browser, site, reason),
         BrowserOp::Close => {
+            browser.keep_jar(config, keys);
             browser.close();
             BrowserResult::Closed
         }
@@ -710,23 +794,43 @@ fn open(
         return refused("the operator refuses this site");
     }
     let destination = url.origin().destination();
-    let same_visit = browser.visit.as_deref() == Some(destination.as_str());
+    // A site the owner signed in to is opened in its profile's own cell
+    // (WO-030): a browser holding another profile, or none, is left.
+    let profile = covering(config, keys, &destination);
+    let profile_id = profile.as_ref().map(|profile| profile.id.clone());
+    browser.adopt_profile();
+    let switching = browser.profile != profile_id;
+    let same_visit = !switching && browser.visit.as_deref() == Some(destination.as_str());
     // On the site it's visiting, the browser stays: a site allowed once,
-    // for the visit, isn't asked for again until it's left.
-    if !(same_visit && browser.once.contains(&destination)) {
+    // for the visit, isn't asked for again until it's left. A profile's
+    // sites the owner allowed when they kept it.
+    if profile.is_none() && !(same_visit && browser.once.contains(&destination)) {
         if let Err(answer) = crate::web_ops::allow(config, keys, web, &url, reason) {
             return from_web(answer);
         }
     }
-    // Allowed: only now is the visit left, if this is another site.
-    if !same_visit {
+    // Allowed: only now is the visit left, if this is another site, and
+    // the browser, if this is another profile. Its session is kept.
+    if switching {
+        if browser.is_open() {
+            browser.keep_jar(config, keys);
+            browser.end(BrowserState::Completed);
+        }
+        browser.leave();
+        browser.sites = Sites::default();
+    } else if !same_visit {
         browser.leave();
     }
+    if let Some(profile) = &profile {
+        for site in &profile.sites {
+            browser.sites.grant(site);
+        }
+    }
     browser.sites.grant(&destination);
-    if !web.holds(url.origin()) {
+    if profile.is_none() && !web.holds(url.origin()) {
         browser.once.insert(destination.clone());
     }
-    browser.visit = Some(destination);
+    browser.visit = Some(destination.clone());
     if !browser.is_open() {
         // One closed under the owner's input is shown failed first.
         browser.end(BrowserState::Failed);
@@ -742,6 +846,9 @@ fn open(
             Ok((cell_id, started)) => {
                 browser.browser = Some(Arc::new(Mutex::new(Some(started))));
                 browser.shown_as(cell_id, reason);
+                if let Some(profile) = &profile {
+                    browser.signed_in(config, keys, profile);
+                }
             }
             Err(reason) => {
                 tracing::warn!(%reason, "the browser couldn't start");
@@ -749,9 +856,111 @@ fn open(
             }
         }
     }
+    if let (Some(board), Some(shown)) = (browser.board.as_ref(), browser.shown.as_ref()) {
+        board.visiting(&shown.id, &destination);
+    }
     browser.command(&BrowserCommand::Open {
         url: url.to_string(),
     })
+}
+
+/// The signed-in profile that holds `destination` (WO-030), if the broker
+/// keeps profiles and one does.
+fn covering(
+    config: &Config,
+    keys: &dyn OpensStores,
+    destination: &str,
+) -> Option<crate::browser_profiles::Profile> {
+    let profiles = crate::browser_profiles::Profiles::of(config, keys)?;
+    match profiles.covering(destination) {
+        Ok(profile) => profile,
+        Err(error) => {
+            tracing::warn!(%error, "the signed-in profiles can't be read: none is used");
+            None
+        }
+    }
+}
+
+/// The browser's cookie jar, read out a page at a time.
+///
+/// # Errors
+///
+/// A sentence for the broker's log: the browser is closed, broke, answered
+/// out of turn, or gave more pages than a jar holds.
+pub(crate) fn read_jar(driven: &Driven) -> Result<Vec<Cookie>, String> {
+    let mut slot = driven.lock().unwrap_or_else(PoisonError::into_inner);
+    let read = slot.as_mut().map(|browser| {
+        let mut jar = Vec::new();
+        let mut from = 0;
+        for _ in 0..MAX_JAR_PAGES {
+            match browser.command(&BrowserCommand::Cookies { from })? {
+                BrowserReply::Cookies { cookies, next } => {
+                    jar.extend(cookies);
+                    match next {
+                        None => return Ok(jar),
+                        Some(next) if next > from => from = next,
+                        Some(_) => return Err(String::from("the browser's jar didn't move on")),
+                    }
+                }
+                BrowserReply::Failed { failure } => {
+                    return Err(format!("the browser couldn't give its jar: {failure:?}"));
+                }
+                BrowserReply::Page { .. }
+                | BrowserReply::Frame { .. }
+                | BrowserReply::CookiesSet
+                | BrowserReply::Closed => {
+                    return Err(String::from("the browser answered out of turn"));
+                }
+            }
+        }
+        Err(String::from("the browser's jar is past its pages"))
+    });
+    drop(slot);
+    read.unwrap_or_else(|| Err(String::from("the browser is closed")))
+}
+
+/// Sets `cookies` in the browser, a page at a time, each within one page's
+/// bytes.
+///
+/// # Errors
+///
+/// A sentence for the broker's log, as for [`read_jar`].
+pub(crate) fn set_jar(driven: &Driven, cookies: &[Cookie]) -> Result<(), String> {
+    let mut pages: Vec<Vec<Cookie>> = Vec::new();
+    let mut page: Vec<Cookie> = Vec::new();
+    let mut bytes = 0;
+    for cookie in cookies {
+        let size = serde_json::to_vec(cookie).map_or(usize::MAX, |json| json.len() + 1);
+        if bytes + size > MAX_COOKIE_PAGE_BYTES && !page.is_empty() {
+            pages.push(std::mem::take(&mut page));
+            bytes = 0;
+        }
+        bytes += size;
+        page.push(cookie.clone());
+    }
+    if !page.is_empty() {
+        pages.push(page);
+    }
+    let mut slot = driven.lock().unwrap_or_else(PoisonError::into_inner);
+    let set = slot.as_mut().map(|browser| {
+        for cookies in pages {
+            match browser.command(&BrowserCommand::SetCookies { cookies })? {
+                BrowserReply::CookiesSet => {}
+                BrowserReply::Failed { failure } => {
+                    return Err(format!("the browser couldn't set the jar: {failure:?}"));
+                }
+                BrowserReply::Page { .. }
+                | BrowserReply::Frame { .. }
+                | BrowserReply::Cookies { .. }
+                | BrowserReply::Closed => {
+                    return Err(String::from("the browser answered out of turn"));
+                }
+            }
+        }
+        Ok(())
+    });
+    drop(slot);
+    set.unwrap_or_else(|| Err(String::from("the browser is closed")))
 }
 
 /// Asks the owner, for `reason`, to allow `site`, one the browser was
@@ -868,7 +1077,8 @@ mod tests {
     }
 
     /// Browsers that answer every command with a page, or break once
-    /// `broken` is set.
+    /// `broken` is set. Each starts with an empty `jar`, giving it a
+    /// cookie a page.
     #[derive(Clone, Default)]
     struct Fake {
         log: Arc<Mutex<Log>>,
@@ -876,6 +1086,7 @@ mod tests {
         refuse_start: bool,
         /// A page it shows whatever it's asked: what a controller says.
         shows: Arc<Mutex<Option<PageSnapshot>>>,
+        jar: Arc<Mutex<Vec<Cookie>>>,
     }
 
     impl Browsers for Fake {
@@ -884,6 +1095,7 @@ mod tests {
                 return Err(String::from("no browser here"));
             }
             self.log.lock().unwrap().started.push(cell_id.to_owned());
+            self.jar.lock().unwrap().clear();
             Ok(Box::new(self.clone()))
         }
     }
@@ -914,11 +1126,18 @@ mod tests {
                 BrowserCommand::Frame | BrowserCommand::Input { .. } => BrowserReply::Frame {
                     jpeg: String::from("/9j/"),
                 },
-                BrowserCommand::Cookies { .. } => BrowserReply::Cookies {
-                    cookies: Vec::new(),
-                    next: None,
-                },
-                BrowserCommand::SetCookies { .. } => BrowserReply::CookiesSet,
+                BrowserCommand::Cookies { from } => {
+                    let at = usize::try_from(*from).unwrap();
+                    let jar = self.jar.lock().unwrap();
+                    BrowserReply::Cookies {
+                        cookies: jar.get(at).cloned().into_iter().collect(),
+                        next: (at + 1 < jar.len()).then_some(from + 1),
+                    }
+                }
+                BrowserCommand::SetCookies { cookies } => {
+                    self.jar.lock().unwrap().extend(cookies.iter().cloned());
+                    BrowserReply::CookiesSet
+                }
                 BrowserCommand::Snapshot
                 | BrowserCommand::Act { .. }
                 | BrowserCommand::Scroll { .. } => BrowserReply::Page {
@@ -1113,6 +1332,370 @@ mod tests {
             },
             refused: Vec::new(),
         }
+    }
+
+    fn cookie(domain: &str, name: &str) -> Cookie {
+        Cookie {
+            name: name.to_owned(),
+            value: format!("{name}-value"),
+            domain: domain.to_owned(),
+            path: String::from("/"),
+            expires: None,
+            secure: true,
+            http_only: true,
+            same_site: None,
+        }
+    }
+
+    /// A config keeping signed-in profiles, the key sealing them, and a
+    /// profile of `sites` kept with `jar`.
+    fn profiled(
+        name: &str,
+        sites: &[&str],
+        jar: Vec<Cookie>,
+    ) -> (
+        Config,
+        crate::api_auth::tests::Scratch,
+        MasterKey,
+        crate::browser_profiles::Profile,
+    ) {
+        let scratch = crate::api_auth::tests::scratch(&format!("browser-{name}"));
+        let mut config = web_config(name);
+        config.web.profiles = scratch.0.join("profiles");
+        let keys = MasterKey::generate().unwrap();
+        let profiles = crate::browser_profiles::Profiles::of(&config, &keys).unwrap();
+        let sites: Vec<String> = sites.iter().map(|site| (*site).to_owned()).collect();
+        let profile = profiles.keep(&sites, 1).unwrap();
+        profiles.keep_jar(&profile.id, jar, 1).unwrap();
+        (config, scratch, keys, profile)
+    }
+
+    fn kept_jar(config: &Config, keys: &MasterKey, profile: &str) -> Vec<Cookie> {
+        crate::browser_profiles::Profiles::of(config, keys)
+            .unwrap()
+            .jar(profile)
+            .unwrap()
+    }
+
+    #[test]
+    fn a_site_the_owner_signed_in_to_opens_in_its_profile_with_its_session() {
+        let (config, _scratch, keys, profile) = profiled(
+            "profile-open",
+            &["a.example:443", "idp.example:443"],
+            vec![cookie("a.example", "sid")],
+        );
+        assert_eq!(
+            covering(&config, &keys, "idp.example:443").map(|found| found.id),
+            Some(profile.id.clone())
+        );
+        assert!(covering(&config, &keys, "b.example:443").is_none());
+        let fake = Fake::default();
+        let (mut web, mut browser) = session("t", &fake);
+        let answer = handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &open("https://a.example/"),
+        );
+        assert_eq!(answer, page("https://a.example/"), "not put to the owner");
+        assert_eq!(
+            fake.log.lock().unwrap().commands,
+            [
+                BrowserCommand::SetCookies {
+                    cookies: vec![cookie("a.example", "sid")]
+                },
+                BrowserCommand::Open {
+                    url: String::from("https://a.example/")
+                },
+                BrowserCommand::Cookies { from: 0 }
+            ],
+            "its session restored before the page opens, and kept after"
+        );
+        assert!(
+            browser.sites().holds("idp.example:443"),
+            "the profile's sites"
+        );
+        assert!(
+            browser.once.is_empty(),
+            "held for the profile, not the visit"
+        );
+        // A page acted on, and the next one opened, are kept at once.
+        fake.jar.lock().unwrap().push(cookie("a.example", "acted"));
+        let act = BrowserOp::Act {
+            element: 1,
+            action: PageAction::Click,
+        };
+        handle_browser_op(&config, &keys, &mut web, &mut browser, &act);
+        assert_eq!(
+            kept_jar(&config, &keys, &profile.id),
+            [cookie("a.example", "sid"), cookie("a.example", "acted")],
+            "kept after an action"
+        );
+        fake.jar.lock().unwrap().push(cookie("a.example", "opened"));
+        let next = open("https://a.example/next");
+        handle_browser_op(&config, &keys, &mut web, &mut browser, &next);
+        assert_eq!(
+            kept_jar(&config, &keys, &profile.id).len(),
+            3,
+            "kept after a page opened"
+        );
+        fake.jar.lock().unwrap().clear();
+        fake.jar.lock().unwrap().push(cookie("a.example", "sid"));
+        // The page signs in further, and sets a cookie for another site.
+        fake.jar
+            .lock()
+            .unwrap()
+            .extend([cookie("idp.example", "token"), cookie("b.example", "track")]);
+        assert_eq!(
+            handle_browser_op(&config, &keys, &mut web, &mut browser, &BrowserOp::Close),
+            BrowserResult::Closed
+        );
+        assert_eq!(
+            kept_jar(&config, &keys, &profile.id),
+            [cookie("a.example", "sid"), cookie("idp.example", "token")],
+            "kept on close: only its own sites' cookies"
+        );
+    }
+
+    #[test]
+    fn leaving_a_profile_keeps_its_session_once_the_next_site_is_allowed() {
+        let (config, _scratch, keys, profile) = profiled(
+            "profile-leave",
+            &["a.example:443"],
+            vec![cookie("a.example", "sid")],
+        );
+        let fake = Fake::default();
+        let (mut web, mut browser) = session("t", &fake);
+        let answer = handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &open("https://a.example/"),
+        );
+        assert_eq!(answer, page("https://a.example/"));
+        // Another site: put to the owner first, and the signed-in browser
+        // runs on meanwhile.
+        let answer = handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &open("https://b.example/"),
+        );
+        let asked = matches!(answer, BrowserResult::Waiting { .. });
+        assert!(asked, "put to the owner first");
+        assert!(browser.is_open());
+        assert_eq!(browser.profile.as_deref(), Some(profile.id.as_str()));
+        assert_eq!(fake.log.lock().unwrap().finished, 0);
+        fake.jar.lock().unwrap().push(cookie("a.example", "fresh"));
+        owner_decides(&config, "t", "https://b.example", Decision::Approve);
+        let answer = handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &open("https://b.example/"),
+        );
+        assert_eq!(answer, page("https://b.example/"));
+        assert_eq!(browser.profile, None);
+        assert!(
+            !browser.sites().holds("a.example:443"),
+            "a browser of its own"
+        );
+        assert_eq!(
+            kept_jar(&config, &keys, &profile.id),
+            [cookie("a.example", "sid"), cookie("a.example", "fresh")],
+            "kept as it was left"
+        );
+        let log = fake.log.lock().unwrap();
+        assert_eq!((log.started.len(), log.finished), (2, 1));
+        let restored = log
+            .commands
+            .iter()
+            .filter(|command| matches!(command, BrowserCommand::SetCookies { .. }))
+            .count();
+        assert_eq!(restored, 1, "nothing set in the other site's browser");
+        drop(log);
+        assert!(fake.jar.lock().unwrap().is_empty(), "its jar starts empty");
+    }
+
+    #[test]
+    fn a_sign_in_the_owner_kept_is_its_browsers_profile_from_then_on() {
+        let config = web_config("profile-adopt");
+        let keys = MasterKey::generate().unwrap();
+        let fake = Fake::default();
+        let ((mut web, mut browser), board, _bus) = watched(&fake);
+        browser.adopt_profile();
+        assert_eq!(browser.profile, None, "no browser yet");
+        let answer = handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &open("https://a.example/"),
+        );
+        let asked = matches!(answer, BrowserResult::Waiting { .. });
+        assert!(asked, "put to the owner first");
+        owner_decides(&config, "t", "https://a.example", Decision::Approve);
+        let answer = handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &open("https://a.example/"),
+        );
+        assert_eq!(answer, page("https://a.example/"));
+        browser.adopt_profile();
+        assert_eq!(browser.profile, None, "not kept");
+        let id = browser
+            .shown
+            .as_ref()
+            .map(|shown| shown.id.clone())
+            .unwrap();
+        board.profiled(&id, "profile-1");
+        browser.adopt_profile();
+        assert_eq!(browser.profile.as_deref(), Some("profile-1"));
+        board.profiled(&id, "profile-2");
+        browser.adopt_profile();
+        assert_eq!(
+            browser.profile.as_deref(),
+            Some("profile-1"),
+            "adopted once"
+        );
+    }
+
+    #[test]
+    fn a_profile_without_a_browser_or_a_store_restores_and_keeps_nothing() {
+        let (config, _scratch, keys, profile) = profiled(
+            "profile-none",
+            &["a.example:443"],
+            vec![cookie("a.example", "sid")],
+        );
+        let fake = Fake::default();
+        let (_, mut browser) = session("t", &fake);
+        browser.signed_in(&config, &keys, &profile);
+        assert_eq!(browser.profile.as_deref(), Some(profile.id.as_str()));
+        browser.keep_jar(&config, &keys);
+        assert_eq!(
+            kept_jar(&config, &keys, &profile.id),
+            [cookie("a.example", "sid")]
+        );
+        let off = web_config("profile-off");
+        let (_, mut browser) = session("t", &fake);
+        browser.browser = Some(driven(fake.clone()));
+        browser.signed_in(&off, &keys, &profile);
+        browser.keep_jar(&off, &keys);
+        assert!(
+            fake.log.lock().unwrap().commands.is_empty(),
+            "no store: nothing asked"
+        );
+        assert!(covering(&off, &keys, "a.example:443").is_none());
+    }
+
+    #[test]
+    fn a_jar_is_read_and_set_a_page_at_a_time_and_a_bad_answer_is_refused() {
+        let fake = Fake::default();
+        let started = fake.start("cell", Sites::default()).unwrap();
+        let driven: Driven = Arc::new(Mutex::new(Some(started)));
+        let big = |n: usize| Cookie {
+            value: "v".repeat(3000),
+            ..cookie("a.example", &format!("c{n}"))
+        };
+        let jar: Vec<Cookie> = (0..40).map(big).collect();
+        assert_eq!(set_jar(&driven, &jar), Ok(()));
+        let pages: Vec<Vec<Cookie>> = fake
+            .log
+            .lock()
+            .unwrap()
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                BrowserCommand::SetCookies { cookies } => Some(cookies.clone()),
+                BrowserCommand::Open { .. }
+                | BrowserCommand::Snapshot
+                | BrowserCommand::Act { .. }
+                | BrowserCommand::Scroll { .. }
+                | BrowserCommand::Frame
+                | BrowserCommand::Input { .. }
+                | BrowserCommand::Cookies { .. }
+                | BrowserCommand::Close => None,
+            })
+            .collect();
+        assert!(pages.len() > 1, "{} pages", pages.len());
+        for page in &pages {
+            let bytes: usize = page
+                .iter()
+                .map(|cookie| serde_json::to_vec(cookie).unwrap().len() + 1)
+                .sum();
+            assert!(bytes <= MAX_COOKIE_PAGE_BYTES, "{bytes}");
+        }
+        assert_eq!(pages.concat(), jar, "all of it, in order");
+        assert_eq!(read_jar(&driven), Ok(jar));
+        assert_eq!(set_jar(&driven, &[]), Ok(()));
+        // A browser that answers out of turn, fails, stalls or is gone.
+        for (reply, read, set) in [
+            (BrowserReply::Closed, true, true),
+            (
+                BrowserReply::Failed {
+                    failure: BrowserFailure::BrowserGone,
+                },
+                true,
+                true,
+            ),
+            (
+                BrowserReply::Cookies {
+                    cookies: Vec::new(),
+                    next: Some(0),
+                },
+                true,
+                true,
+            ),
+            (BrowserReply::CookiesSet, true, false),
+        ] {
+            let driven = driven_by(reply.clone());
+            assert_eq!(read_jar(&driven).is_err(), read, "{reply:?}");
+            assert_eq!(
+                set_jar(&driven, &[cookie("a.example", "s")]).is_err(),
+                set,
+                "{reply:?}"
+            );
+        }
+        let gone: Driven = Arc::new(Mutex::new(None));
+        assert!(read_jar(&gone).is_err());
+        assert!(set_jar(&gone, &[cookie("a.example", "s")]).is_err());
+    }
+
+    /// A browser that answers every command with `reply`.
+    fn driven_by(reply: BrowserReply) -> Driven {
+        struct Answers(BrowserReply);
+        impl Browser for Answers {
+            fn command(&mut self, _: &BrowserCommand) -> Result<BrowserReply, String> {
+                Ok(self.0.clone())
+            }
+            fn finish(self: Box<Self>) {}
+        }
+        driven(Answers(reply))
+    }
+
+    #[test]
+    fn a_jar_past_its_pages_isnt_kept() {
+        struct Counting(u32);
+        impl Browser for Counting {
+            fn command(&mut self, _: &BrowserCommand) -> Result<BrowserReply, String> {
+                self.0 += 1;
+                Ok(BrowserReply::Cookies {
+                    cookies: Vec::new(),
+                    next: Some(self.0),
+                })
+            }
+            fn finish(self: Box<Self>) {}
+        }
+        assert_eq!(
+            read_jar(&driven(Counting(0))),
+            Err(String::from("the browser's jar is past its pages"))
+        );
     }
 
     #[test]

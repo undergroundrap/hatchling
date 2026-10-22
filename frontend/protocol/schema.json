@@ -605,6 +605,16 @@
           "const": "browser_input",
           "description": "[`UiAction::BrowserInput`].",
           "type": "string"
+        },
+        {
+          "const": "keep_signed_in",
+          "description": "[`UiAction::KeepSignedIn`].",
+          "type": "string"
+        },
+        {
+          "const": "manage_profiles",
+          "description": "[`UiAction::ManageProfiles`].",
+          "type": "string"
         }
       ]
     },
@@ -5618,6 +5628,151 @@
       ],
       "type": "object"
     },
+    "ProfileOp": {
+      "description": "An operation on the owner's signed-in profiles (WO-030).",
+      "oneOf": [
+        {
+          "description": "List them.",
+          "properties": {
+            "op": {
+              "const": "list",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Sign one out: its kept session is dropped, its sites kept.",
+          "properties": {
+            "op": {
+              "const": "sign_out",
+              "type": "string"
+            },
+            "profile_id": {
+              "description": "The profile, as listed.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "profile_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Delete one: its kept session and its sites.",
+          "properties": {
+            "op": {
+              "const": "delete",
+              "type": "string"
+            },
+            "profile_id": {
+              "description": "The profile, as listed.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "profile_id"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ProfileResult": {
+      "description": "The result of a [`ProfileOp`].",
+      "oneOf": [
+        {
+          "description": "The profiles, in the order they were made.",
+          "properties": {
+            "profiles": {
+              "description": "The profiles.",
+              "items": {
+                "$ref": "#/$defs/SignedInProfile"
+              },
+              "type": "array"
+            },
+            "result": {
+              "const": "listed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "profiles"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The profile was signed out.",
+          "properties": {
+            "result": {
+              "const": "signed_out",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The profile was deleted.",
+          "properties": {
+            "result": {
+              "const": "deleted",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "No such profile.",
+          "properties": {
+            "result": {
+              "const": "not_found",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The broker keeps no profiles: the operator hasn't given it a place\nto.",
+          "properties": {
+            "result": {
+              "const": "off",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The broker couldn't read or change them; its log says why.",
+          "properties": {
+            "result": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "QueryOp": {
       "description": "A read-scoped query: the vocabulary the feed reads through.\n\nEvery variant reads, and nothing else is expressible here: the\nwrites live in [`GoalsOp`], a different session kind. Each query\nselects one store; every reply item is a feed item carrying its\nprovenance (which store, and its original source) from the store\nlayer.\n\n`after` resumes a paged query past the `next` cursor of the previous\nreply.",
       "oneOf": [
@@ -6980,6 +7135,42 @@
           "type": "string"
         }
       ]
+    },
+    "SignedInProfile": {
+      "description": "A signed-in profile: a site the owner signed in to, with the sites its\nsign-in went through.",
+      "properties": {
+        "created_at": {
+          "description": "When it was made, RFC 3339.",
+          "type": "string"
+        },
+        "last_used": {
+          "description": "When its session was last kept, RFC 3339.",
+          "type": "string"
+        },
+        "profile_id": {
+          "description": "Its id.",
+          "type": "string"
+        },
+        "signed_in": {
+          "description": "Whether a session is kept for it: false once it's signed out.",
+          "type": "boolean"
+        },
+        "sites": {
+          "description": "Its sites, `host:port`, the one signed in on first.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "profile_id",
+        "sites",
+        "signed_in",
+        "created_at",
+        "last_used"
+      ],
+      "type": "object"
     },
     "SiteOp": {
       "description": "An operation on the sites the agent is always allowed to read (WO-028).",
@@ -8615,6 +8806,42 @@
             "input"
           ],
           "type": "object"
+        },
+        {
+          "description": "Keep the sign-in of a browser session the user drives, and signed in\non themselves (WO-030): its site, the sites its sign-in went\nthrough, and its session, sealed, used whenever the agent opens one\nof those sites again.",
+          "properties": {
+            "action": {
+              "const": "keep_signed_in",
+              "type": "string"
+            },
+            "session_id": {
+              "description": "The session.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "session_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "List, sign out or delete the user's signed-in profiles (WO-030).",
+          "properties": {
+            "action": {
+              "const": "manage_profiles",
+              "type": "string"
+            },
+            "op": {
+              "$ref": "#/$defs/ProfileOp",
+              "description": "The operation."
+            }
+          },
+          "required": [
+            "action",
+            "op"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -8944,6 +9171,47 @@
             "result",
             "session_id",
             "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The sign-in was kept, as this profile (WO-030).",
+          "properties": {
+            "profile": {
+              "$ref": "#/$defs/SignedInProfile",
+              "description": "The profile it's kept as."
+            },
+            "result": {
+              "const": "signed_in_kept",
+              "type": "string"
+            },
+            "session_id": {
+              "description": "The session.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "session_id",
+            "profile"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A profile operation's result (WO-030).",
+          "properties": {
+            "outcome": {
+              "$ref": "#/$defs/ProfileResult",
+              "description": "The result."
+            },
+            "result": {
+              "const": "profiles",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "outcome"
           ],
           "type": "object"
         },

@@ -81,6 +81,10 @@ pub enum ApiRequest {
     StopBrowser,
     /// [`UiAction::BrowserInput`].
     BrowserInput,
+    /// [`UiAction::KeepSignedIn`].
+    KeepSignedIn,
+    /// [`UiAction::ManageProfiles`].
+    ManageProfiles,
 }
 
 impl ApiRequest {
@@ -111,6 +115,8 @@ impl ApiRequest {
             UiAction::ReturnControl { .. } => Self::ReturnControl,
             UiAction::StopBrowser { .. } => Self::StopBrowser,
             UiAction::BrowserInput { .. } => Self::BrowserInput,
+            UiAction::KeepSignedIn { .. } => Self::KeepSignedIn,
+            UiAction::ManageProfiles { .. } => Self::ManageProfiles,
         }
     }
 }
@@ -254,6 +260,16 @@ mod tests {
                     input: crate::browser::OwnerInput::Scroll { down: true },
                 }),
                 ApiRequest::BrowserInput,
+            ),
+            (
+                action(UiAction::KeepSignedIn { session_id: id() }),
+                ApiRequest::KeepSignedIn,
+            ),
+            (
+                action(UiAction::ManageProfiles {
+                    op: crate::ui::ProfileOp::List,
+                }),
+                ApiRequest::ManageProfiles,
             ),
         ];
         for (request, kind) in cases {

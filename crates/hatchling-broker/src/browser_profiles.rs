@@ -338,6 +338,63 @@ impl<'k> Profiles<'k> {
     }
 }
 
+/// `profile` as the owner's app is told it, `signed_in` if a session is
+/// kept for it.
+#[must_use]
+pub fn shown(profile: &Profile, signed_in: bool) -> hatchling_core::ui::SignedInProfile {
+    let when = |at: i64| {
+        hatchling_scheduler::Timestamp::from_second(at)
+            .map(|at| at.to_string())
+            .unwrap_or_default()
+    };
+    hatchling_core::ui::SignedInProfile {
+        profile_id: profile.id.clone(),
+        sites: profile.sites.clone(),
+        signed_in,
+        created_at: when(profile.created_at),
+        last_used: when(profile.last_used),
+    }
+}
+
+/// The owner's `op` on the signed-in profiles, under `config`, with `keys`.
+#[must_use]
+pub fn handle_profile_op(
+    config: &Config,
+    keys: &dyn OpensStores,
+    op: &hatchling_core::ui::ProfileOp,
+) -> hatchling_core::ui::ProfileResult {
+    use hatchling_core::ui::{ProfileOp, ProfileResult};
+    let Some(profiles) = Profiles::of(config, keys) else {
+        return ProfileResult::Off;
+    };
+    let gone = |found: bool, done: ProfileResult| {
+        if found { done } else { ProfileResult::NotFound }
+    };
+    let answer = match op {
+        ProfileOp::List => profiles.list().and_then(|listed| {
+            listed
+                .iter()
+                .map(|profile| {
+                    profiles
+                        .jar(&profile.id)
+                        .map(|jar| shown(profile, !jar.is_empty()))
+                })
+                .collect::<Result<Vec<_>, String>>()
+                .map(|profiles| ProfileResult::Listed { profiles })
+        }),
+        ProfileOp::SignOut { profile_id } => profiles
+            .sign_out(profile_id)
+            .map(|found| gone(found, ProfileResult::SignedOut)),
+        ProfileOp::Delete { profile_id } => profiles
+            .delete(profile_id)
+            .map(|found| gone(found, ProfileResult::Deleted)),
+    };
+    answer.unwrap_or_else(|error| {
+        tracing::error!(%error, "a profile operation failed");
+        ProfileResult::Failed
+    })
+}
+
 /// `cookies`, only those of `profile`'s sites; each other is logged, by
 /// its name and domain, as dropped.
 fn only_its_own(profile: &Profile, cookies: Vec<Cookie>) -> Vec<Cookie> {
@@ -686,6 +743,85 @@ mod tests {
         // Another key can't open the sealed store.
         let other = MasterKey::generate().unwrap();
         assert!(Profiles::of(&config, &other).unwrap().list().is_err());
+    }
+
+    #[test]
+    fn the_owners_operations_list_sign_out_and_delete() {
+        use hatchling_core::ui::{ProfileOp, ProfileResult};
+        let (config, _scratch, key) = kept("ops");
+        assert_eq!(
+            handle_profile_op(&config, &key, &ProfileOp::List),
+            ProfileResult::Listed {
+                profiles: Vec::new()
+            }
+        );
+        let profiles = Profiles::of(&config, &key).unwrap();
+        let profile = profiles
+            .keep(&sites(&["a.example:443"]), 1_790_000_000)
+            .unwrap();
+        profiles
+            .keep_jar(
+                &profile.id,
+                vec![cookie("a.example", "sid", "1")],
+                1_790_000_060,
+            )
+            .unwrap();
+        let listed = handle_profile_op(&config, &key, &ProfileOp::List);
+        assert_eq!(
+            listed,
+            ProfileResult::Listed {
+                profiles: vec![hatchling_core::ui::SignedInProfile {
+                    profile_id: profile.id.clone(),
+                    sites: sites(&["a.example:443"]),
+                    signed_in: true,
+                    created_at: String::from("2026-09-21T14:13:20Z"),
+                    last_used: String::from("2026-09-21T14:14:20Z"),
+                }]
+            }
+        );
+        let wire = serde_json::to_string(&listed).unwrap();
+        assert!(!wire.contains("sid"), "no cookie in the list: {wire}");
+        let out = ProfileOp::SignOut {
+            profile_id: profile.id.clone(),
+        };
+        assert_eq!(
+            handle_profile_op(&config, &key, &out),
+            ProfileResult::SignedOut
+        );
+        let ProfileResult::Listed { profiles: after } =
+            handle_profile_op(&config, &key, &ProfileOp::List)
+        else {
+            unreachable!("listed");
+        };
+        assert_eq!(
+            after.iter().map(|p| p.signed_in).collect::<Vec<_>>(),
+            [false]
+        );
+        let delete = ProfileOp::Delete {
+            profile_id: profile.id,
+        };
+        assert_eq!(
+            handle_profile_op(&config, &key, &delete),
+            ProfileResult::Deleted
+        );
+        assert_eq!(
+            handle_profile_op(&config, &key, &delete),
+            ProfileResult::NotFound
+        );
+        assert_eq!(
+            handle_profile_op(&config, &key, &out),
+            ProfileResult::NotFound
+        );
+        let off = crate::api_auth::tests::owner_config(None);
+        assert_eq!(
+            handle_profile_op(&off, &key, &ProfileOp::List),
+            ProfileResult::Off
+        );
+        let other = MasterKey::generate().unwrap();
+        assert_eq!(
+            handle_profile_op(&config, &other, &ProfileOp::List),
+            ProfileResult::Failed
+        );
     }
 
     #[test]

@@ -92,6 +92,10 @@ struct Watched {
     browser: Driven,
     /// The page's title, as the latest frame showed it.
     title: String,
+    /// The site it's visiting, `host:port`.
+    visit: Option<String>,
+    /// The signed-in profile it runs (WO-030), if one.
+    profile: Option<String>,
 }
 
 impl std::fmt::Debug for Watched {
@@ -118,6 +122,8 @@ pub enum OwnerAct<'a> {
     Stop(&'a str),
     /// Give it their own input.
     Input(&'a str, &'a OwnerInput),
+    /// Keep its sign-in (WO-030).
+    Keep(&'a str),
 }
 
 /// Why the owner's input wasn't done.
@@ -173,9 +179,79 @@ impl BrowserBoard {
                     acting: false,
                     browser,
                     title: String::new(),
+                    visit: None,
+                    profile: None,
                 },
             );
         stopped
+    }
+
+    /// The browser `session_id` is visiting `site`, `host:port`.
+    pub(crate) fn visiting(&self, session_id: &str, site: &str) {
+        if let Some(watched) = self
+            .sessions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_mut(session_id)
+        {
+            watched.visit = Some(site.to_owned());
+        }
+    }
+
+    /// The browser `session_id` runs the signed-in profile `profile_id`
+    /// (WO-030): its session is kept when the owner hands it back.
+    pub(crate) fn profiled(&self, session_id: &str, profile_id: &str) {
+        if let Some(watched) = self
+            .sessions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_mut(session_id)
+        {
+            watched.profile = Some(profile_id.to_owned());
+        }
+    }
+
+    /// The signed-in profile the browser `session_id` runs, and the
+    /// browser, to read its session from: `None` unless it runs one.
+    #[must_use]
+    pub(crate) fn profile_of(&self, session_id: &str) -> Option<(String, Driven)> {
+        let sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+        let held = sessions
+            .get(session_id)
+            .and_then(|watched| Some((watched.profile.clone()?, Arc::clone(&watched.browser))));
+        drop(sessions);
+        held
+    }
+
+    /// What the owner keeps when they keep the sign-in of the browser
+    /// `session_id` (WO-030): its sites, the one it's visiting first, and
+    /// the browser, to read its session from. Only while they drive it:
+    /// they signed in on it themselves.
+    ///
+    /// # Errors
+    ///
+    /// As for [`BrowserBoard::hand_back`]: control isn't the owner's, or
+    /// the browser isn't there; and [`ControlRefusal::NotAllowed`] for a
+    /// browser that has visited no site.
+    pub(crate) fn sign_in_of(
+        &self,
+        session_id: &str,
+    ) -> Result<(Vec<String>, Driven), ControlRefusal> {
+        let sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+        let watched = sessions
+            .get(session_id)
+            .ok_or(ControlRefusal::UnknownSession)?;
+        Self::open_to_control(watched, Control::User)?;
+        let visit = watched.visit.clone().ok_or(ControlRefusal::NotAllowed)?;
+        let mut sites = vec![visit];
+        for site in watched.sites.granted() {
+            if !sites.contains(&site) {
+                sites.push(site);
+            }
+        }
+        let browser = Arc::clone(&watched.browser);
+        drop(sessions);
+        Ok((sites, browser))
     }
 
     /// The browser `session_id` has ended: there's nothing to stop.
@@ -732,6 +808,8 @@ mod tests {
             acting: false,
             browser: Driven::default(),
             title: String::new(),
+            visit: None,
+            profile: None,
         }
     }
 
@@ -1025,6 +1103,65 @@ mod tests {
         ] {
             assert_eq!(owner_said(&input), said);
         }
+    }
+
+    #[test]
+    fn a_sign_in_is_kept_only_while_the_owner_drives_with_its_visit_first() {
+        let (board, _) = watched();
+        let sites = Sites::default();
+        sites.grant("idp.example:443");
+        sites.grant("a.example:443");
+        assert_eq!(
+            sites.granted(),
+            [
+                String::from("a.example:443"),
+                String::from("idp.example:443")
+            ],
+            "in order"
+        );
+        let _stopped = board.begin("browser-s", sites, Driven::default());
+        board.visiting("browser-s", "a.example:443");
+        assert_eq!(
+            board.sign_in_of("browser-s").map(|(sites, _)| sites),
+            Err(ControlRefusal::NotAllowed),
+            "the agent drives"
+        );
+        assert_eq!(board.take("browser-s"), Ok(()));
+        assert_eq!(
+            board.sign_in_of("browser-s").map(|(sites, _)| sites),
+            Ok(vec![
+                String::from("a.example:443"),
+                String::from("idp.example:443")
+            ]),
+            "the visit first, then the rest, each once"
+        );
+        assert_eq!(
+            board.sign_in_of("browser-z").map(|(sites, _)| sites),
+            Err(ControlRefusal::UnknownSession)
+        );
+        assert!(board.profile_of("browser-s").is_none());
+        board.profiled("browser-s", "profile-1");
+        assert_eq!(
+            board.profile_of("browser-s").map(|(profile, _)| profile),
+            Some(String::from("profile-1"))
+        );
+        board.visiting("browser-z", "x.example:443");
+        board.profiled("browser-z", "profile-2");
+        assert!(board.profile_of("browser-z").is_none(), "no such browser");
+        // Driven by the owner, but nowhere yet; then stopped.
+        let _other = board.begin("browser-n", Sites::default(), Driven::default());
+        assert_eq!(board.take("browser-n"), Ok(()));
+        assert_eq!(
+            board.sign_in_of("browser-n").map(|(sites, _)| sites),
+            Err(ControlRefusal::NotAllowed),
+            "no site visited"
+        );
+        assert_eq!(board.stop("browser-n"), Ok(()));
+        board.visiting("browser-n", "a.example:443");
+        assert_eq!(
+            board.sign_in_of("browser-n").map(|(sites, _)| sites),
+            Err(ControlRefusal::Finished)
+        );
     }
 
     #[test]

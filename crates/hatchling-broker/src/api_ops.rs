@@ -38,7 +38,7 @@ use hatchling_core::messages::{ScheduleGrant, ScheduleOp};
 use hatchling_core::subagent::{ActivityEvent, SubagentEvent};
 use hatchling_core::ui::{
     ActionRefusal, AgentState, ApiOutcome, ApiRequest, ChatAuthor, ChatMessage, ControlRefusal,
-    Decision, Handoff, UiAction, UiActionResult, UiEventBody,
+    Decision, Handoff, ProfileOp, ProfileResult, SiteOp, UiAction, UiActionResult, UiEventBody,
 };
 use hatchling_scheduler::{Creator, Timestamp};
 use hatchling_vault::OpensStores;
@@ -49,6 +49,15 @@ use crate::browser_board::{InputRefusal, OwnerAct};
 use crate::schedule_ops::{held_grants, list_schedules};
 use crate::skills::Skills;
 use crate::{Config, handle_schedule_op, handle_skill_op};
+
+/// What of the owner's an API call manages.
+#[derive(Clone, Copy)]
+enum Owned<'a> {
+    /// Their always-allowed sites (WO-028).
+    Sites(&'a SiteOp),
+    /// Their signed-in profiles (WO-030).
+    Profiles(&'a ProfileOp),
+}
 
 /// The one chat the API offers: the local channel's conversation.
 pub const LOCAL_CHAT: &str = "local";
@@ -191,18 +200,9 @@ impl<'a> Ops<'a> {
                     ApiOutcome::Served,
                 )
             }
-            UiAction::ManageSites { op } => {
-                // The owner's alone (WO-028): a caller holding less than
-                // every grant the owner holds can't list or revoke a site.
-                if !caller.holds(&owner) {
-                    return refused(ActionRefusal::NotGranted);
-                }
-                (
-                    UiActionResult::Sites {
-                        outcome: crate::site_grants::handle_site_op(self.config, self.key, op),
-                    },
-                    ApiOutcome::Served,
-                )
+            UiAction::ManageSites { op } => self.owned(caller.holds(&owner), Owned::Sites(op)),
+            UiAction::ManageProfiles { op } => {
+                self.owned(caller.holds(&owner), Owned::Profiles(op))
             }
             UiAction::Decide {
                 confirmation_id,
@@ -230,11 +230,37 @@ impl<'a> Ops<'a> {
             UiAction::BrowserInput { session_id, input } => {
                 self.browser(caller.holds(&owner), OwnerAct::Input(session_id, input))
             }
+            UiAction::KeepSignedIn { session_id } => {
+                self.browser(caller.holds(&owner), OwnerAct::Keep(session_id))
+            }
             UiAction::OpenArtifact { .. }
             | UiAction::ShareArtifact { .. }
             | UiAction::AttachArtifact { .. }
             | UiAction::SaveFile { .. } => refused(ActionRefusal::Unavailable),
         }
+    }
+
+    /// The owner's sites and signed-in profiles (WO-028, WO-030), the
+    /// owner's alone: a caller holding less than every grant the owner
+    /// holds can't list, revoke, sign out or delete one.
+    fn owned(&self, owner: bool, what: Owned<'_>) -> (UiActionResult, ApiOutcome) {
+        if !owner {
+            return (
+                UiActionResult::Refused {
+                    reason: ActionRefusal::NotGranted,
+                },
+                ApiOutcome::Refused,
+            );
+        }
+        let result = match what {
+            Owned::Sites(op) => UiActionResult::Sites {
+                outcome: crate::site_grants::handle_site_op(self.config, self.key, op),
+            },
+            Owned::Profiles(op) => UiActionResult::Profiles {
+                outcome: crate::browser_profiles::handle_profile_op(self.config, self.key, op),
+            },
+        };
+        (result, ApiOutcome::Served)
     }
 
     /// The owner's `act` on the agent's browser (WO-029), and the owner's
@@ -253,15 +279,82 @@ impl<'a> Ops<'a> {
             OwnerAct::Take(session_id) => {
                 control_answer(session_id, Handoff::Takeover, board.take(session_id))
             }
-            OwnerAct::Return(session_id, seen) => control_answer(
-                session_id,
-                Handoff::HandBack,
-                board.hand_back(session_id, seen),
-            ),
+            OwnerAct::Return(session_id, seen) => {
+                let handed = board.hand_back(session_id, seen);
+                if handed.is_ok() {
+                    self.keep_session(session_id);
+                }
+                control_answer(session_id, Handoff::HandBack, handed)
+            }
+            OwnerAct::Keep(session_id) => self.keep_signed_in(session_id),
             OwnerAct::Stop(session_id) => self.stop_browser(session_id),
             OwnerAct::Input(session_id, input) => {
                 input_answer(session_id, board.input(session_id, input))
             }
+        }
+    }
+
+    /// The owner keeps the sign-in of the agent's browser `session_id`
+    /// (WO-030), while they drive it: its sites become a profile, the one
+    /// it's visiting first, and its session is kept for them.
+    fn keep_signed_in(&self, session_id: &str) -> (UiActionResult, ApiOutcome) {
+        let board = crate::browser_board::board(self.config);
+        let (sites, driven) = match board.sign_in_of(session_id) {
+            Ok(held) => held,
+            Err(reason) => {
+                return (
+                    UiActionResult::ControlRefused {
+                        session_id: session_id.to_owned(),
+                        reason,
+                    },
+                    ApiOutcome::Refused,
+                );
+            }
+        };
+        let not_kept = |outcome| (UiActionResult::Profiles { outcome }, ApiOutcome::Refused);
+        let Some(profiles) = crate::browser_profiles::Profiles::of(self.config, self.key) else {
+            return not_kept(ProfileResult::Off);
+        };
+        let now = Timestamp::now().as_second();
+        let kept = crate::browser_ops::read_jar(&driven).and_then(|jar| {
+            let cookies = jar.len();
+            let profile = profiles.keep(&sites, now)?;
+            let dropped = profiles.keep_jar(&profile.id, jar, now)?;
+            Ok((profile, cookies > dropped))
+        });
+        match kept {
+            Ok((profile, signed_in)) => {
+                board.profiled(session_id, &profile.id);
+                (
+                    UiActionResult::SignedInKept {
+                        session_id: session_id.to_owned(),
+                        profile: crate::browser_profiles::shown(&profile, signed_in),
+                    },
+                    ApiOutcome::Served,
+                )
+            }
+            Err(error) => {
+                tracing::error!(%error, "a sign-in can't be kept");
+                not_kept(ProfileResult::Failed)
+            }
+        }
+    }
+
+    /// The session of the browser `session_id`, kept as its profile's if
+    /// it runs one (WO-030): the owner hands back what they did on it.
+    fn keep_session(&self, session_id: &str) {
+        let Some((profile, driven)) =
+            crate::browser_board::board(self.config).profile_of(session_id)
+        else {
+            return;
+        };
+        let Some(profiles) = crate::browser_profiles::Profiles::of(self.config, self.key) else {
+            return;
+        };
+        let kept = crate::browser_ops::read_jar(&driven)
+            .and_then(|jar| profiles.keep_jar(&profile, jar, Timestamp::now().as_second()));
+        if let Err(error) = kept {
+            tracing::warn!(%profile, %error, "a signed-in session can't be kept");
         }
     }
 
@@ -1101,6 +1194,252 @@ mod tests {
         );
     }
 
+    /// A browser whose jar is `jar`, a cookie a page; it answers anything
+    /// else closed.
+    struct Jarred(Arc<std::sync::Mutex<Vec<hatchling_core::browser::Cookie>>>);
+
+    impl crate::browser_ops::Browser for Jarred {
+        fn command(
+            &mut self,
+            command: &hatchling_core::browser::BrowserCommand,
+        ) -> Result<hatchling_core::browser::BrowserReply, String> {
+            let jar = self.0.lock().unwrap();
+            Ok(
+                if let hatchling_core::browser::BrowserCommand::Cookies { from } = command {
+                    let at = usize::try_from(*from).unwrap();
+                    hatchling_core::browser::BrowserReply::Cookies {
+                        cookies: jar.get(at).cloned().into_iter().collect(),
+                        next: (at + 1 < jar.len()).then_some(from + 1),
+                    }
+                } else {
+                    hatchling_core::browser::BrowserReply::Closed
+                },
+            )
+        }
+
+        fn finish(self: Box<Self>) {}
+    }
+
+    fn cookie(domain: &str, name: &str) -> hatchling_core::browser::Cookie {
+        hatchling_core::browser::Cookie {
+            name: name.to_owned(),
+            value: format!("{name}-value"),
+            domain: domain.to_owned(),
+            path: String::from("/"),
+            expires: None,
+            secure: true,
+            http_only: true,
+            same_site: None,
+        }
+    }
+
+    /// The API's answer to a caller not granted what they asked.
+    const fn not_granted() -> (UiActionResult, ApiOutcome) {
+        (
+            UiActionResult::Refused {
+                reason: ActionRefusal::NotGranted,
+            },
+            ApiOutcome::Refused,
+        )
+    }
+
+    /// A config keeping signed-in profiles in `dir`, and one keeping none.
+    fn profile_configs(dir: &crate::api_auth::tests::Scratch) -> (Config, Config) {
+        let mut off = owner_config(Some(&dir.0.join("schedules").to_string_lossy()));
+        off.goals.grants = vec![GoalsAction::QueryGoals, GoalsAction::GoalCreate];
+        let mut config = off.clone();
+        config.web.profiles = dir.0.join("profiles");
+        (config, off)
+    }
+
+    #[test]
+    fn only_the_owner_keeps_a_sign_in_and_only_while_they_drive() {
+        let dir = scratch("keep-signed-in");
+        let (config, _) = profile_configs(&dir);
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let ops = Ops::new(&config, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        let owner = caller(&[goals("query-goals"), goals("goal-create"), local_send()]);
+        let narrow = caller(&[goals("query-goals"), local_send()]);
+        let mut replies = Replies::default();
+        let board = crate::browser_board::board(&config);
+        let jar = Arc::new(std::sync::Mutex::new(vec![cookie("a.example", "sid")]));
+        let sites = crate::browser_proxy::Sites::default();
+        sites.grant("idp.example:443");
+        let driven: crate::browser_ops::Driven = Arc::new(std::sync::Mutex::new(Some(Box::new(
+            Jarred(Arc::clone(&jar)),
+        ))));
+        let _stopped = board.begin("browser-keep", sites, driven);
+        let keep = UiAction::KeepSignedIn {
+            session_id: String::from("browser-keep"),
+        };
+        assert_eq!(ops.handle(&narrow, &keep, &mut replies), not_granted());
+        let refused = |reason| {
+            (
+                UiActionResult::ControlRefused {
+                    session_id: String::from("browser-keep"),
+                    reason,
+                },
+                ApiOutcome::Refused,
+            )
+        };
+        board.visiting("browser-keep", "a.example:443");
+        assert_eq!(
+            ops.keep_signed_in("browser-keep"),
+            refused(ControlRefusal::NotAllowed),
+            "the agent drives"
+        );
+        assert_eq!(board.take("browser-keep"), Ok(()));
+        let kept = ops.handle(&owner, &keep, &mut replies);
+        let profile =
+            if let (UiActionResult::SignedInKept { profile, .. }, ApiOutcome::Served) = &kept {
+                Some(profile.clone())
+            } else {
+                None
+            };
+        assert!(profile.is_some(), "{kept:?}");
+        let profile = profile.unwrap();
+        assert_eq!(profile.sites, ["a.example:443", "idp.example:443"]);
+        assert!(profile.signed_in);
+        let profiles = crate::browser_profiles::Profiles::of(&config, &key).unwrap();
+        assert_eq!(
+            profiles.jar(&profile.profile_id),
+            Ok(vec![cookie("a.example", "sid")])
+        );
+        // The owner signs in further, and hands back: kept as handed back.
+        jar.lock()
+            .unwrap()
+            .extend([cookie("idp.example", "token"), cookie("b.example", "track")]);
+        let give = UiAction::ReturnControl {
+            session_id: String::from("browser-keep"),
+            frame_sequence: 0,
+        };
+        assert_eq!(
+            ops.handle(&owner, &give, &mut replies),
+            (
+                UiActionResult::ControlAccepted {
+                    session_id: String::from("browser-keep"),
+                    handoff: Handoff::HandBack,
+                },
+                ApiOutcome::Served,
+            )
+        );
+        assert_eq!(
+            profiles.jar(&profile.profile_id),
+            Ok(vec![
+                cookie("a.example", "sid"),
+                cookie("idp.example", "token")
+            ])
+        );
+        // Kept again directly, from the browser as it is now.
+        jar.lock().unwrap().push(cookie("a.example", "late"));
+        ops.keep_session("browser-keep");
+        ops.keep_session("browser-none");
+        assert_eq!(
+            profiles.jar(&profile.profile_id).map(|jar| jar.len()),
+            Ok(3)
+        );
+        board.end("browser-keep");
+    }
+
+    #[test]
+    fn the_owner_lists_and_deletes_profiles_and_a_gone_browser_keeps_none() {
+        let dir = scratch("list-profiles");
+        let (config, off) = profile_configs(&dir);
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let ops = Ops::new(&config, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        let ops_off = Ops::new(&off, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        let owner = caller(&[goals("query-goals"), goals("goal-create"), local_send()]);
+        let narrow = caller(&[goals("query-goals"), local_send()]);
+        let mut replies = Replies::default();
+        let board = crate::browser_board::board(&config);
+        let profiles = crate::browser_profiles::Profiles::of(&config, &key).unwrap();
+        let profile = profiles.keep(&[String::from("a.example:443")], 1).unwrap();
+        profiles
+            .keep_jar(&profile.id, vec![cookie("a.example", "sid")], 1)
+            .unwrap();
+        // A browser that's gone can't be kept.
+        let _gone = board.begin(
+            "browser-gone",
+            crate::browser_proxy::Sites::default(),
+            crate::browser_ops::Driven::default(),
+        );
+        assert_eq!(board.take("browser-gone"), Ok(()));
+        board.visiting("browser-gone", "c.example:443");
+        let keep = UiAction::KeepSignedIn {
+            session_id: String::from("browser-gone"),
+        };
+        assert_eq!(
+            ops_off.handle(&owner, &keep, &mut replies),
+            (
+                UiActionResult::Profiles {
+                    outcome: ProfileResult::Off
+                },
+                ApiOutcome::Refused,
+            )
+        );
+        assert_eq!(
+            ops.handle(&owner, &keep, &mut replies),
+            (
+                UiActionResult::Profiles {
+                    outcome: ProfileResult::Failed
+                },
+                ApiOutcome::Refused,
+            )
+        );
+        assert_eq!(
+            profiles.list().map(|listed| listed.len()),
+            Ok(1),
+            "none kept"
+        );
+        board.end("browser-gone");
+        // The owner's list, and theirs alone.
+        let list = UiAction::ManageProfiles {
+            op: ProfileOp::List,
+        };
+        assert_eq!(ops.handle(&narrow, &list, &mut replies), not_granted());
+        let listed = ops.handle(&owner, &list, &mut replies);
+        let ids = if let (
+            UiActionResult::Profiles {
+                outcome: ProfileResult::Listed { profiles },
+            },
+            ApiOutcome::Served,
+        ) = &listed
+        {
+            profiles
+                .iter()
+                .map(|shown| (shown.profile_id.clone(), shown.signed_in))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        assert_eq!(ids, [(profile.id.clone(), true)], "{listed:?}");
+        assert_eq!(
+            ops.owned(
+                true,
+                Owned::Profiles(&ProfileOp::Delete {
+                    profile_id: profile.id
+                })
+            ),
+            (
+                UiActionResult::Profiles {
+                    outcome: ProfileResult::Deleted
+                },
+                ApiOutcome::Served,
+            )
+        );
+        assert_eq!(
+            ops_off.handle(&owner, &list, &mut replies),
+            (
+                UiActionResult::Profiles {
+                    outcome: ProfileResult::Off
+                },
+                ApiOutcome::Served,
+            )
+        );
+    }
+
     #[test]
     fn only_the_owner_gives_a_browser_input_and_only_while_they_drive() {
         let dir = scratch("input-browser");
@@ -1318,8 +1657,8 @@ mod tests {
         let partial = caller(held.get(..1).unwrap_or_default());
         let mut replies = Replies::default();
         for op in [
-            hatchling_core::ui::SiteOp::List,
-            hatchling_core::ui::SiteOp::Revoke {
+            SiteOp::List,
+            SiteOp::Revoke {
                 site: String::from("https://a.example"),
             },
         ] {

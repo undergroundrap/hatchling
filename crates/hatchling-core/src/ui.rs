@@ -523,6 +523,65 @@ pub enum SiteResult {
     Failed,
 }
 
+/// An operation on the owner's signed-in profiles (WO-030).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum ProfileOp {
+    /// List them.
+    List,
+    /// Sign one out: its kept session is dropped, its sites kept.
+    SignOut {
+        /// The profile, as listed.
+        profile_id: String,
+    },
+    /// Delete one: its kept session and its sites.
+    Delete {
+        /// The profile, as listed.
+        profile_id: String,
+    },
+}
+
+/// A signed-in profile: a site the owner signed in to, with the sites its
+/// sign-in went through.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct SignedInProfile {
+    /// Its id.
+    pub profile_id: String,
+    /// Its sites, `host:port`, the one signed in on first.
+    pub sites: Vec<String>,
+    /// Whether a session is kept for it: false once it's signed out.
+    pub signed_in: bool,
+    /// When it was made, RFC 3339.
+    pub created_at: String,
+    /// When its session was last kept, RFC 3339.
+    pub last_used: String,
+}
+
+/// The result of a [`ProfileOp`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum ProfileResult {
+    /// The profiles, in the order they were made.
+    Listed {
+        /// The profiles.
+        profiles: Vec<SignedInProfile>,
+    },
+    /// The profile was signed out.
+    SignedOut,
+    /// The profile was deleted.
+    Deleted,
+    /// No such profile.
+    NotFound,
+    /// The broker keeps no profiles: the operator hasn't given it a place
+    /// to.
+    Off,
+    /// The broker couldn't read or change them; its log says why.
+    Failed,
+}
+
 /// A user action.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -625,6 +684,19 @@ pub enum UiAction {
         /// What the user did.
         input: crate::browser::OwnerInput,
     },
+    /// Keep the sign-in of a browser session the user drives, and signed in
+    /// on themselves (WO-030): its site, the sites its sign-in went
+    /// through, and its session, sealed, used whenever the agent opens one
+    /// of those sites again.
+    KeepSignedIn {
+        /// The session.
+        session_id: String,
+    },
+    /// List, sign out or delete the user's signed-in profiles (WO-030).
+    ManageProfiles {
+        /// The operation.
+        op: ProfileOp,
+    },
 }
 
 /// What an action did.
@@ -726,6 +798,18 @@ pub enum UiActionResult {
         session_id: String,
         /// Why.
         reason: ControlRefusal,
+    },
+    /// The sign-in was kept, as this profile (WO-030).
+    SignedInKept {
+        /// The session.
+        session_id: String,
+        /// The profile it's kept as.
+        profile: SignedInProfile,
+    },
+    /// A profile operation's result (WO-030).
+    Profiles {
+        /// The result.
+        outcome: ProfileResult,
     },
     /// The user's input was done; a frame of the page after it follows
     /// (v2).
@@ -1397,6 +1481,20 @@ mod tests {
                 json!({"action": "stop_browser", "session_id": "w1"}),
             ),
             (
+                UiAction::KeepSignedIn {
+                    session_id: s("w1"),
+                },
+                json!({"action": "keep_signed_in", "session_id": "w1"}),
+            ),
+            (
+                UiAction::ManageProfiles {
+                    op: ProfileOp::SignOut {
+                        profile_id: s("profile-1"),
+                    },
+                },
+                json!({"action": "manage_profiles", "op": {"op": "sign_out", "profile_id": "profile-1"}}),
+            ),
+            (
                 UiAction::BrowserInput {
                     session_id: s("w1"),
                     input: crate::browser::OwnerInput::Click { x: 4, y: 5 },
@@ -1488,6 +1586,45 @@ mod tests {
                     failure: crate::browser::BrowserFailure::NotPossible,
                 },
                 json!({"result": "input_failed", "session_id": "w1", "failure": "not_possible"}),
+            ),
+        ];
+        for (result, expected) in &results {
+            pinned(result, expected);
+        }
+    }
+
+    #[test]
+    fn profile_results_are_pinned() {
+        let results = [
+            (
+                UiActionResult::SignedInKept {
+                    session_id: s("w1"),
+                    profile: SignedInProfile {
+                        profile_id: s("profile-1"),
+                        sites: vec![s("a.example:443")],
+                        signed_in: true,
+                        created_at: s("2026-10-22T00:00:00Z"),
+                        last_used: s("2026-10-22T00:00:00Z"),
+                    },
+                },
+                json!({"result": "signed_in_kept", "session_id": "w1", "profile": {
+                    "profile_id": "profile-1", "sites": ["a.example:443"], "signed_in": true,
+                    "created_at": "2026-10-22T00:00:00Z", "last_used": "2026-10-22T00:00:00Z"
+                }}),
+            ),
+            (
+                UiActionResult::Profiles {
+                    outcome: ProfileResult::Listed {
+                        profiles: Vec::new(),
+                    },
+                },
+                json!({"result": "profiles", "outcome": {"result": "listed", "profiles": []}}),
+            ),
+            (
+                UiActionResult::Profiles {
+                    outcome: ProfileResult::NotFound,
+                },
+                json!({"result": "profiles", "outcome": {"result": "not_found"}}),
             ),
         ];
         for (result, expected) in &results {
