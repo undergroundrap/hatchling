@@ -1,6 +1,6 @@
 # WO-029: A browser cell: a real browser the agent drives, in a cell of its own, reaching only what the broker lets through
 
-**Status:** IN PROGRESS (all four parts merged: the cell and the controller, the proxy, grants and the tools, and the owner in the app, proven end to end in CI's `browser in the app`; left: the owner's own input in that test, and the evidence at close)
+**Status:** DONE (2026-10-22)
 **Area:** `crates/hatchling-browser` (new: the controller that runs in the cell), `crates/hatchling-broker` (the browser session, the proxy, site grants, the UI stream), `crates/hatchling-isolation` (the browser cell's profile), `crates/hatchling-agent` (the tools), `crates/hatchling-core` (the ops; `ui` already has the browser surfaces), `frontend/` (the live browser view)
 **Issue:** none yet
 **Trust boundary:** yes
@@ -45,17 +45,17 @@ The UI already has the browser's surfaces, from WO-021: sessions, frames, the ac
 
 ## Acceptance criteria
 
-- [ ] With a real Chromium in a real cell: a page's script that fetches an internal address, plain `http`, or a UDP peer gets nothing, and no packet leaves the cell except through the broker's proxy.
-- [ ] Opening, or a page navigating to, an origin the session doesn't hold loads nothing: it asks the owner, and once, for the task, always and never each do exactly what they do for `web_fetch` (WO-028).
-- [ ] Every connection the browser makes is in the egress log with its origin; the broker sees no plaintext, and a site with a bad certificate doesn't load.
-- [ ] A bundle whose digest isn't the configured one isn't started, whichever file differs (the executable, a library, a `.pak`, the ICU data), and a file changed after the snapshot is made never reaches the browser: it runs only the snapshot.
-- [ ] A page's request to a site the session doesn't hold gets nothing: through an image URL, a script or a redirect, the site never sees it, and a host name never granted is never resolved.
-- [ ] A grant revoked while a tunnel it admitted is open stops that tunnel carrying bytes.
-- [ ] A controller that reports an origin the page isn't on gains nothing by it: no grant, no wider session.
-- [ ] Text the agent types that matches a held secret is refused, and never reaches the page.
-- [ ] While the owner holds control, the agent's actions are refused; after the handback the agent is told the frame changed. Tested in a browser, in the app.
-- [ ] Nothing of a session outlives it: its cell, profile and temporary files are gone when it ends, however it ends.
-- [ ] Everything a page shows the agent reaches the model inside the untrusted-data envelope; a page that says it approved a site approves nothing.
+- [x] With a real Chromium in a real cell: a page's script that fetches an internal address, plain `http`, or a UDP peer gets nothing, and no packet leaves the cell except through the broker's proxy.
+- [x] Opening, or a page navigating to, an origin the session doesn't hold loads nothing: it asks the owner, and once, for the task, always and never each do exactly what they do for `web_fetch` (WO-028).
+- [x] Every connection the browser makes is in the egress log with its origin; the broker sees no plaintext, and a site with a bad certificate doesn't load.
+- [x] A bundle whose digest isn't the configured one isn't started, whichever file differs (the executable, a library, a `.pak`, the ICU data), and a file changed after the snapshot is made never reaches the browser: it runs only the snapshot.
+- [x] A page's request to a site the session doesn't hold gets nothing: through an image URL, a script or a redirect, the site never sees it, and a host name never granted is never resolved.
+- [x] A grant revoked while a tunnel it admitted is open stops that tunnel carrying bytes.
+- [x] A controller that reports an origin the page isn't on gains nothing by it: no grant, no wider session.
+- [x] Text the agent types that matches a held secret is refused, and never reaches the page.
+- [x] While the owner holds control, the agent's actions are refused; after the handback the agent is told the frame changed. Tested in a browser, in the app.
+- [x] Nothing of a session outlives it: its cell, profile and temporary files are gone when it ends, however it ends.
+- [x] Everything a page shows the agent reaches the model inside the untrusted-data envelope; a page that says it approved a site approves nothing.
 
 ## Gates
 
@@ -63,7 +63,43 @@ See [TEMPLATE.md](TEMPLATE.md#gates). The browser cell's tests need a Chromium: 
 
 ## Evidence
 
-Filled in at close.
+Merged as #155, #156, #158, #159, #162, #164, #165, #166, #167, #168, #169, #170, #171, #172, #173, #174, #175, #176, #177, #178, #179, #180, #181, #182, #183, #185, #189, #191 and #192. Each was gated in the sandbox on real cells, with a delegated cgroup and the pinned Chromium: fmt, clippy on 1.98.1 and 1.85.0, preflight, every test with `REQUIRE_CELL=1`, hand mutants for each claim, and mutation on its diff with nothing missed. Then CI. The criteria, and what shows each:
+
+- **A page's script gets nothing; no packet leaves but through the proxy.** `a_page_in_a_real_browser_reaches_only_the_sites_its_session_holds` (`crates/hatchling-broker/tests/browser_cell.rs`): a real Chromium in a real cell, through the broker's strict proxy, on a page trusted through the operator's CA (#191).
+  - The page's script fetches an internal address, a loopback port and an ungranted site, and each is refused.
+  - A WebRTC peer, with a STUN server, gets no UDP candidate.
+  - Asked directly, past the broker's checks, the controller can't open plain `http` or an internal address.
+  - The cell has no network but its loopback (`a_new_network_namespace_cannot_reach_host_abstract_or_loopback_sockets`), and Chromium's only way out is its proxy.
+  - The test first found that a page making a WebRTC peer never loaded (a seccomp kill of the old `epoll_create`), fixed in #189.
+- **An origin the session doesn't hold loads nothing; once, for the task, always and never.** `a_page_opens_only_once_its_site_is_allowed`, `once_is_one_visit_and_the_task_keeps_its_site`, `a_site_held_for_the_task_outlives_the_visit` and `always_and_never_do_for_the_browser_what_they_do_for_a_page` (`browser_ops.rs`). A redirect to an ungranted site, in the real browser, is refused (the real-browser test above).
+- **Every connection logged; no plaintext; a bad certificate doesn't load.**
+  - `a_connect_to_a_public_site_is_tunnelled_as_it_is_and_recorded` (`browser_proxy.rs`) logs each tunnel with its origin.
+  - The real-browser tests show only the granted site let through, in the egress log.
+  - `a_browser_cell_reaches_a_site_only_through_the_broker_and_refuses_a_bad_certificate` shows the site seeing the browser's hello and never a finished handshake.
+  - The proxy is `CONNECT`-only: it carries TLS between the browser and the site, and never terminates it.
+- **A bundle not the pinned one never starts, whichever file; a file changed later never reaches the browser.**
+  - `any_change_to_any_file_is_another_digest`: the executable's bytes and mode, a library, a `.pak`, an added file, a directory.
+  - `a_snapshot_is_kept_only_when_its_copy_is_the_pinned_bundle`.
+  - `a_browser_runs_only_from_a_snapshot_of_its_pinned_bundle`: the ICU data.
+  - `a_browser_that_isnt_the_pinned_one_is_never_started`.
+  - `a_launcher_snapshots_its_bundle_once`.
+- **An image, a script or a redirect to an unheld site gets nothing, and is never resolved.** The real-browser test: an image, a script and a fetch the page makes to an ungranted site, and a redirect to it. The site serves only what was asked, the resolver is asked only for the granted name, and the ungranted site is among those refused. Plus `a_site_the_session_doesnt_hold_is_refused_before_its_name_is_looked_up`.
+- **A revoked grant stops its open tunnel.** `a_revoked_site_loses_its_open_tunnels` and `a_sealed_session_reaches_nothing_again` (`browser_proxy.rs`), and `the_owner_stops_a_browser_once_and_its_sites_are_sealed` (`browser_board.rs`).
+- **A controller that says its page is elsewhere gains nothing.** `a_controller_that_says_its_page_is_elsewhere_gains_nothing`: grants are keyed on what the agent asked for, never on what the controller reports.
+- **A typed secret is refused, and never reaches the page.** `typed_text_holding_a_secret_is_refused_and_never_typed`.
+- **The owner's control, in the app.** CI's `browser in the app` job (`scripts/browser_end_to_end.py`, #182, #185): a broker with the pinned Chromium, a scripted model driving the agent's browser tools, and Playwright as the owner.
+  - The owner allows the site, opens the browser from the chat, takes control, scrolls and types with the app's controls, and hands it back.
+  - The agent says it was told the owner was driving, and that it was handed back.
+  - In the broker: `the_agent_waits_while_the_owner_drives_and_looks_afresh_when_handed_back`.
+- **Nothing outlives a session.**
+  - The browser's profile and temporary files are in the cell's own `tmpfs`, in its own mount namespace (#166, #168), so they're gone however the cell ends.
+  - Dropping a cell's handle kills its whole cgroup (`cgroup.kill`) and removes its run directory.
+  - The real-cell tests show the cell gone once it's finished, and a broken browser closed (`a_broken_browser_is_closed_and_the_next_page_starts_another`).
+  - Not tested: a real browser session killed mid-page, with every host-side trace then looked for. What it would look for is the cgroup and run directory, both removed on drop by code the cgroup tests cover.
+- **A page's words reach the model inside the envelope; a page saying it approved a site approves nothing.**
+  - `a_page_reaches_the_model_inside_the_envelope_whatever_it_says`: a page that closes the envelope and claims an approval is told as data.
+  - `a_controller_that_says_its_page_is_elsewhere_gains_nothing`: the page's claim grants nothing.
+  - Every tool result reaches the model through `wrap_tool_result`.
 
 ## Parts
 
