@@ -1614,7 +1614,9 @@ mod tests {
             ),
             (
                 UiActionResult::Profiles {
-                    outcome: ProfileResult::Listed { profiles: Vec::new() },
+                    outcome: ProfileResult::Listed {
+                        profiles: Vec::new(),
+                    },
                 },
                 json!({"result": "profiles", "outcome": {"result": "listed", "profiles": []}}),
             ),

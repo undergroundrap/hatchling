@@ -233,7 +233,10 @@ impl BrowserBoard {
     /// As for [`BrowserBoard::hand_back`]: control isn't the owner's, or
     /// the browser isn't there; and [`ControlRefusal::NotAllowed`] for a
     /// browser that has visited no site.
-    pub(crate) fn sign_in_of(&self, session_id: &str) -> Result<(Vec<String>, Driven), ControlRefusal> {
+    pub(crate) fn sign_in_of(
+        &self,
+        session_id: &str,
+    ) -> Result<(Vec<String>, Driven), ControlRefusal> {
         let sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
         let watched = sessions
             .get(session_id)
@@ -1108,6 +1111,11 @@ mod tests {
         let sites = Sites::default();
         sites.grant("idp.example:443");
         sites.grant("a.example:443");
+        assert_eq!(
+            sites.granted(),
+            [String::from("a.example:443"), String::from("idp.example:443")],
+            "in order"
+        );
         let _stopped = board.begin("browser-s", sites, Driven::default());
         assert_eq!(
             board.sign_in_of("browser-s").map(|(sites, _)| sites),
@@ -1123,7 +1131,10 @@ mod tests {
         board.visiting("browser-s", "a.example:443");
         assert_eq!(
             board.sign_in_of("browser-s").map(|(sites, _)| sites),
-            Ok(vec![String::from("a.example:443"), String::from("idp.example:443")]),
+            Ok(vec![
+                String::from("a.example:443"),
+                String::from("idp.example:443")
+            ]),
             "the visit first, then the rest, each once"
         );
         assert_eq!(

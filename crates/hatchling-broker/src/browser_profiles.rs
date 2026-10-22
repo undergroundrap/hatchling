@@ -751,12 +751,20 @@ mod tests {
         let (config, _scratch, key) = kept("ops");
         assert_eq!(
             handle_profile_op(&config, &key, &ProfileOp::List),
-            ProfileResult::Listed { profiles: Vec::new() }
+            ProfileResult::Listed {
+                profiles: Vec::new()
+            }
         );
         let profiles = Profiles::of(&config, &key).unwrap();
-        let profile = profiles.keep(&sites(&["a.example:443"]), 1_790_000_000).unwrap();
+        let profile = profiles
+            .keep(&sites(&["a.example:443"]), 1_790_000_000)
+            .unwrap();
         profiles
-            .keep_jar(&profile.id, vec![cookie("a.example", "sid", "1")], 1_790_000_060)
+            .keep_jar(
+                &profile.id,
+                vec![cookie("a.example", "sid", "1")],
+                1_790_000_060,
+            )
             .unwrap();
         let listed = handle_profile_op(&config, &key, &ProfileOp::List);
         assert_eq!(
@@ -776,21 +784,44 @@ mod tests {
         let out = ProfileOp::SignOut {
             profile_id: profile.id.clone(),
         };
-        assert_eq!(handle_profile_op(&config, &key, &out), ProfileResult::SignedOut);
-        let ProfileResult::Listed { profiles: after } = handle_profile_op(&config, &key, &ProfileOp::List) else {
+        assert_eq!(
+            handle_profile_op(&config, &key, &out),
+            ProfileResult::SignedOut
+        );
+        let ProfileResult::Listed { profiles: after } =
+            handle_profile_op(&config, &key, &ProfileOp::List)
+        else {
             unreachable!("listed");
         };
-        assert_eq!(after.iter().map(|p| p.signed_in).collect::<Vec<_>>(), [false]);
+        assert_eq!(
+            after.iter().map(|p| p.signed_in).collect::<Vec<_>>(),
+            [false]
+        );
         let delete = ProfileOp::Delete {
-            profile_id: profile.id.clone(),
+            profile_id: profile.id,
         };
-        assert_eq!(handle_profile_op(&config, &key, &delete), ProfileResult::Deleted);
-        assert_eq!(handle_profile_op(&config, &key, &delete), ProfileResult::NotFound);
-        assert_eq!(handle_profile_op(&config, &key, &out), ProfileResult::NotFound);
+        assert_eq!(
+            handle_profile_op(&config, &key, &delete),
+            ProfileResult::Deleted
+        );
+        assert_eq!(
+            handle_profile_op(&config, &key, &delete),
+            ProfileResult::NotFound
+        );
+        assert_eq!(
+            handle_profile_op(&config, &key, &out),
+            ProfileResult::NotFound
+        );
         let off = crate::api_auth::tests::owner_config(None);
-        assert_eq!(handle_profile_op(&off, &key, &ProfileOp::List), ProfileResult::Off);
+        assert_eq!(
+            handle_profile_op(&off, &key, &ProfileOp::List),
+            ProfileResult::Off
+        );
         let other = MasterKey::generate().unwrap();
-        assert_eq!(handle_profile_op(&config, &other, &ProfileOp::List), ProfileResult::Failed);
+        assert_eq!(
+            handle_profile_op(&config, &other, &ProfileOp::List),
+            ProfileResult::Failed
+        );
     }
 
     #[test]

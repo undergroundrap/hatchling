@@ -343,7 +343,8 @@ impl<'a> Ops<'a> {
     /// The session of the browser `session_id`, kept as its profile's if
     /// it runs one (WO-030): the owner hands back what they did on it.
     fn keep_session(&self, session_id: &str) {
-        let Some((profile, driven)) = crate::browser_board::board(self.config).profile_of(session_id)
+        let Some((profile, driven)) =
+            crate::browser_board::board(self.config).profile_of(session_id)
         else {
             return;
         };
@@ -1232,17 +1233,32 @@ mod tests {
         }
     }
 
-    #[test]
-    fn only_the_owner_keeps_a_sign_in_and_only_while_they_drive() {
-        let dir = scratch("keep-signed-in");
+    /// The API's answer to a caller not granted what they asked.
+    fn not_granted() -> (UiActionResult, ApiOutcome) {
+        (
+            UiActionResult::Refused {
+                reason: ActionRefusal::NotGranted,
+            },
+            ApiOutcome::Refused,
+        )
+    }
+
+    /// A config keeping signed-in profiles in `dir`, and one keeping none.
+    fn profile_configs(dir: &crate::api_auth::tests::Scratch) -> (Config, Config) {
         let mut off = owner_config(Some(&dir.0.join("schedules").to_string_lossy()));
         off.goals.grants = vec![GoalsAction::QueryGoals, GoalsAction::GoalCreate];
         let mut config = off.clone();
         config.web.profiles = dir.0.join("profiles");
+        (config, off)
+    }
+
+    #[test]
+    fn only_the_owner_keeps_a_sign_in_and_only_while_they_drive() {
+        let dir = scratch("keep-signed-in");
+        let (config, _) = profile_configs(&dir);
         let key = MasterKey::generate().unwrap();
         let skills = Skills::load(&SkillConfig::disabled()).unwrap();
         let ops = Ops::new(&config, &key, &skills, None, Arc::new(Bus::starting_at(1)));
-        let ops_off = Ops::new(&off, &key, &skills, None, Arc::new(Bus::starting_at(1)));
         let owner = caller(&[goals("query-goals"), goals("goal-create"), local_send()]);
         let narrow = caller(&[goals("query-goals"), local_send()]);
         let mut replies = Replies::default();
@@ -1257,13 +1273,7 @@ mod tests {
         let keep = UiAction::KeepSignedIn {
             session_id: String::from("browser-keep"),
         };
-        let not_granted = (
-            UiActionResult::Refused {
-                reason: ActionRefusal::NotGranted,
-            },
-            ApiOutcome::Refused,
-        );
-        assert_eq!(ops.handle(&narrow, &keep, &mut replies), not_granted);
+        assert_eq!(ops.handle(&narrow, &keep, &mut replies), not_granted());
         let refused = |reason| {
             (
                 UiActionResult::ControlRefused {
@@ -1285,23 +1295,13 @@ mod tests {
             "no site visited"
         );
         board.visiting("browser-keep", "a.example:443");
-        assert_eq!(
-            ops_off.handle(&owner, &keep, &mut replies),
-            (
-                UiActionResult::Profiles {
-                    outcome: ProfileResult::Off
-                },
-                ApiOutcome::Refused,
-            )
-        );
         let kept = ops.handle(&owner, &keep, &mut replies);
-        let profile = if let (UiActionResult::SignedInKept { profile, .. }, ApiOutcome::Served) =
-            &kept
-        {
-            Some(profile.clone())
-        } else {
-            None
-        };
+        let profile =
+            if let (UiActionResult::SignedInKept { profile, .. }, ApiOutcome::Served) = &kept {
+                Some(profile.clone())
+            } else {
+                None
+            };
         assert!(profile.is_some(), "{kept:?}");
         let profile = profile.unwrap();
         assert_eq!(profile.sites, ["a.example:443", "idp.example:443"]);
@@ -1331,14 +1331,39 @@ mod tests {
         );
         assert_eq!(
             profiles.jar(&profile.profile_id),
-            Ok(vec![cookie("a.example", "sid"), cookie("idp.example", "token")])
+            Ok(vec![
+                cookie("a.example", "sid"),
+                cookie("idp.example", "token")
+            ])
         );
         // Kept again directly, from the browser as it is now.
         jar.lock().unwrap().push(cookie("a.example", "late"));
         ops.keep_session("browser-keep");
         ops.keep_session("browser-none");
-        assert_eq!(profiles.jar(&profile.profile_id).map(|jar| jar.len()), Ok(3));
+        assert_eq!(
+            profiles.jar(&profile.profile_id).map(|jar| jar.len()),
+            Ok(3)
+        );
         board.end("browser-keep");
+    }
+
+    #[test]
+    fn the_owner_lists_and_deletes_profiles_and_a_gone_browser_keeps_none() {
+        let dir = scratch("list-profiles");
+        let (config, off) = profile_configs(&dir);
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let ops = Ops::new(&config, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        let ops_off = Ops::new(&off, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        let owner = caller(&[goals("query-goals"), goals("goal-create"), local_send()]);
+        let narrow = caller(&[goals("query-goals"), local_send()]);
+        let mut replies = Replies::default();
+        let board = crate::browser_board::board(&config);
+        let profiles = crate::browser_profiles::Profiles::of(&config, &key).unwrap();
+        let profile = profiles.keep(&[String::from("a.example:443")], 1).unwrap();
+        profiles
+            .keep_jar(&profile.id, vec![cookie("a.example", "sid")], 1)
+            .unwrap();
         // A browser that's gone can't be kept.
         let _gone = board.begin(
             "browser-gone",
@@ -1347,14 +1372,20 @@ mod tests {
         );
         assert_eq!(board.take("browser-gone"), Ok(()));
         board.visiting("browser-gone", "c.example:443");
+        let keep = UiAction::KeepSignedIn {
+            session_id: String::from("browser-gone"),
+        };
         assert_eq!(
-            ops.handle(
-                &owner,
-                &UiAction::KeepSignedIn {
-                    session_id: String::from("browser-gone"),
+            ops_off.handle(&owner, &keep, &mut replies),
+            (
+                UiActionResult::Profiles {
+                    outcome: ProfileResult::Off
                 },
-                &mut replies
-            ),
+                ApiOutcome::Refused,
+            )
+        );
+        assert_eq!(
+            ops.handle(&owner, &keep, &mut replies),
             (
                 UiActionResult::Profiles {
                     outcome: ProfileResult::Failed
@@ -1362,11 +1393,17 @@ mod tests {
                 ApiOutcome::Refused,
             )
         );
-        assert_eq!(profiles.list().map(|listed| listed.len()), Ok(1), "none kept");
+        assert_eq!(
+            profiles.list().map(|listed| listed.len()),
+            Ok(1),
+            "none kept"
+        );
         board.end("browser-gone");
         // The owner's list, and theirs alone.
-        let list = UiAction::ManageProfiles { op: ProfileOp::List };
-        assert_eq!(ops.handle(&narrow, &list, &mut replies), not_granted);
+        let list = UiAction::ManageProfiles {
+            op: ProfileOp::List,
+        };
+        assert_eq!(ops.handle(&narrow, &list, &mut replies), not_granted());
         let listed = ops.handle(&owner, &list, &mut replies);
         let ids = if let (
             UiActionResult::Profiles {
@@ -1382,12 +1419,12 @@ mod tests {
         } else {
             Vec::new()
         };
-        assert_eq!(ids, [(profile.profile_id.clone(), true)], "{listed:?}");
+        assert_eq!(ids, [(profile.id.clone(), true)], "{listed:?}");
         assert_eq!(
             ops.owned(
                 true,
                 Owned::Profiles(&ProfileOp::Delete {
-                    profile_id: profile.profile_id.clone()
+                    profile_id: profile.id
                 })
             ),
             (
@@ -1396,10 +1433,6 @@ mod tests {
                 },
                 ApiOutcome::Served,
             )
-        );
-        assert_eq!(
-            ops.owned(false, Owned::Profiles(&ProfileOp::List)),
-            not_granted
         );
         assert_eq!(
             ops_off.handle(&owner, &list, &mut replies),

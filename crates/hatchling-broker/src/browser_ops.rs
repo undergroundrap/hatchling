@@ -312,7 +312,11 @@ impl BrowserSession {
             return;
         };
         let kept = read_jar(driven).and_then(|jar| {
-            profiles.keep_jar(profile, jar, hatchling_scheduler::Timestamp::now().as_second())
+            profiles.keep_jar(
+                profile,
+                jar,
+                hatchling_scheduler::Timestamp::now().as_second(),
+            )
         });
         match kept {
             Ok(dropped) => tracing::info!(%profile, dropped, "a signed-in session is kept"),
@@ -404,8 +408,12 @@ impl BrowserSession {
                 set_jar(driven, &jar).map(|()| jar.len())
             });
         match restored {
-            Ok(cookies) => tracing::info!(profile = %profile.id, cookies, "a signed-in session is restored"),
-            Err(error) => tracing::warn!(profile = %profile.id, %error, "a signed-in session can't be restored"),
+            Ok(cookies) => {
+                tracing::info!(profile = %profile.id, cookies, "a signed-in session is restored");
+            }
+            Err(error) => {
+                tracing::warn!(profile = %profile.id, %error, "a signed-in session can't be restored");
+            }
         }
     }
 
@@ -1395,8 +1403,14 @@ mod tests {
             ],
             "its session restored before the page opens"
         );
-        assert!(browser.sites().holds("idp.example:443"), "the profile's sites");
-        assert!(browser.once.is_empty(), "held for the profile, not the visit");
+        assert!(
+            browser.sites().holds("idp.example:443"),
+            "the profile's sites"
+        );
+        assert!(
+            browser.once.is_empty(),
+            "held for the profile, not the visit"
+        );
         // The page signs in further, and sets a cookie for another site.
         fake.jar
             .lock()
@@ -1415,8 +1429,11 @@ mod tests {
 
     #[test]
     fn leaving_a_profile_keeps_its_session_once_the_next_site_is_allowed() {
-        let (config, _scratch, keys, profile) =
-            profiled("profile-leave", &["a.example:443"], vec![cookie("a.example", "sid")]);
+        let (config, _scratch, keys, profile) = profiled(
+            "profile-leave",
+            &["a.example:443"],
+            vec![cookie("a.example", "sid")],
+        );
         let fake = Fake::default();
         let (mut web, mut browser) = session("t", &fake);
         let answer = handle_browser_op(
@@ -1452,7 +1469,10 @@ mod tests {
         );
         assert_eq!(answer, page("https://b.example/"));
         assert_eq!(browser.profile, None);
-        assert!(!browser.sites().holds("a.example:443"), "a browser of its own");
+        assert!(
+            !browser.sites().holds("a.example:443"),
+            "a browser of its own"
+        );
         assert_eq!(
             kept_jar(&config, &keys, &profile.id),
             [cookie("a.example", "sid"), cookie("a.example", "fresh")],
@@ -1498,31 +1518,48 @@ mod tests {
         assert_eq!(answer, page("https://a.example/"));
         browser.adopt_profile();
         assert_eq!(browser.profile, None, "not kept");
-        let id = browser.shown.as_ref().map(|shown| shown.id.clone()).unwrap();
+        let id = browser
+            .shown
+            .as_ref()
+            .map(|shown| shown.id.clone())
+            .unwrap();
         board.profiled(&id, "profile-1");
         browser.adopt_profile();
         assert_eq!(browser.profile.as_deref(), Some("profile-1"));
         board.profiled(&id, "profile-2");
         browser.adopt_profile();
-        assert_eq!(browser.profile.as_deref(), Some("profile-1"), "adopted once");
+        assert_eq!(
+            browser.profile.as_deref(),
+            Some("profile-1"),
+            "adopted once"
+        );
     }
 
     #[test]
     fn a_profile_without_a_browser_or_a_store_restores_and_keeps_nothing() {
-        let (config, _scratch, keys, profile) =
-            profiled("profile-none", &["a.example:443"], vec![cookie("a.example", "sid")]);
+        let (config, _scratch, keys, profile) = profiled(
+            "profile-none",
+            &["a.example:443"],
+            vec![cookie("a.example", "sid")],
+        );
         let fake = Fake::default();
         let (_, mut browser) = session("t", &fake);
         browser.signed_in(&config, &keys, &profile);
         assert_eq!(browser.profile.as_deref(), Some(profile.id.as_str()));
         browser.keep_jar(&config, &keys);
-        assert_eq!(kept_jar(&config, &keys, &profile.id), [cookie("a.example", "sid")]);
+        assert_eq!(
+            kept_jar(&config, &keys, &profile.id),
+            [cookie("a.example", "sid")]
+        );
         let off = web_config("profile-off");
         let (_, mut browser) = session("t", &fake);
         browser.browser = Some(driven(fake.clone()));
         browser.signed_in(&off, &keys, &profile);
         browser.keep_jar(&off, &keys);
-        assert!(fake.log.lock().unwrap().commands.is_empty(), "no store: nothing asked");
+        assert!(
+            fake.log.lock().unwrap().commands.is_empty(),
+            "no store: nothing asked"
+        );
         assert!(covering(&off, &keys, "a.example:443").is_none());
     }
 
@@ -1588,7 +1625,11 @@ mod tests {
         ] {
             let driven = driven_by(reply.clone());
             assert_eq!(read_jar(&driven).is_err(), read, "{reply:?}");
-            assert_eq!(set_jar(&driven, &[cookie("a.example", "s")]).is_err(), set, "{reply:?}");
+            assert_eq!(
+                set_jar(&driven, &[cookie("a.example", "s")]).is_err(),
+                set,
+                "{reply:?}"
+            );
         }
         let gone: Driven = Arc::new(Mutex::new(None));
         assert!(read_jar(&gone).is_err());
