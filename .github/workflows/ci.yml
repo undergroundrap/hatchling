@@ -235,6 +235,60 @@ jobs:
   # WO-014: no root. Cells run on the runner user's subordinate ids, with
   # Ubuntu's user-namespace restriction left on: only binaries an AppArmor
   # profile allows may create user namespaces, as on a stock desktop.
+  # WO-029: the owner drives the agent's browser from the app. A root
+  # broker with the pinned Chromium as its browser, the scripted browsing
+  # model, the app's host, and Playwright using the app as the owner would:
+  # allow the site, open the browser, take control, scroll, hand it back.
+  browser:
+    name: browser in the app
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install the pinned headless Chromium, and a browser for the app
+        run: |
+          python3 -m venv "$RUNNER_TEMP/app-venv"
+          "$RUNNER_TEMP/app-venv/bin/python" -m pip install -r frontend/tests/e2e/requirements.txt
+          "$RUNNER_TEMP/app-venv/bin/python" -m playwright install --with-deps chromium chromium-headless-shell
+          shell=$(find "$HOME/.cache/ms-playwright" -path '*chrome-headless-shell-linux64/chrome-headless-shell' -type f)
+          echo "20ffc88be1c6f7dc8351bebfaca965ff9a07617bddf696f0b67ef85e5868b29a  $shell" | sha256sum --check
+          echo "CELL_BROWSER=$shell" >> "$GITHUB_ENV"
+
+      - name: Build and install
+        run: |
+          cargo build --release --locked -p hatchling-broker -p hatchling-agent -p hatchling-host -p hatchling-browser
+          sudo install -m 755 target/release/hatchling-broker target/release/hatchling-agent target/release/hatchling-host target/release/hatchling-browser /usr/local/bin/
+          sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin hatchling-cell
+          (cd frontend && npm ci && npm run build)
+
+      - name: Allow real cells
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Drive the agent's browser from the app
+        run: |
+          sudo env "PATH=$PATH" "PLAYWRIGHT_BROWSERS_PATH=$HOME/.cache/ms-playwright"             unshare --mount --pid --fork --kill-child --mount-proc             scripts/browser_end_to_end.sh "$CELL_BROWSER" "$RUNNER_TEMP/app-venv/bin/python" "$RUNNER_TEMP/browser-e2e"
+
+      - name: Retain the logs and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-in-the-app
+          path: ${{ runner.temp }}/browser-e2e
+
   rootless:
     name: without root
     runs-on: ubuntu-24.04
