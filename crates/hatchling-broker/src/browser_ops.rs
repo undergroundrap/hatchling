@@ -462,9 +462,12 @@ impl BrowserSession {
             .map(|visit| visit.strip_suffix(":443").unwrap_or(visit))
             .unwrap_or_default()
             .to_owned();
+        // Every browser shows in the owner's one chat, whatever run
+        // started it: there they open it, watch it, stop it, or take it
+        // over.
         board.show(hatchling_core::ui::BrowserSession {
             session_id: shown.id.clone(),
-            chat_id: None,
+            chat_id: Some(String::from(crate::api_ops::LOCAL_CHAT)),
             title: shown.title.clone(),
             site,
             state,
@@ -1266,7 +1269,7 @@ mod tests {
             Some(&UiEventBody::BrowserSession(
                 hatchling_core::ui::BrowserSession {
                     session_id: id.clone(),
-                    chat_id: None,
+                    chat_id: Some(String::from("local")),
                     title: String::from("to check the order's status"),
                     site: String::from("a.example"),
                     state: BrowserState::Running,
