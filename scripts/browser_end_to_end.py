@@ -1,6 +1,6 @@
 """Drive the agent's browser from the app, as the owner would (WO-029): allow
-the site it asks for, open its browser from the chat, take control, and
-hand it back; the agent says it waited while the owner drove.
+the site it asks for, open its browser from the chat, take control, scroll
+and type, and hand it back; the agent says it waited while the owner drove.
 
 Usage: python3 scripts/browser_end_to_end.py <address>
 
@@ -38,6 +38,19 @@ def screenshot(page, name):
         page.screenshot(path=str(Path(folder) / name), full_page=True)
 
 
+# The sequence of the frame the browser view shows.
+FRAME_SEQUENCE = "() => Number(document.querySelector('.browser-session-stage .browser-frame')?.dataset.sequence ?? 0)"
+
+
+def newer(page, act):
+    """Does `act`, and waits until the browser view shows a frame newer than
+    the one it showed before: the picture the owner's input was answered
+    with."""
+    before = page.evaluate(FRAME_SEQUENCE)
+    act()
+    page.wait_for_function(f"(before) => ({FRAME_SEQUENCE})() > before", arg=before, timeout=STEP_TIMEOUT_MS)
+
+
 def drive(page):
     """The owner's part, on the app open at the chat: raise unless each step
     shows on the page in time."""
@@ -60,8 +73,15 @@ def drive(page):
     expect(take).to_be_visible(timeout=STEP_TIMEOUT_MS)
     screenshot(page, "browser-2-watching.png")
     take.click()
-    # The owner has it: the agent's reads now wait, for a few of its steps.
-    # Handed back from the picture the owner sees, the latest frame.
+    # The owner has it: their own input goes to the page, each answered
+    # with a newer picture of it.
+    controls = page.locator("form[aria-label='Your controls for the page']")
+    expect(controls).to_be_visible(timeout=STEP_TIMEOUT_MS)
+    newer(page, controls.get_by_role("button", name="Scroll down").click)
+    controls.get_by_role("textbox", name="Text to type into the page").fill("by hand")
+    newer(page, controls.get_by_role("button", name="Type", exact=True).click)
+    # Meanwhile the agent's reads wait, for a few of its steps. Handed back
+    # from the picture the owner sees, the latest frame.
     back = page.get_by_role("button", name="Return control to agent")
     expect(back).to_be_enabled(timeout=STEP_TIMEOUT_MS)
     page.wait_for_timeout(2 * WAIT_SECS * 1000)
