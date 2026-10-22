@@ -138,6 +138,7 @@ const SYSCALL_TABLE: &[(&str, u32)] = &[
     ("setpriority", 141),
     ("getpriority", 140),
     ("inotify_init", 253),
+    ("epoll_create", 213),
     ("pkey_alloc", 330),
     ("landlock_create_ruleset", 444),
     ("sched_setaffinity", 203),
@@ -475,9 +476,14 @@ const CLI_CALLS: [&str; 61] = [
 /// cache once the cell has fonts, and the controller's wait for the
 /// browser, and its kill, through its pidfd (`waitid`,
 /// `pidfd_send_signal`: no more than `kill`, which the cell has, can do).
+/// And the old `epoll_create`, which WebRTC's network thread opens its
+/// event loop with when a page makes an `RTCPeerConnection`: the same as
+/// `epoll_create1`, which the cell has. Killed for it, the page's renderer
+/// died and the page never finished loading.
 #[cfg(target_arch = "x86_64")]
-const BROWSER_CALLS: [&str; 10] = [
+const BROWSER_CALLS: [&str; 11] = [
     "epoll_wait",
+    "epoll_create",
     "recvmsg",
     "sendmsg",
     "ppoll",

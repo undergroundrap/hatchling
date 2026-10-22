@@ -48,6 +48,16 @@ const START: &str = r#"<!doctype html><title>Start</title>
 
 const NEXT: &str = "<!doctype html><title>Next</title><p>Second page</p>";
 
+/// A page that makes a WebRTC peer as it loads, as many a page's scripts
+/// do: its renderer must live through it, and the page finish loading.
+const WEBRTC: &str = r#"<!doctype html><title>WebRTC</title>
+<p id="peer">no peer</p>
+<script>
+const peer = new RTCPeerConnection({ iceServers: [{ urls: 'stun:203.0.113.7:3478' }] });
+peer.createDataChannel('probe');
+document.getElementById('peer').textContent = 'peer made';
+</script>"#;
+
 /// A page that shows the cookies it was sent, and sets one of its own.
 const COOKIES: &str = r#"<!doctype html><title>Cookies</title>
 <p id="sent"></p>
@@ -225,6 +235,7 @@ fn answer(mut stream: std::net::TcpStream, seen: &Mutex<Vec<String>>) {
         Some("/next") => ("200 OK", NEXT),
         Some("/owner") => ("200 OK", OWNER),
         Some("/cookies") => ("200 OK", COOKIES),
+        Some("/webrtc") => ("200 OK", WEBRTC),
         _ => ("404 Not Found", "not here"),
     };
     let _ = write!(
@@ -374,6 +385,19 @@ fn cookies_kept(connection: &UnixStream) {
         .collect();
     assert!(names.contains(&("set_by_page", HOST)), "{names:?}");
     assert!(names.contains(&("restored", HOST)), "{names:?}");
+}
+
+/// A page on `connection` that makes a WebRTC peer as it loads: it loads,
+/// its renderer alive. Killed for WebRTC's old `epoll_create`, the renderer
+/// died and the load never finished.
+fn webrtc_loads(connection: &UnixStream) {
+    let webrtc = page(send(
+        connection,
+        &BrowserCommand::Open {
+            url: format!("http://{HOST}/webrtc"),
+        },
+    ));
+    assert!(webrtc.text.contains("peer made"), "{}", webrtc.text);
 }
 
 /// The id of the element `role` named `name`.
@@ -545,6 +569,7 @@ fn the_controller_drives_a_real_browser_in_a_cell_through_the_relay_alone() {
     ));
     owner_drives(&connection);
     cookies_kept(&connection);
+    webrtc_loads(&connection);
     // A command it doesn't know is answered, not obeyed.
     let unknown = serde_json::json!({"command": "evaluate", "script": "1"});
     write_frame(&connection, &serde_json::to_vec(&unknown).unwrap()).unwrap();
