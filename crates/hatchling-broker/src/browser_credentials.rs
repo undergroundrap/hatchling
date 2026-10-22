@@ -551,6 +551,16 @@ mod tests {
             credentials.sign_in(&kept.id).is_err(),
             "its secrets gone too"
         );
+        assert!(
+            matches!(
+                credentials
+                    .vault()
+                    .unwrap()
+                    .fetch(&Credentials::entry(&kept.id).unwrap()),
+                Err(hatchling_vault::Error::NotFound { .. })
+            ),
+            "its sealed entry removed, not left on disk"
+        );
         assert_eq!(credentials.list(), Ok(Vec::new()));
     }
 
@@ -598,6 +608,15 @@ mod tests {
             Ok(MAX_CREDENTIALS - 1)
         );
         assert_eq!(credentials.delete_profiles(&profile.id), Ok(0));
+        let entries = std::fs::read_dir(config.web.credentials.as_path())
+            .unwrap()
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .is_ok_and(|entry| entry.file_name().to_string_lossy().starts_with("cred-"))
+            })
+            .count();
+        assert_eq!(entries, 1, "the other profile's sign-in alone is left on disk");
         let left = credentials.list().unwrap();
         assert_eq!(
             left.iter()
