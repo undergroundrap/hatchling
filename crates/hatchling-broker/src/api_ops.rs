@@ -1234,7 +1234,7 @@ mod tests {
     }
 
     /// The API's answer to a caller not granted what they asked.
-    fn not_granted() -> (UiActionResult, ApiOutcome) {
+    const fn not_granted() -> (UiActionResult, ApiOutcome) {
         (
             UiActionResult::Refused {
                 reason: ActionRefusal::NotGranted,

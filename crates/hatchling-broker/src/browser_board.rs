@@ -1113,7 +1113,10 @@ mod tests {
         sites.grant("a.example:443");
         assert_eq!(
             sites.granted(),
-            [String::from("a.example:443"), String::from("idp.example:443")],
+            [
+                String::from("a.example:443"),
+                String::from("idp.example:443")
+            ],
             "in order"
         );
         let _stopped = board.begin("browser-s", sites, Driven::default());
