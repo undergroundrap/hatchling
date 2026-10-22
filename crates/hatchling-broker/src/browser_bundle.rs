@@ -283,6 +283,24 @@ mod tests {
             seen.insert(digest(&scratch.bundle()).unwrap()),
             "a directory"
         );
+        // The executable's own bytes, and a library's.
+        std::fs::write(&chrome, b"browsex").unwrap();
+        assert!(
+            seen.insert(digest(&scratch.bundle()).unwrap()),
+            "the executable"
+        );
+        std::fs::write(&chrome, b"browser").unwrap();
+        let library = scratch.bundle().join("libEGL.so");
+        std::fs::write(&library, b"egl").unwrap();
+        assert!(
+            seen.insert(digest(&scratch.bundle()).unwrap()),
+            "a library added"
+        );
+        std::fs::write(&library, b"EGL").unwrap();
+        assert!(
+            seen.insert(digest(&scratch.bundle()).unwrap()),
+            "a library's bytes"
+        );
     }
 
     #[test]
