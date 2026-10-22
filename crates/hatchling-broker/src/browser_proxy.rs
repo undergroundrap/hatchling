@@ -212,6 +212,12 @@ impl Sites {
         self.held().refused.iter().cloned().collect()
     }
 
+    /// Every site granted now, `host:port`, in order.
+    #[must_use]
+    pub fn granted(&self) -> Vec<String> {
+        self.held().granted.iter().cloned().collect()
+    }
+
     /// Whether `destination` is admitted. One that isn't is kept as
     /// refused, while there's room.
     pub(crate) fn admit(&self, destination: &str) -> bool {
