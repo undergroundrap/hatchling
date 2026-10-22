@@ -42,8 +42,8 @@ const replay = (transport, frames = SAMPLE_EVENTS) => {
 };
 const answer = (transport, request_id, result) => transport.deliver({ type: 'action_result', request_id, result });
 const flush = () => new Promise(resolve => setImmediate(resolve));
-// The actions the app sent besides the allowed sites' list, which it asks for each time it connects.
-const sentActions = transport => transport.sent.filter(frame => frame.type === 'action' && !(frame.action.action === 'manage_sites' && frame.action.op.op === 'list'));
+// The actions the app sent besides the allowed and signed-in sites' lists, which it asks for each time it connects.
+const sentActions = transport => transport.sent.filter(frame => frame.type === 'action' && !(['manage_sites', 'manage_profiles'].includes(frame.action.action) && frame.action.op.op === 'list'));
 const thread = adapter => adapter.getSnapshot().threads[0];
 const lane = (adapter, id) => thread(adapter).lanes.find(item => item.id === id);
 const confirmation = (seq, revision, summary = 'Post the sample summary?') => sampleEvent(seq, seq, { kind: 'confirmation', confirmation_id: 'confirm-1', revision, chat_id: 'main', summary, expires_at: null, digest: `digest-${revision}`, fields: [{ label: 'Operation', value: summary, source: 'broker' }, { label: 'Text', value: 'Sample text.', source: 'agent' }] });
@@ -510,6 +510,61 @@ test('allowed sites: the broker\'s list, loaded on connecting; revoked by the ow
     adapter.dispose();
     assert.equal((await adapter.execute({ type: 'permission.website', host: 'https://a.example', policy: 'ask' })).ok, false);
 });
+test('signed-in sites: the broker\'s list, loaded on connecting; signed out of and deleted by the owner, and listed again', async () => {
+    const { transport, adapter } = connected();
+    const listing = transport.sent.find(frame => frame.type === 'action' && frame.action.action === 'manage_profiles');
+    assert.deepEqual(listing?.action, { action: 'manage_profiles', op: { op: 'list' } }, 'asked for on connecting');
+    assert.deepEqual(adapter.getSnapshot().signedInSites, [], 'empty until the broker answers');
+    const profile = { profile_id: 'profile-1', sites: ['a.example:443', 'idp.example:443'], signed_in: true, created_at: '2026-10-22T08:00:00Z', last_used: '2026-10-22T09:00:00Z' };
+    answer(transport, listing.request_id, { result: 'profiles', outcome: { result: 'listed', profiles: [profile] } });
+    await flush();
+    assert.deepEqual(adapter.getSnapshot().signedInSites, [{ id: 'profile-1', sites: ['a.example:443', 'idp.example:443'], signedIn: true, lastUsed: '2026-10-22T09:00:00Z' }]);
+    for (const [command, op, done, words] of [
+        [{ type: 'profile.sign-out', id: 'profile-1' }, { op: 'sign_out', profile_id: 'profile-1' }, 'signed_out', /Signed out\. Its sites still open/],
+        [{ type: 'profile.delete', id: 'profile-1' }, { op: 'delete', profile_id: 'profile-1' }, 'deleted', /Deleted\. The agent asks again/],
+    ]) {
+        const pending = adapter.execute(command);
+        await flush();
+        const change = transport.last();
+        assert.deepEqual(change.action, { action: 'manage_profiles', op });
+        answer(transport, change.request_id, { result: 'profiles', outcome: { result: done } });
+        await flush();
+        const relisting = transport.last();
+        assert.deepEqual(relisting.action, { action: 'manage_profiles', op: { op: 'list' } });
+        answer(transport, relisting.request_id, { result: 'profiles', outcome: { result: 'listed', profiles: [] } });
+        const settled = await pending;
+        assert.equal(settled.ok, true);
+        assert.match(settled.message, words);
+        assert.deepEqual(adapter.getSnapshot().signedInSites, []);
+    }
+    // Every other answer is told as what it is; only not found lists again.
+    for (const [outcome, words, relists] of [
+        [{ result: 'profiles', outcome: { result: 'deleted' } }, /not confirmed/, false],
+        [{ result: 'profiles', outcome: { result: 'not_found' } }, /already gone/, true],
+        [{ result: 'profiles', outcome: { result: 'off' } }, /keeps no signed-in sites/, false],
+        [{ result: 'profiles', outcome: { result: 'failed' } }, /nothing changed/, false],
+        [{ result: 'profiles', outcome: { result: 'listed', profiles: [] } }, /nothing changed/, false],
+        [{ result: 'refused', reason: 'not_granted' }, /may not change the signed-in sites/, false],
+        [{ result: 'sites', outcome: { result: 'revoked' } }, /not confirmed/, false],
+    ]) {
+        const pending = adapter.execute({ type: 'profile.sign-out', id: 'profile-1' });
+        await flush();
+        answer(transport, transport.last().request_id, outcome);
+        await flush();
+        if (relists) {
+            assert.deepEqual(transport.last().action.op, { op: 'list' });
+            answer(transport, transport.last().request_id, { result: 'refused', reason: 'unavailable' });
+        }
+        const settled = await pending;
+        assert.equal(settled.ok, false);
+        assert.match(settled.message, words);
+    }
+    // A list the broker didn't give leaves the last one as it was.
+    assert.deepEqual(adapter.getSnapshot().signedInSites, []);
+    // Offline, nothing is sent and the owner is told.
+    adapter.dispose();
+    assert.equal((await adapter.execute({ type: 'profile.delete', id: 'profile-1' })).ok, false);
+});
 test('a decision is re-validated at dispatch, against the broker\'s latest state, not the card that was drawn', async () => {
     const { transport, adapter } = connected();
     transport.deliver(confirmation(1, 1));
@@ -659,7 +714,7 @@ test('the adapter: product commands go to the broker or are refused, never simul
 test('the snapshot is honest: only what the broker said, display preferences kept locally', async () => {
     const { transport, adapter } = connected();
     const state = adapter.getSnapshot();
-    for (const key of ['artifacts', 'goals', 'ideas', 'posts', 'purchases', 'browserTasks', 'devices', 'jobs', 'notifications', 'memory', 'connectors', 'channels', 'providers', 'permissions', 'websitePermissions', 'networkPermissions', 'approvalHistory', 'publications', 'systemEntries', 'secureItems'])
+    for (const key of ['artifacts', 'goals', 'ideas', 'posts', 'purchases', 'browserTasks', 'devices', 'jobs', 'notifications', 'memory', 'connectors', 'channels', 'providers', 'permissions', 'websitePermissions', 'signedInSites', 'networkPermissions', 'approvalHistory', 'publications', 'systemEntries', 'secureItems'])
         assert.deepEqual(state[key], [], `${key} is empty, not sample data`);
     assert.deepEqual([state.version, state.spendingLimit, state.spentToday, state.settings.allowlist, state.turn, state.clock], [1, 0, 0, [], 'idle', '']);
     let heard = 0;

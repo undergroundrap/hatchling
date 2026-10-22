@@ -23,7 +23,7 @@ export function openSettings(ctx: AppContext, initial = 'general'): void {
         top: number;
     }[] = [];
     const rootScroll = new Map<string, number>();
-    const titles: Record<string, string> = { 'credential-add': 'Secure credentials store', 'websites': "Websites you've allowed", 'network': 'Direct network protocols', 'permission-connectors': 'Connector permissions', 'permission-artifacts': 'Artifact permissions', 'permission-scheduled': 'Scheduled task permissions', 'permission-advanced': 'Advanced approval settings', 'wallet-examples': 'Sample wallets' };
+    const titles: Record<string, string> = { 'credential-add': 'Secure credentials store', 'websites': "Websites you've allowed", 'network': 'Direct network protocols', 'signed-in': 'Signed-in sites', 'permission-connectors': 'Connector permissions', 'permission-artifacts': 'Artifact permissions', 'permission-scheduled': 'Scheduled task permissions', 'permission-advanced': 'Advanced approval settings', 'wallet-examples': 'Sample wallets' };
     const selectSection = (id: string): void => {
         if (!detail)
             rootScroll.set(active, layout.querySelector('.settings-pane')?.scrollTop ?? 0);
