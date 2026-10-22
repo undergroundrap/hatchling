@@ -20,10 +20,10 @@ function luminance(hex) {
     const [r, g, b] = [1, 3, 5].map((index) => parseInt(hex.slice(index, index + 2), 16) / 255).map((value) => value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4);
     return r * .2126 + g * .7152 + b * .0722;
 }
-test('fresh settings default to white personalization while OS appearance stays independent', () => {
+test('fresh settings default to white personalization and dark mode, whatever the OS appearance', () => {
     const state = createFixtures();
     assert.equal(state.settings.accent, 'white');
-    assert.equal(state.settings.theme, 'system');
+    assert.equal(state.settings.theme, 'dark');
     assert.equal(state.settings.keepChatPanelVisible, true);
     assert.equal(accentColors(state.settings, false).background, '#f1f1f1');
     assert.equal(accentColors(state.settings, true).background, '#e4e7eb');

@@ -266,10 +266,14 @@ class FrontendTests(TouchupCases, ReleaseCases, NavigationCases, PolishCases, Co
         self.page.keyboard.press('Alt+3')
         expect(self.page.get_by_role('heading', name='Feed', exact=True, level=1)).to_be_visible()
 
-    def test_16_system_theme_and_explicit_light_mode(self):
+    def test_16_dark_by_default_system_and_explicit_light_mode(self):
+        # Dark by default, even on a light system; System follows the system.
         self.page.emulate_media(color_scheme='light')
-        self.assertEqual(self.page.locator('body').evaluate('(el) => getComputedStyle(el).backgroundColor'), 'rgb(255, 255, 255)')
+        self.assertEqual(self.page.locator('body').evaluate('(el) => getComputedStyle(el).backgroundColor'), 'rgb(24, 24, 24)')
         self.open_settings()
+        expect(self.page.get_by_role('radio', name='Dark mode', exact=True)).to_be_checked()
+        self.page.get_by_role('radio', name='System mode', exact=True).click()
+        self.assertEqual(self.page.locator('body').evaluate('(el) => getComputedStyle(el).backgroundColor'), 'rgb(255, 255, 255)')
         self.page.get_by_role('radio', name='Dark mode', exact=True).click()
         self.assertEqual(self.page.locator('body').evaluate('(el) => getComputedStyle(el).backgroundColor'), 'rgb(24, 24, 24)')
         self.page.get_by_role('radio', name='Light mode', exact=True).click()
@@ -654,7 +658,9 @@ class FrontendTests(TouchupCases, ReleaseCases, NavigationCases, PolishCases, Co
         for route in ['goals', 'ideas', 'feed', 'library/system']:
             self.route(route)
             self.assert_no_overflow()
-        self.page.emulate_media(color_scheme='light')
+        self.open_settings()
+        self.page.get_by_role('radio', name='Light mode', exact=True).click()
+        self.page.keyboard.press('Escape')
         self.route('feed')
         self.assert_no_overflow()
         self.assertEqual(self.page.locator('.feed-media img').first.evaluate('(el) => getComputedStyle(el).filter'), 'none')

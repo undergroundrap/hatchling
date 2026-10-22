@@ -18,7 +18,7 @@ import type { UiEvent } from './protocol/generated.js';
 import { LiveChatSession } from './session.js';
 import { LiveSites } from './sites.js';
 import { Surfaces } from './surfaces.js';
-const SETTINGS: Settings = { interfaceSize: 'comfortable', theme: 'system', accent: 'white', avatarAccent: '#a78c57', keepChatPanelVisible: true, language: 'English', name: 'hatchling', vibe: '', feedPrompt: '', captchaStanding: false, telemetry: false, quietStart: '22:00', quietEnd: '08:00', digestTime: '08:30', dailyAllowance: 0, allowlist: [] };
+const SETTINGS: Settings = { interfaceSize: 'comfortable', theme: 'dark', accent: 'white', avatarAccent: '#a78c57', keepChatPanelVisible: true, language: 'English', name: 'hatchling', vibe: '', feedPrompt: '', captchaStanding: false, telemetry: false, quietStart: '22:00', quietEnd: '08:00', digestTime: '08:30', dailyAllowance: 0, allowlist: [] };
 const NOT_YET = 'Hatchling cannot do this from the app yet.';
 export class LiveAdapter implements ProtocolAdapter {
     readonly mode = 'live';
