@@ -2053,7 +2053,7 @@ mod tests {
     #[test]
     fn the_browser_tools_are_named_described_and_shaped() {
         let (agent, _) = socket_pair();
-        let tools: [(&dyn Tool, &str, &str, &[&str]); 5] = [
+        let tools: [(&dyn Tool, &str, &str, &[&str]); 6] = [
             (
                 &BrowserOpenTool::new(&agent),
                 "browser_open",
@@ -2396,7 +2396,11 @@ mod tests {
             }
         );
         let (agent, _theirs) = socket_pair();
-        for bad in [json!({}), json!({"password_element": -1}), json!({"password_element": "2"})] {
+        for bad in [
+            json!({}),
+            json!({"password_element": -1}),
+            json!({"password_element": "2"}),
+        ] {
             assert!(
                 BrowserSignInTool::new(&agent).execute(bad.clone()).is_err(),
                 "{bad}"

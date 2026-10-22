@@ -333,7 +333,11 @@ impl Session {
         let tree = self
             .call(Some(session), "Page.getFrameTree", json!({}))
             .map_err(gone_or(BrowserFailure::NoPage))?;
-        if tree.pointer("/frameTree/frame/securityOrigin").and_then(Value::as_str) == Some(origin) {
+        if tree
+            .pointer("/frameTree/frame/securityOrigin")
+            .and_then(Value::as_str)
+            == Some(origin)
+        {
             Ok(())
         } else {
             Err(BrowserFailure::OtherOrigin)
@@ -959,13 +963,12 @@ mod tests {
         ) {
             (Some(9), _, _) => json!({"outcome": "unknown"}),
             (Some(_), Some("box"), _) => json!({"outcome": "ok", "x": 12.5, "y": 40.0}),
-            (Some(_), Some("focus"), _) | (Some(_), Some("choose"), Some("B")) => {
-                json!({"outcome": "ok"})
-            }
-            // Element 1 is a text field, 2 a password field; the rest take neither.
-            (Some(1), Some("username"), _) | (Some(2), Some("password"), _) => {
-                json!({"outcome": "ok"})
-            }
+            // Element 1 is a text field, 2 a password field; the rest take
+            // neither kind of fill.
+            (Some(_), Some("focus"), _)
+            | (Some(_), Some("choose"), Some("B"))
+            | (Some(1), Some("username"), _)
+            | (Some(2), Some("password"), _) => json!({"outcome": "ok"}),
             _ => json!({"outcome": "not_possible"}),
         };
         json!({"result": {"value": outcome}})
@@ -1200,12 +1203,13 @@ mod tests {
     #[test]
     fn a_fill_types_only_on_its_origin_and_only_into_its_kind_of_field() {
         let (mut session, seen) = fake();
-        let fill = |element: u32, field: SignInField, text: &str, origin: &str| BrowserCommand::Fill {
-            element,
-            field,
-            text: Concealed::new(text.to_owned()),
-            origin: origin.to_owned(),
-        };
+        let fill =
+            |element: u32, field: SignInField, text: &str, origin: &str| BrowserCommand::Fill {
+                element,
+                field,
+                text: Concealed::new(text.to_owned()),
+                origin: origin.to_owned(),
+            };
         let failed = |failure| BrowserReply::Failed { failure };
         assert_eq!(
             session.handle(fill(2, SignInField::Password, "s3cret", "https://a.test")),
@@ -1227,7 +1231,11 @@ mod tests {
         let typed = |seen: &Mutex<Vec<Value>>| {
             sent(seen, "Input.insertText")
                 .iter()
-                .filter_map(|call| call.pointer("/params/text").and_then(Value::as_str).map(str::to_owned))
+                .filter_map(|call| {
+                    call.pointer("/params/text")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
                 .collect::<Vec<_>>()
         };
         assert_eq!(typed(&seen), ["ada", "s3cret"]);
@@ -1235,13 +1243,33 @@ mod tests {
         let checks = sent(&seen, "Page.getFrameTree").len();
         assert!(checks >= 4, "{checks}");
         for (command, failure) in [
-            (fill(2, SignInField::Password, "s3cret", "https://b.test"), BrowserFailure::OtherOrigin),
-            (fill(2, SignInField::Password, "s3cret", "https://a.test:8443"), BrowserFailure::OtherOrigin),
-            (fill(1, SignInField::Password, "s3cret", "https://a.test"), BrowserFailure::NotPossible),
-            (fill(2, SignInField::Username, "ada", "https://a.test"), BrowserFailure::NotPossible),
-            (fill(9, SignInField::Password, "s3cret", "https://a.test"), BrowserFailure::UnknownElement),
             (
-                fill(2, SignInField::Password, &"x".repeat(MAX_TYPED_CHARS + 1), "https://a.test"),
+                fill(2, SignInField::Password, "s3cret", "https://b.test"),
+                BrowserFailure::OtherOrigin,
+            ),
+            (
+                fill(2, SignInField::Password, "s3cret", "https://a.test:8443"),
+                BrowserFailure::OtherOrigin,
+            ),
+            (
+                fill(1, SignInField::Password, "s3cret", "https://a.test"),
+                BrowserFailure::NotPossible,
+            ),
+            (
+                fill(2, SignInField::Username, "ada", "https://a.test"),
+                BrowserFailure::NotPossible,
+            ),
+            (
+                fill(9, SignInField::Password, "s3cret", "https://a.test"),
+                BrowserFailure::UnknownElement,
+            ),
+            (
+                fill(
+                    2,
+                    SignInField::Password,
+                    &"x".repeat(MAX_TYPED_CHARS + 1),
+                    "https://a.test",
+                ),
                 BrowserFailure::NotPossible,
             ),
         ] {
@@ -1255,7 +1283,12 @@ mod tests {
             Err(BrowserFailure::OtherOrigin)
         );
         assert_eq!(
-            session.fill(2, SignInField::Password, &Concealed::new(String::from("pw")), "https://a.test"),
+            session.fill(
+                2,
+                SignInField::Password,
+                &Concealed::new(String::from("pw")),
+                "https://a.test"
+            ),
             Ok(snapshot())
         );
     }

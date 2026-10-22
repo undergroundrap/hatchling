@@ -24,8 +24,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use hatchling_core::browser::{
-    BrowserCommand, BrowserFailure, BrowserReply, Cookie, Key, OwnerInput, PageAction, PageSnapshot,
-    SignInField,
+    BrowserCommand, BrowserFailure, BrowserReply, Cookie, Key, OwnerInput, PageAction,
+    PageSnapshot, SignInField,
 };
 use hatchling_core::framing::{read_frame, write_frame};
 use hatchling_core::ui::Concealed;
@@ -433,7 +433,15 @@ fn sign_in_filled(connection: &UnixStream) {
     let comment = element(&form, "textbox", "Comment");
     let failed = |failure| BrowserReply::Failed { failure };
     assert_eq!(
-        send(connection, &fill(password, SignInField::Password, "hunter2", "http://other.test")),
+        send(
+            connection,
+            &fill(
+                password,
+                SignInField::Password,
+                "hunter2",
+                "http://other.test"
+            )
+        ),
         failed(BrowserFailure::OtherOrigin),
         "another origin: nothing typed"
     );
@@ -449,10 +457,24 @@ fn sign_in_filled(connection: &UnixStream) {
             "{field:?} into element {element}"
         );
     }
-    let typed = page(send(connection, &fill(email, SignInField::Username, "ada@hatchling.test", &origin)));
-    assert!(typed.text.contains("email: ada@hatchling.test"), "{}", typed.text);
-    let typed = page(send(connection, &fill(password, SignInField::Password, "hunter2", &origin)));
-    assert!(typed.text.contains("password: 7 characters"), "{}", typed.text);
+    let typed = page(send(
+        connection,
+        &fill(email, SignInField::Username, "ada@hatchling.test", &origin),
+    ));
+    assert!(
+        typed.text.contains("email: ada@hatchling.test"),
+        "{}",
+        typed.text
+    );
+    let typed = page(send(
+        connection,
+        &fill(password, SignInField::Password, "hunter2", &origin),
+    ));
+    assert!(
+        typed.text.contains("password: 7 characters"),
+        "{}",
+        typed.text
+    );
     assert!(!typed.text.contains("comment: h"), "{}", typed.text);
 }
 
