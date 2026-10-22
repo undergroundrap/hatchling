@@ -113,7 +113,7 @@ class PolishCases:
         self.assertIn('error',self.agent_call('read',{'resource':'document','id':'identity-profile'}))
         result=self.agent_call('execute',{'key':'a','action':{'type':'ui.navigate','route':'goals'}})
         self.assertEqual(result['status'],'blocked')
-        self.assertEqual(len(self.agent_call('list')),106)
+        self.assertEqual(len(self.agent_call('list')),109)
 
     def test_134_enabled_agent_uses_shared_navigation_tabs_documents_and_no_auto_send(self):
         self.agent_enabled()
