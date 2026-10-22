@@ -96,7 +96,7 @@ export class LiveChatSession implements ChatSessionPort {
             case 'input_failed':
             case 'signed_in_kept':
             case 'profiles':
-            case 'credentials':
+            case 'sign_ins':
                 return UNCONFIRMED;
         }
     }

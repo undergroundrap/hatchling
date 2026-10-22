@@ -19,7 +19,7 @@ use std::sync::{Mutex, PoisonError};
 
 use hatchling_core::SecretName;
 use hatchling_core::ui::{
-    Concealed, CredentialOp, CredentialRefusal, CredentialResult, SiteCredential,
+    Concealed, SignInOp, SignInRefusal, SignInResult, SiteSignIn,
 };
 use hatchling_egress::web::WebUrl;
 use hatchling_vault::{OpensStores, SealedVault, Secret, Store};
@@ -146,7 +146,7 @@ impl<'k> Credentials<'k> {
         label: &str,
         sign_in: &SignIn,
         now: i64,
-    ) -> Result<Result<Credential, CredentialRefusal>, String> {
+    ) -> Result<Result<Credential, SignInRefusal>, String> {
         let origin = match refusal(profile, origin, label, sign_in) {
             Ok(origin) => origin,
             Err(refused) => return Ok(Err(refused)),
@@ -155,7 +155,7 @@ impl<'k> Credentials<'k> {
         let vault = self.vault()?;
         let mut credentials = Self::read_index(&vault)?;
         if credentials.len() >= MAX_CREDENTIALS {
-            return Ok(Err(CredentialRefusal::Full));
+            return Ok(Err(SignInRefusal::Full));
         }
         let id = crate::approval::random_hex("cred-")
             .map_err(|error| format!("a sign-in id can't be minted: {error}"))?;
@@ -262,33 +262,33 @@ fn refusal(
     origin: &str,
     label: &str,
     sign_in: &SignIn,
-) -> Result<String, CredentialRefusal> {
+) -> Result<String, SignInRefusal> {
     let label = label.trim();
     if label.is_empty() || label.chars().any(char::is_control) {
-        return Err(CredentialRefusal::BadLabel);
+        return Err(SignInRefusal::BadLabel);
     }
     if sign_in.password.expose().is_empty() {
-        return Err(CredentialRefusal::NoPassword);
+        return Err(SignInRefusal::NoPassword);
     }
     if label.chars().count() > MAX_LABEL_CHARS
         || sign_in.username.expose().len() > MAX_USERNAME_BYTES
         || sign_in.password.expose().len() > MAX_PASSWORD_BYTES
     {
-        return Err(CredentialRefusal::TooLong);
+        return Err(SignInRefusal::TooLong);
     }
-    let canonical = origin_of(origin).ok_or(CredentialRefusal::BadOrigin)?;
-    let url = WebUrl::parse(&canonical).map_err(|_| CredentialRefusal::BadOrigin)?;
+    let canonical = origin_of(origin).ok_or(SignInRefusal::BadOrigin)?;
+    let url = WebUrl::parse(&canonical).map_err(|_| SignInRefusal::BadOrigin)?;
     if !profile.holds(&url.origin().destination()) {
-        return Err(CredentialRefusal::NotTheProfiles);
+        return Err(SignInRefusal::NotTheProfiles);
     }
     Ok(canonical)
 }
 
 /// `credential` as the owner's app is told it.
 #[must_use]
-pub fn shown(credential: &Credential) -> SiteCredential {
-    SiteCredential {
-        credential_id: credential.id.clone(),
+pub fn shown(credential: &Credential) -> SiteSignIn {
+    SiteSignIn {
+        sign_in_id: credential.id.clone(),
         profile_id: credential.profile_id.clone(),
         origin: credential.origin.clone(),
         label: credential.label.clone(),
@@ -303,16 +303,16 @@ pub fn shown(credential: &Credential) -> SiteCredential {
 pub fn handle_credential_op(
     config: &Config,
     keys: &dyn OpensStores,
-    op: &CredentialOp,
-) -> CredentialResult {
+    op: &SignInOp,
+) -> SignInResult {
     let Some(credentials) = Credentials::of(config, keys) else {
-        return CredentialResult::Off;
+        return SignInResult::Off;
     };
     let answer = match op {
-        CredentialOp::List => credentials.list().map(|listed| CredentialResult::Listed {
-            credentials: listed.iter().map(shown).collect(),
+        SignInOp::List => credentials.list().map(|listed| SignInResult::Listed {
+            sign_ins: listed.iter().map(shown).collect(),
         }),
-        CredentialOp::Store {
+        SignInOp::Store {
             profile_id,
             origin,
             label,
@@ -320,7 +320,7 @@ pub fn handle_credential_op(
             password,
         } => {
             let Some(profiles) = Profiles::of(config, keys) else {
-                return CredentialResult::Off;
+                return SignInResult::Off;
             };
             let sign_in = SignIn {
                 username: username.clone(),
@@ -328,32 +328,32 @@ pub fn handle_credential_op(
             };
             profiles.list().and_then(|listed| {
                 let Some(profile) = listed.iter().find(|profile| &profile.id == profile_id) else {
-                    return Ok(CredentialResult::Refused {
-                        reason: CredentialRefusal::NoProfile,
+                    return Ok(SignInResult::Refused {
+                        reason: SignInRefusal::NoProfile,
                     });
                 };
                 let now = hatchling_scheduler::Timestamp::now().as_second();
                 credentials
                     .store(profile, origin, label, &sign_in, now)
                     .map(|kept| match kept {
-                        Ok(credential) => CredentialResult::Stored {
-                            credential: shown(&credential),
+                        Ok(credential) => SignInResult::Stored {
+                            sign_in: shown(&credential),
                         },
-                        Err(reason) => CredentialResult::Refused { reason },
+                        Err(reason) => SignInResult::Refused { reason },
                     })
             })
         }
-        CredentialOp::Delete { credential_id } => credentials.delete(credential_id).map(|found| {
+        SignInOp::Delete { sign_in_id } => credentials.delete(sign_in_id).map(|found| {
             if found {
-                CredentialResult::Deleted
+                SignInResult::Deleted
             } else {
-                CredentialResult::NotFound
+                SignInResult::NotFound
             }
         }),
     };
     answer.unwrap_or_else(|error| {
         tracing::error!(%error, "a sign-in operation failed");
-        CredentialResult::Failed
+        SignInResult::Failed
     })
 }
 
@@ -392,8 +392,8 @@ mod tests {
         }
     }
 
-    fn store_op(profile_id: &str, origin: &str, label: &str, password: &str) -> CredentialOp {
-        CredentialOp::Store {
+    fn store_op(profile_id: &str, origin: &str, label: &str, password: &str) -> SignInOp {
+        SignInOp::Store {
             profile_id: profile_id.to_owned(),
             origin: origin.to_owned(),
             label: label.to_owned(),
@@ -441,56 +441,56 @@ mod tests {
                 "https://b.example",
                 "Work",
                 &good,
-                CredentialRefusal::NotTheProfiles,
+                SignInRefusal::NotTheProfiles,
             ),
             (
                 "https://a.example:8443",
                 "Work",
                 &good,
-                CredentialRefusal::NotTheProfiles,
+                SignInRefusal::NotTheProfiles,
             ),
             (
                 "https://a.example/login",
                 "Work",
                 &good,
-                CredentialRefusal::BadOrigin,
+                SignInRefusal::BadOrigin,
             ),
             (
                 "http://a.example",
                 "Work",
                 &good,
-                CredentialRefusal::BadOrigin,
+                SignInRefusal::BadOrigin,
             ),
-            ("https://a.example", " ", &good, CredentialRefusal::BadLabel),
+            ("https://a.example", " ", &good, SignInRefusal::BadLabel),
             (
                 "https://a.example",
                 "a\nb",
                 &good,
-                CredentialRefusal::BadLabel,
+                SignInRefusal::BadLabel,
             ),
             (
                 "https://a.example",
                 "Work",
                 &sign_in("ada", ""),
-                CredentialRefusal::NoPassword,
+                SignInRefusal::NoPassword,
             ),
             (
                 "https://a.example",
                 &"l".repeat(MAX_LABEL_CHARS + 1),
                 &good,
-                CredentialRefusal::TooLong,
+                SignInRefusal::TooLong,
             ),
             (
                 "https://a.example",
                 "Work",
                 &sign_in(&"u".repeat(MAX_USERNAME_BYTES + 1), "pw"),
-                CredentialRefusal::TooLong,
+                SignInRefusal::TooLong,
             ),
             (
                 "https://a.example",
                 "Work",
                 &sign_in("ada", &"p".repeat(MAX_PASSWORD_BYTES + 1)),
-                CredentialRefusal::TooLong,
+                SignInRefusal::TooLong,
             ),
         ] {
             assert_eq!(
@@ -603,7 +603,7 @@ mod tests {
                 &sign_in("ada", "pw"),
                 1
             ),
-            Ok(Err(CredentialRefusal::Full))
+            Ok(Err(SignInRefusal::Full))
         );
         assert_eq!(
             credentials.delete_profiles(&profile.id),
@@ -627,40 +627,40 @@ mod tests {
             &key,
             &store_op(&profile.id, "https://a.example", "Work", "pw"),
         );
-        let CredentialResult::Stored { credential } = stored else {
+        let SignInResult::Stored { sign_in: credential } = stored else {
             unreachable!("{stored:?}");
         };
         assert_eq!(credential.origin, "https://a.example");
         assert_eq!(
-            handle_credential_op(&config, &key, &CredentialOp::List),
-            CredentialResult::Listed {
-                credentials: vec![credential.clone()]
+            handle_credential_op(&config, &key, &SignInOp::List),
+            SignInResult::Listed {
+                sign_ins: vec![credential.clone()]
             }
         );
         for (op, outcome) in [
             (
                 store_op("profile-none", "https://a.example", "Work", "pw"),
-                CredentialResult::Refused {
-                    reason: CredentialRefusal::NoProfile,
+                SignInResult::Refused {
+                    reason: SignInRefusal::NoProfile,
                 },
             ),
             (
                 store_op(&profile.id, "https://b.example", "Work", "pw"),
-                CredentialResult::Refused {
-                    reason: CredentialRefusal::NotTheProfiles,
+                SignInResult::Refused {
+                    reason: SignInRefusal::NotTheProfiles,
                 },
             ),
             (
-                CredentialOp::Delete {
-                    credential_id: credential.credential_id.clone(),
+                SignInOp::Delete {
+                    sign_in_id: credential.sign_in_id.clone(),
                 },
-                CredentialResult::Deleted,
+                SignInResult::Deleted,
             ),
             (
-                CredentialOp::Delete {
-                    credential_id: credential.credential_id,
+                SignInOp::Delete {
+                    sign_in_id: credential.sign_in_id,
                 },
-                CredentialResult::NotFound,
+                SignInResult::NotFound,
             ),
         ] {
             assert_eq!(handle_credential_op(&config, &key, &op), outcome, "{op:?}");
@@ -672,7 +672,7 @@ mod tests {
             &store_op(&profile.id, "https://a.example", "Work", "pw"),
         );
         assert!(
-            matches!(again, CredentialResult::Stored { .. }),
+            matches!(again, SignInResult::Stored { .. }),
             "{again:?}"
         );
         let delete = ProfileOp::Delete {
@@ -683,16 +683,16 @@ mod tests {
             hatchling_core::ui::ProfileResult::Deleted
         );
         assert_eq!(
-            handle_credential_op(&config, &key, &CredentialOp::List),
-            CredentialResult::Listed {
-                credentials: Vec::new()
+            handle_credential_op(&config, &key, &SignInOp::List),
+            SignInResult::Listed {
+                sign_ins: Vec::new()
             }
         );
         // Another key: failed. No profiles, or no store: off.
         let other = MasterKey::generate().unwrap();
         assert_eq!(
-            handle_credential_op(&config, &other, &CredentialOp::List),
-            CredentialResult::Failed
+            handle_credential_op(&config, &other, &SignInOp::List),
+            SignInResult::Failed
         );
         let shown = format!("{:?}", Credentials::of(&config, &key).unwrap());
         assert!(shown.contains("Credentials"), "{shown}");
@@ -704,12 +704,12 @@ mod tests {
                 &key,
                 &store_op("profile-1", "https://a.example", "Work", "pw")
             ),
-            CredentialResult::Off
+            SignInResult::Off
         );
         config.web.credentials = std::path::PathBuf::new();
         assert_eq!(
-            handle_credential_op(&config, &key, &CredentialOp::List),
-            CredentialResult::Off
+            handle_credential_op(&config, &key, &SignInOp::List),
+            SignInResult::Off
         );
     }
 

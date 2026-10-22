@@ -621,7 +621,7 @@ impl Drop for Concealed {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "op", rename_all = "snake_case")]
-pub enum CredentialOp {
+pub enum SignInOp {
     /// List them, by label: never a username or a password.
     List,
     /// Keep a sign-in for one profile and one exact origin.
@@ -641,7 +641,7 @@ pub enum CredentialOp {
     /// Delete one.
     Delete {
         /// The sign-in, as listed.
-        credential_id: String,
+        sign_in_id: String,
     },
 }
 
@@ -649,9 +649,9 @@ pub enum CredentialOp {
 /// where it's filled, never its username or password.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct SiteCredential {
+pub struct SiteSignIn {
     /// Its id.
-    pub credential_id: String,
+    pub sign_in_id: String,
     /// The profile it signs in.
     pub profile_id: String,
     /// The exact origin it's filled on.
@@ -666,7 +666,7 @@ pub struct SiteCredential {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
-pub enum CredentialRefusal {
+pub enum SignInRefusal {
     /// No such profile.
     NoProfile,
     /// The origin isn't an `https` origin alone: a path, a query, a user,
@@ -684,20 +684,20 @@ pub enum CredentialRefusal {
     Full,
 }
 
-/// The result of a [`CredentialOp`].
+/// The result of a [`SignInOp`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "result", rename_all = "snake_case")]
-pub enum CredentialResult {
+pub enum SignInResult {
     /// The sign-ins, in the order they were kept.
     Listed {
         /// The sign-ins.
-        credentials: Vec<SiteCredential>,
+        sign_ins: Vec<SiteSignIn>,
     },
     /// The sign-in was kept.
     Stored {
         /// The sign-in, as listed.
-        credential: SiteCredential,
+        sign_in: SiteSignIn,
     },
     /// The sign-in was deleted.
     Deleted,
@@ -706,7 +706,7 @@ pub enum CredentialResult {
     /// The sign-in wasn't kept, and why.
     Refused {
         /// Why.
-        reason: CredentialRefusal,
+        reason: SignInRefusal,
     },
     /// The broker keeps no sign-ins: the operator hasn't given it a place
     /// to.
@@ -831,9 +831,9 @@ pub enum UiAction {
         op: ProfileOp,
     },
     /// List, keep or delete the sign-ins the broker fills (WO-030).
-    ManageCredentials {
+    ManageSignIns {
         /// The operation.
-        op: CredentialOp,
+        op: SignInOp,
     },
 }
 
@@ -950,9 +950,9 @@ pub enum UiActionResult {
         outcome: ProfileResult,
     },
     /// A sign-in operation's result (WO-030).
-    Credentials {
+    SignIns {
         /// The result.
-        outcome: CredentialResult,
+        outcome: SignInResult,
     },
     /// The user's input was done; a frame of the page after it follows
     /// (v2).
@@ -1777,8 +1777,8 @@ mod tests {
 
     #[test]
     fn a_sign_in_travels_as_strings_and_its_secrets_never_show() {
-        let store = UiAction::ManageCredentials {
-            op: CredentialOp::Store {
+        let store = UiAction::ManageSignIns {
+            op: SignInOp::Store {
                 profile_id: s("profile-1"),
                 origin: s("https://a.example"),
                 label: s("Work"),
@@ -1788,7 +1788,7 @@ mod tests {
         };
         pinned(
             &store,
-            &json!({"action": "manage_credentials", "op": {"op": "store", "profile_id": "profile-1",
+            &json!({"action": "manage_sign_ins", "op": {"op": "store", "profile_id": "profile-1",
                 "origin": "https://a.example", "label": "Work", "username": "ada@a.example",
                 "password": "hunter2-secret"}}),
         );
@@ -1799,8 +1799,8 @@ mod tests {
         );
         assert!(shown.contains("Concealed(..)"), "{shown}");
         assert_eq!(Concealed::new(s("x")).expose(), "x");
-        let credential = SiteCredential {
-            credential_id: s("cred-1"),
+        let credential = SiteSignIn {
+            sign_in_id: s("cred-1"),
             profile_id: s("profile-1"),
             origin: s("https://a.example"),
             label: s("Work"),
@@ -1808,33 +1808,33 @@ mod tests {
         };
         let results = [
             (
-                UiActionResult::Credentials {
-                    outcome: CredentialResult::Stored { credential },
+                UiActionResult::SignIns {
+                    outcome: SignInResult::Stored { sign_in: credential },
                 },
-                json!({"result": "credentials", "outcome": {"result": "stored", "credential": {
-                    "credential_id": "cred-1", "profile_id": "profile-1", "origin": "https://a.example",
+                json!({"result": "sign_ins", "outcome": {"result": "stored", "sign_in": {
+                    "sign_in_id": "cred-1", "profile_id": "profile-1", "origin": "https://a.example",
                     "label": "Work", "created_at": "2026-10-22T00:00:00Z"
                 }}}),
             ),
             (
-                UiActionResult::Credentials {
-                    outcome: CredentialResult::Refused {
-                        reason: CredentialRefusal::NotTheProfiles,
+                UiActionResult::SignIns {
+                    outcome: SignInResult::Refused {
+                        reason: SignInRefusal::NotTheProfiles,
                     },
                 },
-                json!({"result": "credentials", "outcome": {"result": "refused", "reason": "not_the_profiles"}}),
+                json!({"result": "sign_ins", "outcome": {"result": "refused", "reason": "not_the_profiles"}}),
             ),
         ];
         for (result, expected) in &results {
             pinned(result, expected);
         }
         pinned(
-            &UiAction::ManageCredentials {
-                op: CredentialOp::Delete {
-                    credential_id: s("cred-1"),
+            &UiAction::ManageSignIns {
+                op: SignInOp::Delete {
+                    sign_in_id: s("cred-1"),
                 },
             },
-            &json!({"action": "manage_credentials", "op": {"op": "delete", "credential_id": "cred-1"}}),
+            &json!({"action": "manage_sign_ins", "op": {"op": "delete", "sign_in_id": "cred-1"}}),
         );
     }
 }
