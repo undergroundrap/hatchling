@@ -514,6 +514,10 @@ fn holds_current(vault: &Vault, root: &Path) -> Result<bool, Error> {
 /// created only if absent, and the other reads the winner's. A store that
 /// holds current envelopes but no key file is refused, never given a new
 /// key that would leave them unreadable.
+///
+/// An envelope is sealed only under a key already kept, so one seen
+/// sealed means its key file is there: read again, it's found. Another
+/// opener may have made it, and sealed under it, since the first read.
 fn store_key(
     vault: &Vault,
     root: &Path,
@@ -524,9 +528,14 @@ fn store_key(
         return unwrap_store_key(master, store, &wrapped);
     }
     if holds_current(vault, root)? {
-        return Err(Error::StoreKeyMissing {
-            store: store.label(),
-        });
+        return read_wrapped(vault, store, STORE_KEY_FILE)?.map_or_else(
+            || {
+                Err(Error::StoreKeyMissing {
+                    store: store.label(),
+                })
+            },
+            |wrapped| unwrap_store_key(master, store, &wrapped),
+        );
     }
     let key = StoreKey::generate()?;
     if vault.write_dotfile(STORE_KEY_FILE, &wrap_store_key(master, store, &key)?, false)? {
@@ -2791,6 +2800,25 @@ mod tests {
                     .as_bytes(),
                 [1]
             );
+        }
+        // Many rounds of many openers, each sealing as soon as it has the
+        // key: an opener that finds no key file, then a sealed envelope,
+        // still gets the key the first one made.
+        for round in 0..24 {
+            let fresh = test_dir(&format!("store-key-race-{round}"));
+            let openers: Vec<_> = (0..16)
+                .map(|n| {
+                    let (fresh, master) = (fresh.to_path_buf(), std::sync::Arc::clone(&master));
+                    std::thread::spawn(move || {
+                        let name = format!("s{n}").parse::<SecretName>().unwrap();
+                        SealedVault::open(&fresh, &*master)
+                            .and_then(|vault| vault.store(&name, &Secret::new(vec![1]).unwrap()))
+                    })
+                })
+                .collect();
+            for opener in openers {
+                opener.join().unwrap().unwrap();
+            }
         }
         let leftovers: Vec<_> = std::fs::read_dir(&*race)
             .unwrap()
