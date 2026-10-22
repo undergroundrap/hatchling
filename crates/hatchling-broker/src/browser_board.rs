@@ -1120,18 +1120,13 @@ mod tests {
             "in order"
         );
         let _stopped = board.begin("browser-s", sites, Driven::default());
+        board.visiting("browser-s", "a.example:443");
         assert_eq!(
             board.sign_in_of("browser-s").map(|(sites, _)| sites),
             Err(ControlRefusal::NotAllowed),
             "the agent drives"
         );
         assert_eq!(board.take("browser-s"), Ok(()));
-        assert_eq!(
-            board.sign_in_of("browser-s").map(|(sites, _)| sites),
-            Err(ControlRefusal::NotAllowed),
-            "no site visited"
-        );
-        board.visiting("browser-s", "a.example:443");
         assert_eq!(
             board.sign_in_of("browser-s").map(|(sites, _)| sites),
             Ok(vec![
@@ -1153,6 +1148,20 @@ mod tests {
         board.visiting("browser-z", "x.example:443");
         board.profiled("browser-z", "profile-2");
         assert!(board.profile_of("browser-z").is_none(), "no such browser");
+        // Driven by the owner, but nowhere yet; then stopped.
+        let _other = board.begin("browser-n", Sites::default(), Driven::default());
+        assert_eq!(board.take("browser-n"), Ok(()));
+        assert_eq!(
+            board.sign_in_of("browser-n").map(|(sites, _)| sites),
+            Err(ControlRefusal::NotAllowed),
+            "no site visited"
+        );
+        assert_eq!(board.stop("browser-n"), Ok(()));
+        board.visiting("browser-n", "a.example:443");
+        assert_eq!(
+            board.sign_in_of("browser-n").map(|(sites, _)| sites),
+            Err(ControlRefusal::Finished)
+        );
     }
 
     #[test]

@@ -1283,18 +1283,13 @@ mod tests {
                 ApiOutcome::Refused,
             )
         };
+        board.visiting("browser-keep", "a.example:443");
         assert_eq!(
-            ops.handle(&owner, &keep, &mut replies),
+            ops.keep_signed_in("browser-keep"),
             refused(ControlRefusal::NotAllowed),
             "the agent drives"
         );
         assert_eq!(board.take("browser-keep"), Ok(()));
-        assert_eq!(
-            ops.keep_signed_in("browser-keep"),
-            refused(ControlRefusal::NotAllowed),
-            "no site visited"
-        );
-        board.visiting("browser-keep", "a.example:443");
         let kept = ops.handle(&owner, &keep, &mut replies);
         let profile =
             if let (UiActionResult::SignedInKept { profile, .. }, ApiOutcome::Served) = &kept {
