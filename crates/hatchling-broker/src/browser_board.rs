@@ -216,9 +216,11 @@ impl BrowserBoard {
     #[must_use]
     pub(crate) fn profile_of(&self, session_id: &str) -> Option<(String, Driven)> {
         let sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
-        let watched = sessions.get(session_id)?;
-        let profile = watched.profile.clone()?;
-        Some((profile, Arc::clone(&watched.browser)))
+        let held = sessions
+            .get(session_id)
+            .and_then(|watched| Some((watched.profile.clone()?, Arc::clone(&watched.browser))));
+        drop(sessions);
+        held
     }
 
     /// What the owner keeps when they keep the sign-in of the browser

@@ -873,31 +873,34 @@ fn covering(
 /// out of turn, or gave more pages than a jar holds.
 pub(crate) fn read_jar(driven: &Driven) -> Result<Vec<Cookie>, String> {
     let mut slot = driven.lock().unwrap_or_else(PoisonError::into_inner);
-    let browser = slot.as_mut().ok_or("the browser is closed")?;
-    let mut jar = Vec::new();
-    let mut from = 0;
-    for _ in 0..MAX_JAR_PAGES {
-        match browser.command(&BrowserCommand::Cookies { from })? {
-            BrowserReply::Cookies { cookies, next } => {
-                jar.extend(cookies);
-                match next {
-                    None => return Ok(jar),
-                    Some(next) if next > from => from = next,
-                    Some(_) => return Err(String::from("the browser's jar didn't move on")),
+    let read = slot.as_mut().map(|browser| {
+        let mut jar = Vec::new();
+        let mut from = 0;
+        for _ in 0..MAX_JAR_PAGES {
+            match browser.command(&BrowserCommand::Cookies { from })? {
+                BrowserReply::Cookies { cookies, next } => {
+                    jar.extend(cookies);
+                    match next {
+                        None => return Ok(jar),
+                        Some(next) if next > from => from = next,
+                        Some(_) => return Err(String::from("the browser's jar didn't move on")),
+                    }
+                }
+                BrowserReply::Failed { failure } => {
+                    return Err(format!("the browser couldn't give its jar: {failure:?}"));
+                }
+                BrowserReply::Page { .. }
+                | BrowserReply::Frame { .. }
+                | BrowserReply::CookiesSet
+                | BrowserReply::Closed => {
+                    return Err(String::from("the browser answered out of turn"));
                 }
             }
-            BrowserReply::Failed { failure } => {
-                return Err(format!("the browser couldn't give its jar: {failure:?}"));
-            }
-            BrowserReply::Page { .. }
-            | BrowserReply::Frame { .. }
-            | BrowserReply::CookiesSet
-            | BrowserReply::Closed => {
-                return Err(String::from("the browser answered out of turn"));
-            }
         }
-    }
-    Err(String::from("the browser's jar is past its pages"))
+        Err(String::from("the browser's jar is past its pages"))
+    });
+    drop(slot);
+    read.unwrap_or_else(|| Err(String::from("the browser is closed")))
 }
 
 /// Sets `cookies` in the browser, a page at a time, each within one page's
@@ -907,11 +910,9 @@ pub(crate) fn read_jar(driven: &Driven) -> Result<Vec<Cookie>, String> {
 ///
 /// A sentence for the broker's log, as for [`read_jar`].
 pub(crate) fn set_jar(driven: &Driven, cookies: &[Cookie]) -> Result<(), String> {
-    let mut slot = driven.lock().unwrap_or_else(PoisonError::into_inner);
-    let browser = slot.as_mut().ok_or("the browser is closed")?;
+    let mut pages: Vec<Vec<Cookie>> = Vec::new();
     let mut page: Vec<Cookie> = Vec::new();
     let mut bytes = 0;
-    let mut pages = Vec::new();
     for cookie in cookies {
         let size = serde_json::to_vec(cookie).map_or(usize::MAX, |json| json.len() + 1);
         if bytes + size > MAX_COOKIE_PAGE_BYTES && !page.is_empty() {
@@ -924,21 +925,26 @@ pub(crate) fn set_jar(driven: &Driven, cookies: &[Cookie]) -> Result<(), String>
     if !page.is_empty() {
         pages.push(page);
     }
-    for cookies in pages {
-        match browser.command(&BrowserCommand::SetCookies { cookies })? {
-            BrowserReply::CookiesSet => {}
-            BrowserReply::Failed { failure } => {
-                return Err(format!("the browser couldn't set the jar: {failure:?}"));
-            }
-            BrowserReply::Page { .. }
-            | BrowserReply::Frame { .. }
-            | BrowserReply::Cookies { .. }
-            | BrowserReply::Closed => {
-                return Err(String::from("the browser answered out of turn"));
+    let mut slot = driven.lock().unwrap_or_else(PoisonError::into_inner);
+    let set = slot.as_mut().map(|browser| {
+        for cookies in pages {
+            match browser.command(&BrowserCommand::SetCookies { cookies })? {
+                BrowserReply::CookiesSet => {}
+                BrowserReply::Failed { failure } => {
+                    return Err(format!("the browser couldn't set the jar: {failure:?}"));
+                }
+                BrowserReply::Page { .. }
+                | BrowserReply::Frame { .. }
+                | BrowserReply::Cookies { .. }
+                | BrowserReply::Closed => {
+                    return Err(String::from("the browser answered out of turn"));
+                }
             }
         }
-    }
-    Ok(())
+        Ok(())
+    });
+    drop(slot);
+    set.unwrap_or_else(|| Err(String::from("the browser is closed")))
 }
 
 /// Asks the owner, for `reason`, to allow `site`, one the browser was
@@ -1105,10 +1111,11 @@ mod tests {
                     jpeg: String::from("/9j/"),
                 },
                 BrowserCommand::Cookies { from } => {
+                    let at = usize::try_from(*from).unwrap();
                     let jar = self.jar.lock().unwrap();
                     BrowserReply::Cookies {
-                        cookies: jar.get(*from).cloned().into_iter().collect(),
-                        next: (from + 1 < jar.len()).then_some(from + 1),
+                        cookies: jar.get(at).cloned().into_iter().collect(),
+                        next: (at + 1 < jar.len()).then_some(from + 1),
                     }
                 }
                 BrowserCommand::SetCookies { cookies } => {
@@ -1602,7 +1609,7 @@ mod tests {
 
     #[test]
     fn a_jar_past_its_pages_isnt_kept() {
-        struct Counting(usize);
+        struct Counting(u32);
         impl Browser for Counting {
             fn command(&mut self, _: &BrowserCommand) -> Result<BrowserReply, String> {
                 self.0 += 1;

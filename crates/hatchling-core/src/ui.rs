@@ -1581,6 +1581,22 @@ mod tests {
                 json!({"result": "input_done", "session_id": "w1"}),
             ),
             (
+                UiActionResult::InputFailed {
+                    session_id: s("w1"),
+                    failure: crate::browser::BrowserFailure::NotPossible,
+                },
+                json!({"result": "input_failed", "session_id": "w1", "failure": "not_possible"}),
+            ),
+        ];
+        for (result, expected) in &results {
+            pinned(result, expected);
+        }
+    }
+
+    #[test]
+    fn profile_results_are_pinned() {
+        let results = [
+            (
                 UiActionResult::SignedInKept {
                     session_id: s("w1"),
                     profile: SignedInProfile {
@@ -1607,13 +1623,6 @@ mod tests {
                     outcome: ProfileResult::NotFound,
                 },
                 json!({"result": "profiles", "outcome": {"result": "not_found"}}),
-            ),
-            (
-                UiActionResult::InputFailed {
-                    session_id: s("w1"),
-                    failure: crate::browser::BrowserFailure::NotPossible,
-                },
-                json!({"result": "input_failed", "session_id": "w1", "failure": "not_possible"}),
             ),
         ];
         for (result, expected) in &results {

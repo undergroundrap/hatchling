@@ -423,6 +423,14 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             {
                 "const": "browser_input",
                 "type": "string"
+            },
+            {
+                "const": "keep_signed_in",
+                "type": "string"
+            },
+            {
+                "const": "manage_profiles",
+                "type": "string"
             }
         ]
     },
@@ -1493,6 +1501,137 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
         ],
         "type": "object"
     },
+    "ProfileOp": {
+        "oneOf": [
+            {
+                "properties": {
+                    "op": {
+                        "const": "list",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "op"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "op": {
+                        "const": "sign_out",
+                        "type": "string"
+                    },
+                    "profile_id": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "op",
+                    "profile_id"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "op": {
+                        "const": "delete",
+                        "type": "string"
+                    },
+                    "profile_id": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "op",
+                    "profile_id"
+                ],
+                "type": "object"
+            }
+        ]
+    },
+    "ProfileResult": {
+        "oneOf": [
+            {
+                "properties": {
+                    "profiles": {
+                        "items": {
+                            "$ref": "#/$defs/SignedInProfile"
+                        },
+                        "type": "array"
+                    },
+                    "result": {
+                        "const": "listed",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "profiles"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "signed_out",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "deleted",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "not_found",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "off",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "failed",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            }
+        ]
+    },
     "ScheduleGrant": {
         "oneOf": [
             {
@@ -2170,6 +2309,36 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
         ],
         "type": "object"
     },
+    "SignedInProfile": {
+        "properties": {
+            "created_at": {
+                "type": "string"
+            },
+            "last_used": {
+                "type": "string"
+            },
+            "profile_id": {
+                "type": "string"
+            },
+            "signed_in": {
+                "type": "boolean"
+            },
+            "sites": {
+                "items": {
+                    "type": "string"
+                },
+                "type": "array"
+            }
+        },
+        "required": [
+            "profile_id",
+            "sites",
+            "signed_in",
+            "created_at",
+            "last_used"
+        ],
+        "type": "object"
+    },
     "SiteOp": {
         "oneOf": [
             {
@@ -2625,6 +2794,38 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "input"
                 ],
                 "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
+                        "const": "keep_signed_in",
+                        "type": "string"
+                    },
+                    "session_id": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "action",
+                    "session_id"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
+                        "const": "manage_profiles",
+                        "type": "string"
+                    },
+                    "op": {
+                        "$ref": "#/$defs/ProfileOp"
+                    }
+                },
+                "required": [
+                    "action",
+                    "op"
+                ],
+                "type": "object"
             }
         ]
     },
@@ -2910,6 +3111,42 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "result",
                     "session_id",
                     "reason"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "profile": {
+                        "$ref": "#/$defs/SignedInProfile"
+                    },
+                    "result": {
+                        "const": "signed_in_kept",
+                        "type": "string"
+                    },
+                    "session_id": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "session_id",
+                    "profile"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "outcome": {
+                        "$ref": "#/$defs/ProfileResult"
+                    },
+                    "result": {
+                        "const": "profiles",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "outcome"
                 ],
                 "type": "object"
             },

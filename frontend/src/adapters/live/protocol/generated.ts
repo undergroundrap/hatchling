@@ -278,7 +278,7 @@ export type ApiOutcome = 'served' | 'refused';
  * What one API call asked for: the request's kind, never its content
  * (a message's text, a file, a schedule's task).
  */
-export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input';
+export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles';
 /**
  * A bearer token, presented in `Hello` for a token provider.
  *
@@ -2439,6 +2439,44 @@ export type ParkedSummary = {
     readonly text: string;
 };
 /**
+ * An operation on the owner's signed-in profiles (WO-030).
+ */
+export type ProfileOp = {
+    readonly op: 'list';
+} | {
+    readonly op: 'sign_out';
+    /**
+     * The profile, as listed.
+     */
+    readonly profile_id: string;
+} | {
+    readonly op: 'delete';
+    /**
+     * The profile, as listed.
+     */
+    readonly profile_id: string;
+};
+/**
+ * The result of a [`ProfileOp`].
+ */
+export type ProfileResult = {
+    /**
+     * The profiles.
+     */
+    readonly profiles: readonly (SignedInProfile)[];
+    readonly result: 'listed';
+} | {
+    readonly result: 'signed_out';
+} | {
+    readonly result: 'deleted';
+} | {
+    readonly result: 'not_found';
+} | {
+    readonly result: 'off';
+} | {
+    readonly result: 'failed';
+};
+/**
  * A read-scoped query: the vocabulary the feed reads through.
  *
  * Every variant reads, and nothing else is expressible here: the
@@ -2890,6 +2928,32 @@ export type SessionResponse = VaultResult & {
  * The socket a session came in on.
  */
 export type SessionSocket = 'api' | 'ui';
+/**
+ * A signed-in profile: a site the owner signed in to, with the sites its
+ * sign-in went through.
+ */
+export type SignedInProfile = {
+    /**
+     * When it was made, RFC 3339.
+     */
+    readonly created_at: string;
+    /**
+     * When its session was last kept, RFC 3339.
+     */
+    readonly last_used: string;
+    /**
+     * Its id.
+     */
+    readonly profile_id: string;
+    /**
+     * Whether a session is kept for it: false once it's signed out.
+     */
+    readonly signed_in: boolean;
+    /**
+     * Its sites, `host:port`, the one signed in on first.
+     */
+    readonly sites: readonly (string)[];
+};
 /**
  * An operation on the sites the agent is always allowed to read (WO-028).
  */
@@ -3557,6 +3621,18 @@ export type UiAction = {
      * The session.
      */
     readonly session_id: string;
+} | {
+    readonly action: 'keep_signed_in';
+    /**
+     * The session.
+     */
+    readonly session_id: string;
+} | {
+    readonly action: 'manage_profiles';
+    /**
+     * The operation.
+     */
+    readonly op: ProfileOp;
 };
 /**
  * What an action did.
@@ -3691,6 +3767,22 @@ export type UiActionResult = {
      * The session.
      */
     readonly session_id: string;
+} | {
+    /**
+     * The profile it's kept as.
+     */
+    readonly profile: SignedInProfile;
+    readonly result: 'signed_in_kept';
+    /**
+     * The session.
+     */
+    readonly session_id: string;
+} | {
+    /**
+     * The result.
+     */
+    readonly outcome: ProfileResult;
+    readonly result: 'profiles';
 } | {
     readonly result: 'input_done';
     /**

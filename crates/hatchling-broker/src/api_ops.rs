@@ -51,6 +51,7 @@ use crate::skills::Skills;
 use crate::{Config, handle_schedule_op, handle_skill_op};
 
 /// What of the owner's an API call manages.
+#[derive(Clone, Copy)]
 enum Owned<'a> {
     /// Their always-allowed sites (WO-028).
     Sites(&'a SiteOp),
@@ -1204,9 +1205,10 @@ mod tests {
             let jar = self.0.lock().unwrap();
             Ok(
                 if let hatchling_core::browser::BrowserCommand::Cookies { from } = command {
+                    let at = usize::try_from(*from).unwrap();
                     hatchling_core::browser::BrowserReply::Cookies {
-                        cookies: jar.get(*from).cloned().into_iter().collect(),
-                        next: (from + 1 < jar.len()).then_some(from + 1),
+                        cookies: jar.get(at).cloned().into_iter().collect(),
+                        next: (at + 1 < jar.len()).then_some(from + 1),
                     }
                 } else {
                     hatchling_core::browser::BrowserReply::Closed
@@ -1627,8 +1629,8 @@ mod tests {
         let partial = caller(held.get(..1).unwrap_or_default());
         let mut replies = Replies::default();
         for op in [
-            hatchling_core::ui::SiteOp::List,
-            hatchling_core::ui::SiteOp::Revoke {
+            SiteOp::List,
+            SiteOp::Revoke {
                 site: String::from("https://a.example"),
             },
         ] {
