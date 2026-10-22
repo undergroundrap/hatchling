@@ -114,6 +114,8 @@ impl Store {
     pub const REDACTIONS: Self = Self("redactions");
     /// The sites the owner always allows the agent to read (WO-028).
     pub const SITES: Self = Self("sites");
+    /// Signed-in profiles and their cookie jars (WO-030).
+    pub const PROFILES: Self = Self("profiles");
 
     /// The store's label.
     #[must_use]
@@ -131,6 +133,7 @@ impl Store {
             Self::SPACES,
             Self::REDACTIONS,
             Self::SITES,
+            Self::PROFILES,
         ]
         .into_iter()
         .find(|store| store.0 == label)

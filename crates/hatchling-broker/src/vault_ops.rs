@@ -68,6 +68,7 @@ pub fn sealed_stores(
         (Store::ARTIFACTS, &config.artifacts.root),
         (Store::SPACES, &config.spaces.root),
         (Store::SITES, &config.web.grants),
+        (Store::PROFILES, &config.web.profiles),
     ] {
         if !root.as_os_str().is_empty() {
             stores.push((store, root.clone()));

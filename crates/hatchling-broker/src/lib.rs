@@ -32,6 +32,7 @@ pub mod browser_board;
 pub mod browser_bundle;
 pub mod browser_cell;
 pub mod browser_ops;
+pub mod browser_profiles;
 pub mod browser_proxy;
 pub mod browser_session;
 pub use artifact_ops::{SealedArtifactStore, handle_artifact_op, held_secrets, is_workspace_name};

@@ -360,6 +360,7 @@ mod tests {
         ));
         assert_eq!(Store::from_label("spaces"), Some(Store::SPACES));
         assert_eq!(Store::from_label("sites"), Some(Store::SITES));
+        assert_eq!(Store::from_label("profiles"), Some(Store::PROFILES));
         assert_eq!(Store::from_label("vault"), None);
         let _ = std::fs::remove_dir_all(&root);
     }

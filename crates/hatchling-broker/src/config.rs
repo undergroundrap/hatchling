@@ -517,6 +517,10 @@ pub struct WebConfig {
     /// (`HATCHLING_WEB_GRANTS_DIR`, a sealed store); empty, and *Allow
     /// always* isn't offered.
     pub grants: PathBuf,
+    /// Where the broker keeps the browser's signed-in profiles
+    /// (`HATCHLING_BROWSER_PROFILES_DIR`, a sealed store, WO-030); empty,
+    /// and *Keep me signed in* isn't offered.
+    pub profiles: PathBuf,
 }
 
 /// What the broker logs of each search (WO-028).
@@ -539,6 +543,7 @@ impl WebConfig {
             search: false,
             search_log: SearchLog::Length,
             grants: PathBuf::new(),
+            profiles: PathBuf::new(),
         }
     }
 
@@ -616,22 +621,14 @@ fn parse_web(get: &impl Fn(&str) -> Option<String>) -> Result<WebConfig, Error> 
             });
         }
     };
-    let grants = match get(env::HATCHLING_WEB_GRANTS_DIR.name)
-        .as_deref()
-        .map(str::trim)
-    {
-        None | Some("") => PathBuf::new(),
-        Some(raw) => {
-            let path = PathBuf::from(raw);
-            if !path.is_absolute() {
-                return Err(Error::InvalidConfig {
-                    key: "HATCHLING_WEB_GRANTS_DIR",
-                    reason: format!("must be an absolute path: {}", path.display()),
-                });
-            }
-            path
-        }
-    };
+    let grants = store_dir(
+        "HATCHLING_WEB_GRANTS_DIR",
+        get(env::HATCHLING_WEB_GRANTS_DIR.name).as_deref(),
+    )?;
+    let profiles = store_dir(
+        "HATCHLING_BROWSER_PROFILES_DIR",
+        get(env::HATCHLING_BROWSER_PROFILES_DIR.name).as_deref(),
+    )?;
     Ok(WebConfig {
         enabled,
         refused,
@@ -639,7 +636,31 @@ fn parse_web(get: &impl Fn(&str) -> Option<String>) -> Result<WebConfig, Error> 
         search,
         search_log,
         grants,
+        profiles,
     })
+}
+
+/// The sealed store `raw` names for the setting `key`: none when it's unset
+/// or empty.
+///
+/// # Errors
+///
+/// [`Error::InvalidConfig`]: a path that isn't absolute.
+fn store_dir(key: &'static str, raw: Option<&str>) -> Result<PathBuf, Error> {
+    match raw.map(str::trim) {
+        None | Some("") => Ok(PathBuf::new()),
+        Some(raw) => {
+            let path = PathBuf::from(raw);
+            if path.is_absolute() {
+                Ok(path)
+            } else {
+                Err(Error::InvalidConfig {
+                    key,
+                    reason: format!("must be an absolute path: {}", path.display()),
+                })
+            }
+        }
+    }
 }
 
 /// The egress allowlist: the operator's comma-separated `host:port` list,
@@ -3775,6 +3796,46 @@ mod web_config_tests {
             })
         ));
         assert!(WebConfig::off().grants.as_os_str().is_empty());
+    }
+
+    /// The signed-in profiles' store is off unless the operator gives it an
+    /// absolute directory (WO-030).
+    #[test]
+    fn the_signed_in_profiles_store_is_an_absolute_directory_or_off() {
+        let parse = |raw: Option<&str>| {
+            super::parse_web(&|key: &str| match key {
+                "HATCHLING_BROWSER_PROFILES_DIR" => raw.map(str::to_owned),
+                _ => None,
+            })
+        };
+        for off in [None, Some(""), Some("  ")] {
+            assert!(
+                parse(off).unwrap().profiles.as_os_str().is_empty(),
+                "{off:?}"
+            );
+        }
+        assert_eq!(
+            parse(Some("/srv/hatchling/profiles")).unwrap().profiles,
+            std::path::PathBuf::from("/srv/hatchling/profiles")
+        );
+        assert!(matches!(
+            parse(Some("relative/profiles")),
+            Err(Error::InvalidConfig {
+                key: "HATCHLING_BROWSER_PROFILES_DIR",
+                ..
+            })
+        ));
+        assert!(WebConfig::off().profiles.as_os_str().is_empty());
+        // The parse itself: a setting's store, none, or refused.
+        assert_eq!(
+            super::store_dir("K", Some(" /a/b ")).unwrap(),
+            std::path::PathBuf::from("/a/b")
+        );
+        assert!(super::store_dir("K", None).unwrap().as_os_str().is_empty());
+        assert!(matches!(
+            super::store_dir("K", Some("a/b")),
+            Err(Error::InvalidConfig { key: "K", .. })
+        ));
     }
 
     /// Search is off unless the operator chooses Brave; a query's text is
