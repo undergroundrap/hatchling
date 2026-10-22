@@ -129,6 +129,7 @@ body.has-browser-session .floating-agent-toggle { top: 6px; }
 .browser-thumbnail { display: block; width: 100%; aspect-ratio: 1.6; padding: 0; border-radius: 7px; background: white; overflow: hidden; }
 .browser-thumbnail .browser-frame { height: 100%; aspect-ratio: auto; }
 .browser-thumbnail .recorded-browser-frame { object-fit: cover; object-position: left top; }
+.recorded-browser-frame.is-drivable { cursor: crosshair; }
 .browser-thumbnail .sample-tabbar { height: 9px; font-size: calc(3px * var(--ui-scale, 1)); padding: 0 4px; gap: 3px; }
 .browser-thumbnail .sample-tabbar svg { width: 4px; height: 4px; }
 .browser-thumbnail .sample-address { height: 10px; font-size: calc(3px * var(--ui-scale, 1)); gap: 3px; padding: 0 4px; }

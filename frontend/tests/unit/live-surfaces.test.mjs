@@ -13,7 +13,7 @@ import { CONTROL_TRANSITIONS } from '../../dist/app/adapters/live/protocol/gener
 import { HOSTILE_MARKDOWN, SAMPLE_PNG, SURFACE_EVENTS, openedText, sampleArtifact, sampleSession } from '../../dist/app/adapters/live/surface-fixtures.js';
 import { markdown } from '../../dist/app/components/markdown.js';
 import { agentStatus } from '../../dist/app/features/context/agent-status.js';
-import { browserLabel, controlPill, switchingControl } from '../../dist/app/features/browser/session.js';
+import { browserLabel, controlPill, pagePoint, switchingControl } from '../../dist/app/features/browser/session.js';
 class FakeTransport {
     sent = [];
     closes = 0;
@@ -310,6 +310,57 @@ test('no event is processed as agent-driven while the user drives, and nothing a
     const one = connected();
     one.transport.deliver(event({ kind: 'browser_action', session_id: 'web-1', by: 'user', narration: 'x' }));
     assert.match(one.adapter.getSnapshot().threads.find(thread => thread.id === 'browser:web-1').summary, /1 action arrived from whoever was not driving and was not shown\./);
+});
+test("the user's own input goes only to a browser they drive, and the broker answers it", async () => {
+    const { transport, adapter } = connected();
+    const click = { type: 'browser.click', id: 'web-1', x: 10, y: 20 };
+    const before = transport.actions().length;
+    assert.match((await adapter.execute(click)).message, /Hatchling already has control/);
+    assert.match((await adapter.execute({ ...click, id: 'nobody' })).message, /no longer available/);
+    transport.deliver(control('web-1', 'takeover'));
+    assert.match((await adapter.execute({ type: 'browser.key', id: 'web-1', key: 'tab' })).message, /changing hands/);
+    assert.equal(transport.actions().length, before, "nothing sent before control is the user's");
+    transport.deliver(control('web-1', 'granted'));
+    const inputs = [
+        [click, { input: 'click', x: 10, y: 20 }],
+        [{ type: 'browser.input', id: 'web-1', text: 'hi' }, { input: 'type', text: 'hi' }],
+        [{ type: 'browser.key', id: 'web-1', key: 'enter' }, { input: 'key', key: 'enter' }],
+        [{ type: 'browser.scroll', id: 'web-1', down: true }, { input: 'scroll', down: true }],
+    ];
+    for (const [command, input] of inputs) {
+        const done = await answered(transport, adapter, command, { result: 'input_done', session_id: 'web-1' });
+        assert.deepEqual([done.sent, done.outcome], [{ action: 'browser_input', session_id: 'web-1', input }, { ok: true, message: 'Done. The page after it follows.' }]);
+    }
+    const failures = { no_page: /No page is open/, unknown_element: /part of the page is gone/, not_possible: /could not take that/, timeout: /did not finish in time/, load_failed: /could not be loaded/, browser_gone: /stopped working/, bad_command: /did not understand/ };
+    for (const [failure, words] of Object.entries(failures))
+        assert.match((await answered(transport, adapter, click, { result: 'input_failed', session_id: 'web-1', failure })).outcome.message, words);
+    assert.match((await answered(transport, adapter, click, { result: 'control_refused', session_id: 'web-1', reason: 'not_allowed' })).outcome.message, /cannot move that way/);
+    for (const result of [{ result: 'input_done', session_id: 'other' }, { result: 'input_failed', session_id: 'other', failure: 'timeout' }, { result: 'browser_stopped', session_id: 'web-1' }])
+        assert.match((await answered(transport, adapter, click, result)).outcome.message, /something else/);
+    // Only a whole, non-negative pixel is a point of the page.
+    const sent = transport.actions().length;
+    for (const [x, y] of [[-1, 0], [0, -1], [1.5, 0], [0, 2.5]])
+        assert.match((await adapter.execute({ ...click, x, y })).message, /could not take that/);
+    assert.equal(transport.actions().length, sent);
+    transport.deliver(event({ kind: 'browser_session', ...sampleSession('web-1', 'cancelled') }));
+    assert.match((await adapter.execute({ type: 'browser.scroll', id: 'web-1', down: false })).message, /has ended/);
+});
+test('a click on the picture is the point of the page under it, letterboxed or not', () => {
+    const fitted = { left: 10, top: 20, width: 640, height: 400 };
+    assert.deepEqual(pagePoint(fitted, 10, 20), { x: 0, y: 0 });
+    assert.deepEqual(pagePoint(fitted, 649.9, 419.9), { x: 1279, y: 799 });
+    assert.deepEqual(pagePoint(fitted, 330, 220), { x: 640, y: 400 });
+    for (const [x, y] of [[9, 20], [10, 19], [650, 20], [10, 420]])
+        assert.equal(pagePoint(fitted, x, y), undefined, `${x}, ${y}`);
+    // Wider than the page: bars left and right.
+    const wide = { left: 0, top: 0, width: 800, height: 400 };
+    assert.deepEqual(pagePoint(wide, 80, 0), { x: 0, y: 0 });
+    assert.equal(pagePoint(wide, 79, 0), undefined);
+    // Taller: bars above and below.
+    const tall = { left: 0, top: 0, width: 640, height: 600 };
+    assert.deepEqual(pagePoint(tall, 0, 100), { x: 0, y: 0 });
+    assert.equal(pagePoint(tall, 0, 99), undefined);
+    assert.equal(pagePoint({ left: 0, top: 0, width: 0, height: 0 }, 0, 0), undefined, 'nothing shown');
 });
 test('a handoff the table does not allow ends the connection, and is not counted as applied', () => {
     const { transport, adapter } = connected();

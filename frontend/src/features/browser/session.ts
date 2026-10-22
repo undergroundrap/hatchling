@@ -1,5 +1,5 @@
 import type { AppContext } from '../../app/context.js';
-import type { BrowserTask, DeepReadonly } from '../../protocol/models.js';
+import type { BrowserKey, BrowserTask, DeepReadonly } from '../../protocol/models.js';
 import { h, replacePreservingFocus } from '../../components/dom.js';
 import { icon } from '../../components/icons.js';
 import { button, iconButton } from '../../components/ui.js';
@@ -39,6 +39,48 @@ export function switchingControl(): HTMLButtonElement {
     return button('Switching control…', () => undefined, { icon: 'refresh', disabled: true });
 }
 function terminal(task: Task): boolean { return ['cancelled', 'completed', 'failed'].includes(task.state); }
+/** The page's viewport in CSS pixels, as hatchling_core::browser::VIEWPORT: a frame shows it at half size. */
+export const PAGE_VIEWPORT = { width: 1280, height: 800 } as const;
+/** The point of the page under a click at `clientX`, `clientY` on its picture, shown in `box` scaled to fit: undefined off the picture. */
+export function pagePoint(box: {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+}, clientX: number, clientY: number): {
+    x: number;
+    y: number;
+} | undefined {
+    const scale = Math.min(box.width / PAGE_VIEWPORT.width, box.height / PAGE_VIEWPORT.height);
+    if (!(scale > 0))
+        return undefined;
+    const left = box.left + (box.width - PAGE_VIEWPORT.width * scale) / 2;
+    const top = box.top + (box.height - PAGE_VIEWPORT.height * scale) / 2;
+    const x = Math.floor((clientX - left) / scale);
+    const y = Math.floor((clientY - top) / scale);
+    return x >= 0 && y >= 0 && x < PAGE_VIEWPORT.width && y < PAGE_VIEWPORT.height ? { x, y } : undefined;
+}
+const PAGE_KEYS: readonly (readonly [
+    BrowserKey,
+    string
+])[] = [['enter', 'Enter'], ['tab', 'Tab'], ['backspace', 'Backspace'], ['escape', 'Esc'], ['arrow_up', '↑'], ['arrow_down', '↓'], ['arrow_left', '←'], ['arrow_right', '→']];
+/** The user's controls for a live page they drive: text typed where its focus is, keys, scrolling. Clicks go on the picture itself. Made once per view, so a draft survives new frames. */
+function driveControls(ctx: AppContext, id: string): HTMLFormElement {
+    const text = h('input', { id: 'browser-drive-text', name: 'browser-drive-text', type: 'text', autocomplete: 'off', 'aria-label': 'Text to type into the page', maxlength: 4096 });
+    const form = h('form', { class: 'local-takeover-controls', 'aria-label': 'Your controls for the page' }, h('strong', {}, 'You have control'), text, h('button', { type: 'submit', class: 'button primary' }, 'Type'));
+    form.addEventListener('submit', event => {
+        event.preventDefault();
+        if (text.value === '')
+            return;
+        const typed = text.value;
+        text.value = '';
+        void ctx.run({ type: 'browser.input', id, text: typed }, true);
+    });
+    for (const [key, label] of PAGE_KEYS)
+        form.append(button(label, () => { void ctx.run({ type: 'browser.key', id, key }, true); }, { variant: 'ghost' }));
+    form.append(button('Scroll up', () => { void ctx.run({ type: 'browser.scroll', id, down: false }, true); }, { variant: 'ghost' }), button('Scroll down', () => { void ctx.run({ type: 'browser.scroll', id, down: true }, true); }, { variant: 'ghost' }));
+    return form;
+}
 export function browserFrame(task: Task, thumbnail = false, scripted = true): HTMLElement {
     const frame = task.frame;
     const view = h('div', { class: `browser-frame ${thumbnail ? 'is-thumbnail' : ''}`, 'data-sequence': frame?.sequence ?? 0 });
@@ -73,6 +115,7 @@ export function openBrowserSession(ctx: AppContext, id: string): void {
         value: () => width, bounds: () => [Math.min(480, innerWidth - 320), innerWidth - 320],
         change: value => { width = value; document.body.style.setProperty('--browser-workspace-width', `${value}px`); } });
     ref.element.append(resize);
+    const drive = driveControls(ctx, id);
     let signature = '';
     const draw = (): void => {
         const task = ctx.state.browserTasks.find(item => item.id === id);
@@ -112,7 +155,19 @@ export function openBrowserSession(ctx: AppContext, id: string): void {
             }
             viewport.append(tools);
         }
-        const controls = h('div', { class: 'browser-session-footer' }, h('span', {}, ctx.state.mode !== 'scripted' ? 'Adapter-supplied preview. Direct interactive input requires an approved live-session integration.' : stopped ? 'Last recorded preview · read-only' : task.controller === 'user' ? 'The agent is paused while you control the sample.' : 'Watching the local sample session. No external browser is connected.'));
+        if (!stopped && task.controller === 'user' && ctx.state.mode !== 'scripted') {
+            const picture = viewport.querySelector<HTMLImageElement>('.recorded-browser-frame');
+            if (picture) {
+                picture.classList.add('is-drivable');
+                picture.addEventListener('click', event => {
+                    const point = pagePoint(picture.getBoundingClientRect(), event.clientX, event.clientY);
+                    if (point)
+                        void ctx.run({ type: 'browser.click', id, ...point }, true);
+                });
+            }
+            viewport.append(drive);
+        }
+        const controls = h('div', { class: 'browser-session-footer' }, h('span', {}, ctx.state.mode !== 'scripted' ? (!stopped && task.controller === 'user' ? 'You have control. Click the picture to click the page; what you type goes where the page’s focus is. Hatchling waits until you hand it back.' : 'Live picture of the agent’s browser. Take control to use the page yourself.') : stopped ? 'Last recorded preview · read-only' : task.controller === 'user' ? 'The agent is paused while you control the sample.' : 'Watching the local sample session. No external browser is connected.'));
         if (task.challenge === 'waiting' && task.controller === 'agent' && !stopped)
             controls.append(button('Allow this challenge once', () => { void ctx.run({ type: 'browser.grant', id }, true); }, { variant: 'link' }));
         replacePreservingFocus(content, tabs, viewport, controls);
