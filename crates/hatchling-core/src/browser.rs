@@ -30,6 +30,22 @@ pub const VIEWPORT: (u32, u32) = (1280, 800);
 /// for would end.
 pub const MAX_FRAME_JPEG_BASE64: usize = 60 * 1024;
 
+/// The most cookies a jar holds: a jar with more is refused whole, read or
+/// restored (WO-030).
+pub const MAX_COOKIES: usize = 1024;
+
+/// The most bytes of a cookie's name and value together, as browsers
+/// bound them; its domain and path are each bounded by
+/// [`MAX_COOKIE_ATTRIBUTE_BYTES`].
+pub const MAX_COOKIE_BYTES: usize = 4096;
+
+/// The most bytes of a cookie's domain, and of its path.
+pub const MAX_COOKIE_ATTRIBUTE_BYTES: usize = 1024;
+
+/// The most bytes of JSON a page of cookies holds, read or restored: one
+/// frame's worth, less room for the message around it.
+pub const MAX_COOKIE_PAGE_BYTES: usize = 48 * 1024;
+
 /// A command to the browser cell.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "command", rename_all = "snake_case")]
@@ -64,6 +80,20 @@ pub enum BrowserCommand {
     Input {
         /// What the owner did.
         input: OwnerInput,
+    },
+    /// The browser's cookies, from the `from`th on, in the jar's order
+    /// (domain, path, name): as many as fit one page
+    /// ([`MAX_COOKIE_PAGE_BYTES`]). The reply is [`BrowserReply::Cookies`].
+    /// What a signed-in profile keeps between its sessions (WO-030).
+    Cookies {
+        /// Where this page starts.
+        from: u32,
+    },
+    /// Set `cookies` in the browser: a page of a jar the broker kept. The
+    /// reply is [`BrowserReply::CookiesSet`].
+    SetCookies {
+        /// The cookies, within the bounds a read holds them to.
+        cookies: Vec<Cookie>,
     },
     /// Close the page and the browser. The reply is [`BrowserReply::Closed`].
     Close,
@@ -165,6 +195,16 @@ pub enum BrowserReply {
         /// The JPEG's bytes, standard base64.
         jpeg: String,
     },
+    /// A page of the browser's cookies, and where the next starts, if one
+    /// does. Untrusted, like the rest: a page sets its own cookies.
+    Cookies {
+        /// The cookies.
+        cookies: Vec<Cookie>,
+        /// The `from` of the next page.
+        next: Option<u32>,
+    },
+    /// The cookies are set.
+    CookiesSet,
     /// The command wasn't done.
     Failed {
         /// Why.
@@ -195,6 +235,64 @@ pub enum BrowserFailure {
     BrowserGone,
     /// A command that wasn't understood.
     BadCommand,
+}
+
+/// A cookie, as the browser keeps it. Its value is a secret: what a
+/// signed-in session is. It reaches the broker, which seals it, and the
+/// browser, and never a snapshot, a log, or anything the agent sees.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Cookie {
+    /// Its name.
+    pub name: String,
+    /// Its value.
+    pub value: String,
+    /// The domain it's sent to: a host, or `.host` for its subdomains too.
+    pub domain: String,
+    /// The path it's sent for.
+    pub path: String,
+    /// When it expires, in seconds since the epoch; a session cookie has
+    /// none.
+    pub expires: Option<i64>,
+    /// Sent over `https` only.
+    pub secure: bool,
+    /// Out of reach of the page's script.
+    pub http_only: bool,
+    /// When it's sent with a request from another site.
+    pub same_site: Option<SameSite>,
+}
+
+impl std::fmt::Debug for Cookie {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Cookie")
+            .field("name", &self.name)
+            .field("domain", &self.domain)
+            .field("path", &self.path)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Cookie {
+    /// Whether it's within the bounds a jar holds every cookie to:
+    /// [`MAX_COOKIE_BYTES`] of name and value, and a domain and a path each
+    /// within [`MAX_COOKIE_ATTRIBUTE_BYTES`].
+    #[must_use]
+    pub fn within_bounds(&self) -> bool {
+        self.name.len() + self.value.len() <= MAX_COOKIE_BYTES
+            && self.domain.len() <= MAX_COOKIE_ATTRIBUTE_BYTES
+            && self.path.len() <= MAX_COOKIE_ATTRIBUTE_BYTES
+    }
+}
+
+/// When a cookie is sent with a request another site started.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SameSite {
+    /// Never.
+    Strict,
+    /// With a top-level navigation only.
+    Lax,
+    /// Always (it must be [`Cookie::secure`]).
+    None,
 }
 
 /// A page, as the agent sees it: its text and the elements it can act
@@ -393,6 +491,42 @@ mod tests {
         ] {
             assert_eq!(wire(&input), shape);
         }
+        let cookie = Cookie {
+            name: String::from("sid"),
+            value: String::from("s3cret"),
+            domain: String::from(".a.example"),
+            path: String::from("/"),
+            expires: Some(1_900_000_000),
+            secure: true,
+            http_only: true,
+            same_site: Some(SameSite::Lax),
+        };
+        assert_eq!(
+            wire(&BrowserCommand::Cookies { from: 3 }),
+            json!({"command": "cookies", "from": 3})
+        );
+        assert_eq!(
+            wire(&BrowserReply::Cookies {
+                cookies: vec![cookie.clone()],
+                next: None
+            }),
+            json!({"reply": "cookies", "next": null, "cookies": [{
+                "name": "sid", "value": "s3cret", "domain": ".a.example", "path": "/",
+                "expires": 1_900_000_000, "secure": true, "http_only": true, "same_site": "lax"
+            }]})
+        );
+        assert_eq!(
+            wire(&BrowserCommand::SetCookies {
+                cookies: Vec::new()
+            }),
+            json!({"command": "set_cookies", "cookies": []})
+        );
+        assert_eq!(
+            wire(&BrowserReply::CookiesSet),
+            json!({"reply": "cookies_set"})
+        );
+        let shown = format!("{cookie:?}");
+        assert!(!shown.contains("s3cret"), "{shown}");
         let negative: Result<OwnerInput, _> =
             serde_json::from_value(json!({"input": "click", "x": -1, "y": 0}));
         assert!(negative.is_err(), "no point left of the viewport");
@@ -406,6 +540,32 @@ mod tests {
         let unknown: Result<BrowserCommand, _> =
             serde_json::from_value(json!({"command": "evaluate", "script": "1"}));
         assert!(unknown.is_err(), "no command runs a script");
+    }
+
+    #[test]
+    fn a_cookie_is_held_to_a_browsers_bounds() {
+        let cookie = |name: usize, value: usize, domain: usize, path: usize| Cookie {
+            name: "n".repeat(name),
+            value: "v".repeat(value),
+            domain: "d".repeat(domain),
+            path: "p".repeat(path),
+            expires: None,
+            secure: false,
+            http_only: false,
+            same_site: None,
+        };
+        assert!(
+            cookie(
+                96,
+                MAX_COOKIE_BYTES - 96,
+                MAX_COOKIE_ATTRIBUTE_BYTES,
+                MAX_COOKIE_ATTRIBUTE_BYTES
+            )
+            .within_bounds()
+        );
+        assert!(!cookie(96, MAX_COOKIE_BYTES - 95, 1, 1).within_bounds());
+        assert!(!cookie(1, 1, MAX_COOKIE_ATTRIBUTE_BYTES + 1, 1).within_bounds());
+        assert!(!cookie(1, 1, 1, MAX_COOKIE_ATTRIBUTE_BYTES + 1).within_bounds());
     }
 
     #[test]

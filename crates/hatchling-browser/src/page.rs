@@ -16,8 +16,8 @@
 use std::time::{Duration, Instant};
 
 use hatchling_core::browser::{
-    BrowserCommand, BrowserFailure, BrowserReply, Key, MAX_TYPED_CHARS, OwnerInput, PageAction,
-    PageSnapshot, VIEWPORT,
+    BrowserCommand, BrowserFailure, BrowserReply, Cookie, Key, MAX_COOKIE_PAGE_BYTES, MAX_COOKIES,
+    MAX_TYPED_CHARS, OwnerInput, PageAction, PageSnapshot, SameSite, VIEWPORT,
 };
 use serde_json::{Value, json};
 
@@ -88,6 +88,18 @@ impl Session {
             BrowserCommand::Input { input } => {
                 return match self.input(&input) {
                     Ok(jpeg) => BrowserReply::Frame { jpeg },
+                    Err(failure) => BrowserReply::Failed { failure },
+                };
+            }
+            BrowserCommand::Cookies { from } => {
+                return match self.cookies(from) {
+                    Ok((cookies, next)) => BrowserReply::Cookies { cookies, next },
+                    Err(failure) => BrowserReply::Failed { failure },
+                };
+            }
+            BrowserCommand::SetCookies { cookies } => {
+                return match self.set_cookies(&cookies) {
+                    Ok(()) => BrowserReply::CookiesSet,
                     Err(failure) => BrowserReply::Failed { failure },
                 };
             }
@@ -306,6 +318,68 @@ impl Session {
         self.frame()
     }
 
+    /// The browser's cookies from the `from`th on, in the jar's order, as
+    /// many as fit one page, and where the next page starts. A cookie past
+    /// the bounds is left out; a jar of more than [`MAX_COOKIES`] is
+    /// refused whole, as is one the browser can't give.
+    fn cookies(&mut self, from: u32) -> Result<(Vec<Cookie>, Option<u32>), BrowserFailure> {
+        let jar = self
+            .call(None, "Storage.getCookies", json!({}))
+            .map_err(gone_or(BrowserFailure::NotPossible))?;
+        let listed = jar
+            .get("cookies")
+            .and_then(Value::as_array)
+            .ok_or(BrowserFailure::NotPossible)?;
+        page_of(listed, from)
+    }
+
+    /// Sets `cookies` in the browser, all of them or none: each within the
+    /// bounds, and the page within [`MAX_COOKIES`].
+    fn set_cookies(&mut self, cookies: &[Cookie]) -> Result<(), BrowserFailure> {
+        if cookies.len() > MAX_COOKIES || !cookies.iter().all(Cookie::within_bounds) {
+            return Err(BrowserFailure::NotPossible);
+        }
+        let params: Vec<Value> = cookies.iter().map(cookie_param).collect();
+        self.call(None, "Storage.setCookies", json!({ "cookies": params }))
+            .map_err(gone_or(BrowserFailure::NotPossible))?;
+        Ok(())
+    }
+}
+
+/// The page of the jar DevTools `listed` from its `from`th cookie on, in the
+/// jar's order (domain, path, name), as many as fit
+/// [`MAX_COOKIE_PAGE_BYTES`], and where the next page starts. A cookie past
+/// the bounds, or partitioned, is left out; a jar of more than
+/// [`MAX_COOKIES`] is refused whole.
+fn page_of(listed: &[Value], from: u32) -> Result<(Vec<Cookie>, Option<u32>), BrowserFailure> {
+    if listed.len() > MAX_COOKIES {
+        return Err(BrowserFailure::NotPossible);
+    }
+    let mut cookies: Vec<Cookie> = listed
+        .iter()
+        .filter_map(cookie_of)
+        .filter(Cookie::within_bounds)
+        .collect();
+    cookies.sort_by(|a, b| (&a.domain, &a.path, &a.name).cmp(&(&b.domain, &b.path, &b.name)));
+    let start = usize::try_from(from).unwrap_or(usize::MAX);
+    let mut page = Vec::new();
+    let mut bytes = 0;
+    for cookie in cookies.iter().skip(start) {
+        let size = serde_json::to_vec(cookie).map_or(usize::MAX, |json| json.len() + 1);
+        if bytes + size > MAX_COOKIE_PAGE_BYTES {
+            break;
+        }
+        bytes += size;
+        page.push(cookie.clone());
+    }
+    let end = start.saturating_add(page.len());
+    let next = (end < cookies.len())
+        .then(|| u32::try_from(end).ok())
+        .flatten();
+    Ok((page, next))
+}
+
+impl Session {
     /// Types `text` where the page's focus is.
     fn insert(&mut self, session: &str, text: &str) -> Result<(), BrowserFailure> {
         self.call(Some(session), "Input.insertText", json!({"text": text}))
@@ -442,6 +516,69 @@ impl Drop for Session {
     }
 }
 
+/// A cookie as DevTools lists it, if it's whole: a name, a value, a domain
+/// and a path. A partitioned cookie (one site's, kept for another) is left
+/// out: restored without its partition, it would be sent where it never
+/// was.
+fn cookie_of(listed: &Value) -> Option<Cookie> {
+    if listed.get("partitionKey").is_some_and(|key| !key.is_null()) {
+        return None;
+    }
+    let text = |field: &str| listed.get(field).and_then(Value::as_str).map(str::to_owned);
+    let flag = |field: &str| listed.get(field).and_then(Value::as_bool).unwrap_or(false);
+    let session = flag("session");
+    // Whole seconds, through their decimal text: one no i64 holds is
+    // left out, and the cookie kept as a session's, which never outlives
+    // the browser.
+    let expires = listed
+        .get("expires")
+        .and_then(Value::as_f64)
+        .filter(|seconds| !session && seconds.is_finite() && *seconds >= 0.0)
+        .and_then(|seconds| format!("{}", seconds.floor()).parse::<i64>().ok());
+    let same_site = match listed.get("sameSite").and_then(Value::as_str) {
+        Some("Strict") => Some(SameSite::Strict),
+        Some("Lax") => Some(SameSite::Lax),
+        Some("None") => Some(SameSite::None),
+        Some(_) | None => None,
+    };
+    Some(Cookie {
+        name: text("name")?,
+        value: text("value")?,
+        domain: text("domain")?,
+        path: text("path")?,
+        expires,
+        secure: flag("secure"),
+        http_only: flag("httpOnly"),
+        same_site,
+    })
+}
+
+/// `cookie` as DevTools sets it.
+fn cookie_param(cookie: &Cookie) -> Value {
+    let mut param = json!({
+        "name": cookie.name,
+        "value": cookie.value,
+        "domain": cookie.domain,
+        "path": cookie.path,
+        "secure": cookie.secure,
+        "httpOnly": cookie.http_only,
+    });
+    if let Some(fields) = param.as_object_mut() {
+        if let Some(expires) = cookie.expires {
+            fields.insert(String::from("expires"), Value::from(expires));
+        }
+        if let Some(same_site) = cookie.same_site {
+            let same_site = match same_site {
+                SameSite::Strict => "Strict",
+                SameSite::Lax => "Lax",
+                SameSite::None => "None",
+            };
+            fields.insert(String::from("sameSite"), Value::from(same_site));
+        }
+    }
+    param
+}
+
 /// A key's name, its virtual key code, and the text it types, if any.
 const fn key_event(key: Key) -> (&'static str, u32, &'static str) {
     match key {
@@ -488,6 +625,8 @@ mod tests {
 
     use hatchling_core::browser::PageElement;
 
+    use hatchling_core::browser::MAX_COOKIE_BYTES;
+
     use super::*;
     use crate::cdp::Cdp;
 
@@ -531,6 +670,10 @@ mod tests {
             "Page.getFrameTree" => (json!({"frameTree": {"frame": {"id": "F"}}}), Vec::new()),
             "Page.createIsolatedWorld" => (json!({"executionContextId": 7}), Vec::new()),
             "Runtime.evaluate" => (evaluated(&param("expression")), Vec::new()),
+            "Storage.getCookies" => (
+                json!({ "cookies": [listed("a.test", "sid", "1")] }),
+                Vec::new(),
+            ),
             "Page.getLayoutMetrics" => (
                 json!({"cssVisualViewport": {"pageX": 0.0, "pageY": 400.0}}),
                 Vec::new(),
@@ -559,6 +702,186 @@ mod tests {
             ),
             _ => (json!({}), Vec::new()),
         }
+    }
+
+    /// A cookie as DevTools lists it: `name` for `domain`, valued `value`.
+    fn listed(domain: &str, name: &str, value: &str) -> Value {
+        json!({
+            "name": name, "value": value, "domain": domain, "path": "/",
+            "expires": 1_900_000_000.5, "size": 4, "httpOnly": true, "secure": true,
+            "session": false, "sameSite": "Lax", "priority": "Medium",
+        })
+    }
+
+    /// The cookie [`listed`] lists, as the jar keeps it.
+    fn kept(domain: &str, name: &str, value: &str) -> Cookie {
+        Cookie {
+            name: name.to_owned(),
+            value: value.to_owned(),
+            domain: domain.to_owned(),
+            path: String::from("/"),
+            expires: Some(1_900_000_000),
+            secure: true,
+            http_only: true,
+            same_site: Some(SameSite::Lax),
+        }
+    }
+
+    #[test]
+    fn a_cookie_is_read_whole_from_devtools_or_left_out() {
+        assert_eq!(
+            cookie_of(&listed("a.test", "sid", "1")),
+            Some(kept("a.test", "sid", "1"))
+        );
+        let with = |field: &str, value: Value| {
+            let mut cookie = listed("a.test", "sid", "1");
+            if let Some(fields) = cookie.as_object_mut() {
+                fields.insert(field.to_owned(), value);
+            }
+            cookie_of(&cookie)
+        };
+        let session = with("session", json!(true)).unwrap();
+        assert_eq!(session.expires, None, "a session cookie has no expiry");
+        assert_eq!(with("expires", json!(-1)).unwrap().expires, None);
+        assert_eq!(
+            with("expires", json!(1e300)).unwrap().expires,
+            None,
+            "past any i64: kept as a session's"
+        );
+        assert_eq!(with("expires", json!(12.9)).unwrap().expires, Some(12));
+        for (same_site, read) in [
+            ("Strict", Some(SameSite::Strict)),
+            ("None", Some(SameSite::None)),
+            ("Lax", Some(SameSite::Lax)),
+            ("Other", None),
+        ] {
+            assert_eq!(with("sameSite", json!(same_site)).unwrap().same_site, read);
+        }
+        assert_eq!(
+            with("partitionKey", json!({"topLevelSite": "https://b.test"})),
+            None,
+            "partitioned"
+        );
+        assert!(with("partitionKey", Value::Null).is_some());
+        for field in ["name", "value", "domain", "path"] {
+            assert_eq!(with(field, json!(7)), None, "{field}");
+        }
+        let unflagged = with("secure", Value::Null).unwrap();
+        assert!(!unflagged.secure);
+    }
+
+    #[test]
+    fn a_cookie_is_set_as_devtools_takes_it() {
+        assert_eq!(
+            cookie_param(&kept("a.test", "sid", "1")),
+            json!({"name": "sid", "value": "1", "domain": "a.test", "path": "/", "secure": true,
+                   "httpOnly": true, "expires": 1_900_000_000, "sameSite": "Lax"})
+        );
+        let bare = Cookie {
+            expires: None,
+            same_site: None,
+            ..kept("a.test", "sid", "1")
+        };
+        assert_eq!(
+            cookie_param(&bare),
+            json!({"name": "sid", "value": "1", "domain": "a.test", "path": "/", "secure": true, "httpOnly": true})
+        );
+        for (same_site, wire) in [(SameSite::Strict, "Strict"), (SameSite::None, "None")] {
+            let param = cookie_param(&Cookie {
+                same_site: Some(same_site),
+                ..bare.clone()
+            });
+            assert_eq!(param.get("sameSite"), Some(&json!(wire)));
+        }
+    }
+
+    #[test]
+    fn a_jar_is_read_in_pages_in_its_order_within_its_bounds() {
+        // Thirty cookies of about 2 KiB: more than one page holds.
+        let mut jar: Vec<Value> = (0..30)
+            .map(|i| listed(&format!("d{:02}.test", 29 - i), "big", &"v".repeat(2000)))
+            .collect();
+        jar.push(listed("a.test", &"n".repeat(MAX_COOKIE_BYTES), "too big"));
+        let (first, next) = page_of(&jar, 0).unwrap();
+        let next = next.unwrap();
+        assert_eq!(usize::try_from(next).unwrap(), first.len());
+        assert!(serde_json::to_vec(&first).unwrap().len() <= MAX_COOKIE_PAGE_BYTES);
+        let (rest, after) = page_of(&jar, next).unwrap();
+        assert_eq!(after, None, "the last page");
+        let all: Vec<String> = first
+            .iter()
+            .chain(&rest)
+            .map(|c| c.domain.clone())
+            .collect();
+        let ordered: Vec<String> = (0..30).map(|i| format!("d{i:02}.test")).collect();
+        assert_eq!(
+            all, ordered,
+            "in order, each once, the one too big left out"
+        );
+        assert_eq!(page_of(&jar, 999).unwrap(), (Vec::new(), None));
+        // At the bound, whole; past it, refused.
+        let full: Vec<Value> = (0..MAX_COOKIES)
+            .map(|i| listed("a.test", &format!("c{i}"), "1"))
+            .collect();
+        assert!(page_of(&full, 0).is_ok());
+        let over: Vec<Value> = (0..=MAX_COOKIES)
+            .map(|i| listed("a.test", &format!("c{i}"), "1"))
+            .collect();
+        assert_eq!(page_of(&over, 0), Err(BrowserFailure::NotPossible));
+    }
+
+    #[test]
+    fn cookies_are_read_from_and_set_in_the_browser_itself() {
+        let (mut session, seen) = fake();
+        assert_eq!(
+            session.handle(BrowserCommand::Cookies { from: 0 }),
+            BrowserReply::Cookies {
+                cookies: vec![kept("a.test", "sid", "1")],
+                next: None
+            }
+        );
+        let asked = sent(&seen, "Storage.getCookies");
+        assert_eq!(asked.len(), 1);
+        assert_eq!(
+            asked.first().and_then(|call| call.get("sessionId")),
+            None,
+            "the browser's, not a page's"
+        );
+        let cookies = vec![kept("a.test", "sid", "1"), kept("b.test", "x", "2")];
+        assert_eq!(
+            session.handle(BrowserCommand::SetCookies {
+                cookies: cookies.clone()
+            }),
+            BrowserReply::CookiesSet
+        );
+        // And directly: the jar's first page, and an empty page set.
+        assert_eq!(
+            session.cookies(0),
+            Ok((vec![kept("a.test", "sid", "1")], None))
+        );
+        assert_eq!(session.set_cookies(&[]), Ok(()));
+        let set = sent(&seen, "Storage.setCookies");
+        assert_eq!(
+            set.first()
+                .and_then(|call| call.pointer("/params/cookies"))
+                .cloned(),
+            Some(json!(cookies.iter().map(cookie_param).collect::<Vec<_>>()))
+        );
+        // Past the bounds: nothing is set.
+        let too_big = Cookie {
+            value: "v".repeat(MAX_COOKIE_BYTES),
+            ..kept("a.test", "sid", "1")
+        };
+        let too_many = vec![kept("a.test", "sid", "1"); MAX_COOKIES + 1];
+        for cookies in [vec![too_big], too_many] {
+            assert_eq!(
+                session.handle(BrowserCommand::SetCookies { cookies }),
+                BrowserReply::Failed {
+                    failure: BrowserFailure::NotPossible
+                }
+            );
+        }
+        assert_eq!(sent(&seen, "Storage.setCookies").len(), 2);
     }
 
     /// What an expression evaluates to in the fake page.

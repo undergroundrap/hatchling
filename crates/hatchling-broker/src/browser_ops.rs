@@ -587,9 +587,14 @@ impl BrowserSession {
                 self.end(BrowserState::Completed);
                 BrowserResult::Closed
             }
-            // A picture for an agent's command: the controller answered
-            // out of turn, and isn't trusted with another.
-            Ok(BrowserReply::Frame { .. }) => {
+            // A picture, or cookies, for an agent's command: the
+            // controller answered out of turn, and isn't trusted with
+            // another.
+            Ok(
+                BrowserReply::Frame { .. }
+                | BrowserReply::Cookies { .. }
+                | BrowserReply::CookiesSet,
+            ) => {
                 tracing::warn!("the browser answered out of turn: closed");
                 self.end(BrowserState::Failed);
                 BrowserResult::Failed {
@@ -898,6 +903,11 @@ mod tests {
                 BrowserCommand::Frame | BrowserCommand::Input { .. } => BrowserReply::Frame {
                     jpeg: String::from("/9j/"),
                 },
+                BrowserCommand::Cookies { .. } => BrowserReply::Cookies {
+                    cookies: Vec::new(),
+                    next: None,
+                },
+                BrowserCommand::SetCookies { .. } => BrowserReply::CookiesSet,
                 BrowserCommand::Snapshot
                 | BrowserCommand::Act { .. }
                 | BrowserCommand::Scroll { .. } => BrowserReply::Page {

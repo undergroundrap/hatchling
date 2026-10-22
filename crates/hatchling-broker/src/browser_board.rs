@@ -396,7 +396,15 @@ impl BrowserBoard {
                 return Err(InputRefusal::Browser(failure));
             }
             None => return Err(InputRefusal::Browser(BrowserFailure::BrowserGone)),
-            Some(Ok(BrowserReply::Page { .. } | BrowserReply::Closed) | Err(_)) => {
+            Some(
+                Ok(
+                    BrowserReply::Page { .. }
+                    | BrowserReply::Closed
+                    | BrowserReply::Cookies { .. }
+                    | BrowserReply::CookiesSet,
+                )
+                | Err(_),
+            ) => {
                 tracing::warn!(
                     session = session_id,
                     "the browser took no more of the owner's input: closed"
