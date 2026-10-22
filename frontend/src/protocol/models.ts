@@ -406,8 +406,18 @@ export interface NetworkPermission {
     icon: IconName;
     enabled: boolean;
 }
+/** A site the user signed in to and kept signed in for the agent: its browser opens signed in. */
+export interface SignedInSite {
+    id: Id;
+    /** The sites it holds, the one signed in on first. */
+    sites: string[];
+    /** Whether a session is kept for it; signed out, its sites are kept but open signed out. */
+    signedIn: boolean;
+    lastUsed: string;
+}
 export interface AppState {
     websitePermissions: WebsitePermission[];
+    signedInSites: SignedInSite[];
     networkPermissions: NetworkPermission[];
     version: 1;
     mode: 'scripted' | 'live';
@@ -466,6 +476,15 @@ export type Command = {
     type: 'browser.scroll';
     id: Id;
     down: boolean;
+} | {
+    type: 'browser.keep-signed-in';
+    id: Id;
+} | {
+    type: 'profile.sign-out';
+    id: Id;
+} | {
+    type: 'profile.delete';
+    id: Id;
 } | {
     type: 'identity.avatar';
     value: string;

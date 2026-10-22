@@ -15,6 +15,8 @@ export function permissionsTab(ctx: AppContext, nav: SettingsNavigation): HTMLEl
         return websites(ctx, nav);
     if (nav.detail === 'network')
         return network(ctx, nav);
+    if (nav.detail === 'signed-in')
+        return signedIn(ctx, nav);
     if (nav.detail === 'permission-connectors') {
         return h('div', { class: 'settings-stack' }, h('h3', { class: 'settings-section-title' }, 'Connected services'), h('div', { class: 'settings-group reference-list' }, ...ctx.state.connectors.filter(item => item.state === 'connected').map(item => h('div', { class: 'reference-setting-row' }, providerMark(item.id, item.icon), h('span', { class: 'setting-row-copy' }, item.name, h('span', { class: 'setting-description' }, item.scope)), icon('check', 16)))), h('p', { class: 'settings-note' }, 'Reading is limited to the displayed scope. Writes, purchases and credential fills require their own approval.'));
     }
@@ -49,7 +51,7 @@ export function permissionsTab(ctx: AppContext, nav: SettingsNavigation): HTMLEl
         return h('section', {}, h('h3', { class: 'settings-section-title' }, heading), group);
     };
     root.append(defaults('connectors', 'Connector defaults', ['Before actions that may share your information or make important changes', 'Before any action']), defaults('websites', 'Web access defaults', ['When your information may be shared or the website is unfamiliar', 'Ask before accessing any website']));
-    const manage = h('div', { class: 'settings-group reference-list' }, navigationRow('Connectors', ctx.state.connectors.filter(item => item.state === 'connected').length, () => nav.open('permission-connectors')), navigationRow('Websites', ctx.state.websitePermissions.filter(item => item.policy === 'allow').length, () => nav.open('websites')), navigationRow('Artifacts', ctx.state.publications.length, () => nav.open('permission-artifacts')), navigationRow('Scheduled tasks', ctx.state.jobs.filter(item => item.health === 'ok').length, () => nav.open('permission-scheduled')), navigationRow('Direct network protocols', null, () => nav.open('network')));
+    const manage = h('div', { class: 'settings-group reference-list' }, navigationRow('Connectors', ctx.state.connectors.filter(item => item.state === 'connected').length, () => nav.open('permission-connectors')), navigationRow('Websites', ctx.state.websitePermissions.filter(item => item.policy === 'allow').length, () => nav.open('websites')), ctx.state.mode === 'live' ? navigationRow('Signed-in sites', ctx.state.signedInSites.length, () => nav.open('signed-in')) : null, navigationRow('Artifacts', ctx.state.publications.length, () => nav.open('permission-artifacts')), navigationRow('Scheduled tasks', ctx.state.jobs.filter(item => item.health === 'ok').length, () => nav.open('permission-scheduled')), navigationRow('Direct network protocols', null, () => nav.open('network')));
     root.append(h('section', {}, h('h3', { class: 'settings-section-title' }, 'Manage permissions'), manage), button('Advanced approval settings', () => nav.open('permission-advanced'), { variant: 'link' }), button('Reset permission defaults', () => ctx.dialogs.confirm('Reset permission defaults?', 'Remove website grants, disable direct network protocols and standing challenge permission, and restore confirmation defaults? Purchase approvals remain mandatory.', () => { void ctx.run({ type: 'permission.reset' }).then(nav.refresh); }, { label: 'Reset defaults' }), { variant: 'ghost' }));
     return root;
 }
@@ -81,6 +83,18 @@ function liveWebsites(ctx: AppContext, nav: SettingsNavigation): HTMLElement {
     }
     const empty = h('p', { class: 'settings-note' }, 'No sites yet. When the agent asks to read a site, choose Allow always on its request to keep it here.');
     return h('div', { class: 'settings-stack' }, h('section', {}, h('h3', { class: 'settings-section-title' }, "Websites you've allowed"), ctx.state.websitePermissions.length ? group : empty));
+}
+/** The sites the user kept signed in for the agent: kept only from a browser they drove, signed out or deleted here. */
+function signedIn(ctx: AppContext, nav: SettingsNavigation): HTMLElement {
+    const group = h('div', { class: 'settings-group reference-list signed-in-sites' });
+    for (const item of ctx.state.signedInSites) {
+        const names = item.sites.join(', ');
+        const signOut = item.signedIn ? button('Sign out', () => ctx.dialogs.confirm(`Sign out of ${names}?`, 'Hatchling drops the session it kept. The agent still opens these sites in a browser of their own, signed out, until you delete them.', () => { void ctx.run({ type: 'profile.sign-out', id: item.id }, true).then(nav.refresh); }, { label: 'Sign out' }), { variant: 'ghost' }) : null;
+        const remove = button('Delete', () => ctx.dialogs.confirm(`Delete ${names}?`, 'Hatchling drops the session and the sites. The agent asks you again the next time it wants a page on them.', () => { void ctx.run({ type: 'profile.delete', id: item.id }, true).then(nav.refresh); }, { label: 'Delete', danger: true }), { variant: 'ghost' });
+        group.append(h('div', { class: 'reference-setting-row website-permission' }, h('span', { class: 'website-icon' }, icon('lock', 18)), h('span', { class: 'setting-row-copy' }, names, h('span', { class: 'setting-description' }, item.signedIn ? `Signed in · kept ${item.lastUsed}` : 'Signed out')), signOut, remove));
+    }
+    const empty = h('p', { class: 'settings-note' }, 'No signed-in sites yet. Take control of the agent’s browser, sign in to a site, and choose Keep me signed in.');
+    return h('div', { class: 'settings-stack' }, h('section', {}, h('h3', { class: 'settings-section-title' }, 'Signed-in sites'), ctx.state.signedInSites.length ? group : empty));
 }
 function network(ctx: AppContext, nav: SettingsNavigation): HTMLElement {
     const group = h('div', { class: 'settings-group reference-list network-permissions' });

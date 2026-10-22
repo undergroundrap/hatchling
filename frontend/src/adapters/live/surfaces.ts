@@ -12,6 +12,7 @@ import { ArtifactShelf, fileFormat, imageFromUrl } from './artifacts.js';
 import { BrowserDesk } from './browser.js';
 import type { LiveClient, Reply } from './client.js';
 import { switching } from './control.js';
+import { PROFILES_FAILED, PROFILES_OFF } from './profiles.js';
 import type { ActionRefusal, AgentState, ArtifactRefusal, BrowserFailure, ControlRefusal, DeliveryRefusal, FileContent, OwnerInput, UiAction, UiActionResult, UiEventBody } from './protocol/generated.js';
 /** The avatar and the status line show exactly what the broker reported. */
 const TURNS: Readonly<Record<AgentState, TurnState>> = { idle: 'idle', working: 'working', awaiting_approval: 'awaiting', paused: 'interrupted', stalled: 'stalled' };
@@ -231,6 +232,21 @@ export class Surfaces {
                 return { ok: true, message: 'Done. The page after it follows.' };
             if (result.result === 'input_failed' && result.session_id === sessionId)
                 return failed(INPUT_FAILURES[result.failure]);
+            return this.#refusal(sessionId, result);
+        });
+    }
+    /** Keep the sign-in of a browser the user drives: its sites open signed in for the agent from now on. */
+    keepSignedIn(sessionId: string): Promise<CommandResult> {
+        const unready = this.#unready(sessionId, 'user');
+        if (unready !== undefined)
+            return Promise.resolve(unready);
+        return this.#ask({ action: 'keep_signed_in', session_id: sessionId }, result => {
+            if (result.result === 'signed_in_kept' && result.session_id === sessionId)
+                return { ok: true, message: `Kept. The agent opens ${result.profile.sites.join(', ')} signed in from now on, in a browser of its own. Sign out in Settings, under Signed-in sites.` };
+            if (result.result === 'profiles' && result.outcome.result === 'off')
+                return failed(PROFILES_OFF);
+            if (result.result === 'profiles' && result.outcome.result === 'failed')
+                return failed(PROFILES_FAILED);
             return this.#refusal(sessionId, result);
         });
     }

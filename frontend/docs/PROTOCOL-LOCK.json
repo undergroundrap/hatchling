@@ -7,7 +7,7 @@
   "files": {
     "src/protocol/codec.ts": "a1270292f3f6cf55c7718e400b8b5bf0e42c0ff1c1556c7c450a3dc9fcb851ad",
     "src/protocol/identity-document.ts": "401cb95b852cb78e8119d85971286fe141533f94666fe6a5d3e65607734f0924",
-    "src/protocol/models.ts": "36fe96b2c0aa2df5e3819ca127216fb8d40410cb763a0dbb7358acbe48972db2",
+    "src/protocol/models.ts": "b198dbe8b86a1e8fbdd8d5977d3df2fd7462aec7ee9b0da45ec20123e6ce99ba",
     "src/protocol/rules.ts": "6ae575eed661d202f316ec911d1787cb0b2c2a0b084946d8177dd00f887a4bfa"
   },
   "history": [
@@ -38,6 +38,13 @@
       "from": "42f626e570f79c2082ac8adbab279a9164319e716df549c7581afa00036c146c",
       "to": "36fe96b2c0aa2df5e3819ca127216fb8d40410cb763a0dbb7358acbe48972db2",
       "change": "Command gains browser.click, browser.key and browser.scroll (with BrowserKey): the user's own input to a live page they drive. Approved by the maintainer, 2026-10-21. All three are human-only."
+    },
+    {
+      "date": "2026-10-22",
+      "file": "src/protocol/models.ts",
+      "from": "36fe96b2c0aa2df5e3819ca127216fb8d40410cb763a0dbb7358acbe48972db2",
+      "to": "b198dbe8b86a1e8fbdd8d5977d3df2fd7462aec7ee9b0da45ec20123e6ce99ba",
+      "change": "Command gains browser.keep-signed-in, profile.sign-out and profile.delete, and AppState gains signedInSites (with SignedInSite): the user keeps the sign-in of a browser they drive, and signs out of or deletes it in Settings (WO-030). Approved by the maintainer, 2026-10-22. All three are human-only."
     }
   ]
 }
