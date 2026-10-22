@@ -11,6 +11,15 @@
 //! (`HATCHLING_BROWSER_CONTROLLER`) is Hatchling's own program, like the
 //! agent's binary. Fonts (`HATCHLING_BROWSER_FONTS`) are a host directory
 //! the cell sees read-only; without them the browser can't lay out text.
+//!
+//! The operator may name certificate authorities the browser trusts beside
+//! its own (`HATCHLING_BROWSER_CA`, a PEM file): an internal or corporate
+//! CA. The broker reads them once, at start, and the cell is given only
+//! their public keys' SHA-256 ([`ca_key`]): Chromium loads a site whose
+//! chain holds one of those keys whatever else its certificates say, so a
+//! key named here is trusted as fully as the operator's own. The proxy's
+//! checks stay as they are: it's still only the sites a session holds that
+//! the browser reaches at all.
 
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
@@ -19,6 +28,12 @@ use crate::Error;
 use crate::browser_proxy::RELAY_PORT;
 use crate::cell::{BrowserDirs, CellLimits};
 use crate::environment as env;
+
+/// The most certificate authorities the operator may name.
+pub const MAX_BROWSER_CAS: usize = 8;
+
+/// The largest file of them, in bytes.
+pub const MAX_BROWSER_CA_BYTES: u64 = 64 * 1024;
 
 /// A browser cell's memory, as a whole: 2 GiB.
 pub const BROWSER_MEMORY: u64 = 2 * 1024 * 1024 * 1024;
@@ -73,6 +88,9 @@ pub struct BrowserSettings {
     sha256: String,
     controller: PathBuf,
     fonts: Option<PathBuf>,
+    /// The operator's certificate authorities, by their keys' SHA-256 in
+    /// standard base64.
+    ca_keys: Vec<String>,
 }
 
 impl BrowserSettings {
@@ -90,11 +108,13 @@ impl BrowserSettings {
         let sha256 = trimmed(get(env::HATCHLING_BROWSER_SHA256.name));
         let controller = trimmed(get(env::HATCHLING_BROWSER_CONTROLLER.name));
         let fonts = trimmed(get(env::HATCHLING_BROWSER_FONTS.name));
+        let ca = trimmed(get(env::HATCHLING_BROWSER_CA.name));
         let Some(browser) = browser else {
             for (key, value) in [
                 (env::HATCHLING_BROWSER_SHA256.name, &sha256),
                 (env::HATCHLING_BROWSER_CONTROLLER.name, &controller),
                 (env::HATCHLING_BROWSER_FONTS.name, &fonts),
+                (env::HATCHLING_BROWSER_CA.name, &ca),
             ] {
                 if value.is_some() {
                     return Err(invalid(key, "is set, but HATCHLING_BROWSER isn't"));
@@ -130,11 +150,16 @@ impl BrowserSettings {
         let fonts = fonts
             .map(|fonts| absolute(env::HATCHLING_BROWSER_FONTS.name, &fonts))
             .transpose()?;
+        let ca_keys = match ca {
+            Some(ca) => ca_keys(&absolute(env::HATCHLING_BROWSER_CA.name, &ca)?)?,
+            None => Vec::new(),
+        };
         Ok(Some(Self {
             browser,
             sha256,
             controller,
             fonts,
+            ca_keys,
         }))
     }
 
@@ -176,6 +201,7 @@ impl BrowserSettings {
                 .to_owned(),
             fonts: self.fonts.clone(),
             nss: nss_modules(Path::is_file),
+            ca_keys: self.ca_keys.clone(),
             relay: RELAY_PORT,
             handoff,
         }
@@ -191,6 +217,117 @@ pub fn browser_limits() -> CellLimits {
         memory: Some(BROWSER_MEMORY),
         ..CellLimits::default()
     }
+}
+
+/// The keys of the certificate authorities in the PEM file at `path`, each
+/// its public key's SHA-256 in standard base64 ([`ca_key`]).
+///
+/// # Errors
+///
+/// [`Error::InvalidConfig`] naming `HATCHLING_BROWSER_CA`: a file that
+/// can't be read or is past [`MAX_BROWSER_CA_BYTES`], one with no
+/// certificate or more than [`MAX_BROWSER_CAS`], or a certificate that
+/// doesn't parse.
+fn ca_keys(path: &Path) -> Result<Vec<String>, Error> {
+    use std::io::Read as _;
+    let key = env::HATCHLING_BROWSER_CA.name;
+    let file = std::fs::File::open(path).map_err(|_| invalid(key, "can't be read"))?;
+    let mut pem = String::new();
+    file.take(MAX_BROWSER_CA_BYTES + 1)
+        .read_to_string(&mut pem)
+        .map_err(|_| invalid(key, "isn't readable text"))?;
+    if u64::try_from(pem.len()).map_or(true, |len| len > MAX_BROWSER_CA_BYTES) {
+        return Err(invalid(key, "is past 64 KiB"));
+    }
+    let certificates = pem_certificates(&pem)
+        .ok_or_else(|| invalid(key, "holds a certificate that isn't base64"))?;
+    if certificates.is_empty() {
+        return Err(invalid(key, "holds no certificate"));
+    }
+    if certificates.len() > MAX_BROWSER_CAS {
+        return Err(invalid(key, "holds more than 8 certificates"));
+    }
+    certificates
+        .iter()
+        .map(|der| {
+            ca_key(der).ok_or_else(|| invalid(key, "holds a certificate that doesn't parse"))
+        })
+        .collect()
+}
+
+/// The DER of each `CERTIFICATE` block in `pem`, in order; `None` if one
+/// isn't base64.
+fn pem_certificates(pem: &str) -> Option<Vec<Vec<u8>>> {
+    use base64::Engine as _;
+    const BEGIN: &str = "-----BEGIN CERTIFICATE-----";
+    const END: &str = "-----END CERTIFICATE-----";
+    let mut certificates = Vec::new();
+    let mut rest = pem;
+    while let Some(start) = rest.find(BEGIN) {
+        let after = rest.get(start + BEGIN.len()..)?;
+        let end = after.find(END)?;
+        let body: String = after
+            .get(..end)?
+            .chars()
+            .filter(|c| !c.is_ascii_whitespace())
+            .collect();
+        certificates.push(
+            base64::engine::general_purpose::STANDARD
+                .decode(body)
+                .ok()?,
+        );
+        rest = after.get(end + END.len()..)?;
+    }
+    Some(certificates)
+}
+
+/// A certificate's public key, as Chromium names one it's told to trust:
+/// the SHA-256 of its `SubjectPublicKeyInfo`, in standard base64. `None`
+/// if `der` isn't a certificate.
+#[must_use]
+pub fn ca_key(der: &[u8]) -> Option<String> {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    // Certificate ::= SEQUENCE { tbsCertificate SEQUENCE { [0] version
+    // OPTIONAL, serial, signature, issuer, validity, subject,
+    // subjectPublicKeyInfo, ... }, ... }
+    let (certificate, _, _) = der_element(der, 0x30)?;
+    let (tbs, _, _) = der_element(certificate, 0x30)?;
+    let mut fields = tbs;
+    if fields.first() == Some(&0xa0) {
+        fields = der_element(fields, 0xa0)?.2;
+    }
+    for tag in [0x02, 0x30, 0x30, 0x30, 0x30] {
+        fields = der_element(fields, tag)?.2;
+    }
+    let (_, spki, _) = der_element(fields, 0x30)?;
+    Some(base64::engine::general_purpose::STANDARD.encode(sha2::Sha256::digest(spki)))
+}
+
+/// The DER element at the start of `der`, if its tag is `tag`: its
+/// content, the whole element, and what follows it.
+fn der_element(der: &[u8], tag: u8) -> Option<(&[u8], &[u8], &[u8])> {
+    let (&first, rest) = der.split_first()?;
+    if first != tag {
+        return None;
+    }
+    let (&head, rest) = rest.split_first()?;
+    let (len, rest) = if head < 0x80 {
+        (usize::from(head), rest)
+    } else {
+        let width = usize::from(head & 0x7f);
+        if width == 0 || width > 3 {
+            return None;
+        }
+        let (digits, rest) = rest.split_at_checked(width)?;
+        let len = digits
+            .iter()
+            .fold(0usize, |len, digit| (len << 8) | usize::from(*digit));
+        (len, rest)
+    };
+    let content = rest.get(..len)?;
+    let whole = der.get(..der.len() - rest.len() + len)?;
+    Some((content, whole, rest.get(len..)?))
 }
 
 /// `raw` as an absolute path, or the setting refused.
@@ -245,6 +382,168 @@ mod tests {
         ]
     }
 
+    /// Two certificate authorities, made with OpenSSL, and their keys'
+    /// SHA-256 as OpenSSL computes it
+    /// (`openssl x509 -pubkey | openssl pkey -pubin -outform der |
+    /// openssl dgst -sha256 -binary | base64`): an oracle of its own.
+    const EC_CA: &str = "-----BEGIN CERTIFICATE-----\nMIIBmTCCAT+gAwIBAgIURYIbgJQVZyzpiJZGU0EIjyEPKh8wCgYIKoZIzj0EAwIw\nITEfMB0GA1UEAwwWSGF0Y2hsaW5nIHRlc3QgQ0EgKEVDKTAgFw0yNjEwMjIxNTE5\nNTRaGA8yMTI2MDkyODE1MTk1NFowITEfMB0GA1UEAwwWSGF0Y2hsaW5nIHRlc3Qg\nQ0EgKEVDKTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABLMAi2r9z/A9ATfK4CN6\nLQ8GhA2DU4nC5EoUc+ZUg+kLus8XYYpJDo5uVgeXOuJ1c3diPFcAUQ9N47Z2QZWP\n1byjUzBRMB0GA1UdDgQWBBSEW5BY8dSCN7f9iYjX0JpwfsBHbzAfBgNVHSMEGDAW\ngBSEW5BY8dSCN7f9iYjX0JpwfsBHbzAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49\nBAMCA0gAMEUCIBHsUmSpPlJ/Oiw1wZ+1qUUwg/wDxY5y3bD5+Mu6G4hCAiEAxAn+\nisH+nS4UctO33A5BZ13hpO8qPgHbeJeIJbjT5BI=\n-----END CERTIFICATE-----";
+    const EC_CA_KEY: &str = "j5vFg5J9HEaJMQfN82FoLOYU6/odDW9zY6eNDAkYxGE=";
+    const RSA_CA: &str = "-----BEGIN CERTIFICATE-----\nMIIDJzCCAg+gAwIBAgIUW3gK3yawyMqErQU1dSDNz+aq8zMwDQYJKoZIhvcNAQEL\nBQAwIjEgMB4GA1UEAwwXSGF0Y2hsaW5nIHRlc3QgQ0EgKFJTQSkwIBcNMjYxMDIy\nMTUxOTU0WhgPMjEyNjA5MjgxNTE5NTRaMCIxIDAeBgNVBAMMF0hhdGNobGluZyB0\nZXN0IENBIChSU0EpMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvFqA\ny9JdopLwliCCMDW5XVRmZu/eWZR+/7hzwSCx+pGaZJf/AI4+tHmZXIVZJdcNROf6\nqKyc8C7XSknCVYbQPbGwHl2dsYhUGDKAWVqyKLha7hPc2s+5Mte/7FpjT/UxaccF\nvZg7QyG42SC9Yw3cK5GouUiF95SQLRl038DwnaAo9qdakOtCvecUh2jYvNpK10ja\nXI3hNHDDcZx2o2KK+9uFzIB+8vmBw/w7s6uA6fydrgxqeSKLa6EZfyd//HXdkdyx\nJ8/9gkUJnbBawfpsquGvK/GYhHmtYAcXvC9nLlkHN9JpmiAYtjPY8X6MyolOFOyY\nhZFB3cnnVHeiJUjqXwIDAQABo1MwUTAdBgNVHQ4EFgQUK7Iy52iCF9cXGlV8A5VE\nmnogr20wHwYDVR0jBBgwFoAUK7Iy52iCF9cXGlV8A5VEmnogr20wDwYDVR0TAQH/\nBAUwAwEB/zANBgkqhkiG9w0BAQsFAAOCAQEABihUFB7fC8mRCGg1x00P6kHCNUgq\np/ECOhxI3o66PdcwTHEFB9D1ozFknpvvHiXRzZU8LczzvcJclX42kukeXEAYCDKW\n6EYqxlTjiVycTlh5ryH/VNtaEeUrPET8CqvyozhBQqnUHYyUS/ORtIc423zC1hbh\nRbfil1OAV3GuLgNNut3bG+EqaK5W2YZU+p+LccKnRsuQdmjJtQyKrTEIxYXyGAew\nqgOY7Hj0sgqNh+ZCZ4QDUPFUostVQvIX7DO6BxnKqqDG9pngjVYJUMgGKb7+BvoT\nIKVrMdYdaQ5FpsGhmwWByOBUVJNNOWWjK9hzmNDEzFoizVuLRdNjJ4POTA==\n-----END CERTIFICATE-----";
+    const RSA_CA_KEY: &str = "9X/sES7PZwM7Uktzn+dmq1vHdqK/qYvHY75DLPN9xiU=";
+
+    /// `pem`, written to a file of its own in a scratch directory.
+    fn pem_file(name: &str, pem: &str) -> (crate::api_auth::tests::Scratch, PathBuf) {
+        let scratch = crate::api_auth::tests::scratch(&format!("browser-ca-{name}"));
+        std::fs::create_dir_all(&scratch.0).unwrap();
+        let path = scratch.0.join("ca.pem");
+        std::fs::write(&path, pem).unwrap();
+        (scratch, path)
+    }
+
+    #[test]
+    fn the_operators_authorities_are_known_by_their_keys() {
+        use base64::Engine as _;
+        let der = |pem: &str| pem_certificates(pem).unwrap().remove(0);
+        assert_eq!(ca_key(&der(EC_CA)).as_deref(), Some(EC_CA_KEY));
+        assert_eq!(ca_key(&der(RSA_CA)).as_deref(), Some(RSA_CA_KEY));
+        let both = format!("{EC_CA}\n{RSA_CA}\n");
+        let (_scratch, path) = pem_file("both", &both);
+        let mut vars = full();
+        let path = path.display().to_string();
+        vars.push(("HATCHLING_BROWSER_CA", &path));
+        let settings = parse(&vars).unwrap().unwrap();
+        assert_eq!(settings.ca_keys, [EC_CA_KEY, RSA_CA_KEY]);
+        let dirs = settings.dirs(Path::new("/run/snapshot"), PathBuf::from("/run/h.sock"));
+        assert_eq!(
+            dirs.ca_keys,
+            [EC_CA_KEY, RSA_CA_KEY],
+            "the cell is told the keys alone"
+        );
+        assert!(
+            parse(&full()).unwrap().unwrap().ca_keys.is_empty(),
+            "none unless named"
+        );
+        // Not a certificate: a truncated one, another element, nothing.
+        let ec = der(EC_CA);
+        for broken in [
+            ec.get(..ec.len() / 2).unwrap(),
+            ec.get(1..).unwrap(),
+            &[0x30, 0x00][..],
+            &[][..],
+            &[0x30, 0x84, 0, 0, 0, 1][..],
+        ] {
+            assert_eq!(ca_key(broken), None, "{broken:?}");
+        }
+        let element = der_element(&[0x04, 0x02, 0xaa, 0xbb, 0x05], 0x04).unwrap();
+        assert_eq!(
+            element,
+            (
+                &[0xaa, 0xbb][..],
+                &[0x04, 0x02, 0xaa, 0xbb][..],
+                &[0x05][..]
+            )
+        );
+        assert_eq!(der_element(&[0x04, 0x02, 0xaa], 0x04), None, "short");
+        let long = [&[0x04, 0x81, 0x80][..], &[0u8; 0x80][..]].concat();
+        assert_eq!(
+            der_element(&long, 0x04).map(|(content, _, _)| content.len()),
+            Some(0x80)
+        );
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(EC_CA_KEY)
+                .map(|key| key.len()),
+            Ok(32)
+        );
+    }
+
+    #[test]
+    fn a_file_of_authorities_is_read_to_their_keys() {
+        let (_scratch, path) = pem_file(
+            "direct",
+            &format!(
+                "{RSA_CA}
+{EC_CA}
+"
+            ),
+        );
+        assert_eq!(
+            ca_keys(&path).unwrap(),
+            [RSA_CA_KEY, EC_CA_KEY],
+            "in the file's order"
+        );
+        assert!(ca_keys(Path::new("/nonexistent/ca.pem")).is_err());
+    }
+
+    #[test]
+    fn the_operators_authorities_are_refused_unless_a_readable_short_list_of_certificates() {
+        let refused_with = |name: &str, pem: &str| {
+            let (_scratch, path) = pem_file(name, pem);
+            let mut vars = full();
+            let path = path.display().to_string();
+            vars.push(("HATCHLING_BROWSER_CA", &path));
+            refused(&vars)
+        };
+        let key = "HATCHLING_BROWSER_CA";
+        assert_eq!(refused_with("none", "no pem here").0, key);
+        assert!(
+            refused_with("none2", "no pem here")
+                .1
+                .contains("no certificate")
+        );
+        assert!(
+            refused_with(
+                "bad64",
+                "-----BEGIN CERTIFICATE-----\n!!\n-----END CERTIFICATE-----\n"
+            )
+            .1
+            .contains("base64")
+        );
+        assert!(
+            refused_with(
+                "notcert",
+                "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n"
+            )
+            .1
+            .contains("doesn't parse")
+        );
+        let nine = format!("{EC_CA}\n").repeat(MAX_BROWSER_CAS + 1);
+        assert!(refused_with("nine", &nine).1.contains("more than 8"));
+        let eight = format!("{EC_CA}\n").repeat(MAX_BROWSER_CAS);
+        let (_scratch, path) = pem_file("eight", &eight);
+        let mut vars = full();
+        let path = path.display().to_string();
+        vars.push(("HATCHLING_BROWSER_CA", &path));
+        assert_eq!(
+            parse(&vars).unwrap().unwrap().ca_keys.len(),
+            MAX_BROWSER_CAS
+        );
+        let big = format!(
+            "{EC_CA}\n{}",
+            " ".repeat(usize::try_from(MAX_BROWSER_CA_BYTES).unwrap())
+        );
+        assert!(refused_with("big", &big).1.contains("64 KiB"));
+        assert_eq!(
+            refused(
+                &[
+                    full(),
+                    vec![("HATCHLING_BROWSER_CA", "/nonexistent/ca.pem")]
+                ]
+                .concat()
+            ),
+            (key, String::from("can't be read"))
+        );
+        assert_eq!(
+            refused(&[full(), vec![("HATCHLING_BROWSER_CA", "ca.pem")]].concat()).0,
+            key,
+            "not absolute"
+        );
+        assert_eq!(
+            refused(&[("HATCHLING_BROWSER_CA", "/srv/ca.pem")]),
+            (key, String::from("is set, but HATCHLING_BROWSER isn't"))
+        );
+    }
+
     #[test]
     fn a_browser_is_configured_with_its_pin_its_controller_and_its_fonts() {
         assert_eq!(parse(&[]).unwrap(), None, "no browser, no session");
@@ -276,6 +575,7 @@ mod tests {
                 browser_name: String::from("chrome-headless-shell"),
                 fonts: Some(PathBuf::from("/usr/share/fonts")),
                 nss: Vec::new(),
+                ca_keys: Vec::new(),
                 relay: RELAY_PORT,
                 handoff: PathBuf::from("/run/h.sock"),
             }
@@ -389,6 +689,7 @@ mod tests {
             sha256: sha.to_owned(),
             controller: PathBuf::from("/c"),
             fonts: None,
+            ca_keys: Vec::new(),
         };
         assert_eq!(settings(&pinned).bundle(), dir);
         let snapshot = settings(&pinned).snapshot().unwrap();
