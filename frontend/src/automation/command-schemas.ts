@@ -72,6 +72,89 @@ export const commandSchemas: Readonly<Record<Command['type'], ActionSchema>> = {
         ],
         "additionalProperties": false
     },
+    "browser.click": {
+        "type": "object",
+        "properties": {
+            "type": {
+                "type": "string",
+                "enum": [
+                    "browser.click"
+                ]
+            },
+            "id": {
+                "type": "string"
+            },
+            "x": {
+                "type": "number"
+            },
+            "y": {
+                "type": "number"
+            }
+        },
+        "required": [
+            "type",
+            "id",
+            "x",
+            "y"
+        ],
+        "additionalProperties": false
+    },
+    "browser.key": {
+        "type": "object",
+        "properties": {
+            "type": {
+                "type": "string",
+                "enum": [
+                    "browser.key"
+                ]
+            },
+            "id": {
+                "type": "string"
+            },
+            "key": {
+                "type": "string",
+                "enum": [
+                    "enter",
+                    "tab",
+                    "escape",
+                    "backspace",
+                    "arrow_up",
+                    "arrow_down",
+                    "arrow_left",
+                    "arrow_right"
+                ]
+            }
+        },
+        "required": [
+            "type",
+            "id",
+            "key"
+        ],
+        "additionalProperties": false
+    },
+    "browser.scroll": {
+        "type": "object",
+        "properties": {
+            "type": {
+                "type": "string",
+                "enum": [
+                    "browser.scroll"
+                ]
+            },
+            "id": {
+                "type": "string"
+            },
+            "down": {
+                "type": "boolean"
+            }
+        },
+        "required": [
+            "type",
+            "id",
+            "down"
+        ],
+        "additionalProperties": false
+    },
     "identity.avatar": {
         "type": "object",
         "properties": {

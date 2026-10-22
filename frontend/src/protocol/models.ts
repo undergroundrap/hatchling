@@ -440,6 +440,8 @@ export interface AppState {
     secureItems: string[];
 }
 export type Scenario = 'browser-watch' | 'bundle-files' | 'research' | 'purchase' | 'price-change' | 'unknown-payment' | 'captcha' | 'persistent-captcha' | 'fix-ci' | 'channels' | 'secure' | 'choices' | 'mixed-stream' | 'interrupted' | 'stalled';
+/** The keys the user may press on a page they drive: the ones a form needs. */
+export type BrowserKey = 'enter' | 'tab' | 'escape' | 'backspace' | 'arrow_up' | 'arrow_down' | 'arrow_left' | 'arrow_right';
 export type Command = {
     type: 'settings.interface-size';
     value: InterfaceSize;
@@ -451,6 +453,19 @@ export type Command = {
     type: 'browser.input';
     id: Id;
     text: string;
+} | {
+    type: 'browser.click';
+    id: Id;
+    x: number;
+    y: number;
+} | {
+    type: 'browser.key';
+    id: Id;
+    key: BrowserKey;
+} | {
+    type: 'browser.scroll';
+    id: Id;
+    down: boolean;
 } | {
     type: 'identity.avatar';
     value: string;

@@ -85,6 +85,14 @@ export class LiveAdapter implements ProtocolAdapter {
                 return this.#surfaces.giveBack(command.id);
             case 'browser.cancel':
                 return this.#surfaces.stop(command.id);
+            case 'browser.click':
+                return this.#surfaces.input(command.id, { input: 'click', x: command.x, y: command.y });
+            case 'browser.input':
+                return this.#surfaces.input(command.id, { input: 'type', text: command.text });
+            case 'browser.key':
+                return this.#surfaces.input(command.id, { input: 'key', key: command.key });
+            case 'browser.scroll':
+                return this.#surfaces.input(command.id, { input: 'scroll', down: command.down });
             case 'settings.theme':
                 return this.#prefer({ theme: command.value });
             case 'settings.accent':

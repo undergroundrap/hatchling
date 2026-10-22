@@ -4,14 +4,15 @@
 // Every command is checked again when it is sent, against what the broker last
 // said, never against the screen it was pressed on: a version that is no longer
 // listed is not shared, and a browser that is changing hands takes no command
-// but Stop. The broker checks once more and has the last word. Nothing changes
+// but Stop. The user's own input goes only to a browser they drive. The broker
+// checks once more and has the last word. Nothing changes
 // here until the broker answers; a lost answer is unknown, never a success.
 import type { ActivityThread, Artifact, ArtifactFormat, BrowserTask, CommandResult, Message, TurnState } from '../../protocol/models.js';
 import { ArtifactShelf, fileFormat, imageFromUrl } from './artifacts.js';
 import { BrowserDesk } from './browser.js';
 import type { LiveClient, Reply } from './client.js';
 import { switching } from './control.js';
-import type { ActionRefusal, AgentState, ArtifactRefusal, ControlRefusal, DeliveryRefusal, FileContent, UiAction, UiActionResult, UiEventBody } from './protocol/generated.js';
+import type { ActionRefusal, AgentState, ArtifactRefusal, BrowserFailure, ControlRefusal, DeliveryRefusal, FileContent, OwnerInput, UiAction, UiActionResult, UiEventBody } from './protocol/generated.js';
 /** The avatar and the status line show exactly what the broker reported. */
 const TURNS: Readonly<Record<AgentState, TurnState>> = { idle: 'idle', working: 'working', awaiting_approval: 'awaiting', paused: 'interrupted', stalled: 'stalled' };
 const ACTION_REFUSALS: Readonly<Record<ActionRefusal, string>> = {
@@ -39,6 +40,15 @@ const CONTROL_REFUSALS: Readonly<Record<ControlRefusal, string>> = {
     switching: 'Control is changing hands. Wait until it settles.',
     not_allowed: 'Control cannot move that way right now.',
     stale_frame: 'The page changed since you last saw it. Look at it again before handing back.',
+};
+const INPUT_FAILURES: Readonly<Record<BrowserFailure, string>> = {
+    no_page: 'No page is open yet.',
+    unknown_element: 'That part of the page is gone. Look at the page again.',
+    not_possible: 'The page could not take that. A click must be on the page, and typed text at most 4096 characters.',
+    timeout: 'The page did not finish in time.',
+    load_failed: 'The page could not be loaded.',
+    browser_gone: 'The browser stopped working, so it was closed.',
+    bad_command: 'The browser did not understand that, so nothing happened.',
 };
 const UNEXPECTED = 'Hatchling answered with something else, so this is not confirmed.';
 function megabytes(bytes: number): string {
@@ -187,16 +197,38 @@ export class Surfaces {
     }
     /** Ask for a handoff, from the state it starts from. Control moves only when the broker reports it. */
     #control(sessionId: string, from: 'agent' | 'user', action: UiAction, accepted: string): Promise<CommandResult> {
+        const unready = this.#unready(sessionId, from);
+        if (unready !== undefined)
+            return Promise.resolve(unready);
+        return this.#ask(action, result => this.#controlAnswer(sessionId, result, accepted));
+    }
+    /** Why a command for a browser driven by `from` cannot be sent now, if it cannot. */
+    #unready(sessionId: string, from: 'agent' | 'user'): CommandResult | undefined {
         const control = this.desk.control(sessionId);
         if (control === undefined)
-            return Promise.resolve(failed(CONTROL_REFUSALS.unknown_session));
+            return failed(CONTROL_REFUSALS.unknown_session);
         if (!this.desk.live(sessionId))
-            return Promise.resolve(failed(CONTROL_REFUSALS.finished));
+            return failed(CONTROL_REFUSALS.finished);
         if (switching(control))
-            return Promise.resolve(failed(CONTROL_REFUSALS.switching));
+            return failed(CONTROL_REFUSALS.switching);
         if (control !== from)
-            return Promise.resolve(failed(from === 'agent' ? 'You already have control.' : 'Hatchling already has control.'));
-        return this.#ask(action, result => this.#controlAnswer(sessionId, result, accepted));
+            return failed(from === 'agent' ? 'You already have control.' : 'Hatchling already has control.');
+        return undefined;
+    }
+    /** The user's own input to a browser they drive. A frame of the page after it follows. */
+    input(sessionId: string, input: OwnerInput): Promise<CommandResult> {
+        const unready = this.#unready(sessionId, 'user');
+        if (unready !== undefined)
+            return Promise.resolve(unready);
+        if (input.input === 'click' && !(Number.isInteger(input.x) && Number.isInteger(input.y) && input.x >= 0 && input.y >= 0))
+            return Promise.resolve(failed(INPUT_FAILURES.not_possible));
+        return this.#ask({ action: 'browser_input', session_id: sessionId, input }, result => {
+            if (result.result === 'input_done' && result.session_id === sessionId)
+                return { ok: true, message: 'Done. The page after it follows.' };
+            if (result.result === 'input_failed' && result.session_id === sessionId)
+                return failed(INPUT_FAILURES[result.failure]);
+            return this.#refusal(sessionId, result);
+        });
     }
     #controlAnswer(sessionId: string, result: UiActionResult, accepted: string): CommandResult | undefined {
         return result.result === 'control_accepted' && result.session_id === sessionId ? { ok: true, message: accepted } : this.#refusal(sessionId, result);
