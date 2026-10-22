@@ -253,6 +253,9 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.98.1
+          # As rust-toolchain.toml lists them: installed now, not by the
+          # first cargo, which conflicts with the runner's own rustfmt.
+          components: rustfmt, clippy
 
       - name: Install Node.js
         uses: actions/setup-node@v4
