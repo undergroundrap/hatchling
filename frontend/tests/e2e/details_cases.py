@@ -9,13 +9,13 @@ class DetailsCases:
         self.page.get_by_role('button', name='Open evidence: Review sample document collection', exact=True).click()
         return self.page.get_by_role('dialog', name='Review sample document collection', exact=True)
 
-    def test_45_white_default_and_avatar_are_independent_of_appearance_mode(self):
+    def test_45_white_and_dark_defaults_and_avatar_are_independent_of_appearance_mode(self):
         bubble = self.page.locator('.user-bubble').last
         self.assertEqual(bubble.evaluate('(el) => getComputedStyle(el).backgroundColor'), 'rgb(241, 241, 241)')
         self.assertEqual(self.page.locator('body').evaluate('(el) => getComputedStyle(el).backgroundColor'), 'rgb(24, 24, 24)')
         self.open_settings()
         expect(self.page.get_by_role('radio', name='White', exact=True)).to_be_checked()
-        expect(self.page.get_by_role('radio', name='System mode', exact=True)).to_be_checked()
+        expect(self.page.get_by_role('radio', name='Dark mode', exact=True)).to_be_checked()
         self.page.get_by_role('radio', name='Match my avatar', exact=True).click()
         expect(self.page.get_by_role('radio', name='Match my avatar', exact=True)).to_be_checked()
         self.page.keyboard.press('Escape')
