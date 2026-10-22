@@ -244,7 +244,12 @@ class ApprovalTests(unittest.TestCase):
         self.capture('14-short-window')
 
     def test_15_light_theme_uses_the_same_layout_and_readable_status(self):
+        # Dark is the default whatever the system says: choose light.
         self.page.emulate_media(color_scheme='light')
+        self.page.locator('#rail-more').click()
+        self.page.locator('.rail-more').get_by_role('button', name='Settings', exact=True).click()
+        self.page.get_by_role('radio', name='Light mode', exact=True).click()
+        self.page.keyboard.press('Escape')
         self.scenario()
         expect(self.page.locator('.task-approval-record')).to_contain_text('Pending approval')
         self.assert_no_overflow()
