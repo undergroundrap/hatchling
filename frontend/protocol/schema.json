@@ -1990,6 +1990,45 @@
           "type": "object"
         },
         {
+          "description": "The owner is driving the browser, or taking it: nothing was done.\nTry again later.",
+          "properties": {
+            "result": {
+              "const": "owner_driving",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The owner drove the browser and has handed it back: what was asked\nwasn't done. This is the page now, which may have changed under the\nagent.",
+          "properties": {
+            "refused": {
+              "description": "As [`BrowserResult::Page`]'s.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "result": {
+              "const": "handed_back",
+              "type": "string"
+            },
+            "snapshot": {
+              "$ref": "#/$defs/PageSnapshot",
+              "description": "The page as it is now."
+            }
+          },
+          "required": [
+            "result",
+            "snapshot",
+            "refused"
+          ],
+          "type": "object"
+        },
+        {
           "description": "The operator hasn't set up a browser.",
           "properties": {
             "result": {

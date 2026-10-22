@@ -694,27 +694,7 @@ fn browser_answer(result: Result<BrowserResult, crate::Error>) -> ToolOutput {
 fn browser_output(result: BrowserResult) -> ToolOutput {
     match result {
         BrowserResult::Page { snapshot, refused } => {
-            let mut page = json!({
-                "url": snapshot.url,
-                "title": snapshot.title,
-                "text": snapshot.text,
-                "elements": snapshot
-                    .elements
-                    .into_iter()
-                    .map(|element| json!({ "id": element.id, "role": element.role, "name": element.name }))
-                    .collect::<Vec<_>>(),
-                "truncated": snapshot.truncated,
-            });
-            if !refused.is_empty() {
-                if let Some(page) = page.as_object_mut() {
-                    page.insert(String::from("refused_sites"), json!(refused));
-                    page.insert(
-                        String::from("note"),
-                        json!("the browser was refused these sites, which you haven't been allowed: the page may look incomplete without them; ask for one it needs with browser_allow"),
-                    );
-                }
-            }
-            ToolOutput::Ok(page)
+            ToolOutput::Ok(page_output(snapshot, &refused))
         }
         BrowserResult::Waiting { site, request } => ToolOutput::Ok(json!({
             "waiting": site,
@@ -729,6 +709,19 @@ fn browser_output(result: BrowserResult) -> ToolOutput {
         BrowserResult::Stopped => ToolOutput::Err(String::from(
             "the owner stopped the browser: don't use it again unless they ask",
         )),
+        BrowserResult::OwnerDriving => ToolOutput::Err(String::from(
+            "the owner is using the browser: nothing was done; try again later",
+        )),
+        BrowserResult::HandedBack { snapshot, refused } => {
+            let mut page = page_output(snapshot, &refused);
+            if let Some(page) = page.as_object_mut() {
+                page.insert(
+                    String::from("handed_back"),
+                    json!("the owner used the browser and handed it back: what you asked wasn't done, and this is the page now"),
+                );
+            }
+            ToolOutput::Ok(page)
+        }
         BrowserResult::Denied { site } => ToolOutput::Err(format!("the owner said no to {site}")),
         BrowserResult::Expired { site } => ToolOutput::Err(format!(
             "the owner didn't decide on {site} in time; open it again to ask again"
@@ -745,6 +738,32 @@ fn browser_output(result: BrowserResult) -> ToolOutput {
             "there's no browser: the operator hasn't set one up",
         )),
     }
+}
+
+/// A page as the model is told it: its text and elements, and the sites
+/// the browser was refused, with a note, if there were any.
+fn page_output(snapshot: hatchling_core::browser::PageSnapshot, refused: &[String]) -> Value {
+    let mut page = json!({
+        "url": snapshot.url,
+        "title": snapshot.title,
+        "text": snapshot.text,
+        "elements": snapshot
+            .elements
+            .into_iter()
+            .map(|element| json!({ "id": element.id, "role": element.role, "name": element.name }))
+            .collect::<Vec<_>>(),
+        "truncated": snapshot.truncated,
+    });
+    if !refused.is_empty() {
+        if let Some(page) = page.as_object_mut() {
+            page.insert(String::from("refused_sites"), json!(refused));
+            page.insert(
+                String::from("note"),
+                json!("the browser was refused these sites, which you haven't been allowed: the page may look incomplete without them; ask for one it needs with browser_allow"),
+            );
+        }
+    }
+    page
 }
 
 /// What a browser failure tells the model.
@@ -2200,6 +2219,42 @@ mod tests {
     }
 
     #[test]
+    fn a_page_is_told_with_the_sites_refused_and_a_note_only_if_there_were_any() {
+        let snapshot = hatchling_core::browser::PageSnapshot {
+            url: String::from("https://a.example/"),
+            title: String::from("A"),
+            ..hatchling_core::browser::PageSnapshot::default()
+        };
+        let page = page_output(snapshot.clone(), &[]);
+        assert_eq!(page.get("title"), Some(&json!("A")));
+        assert_eq!(page.get("refused_sites"), None);
+        assert_eq!(page.get("note"), None);
+        let page = page_output(snapshot, &[String::from("cdn.example:443")]);
+        assert_eq!(page.get("refused_sites"), Some(&json!(["cdn.example:443"])));
+        let note = page.get("note").and_then(Value::as_str).unwrap_or_default();
+        assert!(note.contains("browser_allow"), "{note}");
+    }
+
+    #[test]
+    fn a_page_handed_back_is_the_page_with_word_of_it() {
+        let ToolOutput::Ok(page) = browser_output(BrowserResult::HandedBack {
+            snapshot: hatchling_core::browser::PageSnapshot {
+                url: String::from("https://a.example/"),
+                ..hatchling_core::browser::PageSnapshot::default()
+            },
+            refused: Vec::new(),
+        }) else {
+            unreachable!("a page is told");
+        };
+        assert_eq!(page.get("url"), Some(&json!("https://a.example/")));
+        let said = page
+            .get("handed_back")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        assert!(said.contains("wasn't done"), "{said}");
+    }
+
+    #[test]
     fn browser_close_closes_it() {
         let (output, op) = browse(
             &|agent| Box::new(BrowserCloseTool::new(agent)),
@@ -2258,6 +2313,10 @@ mod tests {
             ),
             (BrowserResult::Off, "hasn't set one up"),
             (BrowserResult::Stopped, "the owner stopped the browser"),
+            (
+                BrowserResult::OwnerDriving,
+                "the owner is using the browser",
+            ),
         ] {
             let ToolOutput::Err(text) = browser_output(result) else {
                 unreachable!("{says}");

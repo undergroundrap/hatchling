@@ -2436,6 +2436,20 @@ pub enum BrowserResult {
     /// The owner stopped the browser: it stays stopped for this session.
     #[serde(rename = "stopped")]
     Stopped,
+    /// The owner is driving the browser, or taking it: nothing was done.
+    /// Try again later.
+    #[serde(rename = "owner_driving")]
+    OwnerDriving,
+    /// The owner drove the browser and has handed it back: what was asked
+    /// wasn't done. This is the page now, which may have changed under the
+    /// agent.
+    #[serde(rename = "handed_back")]
+    HandedBack {
+        /// The page as it is now.
+        snapshot: crate::browser::PageSnapshot,
+        /// As [`BrowserResult::Page`]'s.
+        refused: Vec<String>,
+    },
     /// The operator hasn't set up a browser.
     #[serde(rename = "off")]
     Off,

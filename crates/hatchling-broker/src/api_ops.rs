@@ -37,14 +37,15 @@ use hatchling_core::CellId;
 use hatchling_core::messages::{ScheduleGrant, ScheduleOp};
 use hatchling_core::subagent::{ActivityEvent, SubagentEvent};
 use hatchling_core::ui::{
-    ActionRefusal, AgentState, ApiOutcome, ApiRequest, ChatAuthor, ChatMessage, Decision, UiAction,
-    UiActionResult, UiEventBody,
+    ActionRefusal, AgentState, ApiOutcome, ApiRequest, ChatAuthor, ChatMessage, ControlRefusal,
+    Decision, Handoff, UiAction, UiActionResult, UiEventBody,
 };
 use hatchling_scheduler::{Creator, Timestamp};
 use hatchling_vault::OpensStores;
 
 use crate::api_auth::Caller;
 use crate::api_stream::Bus;
+use crate::browser_board::OwnerAct;
 use crate::schedule_ops::{held_grants, list_schedules};
 use crate::skills::Skills;
 use crate::{Config, handle_schedule_op, handle_skill_op};
@@ -216,19 +217,48 @@ impl<'a> Ops<'a> {
                 }
                 self.decide(confirmation_id, *revision, digest, *decision)
             }
+            UiAction::TakeControl { session_id } => {
+                self.browser(caller.holds(&owner), OwnerAct::Take(session_id))
+            }
+            UiAction::ReturnControl {
+                session_id,
+                frame_sequence,
+            } => self.browser(
+                caller.holds(&owner),
+                OwnerAct::Return(session_id, *frame_sequence),
+            ),
             UiAction::StopBrowser { session_id } => {
-                // Only the owner stops the agent's browser (WO-029).
-                if !caller.holds(&owner) {
-                    return refused(ActionRefusal::NotGranted);
-                }
-                self.stop_browser(session_id)
+                self.browser(caller.holds(&owner), OwnerAct::Stop(session_id))
             }
             UiAction::OpenArtifact { .. }
             | UiAction::ShareArtifact { .. }
             | UiAction::AttachArtifact { .. }
-            | UiAction::SaveFile { .. }
-            | UiAction::TakeControl { .. }
-            | UiAction::ReturnControl { .. } => refused(ActionRefusal::Unavailable),
+            | UiAction::SaveFile { .. } => refused(ActionRefusal::Unavailable),
+        }
+    }
+
+    /// The owner's `act` on the agent's browser (WO-029), and the owner's
+    /// alone: refused unless the caller is the `owner`.
+    fn browser(&self, owner: bool, act: OwnerAct<'_>) -> (UiActionResult, ApiOutcome) {
+        if !owner {
+            return (
+                UiActionResult::Refused {
+                    reason: ActionRefusal::NotGranted,
+                },
+                ApiOutcome::Refused,
+            );
+        }
+        let board = crate::browser_board::board(self.config);
+        match act {
+            OwnerAct::Take(session_id) => {
+                control_answer(session_id, Handoff::Takeover, board.take(session_id))
+            }
+            OwnerAct::Return(session_id, seen) => control_answer(
+                session_id,
+                Handoff::HandBack,
+                board.hand_back(session_id, seen),
+            ),
+            OwnerAct::Stop(session_id) => self.stop_browser(session_id),
         }
     }
 
@@ -485,6 +515,31 @@ impl Audit {
             Err(error) => tracing::error!(%error, "cannot encode an API call's activity event"),
         }
         event
+    }
+}
+
+/// What a control action on `session_id` answers: `handoff` started, or
+/// why not.
+fn control_answer(
+    session_id: &str,
+    handoff: Handoff,
+    moved: Result<(), ControlRefusal>,
+) -> (UiActionResult, ApiOutcome) {
+    match moved {
+        Ok(()) => (
+            UiActionResult::ControlAccepted {
+                session_id: session_id.to_owned(),
+                handoff,
+            },
+            ApiOutcome::Served,
+        ),
+        Err(reason) => (
+            UiActionResult::ControlRefused {
+                session_id: session_id.to_owned(),
+                reason,
+            },
+            ApiOutcome::Refused,
+        ),
     }
 }
 
@@ -939,6 +994,103 @@ mod tests {
     }
 
     #[test]
+    fn only_the_owner_takes_a_browser_and_hands_it_back_from_the_latest_frame() {
+        let dir = scratch("take-browser");
+        let mut config = owner_config(Some(&dir.0.join("schedules").to_string_lossy()));
+        config.goals.grants = vec![GoalsAction::QueryGoals, GoalsAction::GoalCreate];
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let ops = Ops::new(&config, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        let owner = caller(&[goals("query-goals"), goals("goal-create"), local_send()]);
+        let narrow = caller(&[goals("query-goals"), local_send()]);
+        let mut replies = Replies::default();
+        let board = crate::browser_board::board(&config);
+        let _stopped = board.begin("browser-ctl", crate::browser_proxy::Sites::default());
+        let take = UiAction::TakeControl {
+            session_id: String::from("browser-ctl"),
+        };
+        let give = |frame_sequence| UiAction::ReturnControl {
+            session_id: String::from("browser-ctl"),
+            frame_sequence,
+        };
+        let not_granted = (
+            UiActionResult::Refused {
+                reason: ActionRefusal::NotGranted,
+            },
+            ApiOutcome::Refused,
+        );
+        assert_eq!(ops.handle(&narrow, &take, &mut replies), not_granted);
+        assert_eq!(ops.handle(&narrow, &give(0), &mut replies), not_granted);
+        let accepted = |handoff| {
+            (
+                UiActionResult::ControlAccepted {
+                    session_id: String::from("browser-ctl"),
+                    handoff,
+                },
+                ApiOutcome::Served,
+            )
+        };
+        let refused = |reason| {
+            (
+                UiActionResult::ControlRefused {
+                    session_id: String::from("browser-ctl"),
+                    reason,
+                },
+                ApiOutcome::Refused,
+            )
+        };
+        assert_eq!(
+            ops.handle(&owner, &take, &mut replies),
+            accepted(Handoff::Takeover)
+        );
+        assert_eq!(
+            ops.handle(&owner, &take, &mut replies),
+            refused(ControlRefusal::NotAllowed)
+        );
+        assert_eq!(
+            ops.handle(&owner, &give(5), &mut replies),
+            refused(ControlRefusal::StaleFrame)
+        );
+        assert_eq!(
+            ops.handle(&owner, &give(0), &mut replies),
+            accepted(Handoff::HandBack)
+        );
+        board.end("browser-ctl");
+        assert_eq!(
+            ops.handle(&owner, &take, &mut replies),
+            refused(ControlRefusal::UnknownSession)
+        );
+    }
+
+    #[test]
+    fn a_control_answer_is_the_handoff_started_or_why_not() {
+        assert_eq!(
+            control_answer("browser-x", Handoff::Takeover, Ok(())),
+            (
+                UiActionResult::ControlAccepted {
+                    session_id: String::from("browser-x"),
+                    handoff: Handoff::Takeover,
+                },
+                ApiOutcome::Served,
+            )
+        );
+        assert_eq!(
+            control_answer(
+                "browser-x",
+                Handoff::HandBack,
+                Err(ControlRefusal::StaleFrame)
+            ),
+            (
+                UiActionResult::ControlRefused {
+                    session_id: String::from("browser-x"),
+                    reason: ControlRefusal::StaleFrame,
+                },
+                ApiOutcome::Refused,
+            )
+        );
+    }
+
+    #[test]
     fn each_action_runs_only_within_the_callers_grants() {
         let dir = scratch("grants");
         let mut config = owner_config(Some(&dir.0.join("schedules").to_string_lossy()));
@@ -1134,11 +1286,6 @@ mod tests {
                 name: id(),
                 format: FileFormat::Text,
                 content: FileContent::Text { text: id() },
-            },
-            UiAction::TakeControl { session_id: id() },
-            UiAction::ReturnControl {
-                session_id: id(),
-                frame_sequence: 1,
             },
         ] {
             assert_eq!(
