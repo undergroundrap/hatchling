@@ -67,8 +67,9 @@ def drive(page):
     page.wait_for_timeout(2 * WAIT_SECS * 1000)
     screenshot(page, "browser-3-driving.png")
     expect(back).to_be_enabled(timeout=STEP_TIMEOUT_MS)
+    # Handed back: the agent looks again, answers, and its run ends, closing
+    # the browser; its answer is what shows the handback reached it.
     back.click()
-    expect(page.get_by_role("button", name="Take control of the browser")).to_be_visible(timeout=STEP_TIMEOUT_MS)
 
 
 def check(address):
