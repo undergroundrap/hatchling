@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use hatchling_core::browser::{
-    BrowserCommand, BrowserFailure, BrowserReply, Key, OwnerInput, PageAction, PageSnapshot,
+    BrowserCommand, BrowserFailure, BrowserReply, Cookie, Key, OwnerInput, PageAction, PageSnapshot,
 };
 use hatchling_core::framing::{read_frame, write_frame};
 use hatchling_isolation::{
@@ -47,6 +47,11 @@ const START: &str = r#"<!doctype html><title>Start</title>
 <a href="/next">Next page</a>"#;
 
 const NEXT: &str = "<!doctype html><title>Next</title><p>Second page</p>";
+
+/// A page that shows the cookies it was sent, and sets one of its own.
+const COOKIES: &str = r#"<!doctype html><title>Cookies</title>
+<p id="sent"></p>
+<script>document.getElementById('sent').textContent = 'sent: ' + document.cookie; document.cookie = 'set_by_page=1; path=/; max-age=3600';</script>"#;
 
 /// A page the owner drives by points of the viewport: a field over its
 /// top left quarter, a link over its bottom right one.
@@ -219,6 +224,7 @@ fn answer(mut stream: std::net::TcpStream, seen: &Mutex<Vec<String>>) {
         Some("/") => ("200 OK", START),
         Some("/next") => ("200 OK", NEXT),
         Some("/owner") => ("200 OK", OWNER),
+        Some("/cookies") => ("200 OK", COOKIES),
         _ => ("404 Not Found", "not here"),
     };
     let _ = write!(
@@ -241,7 +247,9 @@ fn page(reply: BrowserReply) -> PageSnapshot {
         BrowserReply::Page { snapshot } => snapshot,
         other @ (BrowserReply::Failed { .. }
         | BrowserReply::Closed
-        | BrowserReply::Frame { .. }) => PageSnapshot {
+        | BrowserReply::Frame { .. }
+        | BrowserReply::Cookies { .. }
+        | BrowserReply::CookiesSet) => PageSnapshot {
             text: format!("not a page: {other:?}"),
             ..PageSnapshot::default()
         },
@@ -263,8 +271,11 @@ fn owner(connection: &UnixStream, input: OwnerInput) {
 fn is_picture(frame: &BrowserReply) {
     let jpeg = match frame {
         BrowserReply::Frame { jpeg } => jpeg.clone(),
-        other
-        @ (BrowserReply::Page { .. } | BrowserReply::Failed { .. } | BrowserReply::Closed) => {
+        other @ (BrowserReply::Page { .. }
+        | BrowserReply::Failed { .. }
+        | BrowserReply::Closed
+        | BrowserReply::Cookies { .. }
+        | BrowserReply::CookiesSet) => {
             format!("not a frame: {other:?}")
         }
     };
@@ -315,6 +326,54 @@ fn owner_drives(connection: &UnixStream) {
     owner(connection, OwnerInput::Click { x: 900, y: 600 });
     let away = page(send(connection, &BrowserCommand::Snapshot));
     assert_eq!(away.url, format!("http://{HOST}/next"), "{}", away.text);
+}
+
+/// The browser's jar on `connection`: a cookie the page set is read out,
+/// and one restored is sent to the page.
+fn cookies_kept(connection: &UnixStream) {
+    let restored = Cookie {
+        name: String::from("restored"),
+        value: String::from("from-the-jar"),
+        domain: String::from(HOST),
+        path: String::from("/"),
+        expires: None,
+        secure: false,
+        http_only: false,
+        same_site: None,
+    };
+    assert_eq!(
+        send(
+            connection,
+            &BrowserCommand::SetCookies {
+                cookies: vec![restored]
+            }
+        ),
+        BrowserReply::CookiesSet
+    );
+    let shown = page(send(
+        connection,
+        &BrowserCommand::Open {
+            url: format!("http://{HOST}/cookies"),
+        },
+    ));
+    assert!(
+        shown.text.contains("restored=from-the-jar"),
+        "{}",
+        shown.text
+    );
+    let BrowserReply::Cookies { cookies, next } =
+        send(connection, &BrowserCommand::Cookies { from: 0 })
+    else {
+        unreachable!("a jar");
+    };
+    assert_eq!(next, None);
+    let names: Vec<(&str, &str)> = cookies
+        .iter()
+        // A cookie set with a domain is kept for its subdomains too: `.host`.
+        .map(|cookie| (cookie.name.as_str(), cookie.domain.trim_start_matches('.')))
+        .collect();
+    assert!(names.contains(&("set_by_page", HOST)), "{names:?}");
+    assert!(names.contains(&("restored", HOST)), "{names:?}");
 }
 
 /// The id of the element `role` named `name`.
@@ -485,6 +544,7 @@ fn the_controller_drives_a_real_browser_in_a_cell_through_the_relay_alone() {
         BrowserReply::Page { .. }
     ));
     owner_drives(&connection);
+    cookies_kept(&connection);
     // A command it doesn't know is answered, not obeyed.
     let unknown = serde_json::json!({"command": "evaluate", "script": "1"});
     write_frame(&connection, &serde_json::to_vec(&unknown).unwrap()).unwrap();
