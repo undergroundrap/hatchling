@@ -120,6 +120,7 @@ const REQUESTS: Readonly<Record<ApiRequest, string>> = {
     take_control: 'Took over the browser',
     return_control: 'Handed back the browser',
     stop_browser: 'Stopped the browser',
+    browser_input: 'Acted on the browser page',
 };
 const FAILURES: Readonly<Record<ChildFailure, string>> = {
     timeout: 'Ran out of time',

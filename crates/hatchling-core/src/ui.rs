@@ -616,6 +616,15 @@ pub enum UiAction {
         /// The session.
         session_id: String,
     },
+    /// The user's own input to a browser session they drive (v2): a
+    /// click at a point of the page, text typed or a key pressed where its
+    /// focus is, or a scroll. A frame of the page after it follows.
+    BrowserInput {
+        /// The session.
+        session_id: String,
+        /// What the user did.
+        input: crate::browser::OwnerInput,
+    },
 }
 
 /// What an action did.
@@ -717,6 +726,19 @@ pub enum UiActionResult {
         session_id: String,
         /// Why.
         reason: ControlRefusal,
+    },
+    /// The user's input was done; a frame of the page after it follows
+    /// (v2).
+    InputDone {
+        /// The session.
+        session_id: String,
+    },
+    /// The browser didn't do the user's input (v2).
+    InputFailed {
+        /// The session.
+        session_id: String,
+        /// Why.
+        failure: crate::browser::BrowserFailure,
     },
     /// The browser session was stopped (v2).
     BrowserStopped {
@@ -1374,6 +1396,13 @@ mod tests {
                 },
                 json!({"action": "stop_browser", "session_id": "w1"}),
             ),
+            (
+                UiAction::BrowserInput {
+                    session_id: s("w1"),
+                    input: crate::browser::OwnerInput::Click { x: 4, y: 5 },
+                },
+                json!({"action": "browser_input", "session_id": "w1", "input": {"input": "click", "x": 4, "y": 5}}),
+            ),
         ];
         for (action, expected) in &actions {
             pinned(action, expected);
@@ -1446,6 +1475,19 @@ mod tests {
                     session_id: s("w1"),
                 },
                 json!({"result": "browser_stopped", "session_id": "w1"}),
+            ),
+            (
+                UiActionResult::InputDone {
+                    session_id: s("w1"),
+                },
+                json!({"result": "input_done", "session_id": "w1"}),
+            ),
+            (
+                UiActionResult::InputFailed {
+                    session_id: s("w1"),
+                    failure: crate::browser::BrowserFailure::NotPossible,
+                },
+                json!({"result": "input_failed", "session_id": "w1", "failure": "not_possible"}),
             ),
         ];
         for (result, expected) in &results {

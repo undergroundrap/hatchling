@@ -600,6 +600,11 @@
           "const": "stop_browser",
           "description": "[`UiAction::StopBrowser`].",
           "type": "string"
+        },
+        {
+          "const": "browser_input",
+          "description": "[`UiAction::BrowserInput`].",
+          "type": "string"
         }
       ]
     },
@@ -5355,6 +5360,92 @@
       ],
       "type": "object"
     },
+    "OwnerInput": {
+      "description": "What the owner does to the page, from the app, while they drive it.\nWhere the page's focus is, or at a point of its viewport: the owner\nsees a picture, not the page's elements.",
+      "oneOf": [
+        {
+          "description": "A left click at a point of the viewport, in CSS pixels from its\ntop left: within [`VIEWPORT`].",
+          "properties": {
+            "input": {
+              "const": "click",
+              "type": "string"
+            },
+            "x": {
+              "description": "Across.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "y": {
+              "description": "Down.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "input",
+            "x",
+            "y"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Type `text` where the page's focus is, as keystrokes would.",
+          "properties": {
+            "input": {
+              "const": "type",
+              "type": "string"
+            },
+            "text": {
+              "description": "At most [`MAX_TYPED_CHARS`] characters.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "input",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Press one key where the page's focus is.",
+          "properties": {
+            "input": {
+              "const": "key",
+              "type": "string"
+            },
+            "key": {
+              "$ref": "#/$defs/Key",
+              "description": "The key."
+            }
+          },
+          "required": [
+            "input",
+            "key"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Scroll the page by most of a screen.",
+          "properties": {
+            "down": {
+              "description": "Down, or up.",
+              "type": "boolean"
+            },
+            "input": {
+              "const": "scroll",
+              "type": "string"
+            }
+          },
+          "required": [
+            "input",
+            "down"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "PageAction": {
       "description": "What to do to an element.",
       "oneOf": [
@@ -8501,6 +8592,29 @@
             "session_id"
           ],
           "type": "object"
+        },
+        {
+          "description": "The user's own input to a browser session they drive (v2): a\nclick at a point of the page, text typed or a key pressed where its\nfocus is, or a scroll. A frame of the page after it follows.",
+          "properties": {
+            "action": {
+              "const": "browser_input",
+              "type": "string"
+            },
+            "input": {
+              "$ref": "#/$defs/OwnerInput",
+              "description": "What the user did."
+            },
+            "session_id": {
+              "description": "The session.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "session_id",
+            "input"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -8830,6 +8944,47 @@
             "result",
             "session_id",
             "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The user's input was done; a frame of the page after it follows\n(v2).",
+          "properties": {
+            "result": {
+              "const": "input_done",
+              "type": "string"
+            },
+            "session_id": {
+              "description": "The session.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "session_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The browser didn't do the user's input (v2).",
+          "properties": {
+            "failure": {
+              "$ref": "#/$defs/BrowserFailure",
+              "description": "Why."
+            },
+            "result": {
+              "const": "input_failed",
+              "type": "string"
+            },
+            "session_id": {
+              "description": "The session.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "session_id",
+            "failure"
           ],
           "type": "object"
         },

@@ -419,6 +419,10 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             {
                 "const": "stop_browser",
                 "type": "string"
+            },
+            {
+                "const": "browser_input",
+                "type": "string"
             }
         ]
     },
@@ -662,6 +666,38 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             "narration"
         ],
         "type": "object"
+    },
+    "BrowserFailure": {
+        "oneOf": [
+            {
+                "const": "no_page",
+                "type": "string"
+            },
+            {
+                "const": "unknown_element",
+                "type": "string"
+            },
+            {
+                "const": "not_possible",
+                "type": "string"
+            },
+            {
+                "const": "timeout",
+                "type": "string"
+            },
+            {
+                "const": "load_failed",
+                "type": "string"
+            },
+            {
+                "const": "browser_gone",
+                "type": "string"
+            },
+            {
+                "const": "bad_command",
+                "type": "string"
+            }
+        ]
     },
     "BrowserFrame": {
         "properties": {
@@ -1315,6 +1351,116 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             "base64"
         ],
         "type": "object"
+    },
+    "Key": {
+        "oneOf": [
+            {
+                "const": "enter",
+                "type": "string"
+            },
+            {
+                "const": "tab",
+                "type": "string"
+            },
+            {
+                "const": "escape",
+                "type": "string"
+            },
+            {
+                "const": "backspace",
+                "type": "string"
+            },
+            {
+                "const": "arrow_up",
+                "type": "string"
+            },
+            {
+                "const": "arrow_down",
+                "type": "string"
+            },
+            {
+                "const": "arrow_left",
+                "type": "string"
+            },
+            {
+                "const": "arrow_right",
+                "type": "string"
+            }
+        ]
+    },
+    "OwnerInput": {
+        "oneOf": [
+            {
+                "properties": {
+                    "input": {
+                        "const": "click",
+                        "type": "string"
+                    },
+                    "x": {
+                        "minimum": 0,
+                        "type": "integer"
+                    },
+                    "y": {
+                        "minimum": 0,
+                        "type": "integer"
+                    }
+                },
+                "required": [
+                    "input",
+                    "x",
+                    "y"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "input": {
+                        "const": "type",
+                        "type": "string"
+                    },
+                    "text": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "input",
+                    "text"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "input": {
+                        "const": "key",
+                        "type": "string"
+                    },
+                    "key": {
+                        "$ref": "#/$defs/Key"
+                    }
+                },
+                "required": [
+                    "input",
+                    "key"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "down": {
+                        "type": "boolean"
+                    },
+                    "input": {
+                        "const": "scroll",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "input",
+                    "down"
+                ],
+                "type": "object"
+            }
+        ]
     },
     "ParkedSummary": {
         "properties": {
@@ -2459,6 +2605,26 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "session_id"
                 ],
                 "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
+                        "const": "browser_input",
+                        "type": "string"
+                    },
+                    "input": {
+                        "$ref": "#/$defs/OwnerInput"
+                    },
+                    "session_id": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "action",
+                    "session_id",
+                    "input"
+                ],
+                "type": "object"
             }
         ]
     },
@@ -2744,6 +2910,42 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "result",
                     "session_id",
                     "reason"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "input_done",
+                        "type": "string"
+                    },
+                    "session_id": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "session_id"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "failure": {
+                        "$ref": "#/$defs/BrowserFailure"
+                    },
+                    "result": {
+                        "const": "input_failed",
+                        "type": "string"
+                    },
+                    "session_id": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "session_id",
+                    "failure"
                 ],
                 "type": "object"
             },

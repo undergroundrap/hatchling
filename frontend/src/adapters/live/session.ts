@@ -92,6 +92,8 @@ export class LiveChatSession implements ChatSessionPort {
             case 'control_accepted':
             case 'control_refused':
             case 'browser_stopped':
+            case 'input_done':
+            case 'input_failed':
                 return UNCONFIRMED;
         }
     }
