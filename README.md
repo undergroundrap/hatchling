@@ -53,6 +53,7 @@ The full model, what it deliberately doesn't cover, and the gaps our own pre-lau
 | **Skills** | Signed, verified skill packages, each run in a dedicated cell scoped to its declared capabilities. |
 | **Artifacts and research** | Documents and pages made by signed builder skills, inspected at the boundary before they reach you; deep-research runs that deliver a cited report. |
 | **Spaces** | Shared, persistent scopes with members and devices. |
+| **Browser** | A real headless Chromium the agent drives, in a cell of its own, that reaches only the sites you approve, through the broker. You watch it in the app, and can stop it, or take it over and hand it back. |
 | **Local API** | A Unix-socket JSON API with a generated JSON Schema, for your own clients and integrations: **[docs/local-api.md](docs/local-api.md)**. |
 | **App** | A TypeScript UI, served on loopback by `hatchling-host`: chat with the agent and follow its status. Opened on its own, it runs a scripted preview. |
 
@@ -311,6 +312,21 @@ An unprivileged broker additionally needs the directory and its `cgroup.procs` a
 An abrupt kill or crash of the entire broker can leave cgroup directories and helper-backed cells until their helpers terminate. Whole-broker crash recovery is outside this work; [WO-012](docs/workorders/workorder-012-disposable-state-and-cleanup.md) covers the planned cleanup of filesystem staging and run directories.
 
 Unset `HATCHLING_CELL_CGROUP` uses the hard rlimits alone and logs one startup warning. `RLIMIT_NPROC` is per real host uid, so this fallback can share a process budget with other cells or host processes; it does not bound aggregate memory or CPU. The memory and CPU variables have no effect in this mode. With a cgroup, `pids.max` replaces the configured `RLIMIT_NPROC`; inherited host rlimits still apply. A configured directory that is missing, non-cgroup, unwritable, holds processes, lacks a required controller or lacks `cgroup.kill` makes startup fail closed.
+
+### The browser
+
+The agent can drive a real browser: a headless Chromium in a cell of its own, with no network but one way out, the broker's `CONNECT` proxy. A page loads only from sites you've approved: opening a site you haven't is put to you, once, for the task or always, as for a page the agent reads, and what a page then needs from other sites is refused until you allow it. Hatchling bundles no browser; you name one, pinned, in the broker's environment:
+
+| Variable | Sets |
+| --- | --- |
+| `HATCHLING_BROWSER` | the browser's executable, absolute, in a directory of its own: its bundle |
+| `HATCHLING_BROWSER_SHA256` | the digest of the whole bundle, every file in that directory; `hatchling-broker browser-digest <browser>` prints it |
+| `HATCHLING_BROWSER_CONTROLLER` | the `hatchling-browser` controller, absolute: the cell's program, which drives the browser over its DevTools pipe |
+| `HATCHLING_BROWSER_FONTS` | optional: a fonts directory shown to the cell, read-only, so pages render text |
+
+The broker copies the bundle into a snapshot only it can write and starts the browser from that snapshot only if its digest is the pin, so a file changed in the bundle later never reaches a browser. A browser cell needs `HATCHLING_CELL_CGROUP`: the broker refuses to start without one when a browser is configured. Each browser is held to 2 GiB of memory and 512 processes as a whole, at most 4 run at once, and each ends after 30 minutes or with its session.
+
+In the app you watch each browser: the site, the step it's on, every action in your words (never the text it types) and a picture of the page. You can stop it, which seals its sites at once. You can take it over: the agent waits, your clicks, typing and keys go to the page, and when you hand it back, the agent looks at the page again before it acts.
 
 From here: **[the local API](docs/local-api.md)** for every action and event, and **[testing on WSL2](docs/testing-on-wsl2.md)** for a Windows setup.
 
