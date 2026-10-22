@@ -9,12 +9,15 @@
 //! ([`PageSnapshot::fitted`]).
 //!
 //! Clicks and keys go through the browser's input, as a person's would;
-//! typed text through `Input.insertText`.
+//! typed text through `Input.insertText`. The owner's own input, while
+//! they drive, goes the same way, at a point of the viewport or where the
+//! page's focus is, and is answered with a picture of the page.
 
 use std::time::{Duration, Instant};
 
 use hatchling_core::browser::{
-    BrowserCommand, BrowserFailure, BrowserReply, Key, MAX_TYPED_CHARS, PageAction, PageSnapshot,
+    BrowserCommand, BrowserFailure, BrowserReply, Key, MAX_TYPED_CHARS, OwnerInput, PageAction,
+    PageSnapshot, VIEWPORT,
 };
 use serde_json::{Value, json};
 
@@ -78,6 +81,12 @@ impl Session {
             BrowserCommand::Scroll { down } => self.scroll(down),
             BrowserCommand::Frame => {
                 return match self.frame() {
+                    Ok(jpeg) => BrowserReply::Frame { jpeg },
+                    Err(failure) => BrowserReply::Failed { failure },
+                };
+            }
+            BrowserCommand::Input { input } => {
+                return match self.input(&input) {
                     Ok(jpeg) => BrowserReply::Frame { jpeg },
                     Err(failure) => BrowserReply::Failed { failure },
                 };
@@ -257,8 +266,7 @@ impl Session {
                     return Err(BrowserFailure::NotPossible);
                 }
                 self.element(element, "focus", "")?;
-                self.call(Some(&session), "Input.insertText", json!({"text": text}))
-                    .map_err(gone_or(BrowserFailure::NotPossible))?;
+                self.insert(&session, text)?;
             }
             PageAction::Key { key } => {
                 self.element(element, "focus", "")?;
@@ -272,6 +280,39 @@ impl Session {
         self.snapshot()
     }
 
+    /// The owner's `input`, through the browser's input, and a picture of
+    /// the page after it.
+    fn input(&mut self, input: &OwnerInput) -> Result<String, BrowserFailure> {
+        let session = self.page_session()?;
+        self.browser()?.cdp.forget_events();
+        match input {
+            OwnerInput::Click { x, y } => {
+                let (width, height) = VIEWPORT;
+                if *x >= width || *y >= height {
+                    return Err(BrowserFailure::NotPossible);
+                }
+                self.click_at(&session, f64::from(*x), f64::from(*y))?;
+            }
+            OwnerInput::Type { text } => {
+                if text.chars().count() > MAX_TYPED_CHARS {
+                    return Err(BrowserFailure::NotPossible);
+                }
+                self.insert(&session, text)?;
+            }
+            OwnerInput::Key { key } => self.press(&session, *key)?,
+            OwnerInput::Scroll { down } => self.scroll_by(&session, *down)?,
+        }
+        self.settle(&session)?;
+        self.frame()
+    }
+
+    /// Types `text` where the page's focus is.
+    fn insert(&mut self, session: &str, text: &str) -> Result<(), BrowserFailure> {
+        self.call(Some(session), "Input.insertText", json!({"text": text}))
+            .map_err(gone_or(BrowserFailure::NotPossible))?;
+        Ok(())
+    }
+
     /// A left click at the element's centre, through the browser's input.
     fn click(&mut self, session: &str, element: u32) -> Result<(), BrowserFailure> {
         let centre = self.element(element, "box", "")?;
@@ -281,6 +322,12 @@ impl Session {
         ) else {
             return Err(BrowserFailure::NotPossible);
         };
+        self.click_at(session, x, y)
+    }
+
+    /// A left click at `x`, `y` of the viewport, through the browser's
+    /// input.
+    fn click_at(&mut self, session: &str, x: f64, y: f64) -> Result<(), BrowserFailure> {
         for kind in ["mousePressed", "mouseReleased"] {
             self.call(
                 Some(session),
@@ -329,6 +376,12 @@ impl Session {
 
     fn scroll(&mut self, down: bool) -> Result<PageSnapshot, BrowserFailure> {
         let session = self.page_session()?;
+        self.scroll_by(&session, down)?;
+        self.snapshot()
+    }
+
+    /// Scrolls the page by most of a screen, down or up.
+    fn scroll_by(&mut self, session: &str, down: bool) -> Result<(), BrowserFailure> {
         let world = self
             .page
             .as_ref()
@@ -336,11 +389,11 @@ impl Session {
             .ok_or(BrowserFailure::NoPage)?;
         let sign = if down { "" } else { "-" };
         self.evaluate(
-            &session,
+            session,
             world,
             &format!("window.scrollBy(0, {sign}0.8 * window.innerHeight)"),
         )?;
-        self.snapshot()
+        Ok(())
     }
 }
 
@@ -358,7 +411,7 @@ impl Session {
                 .and_then(Value::as_f64)
                 .unwrap_or(0.0)
         };
-        let (width, height) = hatchling_core::browser::VIEWPORT;
+        let (width, height) = VIEWPORT;
         let clip = json!({
             "x": at("pageX"),
             "y": at("pageY"),
@@ -875,6 +928,126 @@ mod tests {
                 json!("window.scrollBy(0, -0.8 * window.innerHeight)"),
             ]
         );
+    }
+
+    /// The owner's `input`: the reply.
+    fn owner(session: &mut Session, input: OwnerInput) -> BrowserReply {
+        session.handle(BrowserCommand::Input { input })
+    }
+
+    #[test]
+    fn the_owners_input_goes_through_the_browsers_input_and_is_answered_with_a_picture() {
+        let (mut session, seen) = fake();
+        let not_possible = BrowserReply::Failed {
+            failure: BrowserFailure::NotPossible,
+        };
+        assert_eq!(
+            owner(&mut session, OwnerInput::Scroll { down: true }),
+            BrowserReply::Failed {
+                failure: BrowserFailure::NoPage
+            },
+            "nothing to drive before a page"
+        );
+        session.open("http://a.test/").unwrap();
+        let picture = |reply: &BrowserReply| matches!(reply, BrowserReply::Frame { jpeg } if jpeg.starts_with("/9j/"));
+        // A click at a point of the viewport, which starts a load, waited for.
+        let clicked = owner(&mut session, OwnerInput::Click { x: 1279, y: 799 });
+        assert!(picture(&clicked), "{clicked:?}");
+        let mouse = sent(&seen, "Input.dispatchMouseEvent");
+        let at: Vec<(Option<&str>, Option<f64>, Option<f64>)> = mouse
+            .iter()
+            .map(|event| {
+                (
+                    event.pointer("/params/type").and_then(Value::as_str),
+                    event.pointer("/params/x").and_then(Value::as_f64),
+                    event.pointer("/params/y").and_then(Value::as_f64),
+                )
+            })
+            .collect();
+        assert_eq!(
+            at,
+            [
+                (Some("mousePressed"), Some(1279.0), Some(799.0)),
+                (Some("mouseReleased"), Some(1279.0), Some(799.0)),
+            ]
+        );
+        assert_eq!(
+            sent(&seen, "Page.navigate").len(),
+            1,
+            "the load isn't a navigation of ours"
+        );
+        // Outside the viewport: nothing is clicked.
+        for (x, y) in [(1280, 0), (0, 800)] {
+            assert_eq!(
+                owner(&mut session, OwnerInput::Click { x, y }),
+                not_possible
+            );
+        }
+        assert_eq!(sent(&seen, "Input.dispatchMouseEvent").len(), 2);
+        // Text where the focus is, within the bound.
+        let typed = owner(
+            &mut session,
+            OwnerInput::Type {
+                text: String::from("owner"),
+            },
+        );
+        assert!(picture(&typed), "{typed:?}");
+        let at_the_bound = "é".repeat(MAX_TYPED_CHARS);
+        let long = owner(&mut session, OwnerInput::Type { text: at_the_bound });
+        assert!(picture(&long), "{long:?}");
+        let past = "é".repeat(MAX_TYPED_CHARS + 1);
+        assert_eq!(
+            owner(&mut session, OwnerInput::Type { text: past }),
+            not_possible
+        );
+        let inserted: Vec<usize> = sent(&seen, "Input.insertText")
+            .iter()
+            .filter_map(|e| e.pointer("/params/text").and_then(Value::as_str))
+            .map(|text| text.chars().count())
+            .collect();
+        assert_eq!(inserted, [5, MAX_TYPED_CHARS]);
+        // A key, and a scroll.
+        let pressed = owner(&mut session, OwnerInput::Key { key: Key::Enter });
+        assert!(picture(&pressed), "{pressed:?}");
+        let keys = sent(&seen, "Input.dispatchKeyEvent");
+        assert_eq!(keys.len(), 2, "down and up");
+        let scrolled = owner(&mut session, OwnerInput::Scroll { down: false });
+        assert!(picture(&scrolled), "{scrolled:?}");
+        let scrolls = sent(&seen, "Runtime.evaluate")
+            .iter()
+            .filter_map(|e| e.pointer("/params/expression").cloned())
+            .filter(|e| e == "window.scrollBy(0, -0.8 * window.innerHeight)")
+            .count();
+        assert_eq!(scrolls, 1);
+    }
+
+    #[test]
+    fn a_click_at_a_point_presses_and_releases_there_and_a_scroll_needs_a_page() {
+        let (mut session, seen) = fake();
+        assert_eq!(
+            session.scroll_by("S", true),
+            Err(BrowserFailure::NoPage),
+            "no page, nothing to scroll"
+        );
+        session.open("http://a.test/").unwrap();
+        assert_eq!(session.click_at("S", 3.5, 7.0), Ok(()));
+        let mouse = sent(&seen, "Input.dispatchMouseEvent");
+        assert_eq!(
+            mouse
+                .iter()
+                .filter_map(|event| event.get("params").cloned())
+                .collect::<Vec<_>>(),
+            [
+                json!({"type": "mousePressed", "x": 3.5, "y": 7.0, "button": "left", "clickCount": 1}),
+                json!({"type": "mouseReleased", "x": 3.5, "y": 7.0, "button": "left", "clickCount": 1}),
+            ]
+        );
+        assert_eq!(session.scroll_by("S", true), Ok(()));
+        let scrolled = sent(&seen, "Runtime.evaluate")
+            .iter()
+            .filter_map(|e| e.pointer("/params/expression").cloned())
+            .any(|e| e == "window.scrollBy(0, 0.8 * window.innerHeight)");
+        assert!(scrolled);
     }
 
     #[test]
