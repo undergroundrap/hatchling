@@ -32,7 +32,16 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install -r tests/e2e/requirements.txt
-      - run: python -m playwright install --with-deps chromium
+      # The system libraries, from apt, once. Then the browser: its download
+      # has hung for 20 minutes at a time, so each try is bounded, killed
+      # outright if it lingers, and a stuck one is tried again.
+      - run: |
+          python -m playwright install-deps chromium
+          for attempt in 1 2 3; do
+            timeout -k 10 300 python -m playwright install chromium && break
+            [ "$attempt" = 3 ] && exit 1
+            sleep 15
+          done
       # Every browser suite runs on Playwright's own pinned Chromium. The
       # suites honour CHROMIUM_PATH first; without it they would pick up the
       # runner's system chromium, a different build that closed during the
