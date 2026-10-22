@@ -385,9 +385,13 @@ pub fn handle_profile_op(
         ProfileOp::SignOut { profile_id } => profiles
             .sign_out(profile_id)
             .map(|found| gone(found, ProfileResult::SignedOut)),
-        ProfileOp::Delete { profile_id } => profiles
-            .delete(profile_id)
-            .map(|found| gone(found, ProfileResult::Deleted)),
+        ProfileOp::Delete { profile_id } => profiles.delete(profile_id).and_then(|found| {
+            // Its sign-ins go with it: none is left for a profile gone.
+            if let Some(credentials) = crate::browser_credentials::Credentials::of(config, keys) {
+                credentials.delete_profiles(profile_id)?;
+            }
+            Ok(gone(found, ProfileResult::Deleted))
+        }),
     };
     answer.unwrap_or_else(|error| {
         tracing::error!(%error, "a profile operation failed");

@@ -582,6 +582,139 @@ pub enum ProfileResult {
     Failed,
 }
 
+/// A secret the user types into the app for the broker to keep (WO-030):
+/// a site's username or password. It travels as a plain string and is
+/// never shown: its `Debug` hides it, and it's wiped when dropped.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(transparent)]
+pub struct Concealed(String);
+
+impl Concealed {
+    /// `secret`, concealed.
+    #[must_use]
+    pub const fn new(secret: String) -> Self {
+        Self(secret)
+    }
+
+    /// The secret itself: for the broker's store, and nothing else.
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Concealed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Concealed(..)")
+    }
+}
+
+impl Drop for Concealed {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
+}
+
+/// An operation on the sign-ins the broker fills for a signed-in profile
+/// (WO-030): the owner's alone.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum CredentialOp {
+    /// List them, by label: never a username or a password.
+    List,
+    /// Keep a sign-in for one profile and one exact origin.
+    Store {
+        /// The profile it signs in, as listed.
+        profile_id: String,
+        /// The exact origin it's filled on, `https://host[:port]`: one of
+        /// the profile's sites.
+        origin: String,
+        /// What the owner calls it.
+        label: String,
+        /// The username.
+        username: Concealed,
+        /// The password.
+        password: Concealed,
+    },
+    /// Delete one.
+    Delete {
+        /// The sign-in, as listed.
+        credential_id: String,
+    },
+}
+
+/// A sign-in the broker keeps, as the owner's app is told it: its label and
+/// where it's filled, never its username or password.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct SiteCredential {
+    /// Its id.
+    pub credential_id: String,
+    /// The profile it signs in.
+    pub profile_id: String,
+    /// The exact origin it's filled on.
+    pub origin: String,
+    /// What the owner calls it.
+    pub label: String,
+    /// When it was kept, RFC 3339.
+    pub created_at: String,
+}
+
+/// Why a sign-in wasn't kept.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialRefusal {
+    /// No such profile.
+    NoProfile,
+    /// The origin isn't an `https` origin alone: a path, a query, a user,
+    /// or not `https`.
+    BadOrigin,
+    /// The origin isn't one of the profile's sites.
+    NotTheProfiles,
+    /// The label is empty, or has a control character.
+    BadLabel,
+    /// The password is empty.
+    NoPassword,
+    /// The label, the username or the password is past its bound.
+    TooLong,
+    /// The broker keeps as many sign-ins as it may: delete one first.
+    Full,
+}
+
+/// The result of a [`CredentialOp`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum CredentialResult {
+    /// The sign-ins, in the order they were kept.
+    Listed {
+        /// The sign-ins.
+        credentials: Vec<SiteCredential>,
+    },
+    /// The sign-in was kept.
+    Stored {
+        /// The sign-in, as listed.
+        credential: SiteCredential,
+    },
+    /// The sign-in was deleted.
+    Deleted,
+    /// No such sign-in.
+    NotFound,
+    /// The sign-in wasn't kept, and why.
+    Refused {
+        /// Why.
+        reason: CredentialRefusal,
+    },
+    /// The broker keeps no sign-ins: the operator hasn't given it a place
+    /// to.
+    Off,
+    /// The broker couldn't read or change them; its log says why.
+    Failed,
+}
+
 /// A user action.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -697,6 +830,11 @@ pub enum UiAction {
         /// The operation.
         op: ProfileOp,
     },
+    /// List, keep or delete the sign-ins the broker fills (WO-030).
+    ManageCredentials {
+        /// The operation.
+        op: CredentialOp,
+    },
 }
 
 /// What an action did.
@@ -810,6 +948,11 @@ pub enum UiActionResult {
     Profiles {
         /// The result.
         outcome: ProfileResult,
+    },
+    /// A sign-in operation's result (WO-030).
+    Credentials {
+        /// The result.
+        outcome: CredentialResult,
     },
     /// The user's input was done; a frame of the page after it follows
     /// (v2).
@@ -1630,5 +1773,65 @@ mod tests {
         for (result, expected) in &results {
             pinned(result, expected);
         }
+    }
+
+    #[test]
+    fn a_sign_in_travels_as_strings_and_its_secrets_never_show() {
+        let store = UiAction::ManageCredentials {
+            op: CredentialOp::Store {
+                profile_id: s("profile-1"),
+                origin: s("https://a.example"),
+                label: s("Work"),
+                username: Concealed::new(s("ada@a.example")),
+                password: Concealed::new(s("hunter2-secret")),
+            },
+        };
+        pinned(
+            &store,
+            &json!({"action": "manage_credentials", "op": {"op": "store", "profile_id": "profile-1",
+                "origin": "https://a.example", "label": "Work", "username": "ada@a.example",
+                "password": "hunter2-secret"}}),
+        );
+        let shown = format!("{store:?}");
+        assert!(!shown.contains("hunter2") && !shown.contains("ada@"), "{shown}");
+        assert!(shown.contains("Concealed(..)"), "{shown}");
+        assert_eq!(Concealed::new(s("x")).expose(), "x");
+        let credential = SiteCredential {
+            credential_id: s("cred-1"),
+            profile_id: s("profile-1"),
+            origin: s("https://a.example"),
+            label: s("Work"),
+            created_at: s("2026-10-22T00:00:00Z"),
+        };
+        let results = [
+            (
+                UiActionResult::Credentials {
+                    outcome: CredentialResult::Stored { credential },
+                },
+                json!({"result": "credentials", "outcome": {"result": "stored", "credential": {
+                    "credential_id": "cred-1", "profile_id": "profile-1", "origin": "https://a.example",
+                    "label": "Work", "created_at": "2026-10-22T00:00:00Z"
+                }}}),
+            ),
+            (
+                UiActionResult::Credentials {
+                    outcome: CredentialResult::Refused {
+                        reason: CredentialRefusal::NotTheProfiles,
+                    },
+                },
+                json!({"result": "credentials", "outcome": {"result": "refused", "reason": "not_the_profiles"}}),
+            ),
+        ];
+        for (result, expected) in &results {
+            pinned(result, expected);
+        }
+        pinned(
+            &UiAction::ManageCredentials {
+                op: CredentialOp::Delete {
+                    credential_id: s("cred-1"),
+                },
+            },
+            &json!({"action": "manage_credentials", "op": {"op": "delete", "credential_id": "cred-1"}}),
+        );
     }
 }

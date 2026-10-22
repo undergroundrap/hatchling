@@ -38,7 +38,8 @@ use hatchling_core::messages::{ScheduleGrant, ScheduleOp};
 use hatchling_core::subagent::{ActivityEvent, SubagentEvent};
 use hatchling_core::ui::{
     ActionRefusal, AgentState, ApiOutcome, ApiRequest, ChatAuthor, ChatMessage, ControlRefusal,
-    Decision, Handoff, ProfileOp, ProfileResult, SiteOp, UiAction, UiActionResult, UiEventBody,
+    CredentialOp, Decision, Handoff, ProfileOp, ProfileResult, SiteOp, UiAction, UiActionResult,
+    UiEventBody,
 };
 use hatchling_scheduler::{Creator, Timestamp};
 use hatchling_vault::OpensStores;
@@ -57,6 +58,8 @@ enum Owned<'a> {
     Sites(&'a SiteOp),
     /// Their signed-in profiles (WO-030).
     Profiles(&'a ProfileOp),
+    /// The sign-ins the broker fills for them (WO-030).
+    Credentials(&'a CredentialOp),
 }
 
 /// The one chat the API offers: the local channel's conversation.
@@ -204,6 +207,9 @@ impl<'a> Ops<'a> {
             UiAction::ManageProfiles { op } => {
                 self.owned(caller.holds(&owner), Owned::Profiles(op))
             }
+            UiAction::ManageCredentials { op } => {
+                self.owned(caller.holds(&owner), Owned::Credentials(op))
+            }
             UiAction::Decide {
                 confirmation_id,
                 revision,
@@ -258,6 +264,9 @@ impl<'a> Ops<'a> {
             },
             Owned::Profiles(op) => UiActionResult::Profiles {
                 outcome: crate::browser_profiles::handle_profile_op(self.config, self.key, op),
+            },
+            Owned::Credentials(op) => UiActionResult::Credentials {
+                outcome: crate::browser_credentials::handle_credential_op(self.config, self.key, op),
             },
         };
         (result, ApiOutcome::Served)
