@@ -117,10 +117,12 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/browser-venv"
           "$RUNNER_TEMP/browser-venv/bin/python" -m pip install -r frontend/tests/e2e/requirements.txt
-          # The browsers' download has hung for 20 minutes at a time: each try
-          # is bounded, and a stuck one is tried again.
+          # The system libraries, from apt, once. Then the browsers: their download
+          # has hung for 20 minutes at a time, so each try is bounded, killed
+          # outright if it lingers, and a stuck one is tried again.
+          "$RUNNER_TEMP/browser-venv/bin/python" -m playwright install-deps chromium-headless-shell
           for attempt in 1 2 3; do
-            timeout 300 "$RUNNER_TEMP/browser-venv/bin/python" -m playwright install --with-deps chromium-headless-shell && break
+            timeout -k 10 300 "$RUNNER_TEMP/browser-venv/bin/python" -m playwright install chromium-headless-shell && break
             [ "$attempt" = 3 ] && exit 1
             sleep 15
           done
@@ -212,10 +214,12 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/app-venv"
           "$RUNNER_TEMP/app-venv/bin/python" -m pip install -r frontend/tests/e2e/requirements.txt
-          # The browsers' download has hung for 20 minutes at a time: each try
-          # is bounded, and a stuck one is tried again.
+          # The system libraries, from apt, once. Then the browsers: their download
+          # has hung for 20 minutes at a time, so each try is bounded, killed
+          # outright if it lingers, and a stuck one is tried again.
+          "$RUNNER_TEMP/app-venv/bin/python" -m playwright install-deps chromium
           for attempt in 1 2 3; do
-            timeout 300 "$RUNNER_TEMP/app-venv/bin/python" -m playwright install --with-deps chromium && break
+            timeout -k 10 300 "$RUNNER_TEMP/app-venv/bin/python" -m playwright install chromium && break
             [ "$attempt" = 3 ] && exit 1
             sleep 15
           done
@@ -278,10 +282,12 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/app-venv"
           "$RUNNER_TEMP/app-venv/bin/python" -m pip install -r frontend/tests/e2e/requirements.txt
-          # The browsers' download has hung for 20 minutes at a time: each try
-          # is bounded, and a stuck one is tried again.
+          # The system libraries, from apt, once. Then the browsers: their download
+          # has hung for 20 minutes at a time, so each try is bounded, killed
+          # outright if it lingers, and a stuck one is tried again.
+          "$RUNNER_TEMP/app-venv/bin/python" -m playwright install-deps chromium chromium-headless-shell
           for attempt in 1 2 3; do
-            timeout 300 "$RUNNER_TEMP/app-venv/bin/python" -m playwright install --with-deps chromium chromium-headless-shell && break
+            timeout -k 10 300 "$RUNNER_TEMP/app-venv/bin/python" -m playwright install chromium chromium-headless-shell && break
             [ "$attempt" = 3 ] && exit 1
             sleep 15
           done
@@ -379,10 +385,12 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/app-venv"
           "$RUNNER_TEMP/app-venv/bin/python" -m pip install -r frontend/tests/e2e/requirements.txt
-          # The browsers' download has hung for 20 minutes at a time: each try
-          # is bounded, and a stuck one is tried again.
+          # The system libraries, from apt, once. Then the browsers: their download
+          # has hung for 20 minutes at a time, so each try is bounded, killed
+          # outright if it lingers, and a stuck one is tried again.
+          "$RUNNER_TEMP/app-venv/bin/python" -m playwright install-deps chromium
           for attempt in 1 2 3; do
-            timeout 300 "$RUNNER_TEMP/app-venv/bin/python" -m playwright install --with-deps chromium && break
+            timeout -k 10 300 "$RUNNER_TEMP/app-venv/bin/python" -m playwright install chromium && break
             [ "$attempt" = 3 ] && exit 1
             sleep 15
           done
