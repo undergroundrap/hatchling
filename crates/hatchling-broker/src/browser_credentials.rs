@@ -616,7 +616,10 @@ mod tests {
                     .is_ok_and(|entry| entry.file_name().to_string_lossy().starts_with("cred-"))
             })
             .count();
-        assert_eq!(entries, 1, "the other profile's sign-in alone is left on disk");
+        assert_eq!(
+            entries, 1,
+            "the other profile's sign-in alone is left on disk"
+        );
         let left = credentials.list().unwrap();
         assert_eq!(
             left.iter()
