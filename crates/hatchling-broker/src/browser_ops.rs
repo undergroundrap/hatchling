@@ -30,7 +30,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use hatchling_core::browser::{
@@ -105,6 +105,11 @@ impl Browsers for BrowserLauncher {
         Ok(cell)
     }
 }
+
+/// A running browser that the agent's session and the owner drive in
+/// turn ([`crate::browser_board`]): the session starts and ends it, and
+/// only whoever has control sends it commands. Empty once it's closed.
+pub(crate) type Driven = Arc<Mutex<Option<Box<dyn Browser>>>>;
 
 /// `browsers`, with at most `max` running at once.
 pub struct Capped {
@@ -233,7 +238,7 @@ pub fn configure(
 /// started. Dropped, its browser is closed.
 pub struct BrowserSession {
     browsers: Option<Arc<dyn Browsers>>,
-    browser: Option<Box<dyn Browser>>,
+    browser: Option<Driven>,
     sites: Sites,
     /// The site the browser is visiting, as `host:port`.
     visit: Option<String>,
@@ -255,8 +260,6 @@ struct Shown {
     id: String,
     /// What it's for: the agent's reason when it opened its first page.
     title: String,
-    /// The last frame shown.
-    frame: u64,
     /// The last page's elements, by id: their role and name.
     elements: BTreeMap<u32, (String, String)>,
     /// Set when the owner stops it.
@@ -266,7 +269,7 @@ struct Shown {
 impl std::fmt::Debug for BrowserSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BrowserSession")
-            .field("open", &self.browser.is_some())
+            .field("open", &self.is_open())
             .field("visit", &self.visit)
             .field("once", &self.once)
             .field("shown", &self.shown)
@@ -360,12 +363,17 @@ impl BrowserSession {
     fn shown_as(&mut self, id: String, reason: &str) {
         let stopped = self.board.as_ref().map_or_else(
             || Arc::new(AtomicBool::new(false)),
-            |board| board.begin(&id, self.sites.clone()),
+            |board| {
+                board.begin(
+                    &id,
+                    self.sites.clone(),
+                    self.browser.clone().unwrap_or_default(),
+                )
+            },
         );
         self.shown = Some(Shown {
             id,
             title: reason.chars().take(MAX_NARRATION_CHARS).collect(),
-            frame: 0,
             elements: BTreeMap::new(),
             stopped,
         });
@@ -474,23 +482,28 @@ impl BrowserSession {
     }
 
     /// Takes a frame of the page, titled `title`, and shows it.
-    fn frame(&mut self, board: &BrowserBoard, title: &str) {
-        let Some(browser) = self.browser.as_mut() else {
+    fn frame(&self, board: &BrowserBoard, title: &str) {
+        let (Some(driven), Some(shown)) = (self.browser.as_ref(), self.shown.as_ref()) else {
             return;
         };
-        let Ok(BrowserReply::Frame { jpeg }) = browser.command(&BrowserCommand::Frame) else {
-            return;
-        };
-        if let Some(shown) = self.shown.as_mut() {
-            shown.frame += 1;
-            board.frame(&shown.id, shown.frame, title, &jpeg);
+        let reply = driven
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_mut()
+            .map(|browser| browser.command(&BrowserCommand::Frame));
+        if let Some(Ok(BrowserReply::Frame { jpeg })) = reply {
+            board.frame(&shown.id, title, &jpeg);
         }
     }
 
     /// The browser, if one runs, closed and shown to the owner as `state`;
     /// the board forgets it.
     fn end(&mut self, state: BrowserState) {
-        if let Some(browser) = self.browser.take() {
+        let running = self
+            .browser
+            .take()
+            .and_then(|driven| driven.lock().unwrap_or_else(PoisonError::into_inner).take());
+        if let Some(browser) = running {
             browser.finish();
         }
         if let (Some(board), Some(shown)) = (self.board.clone(), self.shown.as_ref()) {
@@ -526,19 +539,36 @@ impl BrowserSession {
 
     /// Whether the session's browser is running.
     #[must_use]
-    pub const fn is_open(&self) -> bool {
-        self.browser.is_some()
+    pub fn is_open(&self) -> bool {
+        self.browser.as_ref().is_some_and(|driven| {
+            driven
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_some()
+        })
     }
 
     /// `command` sent to the browser, its reply as the agent gets it. A
     /// browser that takes no more commands is closed.
     fn command(&mut self, command: &BrowserCommand) -> BrowserResult {
-        let Some(browser) = self.browser.as_mut() else {
+        let Some(driven) = self.browser.clone() else {
             return BrowserResult::Failed {
                 failure: BrowserFailure::NoPage,
             };
         };
-        match browser.command(command) {
+        let reply = driven
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_mut()
+            .map(|browser| browser.command(command));
+        let Some(reply) = reply else {
+            // Closed under the owner's input, which it failed.
+            self.end(BrowserState::Failed);
+            return BrowserResult::Failed {
+                failure: BrowserFailure::BrowserGone,
+            };
+        };
+        match reply {
             Ok(BrowserReply::Page { snapshot }) => {
                 let refused = self.sites.refused();
                 let snapshot = snapshot.fitted_in(|snapshot| {
@@ -689,7 +719,9 @@ fn open(
         browser.once.insert(destination.clone());
     }
     browser.visit = Some(destination);
-    if browser.browser.is_none() {
+    if !browser.is_open() {
+        // One closed under the owner's input is shown failed first.
+        browser.end(BrowserState::Failed);
         let Some(browsers) = browser.browsers.clone() else {
             return BrowserResult::Off;
         };
@@ -700,7 +732,7 @@ fn open(
         });
         match started {
             Ok((cell_id, started)) => {
-                browser.browser = Some(started);
+                browser.browser = Some(Arc::new(Mutex::new(Some(started))));
                 browser.shown_as(cell_id, reason);
             }
             Err(reason) => {
@@ -809,7 +841,6 @@ fn refused(reason: &str) -> BrowserResult {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
 
     use hatchling_core::browser::PageSnapshot;
     use hatchling_core::ui::Decision;
@@ -875,6 +906,11 @@ mod tests {
         fn finish(self: Box<Self>) {
             self.log.lock().unwrap().finished += 1;
         }
+    }
+
+    /// `browser`, shared as a session holds it.
+    fn driven(browser: impl Browser + 'static) -> Driven {
+        Arc::new(Mutex::new(Some(Box::new(browser))))
     }
 
     /// A session of the task `task` that never waits for the owner, and a
@@ -1310,7 +1346,7 @@ mod tests {
         let fake = Fake::default();
         let (_, mut browser) = session("t", &fake);
         assert!(!browser.owner_stopped(), "nothing to stop");
-        browser.browser = Some(Box::new(fake.clone()));
+        browser.browser = Some(driven(fake.clone()));
         browser.shown_as(String::from("browser-s"), "why");
         assert!(!browser.owner_stopped(), "not stopped");
         if let Some(shown) = browser.shown.as_ref() {
@@ -1327,7 +1363,7 @@ mod tests {
     fn handed_back_the_agent_looks_afresh_and_a_broken_look_is_its_failure() {
         let fake = Fake::default();
         let (_, mut browser) = session("t", &fake);
-        browser.browser = Some(Box::new(fake.clone()));
+        browser.browser = Some(driven(fake.clone()));
         assert_eq!(
             browser.resume(),
             BrowserResult::HandedBack {
@@ -1347,6 +1383,50 @@ mod tests {
                 failure: BrowserFailure::BrowserGone,
             }
         );
+    }
+
+    #[test]
+    fn a_browser_closed_under_the_owners_input_is_shown_failed_at_the_agents_next_op() {
+        use hatchling_core::ui::UiEventBody;
+        let config = web_config("browser-owner-broke");
+        let fake = Fake::default();
+        let (sessions, board, bus) = watched(&fake);
+        let (sessions, _) = ask(&config, sessions, &open("https://a.example/"));
+        owner_decides(&config, "t", "https://a.example", Decision::ApproveSession);
+        let (sessions, _) = ask(&config, sessions, &open("https://a.example/"));
+        let id = shown_id(&sessions);
+        assert_eq!(board.take(&id), Ok(()));
+        fake.broken.store(true, Ordering::SeqCst);
+        assert_eq!(
+            board.input(
+                &id,
+                &hatchling_core::browser::OwnerInput::Scroll { down: true }
+            ),
+            Err(crate::browser_board::InputRefusal::Browser(
+                BrowserFailure::BrowserGone
+            ))
+        );
+        assert_eq!(fake.log.lock().unwrap().finished, 1, "closed at once");
+        assert!(!sessions.1.is_open());
+        fake.broken.store(false, Ordering::SeqCst);
+        assert_eq!(board.hand_back(&id, 1), Ok(()));
+        let (sessions, answer) = ask(&config, sessions, &BrowserOp::Read);
+        assert_eq!(
+            answer,
+            BrowserResult::Failed {
+                failure: BrowserFailure::BrowserGone
+            }
+        );
+        assert!(sessions.1.shown.is_none());
+        let failed = carried_after(&bus, 0).into_iter().any(|body| {
+            matches!(body, UiEventBody::BrowserSession(session) if session.state == BrowserState::Failed)
+        });
+        assert!(failed, "shown failed to the owner");
+        // A new page starts a new browser.
+        let (sessions, answer) = ask(&config, sessions, &open("https://a.example/"));
+        assert_eq!(answer, page("https://a.example/"));
+        assert_eq!(fake.log.lock().unwrap().started.len(), 2);
+        drop(sessions);
     }
 
     #[test]
@@ -1747,7 +1827,7 @@ mod tests {
             text: "\u{1F600}".repeat(60_000),
             ..PageSnapshot::default()
         };
-        browser.browser = Some(Box::new(Big(big)));
+        browser.browser = Some(driven(Big(big)));
         let answer = browser.command(&BrowserCommand::Snapshot);
         let BrowserResult::Page { snapshot, refused } = &answer else {
             unreachable!("{answer:?}");

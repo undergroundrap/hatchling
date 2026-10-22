@@ -278,7 +278,7 @@ export type ApiOutcome = 'served' | 'refused';
  * What one API call asked for: the request's kind, never its content
  * (a message's text, a file, a schedule's task).
  */
-export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser';
+export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input';
 /**
  * A bearer token, presented in `Hello` for a token provider.
  *
@@ -2307,6 +2307,40 @@ export type OperatorSession = {
     readonly socket: SessionSocket;
 };
 /**
+ * What the owner does to the page, from the app, while they drive it.
+ * Where the page's focus is, or at a point of its viewport: the owner
+ * sees a picture, not the page's elements.
+ */
+export type OwnerInput = {
+    readonly input: 'click';
+    /**
+     * Across.
+     */
+    readonly x: number;
+    /**
+     * Down.
+     */
+    readonly y: number;
+} | {
+    readonly input: 'type';
+    /**
+     * At most [`MAX_TYPED_CHARS`] characters.
+     */
+    readonly text: string;
+} | {
+    readonly input: 'key';
+    /**
+     * The key.
+     */
+    readonly key: Key;
+} | {
+    /**
+     * Down, or up.
+     */
+    readonly down: boolean;
+    readonly input: 'scroll';
+};
+/**
  * What to do to an element.
  */
 export type PageAction = {
@@ -3513,6 +3547,16 @@ export type UiAction = {
      * The session.
      */
     readonly session_id: string;
+} | {
+    readonly action: 'browser_input';
+    /**
+     * What the user did.
+     */
+    readonly input: OwnerInput;
+    /**
+     * The session.
+     */
+    readonly session_id: string;
 };
 /**
  * What an action did.
@@ -3643,6 +3687,22 @@ export type UiActionResult = {
      */
     readonly reason: ControlRefusal;
     readonly result: 'control_refused';
+    /**
+     * The session.
+     */
+    readonly session_id: string;
+} | {
+    readonly result: 'input_done';
+    /**
+     * The session.
+     */
+    readonly session_id: string;
+} | {
+    /**
+     * Why.
+     */
+    readonly failure: BrowserFailure;
+    readonly result: 'input_failed';
     /**
      * The session.
      */

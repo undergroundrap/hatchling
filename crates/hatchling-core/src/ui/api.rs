@@ -79,6 +79,8 @@ pub enum ApiRequest {
     ReturnControl,
     /// [`UiAction::StopBrowser`].
     StopBrowser,
+    /// [`UiAction::BrowserInput`].
+    BrowserInput,
 }
 
 impl ApiRequest {
@@ -108,6 +110,7 @@ impl ApiRequest {
             UiAction::TakeControl { .. } => Self::TakeControl,
             UiAction::ReturnControl { .. } => Self::ReturnControl,
             UiAction::StopBrowser { .. } => Self::StopBrowser,
+            UiAction::BrowserInput { .. } => Self::BrowserInput,
         }
     }
 }
@@ -244,6 +247,13 @@ mod tests {
             (
                 action(UiAction::StopBrowser { session_id: id() }),
                 ApiRequest::StopBrowser,
+            ),
+            (
+                action(UiAction::BrowserInput {
+                    session_id: id(),
+                    input: crate::browser::OwnerInput::Scroll { down: true },
+                }),
+                ApiRequest::BrowserInput,
             ),
         ];
         for (request, kind) in cases {

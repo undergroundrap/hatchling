@@ -45,7 +45,7 @@ use hatchling_vault::OpensStores;
 
 use crate::api_auth::Caller;
 use crate::api_stream::Bus;
-use crate::browser_board::OwnerAct;
+use crate::browser_board::{InputRefusal, OwnerAct};
 use crate::schedule_ops::{held_grants, list_schedules};
 use crate::skills::Skills;
 use crate::{Config, handle_schedule_op, handle_skill_op};
@@ -222,13 +222,13 @@ impl<'a> Ops<'a> {
             }
             UiAction::ReturnControl {
                 session_id,
-                frame_sequence,
-            } => self.browser(
-                caller.holds(&owner),
-                OwnerAct::Return(session_id, *frame_sequence),
-            ),
+                frame_sequence: seen,
+            } => self.browser(caller.holds(&owner), OwnerAct::Return(session_id, *seen)),
             UiAction::StopBrowser { session_id } => {
                 self.browser(caller.holds(&owner), OwnerAct::Stop(session_id))
+            }
+            UiAction::BrowserInput { session_id, input } => {
+                self.browser(caller.holds(&owner), OwnerAct::Input(session_id, input))
             }
             UiAction::OpenArtifact { .. }
             | UiAction::ShareArtifact { .. }
@@ -259,6 +259,9 @@ impl<'a> Ops<'a> {
                 board.hand_back(session_id, seen),
             ),
             OwnerAct::Stop(session_id) => self.stop_browser(session_id),
+            OwnerAct::Input(session_id, input) => {
+                input_answer(session_id, board.input(session_id, input))
+            }
         }
     }
 
@@ -515,6 +518,34 @@ impl Audit {
             Err(error) => tracing::error!(%error, "cannot encode an API call's activity event"),
         }
         event
+    }
+}
+
+/// What the owner's input to `session_id` answers: done, or why not.
+/// The browser's own failure is its answer, served; control that isn't
+/// the owner's is refused.
+fn input_answer(session_id: &str, done: Result<(), InputRefusal>) -> (UiActionResult, ApiOutcome) {
+    match done {
+        Ok(()) => (
+            UiActionResult::InputDone {
+                session_id: session_id.to_owned(),
+            },
+            ApiOutcome::Served,
+        ),
+        Err(InputRefusal::Browser(failure)) => (
+            UiActionResult::InputFailed {
+                session_id: session_id.to_owned(),
+                failure,
+            },
+            ApiOutcome::Served,
+        ),
+        Err(InputRefusal::Control(reason)) => (
+            UiActionResult::ControlRefused {
+                session_id: session_id.to_owned(),
+                reason,
+            },
+            ApiOutcome::Refused,
+        ),
     }
 }
 
@@ -938,7 +969,11 @@ mod tests {
         let sites = crate::browser_proxy::Sites::default();
         sites.grant("a.example:443");
         let board = crate::browser_board::board(&config);
-        let stopped = board.begin("browser-api", sites.clone());
+        let stopped = board.begin(
+            "browser-api",
+            sites.clone(),
+            crate::browser_ops::Driven::default(),
+        );
         let stop = |id: &str| UiAction::StopBrowser {
             session_id: id.to_owned(),
         };
@@ -1005,7 +1040,11 @@ mod tests {
         let narrow = caller(&[goals("query-goals"), local_send()]);
         let mut replies = Replies::default();
         let board = crate::browser_board::board(&config);
-        let _stopped = board.begin("browser-ctl", crate::browser_proxy::Sites::default());
+        let _stopped = board.begin(
+            "browser-ctl",
+            crate::browser_proxy::Sites::default(),
+            crate::browser_ops::Driven::default(),
+        );
         let take = UiAction::TakeControl {
             session_id: String::from("browser-ctl"),
         };
@@ -1059,6 +1098,101 @@ mod tests {
         assert_eq!(
             ops.handle(&owner, &take, &mut replies),
             refused(ControlRefusal::UnknownSession)
+        );
+    }
+
+    #[test]
+    fn only_the_owner_gives_a_browser_input_and_only_while_they_drive() {
+        let dir = scratch("input-browser");
+        let mut config = owner_config(Some(&dir.0.join("schedules").to_string_lossy()));
+        config.goals.grants = vec![GoalsAction::QueryGoals, GoalsAction::GoalCreate];
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let ops = Ops::new(&config, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        let owner = caller(&[goals("query-goals"), goals("goal-create"), local_send()]);
+        let narrow = caller(&[goals("query-goals"), local_send()]);
+        let mut replies = Replies::default();
+        let board = crate::browser_board::board(&config);
+        let _stopped = board.begin(
+            "browser-in",
+            crate::browser_proxy::Sites::default(),
+            crate::browser_ops::Driven::default(),
+        );
+        let input = UiAction::BrowserInput {
+            session_id: String::from("browser-in"),
+            input: hatchling_core::browser::OwnerInput::Scroll { down: true },
+        };
+        assert_eq!(
+            ops.handle(&narrow, &input, &mut replies),
+            (
+                UiActionResult::Refused {
+                    reason: ActionRefusal::NotGranted,
+                },
+                ApiOutcome::Refused,
+            )
+        );
+        assert_eq!(
+            ops.handle(&owner, &input, &mut replies),
+            (
+                UiActionResult::ControlRefused {
+                    session_id: String::from("browser-in"),
+                    reason: ControlRefusal::NotAllowed,
+                },
+                ApiOutcome::Refused,
+            ),
+            "the agent drives"
+        );
+        assert_eq!(board.take("browser-in"), Ok(()));
+        assert_eq!(
+            ops.handle(&owner, &input, &mut replies),
+            (
+                UiActionResult::InputFailed {
+                    session_id: String::from("browser-in"),
+                    failure: hatchling_core::browser::BrowserFailure::BrowserGone,
+                },
+                ApiOutcome::Served,
+            ),
+            "no browser running in it"
+        );
+        board.end("browser-in");
+    }
+
+    #[test]
+    fn an_input_answer_is_done_the_browsers_failure_or_a_control_refusal() {
+        let id = String::from("browser-x");
+        assert_eq!(
+            input_answer(&id, Ok(())),
+            (
+                UiActionResult::InputDone {
+                    session_id: id.clone(),
+                },
+                ApiOutcome::Served,
+            )
+        );
+        assert_eq!(
+            input_answer(
+                &id,
+                Err(InputRefusal::Browser(
+                    hatchling_core::browser::BrowserFailure::Timeout
+                ))
+            ),
+            (
+                UiActionResult::InputFailed {
+                    session_id: id.clone(),
+                    failure: hatchling_core::browser::BrowserFailure::Timeout,
+                },
+                ApiOutcome::Served,
+            )
+        );
+        assert_eq!(
+            input_answer(&id, Err(InputRefusal::Control(ControlRefusal::Switching))),
+            (
+                UiActionResult::ControlRefused {
+                    session_id: id.clone(),
+                    reason: ControlRefusal::Switching,
+                },
+                ApiOutcome::Refused,
+            )
         );
     }
 

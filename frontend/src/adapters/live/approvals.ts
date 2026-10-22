@@ -159,6 +159,8 @@ export class LiveApprovals implements TaskApprovalPort {
             case 'control_accepted':
             case 'control_refused':
             case 'browser_stopped':
+            case 'input_done':
+            case 'input_failed':
                 return unknown('Hatchling answered with something other than a decision, so the answer is not confirmed. Check its status.');
         }
     }

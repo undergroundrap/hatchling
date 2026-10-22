@@ -28,12 +28,22 @@
 //!   `HandBack`, then `Resumed` once the agent has looked at the page
 //!   afresh, with the frame it took. Its next op isn't done: it's told the
 //!   page changed under it, and given the page as it is now.
+//!
+//! While the owner drives, their own input reaches the browser: a click at
+//! a point of the page, text typed or a key pressed where its focus is, or
+//! a scroll. Each is shown in the action log in their words, never the
+//! text typed, and a frame of the page after it follows. The board and the
+//! agent's session share the browser ([`Driven`]); only whoever has
+//! control sends it anything. Frames are numbered here, for both.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use hatchling_core::browser::MAX_FRAME_JPEG_BASE64;
+use hatchling_core::browser::{
+    BrowserCommand, BrowserFailure, BrowserReply, MAX_FRAME_JPEG_BASE64, MAX_TYPED_CHARS,
+    OwnerInput, VIEWPORT,
+};
 use hatchling_core::ui::{
     Actor, BrowserAction, BrowserFrame, BrowserSession, Control, ControlRefusal, Handoff,
 };
@@ -42,6 +52,7 @@ use hatchling_scheduler::Timestamp;
 
 use crate::Config;
 use crate::api_stream::Bus;
+use crate::browser_ops::Driven;
 use crate::browser_proxy::Sites;
 
 /// The boards, by the vault root of the broker each belongs to.
@@ -68,7 +79,6 @@ pub struct BrowserBoard {
 }
 
 /// A browser the owner can stop, and drive.
-#[derive(Debug)]
 struct Watched {
     sites: Sites,
     stopped: Arc<AtomicBool>,
@@ -78,6 +88,23 @@ struct Watched {
     latest: u64,
     /// Whether an op of the agent's is in flight.
     acting: bool,
+    /// The browser, which the owner drives once control is theirs.
+    browser: Driven,
+    /// The page's title, as the latest frame showed it.
+    title: String,
+}
+
+impl std::fmt::Debug for Watched {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Watched")
+            .field("sites", &self.sites)
+            .field("stopped", &self.stopped)
+            .field("control", &self.control)
+            .field("latest", &self.latest)
+            .field("acting", &self.acting)
+            .field("title", &self.title)
+            .finish_non_exhaustive()
+    }
 }
 
 /// What the owner does to a browser from the app.
@@ -89,6 +116,17 @@ pub enum OwnerAct<'a> {
     Return(&'a str, u64),
     /// Stop it.
     Stop(&'a str),
+    /// Give it their own input.
+    Input(&'a str, &'a OwnerInput),
+}
+
+/// Why the owner's input wasn't done.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputRefusal {
+    /// Control isn't the owner's, or the browser isn't there.
+    Control(ControlRefusal),
+    /// The browser didn't do it.
+    Browser(BrowserFailure),
 }
 
 /// What the agent's next op may do.
@@ -117,9 +155,10 @@ impl BrowserBoard {
             .is_some()
     }
 
-    /// The browser `session_id` begins, reaching `sites`: the owner may
-    /// stop it. What its session reads to learn it was stopped.
-    pub(crate) fn begin(&self, session_id: &str, sites: Sites) -> Arc<AtomicBool> {
+    /// The browser `session_id`, `browser`, begins, reaching `sites`: the
+    /// owner may stop it, and drive it. What its session reads to learn it
+    /// was stopped.
+    pub(crate) fn begin(&self, session_id: &str, sites: Sites, browser: Driven) -> Arc<AtomicBool> {
         let stopped = Arc::new(AtomicBool::new(false));
         self.sessions
             .lock()
@@ -132,6 +171,8 @@ impl BrowserBoard {
                     control: Control::Agent,
                     latest: 0,
                     acting: false,
+                    browser,
+                    title: String::new(),
                 },
             );
         stopped
@@ -284,21 +325,31 @@ impl BrowserBoard {
 
     /// Logs the agent's action on `session_id`, in the owner's words.
     pub(crate) fn act(&self, session_id: &str, narration: String) {
+        self.told(session_id, Actor::Agent, narration);
+    }
+
+    /// Logs `by`'s action on `session_id`, `narration`.
+    fn told(&self, session_id: &str, by: Actor, narration: String) {
         self.publish(UiEventBody::BrowserAction(BrowserAction {
             session_id: session_id.to_owned(),
-            by: Actor::Agent,
+            by,
             narration,
         }));
     }
 
-    /// Shows frame `sequence` of `session_id`'s page, titled `title`, from
-    /// `jpeg`, which the cell sent: only if it's a JPEG within the bound.
-    /// Whether it was shown.
-    pub(crate) fn frame(&self, session_id: &str, sequence: u64, title: &str, jpeg: &str) -> bool {
+    /// Shows the next frame of `session_id`'s page, titled `title`, from
+    /// `jpeg`, which the cell sent: only if it's a JPEG within the bound,
+    /// and of a browser on the board. Whether it was shown.
+    pub(crate) fn frame(&self, session_id: &str, title: &str, jpeg: &str) -> bool {
         let Some(image) = jpeg_image(jpeg) else {
             tracing::warn!(session = session_id, "a frame that isn't a JPEG: not shown");
             return false;
         };
+        let mut sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(watched) = sessions.get_mut(session_id) else {
+            return false;
+        };
+        let sequence = watched.latest.saturating_add(1);
         let shown = self.publish(UiEventBody::BrowserFrame(BrowserFrame {
             session_id: session_id.to_owned(),
             sequence,
@@ -307,16 +358,66 @@ impl BrowserBoard {
             image: Some(image),
         }));
         if shown {
-            if let Some(watched) = self
-                .sessions
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .get_mut(session_id)
-            {
-                watched.latest = sequence;
-            }
+            watched.latest = sequence;
+            title.clone_into(&mut watched.title);
         }
+        drop(sessions);
         shown
+    }
+
+    /// The owner's `input` to the browser `session_id`, which they drive:
+    /// done, shown in the action log in their words (never the text typed),
+    /// and a frame of the page after it shown.
+    ///
+    /// # Errors
+    ///
+    /// [`InputRefusal::Control`] when control isn't the owner's, as for
+    /// [`BrowserBoard::hand_back`]; [`InputRefusal::Browser`] when the
+    /// browser didn't do it. One that answers out of turn, or not at all,
+    /// is closed: it isn't trusted with another command.
+    pub fn input(&self, session_id: &str, input: &OwnerInput) -> Result<(), InputRefusal> {
+        let sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+        let watched = sessions
+            .get(session_id)
+            .ok_or(InputRefusal::Control(ControlRefusal::UnknownSession))?;
+        Self::open_to_control(watched, Control::User).map_err(InputRefusal::Control)?;
+        let browser = Arc::clone(&watched.browser);
+        drop(sessions);
+        if !within_bounds(input) {
+            return Err(InputRefusal::Browser(BrowserFailure::NotPossible));
+        }
+        let command = BrowserCommand::Input {
+            input: input.clone(),
+        };
+        let mut slot = browser.lock().unwrap_or_else(PoisonError::into_inner);
+        let jpeg = match slot.as_mut().map(|browser| browser.command(&command)) {
+            Some(Ok(BrowserReply::Frame { jpeg })) => jpeg,
+            Some(Ok(BrowserReply::Failed { failure })) => {
+                return Err(InputRefusal::Browser(failure));
+            }
+            None => return Err(InputRefusal::Browser(BrowserFailure::BrowserGone)),
+            Some(Ok(BrowserReply::Page { .. } | BrowserReply::Closed) | Err(_)) => {
+                tracing::warn!(
+                    session = session_id,
+                    "the browser took no more of the owner's input: closed"
+                );
+                if let Some(broken) = slot.take() {
+                    broken.finish();
+                }
+                return Err(InputRefusal::Browser(BrowserFailure::BrowserGone));
+            }
+        };
+        drop(slot);
+        self.told(session_id, Actor::User, owner_said(input));
+        let title = self
+            .sessions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(session_id)
+            .map(|watched| watched.title.clone())
+            .unwrap_or_default();
+        self.frame(session_id, &title, &jpeg);
+        Ok(())
     }
 
     /// Pushes `body` to the owner's app, if one is attached and the stream
@@ -346,6 +447,30 @@ impl BrowserBoard {
         };
         bus.push(ts, event.body);
         true
+    }
+}
+
+/// Whether `input` is within what the browser takes: a point inside the
+/// viewport, and text no longer than the agent itself may type.
+fn within_bounds(input: &OwnerInput) -> bool {
+    match input {
+        OwnerInput::Click { x, y } => {
+            let (width, height) = VIEWPORT;
+            *x < width && *y < height
+        }
+        OwnerInput::Type { text } => text.chars().count() <= MAX_TYPED_CHARS,
+        OwnerInput::Key { .. } | OwnerInput::Scroll { .. } => true,
+    }
+}
+
+/// The owner's `input`, in words for the action log: never the text typed.
+fn owner_said(input: &OwnerInput) -> String {
+    match input {
+        OwnerInput::Click { x, y } => format!("Clicked at {x}, {y}"),
+        OwnerInput::Type { text } => format!("Typed {} characters", text.chars().count()),
+        OwnerInput::Key { key } => format!("Pressed {key:?}"),
+        OwnerInput::Scroll { down: true } => String::from("Scrolled down"),
+        OwnerInput::Scroll { down: false } => String::from("Scrolled up"),
     }
 }
 
@@ -418,8 +543,10 @@ mod tests {
             );
         }
         let (board, bus) = watched();
-        assert!(board.frame("browser-a", 1, "A", &jpeg));
-        assert!(!board.frame("browser-a", 2, "A", &encoded(b"GIF89a")));
+        assert!(!board.frame("browser-a", "A", &jpeg), "not on the board");
+        let _stopped = board.begin("browser-a", Sites::default(), Driven::default());
+        assert!(board.frame("browser-a", "A", &jpeg));
+        assert!(!board.frame("browser-a", "A", &encoded(b"GIF89a")));
         let shown = carried(&bus);
         assert_eq!(shown.len(), 1, "only the JPEG");
         let Some(UiEventBody::BrowserFrame(frame)) = shown.first() else {
@@ -453,6 +580,7 @@ mod tests {
         };
         board.show(session.clone());
         board.act("browser-a", String::from("Clicked button \"Go\""));
+        board.told("browser-a", Actor::User, String::from("Scrolled down"));
         assert_eq!(
             carried(&bus),
             [
@@ -461,6 +589,11 @@ mod tests {
                     session_id: String::from("browser-a"),
                     by: Actor::Agent,
                     narration: String::from("Clicked button \"Go\""),
+                }),
+                UiEventBody::BrowserAction(BrowserAction {
+                    session_id: String::from("browser-a"),
+                    by: Actor::User,
+                    narration: String::from("Scrolled down"),
                 }),
             ]
         );
@@ -491,7 +624,8 @@ mod tests {
         at_bound.resize(MAX_FRAME_JPEG_BASE64 / 4 * 3, 0);
         let jpeg = encoded(&at_bound);
         assert!(jpeg.len() <= MAX_FRAME_JPEG_BASE64);
-        assert!(board.frame("browser-a", 1, &"t".repeat(120), &jpeg));
+        let _stopped = board.begin("browser-a", Sites::default(), Driven::default());
+        assert!(board.frame("browser-a", &"t".repeat(120), &jpeg));
         assert_eq!(carried(&bus).len(), 2, "a frame at its bound is shown");
     }
 
@@ -500,7 +634,7 @@ mod tests {
         let board = BrowserBoard::default();
         let sites = Sites::default();
         sites.grant("a.example:443");
-        let stopped = board.begin("browser-a", sites.clone());
+        let stopped = board.begin("browser-a", sites.clone(), Driven::default());
         assert!(!stopped.load(Ordering::SeqCst));
         assert_eq!(board.stop("browser-a"), Ok(()));
         assert!(stopped.load(Ordering::SeqCst), "its session is told");
@@ -535,9 +669,9 @@ mod tests {
     #[test]
     fn the_owner_takes_control_from_the_agent_and_hands_it_back_from_the_latest_frame() {
         let (board, bus) = watched();
-        let _stopped = board.begin("browser-c", Sites::default());
+        let _stopped = board.begin("browser-c", Sites::default(), Driven::default());
         let jpeg = encoded(&[0xFF, 0xD8, 0xFF, 0xE0]);
-        assert!(board.frame("browser-c", 1, "A", &jpeg));
+        assert!(board.frame("browser-c", "A", &jpeg));
         assert_eq!(board.turn("browser-c"), Turn::Act);
         board.done("browser-c");
         // Taken while the agent's idle: granted at once.
@@ -560,7 +694,7 @@ mod tests {
         );
         assert_eq!(board.take("browser-c"), Err(ControlRefusal::Switching));
         assert_eq!(board.turn("browser-c"), Turn::Resume, "look afresh first");
-        assert!(board.frame("browser-c", 2, "A", &jpeg));
+        assert!(board.frame("browser-c", "A", &jpeg));
         board.resumed("browser-c");
         board.done("browser-c");
         assert_eq!(
@@ -588,6 +722,8 @@ mod tests {
             control,
             latest: 3,
             acting: false,
+            browser: Driven::default(),
+            title: String::new(),
         }
     }
 
@@ -631,7 +767,7 @@ mod tests {
     #[test]
     fn a_takeover_during_the_agents_op_is_granted_when_it_ends() {
         let (board, bus) = watched();
-        let _stopped = board.begin("browser-d", Sites::default());
+        let _stopped = board.begin("browser-d", Sites::default(), Driven::default());
         assert_eq!(board.turn("browser-d"), Turn::Act);
         assert_eq!(board.take("browser-d"), Ok(()));
         assert_eq!(
@@ -660,7 +796,7 @@ mod tests {
             Turn::Act,
             "an unwatched browser acts"
         );
-        let _stopped = board.begin("browser-e", Sites::default());
+        let _stopped = board.begin("browser-e", Sites::default(), Driven::default());
         assert_eq!(board.stop("browser-e"), Ok(()));
         assert_eq!(board.take("browser-e"), Err(ControlRefusal::Finished));
         assert_eq!(
@@ -672,13 +808,215 @@ mod tests {
     #[test]
     fn a_frame_too_big_for_the_stream_isnt_the_latest() {
         let (board, bus) = watched();
-        let _stopped = board.begin("browser-f", Sites::default());
-        assert!(board.frame("browser-f", 1, "A", &encoded(&[0xFF, 0xD8, 0xFF])));
+        let _stopped = board.begin("browser-f", Sites::default(), Driven::default());
+        assert!(board.frame("browser-f", "A", &encoded(&[0xFF, 0xD8, 0xFF])));
         // A title too long for one frame with it: not shown, not the latest.
         let long = "t".repeat(hatchling_core::framing::MAX_FRAME_BYTES);
-        assert!(!board.frame("browser-f", 2, &long, &encoded(&[0xFF, 0xD8, 0xFF])));
+        assert!(!board.frame("browser-f", &long, &encoded(&[0xFF, 0xD8, 0xFF])));
         assert_eq!(board.take("browser-f"), Ok(()));
         assert_eq!(handoffs(&bus).first(), Some(&(Handoff::Takeover, 1)));
+    }
+
+    /// A browser that answers every command with `reply`, keeping what
+    /// it was sent, and saying when it's closed.
+    struct Scripted {
+        reply: Result<BrowserReply, String>,
+        sent: Arc<Mutex<Vec<BrowserCommand>>>,
+        closed: Arc<AtomicBool>,
+    }
+
+    impl crate::browser_ops::Browser for Scripted {
+        fn command(&mut self, command: &BrowserCommand) -> Result<BrowserReply, String> {
+            self.sent
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(command.clone());
+            self.reply.clone()
+        }
+
+        fn finish(self: Box<Self>) {
+            self.closed.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// A [`Scripted`] browser, shared as the board holds it, and what it
+    /// was sent, and whether it was closed.
+    fn scripted(
+        reply: Result<BrowserReply, String>,
+    ) -> (Driven, Arc<Mutex<Vec<BrowserCommand>>>, Arc<AtomicBool>) {
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let closed = Arc::new(AtomicBool::new(false));
+        let browser: Box<dyn crate::browser_ops::Browser> = Box::new(Scripted {
+            reply,
+            sent: Arc::clone(&sent),
+            closed: Arc::clone(&closed),
+        });
+        (Arc::new(Mutex::new(Some(browser))), sent, closed)
+    }
+
+    #[test]
+    fn the_owners_input_reaches_the_browser_only_while_they_drive_and_never_its_text() {
+        let (board, bus) = watched();
+        let jpeg = encoded(&[0xFF, 0xD8, 0xFF, 0xE0]);
+        let (browser, sent, _) = scripted(Ok(BrowserReply::Frame { jpeg }));
+        let _stopped = board.begin("browser-i", Sites::default(), browser);
+        let typed = OwnerInput::Type {
+            text: String::from("hunter2"),
+        };
+        let control = |reason| Err(InputRefusal::Control(reason));
+        assert_eq!(
+            board.input("browser-i", &typed),
+            control(ControlRefusal::NotAllowed),
+            "the agent drives"
+        );
+        assert_eq!(
+            board.input("browser-z", &typed),
+            control(ControlRefusal::UnknownSession)
+        );
+        assert_eq!(board.take("browser-i"), Ok(()));
+        assert_eq!(board.input("browser-i", &typed), Ok(()));
+        assert_eq!(
+            *sent.lock().unwrap(),
+            [BrowserCommand::Input {
+                input: typed.clone()
+            }]
+        );
+        let shown = carried(&bus);
+        let wire = serde_json::to_string(&shown).unwrap();
+        assert!(!wire.contains("hunter2"), "never the text typed: {wire}");
+        let told = UiEventBody::BrowserAction(BrowserAction {
+            session_id: String::from("browser-i"),
+            by: Actor::User,
+            narration: String::from("Typed 7 characters"),
+        });
+        assert!(shown.contains(&told), "{shown:?}");
+        let frames: Vec<u64> = shown
+            .iter()
+            .filter_map(|body| {
+                if let UiEventBody::BrowserFrame(frame) = body {
+                    Some(frame.sequence)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(frames, [1], "the frame after it, numbered on");
+        // Past what the browser takes: never sent.
+        let not_possible = Err(InputRefusal::Browser(BrowserFailure::NotPossible));
+        assert_eq!(
+            board.input("browser-i", &OwnerInput::Click { x: 1280, y: 0 }),
+            not_possible
+        );
+        let long = OwnerInput::Type {
+            text: "x".repeat(MAX_TYPED_CHARS + 1),
+        };
+        assert_eq!(board.input("browser-i", &long), not_possible);
+        assert_eq!(sent.lock().unwrap().len(), 1);
+        // Handed back from that frame: the owner's input waits on the agent.
+        assert_eq!(board.hand_back("browser-i", 1), Ok(()));
+        assert_eq!(
+            board.input("browser-i", &typed),
+            control(ControlRefusal::Switching)
+        );
+        assert_eq!(board.stop("browser-i"), Ok(()));
+        assert_eq!(
+            board.input("browser-i", &typed),
+            control(ControlRefusal::Finished)
+        );
+        assert_eq!(sent.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_browser_that_fails_the_owners_input_says_why_and_one_out_of_turn_is_closed() {
+        let (board, _) = watched();
+        let scroll = OwnerInput::Scroll { down: true };
+        let refused = BrowserReply::Failed {
+            failure: BrowserFailure::NotPossible,
+        };
+        let page = BrowserReply::Page {
+            snapshot: hatchling_core::browser::PageSnapshot::default(),
+        };
+        for (id, reply, failure, closes) in [
+            ("browser-j", Ok(refused), BrowserFailure::NotPossible, false),
+            ("browser-k", Ok(page), BrowserFailure::BrowserGone, true),
+            (
+                "browser-l",
+                Ok(BrowserReply::Closed),
+                BrowserFailure::BrowserGone,
+                true,
+            ),
+            (
+                "browser-m",
+                Err(String::from("gone")),
+                BrowserFailure::BrowserGone,
+                true,
+            ),
+        ] {
+            let (browser, _, closed) = scripted(reply);
+            let _stopped = board.begin(id, Sites::default(), Arc::clone(&browser));
+            assert_eq!(board.take(id), Ok(()));
+            assert_eq!(
+                board.input(id, &scroll),
+                Err(InputRefusal::Browser(failure)),
+                "{id}"
+            );
+            assert_eq!(closed.load(Ordering::SeqCst), closes, "{id}");
+            assert_eq!(browser.lock().unwrap().is_none(), closes, "{id}");
+        }
+        assert_eq!(
+            board.input("browser-k", &scroll),
+            Err(InputRefusal::Browser(BrowserFailure::BrowserGone)),
+            "closed, it takes nothing more"
+        );
+    }
+
+    #[test]
+    fn the_owners_input_is_bounded_and_told_in_their_words() {
+        for (input, within) in [
+            (OwnerInput::Click { x: 1279, y: 799 }, true),
+            (OwnerInput::Click { x: 1280, y: 0 }, false),
+            (OwnerInput::Click { x: 0, y: 800 }, false),
+            (
+                OwnerInput::Type {
+                    text: "\u{e9}".repeat(MAX_TYPED_CHARS),
+                },
+                true,
+            ),
+            (
+                OwnerInput::Type {
+                    text: "\u{e9}".repeat(MAX_TYPED_CHARS + 1),
+                },
+                false,
+            ),
+            (
+                OwnerInput::Key {
+                    key: hatchling_core::browser::Key::Enter,
+                },
+                true,
+            ),
+            (OwnerInput::Scroll { down: false }, true),
+        ] {
+            assert_eq!(within_bounds(&input), within, "{input:?}");
+        }
+        for (input, said) in [
+            (OwnerInput::Click { x: 12, y: 34 }, "Clicked at 12, 34"),
+            (
+                OwnerInput::Type {
+                    text: String::from("s3cret"),
+                },
+                "Typed 6 characters",
+            ),
+            (
+                OwnerInput::Key {
+                    key: hatchling_core::browser::Key::Tab,
+                },
+                "Pressed Tab",
+            ),
+            (OwnerInput::Scroll { down: true }, "Scrolled down"),
+            (OwnerInput::Scroll { down: false }, "Scrolled up"),
+        ] {
+            assert_eq!(owner_said(&input), said);
+        }
     }
 
     #[test]
