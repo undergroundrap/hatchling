@@ -67,6 +67,29 @@ pub fn allow(stream: &UnixStream, site: &str, reason: &str) -> Result<BrowserRes
     )
 }
 
+/// Signs in on the page with the sign-in the owner keeps for its site:
+/// the `password` field, and the `username` one if the form has it, by
+/// their ids; `label` says which sign-in when there are several.
+///
+/// # Errors
+///
+/// As [`open`].
+pub fn sign_in(
+    stream: &UnixStream,
+    username: Option<u32>,
+    password: u32,
+    label: Option<&str>,
+) -> Result<BrowserResult, Error> {
+    request(
+        stream,
+        BrowserOp::SignIn {
+            username,
+            password,
+            label: label.map(str::to_owned),
+        },
+    )
+}
+
 /// Closes the browser.
 ///
 /// # Errors

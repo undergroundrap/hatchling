@@ -42,7 +42,7 @@ v13.
 | Space | `SpaceOp` | `SpaceResult` | v10 |
 | Subagent | `SubagentOp` | `SubagentResult` | v10 |
 | Web | `WebOp` | `WebResult` | v14 |
-| Browser | `BrowserOp` | `BrowserResult` | v15 |
+| Browser | `BrowserOp` | `BrowserResult` | v15; `SignIn` v16 |
 
 ## v9 — Artifact ops
 
@@ -206,6 +206,18 @@ session holds.
   - `HandedBack { snapshot, refused }`: the owner drove the browser and
     handed it back; what was asked wasn't done, and this is the page now;
   - `Off`: the operator hasn't set up a browser.
+
+## v16 — The browser's sign-in
+
+- **`BrowserOp::SignIn { username, password, label }`** (WO-030): sign in on
+  the page with a sign-in the owner keeps for its site, naming the fields
+  by their ids from the last snapshot. Only in a browser running a
+  signed-in profile, and only on the exact origin the sign-in was kept for.
+  The broker types it; the agent learns only the page after, which shows
+  none of it, or why it wasn't done: no sign-in for this site, which one
+  (by `label`) when there are several, or `Failed { failure: OtherOrigin }`
+  when the page isn't on the sign-in's origin. A username goes only into a
+  text or email field, a password only into a password field.
 
 ## Device handshake
 
