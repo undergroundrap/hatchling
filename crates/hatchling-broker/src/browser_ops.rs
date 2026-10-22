@@ -738,8 +738,14 @@ fn answer(
     browser: &mut BrowserSession,
     op: &BrowserOp,
 ) -> BrowserResult {
+    // A page opened or acted on may sign in further: a signed-in browser's
+    // session is kept after each, so it outlives however the session ends.
     match op {
-        BrowserOp::Open { url, reason } => open(config, keys, web, browser, url, reason),
+        BrowserOp::Open { url, reason } => {
+            let opened = open(config, keys, web, browser, url, reason);
+            browser.keep_jar(config, keys);
+            opened
+        }
         BrowserOp::Read => browser.command(&BrowserCommand::Snapshot),
         BrowserOp::Act { element, action } => {
             if let PageAction::Type { text } = action {
@@ -747,10 +753,12 @@ fn answer(
                     return refusal;
                 }
             }
-            browser.command(&BrowserCommand::Act {
+            let acted = browser.command(&BrowserCommand::Act {
                 element: *element,
                 action: action.clone(),
-            })
+            });
+            browser.keep_jar(config, keys);
+            acted
         }
         BrowserOp::Scroll { down } => browser.command(&BrowserCommand::Scroll { down: *down }),
         BrowserOp::Allow { site, reason } => allow_site(config, keys, web, browser, site, reason),
@@ -1399,9 +1407,10 @@ mod tests {
                 },
                 BrowserCommand::Open {
                     url: String::from("https://a.example/")
-                }
+                },
+                BrowserCommand::Cookies { from: 0 }
             ],
-            "its session restored before the page opens"
+            "its session restored before the page opens, and kept after"
         );
         assert!(
             browser.sites().holds("idp.example:443"),
@@ -1411,6 +1420,31 @@ mod tests {
             browser.once.is_empty(),
             "held for the profile, not the visit"
         );
+        // A page acted on, and the next one opened, are kept at once.
+        fake.jar.lock().unwrap().push(cookie("a.example", "acted"));
+        let act = BrowserOp::Act {
+            element: 1,
+            action: PageAction::Click,
+        };
+        handle_browser_op(&config, &keys, &mut web, &mut browser, &act);
+        assert_eq!(
+            kept_jar(&config, &keys, &profile.id),
+            [cookie("a.example", "sid"), cookie("a.example", "acted")],
+            "kept after an action"
+        );
+        fake.jar.lock().unwrap().push(cookie("a.example", "opened"));
+        let next = open("https://a.example/next");
+        handle_browser_op(&config, &keys, &mut web, &mut browser, &next);
+        assert_eq!(
+            kept_jar(&config, &keys, &profile.id).len(),
+            3,
+            "kept after a page opened"
+        );
+        fake.jar.lock().unwrap().clear();
+        fake.jar
+            .lock()
+            .unwrap()
+            .push(cookie("a.example", "sid"));
         // The page signs in further, and sets a cookie for another site.
         fake.jar
             .lock()
@@ -1444,7 +1478,6 @@ mod tests {
             &open("https://a.example/"),
         );
         assert_eq!(answer, page("https://a.example/"));
-        fake.jar.lock().unwrap().push(cookie("a.example", "fresh"));
         // Another site: put to the owner first, and the signed-in browser
         // runs on meanwhile.
         let answer = handle_browser_op(
@@ -1459,6 +1492,7 @@ mod tests {
         assert!(browser.is_open());
         assert_eq!(browser.profile.as_deref(), Some(profile.id.as_str()));
         assert_eq!(fake.log.lock().unwrap().finished, 0);
+        fake.jar.lock().unwrap().push(cookie("a.example", "fresh"));
         owner_decides(&config, "t", "https://b.example", Decision::Approve);
         let answer = handle_browser_op(
             &config,
