@@ -507,7 +507,7 @@ mod tests {
                 &profile,
                 "https://a.example",
                 " Work ",
-                &sign_in("ada", "hunter2-secret"),
+                &sign_in("zoe-user", "hunter2-secret"),
                 7,
             )
             .unwrap()
@@ -525,13 +525,13 @@ mod tests {
         assert_eq!(credentials.list(), Ok(vec![kept.clone()]));
         assert_eq!(
             credentials.sign_in(&kept.id),
-            Ok(sign_in("ada", "hunter2-secret"))
+            Ok(sign_in("zoe-user", "hunter2-secret"))
         );
         assert!(credentials.sign_in("cred-none").is_err());
         // Listed, the secrets are nowhere: not in the index, nor what the app is told.
         let listed = format!("{:?} {:?}", credentials.list(), shown(&kept));
         assert!(
-            !listed.contains("hunter2") && !listed.contains("ada"),
+            !listed.contains("hunter2") && !listed.contains("zoe-user"),
             "{listed}"
         );
         assert_eq!(shown(&kept).created_at, "1970-01-01T00:00:07Z");
