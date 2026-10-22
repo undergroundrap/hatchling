@@ -1793,7 +1793,10 @@ mod tests {
                 "password": "hunter2-secret"}}),
         );
         let shown = format!("{store:?}");
-        assert!(!shown.contains("hunter2") && !shown.contains("ada@"), "{shown}");
+        assert!(
+            !shown.contains("hunter2") && !shown.contains("ada@"),
+            "{shown}"
+        );
         assert!(shown.contains("Concealed(..)"), "{shown}");
         assert_eq!(Concealed::new(s("x")).expose(), "x");
         let credential = SiteCredential {

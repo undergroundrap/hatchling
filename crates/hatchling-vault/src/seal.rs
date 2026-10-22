@@ -1370,6 +1370,12 @@ pub fn rekey(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_sign_ins_store_is_named_by_its_label() {
+        assert_eq!(Store::from_label("credentials"), Some(Store::CREDENTIALS));
+        assert_eq!(Store::CREDENTIALS.label(), "credentials");
+    }
     use std::os::unix::fs::PermissionsExt as _;
 
     /// A fresh directory unique to this test and process, so tests run

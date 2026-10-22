@@ -431,6 +431,10 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             {
                 "const": "manage_profiles",
                 "type": "string"
+            },
+            {
+                "const": "manage_credentials",
+                "type": "string"
             }
         ]
     },
@@ -908,6 +912,9 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             }
         ]
     },
+    "Concealed": {
+        "type": "string"
+    },
     "ConfirmationField": {
         "properties": {
             "label": {
@@ -997,6 +1004,205 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             {
                 "const": "stale_frame",
                 "type": "string"
+            }
+        ]
+    },
+    "CredentialOp": {
+        "oneOf": [
+            {
+                "properties": {
+                    "op": {
+                        "const": "list",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "op"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "label": {
+                        "type": "string"
+                    },
+                    "op": {
+                        "const": "store",
+                        "type": "string"
+                    },
+                    "origin": {
+                        "type": "string"
+                    },
+                    "password": {
+                        "$ref": "#/$defs/Concealed"
+                    },
+                    "profile_id": {
+                        "type": "string"
+                    },
+                    "username": {
+                        "$ref": "#/$defs/Concealed"
+                    }
+                },
+                "required": [
+                    "op",
+                    "profile_id",
+                    "origin",
+                    "label",
+                    "username",
+                    "password"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "credential_id": {
+                        "type": "string"
+                    },
+                    "op": {
+                        "const": "delete",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "op",
+                    "credential_id"
+                ],
+                "type": "object"
+            }
+        ]
+    },
+    "CredentialRefusal": {
+        "oneOf": [
+            {
+                "const": "no_profile",
+                "type": "string"
+            },
+            {
+                "const": "bad_origin",
+                "type": "string"
+            },
+            {
+                "const": "not_the_profiles",
+                "type": "string"
+            },
+            {
+                "const": "bad_label",
+                "type": "string"
+            },
+            {
+                "const": "no_password",
+                "type": "string"
+            },
+            {
+                "const": "too_long",
+                "type": "string"
+            },
+            {
+                "const": "full",
+                "type": "string"
+            }
+        ]
+    },
+    "CredentialResult": {
+        "oneOf": [
+            {
+                "properties": {
+                    "credentials": {
+                        "items": {
+                            "$ref": "#/$defs/SiteCredential"
+                        },
+                        "type": "array"
+                    },
+                    "result": {
+                        "const": "listed",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "credentials"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "credential": {
+                        "$ref": "#/$defs/SiteCredential"
+                    },
+                    "result": {
+                        "const": "stored",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "credential"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "deleted",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "not_found",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "reason": {
+                        "$ref": "#/$defs/CredentialRefusal"
+                    },
+                    "result": {
+                        "const": "refused",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "reason"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "off",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "failed",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
             }
         ]
     },
@@ -2339,6 +2545,33 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
         ],
         "type": "object"
     },
+    "SiteCredential": {
+        "properties": {
+            "created_at": {
+                "type": "string"
+            },
+            "credential_id": {
+                "type": "string"
+            },
+            "label": {
+                "type": "string"
+            },
+            "origin": {
+                "type": "string"
+            },
+            "profile_id": {
+                "type": "string"
+            }
+        },
+        "required": [
+            "credential_id",
+            "profile_id",
+            "origin",
+            "label",
+            "created_at"
+        ],
+        "type": "object"
+    },
     "SiteOp": {
         "oneOf": [
             {
@@ -2826,6 +3059,22 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "op"
                 ],
                 "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
+                        "const": "manage_credentials",
+                        "type": "string"
+                    },
+                    "op": {
+                        "$ref": "#/$defs/CredentialOp"
+                    }
+                },
+                "required": [
+                    "action",
+                    "op"
+                ],
+                "type": "object"
             }
         ]
     },
@@ -3141,6 +3390,22 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     },
                     "result": {
                         "const": "profiles",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "outcome"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "outcome": {
+                        "$ref": "#/$defs/CredentialResult"
+                    },
+                    "result": {
+                        "const": "credentials",
                         "type": "string"
                     }
                 },

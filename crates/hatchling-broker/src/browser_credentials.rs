@@ -18,7 +18,9 @@ use std::path::Path;
 use std::sync::{Mutex, PoisonError};
 
 use hatchling_core::SecretName;
-use hatchling_core::ui::{Concealed, CredentialOp, CredentialRefusal, CredentialResult, SiteCredential};
+use hatchling_core::ui::{
+    Concealed, CredentialOp, CredentialRefusal, CredentialResult, SiteCredential,
+};
 use hatchling_egress::web::WebUrl;
 use hatchling_vault::{OpensStores, SealedVault, Secret, Store};
 use serde::{Deserialize, Serialize};
@@ -187,7 +189,10 @@ impl<'k> Credentials<'k> {
     pub fn sign_in(&self, id: &str) -> Result<SignIn, String> {
         let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
         let vault = self.vault()?;
-        if !Self::read_index(&vault)?.iter().any(|credential| credential.id == id) {
+        if !Self::read_index(&vault)?
+            .iter()
+            .any(|credential| credential.id == id)
+        {
             return Err(format!("no sign-in {id}"));
         }
         let secret = vault
@@ -226,8 +231,9 @@ impl<'k> Credentials<'k> {
         vault: &SealedVault<'_>,
         gone: impl Fn(&Credential) -> bool,
     ) -> Result<usize, String> {
-        let (dropped, kept): (Vec<Credential>, Vec<Credential>) =
-            Self::read_index(vault)?.into_iter().partition(|credential| gone(credential));
+        let (dropped, kept): (Vec<Credential>, Vec<Credential>) = Self::read_index(vault)?
+            .into_iter()
+            .partition(|credential| gone(credential));
         for credential in &dropped {
             match vault.remove(&Self::entry(&credential.id)?) {
                 Ok(()) | Err(hatchling_vault::Error::NotFound { .. }) => {}
@@ -368,7 +374,13 @@ mod tests {
         let key = MasterKey::generate().unwrap();
         let profile = Profiles::of(&config, &key)
             .unwrap()
-            .keep(&[String::from("a.example:443"), String::from("idp.example:443")], 1)
+            .keep(
+                &[
+                    String::from("a.example:443"),
+                    String::from("idp.example:443"),
+                ],
+                1,
+            )
             .unwrap();
         (config, scratch, key, profile)
     }
@@ -392,8 +404,14 @@ mod tests {
 
     #[test]
     fn an_origin_is_an_https_origin_alone() {
-        assert_eq!(origin_of("https://a.example"), Some(String::from("https://a.example")));
-        assert_eq!(origin_of(" https://A.example/ "), Some(String::from("https://a.example")));
+        assert_eq!(
+            origin_of("https://a.example"),
+            Some(String::from("https://a.example"))
+        );
+        assert_eq!(
+            origin_of(" https://A.example/ "),
+            Some(String::from("https://a.example"))
+        );
         assert_eq!(
             origin_of("https://a.example:8443"),
             Some(String::from("https://a.example:8443"))
@@ -419,13 +437,43 @@ mod tests {
         };
         let good = sign_in("ada", "pw");
         for (origin, label, sign, reason) in [
-            ("https://b.example", "Work", &good, CredentialRefusal::NotTheProfiles),
-            ("https://a.example:8443", "Work", &good, CredentialRefusal::NotTheProfiles),
-            ("https://a.example/login", "Work", &good, CredentialRefusal::BadOrigin),
-            ("http://a.example", "Work", &good, CredentialRefusal::BadOrigin),
+            (
+                "https://b.example",
+                "Work",
+                &good,
+                CredentialRefusal::NotTheProfiles,
+            ),
+            (
+                "https://a.example:8443",
+                "Work",
+                &good,
+                CredentialRefusal::NotTheProfiles,
+            ),
+            (
+                "https://a.example/login",
+                "Work",
+                &good,
+                CredentialRefusal::BadOrigin,
+            ),
+            (
+                "http://a.example",
+                "Work",
+                &good,
+                CredentialRefusal::BadOrigin,
+            ),
             ("https://a.example", " ", &good, CredentialRefusal::BadLabel),
-            ("https://a.example", "a\nb", &good, CredentialRefusal::BadLabel),
-            ("https://a.example", "Work", &sign_in("ada", ""), CredentialRefusal::NoPassword),
+            (
+                "https://a.example",
+                "a\nb",
+                &good,
+                CredentialRefusal::BadLabel,
+            ),
+            (
+                "https://a.example",
+                "Work",
+                &sign_in("ada", ""),
+                CredentialRefusal::NoPassword,
+            ),
             (
                 "https://a.example",
                 &"l".repeat(MAX_LABEL_CHARS + 1),
@@ -445,11 +493,18 @@ mod tests {
                 CredentialRefusal::TooLong,
             ),
         ] {
-            assert_eq!(store(origin, label, sign), Err(reason), "{origin} {label:?}");
+            assert_eq!(
+                store(origin, label, sign),
+                Err(reason),
+                "{origin} {label:?}"
+            );
         }
         assert_eq!(credentials.list(), Ok(Vec::new()), "nothing kept");
         // At the bounds, kept: the sign-in site is the profile's too.
-        let edge = sign_in(&"u".repeat(MAX_USERNAME_BYTES), &"p".repeat(MAX_PASSWORD_BYTES));
+        let edge = sign_in(
+            &"u".repeat(MAX_USERNAME_BYTES),
+            &"p".repeat(MAX_PASSWORD_BYTES),
+        );
         let label = "l".repeat(MAX_LABEL_CHARS);
         assert!(store("https://idp.example/", &label, &edge).is_ok());
         assert_eq!(credentials.list().map(|listed| listed.len()), Ok(1));
@@ -460,20 +515,37 @@ mod tests {
         let (config, _scratch, key, profile) = kept("kept");
         let credentials = Credentials::of(&config, &key).unwrap();
         let kept = credentials
-            .store(&profile, "https://a.example", " Work ", &sign_in("ada", "hunter2-secret"), 7)
+            .store(
+                &profile,
+                "https://a.example",
+                " Work ",
+                &sign_in("ada", "hunter2-secret"),
+                7,
+            )
             .unwrap()
             .unwrap();
         assert_eq!(
-            (kept.profile_id.as_str(), kept.origin.as_str(), kept.label.as_str(), kept.created_at),
+            (
+                kept.profile_id.as_str(),
+                kept.origin.as_str(),
+                kept.label.as_str(),
+                kept.created_at
+            ),
             (profile.id.as_str(), "https://a.example", "Work", 7)
         );
         assert!(kept.id.starts_with("cred-"), "{}", kept.id);
         assert_eq!(credentials.list(), Ok(vec![kept.clone()]));
-        assert_eq!(credentials.sign_in(&kept.id), Ok(sign_in("ada", "hunter2-secret")));
+        assert_eq!(
+            credentials.sign_in(&kept.id),
+            Ok(sign_in("ada", "hunter2-secret"))
+        );
         assert!(credentials.sign_in("cred-none").is_err());
         // Listed, the secrets are nowhere: not in the index, nor what the app is told.
         let listed = format!("{:?} {:?}", credentials.list(), shown(&kept));
-        assert!(!listed.contains("hunter2") && !listed.contains("ada"), "{listed}");
+        assert!(
+            !listed.contains("hunter2") && !listed.contains("ada"),
+            "{listed}"
+        );
         assert_eq!(shown(&kept).created_at, "1970-01-01T00:00:07Z");
         let index = std::fs::read_dir(config.web.credentials.as_path())
             .unwrap()
@@ -487,7 +559,10 @@ mod tests {
         );
         assert_eq!(credentials.delete(&kept.id), Ok(true));
         assert_eq!(credentials.delete(&kept.id), Ok(false));
-        assert!(credentials.sign_in(&kept.id).is_err(), "its secrets gone too");
+        assert!(
+            credentials.sign_in(&kept.id).is_err(),
+            "its secrets gone too"
+        );
         assert_eq!(credentials.list(), Ok(Vec::new()));
     }
 
@@ -503,7 +578,13 @@ mod tests {
             let label = format!("Account {n}");
             assert!(
                 credentials
-                    .store(&profile, "https://a.example", &label, &sign_in("ada", "pw"), 1)
+                    .store(
+                        &profile,
+                        "https://a.example",
+                        &label,
+                        &sign_in("ada", "pw"),
+                        1
+                    )
                     .unwrap()
                     .is_ok()
             );
@@ -515,14 +596,25 @@ mod tests {
                 .is_ok()
         );
         assert_eq!(
-            credentials.store(&profile, "https://a.example", "One more", &sign_in("ada", "pw"), 1),
+            credentials.store(
+                &profile,
+                "https://a.example",
+                "One more",
+                &sign_in("ada", "pw"),
+                1
+            ),
             Ok(Err(CredentialRefusal::Full))
         );
-        assert_eq!(credentials.delete_profiles(&profile.id), Ok(MAX_CREDENTIALS - 1));
+        assert_eq!(
+            credentials.delete_profiles(&profile.id),
+            Ok(MAX_CREDENTIALS - 1)
+        );
         assert_eq!(credentials.delete_profiles(&profile.id), Ok(0));
         let left = credentials.list().unwrap();
         assert_eq!(
-            left.iter().map(|credential| credential.profile_id.as_str()).collect::<Vec<_>>(),
+            left.iter()
+                .map(|credential| credential.profile_id.as_str())
+                .collect::<Vec<_>>(),
             [other.id.as_str()]
         );
     }
@@ -566,7 +658,7 @@ mod tests {
             ),
             (
                 CredentialOp::Delete {
-                    credential_id: credential.credential_id.clone(),
+                    credential_id: credential.credential_id,
                 },
                 CredentialResult::NotFound,
             ),
@@ -579,9 +671,12 @@ mod tests {
             &key,
             &store_op(&profile.id, "https://a.example", "Work", "pw"),
         );
-        assert!(matches!(again, CredentialResult::Stored { .. }), "{again:?}");
+        assert!(
+            matches!(again, CredentialResult::Stored { .. }),
+            "{again:?}"
+        );
         let delete = ProfileOp::Delete {
-            profile_id: profile.id.clone(),
+            profile_id: profile.id,
         };
         assert_eq!(
             crate::browser_profiles::handle_profile_op(&config, &key, &delete),
@@ -593,25 +688,63 @@ mod tests {
                 credentials: Vec::new()
             }
         );
-        // No store, or no profiles: off. Another key: failed.
-        let mut off = config.clone();
-        off.web.credentials = std::path::PathBuf::new();
-        assert_eq!(handle_credential_op(&off, &key, &CredentialOp::List), CredentialResult::Off);
-        let mut no_profiles = config.clone();
-        no_profiles.web.profiles = std::path::PathBuf::new();
-        assert_eq!(
-            handle_credential_op(
-                &no_profiles,
-                &key,
-                &store_op("profile-1", "https://a.example", "Work", "pw")
-            ),
-            CredentialResult::Off
-        );
+        // Another key: failed. No profiles, or no store: off.
         let other = MasterKey::generate().unwrap();
         assert_eq!(
             handle_credential_op(&config, &other, &CredentialOp::List),
             CredentialResult::Failed
         );
-        assert!(format!("{:?}", Credentials::of(&config, &key).unwrap()).contains("Credentials"));
+        let shown = format!("{:?}", Credentials::of(&config, &key).unwrap());
+        assert!(shown.contains("Credentials"), "{shown}");
+        let mut config = config;
+        config.web.profiles = std::path::PathBuf::new();
+        assert_eq!(
+            handle_credential_op(
+                &config,
+                &key,
+                &store_op("profile-1", "https://a.example", "Work", "pw")
+            ),
+            CredentialResult::Off
+        );
+        config.web.credentials = std::path::PathBuf::new();
+        assert_eq!(
+            handle_credential_op(&config, &key, &CredentialOp::List),
+            CredentialResult::Off
+        );
+    }
+
+    #[test]
+    fn the_index_and_its_entries_are_read_written_and_dropped_as_named() {
+        let (config, _scratch, key, profile) = kept("index");
+        let credentials = Credentials::of(&config, &key).unwrap();
+        assert!(Credentials::entry("cred-1").is_ok());
+        assert!(Credentials::entry("not a name/").is_err());
+        let vault = credentials.vault().unwrap();
+        assert_eq!(Credentials::read_index(&vault), Ok(Vec::new()), "none yet");
+        let listed = |id: &str| Credential {
+            id: id.to_owned(),
+            profile_id: profile.id.clone(),
+            origin: String::from("https://a.example"),
+            label: String::from("Work"),
+            created_at: 1,
+        };
+        let both = vec![listed("cred-a"), listed("cred-b")];
+        assert_eq!(Credentials::write_index(&vault, &both), Ok(()));
+        assert_eq!(Credentials::read_index(&vault), Ok(both));
+        assert_eq!(
+            Credentials::drop_where(&vault, |credential| credential.id == "cred-a"),
+            Ok(1),
+            "an entry already gone is no failure"
+        );
+        assert_eq!(
+            Credentials::read_index(&vault),
+            Ok(vec![listed("cred-b")])
+        );
+        assert_eq!(Credentials::drop_where(&vault, |_| false), Ok(0));
+        let corrupt = Secret::new(b"not json".to_vec()).unwrap();
+        vault
+            .store(&Credentials::entry(INDEX).unwrap(), &corrupt)
+            .unwrap();
+        assert!(Credentials::read_index(&vault).is_err());
     }
 }

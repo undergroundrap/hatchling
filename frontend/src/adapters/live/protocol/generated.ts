@@ -278,7 +278,7 @@ export type ApiOutcome = 'served' | 'refused';
  * What one API call asked for: the request's kind, never its content
  * (a message's text, a file, a schedule's task).
  */
-export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles';
+export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_credentials';
 /**
  * A bearer token, presented in `Hello` for a token provider.
  *
@@ -1213,6 +1213,12 @@ export type ChildReport = {
  */
 export type ChildVerdict = 'ok' | 'partial';
 /**
+ * A secret the user types into the app for the broker to keep (WO-030):
+ * a site's username or password. It travels as a plain string and is
+ * never shown: its `Debug` hides it, and it's wiped when dropped.
+ */
+export type Concealed = string;
+/**
  * One field of what a confirmation asks.
  */
 export type ConfirmationField = {
@@ -1326,6 +1332,76 @@ export type Control = 'agent' | 'user' | 'to_user' | 'to_agent';
  * Why a control action was refused.
  */
 export type ControlRefusal = 'unknown_session' | 'finished' | 'switching' | 'not_allowed' | 'stale_frame';
+/**
+ * An operation on the sign-ins the broker fills for a signed-in profile
+ * (WO-030): the owner's alone.
+ */
+export type CredentialOp = {
+    readonly op: 'list';
+} | {
+    /**
+     * What the owner calls it.
+     */
+    readonly label: string;
+    readonly op: 'store';
+    /**
+     * The exact origin it's filled on, `https://host[:port]`: one of
+     * the profile's sites.
+     */
+    readonly origin: string;
+    /**
+     * The password.
+     */
+    readonly password: Concealed;
+    /**
+     * The profile it signs in, as listed.
+     */
+    readonly profile_id: string;
+    /**
+     * The username.
+     */
+    readonly username: Concealed;
+} | {
+    /**
+     * The sign-in, as listed.
+     */
+    readonly credential_id: string;
+    readonly op: 'delete';
+};
+/**
+ * Why a sign-in wasn't kept.
+ */
+export type CredentialRefusal = 'no_profile' | 'bad_origin' | 'not_the_profiles' | 'bad_label' | 'no_password' | 'too_long' | 'full';
+/**
+ * The result of a [`CredentialOp`].
+ */
+export type CredentialResult = {
+    /**
+     * The sign-ins.
+     */
+    readonly credentials: readonly (SiteCredential)[];
+    readonly result: 'listed';
+} | {
+    /**
+     * The sign-in, as listed.
+     */
+    readonly credential: SiteCredential;
+    readonly result: 'stored';
+} | {
+    readonly result: 'deleted';
+} | {
+    readonly result: 'not_found';
+} | {
+    /**
+     * Why.
+     */
+    readonly reason: CredentialRefusal;
+    readonly result: 'refused';
+} | {
+    readonly result: 'off';
+} | {
+    readonly result: 'failed';
+};
 /**
  * A user's decision on a confirmation.
  */
@@ -2955,6 +3031,32 @@ export type SignedInProfile = {
     readonly sites: readonly (string)[];
 };
 /**
+ * A sign-in the broker keeps, as the owner's app is told it: its label and
+ * where it's filled, never its username or password.
+ */
+export type SiteCredential = {
+    /**
+     * When it was kept, RFC 3339.
+     */
+    readonly created_at: string;
+    /**
+     * Its id.
+     */
+    readonly credential_id: string;
+    /**
+     * What the owner calls it.
+     */
+    readonly label: string;
+    /**
+     * The exact origin it's filled on.
+     */
+    readonly origin: string;
+    /**
+     * The profile it signs in.
+     */
+    readonly profile_id: string;
+};
+/**
  * An operation on the sites the agent is always allowed to read (WO-028).
  */
 export type SiteOp = {
@@ -3633,6 +3735,12 @@ export type UiAction = {
      * The operation.
      */
     readonly op: ProfileOp;
+} | {
+    readonly action: 'manage_credentials';
+    /**
+     * The operation.
+     */
+    readonly op: CredentialOp;
 };
 /**
  * What an action did.
@@ -3783,6 +3891,12 @@ export type UiActionResult = {
      */
     readonly outcome: ProfileResult;
     readonly result: 'profiles';
+} | {
+    /**
+     * The result.
+     */
+    readonly outcome: CredentialResult;
+    readonly result: 'credentials';
 } | {
     readonly result: 'input_done';
     /**

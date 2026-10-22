@@ -615,6 +615,11 @@
           "const": "manage_profiles",
           "description": "[`UiAction::ManageProfiles`].",
           "type": "string"
+        },
+        {
+          "const": "manage_credentials",
+          "description": "[`UiAction::ManageCredentials`].",
+          "type": "string"
         }
       ]
     },
@@ -2743,6 +2748,10 @@
         }
       ]
     },
+    "Concealed": {
+      "description": "A secret the user types into the app for the broker to keep (WO-030):\na site's username or password. It travels as a plain string and is\nnever shown: its `Debug` hides it, and it's wiped when dropped.",
+      "type": "string"
+    },
     "ConfirmationField": {
       "description": "One field of what a confirmation asks.",
       "properties": {
@@ -2937,6 +2946,234 @@
           "const": "stale_frame",
           "description": "The frame the user returned control from is not the latest.",
           "type": "string"
+        }
+      ]
+    },
+    "CredentialOp": {
+      "description": "An operation on the sign-ins the broker fills for a signed-in profile\n(WO-030): the owner's alone.",
+      "oneOf": [
+        {
+          "description": "List them, by label: never a username or a password.",
+          "properties": {
+            "op": {
+              "const": "list",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Keep a sign-in for one profile and one exact origin.",
+          "properties": {
+            "label": {
+              "description": "What the owner calls it.",
+              "type": "string"
+            },
+            "op": {
+              "const": "store",
+              "type": "string"
+            },
+            "origin": {
+              "description": "The exact origin it's filled on, `https://host[:port]`: one of\nthe profile's sites.",
+              "type": "string"
+            },
+            "password": {
+              "$ref": "#/$defs/Concealed",
+              "description": "The password."
+            },
+            "profile_id": {
+              "description": "The profile it signs in, as listed.",
+              "type": "string"
+            },
+            "username": {
+              "$ref": "#/$defs/Concealed",
+              "description": "The username."
+            }
+          },
+          "required": [
+            "op",
+            "profile_id",
+            "origin",
+            "label",
+            "username",
+            "password"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Delete one.",
+          "properties": {
+            "credential_id": {
+              "description": "The sign-in, as listed.",
+              "type": "string"
+            },
+            "op": {
+              "const": "delete",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "credential_id"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "CredentialRefusal": {
+      "description": "Why a sign-in wasn't kept.",
+      "oneOf": [
+        {
+          "const": "no_profile",
+          "description": "No such profile.",
+          "type": "string"
+        },
+        {
+          "const": "bad_origin",
+          "description": "The origin isn't an `https` origin alone: a path, a query, a user,\nor not `https`.",
+          "type": "string"
+        },
+        {
+          "const": "not_the_profiles",
+          "description": "The origin isn't one of the profile's sites.",
+          "type": "string"
+        },
+        {
+          "const": "bad_label",
+          "description": "The label is empty, or has a control character.",
+          "type": "string"
+        },
+        {
+          "const": "no_password",
+          "description": "The password is empty.",
+          "type": "string"
+        },
+        {
+          "const": "too_long",
+          "description": "The label, the username or the password is past its bound.",
+          "type": "string"
+        },
+        {
+          "const": "full",
+          "description": "The broker keeps as many sign-ins as it may: delete one first.",
+          "type": "string"
+        }
+      ]
+    },
+    "CredentialResult": {
+      "description": "The result of a [`CredentialOp`].",
+      "oneOf": [
+        {
+          "description": "The sign-ins, in the order they were kept.",
+          "properties": {
+            "credentials": {
+              "description": "The sign-ins.",
+              "items": {
+                "$ref": "#/$defs/SiteCredential"
+              },
+              "type": "array"
+            },
+            "result": {
+              "const": "listed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "credentials"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The sign-in was kept.",
+          "properties": {
+            "credential": {
+              "$ref": "#/$defs/SiteCredential",
+              "description": "The sign-in, as listed."
+            },
+            "result": {
+              "const": "stored",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "credential"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The sign-in was deleted.",
+          "properties": {
+            "result": {
+              "const": "deleted",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "No such sign-in.",
+          "properties": {
+            "result": {
+              "const": "not_found",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The sign-in wasn't kept, and why.",
+          "properties": {
+            "reason": {
+              "$ref": "#/$defs/CredentialRefusal",
+              "description": "Why."
+            },
+            "result": {
+              "const": "refused",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The broker keeps no sign-ins: the operator hasn't given it a place\nto.",
+          "properties": {
+            "result": {
+              "const": "off",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The broker couldn't read or change them; its log says why.",
+          "properties": {
+            "result": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -7172,6 +7409,39 @@
       ],
       "type": "object"
     },
+    "SiteCredential": {
+      "description": "A sign-in the broker keeps, as the owner's app is told it: its label and\nwhere it's filled, never its username or password.",
+      "properties": {
+        "created_at": {
+          "description": "When it was kept, RFC 3339.",
+          "type": "string"
+        },
+        "credential_id": {
+          "description": "Its id.",
+          "type": "string"
+        },
+        "label": {
+          "description": "What the owner calls it.",
+          "type": "string"
+        },
+        "origin": {
+          "description": "The exact origin it's filled on.",
+          "type": "string"
+        },
+        "profile_id": {
+          "description": "The profile it signs in.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "credential_id",
+        "profile_id",
+        "origin",
+        "label",
+        "created_at"
+      ],
+      "type": "object"
+    },
     "SiteOp": {
       "description": "An operation on the sites the agent is always allowed to read (WO-028).",
       "oneOf": [
@@ -8842,6 +9112,24 @@
             "op"
           ],
           "type": "object"
+        },
+        {
+          "description": "List, keep or delete the sign-ins the broker fills (WO-030).",
+          "properties": {
+            "action": {
+              "const": "manage_credentials",
+              "type": "string"
+            },
+            "op": {
+              "$ref": "#/$defs/CredentialOp",
+              "description": "The operation."
+            }
+          },
+          "required": [
+            "action",
+            "op"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -9206,6 +9494,24 @@
             },
             "result": {
               "const": "profiles",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "outcome"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A sign-in operation's result (WO-030).",
+          "properties": {
+            "outcome": {
+              "$ref": "#/$defs/CredentialResult",
+              "description": "The result."
+            },
+            "result": {
+              "const": "credentials",
               "type": "string"
             }
           },

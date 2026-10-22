@@ -266,7 +266,11 @@ impl<'a> Ops<'a> {
                 outcome: crate::browser_profiles::handle_profile_op(self.config, self.key, op),
             },
             Owned::Credentials(op) => UiActionResult::Credentials {
-                outcome: crate::browser_credentials::handle_credential_op(self.config, self.key, op),
+                outcome: crate::browser_credentials::handle_credential_op(
+                    self.config,
+                    self.key,
+                    op,
+                ),
             },
         };
         (result, ApiOutcome::Served)
