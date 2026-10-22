@@ -1450,6 +1450,35 @@ mod tests {
     }
 
     #[test]
+    fn only_the_owner_manages_the_sign_ins_and_none_is_kept_without_a_store() {
+        let dir = scratch("manage-credentials");
+        let (mut config, off) = profile_configs(&dir);
+        config.web.credentials = dir.0.join("credentials");
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let ops = Ops::new(&config, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        let ops_off = Ops::new(&off, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        let owner = caller(&[goals("query-goals"), goals("goal-create"), local_send()]);
+        let narrow = caller(&[goals("query-goals"), local_send()]);
+        let mut replies = Replies::default();
+        let list = UiAction::ManageCredentials {
+            op: CredentialOp::List,
+        };
+        assert_eq!(ops.handle(&narrow, &list, &mut replies), not_granted());
+        let listed = |outcome| (UiActionResult::Credentials { outcome }, ApiOutcome::Served);
+        assert_eq!(
+            ops.handle(&owner, &list, &mut replies),
+            listed(hatchling_core::ui::CredentialResult::Listed {
+                credentials: Vec::new()
+            })
+        );
+        assert_eq!(
+            ops_off.handle(&owner, &list, &mut replies),
+            listed(hatchling_core::ui::CredentialResult::Off)
+        );
+    }
+
+    #[test]
     fn only_the_owner_gives_a_browser_input_and_only_while_they_drive() {
         let dir = scratch("input-browser");
         let mut config = owner_config(Some(&dir.0.join("schedules").to_string_lossy()));
