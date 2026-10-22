@@ -1441,10 +1441,7 @@ mod tests {
             "kept after a page opened"
         );
         fake.jar.lock().unwrap().clear();
-        fake.jar
-            .lock()
-            .unwrap()
-            .push(cookie("a.example", "sid"));
+        fake.jar.lock().unwrap().push(cookie("a.example", "sid"));
         // The page signs in further, and sets a cookie for another site.
         fake.jar
             .lock()
