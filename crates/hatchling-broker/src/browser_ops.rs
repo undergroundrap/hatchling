@@ -1814,6 +1814,20 @@ mod tests {
     #[test]
     fn a_sign_in_is_filled_in_its_profiles_browser_on_its_origin_and_never_shown() {
         let (config, _scratch, keys, _profile) = with_sign_ins("fill", &["Work"]);
+        // Another profile's sign-in for the same site is never this one's.
+        let other = crate::browser_profiles::Profiles::of(&config, &keys)
+            .unwrap()
+            .keep(&[String::from("b.example:443"), String::from("a.example:443")], 1)
+            .unwrap();
+        let theirs = crate::browser_credentials::SignIn {
+            username: Concealed::new(String::from("other@a.example")),
+            password: Concealed::new(String::from("Other-hunter2")),
+        };
+        crate::browser_credentials::Credentials::of(&config, &keys)
+            .unwrap()
+            .store(&other, "https://a.example", "Other", &theirs, 1)
+            .unwrap()
+            .unwrap();
         let fake = Fake::default();
         let (mut web, mut browser) = session("t", &fake);
         let opened = open("https://a.example/login");
@@ -1963,7 +1977,7 @@ mod tests {
         let page = PageSnapshot {
             url: String::from("https://a.example/?u=ada@x"),
             title: String::from("ada@x"),
-            text: String::from("ada@x and abc"),
+            text: String::from("ada@x and abc and wxyz"),
             elements: vec![hatchling_core::browser::PageElement {
                 id: 1,
                 role: String::from("textbox"),
@@ -1976,11 +1990,12 @@ mod tests {
             &[
                 Concealed::new(String::from("ada@x")),
                 Concealed::new(String::from("abc")),
+                Concealed::new(String::from("wxyz")),
             ],
         );
         assert_eq!(shown.url, "https://a.example/?u=[hidden]");
         assert_eq!(shown.title, "[hidden]");
-        assert_eq!(shown.text, "[hidden] and abc", "three characters: left");
+        assert_eq!(shown.text, "[hidden] and abc and [hidden]", "three characters: left; four: hidden");
         assert_eq!(
             shown.elements.first().map(|element| element.name.as_str()),
             Some("[hidden]")

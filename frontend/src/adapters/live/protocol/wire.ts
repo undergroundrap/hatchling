@@ -708,6 +708,10 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             {
                 "const": "bad_command",
                 "type": "string"
+            },
+            {
+                "const": "other_origin",
+                "type": "string"
             }
         ]
     },
