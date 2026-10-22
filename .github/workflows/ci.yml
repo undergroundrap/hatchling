@@ -117,7 +117,13 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/browser-venv"
           "$RUNNER_TEMP/browser-venv/bin/python" -m pip install -r frontend/tests/e2e/requirements.txt
-          "$RUNNER_TEMP/browser-venv/bin/python" -m playwright install --with-deps chromium-headless-shell
+          # The browsers' download has hung for 20 minutes at a time: each try
+          # is bounded, and a stuck one is tried again.
+          for attempt in 1 2 3; do
+            timeout 300 "$RUNNER_TEMP/browser-venv/bin/python" -m playwright install --with-deps chromium-headless-shell && break
+            [ "$attempt" = 3 ] && exit 1
+            sleep 15
+          done
           shell=$(find "$HOME/.cache/ms-playwright" -path '*chrome-headless-shell-linux64/chrome-headless-shell' -type f)
           echo "20ffc88be1c6f7dc8351bebfaca965ff9a07617bddf696f0b67ef85e5868b29a  $shell" | sha256sum --check
           echo "HATCHLING_TEST_BROWSER=$shell" >> "$GITHUB_ENV"
@@ -206,7 +212,13 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/app-venv"
           "$RUNNER_TEMP/app-venv/bin/python" -m pip install -r frontend/tests/e2e/requirements.txt
-          "$RUNNER_TEMP/app-venv/bin/python" -m playwright install --with-deps chromium
+          # The browsers' download has hung for 20 minutes at a time: each try
+          # is bounded, and a stuck one is tried again.
+          for attempt in 1 2 3; do
+            timeout 300 "$RUNNER_TEMP/app-venv/bin/python" -m playwright install --with-deps chromium && break
+            [ "$attempt" = 3 ] && exit 1
+            sleep 15
+          done
 
       - name: Allow real cells
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
@@ -266,7 +278,13 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/app-venv"
           "$RUNNER_TEMP/app-venv/bin/python" -m pip install -r frontend/tests/e2e/requirements.txt
-          "$RUNNER_TEMP/app-venv/bin/python" -m playwright install --with-deps chromium chromium-headless-shell
+          # The browsers' download has hung for 20 minutes at a time: each try
+          # is bounded, and a stuck one is tried again.
+          for attempt in 1 2 3; do
+            timeout 300 "$RUNNER_TEMP/app-venv/bin/python" -m playwright install --with-deps chromium chromium-headless-shell && break
+            [ "$attempt" = 3 ] && exit 1
+            sleep 15
+          done
           shell=$(find "$HOME/.cache/ms-playwright" -path '*chrome-headless-shell-linux64/chrome-headless-shell' -type f)
           echo "20ffc88be1c6f7dc8351bebfaca965ff9a07617bddf696f0b67ef85e5868b29a  $shell" | sha256sum --check
           echo "CELL_BROWSER=$shell" >> "$GITHUB_ENV"
@@ -361,7 +379,13 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/app-venv"
           "$RUNNER_TEMP/app-venv/bin/python" -m pip install -r frontend/tests/e2e/requirements.txt
-          "$RUNNER_TEMP/app-venv/bin/python" -m playwright install --with-deps chromium
+          # The browsers' download has hung for 20 minutes at a time: each try
+          # is bounded, and a stuck one is tried again.
+          for attempt in 1 2 3; do
+            timeout 300 "$RUNNER_TEMP/app-venv/bin/python" -m playwright install --with-deps chromium && break
+            [ "$attempt" = 3 ] && exit 1
+            sleep 15
+          done
 
       # The README's own setup adds the runner's range, as for a new user.
       - name: Take the runner's ranges away again
