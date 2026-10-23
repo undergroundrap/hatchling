@@ -7,7 +7,7 @@
 - #144, a vault keeper process holding the master key and the secrets store's key, the broker neither;
 - #145, the gates scanning only for the secrets a cell has had, which the keeper records.
 
-Left: step 2, the egress authority, and step 3, the privileged spawner, which drops the broker from root. Until step 3, the keeper is a separate process, not yet an OS boundary.
+Step 2, the egress authority, has begun: slices 1 and 4 (below) start it beside the keeper and move web search into it. Left: step 2's other slices, and step 3, the privileged spawner, which drops the broker from root. Until step 3, the keeper and the authority are separate processes, not yet OS boundaries.
 **Area:** `crates/hatchling-broker`, `crates/hatchling-vault`, `crates/hatchling-egress`, `crates/hatchling-isolation`, `crates/hatchling-sys`, `crates/hatchling-runtime`, a new crate per separated process if its dependencies warrant one, `docs/arch/`
 **Issue:** [#33](https://github.com/undergroundrap/hatchling/issues/33)
 **Trust boundary:** yes
@@ -138,9 +138,10 @@ Filled in at close.
   - **What the keeper checks today:** only that a name belongs to a purpose. It checks no peer, and both run as one user. So which process may receive which purpose comes from the launch, not from peer credentials, until step 3.
   - **Slices, each landing and gated on its own:**
     1. **Launch and identity.** The keeper starts the egress authority (`hatchling-broker egress-authority`) on a socket pair of its own, and hands the broker its end of a broker-to-authority pair. The keeper releases `egress`, `harness` and `search` reads only on the authority's channel, and refuses them on the broker's: tested.
+       *Landed with slice 4, changed in one way:* the broker starts the authority, not the keeper, so no process forks from one holding the master key. The broker makes the keeper-to-authority pair when it starts the keeper, hands one end to each, and closes both. The keeper serves each channel as its role, and answers only reads on the authority's. Only `search` has moved so far; `egress` and `harness` stay the broker's until their slices.
     2. **The egress swap.** The proxy runs in the authority: the surrogate key, the pinned allowlist, TLS, the swap, the scrub and the staged pages. The authority reads the egress grants from its own configuration, as the keeper does. The broker relays each session's `EgressOp` and `EgressResult` and never fetches a credential. The cell's peer uid is still the broker's word until step 3, and the docs say so.
     3. **The harness relay.** The broker hands the cell's relay listener to the authority (`SCM_RIGHTS`) with the run's vendor and surrogate, and the authority runs the relay with the key it alone reads.
-    4. **Search.** A typed search request to the authority, which reads the key and answers with the results.
+    4. **Search.** A typed search request to the authority, which reads the key and answers with the results. *Landed with slice 1.* Searches run one at a time through the authority.
     5. **The scan.** With the broker holding none of them, the egress credentials leave the gates' scan set.
   - **Not moved by this step:**
     - Channel accounts move with the first channel that uses one, into the authority; until then, none is configured.
