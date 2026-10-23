@@ -238,6 +238,31 @@ setTimeout(() => note('udp candidates', String(udp) + ' (timed out)'), 8000);
 });
 </script>"#;
 
+/// A signed-in page (WO-030): its site sets a cookie, and it registers a
+/// service worker, which is what lives on in a browser that keeps its
+/// profile, and must not in one that keeps only its cookies.
+const SIGNED_IN: &str = r#"<!doctype html><title>Signed in</title>
+<p id="r">waiting</p>
+<script>
+navigator.serviceWorker.register('/worker.js')
+  .then(() => navigator.serviceWorker.ready)
+  .then(() => navigator.serviceWorker.getRegistrations())
+  .then(all => { document.getElementById('r').textContent = 'workers: ' + all.length; },
+        error => { document.getElementById('r').textContent = 'no worker: ' + error; });
+</script>"#;
+
+/// A service worker that does nothing but be there.
+const WORKER: &str = "self.addEventListener('fetch', () => {});";
+
+/// What a later browser finds of the session before it: its cookies, and
+/// any service worker.
+const LATER: &str = r#"<!doctype html><title>Later</title>
+<p id="r">waiting</p>
+<script>
+navigator.serviceWorker.getRegistrations()
+  .then(all => { document.getElementById('r').textContent = 'workers: ' + all.length + '; cookies: ' + document.cookie; });
+</script>"#;
+
 /// The trusted site, on 127.0.0.1 with `certificate` and its `key`: it
 /// serves [`PROBE`] at `/`, a redirect to an ungranted site at `/away`, and
 /// nothing else, and records each request's first line in `requests`, until
@@ -312,6 +337,18 @@ fn serve(config: &Arc<rustls::ServerConfig>, mut tcp: TcpStream, requests: &Mute
         ),
         "/away" => String::from(
             "HTTP/1.1 302 Found\r\nlocation: https://elsewhere.test/landed\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+        ),
+        "/signed-in" => format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\nset-cookie: session=from-the-site; Path=/; Secure; Max-Age=3600\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{SIGNED_IN}",
+            SIGNED_IN.len()
+        ),
+        "/worker.js" => format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/javascript\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{WORKER}",
+            WORKER.len()
+        ),
+        "/later" => format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{LATER}",
+            LATER.len()
         ),
         _ => {
             String::from("HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
@@ -666,5 +703,104 @@ fn a_page_in_a_real_browser_reaches_only_the_sites_its_session_holds() {
                 && decision.verdict == EgressVerdict::Allowed)
             .all(|decision| decision.destination == DESTINATION),
         "only the granted site was let through"
+    );
+}
+
+/// The text of a page `cell` shows once it says `ready` (or after about
+/// ten seconds, whatever it says then).
+fn waited_for(cell: &mut hatchling_broker::browser_cell::BrowserCell, ready: &str) -> String {
+    let mut shown = String::new();
+    for _ in 0..40 {
+        if let BrowserReply::Page { snapshot } = cell.command(&BrowserCommand::Snapshot).unwrap() {
+            shown = snapshot.text;
+        }
+        if shown.contains(ready) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    shown
+}
+
+#[test]
+fn a_kept_session_is_its_cookies_alone_and_a_service_worker_dies_with_its_browser() {
+    let Some((browser, controller, group)) = prerequisites() else {
+        return;
+    };
+    let (certificate, key) = self_signed();
+    let scratch =
+        std::env::temp_dir().join(format!("hatchling-browser-kept-{}", std::process::id()));
+    std::fs::create_dir_all(&scratch).unwrap();
+    let ca = pem(&scratch, &certificate);
+    let stop = Arc::new(AtomicBool::new(false));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let (addr, serving) = trusted_site(certificate, key, &stop, &requests);
+    let route = Route::with(
+        move |destination| {
+            if destination == DESTINATION {
+                Ok(vec![addr])
+            } else {
+                Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+            }
+        },
+        |_| false,
+    );
+    let launcher = BrowserLauncher::new(
+        common::spawner(),
+        settings_trusting(&browser, &controller, Some(&ca)),
+        CellIds::default(),
+        group,
+        route,
+        Duration::from_secs(300),
+    );
+    let sites = Sites::default();
+    sites.grant(DESTINATION);
+
+    // The first browser signs in: the site's cookie, and a service worker.
+    let mut first = launcher.start("browser-first", sites.clone()).unwrap();
+    first
+        .command(&BrowserCommand::Open {
+            url: format!("https://{HOST}/signed-in"),
+        })
+        .unwrap();
+    let registered = waited_for(&mut first, "workers:");
+    assert!(registered.contains("workers: 1"), "{registered}");
+    let BrowserReply::Cookies { cookies, next } =
+        first.command(&BrowserCommand::Cookies { from: 0 }).unwrap()
+    else {
+        unreachable!("a jar");
+    };
+    assert_eq!(next, None);
+    assert!(
+        cookies
+            .iter()
+            .any(|cookie| cookie.name == "session" && cookie.value == "from-the-site"),
+        "the jar is read out"
+    );
+    // The browser ends, as a session's does, and its profile with it.
+    let _first = first.finish();
+
+    // The next starts empty, and is given the jar alone.
+    let mut later = launcher.start("browser-later", sites).unwrap();
+    assert_eq!(
+        later
+            .command(&BrowserCommand::SetCookies { cookies })
+            .unwrap(),
+        BrowserReply::CookiesSet
+    );
+    later
+        .command(&BrowserCommand::Open {
+            url: format!("https://{HOST}/later"),
+        })
+        .unwrap();
+    let found = waited_for(&mut later, "workers:");
+    let _later = later.finish();
+    stop.store(true, Ordering::SeqCst);
+    serving.join().unwrap();
+    std::fs::remove_dir_all(&scratch).unwrap();
+    assert!(found.contains("workers: 0"), "no service worker lives on: {found}");
+    assert!(
+        found.contains("session=from-the-site"),
+        "the session does: {found}"
     );
 }
