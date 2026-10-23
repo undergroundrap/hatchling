@@ -2096,7 +2096,9 @@ mod tests {
     fn a_vendor_key_is_its_trimmed_text_and_its_absence_names_the_secret() {
         let secret = |bytes: &[u8]| hatchling_vault::Secret::new(bytes.to_vec()).unwrap();
         assert_eq!(
-            key_text(&secret(b" sk-key \n")).as_deref().map(String::as_str),
+            key_text(&secret(b" sk-key \n"))
+                .as_deref()
+                .map(String::as_str),
             Some("sk-key")
         );
         assert!(key_text(&secret(b"  \n")).is_none());

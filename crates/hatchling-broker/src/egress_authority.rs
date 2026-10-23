@@ -1759,7 +1759,11 @@ mod tests {
             finish_relay(&mut Relaying::None),
             Reply::Failed { reason } if reason == "no relay was started"
         ));
-        assert!(out_of_step().to_string().contains("it answered out of step"));
+        assert!(
+            out_of_step()
+                .to_string()
+                .contains("it answered out of step")
+        );
         // Started with nothing made ready: the handoff is taken all the
         // same, and refused.
         let (ours, theirs) = UnixStream::pair().unwrap();
