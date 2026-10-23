@@ -7,7 +7,7 @@
 - #144, a vault keeper process holding the master key and the secrets store's key, the broker neither;
 - #145, the gates scanning only for the secrets a cell has had, which the keeper records.
 
-Step 2, the egress authority, has begun: slices 1 and 4 (below) start it beside the keeper and move web search into it, slice 2 moves the egress swap into it, and slice 3 the harness relay. Left: step 2's last slice, and step 3, the privileged spawner, which drops the broker from root. Until step 3, the keeper and the authority are separate processes, not yet OS boundaries.
+Step 2, the egress authority, is done (#202-#205): slices 1 and 4 (below) start it beside the keeper and move web search into it, slice 2 moves the egress swap into it, slice 3 the harness relay, and slice 5 takes the egress credentials out of the gates' scan. The broker now holds no egress credential, vendor key or search key; the keeper releases them to the authority alone. Left: step 3, the privileged spawner, which drops the broker from root. Until step 3, the keeper and the authority are separate processes, not yet OS boundaries.
 **Area:** `crates/hatchling-broker`, `crates/hatchling-vault`, `crates/hatchling-egress`, `crates/hatchling-isolation`, `crates/hatchling-sys`, `crates/hatchling-runtime`, a new crate per separated process if its dependencies warrant one, `docs/arch/`
 **Issue:** [#33](https://github.com/undergroundrap/hatchling/issues/33)
 **Trust boundary:** yes
@@ -145,6 +145,7 @@ Filled in at close.
        *Landed, in one way different:* the broker names only the harness, never its vendor: the authority finds the vendor in its own configuration, so the broker can't send the key anywhere. The broker hands over the run's handoff socket rather than the listener, so it never holds the cell's listener either. The relay is made ready, with the key read, before the cell starts, so a run with no key is refused as before.
     4. **Search.** A typed search request to the authority, which reads the key and answers with the results. *Landed with slice 1;* since slice 2, each search is a connection of its own, so searches run side by side.
     5. **The scan.** With the broker holding none of them, the egress credentials leave the gates' scan set.
+       *Landed.* It closed a way round slice 2: a scan's values go to the broker, so until then a gate's scan handed it every egress credential. Vendor keys were never in the scan set.
   - **Not moved by this step:**
     - Channel accounts move with the first channel that uses one, into the authority; until then, none is configured.
     - Browser sign-ins must reach the browser cell in plaintext, so no network-side process can insert them. Their store moves to the keeper, which releases a sign-in for a fill alone, recorded. The broker still relays it to the cell, so this narrows custody but doesn't remove the broker from the path. That is its own slice, after this step.

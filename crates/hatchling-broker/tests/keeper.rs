@@ -272,7 +272,10 @@ fn the_brokers_end_reads_through_the_keeper() {
         .map(|secret| secret.as_bytes().to_vec())
         .collect();
     assert!(scanned.contains(&b"t".to_vec()), "{} values", scanned.len());
-    assert!(scanned.contains(&b"credential".to_vec()));
+    assert!(
+        !scanned.contains(&b"credential".to_vec()),
+        "a scan handed the broker an egress credential"
+    );
     drop(keeper);
     let _ = std::fs::remove_dir_all(&dir);
 }
