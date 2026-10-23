@@ -1450,7 +1450,8 @@ mod tests {
             chat: false,
             history: Vec::new(),
         });
-        let err = run_helper(Some(&test_spec(&serde_json::to_string(&skill).unwrap()))).unwrap_err();
+        let err =
+            run_helper(Some(&test_spec(&serde_json::to_string(&skill).unwrap()))).unwrap_err();
         assert!(
             format!("{err}").contains("scheduled run cells only"),
             "{err}"
