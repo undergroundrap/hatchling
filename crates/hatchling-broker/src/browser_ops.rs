@@ -2242,6 +2242,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_session_killed_mid_page_has_its_last_read_jar_sealed() {
+        let (config, _scratch, keys, profile) = with_sign_ins("killed", &[]);
+        let fake = Fake::default();
+        let (mut web, mut browser) = session("t", &fake);
+        handle_browser_op(&config, &keys, &mut web, &mut browser, &open("https://a.example/"));
+        fake.jar.lock().unwrap().push(cookie("a.example", "late"));
+        handle_browser_op(&config, &keys, &mut web, &mut browser, &BrowserOp::Read);
+        // Gone without a close: its cell killed, as a crashed session's is.
+        drop(browser);
+        assert_eq!(
+            kept_jar(&config, &keys, &profile.id),
+            [cookie("a.example", "late")],
+            "the last jar read is the one sealed"
+        );
+    }
+
     /// The id the board shows the browser of `bus`'s session by.
     fn browser_id(bus: &crate::api_stream::Bus) -> String {
         bus.wait_after(None, Duration::ZERO)
