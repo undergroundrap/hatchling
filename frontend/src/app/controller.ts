@@ -2,6 +2,7 @@ import { writeRouteHash } from './route-location.js';
 import { ContentLoading } from './content-loading.js';
 import { ApprovalReview } from '../features/approvals/review.js';
 import type { TaskApprovalPort } from '../session/task-approvals.js';
+import type { SignInPort } from '../session/sign-ins.js';
 import { ChatDelivery } from '../features/chat/delivery.js';
 import type { ChatSessionPort } from '../session/chat-session.js';
 import { ComposerDrafts } from '../features/chat/drafts.js';
@@ -47,6 +48,9 @@ export class App implements AppContext {
     readonly contentLoading: ContentLoading;
     readonly approvals: ApprovalReview;
     readonly dialogs: DialogManager;
+    get signIns(): SignInPort | undefined {
+        return this.adapter.signIns;
+    }
     readonly dock: ArtifactDock;
     private readonly disposeTooltips: () => void;
     private readonly disposeMenus: () => void;
@@ -65,6 +69,7 @@ export class App implements AppContext {
     constructor(readonly adapter: ProtocolAdapter & {
         readonly chatSession?: ChatSessionPort;
         readonly taskApprovals?: TaskApprovalPort;
+        readonly signIns?: SignInPort;
     }, private readonly root: HTMLElement, dialogRoot: HTMLElement, private readonly toastRoot: HTMLElement) {
         this.dialogs = new DialogManager(dialogRoot, this.acknowledgeVisible);
         this.dock = new ArtifactDock(dialogRoot, this.onDockChange);
