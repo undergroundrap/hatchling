@@ -1849,12 +1849,18 @@ mod tests {
             &sign_in_op(Some(1), None),
         );
         let told = format!("{answer:?}");
-        assert!(matches!(answer, BrowserResult::Page { .. }), "what the agent is told");
+        assert!(
+            matches!(answer, BrowserResult::Page { .. }),
+            "what the agent is told"
+        );
         assert!(
             !told.contains("hunter2") && !told.contains("work@"),
             "what the agent is told"
         );
-        assert!(told.contains("Signed in as [hidden], [hidden]"), "what the agent is told");
+        assert!(
+            told.contains("Signed in as [hidden], [hidden]"),
+            "what the agent is told"
+        );
         let origin = String::from("https://a.example");
         assert_eq!(
             fills(&fake),
