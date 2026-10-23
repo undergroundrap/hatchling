@@ -1598,9 +1598,12 @@ mod tests {
         board.end("browser-code");
         // Only a code's answer is one.
         assert_eq!(
-            ops.code(true, &UiAction::StopBrowser {
-                session_id: String::from("browser-code")
-            }),
+            ops.code(
+                true,
+                &UiAction::StopBrowser {
+                    session_id: String::from("browser-code")
+                }
+            ),
             (
                 UiActionResult::Refused {
                     reason: ActionRefusal::Unavailable,
