@@ -476,9 +476,10 @@ mod tests {
     #[test]
     fn the_helper_refuses_anything_but_a_browser_cell() {
         assert!(refusal(None).contains("browser-cell requires a cell spec"));
-        assert!(refusal(Some("{}")).contains("browser-cell spec is not a cell config"));
+        let spec = crate::run_launcher::test_spec;
+        assert!(refusal(Some(&spec("{}"))).contains("browser-cell spec is not a cell config"));
         let skill = serde_json::to_string(&CellConfig::skill("browser-spec").unwrap()).unwrap();
-        assert!(refusal(Some(&skill)).contains("browser-cell spawns browser cells only"));
+        assert!(refusal(Some(&spec(&skill))).contains("browser-cell spawns browser cells only"));
         assert_eq!(browser_cell_main(None), ExitCode::FAILURE);
     }
 
@@ -706,10 +707,11 @@ mod tests {
             failed.contains(BROWSER_CELL_SUBCOMMAND),
             "its words: {failed}"
         );
+        let quiet_dir = RunDir::create().unwrap();
         let quiet = Helper::start(
             Path::new("/bin/true"),
             "{}",
-            run_dir.path(),
+            quiet_dir.path(),
             UnixStream::pair().unwrap().0,
         )
         .unwrap();

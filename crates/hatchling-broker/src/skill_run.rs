@@ -855,16 +855,17 @@ mod tests {
     #[test]
     fn a_run_reads_at_most_its_own_limit() {
         let (_echo, runtime) = script("exec cat");
-        let run_dir = RunDir::create().unwrap();
-        let echoed = supervise(&runtime, "{}", run_dir.path(), b"hello", 5);
+        // A run directory each: a helper's spec is a file made new.
+        let run_dir = || RunDir::create().unwrap();
+        let echoed = supervise(&runtime, "{}", run_dir().path(), b"hello", 5);
         assert_eq!(echoed.unwrap(), b"hello", "exactly the limit is fine");
-        let over = supervise(&runtime, "{}", run_dir.path(), b"hello", 4);
+        let over = supervise(&runtime, "{}", run_dir().path(), b"hello", 4);
         assert!(
             matches!(over, Err(SkillRunError::OutputTooLarge)),
             "{over:?}"
         );
         let (_fail, failing) = script("exit 3");
-        let failed = supervise(&failing, "{}", run_dir.path(), b"", 5);
+        let failed = supervise(&failing, "{}", run_dir().path(), b"", 5);
         assert!(
             matches!(failed, Err(SkillRunError::Exited { code: 3, .. })),
             "{failed:?}"

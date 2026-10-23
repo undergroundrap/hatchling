@@ -147,6 +147,22 @@ pub(crate) fn take_spec(path: Option<&str>, helper: &str) -> Result<String, Erro
     String::from_utf8(bytes).map_err(|_| usage(format!("{helper}'s cell spec isn't text")))
 }
 
+/// `spec` written as a broker writes a helper's, in a directory of its
+/// own: the path a helper is given.
+#[cfg(test)]
+pub(crate) fn test_spec(spec: &str) -> String {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "hatchling-spec-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let [_, path] = spec_args("test", &dir, spec).unwrap();
+    path.into_string().unwrap()
+}
+
 /// This broker's pid, as a helper's environment gives it.
 #[must_use]
 pub fn broker_pid() -> String {
@@ -1409,11 +1425,11 @@ mod tests {
     fn the_helper_spawns_run_cells_only() {
         assert!(matches!(run_helper(None), Err(Error::Usage { .. })));
         assert!(matches!(
-            run_helper(Some("not json")),
+            run_helper(Some(&test_spec("not json"))),
             Err(Error::Usage { .. })
         ));
         let agent = serde_json::to_string(&CellConfig::skill("cell-x").unwrap()).unwrap();
-        let err = run_helper(Some(&agent)).unwrap_err();
+        let err = run_helper(Some(&test_spec(&agent))).unwrap_err();
         assert!(
             format!("{err}").contains("scheduled run cells only"),
             "{err}"
@@ -1434,7 +1450,7 @@ mod tests {
             chat: false,
             history: Vec::new(),
         });
-        let err = run_helper(Some(&serde_json::to_string(&skill).unwrap())).unwrap_err();
+        let err = run_helper(Some(&test_spec(&serde_json::to_string(&skill).unwrap()))).unwrap_err();
         assert!(
             format!("{err}").contains("scheduled run cells only"),
             "{err}"
