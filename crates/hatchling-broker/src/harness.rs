@@ -34,11 +34,11 @@
 //!   no network; revises that, deliberately. A harness with a vendor
 //!   API (`HATCHLING_HARNESS_<NAME>_API`) runs in a CLI cell: threads and
 //!   child processes, a pinned set of tools, and one network, a relay on
-//!   its own loopback that the broker serves
+//!   its own loopback that the egress authority serves
 //!   ([`crate::harness_relay`]). Its login is a surrogate key: the vendor
 //!   key stays in the vault (secret [`HarnessKind::secret_name`]), read by
-//!   the broker for its relay, never given to the cell. A harness without
-//!   an API runs offline, as before.
+//!   the authority for the run's relay, never given to the cell or the
+//!   broker. A harness without an API runs offline, as before.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -254,8 +254,8 @@ impl HarnessKind {
         }
     }
 
-    /// The vault secret holding its vendor key: the broker reads
-    /// it for the harness's relay, and no vault grant may name it.
+    /// The vault secret holding its vendor key: the egress authority
+    /// reads it for the harness's relay, and no vault grant may name it.
     #[must_use]
     pub const fn secret_name(self) -> &'static str {
         match self {
@@ -1069,7 +1069,8 @@ fn parse_tools(raw: Option<&str>, networked: bool) -> Result<Vec<(PathBuf, Strin
     Ok(tools)
 }
 
-/// The vendor keys the broker reads for its harness relays.
+/// The vendor keys the broker reads for its harness relays, served
+/// in-process, with no egress authority running.
 ///
 /// Each is the vault secret [`HarnessKind::secret_name`], read with the
 /// broker's own keys and logged as the broker's read before it is used
