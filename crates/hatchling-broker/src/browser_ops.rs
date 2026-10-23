@@ -2061,7 +2061,7 @@ mod tests {
         let ask = BrowserOp::Code { element: 3 };
         // Not a signed-in browser: refused.
         let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, &ask);
-        assert!(matches!(answer, BrowserResult::Refused { .. }), "{answer:?}");
+        assert!(matches!(answer, BrowserResult::Refused { .. }), "the answer");
         handle_browser_op(&config, &keys, &mut web, &mut browser, &open("https://a.example/"));
         showing(&fake, "https://a.example/verify", "Enter the code");
         let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, &ask);
@@ -2084,7 +2084,7 @@ mod tests {
             .unwrap();
         // Still waiting: told so again, nothing typed.
         let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, &ask);
-        assert!(matches!(answer, BrowserResult::CodeWaiting { .. }), "{answer:?}");
+        assert!(matches!(answer, BrowserResult::CodeWaiting { .. }), "the answer");
         assert!(fills(&fake).is_empty());
         // Given: typed into the field asked for, on the origin asked for, hidden.
         assert_eq!(board.give_code(&id, &asked, &Concealed::new(String::from("481516"))), Ok(()));
@@ -2096,8 +2096,8 @@ mod tests {
             &mut browser,
             &BrowserOp::Code { element: 9 },
         );
-        let told = format!("{answer:?}");
-        assert!(!told.contains("481516") && told.contains("[hidden]"), "{told}");
+        let told = format!("the answer");
+        assert!(!told.contains("481516") && told.contains("[hidden]"), "what the agent is told");
         assert_eq!(
             fills(&fake),
             [(
@@ -2115,7 +2115,7 @@ mod tests {
         );
         // Declined, and expired.
         let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, &ask);
-        assert!(matches!(answer, BrowserResult::CodeWaiting { .. }), "{answer:?}");
+        assert!(matches!(answer, BrowserResult::CodeWaiting { .. }), "the answer");
         let latest = |bus: &crate::api_stream::Bus| {
             bus.wait_after(None, Duration::ZERO)
                 .into_iter()
@@ -2143,7 +2143,7 @@ mod tests {
         // Not on an https page: refused.
         showing(&fake, "about:blank", "");
         let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, &ask);
-        assert!(matches!(answer, BrowserResult::Refused { .. }), "{answer:?}");
+        assert!(matches!(answer, BrowserResult::Refused { .. }), "the answer");
         // No board, no owner to ask.
         let (mut web, mut alone) = session("t", &fake);
         handle_browser_op(&config, &keys, &mut web, &mut alone, &open("https://a.example/"));
