@@ -19,9 +19,10 @@
 //!   one to another site is returned, for the agent to ask for that site.
 //! - **The whole read is bounded** by [`FETCH_DEADLINE`], over the proxy's
 //!   bounds on each read and on the page.
-//! - **Search** (`HATCHLING_SEARCH=brave`) runs on the broker, with the
-//!   provider's key from the vault ([`SEARCH_KEY`], which no grant may
-//!   name): the cell never holds it. Each query is logged with its session
+//! - **Search** (`HATCHLING_SEARCH=brave`) runs in the egress authority
+//!   ([`crate::egress_authority`], WO-017), with the provider's key from
+//!   the vault ([`SEARCH_KEY`], which no grant may name): neither the cell
+//!   nor the broker holds it. Each query is logged with its session
 //!   and length, and its text only when the owner opts in
 //!   (`HATCHLING_SEARCH_LOG=queries`). The session remembers its results,
 //!   so the owner asked for a site sees which result led there.
@@ -36,13 +37,12 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use hatchling_core::ui::Decision;
-use hatchling_core::{SecretName, WebHit, WebOp, WebResult};
+use hatchling_core::{WebHit, WebOp, WebResult};
 use hatchling_egress::TlsClient;
-use hatchling_egress::search::{Hit, SearchError};
+use hatchling_egress::search::Hit;
 use hatchling_egress::web::{FetchError, Fetched, Origin, WebUrl};
 use hatchling_scheduler::Timestamp;
 use hatchling_vault::OpensStores;
-use zeroize::Zeroizing;
 
 use crate::Config;
 use crate::approval_board::{Board, SiteAsk, board, refused_as, site_action};
@@ -65,8 +65,9 @@ pub const MAX_REDIRECTS: usize = 5;
 /// How often a waiting session looks at the owner's decision.
 const POLL: Duration = Duration::from_millis(200);
 
-/// The vault secret holding the search provider's key. The broker reads it
-/// for search; no vault grant may name it, so no cell can.
+/// The vault secret holding the search provider's key. The egress
+/// authority reads it for search; no vault grant may name it, so no cell
+/// can, and the vault keeper releases it to no one else.
 pub const SEARCH_KEY: &str = "search-brave";
 
 /// The most search results a session remembers, to tell the owner which
@@ -76,8 +77,9 @@ pub const MAX_FOUND: usize = 100;
 /// Reads one page.
 pub type Fetcher = Arc<dyn Fn(&WebUrl) -> Result<Fetched, FetchError> + Send + Sync>;
 
-/// Runs one search, with the provider's key.
-pub type Searcher = Arc<dyn Fn(&[u8], &str) -> Result<Vec<Hit>, SearchError> + Send + Sync>;
+/// Runs one search, the results or why there are none: through the egress
+/// authority, which holds the provider's key.
+pub type Searcher = Arc<dyn Fn(&str) -> Result<Vec<Hit>, String> + Send + Sync>;
 
 /// A search result the session was given: its URL, the search, and its
 /// place in the results, from 1.
@@ -112,16 +114,17 @@ impl std::fmt::Debug for WebSession {
 
 impl WebSession {
     /// The web of the session the broker knows as `task`, under `config`:
-    /// it waits for the owner only when a person is there, and reads and
-    /// searches with `tls`, the egress proxy's roots (none while both are
-    /// off).
+    /// it waits for the owner only when a person is there, reads with
+    /// `tls`, the egress proxy's roots (none while the web is off), and
+    /// searches through the egress authority, when one runs.
     #[must_use]
     pub fn new(config: &Config, task: &str, tls: Option<TlsClient>) -> Self {
-        let searcher = tls.clone().filter(|_| config.web.search).map(|tls| {
-            let searcher: Searcher =
-                Arc::new(move |key, query| hatchling_egress::search::brave(&tls, key, query));
-            searcher
-        });
+        let searcher = crate::egress_authority::authority()
+            .filter(|_| config.web.search)
+            .map(|authority| {
+                let searcher: Searcher = Arc::new(move |query| authority.search(query));
+                searcher
+            });
         Self {
             task: task.to_owned(),
             sites: BTreeSet::new(),
@@ -192,8 +195,8 @@ impl WebSession {
     }
 }
 
-/// Answers `op` for the session `web`, under `config`, reading the search
-/// key with `keys`.
+/// Answers `op` for the session `web`, under `config`, reading the
+/// owner's kept sites with `keys`.
 pub fn handle_web_op(
     config: &Config,
     keys: &dyn OpensStores,
@@ -202,12 +205,12 @@ pub fn handle_web_op(
 ) -> WebResult {
     match op {
         WebOp::Fetch { url, reason } => fetch(config, keys, web, url, reason),
-        WebOp::Search { query } => search(config, keys, web, query),
+        WebOp::Search { query } => search(config, web, query),
     }
 }
 
 /// Searches for `query`: the results, remembered by the session.
-fn search(config: &Config, keys: &dyn OpensStores, web: &mut WebSession, query: &str) -> WebResult {
+fn search(config: &Config, web: &mut WebSession, query: &str) -> WebResult {
     if !config.web.search {
         return WebResult::Off;
     }
@@ -220,11 +223,7 @@ fn search(config: &Config, keys: &dyn OpensStores, web: &mut WebSession, query: 
     } else {
         tracing::info!(task = %web.task, chars, "web search");
     }
-    let key = match search_key(config, keys) {
-        Ok(key) => key,
-        Err(reason) => return refused(reason),
-    };
-    let hits = match bounded_search(&searcher, key, query, web.deadline) {
+    let hits = match bounded_search(&searcher, query, web.deadline) {
         Ok(hits) => hits,
         Err(reason) => return refused(reason),
     };
@@ -241,43 +240,21 @@ fn search(config: &Config, keys: &dyn OpensStores, web: &mut WebSession, query: 
     WebResult::Results { results }
 }
 
-/// The search provider's key, the broker's own read of [`SEARCH_KEY`].
-fn search_key(config: &Config, keys: &dyn OpensStores) -> Result<Zeroizing<Vec<u8>>, String> {
-    let name: SecretName = SEARCH_KEY
-        .parse()
-        .map_err(|_| String::from("the search key's name is invalid"))?;
-    let read = crate::secrets::Secrets::new(&config.vault.root, keys)
-        .broker_read("search", std::slice::from_ref(&name))
-        .map_err(|error| format!("the search key couldn't be read: {error}"))?;
-    let secret =
-        read.into_iter().next().flatten().ok_or_else(|| {
-            format!("no search key is stored: keep it in the vault as {SEARCH_KEY}")
-        })?;
-    Ok(Zeroizing::new(secret.as_bytes().to_vec()))
-}
-
-/// Runs `searcher` for `query` with `key`, giving up after `deadline`.
-fn bounded_search(
-    searcher: &Searcher,
-    key: Zeroizing<Vec<u8>>,
-    query: &str,
-    deadline: Duration,
-) -> Result<Vec<Hit>, String> {
+/// Runs `searcher` for `query`, giving up after `deadline`: a search
+/// still running then finishes alone, its answer unread.
+fn bounded_search(searcher: &Searcher, query: &str, deadline: Duration) -> Result<Vec<Hit>, String> {
     let (sender, receiver) = mpsc::channel();
     let searcher = Arc::clone(searcher);
     let query = query.to_owned();
     std::thread::spawn(move || {
-        let _ = sender.send(searcher(&key, &query));
+        let _ = sender.send(searcher(&query));
     });
-    receiver.recv_timeout(deadline).map_or_else(
-        |_| {
-            Err(format!(
-                "the search took longer than {} seconds",
-                FETCH_DEADLINE.as_secs()
-            ))
-        },
-        |answer| answer.map_err(|error| error.to_string()),
-    )
+    receiver.recv_timeout(deadline).unwrap_or_else(|_| {
+        Err(format!(
+            "the search took longer than {} seconds",
+            FETCH_DEADLINE.as_secs()
+        ))
+    })
 }
 
 /// Reads the page at `url`, which the agent wants for `reason`.
@@ -1117,16 +1094,16 @@ pub(crate) mod tests {
         }
     }
 
-    /// Answers every search with `hits`, recording the key and query each
-    /// was given.
-    /// The key and query of each search a scripted searcher was asked.
-    type Asked = Arc<Mutex<Vec<(Vec<u8>, String)>>>;
+    /// The query of each search a scripted searcher was asked.
+    type Asked = Arc<Mutex<Vec<String>>>;
 
+    /// Answers every search with `hits`, recording the query each was
+    /// given.
     fn scripted_search(hits: Vec<Hit>) -> (Searcher, Asked) {
         let asked = Arc::new(Mutex::new(Vec::new()));
         let log = Arc::clone(&asked);
-        let searcher: Searcher = Arc::new(move |key: &[u8], query: &str| {
-            log.lock().unwrap().push((key.to_vec(), query.to_owned()));
+        let searcher: Searcher = Arc::new(move |query: &str| {
+            log.lock().unwrap().push(query.to_owned());
             Ok(hits.clone())
         });
         (searcher, asked)
@@ -1138,11 +1115,12 @@ pub(crate) mod tests {
         }
     }
 
-    /// A search runs with the key the vault holds, the results come back
-    /// as the provider's words, and the session remembers them; the query's
-    /// text is logged only when the owner opts in.
+    /// A search runs through the egress authority, never with a key the
+    /// broker reads; the results come back as the provider's words, and
+    /// the session remembers them; the query's text is logged only when
+    /// the owner opts in.
     #[test]
-    fn a_search_runs_with_the_brokers_key_and_is_remembered() {
+    fn a_search_runs_through_the_authority_and_is_remembered() {
         let (mut config, _scratch, master) = search_config("runs", Some(b"k-brave"));
         let (searcher, asked) = scripted_search(vec![
             hit("https://docs.example/a", "A"),
@@ -1171,10 +1149,9 @@ pub(crate) mod tests {
                 ]
             }
         );
-        assert_eq!(
-            *asked.lock().unwrap(),
-            [(b"k-brave".to_vec(), String::from("rust changelog"))]
-        );
+        assert_eq!(*asked.lock().unwrap(), ["rust changelog"]);
+        let (accesses, _) = crate::vault_access::read_log(&config.vault.root).unwrap();
+        assert!(accesses.is_empty(), "the broker read the vault: {accesses:?}");
         assert!(logged.contains("web search"), "{logged}");
         assert!(logged.contains("chars=14"), "{logged}");
         assert!(!logged.contains("rust changelog"), "{logged}");
@@ -1193,21 +1170,31 @@ pub(crate) mod tests {
         assert!(logged.contains("second query"), "{logged}");
     }
 
-    /// Search is off unless the operator chose it; with no key stored, or a
-    /// search that fails or runs too long, it's refused with why.
+    /// Search is off unless the operator chose it, or with no egress
+    /// authority to run it; one the authority refuses (no key stored, a
+    /// provider's error), or that runs too long, is refused with why.
     #[test]
     fn a_search_is_off_or_refused_with_why() {
         let (mut config, _scratch, master) = search_config("refused", None);
         let (fetcher, _) = scripted(Vec::new());
-        let (searcher, asked) = scripted_search(Vec::new());
-        let mut web = unattended("t", &fetcher).searching(Arc::clone(&searcher));
+        let no_key = format!("no search key is stored: keep it in the vault as {SEARCH_KEY}");
+        let told = no_key.clone();
+        let refusing: Searcher = Arc::new(move |_: &str| Err(told.clone()));
+        let mut web = unattended("t", &fetcher).searching(refusing);
         assert_eq!(
             handle_web_op(&config, &master, &mut web, &search("q")),
-            WebResult::Refused {
-                reason: format!("no search key is stored: keep it in the vault as {SEARCH_KEY}")
-            }
+            WebResult::Refused { reason: no_key }
         );
-        assert!(asked.lock().unwrap().is_empty(), "searched with no key");
+        assert!(
+            crate::egress_authority::authority().is_none(),
+            "no authority in a test"
+        );
+        assert!(
+            WebSession::new(&config, "t", None).searcher.is_none(),
+            "no searcher without an authority"
+        );
+        let (searcher, asked) = scripted_search(Vec::new());
+        let mut web = unattended("t", &fetcher).searching(searcher);
         let mut without = unattended("t", &fetcher);
         assert_eq!(
             handle_web_op(&config, &master, &mut without, &search("q")),
@@ -1219,17 +1206,9 @@ pub(crate) mod tests {
             handle_web_op(&config, &master, &mut web, &search("q")),
             WebResult::Off
         );
-        let (config, _scratch, master) = search_config("fails", Some(b"k"));
-        let failing: Searcher =
-            Arc::new(|_: &[u8], _: &str| Err(SearchError::Status { status: 429 }));
-        let mut web = unattended("t", &fetcher).searching(failing);
-        assert_eq!(
-            handle_web_op(&config, &master, &mut web, &search("q")),
-            WebResult::Refused {
-                reason: SearchError::Status { status: 429 }.to_string()
-            }
-        );
-        let slow: Searcher = Arc::new(|_: &[u8], _: &str| {
+        assert!(asked.lock().unwrap().is_empty(), "searched while off");
+        let (config, _scratch, master) = search_config("fails", None);
+        let slow: Searcher = Arc::new(|_: &str| {
             std::thread::sleep(Duration::from_secs(3));
             Ok(Vec::new())
         });
@@ -1246,18 +1225,13 @@ pub(crate) mod tests {
             }
         );
         assert!(started.elapsed() < Duration::from_secs(3), "waited for it");
-        let unreadable = web_config("unreadable");
-        assert!(matches!(
-            search_key(&unreadable, &master),
-            Err(reason) if reason.starts_with("the search key couldn't be read")
-        ));
     }
 
     /// The owner asked for a site a search led to is told which result,
     /// and the search, as the agent's words.
     #[test]
     fn the_owner_is_told_which_search_result_led_there() {
-        let (config, _scratch, master) = search_config("led", Some(b"k"));
+        let (config, _scratch, master) = search_config("led", None);
         let bus = Arc::new(crate::api_stream::Bus::starting_at(1));
         board(&config).attach(Arc::clone(&bus));
         let (searcher, _) = scripted_search(vec![
@@ -1329,37 +1303,19 @@ pub(crate) mod tests {
     #[test]
     fn bounded_search_answers_or_gives_up() {
         let (searcher, asked) = scripted_search(vec![hit("https://a.example/", "A")]);
-        let found = bounded_search(
-            &searcher,
-            Zeroizing::new(b"k".to_vec()),
-            "q",
-            Duration::from_secs(5),
-        );
+        let found = bounded_search(&searcher, "q", Duration::from_secs(5));
         assert_eq!(found, Ok(vec![hit("https://a.example/", "A")]));
-        assert_eq!(*asked.lock().unwrap(), [(b"k".to_vec(), String::from("q"))]);
-        let failing: Searcher = Arc::new(|_: &[u8], _: &str| Err(SearchError::Empty));
+        assert_eq!(*asked.lock().unwrap(), ["q"]);
+        let failing: Searcher = Arc::new(|_: &str| Err(String::from("a provider's error")));
         assert_eq!(
-            bounded_search(
-                &failing,
-                Zeroizing::new(Vec::new()),
-                "q",
-                Duration::from_secs(5)
-            ),
-            Err(SearchError::Empty.to_string())
+            bounded_search(&failing, "q", Duration::from_secs(5)),
+            Err(String::from("a provider's error"))
         );
-        let slow: Searcher = Arc::new(|_: &[u8], _: &str| {
+        let slow: Searcher = Arc::new(|_: &str| {
             std::thread::sleep(Duration::from_secs(3));
             Ok(Vec::new())
         });
-        assert!(
-            bounded_search(
-                &slow,
-                Zeroizing::new(Vec::new()),
-                "q",
-                Duration::from_millis(50)
-            )
-            .is_err()
-        );
+        assert!(bounded_search(&slow, "q", Duration::from_millis(50)).is_err());
     }
 
     /// Always: the owner's yes is kept, every session reads the site without

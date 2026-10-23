@@ -28,6 +28,7 @@ use hatchling_core::cli::{EX_USAGE, help_requested, render_help};
 
 use crate::browser_bundle::{BROWSER_DIGEST_SUBCOMMAND, browser_digest_main};
 use crate::browser_cell::{BROWSER_CELL_SUBCOMMAND, browser_cell_main};
+use crate::egress_authority::{EGRESS_AUTHORITY_SUBCOMMAND, egress_authority_main};
 use crate::harness_tree::{HARNESS_TREE_SUBCOMMAND, harness_tree_main};
 use crate::keeper::{VAULT_KEEPER_SUBCOMMAND, vault_keeper_main};
 use crate::skill_run::{SKILL_CELL_SUBCOMMAND, skill_cell_main};
@@ -67,6 +68,7 @@ pub fn main(program: &str, args: &[String]) -> ExitCode {
             return harness_tree_main(args.get(1..).unwrap_or_default());
         }
         Some(VAULT_KEEPER_SUBCOMMAND) => return vault_keeper_main(),
+        Some(EGRESS_AUTHORITY_SUBCOMMAND) => return egress_authority_main(),
         Some(_) | None => {}
     }
     match run(args) {
@@ -90,7 +92,7 @@ pub fn help(program: &str) -> String {
     render_help(
         program,
         "[subcommand] | --help | -h",
-        "Serve agents with no subcommand. Operator subcommands:\n  migrate-vault\n  rekey-vault [<new-key-file>]   (no file with a keyring)\n  vault-keyring <action>\n    init, enroll-totp, enroll-keys, use-file-tier, backup-codes,\n    status, add-key, remove-key, label-key\n  redactions list | stats | categories\n  redactions show <id> | raw <id> | override <id> [--any-scope]\n  vault-audit [log [count]]\n  clean [--dry-run]   (a dead broker's leftovers; never your data)\n  browser-digest <browser>   (the digest HATCHLING_BROWSER_SHA256 pins)\n\nThe broker builds and supervises the agent's cell. Internal spawner\ncommands skill-cell <spec>, agent-run <spec>, browser-cell <spec>,\nharness-tree and vault-keeper are broker-owned.",
+        "Serve agents with no subcommand. Operator subcommands:\n  migrate-vault\n  rekey-vault [<new-key-file>]   (no file with a keyring)\n  vault-keyring <action>\n    init, enroll-totp, enroll-keys, use-file-tier, backup-codes,\n    status, add-key, remove-key, label-key\n  redactions list | stats | categories\n  redactions show <id> | raw <id> | override <id> [--any-scope]\n  vault-audit [log [count]]\n  clean [--dry-run]   (a dead broker's leftovers; never your data)\n  browser-digest <browser>   (the digest HATCHLING_BROWSER_SHA256 pins)\n\nThe broker builds and supervises the agent's cell. Internal spawner\ncommands skill-cell <spec>, agent-run <spec>, browser-cell <spec>,\nharness-tree, vault-keeper and egress-authority are broker-owned.",
         crate::environment::ENVIRONMENT,
     )
 }
@@ -113,7 +115,7 @@ fn valid_args(args: &[String]) -> bool {
         | ["redactions", "override", _, "--any-scope"]
         | ["vault-audit", "log"]
         | [HARNESS_TREE_SUBCOMMAND, "give" | "reclaim", _, ..] => true,
-        [VAULT_KEEPER_SUBCOMMAND] => args.len() == 1,
+        [VAULT_KEEPER_SUBCOMMAND | EGRESS_AUTHORITY_SUBCOMMAND] => args.len() == 1,
         ["vault-audit", "log", count] => count.parse::<usize>().is_ok(),
         [
             SKILL_CELL_SUBCOMMAND | AGENT_RUN_SUBCOMMAND | BROWSER_CELL_SUBCOMMAND,

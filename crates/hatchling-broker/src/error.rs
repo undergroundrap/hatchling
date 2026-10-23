@@ -269,6 +269,14 @@ pub enum Error {
         reason: String,
     },
 
+    /// The egress authority, which alone holds the credentials of the
+    /// broker's outgoing requests, couldn't be started or reached.
+    #[error("egress authority: {reason}")]
+    Authority {
+        /// What happened.
+        reason: String,
+    },
+
     /// The vault's access log could not be read or written.
     #[error("vault access log: {reason}")]
     VaultAccessLog {

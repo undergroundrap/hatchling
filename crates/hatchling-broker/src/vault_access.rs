@@ -51,6 +51,11 @@ pub enum Caller {
         /// `output-gate`.
         purpose: String,
     },
+    /// The egress authority (WO-017), reading for the request it makes.
+    Authority {
+        /// What for: `search`.
+        purpose: String,
+    },
 }
 
 /// What came of an access.
@@ -237,6 +242,7 @@ fn describe(access: &Access) -> String {
     let who = match &access.caller {
         Caller::Session { uid, cell } => format!("session uid {uid} ({cell})"),
         Caller::Broker { purpose } => format!("broker ({purpose})"),
+        Caller::Authority { purpose } => format!("egress authority ({purpose})"),
     };
     let outcome = match access.outcome {
         Outcome::Allowed => "allowed",
@@ -610,6 +616,16 @@ mod tests {
         );
         assert!(describe(&accesses[1]).ends_with("read not found"));
         assert!(describe(&accesses[2]).ends_with("read failed"));
+        let by_authority = Access {
+            caller: Caller::Authority {
+                purpose: String::from("search"),
+            },
+            ..access("k", Outcome::Allowed)
+        };
+        assert_eq!(
+            describe(&by_authority),
+            "1970-01-01T00:00:00Z egress authority (search) read allowed"
+        );
         let mut config = owner_config(None);
         config.vault.grants = vec![crate::VaultGrant {
             action: VaultAction::Store,

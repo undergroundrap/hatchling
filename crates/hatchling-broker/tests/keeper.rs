@@ -199,7 +199,7 @@ fn the_brokers_end_reads_through_the_keeper() {
         .env("HATCHLING_VAULT_GRANTS", "fetch:token")
         .stdin(Stdio::null())
         .stdout(Stdio::null());
-    let (keeper, keys) = Keeper::start_with(program).unwrap();
+    let (keeper, keys, _) = Keeper::start_with(program).unwrap();
     assert!(keys.stores().all(|(store, _)| store != Store::SECRETS));
     let name = |text: &str| -> hatchling_core::SecretName { text.parse().unwrap() };
     let mixed = keeper
@@ -237,7 +237,7 @@ fn the_brokers_end_reads_through_the_keeper() {
         .env("HATCHLING_VAULT_GRANTS", "fetch:token")
         .stdin(Stdio::null())
         .stdout(Stdio::null());
-    let (keeper, _) = Keeper::start_with(program).unwrap();
+    let (keeper, _, _) = Keeper::start_with(program).unwrap();
     let scanned: Vec<Vec<u8>> = keeper
         .scan("output-gate")
         .unwrap()
@@ -262,9 +262,102 @@ fn a_gate_scans_only_for_what_a_cell_has_had() {
         .env("HATCHLING_VAULT_GRANTS", "fetch:token")
         .stdin(Stdio::null())
         .stdout(Stdio::null());
-    let (keeper, _) = Keeper::start_with(program).unwrap();
+    let (keeper, _, _) = Keeper::start_with(program).unwrap();
     assert!(keeper.scan("output-gate").unwrap().is_empty());
     assert!(keeper.scan("egress").is_err());
     drop(keeper);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The broker's start, as it starts the keeper (and the egress authority
+/// with its `search`), with `env` beside the usual.
+fn program(dir: &Path, env: &[(&str, &str)]) -> Command {
+    let mut program = Command::new(env!("CARGO_BIN_EXE_hatchling-broker"));
+    program
+        .envs(environment(dir))
+        .envs(env.iter().copied())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null());
+    program
+}
+
+/// The egress authority's channel (WO-017, step 2): the keeper releases
+/// search's key on it, never on the broker's, and nothing of the
+/// broker's on it.
+#[test]
+fn searchs_key_is_released_on_the_authoritys_channel_alone() {
+    use hatchling_broker::keeper::Keeper;
+    let dir = scratch("authority-channel").unwrap();
+    sealed_vault(
+        &dir,
+        &[
+            ("search-brave", "k-brave"),
+            ("egress-localhost-18089", "credential"),
+        ],
+    )
+    .unwrap();
+    let (keeper, _, authoritys) =
+        Keeper::start_with(program(&dir, &[("HATCHLING_SEARCH", "brave")])).unwrap();
+    let name = |text: &str| -> hatchling_core::SecretName { text.parse().unwrap() };
+    let refused = format!("{:?}", keeper.read("search", &[name("search-brave")]));
+    assert!(refused.contains("no such read"), "the broker read search's key");
+    let authority = Keeper::over(authoritys).unwrap();
+    let read = authority.read("search", &[name("search-brave")]).unwrap();
+    assert_eq!(read[0].as_ref().unwrap().as_bytes(), b"k-brave");
+    assert!(
+        authority
+            .read("egress", &[name("egress-localhost-18089")])
+            .is_err(),
+        "the authority read the broker's credential"
+    );
+    assert!(authority.scan("output-gate").is_err());
+    // The broker's channel goes on after the authority's.
+    drop(authority);
+    assert!(keeper.read("egress", &[name("egress-localhost-18089")]).is_ok());
+    drop(keeper);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The egress authority, started as the broker starts it: it searches
+/// only while search is on, and with the key it reads from the keeper.
+#[test]
+fn the_egress_authority_searches_with_what_the_keeper_gives_it() {
+    use hatchling_broker::egress_authority::Authority;
+    use hatchling_broker::keeper::Keeper;
+    let dir = scratch("authority").unwrap();
+    sealed_vault(&dir, &[]).unwrap();
+    let searching = [("HATCHLING_SEARCH", "brave")];
+    let (keeper, _, authoritys) = Keeper::start_with(program(&dir, &searching)).unwrap();
+    let authority = Authority::start_with(program(&dir, &searching), &authoritys).unwrap();
+    drop(authoritys);
+    assert_eq!(
+        authority.search("rust"),
+        Err(String::from(
+            "no search key is stored: keep it in the vault as search-brave"
+        ))
+    );
+    drop(authority);
+    drop(keeper);
+    let (keeper, _, authoritys) = Keeper::start_with(program(&dir, &[])).unwrap();
+    let authority = Authority::start_with(program(&dir, &[]), &authoritys).unwrap();
+    drop(authoritys);
+    assert_eq!(authority.search("rust"), Err(String::from("search is off")));
+    drop(authority);
+    drop(keeper);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The egress authority runs only as the broker starts it.
+#[test]
+fn the_egress_authority_refuses_to_run_unless_the_broker_started_it() {
+    let output = Command::new(env!("CARGO_BIN_EXE_hatchling-broker"))
+        .arg("egress-authority")
+        .env_remove("HATCHLING_AUTHORITY_FD")
+        .env_remove("HATCHLING_AUTHORITY_KEEPER_FD")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("only the broker starts it"), "{stderr}");
 }

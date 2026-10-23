@@ -59,7 +59,11 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
     // checks the stores, and hands the broker the keys of its own stores.
     // The master key and the secrets store's key stay with the keeper; a
     // key or store problem stops the broker before it serves anyone.
-    let key = crate::keeper::start()?;
+    let (key, authoritys) = crate::keeper::start()?;
+    // The egress authority next, still on one thread (WO-017, step 2): it
+    // alone reads the credentials of the requests it makes, from the
+    // keeper on the channel just made for it, which the broker closes.
+    crate::egress_authority::start(authoritys)?;
     // Load skills before binding, before any session can name one:
     // each is verified, pinned, and registered, or refused loudly on
     // its own. A broken skill never stops the broker; it never runs.
