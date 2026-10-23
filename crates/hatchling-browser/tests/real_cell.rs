@@ -83,6 +83,11 @@ const SIGN_IN: &str = r#"<!doctype html><title>Sign in</title>
 <p id="code"></p>
 <p id="email"></p><p id="password"></p><p id="comment"></p>"#;
 
+/// The sign-in form, framed: its fields are in a subframe, which no
+/// snapshot lists, so no fill can name one.
+const FRAMED: &str = r#"<!doctype html><title>Framed</title>
+<iframe src="/signin" style="width: 600px; height: 400px"></iframe>"#;
+
 /// Whether `name`'s requirement makes a missing prerequisite a failure.
 fn required(name: &str) -> bool {
     std::env::var(name).is_ok_and(|value| value == "1")
@@ -249,6 +254,7 @@ fn answer(mut stream: std::net::TcpStream, seen: &Mutex<Vec<String>>) {
         Some("/cookies") => ("200 OK", COOKIES),
         Some("/webrtc") => ("200 OK", WEBRTC),
         Some("/signin") => ("200 OK", SIGN_IN),
+        Some("/framed") => ("200 OK", FRAMED),
         _ => ("404 Not Found", "not here"),
     };
     let _ = write!(
@@ -494,6 +500,41 @@ fn sign_in_filled(connection: &UnixStream) {
     assert!(!typed.text.contains("comment: h"), "{}", typed.text);
 }
 
+/// A sign-in form in a subframe (WO-030): its fields aren't the page's, so
+/// none is listed, and a fill naming any id types nothing.
+fn framed_never_filled(connection: &UnixStream) {
+    let framed = page(send(
+        connection,
+        &BrowserCommand::Open {
+            url: format!("http://{HOST}/framed"),
+        },
+    ));
+    assert_eq!(framed.title, "Framed");
+    assert!(
+        framed
+            .elements
+            .iter()
+            .all(|element| element.role != "password" && element.role != "textbox"),
+        "the subframe's fields aren't listed: {:?}",
+        framed.elements
+    );
+    for element in 0..4 {
+        let reply = send(
+            connection,
+            &BrowserCommand::Fill {
+                element,
+                field: SignInField::Password,
+                text: Concealed::new(String::from("hunter2")),
+                origin: format!("http://{HOST}"),
+            },
+        );
+        assert!(
+            matches!(reply, BrowserReply::Failed { .. }),
+            "element {element} took a fill"
+        );
+    }
+}
+
 /// The id of the element `role` named `name`.
 fn element(snapshot: &PageSnapshot, role: &str, name: &str) -> u32 {
     let found = snapshot
@@ -665,6 +706,7 @@ fn the_controller_drives_a_real_browser_in_a_cell_through_the_relay_alone() {
     cookies_kept(&connection);
     webrtc_loads(&connection);
     sign_in_filled(&connection);
+    framed_never_filled(&connection);
     // A command it doesn't know is answered, not obeyed.
     let unknown = serde_json::json!({"command": "evaluate", "script": "1"});
     write_frame(&connection, &serde_json::to_vec(&unknown).unwrap()).unwrap();
