@@ -209,6 +209,31 @@ impl Relay {
     }
 }
 
+/// A run's relay, wherever it serves: in the egress authority, which
+/// reads the vendor key (WO-017, step 2), or, in-process with no
+/// authority running, in the broker, with the key it read.
+#[derive(Debug)]
+pub enum RunRelay {
+    /// The broker's own.
+    Local(Relay),
+    /// The egress authority's.
+    Authority(crate::egress_authority::AuthorityRelay),
+    /// One that couldn't be started, and why.
+    Unstarted(String),
+}
+
+impl RunRelay {
+    /// Stops the relay and reports what it did, and the trouble it had.
+    #[must_use]
+    pub fn finish(self) -> (RelayCount, Option<String>) {
+        match self {
+            Self::Local(relay) => relay.finish(),
+            Self::Authority(relay) => relay.finish(),
+            Self::Unstarted(why) => (RelayCount::default(), Some(why)),
+        }
+    }
+}
+
 impl Drop for Relay {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);

@@ -64,7 +64,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cell::{CellIds, HarnessDirs, HarnessNetwork};
 use crate::environment as env;
-use crate::harness_relay::{RELAY_PORT, Relay, Vendor, Wire};
+use crate::harness_relay::{RELAY_PORT, Relay, RunRelay, Vendor, Wire};
 use crate::harness_tree::{TreeOp, change_trees};
 use crate::skill_cell::VerifiedCode;
 use crate::skill_run::{SkillRunError, SkillRuntime, run_cell};
@@ -177,7 +177,8 @@ const DEFAULT_TOOLS: [&str; 46] = [
 /// when the cell is stopped ends on its own.
 const RELAY_GRACE: Duration = Duration::from_secs(30);
 
-/// Reads a harness's vendor key for its relay.
+/// Reads a harness's vendor key for its relay, in-process, with no egress
+/// authority running: with one, the authority reads it.
 pub type HarnessKeys<'a> = &'a dyn Fn(HarnessKind) -> Option<Zeroizing<String>>;
 
 /// The activity thread every harness run is recorded on.
@@ -577,8 +578,14 @@ impl Harnesses {
         self.binaries.is_empty()
     }
 
+    /// Each harness's vendor.
+    #[must_use]
+    pub(crate) const fn vendors(&self) -> &BTreeMap<HarnessKind, Vendor> {
+        &self.vendors
+    }
+
     /// The vault secrets holding the keys of the vendors these harnesses
-    /// relay to: the only harness keys the broker may read.
+    /// relay to: the only harness keys the egress authority may read.
     #[must_use]
     pub fn vendor_secret_names(&self) -> BTreeSet<String> {
         self.vendors
@@ -686,14 +693,7 @@ impl Harnesses {
         if let Err(reason) = trees(runtime, &cell, &scratch, TreeOp::Give) {
             return report.failed(&reason);
         }
-        let relay = relaying.map(|(handoff, vendor, surrogate, key)| {
-            let destination = vendor.destination.clone();
-            let deadline = Instant::now() + self.timeout + RELAY_GRACE;
-            (
-                destination,
-                Relay::start(handoff, vendor, surrogate, key, deadline),
-            )
-        });
+        let relay = relaying.map(|relaying| relaying.start(self.timeout + RELAY_GRACE));
         let ran = run_cell(
             &runtime.clone().with_timeout(self.timeout),
             &cell,
@@ -762,9 +762,15 @@ impl Harnesses {
             .map_err(|error| error.to_string())
     }
 
-    /// A real CLI's network for one run: its vendor key, a fresh
-    /// surrogate, the handoff socket in the run's own directory, its
-    /// tools, and its environment. The relay's parts come back with it.
+    /// A real CLI's network for one run: a fresh surrogate, its relay
+    /// made ready with its vendor key, the handoff socket in the run's own
+    /// directory, its tools, and its environment. The relay's parts come
+    /// back with it.
+    ///
+    /// The egress authority makes the relay ready, reading the key itself
+    /// (WO-017, step 2), when one runs; in-process, with none, the broker
+    /// reads it with `keys`. A run with no key is refused here, before its
+    /// cell starts.
     fn network(
         &self,
         kind: HarnessKind,
@@ -773,24 +779,32 @@ impl Harnesses {
         dirs: &RunDirs,
         host: Option<&VerifiedCode>,
     ) -> Result<(HarnessNetwork, Relaying), String> {
-        let key = keys(kind).ok_or_else(|| {
-            format!(
-                "the vendor key is not in the vault: store it as the secret {}",
-                kind.secret_name()
-            )
-        })?;
         // Set-up failures are the broker's, and their detail stays in its
         // log: the report says only that the network couldn't be made.
-        let unavailable = |what: &str, error: std::io::Error| {
+        let unavailable = |what: &str, error: &dyn std::fmt::Display| {
             tracing::warn!(%error, what, "harness network setup failed");
             String::from("the harness network could not be set up")
         };
         let surrogate = crate::approval::random_hex(kind.surrogate_prefix())
             .map(Zeroizing::new)
-            .map_err(|error| unavailable("surrogate key", error))?;
+            .map_err(|error| unavailable("surrogate key", &error))?;
+        let ready = match crate::egress_authority::authority() {
+            Some(authority) => {
+                let pending = authority
+                    .connect()
+                    .and_then(|connection| connection.relay(kind, &surrogate))
+                    .map_err(|error| unavailable("relay", &error))??;
+                Ready::Authority(pending)
+            }
+            None => Ready::Local(
+                vendor.clone(),
+                keys(kind).ok_or_else(|| no_key(kind))?,
+                surrogate.clone(),
+            ),
+        };
         let handoff_path = dirs.base.join("relay.sock");
         let handoff = UnixListener::bind(&handoff_path)
-            .map_err(|error| unavailable("relay handoff", error))?;
+            .map_err(|error| unavailable("relay handoff", &error))?;
         let mut tools = self.tools.clone();
         if let Some(host) = host {
             tools.push((host.dir().join(CODEX_HOST), String::from(CODEX_HOST)));
@@ -801,7 +815,12 @@ impl Harnesses {
             tools,
             env: kind.env(RELAY_PORT, &surrogate),
         };
-        Ok((network, (handoff, vendor.clone(), surrogate, key)))
+        let relaying = Relaying {
+            handoff,
+            destination: vendor.destination.clone(),
+            ready,
+        };
+        Ok((network, relaying))
     }
 
     /// Writes `patch` to the artifact workspace, as a new file; its name,
@@ -873,9 +892,49 @@ const fn invalid(key: &'static str, reason: String) -> Error {
     Error::InvalidConfig { key, reason }
 }
 
-/// What a run's relay starts from: the handoff socket, the vendor, the
-/// surrogate the cell holds, and the vendor key.
-type Relaying = (UnixListener, Vendor, Zeroizing<String>, Zeroizing<String>);
+/// The refusal of a run whose vendor key isn't stored.
+fn no_key(kind: HarnessKind) -> String {
+    format!(
+        "the vendor key is not in the vault: store it as the secret {}",
+        kind.secret_name()
+    )
+}
+
+/// What a run's relay starts from: the handoff socket, the vendor's
+/// destination, and the relay made ready.
+struct Relaying {
+    handoff: UnixListener,
+    destination: String,
+    ready: Ready,
+}
+
+/// A relay made ready: in the egress authority, or the broker's own, with
+/// its vendor, the vendor key and the surrogate the cell holds.
+enum Ready {
+    Authority(crate::egress_authority::PendingRelay),
+    Local(Vendor, Zeroizing<String>, Zeroizing<String>),
+}
+
+impl Relaying {
+    /// Starts the relay, serving for `serving`: its destination, and the
+    /// relay, or why it couldn't start.
+    fn start(self, serving: Duration) -> (String, RunRelay) {
+        let relay = match self.ready {
+            Ready::Authority(pending) => match pending.start(&self.handoff, serving) {
+                Ok(relay) => RunRelay::Authority(relay),
+                Err(error) => RunRelay::Unstarted(error.to_string()),
+            },
+            Ready::Local(vendor, key, surrogate) => RunRelay::Local(Relay::start(
+                self.handoff,
+                vendor,
+                surrogate,
+                key,
+                Instant::now() + serving,
+            )),
+        };
+        (self.destination, relay)
+    }
+}
 
 /// One harness's binary and pin: both or neither.
 fn parse_binary(
@@ -1029,11 +1088,17 @@ pub fn vault_keys<'a>(
             .broker_read("harness", std::slice::from_ref(&name))
             .ok()?
             .pop()??;
-        std::str::from_utf8(secret.as_bytes())
-            .ok()
-            .map(|text| Zeroizing::new(text.trim().to_owned()))
-            .filter(|text| !text.is_empty())
+        key_text(&secret)
     }
+}
+
+/// A vendor key as its relay sends it: the secret's text, trimmed, or
+/// `None` when it isn't text or is blank.
+pub(crate) fn key_text(secret: &hatchling_vault::Secret) -> Option<Zeroizing<String>> {
+    std::str::from_utf8(secret.as_bytes())
+        .ok()
+        .map(|text| Zeroizing::new(text.trim().to_owned()))
+        .filter(|text| !text.is_empty())
 }
 
 /// The project roots: `name=/absolute/dir`, each a directory outside the
@@ -1694,7 +1759,7 @@ impl Report {
 
     /// The relay's account of the run, once its cell has ended:
     /// where the requests went and how many, for the activity event.
-    fn finish_relay(&mut self, kind: HarnessKind, relay: Option<(String, Relay)>) {
+    fn finish_relay(&mut self, kind: HarnessKind, relay: Option<(String, RunRelay)>) {
         let Some((destination, relay)) = relay else {
             return;
         };
@@ -2044,7 +2109,10 @@ mod tests {
             Zeroizing::new(String::from("key")),
             Instant::now(),
         );
-        report.finish_relay(HarnessKind::ClaudeCode, Some((destination.clone(), relay)));
+        report.finish_relay(
+            HarnessKind::ClaudeCode,
+            Some((destination.clone(), RunRelay::Local(relay))),
+        );
         assert_eq!(
             report.network,
             Some(HarnessNetworkUse {

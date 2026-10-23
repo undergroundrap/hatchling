@@ -441,13 +441,14 @@ impl Releases {
     }
 
     /// Whether `role` may read every one of `names` for `purpose`. The
-    /// egress destinations' credentials and search's key are the egress
-    /// authority's alone; the rest are the broker's.
+    /// egress destinations' credentials, the harnesses' vendor keys and
+    /// search's key are the egress authority's alone; the channel
+    /// accounts' are the broker's.
     fn allow(&self, role: Role, purpose: &str, names: &[SecretName]) -> bool {
         let given = match (role, purpose) {
             (Role::Authority, "egress") => &self.egress,
             (Role::Authority, "search") => &self.search,
-            (Role::Broker, "harness") => &self.harness,
+            (Role::Authority, "harness") => &self.harness,
             (Role::Broker, "channel-account") => &self.accounts,
             _ => return false,
         };
@@ -847,17 +848,13 @@ mod tests {
         assert!(authority("egress", &[egress]));
         assert!(!authority("egress", &[egress, "token"]));
         assert!(!broker("egress", &[egress]));
-        assert!(broker("harness", &["harness-claude-code"]));
-        assert!(!broker("harness", &["harness-codex-cli"]));
+        assert!(authority("harness", &["harness-claude-code"]));
+        assert!(!authority("harness", &["harness-codex-cli"]));
+        assert!(!broker("harness", &["harness-claude-code"]));
         assert!(broker("channel-account", &["mail-work"]));
         assert!(!broker("channel-account", &["token"]));
         // The egress authority reads none of the broker's.
-        for (purpose, name) in [
-            ("harness", "harness-claude-code"),
-            ("channel-account", "mail-work"),
-        ] {
-            assert!(!authority(purpose, &[name]));
-        }
+        assert!(!authority("channel-account", &["mail-work"]));
         // Search's key, only while search is on (WO-028), and only to the
         // egress authority (WO-017).
         assert!(!rules.allow(Role::Authority, "search", &names(&["search-brave"])));

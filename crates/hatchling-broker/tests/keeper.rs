@@ -491,3 +491,36 @@ fn a_sessions_egress_goes_through_the_authority_with_its_credential() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A harness relay through the real authority (WO-017, step 2): it finds
+/// the harness's vendor in its own configuration, so with none configured
+/// the run is refused, whatever the broker asks; and the keeper refuses
+/// the broker's own read of a vendor key.
+#[test]
+fn a_harness_relay_is_the_authoritys_to_make_ready() {
+    use hatchling_broker::egress_authority::Authority;
+    use hatchling_broker::harness::HarnessKind;
+    use hatchling_broker::keeper::Keeper;
+    let dir = scratch("authority-relay").unwrap();
+    sealed_vault(&dir, &[("harness-claude-code", "sk-real")]).unwrap();
+    let (keeper, _, authoritys) = Keeper::start_with(program(&dir, &[])).unwrap();
+    let authority = Authority::start_with(program(&dir, &[]), &authoritys).unwrap();
+    drop(authoritys);
+    let refused = authority
+        .connect()
+        .unwrap()
+        .relay(HarnessKind::ClaudeCode, "sk-surrogate")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(
+        refused,
+        "the claude-code harness has no vendor API configured"
+    );
+    let name: hatchling_core::SecretName = "harness-claude-code".parse().unwrap();
+    assert!(
+        keeper.read("harness", &[name]).is_err(),
+        "the broker read a vendor key"
+    );
+    drop((authority, keeper));
+    let _ = std::fs::remove_dir_all(&dir);
+}
