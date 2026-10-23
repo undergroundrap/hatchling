@@ -59,6 +59,26 @@ impl<'k> Secrets<'k> {
         if let Some(keeper) = crate::keeper::keeper() {
             return keeper.read(purpose, names);
         }
+        self.recorded_read(
+            Caller::Broker {
+                purpose: purpose.to_owned(),
+            },
+            names,
+        )
+    }
+
+    /// Reads `names` for `caller`, recorded before anything is returned:
+    /// as [`Self::broker_read`] without a keeper, for whoever `caller` is.
+    /// The keeper reads with it for the broker and the egress authority.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::broker_read`].
+    pub(crate) fn recorded_read(
+        &self,
+        caller: Caller,
+        names: &[SecretName],
+    ) -> Result<Vec<Option<Secret>>, Error> {
         let read = self.read(names);
         let outcome = match &read {
             Ok(found) if found.iter().any(Option::is_some) || found.is_empty() => Outcome::Allowed,
@@ -67,9 +87,7 @@ impl<'k> Secrets<'k> {
         };
         crate::vault_access::record(
             self.root,
-            Caller::Broker {
-                purpose: purpose.to_owned(),
-            },
+            caller,
             "read",
             names.iter().map(|name| name.as_str().to_owned()).collect(),
             outcome,
@@ -363,5 +381,57 @@ mod tests {
         let unrecorded = secrets.broker_read("egress", &[name("token")]);
         let _ = std::fs::remove_dir_all(&root);
         assert!(matches!(unrecorded, Err(Error::VaultAccessLog { .. })));
+    }
+
+    /// `recorded_read` records whoever it's given: the egress authority's
+    /// read is recorded as the authority's.
+    #[test]
+    fn a_recorded_read_is_recorded_as_its_callers() {
+        let root = std::env::temp_dir().join(format!(
+            "hatchling-secrets-authority-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let key = MasterKey::generate().unwrap();
+        SealedVault::open(&root, &key)
+            .unwrap()
+            .store(&name("search-brave"), &Secret::new(b"k".to_vec()).unwrap())
+            .unwrap();
+        let secrets = Secrets::new(&root, &key);
+        let authority = Caller::Authority {
+            purpose: String::from("search"),
+        };
+        let read = secrets
+            .recorded_read(authority.clone(), &[name("search-brave")])
+            .unwrap();
+        let key = read.first().and_then(Option::as_ref).unwrap();
+        assert_eq!(key.as_bytes(), b"k");
+        let session = Caller::Session {
+            uid: 7,
+            cell: String::from("c"),
+        };
+        let absent = secrets
+            .recorded_read(session.clone(), &[name("absent")])
+            .unwrap();
+        assert!(matches!(absent.as_slice(), [None]));
+        let logged = accesses(&root);
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(
+            logged,
+            [
+                (
+                    authority,
+                    String::from("read"),
+                    vec![String::from("search-brave")],
+                    Outcome::Allowed
+                ),
+                (
+                    session,
+                    String::from("read"),
+                    vec![String::from("absent")],
+                    Outcome::NotFound
+                ),
+            ]
+        );
     }
 }

@@ -509,7 +509,7 @@ pub struct WebConfig {
     /// asks, and goes on without the page.
     pub attended: bool,
     /// Whether the agent may search, through Brave Search, with the key the
-    /// broker keeps (`HATCHLING_SEARCH=brave`).
+    /// egress authority reads (`HATCHLING_SEARCH=brave`).
     pub search: bool,
     /// What the broker logs of each search (`HATCHLING_SEARCH_LOG`).
     pub search_log: SearchLog,
@@ -1846,7 +1846,7 @@ fn refuse_harness_secret_grants(vault_grants: Vec<VaultGrant>) -> Result<Vec<Vau
         return Err(Error::InvalidConfig {
             key: "HATCHLING_VAULT_GRANTS",
             reason: format!(
-                "grant {}:{} names the search provider's key, which only the broker reads",
+                "grant {}:{} names the search provider's key, which only the egress authority reads",
                 grant.action,
                 grant.name.as_str()
             ),

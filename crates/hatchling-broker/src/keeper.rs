@@ -37,7 +37,7 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitCode};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use hatchling_core::framing::{read_frame, read_frame_or_eof, write_frame};
@@ -63,6 +63,33 @@ pub const RELEASED_RECORD: &str = "keeper-released";
 
 /// The setting that names the keeper's end of the socket pair.
 const KEEPER_FD: &str = crate::environment::HATCHLING_KEEPER_FD.name;
+
+/// The setting that names the keeper's end of its pair with the egress
+/// authority.
+const AUTHORITY_FD: &str = crate::environment::HATCHLING_KEEPER_AUTHORITY_FD.name;
+
+/// Who a request came from: the channel it came on, never its words. The
+/// broker keeps neither end of the authority's channel, so what reaches
+/// the keeper on it is the authority's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Role {
+    /// The broker, on the channel of its start.
+    Broker,
+    /// The egress authority (WO-017), on the channel the broker made for
+    /// it and closed.
+    Authority,
+}
+
+impl Role {
+    /// Whom a read by this role for `purpose` is recorded as.
+    fn caller(self, purpose: &str) -> Caller {
+        let purpose = purpose.to_owned();
+        match self {
+            Self::Broker => Caller::Broker { purpose },
+            Self::Authority => Caller::Authority { purpose },
+        }
+    }
+}
 
 /// What the broker asks the keeper.
 #[derive(Debug, Serialize, Deserialize)]
@@ -105,8 +132,9 @@ pub struct Keeper {
     /// read as the next request's, so no request is sent again.
     lost: AtomicBool,
     /// Kept so the keeper isn't left a zombie; it leaves when the broker
-    /// does.
-    _child: Child,
+    /// does. The egress authority's keeper has no child: the broker
+    /// started it.
+    _child: Option<Child>,
 }
 
 /// How long the broker waits for each of the keeper's answers once it
@@ -126,29 +154,32 @@ pub(crate) fn keeper() -> Option<&'static Keeper> {
 /// [`Keeper::start_with`] the broker's own binary, kept as this broker's
 /// keeper.
 ///
-/// Call it once, while the broker has one thread: the keeper's end of
-/// the socket pair is the one descriptor its exec keeps, and it would be
+/// Also returns the egress authority's end of its channel to the keeper,
+/// for [`crate::egress_authority::start`]. Call it once, while the broker has one thread: the keeper's ends of
+/// its socket pairs are the descriptors its exec keeps, and they would be
 /// inherited by anything another thread started meanwhile.
 ///
 /// # Errors
 ///
 /// As [`Keeper::start_with`], and [`Error::Keeper`] when the broker's
 /// binary can't be found or a keeper is already running.
-pub fn start() -> Result<StoreKeys, Error> {
+pub fn start() -> Result<(StoreKeys, UnixStream), Error> {
     let program = std::env::current_exe().map_err(|e| Error::Keeper {
         reason: format!("cannot locate the broker binary: {e}"),
     })?;
-    let (keeper, keys) = Keeper::start_with(Command::new(program))?;
+    let (keeper, keys, authority) = Keeper::start_with(Command::new(program))?;
     KEEPER.set(keeper).map_err(|_| Error::Keeper {
         reason: String::from("a keeper is already running"),
     })?;
-    Ok(keys)
+    Ok((keys, authority))
 }
 
 impl Keeper {
     /// Starts the keeper as `program`, the broker's binary with its
-    /// environment, given its subcommand and its end of a socket pair, and
-    /// takes the keys of the broker's stores from it.
+    /// environment, given its subcommand and its ends of two socket pairs
+    /// (one with the broker, one with the egress authority), and takes the
+    /// keys of the broker's stores from it. Returns the authority's end of
+    /// its pair, which the broker hands the authority and closes.
     ///
     /// # Errors
     ///
@@ -156,18 +187,24 @@ impl Keeper {
     /// to start (its reason, as the keeper gave it: a key that doesn't
     /// load, a store that doesn't open), or hands over keys that don't
     /// read back.
-    pub fn start_with(mut program: Command) -> Result<(Self, StoreKeys), Error> {
+    pub fn start_with(mut program: Command) -> Result<(Self, StoreKeys, UnixStream), Error> {
         let failed = |reason: String| Error::Keeper { reason };
-        let (ours, theirs) =
-            UnixStream::pair().map_err(|e| failed(format!("cannot make the socket pair: {e}")))?;
-        hatchling_sys::keep_across_exec(theirs.as_fd())
-            .map_err(|e| failed(format!("cannot hand the keeper its socket: {e}")))?;
+        let pair =
+            || UnixStream::pair().map_err(|e| failed(format!("cannot make a socket pair: {e}")));
+        let (ours, theirs) = pair()?;
+        let (for_authority, authoritys) = pair()?;
+        for end in [theirs.as_fd(), for_authority.as_fd()] {
+            hatchling_sys::keep_across_exec(end)
+                .map_err(|e| failed(format!("cannot hand the keeper its socket: {e}")))?;
+        }
         let child = program
             .arg(VAULT_KEEPER_SUBCOMMAND)
             .env(KEEPER_FD, theirs.as_raw_fd().to_string())
+            .env(AUTHORITY_FD, for_authority.as_raw_fd().to_string())
             .spawn()
             .map_err(|e| failed(format!("cannot start: {e}")))?;
         drop(theirs);
+        drop(for_authority);
         let first =
             Zeroizing::new(read_frame(&ours).map_err(|e| failed(format!("gave no keys: {e}")))?);
         let keys = match first.split_first() {
@@ -181,14 +218,30 @@ impl Keeper {
                 )));
             }
         };
-        ours.set_read_timeout(Some(ANSWER_TIMEOUT))
-            .map_err(|e| failed(format!("cannot bound its answers: {e}")))?;
         let keeper = Self {
-            stream: Mutex::new(ours),
-            lost: AtomicBool::new(false),
-            _child: child,
+            _child: Some(child),
+            ..Self::over(ours)?
         };
-        Ok((keeper, keys))
+        Ok((keeper, keys, authoritys))
+    }
+
+    /// A keeper already running, at the other end of `stream`: the egress
+    /// authority's, which the broker started.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Keeper`] when its answers can't be bounded.
+    pub fn over(stream: UnixStream) -> Result<Self, Error> {
+        stream
+            .set_read_timeout(Some(ANSWER_TIMEOUT))
+            .map_err(|e| Error::Keeper {
+                reason: format!("cannot bound its answers: {e}"),
+            })?;
+        Ok(Self {
+            stream: Mutex::new(stream),
+            lost: AtomicBool::new(false),
+            _child: None,
+        })
     }
 
     /// The broker's own read of `names`, for `purpose`, answered by the
@@ -387,13 +440,14 @@ impl Releases {
         }
     }
 
-    /// Whether the broker may read every one of `names` for `purpose`.
-    fn allow(&self, purpose: &str, names: &[SecretName]) -> bool {
-        let given = match purpose {
-            "egress" => &self.egress,
-            "search" => &self.search,
-            "harness" => &self.harness,
-            "channel-account" => &self.accounts,
+    /// Whether `role` may read every one of `names` for `purpose`. Search's
+    /// key is the egress authority's alone; the rest are the broker's.
+    fn allow(&self, role: Role, purpose: &str, names: &[SecretName]) -> bool {
+        let given = match (role, purpose) {
+            (Role::Broker, "egress") => &self.egress,
+            (Role::Authority, "search") => &self.search,
+            (Role::Broker, "harness") => &self.harness,
+            (Role::Broker, "channel-account") => &self.accounts,
             _ => return false,
         };
         names.iter().all(|name| given.contains(name.as_str()))
@@ -424,14 +478,21 @@ impl Releases {
 /// The keeper: `hatchling-broker vault-keeper`.
 #[must_use]
 pub fn vault_keeper_main() -> ExitCode {
-    let stream = match std::env::var(KEEPER_FD)
-        .ok()
-        .and_then(|fd| fd.parse::<i32>().ok())
-        .map(hatchling_sys::net::inherited_unix_stream)
-    {
+    let inherited = |fd: Result<String, std::env::VarError>| {
+        fd.ok()
+            .and_then(|fd| fd.parse::<i32>().ok())
+            .map(hatchling_sys::net::inherited_unix_stream)
+    };
+    let stream = match inherited(std::env::var(KEEPER_FD)) {
         Some(Ok(stream)) => stream,
         Some(Err(error)) => return refuse_to_run(&error.to_string()),
         None => return refuse_to_run("only the broker starts it"),
+    };
+    // The authority's channel, when the broker made one: without one, no
+    // read is the authority's.
+    let authority = match inherited(std::env::var(AUTHORITY_FD)).transpose() {
+        Ok(authority) => authority,
+        Err(error) => return refuse_to_run(&error.to_string()),
     };
     let begun = hatchling_sys::set_not_dumpable()
         .map_err(|source| Error::Keeper {
@@ -454,8 +515,18 @@ pub fn vault_keeper_main() -> ExitCode {
             return refuse_to_run(&error.to_string());
         }
     };
-    let mut state = state;
-    match serve(&stream, &mut state) {
+    let state = Arc::new(Mutex::new(state));
+    if let Some(authority) = authority {
+        let shared = Arc::clone(&state);
+        std::thread::spawn(move || {
+            if let Err(error) = serve(&authority, &shared, Role::Authority) {
+                tracing::error!(%error, "the egress authority's channel ended");
+            }
+        });
+    }
+    // The keeper leaves when the broker does, the authority's channel
+    // with it.
+    match serve(&stream, &state, Role::Broker) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => refuse_to_run(&error.to_string()),
     }
@@ -578,15 +649,32 @@ fn releases_to_cell(config: &Config, op: &VaultOp) -> Option<String> {
         .then(|| name.to_owned())
 }
 
-/// Answers the broker until it goes.
-fn serve(stream: &UnixStream, kept: &mut Kept) -> Result<(), Error> {
+/// Answers `role` on `stream` until it goes. The egress authority only
+/// reads: its scans and cells' ops are refused.
+fn serve(stream: &UnixStream, kept: &Mutex<Kept>, role: Role) -> Result<(), Error> {
     while let Some(frame) = read_frame_or_eof(stream).map_err(keeper_gone)? {
         let frame = Zeroizing::new(frame);
         let request: Request = serde_json::from_slice(&frame).map_err(|e| Error::Keeper {
             reason: format!("a request that doesn't parse: {e}"),
         })?;
+        if role == Role::Authority && !matches!(request, Request::Read { .. }) {
+            tracing::warn!("refused the egress authority a request that isn't a read");
+            send(
+                stream,
+                &Reply::Refused {
+                    reason: String::from("the egress authority only reads"),
+                },
+            )?;
+            continue;
+        }
+        let mut guard = kept.lock().map_err(|_| Error::Keeper {
+            reason: String::from("an earlier answer panicked"),
+        })?;
+        let kept = &mut *guard;
         match request {
-            Request::Read { purpose, names } => answer_read(stream, kept, &purpose, &names)?,
+            Request::Read { purpose, names } => {
+                answer_read(stream, kept, role, &purpose, &names)?;
+            }
             Request::Scan { purpose } => answer_scan(stream, kept, &purpose)?,
             Request::Cell { op, cell, uid } => {
                 if let Some(name) = releases_to_cell(&kept.config, &op) {
@@ -622,24 +710,24 @@ fn serve(stream: &UnixStream, kept: &mut Kept) -> Result<(), Error> {
                 send(stream, &reply)?;
             }
         }
+        drop(guard);
     }
     Ok(())
 }
 
-/// Answers one read: refused and recorded as denied unless the
-/// configuration gives `purpose` every one of `names`.
+/// Answers one read by `role`: refused and recorded as denied unless the
+/// configuration gives `role` every one of `names` for `purpose`.
 fn answer_read(
     stream: &UnixStream,
     kept: &Kept,
+    role: Role,
     purpose: &str,
     names: &[String],
 ) -> Result<(), Error> {
     let parsed: Option<Vec<SecretName>> = names.iter().map(|name| name.parse().ok()).collect();
-    let Some(parsed) = parsed.filter(|parsed| kept.releases.allow(purpose, parsed)) else {
+    let Some(parsed) = parsed.filter(|parsed| kept.releases.allow(role, purpose, parsed)) else {
         let root: PathBuf = kept.config.vault.root.clone();
-        let caller = Caller::Broker {
-            purpose: purpose.to_owned(),
-        };
+        let caller = role.caller(purpose);
         if let Err(error) =
             crate::vault_access::record(&root, caller, "read", names.to_vec(), Outcome::Denied)
         {
@@ -656,7 +744,9 @@ fn answer_read(
             },
         );
     };
-    match Secrets::new(&kept.config.vault.root, &kept.keys).broker_read(purpose, &parsed) {
+    match Secrets::new(&kept.config.vault.root, &kept.keys)
+        .recorded_read(role.caller(purpose), &parsed)
+    {
         Ok(read) => {
             send(
                 stream,
@@ -746,24 +836,37 @@ mod tests {
         }];
         let harness = BTreeSet::from([String::from("harness-claude-code")]);
         let rules = Releases::of(&config, harness);
+        let broker =
+            |purpose: &str, list: &[&str]| rules.allow(Role::Broker, purpose, &names(list));
         let egress = "egress-api-example-com-443";
-        assert!(rules.allow("egress", &names(&[egress])));
-        assert!(!rules.allow("egress", &names(&[egress, "token"])));
-        assert!(rules.allow("harness", &names(&["harness-claude-code"])));
-        assert!(!rules.allow("harness", &names(&["harness-codex-cli"])));
-        assert!(rules.allow("channel-account", &names(&["mail-work"])));
-        assert!(!rules.allow("channel-account", &names(&["token"])));
-        // Search's key, only while search is on (WO-028).
-        assert!(!rules.allow("search", &names(&["search-brave"])));
+        assert!(broker("egress", &[egress]));
+        assert!(!broker("egress", &[egress, "token"]));
+        assert!(broker("harness", &["harness-claude-code"]));
+        assert!(!broker("harness", &["harness-codex-cli"]));
+        assert!(broker("channel-account", &["mail-work"]));
+        assert!(!broker("channel-account", &["token"]));
+        // The egress authority reads none of the broker's.
+        for (purpose, name) in [
+            ("egress", egress),
+            ("harness", "harness-claude-code"),
+            ("channel-account", "mail-work"),
+        ] {
+            assert!(!rules.allow(Role::Authority, purpose, &names(&[name])));
+        }
+        // Search's key, only while search is on (WO-028), and only to the
+        // egress authority (WO-017).
+        assert!(!rules.allow(Role::Authority, "search", &names(&["search-brave"])));
         config.web.search = true;
         let searching = Releases::of(&config, BTreeSet::new());
-        assert!(searching.allow("search", &names(&["search-brave"])));
-        assert!(!searching.allow("search", &names(&["token"])));
-        assert!(!searching.allow("egress", &names(&["search-brave"])));
+        let search = names(&["search-brave"]);
+        assert!(searching.allow(Role::Authority, "search", &search));
+        assert!(!searching.allow(Role::Broker, "search", &search));
+        assert!(!searching.allow(Role::Authority, "search", &names(&["token"])));
+        assert!(!searching.allow(Role::Broker, "egress", &search));
         // The gates scan: they read nothing by name.
         for gate in ["artifact-gate", "output-gate"] {
             assert!(Releases::scans(gate));
-            assert!(!rules.allow(gate, &names(&["token"])));
+            assert!(!broker(gate, &["token"]));
         }
         assert!(!Releases::scans("egress"));
         // A gate scans for the broker's own credentials, and for a held
@@ -781,8 +884,20 @@ mod tests {
             scanned(&["token", "harness-claude-code"]),
             [egress, "mail-work", "token"]
         );
-        assert!(!rules.allow("scan", &names(&["token"])));
-        assert!(rules.allow("egress", &[]));
+        assert!(!broker("scan", &["token"]));
+        assert!(broker("egress", &[]));
+        assert_eq!(
+            Role::Authority.caller("search"),
+            Caller::Authority {
+                purpose: String::from("search")
+            }
+        );
+        assert_eq!(
+            Role::Broker.caller("egress"),
+            Caller::Broker {
+                purpose: String::from("egress")
+            }
+        );
     }
 
     /// The protocol reads exactly its own shapes: an unknown field or
@@ -869,16 +984,165 @@ mod tests {
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
         let egress = String::from("egress-api-example-com-443");
-        answer_read(&ours, &kept, "egress", std::slice::from_ref(&egress)).unwrap();
-        let reply = read_frame(&theirs).unwrap();
-        assert_eq!(reply, br#"{"reply":"read","found":[false]}"#);
-        answer_read(&ours, &kept, "egress", &[String::from("unlisted")]).unwrap();
-        let reply = String::from_utf8(read_frame(&theirs).unwrap()).unwrap();
-        assert!(reply.starts_with(r#"{"reply":"refused""#), "{reply}");
-        assert!(!reply.contains("kept"), "{reply}");
+        let read = |role, name: &str| {
+            answer_read(&ours, &kept, role, "egress", &[name.to_owned()]).unwrap();
+            String::from_utf8(read_frame(&theirs).unwrap()).unwrap()
+        };
+        assert_eq!(
+            read(Role::Broker, &egress),
+            r#"{"reply":"read","found":[false]}"#
+        );
+        let refused = read(Role::Broker, "unlisted");
+        assert!(refused.starts_with(r#"{"reply":"refused""#), "{refused}");
+        assert!(!refused.contains("kept"), "{refused}");
+        // The broker's read, asked by the egress authority: refused, and
+        // recorded as the authority's.
+        let refused = read(Role::Authority, &egress);
+        assert!(refused.starts_with(r#"{"reply":"refused""#), "{refused}");
         let (accesses, _) = crate::vault_access::read_log(&kept.config.vault.root).unwrap();
-        let outcomes: Vec<_> = accesses.iter().map(|access| access.outcome).collect();
-        assert_eq!(outcomes, [Outcome::NotFound, Outcome::Denied]);
+        let outcomes: Vec<_> = accesses
+            .iter()
+            .map(|access| (access.caller.clone(), access.outcome))
+            .collect();
+        let broker = Caller::Broker {
+            purpose: String::from("egress"),
+        };
+        let authority = Caller::Authority {
+            purpose: String::from("egress"),
+        };
+        assert_eq!(
+            outcomes,
+            [
+                (broker.clone(), Outcome::NotFound),
+                (broker, Outcome::Denied),
+                (authority, Outcome::Denied)
+            ]
+        );
+    }
+
+    /// On the egress authority's channel, the keeper answers the
+    /// authority's reads, recorded as its own, and refuses everything
+    /// else: a scan, a cell's op, the broker's reads.
+    #[test]
+    fn the_authoritys_channel_answers_only_the_authoritys_reads() {
+        let mut config = crate::api_auth::tests::owner_config(None);
+        let dir = crate::api_auth::tests::scratch("keeper-authority");
+        config.vault.root = dir.0.join("vault");
+        config.web.search = true;
+        config.vault.grants = vec![crate::VaultGrant {
+            action: hatchling_core::VaultAction::Fetch,
+            name: "token".parse().unwrap(),
+        }];
+        let master = hatchling_vault::MasterKey::generate().unwrap();
+        let vault = hatchling_vault::SealedVault::open(&config.vault.root, &master).unwrap();
+        for (name, value) in [("search-brave", b"k-brave"), ("token", b"t-token")] {
+            vault
+                .store(
+                    &name.parse().unwrap(),
+                    &Secret::new(value.to_vec()).unwrap(),
+                )
+                .unwrap();
+        }
+        let keys = StoreKeys::unwrap(&master, &[(Store::SECRETS, &config.vault.root)]).unwrap();
+        let releases = Releases::of(&config, BTreeSet::new());
+        let kept = Mutex::new(Kept {
+            config,
+            keys,
+            releases,
+            released: BTreeSet::new(),
+        });
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let root = dir.0.join("vault");
+        let serving = std::thread::scope(|scope| {
+            let serving = scope.spawn(|| serve(&theirs, &kept, Role::Authority));
+            let keeper = Keeper::over(ours).unwrap();
+            let search: Vec<SecretName> = names(&["search-brave"]);
+            let read = keeper.read("search", &search).unwrap();
+            let key = read.first().and_then(Option::as_ref).unwrap();
+            assert_eq!(key.as_bytes(), b"k-brave");
+            assert!(keeper.read("egress", &names(&["token"])).is_err());
+            let scan = format!("{:?}", keeper.scan("output-gate"));
+            assert!(scan.contains("only reads"), "{scan}");
+            let op = VaultOp::Fetch {
+                name: String::from("token"),
+            };
+            let cell: CellId = "c".parse().unwrap();
+            assert_eq!(
+                keeper.cell_op(&op, &cell, 7).unwrap(),
+                VaultResult::VaultError
+            );
+            drop(keeper);
+            serving.join().unwrap()
+        });
+        assert!(serving.is_ok(), "ends when the authority goes");
+        assert!(
+            kept.lock().unwrap().released.is_empty(),
+            "nothing released to a cell"
+        );
+        let (accesses, _) = crate::vault_access::read_log(&root).unwrap();
+        let logged: Vec<_> = accesses
+            .iter()
+            .map(|access| (access.caller.clone(), access.outcome))
+            .collect();
+        assert_eq!(
+            logged,
+            [
+                (
+                    Caller::Authority {
+                        purpose: String::from("search")
+                    },
+                    Outcome::Allowed
+                ),
+                (
+                    Caller::Authority {
+                        purpose: String::from("egress")
+                    },
+                    Outcome::Denied
+                ),
+            ]
+        );
+    }
+
+    /// On the broker's channel, the keeper answers the broker as before:
+    /// its reads, its gates' scans and cells' ops; search's key is not the
+    /// broker's.
+    #[test]
+    fn the_brokers_channel_serves_the_broker_and_not_search() {
+        let mut config = crate::api_auth::tests::owner_config(None);
+        let dir = crate::api_auth::tests::scratch("keeper-broker-channel");
+        config.vault.root = dir.0.join("vault");
+        config.web.search = true;
+        let master = hatchling_vault::MasterKey::generate().unwrap();
+        hatchling_vault::SealedVault::open(&config.vault.root, &master)
+            .unwrap()
+            .store(
+                &"search-brave".parse().unwrap(),
+                &Secret::new(b"k-brave".to_vec()).unwrap(),
+            )
+            .unwrap();
+        let keys = StoreKeys::unwrap(&master, &[(Store::SECRETS, &config.vault.root)]).unwrap();
+        let releases = Releases::of(&config, BTreeSet::new());
+        let kept = Mutex::new(Kept {
+            config,
+            keys,
+            releases,
+            released: BTreeSet::new(),
+        });
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        std::thread::scope(|scope| {
+            let serving = scope.spawn(|| serve(&theirs, &kept, Role::Broker));
+            let keeper = Keeper::over(ours).unwrap();
+            let refused = format!("{:?}", keeper.read("search", &names(&["search-brave"])));
+            assert!(refused.contains("no such read"), "{refused}");
+            assert!(keeper.scan("output-gate").unwrap().is_empty());
+            let op = VaultOp::Fetch {
+                name: String::from("token"),
+            };
+            let cell: CellId = "c".parse().unwrap();
+            assert_eq!(keeper.cell_op(&op, &cell, 7).unwrap(), VaultResult::Denied);
+            drop(keeper);
+            assert!(serving.join().unwrap().is_ok());
+        });
     }
 
     /// A keeper that answers a read out of step is lost: the broker sends
@@ -889,11 +1153,7 @@ mod tests {
         theirs
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
-        let keeper = Keeper {
-            stream: Mutex::new(ours),
-            lost: AtomicBool::new(false),
-            _child: Command::new("true").spawn().unwrap(),
-        };
+        let keeper = Keeper::over(ours).unwrap();
         let stand_in = std::thread::spawn(move || {
             let request = read_frame(&theirs).unwrap();
             // Two names asked for, one answered for.
