@@ -151,7 +151,7 @@ impl<'a> Ops<'a> {
         }
         // The owner's alone: a caller holding less than every grant the
         // owner holds can't.
-        let owns = owns;
+        let owns = caller.holds(&owner);
         match action {
             UiAction::SendMessage { chat_id, text } => {
                 if !owns {
@@ -232,12 +232,15 @@ impl<'a> Ops<'a> {
                 self.browser(owns, OwnerAct::Input(session_id, input))
             }
             UiAction::KeepSignedIn { session_id } => self.browser(owns, OwnerAct::Keep(session_id)),
-            UiAction::GiveCode { session_id, request_id, code } => {
-                self.browser(owns, OwnerAct::GiveCode(session_id, request_id, code))
-            }
-            UiAction::DeclineCode { session_id, request_id } => {
-                self.browser(owns, OwnerAct::DeclineCode(session_id, request_id))
-            }
+            UiAction::GiveCode {
+                session_id,
+                request_id,
+                code,
+            } => self.browser(owns, OwnerAct::GiveCode(session_id, request_id, code)),
+            UiAction::DeclineCode {
+                session_id,
+                request_id,
+            } => self.browser(owns, OwnerAct::DeclineCode(session_id, request_id)),
             UiAction::OpenArtifact { .. }
             | UiAction::ShareArtifact { .. }
             | UiAction::AttachArtifact { .. }
@@ -1577,7 +1580,11 @@ mod tests {
         board.end("browser-code");
         // The answer itself: taken, declined, or why not.
         assert_eq!(
-            code_answer("browser-x", Err(hatchling_core::ui::CodeRefusal::Empty), true),
+            code_answer(
+                "browser-x",
+                Err(hatchling_core::ui::CodeRefusal::Empty),
+                true
+            ),
             (
                 UiActionResult::CodeRefused {
                     session_id: String::from("browser-x"),

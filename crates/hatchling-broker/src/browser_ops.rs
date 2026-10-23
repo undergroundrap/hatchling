@@ -2063,7 +2063,8 @@ mod tests {
             .into_iter()
             .rev()
             .find_map(|event| {
-                if let hatchling_core::ui::UiEventBody::BrowserCode { request_id, .. } = event.body {
+                if let hatchling_core::ui::UiEventBody::BrowserCode { request_id, .. } = event.body
+                {
                     Some(request_id)
                 } else {
                     None
@@ -2081,8 +2082,17 @@ mod tests {
         let ask = BrowserOp::Code { element: 3 };
         // Not a signed-in browser: refused.
         let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, &ask);
-        assert!(matches!(answer, BrowserResult::Refused { .. }), "the answer");
-        handle_browser_op(&config, &keys, &mut web, &mut browser, &open("https://a.example/"));
+        assert!(
+            matches!(answer, BrowserResult::Refused { .. }),
+            "the answer"
+        );
+        handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &open("https://a.example/"),
+        );
         showing(&fake, "https://a.example/verify", "Enter the code");
         let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, &ask);
         assert_eq!(
@@ -2099,7 +2109,10 @@ mod tests {
         let asked = latest_code(&bus);
         // Still waiting: told so again, nothing typed.
         let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, &ask);
-        assert!(matches!(answer, BrowserResult::CodeWaiting { .. }), "the answer");
+        assert!(
+            matches!(answer, BrowserResult::CodeWaiting { .. }),
+            "the answer"
+        );
         assert!(fills(&fake).is_empty());
         // Given: typed into the field asked for, on the origin asked for, hidden.
         assert_eq!(
@@ -2115,7 +2128,10 @@ mod tests {
             &BrowserOp::Code { element: 9 },
         );
         let told = format!("{answer:?}");
-        assert!(!told.contains("481516") && told.contains("[hidden]"), "what the agent is told");
+        assert!(
+            !told.contains("481516") && told.contains("[hidden]"),
+            "what the agent is told"
+        );
         assert_eq!(
             fills(&fake),
             [(
@@ -2140,11 +2156,24 @@ mod tests {
         let ((mut web, mut browser), board, bus) = watched(&fake);
         browser.code_wait = Duration::ZERO;
         let ask = BrowserOp::Code { element: 3 };
-        handle_browser_op(&config, &keys, &mut web, &mut browser, &open("https://a.example/"));
-        let id = browser.shown.as_ref().map(|shown| shown.id.clone()).unwrap();
+        handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &open("https://a.example/"),
+        );
+        let id = browser
+            .shown
+            .as_ref()
+            .map(|shown| shown.id.clone())
+            .unwrap();
         showing(&fake, "https://a.example/verify", "Enter the code");
         let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, &ask);
-        assert!(matches!(answer, BrowserResult::CodeWaiting { .. }), "the answer");
+        assert!(
+            matches!(answer, BrowserResult::CodeWaiting { .. }),
+            "the answer"
+        );
         assert_eq!(board.decline_code(&id, &latest_code(&bus)), Ok(()));
         assert_eq!(
             handle_browser_op(&config, &keys, &mut web, &mut browser, &ask),
@@ -2160,7 +2189,10 @@ mod tests {
         // Not on an https page: refused.
         showing(&fake, "about:blank", "");
         let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, &ask);
-        assert!(matches!(answer, BrowserResult::Refused { .. }), "the answer");
+        assert!(
+            matches!(answer, BrowserResult::Refused { .. }),
+            "the answer"
+        );
         // No board, no owner to ask.
         let (mut web, mut alone) = session("t", &fake);
         handle_browser_op(
