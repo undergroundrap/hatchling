@@ -116,6 +116,8 @@ impl Store {
     pub const SITES: Self = Self("sites");
     /// Signed-in profiles and their cookie jars (WO-030).
     pub const PROFILES: Self = Self("profiles");
+    /// The sign-ins the broker fills for signed-in profiles (WO-030).
+    pub const CREDENTIALS: Self = Self("credentials");
 
     /// The store's label.
     #[must_use]
@@ -134,6 +136,7 @@ impl Store {
             Self::REDACTIONS,
             Self::SITES,
             Self::PROFILES,
+            Self::CREDENTIALS,
         ]
         .into_iter()
         .find(|store| store.0 == label)
@@ -1367,6 +1370,12 @@ pub fn rekey(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_sign_ins_store_is_named_by_its_label() {
+        assert_eq!(Store::from_label("credentials"), Some(Store::CREDENTIALS));
+        assert_eq!(Store::CREDENTIALS.label(), "credentials");
+    }
     use std::os::unix::fs::PermissionsExt as _;
 
     /// A fresh directory unique to this test and process, so tests run

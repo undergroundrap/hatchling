@@ -521,6 +521,10 @@ pub struct WebConfig {
     /// (`HATCHLING_BROWSER_PROFILES_DIR`, a sealed store, WO-030); empty,
     /// and *Keep me signed in* isn't offered.
     pub profiles: PathBuf,
+    /// Where the broker keeps the sign-ins it fills for signed-in profiles
+    /// (`HATCHLING_BROWSER_CREDENTIALS_DIR`, a sealed store, WO-030);
+    /// empty, and none is kept.
+    pub credentials: PathBuf,
 }
 
 /// What the broker logs of each search (WO-028).
@@ -544,6 +548,7 @@ impl WebConfig {
             search_log: SearchLog::Length,
             grants: PathBuf::new(),
             profiles: PathBuf::new(),
+            credentials: PathBuf::new(),
         }
     }
 
@@ -629,6 +634,10 @@ fn parse_web(get: &impl Fn(&str) -> Option<String>) -> Result<WebConfig, Error> 
         "HATCHLING_BROWSER_PROFILES_DIR",
         get(env::HATCHLING_BROWSER_PROFILES_DIR.name).as_deref(),
     )?;
+    let credentials = store_dir(
+        "HATCHLING_BROWSER_CREDENTIALS_DIR",
+        get(env::HATCHLING_BROWSER_CREDENTIALS_DIR.name).as_deref(),
+    )?;
     Ok(WebConfig {
         enabled,
         refused,
@@ -637,6 +646,7 @@ fn parse_web(get: &impl Fn(&str) -> Option<String>) -> Result<WebConfig, Error> 
         search_log,
         grants,
         profiles,
+        credentials,
     })
 }
 
@@ -3804,7 +3814,9 @@ mod web_config_tests {
     fn the_signed_in_profiles_store_is_an_absolute_directory_or_off() {
         let parse = |raw: Option<&str>| {
             super::parse_web(&|key: &str| match key {
-                "HATCHLING_BROWSER_PROFILES_DIR" => raw.map(str::to_owned),
+                "HATCHLING_BROWSER_PROFILES_DIR" | "HATCHLING_BROWSER_CREDENTIALS_DIR" => {
+                    raw.map(str::to_owned)
+                }
                 _ => None,
             })
         };
@@ -3818,6 +3830,12 @@ mod web_config_tests {
             parse(Some("/srv/hatchling/profiles")).unwrap().profiles,
             std::path::PathBuf::from("/srv/hatchling/profiles")
         );
+        assert_eq!(
+            parse(Some("/srv/hatchling/profiles")).unwrap().credentials,
+            std::path::PathBuf::from("/srv/hatchling/profiles"),
+            "the sign-ins' store, set the same way"
+        );
+        assert!(parse(None).unwrap().credentials.as_os_str().is_empty());
         assert!(matches!(
             parse(Some("relative/profiles")),
             Err(Error::InvalidConfig {
@@ -3826,6 +3844,7 @@ mod web_config_tests {
             })
         ));
         assert!(WebConfig::off().profiles.as_os_str().is_empty());
+        assert!(WebConfig::off().credentials.as_os_str().is_empty());
         // The parse itself: a setting's store, none, or refused.
         assert_eq!(
             super::store_dir("K", Some(" /a/b ")).unwrap(),

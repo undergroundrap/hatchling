@@ -31,6 +31,7 @@ pub mod artifact_ops;
 pub mod browser_board;
 pub mod browser_bundle;
 pub mod browser_cell;
+pub mod browser_credentials;
 pub mod browser_ops;
 pub mod browser_profiles;
 pub mod browser_proxy;

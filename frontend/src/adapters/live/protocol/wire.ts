@@ -431,6 +431,10 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             {
                 "const": "manage_profiles",
                 "type": "string"
+            },
+            {
+                "const": "manage_sign_ins",
+                "type": "string"
             }
         ]
     },
@@ -907,6 +911,9 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "string"
             }
         ]
+    },
+    "Concealed": {
+        "type": "string"
     },
     "ConfirmationField": {
         "properties": {
@@ -2309,6 +2316,205 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
         ],
         "type": "object"
     },
+    "SignInOp": {
+        "oneOf": [
+            {
+                "properties": {
+                    "op": {
+                        "const": "list",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "op"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "label": {
+                        "type": "string"
+                    },
+                    "op": {
+                        "const": "store",
+                        "type": "string"
+                    },
+                    "origin": {
+                        "type": "string"
+                    },
+                    "password": {
+                        "$ref": "#/$defs/Concealed"
+                    },
+                    "profile_id": {
+                        "type": "string"
+                    },
+                    "username": {
+                        "$ref": "#/$defs/Concealed"
+                    }
+                },
+                "required": [
+                    "op",
+                    "profile_id",
+                    "origin",
+                    "label",
+                    "username",
+                    "password"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "op": {
+                        "const": "delete",
+                        "type": "string"
+                    },
+                    "sign_in_id": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "op",
+                    "sign_in_id"
+                ],
+                "type": "object"
+            }
+        ]
+    },
+    "SignInRefusal": {
+        "oneOf": [
+            {
+                "const": "no_profile",
+                "type": "string"
+            },
+            {
+                "const": "bad_origin",
+                "type": "string"
+            },
+            {
+                "const": "not_the_profiles",
+                "type": "string"
+            },
+            {
+                "const": "bad_label",
+                "type": "string"
+            },
+            {
+                "const": "no_password",
+                "type": "string"
+            },
+            {
+                "const": "too_long",
+                "type": "string"
+            },
+            {
+                "const": "full",
+                "type": "string"
+            }
+        ]
+    },
+    "SignInResult": {
+        "oneOf": [
+            {
+                "properties": {
+                    "result": {
+                        "const": "listed",
+                        "type": "string"
+                    },
+                    "sign_ins": {
+                        "items": {
+                            "$ref": "#/$defs/SiteSignIn"
+                        },
+                        "type": "array"
+                    }
+                },
+                "required": [
+                    "result",
+                    "sign_ins"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "stored",
+                        "type": "string"
+                    },
+                    "sign_in": {
+                        "$ref": "#/$defs/SiteSignIn"
+                    }
+                },
+                "required": [
+                    "result",
+                    "sign_in"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "deleted",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "not_found",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "reason": {
+                        "$ref": "#/$defs/SignInRefusal"
+                    },
+                    "result": {
+                        "const": "refused",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "reason"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "off",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "failed",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            }
+        ]
+    },
     "SignedInProfile": {
         "properties": {
             "created_at": {
@@ -2441,6 +2647,33 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "object"
             }
         ]
+    },
+    "SiteSignIn": {
+        "properties": {
+            "created_at": {
+                "type": "string"
+            },
+            "label": {
+                "type": "string"
+            },
+            "origin": {
+                "type": "string"
+            },
+            "profile_id": {
+                "type": "string"
+            },
+            "sign_in_id": {
+                "type": "string"
+            }
+        },
+        "required": [
+            "sign_in_id",
+            "profile_id",
+            "origin",
+            "label",
+            "created_at"
+        ],
+        "type": "object"
     },
     "SkillOp": {
         "oneOf": [
@@ -2826,6 +3059,22 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "op"
                 ],
                 "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
+                        "const": "manage_sign_ins",
+                        "type": "string"
+                    },
+                    "op": {
+                        "$ref": "#/$defs/SignInOp"
+                    }
+                },
+                "required": [
+                    "action",
+                    "op"
+                ],
+                "type": "object"
             }
         ]
     },
@@ -3141,6 +3390,22 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     },
                     "result": {
                         "const": "profiles",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "outcome"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "outcome": {
+                        "$ref": "#/$defs/SignInResult"
+                    },
+                    "result": {
+                        "const": "sign_ins",
                         "type": "string"
                     }
                 },

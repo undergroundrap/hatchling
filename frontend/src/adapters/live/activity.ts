@@ -123,6 +123,7 @@ const REQUESTS: Readonly<Record<ApiRequest, string>> = {
     browser_input: 'Acted on the browser page',
     keep_signed_in: 'Kept a sign-in for the agent',
     manage_profiles: 'Managed the sites kept signed in',
+    manage_sign_ins: 'Managed the sign-ins Hatchling fills',
 };
 const FAILURES: Readonly<Record<ChildFailure, string>> = {
     timeout: 'Ran out of time',

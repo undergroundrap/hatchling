@@ -85,6 +85,8 @@ pub enum ApiRequest {
     KeepSignedIn,
     /// [`UiAction::ManageProfiles`].
     ManageProfiles,
+    /// [`UiAction::ManageSignIns`].
+    ManageSignIns,
 }
 
 impl ApiRequest {
@@ -117,6 +119,7 @@ impl ApiRequest {
             UiAction::BrowserInput { .. } => Self::BrowserInput,
             UiAction::KeepSignedIn { .. } => Self::KeepSignedIn,
             UiAction::ManageProfiles { .. } => Self::ManageProfiles,
+            UiAction::ManageSignIns { .. } => Self::ManageSignIns,
         }
     }
 }
@@ -270,6 +273,12 @@ mod tests {
                     op: crate::ui::ProfileOp::List,
                 }),
                 ApiRequest::ManageProfiles,
+            ),
+            (
+                action(UiAction::ManageSignIns {
+                    op: crate::ui::SignInOp::List,
+                }),
+                ApiRequest::ManageSignIns,
             ),
         ];
         for (request, kind) in cases {

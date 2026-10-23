@@ -69,6 +69,7 @@ pub fn sealed_stores(
         (Store::SPACES, &config.spaces.root),
         (Store::SITES, &config.web.grants),
         (Store::PROFILES, &config.web.profiles),
+        (Store::CREDENTIALS, &config.web.credentials),
     ] {
         if !root.as_os_str().is_empty() {
             stores.push((store, root.clone()));

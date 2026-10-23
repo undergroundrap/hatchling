@@ -38,7 +38,8 @@ use hatchling_core::messages::{ScheduleGrant, ScheduleOp};
 use hatchling_core::subagent::{ActivityEvent, SubagentEvent};
 use hatchling_core::ui::{
     ActionRefusal, AgentState, ApiOutcome, ApiRequest, ChatAuthor, ChatMessage, ControlRefusal,
-    Decision, Handoff, ProfileOp, ProfileResult, SiteOp, UiAction, UiActionResult, UiEventBody,
+    Decision, Handoff, ProfileOp, ProfileResult, SignInOp, SiteOp, UiAction, UiActionResult,
+    UiEventBody,
 };
 use hatchling_scheduler::{Creator, Timestamp};
 use hatchling_vault::OpensStores;
@@ -57,6 +58,8 @@ enum Owned<'a> {
     Sites(&'a SiteOp),
     /// Their signed-in profiles (WO-030).
     Profiles(&'a ProfileOp),
+    /// The sign-ins the broker fills for them (WO-030).
+    SignIns(&'a SignInOp),
 }
 
 /// The one chat the API offers: the local channel's conversation.
@@ -204,6 +207,7 @@ impl<'a> Ops<'a> {
             UiAction::ManageProfiles { op } => {
                 self.owned(caller.holds(&owner), Owned::Profiles(op))
             }
+            UiAction::ManageSignIns { op } => self.owned(caller.holds(&owner), Owned::SignIns(op)),
             UiAction::Decide {
                 confirmation_id,
                 revision,
@@ -258,6 +262,13 @@ impl<'a> Ops<'a> {
             },
             Owned::Profiles(op) => UiActionResult::Profiles {
                 outcome: crate::browser_profiles::handle_profile_op(self.config, self.key, op),
+            },
+            Owned::SignIns(op) => UiActionResult::SignIns {
+                outcome: crate::browser_credentials::handle_credential_op(
+                    self.config,
+                    self.key,
+                    op,
+                ),
             },
         };
         (result, ApiOutcome::Served)
@@ -1437,6 +1448,33 @@ mod tests {
                 },
                 ApiOutcome::Served,
             )
+        );
+    }
+
+    #[test]
+    fn only_the_owner_manages_the_sign_ins_and_none_is_kept_without_a_store() {
+        let dir = scratch("manage-credentials");
+        let (mut config, off) = profile_configs(&dir);
+        config.web.credentials = dir.0.join("credentials");
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let ops = Ops::new(&config, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        let ops_off = Ops::new(&off, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        let owner = caller(&[goals("query-goals"), goals("goal-create"), local_send()]);
+        let narrow = caller(&[goals("query-goals"), local_send()]);
+        let mut replies = Replies::default();
+        let list = UiAction::ManageSignIns { op: SignInOp::List };
+        assert_eq!(ops.handle(&narrow, &list, &mut replies), not_granted());
+        let listed = |outcome| (UiActionResult::SignIns { outcome }, ApiOutcome::Served);
+        assert_eq!(
+            ops.handle(&owner, &list, &mut replies),
+            listed(hatchling_core::ui::SignInResult::Listed {
+                sign_ins: Vec::new()
+            })
+        );
+        assert_eq!(
+            ops_off.handle(&owner, &list, &mut replies),
+            listed(hatchling_core::ui::SignInResult::Off)
         );
     }
 
