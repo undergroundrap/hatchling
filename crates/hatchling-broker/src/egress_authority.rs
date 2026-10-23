@@ -39,6 +39,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::keeper::Keeper;
+use crate::serve::egress_tls;
 use crate::web_ops::{FETCH_DEADLINE, SEARCH_KEY};
 use crate::{Config, Error};
 
@@ -259,7 +260,7 @@ pub fn egress_authority_main() -> ExitCode {
                 .with_max_level(config.log_level.to_tracing())
                 .try_init();
             let provider = if config.web.search {
-                let tls = crate::serve::egress_tls(|key| std::env::var(key).ok())?;
+                let tls = egress_tls(|key| std::env::var(key).ok())?;
                 let provider: Provider =
                     Arc::new(move |key, query| hatchling_egress::search::brave(&tls, key, query));
                 Some(provider)
