@@ -512,13 +512,19 @@ fn harness_settings(dir: &Path, port: u16) -> io::Result<Vec<(&'static str, Stri
     let pin = hatchling_skill::CodeHash::of(&std::fs::read(&binary)?).to_string();
     let path = |sub: &str| dir.join(sub).display().to_string();
     Ok(vec![
-        ("HATCHLING_HARNESS_CLAUDE_CODE", binary.display().to_string()),
+        (
+            "HATCHLING_HARNESS_CLAUDE_CODE",
+            binary.display().to_string(),
+        ),
         ("HATCHLING_HARNESS_CLAUDE_CODE_SHA256", pin),
         (
             "HATCHLING_HARNESS_CLAUDE_CODE_API",
             format!("local:localhost:{port}"),
         ),
-        ("HATCHLING_HARNESS_ROOTS", format!("project={}", path("project"))),
+        (
+            "HATCHLING_HARNESS_ROOTS",
+            format!("project={}", path("project")),
+        ),
         ("HATCHLING_ARTIFACT_WORKSPACE", path("workspace")),
     ])
 }
@@ -558,7 +564,10 @@ fn a_harness_relay_runs_in_the_authority_with_the_key_it_reads() {
         .relay(HarnessKind::CodexCli, "sk-surrogate")
         .unwrap()
         .unwrap_err();
-    assert_eq!(refused, "the codex-cli harness has no vendor API configured");
+    assert_eq!(
+        refused,
+        "the codex-cli harness has no vendor API configured"
+    );
     let pending = authority
         .connect()
         .unwrap()
