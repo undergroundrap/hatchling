@@ -300,10 +300,14 @@ fn searchs_key_is_released_on_the_authoritys_channel_alone() {
         Keeper::start_with(program(&dir, &[("HATCHLING_SEARCH", "brave")])).unwrap();
     let name = |text: &str| -> hatchling_core::SecretName { text.parse().unwrap() };
     let refused = format!("{:?}", keeper.read("search", &[name("search-brave")]));
-    assert!(refused.contains("no such read"), "the broker read search's key");
+    assert!(
+        refused.contains("no such read"),
+        "the broker read search's key"
+    );
     let authority = Keeper::over(authoritys).unwrap();
     let read = authority.read("search", &[name("search-brave")]).unwrap();
-    assert_eq!(read[0].as_ref().unwrap().as_bytes(), b"k-brave");
+    let key = read.first().and_then(Option::as_ref).unwrap();
+    assert_eq!(key.as_bytes(), b"k-brave");
     assert!(
         authority
             .read("egress", &[name("egress-localhost-18089")])
@@ -313,7 +317,11 @@ fn searchs_key_is_released_on_the_authoritys_channel_alone() {
     assert!(authority.scan("output-gate").is_err());
     // The broker's channel goes on after the authority's.
     drop(authority);
-    assert!(keeper.read("egress", &[name("egress-localhost-18089")]).is_ok());
+    assert!(
+        keeper
+            .read("egress", &[name("egress-localhost-18089")])
+            .is_ok()
+    );
     drop(keeper);
     let _ = std::fs::remove_dir_all(&dir);
 }

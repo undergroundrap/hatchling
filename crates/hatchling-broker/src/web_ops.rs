@@ -242,7 +242,11 @@ fn search(config: &Config, web: &mut WebSession, query: &str) -> WebResult {
 
 /// Runs `searcher` for `query`, giving up after `deadline`: a search
 /// still running then finishes alone, its answer unread.
-fn bounded_search(searcher: &Searcher, query: &str, deadline: Duration) -> Result<Vec<Hit>, String> {
+fn bounded_search(
+    searcher: &Searcher,
+    query: &str,
+    deadline: Duration,
+) -> Result<Vec<Hit>, String> {
     let (sender, receiver) = mpsc::channel();
     let searcher = Arc::clone(searcher);
     let query = query.to_owned();
@@ -1151,7 +1155,10 @@ pub(crate) mod tests {
         );
         assert_eq!(*asked.lock().unwrap(), ["rust changelog"]);
         let (accesses, _) = crate::vault_access::read_log(&config.vault.root).unwrap();
-        assert!(accesses.is_empty(), "the broker read the vault: {accesses:?}");
+        assert!(
+            accesses.is_empty(),
+            "the broker read the vault: {accesses:?}"
+        );
         assert!(logged.contains("web search"), "{logged}");
         assert!(logged.contains("chars=14"), "{logged}");
         assert!(!logged.contains("rust changelog"), "{logged}");

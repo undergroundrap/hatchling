@@ -258,9 +258,8 @@ pub fn egress_authority_main() -> ExitCode {
                 .try_init();
             let provider = if config.web.search {
                 let tls = crate::serve::egress_tls(|key| std::env::var(key).ok())?;
-                let provider: Provider = Arc::new(move |key, query| {
-                    hatchling_egress::search::brave(&tls, key, query)
-                });
+                let provider: Provider =
+                    Arc::new(move |key, query| hatchling_egress::search::brave(&tls, key, query));
                 Some(provider)
             } else {
                 None
@@ -279,7 +278,10 @@ pub fn egress_authority_main() -> ExitCode {
 
 fn refuse_to_run(reason: &str) -> ExitCode {
     use std::io::Write as _;
-    let _ = writeln!(std::io::stderr(), "hatchling-broker egress-authority: {reason}");
+    let _ = writeln!(
+        std::io::stderr(),
+        "hatchling-broker egress-authority: {reason}"
+    );
     ExitCode::FAILURE
 }
 
@@ -336,11 +338,10 @@ fn search(
     let read = keeper
         .read("search", std::slice::from_ref(&name))
         .map_err(|error| format!("the search key couldn't be read: {error}"))?;
-    let secret = read
-        .into_iter()
-        .next()
-        .flatten()
-        .ok_or_else(|| format!("no search key is stored: keep it in the vault as {SEARCH_KEY}"))?;
+    let secret =
+        read.into_iter().next().flatten().ok_or_else(|| {
+            format!("no search key is stored: keep it in the vault as {SEARCH_KEY}")
+        })?;
     let key = Zeroizing::new(secret.as_bytes().to_vec());
     let (sender, receiver) = mpsc::channel();
     let provider = Arc::clone(provider);
@@ -375,7 +376,10 @@ mod tests {
         std::thread::spawn(move || {
             while let Ok(Some(frame)) = read_frame_or_eof(&theirs) {
                 let request: serde_json::Value = serde_json::from_slice(&frame).unwrap();
-                log.lock().unwrap().push(request["purpose"].as_str().unwrap_or_default().to_owned());
+                let purpose = request.get("purpose").and_then(serde_json::Value::as_str);
+                log.lock()
+                    .unwrap()
+                    .push(purpose.unwrap_or_default().to_owned());
                 let found = serde_json::json!({"reply": "read", "found": [key.is_some()]});
                 write_frame(&theirs, &serde_json::to_vec(&found).unwrap()).unwrap();
                 if let Some(key) = key {
@@ -414,7 +418,10 @@ mod tests {
             search(&keeper, &config, Some(&provider), "rust", FETCH_DEADLINE),
             Ok(vec![hit("https://docs.example/a")])
         );
-        assert_eq!(*given.lock().unwrap(), [(b"k-brave".to_vec(), String::from("rust"))]);
+        assert_eq!(
+            *given.lock().unwrap(),
+            [(b"k-brave".to_vec(), String::from("rust"))]
+        );
         assert_eq!(*asked.lock().unwrap(), ["search"], "read for search alone");
     }
 
@@ -425,7 +432,9 @@ mod tests {
         let mut config = searching();
         assert_eq!(
             search(&keeper, &config, Some(&provider), "q", FETCH_DEADLINE),
-            Err(format!("no search key is stored: keep it in the vault as {SEARCH_KEY}"))
+            Err(format!(
+                "no search key is stored: keep it in the vault as {SEARCH_KEY}"
+            ))
         );
         assert_eq!(
             search(&keeper, &config, None, "q", FETCH_DEADLINE),
@@ -437,7 +446,11 @@ mod tests {
             search(&keeper, &config, Some(&provider), "q", FETCH_DEADLINE),
             Err(String::from("search is off"))
         );
-        assert_eq!(asked.lock().unwrap().len(), 1, "no key read while search is off");
+        assert_eq!(
+            asked.lock().unwrap().len(),
+            1,
+            "no key read while search is off"
+        );
         let config = searching();
         let (keeper, _) = keeper_answering(Some(b"k"));
         let failing: Provider = Arc::new(|_, _| Err(SearchError::Status { status: 429 }));
@@ -451,7 +464,13 @@ mod tests {
         });
         let started = std::time::Instant::now();
         assert_eq!(
-            search(&keeper, &config, Some(&slow), "q", Duration::from_millis(100)),
+            search(
+                &keeper,
+                &config,
+                Some(&slow),
+                "q",
+                Duration::from_millis(100)
+            ),
             Err(format!(
                 "the search took longer than {} seconds",
                 FETCH_DEADLINE.as_secs()
@@ -492,20 +511,28 @@ mod tests {
         let (broker, theirs) = UnixStream::pair().unwrap();
         let config = searching();
         let provider: Provider = Arc::new(|_, _| Ok(Vec::new()));
-        std::thread::spawn(move || serve(&theirs, &keeper, &config, Some(&provider), FETCH_DEADLINE));
+        std::thread::spawn(move || {
+            serve(&theirs, &keeper, &config, Some(&provider), FETCH_DEADLINE)
+        });
         let authority = Authority::over(broker).unwrap();
-        assert!(matches!(authority.search("q"), Err(reason) if reason.starts_with("no search key")));
-        let (broker, theirs) = UnixStream::pair().unwrap();
-        drop(theirs);
-        let authority = Authority::over(broker).unwrap();
-        assert_eq!(
-            authority.search("q"),
-            Err(String::from("the egress authority is unavailable"))
+        assert!(
+            matches!(authority.search("q"), Err(reason) if reason.starts_with("no search key"))
         );
-        assert_eq!(
-            authority.search("q"),
-            Err(String::from("the egress authority is unavailable")),
-            "lost for good"
+        // An answer out of step loses the authority: nothing more is sent.
+        let (broker, theirs) = UnixStream::pair().unwrap();
+        let stand_in = std::thread::spawn(move || {
+            let _ = read_frame(&theirs);
+            write_frame(&theirs, b"not an answer").unwrap();
+            read_frame_or_eof(&theirs).unwrap()
+        });
+        let authority = Authority::over(broker).unwrap();
+        let unavailable = Err(String::from("the egress authority is unavailable"));
+        assert_eq!(authority.search("q"), unavailable);
+        assert_eq!(authority.search("q"), unavailable, "lost for good");
+        drop(authority);
+        assert!(
+            stand_in.join().unwrap().is_none(),
+            "a request was sent after it was lost"
         );
         // A request that doesn't parse ends the channel.
         let (keeper, _) = keeper_answering(None);

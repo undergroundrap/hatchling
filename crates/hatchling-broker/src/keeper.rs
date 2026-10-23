@@ -152,10 +152,10 @@ pub(crate) fn keeper() -> Option<&'static Keeper> {
 
 /// Starts the keeper and takes the keys of the broker's stores from it:
 /// [`Keeper::start_with`] the broker's own binary, kept as this broker's
-/// keeper. Also returns the egress authority's end of its channel to the
-/// keeper, for [`crate::egress_authority::start`].
+/// keeper.
 ///
-/// Call it once, while the broker has one thread: the keeper's ends of
+/// Also returns the egress authority's end of its channel to the keeper,
+/// for [`crate::egress_authority::start`]. Call it once, while the broker has one thread: the keeper's ends of
 /// its socket pairs are the descriptors its exec keeps, and they would be
 /// inherited by anything another thread started meanwhile.
 ///
@@ -658,10 +658,6 @@ fn serve(stream: &UnixStream, kept: &Mutex<Kept>, role: Role) -> Result<(), Erro
         let request: Request = serde_json::from_slice(&frame).map_err(|e| Error::Keeper {
             reason: format!("a request that doesn't parse: {e}"),
         })?;
-        let mut kept = kept.lock().map_err(|_| Error::Keeper {
-            reason: String::from("an earlier answer panicked"),
-        })?;
-        let kept = &mut *kept;
         if role == Role::Authority && !matches!(request, Request::Read { .. }) {
             tracing::warn!("refused the egress authority a request that isn't a read");
             send(
@@ -672,6 +668,10 @@ fn serve(stream: &UnixStream, kept: &Mutex<Kept>, role: Role) -> Result<(), Erro
             )?;
             continue;
         }
+        let mut guard = kept.lock().map_err(|_| Error::Keeper {
+            reason: String::from("an earlier answer panicked"),
+        })?;
+        let kept = &mut *guard;
         match request {
             Request::Read { purpose, names } => {
                 answer_read(stream, kept, role, &purpose, &names)?;
@@ -711,6 +711,7 @@ fn serve(stream: &UnixStream, kept: &Mutex<Kept>, role: Role) -> Result<(), Erro
                 send(stream, &reply)?;
             }
         }
+        drop(guard);
     }
     Ok(())
 }
@@ -836,7 +837,8 @@ mod tests {
         }];
         let harness = BTreeSet::from([String::from("harness-claude-code")]);
         let rules = Releases::of(&config, harness);
-        let broker = |purpose: &str, list: &[&str]| rules.allow(Role::Broker, purpose, &names(list));
+        let broker =
+            |purpose: &str, list: &[&str]| rules.allow(Role::Broker, purpose, &names(list));
         let egress = "egress-api-example-com-443";
         assert!(broker("egress", &[egress]));
         assert!(!broker("egress", &[egress, "token"]));
@@ -987,7 +989,10 @@ mod tests {
             answer_read(&ours, &kept, role, "egress", &[name.to_owned()]).unwrap();
             String::from_utf8(read_frame(&theirs).unwrap()).unwrap()
         };
-        assert_eq!(read(Role::Broker, &egress), r#"{"reply":"read","found":[false]}"#);
+        assert_eq!(
+            read(Role::Broker, &egress),
+            r#"{"reply":"read","found":[false]}"#
+        );
         let refused = read(Role::Broker, "unlisted");
         assert!(refused.starts_with(r#"{"reply":"refused""#), "{refused}");
         assert!(!refused.contains("kept"), "{refused}");
@@ -1033,7 +1038,10 @@ mod tests {
         let vault = hatchling_vault::SealedVault::open(&config.vault.root, &master).unwrap();
         for (name, value) in [("search-brave", b"k-brave"), ("token", b"t-token")] {
             vault
-                .store(&name.parse().unwrap(), &Secret::new(value.to_vec()).unwrap())
+                .store(
+                    &name.parse().unwrap(),
+                    &Secret::new(value.to_vec()).unwrap(),
+                )
                 .unwrap();
         }
         let keys = StoreKeys::unwrap(&master, &[(Store::SECRETS, &config.vault.root)]).unwrap();
@@ -1051,7 +1059,8 @@ mod tests {
             let keeper = Keeper::over(ours).unwrap();
             let search: Vec<SecretName> = names(&["search-brave"]);
             let read = keeper.read("search", &search).unwrap();
-            assert_eq!(read[0].as_ref().unwrap().as_bytes(), b"k-brave");
+            let key = read.first().and_then(Option::as_ref).unwrap();
+            assert_eq!(key.as_bytes(), b"k-brave");
             assert!(keeper.read("egress", &names(&["token"])).is_err());
             let scan = format!("{:?}", keeper.scan("output-gate"));
             assert!(scan.contains("only reads"), "{scan}");
@@ -1131,10 +1140,7 @@ mod tests {
                 name: String::from("token"),
             };
             let cell: CellId = "c".parse().unwrap();
-            assert_eq!(
-                keeper.cell_op(&op, &cell, 7).unwrap(),
-                VaultResult::Denied
-            );
+            assert_eq!(keeper.cell_op(&op, &cell, 7).unwrap(), VaultResult::Denied);
             drop(keeper);
             assert!(serving.join().unwrap().is_ok());
         });

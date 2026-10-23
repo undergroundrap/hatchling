@@ -404,17 +404,16 @@ mod tests {
         let read = secrets
             .recorded_read(authority.clone(), &[name("search-brave")])
             .unwrap();
-        assert_eq!(read[0].as_ref().unwrap().as_bytes(), b"k");
+        let key = read.first().and_then(Option::as_ref).unwrap();
+        assert_eq!(key.as_bytes(), b"k");
         let session = Caller::Session {
             uid: 7,
             cell: String::from("c"),
         };
-        assert!(
-            secrets
-                .recorded_read(session.clone(), &[name("absent")])
-                .unwrap()[0]
-                .is_none()
-        );
+        let absent = secrets
+            .recorded_read(session.clone(), &[name("absent")])
+            .unwrap();
+        assert!(matches!(absent.as_slice(), [None]));
         let logged = accesses(&root);
         let _ = std::fs::remove_dir_all(&root);
         assert_eq!(
