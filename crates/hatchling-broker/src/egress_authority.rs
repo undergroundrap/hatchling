@@ -235,13 +235,15 @@ fn gone(error: impl std::fmt::Display) -> Error {
 /// The authority: `hatchling-broker egress-authority`.
 #[must_use]
 pub fn egress_authority_main() -> ExitCode {
-    let inherited = |name: &str| {
-        std::env::var(name)
-            .ok()
+    let inherited = |fd: Result<String, std::env::VarError>| {
+        fd.ok()
             .and_then(|fd| fd.parse::<i32>().ok())
             .map(hatchling_sys::net::inherited_unix_stream)
     };
-    let (broker, keeper) = match (inherited(BROKER_FD), inherited(KEEPER_FD)) {
+    let (broker, keeper) = match (
+        inherited(std::env::var(BROKER_FD)),
+        inherited(std::env::var(KEEPER_FD)),
+    ) {
         (Some(Ok(broker)), Some(Ok(keeper))) => (broker, keeper),
         (Some(Err(error)), _) | (_, Some(Err(error))) => return refuse_to_run(&error.to_string()),
         (None, _) | (_, None) => return refuse_to_run("only the broker starts it"),

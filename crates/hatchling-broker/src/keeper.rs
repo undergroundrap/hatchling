@@ -478,20 +478,19 @@ impl Releases {
 /// The keeper: `hatchling-broker vault-keeper`.
 #[must_use]
 pub fn vault_keeper_main() -> ExitCode {
-    let inherited = |name: &str| {
-        std::env::var(name)
-            .ok()
+    let inherited = |fd: Result<String, std::env::VarError>| {
+        fd.ok()
             .and_then(|fd| fd.parse::<i32>().ok())
             .map(hatchling_sys::net::inherited_unix_stream)
     };
-    let stream = match inherited(KEEPER_FD) {
+    let stream = match inherited(std::env::var(KEEPER_FD)) {
         Some(Ok(stream)) => stream,
         Some(Err(error)) => return refuse_to_run(&error.to_string()),
         None => return refuse_to_run("only the broker starts it"),
     };
     // The authority's channel, when the broker made one: without one, no
     // read is the authority's.
-    let authority = match inherited(AUTHORITY_FD).transpose() {
+    let authority = match inherited(std::env::var(AUTHORITY_FD)).transpose() {
         Ok(authority) => authority,
         Err(error) => return refuse_to_run(&error.to_string()),
     };
