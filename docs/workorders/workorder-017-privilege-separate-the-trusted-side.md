@@ -1,6 +1,13 @@
 # WO-017: Privilege-separate the trusted side
 
-**Status:** QUEUED
+**Status:** IN PROGRESS. Scope step 1, the credential keeper, is merged in five parts:
+- #140, a key per store, wrapped under the master key;
+- #142, the broker serving with its stores' keys alone, the master key dropped at start;
+- #143, one way into the secrets store, and a broker read that can't be recorded releasing nothing;
+- #144, a vault keeper process holding the master key and the secrets store's key, the broker neither;
+- #145, the gates scanning only for the secrets a cell has had, which the keeper records.
+
+Left: step 2, the egress authority, and step 3, the privileged spawner, which drops the broker from root. Until step 3, the keeper is a separate process, not yet an OS boundary.
 **Area:** `crates/hatchling-broker`, `crates/hatchling-vault`, `crates/hatchling-egress`, `crates/hatchling-isolation`, `crates/hatchling-sys`, `crates/hatchling-runtime`, a new crate per separated process if its dependencies warrant one, `docs/arch/`
 **Issue:** [#33](https://github.com/undergroundrap/hatchling/issues/33)
 **Trust boundary:** yes
