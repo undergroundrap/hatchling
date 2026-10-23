@@ -795,6 +795,9 @@ mod tests {
     /// The purposes a fake keeper was asked for, in order.
     type Asked = Arc<StdMutex<Vec<String>>>;
 
+    /// A credential lookup, as a plain function.
+    type Fetcher = fn(&str) -> Option<Zeroizing<Vec<u8>>>;
+
     /// A keeper on the other end of a pair: it answers each read with the
     /// value it holds for the read's purpose, or with nothing stored, and
     /// records each request's purpose.
@@ -1317,7 +1320,6 @@ mod tests {
                 .kind,
             RefusalKind::NotAllowed
         );
-        type Fetcher = fn(&str) -> Option<Zeroizing<Vec<u8>>>;
         let none: Option<&Proxy<Fetcher>> = None;
         assert_eq!(
             granted(&shared, none, "localhost:443")
