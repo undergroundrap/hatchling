@@ -2247,7 +2247,13 @@ mod tests {
         let (config, _scratch, keys, profile) = with_sign_ins("killed", &[]);
         let fake = Fake::default();
         let (mut web, mut browser) = session("t", &fake);
-        handle_browser_op(&config, &keys, &mut web, &mut browser, &open("https://a.example/"));
+        handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &open("https://a.example/"),
+        );
         fake.jar.lock().unwrap().push(cookie("a.example", "late"));
         handle_browser_op(&config, &keys, &mut web, &mut browser, &BrowserOp::Read);
         // Gone without a close: its cell killed, as a crashed session's is.
