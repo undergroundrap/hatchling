@@ -1244,10 +1244,18 @@ mod tests {
         }
         assert_eq!(read_parts(&theirs, 2, PART_BYTES + 4).unwrap(), b"abcd");
         let (ours, theirs) = UnixStream::pair().unwrap();
-        assert!(
-            read_parts(&theirs, 3, 2 * PART_BYTES).is_err(),
-            "too many parts"
-        );
+        theirs
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        // More parts than the bound allows, however small: refused before
+        // any is read.
+        for _ in 0..3 {
+            write_frame(&ours, b"").unwrap();
+        }
+        assert!(read_parts(&theirs, 3, PART_BYTES).is_err(), "too many parts");
+        for _ in 0..3 {
+            assert_eq!(read_frame(&theirs).unwrap(), b"", "a part was read");
+        }
         write_frame(&ours, &vec![0; PART_BYTES + 1]).unwrap();
         assert!(
             read_parts(&theirs, 1, 4 * PART_BYTES).is_err(),
