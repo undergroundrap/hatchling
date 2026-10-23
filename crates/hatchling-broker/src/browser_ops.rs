@@ -2143,7 +2143,8 @@ mod tests {
                 value: String::from("page-set-secret"),
                 ..cookie("a.example", "csrf")
             });
-            showing(&fake, "https://a.example/login", &secrets.join(" "));
+            // Before the fill, a page can show only its cookies.
+            showing(&fake, "https://a.example/login", "jar-secret-value page-set-secret");
             op(&BrowserOp::Read);
             op(&sign_in_op(Some(1), None));
             op(&BrowserOp::Code { element: 3 });
@@ -2157,6 +2158,8 @@ mod tests {
                 told.push(format!("{answer:?}"));
             };
             op(&BrowserOp::Code { element: 3 });
+            // After it, it can show everything it was given.
+            showing(&fake, "https://a.example/home", &secrets.join(" "));
             op(&BrowserOp::Read);
             op(&BrowserOp::Close);
         });
@@ -2172,6 +2175,42 @@ mod tests {
         assert!(
             told.iter().any(|answer| answer.contains("[hidden]")),
             "what the page showed was hidden, not dropped"
+        );
+    }
+
+    #[test]
+    fn a_secret_is_hidden_once_and_only_a_signed_in_browsers_answers_are_kept_and_hidden() {
+        let (config, _scratch, keys, _profile) = with_sign_ins("kept", &[]);
+        let fake = Fake::default();
+        let (mut web, mut browser) = session("t", &fake);
+        browser.hide("a-secret");
+        browser.hide("a-secret");
+        assert_eq!(browser.filled.len(), 1, "once");
+        let page = |text: &str| BrowserResult::Page {
+            snapshot: PageSnapshot {
+                text: text.to_owned(),
+                ..PageSnapshot::default()
+            },
+            refused: Vec::new(),
+        };
+        // No browser, or not a signed-in one: as it was.
+        assert_eq!(
+            browser.kept(&config, &keys, &BrowserOp::Read, page("a-secret")),
+            page("a-secret")
+        );
+        handle_browser_op(&config, &keys, &mut web, &mut browser, &open("https://a.example/"));
+        assert_eq!(
+            browser.kept(&config, &keys, &BrowserOp::Read, page("a-secret")),
+            page("[hidden]")
+        );
+        assert_eq!(
+            browser.kept(&config, &keys, &BrowserOp::Close, page("a-secret")),
+            page("a-secret"),
+            "closing keeps it before, not after"
+        );
+        assert_eq!(
+            browser.kept(&config, &keys, &BrowserOp::Read, BrowserResult::CodeDeclined),
+            BrowserResult::CodeDeclined
         );
     }
 
