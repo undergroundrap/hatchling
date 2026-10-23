@@ -798,7 +798,10 @@ fn a_kept_session_is_its_cookies_alone_and_a_service_worker_dies_with_its_browse
     stop.store(true, Ordering::SeqCst);
     serving.join().unwrap();
     std::fs::remove_dir_all(&scratch).unwrap();
-    assert!(found.contains("workers: 0"), "no service worker lives on: {found}");
+    assert!(
+        found.contains("workers: 0"),
+        "no service worker lives on: {found}"
+    );
     assert!(
         found.contains("session=from-the-site"),
         "the session does: {found}"

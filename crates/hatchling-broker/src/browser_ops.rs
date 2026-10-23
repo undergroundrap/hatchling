@@ -465,14 +465,10 @@ impl BrowserSession {
             .ok_or_else(|| String::from("no browser"))
             .and_then(|driven| {
                 let jar = profiles.jar(&profile.id)?;
-                set_jar(driven, &jar).map(|()| jar)
+                set_jar(driven, &jar).map(|()| jar.len())
             });
         match restored {
-            Ok(jar) => {
-                for cookie in &jar {
-                    self.hide(&cookie.value);
-                }
-                let cookies = jar.len();
+            Ok(cookies) => {
                 tracing::info!(profile = %profile.id, cookies, "a signed-in session is restored");
             }
             Err(error) => {
@@ -2147,7 +2143,11 @@ mod tests {
                 ..cookie("a.example", "csrf")
             });
             // Before the fill, a page can show only its cookies.
-            showing(&fake, "https://a.example/login", "jar-secret-value page-set-secret");
+            showing(
+                &fake,
+                "https://a.example/login",
+                "jar-secret-value page-set-secret",
+            );
             op(&BrowserOp::Read);
             op(&sign_in_op(Some(1), None));
             op(&BrowserOp::Code { element: 3 });
@@ -2211,7 +2211,13 @@ mod tests {
             browser.kept(&config, &keys, &BrowserOp::Read, page("a-secret")),
             page("a-secret")
         );
-        handle_browser_op(&config, &keys, &mut web, &mut browser, &open("https://a.example/"));
+        handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &open("https://a.example/"),
+        );
         // Hidden once the browser runs: a new one starts with nothing hidden.
         browser.hide("a-secret");
         browser.hide("a-secret");
@@ -2226,7 +2232,12 @@ mod tests {
             "closing keeps it before, not after"
         );
         assert_eq!(
-            browser.kept(&config, &keys, &BrowserOp::Read, BrowserResult::CodeDeclined),
+            browser.kept(
+                &config,
+                &keys,
+                &BrowserOp::Read,
+                BrowserResult::CodeDeclined
+            ),
             BrowserResult::CodeDeclined
         );
     }
