@@ -11,18 +11,38 @@
 //! keeper releases the authority's purposes there, and refuses them on the
 //! broker's own channel.
 //!
-//! **What it does now (slice 1): web search.** The broker sends a query;
-//! the authority reads the search provider's key from the keeper, runs the
-//! search with it, and answers with the results. The broker never holds
-//! the key. The egress swap, the harness relay, and the rest move here
-//! slice by slice (WO-017's notes).
+//! **Connections.** The pair with the broker carries only connections:
+//! for each, the broker makes a socket pair and sends the authority one
+//! end ([`Authority::connect`]), which it serves on a thread of its own.
+//! A session's egress is one connection for the session's life; a search
+//! is one connection for one search. So nothing waits on another's
+//! request, and a connection's state (a session's surrogate key) is gone
+//! when its end closes.
+//!
+//! **What it does now:**
+//! - **The egress swap** (slice 2). A session's connection opens its
+//!   egress ([`Connection::egress`]): the authority builds the session a
+//!   proxy of its own, with a fresh surrogate key, over the allowlist it
+//!   resolved once. It mints the cell's surrogates and forwards its
+//!   requests, putting in each destination's credential, which it reads
+//!   from the keeper for that request alone. The broker checks the
+//!   session's grants first and relays the requests and answers
+//!   ([`EgressLink`]); it never holds a credential or the surrogate key.
+//!   The authority checks a destination against the operator's grants
+//!   too, so a broker can't send it anywhere no agent may go.
+//! - **Web search** (slice 4). The broker sends a query; the authority
+//!   reads the search provider's key from the keeper, runs the search,
+//!   and answers with the results.
+//!
+//! The harness relay and the rest move here next (WO-017's notes).
 //!
 //! **What it holds against.** A compromised broker can't read a key the
 //! authority holds: the keeper releases it to the authority's channel
 //! alone, and the authority isn't dumpable. It is not yet an
 //! operating-system boundary: the broker starts it as its own user, and a
-//! root broker can reach any process. The spawner split gives each its own
-//! user.
+//! root broker can reach any process. And until the spawner split, the
+//! peer uid a request is bound to is the broker's word. The spawner split
+//! gives each its own user.
 
 use std::os::fd::{AsFd as _, AsRawFd as _};
 use std::os::unix::net::UnixStream;
@@ -31,15 +51,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::Duration;
 
-use hatchling_core::SecretName;
 use hatchling_core::framing::{read_frame, read_frame_or_eof, write_frame};
+use hatchling_core::{SecretName, fits_one_frame};
 use hatchling_egress::search::{Hit, SearchError};
 use hatchling_egress::web::WebUrl;
+use hatchling_egress::{
+    EgressRequest, EgressResponse, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, Proxy, TlsClient,
+};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
+use crate::egress_path::{EgressPath, Refusal, RefusalKind};
 use crate::keeper::Keeper;
-use crate::serve::egress_tls;
+use crate::serve::{destination_to_secret_name, egress_tls};
 use crate::web_ops::{FETCH_DEADLINE, SEARCH_KEY};
 use crate::{Config, Error};
 
@@ -53,19 +77,46 @@ const BROKER_FD: &str = crate::environment::HATCHLING_AUTHORITY_FD.name;
 /// The setting that names the authority's end of its pair with the keeper.
 const KEEPER_FD: &str = crate::environment::HATCHLING_AUTHORITY_KEEPER_FD.name;
 
-/// How long the broker waits for each of the authority's answers: past the
-/// search's own deadline, which the authority keeps.
-const ANSWER_TIMEOUT: Duration = Duration::from_secs(FETCH_DEADLINE.as_secs() * 2);
+/// How long the broker waits for each of a connection's frames: past the
+/// longest the authority itself waits on an upstream read (a local model
+/// may think for minutes).
+const ANSWER_TIMEOUT: Duration = Duration::from_secs(hatchling_egress::local::IO_TIMEOUT.as_secs() + 30);
+
+/// The most bytes of a body one frame carries: a body moves as many.
+const PART_BYTES: usize = 60 * 1024;
+
+/// What the broker is told when the authority can't be reached, or
+/// answers out of step.
+const UNAVAILABLE: &str = "the egress authority is unavailable";
 
 /// Runs one search with the provider's key.
 pub type Provider = Arc<dyn Fn(&[u8], &str) -> Result<Vec<Hit>, SearchError> + Send + Sync>;
 
-/// What the broker asks the authority.
+/// What the broker asks on a connection.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "request", rename_all = "kebab-case", deny_unknown_fields)]
 enum Request {
     /// A web search for `query`.
     Search { query: String },
+    /// Open this connection's egress: a proxy of its own.
+    Egress,
+    /// Mint a surrogate for `peer_uid` to reach `destination`.
+    Mint {
+        peer_uid: u32,
+        destination: String,
+        ttl_secs: u64,
+    },
+    /// Forward a request presented by `peer_uid`. Its body follows in
+    /// `parts` frames of its own.
+    Forward {
+        peer_uid: u32,
+        method: String,
+        destination: String,
+        path: String,
+        headers: Vec<(String, String)>,
+        surrogate_b64: String,
+        parts: usize,
+    },
 }
 
 /// What the authority answers.
@@ -74,8 +125,23 @@ enum Request {
 enum Reply {
     /// A search's results, the provider's words.
     Results { hits: Vec<Found> },
-    /// Refused, and why: the broker's to tell the agent.
+    /// A search refused, and why: the broker's to tell the agent.
     Refused { reason: String },
+    /// The connection's egress is open.
+    Ready,
+    /// The connection's egress couldn't be opened, and why.
+    Failed { reason: String },
+    /// A minted surrogate.
+    Surrogate { surrogate_b64: String },
+    /// A forwarded request's answer. Its body follows in `parts` frames
+    /// of its own.
+    Answer {
+        status: u16,
+        headers: Vec<(String, String)>,
+        parts: usize,
+    },
+    /// A mint or a request refused, or failed.
+    Denied { refusal: Refusal },
 }
 
 /// One search result, as it crosses to the broker.
@@ -86,11 +152,12 @@ struct Found {
     snippet: String,
 }
 
-/// The broker's end of the authority: one request at a time.
+/// The broker's end of the authority.
 #[derive(Debug)]
 pub struct Authority {
-    stream: Mutex<UnixStream>,
-    /// Set once an exchange broke off: no request is sent again.
+    /// Carries the connections' ends, one at a time.
+    control: Mutex<UnixStream>,
+    /// Set once a connection couldn't be handed over: none is again.
     lost: AtomicBool,
     /// Kept so the authority isn't left a zombie; it leaves when the
     /// broker does.
@@ -148,26 +215,43 @@ impl Authority {
         drop(theirs);
         Ok(Self {
             _child: Some(child),
-            ..Self::over(ours)?
+            ..Self::over(ours)
         })
     }
 
-    /// The broker's end, `stream`, of an authority already running.
+    /// The broker's end, `control`, of an authority already running.
+    #[must_use]
+    pub const fn over(control: UnixStream) -> Self {
+        Self {
+            control: Mutex::new(control),
+            lost: AtomicBool::new(false),
+            _child: None,
+        }
+    }
+
+    /// A new connection to the authority, served on a thread of its own.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Authority`] when its answers can't be bounded.
-    pub fn over(stream: UnixStream) -> Result<Self, Error> {
-        stream
-            .set_read_timeout(Some(ANSWER_TIMEOUT))
-            .map_err(|e| Error::Authority {
-                reason: format!("cannot bound its answers: {e}"),
-            })?;
-        Ok(Self {
-            stream: Mutex::new(stream),
-            lost: AtomicBool::new(false),
-            _child: None,
-        })
+    /// Returns [`Error::Authority`] when it can't be made or handed over.
+    pub fn connect(&self) -> Result<Connection, Error> {
+        let (ours, theirs) = UnixStream::pair().map_err(gone)?;
+        let control = self.control.lock().map_err(|_| Error::Authority {
+            reason: String::from("an earlier connection to it panicked"),
+        })?;
+        if self.lost.load(Ordering::SeqCst) {
+            return Err(Error::Authority {
+                reason: String::from("lost: a connection couldn't be handed over"),
+            });
+        }
+        let sent = hatchling_sys::net::send_fd(control.as_fd(), theirs.as_fd());
+        drop(control);
+        if let Err(error) = sent {
+            self.lost.store(true, Ordering::SeqCst);
+            return Err(gone(error));
+        }
+        drop(theirs);
+        Connection::over(ours)
     }
 
     /// Searches the web for `query`, through the authority: the results,
@@ -178,53 +262,232 @@ impl Authority {
     /// A sentence for the agent: the authority refused, or can't be
     /// reached.
     pub fn search(&self, query: &str) -> Result<Vec<Hit>, String> {
+        self.connect()
+            .map_err(|error| {
+                tracing::error!(%error, "the egress authority can't be reached");
+                String::from(UNAVAILABLE)
+            })?
+            .search(query)
+    }
+}
+
+/// One connection to the authority: the broker's end.
+#[derive(Debug)]
+pub struct Connection {
+    stream: UnixStream,
+}
+
+impl Connection {
+    /// The broker's end, `stream`, of a connection the authority serves.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Authority`] when its answers can't be bounded.
+    pub fn over(stream: UnixStream) -> Result<Self, Error> {
+        stream
+            .set_read_timeout(Some(ANSWER_TIMEOUT))
+            .map_err(|e| Error::Authority {
+                reason: format!("cannot bound its answers: {e}"),
+            })?;
+        Ok(Self { stream })
+    }
+
+    /// Searches the web for `query`.
+    ///
+    /// # Errors
+    ///
+    /// A sentence for the agent: the authority refused, or can't be
+    /// reached.
+    pub fn search(&self, query: &str) -> Result<Vec<Hit>, String> {
+        let request = Request::Search {
+            query: query.to_owned(),
+        };
+        let answer = send(&self.stream, &request).and_then(|()| receive(&self.stream));
+        let hits = match answer {
+            Ok(Reply::Results { hits }) => hits,
+            Ok(Reply::Refused { reason }) => return Err(reason),
+            Ok(
+                Reply::Ready
+                | Reply::Failed { .. }
+                | Reply::Surrogate { .. }
+                | Reply::Answer { .. }
+                | Reply::Denied { .. },
+            ) => return Err(String::from(UNAVAILABLE)),
+            Err(error) => {
+                tracing::error!(%error, "the egress authority can't be reached");
+                return Err(String::from(UNAVAILABLE));
+            }
+        };
+        hits.into_iter()
+            .map(|found| {
+                WebUrl::parse(&found.url)
+                    .map(|url| Hit {
+                        title: found.title,
+                        url,
+                        snippet: found.snippet,
+                    })
+                    .map_err(|_| String::from("the egress authority answered a bad result"))
+            })
+            .collect()
+    }
+
+    /// Opens this connection's egress: a session's, for its life.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Authority`] when the authority couldn't open it
+    /// (its allowlist doesn't resolve) or can't be reached.
+    pub fn egress(self) -> Result<EgressLink, Error> {
+        send(&self.stream, &Request::Egress)?;
+        match receive(&self.stream)? {
+            Reply::Ready => Ok(EgressLink {
+                stream: Mutex::new(self.stream),
+                lost: AtomicBool::new(false),
+            }),
+            Reply::Failed { reason } => Err(Error::Authority { reason }),
+            Reply::Results { .. }
+            | Reply::Refused { .. }
+            | Reply::Surrogate { .. }
+            | Reply::Answer { .. }
+            | Reply::Denied { .. } => Err(Error::Authority {
+                reason: String::from("it answered out of step"),
+            }),
+        }
+    }
+}
+
+/// A session's egress, through the authority: the broker's end.
+#[derive(Debug)]
+pub struct EgressLink {
+    stream: Mutex<UnixStream>,
+    /// Set once an exchange broke off: a late answer could be read as the
+    /// next one's, so no request is sent again.
+    lost: AtomicBool,
+}
+
+impl EgressLink {
+    /// Runs one exchange alone. One that breaks off, or is answered out
+    /// of step, loses the link.
+    fn exchange<T>(
+        &self,
+        run: impl FnOnce(&UnixStream) -> Result<Option<T>, Error>,
+    ) -> Result<T, Refusal> {
         let stream = self
             .stream
             .lock()
-            .map_err(|_| String::from("the egress authority is unavailable"))?;
+            .map_err(|_| Refusal::failed(UNAVAILABLE))?;
         if self.lost.load(Ordering::SeqCst) {
-            return Err(String::from("the egress authority is unavailable"));
+            return Err(Refusal::failed(UNAVAILABLE));
         }
-        let answer = ask(
-            &stream,
-            &Request::Search {
-                query: query.to_owned(),
-            },
-        );
+        let outcome = run(&stream);
         drop(stream);
-        match answer {
-            Ok(Reply::Results { hits }) => hits
-                .into_iter()
-                .map(|found| {
-                    WebUrl::parse(&found.url)
-                        .map(|url| Hit {
-                            title: found.title,
-                            url,
-                            snippet: found.snippet,
-                        })
-                        .map_err(|_| String::from("the egress authority answered a bad result"))
-                })
-                .collect(),
-            Ok(Reply::Refused { reason }) => Err(reason),
+        match outcome {
+            Ok(Some(answer)) => Ok(answer),
+            Ok(None) => {
+                self.lost.store(true, Ordering::SeqCst);
+                tracing::error!("the egress authority answered out of step");
+                Err(Refusal::failed(UNAVAILABLE))
+            }
             Err(error) => {
                 self.lost.store(true, Ordering::SeqCst);
                 tracing::error!(%error, "the egress authority can't be reached");
-                Err(String::from("the egress authority is unavailable"))
+                Err(Refusal::failed(UNAVAILABLE))
             }
         }
     }
 }
 
-/// Sends `request`, and reads the reply.
-fn ask(stream: &UnixStream, request: &Request) -> Result<Reply, Error> {
-    let bytes = serde_json::to_vec(request).map_err(|e| Error::Authority {
-        reason: format!("cannot write a request: {e}"),
+impl EgressPath for EgressLink {
+    fn mint(&self, peer_uid: u32, destination: &str, ttl_secs: u64) -> Result<String, Refusal> {
+        let request = Request::Mint {
+            peer_uid,
+            destination: destination.to_owned(),
+            ttl_secs,
+        };
+        self.exchange(|stream| {
+            send(stream, &request)?;
+            Ok(match receive(stream)? {
+                Reply::Surrogate { surrogate_b64 } => Some(Ok(surrogate_b64)),
+                Reply::Denied { refusal } => Some(Err(refusal)),
+                Reply::Results { .. }
+                | Reply::Refused { .. }
+                | Reply::Ready
+                | Reply::Failed { .. }
+                | Reply::Answer { .. } => None,
+            })
+        })?
+    }
+
+    fn forward(&self, peer_uid: u32, request: &EgressRequest) -> Result<EgressResponse, Refusal> {
+        let header = Request::Forward {
+            peer_uid,
+            method: request.method.clone(),
+            destination: request.destination.clone(),
+            path: request.path.clone(),
+            headers: request.headers.clone(),
+            surrogate_b64: request.surrogate_b64.clone(),
+            parts: request.body.chunks(PART_BYTES).count(),
+        };
+        self.exchange(|stream| {
+            send(stream, &header)?;
+            for part in request.body.chunks(PART_BYTES) {
+                write_frame(stream, part).map_err(gone)?;
+            }
+            Ok(match receive(stream)? {
+                Reply::Answer {
+                    status,
+                    headers,
+                    parts,
+                } => Some(Ok(EgressResponse {
+                    status,
+                    headers,
+                    body: read_parts(stream, parts, MAX_RESPONSE_BYTES)?,
+                })),
+                Reply::Denied { refusal } => Some(Err(refusal)),
+                Reply::Results { .. }
+                | Reply::Refused { .. }
+                | Reply::Ready
+                | Reply::Failed { .. }
+                | Reply::Surrogate { .. } => None,
+            })
+        })?
+    }
+}
+
+/// Writes `message` as one frame.
+fn send(stream: &UnixStream, message: &impl Serialize) -> Result<(), Error> {
+    let bytes = serde_json::to_vec(message).map_err(|e| Error::Authority {
+        reason: format!("cannot write a message: {e}"),
     })?;
-    write_frame(stream, &bytes).map_err(gone)?;
-    let reply = read_frame(stream).map_err(gone)?;
-    serde_json::from_slice(&reply).map_err(|e| Error::Authority {
+    write_frame(stream, &bytes).map_err(gone)
+}
+
+/// Reads one reply.
+fn receive(stream: &UnixStream) -> Result<Reply, Error> {
+    let frame = read_frame(stream).map_err(gone)?;
+    serde_json::from_slice(&frame).map_err(|e| Error::Authority {
         reason: format!("an answer that doesn't parse: {e}"),
     })
+}
+
+/// Reads a body sent as `parts` frames, refusing one that would be more
+/// than `max` bytes.
+fn read_parts(stream: &UnixStream, parts: usize, max: usize) -> Result<Vec<u8>, Error> {
+    let too_large = || Error::Authority {
+        reason: format!("a body of more than {max} bytes"),
+    };
+    if parts > max.div_ceil(PART_BYTES) {
+        return Err(too_large());
+    }
+    let mut body = Vec::new();
+    for _ in 0..parts {
+        let part = read_frame(stream).map_err(gone)?;
+        if part.len() > PART_BYTES || body.len() + part.len() > max {
+            return Err(too_large());
+        }
+        body.extend_from_slice(&part);
+    }
+    Ok(body)
 }
 
 fn gone(error: impl std::fmt::Display) -> Error {
@@ -259,22 +522,26 @@ pub fn egress_authority_main() -> ExitCode {
                 .with_writer(std::io::stderr)
                 .with_max_level(config.log_level.to_tracing())
                 .try_init();
-            let provider = if config.web.search {
-                let tls = egress_tls(|key| std::env::var(key).ok())?;
+            let tls = egress_tls(|key| std::env::var(key).ok())?;
+            let provider = config.web.search.then(|| {
+                let tls = tls.clone();
                 let provider: Provider =
                     Arc::new(move |key, query| hatchling_egress::search::brave(&tls, key, query));
-                Some(provider)
-            } else {
-                None
-            };
-            Keeper::over(keeper).map(|keeper| (config, keeper, provider))
+                provider
+            });
+            Keeper::over(keeper).map(|keeper| Shared {
+                config,
+                keeper,
+                tls,
+                provider,
+                deadline: FETCH_DEADLINE,
+            })
         });
-    let (config, keeper, provider) = match begun {
-        Ok(begun) => begun,
-        Err(error) => return refuse_to_run(&error.to_string()),
-    };
-    match serve(&broker, &keeper, &config, provider.as_ref(), FETCH_DEADLINE) {
-        Ok(()) => ExitCode::SUCCESS,
+    match begun {
+        Ok(shared) => {
+            serve(&broker, &Arc::new(shared));
+            ExitCode::SUCCESS
+        }
         Err(error) => refuse_to_run(&error.to_string()),
     }
 }
@@ -288,20 +555,42 @@ fn refuse_to_run(reason: &str) -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// Answers the broker on `broker` until it goes.
-fn serve(
-    broker: &UnixStream,
-    keeper: &Keeper,
-    config: &Config,
-    provider: Option<&Provider>,
+/// What every connection the authority serves shares.
+struct Shared {
+    config: Config,
+    /// The authority's channel to the keeper.
+    keeper: Keeper,
+    /// The egress proxy's HTTPS roots.
+    tls: TlsClient,
+    /// The search provider, while search is on.
+    provider: Option<Provider>,
+    /// How long a search may take.
     deadline: Duration,
-) -> Result<(), Error> {
-    while let Some(frame) = read_frame_or_eof(broker).map_err(gone)? {
+}
+
+/// Serves each connection the broker hands over on `broker`, on a thread
+/// of its own, until the broker goes.
+fn serve(broker: &UnixStream, shared: &Arc<Shared>) {
+    while let Ok(fd) = hatchling_sys::net::recv_fd(broker.as_fd()) {
+        let shared = Arc::clone(shared);
+        std::thread::spawn(move || {
+            let stream = UnixStream::from(fd);
+            if let Err(error) = serve_connection(&stream, &shared) {
+                tracing::warn!(%error, "a connection from the broker ended");
+            }
+        });
+    }
+}
+
+/// Answers one connection until the broker closes it.
+fn serve_connection(stream: &UnixStream, shared: &Shared) -> Result<(), Error> {
+    let mut proxy = None;
+    while let Some(frame) = read_frame_or_eof(stream).map_err(gone)? {
         let request: Request = serde_json::from_slice(&frame).map_err(|e| Error::Authority {
             reason: format!("a request that doesn't parse: {e}"),
         })?;
         let reply = match request {
-            Request::Search { query } => match search(keeper, config, provider, &query, deadline) {
+            Request::Search { query } => match search(shared, &query) {
                 Ok(hits) => Reply::Results {
                     hits: hits
                         .into_iter()
@@ -314,31 +603,147 @@ fn serve(
                 },
                 Err(reason) => Reply::Refused { reason },
             },
+            Request::Egress => match open_proxy(shared) {
+                Ok(opened) => {
+                    proxy = Some(opened);
+                    Reply::Ready
+                }
+                Err(error) => Reply::Failed {
+                    reason: error.to_string(),
+                },
+            },
+            Request::Mint {
+                peer_uid,
+                destination,
+                ttl_secs,
+            } => match granted(shared, proxy.as_ref(), &destination) {
+                Ok(proxy) => match EgressPath::mint(proxy, peer_uid, &destination, ttl_secs) {
+                    Ok(surrogate_b64) => Reply::Surrogate { surrogate_b64 },
+                    Err(refusal) => Reply::Denied { refusal },
+                },
+                Err(refusal) => Reply::Denied { refusal },
+            },
+            Request::Forward {
+                peer_uid,
+                method,
+                destination,
+                path,
+                headers,
+                surrogate_b64,
+                parts,
+            } => {
+                let body = read_parts(stream, parts, MAX_REQUEST_BYTES)?;
+                let request = EgressRequest {
+                    method,
+                    destination,
+                    path,
+                    headers,
+                    body,
+                    surrogate_b64,
+                };
+                match granted(shared, proxy.as_ref(), &request.destination)
+                    .and_then(|proxy| EgressPath::forward(proxy, peer_uid, &request))
+                {
+                    Ok(answer) => {
+                        answer_with(stream, answer)?;
+                        continue;
+                    }
+                    Err(refusal) => Reply::Denied { refusal },
+                }
+            }
         };
-        let bytes = serde_json::to_vec(&reply).map_err(|e| Error::Authority {
-            reason: format!("cannot write an answer: {e}"),
-        })?;
-        write_frame(broker, &bytes).map_err(gone)?;
+        send(stream, &reply)?;
     }
     Ok(())
 }
 
-/// Searches for `query` with the provider's key, read from `keeper`, giving
-/// up after `deadline`.
-fn search(
-    keeper: &Keeper,
-    config: &Config,
-    provider: Option<&Provider>,
-    query: &str,
-    deadline: Duration,
-) -> Result<Vec<Hit>, String> {
-    let Some(provider) = provider.filter(|_| config.web.search) else {
+/// The connection's proxy, for `destination` one of the operator's
+/// grants: a broker can't send the authority anywhere no agent may go.
+fn granted<'p, P: EgressPath>(
+    shared: &Shared,
+    proxy: Option<&'p P>,
+    destination: &str,
+) -> Result<&'p P, Refusal> {
+    let proxy = proxy.ok_or_else(|| Refusal::failed("this connection's egress isn't open"))?;
+    if shared.config.egress.grants.iter().any(|grant| grant == destination) {
+        Ok(proxy)
+    } else {
+        tracing::warn!(
+            destination = ?destination,
+            "refused a destination no agent is granted"
+        );
+        Err(Refusal {
+            kind: RefusalKind::NotAllowed,
+            reason: String::from("no agent is granted this destination"),
+        })
+    }
+}
+
+/// Sends `answer`: its status and headers, then its body in parts. One
+/// whose headers don't fit a frame is refused instead.
+fn answer_with(stream: &UnixStream, answer: EgressResponse) -> Result<(), Error> {
+    let header = Reply::Answer {
+        status: answer.status,
+        headers: answer.headers,
+        parts: answer.body.chunks(PART_BYTES).count(),
+    };
+    if !fits_one_frame(&header) {
+        return send(
+            stream,
+            &Reply::Denied {
+                refusal: Refusal::failed("the answer's headers don't fit a frame"),
+            },
+        );
+    }
+    send(stream, &header)?;
+    for part in answer.body.chunks(PART_BYTES) {
+        write_frame(stream, part).map_err(gone)?;
+    }
+    Ok(())
+}
+
+/// A session's proxy: a fresh surrogate key, over the allowlist resolved
+/// once for the authority's life, with each credential read from the
+/// keeper for the request that needs it.
+///
+/// # Errors
+///
+/// Returns [`Error::Egress`] when the allowlist doesn't resolve, or the
+/// surrogate key can't be made.
+fn open_proxy(
+    shared: &Shared,
+) -> Result<Proxy<impl Fn(&str) -> Option<Zeroizing<Vec<u8>>> + '_>, Error> {
+    let allowlist = shared
+        .config
+        .egress
+        .allowlist
+        .resolve()
+        .map_err(|source| Error::Egress { source })?;
+    let keeper = &shared.keeper;
+    Proxy::shared(allowlist, shared.tls.clone(), move |destination: &str| {
+        let name = destination_to_secret_name(destination)
+            .parse::<SecretName>()
+            .ok()?;
+        let secret = keeper
+            .read("egress", std::slice::from_ref(&name))
+            .ok()?
+            .pop()??;
+        Some(Zeroizing::new(secret.as_bytes().to_vec()))
+    })
+    .map_err(|source| Error::Egress { source })
+}
+
+/// Searches for `query` with the provider's key, read from the keeper,
+/// giving up after the shared deadline.
+fn search(shared: &Shared, query: &str) -> Result<Vec<Hit>, String> {
+    let Some(provider) = shared.provider.as_ref().filter(|_| shared.config.web.search) else {
         return Err(String::from("search is off"));
     };
     let name: SecretName = SEARCH_KEY
         .parse()
         .map_err(|_| String::from("the search key's name is invalid"))?;
-    let read = keeper
+    let read = shared
+        .keeper
         .read("search", std::slice::from_ref(&name))
         .map_err(|error| format!("the search key couldn't be read: {error}"))?;
     let secret =
@@ -352,7 +757,7 @@ fn search(
     std::thread::spawn(move || {
         let _ = sender.send(provider(&key, &query));
     });
-    receiver.recv_timeout(deadline).map_or_else(
+    receiver.recv_timeout(shared.deadline).map_or_else(
         |_| {
             Err(format!(
                 "the search took longer than {} seconds",
@@ -365,38 +770,86 @@ fn search(
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Read as _, Write as _};
+    use std::net::TcpListener;
     use std::sync::Mutex as StdMutex;
+    use std::time::Instant;
 
     use super::*;
 
-    /// A keeper on the other end of `stream`: it answers each read with
-    /// `key`, or with nothing stored when there's none, and records each
-    /// request's purpose.
-    fn keeper_answering(key: Option<&'static [u8]>) -> (Keeper, Arc<StdMutex<Vec<String>>>) {
+    /// The purposes a fake keeper was asked for, in order.
+    type Asked = Arc<StdMutex<Vec<String>>>;
+
+    /// A keeper on the other end of a pair: it answers each read with the
+    /// value it holds for the read's purpose, or with nothing stored, and
+    /// records each request's purpose.
+    fn keeper_holding(values: &'static [(&'static str, &'static [u8])]) -> (Keeper, Asked) {
         let (ours, theirs) = UnixStream::pair().unwrap();
         let asked = Arc::new(StdMutex::new(Vec::new()));
         let log = Arc::clone(&asked);
         std::thread::spawn(move || {
             while let Ok(Some(frame)) = read_frame_or_eof(&theirs) {
                 let request: serde_json::Value = serde_json::from_slice(&frame).unwrap();
-                let purpose = request.get("purpose").and_then(serde_json::Value::as_str);
-                log.lock()
-                    .unwrap()
-                    .push(purpose.unwrap_or_default().to_owned());
-                let found = serde_json::json!({"reply": "read", "found": [key.is_some()]});
+                let purpose = request
+                    .get("purpose")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+                let value = values
+                    .iter()
+                    .find(|(held, _)| *held == purpose)
+                    .map(|(_, value)| *value);
+                log.lock().unwrap().push(purpose);
+                let found = serde_json::json!({"reply": "read", "found": [value.is_some()]});
                 write_frame(&theirs, &serde_json::to_vec(&found).unwrap()).unwrap();
-                if let Some(key) = key {
-                    write_frame(&theirs, key).unwrap();
+                if let Some(value) = value {
+                    write_frame(&theirs, value).unwrap();
                 }
             }
         });
         (Keeper::over(ours).unwrap(), asked)
     }
 
+    fn shared_with(
+        config: Config,
+        values: &'static [(&'static str, &'static [u8])],
+        provider: Option<Provider>,
+        deadline: Duration,
+    ) -> (Shared, Asked) {
+        let (keeper, asked) = keeper_holding(values);
+        let shared = Shared {
+            config,
+            keeper,
+            tls: TlsClient::bundled().unwrap(),
+            provider,
+            deadline,
+        };
+        (shared, asked)
+    }
+
     fn searching() -> Config {
         let mut config = crate::api_auth::tests::owner_config(None);
         config.web.search = true;
         config
+    }
+
+    /// A config whose egress allows and grants `destination`, with
+    /// `allowlist` its allowlist.
+    fn egressing(allowlist: &str, grants: &[&str]) -> Config {
+        let mut config = crate::api_auth::tests::owner_config(None);
+        config.egress = crate::EgressConfig {
+            allowlist: crate::EgressAllowlist::new(allowlist),
+            grants: grants.iter().map(|grant| (*grant).to_owned()).collect(),
+        };
+        config
+    }
+
+    /// An authority serving `shared` over a pair, and the broker's end.
+    fn serving(shared: Shared) -> (Authority, std::thread::JoinHandle<()>) {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let shared = Arc::new(shared);
+        let served = std::thread::spawn(move || serve(&theirs, &shared));
+        (Authority::over(ours), served)
     }
 
     fn hit(url: &str) -> Hit {
@@ -409,16 +862,20 @@ mod tests {
 
     #[test]
     fn a_search_runs_with_the_key_the_keeper_releases_to_the_authority() {
-        let (keeper, asked) = keeper_answering(Some(b"k-brave"));
         let given = Arc::new(StdMutex::new(Vec::new()));
         let log = Arc::clone(&given);
         let provider: Provider = Arc::new(move |key, query| {
             log.lock().unwrap().push((key.to_vec(), query.to_owned()));
             Ok(vec![hit("https://docs.example/a")])
         });
-        let config = searching();
+        let (shared, asked) = shared_with(
+            searching(),
+            &[("search", b"k-brave")],
+            Some(provider),
+            FETCH_DEADLINE,
+        );
         assert_eq!(
-            search(&keeper, &config, Some(&provider), "rust", FETCH_DEADLINE),
+            search(&shared, "rust"),
             Ok(vec![hit("https://docs.example/a")])
         );
         assert_eq!(
@@ -431,49 +888,49 @@ mod tests {
     #[test]
     fn a_search_is_off_or_refused_with_why() {
         let provider: Provider = Arc::new(|_, _| Ok(Vec::new()));
-        let (keeper, asked) = keeper_answering(None);
-        let mut config = searching();
+        let (shared, asked) = shared_with(searching(), &[], Some(provider), FETCH_DEADLINE);
         assert_eq!(
-            search(&keeper, &config, Some(&provider), "q", FETCH_DEADLINE),
+            search(&shared, "q"),
             Err(format!(
                 "no search key is stored: keep it in the vault as {SEARCH_KEY}"
             ))
         );
+        let (unprovided, _) = shared_with(searching(), &[], None, FETCH_DEADLINE);
         assert_eq!(
-            search(&keeper, &config, None, "q", FETCH_DEADLINE),
+            search(&unprovided, "q"),
             Err(String::from("search is off")),
             "no provider"
         );
-        config.web.search = false;
-        assert_eq!(
-            search(&keeper, &config, Some(&provider), "q", FETCH_DEADLINE),
-            Err(String::from("search is off"))
-        );
+        let provider: Provider = Arc::new(|_, _| Ok(Vec::new()));
+        let mut off = shared;
+        off.config.web.search = false;
+        off.provider = Some(provider);
+        assert_eq!(search(&off, "q"), Err(String::from("search is off")));
         assert_eq!(
             asked.lock().unwrap().len(),
             1,
             "no key read while search is off"
         );
-        let config = searching();
-        let (keeper, _) = keeper_answering(Some(b"k"));
         let failing: Provider = Arc::new(|_, _| Err(SearchError::Status { status: 429 }));
+        let (failing, _) =
+            shared_with(searching(), &[("search", b"k")], Some(failing), FETCH_DEADLINE);
         assert_eq!(
-            search(&keeper, &config, Some(&failing), "q", FETCH_DEADLINE),
+            search(&failing, "q"),
             Err(SearchError::Status { status: 429 }.to_string())
         );
         let slow: Provider = Arc::new(|_, _| {
             std::thread::sleep(Duration::from_secs(3));
             Ok(Vec::new())
         });
-        let started = std::time::Instant::now();
+        let (slow, _) = shared_with(
+            searching(),
+            &[("search", b"k")],
+            Some(slow),
+            Duration::from_millis(100),
+        );
+        let started = Instant::now();
         assert_eq!(
-            search(
-                &keeper,
-                &config,
-                Some(&slow),
-                "q",
-                Duration::from_millis(100)
-            ),
+            search(&slow, "q"),
             Err(format!(
                 "the search took longer than {} seconds",
                 FETCH_DEADLINE.as_secs()
@@ -483,76 +940,354 @@ mod tests {
         // A keeper that's gone: the key couldn't be read.
         let (ours, theirs) = UnixStream::pair().unwrap();
         drop(theirs);
-        let gone_keeper = Keeper::over(ours).unwrap();
+        let provider: Provider = Arc::new(|_, _| Ok(Vec::new()));
+        let gone_keeper = Shared {
+            config: searching(),
+            keeper: Keeper::over(ours).unwrap(),
+            tls: TlsClient::bundled().unwrap(),
+            provider: Some(provider),
+            deadline: FETCH_DEADLINE,
+        };
         assert!(matches!(
-            search(&gone_keeper, &config, Some(&provider), "q", FETCH_DEADLINE),
+            search(&gone_keeper, "q"),
             Err(reason) if reason.starts_with("the search key couldn't be read")
         ));
     }
 
+    /// Each connection is served on its own: a session's egress opens and
+    /// mints while a slow search runs on another, and the authority ends
+    /// when the broker goes.
     #[test]
-    fn the_broker_is_answered_over_its_channel_and_learns_only_results_or_why() {
-        let (keeper, _) = keeper_answering(Some(b"k-brave"));
-        let provider: Provider = Arc::new(|key, query| {
-            assert_eq!(key, b"k-brave");
+    fn each_connection_is_served_on_its_own() {
+        let slow: Provider = Arc::new(|_, query| {
+            std::thread::sleep(Duration::from_secs(2));
             Ok(vec![hit(&format!("https://docs.example/{query}"))])
         });
-        let (broker, theirs) = UnixStream::pair().unwrap();
-        let config = searching();
-        let serving = std::thread::spawn(move || {
-            serve(&theirs, &keeper, &config, Some(&provider), FETCH_DEADLINE)
-        });
-        let authority = Authority::over(broker).unwrap();
+        let mut config = egressing("internal:localhost:443", &["localhost:443"]);
+        config.web.search = true;
+        let (shared, _) = shared_with(config, &[("search", b"k")], Some(slow), FETCH_DEADLINE);
+        let (authority, served) = serving(shared);
+        let authority = Arc::new(authority);
+        let searcher = Arc::clone(&authority);
+        let searching = std::thread::spawn(move || searcher.search("rust"));
+        std::thread::sleep(Duration::from_millis(200));
+        let started = Instant::now();
+        let link = authority.connect().unwrap().egress().unwrap();
+        assert!(link.mint(1000, "localhost:443", 60).is_ok());
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "the egress waited on the search"
+        );
         assert_eq!(
-            authority.search("rust"),
+            searching.join().unwrap(),
             Ok(vec![hit("https://docs.example/rust")])
         );
+        drop(link);
         drop(authority);
-        assert!(serving.join().unwrap().is_ok(), "ends when the broker goes");
-        // Refused: the reason reaches the broker; a broken one is lost.
-        let (keeper, _) = keeper_answering(None);
-        let (broker, theirs) = UnixStream::pair().unwrap();
-        let config = searching();
-        let provider: Provider = Arc::new(|_, _| Ok(Vec::new()));
-        std::thread::spawn(move || {
-            serve(&theirs, &keeper, &config, Some(&provider), FETCH_DEADLINE)
+        served.join().unwrap();
+    }
+
+    /// A one-request upstream on loopback: it records what it was sent,
+    /// and answers with `reply`.
+    fn upstream(reply: Vec<u8>) -> (u16, std::thread::JoinHandle<Vec<u8>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let mut seen = Vec::new();
+            let mut byte = [0_u8; 1];
+            while !seen.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).unwrap();
+                seen.extend_from_slice(&byte);
+            }
+            let head = String::from_utf8_lossy(&seen).into_owned();
+            let length: usize = head
+                .lines()
+                .find_map(|line| line.strip_prefix("Content-Length: "))
+                .unwrap()
+                .parse()
+                .unwrap();
+            let mut body = vec![0; length];
+            stream.read_exact(&mut body).unwrap();
+            seen.extend_from_slice(&body);
+            stream.write_all(&reply).unwrap();
+            seen
         });
-        let authority = Authority::over(broker).unwrap();
+        (port, handle)
+    }
+
+    /// A session's request goes through the authority whole: its body in
+    /// parts, the destination's credential put in from the keeper, and
+    /// the answer back in parts with the credential scrubbed from it.
+    #[test]
+    fn a_request_goes_through_the_authority_with_its_credential_put_in() {
+        let mut answer_body = vec![b'a'; 150 * 1024];
+        answer_body.extend_from_slice(b"echo: Bearer cred-zq-7");
+        let mut reply = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
+            answer_body.len()
+        )
+        .into_bytes();
+        reply.extend_from_slice(&answer_body);
+        let (port, upstream) = upstream(reply);
+        let destination = format!("localhost:{port}");
+        let config = egressing(&format!("local:{destination}"), &[&destination]);
+        let (shared, asked) = shared_with(config, &[("egress", b"cred-zq-7")], None, FETCH_DEADLINE);
+        let (authority, served) = serving(shared);
+        let link = authority.connect().unwrap().egress().unwrap();
+        let surrogate_b64 = link.mint(1000, &destination, 60).unwrap();
+        let body: Vec<u8> = (0..130 * 1024_u32)
+            .map(|n| b'x' + u8::try_from(n % 3).unwrap())
+            .collect();
+        let request = EgressRequest {
+            method: String::from("POST"),
+            destination: destination.clone(),
+            path: String::from("/v1/chat"),
+            headers: vec![(String::from("X-Planted"), String::from("p-7"))],
+            body: body.clone(),
+            surrogate_b64,
+        };
+        let answer = link.forward(1000, &request).unwrap();
+        let seen = upstream.join().unwrap();
+        let seen_text = String::from_utf8_lossy(&seen);
         assert!(
-            matches!(authority.search("q"), Err(reason) if reason.starts_with("no search key"))
+            seen_text.contains("\r\nAuthorization: Bearer cred-zq-7\r\n"),
+            "the credential wasn't put in"
         );
-        // An answer out of step loses the authority: nothing more is sent.
+        assert!(seen_text.contains("X-Planted: p-7"));
+        assert!(seen.ends_with(&body), "the body didn't arrive whole");
+        assert_eq!(answer.status, 200);
+        assert_eq!(answer.body.len(), answer_body.len());
+        assert!(answer.body.starts_with(answer_body.get(..150 * 1024).unwrap()));
+        assert!(
+            !String::from_utf8_lossy(&answer.body).contains("cred-zq-7"),
+            "the credential came back"
+        );
+        assert_eq!(*asked.lock().unwrap(), ["egress"]);
+        drop(link);
+        drop(authority);
+        served.join().unwrap();
+    }
+
+    /// The authority refuses what the proxy would, and what no grant
+    /// allows, whatever the broker asks; a connection whose egress isn't
+    /// open mints nothing; an allowlist that doesn't resolve opens none.
+    #[test]
+    fn the_authority_refuses_what_no_grant_or_proxy_allows() {
+        let config = egressing(
+            "internal:localhost:443,internal:localhost:8443",
+            &["localhost:443"],
+        );
+        let (shared, asked) = shared_with(config, &[("egress", b"c")], None, FETCH_DEADLINE);
+        let (authority, served) = serving(shared);
+        // Not opened: nothing minted.
+        let unopened = authority.connect().unwrap();
+        send(
+            &unopened.stream,
+            &Request::Mint {
+                peer_uid: 1000,
+                destination: String::from("localhost:443"),
+                ttl_secs: 60,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            receive(&unopened.stream).unwrap(),
+            Reply::Denied { refusal } if refusal.kind == RefusalKind::Failed
+        ));
+        let link = authority.connect().unwrap().egress().unwrap();
+        // On the allowlist, granted to no agent: refused by the authority.
+        let ungranted = link.mint(1000, "localhost:8443", 60).unwrap_err();
+        assert_eq!(ungranted.kind, RefusalKind::NotAllowed);
+        assert_eq!(ungranted.reason, "no agent is granted this destination");
+        // A surrogate for another peer, or a forged one: refused.
+        let surrogate_b64 = link.mint(1000, "localhost:443", 60).unwrap();
+        let request = |surrogate_b64: String| EgressRequest {
+            method: String::from("GET"),
+            destination: String::from("localhost:443"),
+            path: String::from("/"),
+            headers: Vec::new(),
+            body: Vec::new(),
+            surrogate_b64,
+        };
+        let refused = link.forward(1001, &request(surrogate_b64)).unwrap_err();
+        assert_eq!(refused.kind, RefusalKind::BadSurrogate);
+        let forged = link
+            .forward(1000, &request(String::from("c3Vycm9nYXRl")))
+            .unwrap_err();
+        assert_eq!(forged.kind, RefusalKind::BadSurrogate);
+        assert!(asked.lock().unwrap().is_empty(), "a credential was read");
+        drop((unopened, link, authority));
+        served.join().unwrap();
+        // An allowlist that doesn't parse: the session's egress isn't
+        // opened, and says why.
+        let (shared, _) = shared_with(
+            egressing("*.example.com:443", &[]),
+            &[],
+            None,
+            FETCH_DEADLINE,
+        );
+        let (authority, served) = serving(shared);
+        assert!(matches!(
+            authority.connect().unwrap().egress(),
+            Err(Error::Authority { .. })
+        ));
+        drop(authority);
+        served.join().unwrap();
+    }
+
+    /// A link answered out of step is lost: nothing more is sent on it.
+    /// A connection the authority can't be handed loses the authority.
+    #[test]
+    fn a_link_or_an_authority_that_breaks_off_is_lost() {
         let (broker, theirs) = UnixStream::pair().unwrap();
         let stand_in = std::thread::spawn(move || {
             let _ = read_frame(&theirs);
-            write_frame(&theirs, b"not an answer").unwrap();
+            write_frame(&theirs, br#"{"reply":"ready"}"#).unwrap();
+            let _ = read_frame(&theirs);
+            write_frame(&theirs, br#"{"reply":"ready"}"#).unwrap();
             read_frame_or_eof(&theirs).unwrap()
         });
-        let authority = Authority::over(broker).unwrap();
-        let unavailable = Err(String::from("the egress authority is unavailable"));
-        assert_eq!(authority.search("q"), unavailable);
-        assert_eq!(authority.search("q"), unavailable, "lost for good");
-        drop(authority);
+        let link = Connection::over(broker).unwrap().egress().unwrap();
+        let unavailable = Err(Refusal::failed(UNAVAILABLE));
+        assert_eq!(link.mint(1000, "localhost:443", 60), unavailable);
+        assert_eq!(link.mint(1000, "localhost:443", 60), unavailable, "lost");
+        drop(link);
         assert!(
             stand_in.join().unwrap().is_none(),
             "a request was sent after it was lost"
         );
-        // A request that doesn't parse ends the channel.
-        let (keeper, _) = keeper_answering(None);
-        let (broker, theirs) = UnixStream::pair().unwrap();
-        write_frame(&broker, b"{\"request\":\"steal\"}").unwrap();
-        assert!(serve(&theirs, &keeper, &searching(), None, FETCH_DEADLINE).is_err());
-        // An answer naming a bad url is refused, not trusted.
+        // An egress answered out of step isn't opened.
         let (broker, theirs) = UnixStream::pair().unwrap();
         std::thread::spawn(move || {
             let _ = read_frame(&theirs);
-            let bad = serde_json::json!({"reply": "results", "hits": [{"title": "x", "url": "http://plain.example/", "snippet": "y"}]});
-            write_frame(&theirs, &serde_json::to_vec(&bad).unwrap()).unwrap();
+            write_frame(&theirs, br#"{"reply":"surrogate","surrogate_b64":"x"}"#).unwrap();
         });
-        let authority = Authority::over(broker).unwrap();
+        assert!(Connection::over(broker).unwrap().egress().is_err());
+        // An authority that's gone: no connection is handed over, ever.
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        drop(theirs);
+        let authority = Authority::over(ours);
+        assert!(authority.connect().is_err());
+        let lost = authority.connect().unwrap_err().to_string();
+        assert!(lost.contains("lost"), "{lost}");
+        assert_eq!(authority.search("q"), Err(String::from(UNAVAILABLE)));
+    }
+
+    /// A search's answer is checked: a bad url isn't trusted, and anything
+    /// but results or a refusal is the authority being unavailable.
+    #[test]
+    fn a_searchs_answer_is_checked() {
+        let answered = |answer: &'static [u8]| {
+            let (broker, theirs) = UnixStream::pair().unwrap();
+            std::thread::spawn(move || {
+                let _ = read_frame(&theirs);
+                write_frame(&theirs, answer).unwrap();
+            });
+            Connection::over(broker).unwrap().search("q")
+        };
         assert_eq!(
-            authority.search("q"),
+            answered(
+                br#"{"reply":"results","hits":[{"title":"x","url":"http://plain.example/","snippet":"y"}]}"#
+            ),
             Err(String::from("the egress authority answered a bad result"))
+        );
+        assert_eq!(
+            answered(br#"{"reply":"refused","reason":"search is off"}"#),
+            Err(String::from("search is off"))
+        );
+        assert_eq!(
+            answered(br#"{"reply":"ready"}"#),
+            Err(String::from(UNAVAILABLE))
+        );
+        assert_eq!(answered(b"not json"), Err(String::from(UNAVAILABLE)));
+    }
+
+    /// A body moves in parts of at most `PART_BYTES`, to its bound; more
+    /// parts, a larger part, or more bytes are refused. An answer whose
+    /// headers don't fit a frame is refused whole.
+    #[test]
+    fn bodies_move_in_bounded_parts() {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        for part in [&b"ab"[..], b"cd"] {
+            write_frame(&ours, part).unwrap();
+        }
+        assert_eq!(read_parts(&theirs, 2, 4).unwrap(), b"abcd");
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        assert!(read_parts(&theirs, 3, 2 * PART_BYTES).is_err(), "too many parts");
+        write_frame(&ours, &vec![0; PART_BYTES + 1]).unwrap();
+        assert!(read_parts(&theirs, 1, 4 * PART_BYTES).is_err(), "a part too large");
+        write_frame(&ours, b"abcde").unwrap();
+        assert!(read_parts(&theirs, 1, 4).is_err(), "more bytes than the bound");
+        assert_eq!(read_parts(&theirs, 0, 0).unwrap(), b"");
+        // Headers too large for a frame: refused, nothing else sent.
+        let answer = EgressResponse {
+            status: 200,
+            headers: vec![(String::from("X-Big"), "v".repeat(70 * 1024))],
+            body: b"body".to_vec(),
+        };
+        answer_with(&ours, answer).unwrap();
+        drop(ours);
+        assert!(matches!(
+            receive(&theirs).unwrap(),
+            Reply::Denied { refusal } if refusal == Refusal::failed("the answer's headers don't fit a frame")
+        ));
+        assert!(read_frame_or_eof(&theirs).unwrap().is_none());
+    }
+
+    /// A request that doesn't parse ends its connection, and only it.
+    #[test]
+    fn a_request_that_does_not_parse_ends_its_connection() {
+        let (shared, _) = shared_with(searching(), &[], None, FETCH_DEADLINE);
+        let (broker, theirs) = UnixStream::pair().unwrap();
+        write_frame(&broker, br#"{"request":"steal"}"#).unwrap();
+        assert!(serve_connection(&theirs, &shared).is_err());
+        let (broker, theirs) = UnixStream::pair().unwrap();
+        drop(broker);
+        assert!(serve_connection(&theirs, &shared).is_ok());
+        assert!(gone("x").to_string().contains("cannot be reached: x"));
+    }
+
+    /// `open_proxy` and `granted`, called directly.
+    #[test]
+    fn a_sessions_proxy_is_its_own_and_reaches_only_grants() {
+        let (shared, _) = shared_with(
+            egressing("internal:localhost:443", &["localhost:443"]),
+            &[],
+            None,
+            FETCH_DEADLINE,
+        );
+        let first = open_proxy(&shared).unwrap();
+        let second = open_proxy(&shared).unwrap();
+        assert!(std::ptr::eq(first.allowlist(), second.allowlist()));
+        let surrogate_b64 = first.mint_surrogate(1000, "localhost:443", 60).unwrap();
+        let request = EgressRequest {
+            method: String::from("GET"),
+            destination: String::from("localhost:443"),
+            path: String::from("/"),
+            headers: Vec::new(),
+            body: Vec::new(),
+            surrogate_b64,
+        };
+        assert!(matches!(
+            second.forward(1000, &request),
+            Err(hatchling_egress::Error::InvalidSurrogate)
+        ));
+        assert!(granted(&shared, Some(&first), "localhost:443").is_ok());
+        assert_eq!(
+            granted(&shared, Some(&first), "elsewhere.example:443")
+                .map(|_| ())
+                .unwrap_err()
+                .kind,
+            RefusalKind::NotAllowed
+        );
+        let none: Option<&Proxy<fn(&str) -> Option<Zeroizing<Vec<u8>>>>> = None;
+        assert_eq!(
+            granted(&shared, none, "localhost:443").map(|_| ()).unwrap_err().kind,
+            RefusalKind::Failed
         );
     }
 
@@ -560,5 +1295,6 @@ mod tests {
     fn the_authority_runs_only_as_the_broker_starts_it() {
         let failure = format!("{:?}", ExitCode::FAILURE);
         assert_eq!(format!("{:?}", egress_authority_main()), failure);
+        assert_eq!(format!("{:?}", refuse_to_run("why")), failure);
     }
 }
