@@ -2205,7 +2205,10 @@ mod tests {
         assert!(plain.is_open() && plain.profile.is_none());
         showing(&fake, "https://b.example/verify", "Enter the code");
         let answer = handle_browser_op(&config, &keys, &mut web, &mut plain, &ask);
-        assert!(matches!(answer, BrowserResult::Refused { .. }), "the answer");
+        assert!(
+            matches!(answer, BrowserResult::Refused { .. }),
+            "the answer"
+        );
         let plain_id = plain.shown.as_ref().map(|shown| shown.id.clone()).unwrap();
         assert_eq!(
             plain_board.code_turn(&plain_id, Duration::ZERO),
