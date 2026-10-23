@@ -2193,6 +2193,25 @@ mod tests {
             matches!(answer, BrowserResult::Refused { .. }),
             "the answer"
         );
+        // An open browser that isn't signed in: refused, the owner never asked.
+        let (mut web, mut plain) = session("t", &fake);
+        let plain_board = Arc::new(BrowserBoard::default());
+        plain = plain.with_board(Arc::clone(&plain_board));
+        plain.code_wait = Duration::ZERO;
+        let other = open("https://b.example/");
+        handle_browser_op(&config, &keys, &mut web, &mut plain, &other);
+        owner_decides(&config, "t", "https://b.example", Decision::Approve);
+        handle_browser_op(&config, &keys, &mut web, &mut plain, &other);
+        assert!(plain.is_open() && plain.profile.is_none());
+        showing(&fake, "https://b.example/verify", "Enter the code");
+        let answer = handle_browser_op(&config, &keys, &mut web, &mut plain, &ask);
+        assert!(matches!(answer, BrowserResult::Refused { .. }), "the answer");
+        let plain_id = plain.shown.as_ref().map(|shown| shown.id.clone()).unwrap();
+        assert_eq!(
+            plain_board.code_turn(&plain_id, Duration::ZERO),
+            CodeTurn::None,
+            "never asked"
+        );
         // No board, no owner to ask.
         let (mut web, mut alone) = session("t", &fake);
         handle_browser_op(
