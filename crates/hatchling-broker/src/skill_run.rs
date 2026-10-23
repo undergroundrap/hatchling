@@ -18,7 +18,7 @@
 //! process, which is why the agent cell is spawned before the broker
 //! starts its connection threads. A skill runs on demand, from a session
 //! thread. So the broker never forks there: it starts itself again as
-//! `hatchling-broker skill-cell <spec>` ([`SKILL_CELL_SUBCOMMAND`]) with
+//! `hatchling-broker skill-cell <spec-file>` ([`SKILL_CELL_SUBCOMMAND`]) with
 //! [`std::process::Command`], whose fork-to-exec path is async-signal-
 //! safe. The fresh single-threaded helper spawns the cell and exits with
 //! the skill's exit code. Its stdin and stdout are the skill's.
@@ -287,8 +287,10 @@ fn supervise(
     let deadline = Instant::now() + runtime.timeout;
     let mut command = Command::new(&runtime.spawner);
     command
-        .arg(SKILL_CELL_SUBCOMMAND)
-        .arg(spec)
+        .args(
+            crate::run_launcher::spec_args(SKILL_CELL_SUBCOMMAND, run_dir, spec)
+                .map_err(SkillRunError::Spawn)?,
+        )
         .env("TMPDIR", run_dir)
         .env(
             crate::run_launcher::BROKER_PID_ENV,
@@ -434,7 +436,7 @@ impl Drop for RunDir {
     }
 }
 
-/// The helper: `hatchling-broker skill-cell <spec>`.
+/// The helper: `hatchling-broker skill-cell <spec-file>`.
 ///
 /// Spawns the skill cell the spec describes, waits for it, and exits
 /// with the skill's exit code. Runs in a fresh process, before any
@@ -453,10 +455,8 @@ pub fn skill_cell_main(spec: Option<&str>) -> ExitCode {
 }
 
 fn run_helper(spec: Option<&str>) -> Result<i32, Error> {
-    let spec = spec.ok_or_else(|| Error::Usage {
-        reason: String::from("skill-cell requires a cell spec"),
-    })?;
-    let config: CellConfig = serde_json::from_str(spec).map_err(|err| Error::Usage {
+    let spec = crate::run_launcher::take_spec(spec, SKILL_CELL_SUBCOMMAND)?;
+    let config: CellConfig = serde_json::from_str(&spec).map_err(|err| Error::Usage {
         reason: format!("skill-cell spec is not a cell config: {err}"),
     })?;
     if config.skill_code.is_none() {

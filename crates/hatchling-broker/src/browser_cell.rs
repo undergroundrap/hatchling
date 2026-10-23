@@ -5,7 +5,7 @@
 //!
 //! A browser session starts from a session thread, so its cell is spawned
 //! the way a skill's or a run's is: the broker starts its own binary again
-//! as `hatchling-broker browser-cell <spec>` ([`BROWSER_CELL_SUBCOMMAND`]),
+//! as `hatchling-broker browser-cell <spec-file>` ([`BROWSER_CELL_SUBCOMMAND`]),
 //! a fresh single-threaded helper. The helper hands the broker two things
 //! and keeps neither: the controller's connection, on the channel that is
 //! its stdin, and the cell's relay listener, at the handoff socket in the
@@ -346,8 +346,11 @@ impl Helper {
         let mut std_child = {
             let mut command = Command::new(spawner);
             command
-                .arg(BROWSER_CELL_SUBCOMMAND)
-                .arg(spec)
+                .args(crate::run_launcher::spec_args(
+                    BROWSER_CELL_SUBCOMMAND,
+                    run_dir,
+                    spec,
+                )?)
                 .env("TMPDIR", run_dir)
                 .env(BROKER_PID_ENV, broker_pid())
                 .stdin(Stdio::from(OwnedFd::from(channel)))
@@ -402,7 +405,7 @@ impl Drop for Helper {
     }
 }
 
-/// The helper: `hatchling-broker browser-cell <spec>`.
+/// The helper: `hatchling-broker browser-cell <spec-file>`.
 ///
 /// Spawns the browser cell the spec describes, hands the broker its
 /// connection (on the channel that is the helper's stdin) and its relay
@@ -422,10 +425,8 @@ pub fn browser_cell_main(spec: Option<&str>) -> ExitCode {
 }
 
 fn run_helper(spec: Option<&str>) -> Result<i32, Error> {
-    let spec = spec.ok_or_else(|| Error::Usage {
-        reason: String::from("browser-cell requires a cell spec"),
-    })?;
-    let config: CellConfig = serde_json::from_str(spec).map_err(|err| Error::Usage {
+    let spec = crate::run_launcher::take_spec(spec, BROWSER_CELL_SUBCOMMAND)?;
+    let config: CellConfig = serde_json::from_str(&spec).map_err(|err| Error::Usage {
         reason: format!("browser-cell spec is not a cell config: {err}"),
     })?;
     let handoff = config
