@@ -1252,7 +1252,10 @@ mod tests {
         for _ in 0..3 {
             write_frame(&ours, b"").unwrap();
         }
-        assert!(read_parts(&theirs, 3, PART_BYTES).is_err(), "too many parts");
+        assert!(
+            read_parts(&theirs, 3, PART_BYTES).is_err(),
+            "too many parts"
+        );
         for _ in 0..3 {
             assert_eq!(read_frame(&theirs).unwrap(), b"", "a part was read");
         }
