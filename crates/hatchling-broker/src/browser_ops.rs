@@ -316,23 +316,71 @@ impl BrowserSession {
 
     /// Keeps the running browser's session as its profile's, if it runs
     /// one (WO-030): its cookies read out, and sealed, only its sites'.
-    fn keep_jar(&self, config: &Config, keys: &dyn OpensStores) {
-        let (Some(profile), Some(driven)) = (self.profile.as_ref(), self.browser.as_ref()) else {
+    fn keep_jar(&mut self, config: &Config, keys: &dyn OpensStores) {
+        let (Some(profile), Some(driven)) = (self.profile.clone(), self.browser.clone()) else {
             return;
         };
         let Some(profiles) = crate::browser_profiles::Profiles::of(config, keys) else {
             return;
         };
-        let kept = read_jar(driven).and_then(|jar| {
-            profiles.keep_jar(
-                profile,
-                jar,
-                hatchling_scheduler::Timestamp::now().as_second(),
-            )
+        let kept = read_jar(&driven).and_then(|jar| {
+            let values: Vec<String> = jar.iter().map(|cookie| cookie.value.clone()).collect();
+            profiles
+                .keep_jar(
+                    &profile,
+                    jar,
+                    hatchling_scheduler::Timestamp::now().as_second(),
+                )
+                .map(|dropped| (dropped, values))
         });
         match kept {
-            Ok(dropped) => tracing::info!(%profile, dropped, "a signed-in session is kept"),
+            Ok((dropped, values)) => {
+                for value in &values {
+                    self.hide(value);
+                }
+                tracing::info!(%profile, dropped, "a signed-in session is kept");
+            }
             Err(error) => tracing::warn!(%profile, %error, "a signed-in session can't be kept"),
+        }
+    }
+
+    /// After `op`, a signed-in browser's session is kept, so it outlives
+    /// however the session ends (a page may sign in further, or set a
+    /// cookie of its own), and every cookie value in it is hidden from
+    /// `result`, which the agent is given (WO-030).
+    fn kept(
+        &mut self,
+        config: &Config,
+        keys: &dyn OpensStores,
+        op: &BrowserOp,
+        result: BrowserResult,
+    ) -> BrowserResult {
+        if matches!(op, BrowserOp::Close) || self.profile.is_none() || !self.is_open() {
+            return result;
+        }
+        self.keep_jar(config, keys);
+        let fitted = |snapshot: PageSnapshot, refused: &[String]| {
+            snapshot.fitted_in(|snapshot| {
+                hatchling_core::fits_one_frame(&SessionResponse::Browser(BrowserResult::Page {
+                    snapshot: snapshot.clone(),
+                    refused: refused.to_vec(),
+                }))
+            })
+        };
+        if let BrowserResult::Page { snapshot, refused } = result {
+            let snapshot = fitted(hidden(snapshot, &self.filled), &refused);
+            return BrowserResult::Page { snapshot, refused };
+        }
+        result
+    }
+
+    /// Hides `secret` from every snapshot the agent is given from now on,
+    /// until the browser closes: what the broker filled, and a signed-in
+    /// session's cookie values, which a page can show (`document.cookie`)
+    /// and an agent could then carry elsewhere.
+    fn hide(&mut self, secret: &str) {
+        if !self.filled.iter().any(|known| known.expose() == secret) {
+            self.filled.push(Concealed::new(secret.to_owned()));
         }
     }
 
@@ -417,10 +465,14 @@ impl BrowserSession {
             .ok_or_else(|| String::from("no browser"))
             .and_then(|driven| {
                 let jar = profiles.jar(&profile.id)?;
-                set_jar(driven, &jar).map(|()| jar.len())
+                set_jar(driven, &jar).map(|()| jar)
             });
         match restored {
-            Ok(cookies) => {
+            Ok(jar) => {
+                for cookie in &jar {
+                    self.hide(&cookie.value);
+                }
+                let cookies = jar.len();
                 tracing::info!(profile = %profile.id, cookies, "a signed-in session is restored");
             }
             Err(error) => {
@@ -749,6 +801,7 @@ pub fn handle_browser_op(
     }
     let narration = browser.narrate(op);
     let result = answer(config, keys, web, browser, op);
+    let result = browser.kept(config, keys, op, result);
     browser.report(narration, &result);
     browser.done();
     result
@@ -762,14 +815,8 @@ fn answer(
     browser: &mut BrowserSession,
     op: &BrowserOp,
 ) -> BrowserResult {
-    // A page opened or acted on may sign in further: a signed-in browser's
-    // session is kept after each, so it outlives however the session ends.
     match op {
-        BrowserOp::Open { url, reason } => {
-            let opened = open(config, keys, web, browser, url, reason);
-            browser.keep_jar(config, keys);
-            opened
-        }
+        BrowserOp::Open { url, reason } => open(config, keys, web, browser, url, reason),
         BrowserOp::Read => browser.command(&BrowserCommand::Snapshot),
         BrowserOp::Act { element, action } => {
             if let PageAction::Type { text } = action {
@@ -777,12 +824,10 @@ fn answer(
                     return refusal;
                 }
             }
-            let acted = browser.command(&BrowserCommand::Act {
+            browser.command(&BrowserCommand::Act {
                 element: *element,
                 action: action.clone(),
-            });
-            browser.keep_jar(config, keys);
-            acted
+            })
         }
         BrowserOp::Scroll { down } => browser.command(&BrowserCommand::Scroll { down: *down }),
         BrowserOp::Allow { site, reason } => allow_site(config, keys, web, browser, site, reason),
@@ -795,23 +840,15 @@ fn answer(
             username,
             password,
             label,
-        } => {
-            let filled = sign_in(
-                config,
-                keys,
-                browser,
-                *username,
-                *password,
-                label.as_deref(),
-            );
-            browser.keep_jar(config, keys);
-            filled
-        }
-        BrowserOp::Code { element } => {
-            let filled = code(browser, *element);
-            browser.keep_jar(config, keys);
-            filled
-        }
+        } => sign_in(
+            config,
+            keys,
+            browser,
+            *username,
+            *password,
+            label.as_deref(),
+        ),
+        BrowserOp::Code { element } => code(browser, *element),
     }
 }
 
@@ -2066,6 +2103,85 @@ mod tests {
                 if let hatchling_core::ui::UiEventBody::BrowserCode { request_id, .. } = event.body
                 {
                     Some(request_id)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn after_a_whole_signed_in_session_neither_the_agent_nor_the_log_holds_a_secret() {
+        let (config, _scratch, keys, profile) = with_sign_ins("whole", &["Work"]);
+        let restored = Cookie {
+            value: String::from("jar-secret-value"),
+            ..cookie("a.example", "sid")
+        };
+        crate::browser_profiles::Profiles::of(&config, &keys)
+            .unwrap()
+            .keep_jar(&profile.id, vec![restored], 1)
+            .unwrap();
+        let fake = Fake::default();
+        let ((mut web, mut browser), board, bus) = watched(&fake);
+        browser.code_wait = Duration::ZERO;
+        let secrets = [
+            "work@a.example",
+            "Work-hunter2",
+            "jar-secret-value",
+            "page-set-secret",
+            "481516",
+        ];
+        let mut told = Vec::new();
+        let logged = crate::test_log::captured(|| {
+            let mut op = |op: &BrowserOp| {
+                let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, op);
+                told.push(format!("{answer:?}"));
+            };
+            op(&open("https://a.example/login"));
+            // The page sets a cookie of its own, and shows everything it holds.
+            fake.jar.lock().unwrap().push(Cookie {
+                value: String::from("page-set-secret"),
+                ..cookie("a.example", "csrf")
+            });
+            showing(&fake, "https://a.example/login", &secrets.join(" "));
+            op(&BrowserOp::Read);
+            op(&sign_in_op(Some(1), None));
+            op(&BrowserOp::Code { element: 3 });
+            let id = browser_id(&bus);
+            assert_eq!(
+                board.give_code(&id, &latest_code(&bus), &Concealed::new(String::from("481516"))),
+                Ok(())
+            );
+            let mut op = |op: &BrowserOp| {
+                let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, op);
+                told.push(format!("{answer:?}"));
+            };
+            op(&BrowserOp::Code { element: 3 });
+            op(&BrowserOp::Read);
+            op(&BrowserOp::Close);
+        });
+        assert!(logged.contains("a sign-in is filled"), "the fill was logged");
+        assert!(logged.contains("a signed-in session is kept"), "the session was kept");
+        for secret in secrets {
+            assert!(!logged.contains(secret), "the broker's log names a secret");
+            assert!(
+                told.iter().all(|answer| !answer.contains(secret)),
+                "the agent was told a secret"
+            );
+        }
+        assert!(
+            told.iter().any(|answer| answer.contains("[hidden]")),
+            "what the page showed was hidden, not dropped"
+        );
+    }
+
+    /// The id the board shows the browser of `bus`'s session by.
+    fn browser_id(bus: &crate::api_stream::Bus) -> String {
+        bus.wait_after(None, Duration::ZERO)
+            .into_iter()
+            .find_map(|event| {
+                if let hatchling_core::ui::UiEventBody::BrowserSession(session) = event.body {
+                    Some(session.session_id)
                 } else {
                     None
                 }
