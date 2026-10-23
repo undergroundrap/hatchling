@@ -17,6 +17,7 @@ import type { UiTransport } from './client.js';
 import type { UiEvent } from './protocol/generated.js';
 import { LiveProfiles } from './profiles.js';
 import { LiveSignIns } from './sign-ins.js';
+import type { CodePort } from '../../session/codes.js';
 import { LiveChatSession } from './session.js';
 import { LiveSites } from './sites.js';
 import { Surfaces } from './surfaces.js';
@@ -34,6 +35,8 @@ export class LiveAdapter implements ProtocolAdapter {
     readonly #profiles: LiveProfiles;
     /** Where the Settings form sends a sign-in to keep: straight to the broker, never as a Command. */
     readonly signIns: LiveSignIns;
+    /** Where the browser view sends a one-time code: straight to the broker, never as a Command. */
+    readonly codes: CodePort;
     readonly #listeners = new Set<() => void>();
     #settings: Settings = SETTINGS;
     #clock = '';
@@ -51,6 +54,7 @@ export class LiveAdapter implements ProtocolAdapter {
         this.#sites = new LiveSites(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.#profiles = new LiveProfiles(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.signIns = new LiveSignIns(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
+        this.codes = { give: (sessionId, code) => this.#surfaces.giveCode(sessionId, code) };
         this.chatSession = new LiveChatSession(this.#client, this.#chats, artifactId => this.#surfaces.shelf.latest(artifactId));
         this.#snapshot = this.#build();
         // Registered first, so the snapshot is current before any view hears of a change.
@@ -108,6 +112,8 @@ export class LiveAdapter implements ProtocolAdapter {
                 return this.#profiles.delete(command.id);
             case 'sign-in.delete':
                 return this.signIns.delete(command.id);
+            case 'browser.decline-code':
+                return this.#surfaces.declineCode(command.id);
             case 'settings.theme':
                 return this.#prefer({ theme: command.value });
             case 'settings.accent':

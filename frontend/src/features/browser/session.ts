@@ -171,6 +171,19 @@ export function openBrowserSession(ctx: AppContext, id: string): void {
             }
             viewport.append(drive);
         }
+        // A code the page asks for: typed here, sent straight to Hatchling, never kept by the app.
+        const port = ctx.codes;
+        if (!stopped && task.codeRequest && port) {
+            const code = h('input', { name: 'one-time-code', type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: 64, 'aria-label': 'One-time code' });
+            const form = h('form', { class: 'local-takeover-controls browser-code-request', 'aria-label': 'The page asks for a one-time code' }, h('strong', {}, `${task.codeRequest.origin} asks for a one-time code`), code, h('button', { type: 'submit', class: 'button primary' }, 'Give code'), button('Decline', () => { void ctx.run({ type: 'browser.decline-code', id }); }, { variant: 'ghost' }));
+            form.addEventListener('submit', event => {
+                event.preventDefault();
+                const given = code.value;
+                code.value = '';
+                void port.give(id, given).then(result => ctx.toast(result.message, !result.ok));
+            });
+            viewport.append(form);
+        }
         const controls = h('div', { class: 'browser-session-footer' }, h('span', {}, ctx.state.mode !== 'scripted' ? (!stopped && task.controller === 'user' ? 'You have control. Click the picture to click the page; what you type goes where the page’s focus is. Hatchling waits until you hand it back.' : 'Live picture of the agent’s browser. Take control to use the page yourself.') : stopped ? 'Last recorded preview · read-only' : task.controller === 'user' ? 'The agent is paused while you control the sample.' : 'Watching the local sample session. No external browser is connected.'));
         if (task.challenge === 'waiting' && task.controller === 'agent' && !stopped)
             controls.append(button('Allow this challenge once', () => { void ctx.run({ type: 'browser.grant', id }, true); }, { variant: 'link' }));

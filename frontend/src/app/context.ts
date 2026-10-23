@@ -1,5 +1,6 @@
 import type { ContentLoading } from './content-loading.js';
 import type { SignInPort } from '../session/sign-ins.js';
+import type { CodePort } from '../session/codes.js';
 import type { ApprovalReview } from '../features/approvals/review.js';
 import type { ChatDelivery } from '../features/chat/delivery.js';
 import type { AppState, ArtifactFormat, Command, CommandResult, DeepReadonly, ProtocolAdapter } from '../protocol/models.js';
@@ -56,6 +57,8 @@ export interface AppContext {
     readonly adapter: ProtocolAdapter;
     /** Where a sign-in to keep goes, when the app is connected to Hatchling (WO-030). */
     readonly signIns: SignInPort | undefined;
+    /** Where a one-time code goes, when the app is connected to Hatchling (WO-030). */
+    readonly codes: CodePort | undefined;
     readonly delivery: ChatDelivery;
     readonly contentLoading: ContentLoading;
     readonly approvals: ApprovalReview;

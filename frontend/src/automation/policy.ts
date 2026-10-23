@@ -16,6 +16,7 @@ export const actionPolicy: Readonly<Record<Command['type'], Exposure>> = {
     'browser.advance': 'internal',
     'browser.cancel': 'review',
     'browser.click': 'human-only',
+    'browser.decline-code': 'human-only',
     'browser.grant': 'human-only',
     'browser.input': 'human-only',
     'browser.keep-signed-in': 'human-only',

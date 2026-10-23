@@ -13,7 +13,7 @@ import { BrowserDesk } from './browser.js';
 import type { LiveClient, Reply } from './client.js';
 import { switching } from './control.js';
 import { PROFILES_FAILED, PROFILES_OFF } from './profiles.js';
-import type { ActionRefusal, AgentState, ArtifactRefusal, BrowserFailure, ControlRefusal, DeliveryRefusal, FileContent, OwnerInput, UiAction, UiActionResult, UiEventBody } from './protocol/generated.js';
+import type { ActionRefusal, AgentState, ArtifactRefusal, BrowserFailure, CodeRefusal, ControlRefusal, DeliveryRefusal, FileContent, OwnerInput, UiAction, UiActionResult, UiEventBody } from './protocol/generated.js';
 /** The avatar and the status line show exactly what the broker reported. */
 const TURNS: Readonly<Record<AgentState, TurnState>> = { idle: 'idle', working: 'working', awaiting_approval: 'awaiting', paused: 'interrupted', stalled: 'stalled' };
 const ACTION_REFUSALS: Readonly<Record<ActionRefusal, string>> = {
@@ -52,6 +52,12 @@ const INPUT_FAILURES: Readonly<Record<BrowserFailure, string>> = {
     bad_command: 'The browser did not understand that, so nothing happened.',
     other_origin: 'The page is not on the site its sign-in is for, so nothing was filled.',
 };
+const CODE_REFUSALS: Readonly<Record<CodeRefusal, string>> = {
+    no_request: 'This code is no longer asked for: it was answered, it expired, or the page asked again.',
+    empty: 'Type the code first.',
+    too_long: 'That is longer than any code a site sends.',
+};
+const NO_CODE = 'No code is asked for on this browser now.';
 const UNEXPECTED = 'Hatchling answered with something else, so this is not confirmed.';
 function megabytes(bytes: number): string {
     return `${Number((bytes / 1048576).toFixed(1))} MB`;
@@ -91,7 +97,7 @@ export class Surfaces {
             case 'browser_control':
                 return this.desk.handoff(body.session_id, body.handoff, body.frame_sequence);
             case 'browser_code':
-                // Shown with its browser once the app asks for codes.
+                this.desk.code(body.session_id, body.request_id, body.origin, body.state);
                 return undefined;
             case 'activity':
             case 'chat_message':
@@ -255,6 +261,37 @@ export class Surfaces {
     }
     #refusal(sessionId: string, result: UiActionResult): CommandResult | undefined {
         return result.result === 'control_refused' && result.session_id === sessionId ? failed(CONTROL_REFUSALS[result.reason]) : undefined;
+    }
+    /** Give the code a session's page asks for: sent once, straight to the broker, never kept. */
+    giveCode(sessionId: string, code: string): Promise<CommandResult> {
+        const request = this.desk.codeRequest(sessionId);
+        if (request === undefined)
+            return Promise.resolve(failed(NO_CODE));
+        return this.#ask({ action: 'give_code', session_id: sessionId, request_id: request.id, code }, result => {
+            if (result.result === 'code_taken' && result.session_id === sessionId) {
+                this.desk.answered(sessionId, request.id);
+                this.#changed();
+                return { ok: true, message: 'Given. Hatchling types it into the page once, and forgets it.' };
+            }
+            return this.#codeRefusal(sessionId, result);
+        });
+    }
+    /** Decline the code a session's page asks for. */
+    declineCode(sessionId: string): Promise<CommandResult> {
+        const request = this.desk.codeRequest(sessionId);
+        if (request === undefined)
+            return Promise.resolve(failed(NO_CODE));
+        return this.#ask({ action: 'decline_code', session_id: sessionId, request_id: request.id }, result => {
+            if (result.result === 'code_declined' && result.session_id === sessionId) {
+                this.desk.answered(sessionId, request.id);
+                this.#changed();
+                return { ok: true, message: 'Declined. Hatchling tells the agent it will not get the code.' };
+            }
+            return this.#codeRefusal(sessionId, result);
+        });
+    }
+    #codeRefusal(sessionId: string, result: UiActionResult): CommandResult | undefined {
+        return result.result === 'code_refused' && result.session_id === sessionId ? failed(CODE_REFUSALS[result.reason]) : undefined;
     }
     /** Stop is the one browser command allowed whoever drives, even while control changes hands. */
     stop(sessionId: string): Promise<CommandResult> {

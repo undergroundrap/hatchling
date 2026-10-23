@@ -297,6 +297,14 @@ export interface BrowserTask {
     continuedFrom: Id | null;
     blocker: string;
     lastConfirmedState: string;
+    /** A one-time code its page asks for, which the user gives here (WO-030). */
+    codeRequest?: BrowserCodeRequest;
+}
+/** A signed-in site's request for a one-time code: where it's for. The code itself is never state. */
+export interface BrowserCodeRequest {
+    id: Id;
+    /** `https://host[:port]`. */
+    origin: string;
 }
 export interface Device {
     id: Id;
@@ -496,6 +504,9 @@ export type Command = {
     id: Id;
 } | {
     type: 'sign-in.delete';
+    id: Id;
+} | {
+    type: 'browser.decline-code';
     id: Id;
 } | {
     type: 'identity.avatar';
