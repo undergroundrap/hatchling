@@ -232,15 +232,7 @@ impl<'a> Ops<'a> {
                 self.browser(owns, OwnerAct::Input(session_id, input))
             }
             UiAction::KeepSignedIn { session_id } => self.browser(owns, OwnerAct::Keep(session_id)),
-            UiAction::GiveCode {
-                session_id,
-                request_id,
-                code,
-            } => self.browser(owns, OwnerAct::GiveCode(session_id, request_id, code)),
-            UiAction::DeclineCode {
-                session_id,
-                request_id,
-            } => self.browser(owns, OwnerAct::DeclineCode(session_id, request_id)),
+            UiAction::GiveCode { .. } | UiAction::DeclineCode { .. } => self.code(owns, action),
             UiAction::OpenArtifact { .. }
             | UiAction::ShareArtifact { .. }
             | UiAction::AttachArtifact { .. }
@@ -276,6 +268,32 @@ impl<'a> Ops<'a> {
             },
         };
         (result, ApiOutcome::Served)
+    }
+
+    /// The owner's answer to a browser's code request (WO-030): a code
+    /// given, or the request declined; the owner's alone.
+    fn code(&self, owner: bool, action: &UiAction) -> (UiActionResult, ApiOutcome) {
+        if let UiAction::GiveCode {
+            session_id,
+            request_id,
+            code,
+        } = action
+        {
+            return self.browser(owner, OwnerAct::GiveCode(session_id, request_id, code));
+        }
+        if let UiAction::DeclineCode {
+            session_id,
+            request_id,
+        } = action
+        {
+            return self.browser(owner, OwnerAct::DeclineCode(session_id, request_id));
+        }
+        (
+            UiActionResult::Refused {
+                reason: ActionRefusal::Unavailable,
+            },
+            ApiOutcome::Refused,
+        )
     }
 
     /// The owner's `act` on the agent's browser (WO-029), and the owner's
@@ -1578,6 +1596,18 @@ mod tests {
             )
         );
         board.end("browser-code");
+        // Only a code's answer is one.
+        assert_eq!(
+            ops.code(true, &UiAction::StopBrowser {
+                session_id: String::from("browser-code")
+            }),
+            (
+                UiActionResult::Refused {
+                    reason: ActionRefusal::Unavailable,
+                },
+                ApiOutcome::Refused,
+            )
+        );
         // The answer itself: taken, declined, or why not.
         assert_eq!(
             code_answer(
