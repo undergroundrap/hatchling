@@ -2134,6 +2134,9 @@ mod tests {
         let mut told = Vec::new();
         let logged = crate::test_log::captured(|| {
             let mut op = |op: &BrowserOp| {
+                // Tests on other threads hit the same log lines: the cache of
+                // which are wanted is rebuilt with this capture in place.
+                tracing::callsite::rebuild_interest_cache();
                 let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, op);
                 told.push(format!("{answer:?}"));
             };
@@ -2158,6 +2161,9 @@ mod tests {
                 Ok(())
             );
             let mut op = |op: &BrowserOp| {
+                // Tests on other threads hit the same log lines: the cache of
+                // which are wanted is rebuilt with this capture in place.
+                tracing::callsite::rebuild_interest_cache();
                 let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, op);
                 told.push(format!("{answer:?}"));
             };
@@ -2193,9 +2199,6 @@ mod tests {
         let (config, _scratch, keys, _profile) = with_sign_ins("kept", &[]);
         let fake = Fake::default();
         let (mut web, mut browser) = session("t", &fake);
-        browser.hide("a-secret");
-        browser.hide("a-secret");
-        assert_eq!(browser.filled.len(), 1, "once");
         let page = |text: &str| BrowserResult::Page {
             snapshot: PageSnapshot {
                 text: text.to_owned(),
@@ -2209,6 +2212,10 @@ mod tests {
             page("a-secret")
         );
         handle_browser_op(&config, &keys, &mut web, &mut browser, &open("https://a.example/"));
+        // Hidden once the browser runs: a new one starts with nothing hidden.
+        browser.hide("a-secret");
+        browser.hide("a-secret");
+        assert_eq!(browser.filled.len(), 1, "once");
         assert_eq!(
             browser.kept(&config, &keys, &BrowserOp::Read, page("a-secret")),
             page("[hidden]")
