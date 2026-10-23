@@ -24,9 +24,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use hatchling_core::browser::{
-    BrowserCommand, BrowserFailure, BrowserReply, Cookie, Key, OwnerInput, PageAction, PageSnapshot,
+    BrowserCommand, BrowserFailure, BrowserReply, Cookie, Key, OwnerInput, PageAction,
+    PageSnapshot, SignInField,
 };
 use hatchling_core::framing::{read_frame, write_frame};
+use hatchling_core::ui::Concealed;
 use hatchling_isolation::{
     Cell as _, CellSpec, Exposure, Filter, IsolationBackend as _, Limits, Tool,
 };
@@ -70,6 +72,14 @@ const OWNER: &str = r#"<!doctype html><title>Owner</title>
 <input aria-label="Field" style="left: 0; top: 0" oninput="document.getElementById('echo').textContent = 'echo: ' + this.value">
 <a href="/next" style="left: 640px; top: 400px">Away</a>
 <p id="echo" style="position: fixed; left: 700px; top: 10px"></p>"#;
+
+/// A sign-in form: an email field, a password field, and a comment box a
+/// password must never reach. Each shows what it holds.
+const SIGN_IN: &str = r#"<!doctype html><title>Sign in</title>
+<input type="email" aria-label="Email" oninput="document.getElementById('email').textContent = 'email: ' + this.value">
+<input type="password" aria-label="Password" oninput="document.getElementById('password').textContent = 'password: ' + this.value.length + ' characters'">
+<textarea aria-label="Comment" oninput="document.getElementById('comment').textContent = 'comment: ' + this.value"></textarea>
+<p id="email"></p><p id="password"></p><p id="comment"></p>"#;
 
 /// Whether `name`'s requirement makes a missing prerequisite a failure.
 fn required(name: &str) -> bool {
@@ -236,6 +246,7 @@ fn answer(mut stream: std::net::TcpStream, seen: &Mutex<Vec<String>>) {
         Some("/owner") => ("200 OK", OWNER),
         Some("/cookies") => ("200 OK", COOKIES),
         Some("/webrtc") => ("200 OK", WEBRTC),
+        Some("/signin") => ("200 OK", SIGN_IN),
         _ => ("404 Not Found", "not here"),
     };
     let _ = write!(
@@ -398,6 +409,73 @@ fn webrtc_loads(connection: &UnixStream) {
         },
     ));
     assert!(webrtc.text.contains("peer made"), "{}", webrtc.text);
+}
+
+/// A sign-in filled on `connection` (WO-030): only on the page's own
+/// origin, a username only into its field, a password only into a
+/// password field, never into a box that would show it.
+fn sign_in_filled(connection: &UnixStream) {
+    let form = page(send(
+        connection,
+        &BrowserCommand::Open {
+            url: format!("http://{HOST}/signin"),
+        },
+    ));
+    let fill = |element: u32, field: SignInField, text: &str, origin: &str| BrowserCommand::Fill {
+        element,
+        field,
+        text: Concealed::new(text.to_owned()),
+        origin: origin.to_owned(),
+    };
+    let origin = format!("http://{HOST}");
+    let email = element(&form, "textbox", "Email");
+    let password = element(&form, "password", "Password");
+    let comment = element(&form, "textbox", "Comment");
+    let failed = |failure| BrowserReply::Failed { failure };
+    assert_eq!(
+        send(
+            connection,
+            &fill(
+                password,
+                SignInField::Password,
+                "hunter2",
+                "http://other.test"
+            )
+        ),
+        failed(BrowserFailure::OtherOrigin),
+        "another origin: nothing typed"
+    );
+    for (element, field) in [
+        (comment, SignInField::Password),
+        (comment, SignInField::Username),
+        (email, SignInField::Password),
+        (password, SignInField::Username),
+    ] {
+        assert_eq!(
+            send(connection, &fill(element, field, "hunter2", &origin)),
+            failed(BrowserFailure::NotPossible),
+            "a field of the wrong kind"
+        );
+    }
+    let typed = page(send(
+        connection,
+        &fill(email, SignInField::Username, "ada@hatchling.test", &origin),
+    ));
+    assert!(
+        typed.text.contains("email: ada@hatchling.test"),
+        "{}",
+        typed.text
+    );
+    let typed = page(send(
+        connection,
+        &fill(password, SignInField::Password, "hunter2", &origin),
+    ));
+    assert!(
+        typed.text.contains("password: 7 characters"),
+        "{}",
+        typed.text
+    );
+    assert!(!typed.text.contains("comment: h"), "{}", typed.text);
 }
 
 /// The id of the element `role` named `name`.
@@ -570,6 +648,7 @@ fn the_controller_drives_a_real_browser_in_a_cell_through_the_relay_alone() {
     owner_drives(&connection);
     cookies_kept(&connection);
     webrtc_loads(&connection);
+    sign_in_filled(&connection);
     // A command it doesn't know is answered, not obeyed.
     let unknown = serde_json::json!({"command": "evaluate", "script": "1"});
     write_frame(&connection, &serde_json::to_vec(&unknown).unwrap()).unwrap();

@@ -1659,6 +1659,11 @@
           "const": "bad_command",
           "description": "A command that wasn't understood.",
           "type": "string"
+        },
+        {
+          "const": "other_origin",
+          "description": "The page isn't on the origin a sign-in is for: nothing was filled.",
+          "type": "string"
         }
       ]
     },
@@ -1818,6 +1823,42 @@
           },
           "required": [
             "op"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Sign in on the page with the sign-in the owner keeps for its site\n(WO-030, v16): the broker types it into the fields named, and the\nagent never sees it.",
+          "properties": {
+            "label": {
+              "description": "Which sign-in, by its label, when the site has more than one.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "op": {
+              "const": "sign_in",
+              "type": "string"
+            },
+            "password": {
+              "description": "The password field's element, from the last snapshot.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "username": {
+              "description": "The username field's element, from the last snapshot; none for a\nform that asks for the password alone.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "op",
+            "password"
           ],
           "type": "object"
         }
@@ -10560,7 +10601,7 @@
       "backend_newer": "broker v{backend} needs frontend ≥ v{backend}; frontend is v{frontend} — reload the frontend to update",
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
-    "session_protocol": 15,
+    "session_protocol": 16,
     "ui_schema_version": 4
   },
   "x-roots": {

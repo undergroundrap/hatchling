@@ -17,8 +17,9 @@ use std::time::{Duration, Instant};
 
 use hatchling_core::browser::{
     BrowserCommand, BrowserFailure, BrowserReply, Cookie, Key, MAX_COOKIE_PAGE_BYTES, MAX_COOKIES,
-    MAX_TYPED_CHARS, OwnerInput, PageAction, PageSnapshot, SameSite, VIEWPORT,
+    MAX_TYPED_CHARS, OwnerInput, PageAction, PageSnapshot, SameSite, SignInField, VIEWPORT,
 };
+use hatchling_core::ui::Concealed;
 use serde_json::{Value, json};
 
 use crate::cdp::CdpError;
@@ -103,6 +104,12 @@ impl Session {
                     Err(failure) => BrowserReply::Failed { failure },
                 };
             }
+            BrowserCommand::Fill {
+                element,
+                field,
+                text,
+                origin,
+            } => self.fill(element, field, &text, &origin),
             BrowserCommand::Close => {
                 self.close();
                 return BrowserReply::Closed;
@@ -290,6 +297,51 @@ impl Session {
         }
         self.settle(&session)?;
         self.snapshot()
+    }
+
+    /// Fills `element`, the sign-in form's `field`, with `text`: only while
+    /// the top frame is on `origin`, before and after the field takes the
+    /// focus (a focus handler that navigates gets nothing typed), and only
+    /// into the kind of field `field` names.
+    fn fill(
+        &mut self,
+        element: u32,
+        field: SignInField,
+        text: &Concealed,
+        origin: &str,
+    ) -> Result<PageSnapshot, BrowserFailure> {
+        let session = self.page_session()?;
+        if text.expose().chars().count() > MAX_TYPED_CHARS {
+            return Err(BrowserFailure::NotPossible);
+        }
+        self.browser()?.cdp.forget_events();
+        self.on_origin(&session, origin)?;
+        let step = match field {
+            SignInField::Username => "username",
+            SignInField::Password => "password",
+        };
+        self.element(element, step, "")?;
+        self.on_origin(&session, origin)?;
+        self.insert(&session, text.expose())?;
+        self.settle(&session)?;
+        self.snapshot()
+    }
+
+    /// Whether the top frame is on `origin` now, as the browser reports it
+    /// (its security origin, never what the page's script says).
+    fn on_origin(&mut self, session: &str, origin: &str) -> Result<(), BrowserFailure> {
+        let tree = self
+            .call(Some(session), "Page.getFrameTree", json!({}))
+            .map_err(gone_or(BrowserFailure::NoPage))?;
+        if tree
+            .pointer("/frameTree/frame/securityOrigin")
+            .and_then(Value::as_str)
+            == Some(origin)
+        {
+            Ok(())
+        } else {
+            Err(BrowserFailure::OtherOrigin)
+        }
     }
 
     /// The owner's `input`, through the browser's input, and a picture of
@@ -667,7 +719,10 @@ mod tests {
                 Vec::new(),
             ),
             "Page.navigate" => (json!({"frameId": "F"}), vec![event("Page.loadEventFired")]),
-            "Page.getFrameTree" => (json!({"frameTree": {"frame": {"id": "F"}}}), Vec::new()),
+            "Page.getFrameTree" => (
+                json!({"frameTree": {"frame": {"id": "F", "securityOrigin": "https://a.test"}}}),
+                Vec::new(),
+            ),
             "Page.createIsolatedWorld" => (json!({"executionContextId": 7}), Vec::new()),
             "Runtime.evaluate" => (evaluated(&param("expression")), Vec::new()),
             "Storage.getCookies" => (
@@ -908,9 +963,12 @@ mod tests {
         ) {
             (Some(9), _, _) => json!({"outcome": "unknown"}),
             (Some(_), Some("box"), _) => json!({"outcome": "ok", "x": 12.5, "y": 40.0}),
-            (Some(_), Some("focus"), _) | (Some(_), Some("choose"), Some("B")) => {
-                json!({"outcome": "ok"})
-            }
+            // Element 1 is a text field, 2 a password field; the rest take
+            // neither kind of fill.
+            (Some(_), Some("focus"), _)
+            | (Some(_), Some("choose"), Some("B"))
+            | (Some(1), Some("username"), _)
+            | (Some(2), Some("password"), _) => json!({"outcome": "ok"}),
             _ => json!({"outcome": "not_possible"}),
         };
         json!({"result": {"value": outcome}})
@@ -1139,6 +1197,99 @@ mod tests {
         assert_eq!(
             session.evaluate("S", 7, "window.scrollBy(0, 1)"),
             Ok(Value::Null)
+        );
+    }
+
+    #[test]
+    fn a_fill_types_only_on_its_origin_and_only_into_its_kind_of_field() {
+        let (mut session, seen) = fake();
+        let fill =
+            |element: u32, field: SignInField, text: &str, origin: &str| BrowserCommand::Fill {
+                element,
+                field,
+                text: Concealed::new(text.to_owned()),
+                origin: origin.to_owned(),
+            };
+        let failed = |failure| BrowserReply::Failed { failure };
+        assert_eq!(
+            session.handle(fill(2, SignInField::Password, "s3cret", "https://a.test")),
+            failed(BrowserFailure::NoPage)
+        );
+        session.open("http://a.test/").unwrap();
+        assert_eq!(
+            session.handle(fill(1, SignInField::Username, "ada", "https://a.test")),
+            BrowserReply::Page {
+                snapshot: snapshot()
+            }
+        );
+        assert_eq!(
+            session.handle(fill(2, SignInField::Password, "s3cret", "https://a.test")),
+            BrowserReply::Page {
+                snapshot: snapshot()
+            }
+        );
+        let typed = |seen: &Mutex<Vec<Value>>| {
+            sent(seen, "Input.insertText")
+                .iter()
+                .filter_map(|call| {
+                    call.pointer("/params/text")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(typed(&seen), ["ada", "s3cret"]);
+        // The origin is checked before the field takes the focus, and after.
+        let checks = sent(&seen, "Page.getFrameTree").len();
+        assert!(checks >= 4, "{checks}");
+        for (command, failure) in [
+            (
+                fill(2, SignInField::Password, "s3cret", "https://b.test"),
+                BrowserFailure::OtherOrigin,
+            ),
+            (
+                fill(2, SignInField::Password, "s3cret", "https://a.test:8443"),
+                BrowserFailure::OtherOrigin,
+            ),
+            (
+                fill(1, SignInField::Password, "s3cret", "https://a.test"),
+                BrowserFailure::NotPossible,
+            ),
+            (
+                fill(2, SignInField::Username, "ada", "https://a.test"),
+                BrowserFailure::NotPossible,
+            ),
+            (
+                fill(9, SignInField::Password, "s3cret", "https://a.test"),
+                BrowserFailure::UnknownElement,
+            ),
+            (
+                fill(
+                    2,
+                    SignInField::Password,
+                    &"x".repeat(MAX_TYPED_CHARS + 1),
+                    "https://a.test",
+                ),
+                BrowserFailure::NotPossible,
+            ),
+        ] {
+            assert_eq!(session.handle(command), failed(failure));
+        }
+        assert_eq!(typed(&seen).len(), 2, "nothing more typed");
+        // Directly: the origin as the browser reports it.
+        assert_eq!(session.on_origin("S", "https://a.test"), Ok(()));
+        assert_eq!(
+            session.on_origin("S", "https://a.test/"),
+            Err(BrowserFailure::OtherOrigin)
+        );
+        assert_eq!(
+            session.fill(
+                2,
+                SignInField::Password,
+                &Concealed::new(String::from("pw")),
+                "https://a.test"
+            ),
+            Ok(snapshot())
         );
     }
 

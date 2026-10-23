@@ -457,6 +457,9 @@ impl Cell<Ready> {
         registry.register(Box::new(crate::tools::BrowserAllowTool::new(
             self.connection(),
         )));
+        registry.register(Box::new(crate::tools::BrowserSignInTool::new(
+            self.connection(),
+        )));
         registry.register(Box::new(crate::tools::BrowserCloseTool::new(
             self.connection(),
         )));

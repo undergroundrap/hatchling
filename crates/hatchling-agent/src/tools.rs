@@ -634,6 +634,74 @@ impl Tool for BrowserAllowTool<'_> {
     }
 }
 
+/// Signs in on the page with a sign-in the owner keeps (WO-030): the
+/// broker types it, and the model never sees it.
+pub struct BrowserSignInTool<'s> {
+    stream: &'s UnixStream,
+}
+
+impl<'s> BrowserSignInTool<'s> {
+    /// Build over the broker session.
+    #[must_use]
+    pub const fn new(stream: &'s UnixStream) -> Self {
+        Self { stream }
+    }
+}
+
+impl Tool for BrowserSignInTool<'_> {
+    fn name(&self) -> &'static str {
+        "browser_sign_in"
+    }
+
+    fn description(&self) -> &'static str {
+        "Sign in on the page you're on with the sign-in the owner keeps for this site: name its password field, and its username field if it has one, by their ids from the last page. Hatchling types them; you never see either. Works only in a browser the owner kept signed in to this site. Returns the page after, or why it wasn't done."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "password_element": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "The password field's id, from the last page."
+                },
+                "username_element": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "The username or email field's id, from the last page, if the form has one."
+                },
+                "label": {
+                    "type": "string",
+                    "description": "Which sign-in, by its label, when you're told the site has more than one."
+                }
+            },
+            "required": ["password_element"],
+            "additionalProperties": false
+        })
+    }
+
+    fn execute(&self, arguments: Value) -> Result<ToolOutput, LoopError> {
+        let element = |key: &str| {
+            arguments
+                .get(key)
+                .and_then(Value::as_u64)
+                .and_then(|element| u32::try_from(element).ok())
+        };
+        let password = element("password_element").ok_or_else(|| LoopError::ToolFailed {
+            tool: self.name().to_owned(),
+            reason: String::from("missing or invalid 'password_element' argument"),
+        })?;
+        let label = arguments.get("label").and_then(Value::as_str);
+        Ok(browser_answer(crate::browser::sign_in(
+            self.stream,
+            element("username_element"),
+            password,
+            label,
+        )))
+    }
+}
+
 /// Closes the browser (WO-029).
 pub struct BrowserCloseTool<'s> {
     stream: &'s UnixStream,
@@ -780,6 +848,9 @@ const fn browser_failure_text(failure: BrowserFailure) -> &'static str {
         BrowserFailure::LoadFailed => "the page couldn't be loaded",
         BrowserFailure::BrowserGone => "the browser stopped: open a page to start it again",
         BrowserFailure::BadCommand => "the browser didn't understand that",
+        BrowserFailure::OtherOrigin => {
+            "the page isn't on the site its sign-in is for: nothing was filled"
+        }
     }
 }
 
@@ -1982,7 +2053,7 @@ mod tests {
     #[test]
     fn the_browser_tools_are_named_described_and_shaped() {
         let (agent, _) = socket_pair();
-        let tools: [(&dyn Tool, &str, &str, &[&str]); 5] = [
+        let tools: [(&dyn Tool, &str, &str, &[&str]); 6] = [
             (
                 &BrowserOpenTool::new(&agent),
                 "browser_open",
@@ -2006,6 +2077,12 @@ mod tests {
                 "browser_close",
                 "Close the browser",
                 &[],
+            ),
+            (
+                &BrowserSignInTool::new(&agent),
+                "browser_sign_in",
+                "you never see either",
+                &["password_element"],
             ),
             (
                 &BrowserAllowTool::new(&agent),
@@ -2290,6 +2367,48 @@ mod tests {
     }
 
     #[test]
+    fn browser_sign_in_names_the_fields_and_never_a_secret() {
+        let (output, op) = browse(
+            &|agent| Box::new(BrowserSignInTool::new(agent)),
+            json!({"password_element": 2, "username_element": 1, "label": "Work"}),
+            snapshot_page(Vec::new()),
+        );
+        assert_eq!(
+            op,
+            hatchling_core::BrowserOp::SignIn {
+                username: Some(1),
+                password: 2,
+                label: Some(String::from("Work")),
+            }
+        );
+        assert!(matches!(output, ToolOutput::Ok(_)), "{output:?}");
+        let (_, op) = browse(
+            &|agent| Box::new(BrowserSignInTool::new(agent)),
+            json!({"password_element": 3}),
+            snapshot_page(Vec::new()),
+        );
+        assert_eq!(
+            op,
+            hatchling_core::BrowserOp::SignIn {
+                username: None,
+                password: 3,
+                label: None,
+            }
+        );
+        let (agent, _theirs) = socket_pair();
+        for bad in [
+            json!({}),
+            json!({"password_element": -1}),
+            json!({"password_element": "2"}),
+        ] {
+            assert!(
+                BrowserSignInTool::new(&agent).execute(bad.clone()).is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
     fn browser_close_closes_it() {
         let (output, op) = browse(
             &|agent| Box::new(BrowserCloseTool::new(agent)),
@@ -2366,6 +2485,7 @@ mod tests {
             (BrowserFailure::LoadFailed, "couldn't be loaded"),
             (BrowserFailure::BrowserGone, "start it again"),
             (BrowserFailure::BadCommand, "didn't understand"),
+            (BrowserFailure::OtherOrigin, "nothing was filled"),
         ] {
             assert_eq!(
                 browser_output(BrowserResult::Failed { failure }),

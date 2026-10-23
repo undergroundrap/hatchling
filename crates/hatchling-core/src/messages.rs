@@ -2365,6 +2365,19 @@ pub enum BrowserOp {
     /// Close the browser: its cell, profile and files go with it.
     #[serde(rename = "close")]
     Close,
+    /// Sign in on the page with the sign-in the owner keeps for its site
+    /// (WO-030, v16): the broker types it into the fields named, and the
+    /// agent never sees it.
+    #[serde(rename = "sign_in")]
+    SignIn {
+        /// The username field's element, from the last snapshot; none for a
+        /// form that asks for the password alone.
+        username: Option<u32>,
+        /// The password field's element, from the last snapshot.
+        password: u32,
+        /// Which sign-in, by its label, when the site has more than one.
+        label: Option<String>,
+    },
 }
 
 /// The broker's reply to one [`BrowserOp`].

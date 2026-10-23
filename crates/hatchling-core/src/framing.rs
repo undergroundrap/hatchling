@@ -15,6 +15,8 @@ use crate::Error;
 /// path; a peer speaking anything else is a protocol violation, not a
 /// negotiation.
 ///
+/// v16 adds the browser's sign-in (`BrowserOp::SignIn`, WO-030): the
+/// broker fills a sign-in the owner keeps, and the agent never sees it.
 /// v15 adds the browser session (`BrowserOp` / `BrowserResult`, WO-029):
 /// a real browser the agent drives, in a cell of its own, reaching only
 /// the sites the session holds.
@@ -38,7 +40,7 @@ use crate::Error;
 /// (`EgressOp` / `EgressResult`). v2 adds the post-handshake vault
 /// session (`VaultOp` / `VaultResult`). v1 peers fail closed at the
 /// version check, in both directions.
-pub const PROTOCOL_VERSION: u16 = 15;
+pub const PROTOCOL_VERSION: u16 = 16;
 
 /// Largest single frame accepted, in bytes. Bounds allocation against a
 /// malicious or broken peer before any heap grows.

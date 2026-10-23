@@ -35,9 +35,10 @@ use std::time::Duration;
 
 use hatchling_core::browser::{
     BrowserCommand, BrowserFailure, BrowserReply, Cookie, MAX_COOKIE_PAGE_BYTES, PageAction,
-    PageSnapshot,
+    PageSnapshot, SignInField,
 };
 use hatchling_core::ui::BrowserState;
+use hatchling_core::ui::Concealed;
 use hatchling_core::{BrowserOp, BrowserResult, SessionResponse, WebResult};
 use hatchling_egress::web::WebUrl;
 use hatchling_vault::OpensStores;
@@ -257,6 +258,9 @@ pub struct BrowserSession {
     stopped: bool,
     /// The signed-in profile the running browser holds (WO-030), if one.
     profile: Option<String>,
+    /// What the broker has filled into the running browser (WO-030):
+    /// hidden from every snapshot the agent is given.
+    filled: Vec<Concealed>,
 }
 
 /// A browser as the owner sees it.
@@ -299,6 +303,7 @@ impl BrowserSession {
             shown: None,
             stopped: false,
             profile: None,
+            filled: Vec::new(),
         }
     }
 
@@ -484,6 +489,10 @@ impl BrowserSession {
             BrowserOp::Scroll { down: false } => String::from("Scrolled up"),
             BrowserOp::Allow { site, .. } => format!("Asked the owner to allow {site}"),
             BrowserOp::Close => String::from("Closed the browser"),
+            BrowserOp::SignIn { label, .. } => label.as_ref().map_or_else(
+                || String::from("Filled a sign-in"),
+                |label| format!("Filled the sign-in \"{label}\""),
+            ),
         };
         said.chars().take(MAX_NARRATION_CHARS).collect()
     }
@@ -597,6 +606,7 @@ impl BrowserSession {
         }
         self.shown = None;
         self.profile = None;
+        self.filled.clear();
     }
 
     /// Leaves the visit: every site held only for it is revoked, and its
@@ -648,6 +658,7 @@ impl BrowserSession {
         };
         match reply {
             Ok(BrowserReply::Page { snapshot }) => {
+                let snapshot = hidden(snapshot, &self.filled);
                 let refused = self.sites.refused();
                 let snapshot = snapshot.fitted_in(|snapshot| {
                     hatchling_core::fits_one_frame(&SessionResponse::Browser(BrowserResult::Page {
@@ -767,7 +778,132 @@ fn answer(
             browser.close();
             BrowserResult::Closed
         }
+        BrowserOp::SignIn {
+            username,
+            password,
+            label,
+        } => {
+            let filled = sign_in(
+                config,
+                keys,
+                browser,
+                *username,
+                *password,
+                label.as_deref(),
+            );
+            browser.keep_jar(config, keys);
+            filled
+        }
     }
+}
+
+/// What a page shows, under [`MIN_HIDDEN_CHARS`] characters, isn't hidden:
+/// a secret that short would hide half the page's words.
+const MIN_HIDDEN_CHARS: usize = 4;
+
+/// What stands in a snapshot for a secret the broker filled.
+const HIDDEN: &str = "[hidden]";
+
+/// `snapshot` with each secret in `filled` hidden wherever the page shows
+/// it: its URL, its title, its text, its elements' names (WO-030). A page
+/// can read a field it was given and show it; the agent never sees it.
+fn hidden(mut snapshot: PageSnapshot, filled: &[Concealed]) -> PageSnapshot {
+    for secret in filled
+        .iter()
+        .map(Concealed::expose)
+        .filter(|secret| secret.chars().count() >= MIN_HIDDEN_CHARS)
+    {
+        snapshot.url = snapshot.url.replace(secret, HIDDEN);
+        snapshot.title = snapshot.title.replace(secret, HIDDEN);
+        snapshot.text = snapshot.text.replace(secret, HIDDEN);
+        for element in &mut snapshot.elements {
+            element.name = element.name.replace(secret, HIDDEN);
+        }
+    }
+    snapshot
+}
+
+/// Fills the page's sign-in form with the sign-in the owner keeps for its
+/// origin (WO-030): only in a browser running a signed-in profile, only a
+/// sign-in of that profile, for the exact origin the browser reports its
+/// page on, and typed by the browser's controller into the fields named.
+/// The agent is told the page after, with what was filled hidden.
+fn sign_in(
+    config: &Config,
+    keys: &dyn OpensStores,
+    browser: &mut BrowserSession,
+    username: Option<u32>,
+    password: u32,
+    label: Option<&str>,
+) -> BrowserResult {
+    let Some(profile) = browser.profile.clone() else {
+        return refused(
+            "this browser isn't signed in to a site the owner kept: a sign-in is filled only there",
+        );
+    };
+    let Some(credentials) = crate::browser_credentials::Credentials::of(config, keys) else {
+        return refused("the owner keeps no sign-ins");
+    };
+    let read = browser.command(&BrowserCommand::Snapshot);
+    let BrowserResult::Page { snapshot, .. } = &read else {
+        return read;
+    };
+    let Ok(url) = WebUrl::parse(&snapshot.url) else {
+        return refused("the page isn't on an https site");
+    };
+    let origin = url.origin().to_string();
+    let listed = match credentials.list() {
+        Ok(listed) => listed,
+        Err(error) => {
+            tracing::error!(%error, "the sign-ins can't be read");
+            return refused("the owner's sign-ins couldn't be read");
+        }
+    };
+    let own: Vec<_> = listed
+        .into_iter()
+        .filter(|credential| credential.profile_id == profile && credential.origin == origin)
+        .collect();
+    let labels = own
+        .iter()
+        .map(|credential| format!("\"{}\"", credential.label))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let chosen = match (own.as_slice(), label) {
+        ([], _) => return refused("the owner keeps no sign-in for this site"),
+        (_, Some(label)) => own.iter().find(|credential| credential.label == label),
+        ([only], None) => Some(only),
+        (_, None) => None,
+    };
+    let Some(chosen) = chosen else {
+        return refused(&format!("say which sign-in, by its label: {labels}"));
+    };
+    let sign_in = match credentials.sign_in(&chosen.id) {
+        Ok(sign_in) => sign_in,
+        Err(error) => {
+            tracing::error!(%error, "a sign-in can't be read");
+            return refused("the sign-in couldn't be read");
+        }
+    };
+    tracing::info!(credential = %chosen.id, label = %chosen.label, %origin, "a sign-in is filled");
+    browser.filled.push(sign_in.username.clone());
+    browser.filled.push(sign_in.password.clone());
+    if let Some(element) = username {
+        let typed = browser.command(&BrowserCommand::Fill {
+            element,
+            field: SignInField::Username,
+            text: sign_in.username,
+            origin: origin.clone(),
+        });
+        if !matches!(typed, BrowserResult::Page { .. }) {
+            return typed;
+        }
+    }
+    browser.command(&BrowserCommand::Fill {
+        element: password,
+        field: SignInField::Password,
+        text: sign_in.password,
+        origin,
+    })
 }
 
 /// Opens `url`, which the agent wants for `reason`, once its site is
@@ -1110,7 +1246,9 @@ mod tests {
             if let Some(snapshot) = shown {
                 if matches!(
                     command,
-                    BrowserCommand::Open { .. } | BrowserCommand::Snapshot
+                    BrowserCommand::Open { .. }
+                        | BrowserCommand::Snapshot
+                        | BrowserCommand::Fill { .. }
                 ) {
                     return Ok(BrowserReply::Page { snapshot });
                 }
@@ -1140,6 +1278,7 @@ mod tests {
                 }
                 BrowserCommand::Snapshot
                 | BrowserCommand::Act { .. }
+                | BrowserCommand::Fill { .. }
                 | BrowserCommand::Scroll { .. } => BrowserReply::Page {
                     snapshot: PageSnapshot::default(),
                 },
@@ -1594,6 +1733,287 @@ mod tests {
         assert!(covering(&off, &keys, "a.example:443").is_none());
     }
 
+    /// A profile of `a.example` and its sign-in site kept, and sign-ins for
+    /// it, labelled, on `https://a.example`.
+    fn with_sign_ins(
+        name: &str,
+        labels: &[&str],
+    ) -> (
+        Config,
+        crate::api_auth::tests::Scratch,
+        MasterKey,
+        crate::browser_profiles::Profile,
+    ) {
+        let (mut config, scratch, keys, profile) =
+            profiled(name, &["a.example:443", "idp.example:443"], Vec::new());
+        config.web.credentials = scratch.0.join("credentials");
+        let credentials = crate::browser_credentials::Credentials::of(&config, &keys).unwrap();
+        for label in labels {
+            let sign_in = crate::browser_credentials::SignIn {
+                username: Concealed::new(format!("{}@a.example", label.to_lowercase())),
+                password: Concealed::new(format!("{label}-hunter2")),
+            };
+            credentials
+                .store(&profile, "https://a.example", label, &sign_in, 1)
+                .unwrap()
+                .unwrap();
+        }
+        (config, scratch, keys, profile)
+    }
+
+    /// The page the test browser shows: on `url`, its text `text`.
+    fn showing(fake: &Fake, url: &str, text: &str) {
+        *fake.shows.lock().unwrap() = Some(PageSnapshot {
+            url: url.to_owned(),
+            text: text.to_owned(),
+            elements: vec![hatchling_core::browser::PageElement {
+                id: 2,
+                role: String::from("password"),
+                name: format!("{text} field"),
+            }],
+            ..PageSnapshot::default()
+        });
+    }
+
+    /// The fills the test browser was sent: each one's element, field,
+    /// text and origin.
+    fn fills(fake: &Fake) -> Vec<(u32, SignInField, String, String)> {
+        fake.log
+            .lock()
+            .unwrap()
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                BrowserCommand::Fill {
+                    element,
+                    field,
+                    text,
+                    origin,
+                } => Some((*element, *field, text.expose().to_owned(), origin.clone())),
+                BrowserCommand::Open { .. }
+                | BrowserCommand::Snapshot
+                | BrowserCommand::Act { .. }
+                | BrowserCommand::Scroll { .. }
+                | BrowserCommand::Frame
+                | BrowserCommand::Input { .. }
+                | BrowserCommand::Cookies { .. }
+                | BrowserCommand::SetCookies { .. }
+                | BrowserCommand::Close => None,
+            })
+            .collect()
+    }
+
+    fn sign_in_op(username: Option<u32>, label: Option<&str>) -> BrowserOp {
+        BrowserOp::SignIn {
+            username,
+            password: 2,
+            label: label.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn a_sign_in_is_filled_in_its_profiles_browser_on_its_origin_and_never_shown() {
+        let (config, _scratch, keys, _profile) = with_sign_ins("fill", &["Work"]);
+        // Another profile's sign-in for the same site is never this one's.
+        let other = crate::browser_profiles::Profiles::of(&config, &keys)
+            .unwrap()
+            .keep(
+                &[String::from("b.example:443"), String::from("a.example:443")],
+                1,
+            )
+            .unwrap();
+        let theirs = crate::browser_credentials::SignIn {
+            username: Concealed::new(String::from("other@a.example")),
+            password: Concealed::new(String::from("Other-hunter2")),
+        };
+        crate::browser_credentials::Credentials::of(&config, &keys)
+            .unwrap()
+            .store(&other, "https://a.example", "Other", &theirs, 1)
+            .unwrap()
+            .unwrap();
+        let fake = Fake::default();
+        let (mut web, mut browser) = session("t", &fake);
+        let opened = open("https://a.example/login");
+        handle_browser_op(&config, &keys, &mut web, &mut browser, &opened);
+        // The page echoes what it's given: the agent sees none of it.
+        showing(
+            &fake,
+            "https://a.example/login",
+            "Signed in as work@a.example, Work-hunter2",
+        );
+        let answer = handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &sign_in_op(Some(1), None),
+        );
+        let told = format!("{answer:?}");
+        assert!(
+            matches!(answer, BrowserResult::Page { .. }),
+            "what the agent is told"
+        );
+        assert!(
+            !told.contains("hunter2") && !told.contains("work@"),
+            "what the agent is told"
+        );
+        assert!(
+            told.contains("Signed in as [hidden], [hidden]"),
+            "what the agent is told"
+        );
+        let origin = String::from("https://a.example");
+        assert_eq!(
+            fills(&fake),
+            [
+                (
+                    1,
+                    SignInField::Username,
+                    String::from("work@a.example"),
+                    origin.clone()
+                ),
+                (
+                    2,
+                    SignInField::Password,
+                    String::from("Work-hunter2"),
+                    origin
+                ),
+            ]
+        );
+        // Every page after hides them too, until the browser is closed.
+        let read = handle_browser_op(&config, &keys, &mut web, &mut browser, &BrowserOp::Read);
+        let read = format!("{read:?}");
+        assert!(!read.contains("hunter2"), "what the agent is told");
+        handle_browser_op(&config, &keys, &mut web, &mut browser, &BrowserOp::Close);
+        assert!(browser.filled.is_empty(), "forgotten with the browser");
+    }
+
+    #[test]
+    fn a_sign_in_is_refused_off_its_origin_outside_a_profile_and_unless_its_named() {
+        let (config, _scratch, keys, _profile) = with_sign_ins("refused", &["Work", "Home"]);
+        let fake = Fake::default();
+        let (mut web, mut browser) = session("t", &fake);
+        let refused_for = |answer: &BrowserResult, words: &str| matches!(answer, BrowserResult::Refused { reason } if reason.contains(words));
+        // No browser of a profile: refused, nothing read.
+        let answer = handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &sign_in_op(None, None),
+        );
+        assert!(refused_for(&answer, "isn't signed in"), "the answer");
+        handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &open("https://a.example/"),
+        );
+        // Two sign-ins: say which.
+        showing(&fake, "https://a.example/login", "Sign in");
+        let answer = handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &sign_in_op(None, None),
+        );
+        assert!(
+            refused_for(
+                &answer,
+                "say which sign-in, by its label: \"Work\", \"Home\""
+            ),
+            "the answer"
+        );
+        let answer = handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &sign_in_op(None, Some("Gym")),
+        );
+        assert!(refused_for(&answer, "say which"), "the answer");
+        let answer = handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &sign_in_op(None, Some("Home")),
+        );
+        assert!(matches!(answer, BrowserResult::Page { .. }), "the answer");
+        assert_eq!(
+            fills(&fake)
+                .iter()
+                .map(|(_, _, text, _)| text.as_str())
+                .collect::<Vec<_>>(),
+            ["Home-hunter2"],
+            "the one named, its password alone"
+        );
+        // The profile's other site: no sign-in kept for it.
+        showing(&fake, "https://idp.example/", "Sign in");
+        let answer = handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &sign_in_op(None, None),
+        );
+        assert!(
+            refused_for(&answer, "no sign-in for this site"),
+            "the answer"
+        );
+        showing(&fake, "about:blank", "");
+        let answer = handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &sign_in_op(None, None),
+        );
+        assert!(refused_for(&answer, "isn't on an https site"), "the answer");
+        assert_eq!(fills(&fake).len(), 1, "nothing more filled");
+        // A store off: none.
+        let mut off = config;
+        off.web.credentials = PathBuf::new();
+        showing(&fake, "https://a.example/login", "Sign in");
+        let answer =
+            handle_browser_op(&off, &keys, &mut web, &mut browser, &sign_in_op(None, None));
+        assert!(refused_for(&answer, "keeps no sign-ins"), "the answer");
+    }
+
+    #[test]
+    fn a_secret_is_hidden_wherever_a_page_shows_it_unless_its_too_short_to_hide() {
+        let page = PageSnapshot {
+            url: String::from("https://a.example/?u=ada@x"),
+            title: String::from("ada@x"),
+            text: String::from("ada@x and abc and wxyz"),
+            elements: vec![hatchling_core::browser::PageElement {
+                id: 1,
+                role: String::from("textbox"),
+                name: String::from("ada@x"),
+            }],
+            truncated: false,
+        };
+        let shown = hidden(
+            page,
+            &[
+                Concealed::new(String::from("ada@x")),
+                Concealed::new(String::from("abc")),
+                Concealed::new(String::from("wxyz")),
+            ],
+        );
+        assert_eq!(shown.url, "https://a.example/?u=[hidden]");
+        assert_eq!(shown.title, "[hidden]");
+        assert_eq!(
+            shown.text, "[hidden] and abc and [hidden]",
+            "three characters: left; four: hidden"
+        );
+        assert_eq!(
+            shown.elements.first().map(|element| element.name.as_str()),
+            Some("[hidden]")
+        );
+    }
+
     #[test]
     fn a_jar_is_read_and_set_a_page_at_a_time_and_a_bad_answer_is_refused() {
         let fake = Fake::default();
@@ -1620,6 +2040,7 @@ mod tests {
                 | BrowserCommand::Frame
                 | BrowserCommand::Input { .. }
                 | BrowserCommand::Cookies { .. }
+                | BrowserCommand::Fill { .. }
                 | BrowserCommand::Close => None,
             })
             .collect();

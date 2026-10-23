@@ -4,7 +4,7 @@
 /** The frontend protocol version this build speaks. */
 export const UI_SCHEMA_VERSION = 4;
 /** The broker session protocol version the schema was generated at. */
-export const SESSION_PROTOCOL_VERSION = 15;
+export const SESSION_PROTOCOL_VERSION = 16;
 /** The mismatch sentence when this frontend is the newer side. */
 export const INCOMPATIBLE_FRONTEND_NEWER = 'frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update';
 /** The mismatch sentence when the backend is the newer side. */
@@ -746,7 +746,7 @@ export type BrowserAction = {
 /**
  * Why a command wasn't done.
  */
-export type BrowserFailure = 'no_page' | 'unknown_element' | 'not_possible' | 'timeout' | 'load_failed' | 'browser_gone' | 'bad_command';
+export type BrowserFailure = 'no_page' | 'unknown_element' | 'not_possible' | 'timeout' | 'load_failed' | 'browser_gone' | 'bad_command' | 'other_origin';
 /**
  * A snapshot of the page.
  */
@@ -825,6 +825,21 @@ export type BrowserOp = {
     readonly site: string;
 } | {
     readonly op: 'close';
+} | {
+    /**
+     * Which sign-in, by its label, when the site has more than one.
+     */
+    readonly label?: string | null;
+    readonly op: 'sign_in';
+    /**
+     * The password field's element, from the last snapshot.
+     */
+    readonly password: number;
+    /**
+     * The username field's element, from the last snapshot; none for a
+     * form that asks for the password alone.
+     */
+    readonly username?: number | null;
 };
 /**
  * The broker's reply to one [`BrowserOp`].

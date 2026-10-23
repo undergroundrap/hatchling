@@ -49,6 +49,7 @@ const INPUT_FAILURES: Readonly<Record<BrowserFailure, string>> = {
     load_failed: 'The page could not be loaded.',
     browser_gone: 'The browser stopped working, so it was closed.',
     bad_command: 'The browser did not understand that, so nothing happened.',
+    other_origin: 'The page is not on the site its sign-in is for, so nothing was filled.',
 };
 const UNEXPECTED = 'Hatchling answered with something else, so this is not confirmed.';
 function megabytes(bytes: number): string {

@@ -95,6 +95,20 @@ pub enum BrowserCommand {
         /// The cookies, within the bounds a read holds them to.
         cookies: Vec<Cookie>,
     },
+    /// Fill a sign-in form's field with what the broker keeps (WO-030):
+    /// only while the page's top frame is on `origin`, and only into the
+    /// kind of field `field` names. The reply is the snapshot after.
+    Fill {
+        /// The field's element, from the last snapshot.
+        element: u32,
+        /// Which field it is: a username goes only into a text or email
+        /// field, a password only into a password field.
+        field: SignInField,
+        /// What to type: the broker's, never the agent's.
+        text: crate::ui::Concealed,
+        /// The exact origin the top frame must be on, `https://host[:port]`.
+        origin: String,
+    },
     /// Close the page and the browser. The reply is [`BrowserReply::Closed`].
     Close,
 }
@@ -235,6 +249,18 @@ pub enum BrowserFailure {
     BrowserGone,
     /// A command that wasn't understood.
     BadCommand,
+    /// The page isn't on the origin a sign-in is for: nothing was filled.
+    OtherOrigin,
+}
+
+/// The field of a sign-in form a fill types into (WO-030).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SignInField {
+    /// The username: a text or email field.
+    Username,
+    /// The password: a password field.
+    Password,
 }
 
 /// A cookie, as the browser keeps it. Its value is a secret: what a
