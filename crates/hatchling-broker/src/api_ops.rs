@@ -149,15 +149,18 @@ impl<'a> Ops<'a> {
         if caller.grants().is_empty() {
             return refused(ActionRefusal::NotGranted);
         }
+        // The owner's alone: a caller holding less than every grant the
+        // owner holds can't.
+        let owns = owns;
         match action {
             UiAction::SendMessage { chat_id, text } => {
-                if !caller.holds(&owner) {
+                if !owns {
                     return refused(ActionRefusal::NotGranted);
                 }
                 self.send(chat_id, text, replies)
             }
             UiAction::InvokeSkill { op } => {
-                if !caller.holds(&owner) {
+                if !owns {
                     return refused(ActionRefusal::NotGranted);
                 }
                 let Ok(cell) = API_CELL.parse::<CellId>() else {
@@ -203,11 +206,9 @@ impl<'a> Ops<'a> {
                     ApiOutcome::Served,
                 )
             }
-            UiAction::ManageSites { op } => self.owned(caller.holds(&owner), Owned::Sites(op)),
-            UiAction::ManageProfiles { op } => {
-                self.owned(caller.holds(&owner), Owned::Profiles(op))
-            }
-            UiAction::ManageSignIns { op } => self.owned(caller.holds(&owner), Owned::SignIns(op)),
+            UiAction::ManageSites { op } => self.owned(owns, Owned::Sites(op)),
+            UiAction::ManageProfiles { op } => self.owned(owns, Owned::Profiles(op)),
+            UiAction::ManageSignIns { op } => self.owned(owns, Owned::SignIns(op)),
             UiAction::Decide {
                 confirmation_id,
                 revision,
@@ -216,42 +217,27 @@ impl<'a> Ops<'a> {
             } => {
                 // Only the owner decides (WO-027): a caller holding less
                 // than every grant the owner holds can't.
-                if !caller.holds(&owner) {
+                if !owns {
                     return refused(ActionRefusal::NotGranted);
                 }
                 self.decide(confirmation_id, *revision, digest, *decision)
             }
-            UiAction::TakeControl { session_id } => {
-                self.browser(caller.holds(&owner), OwnerAct::Take(session_id))
-            }
+            UiAction::TakeControl { session_id } => self.browser(owns, OwnerAct::Take(session_id)),
             UiAction::ReturnControl {
                 session_id,
                 frame_sequence: seen,
-            } => self.browser(caller.holds(&owner), OwnerAct::Return(session_id, *seen)),
-            UiAction::StopBrowser { session_id } => {
-                self.browser(caller.holds(&owner), OwnerAct::Stop(session_id))
-            }
+            } => self.browser(owns, OwnerAct::Return(session_id, *seen)),
+            UiAction::StopBrowser { session_id } => self.browser(owns, OwnerAct::Stop(session_id)),
             UiAction::BrowserInput { session_id, input } => {
-                self.browser(caller.holds(&owner), OwnerAct::Input(session_id, input))
+                self.browser(owns, OwnerAct::Input(session_id, input))
             }
-            UiAction::KeepSignedIn { session_id } => {
-                self.browser(caller.holds(&owner), OwnerAct::Keep(session_id))
+            UiAction::KeepSignedIn { session_id } => self.browser(owns, OwnerAct::Keep(session_id)),
+            UiAction::GiveCode { session_id, request_id, code } => {
+                self.browser(owns, OwnerAct::GiveCode(session_id, request_id, code))
             }
-            UiAction::GiveCode {
-                session_id,
-                request_id,
-                code,
-            } => self.browser(
-                caller.holds(&owner),
-                OwnerAct::GiveCode(session_id, request_id, code),
-            ),
-            UiAction::DeclineCode {
-                session_id,
-                request_id,
-            } => self.browser(
-                caller.holds(&owner),
-                OwnerAct::DeclineCode(session_id, request_id),
-            ),
+            UiAction::DeclineCode { session_id, request_id } => {
+                self.browser(owns, OwnerAct::DeclineCode(session_id, request_id))
+            }
             UiAction::OpenArtifact { .. }
             | UiAction::ShareArtifact { .. }
             | UiAction::AttachArtifact { .. }
@@ -660,7 +646,10 @@ fn code_answer(
     let session_id = session_id.to_owned();
     match done {
         Ok(()) if given => (UiActionResult::CodeTaken { session_id }, ApiOutcome::Served),
-        Ok(()) => (UiActionResult::CodeDeclined { session_id }, ApiOutcome::Served),
+        Ok(()) => (
+            UiActionResult::CodeDeclined { session_id },
+            ApiOutcome::Served,
+        ),
         Err(reason) => (
             UiActionResult::CodeRefused { session_id, reason },
             ApiOutcome::Refused,
@@ -1537,13 +1526,18 @@ mod tests {
             crate::browser_proxy::Sites::default(),
             crate::browser_ops::Driven::default(),
         );
-        let request = board.ask_code("browser-code", 2, "https://a.example").unwrap();
+        let request = board
+            .ask_code("browser-code", 2, "https://a.example")
+            .unwrap();
         let give = |request_id: &str, code: &str| UiAction::GiveCode {
             session_id: String::from("browser-code"),
             request_id: request_id.to_owned(),
             code: hatchling_core::ui::Concealed::new(code.to_owned()),
         };
-        assert_eq!(ops.handle(&narrow, &give(&request, "481516"), &mut replies), not_granted());
+        assert_eq!(
+            ops.handle(&narrow, &give(&request, "481516"), &mut replies),
+            not_granted()
+        );
         assert_eq!(
             ops.handle(&owner, &give("code-other", "481516"), &mut replies),
             (
@@ -1563,7 +1557,9 @@ mod tests {
                 ApiOutcome::Served,
             )
         );
-        let next = board.ask_code("browser-code", 2, "https://a.example").unwrap();
+        let next = board
+            .ask_code("browser-code", 2, "https://a.example")
+            .unwrap();
         let decline = UiAction::DeclineCode {
             session_id: String::from("browser-code"),
             request_id: next,
@@ -1579,6 +1575,26 @@ mod tests {
             )
         );
         board.end("browser-code");
+        // The answer itself: taken, declined, or why not.
+        assert_eq!(
+            code_answer("browser-x", Err(hatchling_core::ui::CodeRefusal::Empty), true),
+            (
+                UiActionResult::CodeRefused {
+                    session_id: String::from("browser-x"),
+                    reason: hatchling_core::ui::CodeRefusal::Empty,
+                },
+                ApiOutcome::Refused,
+            )
+        );
+        assert_eq!(
+            code_answer("browser-x", Ok(()), false),
+            (
+                UiActionResult::CodeDeclined {
+                    session_id: String::from("browser-x"),
+                },
+                ApiOutcome::Served,
+            )
+        );
     }
 
     #[test]

@@ -1881,11 +1881,15 @@ mod tests {
         );
         for (result, expected) in [
             (
-                UiActionResult::CodeTaken { session_id: s("w1") },
+                UiActionResult::CodeTaken {
+                    session_id: s("w1"),
+                },
                 json!({"result": "code_taken", "session_id": "w1"}),
             ),
             (
-                UiActionResult::CodeDeclined { session_id: s("w1") },
+                UiActionResult::CodeDeclined {
+                    session_id: s("w1"),
+                },
                 json!({"result": "code_declined", "session_id": "w1"}),
             ),
             (

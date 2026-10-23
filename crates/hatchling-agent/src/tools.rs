@@ -2498,7 +2498,10 @@ mod tests {
                 json!({"element": 3}),
                 reply,
             );
-            assert!(matches!(&output, ToolOutput::Err(said) if said.contains(words)), "{output:?}");
+            assert!(
+                matches!(&output, ToolOutput::Err(said) if said.contains(words)),
+                "{output:?}"
+            );
         }
         let (agent, _theirs) = socket_pair();
         assert!(BrowserAskCodeTool::new(&agent).execute(json!({})).is_err());

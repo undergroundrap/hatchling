@@ -37,8 +37,8 @@ use hatchling_core::browser::{
     BrowserCommand, BrowserFailure, BrowserReply, Cookie, MAX_COOKIE_PAGE_BYTES, PageAction,
     PageSnapshot, SignInField,
 };
-use hatchling_core::ui::{BrowserState, CodeState};
 use hatchling_core::ui::Concealed;
+use hatchling_core::ui::{BrowserState, CodeState};
 use hatchling_core::{BrowserOp, BrowserResult, SessionResponse, WebResult};
 use hatchling_egress::web::WebUrl;
 use hatchling_vault::OpensStores;
@@ -496,7 +496,9 @@ impl BrowserSession {
             BrowserOp::Scroll { down: false } => String::from("Scrolled up"),
             BrowserOp::Allow { site, .. } => format!("Asked the owner to allow {site}"),
             BrowserOp::Close => String::from("Closed the browser"),
-            BrowserOp::Code { element } => format!("Asked the owner for the code {}", named(*element)),
+            BrowserOp::Code { element } => {
+                format!("Asked the owner for the code {}", named(*element))
+            }
             BrowserOp::SignIn { label, .. } => label.as_ref().map_or_else(
                 || String::from("Filled a sign-in"),
                 |label| format!("Filled the sign-in \"{label}\""),
@@ -839,7 +841,10 @@ fn code(browser: &mut BrowserSession, element: u32) -> BrowserResult {
         let Ok(url) = WebUrl::parse(&snapshot.url) else {
             return refused("the page isn't on an https site");
         };
-        if board.ask_code(&session, element, &url.origin().to_string()).is_none() {
+        if board
+            .ask_code(&session, element, &url.origin().to_string())
+            .is_none()
+        {
             return refused("the owner couldn't be asked for the code");
         }
         turn = board.code_turn(&session, browser.code_wait);
@@ -2052,6 +2057,21 @@ mod tests {
         assert!(refused_for(&answer, "keeps no sign-ins"), "the answer");
     }
 
+    /// The latest code request the stream `bus` showed the app.
+    fn latest_code(bus: &crate::api_stream::Bus) -> String {
+        bus.wait_after(None, Duration::ZERO)
+            .into_iter()
+            .rev()
+            .find_map(|event| {
+                if let hatchling_core::ui::UiEventBody::BrowserCode { request_id, .. } = event.body {
+                    Some(request_id)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default()
+    }
+
     #[test]
     fn a_code_is_asked_of_the_owner_typed_once_given_and_never_shown() {
         let (config, _scratch, keys, _profile) = with_sign_ins("code", &[]);
@@ -2071,23 +2091,21 @@ mod tests {
                 origin: String::from("https://a.example")
             }
         );
-        let id = browser.shown.as_ref().map(|shown| shown.id.clone()).unwrap();
-        let asked = bus
-            .wait_after(None, Duration::ZERO)
-            .into_iter()
-            .find_map(|event| match event.body {
-                hatchling_core::ui::UiEventBody::BrowserCode {
-                    request_id, state, ..
-                } if state == CodeState::Asked => Some(request_id),
-                _ => None,
-            })
+        let id = browser
+            .shown
+            .as_ref()
+            .map(|shown| shown.id.clone())
             .unwrap();
+        let asked = latest_code(&bus);
         // Still waiting: told so again, nothing typed.
         let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, &ask);
         assert!(matches!(answer, BrowserResult::CodeWaiting { .. }), "the answer");
         assert!(fills(&fake).is_empty());
         // Given: typed into the field asked for, on the origin asked for, hidden.
-        assert_eq!(board.give_code(&id, &asked, &Concealed::new(String::from("481516"))), Ok(()));
+        assert_eq!(
+            board.give_code(&id, &asked, &Concealed::new(String::from("481516"))),
+            Ok(())
+        );
         showing(&fake, "https://a.example/verify", "Code 481516 accepted");
         let answer = handle_browser_op(
             &config,
@@ -2096,7 +2114,7 @@ mod tests {
             &mut browser,
             &BrowserOp::Code { element: 9 },
         );
-        let told = format!("the answer");
+        let told = format!("{answer:?}");
         assert!(!told.contains("481516") && told.contains("[hidden]"), "what the agent is told");
         assert_eq!(
             fills(&fake),
@@ -2113,22 +2131,21 @@ mod tests {
             Err(hatchling_core::ui::CodeRefusal::NoRequest),
             "used once"
         );
-        // Declined, and expired.
+    }
+
+    #[test]
+    fn a_code_declined_or_expired_is_never_typed_and_one_off_https_or_unwatched_is_refused() {
+        let (config, _scratch, keys, _profile) = with_sign_ins("code-no", &[]);
+        let fake = Fake::default();
+        let ((mut web, mut browser), board, bus) = watched(&fake);
+        browser.code_wait = Duration::ZERO;
+        let ask = BrowserOp::Code { element: 3 };
+        handle_browser_op(&config, &keys, &mut web, &mut browser, &open("https://a.example/"));
+        let id = browser.shown.as_ref().map(|shown| shown.id.clone()).unwrap();
+        showing(&fake, "https://a.example/verify", "Enter the code");
         let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, &ask);
         assert!(matches!(answer, BrowserResult::CodeWaiting { .. }), "the answer");
-        let latest = |bus: &crate::api_stream::Bus| {
-            bus.wait_after(None, Duration::ZERO)
-                .into_iter()
-                .filter_map(|event| match event.body {
-                    hatchling_core::ui::UiEventBody::BrowserCode { request_id, .. } => {
-                        Some(request_id)
-                    }
-                    _ => None,
-                })
-                .last()
-                .unwrap()
-        };
-        assert_eq!(board.decline_code(&id, &latest(&bus)), Ok(()));
+        assert_eq!(board.decline_code(&id, &latest_code(&bus)), Ok(()));
         assert_eq!(
             handle_browser_op(&config, &keys, &mut web, &mut browser, &ask),
             BrowserResult::CodeDeclined
@@ -2139,14 +2156,20 @@ mod tests {
             handle_browser_op(&config, &keys, &mut web, &mut browser, &ask),
             BrowserResult::CodeExpired
         );
-        assert_eq!(fills(&fake).len(), 1, "one code typed in all");
+        assert!(fills(&fake).is_empty(), "no code typed");
         // Not on an https page: refused.
         showing(&fake, "about:blank", "");
         let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, &ask);
         assert!(matches!(answer, BrowserResult::Refused { .. }), "the answer");
         // No board, no owner to ask.
         let (mut web, mut alone) = session("t", &fake);
-        handle_browser_op(&config, &keys, &mut web, &mut alone, &open("https://a.example/"));
+        handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut alone,
+            &open("https://a.example/"),
+        );
         assert!(matches!(code(&mut alone, 3), BrowserResult::Refused { .. }));
     }
 

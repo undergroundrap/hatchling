@@ -470,11 +470,17 @@ fn sign_in_filled(connection: &UnixStream) {
     );
     let code = element(&form, "textbox", "Code");
     assert_eq!(
-        send(connection, &fill(password, SignInField::Code, "481516", &origin)),
+        send(
+            connection,
+            &fill(password, SignInField::Code, "481516", &origin)
+        ),
         failed(BrowserFailure::NotPossible),
         "a code goes only into a code's field"
     );
-    let coded = page(send(connection, &fill(code, SignInField::Code, "481516", &origin)));
+    let coded = page(send(
+        connection,
+        &fill(code, SignInField::Code, "481516", &origin),
+    ));
     assert!(coded.text.contains("code: 481516"), "{}", coded.text);
     let typed = page(send(
         connection,

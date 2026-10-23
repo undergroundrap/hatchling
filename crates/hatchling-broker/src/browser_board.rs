@@ -46,8 +46,8 @@ use hatchling_core::browser::{
     MAX_TYPED_CHARS, OwnerInput, VIEWPORT,
 };
 use hatchling_core::ui::{
-    Actor, BrowserAction, BrowserFrame, BrowserSession, CodeRefusal, CodeState, Concealed,
-    Control, ControlRefusal, Handoff,
+    Actor, BrowserAction, BrowserFrame, BrowserSession, CodeRefusal, CodeState, Concealed, Control,
+    ControlRefusal, Handoff,
 };
 use hatchling_core::ui::{ImageType, InlineImage, UiEvent, UiEventBody, UiResponse};
 use hatchling_scheduler::Timestamp;
@@ -117,9 +117,7 @@ pub(crate) enum CodeTurn {
     /// Nobody answered in time.
     Expired,
     /// Asked, not answered yet.
-    Waiting {
-        origin: String,
-    },
+    Waiting { origin: String },
     /// No code is asked for.
     None,
 }
@@ -363,7 +361,13 @@ impl BrowserBoard {
 
     /// Tells the owner's app the code request `request_id` of the browser
     /// `session_id`, for `origin`, is now `state`.
-    pub(crate) fn code_moved(&self, session_id: &str, request_id: &str, origin: &str, state: CodeState) {
+    pub(crate) fn code_moved(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        origin: &str,
+        state: CodeState,
+    ) {
         self.publish(UiEventBody::BrowserCode {
             session_id: session_id.to_owned(),
             request_id: request_id.to_owned(),
@@ -1367,11 +1371,15 @@ mod tests {
     }
 
     #[test]
-    fn a_code_is_given_or_declined_once_while_it_waits_and_expires_unanswered() {
-        let (board, bus) = watched();
+    fn a_code_is_given_once_while_it_waits_and_only_for_the_request_that_waits() {
+        let (board, _) = watched();
         let _stopped = board.begin("browser-c", Sites::default(), Driven::default());
         assert_eq!(board.code_turn("browser-c", Duration::ZERO), CodeTurn::None);
-        assert_eq!(board.ask_code("browser-z", 1, "https://a.example"), None, "no such browser");
+        assert_eq!(
+            board.ask_code("browser-z", 1, "https://a.example"),
+            None,
+            "no such browser"
+        );
         let first = board.ask_code("browser-c", 1, "https://a.example").unwrap();
         let second = board.ask_code("browser-c", 2, "https://a.example").unwrap();
         let code = |text: &str| Concealed::new(text.to_owned());
@@ -1380,7 +1388,10 @@ mod tests {
             Err(CodeRefusal::NoRequest),
             "the first is gone"
         );
-        assert_eq!(board.give_code("browser-c", &second, &code("")), Err(CodeRefusal::Empty));
+        assert_eq!(
+            board.give_code("browser-c", &second, &code("")),
+            Err(CodeRefusal::Empty)
+        );
         assert_eq!(
             board.give_code("browser-c", &second, &code(&"9".repeat(MAX_CODE_CHARS + 1))),
             Err(CodeRefusal::TooLong)
@@ -1395,7 +1406,10 @@ mod tests {
         std::thread::scope(|scope| {
             let waiting = scope.spawn(|| board.code_turn("browser-c", Duration::from_secs(10)));
             std::thread::sleep(Duration::from_millis(50));
-            assert_eq!(board.give_code("browser-c", &second, &code("481516")), Ok(()));
+            assert_eq!(
+                board.give_code("browser-c", &second, &code("481516")),
+                Ok(())
+            );
             assert_eq!(
                 waiting.join().unwrap(),
                 CodeTurn::Given {
@@ -1406,36 +1420,83 @@ mod tests {
                 }
             );
         });
-        assert_eq!(board.code_turn("browser-c", Duration::ZERO), CodeTurn::None, "gone once told");
-        assert_eq!(board.give_code("browser-c", &second, &code("1")), Err(CodeRefusal::NoRequest));
+        assert_eq!(
+            board.code_turn("browser-c", Duration::ZERO),
+            CodeTurn::None,
+            "gone once told"
+        );
+        assert_eq!(
+            board.give_code("browser-c", &second, &code("1")),
+            Err(CodeRefusal::NoRequest)
+        );
+    }
+
+    /// The code states the stream carried.
+    fn code_states(bus: &Bus) -> Vec<CodeState> {
+        carried(bus)
+            .into_iter()
+            .filter_map(|body| {
+                if let UiEventBody::BrowserCode { state, .. } = body {
+                    Some(state)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_code_is_declined_once_and_expires_unanswered_each_shown_to_the_app() {
+        let (board, bus) = watched();
+        let _stopped = board.begin("browser-c", Sites::default(), Driven::default());
+        let code = |text: &str| Concealed::new(text.to_owned());
         let third = board.ask_code("browser-c", 3, "https://a.example").unwrap();
         assert_eq!(board.decline_code("browser-c", &third), Ok(()));
-        assert_eq!(board.decline_code("browser-c", &third), Err(CodeRefusal::NoRequest), "once");
-        assert_eq!(board.code_turn("browser-c", Duration::ZERO), CodeTurn::Declined);
+        assert_eq!(
+            board.decline_code("browser-c", &third),
+            Err(CodeRefusal::NoRequest),
+            "once"
+        );
+        assert_eq!(
+            board.code_turn("browser-c", Duration::ZERO),
+            CodeTurn::Declined
+        );
         let fourth = board.ask_code("browser-c", 4, "https://a.example").unwrap();
         board.age_code("browser-c");
-        assert_eq!(board.give_code("browser-c", &fourth, &code("1")), Err(CodeRefusal::NoRequest));
-        assert_eq!(board.code_turn("browser-c", Duration::ZERO), CodeTurn::Expired);
-        board.age_code("browser-z");
-        let states: Vec<CodeState> = carried(&bus)
-            .into_iter()
-            .filter_map(|body| match body {
-                UiEventBody::BrowserCode { state, .. } => Some(state),
-                _ => None,
-            })
-            .collect();
         assert_eq!(
-            states,
+            board.give_code("browser-c", &fourth, &code("1")),
+            Err(CodeRefusal::NoRequest)
+        );
+        assert_eq!(
+            board.code_turn("browser-c", Duration::ZERO),
+            CodeTurn::Expired
+        );
+        board.age_code("browser-z");
+        assert_eq!(
+            code_states(&bus),
             [
-                CodeState::Asked,
-                CodeState::Asked,
                 CodeState::Asked,
                 CodeState::Declined,
                 CodeState::Asked,
                 CodeState::Expired
             ]
         );
-        board.code_moved("browser-c", "code-x", "https://a.example", CodeState::Filled);
+        // Answered directly: only the request that waits.
+        let fifth = board.ask_code("browser-c", 5, "https://a.example").unwrap();
+        assert_eq!(
+            board.answer_code("browser-c", "code-other", CodeAnswer::Declined),
+            Err(CodeRefusal::NoRequest)
+        );
+        assert_eq!(
+            board.answer_code("browser-c", &fifth, CodeAnswer::Given(code("7"))),
+            Ok(())
+        );
+        board.code_moved(
+            "browser-c",
+            "code-x",
+            "https://a.example",
+            CodeState::Filled,
+        );
         assert!(matches!(
             carried(&bus).last(),
             Some(UiEventBody::BrowserCode {
