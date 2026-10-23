@@ -54,10 +54,10 @@
 //! peer uid a request is bound to is the broker's word. The spawner split
 //! gives each its own user.
 
-use std::os::fd::{AsFd as _, AsRawFd as _};
-use std::os::unix::net::UnixStream;
 use std::collections::BTreeMap;
+use std::os::fd::{AsFd as _, AsRawFd as _};
 use std::os::unix::net::UnixListener;
+use std::os::unix::net::UnixStream;
 use std::process::{Child, Command, ExitCode};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
@@ -808,44 +808,52 @@ fn serve_connection(stream: &UnixStream, shared: &Shared) -> Result<(), Error> {
                 relay = ready.map_or(Relaying::None, Relaying::Ready);
                 reply
             }
-            Request::Start { seconds } => {
-                // The handoff socket comes whatever the relay's state, so
-                // the stream stays in step.
-                let handoff = hatchling_sys::net::recv_fd(stream.as_fd()).map_err(gone)?;
-                match std::mem::replace(&mut relay, Relaying::None) {
-                    Relaying::Ready(ready) => {
-                        let serving = Duration::from_secs(seconds).min(MAX_RELAY);
-                        relay = Relaying::Serving(Relay::start(
-                            UnixListener::from(handoff),
-                            ready.vendor,
-                            ready.surrogate,
-                            ready.key,
-                            Instant::now() + serving,
-                        ));
-                        Reply::Ready
-                    }
-                    Relaying::None | Relaying::Serving(_) => Reply::Failed {
-                        reason: String::from("no relay was made ready"),
-                    },
-                }
-            }
-            Request::Finish => match std::mem::replace(&mut relay, Relaying::None) {
-                Relaying::Serving(serving) => {
-                    let (count, problem) = serving.finish();
-                    Reply::Relayed {
-                        forwarded: count.forwarded,
-                        refused: count.refused,
-                        problem,
-                    }
-                }
-                Relaying::None | Relaying::Ready(_) => Reply::Failed {
-                    reason: String::from("no relay was started"),
-                },
-            },
+            Request::Start { seconds } => start_relay(stream, &mut relay, seconds)?,
+            Request::Finish => finish_relay(&mut relay),
         };
         send(stream, &reply)?;
     }
     Ok(())
+}
+
+/// Starts the relay made ready, serving for `seconds`, with the handoff
+/// socket that follows on `stream`. The socket is taken whatever the
+/// relay's state, so the stream stays in step.
+fn start_relay(stream: &UnixStream, relay: &mut Relaying, seconds: u64) -> Result<Reply, Error> {
+    let handoff = hatchling_sys::net::recv_fd(stream.as_fd()).map_err(gone)?;
+    Ok(match std::mem::replace(relay, Relaying::None) {
+        Relaying::Ready(ready) => {
+            let serving = Duration::from_secs(seconds).min(MAX_RELAY);
+            *relay = Relaying::Serving(Relay::start(
+                UnixListener::from(handoff),
+                ready.vendor,
+                ready.surrogate,
+                ready.key,
+                Instant::now() + serving,
+            ));
+            Reply::Ready
+        }
+        Relaying::None | Relaying::Serving(_) => Reply::Failed {
+            reason: String::from("no relay was made ready"),
+        },
+    })
+}
+
+/// Stops the relay started, and says what it did.
+fn finish_relay(relay: &mut Relaying) -> Reply {
+    match std::mem::replace(relay, Relaying::None) {
+        Relaying::Serving(serving) => {
+            let (count, problem) = serving.finish();
+            Reply::Relayed {
+                forwarded: count.forwarded,
+                refused: count.refused,
+                problem,
+            }
+        }
+        Relaying::None | Relaying::Ready(_) => Reply::Failed {
+            reason: String::from("no relay was started"),
+        },
+    }
 }
 
 /// A connection's harness relay, as far as it has got.
@@ -875,7 +883,9 @@ fn ready_relay(shared: &Shared, harness: &str, surrogate: String) -> (Reply, Opt
         return refused(format!("{harness:?} is not a harness"));
     };
     let Some(vendor) = shared.vendors.get(&kind) else {
-        return refused(format!("the {harness} harness has no vendor API configured"));
+        return refused(format!(
+            "the {harness} harness has no vendor API configured"
+        ));
     };
     let no_key = || {
         refused(format!(
@@ -1032,7 +1042,6 @@ fn search(shared: &Shared, query: &str) -> Result<Vec<Hit>, String> {
 mod tests {
     use std::io::{Read as _, Write as _};
     use std::net::TcpListener;
-    use std::os::fd::AsFd as _;
     use std::sync::Mutex as StdMutex;
     use std::time::Instant;
 
@@ -1720,7 +1729,9 @@ mod tests {
         ));
         let (unknown, none) = ready_relay(&shared, "vim", String::from("s"));
         assert!(none.is_none());
-        assert!(matches!(unknown, Reply::Refused { reason } if reason == "\"vim\" is not a harness"));
+        assert!(
+            matches!(unknown, Reply::Refused { reason } if reason == "\"vim\" is not a harness")
+        );
     }
 
     /// A relay is started only once made ready, and finished only once
@@ -1744,6 +1755,11 @@ mod tests {
         let (count, problem) = unstarted.finish();
         assert_eq!(count, RelayCount::default());
         assert!(problem.is_some_and(|problem| problem.contains("no relay was started")));
+        assert!(matches!(
+            finish_relay(&mut Relaying::None),
+            Reply::Failed { reason } if reason == "no relay was started"
+        ));
+        assert!(out_of_step().to_string().contains("it answered out of step"));
         drop(authority);
         served.join().unwrap();
     }

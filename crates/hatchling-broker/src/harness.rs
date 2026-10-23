@@ -2089,6 +2089,25 @@ mod tests {
         );
     }
 
+    /// A vendor key is its secret's text, trimmed, and none when blank or
+    /// not text; a run with none is refused naming the secret to store;
+    /// no harness configured is no vendor.
+    #[test]
+    fn a_vendor_key_is_its_trimmed_text_and_its_absence_names_the_secret() {
+        let secret = |bytes: &[u8]| hatchling_vault::Secret::new(bytes.to_vec()).unwrap();
+        assert_eq!(
+            key_text(&secret(b" sk-key \n")).as_deref().map(String::as_str),
+            Some("sk-key")
+        );
+        assert!(key_text(&secret(b"  \n")).is_none());
+        assert!(key_text(&secret(&[0xff, 0xfe])).is_none());
+        assert_eq!(
+            no_key(HarnessKind::CodexCli),
+            "the vendor key is not in the vault: store it as the secret harness-codex-cli"
+        );
+        assert!(Harnesses::default().vendors().is_empty());
+    }
+
     #[test]
     fn a_relayed_run_reports_where_its_requests_went() {
         let mut report = sample_report();
