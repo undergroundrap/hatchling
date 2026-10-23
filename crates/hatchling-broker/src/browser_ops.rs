@@ -2150,7 +2150,11 @@ mod tests {
             op(&BrowserOp::Code { element: 3 });
             let id = browser_id(&bus);
             assert_eq!(
-                board.give_code(&id, &latest_code(&bus), &Concealed::new(String::from("481516"))),
+                board.give_code(
+                    &id,
+                    &latest_code(&bus),
+                    &Concealed::new(String::from("481516"))
+                ),
                 Ok(())
             );
             let mut op = |op: &BrowserOp| {
@@ -2163,8 +2167,14 @@ mod tests {
             op(&BrowserOp::Read);
             op(&BrowserOp::Close);
         });
-        assert!(logged.contains("a sign-in is filled"), "the fill was logged");
-        assert!(logged.contains("a signed-in session is kept"), "the session was kept");
+        assert!(
+            logged.contains("a sign-in is filled"),
+            "the fill was logged"
+        );
+        assert!(
+            logged.contains("a signed-in session is kept"),
+            "the session was kept"
+        );
         for secret in secrets {
             assert!(!logged.contains(secret), "the broker's log names a secret");
             assert!(
