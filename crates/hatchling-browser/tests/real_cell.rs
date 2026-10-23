@@ -454,7 +454,7 @@ fn sign_in_filled(connection: &UnixStream) {
         assert_eq!(
             send(connection, &fill(element, field, "hunter2", &origin)),
             failed(BrowserFailure::NotPossible),
-            "{field:?} into element {element}"
+            "a field of the wrong kind"
         );
     }
     let typed = page(send(

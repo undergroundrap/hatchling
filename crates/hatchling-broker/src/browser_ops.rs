@@ -1849,12 +1849,12 @@ mod tests {
             &sign_in_op(Some(1), None),
         );
         let told = format!("{answer:?}");
-        assert!(matches!(answer, BrowserResult::Page { .. }), "{told}");
+        assert!(matches!(answer, BrowserResult::Page { .. }), "what the agent is told");
         assert!(
             !told.contains("hunter2") && !told.contains("work@"),
-            "{told}"
+            "what the agent is told"
         );
-        assert!(told.contains("Signed in as [hidden], [hidden]"), "{told}");
+        assert!(told.contains("Signed in as [hidden], [hidden]"), "what the agent is told");
         let origin = String::from("https://a.example");
         assert_eq!(
             fills(&fake),
@@ -1876,7 +1876,7 @@ mod tests {
         // Every page after hides them too, until the browser is closed.
         let read = handle_browser_op(&config, &keys, &mut web, &mut browser, &BrowserOp::Read);
         let read = format!("{read:?}");
-        assert!(!read.contains("hunter2"), "{read}");
+        assert!(!read.contains("hunter2"), "what the agent is told");
         handle_browser_op(&config, &keys, &mut web, &mut browser, &BrowserOp::Close);
         assert!(browser.filled.is_empty(), "forgotten with the browser");
     }
@@ -1895,7 +1895,7 @@ mod tests {
             &mut browser,
             &sign_in_op(None, None),
         );
-        assert!(refused_for(&answer, "isn't signed in"), "{answer:?}");
+        assert!(refused_for(&answer, "isn't signed in"), "the answer");
         handle_browser_op(
             &config,
             &keys,
@@ -1917,7 +1917,7 @@ mod tests {
                 &answer,
                 "say which sign-in, by its label: \"Work\", \"Home\""
             ),
-            "{answer:?}"
+            "the answer"
         );
         let answer = handle_browser_op(
             &config,
@@ -1926,7 +1926,7 @@ mod tests {
             &mut browser,
             &sign_in_op(None, Some("Gym")),
         );
-        assert!(refused_for(&answer, "say which"), "{answer:?}");
+        assert!(refused_for(&answer, "say which"), "the answer");
         let answer = handle_browser_op(
             &config,
             &keys,
@@ -1934,7 +1934,7 @@ mod tests {
             &mut browser,
             &sign_in_op(None, Some("Home")),
         );
-        assert!(matches!(answer, BrowserResult::Page { .. }), "{answer:?}");
+        assert!(matches!(answer, BrowserResult::Page { .. }), "the answer");
         assert_eq!(
             fills(&fake)
                 .iter()
@@ -1954,7 +1954,7 @@ mod tests {
         );
         assert!(
             refused_for(&answer, "no sign-in for this site"),
-            "{answer:?}"
+            "the answer"
         );
         showing(&fake, "about:blank", "");
         let answer = handle_browser_op(
@@ -1964,7 +1964,7 @@ mod tests {
             &mut browser,
             &sign_in_op(None, None),
         );
-        assert!(refused_for(&answer, "isn't on an https site"), "{answer:?}");
+        assert!(refused_for(&answer, "isn't on an https site"), "the answer");
         assert_eq!(fills(&fake).len(), 1, "nothing more filled");
         // A store off: none.
         let mut off = config;
@@ -1972,7 +1972,7 @@ mod tests {
         showing(&fake, "https://a.example/login", "Sign in");
         let answer =
             handle_browser_op(&off, &keys, &mut web, &mut browser, &sign_in_op(None, None));
-        assert!(refused_for(&answer, "keeps no sign-ins"), "{answer:?}");
+        assert!(refused_for(&answer, "keeps no sign-ins"), "the answer");
     }
 
     #[test]
