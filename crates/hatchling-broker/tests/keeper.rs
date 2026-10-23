@@ -398,27 +398,28 @@ fn the_egress_authority_refuses_to_run_unless_the_broker_started_it() {
     assert!(stderr.contains("only the broker starts it"), "{stderr}");
 }
 
+/// What a one-request upstream was sent.
+type Upstream = std::thread::JoinHandle<io::Result<Vec<u8>>>;
+
 /// A one-request upstream on loopback: it answers `reply`, and returns
 /// what it was sent.
-fn upstream(reply: &'static [u8]) -> (u16, std::thread::JoinHandle<Vec<u8>>) {
+fn upstream(reply: &'static [u8]) -> io::Result<(u16, Upstream)> {
     use std::io::{Read as _, Write as _};
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
     let handle = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .unwrap();
+        let (mut stream, _) = listener.accept()?;
+        stream.set_read_timeout(Some(Duration::from_secs(10)))?;
         let mut seen = Vec::new();
         let mut byte = [0_u8; 1];
         while !seen.ends_with(b"\r\n\r\n") {
-            stream.read_exact(&mut byte).unwrap();
+            stream.read_exact(&mut byte)?;
             seen.extend_from_slice(&byte);
         }
-        stream.write_all(reply).unwrap();
-        seen
+        stream.write_all(reply)?;
+        Ok(seen)
     });
-    (port, handle)
+    Ok((port, handle))
 }
 
 /// A session's egress through the real keeper and authority, started as
@@ -431,7 +432,8 @@ fn a_sessions_egress_goes_through_the_authority_with_its_credential() {
     use hatchling_broker::egress_authority::Authority;
     use hatchling_broker::egress_path::EgressPath as _;
     use hatchling_broker::keeper::Keeper;
-    let (port, served) = upstream(b"HTTP/1.1 200 OK\r\nContent-Length: 22\r\n\r\necho: Bearer cred-qz-9");
+    let (port, served) =
+        upstream(b"HTTP/1.1 200 OK\r\nContent-Length: 22\r\n\r\necho: Bearer cred-qz-9").unwrap();
     let destination = format!("localhost:{port}");
     let secret = format!("egress-localhost-{port}");
     let dir = scratch("authority-egress").unwrap();
@@ -460,7 +462,7 @@ fn a_sessions_egress_goes_through_the_authority_with_its_credential() {
         surrogate_b64,
     };
     let answer = link.forward(1000, &request).unwrap();
-    let seen = String::from_utf8(served.join().unwrap()).unwrap();
+    let seen = String::from_utf8(served.join().unwrap().unwrap()).unwrap();
     assert!(
         seen.contains("\r\nAuthorization: Bearer cred-qz-9\r\n"),
         "the credential wasn't put in"

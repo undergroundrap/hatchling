@@ -80,7 +80,8 @@ const KEEPER_FD: &str = crate::environment::HATCHLING_AUTHORITY_KEEPER_FD.name;
 /// How long the broker waits for each of a connection's frames: past the
 /// longest the authority itself waits on an upstream read (a local model
 /// may think for minutes).
-const ANSWER_TIMEOUT: Duration = Duration::from_secs(hatchling_egress::local::IO_TIMEOUT.as_secs() + 30);
+const ANSWER_TIMEOUT: Duration =
+    Duration::from_secs(hatchling_egress::local::IO_TIMEOUT.as_secs() + 30);
 
 /// The most bytes of a body one frame carries: a body moves as many.
 const PART_BYTES: usize = 60 * 1024;
@@ -665,7 +666,13 @@ fn granted<'p, P: EgressPath>(
     destination: &str,
 ) -> Result<&'p P, Refusal> {
     let proxy = proxy.ok_or_else(|| Refusal::failed("this connection's egress isn't open"))?;
-    if shared.config.egress.grants.iter().any(|grant| grant == destination) {
+    if shared
+        .config
+        .egress
+        .grants
+        .iter()
+        .any(|grant| grant == destination)
+    {
         Ok(proxy)
     } else {
         tracing::warn!(
@@ -710,6 +717,10 @@ fn answer_with(stream: &UnixStream, answer: EgressResponse) -> Result<(), Error>
 ///
 /// Returns [`Error::Egress`] when the allowlist doesn't resolve, or the
 /// surrogate key can't be made.
+#[allow(
+    clippy::type_complexity,
+    reason = "the credential-lookup closure type is inherent to the proxy's generic design"
+)]
 fn open_proxy(
     shared: &Shared,
 ) -> Result<Proxy<impl Fn(&str) -> Option<Zeroizing<Vec<u8>>> + '_>, Error> {
@@ -736,7 +747,11 @@ fn open_proxy(
 /// Searches for `query` with the provider's key, read from the keeper,
 /// giving up after the shared deadline.
 fn search(shared: &Shared, query: &str) -> Result<Vec<Hit>, String> {
-    let Some(provider) = shared.provider.as_ref().filter(|_| shared.config.web.search) else {
+    let Some(provider) = shared
+        .provider
+        .as_ref()
+        .filter(|_| shared.config.web.search)
+    else {
         return Err(String::from("search is off"));
     };
     let name: SecretName = SEARCH_KEY
@@ -912,8 +927,12 @@ mod tests {
             "no key read while search is off"
         );
         let failing: Provider = Arc::new(|_, _| Err(SearchError::Status { status: 429 }));
-        let (failing, _) =
-            shared_with(searching(), &[("search", b"k")], Some(failing), FETCH_DEADLINE);
+        let (failing, _) = shared_with(
+            searching(),
+            &[("search", b"k")],
+            Some(failing),
+            FETCH_DEADLINE,
+        );
         assert_eq!(
             search(&failing, "q"),
             Err(SearchError::Status { status: 429 }.to_string())
@@ -1035,7 +1054,8 @@ mod tests {
         let (port, upstream) = upstream(reply);
         let destination = format!("localhost:{port}");
         let config = egressing(&format!("local:{destination}"), &[&destination]);
-        let (shared, asked) = shared_with(config, &[("egress", b"cred-zq-7")], None, FETCH_DEADLINE);
+        let (shared, asked) =
+            shared_with(config, &[("egress", b"cred-zq-7")], None, FETCH_DEADLINE);
         let (authority, served) = serving(shared);
         let link = authority.connect().unwrap().egress().unwrap();
         let surrogate_b64 = link.mint(1000, &destination, 60).unwrap();
@@ -1044,7 +1064,7 @@ mod tests {
             .collect();
         let request = EgressRequest {
             method: String::from("POST"),
-            destination: destination.clone(),
+            destination,
             path: String::from("/v1/chat"),
             headers: vec![(String::from("X-Planted"), String::from("p-7"))],
             body: body.clone(),
@@ -1061,7 +1081,11 @@ mod tests {
         assert!(seen.ends_with(&body), "the body didn't arrive whole");
         assert_eq!(answer.status, 200);
         assert_eq!(answer.body.len(), answer_body.len());
-        assert!(answer.body.starts_with(answer_body.get(..150 * 1024).unwrap()));
+        assert!(
+            answer
+                .body
+                .starts_with(answer_body.get(..150 * 1024).unwrap())
+        );
         assert!(
             !String::from_utf8_lossy(&answer.body).contains("cred-zq-7"),
             "the credential came back"
@@ -1215,13 +1239,22 @@ mod tests {
         for part in [&b"ab"[..], b"cd"] {
             write_frame(&ours, part).unwrap();
         }
-        assert_eq!(read_parts(&theirs, 2, 4).unwrap(), b"abcd");
+        assert_eq!(read_parts(&theirs, 2, PART_BYTES + 4).unwrap(), b"abcd");
         let (ours, theirs) = UnixStream::pair().unwrap();
-        assert!(read_parts(&theirs, 3, 2 * PART_BYTES).is_err(), "too many parts");
+        assert!(
+            read_parts(&theirs, 3, 2 * PART_BYTES).is_err(),
+            "too many parts"
+        );
         write_frame(&ours, &vec![0; PART_BYTES + 1]).unwrap();
-        assert!(read_parts(&theirs, 1, 4 * PART_BYTES).is_err(), "a part too large");
+        assert!(
+            read_parts(&theirs, 1, 4 * PART_BYTES).is_err(),
+            "a part too large"
+        );
         write_frame(&ours, b"abcde").unwrap();
-        assert!(read_parts(&theirs, 1, 4).is_err(), "more bytes than the bound");
+        assert!(
+            read_parts(&theirs, 1, 4).is_err(),
+            "more bytes than the bound"
+        );
         assert_eq!(read_parts(&theirs, 0, 0).unwrap(), b"");
         // Headers too large for a frame: refused, nothing else sent.
         let answer = EgressResponse {
@@ -1284,9 +1317,13 @@ mod tests {
                 .kind,
             RefusalKind::NotAllowed
         );
-        let none: Option<&Proxy<fn(&str) -> Option<Zeroizing<Vec<u8>>>>> = None;
+        type Fetcher = fn(&str) -> Option<Zeroizing<Vec<u8>>>;
+        let none: Option<&Proxy<Fetcher>> = None;
         assert_eq!(
-            granted(&shared, none, "localhost:443").map(|_| ()).unwrap_err().kind,
+            granted(&shared, none, "localhost:443")
+                .map(|_| ())
+                .unwrap_err()
+                .kind,
             RefusalKind::Failed
         );
     }

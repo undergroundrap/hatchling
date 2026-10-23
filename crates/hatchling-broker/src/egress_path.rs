@@ -103,7 +103,7 @@ where
     }
 
     fn forward(&self, peer_uid: u32, request: &EgressRequest) -> Result<EgressResponse, Refusal> {
-        Proxy::forward(self, peer_uid, request).map_err(|error| Refusal::of(&error))
+        Self::forward(self, peer_uid, request).map_err(|error| Refusal::of(&error))
     }
 }
 
