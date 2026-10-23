@@ -435,6 +435,14 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             {
                 "const": "manage_sign_ins",
                 "type": "string"
+            },
+            {
+                "const": "give_code",
+                "type": "string"
+            },
+            {
+                "const": "decline_code",
+                "type": "string"
             }
         ]
     },
@@ -912,6 +920,42 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             },
             {
                 "const": "partial",
+                "type": "string"
+            }
+        ]
+    },
+    "CodeRefusal": {
+        "oneOf": [
+            {
+                "const": "no_request",
+                "type": "string"
+            },
+            {
+                "const": "empty",
+                "type": "string"
+            },
+            {
+                "const": "too_long",
+                "type": "string"
+            }
+        ]
+    },
+    "CodeState": {
+        "oneOf": [
+            {
+                "const": "asked",
+                "type": "string"
+            },
+            {
+                "const": "filled",
+                "type": "string"
+            },
+            {
+                "const": "declined",
+                "type": "string"
+            },
+            {
+                "const": "expired",
                 "type": "string"
             }
         ]
@@ -3079,6 +3123,50 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "op"
                 ],
                 "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
+                        "const": "give_code",
+                        "type": "string"
+                    },
+                    "code": {
+                        "$ref": "#/$defs/Concealed"
+                    },
+                    "request_id": {
+                        "type": "string"
+                    },
+                    "session_id": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "action",
+                    "session_id",
+                    "request_id",
+                    "code"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
+                        "const": "decline_code",
+                        "type": "string"
+                    },
+                    "request_id": {
+                        "type": "string"
+                    },
+                    "session_id": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "action",
+                    "session_id",
+                    "request_id"
+                ],
+                "type": "object"
             }
         ]
     },
@@ -3422,6 +3510,58 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             {
                 "properties": {
                     "result": {
+                        "const": "code_taken",
+                        "type": "string"
+                    },
+                    "session_id": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "session_id"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "code_declined",
+                        "type": "string"
+                    },
+                    "session_id": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "session_id"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "reason": {
+                        "$ref": "#/$defs/CodeRefusal"
+                    },
+                    "result": {
+                        "const": "code_refused",
+                        "type": "string"
+                    },
+                    "session_id": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "session_id",
+                    "reason"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
                         "const": "input_done",
                         "type": "string"
                     },
@@ -3756,6 +3896,34 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "session_id",
                     "handoff",
                     "frame_sequence"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "kind": {
+                        "const": "browser_code",
+                        "type": "string"
+                    },
+                    "origin": {
+                        "type": "string"
+                    },
+                    "request_id": {
+                        "type": "string"
+                    },
+                    "session_id": {
+                        "type": "string"
+                    },
+                    "state": {
+                        "$ref": "#/$defs/CodeState"
+                    }
+                },
+                "required": [
+                    "kind",
+                    "session_id",
+                    "request_id",
+                    "origin",
+                    "state"
                 ],
                 "type": "object"
             }

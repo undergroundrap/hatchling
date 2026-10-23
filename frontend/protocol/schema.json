@@ -620,6 +620,16 @@
           "const": "manage_sign_ins",
           "description": "[`UiAction::ManageSignIns`].",
           "type": "string"
+        },
+        {
+          "const": "give_code",
+          "description": "[`UiAction::GiveCode`].",
+          "type": "string"
+        },
+        {
+          "const": "decline_code",
+          "description": "[`UiAction::DeclineCode`].",
+          "type": "string"
         }
       ]
     },
@@ -1861,6 +1871,26 @@
             "password"
           ],
           "type": "object"
+        },
+        {
+          "description": "The page asks for a one-time code (WO-030, v17): ask the owner for\nit, and type it into the field named once they give it. The agent\nnever sees it. Asked again while the owner hasn't answered, it\nwaits for them a while.",
+          "properties": {
+            "element": {
+              "description": "The code field's element, from the last snapshot.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "op": {
+              "const": "code",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "element"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -2094,6 +2124,50 @@
           "properties": {
             "result": {
               "const": "off",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The owner has been asked for the page's one-time code, and hasn't\ngiven it yet: ask again shortly (v17).",
+          "properties": {
+            "origin": {
+              "description": "The origin the code is for, `https://host[:port]`.",
+              "type": "string"
+            },
+            "result": {
+              "const": "code_waiting",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "origin"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The owner declined to give the code (v17).",
+          "properties": {
+            "result": {
+              "const": "code_declined",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The owner didn't give the code in time: ask again if the page still\nwants one (v17).",
+          "properties": {
+            "result": {
+              "const": "code_expired",
               "type": "string"
             }
           },
@@ -2785,6 +2859,51 @@
         {
           "const": "partial",
           "description": "It returned, but not everything the brief asked for.",
+          "type": "string"
+        }
+      ]
+    },
+    "CodeRefusal": {
+      "description": "Why a code the user gave wasn't taken.",
+      "oneOf": [
+        {
+          "const": "no_request",
+          "description": "No such request is waiting: it was answered, it expired, or the\nbrowser asked for another since.",
+          "type": "string"
+        },
+        {
+          "const": "empty",
+          "description": "The code is empty.",
+          "type": "string"
+        },
+        {
+          "const": "too_long",
+          "description": "The code is past its bound.",
+          "type": "string"
+        }
+      ]
+    },
+    "CodeState": {
+      "description": "Where a browser's one-time code stands (WO-030).",
+      "oneOf": [
+        {
+          "const": "asked",
+          "description": "The page asks for it, and the owner is asked.",
+          "type": "string"
+        },
+        {
+          "const": "filled",
+          "description": "It was typed into the page, and forgotten.",
+          "type": "string"
+        },
+        {
+          "const": "declined",
+          "description": "The owner declined.",
+          "type": "string"
+        },
+        {
+          "const": "expired",
+          "description": "Nobody answered in time.",
           "type": "string"
         }
       ]
@@ -9171,6 +9290,57 @@
             "op"
           ],
           "type": "object"
+        },
+        {
+          "description": "Give the one-time code a browser session's page asks for (WO-030):\ntyped into the page by the broker, used once and not kept.",
+          "properties": {
+            "action": {
+              "const": "give_code",
+              "type": "string"
+            },
+            "code": {
+              "$ref": "#/$defs/Concealed",
+              "description": "The code."
+            },
+            "request_id": {
+              "description": "The request, as the stream showed it.",
+              "type": "string"
+            },
+            "session_id": {
+              "description": "The session.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "session_id",
+            "request_id",
+            "code"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Decline to give a code a browser session's page asks for (WO-030).",
+          "properties": {
+            "action": {
+              "const": "decline_code",
+              "type": "string"
+            },
+            "request_id": {
+              "description": "The request, as the stream showed it.",
+              "type": "string"
+            },
+            "session_id": {
+              "description": "The session.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "session_id",
+            "request_id"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -9563,6 +9733,65 @@
           "type": "object"
         },
         {
+          "description": "The code was taken: the broker types it into the page next.",
+          "properties": {
+            "result": {
+              "const": "code_taken",
+              "type": "string"
+            },
+            "session_id": {
+              "description": "The session.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "session_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The code request was declined.",
+          "properties": {
+            "result": {
+              "const": "code_declined",
+              "type": "string"
+            },
+            "session_id": {
+              "description": "The session.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "session_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The code wasn't taken, and why.",
+          "properties": {
+            "reason": {
+              "$ref": "#/$defs/CodeRefusal",
+              "description": "Why."
+            },
+            "result": {
+              "const": "code_refused",
+              "type": "string"
+            },
+            "session_id": {
+              "description": "The session.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "session_id",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
           "description": "The user's input was done; a frame of the page after it follows\n(v2).",
           "properties": {
             "result": {
@@ -9951,6 +10180,39 @@
             "session_id",
             "handoff",
             "frame_sequence"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A browser session's page asks for a one-time code, or the request\nmoved on (WO-030).",
+          "properties": {
+            "kind": {
+              "const": "browser_code",
+              "type": "string"
+            },
+            "origin": {
+              "description": "The origin the code is for, `https://host[:port]`.",
+              "type": "string"
+            },
+            "request_id": {
+              "description": "The request.",
+              "type": "string"
+            },
+            "session_id": {
+              "description": "The session.",
+              "type": "string"
+            },
+            "state": {
+              "$ref": "#/$defs/CodeState",
+              "description": "Where it stands."
+            }
+          },
+          "required": [
+            "kind",
+            "session_id",
+            "request_id",
+            "origin",
+            "state"
           ],
           "type": "object"
         }
@@ -10601,7 +10863,7 @@
       "backend_newer": "broker v{backend} needs frontend ≥ v{backend}; frontend is v{frontend} — reload the frontend to update",
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
-    "session_protocol": 16,
+    "session_protocol": 17,
     "ui_schema_version": 4
   },
   "x-roots": {
