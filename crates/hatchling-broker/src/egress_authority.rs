@@ -1760,6 +1760,14 @@ mod tests {
             Reply::Failed { reason } if reason == "no relay was started"
         ));
         assert!(out_of_step().to_string().contains("it answered out of step"));
+        // Started with nothing made ready: the handoff is taken all the
+        // same, and refused.
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        hatchling_sys::net::send_fd(ours.as_fd(), handoff.as_fd()).unwrap();
+        assert!(matches!(
+            start_relay(&theirs, &mut Relaying::None, 1).unwrap(),
+            Reply::Failed { reason } if reason == "no relay was made ready"
+        ));
         drop(authority);
         served.join().unwrap();
     }
