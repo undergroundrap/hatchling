@@ -7,7 +7,7 @@
 - #144, a vault keeper process holding the master key and the secrets store's key, the broker neither;
 - #145, the gates scanning only for the secrets a cell has had, which the keeper records.
 
-Step 2, the egress authority, has begun: slices 1 and 4 (below) start it beside the keeper and move web search into it, and slice 2 moves the egress swap into it. Left: step 2's other slices, and step 3, the privileged spawner, which drops the broker from root. Until step 3, the keeper and the authority are separate processes, not yet OS boundaries.
+Step 2, the egress authority, has begun: slices 1 and 4 (below) start it beside the keeper and move web search into it, slice 2 moves the egress swap into it, and slice 3 the harness relay. Left: step 2's last slice, and step 3, the privileged spawner, which drops the broker from root. Until step 3, the keeper and the authority are separate processes, not yet OS boundaries.
 **Area:** `crates/hatchling-broker`, `crates/hatchling-vault`, `crates/hatchling-egress`, `crates/hatchling-isolation`, `crates/hatchling-sys`, `crates/hatchling-runtime`, a new crate per separated process if its dependencies warrant one, `docs/arch/`
 **Issue:** [#33](https://github.com/undergroundrap/hatchling/issues/33)
 **Trust boundary:** yes
@@ -142,6 +142,7 @@ Filled in at close.
     2. **The egress swap.** The proxy runs in the authority: the surrogate key, the pinned allowlist, TLS, the swap, the scrub and the staged pages. The authority reads the egress grants from its own configuration, as the keeper does. The broker relays each session's `EgressOp` and `EgressResult` and never fetches a credential. The cell's peer uid is still the broker's word until step 3, and the docs say so.
        *Landed, in one way different:* the staged pages stay with the broker, which moves a body too large for one session frame in parts as before; the authority gets each request whole, in parts of its own wire. Each session is a connection of its own to the authority, handed over by `SCM_RIGHTS` and served on its own thread, so one session's request, or a search, never waits on another's. The authority refuses a destination no agent is granted.
     3. **The harness relay.** The broker hands the cell's relay listener to the authority (`SCM_RIGHTS`) with the run's vendor and surrogate, and the authority runs the relay with the key it alone reads.
+       *Landed, in one way different:* the broker names only the harness, never its vendor: the authority finds the vendor in its own configuration, so the broker can't send the key anywhere. The broker hands over the run's handoff socket rather than the listener, so it never holds the cell's listener either. The relay is made ready, with the key read, before the cell starts, so a run with no key is refused as before.
     4. **Search.** A typed search request to the authority, which reads the key and answers with the results. *Landed with slice 1;* since slice 2, each search is a connection of its own, so searches run side by side.
     5. **The scan.** With the broker holding none of them, the egress credentials leave the gates' scan set.
   - **Not moved by this step:**

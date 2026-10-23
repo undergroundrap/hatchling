@@ -1,14 +1,15 @@
-//! A real CLI's vendor relay: the broker's side of a harness
-//! cell's only network.
+//! A real CLI's vendor relay: the trusted side of a harness cell's only
+//! network.
 //!
 //! A harness cell with a network has one TCP listener, on its own loopback,
-//! which its cell hands to the broker. The broker serves it here, one
-//! HTTP/1.1 request per connection, and:
+//! which its cell hands over. The egress authority serves it here
+//! ([`crate::egress_authority`]; in-process, with no authority running, the
+//! broker does), one HTTP/1.1 request per connection, and:
 //!
 //! - **answers locally, never forwarding,** a request that does not carry
 //!   the run's surrogate key in the vendor's own header, names a method or
 //!   path its API does not use, or breaks the bounds or the framing;
-//! - **swaps the surrogate for the vendor key** the broker read from the
+//! - **swaps the surrogate for the vendor key** the authority read from the
 //!   vault for this run, which never enters the cell, so a harness that
 //!   sends its key anywhere sends a value that works nowhere else;
 //! - **forwards to the vendor's one destination**, at the addresses pinned
@@ -205,6 +206,31 @@ impl Relay {
         RelayCount {
             forwarded: self.counts.0.load(Ordering::SeqCst),
             refused: self.counts.1.load(Ordering::SeqCst),
+        }
+    }
+}
+
+/// A run's relay, wherever it serves: in the egress authority, which
+/// reads the vendor key (WO-017, step 2), or, in-process with no
+/// authority running, in the broker, with the key it read.
+#[derive(Debug)]
+pub enum RunRelay {
+    /// The broker's own.
+    Local(Relay),
+    /// The egress authority's.
+    Authority(crate::egress_authority::AuthorityRelay),
+    /// One that couldn't be started, and why.
+    Unstarted(String),
+}
+
+impl RunRelay {
+    /// Stops the relay and reports what it did, and the trouble it had.
+    #[must_use]
+    pub fn finish(self) -> (RelayCount, Option<String>) {
+        match self {
+            Self::Local(relay) => relay.finish(),
+            Self::Authority(relay) => relay.finish(),
+            Self::Unstarted(why) => (RelayCount::default(), Some(why)),
         }
     }
 }

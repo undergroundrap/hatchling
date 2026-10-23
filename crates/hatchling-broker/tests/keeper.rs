@@ -416,6 +416,14 @@ fn upstream(reply: &'static [u8]) -> io::Result<(u16, Upstream)> {
             stream.read_exact(&mut byte)?;
             seen.extend_from_slice(&byte);
         }
+        let length: usize = String::from_utf8_lossy(&seen)
+            .lines()
+            .find_map(|line| line.strip_prefix("Content-Length: "))
+            .and_then(|length| length.trim().parse().ok())
+            .unwrap_or(0);
+        let mut body = vec![0; length];
+        stream.read_exact(&mut body)?;
+        seen.extend_from_slice(&body);
         stream.write_all(reply)?;
         Ok(seen)
     });
@@ -476,6 +484,124 @@ fn a_sessions_egress_goes_through_the_authority_with_its_credential() {
     drop((link, authority, keeper));
     let log = std::fs::read_to_string(dir.join("vault").join(".access.log")).unwrap();
     let reads: Vec<&str> = log.lines().filter(|line| line.contains(&secret)).collect();
+    assert_eq!(reads.len(), 2, "{log}");
+    assert!(
+        reads
+            .first()
+            .is_some_and(|line| line.contains("broker") && line.contains("denied")),
+        "{log}"
+    );
+    assert!(
+        reads
+            .get(1)
+            .is_some_and(|line| line.contains("authority") && line.contains("allowed")),
+        "{log}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The settings of a Claude Code harness under `dir`, relaying to a
+/// vendor on `port`: a stand-in binary, pinned; a project root; and the
+/// artifact workspace its patches go to.
+fn harness_settings(dir: &Path, port: u16) -> io::Result<Vec<(&'static str, String)>> {
+    for sub in ["bin", "project", "workspace"] {
+        std::fs::create_dir_all(dir.join(sub))?;
+    }
+    let binary = dir.join("bin").join("claude");
+    std::fs::write(&binary, b"#!/bin/sh\nexit 0\n")?;
+    let pin = hatchling_skill::CodeHash::of(&std::fs::read(&binary)?).to_string();
+    let path = |sub: &str| dir.join(sub).display().to_string();
+    Ok(vec![
+        (
+            "HATCHLING_HARNESS_CLAUDE_CODE",
+            binary.display().to_string(),
+        ),
+        ("HATCHLING_HARNESS_CLAUDE_CODE_SHA256", pin),
+        (
+            "HATCHLING_HARNESS_CLAUDE_CODE_API",
+            format!("local:localhost:{port}"),
+        ),
+        (
+            "HATCHLING_HARNESS_ROOTS",
+            format!("project={}", path("project")),
+        ),
+        ("HATCHLING_ARTIFACT_WORKSPACE", path("workspace")),
+    ])
+}
+
+/// A harness relay through the real keeper and authority (WO-017, step
+/// 2): the authority finds the harness's vendor in its own configuration
+/// and reads the vendor key, the cell's surrogate is swapped for it on
+/// the way to the vendor, and the keeper refuses the broker's own read of
+/// it. A harness with no vendor configured is refused.
+#[test]
+fn a_harness_relay_runs_in_the_authority_with_the_key_it_reads() {
+    use std::io::{Read as _, Write as _};
+    use std::os::unix::net::UnixListener;
+
+    use hatchling_broker::egress_authority::Authority;
+    use hatchling_broker::harness::HarnessKind;
+    use hatchling_broker::keeper::Keeper;
+    let (port, vendor) = upstream(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok").unwrap();
+    let dir = scratch("authority-relay").unwrap();
+    sealed_vault(&dir, &[("harness-claude-code", "sk-real-qz-3")]).unwrap();
+    let settings = harness_settings(&dir, port).unwrap();
+    let env: Vec<(&str, &str)> = settings
+        .iter()
+        .map(|(name, value)| (*name, value.as_str()))
+        .collect();
+    let (keeper, _, authoritys) = Keeper::start_with(program(&dir, &env)).unwrap();
+    let authority = Authority::start_with(program(&dir, &env), &authoritys).unwrap();
+    drop(authoritys);
+    let name: hatchling_core::SecretName = "harness-claude-code".parse().unwrap();
+    assert!(
+        keeper.read("harness", &[name]).is_err(),
+        "the broker read a vendor key"
+    );
+    let refused = authority
+        .connect()
+        .unwrap()
+        .relay(HarnessKind::CodexCli, "sk-surrogate")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(
+        refused,
+        "the codex-cli harness has no vendor API configured"
+    );
+    let pending = authority
+        .connect()
+        .unwrap()
+        .relay(HarnessKind::ClaudeCode, "sk-surrogate-qz")
+        .unwrap()
+        .unwrap();
+    let handoff_path = dir.join("relay.sock");
+    let handoff = UnixListener::bind(&handoff_path).unwrap();
+    let relay = pending.start(&handoff, Duration::from_secs(30)).unwrap();
+    // The cell hands its listener over; the CLI asks through it.
+    let cell = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let cell_port = cell.local_addr().unwrap().port();
+    let to_handoff = UnixStream::connect(&handoff_path).unwrap();
+    hatchling_sys::net::send_fd(to_handoff.as_fd(), cell.as_fd()).unwrap();
+    let mut cli = std::net::TcpStream::connect(("127.0.0.1", cell_port)).unwrap();
+    cli.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    cli.write_all(
+        b"POST /v1/messages HTTP/1.1\r\nx-api-key: sk-surrogate-qz\r\nContent-Length: 2\r\n\r\n{}",
+    )
+    .unwrap();
+    let mut answer = String::new();
+    cli.read_to_string(&mut answer).unwrap();
+    assert!(answer.ends_with("ok"), "{answer}");
+    let seen = String::from_utf8(vendor.join().unwrap().unwrap()).unwrap();
+    assert!(seen.contains("x-api-key: sk-real-qz-3\r\n"), "{seen}");
+    assert!(!seen.contains("sk-surrogate-qz"), "{seen}");
+    let (count, problem) = relay.finish();
+    assert_eq!((count.forwarded, count.refused, problem), (1, 0, None));
+    drop((to_handoff, cell, authority, keeper));
+    let log = std::fs::read_to_string(dir.join("vault").join(".access.log")).unwrap();
+    let reads: Vec<&str> = log
+        .lines()
+        .filter(|line| line.contains("harness-claude-code"))
+        .collect();
     assert_eq!(reads.len(), 2, "{log}");
     assert!(
         reads

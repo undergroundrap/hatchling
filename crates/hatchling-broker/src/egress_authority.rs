@@ -33,8 +33,18 @@
 //! - **Web search** (slice 4). The broker sends a query; the authority
 //!   reads the search provider's key from the keeper, runs the search,
 //!   and answers with the results.
-//!
-//! The harness relay and the rest move here next (WO-017's notes).
+//! - **The harness relay** (slice 3). A harness run's connection names
+//!   its harness and the surrogate its cell holds ([`Connection::relay`]).
+//!   The authority finds the harness's vendor in its own configuration
+//!   (its API, its one destination, its pinned addresses) and reads the
+//!   vendor key from the keeper, so a missing key refuses the run before
+//!   its cell starts. When the cell is about to start, the broker hands
+//!   over the run's handoff socket ([`PendingRelay::start`]): the
+//!   authority takes the cell's listener from it and serves the relay
+//!   ([`crate::harness_relay`]), swapping the surrogate for the key, until
+//!   the broker asks how it went ([`AuthorityRelay::finish`]) or the
+//!   connection closes. The broker never holds the key, or names where it
+//!   goes.
 //!
 //! **What it holds against.** A compromised broker can't read a key the
 //! authority holds: the keeper releases it to the authority's channel
@@ -44,12 +54,14 @@
 //! peer uid a request is bound to is the broker's word. The spawner split
 //! gives each its own user.
 
+use std::collections::BTreeMap;
 use std::os::fd::{AsFd as _, AsRawFd as _};
+use std::os::unix::net::UnixListener;
 use std::os::unix::net::UnixStream;
 use std::process::{Child, Command, ExitCode};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use hatchling_core::framing::{read_frame, read_frame_or_eof, write_frame};
 use hatchling_core::{SecretName, fits_one_frame};
@@ -62,6 +74,8 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::egress_path::{EgressPath, Refusal, RefusalKind};
+use crate::harness::HarnessKind;
+use crate::harness_relay::{Relay, RelayCount, Vendor};
 use crate::keeper::Keeper;
 use crate::serve::{destination_to_secret_name, egress_tls};
 use crate::web_ops::{FETCH_DEADLINE, SEARCH_KEY};
@@ -85,6 +99,10 @@ const ANSWER_TIMEOUT: Duration =
 
 /// The most bytes of a body one frame carries: a body moves as many.
 const PART_BYTES: usize = 60 * 1024;
+
+/// The longest a harness run's relay serves: past any run's timeout and
+/// its grace.
+const MAX_RELAY: Duration = Duration::from_secs(2 * 3600);
 
 /// What the broker is told when the authority can't be reached, or
 /// answers out of step.
@@ -118,6 +136,14 @@ enum Request {
         surrogate_b64: String,
         parts: usize,
     },
+    /// Make ready a harness run's relay: `harness` names it, and
+    /// `surrogate` is what its cell holds.
+    Relay { harness: String, surrogate: String },
+    /// Start the relay made ready, serving for `seconds`. The run's
+    /// handoff socket follows, as a descriptor.
+    Start { seconds: u64 },
+    /// Stop the relay, and say what it did.
+    Finish,
 }
 
 /// What the authority answers.
@@ -143,6 +169,12 @@ enum Reply {
     },
     /// A mint or a request refused, or failed.
     Denied { refusal: Refusal },
+    /// What a relay did, and the trouble it had, if any.
+    Relayed {
+        forwarded: u32,
+        refused: u32,
+        problem: Option<String>,
+    },
 }
 
 /// One search result, as it crosses to the broker.
@@ -312,7 +344,8 @@ impl Connection {
                 | Reply::Failed { .. }
                 | Reply::Surrogate { .. }
                 | Reply::Answer { .. }
-                | Reply::Denied { .. },
+                | Reply::Denied { .. }
+                | Reply::Relayed { .. },
             ) => return Err(String::from(UNAVAILABLE)),
             Err(error) => {
                 tracing::error!(%error, "the egress authority can't be reached");
@@ -350,10 +383,118 @@ impl Connection {
             | Reply::Refused { .. }
             | Reply::Surrogate { .. }
             | Reply::Answer { .. }
-            | Reply::Denied { .. } => Err(Error::Authority {
-                reason: String::from("it answered out of step"),
-            }),
+            | Reply::Denied { .. }
+            | Reply::Relayed { .. } => Err(out_of_step()),
         }
+    }
+}
+
+impl Connection {
+    /// Makes ready a harness run's relay: the authority reads `harness`'s
+    /// vendor key now, so a run with none is refused before its cell
+    /// starts. `surrogate` is what the cell holds.
+    ///
+    /// # Errors
+    ///
+    /// The outer error: the authority can't be reached, or answered out
+    /// of step. The inner one: the run is refused, in words for its
+    /// report.
+    pub fn relay(
+        self,
+        harness: HarnessKind,
+        surrogate: &str,
+    ) -> Result<Result<PendingRelay, String>, Error> {
+        let request = Request::Relay {
+            harness: harness.name().to_owned(),
+            surrogate: surrogate.to_owned(),
+        };
+        send(&self.stream, &request)?;
+        match receive(&self.stream)? {
+            Reply::Ready => Ok(Ok(PendingRelay { connection: self })),
+            Reply::Refused { reason } => Ok(Err(reason)),
+            Reply::Failed { reason } => Err(Error::Authority { reason }),
+            Reply::Results { .. }
+            | Reply::Surrogate { .. }
+            | Reply::Answer { .. }
+            | Reply::Denied { .. }
+            | Reply::Relayed { .. } => Err(out_of_step()),
+        }
+    }
+}
+
+/// A harness run's relay, made ready: the vendor key read.
+#[derive(Debug)]
+pub struct PendingRelay {
+    connection: Connection,
+}
+
+impl PendingRelay {
+    /// Starts the relay: the authority takes the cell's listener from
+    /// `handoff` and serves it for `serving`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Authority`] when the authority can't be reached,
+    /// or couldn't start it.
+    pub fn start(self, handoff: &UnixListener, serving: Duration) -> Result<AuthorityRelay, Error> {
+        let stream = &self.connection.stream;
+        send(
+            stream,
+            &Request::Start {
+                seconds: serving.as_secs(),
+            },
+        )?;
+        hatchling_sys::net::send_fd(stream.as_fd(), handoff.as_fd()).map_err(gone)?;
+        match receive(stream)? {
+            Reply::Ready => Ok(AuthorityRelay {
+                connection: self.connection,
+            }),
+            Reply::Failed { reason } => Err(Error::Authority { reason }),
+            Reply::Results { .. }
+            | Reply::Refused { .. }
+            | Reply::Surrogate { .. }
+            | Reply::Answer { .. }
+            | Reply::Denied { .. }
+            | Reply::Relayed { .. } => Err(out_of_step()),
+        }
+    }
+}
+
+/// A harness run's relay, serving in the authority.
+#[derive(Debug)]
+pub struct AuthorityRelay {
+    connection: Connection,
+}
+
+impl AuthorityRelay {
+    /// Stops the relay and reports what it did, and the trouble it had.
+    #[must_use]
+    pub fn finish(self) -> (RelayCount, Option<String>) {
+        let stream = &self.connection.stream;
+        let answer = send(stream, &Request::Finish).and_then(|()| receive(stream));
+        match answer {
+            Ok(Reply::Relayed {
+                forwarded,
+                refused,
+                problem,
+            }) => (RelayCount { forwarded, refused }, problem),
+            Ok(Reply::Failed { reason }) => (RelayCount::default(), Some(reason)),
+            Ok(
+                Reply::Results { .. }
+                | Reply::Refused { .. }
+                | Reply::Ready
+                | Reply::Surrogate { .. }
+                | Reply::Answer { .. }
+                | Reply::Denied { .. },
+            ) => (RelayCount::default(), Some(out_of_step().to_string())),
+            Err(error) => (RelayCount::default(), Some(error.to_string())),
+        }
+    }
+}
+
+fn out_of_step() -> Error {
+    Error::Authority {
+        reason: String::from("it answered out of step"),
     }
 }
 
@@ -414,7 +555,8 @@ impl EgressPath for EgressLink {
                 | Reply::Refused { .. }
                 | Reply::Ready
                 | Reply::Failed { .. }
-                | Reply::Answer { .. } => None,
+                | Reply::Answer { .. }
+                | Reply::Relayed { .. } => None,
             })
         })?
     }
@@ -449,7 +591,8 @@ impl EgressPath for EgressLink {
                 | Reply::Refused { .. }
                 | Reply::Ready
                 | Reply::Failed { .. }
-                | Reply::Surrogate { .. } => None,
+                | Reply::Surrogate { .. }
+                | Reply::Relayed { .. } => None,
             })
         })?
     }
@@ -530,12 +673,17 @@ pub fn egress_authority_main() -> ExitCode {
                     Arc::new(move |key, query| hatchling_egress::search::brave(&tls, key, query));
                 provider
             });
+            let vendors = crate::harness::Harnesses::from_env(&config)?
+                .with_tls(&tls)
+                .vendors()
+                .clone();
             Keeper::over(keeper).map(|keeper| Shared {
                 config,
                 keeper,
                 tls,
                 provider,
                 deadline: FETCH_DEADLINE,
+                vendors,
             })
         });
     match begun {
@@ -567,6 +715,8 @@ struct Shared {
     provider: Option<Provider>,
     /// How long a search may take.
     deadline: Duration,
+    /// Each harness's vendor, from the authority's own configuration.
+    vendors: BTreeMap<HarnessKind, Vendor>,
 }
 
 /// Serves each connection the broker hands over on `broker`, on a thread
@@ -586,6 +736,7 @@ fn serve(broker: &UnixStream, shared: &Arc<Shared>) {
 /// Answers one connection until the broker closes it.
 fn serve_connection(stream: &UnixStream, shared: &Shared) -> Result<(), Error> {
     let mut proxy = None;
+    let mut relay = Relaying::None;
     while let Some(frame) = read_frame_or_eof(stream).map_err(gone)? {
         let request: Request = serde_json::from_slice(&frame).map_err(|e| Error::Authority {
             reason: format!("a request that doesn't parse: {e}"),
@@ -652,10 +803,114 @@ fn serve_connection(stream: &UnixStream, shared: &Shared) -> Result<(), Error> {
                     Err(refusal) => Reply::Denied { refusal },
                 }
             }
+            Request::Relay { harness, surrogate } => {
+                let (reply, ready) = ready_relay(shared, &harness, surrogate);
+                relay = ready.map_or(Relaying::None, Relaying::Ready);
+                reply
+            }
+            Request::Start { seconds } => start_relay(stream, &mut relay, seconds)?,
+            Request::Finish => finish_relay(&mut relay),
         };
         send(stream, &reply)?;
     }
     Ok(())
+}
+
+/// Starts the relay made ready, serving for `seconds`, with the handoff
+/// socket that follows on `stream`. The socket is taken whatever the
+/// relay's state, so the stream stays in step.
+fn start_relay(stream: &UnixStream, relay: &mut Relaying, seconds: u64) -> Result<Reply, Error> {
+    let handoff = hatchling_sys::net::recv_fd(stream.as_fd()).map_err(gone)?;
+    Ok(match std::mem::replace(relay, Relaying::None) {
+        Relaying::Ready(ready) => {
+            let serving = Duration::from_secs(seconds).min(MAX_RELAY);
+            *relay = Relaying::Serving(Relay::start(
+                UnixListener::from(handoff),
+                ready.vendor,
+                ready.surrogate,
+                ready.key,
+                Instant::now() + serving,
+            ));
+            Reply::Ready
+        }
+        Relaying::None | Relaying::Serving(_) => Reply::Failed {
+            reason: String::from("no relay was made ready"),
+        },
+    })
+}
+
+/// Stops the relay started, and says what it did.
+fn finish_relay(relay: &mut Relaying) -> Reply {
+    match std::mem::replace(relay, Relaying::None) {
+        Relaying::Serving(serving) => {
+            let (count, problem) = serving.finish();
+            Reply::Relayed {
+                forwarded: count.forwarded,
+                refused: count.refused,
+                problem,
+            }
+        }
+        Relaying::None | Relaying::Ready(_) => Reply::Failed {
+            reason: String::from("no relay was started"),
+        },
+    }
+}
+
+/// A connection's harness relay, as far as it has got.
+enum Relaying {
+    None,
+    Ready(ReadyRelay),
+    Serving(Relay),
+}
+
+/// A relay made ready: its vendor, the surrogate the cell holds, and the
+/// vendor key.
+struct ReadyRelay {
+    vendor: Vendor,
+    surrogate: Zeroizing<String>,
+    key: Zeroizing<String>,
+}
+
+/// Makes ready a relay for the harness `harness` names: its vendor from
+/// the authority's own configuration, its key from the keeper. The reply,
+/// and the relay when it's ready.
+fn ready_relay(shared: &Shared, harness: &str, surrogate: String) -> (Reply, Option<ReadyRelay>) {
+    let refused = |reason: String| (Reply::Refused { reason }, None);
+    let Some(kind) = HarnessKind::ALL
+        .into_iter()
+        .find(|kind| kind.name() == harness)
+    else {
+        return refused(format!("{harness:?} is not a harness"));
+    };
+    let Some(vendor) = shared.vendors.get(&kind) else {
+        return refused(format!(
+            "the {harness} harness has no vendor API configured"
+        ));
+    };
+    let no_key = || {
+        refused(format!(
+            "the vendor key is not in the vault: store it as the secret {}",
+            kind.secret_name()
+        ))
+    };
+    let Ok(name) = kind.secret_name().parse::<SecretName>() else {
+        return no_key();
+    };
+    let key = shared
+        .keeper
+        .read("harness", std::slice::from_ref(&name))
+        .ok()
+        .and_then(|mut read| read.pop().flatten())
+        .and_then(|secret| crate::harness::key_text(&secret));
+    let Some(key) = key else {
+        return no_key();
+    };
+    let ready = ReadyRelay {
+        vendor: vendor.clone(),
+        surrogate: Zeroizing::new(surrogate),
+        key,
+    };
+    (Reply::Ready, Some(ready))
 }
 
 /// The connection's proxy, for `destination` one of the operator's
@@ -841,6 +1096,7 @@ mod tests {
             tls: TlsClient::bundled().unwrap(),
             provider,
             deadline,
+            vendors: BTreeMap::new(),
         };
         (shared, asked)
     }
@@ -969,6 +1225,7 @@ mod tests {
             tls: TlsClient::bundled().unwrap(),
             provider: Some(provider),
             deadline: FETCH_DEADLINE,
+            vendors: BTreeMap::new(),
         };
         assert!(matches!(
             search(&gone_keeper, "q"),
@@ -1339,6 +1596,184 @@ mod tests {
                 .kind,
             RefusalKind::Failed
         );
+    }
+
+    /// A vendor upstream for one request: it answers `ok`, and returns
+    /// what it was sent.
+    fn vendor_once() -> (u16, std::thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let mut seen = Vec::new();
+            let mut byte = [0_u8; 1];
+            while !seen.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).unwrap();
+                seen.extend_from_slice(&byte);
+            }
+            let mut body = [0_u8; 2];
+            stream.read_exact(&mut body).unwrap();
+            seen.extend_from_slice(&body);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                .unwrap();
+            String::from_utf8(seen).unwrap()
+        });
+        (port, handle)
+    }
+
+    /// A harness run's relay serves in the authority: the vendor from its
+    /// own configuration, the key from the keeper, the cell's surrogate
+    /// swapped for it, and the count back to the broker. A harness with no
+    /// vendor, or no key stored, is refused before it starts.
+    #[test]
+    fn a_harness_runs_relay_serves_in_the_authority_with_the_key_it_reads() {
+        let (port, vendor) = vendor_once();
+        let destination = format!("localhost:{port}");
+        let allowlist = hatchling_egress::Allowlist::parse(&format!("local:{destination}"));
+        let (mut shared, asked) = shared_with(
+            crate::api_auth::tests::owner_config(None),
+            &[("harness", b" sk-real-zq-5\n")],
+            None,
+            FETCH_DEADLINE,
+        );
+        shared.vendors.insert(
+            HarnessKind::ClaudeCode,
+            Vendor {
+                wire: crate::harness_relay::Wire::Anthropic,
+                destination,
+                allowlist: Arc::new(allowlist.unwrap()),
+                tls: TlsClient::bundled().unwrap(),
+            },
+        );
+        let (authority, served) = serving(shared);
+        assert_eq!(
+            authority
+                .connect()
+                .unwrap()
+                .relay(HarnessKind::CodexCli, "s")
+                .unwrap()
+                .unwrap_err(),
+            "the codex-cli harness has no vendor API configured"
+        );
+        let pending = authority
+            .connect()
+            .unwrap()
+            .relay(HarnessKind::ClaudeCode, "sk-surrogate-zq")
+            .unwrap()
+            .unwrap();
+        let dir = crate::api_auth::tests::scratch("authority-relay");
+        let handoff_path = dir.0.join("relay.sock");
+        let handoff = UnixListener::bind(&handoff_path).unwrap();
+        let relay = pending.start(&handoff, Duration::from_secs(30)).unwrap();
+        // The cell hands its listener over; the CLI asks through it.
+        let cell = TcpListener::bind("127.0.0.1:0").unwrap();
+        let cell_port = cell.local_addr().unwrap().port();
+        let to_handoff = UnixStream::connect(&handoff_path).unwrap();
+        hatchling_sys::net::send_fd(to_handoff.as_fd(), cell.as_fd()).unwrap();
+        let mut cli = std::net::TcpStream::connect(("127.0.0.1", cell_port)).unwrap();
+        cli.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        cli.write_all(
+            b"POST /v1/messages HTTP/1.1\r\nx-api-key: sk-surrogate-zq\r\nContent-Length: 2\r\n\r\n{}",
+        )
+        .unwrap();
+        let mut answer = String::new();
+        cli.read_to_string(&mut answer).unwrap();
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+        assert!(answer.ends_with("ok"), "{answer}");
+        let seen = vendor.join().unwrap();
+        assert!(seen.contains("x-api-key: sk-real-zq-5\r\n"), "{seen}");
+        assert!(!seen.contains("sk-surrogate-zq"), "{seen}");
+        assert_eq!(
+            relay.finish(),
+            (
+                RelayCount {
+                    forwarded: 1,
+                    refused: 0
+                },
+                None
+            )
+        );
+        assert_eq!(*asked.lock().unwrap(), ["harness"]);
+        drop((to_handoff, cell, authority));
+        served.join().unwrap();
+    }
+
+    /// A relay for a harness that isn't one, or whose key isn't stored, is
+    /// refused, in words for the run's report.
+    #[test]
+    fn a_relay_is_refused_without_its_harness_or_its_key() {
+        let (mut shared, _) = shared_with(
+            crate::api_auth::tests::owner_config(None),
+            &[],
+            None,
+            FETCH_DEADLINE,
+        );
+        let allowlist = hatchling_egress::Allowlist::parse("local:localhost:1").unwrap();
+        shared.vendors.insert(
+            HarnessKind::ClaudeCode,
+            Vendor {
+                wire: crate::harness_relay::Wire::Anthropic,
+                destination: String::from("localhost:1"),
+                allowlist: Arc::new(allowlist),
+                tls: TlsClient::bundled().unwrap(),
+            },
+        );
+        let (refused, _) = ready_relay(&shared, "claude-code", String::from("s"));
+        assert!(matches!(
+            refused,
+            Reply::Refused { reason } if reason == "the vendor key is not in the vault: store it as the secret harness-claude-code"
+        ));
+        let (unknown, none) = ready_relay(&shared, "vim", String::from("s"));
+        assert!(none.is_none());
+        assert!(
+            matches!(unknown, Reply::Refused { reason } if reason == "\"vim\" is not a harness")
+        );
+    }
+
+    /// A relay is started only once made ready, and finished only once
+    /// started; the handoff socket is taken either way, so the
+    /// connection stays in step.
+    #[test]
+    fn a_relay_runs_its_steps_in_order() {
+        let (shared, _) = shared_with(searching(), &[], None, FETCH_DEADLINE);
+        let (authority, served) = serving(shared);
+        let connection = authority.connect().unwrap();
+        let dir = crate::api_auth::tests::scratch("authority-relay-order");
+        let handoff = UnixListener::bind(dir.0.join("relay.sock")).unwrap();
+        let unready = PendingRelay { connection };
+        assert!(matches!(
+            unready.start(&handoff, Duration::from_secs(1)),
+            Err(Error::Authority { reason }) if reason == "no relay was made ready"
+        ));
+        let unstarted = AuthorityRelay {
+            connection: authority.connect().unwrap(),
+        };
+        let (count, problem) = unstarted.finish();
+        assert_eq!(count, RelayCount::default());
+        assert!(problem.is_some_and(|problem| problem.contains("no relay was started")));
+        assert!(matches!(
+            finish_relay(&mut Relaying::None),
+            Reply::Failed { reason } if reason == "no relay was started"
+        ));
+        assert!(
+            out_of_step()
+                .to_string()
+                .contains("it answered out of step")
+        );
+        // Started with nothing made ready: the handoff is taken all the
+        // same, and refused.
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        hatchling_sys::net::send_fd(ours.as_fd(), handoff.as_fd()).unwrap();
+        assert!(matches!(
+            start_relay(&theirs, &mut Relaying::None, 1).unwrap(),
+            Reply::Failed { reason } if reason == "no relay was made ready"
+        ));
+        drop(authority);
+        served.join().unwrap();
     }
 
     #[test]
