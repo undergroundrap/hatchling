@@ -164,6 +164,9 @@ export class LiveApprovals implements TaskApprovalPort {
             case 'signed_in_kept':
             case 'profiles':
             case 'sign_ins':
+            case 'code_taken':
+            case 'code_declined':
+            case 'code_refused':
                 return unknown('Hatchling answered with something other than a decision, so the answer is not confirmed. Check its status.');
         }
     }

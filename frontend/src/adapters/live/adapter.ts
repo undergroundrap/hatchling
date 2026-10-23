@@ -153,6 +153,7 @@ export class LiveAdapter implements ProtocolAdapter {
             case 'browser_frame':
             case 'browser_action':
             case 'browser_control':
+            case 'browser_code':
                 // Build and schedule notices have no view yet; the surfaces took the rest.
                 return undefined;
         }

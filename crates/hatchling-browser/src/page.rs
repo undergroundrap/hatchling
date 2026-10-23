@@ -319,6 +319,7 @@ impl Session {
         let step = match field {
             SignInField::Username => "username",
             SignInField::Password => "password",
+            SignInField::Code => "code",
         };
         self.element(element, step, "")?;
         self.on_origin(&session, origin)?;

@@ -311,6 +311,13 @@ test('no event is processed as agent-driven while the user drives, and nothing a
     one.transport.deliver(event({ kind: 'browser_action', session_id: 'web-1', by: 'user', narration: 'x' }));
     assert.match(one.adapter.getSnapshot().threads.find(thread => thread.id === 'browser:web-1').summary, /1 action arrived from whoever was not driving and was not shown\./);
 });
+test('a code request on the stream is taken in stride: the browser and the connection carry on', () => {
+    const { transport, adapter } = connected();
+    const before = adapter.getSnapshot().browserTasks.length;
+    transport.deliver(event({ kind: 'browser_code', session_id: 'web-1', request_id: 'code-1', origin: 'https://a.example', state: 'asked' }));
+    assert.equal(adapter.getSnapshot().browserTasks.length, before);
+    assert.equal(transport.closes, 0, 'not a broken protocol');
+});
 test("the user's own input goes only to a browser they drive, and the broker answers it", async () => {
     const { transport, adapter } = connected();
     const click = { type: 'browser.click', id: 'web-1', x: 10, y: 20 };

@@ -37,13 +37,13 @@ use hatchling_core::browser::{
     BrowserCommand, BrowserFailure, BrowserReply, Cookie, MAX_COOKIE_PAGE_BYTES, PageAction,
     PageSnapshot, SignInField,
 };
-use hatchling_core::ui::BrowserState;
 use hatchling_core::ui::Concealed;
+use hatchling_core::ui::{BrowserState, CodeState};
 use hatchling_core::{BrowserOp, BrowserResult, SessionResponse, WebResult};
 use hatchling_egress::web::WebUrl;
 use hatchling_vault::OpensStores;
 
-use crate::browser_board::{BrowserBoard, Turn};
+use crate::browser_board::{BrowserBoard, CodeTurn, Turn};
 use crate::browser_cell::{BrowserCell, BrowserLauncher};
 use crate::browser_proxy::{Route, Sites};
 use crate::browser_session::BrowserSettings;
@@ -261,7 +261,13 @@ pub struct BrowserSession {
     /// What the broker has filled into the running browser (WO-030):
     /// hidden from every snapshot the agent is given.
     filled: Vec<Concealed>,
+    /// How long a code op waits for the owner's answer.
+    code_wait: Duration,
 }
+
+/// How long a code op waits for the owner to give the code, before it
+/// tells the agent to ask again.
+pub const CODE_WAIT: Duration = Duration::from_secs(30);
 
 /// A browser as the owner sees it.
 #[derive(Debug)]
@@ -304,6 +310,7 @@ impl BrowserSession {
             stopped: false,
             profile: None,
             filled: Vec::new(),
+            code_wait: CODE_WAIT,
         }
     }
 
@@ -489,6 +496,9 @@ impl BrowserSession {
             BrowserOp::Scroll { down: false } => String::from("Scrolled up"),
             BrowserOp::Allow { site, .. } => format!("Asked the owner to allow {site}"),
             BrowserOp::Close => String::from("Closed the browser"),
+            BrowserOp::Code { element } => {
+                format!("Asked the owner for the code {}", named(*element))
+            }
             BrowserOp::SignIn { label, .. } => label.as_ref().map_or_else(
                 || String::from("Filled a sign-in"),
                 |label| format!("Filled the sign-in \"{label}\""),
@@ -517,6 +527,9 @@ impl BrowserSession {
             | BrowserResult::Stopped
             | BrowserResult::OwnerDriving
             | BrowserResult::HandedBack { .. }
+            | BrowserResult::CodeWaiting { .. }
+            | BrowserResult::CodeDeclined
+            | BrowserResult::CodeExpired
             | BrowserResult::Off => return,
         };
         board.act(&id, narration);
@@ -794,6 +807,69 @@ fn answer(
             browser.keep_jar(config, keys);
             filled
         }
+        BrowserOp::Code { element } => {
+            let filled = code(browser, *element);
+            browser.keep_jar(config, keys);
+            filled
+        }
+    }
+}
+
+/// The page's one-time code (WO-030): the owner is asked in the app, on
+/// the page's origin, and once they give it the broker types it into the
+/// field asked for, through the same exact-origin fill as a sign-in, and
+/// forgets it. Asked again while the owner hasn't answered, it waits for
+/// them a while.
+fn code(browser: &mut BrowserSession, element: u32) -> BrowserResult {
+    if browser.profile.is_none() {
+        return refused(
+            "this browser isn't signed in to a site the owner kept: a code is asked for only there",
+        );
+    }
+    let (Some(board), Some(session)) = (
+        browser.board.clone(),
+        browser.shown.as_ref().map(|shown| shown.id.clone()),
+    ) else {
+        return refused("the owner can't be asked for a code here");
+    };
+    let mut turn = board.code_turn(&session, browser.code_wait);
+    if turn == CodeTurn::None {
+        let read = browser.command(&BrowserCommand::Snapshot);
+        let BrowserResult::Page { snapshot, .. } = &read else {
+            return read;
+        };
+        let Ok(url) = WebUrl::parse(&snapshot.url) else {
+            return refused("the page isn't on an https site");
+        };
+        if board
+            .ask_code(&session, element, &url.origin().to_string())
+            .is_none()
+        {
+            return refused("the owner couldn't be asked for the code");
+        }
+        turn = board.code_turn(&session, browser.code_wait);
+    }
+    match turn {
+        CodeTurn::Given {
+            request,
+            element,
+            origin,
+            code,
+        } => {
+            browser.filled.push(code.clone());
+            let filled = browser.command(&BrowserCommand::Fill {
+                element,
+                field: SignInField::Code,
+                text: code,
+                origin: origin.clone(),
+            });
+            board.code_moved(&session, &request, &origin, CodeState::Filled);
+            filled
+        }
+        CodeTurn::Declined => BrowserResult::CodeDeclined,
+        CodeTurn::Expired => BrowserResult::CodeExpired,
+        CodeTurn::Waiting { origin } => BrowserResult::CodeWaiting { origin },
+        CodeTurn::None => refused("the owner couldn't be asked for the code"),
     }
 }
 
@@ -1979,6 +2055,176 @@ mod tests {
         let answer =
             handle_browser_op(&off, &keys, &mut web, &mut browser, &sign_in_op(None, None));
         assert!(refused_for(&answer, "keeps no sign-ins"), "the answer");
+    }
+
+    /// The latest code request the stream `bus` showed the app.
+    fn latest_code(bus: &crate::api_stream::Bus) -> String {
+        bus.wait_after(None, Duration::ZERO)
+            .into_iter()
+            .rev()
+            .find_map(|event| {
+                if let hatchling_core::ui::UiEventBody::BrowserCode { request_id, .. } = event.body
+                {
+                    Some(request_id)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_code_is_asked_of_the_owner_typed_once_given_and_never_shown() {
+        let (config, _scratch, keys, _profile) = with_sign_ins("code", &[]);
+        let fake = Fake::default();
+        let ((mut web, mut browser), board, bus) = watched(&fake);
+        browser.code_wait = Duration::ZERO;
+        let ask = BrowserOp::Code { element: 3 };
+        // Not a signed-in browser: refused.
+        let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, &ask);
+        assert!(
+            matches!(answer, BrowserResult::Refused { .. }),
+            "the answer"
+        );
+        handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &open("https://a.example/"),
+        );
+        showing(&fake, "https://a.example/verify", "Enter the code");
+        let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, &ask);
+        assert_eq!(
+            answer,
+            BrowserResult::CodeWaiting {
+                origin: String::from("https://a.example")
+            }
+        );
+        let id = browser
+            .shown
+            .as_ref()
+            .map(|shown| shown.id.clone())
+            .unwrap();
+        let asked = latest_code(&bus);
+        // Still waiting: told so again, nothing typed.
+        let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, &ask);
+        assert!(
+            matches!(answer, BrowserResult::CodeWaiting { .. }),
+            "the answer"
+        );
+        assert!(fills(&fake).is_empty());
+        // Given: typed into the field asked for, on the origin asked for, hidden.
+        assert_eq!(
+            board.give_code(&id, &asked, &Concealed::new(String::from("481516"))),
+            Ok(())
+        );
+        showing(&fake, "https://a.example/verify", "Code 481516 accepted");
+        let answer = handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &BrowserOp::Code { element: 9 },
+        );
+        let told = format!("{answer:?}");
+        assert!(
+            !told.contains("481516") && told.contains("[hidden]"),
+            "what the agent is told"
+        );
+        assert_eq!(
+            fills(&fake),
+            [(
+                3,
+                SignInField::Code,
+                String::from("481516"),
+                String::from("https://a.example")
+            )],
+            "the field asked for, not the one named later"
+        );
+        assert_eq!(
+            board.give_code(&id, &asked, &Concealed::new(String::from("1"))),
+            Err(hatchling_core::ui::CodeRefusal::NoRequest),
+            "used once"
+        );
+    }
+
+    #[test]
+    fn a_code_declined_or_expired_is_never_typed_and_one_off_https_or_unwatched_is_refused() {
+        let (config, _scratch, keys, _profile) = with_sign_ins("code-no", &[]);
+        let fake = Fake::default();
+        let ((mut web, mut browser), board, bus) = watched(&fake);
+        browser.code_wait = Duration::ZERO;
+        let ask = BrowserOp::Code { element: 3 };
+        handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &open("https://a.example/"),
+        );
+        let id = browser
+            .shown
+            .as_ref()
+            .map(|shown| shown.id.clone())
+            .unwrap();
+        showing(&fake, "https://a.example/verify", "Enter the code");
+        let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, &ask);
+        assert!(
+            matches!(answer, BrowserResult::CodeWaiting { .. }),
+            "the answer"
+        );
+        assert_eq!(board.decline_code(&id, &latest_code(&bus)), Ok(()));
+        assert_eq!(
+            handle_browser_op(&config, &keys, &mut web, &mut browser, &ask),
+            BrowserResult::CodeDeclined
+        );
+        handle_browser_op(&config, &keys, &mut web, &mut browser, &ask);
+        board.age_code(&id);
+        assert_eq!(
+            handle_browser_op(&config, &keys, &mut web, &mut browser, &ask),
+            BrowserResult::CodeExpired
+        );
+        assert!(fills(&fake).is_empty(), "no code typed");
+        // Not on an https page: refused.
+        showing(&fake, "about:blank", "");
+        let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, &ask);
+        assert!(
+            matches!(answer, BrowserResult::Refused { .. }),
+            "the answer"
+        );
+        // An open browser that isn't signed in: refused, the owner never asked.
+        let (mut web, mut plain) = session("t", &fake);
+        let plain_board = Arc::new(BrowserBoard::default());
+        plain = plain.with_board(Arc::clone(&plain_board));
+        plain.code_wait = Duration::ZERO;
+        let other = open("https://b.example/");
+        handle_browser_op(&config, &keys, &mut web, &mut plain, &other);
+        owner_decides(&config, "t", "https://b.example", Decision::Approve);
+        handle_browser_op(&config, &keys, &mut web, &mut plain, &other);
+        assert!(plain.is_open() && plain.profile.is_none());
+        showing(&fake, "https://b.example/verify", "Enter the code");
+        let answer = handle_browser_op(&config, &keys, &mut web, &mut plain, &ask);
+        assert!(
+            matches!(answer, BrowserResult::Refused { .. }),
+            "the answer"
+        );
+        let plain_id = plain.shown.as_ref().map(|shown| shown.id.clone()).unwrap();
+        assert_eq!(
+            plain_board.code_turn(&plain_id, Duration::ZERO),
+            CodeTurn::None,
+            "never asked"
+        );
+        // No board, no owner to ask.
+        let (mut web, mut alone) = session("t", &fake);
+        handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut alone,
+            &open("https://a.example/"),
+        );
+        assert!(matches!(code(&mut alone, 3), BrowserResult::Refused { .. }));
     }
 
     #[test]

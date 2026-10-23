@@ -702,6 +702,57 @@ impl Tool for BrowserSignInTool<'_> {
     }
 }
 
+/// Asks the owner for a one-time code the page wants (WO-030): the broker
+/// types it, and the model never sees it.
+pub struct BrowserAskCodeTool<'s> {
+    stream: &'s UnixStream,
+}
+
+impl<'s> BrowserAskCodeTool<'s> {
+    /// Build over the broker session.
+    #[must_use]
+    pub const fn new(stream: &'s UnixStream) -> Self {
+        Self { stream }
+    }
+}
+
+impl Tool for BrowserAskCodeTool<'_> {
+    fn name(&self) -> &'static str {
+        "browser_ask_code"
+    }
+
+    fn description(&self) -> &'static str {
+        "When the page asks for a one-time code (from a text message, an email or an authenticator), name its field by its id from the last page: the owner is asked for the code in the app, and Hatchling types it; you never see it. Works only in a browser the owner kept signed in to this site. If you're told the owner has been asked, call this again shortly."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "element": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "The code field's id, from the last page."
+                }
+            },
+            "required": ["element"],
+            "additionalProperties": false
+        })
+    }
+
+    fn execute(&self, arguments: Value) -> Result<ToolOutput, LoopError> {
+        let element = arguments
+            .get("element")
+            .and_then(Value::as_u64)
+            .and_then(|element| u32::try_from(element).ok())
+            .ok_or_else(|| LoopError::ToolFailed {
+                tool: self.name().to_owned(),
+                reason: String::from("missing or invalid 'element' argument"),
+            })?;
+        Ok(browser_answer(crate::browser::code(self.stream, element)))
+    }
+}
+
 /// Closes the browser (WO-029).
 pub struct BrowserCloseTool<'s> {
     stream: &'s UnixStream,
@@ -779,6 +830,16 @@ fn browser_output(result: BrowserResult) -> ToolOutput {
         )),
         BrowserResult::OwnerDriving => ToolOutput::Err(String::from(
             "the owner is using the browser: nothing was done; try again later",
+        )),
+        BrowserResult::CodeWaiting { origin } => ToolOutput::Ok(json!({
+            "code_waiting": origin,
+            "note": "the owner has been asked for the code: call browser_ask_code again shortly",
+        })),
+        BrowserResult::CodeDeclined => ToolOutput::Err(String::from(
+            "the owner declined to give the code: don't ask again unless they say so",
+        )),
+        BrowserResult::CodeExpired => ToolOutput::Err(String::from(
+            "the owner didn't give the code in time: ask again if the page still wants one",
         )),
         BrowserResult::HandedBack { snapshot, refused } => {
             let mut page = page_output(snapshot, &refused);
@@ -2053,7 +2114,7 @@ mod tests {
     #[test]
     fn the_browser_tools_are_named_described_and_shaped() {
         let (agent, _) = socket_pair();
-        let tools: [(&dyn Tool, &str, &str, &[&str]); 6] = [
+        let tools: [(&dyn Tool, &str, &str, &[&str]); 7] = [
             (
                 &BrowserOpenTool::new(&agent),
                 "browser_open",
@@ -2083,6 +2144,12 @@ mod tests {
                 "browser_sign_in",
                 "you never see either",
                 &["password_element"],
+            ),
+            (
+                &BrowserAskCodeTool::new(&agent),
+                "browser_ask_code",
+                "one-time code",
+                &["element"],
             ),
             (
                 &BrowserAllowTool::new(&agent),
@@ -2406,6 +2473,38 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn browser_ask_code_names_the_field_and_is_told_what_came_of_it() {
+        let (output, op) = browse(
+            &|agent| Box::new(BrowserAskCodeTool::new(agent)),
+            json!({"element": 3}),
+            BrowserResult::CodeWaiting {
+                origin: String::from("https://a.example"),
+            },
+        );
+        assert_eq!(op, hatchling_core::BrowserOp::Code { element: 3 });
+        let ToolOutput::Ok(told) = output else {
+            unreachable!("{output:?}");
+        };
+        assert_eq!(told.get("code_waiting"), Some(&json!("https://a.example")));
+        for (reply, words) in [
+            (BrowserResult::CodeDeclined, "declined"),
+            (BrowserResult::CodeExpired, "in time"),
+        ] {
+            let (output, _) = browse(
+                &|agent| Box::new(BrowserAskCodeTool::new(agent)),
+                json!({"element": 3}),
+                reply,
+            );
+            assert!(
+                matches!(&output, ToolOutput::Err(said) if said.contains(words)),
+                "{output:?}"
+            );
+        }
+        let (agent, _theirs) = socket_pair();
+        assert!(BrowserAskCodeTool::new(&agent).execute(json!({})).is_err());
     }
 
     #[test]

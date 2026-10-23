@@ -89,6 +89,9 @@ export class Surfaces {
                 return undefined;
             case 'browser_control':
                 return this.desk.handoff(body.session_id, body.handoff, body.frame_sequence);
+            case 'browser_code':
+                // Shown with its browser once the app asks for codes.
+                return undefined;
             case 'activity':
             case 'chat_message':
             case 'artifact':

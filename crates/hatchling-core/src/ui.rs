@@ -242,6 +242,18 @@ pub enum UiEventBody {
         /// the user handed back: the agent looked again before acting.
         frame_sequence: u64,
     },
+    /// A browser session's page asks for a one-time code, or the request
+    /// moved on (WO-030).
+    BrowserCode {
+        /// The session.
+        session_id: String,
+        /// The request.
+        request_id: String,
+        /// The origin the code is for, `https://host[:port]`.
+        origin: String,
+        /// Where it stands.
+        state: CodeState,
+    },
 }
 
 /// The state the activity feed shows for an event. `Interrupted` is a
@@ -715,6 +727,35 @@ pub enum SignInResult {
     Failed,
 }
 
+/// Where a browser's one-time code stands (WO-030).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum CodeState {
+    /// The page asks for it, and the owner is asked.
+    Asked,
+    /// It was typed into the page, and forgotten.
+    Filled,
+    /// The owner declined.
+    Declined,
+    /// Nobody answered in time.
+    Expired,
+}
+
+/// Why a code the user gave wasn't taken.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum CodeRefusal {
+    /// No such request is waiting: it was answered, it expired, or the
+    /// browser asked for another since.
+    NoRequest,
+    /// The code is empty.
+    Empty,
+    /// The code is past its bound.
+    TooLong,
+}
+
 /// A user action.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -835,6 +876,23 @@ pub enum UiAction {
         /// The operation.
         op: SignInOp,
     },
+    /// Give the one-time code a browser session's page asks for (WO-030):
+    /// typed into the page by the broker, used once and not kept.
+    GiveCode {
+        /// The session.
+        session_id: String,
+        /// The request, as the stream showed it.
+        request_id: String,
+        /// The code.
+        code: Concealed,
+    },
+    /// Decline to give a code a browser session's page asks for (WO-030).
+    DeclineCode {
+        /// The session.
+        session_id: String,
+        /// The request, as the stream showed it.
+        request_id: String,
+    },
 }
 
 /// What an action did.
@@ -953,6 +1011,23 @@ pub enum UiActionResult {
     SignIns {
         /// The result.
         outcome: SignInResult,
+    },
+    /// The code was taken: the broker types it into the page next.
+    CodeTaken {
+        /// The session.
+        session_id: String,
+    },
+    /// The code request was declined.
+    CodeDeclined {
+        /// The session.
+        session_id: String,
+    },
+    /// The code wasn't taken, and why.
+    CodeRefused {
+        /// The session.
+        session_id: String,
+        /// Why.
+        reason: CodeRefusal,
     },
     /// The user's input was done; a frame of the page after it follows
     /// (v2).
@@ -1568,6 +1643,15 @@ mod tests {
             },
             &json!({"kind": "browser_control", "session_id": "w1", "handoff": "resumed", "frame_sequence": 9}),
         );
+        pinned(
+            &UiEventBody::BrowserCode {
+                session_id: s("w1"),
+                request_id: s("code-1"),
+                origin: s("https://a.example"),
+                state: CodeState::Asked,
+            },
+            &json!({"kind": "browser_code", "session_id": "w1", "request_id": "code-1", "origin": "https://a.example", "state": "asked"}),
+        );
     }
 
     #[test]
@@ -1772,6 +1856,51 @@ mod tests {
         ];
         for (result, expected) in &results {
             pinned(result, expected);
+        }
+    }
+
+    #[test]
+    fn a_code_travels_as_a_string_and_never_shows() {
+        let give = UiAction::GiveCode {
+            session_id: s("w1"),
+            request_id: s("code-1"),
+            code: Concealed::new(s("481516")),
+        };
+        pinned(
+            &give,
+            &json!({"action": "give_code", "session_id": "w1", "request_id": "code-1", "code": "481516"}),
+        );
+        let shown = format!("{give:?}");
+        assert!(!shown.contains("481516"), "{shown}");
+        pinned(
+            &UiAction::DeclineCode {
+                session_id: s("w1"),
+                request_id: s("code-1"),
+            },
+            &json!({"action": "decline_code", "session_id": "w1", "request_id": "code-1"}),
+        );
+        for (result, expected) in [
+            (
+                UiActionResult::CodeTaken {
+                    session_id: s("w1"),
+                },
+                json!({"result": "code_taken", "session_id": "w1"}),
+            ),
+            (
+                UiActionResult::CodeDeclined {
+                    session_id: s("w1"),
+                },
+                json!({"result": "code_declined", "session_id": "w1"}),
+            ),
+            (
+                UiActionResult::CodeRefused {
+                    session_id: s("w1"),
+                    reason: CodeRefusal::NoRequest,
+                },
+                json!({"result": "code_refused", "session_id": "w1", "reason": "no_request"}),
+            ),
+        ] {
+            pinned(&result, &expected);
         }
     }
 

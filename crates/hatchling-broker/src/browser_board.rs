@@ -38,14 +38,16 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use hatchling_core::browser::{
-    BrowserCommand, BrowserFailure, BrowserReply, MAX_FRAME_JPEG_BASE64, MAX_TYPED_CHARS,
-    OwnerInput, VIEWPORT,
+    BrowserCommand, BrowserFailure, BrowserReply, MAX_CODE_CHARS, MAX_FRAME_JPEG_BASE64,
+    MAX_TYPED_CHARS, OwnerInput, VIEWPORT,
 };
 use hatchling_core::ui::{
-    Actor, BrowserAction, BrowserFrame, BrowserSession, Control, ControlRefusal, Handoff,
+    Actor, BrowserAction, BrowserFrame, BrowserSession, CodeRefusal, CodeState, Concealed, Control,
+    ControlRefusal, Handoff,
 };
 use hatchling_core::ui::{ImageType, InlineImage, UiEvent, UiEventBody, UiResponse};
 use hatchling_scheduler::Timestamp;
@@ -76,6 +78,48 @@ pub fn board(config: &Config) -> Arc<BrowserBoard> {
 pub struct BrowserBoard {
     bus: Mutex<Option<Arc<Bus>>>,
     sessions: Mutex<BTreeMap<String, Watched>>,
+    /// Woken when the owner answers a code request (WO-030).
+    codes: Condvar,
+}
+
+/// How long the owner has to give a one-time code a page asks for.
+pub const CODE_LIFETIME: Duration = Duration::from_secs(5 * 60);
+
+/// A one-time code a browser's page asks for (WO-030): its field, its
+/// origin, and the owner's answer once they give it.
+struct CodeAsk {
+    id: String,
+    element: u32,
+    origin: String,
+    asked: Instant,
+    answer: Option<CodeAnswer>,
+}
+
+/// The owner's answer to a code request.
+enum CodeAnswer {
+    Given(Concealed),
+    Declined,
+}
+
+/// What a browser's code request came to, for the agent's op.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum CodeTurn {
+    /// The owner gave it: type it into `element`, on `origin`. The request
+    /// is gone; settle it once typed.
+    Given {
+        request: String,
+        element: u32,
+        origin: String,
+        code: Concealed,
+    },
+    /// The owner declined.
+    Declined,
+    /// Nobody answered in time.
+    Expired,
+    /// Asked, not answered yet.
+    Waiting { origin: String },
+    /// No code is asked for.
+    None,
 }
 
 /// A browser the owner can stop, and drive.
@@ -96,6 +140,8 @@ struct Watched {
     visit: Option<String>,
     /// The signed-in profile it runs (WO-030), if one.
     profile: Option<String>,
+    /// The one-time code its page asks for (WO-030), if one.
+    code: Option<CodeAsk>,
 }
 
 impl std::fmt::Debug for Watched {
@@ -124,6 +170,10 @@ pub enum OwnerAct<'a> {
     Input(&'a str, &'a OwnerInput),
     /// Keep its sign-in (WO-030).
     Keep(&'a str),
+    /// Give the code a request of it asks for (WO-030).
+    GiveCode(&'a str, &'a str, &'a Concealed),
+    /// Decline a code request of it (WO-030).
+    DeclineCode(&'a str, &'a str),
 }
 
 /// Why the owner's input wasn't done.
@@ -181,9 +231,165 @@ impl BrowserBoard {
                     title: String::new(),
                     visit: None,
                     profile: None,
+                    code: None,
                 },
             );
         stopped
+    }
+
+    /// The page of the browser `session_id` asks for a one-time code, for
+    /// `element` on `origin` (WO-030): the owner is asked, and any request
+    /// before it is gone. The request's id; none for a browser there isn't.
+    pub(crate) fn ask_code(&self, session_id: &str, element: u32, origin: &str) -> Option<String> {
+        let id = crate::approval::random_hex("code-").ok()?;
+        let mut sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+        let watched = sessions.get_mut(session_id)?;
+        watched.code = Some(CodeAsk {
+            id: id.clone(),
+            element,
+            origin: origin.to_owned(),
+            asked: Instant::now(),
+            answer: None,
+        });
+        drop(sessions);
+        self.code_moved(session_id, &id, origin, CodeState::Asked);
+        Some(id)
+    }
+
+    /// The owner gives `code` for the request `request_id` of the browser
+    /// `session_id`: taken while it waits, and not yet answered or expired.
+    ///
+    /// # Errors
+    ///
+    /// [`CodeRefusal::Empty`] or [`CodeRefusal::TooLong`] for the code
+    /// itself; [`CodeRefusal::NoRequest`] when no such request waits.
+    pub fn give_code(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        code: &Concealed,
+    ) -> Result<(), CodeRefusal> {
+        let length = code.expose().chars().count();
+        if length == 0 {
+            return Err(CodeRefusal::Empty);
+        }
+        if length > MAX_CODE_CHARS {
+            return Err(CodeRefusal::TooLong);
+        }
+        self.answer_code(session_id, request_id, CodeAnswer::Given(code.clone()))
+    }
+
+    /// The owner declines the request `request_id` of the browser
+    /// `session_id`.
+    ///
+    /// # Errors
+    ///
+    /// [`CodeRefusal::NoRequest`] when no such request waits.
+    pub fn decline_code(&self, session_id: &str, request_id: &str) -> Result<(), CodeRefusal> {
+        self.answer_code(session_id, request_id, CodeAnswer::Declined)
+    }
+
+    fn answer_code(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        answer: CodeAnswer,
+    ) -> Result<(), CodeRefusal> {
+        let mut sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+        let ask = sessions
+            .get_mut(session_id)
+            .and_then(|watched| watched.code.as_mut())
+            .filter(|ask| {
+                ask.id == request_id && ask.answer.is_none() && ask.asked.elapsed() < CODE_LIFETIME
+            })
+            .ok_or(CodeRefusal::NoRequest)?;
+        ask.answer = Some(answer);
+        drop(sessions);
+        self.codes.notify_all();
+        Ok(())
+    }
+
+    /// The code request of the browser `session_id`, waited on up to `wait`
+    /// for the owner's answer. An answered or expired request is gone once
+    /// told: given, the caller types it and settles it.
+    pub(crate) fn code_turn(&self, session_id: &str, wait: Duration) -> CodeTurn {
+        let deadline = Instant::now() + wait;
+        let mut sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            let Some(watched) = sessions.get_mut(session_id) else {
+                return CodeTurn::None;
+            };
+            let Some(ask) = watched.code.as_ref() else {
+                return CodeTurn::None;
+            };
+            let expired = ask.answer.is_none() && ask.asked.elapsed() >= CODE_LIFETIME;
+            if ask.answer.is_some() || expired {
+                let Some(ask) = watched.code.take() else {
+                    return CodeTurn::None;
+                };
+                drop(sessions);
+                return match (ask.answer, expired) {
+                    (Some(CodeAnswer::Given(code)), false) => CodeTurn::Given {
+                        request: ask.id,
+                        element: ask.element,
+                        origin: ask.origin,
+                        code,
+                    },
+                    (Some(CodeAnswer::Declined), false) => {
+                        self.code_moved(session_id, &ask.id, &ask.origin, CodeState::Declined);
+                        CodeTurn::Declined
+                    }
+                    (Some(_) | None, true) | (None, false) => {
+                        self.code_moved(session_id, &ask.id, &ask.origin, CodeState::Expired);
+                        CodeTurn::Expired
+                    }
+                };
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return CodeTurn::Waiting {
+                    origin: ask.origin.clone(),
+                };
+            }
+            sessions = self
+                .codes
+                .wait_timeout(sessions, deadline - now)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+    }
+
+    /// Tells the owner's app the code request `request_id` of the browser
+    /// `session_id`, for `origin`, is now `state`.
+    pub(crate) fn code_moved(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        origin: &str,
+        state: CodeState,
+    ) {
+        self.publish(UiEventBody::BrowserCode {
+            session_id: session_id.to_owned(),
+            request_id: request_id.to_owned(),
+            origin: origin.to_owned(),
+            state,
+        });
+    }
+
+    /// Ages the browser `session_id`'s code request past its lifetime.
+    #[cfg(test)]
+    pub(crate) fn age_code(&self, session_id: &str) {
+        if let Some(ask) = self
+            .sessions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_mut(session_id)
+            .and_then(|watched| watched.code.as_mut())
+        {
+            ask.asked = Instant::now()
+                .checked_sub(CODE_LIFETIME)
+                .unwrap_or(ask.asked);
+        }
     }
 
     /// The browser `session_id` is visiting `site`, `host:port`.
@@ -576,7 +782,6 @@ fn jpeg_image(base64: &str) -> Option<InlineImage> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
 
     use base64::Engine as _;
     use hatchling_core::ui::BrowserState;
@@ -810,6 +1015,7 @@ mod tests {
             title: String::new(),
             visit: None,
             profile: None,
+            code: None,
         }
     }
 
@@ -1162,6 +1368,142 @@ mod tests {
             board.sign_in_of("browser-n").map(|(sites, _)| sites),
             Err(ControlRefusal::Finished)
         );
+    }
+
+    #[test]
+    fn a_code_is_given_once_while_it_waits_and_only_for_the_request_that_waits() {
+        let (board, _) = watched();
+        let _stopped = board.begin("browser-c", Sites::default(), Driven::default());
+        assert_eq!(board.code_turn("browser-c", Duration::ZERO), CodeTurn::None);
+        assert_eq!(
+            board.ask_code("browser-z", 1, "https://a.example"),
+            None,
+            "no such browser"
+        );
+        let first = board.ask_code("browser-c", 1, "https://a.example").unwrap();
+        let second = board.ask_code("browser-c", 2, "https://a.example").unwrap();
+        let code = |text: &str| Concealed::new(text.to_owned());
+        assert_eq!(
+            board.give_code("browser-c", &first, &code("123")),
+            Err(CodeRefusal::NoRequest),
+            "the first is gone"
+        );
+        assert_eq!(
+            board.give_code("browser-c", &second, &code("")),
+            Err(CodeRefusal::Empty)
+        );
+        assert_eq!(
+            board.give_code("browser-c", &second, &code(&"9".repeat(MAX_CODE_CHARS + 1))),
+            Err(CodeRefusal::TooLong)
+        );
+        assert_eq!(
+            board.code_turn("browser-c", Duration::from_millis(20)),
+            CodeTurn::Waiting {
+                origin: String::from("https://a.example")
+            }
+        );
+        // Given while the agent waits: it wakes with it.
+        std::thread::scope(|scope| {
+            let waiting = scope.spawn(|| board.code_turn("browser-c", Duration::from_secs(10)));
+            std::thread::sleep(Duration::from_millis(50));
+            assert_eq!(
+                board.give_code("browser-c", &second, &code("481516")),
+                Ok(())
+            );
+            assert_eq!(
+                waiting.join().unwrap(),
+                CodeTurn::Given {
+                    request: second.clone(),
+                    element: 2,
+                    origin: String::from("https://a.example"),
+                    code: code("481516"),
+                }
+            );
+        });
+        assert_eq!(
+            board.code_turn("browser-c", Duration::ZERO),
+            CodeTurn::None,
+            "gone once told"
+        );
+        assert_eq!(
+            board.give_code("browser-c", &second, &code("1")),
+            Err(CodeRefusal::NoRequest)
+        );
+    }
+
+    /// The code states the stream carried.
+    fn code_states(bus: &Bus) -> Vec<CodeState> {
+        carried(bus)
+            .into_iter()
+            .filter_map(|body| {
+                if let UiEventBody::BrowserCode { state, .. } = body {
+                    Some(state)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_code_is_declined_once_and_expires_unanswered_each_shown_to_the_app() {
+        let (board, bus) = watched();
+        let _stopped = board.begin("browser-c", Sites::default(), Driven::default());
+        let code = |text: &str| Concealed::new(text.to_owned());
+        let third = board.ask_code("browser-c", 3, "https://a.example").unwrap();
+        assert_eq!(board.decline_code("browser-c", &third), Ok(()));
+        assert_eq!(
+            board.decline_code("browser-c", &third),
+            Err(CodeRefusal::NoRequest),
+            "once"
+        );
+        assert_eq!(
+            board.code_turn("browser-c", Duration::ZERO),
+            CodeTurn::Declined
+        );
+        let fourth = board.ask_code("browser-c", 4, "https://a.example").unwrap();
+        board.age_code("browser-c");
+        assert_eq!(
+            board.give_code("browser-c", &fourth, &code("1")),
+            Err(CodeRefusal::NoRequest)
+        );
+        assert_eq!(
+            board.code_turn("browser-c", Duration::ZERO),
+            CodeTurn::Expired
+        );
+        board.age_code("browser-z");
+        assert_eq!(
+            code_states(&bus),
+            [
+                CodeState::Asked,
+                CodeState::Declined,
+                CodeState::Asked,
+                CodeState::Expired
+            ]
+        );
+        // Answered directly: only the request that waits.
+        let fifth = board.ask_code("browser-c", 5, "https://a.example").unwrap();
+        assert_eq!(
+            board.answer_code("browser-c", "code-other", CodeAnswer::Declined),
+            Err(CodeRefusal::NoRequest)
+        );
+        assert_eq!(
+            board.answer_code("browser-c", &fifth, CodeAnswer::Given(code("7"))),
+            Ok(())
+        );
+        board.code_moved(
+            "browser-c",
+            "code-x",
+            "https://a.example",
+            CodeState::Filled,
+        );
+        assert!(matches!(
+            carried(&bus).last(),
+            Some(UiEventBody::BrowserCode {
+                state: CodeState::Filled,
+                ..
+            })
+        ));
     }
 
     #[test]

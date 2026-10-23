@@ -4,7 +4,7 @@
 /** The frontend protocol version this build speaks. */
 export const UI_SCHEMA_VERSION = 4;
 /** The broker session protocol version the schema was generated at. */
-export const SESSION_PROTOCOL_VERSION = 16;
+export const SESSION_PROTOCOL_VERSION = 17;
 /** The mismatch sentence when this frontend is the newer side. */
 export const INCOMPATIBLE_FRONTEND_NEWER = 'frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update';
 /** The mismatch sentence when the backend is the newer side. */
@@ -278,7 +278,7 @@ export type ApiOutcome = 'served' | 'refused';
  * What one API call asked for: the request's kind, never its content
  * (a message's text, a file, a schedule's task).
  */
-export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins';
+export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'give_code' | 'decline_code';
 /**
  * A bearer token, presented in `Hello` for a token provider.
  *
@@ -840,6 +840,12 @@ export type BrowserOp = {
      * form that asks for the password alone.
      */
     readonly username?: number | null;
+} | {
+    /**
+     * The code field's element, from the last snapshot.
+     */
+    readonly element: number;
+    readonly op: 'code';
 };
 /**
  * The broker's reply to one [`BrowserOp`].
@@ -920,6 +926,16 @@ export type BrowserResult = {
     readonly snapshot: PageSnapshot;
 } | {
     readonly result: 'off';
+} | {
+    /**
+     * The origin the code is for, `https://host[:port]`.
+     */
+    readonly origin: string;
+    readonly result: 'code_waiting';
+} | {
+    readonly result: 'code_declined';
+} | {
+    readonly result: 'code_expired';
 };
 /**
  * A browser session, as the UI shows it. Its control state is not here:
@@ -1227,6 +1243,14 @@ export type ChildReport = {
  * Whether a child completed its brief.
  */
 export type ChildVerdict = 'ok' | 'partial';
+/**
+ * Why a code the user gave wasn't taken.
+ */
+export type CodeRefusal = 'no_request' | 'empty' | 'too_long';
+/**
+ * Where a browser's one-time code stands (WO-030).
+ */
+export type CodeState = 'asked' | 'filled' | 'declined' | 'expired';
 /**
  * A secret the user types into the app for the broker to keep (WO-030):
  * a site's username or password. It travels as a plain string and is
@@ -3756,6 +3780,30 @@ export type UiAction = {
      * The operation.
      */
     readonly op: SignInOp;
+} | {
+    readonly action: 'give_code';
+    /**
+     * The code.
+     */
+    readonly code: Concealed;
+    /**
+     * The request, as the stream showed it.
+     */
+    readonly request_id: string;
+    /**
+     * The session.
+     */
+    readonly session_id: string;
+} | {
+    readonly action: 'decline_code';
+    /**
+     * The request, as the stream showed it.
+     */
+    readonly request_id: string;
+    /**
+     * The session.
+     */
+    readonly session_id: string;
 };
 /**
  * What an action did.
@@ -3912,6 +3960,28 @@ export type UiActionResult = {
      */
     readonly outcome: SignInResult;
     readonly result: 'sign_ins';
+} | {
+    readonly result: 'code_taken';
+    /**
+     * The session.
+     */
+    readonly session_id: string;
+} | {
+    readonly result: 'code_declined';
+    /**
+     * The session.
+     */
+    readonly session_id: string;
+} | {
+    /**
+     * Why.
+     */
+    readonly reason: CodeRefusal;
+    readonly result: 'code_refused';
+    /**
+     * The session.
+     */
+    readonly session_id: string;
 } | {
     readonly result: 'input_done';
     /**
@@ -4072,6 +4142,24 @@ export type UiEventBody = {
      * The session.
      */
     readonly session_id: string;
+} | {
+    readonly kind: 'browser_code';
+    /**
+     * The origin the code is for, `https://host[:port]`.
+     */
+    readonly origin: string;
+    /**
+     * The request.
+     */
+    readonly request_id: string;
+    /**
+     * The session.
+     */
+    readonly session_id: string;
+    /**
+     * Where it stands.
+     */
+    readonly state: CodeState;
 };
 /**
  * A frame the UI sends.

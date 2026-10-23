@@ -90,6 +90,16 @@ pub fn sign_in(
     )
 }
 
+/// Asks the owner for the one-time code the page wants, for its field
+/// `element`: the broker types it once they give it.
+///
+/// # Errors
+///
+/// As [`open`].
+pub fn code(stream: &UnixStream, element: u32) -> Result<BrowserResult, Error> {
+    request(stream, BrowserOp::Code { element })
+}
+
 /// Closes the browser.
 ///
 /// # Errors
