@@ -440,11 +440,12 @@ impl Releases {
         }
     }
 
-    /// Whether `role` may read every one of `names` for `purpose`. Search's
-    /// key is the egress authority's alone; the rest are the broker's.
+    /// Whether `role` may read every one of `names` for `purpose`. The
+    /// egress destinations' credentials and search's key are the egress
+    /// authority's alone; the rest are the broker's.
     fn allow(&self, role: Role, purpose: &str, names: &[SecretName]) -> bool {
         let given = match (role, purpose) {
-            (Role::Broker, "egress") => &self.egress,
+            (Role::Authority, "egress") => &self.egress,
             (Role::Authority, "search") => &self.search,
             (Role::Broker, "harness") => &self.harness,
             (Role::Broker, "channel-account") => &self.accounts,
@@ -838,20 +839,24 @@ mod tests {
         let rules = Releases::of(&config, harness);
         let broker =
             |purpose: &str, list: &[&str]| rules.allow(Role::Broker, purpose, &names(list));
+        let authority =
+            |purpose: &str, list: &[&str]| rules.allow(Role::Authority, purpose, &names(list));
         let egress = "egress-api-example-com-443";
-        assert!(broker("egress", &[egress]));
-        assert!(!broker("egress", &[egress, "token"]));
+        // The egress destinations' credentials: the authority's alone
+        // (WO-017, step 2).
+        assert!(authority("egress", &[egress]));
+        assert!(!authority("egress", &[egress, "token"]));
+        assert!(!broker("egress", &[egress]));
         assert!(broker("harness", &["harness-claude-code"]));
         assert!(!broker("harness", &["harness-codex-cli"]));
         assert!(broker("channel-account", &["mail-work"]));
         assert!(!broker("channel-account", &["token"]));
         // The egress authority reads none of the broker's.
         for (purpose, name) in [
-            ("egress", egress),
             ("harness", "harness-claude-code"),
             ("channel-account", "mail-work"),
         ] {
-            assert!(!rules.allow(Role::Authority, purpose, &names(&[name])));
+            assert!(!authority(purpose, &[name]));
         }
         // Search's key, only while search is on (WO-028), and only to the
         // egress authority (WO-017).
@@ -885,7 +890,7 @@ mod tests {
             [egress, "mail-work", "token"]
         );
         assert!(!broker("scan", &["token"]));
-        assert!(broker("egress", &[]));
+        assert!(authority("egress", &[]));
         assert_eq!(
             Role::Authority.caller("search"),
             Caller::Authority {
@@ -989,15 +994,15 @@ mod tests {
             String::from_utf8(read_frame(&theirs).unwrap()).unwrap()
         };
         assert_eq!(
-            read(Role::Broker, &egress),
+            read(Role::Authority, &egress),
             r#"{"reply":"read","found":[false]}"#
         );
-        let refused = read(Role::Broker, "unlisted");
+        let refused = read(Role::Authority, "unlisted");
         assert!(refused.starts_with(r#"{"reply":"refused""#), "{refused}");
         assert!(!refused.contains("kept"), "{refused}");
-        // The broker's read, asked by the egress authority: refused, and
-        // recorded as the authority's.
-        let refused = read(Role::Authority, &egress);
+        // The authority's read, asked by the broker: refused, and recorded
+        // as the broker's.
+        let refused = read(Role::Broker, &egress);
         assert!(refused.starts_with(r#"{"reply":"refused""#), "{refused}");
         let (accesses, _) = crate::vault_access::read_log(&kept.config.vault.root).unwrap();
         let outcomes: Vec<_> = accesses
@@ -1013,9 +1018,9 @@ mod tests {
         assert_eq!(
             outcomes,
             [
-                (broker.clone(), Outcome::NotFound),
-                (broker, Outcome::Denied),
-                (authority, Outcome::Denied)
+                (authority.clone(), Outcome::NotFound),
+                (authority, Outcome::Denied),
+                (broker, Outcome::Denied)
             ]
         );
     }

@@ -28,6 +28,7 @@ use hatchling_vault::OpensStores;
 use zeroize::Zeroizing;
 
 use crate::cell::cgroup_parent;
+use crate::egress_path::{EgressPath, Refusal, RefusalKind};
 use crate::environment as env;
 use crate::secrets::{Secrets, handle_vault_op};
 use crate::{
@@ -701,9 +702,15 @@ fn serve_session(
     hub: Option<&LocalHub>,
     runs: Option<crate::RunEnv>,
 ) -> Result<(), Error> {
-    // Initialize the egress proxy once per session. The HMAC key is
-    // fresh per session; surrogates do not survive reconnects.
-    let egress_proxy = init_egress_proxy(&config.egress, &config.vault, key)?;
+    // The session's egress, opened once per session, with a surrogate key
+    // fresh for it: surrogates do not survive reconnects. It goes through
+    // the egress authority, which holds the key and reads each credential
+    // (WO-017, step 2), so the broker holds neither. In-process, with no
+    // authority running, it's a proxy of the broker's own.
+    let egress_path: Box<dyn EgressPath + '_> = match crate::egress_authority::authority() {
+        Some(authority) => Box::new(authority.connect()?.egress()?),
+        None => Box::new(init_egress_proxy(&config.egress, &config.vault, key)?),
+    };
     // Egress bodies too large for one frame, in transit (see
     // `crate::egress_pages`): one staged request and one answer at most.
     let mut egress_pages = crate::egress_pages::Pages::default();
@@ -779,7 +786,7 @@ fn serve_session(
                     creds.uid().as_u32(),
                 )?),
                 SessionRequest::Egress(op) => SessionResponse::Egress(handle_egress_op(
-                    &egress_proxy,
+                    &*egress_path,
                     &config.egress,
                     &op,
                     cell_id,
@@ -981,9 +988,9 @@ pub(crate) fn session_error(error: hatchling_core::Error) -> Error {
     }
 }
 
-/// The credential lookup the broker hands the egress proxy: maps a
-/// destination to its vault secret name and decrypts the sealed
-/// credential with the secrets store's key, which the broker holds. Unknown
+/// The credential lookup an in-process proxy is given, with no egress
+/// authority running: maps a destination to its vault secret name and
+/// decrypts the sealed credential with the secrets store's key. Unknown
 /// destinations, unparseable names, and undecryptable files all yield
 /// `None` — the proxy treats that as "no credential" and denies the
 /// destination rather than failing the session.
@@ -1009,7 +1016,9 @@ fn credential_fetcher(
     }
 }
 
-/// Initializes the egress proxy for a session.
+/// Initializes the egress proxy for a session served in-process, with no
+/// egress authority running (the authority builds its own the same way,
+/// reading each credential from the keeper).
 ///
 /// The proxy is built over the config's allowlist, resolved once and
 /// shared by every session (see [`crate::EgressAllowlist`]): the first
@@ -1124,12 +1133,8 @@ pub(crate) fn destination_to_secret_name(destination: &str) -> String {
 ///
 /// Returns [`Error::SessionProtocol`] if the op's body is not valid
 /// base64.
-#[allow(
-    clippy::type_complexity,
-    reason = "the credential-lookup closure type is inherent to the proxy's generic design; a named type would add indirection without clarity"
-)]
 pub(crate) fn handle_egress_op(
-    proxy: &Proxy<impl Fn(&str) -> Option<Zeroizing<Vec<u8>>>>,
+    proxy: &dyn EgressPath,
     egress_config: &EgressConfig,
     op: &EgressOp,
     cell_id: &CellId,
@@ -1197,29 +1202,23 @@ pub(crate) fn handle_egress_op(
             crate::machine::decided(cell_id.as_str(), destination, egress_verdict(&forwarded));
             match forwarded {
                 Ok(response) => Ok(ok_reply(response, pages)),
-                Err(
-                    hatchling_egress::Error::DestinationDenied
-                    | hatchling_egress::Error::PolicyRefused { .. }
-                    | hatchling_egress::Error::InvalidSurrogate
-                    | hatchling_egress::Error::ExpiredSurrogate
-                    | hatchling_egress::Error::PeerMismatch
-                    | hatchling_egress::Error::DestinationMismatch,
-                ) => {
-                    tracing::warn!(
-                        cell_id = %cell_id,
-                        destination = %destination,
-                        "egress request denied"
-                    );
-                    Ok(EgressResult::Denied)
-                }
-                Err(source) => {
+                Err(refusal) if refusal.kind == RefusalKind::Failed => {
                     tracing::error!(
                         cell_id = %cell_id,
                         destination = %destination,
-                        %source,
+                        reason = %refusal.reason,
                         "egress request failed"
                     );
                     Ok(EgressResult::EgressError)
+                }
+                Err(refusal) => {
+                    tracing::warn!(
+                        cell_id = %cell_id,
+                        destination = %destination,
+                        reason = %refusal.reason,
+                        "egress request denied"
+                    );
+                    Ok(EgressResult::Denied)
                 }
             }
         }
@@ -1229,18 +1228,14 @@ pub(crate) fn handle_egress_op(
 /// Mints `cell_id`'s surrogate for `destination`, granted, living at most
 /// an hour whatever `ttl_secs` asks: longer is a confused-deputy risk.
 /// A refusal is kept for the operator.
-#[allow(
-    clippy::type_complexity,
-    reason = "the credential-lookup closure type is inherent to the proxy's generic design"
-)]
 fn mint_for(
-    proxy: &Proxy<impl Fn(&str) -> Option<Zeroizing<Vec<u8>>>>,
+    proxy: &dyn EgressPath,
     cell_id: &CellId,
     peer_uid: u32,
     destination: &str,
     ttl_secs: u64,
 ) -> EgressResult {
-    match proxy.mint_surrogate(peer_uid, destination, ttl_secs.min(3600)) {
+    match proxy.mint(peer_uid, destination, ttl_secs.min(3600)) {
         Ok(surrogate_b64) => {
             tracing::info!(
                 cell_id = %cell_id,
@@ -1249,11 +1244,11 @@ fn mint_for(
             );
             EgressResult::Surrogate { surrogate_b64 }
         }
-        Err(source) => {
+        Err(refusal) => {
             tracing::warn!(
                 cell_id = %cell_id,
                 destination = %destination,
-                %source,
+                reason = %refusal.reason,
                 "egress surrogate mint failed"
             );
             crate::machine::decided(cell_id.as_str(), destination, EgressVerdict::NotAllowed);
@@ -1263,25 +1258,15 @@ fn mint_for(
 }
 
 /// The operator's verdict on a forwarded request's outcome.
-const fn egress_verdict<T>(forwarded: &Result<T, hatchling_egress::Error>) -> EgressVerdict {
+const fn egress_verdict<T>(forwarded: &Result<T, Refusal>) -> EgressVerdict {
     match forwarded {
         Ok(_) => EgressVerdict::Allowed,
-        Err(hatchling_egress::Error::DestinationDenied) => EgressVerdict::NotAllowed,
-        Err(hatchling_egress::Error::PolicyRefused { .. }) => EgressVerdict::Policy,
-        Err(
-            hatchling_egress::Error::InvalidSurrogate
-            | hatchling_egress::Error::ExpiredSurrogate
-            | hatchling_egress::Error::PeerMismatch
-            | hatchling_egress::Error::DestinationMismatch,
-        ) => EgressVerdict::BadSurrogate,
-        Err(
-            hatchling_egress::Error::UpstreamFailed
-            | hatchling_egress::Error::ResponseTooLarge
-            | hatchling_egress::Error::Io { .. }
-            | hatchling_egress::Error::InvalidAllowlist { .. }
-            | hatchling_egress::Error::InvalidTrustBundle { .. }
-            | hatchling_egress::Error::Random { .. },
-        ) => EgressVerdict::Failed,
+        Err(refusal) => match refusal.kind {
+            RefusalKind::NotAllowed => EgressVerdict::NotAllowed,
+            RefusalKind::Policy => EgressVerdict::Policy,
+            RefusalKind::BadSurrogate => EgressVerdict::BadSurrogate,
+            RefusalKind::Failed => EgressVerdict::Failed,
+        },
     }
 }
 
@@ -1711,37 +1696,18 @@ mod tests {
 
     #[test]
     fn each_egress_outcome_has_its_verdict() {
-        use hatchling_egress::Error as Egress;
-        let forwarded: Result<(), Egress> = Ok(());
+        let forwarded: Result<(), Refusal> = Ok(());
         assert_eq!(egress_verdict(&forwarded), EgressVerdict::Allowed);
-        for (error, verdict) in [
-            (Egress::DestinationDenied, EgressVerdict::NotAllowed),
-            (
-                Egress::PolicyRefused {
-                    reason: "a model request may not use a tool the vendor runs",
-                },
-                EgressVerdict::Policy,
-            ),
-            (Egress::InvalidSurrogate, EgressVerdict::BadSurrogate),
-            (Egress::ExpiredSurrogate, EgressVerdict::BadSurrogate),
-            (Egress::PeerMismatch, EgressVerdict::BadSurrogate),
-            (Egress::DestinationMismatch, EgressVerdict::BadSurrogate),
-            (Egress::UpstreamFailed, EgressVerdict::Failed),
-            (Egress::ResponseTooLarge, EgressVerdict::Failed),
-            (
-                Egress::Io {
-                    source: std::io::Error::other("down"),
-                },
-                EgressVerdict::Failed,
-            ),
-            (
-                Egress::InvalidAllowlist {
-                    reason: String::new(),
-                },
-                EgressVerdict::Failed,
-            ),
+        for (kind, verdict) in [
+            (RefusalKind::NotAllowed, EgressVerdict::NotAllowed),
+            (RefusalKind::Policy, EgressVerdict::Policy),
+            (RefusalKind::BadSurrogate, EgressVerdict::BadSurrogate),
+            (RefusalKind::Failed, EgressVerdict::Failed),
         ] {
-            let refused: Result<(), Egress> = Err(error);
+            let refused: Result<(), Refusal> = Err(Refusal {
+                kind,
+                reason: String::new(),
+            });
             assert_eq!(egress_verdict(&refused), verdict);
         }
     }

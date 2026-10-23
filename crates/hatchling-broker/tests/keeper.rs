@@ -38,20 +38,31 @@ fn environment(scratch: &Path) -> Vec<(&'static str, String)> {
     ]
 }
 
-/// The keeper, started as the broker starts it, and the broker's end.
-fn start(scratch: &Path) -> io::Result<(Child, UnixStream)> {
+/// The keeper, started as the broker starts it, the broker's end, and the
+/// egress authority's.
+fn start(scratch: &Path) -> io::Result<(Child, UnixStream, UnixStream)> {
     let (ours, theirs) = UnixStream::pair()?;
-    hatchling_sys::keep_across_exec(theirs.as_fd()).map_err(io::Error::other)?;
+    let (authoritys, keepers) = UnixStream::pair()?;
+    for end in [theirs.as_fd(), keepers.as_fd()] {
+        hatchling_sys::keep_across_exec(end).map_err(io::Error::other)?;
+    }
     let child = Command::new(env!("CARGO_BIN_EXE_hatchling-broker"))
         .arg("vault-keeper")
         .envs(environment(scratch))
         .env("HATCHLING_KEEPER_FD", theirs.as_raw_fd().to_string())
+        .env(
+            "HATCHLING_KEEPER_AUTHORITY_FD",
+            keepers.as_raw_fd().to_string(),
+        )
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .spawn()?;
     drop(theirs);
-    ours.set_read_timeout(Some(Duration::from_secs(20)))?;
-    Ok((child, ours))
+    drop(keepers);
+    for end in [&ours, &authoritys] {
+        end.set_read_timeout(Some(Duration::from_secs(20)))?;
+    }
+    Ok((child, ours, authoritys))
 }
 
 /// Waits for the keeper to leave, at most 10 seconds.
@@ -99,8 +110,9 @@ fn sealed_vault(dir: &Path, secrets: &[(&str, &str)]) -> io::Result<PathBuf> {
 }
 
 /// The keeper hands the broker every store's key but the secrets', reads
-/// a configured credential and refuses any other, records both, keeps
-/// its memory closed, and leaves when the broker does.
+/// a configured credential to the egress authority and refuses it to the
+/// broker, refuses any other, records each, keeps its memory closed, and
+/// leaves when the broker does.
 #[test]
 fn the_keeper_keeps_the_secrets_and_releases_only_what_is_configured() {
     let dir = scratch("serve").unwrap();
@@ -112,7 +124,7 @@ fn the_keeper_keeps_the_secrets_and_releases_only_what_is_configured() {
         ],
     )
     .unwrap();
-    let (child, stream) = start(&dir).unwrap();
+    let (child, stream, authoritys) = start(&dir).unwrap();
     let first = read_frame(&stream).unwrap();
     let (kind, handed) = first.split_first().unwrap();
     assert_eq!(*kind, 0, "{}", String::from_utf8_lossy(handed));
@@ -130,20 +142,19 @@ fn the_keeper_keeps_the_secrets_and_releases_only_what_is_configured() {
         let mem = std::fs::metadata(format!("/proc/{}/mem", child.id())).unwrap();
         assert_eq!(mem.uid(), 0, "the keeper is dumpable");
     }
-    // A configured credential, read for its purpose.
-    let reply = ask(
-        &stream,
-        r#"{"request":"read","purpose":"egress","names":["egress-localhost-18089"]}"#,
-    )
-    .unwrap();
+    // A configured credential, read for its purpose by the authority.
+    let credential = r#"{"request":"read","purpose":"egress","names":["egress-localhost-18089"]}"#;
+    let reply = ask(&authoritys, credential).unwrap();
     assert_eq!(reply, r#"{"reply":"read","found":[true]}"#);
-    assert_eq!(read_frame(&stream).unwrap(), b"credential");
-    // Anything else is refused.
+    assert_eq!(read_frame(&authoritys).unwrap(), b"credential");
+    // The broker asking for it is refused, and so is anything else.
+    let reply = ask(&stream, credential).unwrap();
+    assert!(reply.starts_with(r#"{"reply":"refused""#), "{reply}");
     for refused in [
         r#"{"request":"read","purpose":"egress","names":["unlisted"]}"#,
         r#"{"request":"read","purpose":"anything","names":["unlisted"]}"#,
     ] {
-        let reply = ask(&stream, refused).unwrap();
+        let reply = ask(&authoritys, refused).unwrap();
         assert!(reply.starts_with(r#"{"reply":"refused""#), "{reply}");
         assert!(!reply.contains("kept"), "{reply}");
     }
@@ -151,9 +162,17 @@ fn the_keeper_keeps_the_secrets_and_releases_only_what_is_configured() {
     let lines =
         |name: &str| -> Vec<&str> { log.lines().filter(|line| line.contains(name)).collect() };
     let released = lines("egress-localhost-18089");
-    assert_eq!(released.len(), 1, "{log}");
+    assert_eq!(released.len(), 2, "{log}");
     assert!(
-        released.iter().all(|line| line.contains("allowed")),
+        released
+            .first()
+            .is_some_and(|line| line.contains("authority") && line.contains("allowed")),
+        "{log}"
+    );
+    assert!(
+        released
+            .get(1)
+            .is_some_and(|line| line.contains("broker") && line.contains("denied")),
         "{log}"
     );
     let refused = lines("unlisted");
@@ -161,6 +180,7 @@ fn the_keeper_keeps_the_secrets_and_releases_only_what_is_configured() {
     assert!(refused.iter().all(|line| line.contains("denied")), "{log}");
     drop(stream);
     assert!(exits(child).unwrap().success());
+    drop(authoritys);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -199,17 +219,24 @@ fn the_brokers_end_reads_through_the_keeper() {
         .env("HATCHLING_VAULT_GRANTS", "fetch:token")
         .stdin(Stdio::null())
         .stdout(Stdio::null());
-    let (keeper, keys, _) = Keeper::start_with(program).unwrap();
+    let (keeper, keys, authoritys) = Keeper::start_with(program).unwrap();
     assert!(keys.stores().all(|(store, _)| store != Store::SECRETS));
     let name = |text: &str| -> hatchling_core::SecretName { text.parse().unwrap() };
-    let mixed = keeper
+    let authority = Keeper::over(authoritys).unwrap();
+    let mixed = authority
         .read("egress", &[name("egress-localhost-18089"), name("token")])
         .map(|read| read.len());
     assert!(
         matches!(mixed, Err(hatchling_broker::Error::Keeper { .. })),
         "egress read a vault grant's secret: {mixed:?}"
     );
-    let mut read = keeper
+    assert!(
+        keeper
+            .read("egress", &[name("egress-localhost-18089")])
+            .is_err(),
+        "the broker read an egress credential"
+    );
+    let mut read = authority
         .read("egress", &[name("egress-localhost-18089")])
         .unwrap()
         .into_iter();
@@ -282,10 +309,10 @@ fn program(dir: &Path, env: &[(&str, &str)]) -> Command {
 }
 
 /// The egress authority's channel (WO-017, step 2): the keeper releases
-/// search's key on it, never on the broker's, and nothing of the
-/// broker's on it.
+/// search's key and the egress credentials on it, never on the broker's,
+/// and nothing of the broker's on it.
 #[test]
-fn searchs_key_is_released_on_the_authoritys_channel_alone() {
+fn the_authoritys_reads_are_released_on_its_channel_alone() {
     use hatchling_broker::keeper::Keeper;
     let dir = scratch("authority-channel").unwrap();
     sealed_vault(
@@ -308,20 +335,21 @@ fn searchs_key_is_released_on_the_authoritys_channel_alone() {
     let read = authority.read("search", &[name("search-brave")]).unwrap();
     let key = read.first().and_then(Option::as_ref).unwrap();
     assert_eq!(key.as_bytes(), b"k-brave");
+    let read = authority
+        .read("egress", &[name("egress-localhost-18089")])
+        .unwrap();
+    let credential = read.first().and_then(Option::as_ref).unwrap();
+    assert_eq!(credential.as_bytes(), b"credential");
     assert!(
-        authority
+        keeper
             .read("egress", &[name("egress-localhost-18089")])
             .is_err(),
-        "the authority read the broker's credential"
+        "the broker read an egress credential"
     );
     assert!(authority.scan("output-gate").is_err());
     // The broker's channel goes on after the authority's.
     drop(authority);
-    assert!(
-        keeper
-            .read("egress", &[name("egress-localhost-18089")])
-            .is_ok()
-    );
+    assert!(keeper.scan("output-gate").is_ok());
     drop(keeper);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -368,4 +396,98 @@ fn the_egress_authority_refuses_to_run_unless_the_broker_started_it() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("only the broker starts it"), "{stderr}");
+}
+
+/// What a one-request upstream was sent.
+type Upstream = std::thread::JoinHandle<io::Result<Vec<u8>>>;
+
+/// A one-request upstream on loopback: it answers `reply`, and returns
+/// what it was sent.
+fn upstream(reply: &'static [u8]) -> io::Result<(u16, Upstream)> {
+    use std::io::{Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let handle = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept()?;
+        stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+        let mut seen = Vec::new();
+        let mut byte = [0_u8; 1];
+        while !seen.ends_with(b"\r\n\r\n") {
+            stream.read_exact(&mut byte)?;
+            seen.extend_from_slice(&byte);
+        }
+        stream.write_all(reply)?;
+        Ok(seen)
+    });
+    Ok((port, handle))
+}
+
+/// A session's egress through the real keeper and authority, started as
+/// the broker starts them (WO-017, step 2): the authority mints the
+/// surrogate, reads the destination's credential from the keeper, puts it
+/// in, and scrubs it from the answer; the broker's own read of it is
+/// refused, and the access log names the authority.
+#[test]
+fn a_sessions_egress_goes_through_the_authority_with_its_credential() {
+    use hatchling_broker::egress_authority::Authority;
+    use hatchling_broker::egress_path::EgressPath as _;
+    use hatchling_broker::keeper::Keeper;
+    let (port, served) =
+        upstream(b"HTTP/1.1 200 OK\r\nContent-Length: 22\r\n\r\necho: Bearer cred-qz-9").unwrap();
+    let destination = format!("localhost:{port}");
+    let secret = format!("egress-localhost-{port}");
+    let dir = scratch("authority-egress").unwrap();
+    sealed_vault(&dir, &[(secret.as_str(), "cred-qz-9")]).unwrap();
+    let allowlist = format!("local:{destination}");
+    let env = [
+        ("HATCHLING_EGRESS_ALLOWLIST", allowlist.as_str()),
+        ("HATCHLING_EGRESS_GRANTS", destination.as_str()),
+    ];
+    let (keeper, _, authoritys) = Keeper::start_with(program(&dir, &env)).unwrap();
+    let authority = Authority::start_with(program(&dir, &env), &authoritys).unwrap();
+    drop(authoritys);
+    let name: hatchling_core::SecretName = secret.parse().unwrap();
+    assert!(
+        keeper.read("egress", &[name]).is_err(),
+        "the broker read the credential"
+    );
+    let link = authority.connect().unwrap().egress().unwrap();
+    let surrogate_b64 = link.mint(1000, &destination, 60).unwrap();
+    let request = hatchling_egress::EgressRequest {
+        method: String::from("GET"),
+        destination: destination.clone(),
+        path: String::from("/v1/models"),
+        headers: Vec::new(),
+        body: Vec::new(),
+        surrogate_b64,
+    };
+    let answer = link.forward(1000, &request).unwrap();
+    let seen = String::from_utf8(served.join().unwrap().unwrap()).unwrap();
+    assert!(
+        seen.contains("\r\nAuthorization: Bearer cred-qz-9\r\n"),
+        "the credential wasn't put in"
+    );
+    assert_eq!(answer.status, 200);
+    assert_eq!(answer.body.len(), 22);
+    assert!(
+        !String::from_utf8_lossy(&answer.body).contains("cred-qz-9"),
+        "the credential came back"
+    );
+    drop((link, authority, keeper));
+    let log = std::fs::read_to_string(dir.join("vault").join(".access.log")).unwrap();
+    let reads: Vec<&str> = log.lines().filter(|line| line.contains(&secret)).collect();
+    assert_eq!(reads.len(), 2, "{log}");
+    assert!(
+        reads
+            .first()
+            .is_some_and(|line| line.contains("broker") && line.contains("denied")),
+        "{log}"
+    );
+    assert!(
+        reads
+            .get(1)
+            .is_some_and(|line| line.contains("authority") && line.contains("allowed")),
+        "{log}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
