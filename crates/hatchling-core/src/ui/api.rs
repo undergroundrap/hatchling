@@ -87,6 +87,10 @@ pub enum ApiRequest {
     ManageProfiles,
     /// [`UiAction::ManageSignIns`].
     ManageSignIns,
+    /// [`UiAction::GiveCode`].
+    GiveCode,
+    /// [`UiAction::DeclineCode`].
+    DeclineCode,
 }
 
 impl ApiRequest {
@@ -120,6 +124,8 @@ impl ApiRequest {
             UiAction::KeepSignedIn { .. } => Self::KeepSignedIn,
             UiAction::ManageProfiles { .. } => Self::ManageProfiles,
             UiAction::ManageSignIns { .. } => Self::ManageSignIns,
+            UiAction::GiveCode { .. } => Self::GiveCode,
+            UiAction::DeclineCode { .. } => Self::DeclineCode,
         }
     }
 }
@@ -279,6 +285,21 @@ mod tests {
                     op: crate::ui::SignInOp::List,
                 }),
                 ApiRequest::ManageSignIns,
+            ),
+            (
+                action(UiAction::GiveCode {
+                    session_id: id(),
+                    request_id: id(),
+                    code: crate::ui::Concealed::new(String::from("1")),
+                }),
+                ApiRequest::GiveCode,
+            ),
+            (
+                action(UiAction::DeclineCode {
+                    session_id: id(),
+                    request_id: id(),
+                }),
+                ApiRequest::DeclineCode,
             ),
         ];
         for (request, kind) in cases {

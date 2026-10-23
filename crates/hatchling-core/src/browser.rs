@@ -21,6 +21,9 @@ pub const MAX_LABEL_CHARS: usize = 120;
 /// The most characters the agent may type in one action.
 pub const MAX_TYPED_CHARS: usize = 4096;
 
+/// The most characters of a one-time code the owner gives (WO-030).
+pub const MAX_CODE_CHARS: usize = 64;
+
 /// The page's viewport, in CSS pixels, width and height: what a
 /// [`BrowserCommand::Frame`] shows, at half size.
 pub const VIEWPORT: (u32, u32) = (1280, 800);
@@ -261,6 +264,8 @@ pub enum SignInField {
     Username,
     /// The password: a password field.
     Password,
+    /// A one-time code the owner gave: a text, number or telephone field.
+    Code,
 }
 
 /// A cookie, as the browser keeps it. Its value is a secret: what a

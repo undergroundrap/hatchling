@@ -237,6 +237,21 @@ impl<'a> Ops<'a> {
             UiAction::KeepSignedIn { session_id } => {
                 self.browser(caller.holds(&owner), OwnerAct::Keep(session_id))
             }
+            UiAction::GiveCode {
+                session_id,
+                request_id,
+                code,
+            } => self.browser(
+                caller.holds(&owner),
+                OwnerAct::GiveCode(session_id, request_id, code),
+            ),
+            UiAction::DeclineCode {
+                session_id,
+                request_id,
+            } => self.browser(
+                caller.holds(&owner),
+                OwnerAct::DeclineCode(session_id, request_id),
+            ),
             UiAction::OpenArtifact { .. }
             | UiAction::ShareArtifact { .. }
             | UiAction::AttachArtifact { .. }
@@ -298,6 +313,16 @@ impl<'a> Ops<'a> {
                 control_answer(session_id, Handoff::HandBack, handed)
             }
             OwnerAct::Keep(session_id) => self.keep_signed_in(session_id),
+            OwnerAct::GiveCode(session_id, request_id, code) => code_answer(
+                session_id,
+                board.give_code(session_id, request_id, code),
+                true,
+            ),
+            OwnerAct::DeclineCode(session_id, request_id) => code_answer(
+                session_id,
+                board.decline_code(session_id, request_id),
+                false,
+            ),
             OwnerAct::Stop(session_id) => self.stop_browser(session_id),
             OwnerAct::Input(session_id, input) => {
                 input_answer(session_id, board.input(session_id, input))
@@ -622,6 +647,24 @@ impl Audit {
             Err(error) => tracing::error!(%error, "cannot encode an API call's activity event"),
         }
         event
+    }
+}
+
+/// What the owner's code answer for `session_id` comes to: taken (`given`)
+/// or declined, or why not.
+fn code_answer(
+    session_id: &str,
+    done: Result<(), hatchling_core::ui::CodeRefusal>,
+    given: bool,
+) -> (UiActionResult, ApiOutcome) {
+    let session_id = session_id.to_owned();
+    match done {
+        Ok(()) if given => (UiActionResult::CodeTaken { session_id }, ApiOutcome::Served),
+        Ok(()) => (UiActionResult::CodeDeclined { session_id }, ApiOutcome::Served),
+        Err(reason) => (
+            UiActionResult::CodeRefused { session_id, reason },
+            ApiOutcome::Refused,
+        ),
     }
 }
 
@@ -1476,6 +1519,66 @@ mod tests {
             ops_off.handle(&owner, &list, &mut replies),
             listed(hatchling_core::ui::SignInResult::Off)
         );
+    }
+
+    #[test]
+    fn only_the_owner_gives_or_declines_a_code_and_only_one_that_waits() {
+        let dir = scratch("give-code");
+        let (config, _) = profile_configs(&dir);
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let ops = Ops::new(&config, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        let owner = caller(&[goals("query-goals"), goals("goal-create"), local_send()]);
+        let narrow = caller(&[goals("query-goals"), local_send()]);
+        let mut replies = Replies::default();
+        let board = crate::browser_board::board(&config);
+        let _stopped = board.begin(
+            "browser-code",
+            crate::browser_proxy::Sites::default(),
+            crate::browser_ops::Driven::default(),
+        );
+        let request = board.ask_code("browser-code", 2, "https://a.example").unwrap();
+        let give = |request_id: &str, code: &str| UiAction::GiveCode {
+            session_id: String::from("browser-code"),
+            request_id: request_id.to_owned(),
+            code: hatchling_core::ui::Concealed::new(code.to_owned()),
+        };
+        assert_eq!(ops.handle(&narrow, &give(&request, "481516"), &mut replies), not_granted());
+        assert_eq!(
+            ops.handle(&owner, &give("code-other", "481516"), &mut replies),
+            (
+                UiActionResult::CodeRefused {
+                    session_id: String::from("browser-code"),
+                    reason: hatchling_core::ui::CodeRefusal::NoRequest,
+                },
+                ApiOutcome::Refused,
+            )
+        );
+        assert_eq!(
+            ops.handle(&owner, &give(&request, "481516"), &mut replies),
+            (
+                UiActionResult::CodeTaken {
+                    session_id: String::from("browser-code"),
+                },
+                ApiOutcome::Served,
+            )
+        );
+        let next = board.ask_code("browser-code", 2, "https://a.example").unwrap();
+        let decline = UiAction::DeclineCode {
+            session_id: String::from("browser-code"),
+            request_id: next,
+        };
+        assert_eq!(ops.handle(&narrow, &decline, &mut replies), not_granted());
+        assert_eq!(
+            ops.handle(&owner, &decline, &mut replies),
+            (
+                UiActionResult::CodeDeclined {
+                    session_id: String::from("browser-code"),
+                },
+                ApiOutcome::Served,
+            )
+        );
+        board.end("browser-code");
     }
 
     #[test]

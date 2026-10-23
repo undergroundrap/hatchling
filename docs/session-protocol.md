@@ -42,7 +42,7 @@ v13.
 | Space | `SpaceOp` | `SpaceResult` | v10 |
 | Subagent | `SubagentOp` | `SubagentResult` | v10 |
 | Web | `WebOp` | `WebResult` | v14 |
-| Browser | `BrowserOp` | `BrowserResult` | v15; `SignIn` v16 |
+| Browser | `BrowserOp` | `BrowserResult` | v15; `SignIn` v16; `Code` v17 |
 
 ## v9 — Artifact ops
 
@@ -218,6 +218,18 @@ session holds.
   (by `label`) when there are several, or `Failed { failure: OtherOrigin }`
   when the page isn't on the sign-in's origin. A username goes only into a
   text or email field, a password only into a password field.
+
+## v17 — The browser's one-time code
+
+- **`BrowserOp::Code { element }`** (WO-030): the page asks for a one-time
+  code. In a browser running a signed-in profile, the owner is asked in the
+  app, on the page's origin; once they give it, the broker types it into
+  the field named, through the same exact-origin fill as a sign-in, and
+  forgets it. The agent never sees it. Asked again while the owner hasn't
+  answered, the op waits for them a while.
+- **`BrowserResult`** gains `CodeWaiting { origin }` (asked, not answered
+  yet: ask again shortly), `CodeDeclined` and `CodeExpired`. Filled, the
+  reply is the page after, the code hidden.
 
 ## Device handshake
 

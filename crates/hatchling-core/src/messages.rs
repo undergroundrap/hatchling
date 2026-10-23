@@ -2378,6 +2378,15 @@ pub enum BrowserOp {
         /// Which sign-in, by its label, when the site has more than one.
         label: Option<String>,
     },
+    /// The page asks for a one-time code (WO-030, v17): ask the owner for
+    /// it, and type it into the field named once they give it. The agent
+    /// never sees it. Asked again while the owner hasn't answered, it
+    /// waits for them a while.
+    #[serde(rename = "code")]
+    Code {
+        /// The code field's element, from the last snapshot.
+        element: u32,
+    },
 }
 
 /// The broker's reply to one [`BrowserOp`].
@@ -2466,6 +2475,20 @@ pub enum BrowserResult {
     /// The operator hasn't set up a browser.
     #[serde(rename = "off")]
     Off,
+    /// The owner has been asked for the page's one-time code, and hasn't
+    /// given it yet: ask again shortly (v17).
+    #[serde(rename = "code_waiting")]
+    CodeWaiting {
+        /// The origin the code is for, `https://host[:port]`.
+        origin: String,
+    },
+    /// The owner declined to give the code (v17).
+    #[serde(rename = "code_declined")]
+    CodeDeclined,
+    /// The owner didn't give the code in time: ask again if the page still
+    /// wants one (v17).
+    #[serde(rename = "code_expired")]
+    CodeExpired,
 }
 
 /// The inspector's verdict on a build's output.

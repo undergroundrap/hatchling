@@ -79,6 +79,8 @@ const SIGN_IN: &str = r#"<!doctype html><title>Sign in</title>
 <input type="email" aria-label="Email" oninput="document.getElementById('email').textContent = 'email: ' + this.value">
 <input type="password" aria-label="Password" oninput="document.getElementById('password').textContent = 'password: ' + this.value.length + ' characters'">
 <textarea aria-label="Comment" oninput="document.getElementById('comment').textContent = 'comment: ' + this.value"></textarea>
+<input type="tel" aria-label="Code" oninput="document.getElementById('code').textContent = 'code: ' + this.value">
+<p id="code"></p>
 <p id="email"></p><p id="password"></p><p id="comment"></p>"#;
 
 /// Whether `name`'s requirement makes a missing prerequisite a failure.
@@ -466,6 +468,14 @@ fn sign_in_filled(connection: &UnixStream) {
         "{}",
         typed.text
     );
+    let code = element(&form, "textbox", "Code");
+    assert_eq!(
+        send(connection, &fill(password, SignInField::Code, "481516", &origin)),
+        failed(BrowserFailure::NotPossible),
+        "a code goes only into a code's field"
+    );
+    let coded = page(send(connection, &fill(code, SignInField::Code, "481516", &origin)));
+    assert!(coded.text.contains("code: 481516"), "{}", coded.text);
     let typed = page(send(
         connection,
         &fill(password, SignInField::Password, "hunter2", &origin),
