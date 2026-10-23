@@ -1,6 +1,13 @@
 # WO-017: Privilege-separate the trusted side
 
-**Status:** QUEUED
+**Status:** IN PROGRESS. Scope step 1, the credential keeper, is merged in five parts:
+- #140, a key per store, wrapped under the master key;
+- #142, the broker serving with its stores' keys alone, the master key dropped at start;
+- #143, one way into the secrets store, and a broker read that can't be recorded releasing nothing;
+- #144, a vault keeper process holding the master key and the secrets store's key, the broker neither;
+- #145, the gates scanning only for the secrets a cell has had, which the keeper records.
+
+Left: step 2, the egress authority, and step 3, the privileged spawner, which drops the broker from root. Until step 3, the keeper is a separate process, not yet an OS boundary.
 **Area:** `crates/hatchling-broker`, `crates/hatchling-vault`, `crates/hatchling-egress`, `crates/hatchling-isolation`, `crates/hatchling-sys`, `crates/hatchling-runtime`, a new crate per separated process if its dependencies warrant one, `docs/arch/`
 **Issue:** [#33](https://github.com/undergroundrap/hatchling/issues/33)
 **Trust boundary:** yes
@@ -120,6 +127,24 @@ Filled in at close.
     - the broker inherits no key-bearing memory, descriptors or owner service connections;
     - the spawner refuses owner credentials and arbitrary privileged operations from an admitted broker;
     - a window-fingerprint reconstruction is shown, to keep that design out.
+- **Step 2's design, after mapping the broker's plaintext paths (2026-10-23).**
+  - **Where the broker holds a plaintext credential today:**
+    - the egress swap: one keeper read per request, put in `Authorization` and scrubbed from the answer;
+    - the harness relay: the vendor's key, held for the whole run by the relay's connection threads, and scrubbed from the streamed answer;
+    - web search: the Brave key, read per search;
+    - channel accounts: read when a session starts. No shipped channel uses one yet: only `local`, which needs none;
+    - the gates' scan: it returns the egress and channel-account credentials, because the broker handled them itself;
+    - browser sign-ins (WO-030): in the broker's own `credentials` store, typed into the browser cell.
+  - **What the keeper checks today:** only that a name belongs to a purpose. It checks no peer, and both run as one user. So which process may receive which purpose comes from the launch, not from peer credentials, until step 3.
+  - **Slices, each landing and gated on its own:**
+    1. **Launch and identity.** The keeper starts the egress authority (`hatchling-broker egress-authority`) on a socket pair of its own, and hands the broker its end of a broker-to-authority pair. The keeper releases `egress`, `harness` and `search` reads only on the authority's channel, and refuses them on the broker's: tested.
+    2. **The egress swap.** The proxy runs in the authority: the surrogate key, the pinned allowlist, TLS, the swap, the scrub and the staged pages. The authority reads the egress grants from its own configuration, as the keeper does. The broker relays each session's `EgressOp` and `EgressResult` and never fetches a credential. The cell's peer uid is still the broker's word until step 3, and the docs say so.
+    3. **The harness relay.** The broker hands the cell's relay listener to the authority (`SCM_RIGHTS`) with the run's vendor and surrogate, and the authority runs the relay with the key it alone reads.
+    4. **Search.** A typed search request to the authority, which reads the key and answers with the results.
+    5. **The scan.** With the broker holding none of them, the egress credentials leave the gates' scan set.
+  - **Not moved by this step:**
+    - Channel accounts move with the first channel that uses one, into the authority; until then, none is configured.
+    - Browser sign-ins must reach the browser cell in plaintext, so no network-side process can insert them. Their store moves to the keeper, which releases a sign-in for a fill alone, recorded. The broker still relays it to the cell, so this narrows custody but doesn't remove the broker from the path. That is its own slice, after this step.
 - **Order matters.** The keeper comes first: it forces the grant-handle abstraction the other two build on, and it's the smallest surface with the clearest threat. The egress authority is second, because it's the keeper's only plaintext consumer. The spawner is last, because it's what makes the separate users mean anything, and it's the largest change.
 - **One binary can still ship all four.** `hatchling` can start the keeper, egress authority and spawner by re-running itself under a subcommand, as the broker already does for its spawner helpers. The separation is the users, the sockets and what each process holds, not the file they're loaded from. A process may start from a larger binary and still hold nothing it shouldn't.
 - Each separated process gets the same treatment as the cell interface: typed requests, peer-credential admission, a refusal for anything else, and its own section in the trust boundary.
