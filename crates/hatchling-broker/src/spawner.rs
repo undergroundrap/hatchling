@@ -1048,8 +1048,8 @@ fn serve_connection(stream: &UnixStream, program: &Path, policy: &Policy) -> Res
             },
         ),
         Request::Deliver { name, size } => {
-            let delivered = read_delivery(stream, size)
-                .and_then(|bytes| deliver(policy, &name, &bytes));
+            let delivered =
+                read_delivery(stream, size).and_then(|bytes| deliver(policy, &name, &bytes));
             let reply = match delivered {
                 Ok(()) => Reply::Done,
                 Err(reason) => Reply::Refused { reason },
@@ -1339,6 +1339,28 @@ pub(crate) mod tests {
         (Spawner::over(ours), served)
     }
 
+    /// A delivery is read whole from the frames that carry it, and refused
+    /// when they don't add up to the size said, when its size is past the
+    /// bound, or when the broker is gone.
+    #[test]
+    fn a_delivery_is_read_from_its_frames() {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        for chunk in [&b"ab"[..], b"cd"] {
+            write_frame(&ours, chunk).unwrap();
+        }
+        assert_eq!(read_delivery(&theirs, 4).unwrap(), b"abcd");
+        assert_eq!(read_delivery(&theirs, 0).unwrap(), b"");
+        write_frame(&ours, b"abc").unwrap();
+        assert!(read_delivery(&theirs, 2).unwrap_err().contains("isn't the 2 bytes"));
+        assert!(
+            read_delivery(&theirs, MAX_DELIVERY_BYTES + 1)
+                .unwrap_err()
+                .contains("larger than")
+        );
+        drop(ours);
+        assert!(read_delivery(&theirs, 1).is_err(), "the broker gone");
+    }
+
     /// The spawner writes an approved delivery into the workspace, as a
     /// new file of the owner's; a name that isn't a workspace name, a file
     /// already there, a delivery too large, and no workspace configured
@@ -1365,9 +1387,14 @@ pub(crate) mod tests {
                 .contains("isn't a workspace name")
         );
         // Carried in many frames, and whole.
-        let patch: Vec<u8> = (0..100 * 1024_u32).map(|at| u8::try_from(at % 251).unwrap()).collect();
+        let patch: Vec<u8> = (0..100 * 1024_u32)
+            .map(|at| u8::try_from(at % 251).unwrap())
+            .collect();
         spawner.deliver("harness-1.patch", &patch).unwrap();
-        assert_eq!(std::fs::read(workspace.join("harness-1.patch")).unwrap(), patch);
+        assert_eq!(
+            std::fs::read(workspace.join("harness-1.patch")).unwrap(),
+            patch
+        );
         spawner.deliver("empty", b"").unwrap();
         assert_eq!(std::fs::read(workspace.join("empty")).unwrap(), b"");
         let large = vec![b'x'; MAX_DELIVERY_BYTES + 1];
