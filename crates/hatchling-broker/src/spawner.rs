@@ -390,12 +390,11 @@ impl Policy {
         if config.limits != limits {
             return Err(String::from("its limits aren't the configured ones"));
         }
+        // The cell's group is the spawner's to make, in the delegated one.
         match (&self.cgroup, &config.cgroup) {
-            (Some(parent), Some(group))
-                if group.parent() == Some(parent.as_path())
-                    && group.file_name().is_some_and(|name| name != "..") => {}
+            (Some(parent), Some(group)) if group == parent => {}
             (None, None) if helper != HelperKind::BrowserCell => {}
-            _ => return Err(String::from("its group isn't one in the delegated group")),
+            _ => return Err(String::from("its group isn't the delegated group")),
         }
         host_paths(config)
             .iter()
@@ -1058,11 +1057,25 @@ fn serve_helper(
     let refuse = |reason: String| send(stream, &Reply::Refused { reason });
     let checked = serde_json::from_str::<CellConfig>(spec)
         .map_err(|_| String::from("it isn't a cell spec"))
-        .and_then(|config| policy.check(helper, &config));
-    if let Err(why) = checked {
-        tracing::warn!(?helper, %why, "refused a cell spec");
-        return refuse(format!("the spawner refused the spec: {why}"));
-    }
+        .and_then(|config| policy.check(helper, &config).map(|()| config));
+    let config = match checked {
+        Ok(config) => config,
+        Err(why) => {
+            tracing::warn!(?helper, %why, "refused a cell spec");
+            return refuse(format!("the spawner refused the spec: {why}"));
+        }
+    };
+    // The cell's group, made here in the delegated one with the configured
+    // limits, is held until the helper has ended, then ended with whatever
+    // is left in it.
+    let (config, _group) = match config.supervised_cgroup() {
+        Ok(grouped) => grouped,
+        Err(error) => return refuse(format!("cannot make the cell's group: {error}")),
+    };
+    let spec = match serde_json::to_string(&config) {
+        Ok(spec) => spec,
+        Err(error) => return refuse(format!("cannot write the cell spec: {error}")),
+    };
     let [stdin, stdout, stderr]: [OwnedFd; 3] = match descriptors.try_into() {
         Ok(stdio) => stdio,
         Err(_) => return refuse(String::from("a helper takes three descriptors")),
@@ -1071,7 +1084,7 @@ fn serve_helper(
         Ok(dir) => dir,
         Err(reason) => return refuse(reason),
     };
-    let args = match spec_args(helper.subcommand(), &helper_dir.0, spec) {
+    let args = match spec_args(helper.subcommand(), &helper_dir.0, &spec) {
         Ok(args) => args,
         Err(reason) => return refuse(reason),
     };
@@ -1185,10 +1198,59 @@ mod tests {
     /// A spawner serving `program` as every helper, over a pair, and the
     /// broker's end.
     fn serving(program: &str) -> (Spawner, std::thread::JoinHandle<()>) {
+        serving_with(program, policy())
+    }
+
+    /// [`serving`], held to `policy`.
+    fn serving_with(program: &str, policy: Policy) -> (Spawner, std::thread::JoinHandle<()>) {
         let (ours, theirs) = UnixStream::pair().unwrap();
-        let held = Arc::new((PathBuf::from(program), policy()));
+        let held = Arc::new((PathBuf::from(program), policy));
         let served = std::thread::spawn(move || serve(&theirs, &held));
         (Spawner::over(ours), served)
+    }
+
+    /// With a delegated group, the spawner makes each cell's group in it,
+    /// names it in the spec the helper reads, and ends it once the helper
+    /// has ended.
+    #[test]
+    fn the_spawner_makes_each_cells_group_and_ends_it() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let Some(base) = std::env::var_os("HATCHLING_TEST_CGROUP") else {
+            assert!(!std::env::var("HATCHLING_REQUIRE_CGROUP").is_ok_and(|v| v == "1"));
+            return;
+        };
+        let delegated = hatchling_sys::cgroup::CellCgroup::create(
+            Path::new(&base),
+            hatchling_sys::cgroup::CgroupLimits::default(),
+        )
+        .unwrap();
+        let parent = delegated.path().to_path_buf();
+        let dir = run_dir("groups");
+        let program = dir.join("helper.sh");
+        std::fs::write(&program, "#!/bin/sh\ncat \"$2\" >&2\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let policy = Policy {
+            cgroup: Some(parent.clone()),
+            ..policy()
+        };
+        let (spawner, served) = serving_with(program.to_str().unwrap(), policy);
+        let mut config: CellConfig = serde_json::from_str(&skill_spec()).unwrap();
+        config.cgroup = Some(parent.clone());
+        let (stdio, mut errors) = stdio();
+        let process = spawner
+            .helper(HelperKind::SkillCell, &serde_json::to_string(&config).unwrap(), stdio)
+            .unwrap();
+        assert_eq!(process.wait_deadline(Duration::from_secs(10)).unwrap().code, 0);
+        let mut said = String::new();
+        errors.read_to_string(&mut said).unwrap();
+        let read: CellConfig = serde_json::from_str(said.trim()).unwrap();
+        let group = read.cgroup.unwrap();
+        assert_eq!(group.parent(), Some(parent.as_path()), "made in the delegated group");
+        drop((process, spawner));
+        served.join().unwrap();
+        assert!(!group.exists(), "the cell's group outlived its helper");
+        std::fs::remove_dir_all(&dir).unwrap();
+        drop(delegated);
     }
 
     /// The policy of the cells the environment configures: what the
@@ -1751,9 +1813,10 @@ mod tests {
         );
         assert_eq!(
             refused(&|config| config.cgroup = Some(PathBuf::from("/sys/fs/cgroup/elsewhere"))),
-            "its group isn't one in the delegated group"
+            "its group isn't the delegated group"
         );
-        // With a delegated group: a group directly in it, and only there.
+        // With a delegated group: that group itself, which the spawner makes
+        // the cell's group in, and nothing else.
         let delegated = Policy {
             cgroup: Some(PathBuf::from("/sys/fs/cgroup/hatchling")),
             ..policy.clone()
@@ -1763,10 +1826,10 @@ mod tests {
             config.cgroup = group.map(PathBuf::from);
             delegated.check(HelperKind::SkillCell, &config)
         };
-        assert_eq!(in_group(Some("/sys/fs/cgroup/hatchling/cell-1")), Ok(()));
+        assert_eq!(in_group(Some("/sys/fs/cgroup/hatchling")), Ok(()));
         for outside in [
             None,
-            Some("/sys/fs/cgroup/hatchling"),
+            Some("/sys/fs/cgroup/hatchling/cell-1"),
             Some("/sys/fs/cgroup/hatchling/cell-1/deeper"),
             Some("/sys/fs/cgroup/hatchling/.."),
             Some("/sys/fs/cgroup/other/cell-1"),

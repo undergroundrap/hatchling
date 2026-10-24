@@ -625,9 +625,17 @@ impl ScheduledRun {
 impl CellConfig {
     /// Holds cleanup ownership in the broker while a helper builds its cell.
     /// The helper gets a private parent; killing it cannot strand its leaves.
+    ///
+    /// With a spawner running, the group is the spawner's to make and to
+    /// end, around its helper (WO-017): the cell is left naming the
+    /// delegated group, and nothing is held here. A broker holding the
+    /// group could lift its cell's limits.
     pub(crate) fn supervised_cgroup(
         &self,
     ) -> Result<(Self, Option<hatchling_sys::cgroup::CellCgroup>), Error> {
+        if crate::spawner::spawner().is_some() {
+            return Ok((self.clone(), None));
+        }
         let group = self
             .cgroup
             .as_ref()
