@@ -149,6 +149,46 @@ Filled in at close.
   - **Not moved by this step:**
     - Channel accounts move with the first channel that uses one, into the authority; until then, none is configured.
     - Browser sign-ins must reach the browser cell in plaintext, so no network-side process can insert them. Their store moves to the keeper, which releases a sign-in for a fill alone, recorded. The broker still relays it to the cell, so this narrows custody but doesn't remove the broker from the path. That is its own slice, after this step.
+- **Step 3's design, after mapping where the broker uses privilege (2026-10-24).**
+  - **Where privilege is used today.**
+    - Every cell, whichever path starts it, ends in `isolate` (`hatchling-isolation`), run by whoever spawns it: the broker for its own agent cell, a re-executed broker helper for every other (`agent-run`, `skill-cell`, `browser-cell`). The harness's work trees are given and taken back by another (`harness-tree`).
+    - The steps that need privilege on the host are these:
+      - writing a cell's id maps for a uid other than the spawner's own (`own` ids as root), or running the setuid `newuidmap` and `newgidmap` (`subordinate` ids);
+      - dropping the host's supplementary groups;
+      - handing a socket or a work tree to the cell's uid (`CAP_CHOWN`);
+      - raising a hard core limit of 0;
+      - reading back and removing what a cell wrote, which a root broker does by overriding file permissions.
+    - Everything after `unshare(CLONE_NEWUSER)` uses capabilities inside the cell's own namespace only.
+    - Today the helpers and the broker are one user, so a broker that drops root can spawn nothing.
+  - **The owner's decisions (2026-10-24).**
+    - **Root mode uses named system users:** `hatchling-keeper`, `hatchling-egress` and `hatchling-broker`, created once by the operator. `hatchling broker` started as root refuses to start without them, and says how to create them. The README's quickstart gains that one step.
+    - **The owner is recorded at start:** `SUDO_UID` when started with sudo, the real uid when rootless, or `HATCHLING_OWNER_UID` to name it. The broker's API, UI, operator and device sockets admit that uid alone, by peer credentials, as they admit the broker's own uid today.
+    - **Rootless mode, as noted under Launch:** the keeper and the spawner stay the owner, and the broker drops to a subordinate uid of its own, distinct from the cells'.
+  - **The processes.**
+    - **A launcher** (`hatchling broker`) never opens the vault. It reads the configuration, makes the socket pairs, and starts four processes, each fresh, by exec: the spawner, the keeper, the authority and the broker. Each starts as its user (`setgroups`, `setgid`, `setuid`, then exec, so no capability survives). Each channel's role comes from the launch, as now; peer credentials on a pair made before a drop prove nothing.
+    - **The spawner** stays privileged: root in root mode, the owner rootless. It holds no store and no key. It takes one typed request, a cell spec, and validates it itself before any privileged call:
+      - the identity in the configured range, never an account's;
+      - every bind source under an allowed root;
+      - no capability, no device, no extra mount.
+
+      It then spawns the cell, hands the broker the cell's connection (`SCM_RIGHTS`), and stops it on request or when the broker goes. The helpers become the spawner's.
+    - **The broker** runs as `hatchling-broker`, or its subordinate uid rootless, with no capability. It sends specs, and serves the connections it's handed.
+    - **Files:**
+      - the vault, its key file and keyring belong to `hatchling-keeper`;
+      - the broker's stores belong to `hatchling-broker`;
+      - the launcher hands existing state, owned by root, to the right user on the first separated start, and logs each change.
+    - **The getuid and geteuid checks.** The vault, memory and goals stores check ownership against `getuid`, and the system helpers against `geteuid`. Every drop sets both.
+  - **What the map turned up, to fix on the way.**
+    - **The agent checks its broker's uid against the peer credentials of a socket pair the spawner made.** It matches today only because the spawner and the broker are one user. The spawner must report the broker's uid, or hand over a pair the broker made.
+    - **A cell's view runs `ldd` found on `PATH`, as the spawner.** It moves to a fixed path.
+    - **A root broker relies on root's file access** to read back a harness's results and remove its run directory in `own` mode. Under the spawner, the trees go back to the broker's user, as `harness-tree` already does in `subordinate` mode.
+    - **(Fixed separately.)** A helper's spec travelled in its arguments, readable by any local user, and carried a run's task and chat history.
+  - **Slices, each landing and gated on its own.**
+    1. **The spawner, with the broker still root.** Every cell spawn moves behind the typed spec channel and its validation; tested per field.
+    2. **The keeper and the authority as their users.** The vault is owned by `hatchling-keeper`, and the keeper refuses a read from any other uid; tested with real processes.
+    3. **The broker drops root.** It runs as `hatchling-broker` with an empty capability set, and the sockets admit the recorded owner. The tests read `/proc/<pid>/status` for all four processes' Uid and Cap lines, and a hand mutant that skips the drop fails one.
+    4. **Rootless.** The same split on subordinate ids.
+    5. **The README and the module map**, and the close-out evidence.
 - **Order matters.** The keeper comes first: it forces the grant-handle abstraction the other two build on, and it's the smallest surface with the clearest threat. The egress authority is second, because it's the keeper's only plaintext consumer. The spawner is last, because it's what makes the separate users mean anything, and it's the largest change.
 - **One binary can still ship all four.** `hatchling` can start the keeper, egress authority and spawner by re-running itself under a subcommand, as the broker already does for its spawner helpers. The separation is the users, the sockets and what each process holds, not the file they're loaded from. A process may start from a larger binary and still hold nothing it shouldn't.
 - Each separated process gets the same treatment as the cell interface: typed requests, peer-credential admission, a refusal for anything else, and its own section in the trust boundary.
