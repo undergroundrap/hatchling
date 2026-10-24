@@ -185,6 +185,7 @@ Filled in at close.
     - **(Fixed separately.)** A helper's spec travelled in its arguments, readable by any local user, and carried a run's task and chat history.
   - **Slices, each landing and gated on its own.**
     1. **The spawner, with the broker still root.** Every cell spawn moves behind the typed spec channel and its validation; tested per field.
+       *In three parts.* 1a: the spawner, its connections, and every helper's start and supervision behind it, with the spec checked to be its helper's kind. 1b: every field checked against the spawner's own policy. 1c: the broker's own agent cell behind it too.
     2. **The keeper and the authority as their users.** The vault is owned by `hatchling-keeper`, and the keeper refuses a read from any other uid; tested with real processes.
     3. **The broker drops root.** It runs as `hatchling-broker` with an empty capability set, and the sockets admit the recorded owner. The tests read `/proc/<pid>/status` for all four processes' Uid and Cap lines, and a hand mutant that skips the drop fails one.
     4. **Rootless.** The same split on subordinate ids.
