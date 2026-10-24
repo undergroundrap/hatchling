@@ -408,9 +408,11 @@ pub fn mint_ui_token(path: &Path) -> Result<ApiToken, Error> {
     mint_ui_token_as(path, hatchling_sys::euid())
 }
 
-/// [`mint_ui_token`] for `owner`, who is given the token: the broker's
-/// owner (WO-017), who reads it. An earlier token may be the owner's, or
-/// the broker's own, from a start before tokens were given to the owner.
+/// [`mint_ui_token`] for `owner`, who is given the token.
+///
+/// That is the broker's owner (WO-017), who reads it. An earlier token may
+/// be the owner's, or the broker's own, from a start before tokens were
+/// given to the owner.
 ///
 /// # Errors
 ///

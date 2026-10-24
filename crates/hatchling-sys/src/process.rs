@@ -1308,7 +1308,7 @@ mod tests {
     /// The real uid is the kernel's, read apart from the effective one.
     #[test]
     fn the_real_uid_is_the_kernels() {
-        assert_eq!(super::uid(), rustix::process::getuid().as_raw());
+        assert_eq!(uid(), rustix::process::getuid().as_raw());
     }
 
     /// How long a test waits to reap a child it killed: a `SIGKILL`ed
