@@ -6,7 +6,7 @@ Every path below comes from a setting in the broker's environment (see `hatchlin
 
 ## Your data
 
-Deleting any of these loses credentials or history. Each lives where its setting points, readable by the broker's user alone.
+Deleting any of these loses credentials or history. Each lives where its setting points, readable by one user alone. The vault, its master key and its keyring are the vault keeper's: `hatchling-keeper` when the broker runs as root, which hands them to that user at its start. Every other store is the broker's user's.
 
 | Setting | What is there |
 | --- | --- |
@@ -47,7 +47,7 @@ The broker makes these as it runs and removes each when its cell or run ends. A 
 
 Back up every path under **Your data** while the broker is stopped, so no store is part-written. Back up each store whole, `.store-key` included. Keep the master key, or the keyring with what opens it, apart from the stores: the stores alone are ciphertext, and the key alone opens nothing that isn't there.
 
-To restore, put each path back where its setting points, owned by the broker's user, mode `0700` for directories and `0600` for files, and start the broker. A store from before a `rekey-vault` needs the key from before it.
+To restore, put each path back where its setting points, mode `0700` for directories and `0600` for files, and start the broker. Run as root, the broker gives the vault, its key and its keyring back to `hatchling-keeper` itself; every other store must be owned by the broker's user. A store from before a `rekey-vault` needs the key from before it.
 
 ## Uninstall
 

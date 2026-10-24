@@ -8,7 +8,7 @@
 # <browser> is the pinned headless Chromium the cell runs; <app-python> a
 # Python with Playwright for the app's own browser. The binaries are in
 # /usr/local/bin and the app is built in frontend/dist, as the README's
-# quickstart leaves them, and hatchling-cell exists.
+# quickstart leaves them, and hatchling-cell and hatchling-keeper exist.
 set -euo pipefail
 [ "$(id -u)" = 0 ] || { echo "run as root"; exit 64; }
 [ $# = 3 ] || { echo "usage: $0 <browser> <app-python> <logs>"; exit 64; }
@@ -17,6 +17,8 @@ mkdir -p "$logs"
 
 export HATCHLING_HOME
 HATCHLING_HOME=$(mktemp -d /var/tmp/hatchling-browser-e2e.XXXXXX)
+# Searchable, not readable: the vault keeper's user reaches the vault inside.
+chmod 711 "$HATCHLING_HOME"
 mkdir -p -m 700 "$HATCHLING_HOME"/{sock,vault,schedules}
 export HATCHLING_BROKER_SOCKET=$HATCHLING_HOME/sock/broker.sock
 export HATCHLING_AGENT_UID
