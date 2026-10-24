@@ -378,6 +378,16 @@ impl Helpers {
 mod tests {
     use super::*;
 
+    /// This process's cell ids are those of its own uid and gid: the same
+    /// answer, or the same refusal, by either way of asking.
+    #[test]
+    fn own_cell_ids_are_the_cell_ids_for_this_process() {
+        let own = own_cell_ids().map_err(|error| error.to_string());
+        let named = cell_ids_for(crate::process::euid(), rustix::process::getegid().as_raw())
+            .map_err(|error| error.to_string());
+        assert_eq!(own, named);
+    }
+
     /// An account is found by its name alone, with its uid and primary
     /// gid; a name that is only a prefix, or a line without both ids,
     /// isn't one.
