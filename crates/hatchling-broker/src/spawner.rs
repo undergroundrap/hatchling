@@ -1345,6 +1345,10 @@ pub(crate) mod tests {
     #[test]
     fn a_delivery_is_read_from_its_frames() {
         let (ours, theirs) = UnixStream::pair().unwrap();
+        // A read that waits past its frames fails, never hangs.
+        theirs
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         for chunk in [&b"ab"[..], b"cd"] {
             write_frame(&ours, chunk).unwrap();
         }
@@ -1417,6 +1421,9 @@ pub(crate) mod tests {
             (MAX_DELIVERY_BYTES + 1, Vec::new(), "larger than"),
         ] {
             let stream = spawner.connect().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
             let name = String::from("lied");
             send(&stream, &Request::Deliver { name, size }).unwrap();
             for frame in frames {
