@@ -283,6 +283,12 @@ pub fn ensure_private_dir(path: &Path) -> Result<(), Error> {
 /// can't be given or written.
 pub fn write_new_file_for(dir: &Path, name: &str, bytes: &[u8], owner: u32) -> Result<(), Error> {
     use std::io::Write as _;
+    /// How the file is made: new, and never through a symlink.
+    const FLAGS: rustix::fs::OFlags = rustix::fs::OFlags::WRONLY
+        .union(rustix::fs::OFlags::CREATE)
+        .union(rustix::fs::OFlags::EXCL)
+        .union(rustix::fs::OFlags::NOFOLLOW)
+        .union(rustix::fs::OFlags::CLOEXEC);
     if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\0') {
         return Err(refused("make a file in the directory", "not one plain name"));
     }
@@ -297,11 +303,7 @@ pub fn write_new_file_for(dir: &Path, name: &str, bytes: &[u8], owner: u32) -> R
     let made = rustix::fs::openat(
         &handle,
         name,
-        rustix::fs::OFlags::WRONLY
-            | rustix::fs::OFlags::CREATE
-            | rustix::fs::OFlags::EXCL
-            | rustix::fs::OFlags::NOFOLLOW
-            | rustix::fs::OFlags::CLOEXEC,
+        FLAGS,
         rustix::fs::Mode::from_raw_mode(0o600),
     )
     .map_err(failed("make the file"))?;
@@ -357,9 +359,14 @@ mod tests {
         assert!(super::write_new_file_for(&dir, "report.md", b"again", me).is_err());
         std::os::unix::fs::symlink("/etc/passwd", dir.join("linked")).unwrap();
         assert!(super::write_new_file_for(&dir, "linked", b"x", me).is_err());
-        for name in ["", ".", "..", "a/b"] {
-            assert!(super::write_new_file_for(&dir, name, b"x", me).is_err(), "{name:?}");
+        // Refused by name, before the kernel is asked: "a/b" would
+        // otherwise be made in the directory "a".
+        std::fs::create_dir(dir.join("a")).unwrap();
+        for name in ["", ".", "..", "a/b", "a\0b"] {
+            let refused = super::write_new_file_for(&dir, name, b"x", me).unwrap_err();
+            assert!(refused.to_string().contains("not one plain name"), "{name:?}");
         }
+        assert!(!dir.join("a").join("b").exists());
         // Not through a linked directory, nor into another owner's.
         std::os::unix::fs::symlink(&dir, dir.with_extension("link")).unwrap();
         assert!(super::write_new_file_for(&dir.with_extension("link"), "via", b"x", me).is_err());
