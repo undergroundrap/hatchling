@@ -46,14 +46,16 @@ use hatchling_core::ui::{
 use hatchling_vault::OpensStores;
 
 use crate::api_auth::{
-    ApiConfig, Caller, PeerProvider, Provider, TokenProvider, admit, mint_ui_token, ui_token_path,
+    ApiConfig, Caller, PeerProvider, Provider, TokenProvider, admit, mint_ui_token_for,
+    ui_token_path,
 };
 use crate::api_ops::{Audit, Ops, Replies};
 use crate::api_stream::{Bus, FOLLOW_POLL, Follower};
 use crate::connections::ConnectionSlots;
 use crate::serve::session_error;
 use crate::skills::Skills;
-use crate::{Config, Error, bind_socket};
+use crate::listener::bind_owner_socket;
+use crate::{Config, Error};
 
 /// The API socket's mode bits: owner only.
 pub const API_SOCKET_MODE: u32 = 0o600;
@@ -111,7 +113,7 @@ impl std::fmt::Debug for Api {
 ///
 /// Returns [`Error::InvalidConfig`] when the API would serve the agent's
 /// own uid, or for a UI socket without an API socket; the bind errors of
-/// [`bind_socket`]; or [`mint_ui_token`]'s.
+/// [`bind_owner_socket`]; or [`mint_ui_token_for`]'s.
 pub fn open_api(config: &Config, api: &ApiConfig) -> Result<Option<Api>, Error> {
     let Some(socket) = &api.socket else {
         return match api.ui_socket {
@@ -124,20 +126,20 @@ pub fn open_api(config: &Config, api: &ApiConfig) -> Result<Option<Api>, Error> 
             None => Ok(None),
         };
     };
-    // The broker binds the sockets, so they're its own: its uid, never
-    // read back from a path.
-    let owner = PeerUid::from_kernel(hatchling_sys::euid());
+    // The sockets are made for the broker's owner and given to it: its
+    // uid, recorded at start, never read back from a path.
+    let owner = PeerUid::from_kernel(crate::owner::owner()?);
     if owner == config.agent_uid {
         return Err(Error::InvalidConfig {
             key: "HATCHLING_API_SOCKET",
             reason: format!(
-                "the API serves uid {owner}, the broker's own, which is also the agent's: \
+                "the API serves uid {owner}, the broker's owner, which is also the agent's: \
                  the cell could drive the API; {}",
                 crate::cell::OWN_UID_HINT
             ),
         });
     }
-    let listener = bind_socket(socket, API_SOCKET_MODE)?;
+    let listener = bind_owner_socket(socket, API_SOCKET_MODE, owner.as_u32())?;
     let peer = PeerProvider::new(owner, api.grants.clone());
     let mut opened = Api::new(
         listener,
@@ -145,8 +147,8 @@ pub fn open_api(config: &Config, api: &ApiConfig) -> Result<Option<Api>, Error> 
         config.scheduler.activity_log(),
     );
     if let Some(ui_socket) = &api.ui_socket {
-        let listener = bind_socket(ui_socket, API_SOCKET_MODE)?;
-        let token = mint_ui_token(&ui_token_path(ui_socket))?;
+        let listener = bind_owner_socket(ui_socket, API_SOCKET_MODE, owner.as_u32())?;
+        let token = mint_ui_token_for(&ui_token_path(ui_socket), owner.as_u32())?;
         opened = opened.with_ui(listener, Box::new(TokenProvider::new(peer, token)));
     }
     Ok(Some(opened))
@@ -164,7 +166,7 @@ impl Api {
                 socket: SessionSocket::Api,
             },
             ui: None,
-            owner: PeerUid::from_kernel(hatchling_sys::euid()),
+            owner: PeerUid::from_kernel(crate::owner::recorded()),
             bus: Arc::new(Bus::starting_now()),
             log,
             slots: ConnectionSlots::new(API_MAX_CONNECTIONS),

@@ -57,6 +57,38 @@ pub fn bind_socket(socket: &SocketPath, mode: u32) -> Result<UnixListener, Error
     bind_socket_as(socket, mode, hatchling_sys::euid())
 }
 
+/// [`bind_socket`] for `owner`, who is given the socket: the broker's
+/// owner (WO-017). A stale socket may be the owner's, or the broker's
+/// own, from a start before sockets were given to the owner.
+///
+/// # Errors
+///
+/// As [`bind_socket`], and [`Error::SocketSetup`] when the socket can't
+/// be given to the owner.
+pub fn bind_owner_socket(
+    socket: &SocketPath,
+    mode: u32,
+    owner: u32,
+) -> Result<UnixListener, Error> {
+    let stale = std::fs::symlink_metadata(socket.as_path())
+        .ok()
+        .map_or(owner, |meta| {
+            if meta.uid() == hatchling_sys::euid() {
+                meta.uid()
+            } else {
+                owner
+            }
+        });
+    let listener = bind_socket_as(socket, mode, stale)?;
+    if owner != hatchling_sys::euid() {
+        hatchling_sys::hand_over_socket(socket.as_path(), owner, hatchling_sys::egid())
+            .map_err(|source| Error::SocketSetup {
+                source: std::io::Error::other(source),
+            })?;
+    }
+    Ok(listener)
+}
+
 /// Whether `metadata` is a socket's, by its file type.
 fn socket_by_type(metadata: &Metadata) -> bool {
     metadata.file_type().is_socket()
@@ -171,6 +203,35 @@ mod tests {
     use super::*;
     use crate::VaultConfig;
     use hatchling_core::{LogLevel, PeerUid};
+
+    /// A socket made for the owner is given to it; a stale one may be
+    /// the owner's or the broker's own, and another's is refused. Given
+    /// to another user only as root.
+    #[test]
+    fn an_owner_socket_is_given_to_its_owner() {
+        let path = test_path("owner");
+        let socket: SocketPath = path.to_str().unwrap().parse().unwrap();
+        let me = hatchling_sys::euid();
+        let first = bind_owner_socket(&socket, 0o600, me).unwrap();
+        drop(first);
+        // The stale socket, the broker's own: replaced.
+        let again = bind_owner_socket(&socket, 0o600, me).unwrap();
+        assert_eq!(std::fs::symlink_metadata(&path).unwrap().uid(), me);
+        drop(again);
+        let other = me.wrapping_add(4242);
+        if me == 0 {
+            let given = bind_owner_socket(&socket, 0o600, other).unwrap();
+            assert_eq!(std::fs::symlink_metadata(&path).unwrap().uid(), other);
+            drop(given);
+            // The owner's stale socket: replaced, and given again.
+            let replaced = bind_owner_socket(&socket, 0o600, other).unwrap();
+            assert_eq!(std::fs::symlink_metadata(&path).unwrap().uid(), other);
+            drop(replaced);
+        } else {
+            // Not root: the socket can't be given away, and nothing binds.
+            assert!(bind_owner_socket(&socket, 0o600, other).is_err());
+        }
+    }
 
     fn test_path(name: &str) -> crate::test_socket::TestSocket {
         crate::test_socket::TestSocket::new(format!(

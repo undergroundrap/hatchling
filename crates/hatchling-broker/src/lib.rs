@@ -70,6 +70,7 @@ pub mod machine;
 pub mod memory_ops;
 pub mod operator;
 pub mod output_gate;
+pub mod owner;
 pub use output_gate::{RedactionConfig, Rules, RulesHandle, RulesWorker};
 pub mod run_launcher;
 pub use run_launcher::{AGENT_RUN_SUBCOMMAND, CellLauncher, RunEnv, agent_run_main, scoped_config};
