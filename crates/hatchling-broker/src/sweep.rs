@@ -317,12 +317,14 @@ pub fn run_clean(config: &Config, args: &[String]) -> Result<(), Error> {
             });
         }
     };
-    // The lock is taken first, as the user that made it: run as root,
-    // the command then becomes the broker's own user, whose leftovers
-    // they are (WO-017).
     let _lock = take_lock(config)?;
-    crate::broker_user::drop_to_broker()?;
-    let report = clean_locked(config, &std::env::temp_dir(), dry_run)?;
+    let mut report = clean_locked(config, &std::env::temp_dir(), dry_run)?;
+    // Run as root, the command then becomes the broker's own user, and
+    // cleans what that user left, which root may not remove (WO-017).
+    if crate::broker_user::drop_to_broker()? {
+        let theirs = clean_locked(config, &std::env::temp_dir(), dry_run)?;
+        report = format!("{report}\n{theirs}");
+    }
     writeln!(std::io::stdout().lock(), "{report}").map_err(|e| Error::Sweep {
         reason: format!("cannot write the report: {e}"),
     })
@@ -578,6 +580,10 @@ mod tests {
             .join("\n")
         );
         assert_eq!(snapshot(&dir.0), before, "a dry run changes nothing");
+        // With the lock held already, the same.
+        let held = take_lock(&config).unwrap();
+        assert_eq!(clean_locked(&config, &tmp, true).unwrap(), listed);
+        drop(held);
         let done = clean_in(&config, &tmp, false).unwrap();
         assert_eq!(
             done,

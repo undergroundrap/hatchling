@@ -435,7 +435,8 @@ mod tests {
         assert_eq!(std::fs::metadata(roots).unwrap().uid(), 0);
         let read = read_trust_roots_file(roots);
         assert!(
-            read.as_ref().map_or_else(|err| !err.contains("must be owned"), |_| true),
+            read.as_ref()
+                .map_or_else(|err| !err.contains("must be owned"), |_| true),
             "root's is never refused for its owner: {read:?}"
         );
         if hatchling_sys::euid() == 0 {

@@ -1108,15 +1108,10 @@ pub fn drop_to(uid: u32, gid: u32) -> Result<(), Error> {
         });
     }
     set_no_new_privs()?;
-    let (mut real, mut effective, mut saved) = (0, 0, 0);
-    // SAFETY: getresuid writes three ids through valid pointers.
-    let read = unsafe { libc::getresuid(&raw mut real, &raw mut effective, &raw mut saved) };
-    if read != 0 || [real, effective, saved] != [uid; 3] {
+    if resids(Ids::User) != Some([uid; 3]) {
         return Err(not_held("getresuid"));
     }
-    // SAFETY: as getresuid, for the group ids.
-    let read = unsafe { libc::getresgid(&raw mut real, &raw mut effective, &raw mut saved) };
-    if read != 0 || [real, effective, saved] != [gid; 3] {
+    if resids(Ids::Group) != Some([gid; 3]) {
         return Err(not_held("getresgid"));
     }
     // SAFETY: a count of zero asks only how many groups there are.
@@ -1127,6 +1122,29 @@ pub fn drop_to(uid: u32, gid: u32) -> Result<(), Error> {
         return Err(not_held("capget"));
     }
     Ok(())
+}
+
+/// Which ids [`resids`] reads.
+#[derive(Clone, Copy)]
+enum Ids {
+    User,
+    Group,
+}
+
+/// This process's real, effective and saved user or group ids, in that
+/// order; none if they can't be read.
+fn resids(ids: Ids) -> Option<[u32; 3]> {
+    let mut read = [0_u32; 3];
+    let [real, effective, saved] = &mut read;
+    // SAFETY: getresuid and getresgid write three ids through pointers
+    // valid and writable for the call's duration.
+    let status = unsafe {
+        match ids {
+            Ids::User => libc::getresuid(real, effective, saved),
+            Ids::Group => libc::getresgid(real, effective, saved),
+        }
+    };
+    (status == 0).then_some(read)
 }
 
 /// The calling thread's permitted capabilities, as one 64-bit mask.
@@ -1615,7 +1633,11 @@ mod tests {
                 ..
             })
         ));
-        if euid() != 0 {
+        assert_eq!(permitted_capabilities().unwrap(), capabilities()[1]);
+        let own = (euid(), rustix::process::getegid().as_raw());
+        assert_eq!(resids(Ids::User).map(|ids| ids[1]), Some(own.0));
+        assert_eq!(resids(Ids::Group).map(|ids| ids[1]), Some(own.1));
+        if own.0 != 0 {
             let refused = drop_to(4242, 4242);
             assert!(matches!(refused, Err(Error::Process { .. })), "{refused:?}");
             return;
@@ -1636,13 +1658,7 @@ mod tests {
                 if drop_to(4242, 4343).is_err() {
                     exit_child(1);
                 }
-                let (mut real, mut effective, mut saved) = (0, 0, 0);
-                // SAFETY: getresuid writes three ids through valid pointers.
-                unsafe { libc::getresuid(&raw mut real, &raw mut effective, &raw mut saved) };
-                let users = [real, effective, saved];
-                // SAFETY: as above, for the group ids.
-                unsafe { libc::getresgid(&raw mut real, &raw mut effective, &raw mut saved) };
-                if users != [4242; 3] || [real, effective, saved] != [4343; 3] {
+                if resids(Ids::User) != Some([4242; 3]) || resids(Ids::Group) != Some([4343; 3]) {
                     exit_child(2);
                 }
                 // SAFETY: a count of zero asks only how many groups there are.

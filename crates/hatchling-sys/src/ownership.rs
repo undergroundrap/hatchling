@@ -315,10 +315,11 @@ pub fn write_new_file_for(dir: &Path, name: &str, bytes: &[u8], owner: u32) -> R
         })
 }
 
-/// Gives the file at `path` to `owner`, made first if absent: empty,
-/// 0600 (WO-017: a log the broker's user appends to, beside a directory
-/// it may not make files in). It is opened without following a link,
-/// and must be a regular file.
+/// Gives the file at `path` to `owner`, made first if absent.
+///
+/// Made, it is empty and 0600 (WO-017: a log the broker's user appends
+/// to, beside a directory it may not make files in). It is opened
+/// without following a link, and must be a regular file.
 ///
 /// # Errors
 ///
@@ -398,7 +399,10 @@ mod tests {
         // as root, and to this user otherwise: nothing changes).
         let device_owner = std::fs::metadata("/dev/null").unwrap().uid();
         let refused = hand_file_to(Path::new("/dev/null"), me).unwrap_err();
-        assert!(refused.to_string().contains("not a regular file"), "{refused}");
+        assert!(
+            refused.to_string().contains("not a regular file"),
+            "{refused}"
+        );
         assert_eq!(std::fs::metadata("/dev/null").unwrap().uid(), device_owner);
         if me == 0 {
             hand_file_to(&log, 4343).unwrap();

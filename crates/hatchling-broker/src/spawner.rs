@@ -2292,7 +2292,8 @@ sleep 30 </dev/null >/dev/null 2>&1 &
             "HATCHLING_ARTIFACT_WORKSPACE" => Some(String::from("/tmp/hatchling-policy-out")),
             _ => get(key),
         };
-        let read = Policy::parse(&delivering, temp.clone(), (owner, hatchling_sys::egid())).unwrap();
+        let read =
+            Policy::parse(&delivering, temp.clone(), (owner, hatchling_sys::egid())).unwrap();
         assert_eq!(
             read.workspace.as_deref(),
             Some(Path::new("/tmp/hatchling-policy-out"))

@@ -47,6 +47,10 @@ use crate::{
 ///
 /// Propagates [`Error`] from the keeper's start (key loading, vault
 /// validation), cell spawn, or socket setup.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the broker's start, in the order it must happen: one step, one line and its comment"
+)]
 pub fn run_serve(config: &Config) -> Result<(), Error> {
     tracing_subscriber::fmt()
         .with_max_level(config.log_level.to_tracing())
@@ -104,6 +108,9 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
     // the broker stops here, naming the files `migrate-vault` must
     // re-seal. The vault is the keeper's, which checks it itself.
     crate::check_sealed_stores(&crate::vault_ops::broker_stores(config, redaction.as_ref()))?;
+    // An earlier broker killed mid-run left its cells' staging and its
+    // runs' directories: none is live now, and none is your data.
+    let _swept = crate::sweep::sweep_at_start(config, redaction.as_ref());
     let gated = match &redaction {
         Some(redaction) => crate::output_gate::build(config, redaction, &key)?,
         None => crate::output_gate::Built {
@@ -166,11 +173,11 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
         Agents::Listener(&listener)
     };
     // Everything that needed root is done, on one thread still: run as
-    // root, the broker becomes its own user now, for good (WO-017).
-    crate::broker_user::drop_to_broker()?;
-    // An earlier broker killed mid-run left its cells' staging and its
-    // runs' directories: none is live now, and none is your data.
-    let _swept = crate::sweep::sweep_at_start(config, redaction.as_ref());
+    // root, the broker becomes its own user now, for good (WO-017), and
+    // sweeps what that user left, which root may not remove.
+    if crate::broker_user::drop_to_broker()? {
+        let _swept = crate::sweep::sweep_at_start(config, redaction.as_ref());
+    }
     std::thread::scope(|scope| {
         // The gate's rules borrow the keys on a thread of their own
         // (see `crate::output_gate`): the gate only queues work for them.

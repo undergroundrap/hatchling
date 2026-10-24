@@ -112,15 +112,19 @@ fn hand_state(config: &Config, uid: u32, gid: u32) -> Result<(), Error> {
     let failed = |reason: String| Error::BrokerUser { reason };
     crate::keeper::hand_to(BROKER_USER, &state_dirs(config), uid, gid).map_err(failed)?;
     for file in state_files(config) {
-        hatchling_sys::hand_file_to(&file, uid)
-            .map_err(|e| failed(format!("cannot hand {} to {BROKER_USER}: {e}", file.display())))?;
+        hatchling_sys::hand_file_to(&file, uid).map_err(|e| {
+            failed(format!(
+                "cannot hand {} to {BROKER_USER}: {e}",
+                file.display()
+            ))
+        })?;
     }
     Ok(())
 }
 
 /// Run as root, makes this process the broker's user, for good
 /// ([`hatchling_sys::drop_to`]), and says so. Not run as root, it changes
-/// nothing.
+/// nothing. Whether it dropped.
 ///
 /// Call it once everything that needs root is done, while the process
 /// has one thread.
@@ -128,9 +132,9 @@ fn hand_state(config: &Config, uid: u32, gid: u32) -> Result<(), Error> {
 /// # Errors
 ///
 /// As [`broker_user`], and [`Error::BrokerUser`] when the drop fails.
-pub fn drop_to_broker() -> Result<(), Error> {
+pub fn drop_to_broker() -> Result<bool, Error> {
     let Some((uid, gid)) = broker_user()? else {
-        return Ok(());
+        return Ok(false);
     };
     hatchling_sys::drop_to(uid, gid).map_err(|e| Error::BrokerUser {
         reason: format!("cannot become {BROKER_USER}: {e}"),
@@ -140,7 +144,7 @@ pub fn drop_to_broker() -> Result<(), Error> {
         user = BROKER_USER,
         "the broker runs as its own user"
     );
-    Ok(())
+    Ok(true)
 }
 
 /// [`act_for_broker`] in `dirs`, for `uid` and `gid`.
@@ -207,7 +211,10 @@ mod tests {
                 PathBuf::from("/srv/h/schedules.runs"),
             ]
         );
-        assert_eq!(state_files(&config), [PathBuf::from("/srv/h/schedules.activity")]);
+        assert_eq!(
+            state_files(&config),
+            [PathBuf::from("/srv/h/schedules.activity")]
+        );
     }
 
     /// The broker's state is handed to its user: its directories made if
@@ -231,10 +238,7 @@ mod tests {
         assert!(meta(&base.join("memory")).is_dir());
         assert!(meta(&base.join("schedules.runs")).is_dir());
         let log = base.join("schedules.activity");
-        assert_eq!(
-            (meta(&log).len(), meta(&log).mode() & 0o777),
-            (0, 0o600)
-        );
+        assert_eq!((meta(&log).len(), meta(&log).mode() & 0o777), (0, 0o600));
         std::fs::write(&log, b"kept").unwrap();
         hand_state(&config, me.0, me.1).unwrap();
         assert_eq!(std::fs::read(&log).unwrap(), b"kept");
@@ -258,7 +262,7 @@ mod tests {
     fn not_as_root_the_broker_drops_to_no_one() {
         if hatchling_sys::euid() != 0 {
             let before = hatchling_sys::euid();
-            drop_to_broker().unwrap();
+            assert!(!drop_to_broker().unwrap());
             assert_eq!(hatchling_sys::euid(), before);
         }
     }
