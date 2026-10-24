@@ -422,9 +422,9 @@ enum Request {
     Helper { helper: HelperKind, spec: String },
     /// Kill the helper this connection started.
     Kill,
-    /// Write the bytes in the next frame, an approved delivery, into the
-    /// workspace as a new file `name`, for the owner.
-    Deliver { name: String },
+    /// Write the next `size` bytes, an approved delivery sent in frames,
+    /// into the workspace as a new file `name`, for the owner.
+    Deliver { name: String, size: usize },
     /// Give a harness's work trees to its cell's identity, or take them
     /// back: on the owner's subordinate ids, or, `direct`, on the cell's
     /// own.
@@ -641,11 +641,17 @@ impl Spawner {
         stream
             .set_read_timeout(Some(TREES_TIMEOUT))
             .map_err(|error| format!("cannot bound the spawner's answer: {error}"))?;
+        if bytes.len() > MAX_DELIVERY_BYTES {
+            return Err(too_large());
+        }
         let request = Request::Deliver {
             name: name.to_owned(),
+            size: bytes.len(),
         };
         send(&stream, &request).map_err(|error| error.to_string())?;
-        write_frame(&stream, bytes).map_err(|error| gone(error).to_string())?;
+        for chunk in bytes.chunks(DELIVERY_CHUNK) {
+            write_frame(&stream, chunk).map_err(|error| gone(error).to_string())?;
+        }
         match receive(&stream).map_err(|error| error.to_string())? {
             Reply::Done => Ok(()),
             Reply::Refused { reason } => Err(reason),
@@ -1041,9 +1047,10 @@ fn serve_connection(stream: &UnixStream, program: &Path, policy: &Policy) -> Res
                 reason: String::from("nothing was started to kill"),
             },
         ),
-        Request::Deliver { name } => {
-            let bytes = read_frame(stream).map_err(gone)?;
-            let reply = match deliver(policy, &name, &bytes) {
+        Request::Deliver { name, size } => {
+            let delivered = read_delivery(stream, size)
+                .and_then(|bytes| deliver(policy, &name, &bytes));
+            let reply = match delivered {
                 Ok(()) => Reply::Done,
                 Err(reason) => Reply::Refused { reason },
             };
@@ -1052,11 +1059,45 @@ fn serve_connection(stream: &UnixStream, program: &Path, policy: &Policy) -> Res
     }
 }
 
+/// The largest delivery the spawner writes: a harness's patch of a whole
+/// work tree, as it was and as it is (twice
+/// [`crate::harness::MAX_WORK_BYTES`]), with room for its headers.
+pub(crate) const MAX_DELIVERY_BYTES: usize = 24 * 1024 * 1024;
+
+/// How much of a delivery each frame carries: well inside a frame.
+const DELIVERY_CHUNK: usize = 32 * 1024;
+
+/// Why a delivery is refused for its size.
+fn too_large() -> String {
+    format!("a delivery larger than {MAX_DELIVERY_BYTES} bytes")
+}
+
+/// The `size` bytes of a delivery, read from the frames that carry them:
+/// no more and no fewer, and never more than [`MAX_DELIVERY_BYTES`].
+///
+/// # Errors
+///
+/// Why not: too large, frames that don't add up to `size`, or a broker
+/// gone.
+fn read_delivery(stream: &UnixStream, size: usize) -> Result<Vec<u8>, String> {
+    if size > MAX_DELIVERY_BYTES {
+        return Err(too_large());
+    }
+    let mut bytes = Vec::with_capacity(size);
+    while bytes.len() < size {
+        let frame = read_frame(stream).map_err(|error| gone(error).to_string())?;
+        if frame.is_empty() || bytes.len() + frame.len() > size {
+            return Err(format!("a delivery that isn't the {size} bytes it said"));
+        }
+        bytes.extend_from_slice(&frame);
+    }
+    Ok(bytes)
+}
+
 /// Writes an approved delivery, `bytes`, into the workspace as a new file
 /// `name`, for the owner, who is given it (the owner's choice,
 /// 2026-10-24): only into the configured workspace, a directory of the
-/// owner's, under a workspace name, never over a file, at most a stored
-/// build's size.
+/// owner's, under a workspace name, never over a file.
 ///
 /// # Errors
 ///
@@ -1068,9 +1109,6 @@ fn deliver(policy: &Policy, name: &str, bytes: &[u8]) -> Result<(), String> {
         .ok_or_else(|| String::from("no workspace is configured"))?;
     if !crate::artifact_ops::is_workspace_name(name) {
         return Err(format!("{name:?} isn't a workspace name"));
-    }
-    if bytes.len() > hatchling_core::MAX_SECRET_BYTES {
-        return Err(String::from("a delivery larger than any stored build"));
     }
     hatchling_sys::write_new_file_for(workspace, name, bytes, policy.owner)
         .map_err(|error| error.to_string())
@@ -1326,13 +1364,40 @@ pub(crate) mod tests {
                 .unwrap_err()
                 .contains("isn't a workspace name")
         );
-        let large = vec![b'x'; hatchling_core::MAX_SECRET_BYTES + 1];
+        // Carried in many frames, and whole.
+        let patch: Vec<u8> = (0..100 * 1024_u32).map(|at| u8::try_from(at % 251).unwrap()).collect();
+        spawner.deliver("harness-1.patch", &patch).unwrap();
+        assert_eq!(std::fs::read(workspace.join("harness-1.patch")).unwrap(), patch);
+        spawner.deliver("empty", b"").unwrap();
+        assert_eq!(std::fs::read(workspace.join("empty")).unwrap(), b"");
+        let large = vec![b'x'; MAX_DELIVERY_BYTES + 1];
         assert!(
             spawner
                 .deliver("large", &large)
                 .unwrap_err()
-                .contains("larger than any stored build")
+                .contains("larger than")
         );
+        assert!(!workspace.join("large").exists());
+        // Frames that don't add up to the size said, or a size past the
+        // bound, are refused, and nothing is written.
+        for (size, frames, refusal) in [
+            (3, vec![&b"abcd"[..]], "isn't the 3 bytes"),
+            (4, vec![&b"ab"[..], &b""[..]], "isn't the 4 bytes"),
+            (MAX_DELIVERY_BYTES + 1, Vec::new(), "larger than"),
+        ] {
+            let stream = spawner.connect().unwrap();
+            let name = String::from("lied");
+            send(&stream, &Request::Deliver { name, size }).unwrap();
+            for frame in frames {
+                write_frame(&stream, frame).unwrap();
+            }
+            let reply = receive(&stream).unwrap();
+            assert!(
+                matches!(&reply, Reply::Refused { reason } if reason.contains(refusal)),
+                "{reply:?}"
+            );
+            assert!(!workspace.join("lied").exists());
+        }
         drop(spawner);
         served.join().unwrap();
         let (spawner, served) = serving("/bin/sh");

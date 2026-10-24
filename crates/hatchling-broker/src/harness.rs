@@ -828,17 +828,18 @@ impl Harnesses {
         Ok((network, relaying))
     }
 
-    /// Writes `patch` to the artifact workspace, as a new file; its name,
-    /// or `None` when it could not be written (logged).
+    /// Writes `patch` to the artifact workspace, as a new file, through
+    /// the spawner when one runs, as the owner's (WO-017); its name, or
+    /// `None` when it could not be written (logged).
     fn deliver_patch(&self, patch: &str) -> Option<String> {
         let workspace = self.workspace.as_ref()?;
         let name = format!("{}.patch", crate::approval::random_hex("harness-").ok()?);
-        let written = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(workspace.join(&name))
-            .and_then(|mut file| file.write_all(patch.as_bytes()));
+        let written = crate::artifact_ops::write_workspace(
+            crate::spawner::spawner(),
+            &workspace.join(&name),
+            &name,
+            patch.as_bytes(),
+        );
         match written {
             Ok(()) => Some(name),
             Err(error) => {

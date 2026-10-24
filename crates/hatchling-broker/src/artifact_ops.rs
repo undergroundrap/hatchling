@@ -1016,7 +1016,7 @@ impl Sink for WorkspaceSink {
 /// # Errors
 ///
 /// Why it wasn't written.
-fn write_workspace(
+pub(crate) fn write_workspace(
     spawner: Option<&crate::spawner::Spawner>,
     path: &Path,
     name: &str,
