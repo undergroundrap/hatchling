@@ -59,6 +59,11 @@ const REAP_AFTER_KILL: Duration = Duration::from_secs(5);
 /// How long the broker waits for the spawner to say a helper started.
 const START_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How long the broker waits for a change to a harness's trees: past the
+/// spawner's own bound on its tree helper.
+const TREES_TIMEOUT: Duration =
+    Duration::from_secs(crate::harness_tree::HELPER_TIMEOUT.as_secs() + 30);
+
 /// A helper the spawner starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -289,6 +294,9 @@ impl Spawner {
         cell: CellIdentity,
     ) -> Result<(), String> {
         let stream = self.connect().map_err(|error| error.to_string())?;
+        stream
+            .set_read_timeout(Some(TREES_TIMEOUT))
+            .map_err(|error| format!("cannot bound the spawner's answer: {error}"))?;
         let request = Request::Trees {
             give: op == TreeOp::Give,
             dirs: dirs.iter().map(|dir| dir.to_path_buf()).collect(),
@@ -884,6 +892,9 @@ mod tests {
             "a refused spec was written"
         );
         let stream = spawner.connect().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
         send(&stream, &Request::Kill).unwrap();
         assert!(matches!(receive(&stream).unwrap(), Reply::Refused { .. }));
         drop((stream, spawner));
@@ -936,6 +947,9 @@ mod tests {
     #[test]
     fn a_watch_reads_the_helpers_end_or_the_spawners() {
         let (ours, theirs) = UnixStream::pair().unwrap();
+        theirs
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
         let process = SpawnedProcess::watching(ours, 7).unwrap();
         assert_eq!(process.outcome().unwrap(), None);
         assert_eq!(
@@ -954,6 +968,9 @@ mod tests {
         assert!(wait_error("why").to_string().contains("why"));
         // A wait past its deadline asks the spawner for a kill.
         let (ours, theirs) = UnixStream::pair().unwrap();
+        theirs
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
         let late = SpawnedProcess::watching(ours, 9).unwrap();
         assert!(late.wait_deadline(Duration::from_millis(10)).is_err());
         let asked = read_frame(&theirs).unwrap();
@@ -966,6 +983,9 @@ mod tests {
     #[test]
     fn a_spec_or_a_tree_change_the_spawner_cannot_make_is_refused() {
         let (broker, theirs) = UnixStream::pair().unwrap();
+        broker
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
         let (fds, _) = stdio();
         serve_helper(
             &theirs,

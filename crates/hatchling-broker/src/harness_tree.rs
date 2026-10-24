@@ -29,7 +29,7 @@ use hatchling_isolation::{CellIdentity, IsolationBackend as _, Supervised as _};
 pub const HARNESS_TREE_SUBCOMMAND: &str = "harness-tree";
 
 /// How long the helper has, from its start, to change its trees.
-const HELPER_TIMEOUT: Duration = Duration::from_secs(120);
+pub(crate) const HELPER_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// What the helper does with its trees.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
