@@ -22,7 +22,16 @@ use crate::{Config, Error, RedactionConfig};
 
 /// The system's paths a broker reads: its configuration, libraries,
 /// zone data, name service and resolver files, and its own process's.
-const SYSTEM_READ: [&str; 8] = ["/etc", "/usr", "/lib", "/lib64", "/proc", "/sys", "/run", "/dev/urandom"];
+const SYSTEM_READ: [&str; 8] = [
+    "/etc",
+    "/usr",
+    "/lib",
+    "/lib64",
+    "/proc",
+    "/sys",
+    "/run",
+    "/dev/urandom",
+];
 
 /// The paths the broker reads and writes: its stores and state (each
 /// made first, if absent: a rule needs a path), its run directories'
@@ -53,7 +62,11 @@ fn readable(config: &Config, get: impl Fn(&str) -> Option<String>) -> Result<Vec
             .filter(|path| !path.as_os_str().is_empty())
             .cloned(),
     );
-    paths.extend(Harnesses::parse(config, &get)?.roots().map(Path::to_path_buf));
+    paths.extend(
+        Harnesses::parse(config, &get)?
+            .roots()
+            .map(Path::to_path_buf),
+    );
     if let Some(browser) = BrowserSettings::parse(&get)? {
         paths.push(browser.bundle().to_path_buf());
         paths.push(browser.controller().to_path_buf());
@@ -62,10 +75,12 @@ fn readable(config: &Config, get: impl Fn(&str) -> Option<String>) -> Result<Vec
     Ok(paths)
 }
 
-/// Holds this process, for good, to the broker's paths ([`writable`],
-/// [`readable`]), the state among them made first if absent. Call it once
-/// its start is done, while it has one thread. A kernel without
-/// Landlock leaves it as it was, said in the log. Whether it was held.
+/// Holds this process, for good, to the broker's paths.
+///
+/// They are [`writable`] and [`readable`], the state among them made
+/// first if absent. Call it once its start is done, while it has one
+/// thread. A kernel without Landlock leaves it as it was, said in the
+/// log. Whether it was held.
 ///
 /// # Errors
 ///
@@ -132,20 +147,34 @@ mod tests {
             "/srv/h/schedules.activity",
             "/dev/null",
         ] {
-            assert!(written.contains(&PathBuf::from(path)), "{path}: {written:?}");
+            assert!(
+                written.contains(&PathBuf::from(path)),
+                "{path}: {written:?}"
+            );
         }
         assert!(written.contains(&std::env::temp_dir()));
         assert!(written.contains(&config.socket.as_path().parent().unwrap().to_path_buf()));
-        assert!(!written.contains(&config.vault.root), "the vault is the keeper's");
+        assert!(
+            !written.contains(&config.vault.root),
+            "the vault is the keeper's"
+        );
         config.skills.skills_dir = PathBuf::from("/srv/h/skills");
         config.skills.trust_roots_file = PathBuf::from("/etc/hatchling/roots");
         let read = readable(&config, |_| None).unwrap();
-        for path in SYSTEM_READ.iter().copied().chain(["/srv/h/skills", "/etc/hatchling/roots"]) {
+        for path in SYSTEM_READ
+            .iter()
+            .copied()
+            .chain(["/srv/h/skills", "/etc/hatchling/roots"])
+        {
             assert!(read.contains(&PathBuf::from(path)), "{path}: {read:?}");
         }
         assert!(!read.contains(&config.vault.root));
         config.skills.skills_dir = PathBuf::new();
-        assert!(!readable(&config, |_| None).unwrap().contains(&PathBuf::new()));
+        assert!(
+            !readable(&config, |_| None)
+                .unwrap()
+                .contains(&PathBuf::new())
+        );
         // A harness's project roots, which its tasks' files are copied from.
         let dir = crate::api_auth::tests::scratch("confine-roots");
         let (project, pinned) = (dir.0.join("project"), dir.0.join("harness"));
@@ -156,9 +185,15 @@ mod tests {
         std::fs::create_dir_all(dir.0.join("workspace")).unwrap();
         config.artifacts.workspace = Some(dir.0.join("workspace"));
         let vars = std::collections::HashMap::from([
-            ("HATCHLING_HARNESS_CLAUDE_CODE", pinned.display().to_string()),
+            (
+                "HATCHLING_HARNESS_CLAUDE_CODE",
+                pinned.display().to_string(),
+            ),
             ("HATCHLING_HARNESS_CLAUDE_CODE_SHA256", sha256),
-            ("HATCHLING_HARNESS_ROOTS", format!("project={}", project.display())),
+            (
+                "HATCHLING_HARNESS_ROOTS",
+                format!("project={}", project.display()),
+            ),
         ]);
         let read = readable(&config, |key| vars.get(key).cloned()).unwrap();
         assert!(read.contains(&project), "{read:?}");
@@ -181,9 +216,9 @@ mod tests {
         std::fs::create_dir_all(home.join("state")).unwrap();
         // The temp directory is the broker's: the user's file lives apart
         // from it, as a home does.
-        let outside = std::env::var_os("HOME").map(PathBuf::from).filter(|home| {
-            !home.starts_with(std::env::temp_dir()) && home.is_dir()
-        });
+        let outside = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .filter(|home| !home.starts_with(std::env::temp_dir()) && home.is_dir());
         let probe = outside.map(|home| {
             let probe = home.join(format!(".hatchling-confine-probe-{}", std::process::id()));
             std::fs::write(&probe, b"p").unwrap();
@@ -196,7 +231,8 @@ mod tests {
             }
             return;
         }
-        let in_temp = std::env::temp_dir().join(format!("hatchling-confine-temp-{}", std::process::id()));
+        let in_temp =
+            std::env::temp_dir().join(format!("hatchling-confine-temp-{}", std::process::id()));
         match fork().unwrap() {
             ForkResult::Parent { child } => {
                 let status = child.wait_deadline(Duration::from_secs(10)).unwrap();
@@ -216,19 +252,26 @@ mod tests {
                     exit_child(1);
                 }
                 let state = home.join("state");
-                if !state.join("schedules.runs").is_dir() || !state.join("schedules.activity").is_file() {
+                if !state.join("schedules.runs").is_dir()
+                    || !state.join("schedules.activity").is_file()
+                {
                     exit_child(2);
                 }
                 if std::fs::write(config.artifacts.root.join("build"), b"b").is_err() {
                     exit_child(3);
                 }
-                if probe.as_ref().is_some_and(|probe| std::fs::read(probe).is_ok()) {
+                if probe
+                    .as_ref()
+                    .is_some_and(|probe| std::fs::read(probe).is_ok())
+                {
                     exit_child(4);
                 }
                 if std::process::Command::new("/bin/true").status().is_ok() {
                     exit_child(5);
                 }
-                if std::fs::read(home.join("secret")).is_ok() && !home.starts_with(std::env::temp_dir()) {
+                if std::fs::read(home.join("secret")).is_ok()
+                    && !home.starts_with(std::env::temp_dir())
+                {
                     exit_child(6);
                 }
                 if std::fs::write(&in_temp, b"t").is_err() {

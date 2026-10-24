@@ -120,7 +120,7 @@ impl Confinement {
             libc::syscall(
                 libc::SYS_landlock_create_ruleset,
                 std::ptr::from_ref(&attr),
-                std::mem::size_of::<RulesetAttr>(),
+                size_of::<RulesetAttr>(),
                 0_u32,
             )
         };
@@ -237,7 +237,11 @@ mod tests {
     fn each_abi_handles_the_rights_it_knows() {
         let known = [0, 0x1fff, 0x3fff, 0x7fff, 0x7fff, 0xffff, 0xffff];
         for (abi, rights) in known.into_iter().enumerate() {
-            assert_eq!(handled_for(u32::try_from(abi).unwrap()), rights, "abi {abi}");
+            assert_eq!(
+                handled_for(u32::try_from(abi).unwrap()),
+                rights,
+                "abi {abi}"
+            );
         }
         assert_eq!(FILE_RIGHTS, 0x1 + 0x2 + 0x4 + 0x4000 + 0x8000);
         assert_eq!(READ, 0x4 + 0x8);
@@ -310,7 +314,7 @@ mod tests {
                 let appended = std::fs::OpenOptions::new()
                     .append(true)
                     .open(&log)
-                    .and_then(|mut file| std::io::Write::write_all(&mut file, b"z"));
+                    .and_then(|mut file| io::Write::write_all(&mut file, b"z"));
                 if appended.is_err() {
                     exit_child(6);
                 }
