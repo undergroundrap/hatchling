@@ -1228,7 +1228,11 @@ mod tests {
         // The helper says where it runs, and what its spec says.
         let dir = run_dir("ends");
         let program = dir.join("helper.sh");
-        std::fs::write(&program, "#!/bin/sh\necho \"dir=$TMPDIR\" >&2\ncat \"$2\" >&2\n").unwrap();
+        std::fs::write(
+            &program,
+            "#!/bin/sh\necho \"dir=$TMPDIR\" >&2\ncat \"$2\" >&2\n",
+        )
+        .unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
         let (spawner, served) = serving(program.to_str().unwrap());
         let (stdio, mut errors) = stdio();
@@ -1429,7 +1433,6 @@ mod tests {
             &policy(),
             HelperKind::SkillCell,
             "{}",
-            Path::new("/nonexistent"),
             fds.into(),
         )
         .unwrap();

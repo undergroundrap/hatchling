@@ -97,9 +97,7 @@ fn the_real_spawner_starts_the_real_helper_on_the_spec_it_wrote() {
     config.skill_code = Some(code.clone());
     let spec = serde_json::to_string(&config).unwrap();
     let (fds, mut errors) = stdio().unwrap();
-    let process = spawner
-        .helper(HelperKind::SkillCell, &spec, fds)
-        .unwrap();
+    let process = spawner.helper(HelperKind::SkillCell, &spec, fds).unwrap();
     let exit = process.wait_deadline(Duration::from_secs(30)).unwrap();
     let mut said = String::new();
     errors.read_to_string(&mut said).unwrap();
