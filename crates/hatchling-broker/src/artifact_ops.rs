@@ -1005,14 +1005,33 @@ impl Sink for WorkspaceSink {
     }
 
     fn put(&mut self, bytes: &[u8]) -> Result<(), String> {
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&self.path)
-            .and_then(|mut file| file.write_all(bytes))
-            .map_err(|e| e.to_string())
+        write_workspace(crate::spawner::spawner(), &self.path, &self.name, bytes)
     }
+}
+
+/// Writes `bytes` as the new workspace file `name`, at `path`: through
+/// `spawner` when one runs, which writes it as the owner's (WO-017; the
+/// broker's user can't write in the owner's workspace), else here.
+///
+/// # Errors
+///
+/// Why it wasn't written.
+fn write_workspace(
+    spawner: Option<&crate::spawner::Spawner>,
+    path: &Path,
+    name: &str,
+    bytes: &[u8],
+) -> Result<(), String> {
+    if let Some(spawner) = spawner {
+        return spawner.deliver(name, bytes);
+    }
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .and_then(|mut file| file.write_all(bytes))
+        .map_err(|e| e.to_string())
 }
 
 /// Whether `name` is a plain workspace file name: one path component of
@@ -1179,6 +1198,27 @@ mod tests {
             sink_for(&config, Some(&hub), "session:a", &workspace).is_none(),
             "no workspace"
         );
+    }
+
+    /// A workspace delivery is written here with no spawner, and by the
+    /// spawner when one runs; neither writes over a file.
+    #[test]
+    fn a_workspace_delivery_goes_through_the_spawner_when_one_runs() {
+        let dir = crate::api_auth::tests::scratch("workspace-write");
+        let here = dir.0.join("here.md");
+        write_workspace(None, &here, "here.md", b"here").unwrap();
+        assert_eq!(std::fs::read(&here).unwrap(), b"here");
+        assert!(write_workspace(None, &here, "here.md", b"again").is_err());
+        let (spawner, served) = crate::spawner::tests::delivering_to(&dir.0);
+        // The path is ignored: the spawner writes the name in its own
+        // workspace.
+        let unused = dir.0.join("unused");
+        write_workspace(Some(&spawner), &unused, "spawned.md", b"spawned").unwrap();
+        assert_eq!(std::fs::read(dir.0.join("spawned.md")).unwrap(), b"spawned");
+        assert!(!unused.exists());
+        assert!(write_workspace(Some(&spawner), &unused, "spawned.md", b"x").is_err());
+        drop(spawner);
+        served.join().unwrap();
     }
 
     /// the gates' read of every held secret names what it reads,

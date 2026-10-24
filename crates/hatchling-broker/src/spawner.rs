@@ -270,6 +270,11 @@ pub(crate) struct Policy {
     cgroup: Option<PathBuf>,
     /// The host paths a cell may be given.
     paths: Paths,
+    /// Where approved deliveries are written, if anywhere: the owner's
+    /// workspace.
+    workspace: Option<PathBuf>,
+    /// The broker's owner, who is given every delivery.
+    owner: u32,
 }
 
 /// Who a cell runs as, and the broker's uid as the cell sees it.
@@ -300,6 +305,8 @@ impl Policy {
             limits: reference.limits,
             cgroup: reference.cgroup.clone(),
             paths,
+            workspace: None,
+            owner: crate::owner::recorded(),
         }
     }
 
@@ -360,7 +367,11 @@ impl Policy {
             owner,
             group: hatchling_sys::egid(),
         };
-        Ok(Self::of(&reference, agent, paths))
+        Ok(Self {
+            workspace: config.artifacts.workspace,
+            owner: crate::owner::owner()?,
+            ..Self::of(&reference, agent, paths)
+        })
     }
 
     /// Whether `helper` may start `config`: why not, if it may not.
@@ -411,6 +422,9 @@ enum Request {
     Helper { helper: HelperKind, spec: String },
     /// Kill the helper this connection started.
     Kill,
+    /// Write the bytes in the next frame, an approved delivery, into the
+    /// workspace as a new file `name`, for the owner.
+    Deliver { name: String },
     /// Give a harness's work trees to its cell's identity, or take them
     /// back: on the owner's subordinate ids, or, `direct`, on the cell's
     /// own.
@@ -614,6 +628,31 @@ impl Spawner {
         let connection = hatchling_sys::net::recv_fd(handoff.as_fd())
             .map_err(|error| format!("the agent cell came without its connection: {error}"))?;
         Ok((process, UnixStream::from(connection)))
+    }
+
+    /// Has the spawner write `bytes`, an approved delivery, into the
+    /// owner's workspace as a new file `name`, given to the owner.
+    ///
+    /// # Errors
+    ///
+    /// Why it wasn't written.
+    pub(crate) fn deliver(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
+        let stream = self.connect().map_err(|error| error.to_string())?;
+        stream
+            .set_read_timeout(Some(TREES_TIMEOUT))
+            .map_err(|error| format!("cannot bound the spawner's answer: {error}"))?;
+        let request = Request::Deliver {
+            name: name.to_owned(),
+        };
+        send(&stream, &request).map_err(|error| error.to_string())?;
+        write_frame(&stream, bytes).map_err(|error| gone(error).to_string())?;
+        match receive(&stream).map_err(|error| error.to_string())? {
+            Reply::Done => Ok(()),
+            Reply::Refused { reason } => Err(reason),
+            Reply::Started { .. } | Reply::Exited { .. } => {
+                Err(String::from("the spawner answered out of step"))
+            }
+        }
     }
 
     /// Gives `dirs` to the cell `cell`, or takes them back
@@ -1002,7 +1041,39 @@ fn serve_connection(stream: &UnixStream, program: &Path, policy: &Policy) -> Res
                 reason: String::from("nothing was started to kill"),
             },
         ),
+        Request::Deliver { name } => {
+            let bytes = read_frame(stream).map_err(gone)?;
+            let reply = match deliver(policy, &name, &bytes) {
+                Ok(()) => Reply::Done,
+                Err(reason) => Reply::Refused { reason },
+            };
+            send(stream, &reply)
+        }
     }
+}
+
+/// Writes an approved delivery, `bytes`, into the workspace as a new file
+/// `name`, for the owner, who is given it (the owner's choice,
+/// 2026-10-24): only into the configured workspace, a directory of the
+/// owner's, under a workspace name, never over a file, at most a stored
+/// build's size.
+///
+/// # Errors
+///
+/// Why not.
+fn deliver(policy: &Policy, name: &str, bytes: &[u8]) -> Result<(), String> {
+    let workspace = policy
+        .workspace
+        .as_ref()
+        .ok_or_else(|| String::from("no workspace is configured"))?;
+    if !crate::artifact_ops::is_workspace_name(name) {
+        return Err(format!("{name:?} isn't a workspace name"));
+    }
+    if bytes.len() > hatchling_core::MAX_SECRET_BYTES {
+        return Err(String::from("a delivery larger than any stored build"));
+    }
+    hatchling_sys::write_new_file_for(workspace, name, bytes, policy.owner)
+        .map_err(|error| error.to_string())
 }
 
 /// Gives a harness's trees, `dirs`, to its cell on the cell's own ids
@@ -1195,11 +1266,26 @@ fn supervise(
 }
 
 #[cfg(test)]
-mod tests {
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "crate-visible on purpose: the artifact operations' tests deliver through it"
+)]
+pub(crate) mod tests {
     use std::io::Read as _;
     use std::time::Instant;
 
     use super::*;
+
+    /// A spawner, over a pair, writing deliveries into `workspace` for
+    /// this process's own user, and the broker's end.
+    pub(crate) fn delivering_to(workspace: &Path) -> (Spawner, std::thread::JoinHandle<()>) {
+        let policy = Policy {
+            workspace: Some(workspace.to_path_buf()),
+            owner: hatchling_sys::euid(),
+            ..policy()
+        };
+        serving_with("/bin/sh", policy)
+    }
 
     /// A spawner serving `program` as every helper, over a pair, and the
     /// broker's end.
@@ -1213,6 +1299,52 @@ mod tests {
         let held = Arc::new((PathBuf::from(program), policy));
         let served = std::thread::spawn(move || serve(&theirs, &held));
         (Spawner::over(ours), served)
+    }
+
+    /// The spawner writes an approved delivery into the workspace, as a
+    /// new file of the owner's; a name that isn't a workspace name, a file
+    /// already there, a delivery too large, and no workspace configured
+    /// are each refused.
+    #[test]
+    fn a_delivery_is_written_into_the_workspace_for_its_owner() {
+        use std::os::unix::fs::MetadataExt as _;
+        let workspace = run_dir("workspace");
+        let me = hatchling_sys::euid();
+        let (spawner, served) = delivering_to(&workspace);
+        spawner.deliver("report.md", b"hello").unwrap();
+        let written = workspace.join("report.md");
+        assert_eq!(std::fs::read(&written).unwrap(), b"hello");
+        assert_eq!(std::fs::metadata(&written).unwrap().uid(), me);
+        assert!(
+            spawner.deliver("report.md", b"again").is_err(),
+            "over a file"
+        );
+        assert_eq!(std::fs::read(&written).unwrap(), b"hello");
+        assert!(
+            spawner
+                .deliver("../escape", b"x")
+                .unwrap_err()
+                .contains("isn't a workspace name")
+        );
+        let large = vec![b'x'; hatchling_core::MAX_SECRET_BYTES + 1];
+        assert!(
+            spawner
+                .deliver("large", &large)
+                .unwrap_err()
+                .contains("larger than any stored build")
+        );
+        drop(spawner);
+        served.join().unwrap();
+        let (spawner, served) = serving("/bin/sh");
+        assert!(
+            spawner
+                .deliver("report.md", b"x")
+                .unwrap_err()
+                .contains("no workspace is configured")
+        );
+        drop(spawner);
+        served.join().unwrap();
+        std::fs::remove_dir_all(&workspace).unwrap();
     }
 
     /// With a delegated group, the spawner makes each cell's group in it,
@@ -2044,6 +2176,19 @@ sleep 30 </dev/null >/dev/null 2>&1 &
             agent_identity(&get).unwrap()
         );
         assert_eq!(read.limits, reference.limits);
+        // No artifacts, no workspace; deliveries are the recorded owner's.
+        assert_eq!(read.workspace, None);
+        assert_eq!(read.owner, crate::owner::owner().unwrap());
+        let delivering = |key: &str| match key {
+            "HATCHLING_ARTIFACT_DIR" => Some(String::from("/tmp/hatchling-policy-builds")),
+            "HATCHLING_ARTIFACT_WORKSPACE" => Some(String::from("/tmp/hatchling-policy-out")),
+            _ => get(key),
+        };
+        let read = Policy::parse(&delivering, temp.clone(), owner).unwrap();
+        assert_eq!(
+            read.workspace.as_deref(),
+            Some(Path::new("/tmp/hatchling-policy-out"))
+        );
         // As root, a run cell's base may be set apart from a skill cell's:
         // then the agent's identity is its own.
         if owner == 0 {
