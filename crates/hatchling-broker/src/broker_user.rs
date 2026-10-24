@@ -27,10 +27,11 @@ pub fn broker_user() -> Result<Option<(u32, u32)>, Error> {
         .map_err(|reason| Error::BrokerUser { reason })
 }
 
-/// The directories the broker's user owns: each sealed store's root but
-/// the vault, which is the keeper's, and the output gate's directory,
-/// which holds the redaction store. (The configuration keeps the stores
-/// apart, so none is named twice.)
+/// The directories the broker's user owns.
+///
+/// Each sealed store's root but the vault, which is the keeper's, and the
+/// output gate's directory, which holds the redaction store. (The
+/// configuration keeps the stores apart, so none is named twice.)
 #[must_use]
 pub fn broker_dirs(config: &Config, redaction: Option<&RedactionConfig>) -> Vec<PathBuf> {
     redaction
@@ -45,9 +46,11 @@ pub fn broker_dirs(config: &Config, redaction: Option<&RedactionConfig>) -> Vec<
 }
 
 /// Lets this process, run as root, act for the broker's user in its
-/// directories ([`broker_dirs`], the output gate's when there is an
-/// ingress for it to guard), handed to that user first. Not run as root,
-/// it changes nothing.
+/// directories.
+///
+/// They are [`broker_dirs`], the output gate's when there is an ingress
+/// for it to guard, handed to that user first. Not run as root, it
+/// changes nothing.
 ///
 /// # Errors
 ///

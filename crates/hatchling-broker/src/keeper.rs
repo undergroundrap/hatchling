@@ -252,7 +252,8 @@ pub fn keeper_dirs(vault: &VaultConfig, keyring: &KeyringConfig) -> Vec<PathBuf>
 ///
 /// Why, for a directory that can't be made, reached or given.
 pub(crate) fn hand_to(user: &str, dirs: &[PathBuf], uid: u32, gid: u32) -> Result<(), String> {
-    let failed = |dir: &Path, why: String| format!("cannot hand {} to {user}: {why}", dir.display());
+    let failed =
+        |dir: &Path, why: String| format!("cannot hand {} to {user}: {why}", dir.display());
     for dir in dirs {
         if let Some(closed) = dir
             .ancestors()
@@ -1289,10 +1290,13 @@ mod tests {
         let other = (uid.wrapping_add(4242), gid.wrapping_add(4242));
         assert!(searchable(&closed, uid, gid), "its owner searches it");
         assert!(!searchable(&closed, other.0, other.1));
-        let refused = hand_to("a-service-user", &[closed.join("vault")], other.0, other.1)
-            .unwrap_err();
+        let refused =
+            hand_to("a-service-user", &[closed.join("vault")], other.0, other.1).unwrap_err();
         assert!(refused.contains(&closed.display().to_string()), "{refused}");
-        assert!(refused.contains("a-service-user can't reach it"), "{refused}");
+        assert!(
+            refused.contains("a-service-user can't reach it"),
+            "{refused}"
+        );
         assert!(!closed.join("vault").exists(), "nothing was made");
         assert!(!searchable(&base.join("absent"), uid, gid));
         std::fs::remove_dir_all(&base).unwrap();

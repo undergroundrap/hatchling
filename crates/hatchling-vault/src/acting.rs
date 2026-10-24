@@ -51,10 +51,11 @@ pub fn act_for(owner: u32, dirs: &[&Path]) -> std::io::Result<()> {
             "this process already acts for that user",
         ));
     }
-    if let Some(taken) = dirs
-        .iter()
-        .find(|dir| acting.iter().any(|known| known.dirs.iter().any(|acted| acted == **dir)))
-    {
+    if let Some(taken) = dirs.iter().find(|dir| {
+        acting
+            .iter()
+            .any(|known| known.dirs.iter().any(|acted| acted == **dir))
+    }) {
         return Err(Error::new(
             ErrorKind::AlreadyExists,
             format!(

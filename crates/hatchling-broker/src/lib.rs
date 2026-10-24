@@ -76,8 +76,8 @@ pub mod run_launcher;
 pub use run_launcher::{AGENT_RUN_SUBCOMMAND, CellLauncher, RunEnv, agent_run_main, scoped_config};
 pub mod redactions;
 pub use redactions::{FileAudit, FileOverrides, run_operator, run_redactions};
-pub mod keeper;
 pub mod broker_user;
+pub mod keeper;
 pub mod schedule_ops;
 pub mod secrets;
 pub use schedule_ops::{
