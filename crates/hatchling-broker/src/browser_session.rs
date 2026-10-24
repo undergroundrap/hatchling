@@ -62,6 +62,11 @@ const LIBRARY_DIRS: [&str; 4] = [
     "/usr/lib",
 ];
 
+/// NSS's modules as this host has them now: what a browser cell is given.
+pub(crate) fn host_nss_modules() -> Vec<PathBuf> {
+    nss_modules(Path::is_file)
+}
+
 /// NSS's modules, in the first of [`LIBRARY_DIRS`] that holds NSS itself
 /// (`libnss3.so`), where NSS looks for them first: each one `is_file`
 /// finds there.
@@ -169,6 +174,12 @@ impl BrowserSettings {
         &self.controller
     }
 
+    /// The fonts' directory, if any.
+    #[must_use]
+    pub fn fonts(&self) -> Option<&Path> {
+        self.fonts.as_deref()
+    }
+
     /// The browser's bundle: its directory.
     #[must_use]
     pub fn bundle(&self) -> &Path {
@@ -200,7 +211,7 @@ impl BrowserSettings {
                 .unwrap_or_default()
                 .to_owned(),
             fonts: self.fonts.clone(),
-            nss: nss_modules(Path::is_file),
+            nss: host_nss_modules(),
             ca_keys: self.ca_keys.clone(),
             relay: RELAY_PORT,
             handoff,
@@ -562,7 +573,8 @@ mod tests {
             Some(Path::new("/usr/share/fonts"))
         );
         let no_fonts: Vec<_> = full().into_iter().take(3).collect();
-        assert_eq!(parse(&no_fonts).unwrap().unwrap().fonts, None);
+        assert_eq!(parse(&no_fonts).unwrap().unwrap().fonts(), None);
+        assert_eq!(settings.fonts(), Some(Path::new("/usr/share/fonts")));
         let dirs = settings.dirs(Path::new("/run/snapshot"), PathBuf::from("/run/h.sock"));
         assert_eq!(dirs.nss, nss_modules(Path::is_file), "as the host has them");
         assert_eq!(
@@ -589,6 +601,7 @@ mod tests {
 
     #[test]
     fn nss_modules_come_from_where_nss_is() {
+        assert_eq!(host_nss_modules(), nss_modules(Path::is_file));
         let host = |files: &'static [&'static str]| {
             move |path: &Path| files.iter().any(|file| path == Path::new(file))
         };

@@ -584,6 +584,11 @@ impl Harnesses {
         &self.vendors
     }
 
+    /// The host programs a CLI cell may run.
+    pub(crate) fn tools(&self) -> impl Iterator<Item = &Path> {
+        self.tools.iter().map(|(source, _)| source.as_path())
+    }
+
     /// The vault secrets holding the keys of the vendors these harnesses
     /// relay to: the only harness keys the egress authority may read.
     #[must_use]
@@ -2110,6 +2115,7 @@ mod tests {
             "the vendor key is not in the vault: store it as the secret harness-codex-cli"
         );
         assert!(Harnesses::default().vendors().is_empty());
+        assert_eq!(Harnesses::default().tools().count(), 0);
     }
 
     #[test]

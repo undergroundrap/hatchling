@@ -36,11 +36,36 @@ fn stdio() -> io::Result<([OwnedFd; 3], File)> {
     Ok(([null(false)?, null(true)?, write], File::from(read)))
 }
 
-/// The spawner, started as the broker starts it.
-fn spawner() -> Result<Spawner, hatchling_broker::Error> {
+/// The spawner, started as the broker starts it, with a broker's settings
+/// under `dir`: it reads its policy from them.
+fn spawner(dir: &std::path::Path) -> Result<Spawner, hatchling_broker::Error> {
+    let path = |name: &str| dir.join(name).display().to_string();
     let mut program = Command::new(env!("CARGO_BIN_EXE_hatchling-broker"));
-    program.stdin(Stdio::null()).stdout(Stdio::null());
+    program
+        .env("HATCHLING_BROKER_SOCKET", path("broker.sock"))
+        .env(
+            "HATCHLING_AGENT_UID",
+            rustix::process::getuid().as_raw().to_string(),
+        )
+        .env("HATCHLING_VAULT_DIR", path("vault"))
+        .env("HATCHLING_LOG_LEVEL", "error")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null());
     Spawner::start_with(program)
+}
+
+/// A run directory of the broker's own, as the spawner's policy knows
+/// one: in the temp directory, named as one, owner-only.
+fn broker_run_dir(tag: &str) -> io::Result<PathBuf> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = std::env::temp_dir().join(format!(
+        "hatchling-skill-code-test-{tag}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    Ok(dir)
 }
 
 /// The real spawner starts the real skill-cell helper, which reads the
@@ -48,10 +73,12 @@ fn spawner() -> Result<Spawner, hatchling_broker::Error> {
 /// spec the helper doesn't start is refused before anything runs.
 #[test]
 fn the_real_spawner_starts_the_real_helper_on_the_spec_it_wrote() {
-    let spawner = spawner().unwrap();
     let dir = run_dir("skill").unwrap();
+    let spawner = spawner(&dir).unwrap();
+    let code = broker_run_dir("skill").unwrap();
     let mut config = CellConfig::skill("spawned").unwrap();
-    config.skill_code = Some(PathBuf::from("/nonexistent/hatchling-skill-code"));
+    config.agent_bin = code.join("skill");
+    config.skill_code = Some(code.clone());
     let spec = serde_json::to_string(&config).unwrap();
     let (fds, mut errors) = stdio().unwrap();
     let process = spawner
@@ -84,8 +111,17 @@ fn the_real_spawner_starts_the_real_helper_on_the_spec_it_wrote() {
         refused.contains("the spawner refused the spec"),
         "{refused}"
     );
+    // A spec naming a path the policy doesn't give a cell: refused.
+    config.skill_code = Some(PathBuf::from("/etc"));
+    let outside = serde_json::to_string(&config).unwrap();
+    let (fds, _) = stdio().unwrap();
+    let refused = spawner
+        .helper(HelperKind::SkillCell, &outside, &dir, fds)
+        .unwrap_err();
+    assert!(refused.contains("/etc isn't a path"), "{refused}");
     drop((process, spawner));
     let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&code);
 }
 
 /// The spawner runs only as the broker starts it.
