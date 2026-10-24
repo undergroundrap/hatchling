@@ -208,6 +208,51 @@ fn cell_identity(
     }
 }
 
+/// The ids an agent cell takes, and the identity `backend` gives it, as
+/// `get` configures them: `HATCHLING_CELL_IDS`, `HATCHLING_CELL_UID_BASE`
+/// and `HATCHLING_CELL_UID_COUNT`.
+///
+/// # Errors
+///
+/// [`Error::InvalidConfig`] for a value that doesn't parse, and as
+/// [`cell_identity`].
+fn agent_ids(
+    backend: &impl IsolationBackend,
+    get: &impl Fn(&str) -> Option<String>,
+) -> Result<(CellIds, CellIdentity), Error> {
+    let ids = CellIds::parse(get)?;
+    let principal = match get(env::HATCHLING_CELL_UID_BASE.name) {
+        Some(raw) => Some(raw.parse::<u32>().map_err(|_| Error::InvalidConfig {
+            key: "HATCHLING_CELL_UID_BASE",
+            reason: String::from("expected a kernel uid as a base-10 u32"),
+        })?),
+        None => None,
+    };
+    let count = match get(env::HATCHLING_CELL_UID_COUNT.name) {
+        Some(raw) => Some(raw.parse::<u32>().map_err(|_| Error::InvalidConfig {
+            key: "HATCHLING_CELL_UID_COUNT",
+            reason: String::from("expected a count as a base-10 u32"),
+        })?),
+        None => None,
+    };
+    Ok((ids, cell_identity(backend, ids, principal, count)?))
+}
+
+/// The identity an agent cell runs as, as `get` configures it, and the
+/// broker's uid as that cell sees it: what [`CellConfig::from_env`] gives
+/// a run cell, read without one.
+///
+/// # Errors
+///
+/// As [`CellConfig::from_env`]'s identity.
+pub(crate) fn agent_identity(
+    get: &impl Fn(&str) -> Option<String>,
+) -> Result<(CellIdentity, u32), Error> {
+    let backend = hatchling_isolation::platform();
+    let (_, identity) = agent_ids(&backend, get)?;
+    Ok((identity, backend.broker_in_cell(&identity)?))
+}
+
 /// What every cell's program, and everything it starts, is held to.
 ///
 /// The limits come from `HATCHLING_CELL_MAX_PROCESSES`, `HATCHLING_CELL_MAX_ADDRESS_SPACE`,
@@ -926,22 +971,7 @@ impl CellConfig {
             });
         }
         let backend = hatchling_isolation::platform();
-        let ids = CellIds::parse(&get)?;
-        let principal = match get(env::HATCHLING_CELL_UID_BASE.name) {
-            Some(raw) => Some(raw.parse::<u32>().map_err(|_| Error::InvalidConfig {
-                key: "HATCHLING_CELL_UID_BASE",
-                reason: String::from("expected a kernel uid as a base-10 u32"),
-            })?),
-            None => None,
-        };
-        let count = match get(env::HATCHLING_CELL_UID_COUNT.name) {
-            Some(raw) => Some(raw.parse::<u32>().map_err(|_| Error::InvalidConfig {
-                key: "HATCHLING_CELL_UID_COUNT",
-                reason: String::from("expected a count as a base-10 u32"),
-            })?),
-            None => None,
-        };
-        let identity = cell_identity(&backend, ids, principal, count)?;
+        let (ids, identity) = agent_ids(&backend, &get)?;
         let (uid_base, uid_count) = (identity.principal, identity.count);
         // The peer gate compares SO_PEERCRED against HATCHLING_AGENT_UID
         // with exact equality: if the map base drifted from it, the
@@ -1901,6 +1931,32 @@ mod tests {
         let err = CellConfig::parse(lookup(&vars), &socket("/tmp/x/broker.sock"), default_base())
             .unwrap_err();
         assert!(matches!(err, Error::InvalidConfig { key, .. } if key == "HATCHLING_AGENT_BIN"));
+    }
+
+    /// An agent's identity is read from its own settings, each refused
+    /// when it doesn't parse; with none, it is the backend's default.
+    #[test]
+    fn an_agents_identity_is_read_from_its_settings() {
+        let backend = hatchling_isolation::platform();
+        let none = |_: &str| None;
+        let (ids, identity) = agent_ids(&backend, &none).unwrap();
+        assert_eq!(ids, CellIds::Own);
+        assert_eq!(identity, backend.identity(None, 1).unwrap());
+        assert_eq!(
+            agent_identity(&none).unwrap(),
+            (identity, backend.broker_in_cell(&identity).unwrap())
+        );
+        for (key, value) in [
+            ("HATCHLING_CELL_UID_BASE", "x"),
+            ("HATCHLING_CELL_UID_COUNT", "-1"),
+            ("HATCHLING_CELL_IDS", "both"),
+        ] {
+            let get = |asked: &str| (asked == key).then(|| value.to_owned());
+            assert!(agent_identity(&get).is_err(), "{key}={value}");
+        }
+        let base = identity.principal.to_string();
+        let get = |asked: &str| (asked == "HATCHLING_CELL_UID_BASE").then(|| base.clone());
+        assert_eq!(agent_ids(&backend, &get).unwrap().1, identity);
     }
 
     #[test]

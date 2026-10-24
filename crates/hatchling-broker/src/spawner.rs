@@ -54,7 +54,7 @@ use hatchling_isolation::{
 use serde::{Deserialize, Serialize};
 
 use crate::browser_session::BrowserSettings;
-use crate::cell::{CellConfig, CellLimits, Process};
+use crate::cell::{CellConfig, CellLimits, Process, agent_identity};
 use crate::harness::Harnesses;
 use crate::harness_tree::TreeOp;
 use crate::run_launcher::{BROKER_PID_ENV, broker_pid, forget_spec, spec_args};
@@ -225,10 +225,11 @@ fn host_paths(config: &CellConfig) -> Vec<PathBuf> {
 /// cell, never the broker's word.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Policy {
-    /// The identity every cell runs as.
-    identity: CellIdentity,
-    /// The broker's uid as a cell sees it.
-    broker_in_cell: u32,
+    /// Who a skill or browser cell runs as.
+    skill: RunsAs,
+    /// Who a run cell runs as: the agent's own identity, which the
+    /// configuration may set apart from a skill cell's.
+    agent: RunsAs,
     /// Every cell's limits, but a browser cell's.
     limits: CellLimits,
     /// The delegated group a cell's group is made in, if any.
@@ -237,13 +238,31 @@ pub(crate) struct Policy {
     paths: Paths,
 }
 
+/// Who a cell runs as, and the broker's uid as the cell sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RunsAs {
+    identity: CellIdentity,
+    broker_in_cell: u32,
+}
+
 impl Policy {
-    /// The policy of `reference`, a cell built from the configuration,
-    /// giving cells only `paths`.
-    fn of(reference: &CellConfig, paths: Paths) -> Self {
+    /// The policy of `reference`, a skill cell built from the
+    /// configuration, with run cells as `agent`, giving cells only
+    /// `paths`.
+    fn of(
+        reference: &CellConfig,
+        (identity, broker_in_cell): (CellIdentity, u32),
+        paths: Paths,
+    ) -> Self {
         Self {
-            identity: reference.identity(),
-            broker_in_cell: reference.broker_uid_in_cell,
+            skill: RunsAs {
+                identity: reference.identity(),
+                broker_in_cell: reference.broker_uid_in_cell,
+            },
+            agent: RunsAs {
+                identity,
+                broker_in_cell,
+            },
             limits: reference.limits,
             cgroup: reference.cgroup.clone(),
             paths,
@@ -280,6 +299,7 @@ impl Policy {
         owner: u32,
     ) -> Result<Self, Error> {
         let reference = CellConfig::skill_with("spawner-policy", get)?;
+        let agent = agent_identity(get)?;
         let config = Config::parse(get)?;
         let mut exact = std::collections::BTreeSet::new();
         let mut under = Vec::new();
@@ -305,7 +325,7 @@ impl Policy {
             temp,
             owner,
         };
-        Ok(Self::of(&reference, paths))
+        Ok(Self::of(&reference, agent, paths))
     }
 
     /// Whether `helper` may start `config`: why not, if it may not.
@@ -313,10 +333,15 @@ impl Policy {
         if !helper.starts(config) {
             return Err(format!("not a cell {} starts", helper.subcommand()));
         }
-        if config.identity() != self.identity {
+        let runs_as = if helper == HelperKind::AgentRun {
+            self.agent
+        } else {
+            self.skill
+        };
+        if config.identity() != runs_as.identity {
             return Err(String::from("its identity isn't the configured cell's"));
         }
-        if config.broker_uid_in_cell != self.broker_in_cell {
+        if config.broker_uid_in_cell != runs_as.broker_in_cell {
             return Err(String::from("its broker isn't the configured cell's"));
         }
         if !config.is_skill_cell() && !config.connected {
@@ -1004,10 +1029,11 @@ mod tests {
         (Spawner::over(ours), served)
     }
 
-    /// The policy of a skill cell the environment configures: what the
+    /// The policy of the cells the environment configures: what the
     /// tests' specs are built from.
     fn policy() -> Policy {
-        Policy::of(&CellConfig::skill("policy").unwrap(), paths())
+        let agent = agent_identity(&|key| crate::cell::env_value(std::env::var(key))).unwrap();
+        Policy::of(&CellConfig::skill("policy").unwrap(), agent, paths())
     }
 
     /// The paths of a broker with nothing configured: only its run
@@ -1362,6 +1388,65 @@ mod tests {
         assert_eq!(policy.check(HelperKind::AgentRun, &connected_run), Ok(()));
     }
 
+    /// A run cell is held to the agent's identity, which the configuration
+    /// may set apart (`HATCHLING_CELL_UID_BASE`); a skill cell to a skill
+    /// cell's. Neither passes as the other.
+    #[test]
+    fn a_run_cell_runs_as_the_agent_and_a_skill_cell_as_a_skill_cell() {
+        let agent = CellIdentity::direct(300_000, 1);
+        let policy = Policy {
+            agent: RunsAs {
+                identity: agent,
+                broker_in_cell: 7,
+            },
+            ..policy()
+        };
+        let skill: CellConfig = serde_json::from_str(&skill_spec()).unwrap();
+        assert_eq!(policy.check(HelperKind::SkillCell, &skill), Ok(()));
+        let as_agent = |config: &mut CellConfig| {
+            config.uid_base = agent.principal;
+            config.uid_count = agent.count;
+            config.gid_base = Some(agent.group);
+            config.broker_uid_in_cell = 7;
+        };
+        let mut run = skill.clone();
+        run.skill_code = None;
+        run.scheduled = Some(crate::cell::ScheduledRun {
+            task: String::from("t"),
+            missed: false,
+            due: 0,
+            model_endpoint: None,
+            model_name: None,
+            model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
+            depth: 0,
+            event: None,
+            max_steps: None,
+            subagent: false,
+            chat: false,
+            history: Vec::new(),
+        });
+        run.connected = true;
+        assert_eq!(
+            policy.check(HelperKind::AgentRun, &run).unwrap_err(),
+            "its identity isn't the configured cell's"
+        );
+        as_agent(&mut run);
+        assert_eq!(policy.check(HelperKind::AgentRun, &run), Ok(()));
+        run.broker_uid_in_cell = 8;
+        assert_eq!(
+            policy.check(HelperKind::AgentRun, &run).unwrap_err(),
+            "its broker isn't the configured cell's"
+        );
+        let mut skill_as_agent = skill;
+        as_agent(&mut skill_as_agent);
+        assert_eq!(
+            policy
+                .check(HelperKind::SkillCell, &skill_as_agent)
+                .unwrap_err(),
+            "its identity isn't the configured cell's"
+        );
+    }
+
     /// The policy refuses limits and a group the configuration doesn't
     /// give, each on its own.
     #[test]
@@ -1570,8 +1655,28 @@ mod tests {
         assert!(read.paths.exact.contains(Path::new("/opt/hatchling/agent")));
         assert!(read.paths.under.is_empty(), "no scheduler, no fonts");
         let reference = CellConfig::skill_with("policy", get).unwrap();
-        assert_eq!(read.identity, reference.identity());
+        assert_eq!(read.skill.identity, reference.identity());
+        assert_eq!(read.skill.broker_in_cell, reference.broker_uid_in_cell);
+        assert_eq!(
+            (read.agent.identity, read.agent.broker_in_cell),
+            agent_identity(&get).unwrap()
+        );
         assert_eq!(read.limits, reference.limits);
+        // As root, a run cell's base may be set apart from a skill cell's:
+        // then the agent's identity is its own.
+        if owner == 0 {
+            let base = (reference.uid_base + 1).to_string();
+            let apart = |key: &str| {
+                if key == "HATCHLING_CELL_UID_BASE" {
+                    Some(base.clone())
+                } else {
+                    get(key)
+                }
+            };
+            let read = Policy::parse(&apart, temp.clone(), owner).unwrap();
+            assert_eq!(read.skill.identity, reference.identity());
+            assert_eq!(read.agent.identity.principal, reference.uid_base + 1);
+        }
         // Settings that don't parse: no policy.
         let broken = |key: &str| (key == "HATCHLING_SEARCH").then(|| String::from("bing"));
         assert!(Policy::parse(&broken, temp, owner).is_err());
