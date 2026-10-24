@@ -57,7 +57,7 @@ use chacha20poly1305::aead::{Aead, AeadInPlace, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
-use crate::vault::{Vault, ensure_owner_only_dir};
+use crate::vault::{Vault, ensure_owner_only_dir, give, owner_in};
 use crate::{Error, Secret, SecretName};
 use hatchling_core::MAX_SECRET_BYTES;
 
@@ -800,6 +800,7 @@ impl FileKey {
         match opened {
             Ok(mut file) => {
                 use std::io::Write as _;
+                give(&file, owner).map_err(|source| Error::Io { source })?;
                 file.write_all(&key.0)
                     .map_err(|source| Error::Io { source })?;
                 file.sync_all().map_err(|source| Error::Io { source })?;
@@ -830,7 +831,14 @@ impl FileKey {
     /// or the [`load_or_create`](KeySource::load_or_create) checks'
     /// errors for a file that is not a sound key file.
     pub fn load(&self) -> Result<MasterKey, Error> {
-        self.load_as(rustix::process::getuid().as_raw())
+        self.load_as(self.owner())
+    }
+
+    /// Who the key file's directory is, to this process ([`owner_in`]).
+    fn owner(&self) -> u32 {
+        self.path
+            .parent()
+            .map_or_else(|| rustix::process::getuid().as_raw(), owner_in)
     }
 
     fn load_as(&self, owner: u32) -> Result<MasterKey, Error> {
@@ -844,7 +852,7 @@ impl FileKey {
 
 impl KeySource for FileKey {
     fn load_or_create(&self) -> Result<MasterKey, Error> {
-        self.load_or_create_as(rustix::process::getuid().as_raw())
+        self.load_or_create_as(self.owner())
     }
 }
 

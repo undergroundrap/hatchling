@@ -65,7 +65,7 @@ pub use seal::{
 };
 pub use secret::Secret;
 pub use totp::{PendingTotp, totp_code};
-pub use vault::Vault;
+pub use vault::{Vault, act_for};
 
 #[cfg(test)]
 pub mod testutil;
