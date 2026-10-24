@@ -1351,7 +1351,11 @@ pub(crate) mod tests {
         assert_eq!(read_delivery(&theirs, 4).unwrap(), b"abcd");
         assert_eq!(read_delivery(&theirs, 0).unwrap(), b"");
         write_frame(&ours, b"abc").unwrap();
-        assert!(read_delivery(&theirs, 2).unwrap_err().contains("isn't the 2 bytes"));
+        assert!(
+            read_delivery(&theirs, 2)
+                .unwrap_err()
+                .contains("isn't the 2 bytes")
+        );
         assert!(
             read_delivery(&theirs, MAX_DELIVERY_BYTES + 1)
                 .unwrap_err()
