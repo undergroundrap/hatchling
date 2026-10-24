@@ -198,6 +198,7 @@ Filled in at close.
          - the README and the CI scripts creating the users.
 
          In root mode the launcher opens the security keys (`/dev/hidraw*`) before the drop and hands the keeper their descriptors, so the hardware tier keeps working without a udev rule (the owner's choice, 2026-10-24).
+       *2a landed (#211).* *2b landed:* the keeper runs as `hatchling-keeper` in root mode. The broker hands it its directories by handle and opens its security keys. The operator's vault commands act for it (`hatchling_vault::act_for`, limited to the directories they name). **Not proven by a test:** an operator command that forgot to act for the keeper. The end-to-end runs don't reach a keeper-owned vault with one before the broker's first start.
        - **2c:** the authority runs as `hatchling-egress`, with its inputs (the CA bundle, the harnesses' binaries) readable by it.
     3. **The broker drops root.** It runs as `hatchling-broker` with an empty capability set, and the sockets admit the recorded owner. The tests read `/proc/<pid>/status` for all four processes' Uid and Cap lines, and a hand mutant that skips the drop fails one.
     4. **Rootless.** The same split on subordinate ids.
