@@ -458,6 +458,11 @@ impl Spawner {
     /// Returns [`Error::Spawner`] when it can't be started.
     pub fn start_with(mut program: Command) -> Result<Self, Error> {
         let failed = |reason: String| Error::Spawner { reason };
+        // The spawner makes the cells, as this process's ids: recorded,
+        // so each cell's identity stays the spawner's whatever this
+        // process runs as later (WO-017).
+        hatchling_isolation::linux::spawns_as(hatchling_sys::euid(), hatchling_sys::egid())
+            .map_err(|e| failed(format!("cannot record who makes the cells: {e}")))?;
         let (ours, theirs) =
             UnixStream::pair().map_err(|e| failed(format!("cannot make the socket pair: {e}")))?;
         hatchling_sys::keep_across_exec(theirs.as_fd())

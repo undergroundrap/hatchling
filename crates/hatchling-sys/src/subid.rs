@@ -200,14 +200,24 @@ pub fn cell_ids(
 }
 
 /// [`cell_ids`] for this process: its effective uid and gid, and the
-/// system's account files. A missing `/etc/subuid` or `/etc/subgid`
-/// holds no range.
+/// system's account files.
+///
+/// # Errors
+///
+/// As [`cell_ids_for`].
+pub fn own_cell_ids() -> Result<(u32, u32), Error> {
+    cell_ids_for(crate::process::euid(), rustix::process::getegid().as_raw())
+}
+
+/// [`cell_ids`] for `owner`, whose primary group is `primary_gid`, in the
+/// system's account files. A missing `/etc/subuid` or `/etc/subgid` holds
+/// no range.
 ///
 /// # Errors
 ///
 /// As [`cell_ids`], or [`Error::InvalidIdMap`] if `/etc/passwd` or
 /// `/etc/group` can't be read.
-pub fn own_cell_ids() -> Result<(u32, u32), Error> {
+pub fn cell_ids_for(owner: u32, primary_gid: u32) -> Result<(u32, u32), Error> {
     let read = |path: &str| {
         std::fs::read_to_string(path).map_err(|source| Error::InvalidIdMap {
             reason: format!("cannot read {path}: {source}"),
@@ -217,8 +227,8 @@ pub fn own_cell_ids() -> Result<(u32, u32), Error> {
     let (passwd, group) = (read("/etc/passwd")?, read("/etc/group")?);
     let (uid_ranges, gid_ranges) = (optional("/etc/subuid"), optional("/etc/subgid"));
     cell_ids(
-        crate::process::euid(),
-        rustix::process::getegid().as_raw(),
+        owner,
+        primary_gid,
         &AccountFiles {
             passwd: &passwd,
             group: &group,
@@ -367,6 +377,16 @@ impl Helpers {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// This process's cell ids are those of its own uid and gid: the same
+    /// answer, or the same refusal, by either way of asking.
+    #[test]
+    fn own_cell_ids_are_the_cell_ids_for_this_process() {
+        let own = own_cell_ids().map_err(|error| error.to_string());
+        let named = cell_ids_for(crate::process::euid(), rustix::process::getegid().as_raw())
+            .map_err(|error| error.to_string());
+        assert_eq!(own, named);
+    }
 
     /// An account is found by its name alone, with its uid and primary
     /// gid; a name that is only a prefix, or a line without both ids,
