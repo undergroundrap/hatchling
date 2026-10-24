@@ -1467,12 +1467,15 @@ sleep 30 </dev/null >/dev/null 2>&1 &
     #[test]
     fn a_helper_runs_on_the_brokers_descriptors_in_a_directory_of_its_own() {
         use std::os::unix::fs::PermissionsExt as _;
-        // The helper says where it runs, and what its spec says.
+        // The helper says where it runs, and what its spec says, and
+        // leaves enough in its directory that removing it takes a while:
+        // removed after its end is reported, it would still be there.
         let dir = run_dir("ends");
         let program = dir.join("helper.sh");
         std::fs::write(
             &program,
-            "#!/bin/sh\necho \"dir=$TMPDIR\" >&2\ncat \"$2\" >&2\n",
+            "#!/bin/sh\necho \"dir=$TMPDIR\" >&2\ncat \"$2\" >&2\n\
+             i=0; while [ $i -lt 1000 ]; do : > \"$TMPDIR/left-$i\"; i=$((i+1)); done\n",
         )
         .unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
