@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 use hatchling_core::{LogLevel, SocketPath};
 use hatchling_isolation::{
     Cell as _, CellIdentity, CellSpec, ENDPOINT_DIR, Endpoint, Exit, Exposure, Filter,
-    IsolationBackend, Limits, Mapping, PROGRAM, Supervised as _, Tool,
+    IsolationBackend, Limits, Mapping, PROGRAM, Tool,
 };
 use serde::{Deserialize, Serialize};
 

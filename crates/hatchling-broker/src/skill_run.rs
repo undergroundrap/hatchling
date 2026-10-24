@@ -58,16 +58,15 @@
 
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, Stdio};
+use std::process::ExitCode;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use hatchling_core::ui::operator::CellKind;
 use hatchling_core::{LogLevel, MAX_SKILL_INPUT_BYTES, MAX_SKILL_OUTPUT_BYTES};
-use hatchling_isolation::{IsolationBackend as _, SuperviseError, Supervised};
+use hatchling_isolation::Supervised;
 use hatchling_skill::RegisteredSkill;
 
-use crate::cell::Process;
 use crate::skill_cell::{SkillCellConfig, prepare_skill_cell};
 use crate::{CellConfig, CellHandle, Error, spawn_cell};
 
@@ -481,6 +480,8 @@ fn helper_exit_code(code: i32) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    use std::process::{Command, Stdio};
+
     use super::*;
 
     /// Every attempt a busy program needs, and every pause between them.
@@ -650,23 +651,6 @@ mod tests {
         let mut registry = hatchling_skill::SkillRegistry::new();
         let id = registry.register(admission, b"code").unwrap();
         registry.get(&id).unwrap().clone()
-    }
-
-    /// A helper goes under the backend's supervision, and one
-    /// that cannot is reported as a spawn failure, never left running.
-    #[test]
-    fn a_helper_is_supervised_or_reported() {
-        let mut child = Command::new("/bin/true").spawn().unwrap();
-        let process = supervised(&mut child).unwrap();
-        let exit = process.wait_deadline(Duration::from_secs(10)).unwrap();
-        assert_eq!(exit.code, 0);
-        let mut reaped = Command::new("/bin/true").spawn().unwrap();
-        reaped.wait().unwrap();
-        let refused = supervised(&mut reaped).err().unwrap();
-        assert!(
-            matches!(&refused, SkillRunError::Spawn(reason) if reason.starts_with("cannot supervise: ")),
-            "{refused}"
-        );
     }
 
     #[test]

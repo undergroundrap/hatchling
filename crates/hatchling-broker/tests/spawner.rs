@@ -76,7 +76,10 @@ fn the_real_spawner_starts_the_real_helper_on_the_spec_it_wrote() {
     let refused = spawner
         .helper(HelperKind::BrowserCell, &spec, &dir, fds)
         .unwrap_err();
-    assert!(refused.contains("the spawner refused the spec"), "{refused}");
+    assert!(
+        refused.contains("the spawner refused the spec"),
+        "{refused}"
+    );
     drop((process, spawner));
     let _ = std::fs::remove_dir_all(&dir);
 }

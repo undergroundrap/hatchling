@@ -54,7 +54,7 @@ use std::io::Read as _;
 use std::os::fd::{AsFd as _, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, Stdio};
+use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread::{JoinHandle, Scope, ScopedJoinHandle};
@@ -63,7 +63,7 @@ use std::time::{Duration, Instant};
 use hatchling_channel::LocalHub;
 use hatchling_core::ui::operator::CellKind;
 use hatchling_core::{CellId, LogLevel, ScheduleGrant, SocketPath};
-use hatchling_isolation::{IsolationBackend as _, Supervised};
+use hatchling_isolation::Supervised;
 use hatchling_scheduler::{Dispatcher, Launcher, Run, RunRequest, Timestamp};
 use hatchling_vault::OpensStores;
 

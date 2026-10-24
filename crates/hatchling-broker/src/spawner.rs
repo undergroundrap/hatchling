@@ -26,7 +26,6 @@
 //! ([`start_helper`]).
 
 use std::fs::File;
-use std::io::Read as _;
 use std::os::fd::{AsFd as _, AsRawFd as _, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -42,10 +41,10 @@ use hatchling_isolation::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::Error;
 use crate::cell::{CellConfig, Process};
 use crate::harness_tree::TreeOp;
 use crate::run_launcher::{BROKER_PID_ENV, broker_pid, forget_spec, spec_args};
-use crate::Error;
 
 /// The spawner's subcommand: `hatchling-broker spawner`, started only by
 /// the broker.
@@ -283,7 +282,12 @@ impl Spawner {
     /// # Errors
     ///
     /// Why the trees weren't changed.
-    pub(crate) fn trees(&self, op: TreeOp, dirs: &[&Path], cell: CellIdentity) -> Result<(), String> {
+    pub(crate) fn trees(
+        &self,
+        op: TreeOp,
+        dirs: &[&Path],
+        cell: CellIdentity,
+    ) -> Result<(), String> {
         let stream = self.connect().map_err(|error| error.to_string())?;
         let request = Request::Trees {
             give: op == TreeOp::Give,
@@ -391,7 +395,9 @@ impl Supervised for SpawnedProcess {
         }
         let _ = self.terminate();
         let _ = self.ended_within(REAP_AFTER_KILL);
-        Err(wait_error("the helper ran past its deadline, and was killed"))
+        Err(wait_error(
+            "the helper ran past its deadline, and was killed",
+        ))
     }
 
     fn terminate(&self) -> Result<(), IsolationError> {
@@ -629,7 +635,7 @@ fn serve_helper(
     spec: &str,
     run_dir: &Path,
     broker_pid: &str,
-    stdio: Vec<OwnedFd>,
+    descriptors: Vec<OwnedFd>,
 ) -> Result<(), Error> {
     let refuse = |reason: String| send(stream, &Reply::Refused { reason });
     let starts = serde_json::from_str::<CellConfig>(spec)
@@ -642,7 +648,7 @@ fn serve_helper(
             helper.subcommand()
         ));
     }
-    let [stdin, stdout, stderr]: [OwnedFd; 3] = match stdio.try_into() {
+    let [stdin, stdout, stderr]: [OwnedFd; 3] = match descriptors.try_into() {
         Ok(stdio) => stdio,
         Err(_) => return refuse(String::from("a helper takes three descriptors")),
     };
@@ -666,14 +672,18 @@ fn serve_helper(
         }
     };
     // Just spawned and unreaped: its pid can't name another process.
-    let pid = i32::try_from(std_child.id()).ok();
-    let child = pid
+    let supervised = i32::try_from(std_child.id())
+        .ok()
         .and_then(hatchling_sys::ChildPid::new)
-        .ok_or_else(|| String::from("its pid"))
-        .and_then(|pid| hatchling_sys::Child::new(pid).map_err(|error| error.to_string()));
-    let (child, pid) = match (child, pid) {
-        (Ok(child), Some(pid)) => (child, pid),
-        (Err(reason), _) | (Ok(_), None) => {
+        .ok_or_else(|| String::from("its pid isn't one"))
+        .and_then(|pid| {
+            hatchling_sys::Child::new(pid)
+                .map(|child| (child, pid.get()))
+                .map_err(|error| error.to_string())
+        });
+    let (child, pid) = match supervised {
+        Ok(supervised) => supervised,
+        Err(reason) => {
             let mut std_child = std_child;
             let _ = std_child.kill();
             let _ = std_child.wait();
@@ -738,10 +748,8 @@ mod tests {
     }
 
     fn run_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "hatchling-spawner-{tag}-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("hatchling-spawner-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -757,7 +765,7 @@ mod tests {
     /// Stdio for a helper: nothing in, nothing kept out, and stderr's
     /// read end for the test.
     fn stdio() -> ([OwnedFd; 3], File) {
-        let null = |write| {
+        let null = |write: bool| {
             OwnedFd::from(
                 File::options()
                     .read(!write)

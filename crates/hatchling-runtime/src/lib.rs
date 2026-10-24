@@ -24,10 +24,10 @@ use std::path::Path;
 use hatchling_broker::AGENT_RUN_SUBCOMMAND;
 use hatchling_broker::browser_cell::BROWSER_CELL_SUBCOMMAND;
 use hatchling_broker::egress_authority::EGRESS_AUTHORITY_SUBCOMMAND;
-use hatchling_broker::spawner::SPAWNER_SUBCOMMAND;
 use hatchling_broker::harness_tree::HARNESS_TREE_SUBCOMMAND;
 use hatchling_broker::keeper::VAULT_KEEPER_SUBCOMMAND;
 use hatchling_broker::skill_run::SKILL_CELL_SUBCOMMAND;
+use hatchling_broker::spawner::SPAWNER_SUBCOMMAND;
 use hatchling_isolation::PROGRAM;
 
 /// Usage, printed for `--help` on stdout and for a usage error on stderr.

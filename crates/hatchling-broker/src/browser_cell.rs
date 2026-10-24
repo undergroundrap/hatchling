@@ -24,7 +24,7 @@ use std::io::{Read as _, Write as _};
 use std::os::fd::{AsFd as _, OwnedFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, Stdio};
+use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -34,14 +34,14 @@ use hatchling_core::LogLevel;
 use hatchling_core::browser::{BrowserCommand, BrowserReply};
 use hatchling_core::framing::{read_frame, write_frame};
 use hatchling_core::ui::operator::CellKind;
-use hatchling_isolation::{IsolationBackend as _, Supervised as _};
+use hatchling_isolation::Supervised as _;
 
 use crate::browser_bundle::Snapshot;
 use crate::browser_proxy::{BrowserProxy, ProxyCount, Route, Sites};
 use crate::browser_session::{BrowserSettings, browser_limits};
 use crate::cell::Process;
 use crate::harness_relay::HANDOFF_TIMEOUT;
-use crate::run_launcher::{BROKER_PID_ENV, broker_pid};
+use crate::run_launcher::BROKER_PID_ENV;
 use crate::skill_run::{REAP_AFTER_KILL, RunDir, STDERR_KEEP};
 use crate::{CellConfig, CellIds, Error, spawn_cell};
 

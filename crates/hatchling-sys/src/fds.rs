@@ -248,10 +248,7 @@ pub fn wait_readable(fds: &[BorrowedFd<'_>]) -> Result<Vec<bool>, Error> {
             }
         }
     }
-    Ok(polled
-        .iter()
-        .map(|fd| !fd.revents().is_empty())
-        .collect())
+    Ok(polled.iter().map(|fd| !fd.revents().is_empty()).collect())
 }
 
 #[cfg(test)]
