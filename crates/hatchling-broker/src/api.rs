@@ -633,7 +633,8 @@ mod tests {
                     ..
                 })
             ),
-            "{refused:?}"
+            // Not the error itself: it names the owner's uid.
+            "not refused as the API socket's setting"
         );
         assert!(!socket.as_path().exists(), "no socket was bound");
     }
