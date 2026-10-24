@@ -573,8 +573,7 @@ pub(super) mod tests {
         std::os::unix::fs::chown(&dir, Some(4242), Some(4343)).unwrap();
         std::os::unix::fs::chown(&binary, Some(0), Some(0)).unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let owned = binary.clone();
-        let output = within_watchdog("ldd_output", move || ldd_output(&owned)).unwrap();
+        let output = within_watchdog("ldd_output", move || ldd_output(&binary)).unwrap();
         assert!(!output.status.success(), "{output:?}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
