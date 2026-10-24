@@ -110,10 +110,10 @@ fn sealed_vault(dir: &Path, secrets: &[(&str, &str)]) -> io::Result<PathBuf> {
 }
 
 /// The keeper hands the broker every store's key but the secrets', from
-/// the keys the broker read of its stores, without opening one; reads a
-/// configured credential to the egress authority and refuses it to the
-/// broker, refuses any other, records each, keeps its memory closed, and
-/// leaves when the broker does.
+/// the keys the broker read of its stores; reads a configured credential
+/// to the egress authority and refuses it to the broker, refuses any
+/// other, records each, keeps its memory closed, and leaves when the
+/// broker does.
 #[test]
 fn the_keeper_keeps_the_secrets_and_releases_only_what_is_configured() {
     let dir = scratch("serve").unwrap();
@@ -125,29 +125,23 @@ fn the_keeper_keeps_the_secrets_and_releases_only_what_is_configured() {
         ],
     )
     .unwrap();
-    // The broker's store is there, and closed to everyone once the broker
-    // has read its key: a keeper that opened it would stop on its mode.
     let artifacts = dir.join("artifacts");
-    std::fs::create_dir(&artifacts).unwrap();
-    std::fs::set_permissions(&artifacts, std::fs::Permissions::from_mode(0o700)).unwrap();
     let (child, stream, authoritys) = start(&dir).unwrap();
     let first = read_frame(&stream).unwrap();
     let (kind, asking) = first.split_first().unwrap();
     assert_eq!(*kind, 2, "{}", String::from_utf8_lossy(asking));
     let asked = hatchling_vault::handoff::asked(asking).unwrap();
-    assert_eq!(asked, [(Store::ARTIFACTS, artifacts.clone())]);
+    assert_eq!(asked, [(Store::ARTIFACTS, artifacts)]);
     let kept: Vec<_> = asked
         .iter()
         .map(|(store, root)| hatchling_vault::wrapped_store_key(root, *store).unwrap())
         .collect();
-    std::fs::set_permissions(&artifacts, std::fs::Permissions::from_mode(0o000)).unwrap();
     write_frame(
         &stream,
         &hatchling_vault::handoff::kept_bytes(&kept).unwrap(),
     )
     .unwrap();
     let answer = read_frame(&stream).unwrap();
-    std::fs::set_permissions(&artifacts, std::fs::Permissions::from_mode(0o700)).unwrap();
     let (kind, handed) = answer.split_first().unwrap();
     assert_eq!(*kind, 0, "{}", String::from_utf8_lossy(handed));
     let keys = StoreKeys::from_bytes(handed).unwrap();
@@ -203,6 +197,79 @@ fn the_keeper_keeps_the_secrets_and_releases_only_what_is_configured() {
     drop(stream);
     assert!(exits(child).unwrap().success());
     drop(authoritys);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// One keeper start, answered as the broker answers it: each store's key
+/// as the store keeps it. With `close`, each store there is closed to
+/// everyone from when the broker has read its key until the keeper
+/// answers: a keeper that opened one would stop on its mode.
+fn keys_from(dir: &Path, close: bool) -> StoreKeys {
+    let (child, stream, _authoritys) = start(dir).unwrap();
+    let asking = read_frame(&stream).unwrap();
+    let (kind, asking) = asking.split_first().unwrap();
+    assert_eq!(*kind, 2, "{}", String::from_utf8_lossy(asking));
+    let asked = hatchling_vault::handoff::asked(asking).unwrap();
+    let kept: Vec<_> = asked
+        .iter()
+        .map(|(store, root)| hatchling_vault::wrapped_store_key(root, *store).unwrap())
+        .collect();
+    let closed: Vec<&PathBuf> = asked
+        .iter()
+        .map(|(_, root)| root)
+        .filter(|root| close && root.exists())
+        .collect();
+    let mode = |root: &PathBuf, mode: u32| {
+        std::fs::set_permissions(root, std::fs::Permissions::from_mode(mode)).unwrap();
+    };
+    for root in &closed {
+        mode(root, 0o000);
+    }
+    write_frame(
+        &stream,
+        &hatchling_vault::handoff::kept_bytes(&kept).unwrap(),
+    )
+    .unwrap();
+    let answer = read_frame(&stream).unwrap();
+    for root in &closed {
+        mode(root, 0o700);
+    }
+    let (kind, handed) = answer.split_first().unwrap();
+    assert_eq!(*kind, 0, "{}", String::from_utf8_lossy(handed));
+    assert!(!close || !closed.is_empty(), "no store was there to close");
+    let keys = StoreKeys::from_bytes(handed).unwrap();
+    drop(stream);
+    assert!(exits(child).unwrap().success());
+    keys
+}
+
+/// A store's key, as the store keeps it, is unwrapped by the keeper
+/// without its opening the store: closed to everyone once the broker has
+/// read the key, the store still gets its key, and it opens the store.
+#[test]
+fn the_keeper_unwraps_a_kept_key_without_opening_its_store() {
+    let dir = scratch("kept").unwrap();
+    sealed_vault(&dir, &[]).unwrap();
+    let artifacts = dir.join("artifacts");
+    let name: hatchling_vault::SecretName = "kept".parse().unwrap();
+    // A first start gives the store a key, which the broker keeps.
+    let keys = keys_from(&dir, false);
+    SealedVault::open_in(&artifacts, &keys, Store::ARTIFACTS)
+        .unwrap()
+        .store(
+            &name,
+            &hatchling_vault::Secret::new(b"a".to_vec()).unwrap(),
+        )
+        .unwrap();
+    let keys = keys_from(&dir, true);
+    assert_eq!(
+        SealedVault::open_in(&artifacts, &keys, Store::ARTIFACTS)
+            .unwrap()
+            .fetch(&name)
+            .unwrap()
+            .as_bytes(),
+        b"a"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
