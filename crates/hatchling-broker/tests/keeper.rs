@@ -238,7 +238,9 @@ fn keys_from(dir: &Path, close: bool) -> io::Result<StoreKeys> {
     mode(0o700)?;
     let answer = answered?;
     let Some((&0, handed)) = answer.split_first() else {
-        return Err(io::Error::other(String::from_utf8_lossy(&answer).into_owned()));
+        return Err(io::Error::other(
+            String::from_utf8_lossy(&answer).into_owned(),
+        ));
     };
     let keys = StoreKeys::from_bytes(handed).map_err(vault)?;
     drop(stream);
