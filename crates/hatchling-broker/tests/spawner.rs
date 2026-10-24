@@ -61,11 +61,15 @@ fn the_real_spawner_starts_the_real_helper_on_the_spec_it_wrote() {
     let mut said = String::new();
     errors.read_to_string(&mut said).unwrap();
     assert_ne!(exit.code, 0, "{said}");
-    // It got as far as its cell: past its spec, and past its watch on
-    // the spawner, its parent.
-    assert!(said.contains("hatchling-broker skill-cell:"), "{said}");
+    // It got as far as its cell's own spawn: past its spec, and past its
+    // watch on the spawner, its parent (an empty program is the first
+    // thing the spawn itself refuses).
     assert!(
-        said.contains("hatchling-broker skill-cell: cell spawn failed"),
+        !said.contains("cannot watch"),
+        "the helper couldn't watch its parent: {said}"
+    );
+    assert!(
+        said.contains("cannot canonicalize agent binary"),
         "the helper stopped before its cell: {said}"
     );
     assert!(
