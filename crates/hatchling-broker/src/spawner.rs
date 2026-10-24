@@ -375,9 +375,12 @@ impl SpawnedProcess {
     /// Waits up to `timeout` for how the helper ended.
     fn ended_within(&self, timeout: Duration) -> Result<Option<Exit>, IsolationError> {
         let (slot, changed) = &*self.ended;
-        let guard = slot.lock().map_err(|_| wait_error("its watch panicked"))?;
         let ended = changed
-            .wait_timeout_while(guard, timeout, |slot| slot.is_none())
+            .wait_timeout_while(
+                slot.lock().map_err(|_| wait_error("its watch panicked"))?,
+                timeout,
+                |slot| slot.is_none(),
+            )
             .map_err(|_| wait_error("its watch panicked"))?
             .0
             .clone();
