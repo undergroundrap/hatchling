@@ -243,19 +243,16 @@ pub fn keeper_dirs(vault: &VaultConfig, keyring: &KeyringConfig) -> Vec<PathBuf>
     dirs
 }
 
-/// Hands `dirs` to the keeper's user, `uid` and `gid`, before it starts:
-/// each made if absent, and it and everything in it given to the user,
-/// each change logged. A directory the user couldn't reach, below one it
-/// may not search, is refused, naming that one.
+/// Hands `dirs` to the service user `user`, `uid` and `gid`, before it
+/// uses them (WO-017): each made if absent, and it and everything in it
+/// given to the user, each change logged. A directory the user couldn't
+/// reach, below one it may not search, is refused, naming that one.
 ///
 /// # Errors
 ///
-/// [`Error::Keeper`] for a directory that can't be made, reached or
-/// given.
-fn hand_to_keeper(dirs: &[PathBuf], uid: u32, gid: u32) -> Result<(), Error> {
-    let failed = |dir: &Path, why: String| Error::Keeper {
-        reason: format!("cannot hand {} to {KEEPER_USER}: {why}", dir.display()),
-    };
+/// Why, for a directory that can't be made, reached or given.
+pub(crate) fn hand_to(user: &str, dirs: &[PathBuf], uid: u32, gid: u32) -> Result<(), String> {
+    let failed = |dir: &Path, why: String| format!("cannot hand {} to {user}: {why}", dir.display());
     for dir in dirs {
         if let Some(closed) = dir
             .ancestors()
@@ -265,7 +262,7 @@ fn hand_to_keeper(dirs: &[PathBuf], uid: u32, gid: u32) -> Result<(), Error> {
             return Err(failed(
                 dir,
                 format!(
-                    "{KEEPER_USER} can't reach it through {}, which it may not search",
+                    "{user} can't reach it through {}, which it may not search",
                     closed.display()
                 ),
             ));
@@ -277,7 +274,7 @@ fn hand_to_keeper(dirs: &[PathBuf], uid: u32, gid: u32) -> Result<(), Error> {
         let changed = not_theirs(dir, uid, gid, NOT_THEIRS_DEPTH);
         if changed > 0 {
             hatchling_sys::chown_tree(dir, uid, gid).map_err(|e| failed(dir, e.to_string()))?;
-            tracing::info!(dir = %dir.display(), changed, user = KEEPER_USER, "handed to the vault keeper's user");
+            tracing::info!(dir = %dir.display(), changed, user, "handed to its service user");
         }
     }
     Ok(())
@@ -395,14 +392,14 @@ pub(crate) fn handed_keys(handed: &str) -> Vec<(String, std::fs::File)> {
 ///
 /// # Errors
 ///
-/// As [`keeper_user`] and [`hand_to_keeper`], and [`Error::Keeper`] when
-/// the acting is refused.
+/// As [`keeper_user`], and [`Error::Keeper`] when the directories can't be
+/// handed over or the acting is refused.
 pub fn act_for_keeper(config: &Config) -> Result<(), Error> {
     let Some((uid, gid)) = keeper_user()? else {
         return Ok(());
     };
     let dirs = keeper_dirs(&config.vault, &KeyringConfig::from_env()?);
-    hand_to_keeper(&dirs, uid, gid)?;
+    hand_to(KEEPER_USER, &dirs, uid, gid).map_err(|reason| Error::Keeper { reason })?;
     let dirs: Vec<&Path> = dirs.iter().map(PathBuf::as_path).collect();
     hatchling_vault::act_for(uid, &dirs).map_err(|e| Error::Keeper {
         reason: format!("cannot act for {KEEPER_USER}: {e}"),
@@ -431,11 +428,13 @@ impl Keeper {
         let _held_keys = match keeper_user()? {
             Some((uid, gid)) => {
                 let config = Config::from_env()?;
-                hand_to_keeper(
+                hand_to(
+                    KEEPER_USER,
                     &keeper_dirs(&config.vault, &KeyringConfig::from_env()?),
                     uid,
                     gid,
-                )?;
+                )
+                .map_err(failed)?;
                 let keys = open_security_keys();
                 for (_, key) in &keys {
                     hatchling_sys::keep_across_exec(key.as_fd()).map_err(|e| {
@@ -1264,7 +1263,7 @@ mod tests {
         std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o711)).unwrap();
         let (uid, gid) = (hatchling_sys::euid(), rustix::process::getegid().as_raw());
         let vault = base.join("vault");
-        hand_to_keeper(std::slice::from_ref(&vault), uid, gid).unwrap();
+        hand_to(KEEPER_USER, std::slice::from_ref(&vault), uid, gid).unwrap();
         let made = std::fs::symlink_metadata(&vault).unwrap();
         assert!(made.is_dir());
         assert_eq!((made.uid(), made.mode() & 0o777), (uid, 0o700));
@@ -1290,10 +1289,10 @@ mod tests {
         let other = (uid.wrapping_add(4242), gid.wrapping_add(4242));
         assert!(searchable(&closed, uid, gid), "its owner searches it");
         assert!(!searchable(&closed, other.0, other.1));
-        let refused = hand_to_keeper(&[closed.join("vault")], other.0, other.1)
-            .unwrap_err()
-            .to_string();
+        let refused = hand_to("a-service-user", &[closed.join("vault")], other.0, other.1)
+            .unwrap_err();
         assert!(refused.contains(&closed.display().to_string()), "{refused}");
+        assert!(refused.contains("a-service-user can't reach it"), "{refused}");
         assert!(!closed.join("vault").exists(), "nothing was made");
         assert!(!searchable(&base.join("absent"), uid, gid));
         std::fs::remove_dir_all(&base).unwrap();

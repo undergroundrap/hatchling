@@ -277,6 +277,14 @@ pub enum Error {
         reason: String,
     },
 
+    /// The broker's own user, run as root, is missing, or its stores
+    /// couldn't be handed to it (WO-017).
+    #[error("the broker's user: {reason}")]
+    BrokerUser {
+        /// What happened.
+        reason: String,
+    },
+
     /// The spawner, which starts every cell's helper, couldn't be started
     /// or reached.
     #[error("spawner: {reason}")]

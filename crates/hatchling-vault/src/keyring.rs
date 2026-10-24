@@ -949,18 +949,24 @@ mod tests {
         rustix::process::getuid().as_raw()
     }
 
-    /// Root acts for one user, in the directories it names: there a store,
+    /// Root acts for a user, in the directories it names: there a store,
     /// a key file and a keyring are that user's, and what root makes there
-    /// is given to them. Anywhere else, and for anyone but root, nothing
-    /// changes. (The only test in this crate that acts for a user: it
-    /// can, once per process.)
+    /// is given to them. It acts for another user, in other directories,
+    /// but never for one twice, nor for two in one directory. Anywhere
+    /// else, and for anyone but root, nothing changes. (The only test in
+    /// this crate that acts for users: each can be added once per
+    /// process.)
     #[test]
-    fn root_acts_for_one_user_in_the_directories_it_names() {
+    fn root_acts_for_each_user_in_the_directories_it_names() {
         use crate::{FileKey, KeySource as _, Vault, act_for};
         use std::os::unix::fs::MetadataExt as _;
         let dir = test_dir("acting");
-        let (vault_dir, keys, elsewhere) =
-            (dir.join("vault"), dir.join("vault.key"), dir.join("other"));
+        let (vault_dir, keys, elsewhere, theirs) = (
+            dir.join("vault"),
+            dir.join("vault.key"),
+            dir.join("other"),
+            dir.join("theirs"),
+        );
         assert_eq!(owner_in(&vault_dir), own());
         assert_eq!(owner_of(&keys.join("keyring")), own());
         if own() != 0 {
@@ -973,7 +979,15 @@ mod tests {
             "for root itself"
         );
         act_for(4242, &[vault_dir.as_path(), keys.as_path()]).unwrap();
-        assert!(act_for(4243, &[vault_dir.as_path()]).is_err(), "once only");
+        assert!(
+            act_for(4243, &[theirs.as_path(), vault_dir.as_path()]).is_err(),
+            "not for two in one directory"
+        );
+        assert!(act_for(4242, &[theirs.as_path()]).is_err(), "once each");
+        // Neither refusal took effect, in part or in whole.
+        assert_eq!(owner_in(&theirs), 0);
+        act_for(4243, &[theirs.as_path()]).unwrap();
+        assert_eq!(owner_in(&theirs), 4243);
         assert_eq!(owner_in(&vault_dir), 4242);
         assert_eq!(owner_in(&elsewhere), 0);
         assert_eq!(owner_of(&keys.join("keyring")), 4242);

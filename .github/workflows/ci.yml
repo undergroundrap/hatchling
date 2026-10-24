@@ -302,6 +302,7 @@ jobs:
           sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin hatchling-cell
           sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin hatchling-keeper
           sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin hatchling-egress
+          sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin hatchling-broker
           (cd frontend && npm ci && npm run build)
 
       - name: Allow real cells
