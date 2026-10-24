@@ -106,7 +106,16 @@ class ReleaseCases:
             # Restoring the status animates it in: measure once it's shown.
             expect(self.page.locator('.agent-status')).to_be_visible()
             expect(self.page.locator('.context-tabs')).to_be_visible()
-            a=self.page.locator('.agent-status').bounding_box();b=self.page.locator('.context-tabs').bounding_box()
+            # Viewport changes replace the shell, so a node seen a moment ago
+            # may have no box now: measure both at once, after the reflow.
+            geometry=self.page.wait_for_function('''() => {
+                const status=document.querySelector('.agent-status');
+                const tabs=document.querySelector('.context-tabs');
+                if (!status || !tabs) return false;
+                const a=status.getBoundingClientRect(), b=tabs.getBoundingClientRect();
+                return a.height && b.height ? {a:a.toJSON(), b:b.toJSON()} : false;
+            }''').json_value()
+            a=geometry['a'];b=geometry['b']
             self.assertLess(a['y']+a['height'],b['y'])
             self.assert_no_overflow()
 
