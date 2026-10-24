@@ -61,6 +61,7 @@ pub use rotate::{Rotated, Rotation};
 pub use seal::{
     FileKey, KeySource, MasterKey, MigrateReport, OpenedKey, OpensStores, RekeyReport,
     STORE_KEY_FILE, SealedVault, Store, StoreKeys, check, holds_envelopes, migrate, rekey,
+    wrapped_store_key,
 };
 pub use secret::Secret;
 pub use totp::{PendingTotp, totp_code};

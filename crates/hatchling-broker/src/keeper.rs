@@ -34,7 +34,7 @@
 use std::collections::BTreeSet;
 use std::os::fd::{AsFd as _, AsRawFd as _};
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -42,7 +42,7 @@ use std::time::Duration;
 
 use hatchling_core::framing::{read_frame, read_frame_or_eof, write_frame};
 use hatchling_core::{CellId, SecretName, VaultOp, VaultResult};
-use hatchling_vault::{Secret, Store, StoreKeys};
+use hatchling_vault::{MasterKey, Secret, Store, StoreKeys};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
@@ -67,6 +67,14 @@ const KEEPER_FD: &str = crate::environment::HATCHLING_KEEPER_FD.name;
 /// The setting that names the keeper's end of its pair with the egress
 /// authority.
 const AUTHORITY_FD: &str = crate::environment::HATCHLING_KEEPER_AUTHORITY_FD.name;
+
+/// What the keeper's first frames are, by their first byte: the keys it
+/// hands the broker,
+const HANDED: u8 = 0;
+/// why it won't,
+const REFUSED: u8 = 1;
+/// or the broker's stores it asks the keys of, as they keep them.
+const ASKING: u8 = 2;
 
 /// Who a request came from: the channel it came on, never its words. The
 /// broker keeps neither end of the authority's channel, so what reaches
@@ -205,16 +213,36 @@ impl Keeper {
             .map_err(|e| failed(format!("cannot start: {e}")))?;
         drop(theirs);
         drop(for_authority);
-        let first =
-            Zeroizing::new(read_frame(&ours).map_err(|e| failed(format!("gave no keys: {e}")))?);
-        let keys = match first.split_first() {
-            Some((0, handed)) => {
-                StoreKeys::from_bytes(handed).map_err(|source| Error::Vault { source })?
+        // The broker's stores are the broker's: the keeper asks for their
+        // keys as they keep them, wrapped, and unwraps them, opening none.
+        let first = read_frame(&ours).map_err(|e| failed(format!("asked for no keys: {e}")))?;
+        let asked = match first.split_first() {
+            Some((&ASKING, asking)) => {
+                hatchling_vault::handoff::asked(asking).map_err(|source| Error::Vault { source })?
             }
-            Some((1, reason)) => return Err(failed(String::from_utf8_lossy(reason).into_owned())),
+            Some((&REFUSED, reason)) => {
+                return Err(failed(String::from_utf8_lossy(reason).into_owned()));
+            }
             _ => {
                 return Err(failed(String::from(
-                    "its first answer was neither keys nor a reason",
+                    "its first answer was neither an asking nor a reason",
+                )));
+            }
+        };
+        write_frame(&ours, &kept_keys(&asked)?)
+            .map_err(|e| failed(format!("cannot answer its asking: {e}")))?;
+        let handed =
+            Zeroizing::new(read_frame(&ours).map_err(|e| failed(format!("gave no keys: {e}")))?);
+        let keys = match handed.split_first() {
+            Some((&HANDED, handed)) => {
+                StoreKeys::from_bytes(handed).map_err(|source| Error::Vault { source })?
+            }
+            Some((&REFUSED, reason)) => {
+                return Err(failed(String::from_utf8_lossy(reason).into_owned()));
+            }
+            _ => {
+                return Err(failed(String::from(
+                    "its answer was neither keys nor a reason",
                 )));
             }
         };
@@ -386,6 +414,59 @@ fn ask(stream: &UnixStream, request: &Request) -> Result<Reply, Error> {
     })
 }
 
+/// The broker's answer to the keeper's asking, `asked`: each store's key
+/// as the store keeps it, wrapped, read here, where the stores are the
+/// broker's. The vault is the keeper's own: asking for it is refused.
+///
+/// # Errors
+///
+/// [`Error::Keeper`] for an asking for the vault, and [`Error::Vault`]
+/// for a store whose key can't be read.
+fn kept_keys(asked: &[(Store, PathBuf)]) -> Result<Vec<u8>, Error> {
+    let mut kept = Vec::with_capacity(asked.len());
+    for (store, root) in asked {
+        if *store == Store::SECRETS {
+            return Err(Error::Keeper {
+                reason: String::from("it asked for the vault's key, which is its own"),
+            });
+        }
+        kept.push(
+            hatchling_vault::wrapped_store_key(root, *store)
+                .map_err(|source| Error::Vault { source })?,
+        );
+    }
+    hatchling_vault::handoff::kept_bytes(&kept).map_err(|source| Error::Vault { source })
+}
+
+/// The keys of the broker's `stores` under `master`: asked of the broker
+/// on `stream` as its stores keep them, wrapped, and unwrapped here,
+/// where none of them is opened.
+///
+/// # Errors
+///
+/// [`Error::Keeper`] when the broker can't be asked or doesn't answer,
+/// and [`Error::Vault`] for an answer that isn't one, or a key that
+/// doesn't unwrap as its store's.
+fn broker_keys(
+    stream: &UnixStream,
+    master: &MasterKey,
+    stores: &[(Store, PathBuf)],
+) -> Result<StoreKeys, Error> {
+    let stores: Vec<(Store, &Path)> = stores
+        .iter()
+        .map(|(store, root)| (*store, root.as_path()))
+        .collect();
+    let asking =
+        hatchling_vault::handoff::ask_bytes(&stores).map_err(|source| Error::Vault { source })?;
+    let mut frame = Vec::with_capacity(asking.len() + 1);
+    frame.push(ASKING);
+    frame.extend_from_slice(&asking);
+    write_frame(stream, &frame).map_err(keeper_gone)?;
+    let answer = read_frame(stream).map_err(keeper_gone)?;
+    let kept = hatchling_vault::handoff::kept(&answer).map_err(|source| Error::Vault { source })?;
+    StoreKeys::unwrap_kept(master, &stores, &kept).map_err(|source| Error::Vault { source })
+}
+
 fn keeper_gone(error: impl std::fmt::Display) -> Error {
     Error::Keeper {
         reason: format!("cannot be reached: {error}"),
@@ -509,7 +590,7 @@ pub fn vault_keeper_main() -> ExitCode {
     let state = match begun {
         Ok(state) => state,
         Err(error) => {
-            let mut reason = vec![1];
+            let mut reason = vec![REFUSED];
             reason.extend_from_slice(error.to_string().as_bytes());
             let _ = write_frame(&stream, &reason);
             return refuse_to_run(&error.to_string());
@@ -559,24 +640,20 @@ fn begin(stream: &UnixStream, config: Config) -> Result<Kept, Error> {
         .map(|_| RedactionConfig::from_env(&config))
         .transpose()?;
     let harness = crate::harness::Harnesses::from_env(&config)?.vendor_secret_names();
-    let stores = crate::sealed_stores(&config, redaction.as_ref());
-    crate::check_sealed_stores(&stores)?;
+    // The vault is the keeper's alone; the other stores are the broker's,
+    // which checks them, and whose keys it asks the broker for.
+    let (vault, brokers): (Vec<_>, Vec<_>) = crate::sealed_stores(&config, redaction.as_ref())
+        .into_iter()
+        .partition(|(store, _)| *store == Store::SECRETS);
+    crate::check_sealed_stores(&vault)?;
     let master = crate::load_master_key(&config.vault)?;
     crate::validate_sealed_vault(&config.vault, &master)?;
-    let all = crate::hand_store_keys(master, &stores)?;
-    let brokers: Vec<Store> = stores
-        .iter()
-        .map(|(store, _)| *store)
-        .filter(|store| *store != Store::SECRETS)
-        .collect();
-    let handed = all
-        .only(&brokers)
+    let handed = broker_keys(stream, &master, &brokers)?
         .to_bytes()
         .map_err(|source| Error::Vault { source })?;
-    let keys = all.only(&[Store::SECRETS]);
-    drop(all);
+    let keys = crate::hand_store_keys(master, &vault)?;
     let mut frame = Zeroizing::new(Vec::with_capacity(handed.len() + 1));
-    frame.push(0);
+    frame.push(HANDED);
     frame.extend_from_slice(&handed);
     write_frame(stream, &frame).map_err(keeper_gone)?;
     let rules = Releases::of(&config, harness);
@@ -817,6 +894,50 @@ mod tests {
 
     fn names(list: &[&str]) -> Vec<SecretName> {
         list.iter().map(|name| name.parse().unwrap()).collect()
+    }
+
+    /// The keeper asks the broker for its stores' keys as they keep them,
+    /// and unwraps what the broker read; an answer that isn't one is
+    /// refused, and so is an asking for the vault's own key.
+    #[test]
+    fn the_keeper_unwraps_the_keys_the_broker_reads_of_its_stores() {
+        use hatchling_vault::SealedVault;
+        let master = MasterKey::generate().unwrap();
+        let root =
+            std::env::temp_dir().join(format!("hatchling-keeper-asks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        SealedVault::open_in(&root, &master, Store::SPACES).unwrap();
+        let stores = vec![(Store::SPACES, root.clone())];
+        let (keeper, broker) = UnixStream::pair().unwrap();
+        for end in [&keeper, &broker] {
+            end.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        }
+        let answering = std::thread::spawn(move || {
+            let asking = read_frame(&broker).unwrap();
+            let (kind, asking) = asking.split_first().unwrap();
+            assert_eq!(*kind, ASKING);
+            let asked = hatchling_vault::handoff::asked(asking).unwrap();
+            write_frame(&broker, &kept_keys(&asked).unwrap()).unwrap();
+            // Asked again, it answers something else.
+            read_frame(&broker).unwrap();
+            write_frame(&broker, b"no").unwrap();
+        });
+        let keys = broker_keys(&keeper, &master, &stores).unwrap();
+        assert_eq!(
+            keys.stores().collect::<Vec<_>>(),
+            [(Store::SPACES, root.as_path())]
+        );
+        assert!(SealedVault::open_in(&root, &keys, Store::SPACES).is_ok());
+        assert!(matches!(
+            broker_keys(&keeper, &master, &stores),
+            Err(Error::Vault { .. })
+        ));
+        answering.join().unwrap();
+        assert!(matches!(
+            kept_keys(&[(Store::SECRETS, root.clone())]),
+            Err(Error::Keeper { .. })
+        ));
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// Each purpose reads only the names the configuration gives it, and

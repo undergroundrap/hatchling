@@ -109,8 +109,9 @@ fn sealed_vault(dir: &Path, secrets: &[(&str, &str)]) -> io::Result<PathBuf> {
     Ok(vault)
 }
 
-/// The keeper hands the broker every store's key but the secrets', reads
-/// a configured credential to the egress authority and refuses it to the
+/// The keeper hands the broker every store's key but the secrets', from
+/// the keys the broker read of its stores, without opening one; reads a
+/// configured credential to the egress authority and refuses it to the
 /// broker, refuses any other, records each, keeps its memory closed, and
 /// leaves when the broker does.
 #[test]
@@ -124,9 +125,26 @@ fn the_keeper_keeps_the_secrets_and_releases_only_what_is_configured() {
         ],
     )
     .unwrap();
+    // The broker's store is there, and closed to everyone once the broker
+    // has read its key: a keeper that opened it would stop on its mode.
+    let artifacts = dir.join("artifacts");
+    std::fs::create_dir(&artifacts).unwrap();
+    std::fs::set_permissions(&artifacts, std::fs::Permissions::from_mode(0o700)).unwrap();
     let (child, stream, authoritys) = start(&dir).unwrap();
     let first = read_frame(&stream).unwrap();
-    let (kind, handed) = first.split_first().unwrap();
+    let (kind, asking) = first.split_first().unwrap();
+    assert_eq!(*kind, 2, "{}", String::from_utf8_lossy(asking));
+    let asked = hatchling_vault::handoff::asked(asking).unwrap();
+    assert_eq!(asked, [(Store::ARTIFACTS, artifacts.clone())]);
+    let kept: Vec<_> = asked
+        .iter()
+        .map(|(store, root)| hatchling_vault::wrapped_store_key(root, *store).unwrap())
+        .collect();
+    std::fs::set_permissions(&artifacts, std::fs::Permissions::from_mode(0o000)).unwrap();
+    write_frame(&stream, &hatchling_vault::handoff::kept_bytes(&kept).unwrap()).unwrap();
+    let answer = read_frame(&stream).unwrap();
+    std::fs::set_permissions(&artifacts, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let (kind, handed) = answer.split_first().unwrap();
     assert_eq!(*kind, 0, "{}", String::from_utf8_lossy(handed));
     let keys = StoreKeys::from_bytes(handed).unwrap();
     assert_eq!(
