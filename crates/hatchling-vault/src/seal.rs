@@ -368,13 +368,12 @@ impl StoreKeys {
         }
         let mut held = Vec::with_capacity(stores.len());
         for (&(store, root), wrapped) in stores.iter().zip(kept) {
-            let (key, pending) = match wrapped {
-                Some(wrapped) => (unwrap_store_key(master, store, wrapped)?, None),
-                None => {
-                    let key = StoreKey::generate()?;
-                    let wrapped = wrap_store_key(master, store, &key)?;
-                    (key, Some(wrapped))
-                }
+            let (key, pending) = if let Some(wrapped) = wrapped {
+                (unwrap_store_key(master, store, wrapped)?, None)
+            } else {
+                let key = StoreKey::generate()?;
+                let wrapped = wrap_store_key(master, store, &key)?;
+                (key, Some(wrapped))
             };
             held.push(Held {
                 store,
@@ -410,8 +409,9 @@ impl OpensStores for StoreKeys {
     }
 }
 
-/// `store`'s key as the store at `root` keeps it, wrapped: read by
-/// whoever owns the store, for a keeper to unwrap
+/// `store`'s key as the store at `root` keeps it, wrapped.
+///
+/// Read by whoever owns the store, for a keeper to unwrap
 /// ([`StoreKeys::unwrap_kept`]). None for a store not made yet, or made
 /// and holding nothing sealed.
 ///

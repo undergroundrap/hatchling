@@ -304,7 +304,7 @@ impl<'b> Reader<'b> {
     }
 
     /// Nothing left over.
-    fn done(&self) -> Result<(), Error> {
+    const fn done(&self) -> Result<(), Error> {
         if self.0.is_empty() {
             Ok(())
         } else {

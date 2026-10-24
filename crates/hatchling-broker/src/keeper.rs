@@ -1085,7 +1085,7 @@ mod tests {
         let dir = crate::api_auth::tests::scratch("keeper-answer");
         config.vault.root = dir.0.join("vault");
         config.egress.grants = vec![String::from("api.example.com:443")];
-        let master = hatchling_vault::MasterKey::generate().unwrap();
+        let master = MasterKey::generate().unwrap();
         hatchling_vault::SealedVault::open(&config.vault.root, &master)
             .unwrap()
             .store(
@@ -1155,7 +1155,7 @@ mod tests {
             action: hatchling_core::VaultAction::Fetch,
             name: "token".parse().unwrap(),
         }];
-        let master = hatchling_vault::MasterKey::generate().unwrap();
+        let master = MasterKey::generate().unwrap();
         let vault = hatchling_vault::SealedVault::open(&config.vault.root, &master).unwrap();
         for (name, value) in [("search-brave", b"k-brave"), ("token", b"t-token")] {
             vault
@@ -1234,7 +1234,7 @@ mod tests {
         let dir = crate::api_auth::tests::scratch("keeper-broker-channel");
         config.vault.root = dir.0.join("vault");
         config.web.search = true;
-        let master = hatchling_vault::MasterKey::generate().unwrap();
+        let master = MasterKey::generate().unwrap();
         hatchling_vault::SealedVault::open(&config.vault.root, &master)
             .unwrap()
             .store(
@@ -1330,7 +1330,7 @@ mod tests {
                 name: "old".parse().unwrap(),
             },
         ];
-        let master = hatchling_vault::MasterKey::generate().unwrap();
+        let master = MasterKey::generate().unwrap();
         hatchling_vault::SealedVault::open(&config.vault.root, &master)
             .unwrap()
             .store(
