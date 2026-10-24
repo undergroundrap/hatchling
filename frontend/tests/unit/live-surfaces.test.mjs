@@ -318,6 +318,40 @@ test('a code request on the stream is taken in stride: the browser and the conne
     assert.equal(adapter.getSnapshot().browserTasks.length, before);
     assert.equal(transport.closes, 0, 'not a broken protocol');
 });
+test('the user keeps the sign-in of a browser they drive, and the signed-in list is asked for again', async () => {
+    const { transport, adapter } = connected();
+    const keep = { type: 'browser.keep-signed-in', id: 'web-1' };
+    const before = transport.actions().length;
+    assert.match((await adapter.execute(keep)).message, /Hatchling already has control/);
+    assert.equal(transport.actions().length, before, 'nothing sent while the agent drives');
+    transport.deliver(control('web-1', 'takeover'));
+    transport.deliver(control('web-1', 'granted'));
+    const profile = { profile_id: 'profile-1', sites: ['a.example:443', 'idp.example:443'], signed_in: true, created_at: '2026-10-22T08:00:00Z', last_used: '2026-10-22T09:00:00Z' };
+    const pending = adapter.execute(keep);
+    await flush();
+    const sent = transport.last();
+    assert.deepEqual(sent.action, { action: 'keep_signed_in', session_id: 'web-1' });
+    transport.deliver({ type: 'action_result', request_id: sent.request_id, result: { result: 'signed_in_kept', session_id: 'web-1', profile } });
+    await flush();
+    const listing = transport.last();
+    assert.deepEqual(listing.action, { action: 'manage_profiles', op: { op: 'list' } });
+    transport.deliver({ type: 'action_result', request_id: listing.request_id, result: { result: 'profiles', outcome: { result: 'listed', profiles: [profile] } } });
+    const kept = await pending;
+    assert.equal(kept.ok, true);
+    assert.match(kept.message, /opens a\.example:443, idp\.example:443 signed in from now on/);
+    assert.deepEqual(adapter.getSnapshot().signedInSites.map(item => item.id), ['profile-1']);
+    for (const [result, words] of [
+        [{ result: 'profiles', outcome: { result: 'off' } }, /keeps no signed-in sites/],
+        [{ result: 'profiles', outcome: { result: 'failed' } }, /couldn't change its signed-in sites/],
+        [{ result: 'profiles', outcome: { result: 'not_found' } }, /something else/],
+        [{ result: 'control_refused', session_id: 'web-1', reason: 'not_allowed' }, /cannot move that way/],
+        [{ result: 'signed_in_kept', session_id: 'other', profile }, /something else/],
+    ]) {
+        const { outcome } = await answered(transport, adapter, keep, result);
+        assert.equal(outcome.ok, false);
+        assert.match(outcome.message, words);
+    }
+});
 test("the user's own input goes only to a browser they drive, and the broker answers it", async () => {
     const { transport, adapter } = connected();
     const click = { type: 'browser.click', id: 'web-1', x: 10, y: 20 };

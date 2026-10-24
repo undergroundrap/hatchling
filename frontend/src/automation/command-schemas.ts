@@ -155,6 +155,63 @@ export const commandSchemas: Readonly<Record<Command['type'], ActionSchema>> = {
         ],
         "additionalProperties": false
     },
+    "browser.keep-signed-in": {
+        "type": "object",
+        "properties": {
+            "type": {
+                "type": "string",
+                "enum": [
+                    "browser.keep-signed-in"
+                ]
+            },
+            "id": {
+                "type": "string"
+            }
+        },
+        "required": [
+            "type",
+            "id"
+        ],
+        "additionalProperties": false
+    },
+    "profile.sign-out": {
+        "type": "object",
+        "properties": {
+            "type": {
+                "type": "string",
+                "enum": [
+                    "profile.sign-out"
+                ]
+            },
+            "id": {
+                "type": "string"
+            }
+        },
+        "required": [
+            "type",
+            "id"
+        ],
+        "additionalProperties": false
+    },
+    "profile.delete": {
+        "type": "object",
+        "properties": {
+            "type": {
+                "type": "string",
+                "enum": [
+                    "profile.delete"
+                ]
+            },
+            "id": {
+                "type": "string"
+            }
+        },
+        "required": [
+            "type",
+            "id"
+        ],
+        "additionalProperties": false
+    },
     "identity.avatar": {
         "type": "object",
         "properties": {

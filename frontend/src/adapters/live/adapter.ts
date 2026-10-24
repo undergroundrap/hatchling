@@ -15,6 +15,7 @@ import { ChatBook } from './chat.js';
 import { LiveClient } from './client.js';
 import type { UiTransport } from './client.js';
 import type { UiEvent } from './protocol/generated.js';
+import { LiveProfiles } from './profiles.js';
 import { LiveChatSession } from './session.js';
 import { LiveSites } from './sites.js';
 import { Surfaces } from './surfaces.js';
@@ -29,6 +30,7 @@ export class LiveAdapter implements ProtocolAdapter {
     readonly #chats = new ChatBook();
     readonly #surfaces: Surfaces;
     readonly #sites: LiveSites;
+    readonly #profiles: LiveProfiles;
     readonly #listeners = new Set<() => void>();
     #settings: Settings = SETTINGS;
     #clock = '';
@@ -44,6 +46,7 @@ export class LiveAdapter implements ProtocolAdapter {
         this.#surfaces = new Surfaces(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.taskApprovals = new LiveApprovals(this.#client);
         this.#sites = new LiveSites(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
+        this.#profiles = new LiveProfiles(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.chatSession = new LiveChatSession(this.#client, this.#chats, artifactId => this.#surfaces.shelf.latest(artifactId));
         this.#snapshot = this.#build();
         // Registered first, so the snapshot is current before any view hears of a change.
@@ -93,6 +96,12 @@ export class LiveAdapter implements ProtocolAdapter {
                 return this.#surfaces.input(command.id, { input: 'key', key: command.key });
             case 'browser.scroll':
                 return this.#surfaces.input(command.id, { input: 'scroll', down: command.down });
+            case 'browser.keep-signed-in':
+                return this.#keepSignedIn(command.id);
+            case 'profile.sign-out':
+                return this.#profiles.signOut(command.id);
+            case 'profile.delete':
+                return this.#profiles.delete(command.id);
             case 'settings.theme':
                 return this.#prefer({ theme: command.value });
             case 'settings.accent':
@@ -117,6 +126,13 @@ export class LiveAdapter implements ProtocolAdapter {
     dispose(): void {
         this.#client.dispose();
         this.#listeners.clear();
+    }
+    /** Keep the sign-in of a browser the user drives; the list shows it once the broker has kept it. */
+    async #keepSignedIn(sessionId: string): Promise<CommandResult> {
+        const kept = await this.#surfaces.keepSignedIn(sessionId);
+        if (kept.ok)
+            await this.#profiles.refresh();
+        return kept;
     }
     #prefer(change: Partial<Pick<Settings, 'theme' | 'accent' | 'interfaceSize' | 'keepChatPanelVisible'>>): CommandResult {
         this.#settings = { ...this.#settings, ...change };
@@ -169,6 +185,7 @@ export class LiveAdapter implements ProtocolAdapter {
         const threads = [...this.#activity.threads(), ...this.#surfaces.threads()];
         return {
             websitePermissions: this.#sites.sites().map(site => ({ host: site.site, policy: 'allow' as const })),
+            signedInSites: [...this.#profiles.profiles()],
             networkPermissions: [],
             version: 1,
             mode: 'live',
