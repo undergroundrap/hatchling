@@ -2377,6 +2377,10 @@ mod tests {
             harnesses.roots,
             BTreeMap::from([(String::from("project"), scratch.join("project"))])
         );
+        assert_eq!(
+            harnesses.roots().collect::<Vec<_>>(),
+            [scratch.join("project").as_path()]
+        );
         assert_eq!(harnesses.timeout, Duration::from_secs(7));
         assert!(!harnesses.tools.is_empty(), "the host's default tools");
     }

@@ -146,6 +146,22 @@ mod tests {
         assert!(!read.contains(&config.vault.root));
         config.skills.skills_dir = PathBuf::new();
         assert!(!readable(&config, |_| None).unwrap().contains(&PathBuf::new()));
+        // A harness's project roots, which its tasks' files are copied from.
+        let dir = crate::api_auth::tests::scratch("confine-roots");
+        let (project, pinned) = (dir.0.join("project"), dir.0.join("harness"));
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(&pinned, b"stub harness").unwrap();
+        let sha256 = hatchling_skill::CodeHash::of(b"stub harness").to_string();
+        let mut config = crate::api_auth::tests::owner_config(None);
+        std::fs::create_dir_all(dir.0.join("workspace")).unwrap();
+        config.artifacts.workspace = Some(dir.0.join("workspace"));
+        let vars = std::collections::HashMap::from([
+            ("HATCHLING_HARNESS_CLAUDE_CODE", pinned.display().to_string()),
+            ("HATCHLING_HARNESS_CLAUDE_CODE_SHA256", sha256),
+            ("HATCHLING_HARNESS_ROOTS", format!("project={}", project.display())),
+        ]);
+        let read = readable(&config, |key| vars.get(key).cloned()).unwrap();
+        assert!(read.contains(&project), "{read:?}");
     }
 
     /// Confined, the broker writes its stores, makes its state, and can't
