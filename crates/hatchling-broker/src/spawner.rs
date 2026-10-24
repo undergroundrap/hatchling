@@ -1265,10 +1265,12 @@ sleep 30 </dev/null >/dev/null 2>&1 &
         // At once, as its end is heard: the group, its sleeper killed, is
         // gone already.
         let read: CellConfig =
-            serde_json::from_str(&std::fs::read_to_string(dir.join("spec.json")).unwrap())
-                .unwrap();
+            serde_json::from_str(&std::fs::read_to_string(dir.join("spec.json")).unwrap()).unwrap();
         let group = read.cgroup.unwrap();
-        assert!(!group.exists(), "the cell's group outlived its helper's end");
+        assert!(
+            !group.exists(),
+            "the cell's group outlived its helper's end"
+        );
         assert_eq!(exit.code, 0, "the helper didn't join its group");
         assert_eq!(
             group.parent(),
