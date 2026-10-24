@@ -54,6 +54,7 @@ use hatchling_isolation::{
 use serde::{Deserialize, Serialize};
 
 use crate::Error;
+use crate::browser_session::BrowserSettings;
 use crate::cell::{CellConfig, CellLimits, Process};
 use crate::harness_tree::TreeOp;
 use crate::run_launcher::{BROKER_PID_ENV, broker_pid, forget_spec, spec_args};
@@ -61,6 +62,9 @@ use crate::run_launcher::{BROKER_PID_ENV, broker_pid, forget_spec, spec_args};
 /// The spawner's subcommand: `hatchling-broker spawner`, started only by
 /// the broker.
 pub const SPAWNER_SUBCOMMAND: &str = "spawner";
+
+/// The setting that names the agent's program: one a cell may be given.
+const AGENT_BIN: &str = crate::environment::HATCHLING_AGENT_BIN.name;
 
 /// The setting that names the spawner's end of its pair with the broker.
 const SPAWNER_FD: &str = crate::environment::HATCHLING_SPAWNER_FD.name;
@@ -112,6 +116,105 @@ impl HelperKind {
     }
 }
 
+/// The names the broker's own fresh run directories begin with, in its
+/// temp directory: a verified code copy, a harness run's trees, a skill
+/// run's directory, and a browser bundle's snapshot.
+const RUN_DIRS: [&str; 4] = [
+    "hatchling-skill-code-",
+    "hatchling-harness-",
+    "hatchling-skill-run-",
+    "hatchling-staging-",
+];
+
+/// The host paths a cell may be given: what the operator configured, and
+/// what's inside the broker's own fresh run directories.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Paths {
+    /// Exactly these: the programs, tools and modules the operator
+    /// configured.
+    exact: std::collections::BTreeSet<PathBuf>,
+    /// Anything inside these: directories the operator configured.
+    under: Vec<PathBuf>,
+    /// The broker's temp directory, where its run directories are made.
+    temp: PathBuf,
+    /// Who owns the broker's run directories: the broker.
+    owner: u32,
+}
+
+impl Paths {
+    /// Why `path` isn't one a cell may be given, if it isn't.
+    ///
+    /// A run directory is a real directory, not a link, owned by the
+    /// broker and writable by no one else, and nothing on the way from it
+    /// to `path` is a link. Checked here, before the spawn; a broker that
+    /// owns the directory could change it after (the spawner opening
+    /// each source itself closes that, when the broker runs as its own
+    /// user: WO-017's slice 3).
+    fn allow(&self, path: &Path) -> Result<(), String> {
+        use std::os::unix::fs::MetadataExt as _;
+        let refused = || Err(format!("{} isn't a path a cell may be given", path.display()));
+        let plain = path.is_absolute()
+            && path
+                .components()
+                .skip(1)
+                .all(|part| matches!(part, std::path::Component::Normal(_)));
+        if !plain {
+            return refused();
+        }
+        if self.exact.contains(path) || self.under.iter().any(|dir| path.starts_with(dir)) {
+            return Ok(());
+        }
+        let Ok(inside) = path.strip_prefix(&self.temp) else {
+            return refused();
+        };
+        let mut parts = inside.components();
+        let Some(std::path::Component::Normal(name)) = parts.next() else {
+            return refused();
+        };
+        let named = name
+            .to_str()
+            .is_some_and(|name| RUN_DIRS.iter().any(|prefix| name.starts_with(prefix)));
+        let run_dir = self.temp.join(name);
+        let owned = std::fs::symlink_metadata(&run_dir).is_ok_and(|meta| {
+            meta.is_dir() && meta.uid() == self.owner && meta.mode() & 0o022 == 0
+        });
+        if !named || !owned {
+            return refused();
+        }
+        let mut walked = run_dir;
+        for part in parts {
+            walked.push(part);
+            if std::fs::symlink_metadata(&walked).is_ok_and(|meta| meta.file_type().is_symlink()) {
+                return refused();
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Every host path `config` would give its cell.
+fn host_paths(config: &CellConfig) -> Vec<PathBuf> {
+    let mut paths = vec![config.agent_bin.clone()];
+    paths.extend(config.skill_code.clone());
+    if let Some(harness) = &config.harness {
+        paths.extend([harness.work.clone(), harness.scratch.clone()]);
+        if let Some(network) = &harness.network {
+            paths.push(network.handoff.clone());
+            paths.extend(network.tools.iter().map(|(source, _)| source.clone()));
+        }
+    }
+    if let Some(browser) = &config.browser {
+        paths.extend([
+            browser.browser_dir.clone(),
+            browser.browser(),
+            browser.handoff.clone(),
+        ]);
+        paths.extend(browser.fonts.clone());
+        paths.extend(browser.nss.iter().cloned());
+    }
+    paths
+}
+
 /// What the spawner holds every cell spec to: its own configuration's
 /// cell, never the broker's word.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,26 +227,63 @@ pub(crate) struct Policy {
     limits: CellLimits,
     /// The delegated group a cell's group is made in, if any.
     cgroup: Option<PathBuf>,
+    /// The host paths a cell may be given.
+    paths: Paths,
 }
 
 impl Policy {
-    /// The policy of `reference`, a cell built from the configuration.
-    fn of(reference: &CellConfig) -> Self {
+    /// The policy of `reference`, a cell built from the configuration,
+    /// giving cells only `paths`.
+    fn of(reference: &CellConfig, paths: Paths) -> Self {
         Self {
             identity: reference.identity(),
             broker_in_cell: reference.broker_uid_in_cell,
             limits: reference.limits,
             cgroup: reference.cgroup.clone(),
+            paths,
         }
     }
 
-    /// The policy the environment configures.
+    /// The policy the environment configures: its cell, and the paths
+    /// its configuration names (the agent binary, the scheduler's run
+    /// directories, the harnesses' tools, the browser's controller, fonts
+    /// and NSS modules).
     ///
     /// # Errors
     ///
-    /// As [`CellConfig::skill`].
+    /// As [`CellConfig::skill`], [`crate::Config::from_env`],
+    /// [`crate::harness::Harnesses::from_env`] and the browser's
+    /// settings.
     fn from_env() -> Result<Self, Error> {
-        CellConfig::skill("spawner-policy").map(|reference| Self::of(&reference))
+        let reference = CellConfig::skill("spawner-policy")?;
+        let config = crate::Config::from_env()?;
+        let mut exact = std::collections::BTreeSet::new();
+        let mut under = Vec::new();
+        if let Some(agent) = crate::cell::env_value(std::env::var(AGENT_BIN)) {
+            exact.insert(PathBuf::from(agent));
+        }
+        if config.scheduler.enabled() {
+            under.push(config.scheduler.run_root());
+        }
+        exact.extend(
+            crate::harness::Harnesses::from_env(&config)?
+                .tools()
+                .map(Path::to_path_buf),
+        );
+        if let Some(browser) =
+            BrowserSettings::parse(|key| crate::cell::env_value(std::env::var(key)))?
+        {
+            exact.insert(browser.controller().to_path_buf());
+            under.extend(browser.fonts().map(Path::to_path_buf));
+            exact.extend(crate::browser_session::host_nss_modules());
+        }
+        let paths = Paths {
+            exact,
+            under,
+            temp: std::env::temp_dir(),
+            owner: hatchling_sys::euid(),
+        };
+        Ok(Self::of(&reference, paths))
     }
 
     /// Whether `helper` may start `config`: why not, if it may not.
@@ -175,7 +315,9 @@ impl Policy {
             (None, None) if helper != HelperKind::BrowserCell => {}
             _ => return Err(String::from("its group isn't one in the delegated group")),
         }
-        Ok(())
+        host_paths(config)
+            .iter()
+            .try_for_each(|path| self.paths.allow(path))
     }
 }
 
@@ -843,7 +985,31 @@ mod tests {
     /// The policy of a skill cell the environment configures: what the
     /// tests' specs are built from.
     fn policy() -> Policy {
-        Policy::of(&CellConfig::skill("policy").unwrap())
+        Policy::of(&CellConfig::skill("policy").unwrap(), paths())
+    }
+
+    /// The paths of a broker with nothing configured: only its run
+    /// directories.
+    fn paths() -> Paths {
+        Paths {
+            exact: std::collections::BTreeSet::new(),
+            under: Vec::new(),
+            temp: std::env::temp_dir(),
+            owner: hatchling_sys::euid(),
+        }
+    }
+
+    /// A run directory of the broker's own: named as one, owner-only.
+    fn broker_run_dir(tag: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::env::temp_dir().join(format!(
+            "hatchling-skill-code-{tag}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        dir
     }
 
     fn run_dir(tag: &str) -> PathBuf {
@@ -856,8 +1022,10 @@ mod tests {
 
     /// A skill cell's spec: one the skill-cell helper starts.
     fn skill_spec() -> String {
+        let code = broker_run_dir("spec");
         let mut config = CellConfig::skill("spawned").unwrap();
-        config.skill_code = Some(PathBuf::from("/nonexistent/code"));
+        config.agent_bin = code.join("skill");
+        config.skill_code = Some(code);
         serde_json::to_string(&config).unwrap()
     }
 
@@ -1108,7 +1276,6 @@ mod tests {
         let policy = policy();
         let skill: CellConfig = serde_json::from_str(&skill_spec()).unwrap();
         assert_eq!(policy.check(HelperKind::SkillCell, &skill), Ok(()));
-        assert_eq!(Policy::from_env().unwrap(), policy);
         let refused = |change: &dyn Fn(&mut CellConfig), helper: HelperKind| {
             let mut config = skill.clone();
             change(&mut config);
@@ -1213,6 +1380,123 @@ mod tests {
         ] {
             assert!(in_group(outside).is_err(), "{outside:?}");
         }
+    }
+
+    /// A path a cell may be given: one the operator configured, exactly
+    /// or under a configured directory, or inside a run directory of the
+    /// broker's own; nothing else, each refusal on its own.
+    #[test]
+    fn a_cell_is_given_only_configured_paths_and_the_brokers_own_run_directories() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let run = broker_run_dir("paths");
+        let paths = Paths {
+            exact: std::collections::BTreeSet::from([PathBuf::from("/opt/agent/bin/agent")]),
+            under: vec![PathBuf::from("/srv/fonts")],
+            ..paths()
+        };
+        for allowed in [
+            PathBuf::from("/opt/agent/bin/agent"),
+            PathBuf::from("/srv/fonts/a.ttf"),
+            run.clone(),
+            run.join("skill"),
+            run.join("not/yet/made"),
+        ] {
+            assert_eq!(paths.allow(&allowed), Ok(()), "{}", allowed.display());
+        }
+        let temp = std::env::temp_dir();
+        for refused in [
+            PathBuf::from("agent"),
+            PathBuf::from("/opt/agent/bin/agent2"),
+            PathBuf::from("/opt/agent/bin"),
+            PathBuf::from("/srv/fonts/../vault"),
+            run.join("../hatchling-vault"),
+            run.join("./skill"),
+            temp.join("hatchling-other-1"),
+            temp.clone(),
+            PathBuf::from("/etc/shadow"),
+        ] {
+            assert!(paths.allow(&refused).is_err(), "{}", refused.display());
+        }
+        // Another owner's, or a directory others can write: refused.
+        let elsewhere = Paths {
+            owner: hatchling_sys::euid() + 1,
+            ..paths.clone()
+        };
+        assert!(elsewhere.allow(&run.join("skill")).is_err(), "another owner's");
+        std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(paths.allow(&run.join("skill")).is_err(), "writable by others");
+        std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // A link, as the run directory or on the way into it: refused.
+        let linked = temp.join(format!("hatchling-harness-link-{}", std::process::id()));
+        let _ = std::fs::remove_file(&linked);
+        std::os::unix::fs::symlink("/etc", &linked).unwrap();
+        assert!(paths.allow(&linked.join("shadow")).is_err(), "a linked run dir");
+        std::fs::remove_file(&linked).unwrap();
+        std::os::unix::fs::symlink("/etc", run.join("away")).unwrap();
+        assert!(paths.allow(&run.join("away/shadow")).is_err(), "a link inside");
+        std::fs::remove_dir_all(&run).unwrap();
+    }
+
+    /// Every path a cell spec names is held to the policy: the program,
+    /// the skill's code, a harness's trees, tools and handoff, and a
+    /// browser's directory, program, handoff, fonts and modules.
+    #[test]
+    fn every_host_path_a_spec_names_is_checked() {
+        let mut config = CellConfig::skill("paths").unwrap();
+        config.agent_bin = PathBuf::from("/p/agent");
+        config.skill_code = Some(PathBuf::from("/p/code"));
+        config.harness = Some(crate::cell::HarnessDirs {
+            work: PathBuf::from("/p/work"),
+            scratch: PathBuf::from("/p/scratch"),
+            args: Vec::new(),
+            network: Some(crate::cell::HarnessNetwork {
+                relay: 1,
+                handoff: PathBuf::from("/p/relay.sock"),
+                tools: vec![(PathBuf::from("/p/tool"), String::from("tool"))],
+                env: Vec::new(),
+            }),
+        });
+        config.browser = Some(crate::cell::BrowserDirs {
+            browser_dir: PathBuf::from("/p/browser"),
+            browser_name: String::from("chrome"),
+            fonts: Some(PathBuf::from("/p/fonts")),
+            nss: vec![PathBuf::from("/p/nss.so")],
+            ca_keys: Vec::new(),
+            relay: 2,
+            handoff: PathBuf::from("/p/browser.sock"),
+        });
+        let named: std::collections::BTreeSet<String> = host_paths(&config)
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect();
+        let expected = [
+            "/p/agent",
+            "/p/code",
+            "/p/work",
+            "/p/scratch",
+            "/p/relay.sock",
+            "/p/tool",
+            "/p/browser",
+            "/p/browser/chrome",
+            "/p/browser.sock",
+            "/p/fonts",
+            "/p/nss.so",
+        ];
+        assert_eq!(
+            named,
+            expected.iter().map(|path| (*path).to_owned()).collect()
+        );
+        // One path outside the policy, and the spec is refused.
+        let policy = policy();
+        let skill: CellConfig = serde_json::from_str(&skill_spec()).unwrap();
+        let mut outside = skill;
+        outside.skill_code = Some(PathBuf::from("/etc"));
+        assert!(
+            policy
+                .check(HelperKind::SkillCell, &outside)
+                .unwrap_err()
+                .contains("/etc isn't a path a cell may be given")
+        );
     }
 
     #[test]
