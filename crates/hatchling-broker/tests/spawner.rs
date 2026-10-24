@@ -61,10 +61,12 @@ fn the_real_spawner_starts_the_real_helper_on_the_spec_it_wrote() {
     let mut said = String::new();
     errors.read_to_string(&mut said).unwrap();
     assert_ne!(exit.code, 0, "{said}");
+    // It got as far as its cell: past its spec, and past its watch on
+    // the spawner, its parent.
     assert!(said.contains("hatchling-broker skill-cell:"), "{said}");
     assert!(
-        !said.contains("cell spec"),
-        "the helper couldn't read its spec: {said}"
+        said.contains("/nonexistent/hatchling-skill-code"),
+        "the helper stopped before its cell: {said}"
     );
     assert!(
         !dir.join("cell-spec.json").exists(),

@@ -20,6 +20,11 @@
 //!   reclaim): the spawner runs it, its id maps included, and says how it
 //!   went ([`Spawner::trees`]).
 //!
+//! **Lifetimes.** A helper watches its parent and ends with it: the
+//! spawner, which ends when the broker does (its pair with the broker
+//! closes), so a broker that's gone, however it went, takes its helpers
+//! and their cells with it, as before.
+//!
 //! The broker still runs as root until slice 3: this slice moves every
 //! start behind the spawner first. Served in-process with no spawner
 //! running, as with no keeper, the broker starts its helpers itself
@@ -110,7 +115,6 @@ enum Request {
         helper: HelperKind,
         spec: String,
         run_dir: PathBuf,
-        broker_pid: String,
     },
     /// Kill the helper this connection started.
     Kill,
@@ -260,7 +264,6 @@ impl Spawner {
             helper,
             spec: spec.to_owned(),
             run_dir: run_dir.to_path_buf(),
-            broker_pid: broker_pid(),
         };
         send(&stream, &request).map_err(|error| error.to_string())?;
         for fd in &stdio {
@@ -603,7 +606,6 @@ fn serve_connection(stream: &UnixStream, program: &Path) -> Result<(), Error> {
             helper,
             spec,
             run_dir,
-            broker_pid,
         } => {
             // The descriptors come whatever's decided of the spec, so the
             // stream stays in step.
@@ -611,7 +613,7 @@ fn serve_connection(stream: &UnixStream, program: &Path) -> Result<(), Error> {
             for _ in 0..3 {
                 stdio.push(hatchling_sys::net::recv_fd(stream.as_fd()).map_err(gone)?);
             }
-            serve_helper(stream, program, helper, &spec, &run_dir, &broker_pid, stdio)
+            serve_helper(stream, program, helper, &spec, &run_dir, stdio)
         }
         Request::Trees {
             give,
@@ -650,7 +652,6 @@ fn serve_helper(
     helper: HelperKind,
     spec: &str,
     run_dir: &Path,
-    broker_pid: &str,
     descriptors: Vec<OwnedFd>,
 ) -> Result<(), Error> {
     let refuse = |reason: String| send(stream, &Reply::Refused { reason });
@@ -674,7 +675,9 @@ fn serve_helper(
     let spawned = Command::new(program)
         .args(args)
         .env("TMPDIR", run_dir)
-        .env(BROKER_PID_ENV, broker_pid)
+        // A helper watches its parent, and ends with it: here, the
+        // spawner, which ends when the broker does.
+        .env(BROKER_PID_ENV, std::process::id().to_string())
         .stdin(Stdio::from(stdin))
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
@@ -993,7 +996,6 @@ mod tests {
             HelperKind::SkillCell,
             "{}",
             Path::new("/nonexistent"),
-            "1",
             fds.into(),
         )
         .unwrap();
