@@ -11,11 +11,11 @@
 //! On a connection the broker asks one thing:
 //! - **A helper** (`agent-run`, `skill-cell`, `browser-cell`), with its
 //!   cell spec, its run's private directory, and its three stdio
-//!   descriptors ([`Spawner::helper`]). The spawner checks the spec is
-//!   one that helper starts, writes it to the run's directory as the
-//!   helper's spec file, starts the helper on those descriptors, and says
-//!   its pid. It reports how the helper ended, and kills it when the broker
-//!   asks, or goes.
+//!   descriptors ([`Spawner::helper`]). The spawner holds the spec to its
+//!   own policy ([`Policy`]) before anything else, writes it to the run's
+//!   directory as the helper's spec file, starts the helper on those
+//!   descriptors, and says its pid. It reports how the helper ended, and
+//!   kills it when the broker asks, or goes.
 //! - **A change to a harness's work trees** (`harness-tree` give or
 //!   reclaim): the spawner runs it, its id maps included, and says how it
 //!   went ([`Spawner::trees`]).
@@ -24,6 +24,13 @@
 //! spawner, which ends when the broker does (its pair with the broker
 //! closes), so a broker that's gone, however it went, takes its helpers
 //! and their cells with it, as before.
+//!
+//! **The policy** is the spawner's own: the cell identity, the limits and
+//! the group parent it reads from its own configuration, never the
+//! broker's word. A spec for another identity, wider limits, a group
+//! elsewhere, or a cell with an endpoint (whose socket the spawner would
+//! hand to the cell's uid) is refused before any privileged call. Its
+//! paths are checked next (slice 1b's second part).
 //!
 //! The broker still runs as root until slice 3: this slice moves every
 //! start behind the spawner first. Served in-process with no spawner
@@ -47,7 +54,7 @@ use hatchling_isolation::{
 use serde::{Deserialize, Serialize};
 
 use crate::Error;
-use crate::cell::{CellConfig, Process};
+use crate::cell::{CellConfig, CellLimits, Process};
 use crate::harness_tree::TreeOp;
 use crate::run_launcher::{BROKER_PID_ENV, broker_pid, forget_spec, spec_args};
 
@@ -102,6 +109,73 @@ impl HelperKind {
             Self::SkillCell => config.skill_code.is_some(),
             Self::BrowserCell => config.browser.is_some(),
         }
+    }
+}
+
+/// What the spawner holds every cell spec to: its own configuration's
+/// cell, never the broker's word.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Policy {
+    /// The identity every cell runs as.
+    identity: CellIdentity,
+    /// The broker's uid as a cell sees it.
+    broker_in_cell: u32,
+    /// Every cell's limits, but a browser cell's.
+    limits: CellLimits,
+    /// The delegated group a cell's group is made in, if any.
+    cgroup: Option<PathBuf>,
+}
+
+impl Policy {
+    /// The policy of `reference`, a cell built from the configuration.
+    fn of(reference: &CellConfig) -> Self {
+        Self {
+            identity: reference.identity(),
+            broker_in_cell: reference.broker_uid_in_cell,
+            limits: reference.limits,
+            cgroup: reference.cgroup.clone(),
+        }
+    }
+
+    /// The policy the environment configures.
+    ///
+    /// # Errors
+    ///
+    /// As [`CellConfig::skill`].
+    fn from_env() -> Result<Self, Error> {
+        CellConfig::skill("spawner-policy").map(|reference| Self::of(&reference))
+    }
+
+    /// Whether `helper` may start `config`: why not, if it may not.
+    fn check(&self, helper: HelperKind, config: &CellConfig) -> Result<(), String> {
+        if !helper.starts(config) {
+            return Err(format!("not a cell {} starts", helper.subcommand()));
+        }
+        if config.identity() != self.identity {
+            return Err(String::from("its identity isn't the configured cell's"));
+        }
+        if config.broker_uid_in_cell != self.broker_in_cell {
+            return Err(String::from("its broker isn't the configured cell's"));
+        }
+        if !config.is_skill_cell() && !config.connected {
+            return Err(String::from("a cell with an endpoint"));
+        }
+        let limits = if helper == HelperKind::BrowserCell {
+            crate::browser_session::browser_limits()
+        } else {
+            self.limits
+        };
+        if config.limits != limits {
+            return Err(String::from("its limits aren't the configured ones"));
+        }
+        match (&self.cgroup, &config.cgroup) {
+            (Some(parent), Some(group))
+                if group.parent() == Some(parent.as_path())
+                    && group.file_name().is_some_and(|name| name != "..") => {}
+            (None, None) if helper != HelperKind::BrowserCell => {}
+            _ => return Err(String::from("its group isn't one in the delegated group")),
+        }
+        Ok(())
     }
 }
 
@@ -567,7 +641,11 @@ pub fn spawner_main() -> ExitCode {
         Ok(program) => program,
         Err(error) => return refuse_to_run(&format!("cannot locate its own binary: {error}")),
     };
-    serve(&broker, &Arc::new(program));
+    let policy = match Policy::from_env() {
+        Ok(policy) => policy,
+        Err(error) => return refuse_to_run(&format!("cannot read its policy: {error}")),
+    };
+    serve(&broker, &Arc::new((program, policy)));
     ExitCode::SUCCESS
 }
 
@@ -578,14 +656,15 @@ fn refuse_to_run(reason: &str) -> ExitCode {
 }
 
 /// Serves each connection the broker hands over on `broker`, on a thread
-/// of its own, until the broker goes. `program` is the binary helpers are
-/// started as.
-fn serve(broker: &UnixStream, program: &Arc<PathBuf>) {
+/// of its own, until the broker goes. `held` is the binary helpers are
+/// started as, and the policy every spec is held to.
+fn serve(broker: &UnixStream, held: &Arc<(PathBuf, Policy)>) {
     while let Ok(fd) = hatchling_sys::net::recv_fd(broker.as_fd()) {
-        let program = Arc::clone(program);
+        let held = Arc::clone(held);
         std::thread::spawn(move || {
             let stream = UnixStream::from(fd);
-            if let Err(error) = serve_connection(&stream, &program) {
+            let (program, policy) = &*held;
+            if let Err(error) = serve_connection(&stream, program, policy) {
                 tracing::warn!(%error, "a connection from the broker ended");
             }
         });
@@ -594,7 +673,7 @@ fn serve(broker: &UnixStream, program: &Arc<PathBuf>) {
 
 /// Answers one connection: one request, then, for a helper, its
 /// supervision until it ends or the broker goes.
-fn serve_connection(stream: &UnixStream, program: &Path) -> Result<(), Error> {
+fn serve_connection(stream: &UnixStream, program: &Path, policy: &Policy) -> Result<(), Error> {
     let Some(frame) = read_frame_or_eof(stream).map_err(gone)? else {
         return Ok(());
     };
@@ -613,7 +692,7 @@ fn serve_connection(stream: &UnixStream, program: &Path) -> Result<(), Error> {
             for _ in 0..3 {
                 stdio.push(hatchling_sys::net::recv_fd(stream.as_fd()).map_err(gone)?);
             }
-            serve_helper(stream, program, helper, &spec, &run_dir, stdio)
+            serve_helper(stream, program, policy, helper, &spec, &run_dir, stdio)
         }
         Request::Trees {
             give,
@@ -649,20 +728,19 @@ fn serve_connection(stream: &UnixStream, program: &Path) -> Result<(), Error> {
 fn serve_helper(
     stream: &UnixStream,
     program: &Path,
+    policy: &Policy,
     helper: HelperKind,
     spec: &str,
     run_dir: &Path,
     descriptors: Vec<OwnedFd>,
 ) -> Result<(), Error> {
     let refuse = |reason: String| send(stream, &Reply::Refused { reason });
-    let starts =
-        serde_json::from_str::<CellConfig>(spec).is_ok_and(|config| helper.starts(&config));
-    if !starts {
-        tracing::warn!(?helper, "refused a spec its helper doesn't start");
-        return refuse(format!(
-            "the spawner refused the spec: not a cell {} starts",
-            helper.subcommand()
-        ));
+    let checked = serde_json::from_str::<CellConfig>(spec)
+        .map_err(|_| String::from("it isn't a cell spec"))
+        .and_then(|config| policy.check(helper, &config));
+    if let Err(why) = checked {
+        tracing::warn!(?helper, %why, "refused a cell spec");
+        return refuse(format!("the spawner refused the spec: {why}"));
     }
     let [stdin, stdout, stderr]: [OwnedFd; 3] = match descriptors.try_into() {
         Ok(stdio) => stdio,
@@ -757,9 +835,15 @@ mod tests {
     /// broker's end.
     fn serving(program: &str) -> (Spawner, std::thread::JoinHandle<()>) {
         let (ours, theirs) = UnixStream::pair().unwrap();
-        let program = Arc::new(PathBuf::from(program));
-        let served = std::thread::spawn(move || serve(&theirs, &program));
+        let held = Arc::new((PathBuf::from(program), policy()));
+        let served = std::thread::spawn(move || serve(&theirs, &held));
         (Spawner::over(ours), served)
+    }
+
+    /// The policy of a skill cell the environment configures: what the
+    /// tests' specs are built from.
+    fn policy() -> Policy {
+        Policy::of(&CellConfig::skill("policy").unwrap())
     }
 
     fn run_dir(tag: &str) -> PathBuf {
@@ -940,7 +1024,7 @@ mod tests {
         served.join().unwrap();
         let (broker, theirs) = UnixStream::pair().unwrap();
         write_frame(&broker, br#"{"request":"steal"}"#).unwrap();
-        assert!(serve_connection(&theirs, Path::new("/bin/sh")).is_err());
+        assert!(serve_connection(&theirs, Path::new("/bin/sh"), &policy()).is_err());
         assert!(gone("x").to_string().contains("cannot be reached: x"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -993,6 +1077,7 @@ mod tests {
         serve_helper(
             &theirs,
             Path::new("/bin/sh"),
+            &policy(),
             HelperKind::SkillCell,
             "{}",
             Path::new("/nonexistent"),
@@ -1013,6 +1098,121 @@ mod tests {
         assert!(!refused.is_empty());
         drop(spawner);
         served.join().unwrap();
+    }
+
+    /// The policy refuses each field the broker could widen, each on its
+    /// own: the identity, the broker's uid in the cell, an endpoint, the
+    /// limits and the group; and takes the configured cell as it is.
+    #[test]
+    fn the_policy_refuses_each_field_it_does_not_configure() {
+        let policy = policy();
+        let skill: CellConfig = serde_json::from_str(&skill_spec()).unwrap();
+        assert_eq!(policy.check(HelperKind::SkillCell, &skill), Ok(()));
+        assert_eq!(Policy::from_env().unwrap(), policy);
+        let refused = |change: &dyn Fn(&mut CellConfig), helper: HelperKind| {
+            let mut config = skill.clone();
+            change(&mut config);
+            policy.check(helper, &config).unwrap_err()
+        };
+        assert_eq!(
+            refused(&|config| config.skill_code = None, HelperKind::SkillCell),
+            "not a cell skill-cell starts"
+        );
+        assert_eq!(
+            refused(&|config| config.uid_base += 1, HelperKind::SkillCell),
+            "its identity isn't the configured cell's"
+        );
+        assert_eq!(
+            refused(&|config| config.uid_count += 1, HelperKind::SkillCell),
+            "its identity isn't the configured cell's"
+        );
+        assert_eq!(
+            refused(&|config| config.gid_base = Some(0), HelperKind::SkillCell),
+            "its identity isn't the configured cell's"
+        );
+        assert_eq!(
+            refused(
+                &|config| config.broker_uid_in_cell += 1,
+                HelperKind::SkillCell
+            ),
+            "its broker isn't the configured cell's"
+        );
+        let run = |config: &mut CellConfig| {
+            config.skill_code = None;
+            config.scheduled = Some(crate::cell::ScheduledRun {
+                task: String::from("t"),
+                missed: false,
+                due: 0,
+                model_endpoint: None,
+                model_name: None,
+                model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
+                depth: 0,
+                event: None,
+                max_steps: None,
+                subagent: false,
+                chat: false,
+                history: Vec::new(),
+            });
+        };
+        assert_eq!(
+            refused(
+                &|config| {
+                    run(config);
+                    config.connected = false;
+                },
+                HelperKind::AgentRun
+            ),
+            "a cell with an endpoint"
+        );
+        let mut connected_run = skill.clone();
+        run(&mut connected_run);
+        connected_run.connected = true;
+        assert_eq!(policy.check(HelperKind::AgentRun, &connected_run), Ok(()));
+    }
+
+    /// The policy refuses limits and a group the configuration doesn't
+    /// give, each on its own.
+    #[test]
+    fn the_policy_refuses_limits_and_a_group_it_does_not_configure() {
+        let policy = policy();
+        let skill: CellConfig = serde_json::from_str(&skill_spec()).unwrap();
+        let refused = |change: &dyn Fn(&mut CellConfig)| {
+            let mut config = skill.clone();
+            change(&mut config);
+            policy.check(HelperKind::SkillCell, &config).unwrap_err()
+        };
+        assert_eq!(
+            refused(&|config| config.limits.processes = Some(1 << 20)),
+            "its limits aren't the configured ones"
+        );
+        assert_eq!(
+            refused(&|config| config.limits.memory = Some(u64::MAX)),
+            "its limits aren't the configured ones"
+        );
+        assert_eq!(
+            refused(&|config| config.cgroup = Some(PathBuf::from("/sys/fs/cgroup/elsewhere"))),
+            "its group isn't one in the delegated group"
+        );
+        // With a delegated group: a group directly in it, and only there.
+        let delegated = Policy {
+            cgroup: Some(PathBuf::from("/sys/fs/cgroup/hatchling")),
+            ..policy.clone()
+        };
+        let in_group = |group: Option<&str>| {
+            let mut config = skill.clone();
+            config.cgroup = group.map(PathBuf::from);
+            delegated.check(HelperKind::SkillCell, &config)
+        };
+        assert_eq!(in_group(Some("/sys/fs/cgroup/hatchling/cell-1")), Ok(()));
+        for outside in [
+            None,
+            Some("/sys/fs/cgroup/hatchling"),
+            Some("/sys/fs/cgroup/hatchling/cell-1/deeper"),
+            Some("/sys/fs/cgroup/hatchling/.."),
+            Some("/sys/fs/cgroup/other/cell-1"),
+        ] {
+            assert!(in_group(outside).is_err(), "{outside:?}");
+        }
     }
 
     #[test]
