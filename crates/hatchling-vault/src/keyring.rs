@@ -52,8 +52,8 @@ use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::Error;
-use crate::seal::MasterKey;
 use crate::acting::{give, owner_in};
+use crate::seal::MasterKey;
 use crate::vault::ensure_owner_only_dir;
 
 /// The keyring format this build writes.

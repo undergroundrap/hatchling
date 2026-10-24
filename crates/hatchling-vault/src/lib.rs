@@ -51,6 +51,7 @@ pub mod vault;
 // The name alphabet and the size bound are wire-contract rules: both
 // ends of the protocol validate the same values, so they live in
 // `hatchling-core` and are re-exported here for the broker's use.
+pub use acting::act_for;
 pub use backup::BackupCodes;
 pub use error::Error;
 pub use fido2::{Authenticator, AuthenticatorError, Credential, KeyCheck, SingleKeyRisk};
@@ -66,7 +67,6 @@ pub use seal::{
 };
 pub use secret::Secret;
 pub use totp::{PendingTotp, totp_code};
-pub use acting::act_for;
 pub use vault::Vault;
 
 #[cfg(test)]
