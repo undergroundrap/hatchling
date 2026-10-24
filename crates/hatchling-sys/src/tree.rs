@@ -544,7 +544,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("run/work/sub")).unwrap();
         std::fs::write(base.join("run/work/sub/file"), b"f").unwrap();
-        symlink(base.join("run"), base.join("link")).unwrap();
+        // A relative link, which stays beneath the base: only refusing every
+        // link refuses it.
+        symlink("run", base.join("link")).unwrap();
         let (uid, gid) = (crate::euid(), crate::egid());
         let changed = chown_tree_beneath(&base, Path::new("run/work"), uid, gid).unwrap();
         assert_eq!(changed, 3, "work, sub and file");

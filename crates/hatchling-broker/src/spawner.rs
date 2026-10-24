@@ -1264,7 +1264,8 @@ mod tests {
             own_trees(&policy, TreeOp::Give, std::slice::from_ref(&work), cell).unwrap();
             own_trees(&policy, TreeOp::Reclaim, std::slice::from_ref(&work), cell).unwrap();
             // A link on the way is refused when the tree is opened.
-            std::os::unix::fs::symlink(&work, base.join("linked")).unwrap();
+            // A relative link, which stays beneath the temp directory.
+            std::os::unix::fs::symlink("work", base.join("linked")).unwrap();
             let linked = own_trees(&policy, TreeOp::Give, &[base.join("linked/sub")], cell);
             assert!(
                 linked.unwrap_err().contains("give"),
