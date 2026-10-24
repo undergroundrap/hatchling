@@ -53,12 +53,12 @@ use hatchling_isolation::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{Config, Error};
 use crate::browser_session::BrowserSettings;
-use crate::harness::Harnesses;
 use crate::cell::{CellConfig, CellLimits, Process};
+use crate::harness::Harnesses;
 use crate::harness_tree::TreeOp;
 use crate::run_launcher::{BROKER_PID_ENV, broker_pid, forget_spec, spec_args};
+use crate::{Config, Error};
 
 /// The spawner's subcommand: `hatchling-broker spawner`, started only by
 /// the broker.
@@ -1446,7 +1446,10 @@ mod tests {
         let unnamed = temp.join(format!("hatchling-other-{}", std::process::id()));
         std::fs::create_dir_all(&unnamed).unwrap();
         std::fs::set_permissions(&unnamed, std::fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(paths.allow(&unnamed.join("skill")).is_err(), "not a run directory's name");
+        assert!(
+            paths.allow(&unnamed.join("skill")).is_err(),
+            "not a run directory's name"
+        );
         std::fs::remove_dir_all(&unnamed).unwrap();
         // Another owner's, or a directory others can write: refused.
         let elsewhere = Paths {
