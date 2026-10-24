@@ -285,32 +285,20 @@ fn supervise(
     limit: usize,
 ) -> Result<Vec<u8>, SkillRunError> {
     let deadline = Instant::now() + runtime.timeout;
-    let mut command = Command::new(&runtime.spawner);
-    command
-        .args(
-            crate::run_launcher::spec_args(SKILL_CELL_SUBCOMMAND, run_dir, spec)
-                .map_err(SkillRunError::Spawn)?,
-        )
-        .env("TMPDIR", run_dir)
-        .env(
-            crate::run_launcher::BROKER_PID_ENV,
-            crate::run_launcher::broker_pid(),
-        )
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut std_child =
-        retry_while_busy(|| command.spawn(), std::thread::sleep).map_err(|err| {
-            crate::run_launcher::forget_spec(run_dir);
-            SkillRunError::Spawn(format!("cannot start {}: {err}", runtime.spawner.display()))
-        })?;
-    let child = supervised(&mut std_child)?;
-    let stdin = std_child.stdin.take();
-    let stdout = std_child.stdout.take();
-    let stderr = std_child.stderr.take();
-    // `child` owns supervision (pidfd, bounded waits, kill-on-drop); the
-    // std handle neither kills nor waits on drop.
-    drop(std_child);
+    let started = crate::spawner::start_helper(
+        &runtime.spawner,
+        crate::spawner::HelperKind::SkillCell,
+        spec,
+        run_dir,
+        crate::spawner::Input::Piped,
+        true,
+    )
+    .map_err(SkillRunError::Spawn)?;
+    // `child` owns supervision (bounded waits, kill-on-drop).
+    let child = started.process;
+    let stdin = started.stdin;
+    let stdout = started.stdout;
+    let stderr = Some(started.stderr);
 
     // A skill that never reads its input cannot wedge the broker: the
     // write happens off this thread, and the pipe closes (the skill's
@@ -386,20 +374,6 @@ fn output_read_limit(limit: usize) -> u64 {
 /// The time left before `deadline`, zero once it has passed.
 fn remaining(deadline: Instant) -> Duration {
     deadline.saturating_duration_since(Instant::now())
-}
-
-/// Puts the just-spawned helper under the backend's supervision. If that
-/// fails the backend kills and reaps it at once: it is never left
-/// unsupervised.
-fn supervised(std_child: &mut std::process::Child) -> Result<Process, SkillRunError> {
-    hatchling_isolation::platform()
-        .supervise(std_child)
-        .map_err(|error| match error {
-            SuperviseError::InvalidPid => SkillRunError::Spawn(error.to_string()),
-            SuperviseError::Refused(source) => {
-                SkillRunError::Spawn(format!("cannot supervise: {source}"))
-            }
-        })
 }
 
 /// The helper's private temp dir, removed (with anything a killed helper

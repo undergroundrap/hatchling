@@ -65,6 +65,9 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
     // alone reads the credentials of the requests it makes, from the
     // keeper on the channel just made for it, which the broker closes.
     crate::egress_authority::start(authoritys)?;
+    // The spawner last, still on one thread (WO-017, step 3): every
+    // cell's helper is started through it.
+    crate::spawner::start()?;
     // Load skills before binding, before any session can name one:
     // each is verified, pinned, and registered, or refused loudly on
     // its own. A broken skill never stops the broker; it never runs.

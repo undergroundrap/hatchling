@@ -277,6 +277,14 @@ pub enum Error {
         reason: String,
     },
 
+    /// The spawner, which starts every cell's helper, couldn't be started
+    /// or reached.
+    #[error("spawner: {reason}")]
+    Spawner {
+        /// What happened.
+        reason: String,
+    },
+
     /// The vault's access log could not be read or written.
     #[error("vault access log: {reason}")]
     VaultAccessLog {

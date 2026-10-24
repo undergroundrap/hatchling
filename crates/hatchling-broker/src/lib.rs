@@ -91,6 +91,7 @@ pub mod skill_run;
 pub mod skills;
 pub mod space_ops;
 pub mod subagent_ops;
+pub mod spawner;
 pub mod sweep;
 pub use space_ops::{EndAdmissions, MediaMeta, SealedSpaceStore, SpaceSession, handle_space_op};
 #[cfg(test)]

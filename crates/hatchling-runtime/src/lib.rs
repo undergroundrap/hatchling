@@ -24,6 +24,7 @@ use std::path::Path;
 use hatchling_broker::AGENT_RUN_SUBCOMMAND;
 use hatchling_broker::browser_cell::BROWSER_CELL_SUBCOMMAND;
 use hatchling_broker::egress_authority::EGRESS_AUTHORITY_SUBCOMMAND;
+use hatchling_broker::spawner::SPAWNER_SUBCOMMAND;
 use hatchling_broker::harness_tree::HARNESS_TREE_SUBCOMMAND;
 use hatchling_broker::keeper::VAULT_KEEPER_SUBCOMMAND;
 use hatchling_broker::skill_run::SKILL_CELL_SUBCOMMAND;
@@ -89,7 +90,8 @@ pub fn route<'a>(argv0: &str, args: &'a [String]) -> Route<'a> {
             | BROWSER_CELL_SUBCOMMAND
             | HARNESS_TREE_SUBCOMMAND
             | VAULT_KEEPER_SUBCOMMAND
-            | EGRESS_AUTHORITY_SUBCOMMAND,
+            | EGRESS_AUTHORITY_SUBCOMMAND
+            | SPAWNER_SUBCOMMAND,
         ) => Route::Broker(args),
         Some("--help" | "-h" | "help") if args.len() == 1 => Route::Help,
         Some("--version" | "-V") if args.len() == 1 => Route::Version,
@@ -132,6 +134,7 @@ mod tests {
             HARNESS_TREE_SUBCOMMAND,
             VAULT_KEEPER_SUBCOMMAND,
             EGRESS_AUTHORITY_SUBCOMMAND,
+            SPAWNER_SUBCOMMAND,
         ] {
             let given = args(&[helper, "/run/spec"]);
             assert_eq!(

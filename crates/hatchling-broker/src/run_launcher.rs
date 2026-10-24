@@ -770,25 +770,17 @@ fn start_helper(
     run_dir: &Path,
     handoff: UnixStream,
 ) -> Result<Started, String> {
-    let mut std_child = Command::new(spawner)
-        .args(spec_args(AGENT_RUN_SUBCOMMAND, run_dir, spec)?)
-        .env("TMPDIR", run_dir)
-        .env(BROKER_PID_ENV, broker_pid())
-        .stdin(Stdio::from(OwnedFd::from(handoff)))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|err| {
-            forget_spec(run_dir);
-            format!("cannot start {}: {err}", spawner.display())
-        })?;
-    // On a refusal the backend has already killed and reaped the helper.
-    let child = hatchling_isolation::platform()
-        .supervise(&mut std_child)
-        .map_err(|error| format!("cannot supervise the run helper: {error}"))?;
-    let stdout = std_child.stdout.take();
-    let stderr = std_child.stderr.take();
-    drop(std_child);
+    let started = crate::spawner::start_helper(
+        spawner,
+        crate::spawner::HelperKind::AgentRun,
+        spec,
+        run_dir,
+        crate::spawner::Input::Fd(OwnedFd::from(handoff)),
+        true,
+    )?;
+    let child = started.process;
+    let stdout = started.stdout;
+    let stderr = Some(started.stderr);
     let (sender, output) = mpsc::channel();
     let limit = u64::try_from(MAX_RUN_OUTPUT_BYTES).map_or(u64::MAX, |cap| cap + 1);
     std::thread::spawn(move || {
