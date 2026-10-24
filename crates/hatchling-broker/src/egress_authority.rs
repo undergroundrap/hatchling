@@ -56,9 +56,9 @@
 
 use std::collections::BTreeMap;
 use std::os::fd::{AsFd as _, AsRawFd as _};
-use std::os::unix::process::CommandExt as _;
 use std::os::unix::net::UnixListener;
 use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt as _;
 use std::process::{Child, Command, ExitCode};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
@@ -286,6 +286,7 @@ impl Authority {
         control
             .set_read_timeout(None)
             .map_err(|e| failed(format!("cannot wait on it: {e}")))?;
+        drop(control);
         if said.is_empty() {
             Ok(())
         } else {
@@ -1123,7 +1124,10 @@ mod tests {
         };
         said(Some(b"")).unwrap();
         let refused = said(Some(b"cannot read the CA bundle")).unwrap_err();
-        assert!(refused.to_string().contains("cannot read the CA bundle"), "{refused}");
+        assert!(
+            refused.to_string().contains("cannot read the CA bundle"),
+            "{refused}"
+        );
         let gone = said(None).unwrap_err();
         assert!(gone.to_string().contains("didn't start"), "{gone}");
         // Not as root, the authority is the broker's own user.
