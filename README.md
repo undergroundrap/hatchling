@@ -103,7 +103,7 @@ runs; it supplies the agent's identity and configuration.
 
 **Requirements:** Linux 5.11+ with unprivileged user namespaces and seccomp-BPF (or WSL2); Rust (the pinned 1.98.1 installs itself through `rust-toolchain.toml`; the minimum supported is 1.85); a C compiler; Python 3 for the examples; Node.js 22.12+ to build the app; root, for the reason [below](#running-without-root), or a [subordinate id range](#quickstart-without-root) for your user.
 
-Build, install the broker, the agent and the app's host, and create four system users nothing else runs as: the one the cells run as, the vault keeper's, which alone owns the vault and its key, the egress authority's, which alone reads the credentials of the requests it makes, and the broker's, which owns its stores.
+Build, install the broker, the agent and the app's host, and create four system users nothing else runs as: the one the cells run as, the vault keeper's, which alone owns the vault and its key, the egress authority's, which alone reads the credentials of the requests it makes, and the broker's own, which it runs as once it has started, and which owns what it keeps.
 
 ```bash
 git clone https://github.com/undergroundrap/hatchling
