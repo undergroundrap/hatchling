@@ -103,7 +103,7 @@ runs; it supplies the agent's identity and configuration.
 
 **Requirements:** Linux 5.11+ with unprivileged user namespaces and seccomp-BPF (or WSL2); Rust (the pinned 1.98.1 installs itself through `rust-toolchain.toml`; the minimum supported is 1.85); a C compiler; Python 3 for the examples; Node.js 22.12+ to build the app; root, for the reason [below](#running-without-root), or a [subordinate id range](#quickstart-without-root) for your user.
 
-Build, install the broker, the agent and the app's host, and create three system users nothing else runs as: the one the cells run as, the vault keeper's, which alone owns the vault and its key, and the egress authority's, which alone reads the credentials of the requests it makes.
+Build, install the broker, the agent and the app's host, and create four system users nothing else runs as: the one the cells run as, the vault keeper's, which alone owns the vault and its key, the egress authority's, which alone reads the credentials of the requests it makes, and the broker's, which owns its stores.
 
 ```bash
 git clone https://github.com/undergroundrap/hatchling
@@ -113,6 +113,7 @@ sudo install -m 755 target/release/hatchling-broker target/release/hatchling-age
 sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin hatchling-cell
 sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin hatchling-keeper
 sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin hatchling-egress
+sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin hatchling-broker
 ```
 
 Or install from crates.io: `cargo install hatchling-runtime` builds one `hatchling` binary that is both. Copy it where the cell's user can run it (`sudo install -m 755 ~/.cargo/bin/hatchling /usr/local/bin/`), then below use `hatchling broker` for `hatchling-broker`, and set `HATCHLING_AGENT_BIN=/usr/local/bin/hatchling`. Keep the clone either way: the examples run from it, and the app's host is built there (`cargo build --release -p hatchling-host`, then install `target/release/hatchling-host` as above).

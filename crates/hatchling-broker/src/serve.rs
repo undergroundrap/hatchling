@@ -60,6 +60,9 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
     // checks the stores, and hands the broker the keys of its own stores.
     // The master key and the secrets store's key stay with the keeper; a
     // key or store problem stops the broker before it serves anyone.
+    // Run as root, its stores are the broker's user's (WO-017), which the
+    // keeper's start reads the kept keys of.
+    crate::broker_user::act_for_broker(config)?;
     let (key, authoritys) = crate::keeper::start()?;
     // The egress authority next, still on one thread (WO-017, step 2): it
     // alone reads the credentials of the requests it makes, from the
