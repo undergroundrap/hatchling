@@ -265,6 +265,56 @@ pub fn ensure_private_dir(path: &Path) -> Result<(), Error> {
         .map_err(failed("chmod the directory"))
 }
 
+/// Writes `bytes` to a new file `name` in the directory `dir`, for
+/// `owner`, who is given it (WO-017: the spawner writing an approved
+/// delivery into the owner's workspace).
+///
+/// `dir` is opened without following a link, and must be a directory
+/// `owner` owns: what is written lands in a directory of theirs, whatever
+/// they change on the way to it. `name` is created there, relative to
+/// that handle, never replacing anything and never through a link
+/// (`O_EXCL | O_NOFOLLOW`), mode 0600, and given to `owner` before a
+/// byte is written.
+///
+/// # Errors
+///
+/// Returns [`Error::Ownership`] if `dir` isn't a directory of `owner`'s,
+/// `name` isn't one plain name, the file exists or can't be made, or it
+/// can't be given or written.
+pub fn write_new_file_for(dir: &Path, name: &str, bytes: &[u8], owner: u32) -> Result<(), Error> {
+    use std::io::Write as _;
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\0') {
+        return Err(refused("make a file in the directory", "not one plain name"));
+    }
+    let handle = open_dir_nofollow(dir).map_err(failed("open the directory"))?;
+    let stat = rustix::fs::fstat(&handle).map_err(failed("fstat the directory"))?;
+    if stat.st_uid != owner {
+        return Err(refused(
+            "make a file in the directory",
+            "the directory isn't the owner's",
+        ));
+    }
+    let made = rustix::fs::openat(
+        &handle,
+        name,
+        rustix::fs::OFlags::WRONLY
+            | rustix::fs::OFlags::CREATE
+            | rustix::fs::OFlags::EXCL
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::from_raw_mode(0o600),
+    )
+    .map_err(failed("make the file"))?;
+    let mut file = std::fs::File::from(made);
+    give_to(&file, owner)?;
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|source| Error::Ownership {
+            operation: "write the file",
+            source,
+        })
+}
+
 /// Opens `path` only if it is a directory itself: a symlink, even to a
 /// directory, or anything else fails.
 fn open_dir_nofollow(path: &Path) -> Result<rustix::fd::OwnedFd, rustix::io::Errno> {
@@ -289,6 +339,40 @@ pub const fn private_dir_ok(uid: u32, mode: u32, euid: u32) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// A new file is written only in a directory of its owner's, reached
+    /// without a link, under one plain name, never over another file;
+    /// written for another user only as root.
+    #[test]
+    fn a_new_file_is_written_only_in_its_owners_directory() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let dir = std::env::temp_dir().join(format!("hatchling-new-file-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).unwrap();
+        let me = rustix::process::geteuid().as_raw();
+        super::write_new_file_for(&dir, "report.md", b"hello", me).unwrap();
+        let made = std::fs::metadata(dir.join("report.md")).unwrap();
+        assert_eq!((made.uid(), made.permissions().mode() & 0o777), (me, 0o600));
+        assert_eq!(std::fs::read(dir.join("report.md")).unwrap(), b"hello");
+        // Never over a file, a link included.
+        assert!(super::write_new_file_for(&dir, "report.md", b"again", me).is_err());
+        std::os::unix::fs::symlink("/etc/passwd", dir.join("linked")).unwrap();
+        assert!(super::write_new_file_for(&dir, "linked", b"x", me).is_err());
+        for name in ["", ".", "..", "a/b"] {
+            assert!(super::write_new_file_for(&dir, name, b"x", me).is_err(), "{name:?}");
+        }
+        // Not through a linked directory, nor into another owner's.
+        std::os::unix::fs::symlink(&dir, dir.with_extension("link")).unwrap();
+        assert!(super::write_new_file_for(&dir.with_extension("link"), "via", b"x", me).is_err());
+        assert!(super::write_new_file_for(&dir, "theirs", b"x", me.wrapping_add(4242)).is_err());
+        if me == 0 {
+            std::os::unix::fs::chown(&dir, Some(4242), None).unwrap();
+            super::write_new_file_for(&dir, "given", b"g", 4242).unwrap();
+            assert_eq!(std::fs::metadata(dir.join("given")).unwrap().uid(), 4242);
+        }
+        std::fs::remove_file(dir.with_extension("link")).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// A file is given to another user only as root; given to this
     /// process's own user, it is left as it is, and a symlink is never
     /// opened as the directory it names.
