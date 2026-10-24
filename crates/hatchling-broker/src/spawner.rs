@@ -375,12 +375,12 @@ impl SpawnedProcess {
     /// Waits up to `timeout` for how the helper ended.
     fn ended_within(&self, timeout: Duration) -> Result<Option<Exit>, IsolationError> {
         let (slot, changed) = &*self.ended;
-        let slot = slot.lock().map_err(|_| wait_error("its watch panicked"))?;
-        let (slot, _) = changed
-            .wait_timeout_while(slot, timeout, |slot| slot.is_none())
-            .map_err(|_| wait_error("its watch panicked"))?;
-        let ended = slot.clone();
-        drop(slot);
+        let guard = slot.lock().map_err(|_| wait_error("its watch panicked"))?;
+        let ended = changed
+            .wait_timeout_while(guard, timeout, |slot| slot.is_none())
+            .map_err(|_| wait_error("its watch panicked"))?
+            .0
+            .clone();
         match ended {
             None => Ok(None),
             Some(Ok(exit)) => Ok(Some(exit)),
@@ -935,7 +935,10 @@ mod tests {
         let (ours, theirs) = UnixStream::pair().unwrap();
         let process = SpawnedProcess::watching(ours, 7).unwrap();
         assert_eq!(process.outcome().unwrap(), None);
-        assert_eq!(process.ended_within(Duration::from_millis(10)).unwrap(), None);
+        assert_eq!(
+            process.ended_within(Duration::from_millis(10)).unwrap(),
+            None
+        );
         send(&theirs, &Reply::Exited { status: 3 << 8 }).unwrap();
         let exit = process.ended_within(Duration::from_secs(10)).unwrap();
         assert_eq!(exit.map(|exit| exit.code), Some(3));
