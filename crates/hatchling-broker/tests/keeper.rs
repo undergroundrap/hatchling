@@ -204,43 +204,48 @@ fn the_keeper_keeps_the_secrets_and_releases_only_what_is_configured() {
 /// as the store keeps it. With `close`, each store there is closed to
 /// everyone from when the broker has read its key until the keeper
 /// answers: a keeper that opened one would stop on its mode.
-fn keys_from(dir: &Path, close: bool) -> StoreKeys {
-    let (child, stream, _authoritys) = start(dir).unwrap();
-    let asking = read_frame(&stream).unwrap();
-    let (kind, asking) = asking.split_first().unwrap();
-    assert_eq!(*kind, 2, "{}", String::from_utf8_lossy(asking));
-    let asked = hatchling_vault::handoff::asked(asking).unwrap();
-    let kept: Vec<_> = asked
+fn keys_from(dir: &Path, close: bool) -> io::Result<StoreKeys> {
+    let vault = |error: hatchling_vault::Error| io::Error::other(error.to_string());
+    let (child, stream, _authoritys) = start(dir)?;
+    let asking = read_frame(&stream).map_err(io::Error::other)?;
+    let Some((&2, asking)) = asking.split_first() else {
+        return Err(io::Error::other(format!("not an asking: {asking:?}")));
+    };
+    let asked = hatchling_vault::handoff::asked(asking).map_err(vault)?;
+    let kept = asked
         .iter()
-        .map(|(store, root)| hatchling_vault::wrapped_store_key(root, *store).unwrap())
-        .collect();
+        .map(|(store, root)| hatchling_vault::wrapped_store_key(root, *store))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(vault)?;
     let closed: Vec<&PathBuf> = asked
         .iter()
         .map(|(_, root)| root)
         .filter(|root| close && root.exists())
         .collect();
-    let mode = |root: &PathBuf, mode: u32| {
-        std::fs::set_permissions(root, std::fs::Permissions::from_mode(mode)).unwrap();
+    if close && closed.is_empty() {
+        return Err(io::Error::other("no store was there to close"));
+    }
+    let mode = |mode: u32| {
+        closed.iter().try_for_each(|root| {
+            std::fs::set_permissions(root, std::fs::Permissions::from_mode(mode))
+        })
     };
-    for root in &closed {
-        mode(root, 0o000);
-    }
-    write_frame(
-        &stream,
-        &hatchling_vault::handoff::kept_bytes(&kept).unwrap(),
-    )
-    .unwrap();
-    let answer = read_frame(&stream).unwrap();
-    for root in &closed {
-        mode(root, 0o700);
-    }
-    let (kind, handed) = answer.split_first().unwrap();
-    assert_eq!(*kind, 0, "{}", String::from_utf8_lossy(handed));
-    assert!(!close || !closed.is_empty(), "no store was there to close");
-    let keys = StoreKeys::from_bytes(handed).unwrap();
+    mode(0o000)?;
+    let answered = hatchling_vault::handoff::kept_bytes(&kept)
+        .map_err(vault)
+        .and_then(|kept| write_frame(&stream, &kept).map_err(io::Error::other))
+        .and_then(|()| read_frame(&stream).map_err(io::Error::other));
+    mode(0o700)?;
+    let answer = answered?;
+    let Some((&0, handed)) = answer.split_first() else {
+        return Err(io::Error::other(String::from_utf8_lossy(&answer).into_owned()));
+    };
+    let keys = StoreKeys::from_bytes(handed).map_err(vault)?;
     drop(stream);
-    assert!(exits(child).unwrap().success());
-    keys
+    if !exits(child)?.success() {
+        return Err(io::Error::other("the keeper failed"));
+    }
+    Ok(keys)
 }
 
 /// A store's key, as the store keeps it, is unwrapped by the keeper
@@ -253,15 +258,12 @@ fn the_keeper_unwraps_a_kept_key_without_opening_its_store() {
     let artifacts = dir.join("artifacts");
     let name: hatchling_vault::SecretName = "kept".parse().unwrap();
     // A first start gives the store a key, which the broker keeps.
-    let keys = keys_from(&dir, false);
+    let keys = keys_from(&dir, false).unwrap();
     SealedVault::open_in(&artifacts, &keys, Store::ARTIFACTS)
         .unwrap()
-        .store(
-            &name,
-            &hatchling_vault::Secret::new(b"a".to_vec()).unwrap(),
-        )
+        .store(&name, &hatchling_vault::Secret::new(b"a".to_vec()).unwrap())
         .unwrap();
-    let keys = keys_from(&dir, true);
+    let keys = keys_from(&dir, true).unwrap();
     assert_eq!(
         SealedVault::open_in(&artifacts, &keys, Store::ARTIFACTS)
             .unwrap()
