@@ -531,7 +531,10 @@ mod tests {
     /// refused is never written.
     #[test]
     fn an_asking_and_its_answer_are_read_exactly_or_refused() {
-        let (spaces, later) = (PathBuf::from("/srv/h/spaces"), PathBuf::from("/srv/h/later"));
+        let (spaces, later) = (
+            PathBuf::from("/srv/h/spaces"),
+            PathBuf::from("/srv/h/later"),
+        );
         let stores = [
             (Store::SPACES, spaces.as_path()),
             (Store::SCHEDULES, later.as_path()),
@@ -547,10 +550,16 @@ mod tests {
         let read_ask = |bytes: &[u8]| asked(bytes).map(drop);
         let read_kept = |bytes: &[u8]| kept(bytes).map(drop);
         for len in 0..ask.len() {
-            assert!(read_ask(ask.get(..len).unwrap()).is_err(), "asking cut at {len}");
+            assert!(
+                read_ask(ask.get(..len).unwrap()).is_err(),
+                "asking cut at {len}"
+            );
         }
         for len in 0..answer.len() {
-            assert!(read_kept(answer.get(..len).unwrap()).is_err(), "answer cut at {len}");
+            assert!(
+                read_kept(answer.get(..len).unwrap()).is_err(),
+                "answer cut at {len}"
+            );
         }
         let refused = |result: Result<(), Error>, reason: &str| {
             assert!(

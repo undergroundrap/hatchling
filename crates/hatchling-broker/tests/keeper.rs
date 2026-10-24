@@ -141,7 +141,11 @@ fn the_keeper_keeps_the_secrets_and_releases_only_what_is_configured() {
         .map(|(store, root)| hatchling_vault::wrapped_store_key(root, *store).unwrap())
         .collect();
     std::fs::set_permissions(&artifacts, std::fs::Permissions::from_mode(0o000)).unwrap();
-    write_frame(&stream, &hatchling_vault::handoff::kept_bytes(&kept).unwrap()).unwrap();
+    write_frame(
+        &stream,
+        &hatchling_vault::handoff::kept_bytes(&kept).unwrap(),
+    )
+    .unwrap();
     let answer = read_frame(&stream).unwrap();
     std::fs::set_permissions(&artifacts, std::fs::Permissions::from_mode(0o700)).unwrap();
     let (kind, handed) = answer.split_first().unwrap();
