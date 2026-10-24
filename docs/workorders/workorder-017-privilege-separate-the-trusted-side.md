@@ -202,6 +202,16 @@ Filled in at close.
        - **2c:** the authority runs as `hatchling-egress`, with its inputs (the CA bundle, the harnesses' binaries) readable by it.
          *2c landed:* the authority starts as `hatchling-egress` in root mode, and the broker waits for its word that it started.
     3. **The broker drops root.** It runs as `hatchling-broker` with an empty capability set, and the sockets admit the recorded owner. The tests read `/proc/<pid>/status` for all four processes' Uid and Cap lines, and a hand mutant that skips the drop fails one.
+       *In parts, after mapping what the broker still does as root (2026-10-24). Each lands with the broker still root; the drop comes last.*
+       - **3a:** a cell's identity is worked out for its maker. Today it follows the broker's own uid when the spec is built, which would change every identity after the drop. Also, `ldd` runs from a fixed path.
+       - **3b:** spec files and the helpers' staging move out of the broker's run directories, and the spawner learns the broker's uid for its path rule. This closes the TOCTOU left from slice 1.
+       - **3c:** a harness's trees in `own` mode are given and taken back through the spawner.
+       - **3d:** the spawner makes each cell's group. A broker holding the delegated group could lift its cells' limits.
+       - **3e:** the owner is recorded at start. The owner-facing sockets and their token files are bound before the drop and given to the owner, and the stale-file checks accept that owner.
+       - **3f:** the broker's stores, memory, goals, trust roots and lock are handed to `hatchling-broker`. The keeper's start, which reads the stores' kept keys as root, acts for that user there.
+       - **3g:** the drop itself, after the spawner starts while there is one thread, with the `/proc` tests and the README.
+
+       *3a landed:* the broker records the spawner's uid and gid when it starts it (`spawns_as`). Identities, subordinate ids and the uid the agent sees its maker as are all worked out for that maker. The agent's check of its maker's uid now holds by design rather than by the broker and the spawner being one user: the cell's connection is made by the spawner's helper, which is the maker.
     4. **Rootless.** The same split on subordinate ids.
     5. **The README and the module map**, and the close-out evidence.
 - **Order matters.** The keeper comes first: it forces the grant-handle abstraction the other two build on, and it's the smallest surface with the clearest threat. The egress authority is second, because it's the keeper's only plaintext consumer. The spawner is last, because it's what makes the separate users mean anything, and it's the largest change.
