@@ -97,9 +97,7 @@ fn the_real_spawner_starts_the_real_helper_on_the_spec_it_wrote() {
     config.skill_code = Some(code.clone());
     let spec = serde_json::to_string(&config).unwrap();
     let (fds, mut errors) = stdio().unwrap();
-    let process = spawner
-        .helper(HelperKind::SkillCell, &spec, &dir, fds)
-        .unwrap();
+    let process = spawner.helper(HelperKind::SkillCell, &spec, fds).unwrap();
     let exit = process.wait_deadline(Duration::from_secs(30)).unwrap();
     let mut said = String::new();
     errors.read_to_string(&mut said).unwrap();
@@ -121,7 +119,7 @@ fn the_real_spawner_starts_the_real_helper_on_the_spec_it_wrote() {
     );
     let (fds, _) = stdio().unwrap();
     let refused = spawner
-        .helper(HelperKind::BrowserCell, &spec, &dir, fds)
+        .helper(HelperKind::BrowserCell, &spec, fds)
         .unwrap_err();
     assert!(
         refused.contains("the spawner refused the spec"),
@@ -132,7 +130,7 @@ fn the_real_spawner_starts_the_real_helper_on_the_spec_it_wrote() {
     let outside = serde_json::to_string(&config).unwrap();
     let (fds, _) = stdio().unwrap();
     let refused = spawner
-        .helper(HelperKind::SkillCell, &outside, &dir, fds)
+        .helper(HelperKind::SkillCell, &outside, fds)
         .unwrap_err();
     assert!(refused.contains("/etc isn't a path"), "{refused}");
     drop((process, spawner));
@@ -158,7 +156,7 @@ fn the_real_spawner_starts_the_brokers_agent_cell_and_hands_back_its_connection(
     let config = common::broker_config(&socket, uid)?;
     let mut cell = common::cell_config(&socket, uid)?;
     cell.connected = true;
-    let (process, connection) = spawner.agent_cell(&cell, &dir)?;
+    let (process, connection) = spawner.agent_cell(&cell)?;
     connection
         .set_read_timeout(Some(Duration::from_secs(10)))
         .map_err(|e| format!("set timeout: {e}"))?;
