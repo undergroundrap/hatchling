@@ -212,6 +212,7 @@ Filled in at close.
        - **3g:** the drop itself, after the spawner starts while there is one thread, with the `/proc` tests and the README. The spawner's path rule then takes the broker's uid, not its own, for the broker's run directories.
        - **3h:** a cell's bind sources are opened by the spawner, which mounts the open files. Today they are checked by path and mounted by path, so a broker that owns a run directory could change one in between. This is the TOCTOU left from slice 1.
 
+       *3b landed:* each helper runs in a directory the spawner makes for it and removes when it ends. Its spec is written there, and its cell is staged there. The broker no longer names a directory for the spawner to write into: the request carries none.
        *3a landed:* the broker records the spawner's uid and gid when it starts it (`spawns_as`). Identities, subordinate ids and the uid the agent sees its maker as are all worked out for that maker. The agent's check of its maker's uid now holds by design rather than by the broker and the spawner being one user: the cell's connection is made by the spawner's helper, which is the maker.
     4. **Rootless.** The same split on subordinate ids.
     5. **The README and the module map**, and the close-out evidence.
