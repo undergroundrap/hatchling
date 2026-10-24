@@ -1176,7 +1176,7 @@ mod tests {
         agent.connected = true;
         assert!(HelperKind::AgentRun.starts(&agent));
         assert!(!HelperKind::SkillCell.starts(&agent));
-        let mut skill_connected = skill.clone();
+        let mut skill_connected = skill;
         skill_connected.connected = true;
         assert!(!HelperKind::AgentRun.starts(&skill_connected));
         let mut browser = agent;

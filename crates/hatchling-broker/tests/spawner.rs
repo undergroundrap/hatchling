@@ -162,10 +162,7 @@ fn the_real_spawner_starts_the_brokers_agent_cell_and_hands_back_its_connection(
     connection
         .set_read_timeout(Some(Duration::from_secs(10)))
         .map_err(|e| format!("set timeout: {e}"))?;
-    let cell_id = cell
-        .cell_id
-        .parse()
-        .map_err(|e| format!("cell id: {e}"))?;
+    let cell_id = cell.cell_id.parse().map_err(|e| format!("cell id: {e}"))?;
     let agent_cell = hatchling_broker::AgentCell {
         connection,
         cell_id,
