@@ -268,13 +268,41 @@ fn hand_to_keeper(dirs: &[PathBuf], uid: u32, gid: u32) -> Result<(), Error> {
         if std::fs::symlink_metadata(dir).is_err() {
             hatchling_sys::create_private_dir(dir).map_err(|e| failed(dir, e.to_string()))?;
         }
-        let changed =
-            hatchling_sys::chown_tree(dir, uid, gid).map_err(|e| failed(dir, e.to_string()))?;
+        // Handed over once: on a later start everything is the user's.
+        let changed = not_theirs(dir, uid, gid, NOT_THEIRS_DEPTH);
         if changed > 0 {
+            hatchling_sys::chown_tree(dir, uid, gid).map_err(|e| failed(dir, e.to_string()))?;
             tracing::info!(dir = %dir.display(), changed, user = KEEPER_USER, "handed to the vault keeper's user");
         }
     }
     Ok(())
+}
+
+/// How deep [`not_theirs`] looks before it counts what is below as
+/// changed, leaving [`hatchling_sys::chown_tree`] to refuse it.
+const NOT_THEIRS_DEPTH: usize = 16;
+
+/// How many entries of the tree at `dir`, itself included, aren't `uid`'s
+/// and `gid`'s: what [`hatchling_sys::chown_tree`] would change. Nothing
+/// is followed; one that can't be looked at, or lies past `depth`, counts,
+/// so the walk that changes it reports it.
+fn not_theirs(dir: &Path, uid: u32, gid: u32, depth: usize) -> usize {
+    use std::os::unix::fs::MetadataExt as _;
+    let Ok(meta) = std::fs::symlink_metadata(dir) else {
+        return 1;
+    };
+    if depth == 0 {
+        return 1;
+    }
+    let own = usize::from(meta.uid() != uid || meta.gid() != gid);
+    if !meta.is_dir() {
+        return own;
+    }
+    std::fs::read_dir(dir).map_or(own + 1, |entries| {
+        entries.fold(own, |count, entry| {
+            count + entry.map_or(1, |entry| not_theirs(&entry.path(), uid, gid, depth - 1))
+        })
+    })
 }
 
 /// Whether the user `uid`, in group `gid`, may search the directory `dir`
@@ -1216,6 +1244,17 @@ mod tests {
         let made = std::fs::symlink_metadata(&vault).unwrap();
         assert!(made.is_dir());
         assert_eq!((made.uid(), made.mode() & 0o777), (uid, 0o700));
+        // What isn't the user's yet is counted, and nothing else.
+        std::fs::write(vault.join("secret"), b"s").unwrap();
+        assert_eq!(not_theirs(&vault, uid, gid, 2), 0);
+        assert_eq!(not_theirs(&vault, uid.wrapping_add(4242), gid, 2), 2);
+        assert_eq!(not_theirs(&vault, uid, gid.wrapping_add(4242), 2), 2);
+        assert_eq!(not_theirs(&base.join("absent"), uid, gid, 2), 1);
+        assert_eq!(
+            not_theirs(&vault, uid, gid, 1),
+            1,
+            "past its depth, counted"
+        );
         assert!(searchable(
             &base,
             uid.wrapping_add(4242),
