@@ -24,7 +24,7 @@ use std::io::{Read as _, Write as _};
 use std::os::fd::{AsFd as _, OwnedFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, Stdio};
+use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -34,14 +34,14 @@ use hatchling_core::LogLevel;
 use hatchling_core::browser::{BrowserCommand, BrowserReply};
 use hatchling_core::framing::{read_frame, write_frame};
 use hatchling_core::ui::operator::CellKind;
-use hatchling_isolation::{IsolationBackend as _, Supervised as _};
+use hatchling_isolation::Supervised as _;
 
 use crate::browser_bundle::Snapshot;
 use crate::browser_proxy::{BrowserProxy, ProxyCount, Route, Sites};
 use crate::browser_session::{BrowserSettings, browser_limits};
 use crate::cell::Process;
 use crate::harness_relay::HANDOFF_TIMEOUT;
-use crate::run_launcher::{BROKER_PID_ENV, broker_pid};
+use crate::run_launcher::BROKER_PID_ENV;
 use crate::skill_run::{REAP_AFTER_KILL, RunDir, STDERR_KEEP};
 use crate::{CellConfig, CellIds, Error, spawn_cell};
 
@@ -343,40 +343,28 @@ impl Helper {
         run_dir: &Path,
         channel: UnixStream,
     ) -> Result<Self, String> {
-        let mut std_child = {
-            let mut command = Command::new(spawner);
-            command
-                .args(crate::run_launcher::spec_args(
-                    BROWSER_CELL_SUBCOMMAND,
-                    run_dir,
-                    spec,
-                )?)
-                .env("TMPDIR", run_dir)
-                .env(BROKER_PID_ENV, broker_pid())
-                .stdin(Stdio::from(OwnedFd::from(channel)))
-                .stdout(Stdio::null())
-                .stderr(Stdio::piped());
-            // The command holds the helper's end of the channel until it's
-            // dropped here: then the helper's exit is the channel's end.
-            crate::skill_run::retry_while_busy(|| command.spawn(), std::thread::sleep)
-        }
-        .map_err(|error| {
-            crate::run_launcher::forget_spec(run_dir);
-            format!("cannot start {}: {error}", spawner.display())
-        })?;
-        let process = hatchling_isolation::platform()
-            .supervise(&mut std_child)
-            .map_err(|error| format!("cannot supervise the browser cell's helper: {error}"))?;
-        let errors = std_child.stderr.take().map(|mut pipe| {
-            std::thread::spawn(move || {
-                let mut kept = Vec::new();
-                let _ = (&mut pipe).take(STDERR_KEEP).read_to_end(&mut kept);
-                // Keep draining so the helper can never block on stderr.
-                let _ = std::io::copy(&mut pipe, &mut std::io::sink());
-                kept
-            })
-        });
-        Ok(Self { process, errors })
+        // The helper holds its end of the channel: its exit is the
+        // channel's end.
+        let started = crate::spawner::start_helper(
+            spawner,
+            crate::spawner::HelperKind::BrowserCell,
+            spec,
+            run_dir,
+            crate::spawner::Input::Fd(OwnedFd::from(channel)),
+            false,
+        )?;
+        let mut pipe = started.stderr;
+        let errors = Some(std::thread::spawn(move || {
+            let mut kept = Vec::new();
+            let _ = (&mut pipe).take(STDERR_KEEP).read_to_end(&mut kept);
+            // Keep draining so the helper can never block on stderr.
+            let _ = std::io::copy(&mut pipe, &mut std::io::sink());
+            kept
+        }));
+        Ok(Self {
+            process: started.process,
+            errors,
+        })
     }
 
     /// `reason`, with what the helper said, once it's killed and reaped.

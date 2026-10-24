@@ -1068,8 +1068,42 @@ impl CellHandle {
     }
 }
 
-/// A helper process under the platform backend's supervision.
-pub(crate) type Process = <hatchling_isolation::Platform as IsolationBackend>::Process;
+/// A helper process under supervision: the spawner's, over its
+/// connection ([`crate::spawner`]), or, in-process with no spawner
+/// running, the platform backend's, here.
+#[derive(Debug)]
+pub(crate) enum Process {
+    /// One the broker started and supervises itself.
+    Local(<hatchling_isolation::Platform as IsolationBackend>::Process),
+    /// One the spawner started and supervises for it.
+    Spawned(crate::spawner::SpawnedProcess),
+}
+
+impl hatchling_isolation::Supervised for Process {
+    fn try_wait(&self) -> Result<Option<Exit>, hatchling_isolation::Error> {
+        match self {
+            Self::Local(process) => process.try_wait(),
+            Self::Spawned(process) => process.try_wait(),
+        }
+    }
+
+    fn wait_deadline(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Result<Exit, hatchling_isolation::Error> {
+        match self {
+            Self::Local(process) => process.wait_deadline(timeout),
+            Self::Spawned(process) => process.wait_deadline(timeout),
+        }
+    }
+
+    fn terminate(&self) -> Result<(), hatchling_isolation::Error> {
+        match self {
+            Self::Local(process) => process.terminate(),
+            Self::Spawned(process) => process.terminate(),
+        }
+    }
+}
 
 /// Where the cell program starts, when not at `/`: a harness cell
 /// works in its work tree, `/work`.

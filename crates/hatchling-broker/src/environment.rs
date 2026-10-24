@@ -53,6 +53,7 @@ hatchling_core::declare_environment! {
     HATCHLING_KEEPER_AUTHORITY_FD: ("internal; set by the broker", "The vault keeper's end of its socket pair with the egress authority."),
     HATCHLING_AUTHORITY_FD: ("internal; set by the broker", "The egress authority's end of its socket pair with the broker."),
     HATCHLING_AUTHORITY_KEEPER_FD: ("internal; set by the broker", "The egress authority's end of its socket pair with the vault keeper."),
+    HATCHLING_SPAWNER_FD: ("internal; set by the broker", "The spawner's end of its socket pair with the broker."),
     HATCHLING_CELL_IDS: ("optional; default own", "Where cells get their uid: own (the broker's map) or subordinate (the owner's /etc/subuid and /etc/subgid ranges)."),
     HATCHLING_CELL_UID_BASE: ("optional", "Host uid mapped into the cell; must match HATCHLING_AGENT_UID."),
     HATCHLING_CELL_UID_COUNT: ("optional; default 1", "Number of uids mapped into the cell."),

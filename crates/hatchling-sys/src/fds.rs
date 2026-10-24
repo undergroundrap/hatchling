@@ -211,6 +211,46 @@ pub fn fd_flags(fd: i32) -> Option<i32> {
     (flags >= 0).then_some(flags)
 }
 
+/// A pipe: its read end and its write end, both close-on-exec.
+///
+/// # Errors
+///
+/// Returns [`Error::Process`] if the pipe can't be made.
+pub fn pipe() -> Result<(OwnedFd, OwnedFd), Error> {
+    rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).map_err(|source| Error::Process {
+        operation: "pipe2(O_CLOEXEC)",
+        source: std::io::Error::from_raw_os_error(source.raw_os_error()),
+    })
+}
+
+/// Waits until one of `fds` is readable or hung up, however long that
+/// takes, and says which: one flag for each, in order. A wait a signal
+/// interrupts is waited again.
+///
+/// # Errors
+///
+/// Returns [`Error::Process`] if the wait fails.
+pub fn wait_readable(fds: &[BorrowedFd<'_>]) -> Result<Vec<bool>, Error> {
+    use rustix::event::{PollFd, PollFlags, poll};
+    let mut polled: Vec<PollFd<'_>> = fds
+        .iter()
+        .map(|fd| PollFd::new(fd, PollFlags::IN))
+        .collect();
+    loop {
+        match poll(&mut polled, -1) {
+            Ok(_) => break,
+            Err(rustix::io::Errno::INTR) => {}
+            Err(source) => {
+                return Err(Error::Process {
+                    operation: "poll",
+                    source: std::io::Error::from_raw_os_error(source.raw_os_error()),
+                });
+            }
+        }
+    }
+    Ok(polled.iter().map(|fd| !fd.revents().is_empty()).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use std::os::fd::{AsFd as _, IntoRawFd as _};
@@ -615,6 +655,37 @@ mod tests {
             "exit 2: the open fd was not listed (or the list is not sorted \
              from 0); 3: an inheritable fd did not read as flags 0; 4: a \
              closed fd still read as open"
+        );
+    }
+
+    /// A pipe carries what's written to its read end, both ends close on
+    /// exec; a wait on several descriptors says which is readable, and a
+    /// hung-up one counts.
+    #[test]
+    fn a_pipe_carries_bytes_and_a_wait_says_which_end_is_ready() {
+        use std::io::{Read as _, Write as _};
+        let (read, write) = pipe().unwrap();
+        for end in [&read, &write] {
+            let flags = rustix::io::fcntl_getfd(end).unwrap();
+            assert!(flags.contains(rustix::io::FdFlags::CLOEXEC));
+        }
+        let (quiet, _quiet_write) = pipe().unwrap();
+        let mut writer = std::fs::File::from(write);
+        writer.write_all(b"x").unwrap();
+        assert_eq!(
+            wait_readable(&[quiet.as_fd(), read.as_fd()]).unwrap(),
+            [false, true]
+        );
+        let mut byte = [0_u8; 1];
+        std::fs::File::from(read.try_clone().unwrap())
+            .read_exact(&mut byte)
+            .unwrap();
+        assert_eq!(&byte, b"x");
+        drop(writer);
+        assert_eq!(
+            wait_readable(&[read.as_fd(), quiet.as_fd()]).unwrap(),
+            [true, false],
+            "a hung-up end is ready"
         );
     }
 }

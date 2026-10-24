@@ -1391,12 +1391,14 @@ fn trees(
     match (cell.ids, op) {
         (CellIds::Own, TreeOp::Give) => hand_over(dirs, cell.uid_base),
         (CellIds::Own, TreeOp::Reclaim) => Ok(()),
-        (CellIds::Subordinate, _) => change_trees(
-            runtime.spawner(),
-            op,
-            &[&dirs.work, &dirs.scratch],
-            cell.identity(),
-        ),
+        // The spawner changes them when one runs (WO-017, step 3).
+        (CellIds::Subordinate, _) => {
+            let changed = [dirs.work.as_path(), dirs.scratch.as_path()];
+            crate::spawner::spawner().map_or_else(
+                || change_trees(runtime.spawner(), op, &changed, cell.identity()),
+                |spawner| spawner.trees(op, &changed, cell.identity()),
+            )
+        }
     }
 }
 
