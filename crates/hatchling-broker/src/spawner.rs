@@ -1240,6 +1240,16 @@ mod tests {
         ] {
             assert!(paths.harness_tree(&refused).is_err(), "{}", refused.display());
         }
+        // A real directory of the broker's, named as another run's.
+        let skill_run = temp.join(format!("hatchling-skill-run-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&skill_run);
+        std::fs::create_dir_all(skill_run.join("work")).unwrap();
+        std::fs::set_permissions(&skill_run, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            paths.harness_tree(&skill_run.join("work")).is_err(),
+            "not a harness's run directory"
+        );
+        std::fs::remove_dir_all(&skill_run).unwrap();
         let elsewhere = Paths {
             owner: hatchling_sys::euid() + 1,
             ..paths
