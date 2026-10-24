@@ -189,6 +189,16 @@ Filled in at close.
        *1b landed:* the identity, the broker's uid in the cell, no endpoint, the limits, the group, and every host path a spec names (configured, or inside one of the broker's own run directories). **Left for slice 3:** the paths are checked before the spawn, but a broker that owns a run directory could change it between the check and the mount. That's harmless while the broker is root, which can do anything already. When it isn't, the spawner must open each source itself and hand the open files on. A run cell is held to the agent's identity, which `HATCHLING_CELL_UID_BASE` may set apart from a skill cell's (found by the hosted-model proof, which sets it).
        *1c landed:* the broker's own agent cell starts through the `agent-run` helper, which hands back its connection; the broker forks no cell while a spawner runs. **Also left for slice 3:** the spawner writes each spec into the run directory the broker names. Once the broker isn't root, the spawner must hold that directory to the same rule as a spec's paths, or take the spec another way.
     2. **The keeper and the authority as their users.** The vault is owned by `hatchling-keeper`, and the keeper refuses a read from any other uid; tested with real processes.
+       *In three parts, after mapping what touches the vault (2026-10-24).* The keeper opened every store to unwrap its key, the vault's owner checks use the real uid, the operator's vault commands run as root, and the root quickstarts build the vault as root.
+       - **2a:** the keeper opens no store of the broker's. It asks the broker for each store's key as the store keeps it, wrapped, and unwraps it without a file.
+       - **2b:** the keeper runs as `hatchling-keeper`. That takes:
+         - looking users up by name, and a root broker refusing to start without them;
+         - the vault and its key directory handed to the keeper by handle, each change logged;
+         - the operator's vault commands dropping to the keeper's user;
+         - the README and the CI scripts creating the users.
+
+         In root mode the launcher opens the security keys (`/dev/hidraw*`) before the drop and hands the keeper their descriptors, so the hardware tier keeps working without a udev rule (the owner's choice, 2026-10-24).
+       - **2c:** the authority runs as `hatchling-egress`, with its inputs (the CA bundle, the harnesses' binaries) readable by it.
     3. **The broker drops root.** It runs as `hatchling-broker` with an empty capability set, and the sockets admit the recorded owner. The tests read `/proc/<pid>/status` for all four processes' Uid and Cap lines, and a hand mutant that skips the drop fails one.
     4. **Rootless.** The same split on subordinate ids.
     5. **The README and the module map**, and the close-out evidence.

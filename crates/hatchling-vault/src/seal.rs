@@ -344,6 +344,47 @@ impl StoreKeys {
         Ok(Self { held })
     }
 
+    /// The keys of `stores` under `master`, each from `kept`, its key as
+    /// its store keeps it, wrapped ([`wrapped_store_key`], read by
+    /// whoever owns the store): what a keeper hands a broker whose stores
+    /// it doesn't open (WO-017). A store keeping none is given a fresh
+    /// key, wrapped for its first open to keep. No file is read or
+    /// written here.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::HandoffMalformed`] unless `kept` has one entry for each
+    /// store, and as [`StoreKeys::unwrap`] for a key that doesn't unwrap
+    /// as its store's.
+    pub fn unwrap_kept(
+        master: &MasterKey,
+        stores: &[(Store, &Path)],
+        kept: &[Option<Vec<u8>>],
+    ) -> Result<Self, Error> {
+        if stores.len() != kept.len() {
+            return Err(Error::HandoffMalformed {
+                reason: "not one kept key for each store",
+            });
+        }
+        let mut held = Vec::with_capacity(stores.len());
+        for (&(store, root), wrapped) in stores.iter().zip(kept) {
+            let (key, pending) = if let Some(wrapped) = wrapped {
+                (unwrap_store_key(master, store, wrapped)?, None)
+            } else {
+                let key = StoreKey::generate()?;
+                let wrapped = wrap_store_key(master, store, &key)?;
+                (key, Some(wrapped))
+            };
+            held.push(Held {
+                store,
+                root: root.to_path_buf(),
+                key,
+                pending,
+            });
+        }
+        Ok(Self { held })
+    }
+
     /// The stores held, with their roots, in the order they were handed.
     pub fn stores(&self) -> impl Iterator<Item = (Store, &Path)> {
         self.held
@@ -366,6 +407,33 @@ impl OpensStores for StoreKeys {
         }
         Ok(OpenedKey(Opened::Held(&held.key)))
     }
+}
+
+/// `store`'s key as the store at `root` keeps it, wrapped.
+///
+/// Read by whoever owns the store, for a keeper to unwrap
+/// ([`StoreKeys::unwrap_kept`]). None for a store not made yet, or made
+/// and holding nothing sealed.
+///
+/// # Errors
+///
+/// As [`SealedVault::open_in`] for the store, and
+/// [`Error::StoreKeyMissing`] for a store holding sealed files and no
+/// key.
+pub fn wrapped_store_key(root: &Path, store: Store) -> Result<Option<Vec<u8>>, Error> {
+    if std::fs::symlink_metadata(root).is_err() {
+        return Ok(None);
+    }
+    let vault = Vault::open(root)?;
+    if let Some(wrapped) = read_wrapped(&vault, store, STORE_KEY_FILE)? {
+        return Ok(Some(wrapped));
+    }
+    if holds_current(&vault, root)? {
+        return Err(Error::StoreKeyMissing {
+            store: store.label(),
+        });
+    }
+    Ok(None)
 }
 
 /// Keeps `pending`, a store's key wrapped before the store was made, as
