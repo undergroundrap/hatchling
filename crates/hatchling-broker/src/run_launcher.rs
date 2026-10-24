@@ -865,7 +865,8 @@ pub fn hold_in_flight(config: &Config, key: &dyn OpensStores) -> Vec<String> {
     }
 }
 
-/// The `agent-run` helper: spawns one run cell and exits with its code.
+/// The `agent-run` helper: spawns one run cell, or the broker's own agent
+/// cell, and exits with its code.
 #[must_use]
 pub fn agent_run_main(spec: Option<&str>) -> ExitCode {
     match run_helper(spec) {
@@ -883,9 +884,14 @@ fn run_helper(spec: Option<&str>) -> Result<i32, Error> {
     let config: CellConfig = serde_json::from_str(&spec).map_err(|err| Error::Usage {
         reason: format!("agent-run spec is not a cell config: {err}"),
     })?;
-    if config.scheduled.is_none() || config.is_skill_cell() {
+    if config.is_skill_cell()
+        || config.is_browser_cell()
+        || (config.scheduled.is_none() && !config.connected)
+    {
         return Err(Error::Usage {
-            reason: String::from("agent-run spawns scheduled run cells only"),
+            reason: String::from(
+                "agent-run spawns run cells and the broker's connected agent cell only",
+            ),
         });
     }
     // The broker's channel comes off stdin before the cell is spawned, so
@@ -899,12 +905,29 @@ fn run_helper(spec: Option<&str>) -> Result<i32, Error> {
         None
     };
     let watch = watch_broker(std::env::var_os(BROKER_PID_ENV))?;
-    let mut cell = spawn_cell(&config, LogLevel::Error)?;
+    let level = agent_log_level(
+        &config,
+        std::env::var(crate::environment::HATCHLING_LOG_LEVEL.name)
+            .ok()
+            .as_deref(),
+    );
+    let mut cell = spawn_cell(&config, level)?;
     watch.exit_with_parent(1);
     if let Some(handoff) = handoff {
         hand_over_connection(&handoff, cell.connection())?;
     }
     Ok(cell.wait_exit()?.code)
+}
+
+/// What `config`'s agent logs at: a run's, errors alone (its stderr is
+/// kept for its failure); the broker's own agent cell, as the broker does
+/// (`raw`, its `HATCHLING_LOG_LEVEL`, or info).
+fn agent_log_level(config: &CellConfig, raw: Option<&str>) -> LogLevel {
+    if config.scheduled.is_some() {
+        return LogLevel::Error;
+    }
+    raw.and_then(|raw| raw.parse().ok())
+        .unwrap_or(LogLevel::Info)
 }
 
 /// Sends the broker `connection`, the owner's end of a connected run
@@ -1426,18 +1449,31 @@ mod tests {
     }
 
     #[test]
-    fn the_helper_spawns_run_cells_only() {
+    fn the_helper_spawns_run_cells_and_the_connected_agent_cell_only() {
+        const ONLY: &str = "agent-run spawns run cells and the broker's connected agent cell only";
         assert!(matches!(run_helper(None), Err(Error::Usage { .. })));
         assert!(matches!(
             run_helper(Some(&test_spec("not json"))),
             Err(Error::Usage { .. })
         ));
+        // An agent cell with an endpoint.
         let agent = serde_json::to_string(&CellConfig::skill("cell-x").unwrap()).unwrap();
         let err = run_helper(Some(&test_spec(&agent))).unwrap_err();
-        assert!(
-            format!("{err}").contains("scheduled run cells only"),
-            "{err}"
-        );
+        assert!(format!("{err}").contains(ONLY), "{err}");
+        let mut browser = CellConfig::skill("cell-x").unwrap();
+        browser.connected = true;
+        browser.browser = Some(crate::cell::BrowserDirs {
+            browser_dir: PathBuf::from("/opt/browser"),
+            browser_name: String::from("chrome"),
+            fonts: None,
+            nss: Vec::new(),
+            ca_keys: Vec::new(),
+            relay: 1,
+            handoff: PathBuf::from("/tmp/handoff"),
+        });
+        let err =
+            run_helper(Some(&test_spec(&serde_json::to_string(&browser).unwrap()))).unwrap_err();
+        assert!(format!("{err}").contains(ONLY), "{err}");
         let mut skill = CellConfig::skill("cell-x").unwrap();
         skill.skill_code = Some(PathBuf::from("/tmp/code"));
         skill.scheduled = Some(ScheduledRun {
@@ -1456,11 +1492,35 @@ mod tests {
         });
         let err =
             run_helper(Some(&test_spec(&serde_json::to_string(&skill).unwrap()))).unwrap_err();
-        assert!(
-            format!("{err}").contains("scheduled run cells only"),
-            "{err}"
-        );
+        assert!(format!("{err}").contains(ONLY), "{err}");
         assert_eq!(AGENT_RUN_SUBCOMMAND, "agent-run");
+    }
+
+    /// A run's agent logs errors alone, whatever the broker's level; the
+    /// broker's own agent cell logs at the broker's, or info.
+    #[test]
+    fn a_runs_agent_logs_errors_and_the_brokers_own_logs_as_the_broker() {
+        let mut agent = CellConfig::skill("cell-x").unwrap();
+        agent.connected = true;
+        assert_eq!(agent_log_level(&agent, Some("debug")), LogLevel::Debug);
+        assert_eq!(agent_log_level(&agent, Some("warn")), LogLevel::Warn);
+        assert_eq!(agent_log_level(&agent, None), LogLevel::Info);
+        assert_eq!(agent_log_level(&agent, Some("loud")), LogLevel::Info);
+        agent.scheduled = Some(ScheduledRun {
+            task: String::from("t"),
+            missed: false,
+            due: 0,
+            model_endpoint: None,
+            model_name: None,
+            model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
+            depth: 0,
+            event: None,
+            max_steps: None,
+            subagent: false,
+            chat: false,
+            history: Vec::new(),
+        });
+        assert_eq!(agent_log_level(&agent, Some("debug")), LogLevel::Error);
     }
 
     #[test]

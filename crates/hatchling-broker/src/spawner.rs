@@ -85,8 +85,8 @@ const TREES_TIMEOUT: Duration =
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum HelperKind {
-    /// A scheduled run's, a subagent's or a chat's cell
-    /// ([`crate::AGENT_RUN_SUBCOMMAND`]).
+    /// A scheduled run's, a subagent's or a chat's cell, or the broker's
+    /// own agent cell ([`crate::AGENT_RUN_SUBCOMMAND`]).
     AgentRun,
     /// A skill's or a harness's cell
     /// ([`crate::skill_run::SKILL_CELL_SUBCOMMAND`]).
@@ -110,7 +110,11 @@ impl HelperKind {
     /// checks of its own spec, checked first by the spawner.
     const fn starts(self, config: &CellConfig) -> bool {
         match self {
-            Self::AgentRun => config.scheduled.is_some() && !config.is_skill_cell(),
+            Self::AgentRun => {
+                !config.is_skill_cell()
+                    && !config.is_browser_cell()
+                    && (config.scheduled.is_some() || config.connected)
+            }
             Self::SkillCell => config.skill_code.is_some(),
             Self::BrowserCell => config.browser.is_some(),
         }
@@ -227,8 +231,9 @@ fn host_paths(config: &CellConfig) -> Vec<PathBuf> {
 pub(crate) struct Policy {
     /// Who a skill or browser cell runs as.
     skill: RunsAs,
-    /// Who a run cell runs as: the agent's own identity, which the
-    /// configuration may set apart from a skill cell's.
+    /// Who a run cell, or the broker's own agent cell, runs as: the
+    /// agent's identity, which the configuration may set apart from a
+    /// skill cell's.
     agent: RunsAs,
     /// Every cell's limits, but a browser cell's.
     limits: CellLimits,
@@ -547,6 +552,46 @@ impl Spawner {
         SpawnedProcess::watching(stream, pid)
     }
 
+    /// Starts `cell`, the broker's own agent cell, in `run_dir`: its
+    /// `agent-run` helper hands back the cell's connection, which comes
+    /// back here with the helper's supervision. The helper writes where
+    /// the broker does.
+    ///
+    /// # Errors
+    ///
+    /// Why it wasn't started, or why its connection didn't come back
+    /// within [`START_TIMEOUT`].
+    pub fn agent_cell(
+        &self,
+        cell: &CellConfig,
+        run_dir: &Path,
+    ) -> Result<(SpawnedProcess, UnixStream), String> {
+        let spec = serde_json::to_string(cell)
+            .map_err(|error| format!("cannot encode the agent cell: {error}"))?;
+        let (handoff, helper_end) = UnixStream::pair()
+            .map_err(|error| format!("cannot make the agent cell's handoff: {error}"))?;
+        let null = File::options()
+            .write(true)
+            .open("/dev/null")
+            .map_err(|error| format!("cannot open /dev/null: {error}"))?;
+        let stderr = std::io::stderr()
+            .as_fd()
+            .try_clone_to_owned()
+            .map_err(|error| format!("cannot share the broker's stderr: {error}"))?;
+        let process = self.helper(
+            HelperKind::AgentRun,
+            &spec,
+            run_dir,
+            [OwnedFd::from(helper_end), OwnedFd::from(null), stderr],
+        )?;
+        handoff
+            .set_read_timeout(Some(START_TIMEOUT))
+            .map_err(|error| format!("cannot bound the agent cell's start: {error}"))?;
+        let connection = hatchling_sys::net::recv_fd(handoff.as_fd())
+            .map_err(|error| format!("the agent cell came without its connection: {error}"))?;
+        Ok((process, UnixStream::from(connection)))
+    }
+
     /// Gives `dirs` to the cell `cell`, or takes them back
     /// ([`crate::harness_tree::change_trees`]), in the spawner.
     ///
@@ -633,6 +678,27 @@ impl SpawnedProcess {
     #[must_use]
     pub const fn pid(&self) -> i32 {
         self.pid
+    }
+
+    /// Waits for how the helper ended, however long it runs.
+    ///
+    /// # Errors
+    ///
+    /// [`IsolationError::Wait`] if the spawner went first.
+    pub fn wait(&self) -> Result<Exit, IsolationError> {
+        let (slot, changed) = &*self.ended;
+        let ended = changed
+            .wait_while(
+                slot.lock().map_err(|_| wait_error("its watch panicked"))?,
+                |slot| slot.is_none(),
+            )
+            .map_err(|_| wait_error("its watch panicked"))?
+            .clone();
+        match ended {
+            Some(Ok(exit)) => Ok(exit),
+            Some(Err(reason)) => Err(wait_error(&reason)),
+            None => Err(wait_error("its watch ended without saying")),
+        }
     }
 
     /// How the helper ended, once known.
@@ -1102,6 +1168,28 @@ mod tests {
         assert!(HelperKind::SkillCell.starts(&skill));
         assert!(!HelperKind::AgentRun.starts(&skill));
         assert!(!HelperKind::BrowserCell.starts(&skill));
+        // The broker's own agent cell: connected, and neither a run, a
+        // skill nor a browser.
+        let mut agent = skill.clone();
+        agent.skill_code = None;
+        assert!(!HelperKind::AgentRun.starts(&agent), "with an endpoint");
+        agent.connected = true;
+        assert!(HelperKind::AgentRun.starts(&agent));
+        assert!(!HelperKind::SkillCell.starts(&agent));
+        let mut skill_connected = skill.clone();
+        skill_connected.connected = true;
+        assert!(!HelperKind::AgentRun.starts(&skill_connected));
+        let mut browser = agent;
+        browser.browser = Some(crate::cell::BrowserDirs {
+            browser_dir: PathBuf::from("/opt/browser"),
+            browser_name: String::from("chrome"),
+            fonts: None,
+            nss: Vec::new(),
+            ca_keys: Vec::new(),
+            relay: 1,
+            handoff: PathBuf::from("/tmp/handoff"),
+        });
+        assert!(!HelperKind::AgentRun.starts(&browser));
         assert_eq!(HelperKind::AgentRun.subcommand(), "agent-run");
         assert_eq!(HelperKind::SkillCell.subcommand(), "skill-cell");
         assert_eq!(HelperKind::BrowserCell.subcommand(), "browser-cell");
@@ -1124,6 +1212,7 @@ mod tests {
         let exit = process.wait_deadline(Duration::from_secs(10)).unwrap();
         assert_ne!(exit.code, 0);
         assert_eq!(process.try_wait().unwrap(), Some(exit));
+        assert_eq!(process.wait().unwrap(), exit, "and waits say so after");
         let mut said = String::new();
         errors.read_to_string(&mut said).unwrap();
         assert!(said.contains("skill-cell"), "{said}");

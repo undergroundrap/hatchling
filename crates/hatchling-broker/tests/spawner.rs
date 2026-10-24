@@ -12,6 +12,13 @@ use hatchling_broker::CellConfig;
 use hatchling_broker::spawner::{HelperKind, Spawner};
 use hatchling_isolation::Supervised as _;
 
+#[allow(
+    dead_code,
+    clippy::redundant_pub_crate,
+    reason = "test helpers use pub(crate); the private `mod common` makes it technically redundant"
+)]
+mod common;
+
 /// A run directory of this test's own.
 fn run_dir(tag: &str) -> io::Result<PathBuf> {
     let dir = std::env::temp_dir().join(format!(
@@ -39,18 +46,27 @@ fn stdio() -> io::Result<([OwnedFd; 3], File)> {
 /// The spawner, started as the broker starts it, with a broker's settings
 /// under `dir`: it reads its policy from them.
 fn spawner(dir: &std::path::Path) -> Result<Spawner, hatchling_broker::Error> {
+    spawner_with(dir, rustix::process::getuid().as_raw(), None)
+}
+
+/// [`spawner`], for agents as `agent_uid`, running `agent` if given.
+fn spawner_with(
+    dir: &std::path::Path,
+    agent_uid: u32,
+    agent: Option<&std::path::Path>,
+) -> Result<Spawner, hatchling_broker::Error> {
     let path = |name: &str| dir.join(name).display().to_string();
     let mut program = Command::new(env!("CARGO_BIN_EXE_hatchling-broker"));
     program
         .env("HATCHLING_BROKER_SOCKET", path("broker.sock"))
-        .env(
-            "HATCHLING_AGENT_UID",
-            rustix::process::getuid().as_raw().to_string(),
-        )
+        .env("HATCHLING_AGENT_UID", agent_uid.to_string())
         .env("HATCHLING_VAULT_DIR", path("vault"))
         .env("HATCHLING_LOG_LEVEL", "error")
         .stdin(Stdio::null())
         .stdout(Stdio::null());
+    if let Some(agent) = agent {
+        program.env("HATCHLING_AGENT_BIN", agent);
+    }
     Spawner::start_with(program)
 }
 
@@ -122,6 +138,59 @@ fn the_real_spawner_starts_the_real_helper_on_the_spec_it_wrote() {
     drop((process, spawner));
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&code);
+}
+
+/// The real spawner starts the broker's own agent cell through the real
+/// `agent-run` helper, which hands back the cell's connection: the real
+/// agent completes its handshake over it, and the helper exits with it.
+#[test]
+fn the_real_spawner_starts_the_brokers_agent_cell_and_hands_back_its_connection()
+-> Result<(), String> {
+    if !common::guard_cell_available()? {
+        return Ok(());
+    }
+    let dir = run_dir("agent").map_err(|e| format!("run dir: {e}"))?;
+    let agent = common::agent_binary()?;
+    let uid = common::mapped_agent_uid();
+    let spawner =
+        spawner_with(&dir, uid, Some(&agent)).map_err(|e| format!("start the spawner: {e}"))?;
+    let socket = dir.join("broker.sock");
+    let config = common::broker_config(&socket, uid)?;
+    let mut cell = common::cell_config(&socket, uid)?;
+    cell.connected = true;
+    let (process, connection) = spawner.agent_cell(&cell, &dir)?;
+    connection
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .map_err(|e| format!("set timeout: {e}"))?;
+    let cell_id = cell
+        .cell_id
+        .parse()
+        .map_err(|e| format!("cell id: {e}"))?;
+    let agent_cell = hatchling_broker::AgentCell {
+        connection,
+        cell_id,
+        pid: 0,
+    };
+    let key = hatchling_vault::MasterKey::generate().map_err(|e| format!("key: {e}"))?;
+    // The agent exits after its handshake; the session then ends at EOF.
+    hatchling_broker::serve_cell_connection(
+        &agent_cell,
+        &config,
+        &key,
+        &hatchling_broker::Skills::default(),
+        None,
+        None,
+    )
+    .map_err(|e| format!("serve the cell's session: {e}"))?;
+    let exit = process
+        .wait_deadline(Duration::from_secs(30))
+        .map_err(|e| format!("wait for the helper: {e}"))?;
+    if exit.code != 0 {
+        return Err(format!("the helper exited {}", exit.code));
+    }
+    drop(spawner);
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
 }
 
 /// The spawner runs only as the broker starts it.
