@@ -144,6 +144,8 @@ pub(crate) struct Paths {
     temp: PathBuf,
     /// Who owns the broker's run directories: the broker.
     owner: u32,
+    /// The broker's group, which takes a harness's trees back with it.
+    group: u32,
 }
 
 impl Paths {
@@ -199,6 +201,33 @@ impl Paths {
             }
         }
         Ok(())
+    }
+
+    /// `path` beneath the broker's temp directory, when it is in one of
+    /// the broker's harness run directories: plain, and in a directory
+    /// named as one, owned by the broker and writable by no one else.
+    /// What may be under it is checked as the tree is opened
+    /// ([`hatchling_sys::chown_tree_beneath`]).
+    fn harness_tree(&self, path: &Path) -> Result<PathBuf, String> {
+        use std::os::unix::fs::MetadataExt as _;
+        let refused = || format!("{} isn't a harness's tree", path.display());
+        let inside = path.strip_prefix(&self.temp).map_err(|_| refused())?;
+        let mut parts = inside.components();
+        let Some(std::path::Component::Normal(name)) = parts.next() else {
+            return Err(refused());
+        };
+        let named = name
+            .to_str()
+            .is_some_and(|name| name.starts_with("hatchling-harness-"));
+        let plain = parts.all(|part| matches!(part, std::path::Component::Normal(_)));
+        let owned = std::fs::symlink_metadata(self.temp.join(name)).is_ok_and(|meta| {
+            meta.is_dir() && meta.uid() == self.owner && meta.mode() & 0o022 == 0
+        });
+        if named && plain && owned && inside.components().count() > 1 {
+            Ok(inside.to_path_buf())
+        } else {
+            Err(refused())
+        }
     }
 }
 
@@ -329,6 +358,7 @@ impl Policy {
             under,
             temp,
             owner,
+            group: hatchling_sys::egid(),
         };
         Ok(Self::of(&reference, agent, paths))
     }
@@ -383,12 +413,14 @@ enum Request {
     /// Kill the helper this connection started.
     Kill,
     /// Give a harness's work trees to its cell's identity, or take them
-    /// back.
+    /// back: on the owner's subordinate ids, or, `direct`, on the cell's
+    /// own.
     Trees {
         give: bool,
         dirs: Vec<PathBuf>,
         principal: u32,
         group: u32,
+        direct: bool,
     },
 }
 
@@ -606,6 +638,7 @@ impl Spawner {
             dirs: dirs.iter().map(|dir| dir.to_path_buf()).collect(),
             principal: cell.principal,
             group: cell.group,
+            direct: cell.mapping == Mapping::Direct,
         };
         send(&stream, &request).map_err(|error| error.to_string())?;
         match receive(&stream).map_err(|error| error.to_string())? {
@@ -943,16 +976,22 @@ fn serve_connection(stream: &UnixStream, program: &Path, policy: &Policy) -> Res
             dirs,
             principal,
             group,
+            direct,
         } => {
             let op = if give { TreeOp::Give } else { TreeOp::Reclaim };
-            let dirs: Vec<&Path> = dirs.iter().map(PathBuf::as_path).collect();
-            let cell = CellIdentity {
-                principal,
-                group,
-                count: 1,
-                mapping: Mapping::Subordinate,
+            let changed = if direct {
+                own_trees(policy, op, &dirs, (principal, group))
+            } else {
+                let dirs: Vec<&Path> = dirs.iter().map(PathBuf::as_path).collect();
+                let cell = CellIdentity {
+                    principal,
+                    group,
+                    count: 1,
+                    mapping: Mapping::Subordinate,
+                };
+                crate::harness_tree::change_trees(program, op, &dirs, cell)
             };
-            let reply = match crate::harness_tree::change_trees(program, op, &dirs, cell) {
+            let reply = match changed {
                 Ok(()) => Reply::Done,
                 Err(reason) => Reply::Refused { reason },
             };
@@ -965,6 +1004,40 @@ fn serve_connection(stream: &UnixStream, program: &Path, policy: &Policy) -> Res
             },
         ),
     }
+}
+
+/// Gives a harness's trees, `dirs`, to its cell on the cell's own ids
+/// (`own` mode), or takes them back for the broker. Only trees in the
+/// broker's harness run directories ([`Paths::harness_tree`]), given only
+/// to the configured cell's identity, `cell` (uid and gid), or taken back
+/// to the broker's; each opened beneath the broker's temp directory
+/// without following a link.
+///
+/// # Errors
+///
+/// Why not, for the first tree refused or not changed.
+fn own_trees(
+    policy: &Policy,
+    op: TreeOp,
+    dirs: &[PathBuf],
+    cell: (u32, u32),
+) -> Result<(), String> {
+    let configured = policy.skill.identity;
+    if cell != (configured.principal, configured.group) || configured.mapping != Mapping::Direct {
+        return Err(String::from(
+            "the trees' cell isn't the configured cell's identity",
+        ));
+    }
+    let (uid, gid) = match op {
+        TreeOp::Give => cell,
+        TreeOp::Reclaim => (policy.paths.owner, policy.paths.group),
+    };
+    for dir in dirs {
+        let beneath = policy.paths.harness_tree(dir)?;
+        hatchling_sys::chown_tree_beneath(&policy.paths.temp, &beneath, uid, gid)
+            .map_err(|error| format!("{} {}: {error}", op.name(), dir.display()))?;
+    }
+    Ok(())
 }
 
 /// Starts `helper` for `spec` and supervises it on `stream` until it ends
@@ -1133,7 +1206,84 @@ mod tests {
             under: Vec::new(),
             temp: std::env::temp_dir(),
             owner: hatchling_sys::euid(),
+            group: hatchling_sys::egid(),
         }
+    }
+
+    /// A harness's tree is one in the broker's harness run directories:
+    /// plain, below a directory named as one and the broker's alone. Only
+    /// such a tree is changed, given to the configured cell or taken back
+    /// to the broker, and opened without a link on the way.
+    #[test]
+    fn only_a_harness_tree_is_changed_and_only_for_its_cell_or_the_broker() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let temp = std::env::temp_dir();
+        let name = format!("hatchling-harness-test-{}", std::process::id());
+        let base = temp.join(&name);
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir(&base).unwrap();
+        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let work = base.join("work");
+        std::fs::create_dir_all(work.join("sub")).unwrap();
+        std::fs::write(work.join("sub/file"), b"f").unwrap();
+        let paths = paths();
+        assert_eq!(
+            paths.harness_tree(&work).unwrap(),
+            PathBuf::from(&name).join("work")
+        );
+        for refused in [
+            base.clone(),
+            temp.join("hatchling-skill-run-x/work"),
+            PathBuf::from("/etc"),
+            work.join("../../etc"),
+        ] {
+            assert!(
+                paths.harness_tree(&refused).is_err(),
+                "{}",
+                refused.display()
+            );
+        }
+        // A real directory of the broker's, named as another run's.
+        let skill_run = temp.join(format!("hatchling-skill-run-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&skill_run);
+        std::fs::create_dir_all(skill_run.join("work")).unwrap();
+        std::fs::set_permissions(&skill_run, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            paths.harness_tree(&skill_run.join("work")).is_err(),
+            "not a harness's run directory"
+        );
+        std::fs::remove_dir_all(&skill_run).unwrap();
+        let elsewhere = Paths {
+            owner: hatchling_sys::euid() + 1,
+            ..paths
+        };
+        assert!(elsewhere.harness_tree(&work).is_err(), "another owner's");
+        let policy = policy();
+        let cell = (policy.skill.identity.principal, policy.skill.identity.group);
+        if policy.skill.identity.mapping == Mapping::Direct {
+            own_trees(&policy, TreeOp::Give, std::slice::from_ref(&work), cell).unwrap();
+            own_trees(&policy, TreeOp::Reclaim, std::slice::from_ref(&work), cell).unwrap();
+            // A link on the way is refused when the tree is opened.
+            // A relative link, which stays beneath the temp directory.
+            std::os::unix::fs::symlink("work", base.join("linked")).unwrap();
+            let linked = own_trees(&policy, TreeOp::Give, &[base.join("linked/sub")], cell);
+            assert!(
+                linked.unwrap_err().contains("give"),
+                "opened through a link"
+            );
+        }
+        let other = own_trees(
+            &policy,
+            TreeOp::Give,
+            std::slice::from_ref(&work),
+            (cell.0 + 1, cell.1),
+        );
+        assert!(other.unwrap_err().contains("configured cell"));
+        let etc = own_trees(&policy, TreeOp::Give, &[PathBuf::from("/etc")], cell);
+        assert!(
+            etc.is_err_and(|why| why.contains("configured cell") || why.contains("harness's tree"))
+        );
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     /// A run directory of the broker's own: named as one, owner-only, and

@@ -42,7 +42,7 @@ pub(crate) enum TreeOp {
 
 impl TreeOp {
     /// Its name on the helper's command line.
-    const fn name(self) -> &'static str {
+    pub(crate) const fn name(self) -> &'static str {
         match self {
             Self::Give => "give",
             Self::Reclaim => "reclaim",

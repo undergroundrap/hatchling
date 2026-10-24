@@ -27,7 +27,7 @@ use std::io;
 use std::os::fd::{AsFd, AsRawFd as _, OwnedFd};
 use std::path::Path;
 
-use rustix::fs::{AtFlags, FileType, Mode, OFlags, StatxFlags};
+use rustix::fs::{AtFlags, FileType, Mode, OFlags, ResolveFlags, StatxFlags};
 
 use crate::Error;
 
@@ -275,14 +275,46 @@ pub fn chown_tree(path: &Path, uid: u32, gid: u32) -> Result<u64, Error> {
     chown_tree_within(path, uid, gid, Budget::of(MAX_CHOWN_ENTRIES))
 }
 
+/// [`chown_tree`] for the directory `rel`, a relative path beneath
+/// `base`.
+///
+/// It is opened without leaving `base` or following a link on the way
+/// (`openat2`, `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS`). A process that
+/// may rename what is below `base` can't point the change anywhere else
+/// (WO-017: the spawner changing a harness's trees in the broker's run
+/// directories).
+///
+/// # Errors
+///
+/// As [`chown_tree`], and [`Error::Ownership`] if `base` can't be opened,
+/// or `rel` isn't a directory beneath it reached without a link.
+pub fn chown_tree_beneath(base: &Path, rel: &Path, uid: u32, gid: u32) -> Result<u64, Error> {
+    let base = rustix::fs::open(base, PATH_FLAGS | OFlags::DIRECTORY, Mode::empty())
+        .map_err(changing("open the base"))?;
+    let root = rustix::fs::openat2(
+        &base,
+        rel,
+        PATH_FLAGS | OFlags::DIRECTORY,
+        Mode::empty(),
+        ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
+    )
+    .map_err(changing("open the tree beneath its base"))?;
+    chown_open_tree(&root, uid, gid, Budget::of(MAX_CHOWN_ENTRIES))
+}
+
 /// [`chown_tree`], changing at most `budget`'s entries.
-fn chown_tree_within(path: &Path, uid: u32, gid: u32, mut budget: Budget) -> Result<u64, Error> {
+fn chown_tree_within(path: &Path, uid: u32, gid: u32, budget: Budget) -> Result<u64, Error> {
     let root = rustix::fs::open(path, PATH_FLAGS | OFlags::DIRECTORY, Mode::empty())
         .map_err(changing("open the tree"))?;
-    let top = look(&root, c"").map_err(changing("look at the tree"))?;
-    let above = start_above(&root, top)?;
-    change_dir(&root, top, uid, gid, &mut budget)?;
-    let readable = rustix::fs::openat(&root, c".", DIR_FLAGS, Mode::empty())
+    chown_open_tree(&root, uid, gid, budget)
+}
+
+/// [`chown_tree`] for the tree whose top `root` is open.
+fn chown_open_tree(root: &OwnedFd, uid: u32, gid: u32, mut budget: Budget) -> Result<u64, Error> {
+    let top = look(root, c"").map_err(changing("look at the tree"))?;
+    let above = start_above(root, top)?;
+    change_dir(root, top, uid, gid, &mut budget)?;
+    let readable = rustix::fs::openat(root, c".", DIR_FLAGS, Mode::empty())
         .map_err(changing("open the tree"))?;
     chown_entries(&readable, top.mount, uid, gid, &above, &mut budget)?;
     Ok(budget.used)
@@ -503,6 +535,43 @@ fn remove_entry(dir: &OwnedFd, name: &CStr, walk: Walk<'_>, above: &[DirId]) -> 
 
 #[cfg(test)]
 mod tests {
+    /// A tree beneath its base is changed through what was opened there;
+    /// one reached through a link, or out of the base, or named
+    /// absolutely, is refused before anything changes.
+    #[test]
+    fn a_tree_beneath_its_base_is_changed_and_nothing_reached_otherwise() {
+        let base = std::env::temp_dir().join(format!("hatchling-beneath-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("run/work/sub")).unwrap();
+        std::fs::write(base.join("run/work/sub/file"), b"f").unwrap();
+        // A relative link, which stays beneath the base: only refusing every
+        // link refuses it.
+        symlink("run", base.join("link")).unwrap();
+        let (uid, gid) = (crate::euid(), crate::egid());
+        let changed = chown_tree_beneath(&base, Path::new("run/work"), uid, gid).unwrap();
+        assert_eq!(changed, 3, "work, sub and file");
+        for refused in ["link/work", "run/../../etc", "/etc", "run/work/sub/file"] {
+            assert!(
+                chown_tree_beneath(&base, Path::new(refused), uid, gid).is_err(),
+                "{refused}"
+            );
+        }
+        assert!(chown_tree_beneath(&base.join("absent"), Path::new("run"), uid, gid).is_err());
+        // What was opened is what is changed, wherever its path now leads.
+        let opened = rustix::fs::open(
+            base.join("run"),
+            PATH_FLAGS | OFlags::DIRECTORY,
+            Mode::empty(),
+        )
+        .unwrap();
+        std::fs::rename(base.join("run"), base.join("moved")).unwrap();
+        assert_eq!(
+            chown_open_tree(&opened, uid, gid, Budget::of(MAX_CHOWN_ENTRIES)).unwrap(),
+            4,
+            "run, work, sub and file"
+        );
+        std::fs::remove_dir_all(&base).unwrap();
+    }
     use std::os::unix::fs::symlink;
     use std::path::PathBuf;
 
