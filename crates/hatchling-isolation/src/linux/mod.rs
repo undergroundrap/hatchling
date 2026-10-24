@@ -36,33 +36,63 @@ use crate::{CellIdentity, CellSpec, CellView, Error, IsolationBackend, Supervise
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Linux;
 
+/// Who makes cells: the uid and gid recorded by [`spawns_as`].
+static SPAWNS_AS: std::sync::OnceLock<(u32, u32)> = std::sync::OnceLock::new();
+
+/// Records that cells are made by a process running as `uid` and `gid`
+/// (WO-017): the spawner, which writes their id maps, while this process,
+/// which builds their specs, may run as another user. Each cell's
+/// identity, and the uid its maker appears as inside it, are then worked
+/// out for that process; until this is called, for this one.
+///
+/// # Errors
+///
+/// Refused when another maker is recorded already; recording the same
+/// one again is fine.
+pub fn spawns_as(uid: u32, gid: u32) -> std::io::Result<()> {
+    if *SPAWNS_AS.get_or_init(|| (uid, gid)) == (uid, gid) {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "another maker of cells is recorded already",
+        ))
+    }
+}
+
+/// The uid and gid cells are made as: [`spawns_as`]'s, or this
+/// process's own.
+fn maker() -> (u32, u32) {
+    SPAWNS_AS
+        .get()
+        .copied()
+        .unwrap_or_else(|| (hatchling_sys::euid(), hatchling_sys::egid()))
+}
+
 impl IsolationBackend for Linux {
     type Cell = LinuxCell;
     type Process = LinuxProcess;
 
     fn owner(&self) -> u32 {
-        hatchling_sys::euid()
+        maker().0
     }
 
     fn identity(&self, principal: Option<u32>, count: u32) -> Result<CellIdentity, Error> {
-        identity::identity(
-            hatchling_sys::euid(),
-            hatchling_sys::egid(),
-            principal,
-            count,
-        )
+        let (uid, gid) = maker();
+        identity::identity(uid, gid, principal, count)
     }
 
     fn subordinate_identity(&self) -> Result<CellIdentity, Error> {
+        let (uid, gid) = maker();
         identity::subordinate(
-            hatchling_sys::euid(),
-            hatchling_sys::subid::own_cell_ids,
+            uid,
+            || hatchling_sys::subid::cell_ids_for(uid, gid),
             || hatchling_sys::subid::Helpers::standard().map(drop),
         )
     }
 
     fn broker_in_cell(&self, identity: &CellIdentity) -> Result<u32, Error> {
-        identity::broker_in_cell(hatchling_sys::euid(), *identity)
+        identity::broker_in_cell(maker().0, *identity)
     }
 
     fn view(&self, spec: &CellSpec) -> Result<CellView, Error> {
@@ -133,6 +163,35 @@ mod tests {
     #[test]
     fn the_owner_is_this_process() {
         assert_eq!(Linux.owner(), hatchling_sys::euid());
+    }
+
+    /// Recorded once, the maker's ids decide each identity, whatever this
+    /// process runs as; until then they are this process's own. (In a
+    /// child of its own: the record is its process's.)
+    #[test]
+    fn identities_are_worked_out_for_the_maker_recorded() {
+        assert_eq!(maker(), (hatchling_sys::euid(), hatchling_sys::egid()));
+        match hatchling_sys::fork().unwrap() {
+            hatchling_sys::ForkResult::Child => {
+                let held = (|| {
+                    spawns_as(0, 0).ok()?;
+                    spawns_as(0, 0).ok()?;
+                    spawns_as(1, 1).err()?;
+                    (Linux.owner() == 0).then_some(())?;
+                    let cell = Linux.identity(None, 1).ok()?;
+                    (cell.principal == 65534 && cell.group == 65534).then_some(())?;
+                    Linux.subordinate_identity().err()?;
+                    Some(())
+                })();
+                hatchling_sys::exit_child(i32::from(held.is_none()));
+            }
+            hatchling_sys::ForkResult::Parent { child } => {
+                let status = child
+                    .wait_deadline(std::time::Duration::from_secs(30))
+                    .unwrap();
+                assert_eq!(hatchling_sys::child_exit_code(status), 0);
+            }
+        }
     }
 
     #[test]

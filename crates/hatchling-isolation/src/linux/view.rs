@@ -167,6 +167,27 @@ struct SharedLib {
     target: String,
 }
 
+/// Where `ldd` is: the first of [`LDD`] that is a file. Never found on
+/// `PATH`, which is whoever started the cell's maker's to set.
+///
+/// # Errors
+///
+/// `NotFound` when none is.
+fn ldd() -> std::io::Result<&'static Path> {
+    LDD.iter()
+        .map(Path::new)
+        .find(|path| path.is_file())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("no ldd at {}", LDD.join(" or ")),
+            )
+        })
+}
+
+/// Where `ldd` may be, in order.
+const LDD: [&str; 2] = ["/usr/bin/ldd", "/bin/ldd"];
+
 /// Runs `ldd` on the agent binary with a hard timeout: `ldd` only
 /// reads ELF headers, so anything past [`LDD_TIMEOUT`] is a hang.
 ///
@@ -181,7 +202,7 @@ fn ldd_output(agent_bin: &Path) -> Result<std::process::Output, Error> {
     let spawn_err = |source: std::io::Error| Error::Spawn {
         reason: format!("cannot run ldd on {}: {source}", agent_bin.display()),
     };
-    let mut std_child = Command::new("ldd")
+    let mut std_child = Command::new(ldd().map_err(spawn_err)?)
         .arg(agent_bin)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -479,6 +500,13 @@ pub(super) mod tests {
             matches!(result, Err(Error::Spawn { .. })),
             "shared_libraries must fail for a missing binary"
         );
+    }
+
+    /// `ldd` is run from a fixed path, never one `PATH` names.
+    #[test]
+    fn ldd_is_found_at_a_fixed_path() {
+        let found = ldd().unwrap();
+        assert!(LDD.contains(&found.to_str().unwrap()), "{}", found.display());
     }
 
     #[test]
