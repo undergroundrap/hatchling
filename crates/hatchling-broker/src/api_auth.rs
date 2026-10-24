@@ -417,15 +417,13 @@ pub fn mint_ui_token(path: &Path) -> Result<ApiToken, Error> {
 /// As [`mint_ui_token`], and [`Error::SocketSetup`] when the token can't
 /// be given to the owner.
 pub fn mint_ui_token_for(path: &Path, owner: u32) -> Result<ApiToken, Error> {
-    let earlier = std::fs::symlink_metadata(path)
-        .ok()
-        .map_or(owner, |meta| {
-            if meta.uid() == hatchling_sys::euid() {
-                meta.uid()
-            } else {
-                owner
-            }
-        });
+    let earlier = std::fs::symlink_metadata(path).ok().map_or(owner, |meta| {
+        if meta.uid() == hatchling_sys::euid() {
+            meta.uid()
+        } else {
+            owner
+        }
+    });
     let token = mint_ui_token_as(path, earlier)?;
     let file = std::fs::File::open(path).map_err(|source| Error::SocketSetup { source })?;
     hatchling_sys::give_to(&file, owner).map_err(|source| Error::SocketSetup {

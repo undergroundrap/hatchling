@@ -28,12 +28,10 @@ use hatchling_core::{PeerUid, SocketPath};
 use subtle::ConstantTimeEq as _;
 
 use crate::api::{API_SOCKET_MODE, API_WRITE_TIMEOUT, HELLO_TIMEOUT};
-use crate::api_auth::{
-    ApiConfig, from_owner, mint_ui_token_for, parse_socket_path, ui_token_path,
-};
+use crate::api_auth::{ApiConfig, from_owner, mint_ui_token_for, parse_socket_path, ui_token_path};
 use crate::connections::ConnectionSlots;
-use crate::serve::session_error;
 use crate::listener::bind_owner_socket;
+use crate::serve::session_error;
 use crate::{Config, Error};
 
 /// Most operator connections served at once.

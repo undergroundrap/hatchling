@@ -43,9 +43,9 @@ use hatchling_space::{
 };
 use hatchling_vault::OpensStores;
 
+use crate::listener::bind_owner_socket;
 use crate::serve::session_error;
 use crate::space_ops::{EndAdmissions, SealedSpaceStore, SpaceSession, handle_space_op, pairings};
-use crate::listener::bind_owner_socket;
 use crate::{Config, Error};
 
 /// The device socket's permission bits: owner only.

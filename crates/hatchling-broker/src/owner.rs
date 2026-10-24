@@ -32,7 +32,7 @@ pub fn owner() -> Result<u32, Error> {
     }
     let found = owner_from(
         &|key| crate::cell::env_value(std::env::var(key)),
-        rustix::process::getuid().as_raw(),
+        hatchling_sys::uid(),
         hatchling_sys::euid(),
     )?;
     Ok(*OWNER.get_or_init(|| found))
@@ -91,14 +91,21 @@ mod tests {
         assert_eq!(owner_from(&named, 0, 0).unwrap(), 1234);
         let sudo = with(&[("SUDO_UID", "1000")]);
         assert_eq!(owner_from(&sudo, 0, 0).unwrap(), 1000);
-        assert_eq!(owner_from(&sudo, 1001, 1001).unwrap(), 1001, "not root: no sudo user");
+        assert_eq!(
+            owner_from(&sudo, 1001, 1001).unwrap(),
+            1001,
+            "not root: no sudo user"
+        );
         assert_eq!(owner_from(&with(&[]), 0, 0).unwrap(), 0);
         assert_eq!(owner_from(&with(&[]), 1001, 1001).unwrap(), 1001);
         for bad in [
             with(&[("HATCHLING_OWNER_UID", "ocean")]),
             with(&[("SUDO_UID", "-1")]),
         ] {
-            assert!(matches!(owner_from(&bad, 0, 0), Err(Error::InvalidConfig { .. })));
+            assert!(matches!(
+                owner_from(&bad, 0, 0),
+                Err(Error::InvalidConfig { .. })
+            ));
         }
         // Recorded once: what is recorded is what is read back.
         let recorded_first = recorded();

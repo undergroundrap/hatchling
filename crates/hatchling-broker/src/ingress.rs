@@ -35,8 +35,8 @@ use hatchling_channel::{Cleared, IngressEvent, LocalHub, Message, OutputGate};
 use hatchling_core::framing::{read_frame_or_eof, write_frame};
 use hatchling_core::{PeerUid, SocketPath, peer_credentials};
 
-use crate::serve::session_error;
 use crate::listener::bind_owner_socket;
+use crate::serve::session_error;
 use crate::{Config, Error};
 
 /// The ingress socket's permission bits: owner only.

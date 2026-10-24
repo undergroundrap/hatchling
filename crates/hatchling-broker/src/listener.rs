@@ -81,10 +81,11 @@ pub fn bind_owner_socket(
         });
     let listener = bind_socket_as(socket, mode, stale)?;
     if owner != hatchling_sys::euid() {
-        hatchling_sys::hand_over_socket(socket.as_path(), owner, hatchling_sys::egid())
-            .map_err(|source| Error::SocketSetup {
+        hatchling_sys::hand_over_socket(socket.as_path(), owner, hatchling_sys::egid()).map_err(
+            |source| Error::SocketSetup {
                 source: std::io::Error::other(source),
-            })?;
+            },
+        )?;
     }
     Ok(listener)
 }
@@ -210,22 +211,22 @@ mod tests {
     #[test]
     fn an_owner_socket_is_given_to_its_owner() {
         let path = test_path("owner");
-        let socket: SocketPath = path.to_str().unwrap().parse().unwrap();
+        let socket: SocketPath = path.parse().unwrap();
         let me = hatchling_sys::euid();
         let first = bind_owner_socket(&socket, 0o600, me).unwrap();
         drop(first);
         // The stale socket, the broker's own: replaced.
         let again = bind_owner_socket(&socket, 0o600, me).unwrap();
-        assert_eq!(std::fs::symlink_metadata(&path).unwrap().uid(), me);
+        assert_eq!(std::fs::symlink_metadata(&*path).unwrap().uid(), me);
         drop(again);
         let other = me.wrapping_add(4242);
         if me == 0 {
             let given = bind_owner_socket(&socket, 0o600, other).unwrap();
-            assert_eq!(std::fs::symlink_metadata(&path).unwrap().uid(), other);
+            assert_eq!(std::fs::symlink_metadata(&*path).unwrap().uid(), other);
             drop(given);
             // The owner's stale socket: replaced, and given again.
             let replaced = bind_owner_socket(&socket, 0o600, other).unwrap();
-            assert_eq!(std::fs::symlink_metadata(&path).unwrap().uid(), other);
+            assert_eq!(std::fs::symlink_metadata(&*path).unwrap().uid(), other);
             drop(replaced);
         } else {
             // Not root: the socket can't be given away, and nothing binds.

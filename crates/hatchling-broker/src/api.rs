@@ -52,9 +52,9 @@ use crate::api_auth::{
 use crate::api_ops::{Audit, Ops, Replies};
 use crate::api_stream::{Bus, FOLLOW_POLL, Follower};
 use crate::connections::ConnectionSlots;
+use crate::listener::bind_owner_socket;
 use crate::serve::session_error;
 use crate::skills::Skills;
-use crate::listener::bind_owner_socket;
 use crate::{Config, Error};
 
 /// The API socket's mode bits: owner only.
