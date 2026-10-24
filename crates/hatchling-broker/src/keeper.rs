@@ -347,18 +347,21 @@ pub(crate) fn handed_keys(handed: &str) -> Vec<(String, std::fs::File)> {
 }
 
 /// Lets an operator's command, run as root, act for the keeper's user in
-/// its directories ([`hatchling_vault::act_for`]): the vault, its key and
-/// its keyring are opened as that user's, and what the command makes
-/// there is given to it. Not run as root, it changes nothing.
+/// its directories ([`hatchling_vault::act_for`]), handed to that user
+/// first as the broker hands them: the vault, its key and its keyring are
+/// opened as that user's, and what the command makes there is given to
+/// it. Not run as root, it changes nothing.
 ///
 /// # Errors
 ///
-/// As [`keeper_user`], and [`Error::Keeper`] when the acting is refused.
+/// As [`keeper_user`] and [`hand_to_keeper`], and [`Error::Keeper`] when
+/// the acting is refused.
 pub fn act_for_keeper(config: &Config) -> Result<(), Error> {
-    let Some((uid, _)) = keeper_user()? else {
+    let Some((uid, gid)) = keeper_user()? else {
         return Ok(());
     };
     let dirs = keeper_dirs(&config.vault, &KeyringConfig::from_env()?);
+    hand_to_keeper(&dirs, uid, gid)?;
     let dirs: Vec<&Path> = dirs.iter().map(PathBuf::as_path).collect();
     hatchling_vault::act_for(uid, &dirs).map_err(|e| Error::Keeper {
         reason: format!("cannot act for {KEEPER_USER}: {e}"),
