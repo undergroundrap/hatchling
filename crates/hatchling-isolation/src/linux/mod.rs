@@ -204,7 +204,11 @@ mod tests {
                 let status = child
                     .wait_deadline(std::time::Duration::from_secs(30))
                     .unwrap();
-                assert_eq!(hatchling_sys::child_exit_code(status), 0, "the step that failed");
+                assert_eq!(
+                    hatchling_sys::child_exit_code(status),
+                    0,
+                    "the step that failed"
+                );
             }
         }
     }
