@@ -175,23 +175,36 @@ mod tests {
         assert_eq!(maker(), (hatchling_sys::euid(), hatchling_sys::egid()));
         match hatchling_sys::fork().unwrap() {
             hatchling_sys::ForkResult::Child => {
-                let held = (|| {
-                    spawns_as(0, 0).ok()?;
-                    spawns_as(0, 0).ok()?;
-                    spawns_as(1, 1).err()?;
-                    (Linux.owner() == 0).then_some(())?;
-                    let cell = Linux.identity(None, 1).ok()?;
-                    (cell.principal == 65534 && cell.group == 65534).then_some(())?;
-                    Linux.subordinate_identity().err()?;
-                    Some(())
+                // Each step that fails exits with its own code.
+                let failed = (|| {
+                    if spawns_as(0, 0).is_err() {
+                        return 1;
+                    }
+                    if spawns_as(0, 0).is_err() {
+                        return 2;
+                    }
+                    if spawns_as(1, 1).is_ok() {
+                        return 3;
+                    }
+                    if Linux.owner() != 0 {
+                        return 4;
+                    }
+                    match Linux.identity(None, 1) {
+                        Ok(cell) if cell.principal == 65534 && cell.group == 65534 => {}
+                        _ => return 5,
+                    }
+                    if Linux.subordinate_identity().is_ok() {
+                        return 6;
+                    }
+                    0
                 })();
-                hatchling_sys::exit_child(i32::from(held.is_none()));
+                hatchling_sys::exit_child(failed);
             }
             hatchling_sys::ForkResult::Parent { child } => {
                 let status = child
                     .wait_deadline(std::time::Duration::from_secs(30))
                     .unwrap();
-                assert_eq!(hatchling_sys::child_exit_code(status), 0);
+                assert_eq!(hatchling_sys::child_exit_code(status), 0, "the step that failed");
             }
         }
     }
