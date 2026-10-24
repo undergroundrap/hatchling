@@ -88,6 +88,33 @@ pub fn account_ids(accounts: &str) -> Vec<u32> {
         .collect()
 }
 
+/// The uid and primary gid of the account `name` in `passwd` text
+/// (`/etc/passwd`: `name:password:uid:gid:...`), if it has a line there.
+#[must_use]
+pub fn account(passwd: &str, name: &str) -> Option<(u32, u32)> {
+    passwd.lines().find_map(|line| {
+        let mut fields = line.split(':');
+        if fields.next()? != name {
+            return None;
+        }
+        let uid = fields.nth(1)?.parse().ok()?;
+        let gid = fields.next()?.parse().ok()?;
+        Some((uid, gid))
+    })
+}
+
+/// [`account`] in this host's `/etc/passwd`: a system user is a local one.
+///
+/// # Errors
+///
+/// [`Error::InvalidIdMap`] if `/etc/passwd` can't be read.
+pub fn local_account(name: &str) -> Result<Option<(u32, u32)>, Error> {
+    let passwd = std::fs::read_to_string("/etc/passwd").map_err(|source| Error::InvalidIdMap {
+        reason: format!("cannot read /etc/passwd: {source}"),
+    })?;
+    Ok(account(&passwd, name))
+}
+
 /// The name of the account with id `id` in `accounts` text, if any.
 #[must_use]
 pub fn account_name(accounts: &str, id: u32) -> Option<&str> {
@@ -340,6 +367,24 @@ impl Helpers {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An account is found by its name alone, with its uid and primary
+    /// gid; a name that is only a prefix, or a line without both ids,
+    /// isn't one.
+    #[test]
+    fn an_account_is_found_by_its_name() {
+        let passwd = "root:x:0:0:root:/root:/bin/bash\n\
+                      hatchling-keeper:x:998:997::/nonexistent:/usr/sbin/nologin\n\
+                      hatchling-keeper-old:x:996:995::/:/bin/false\n\
+                      broken:x:abc:1::/:/bin/false\n";
+        assert_eq!(account(passwd, "hatchling-keeper"), Some((998, 997)));
+        assert_eq!(account(passwd, "root"), Some((0, 0)));
+        assert_eq!(account(passwd, "hatchling"), None);
+        assert_eq!(account(passwd, "broken"), None);
+        assert_eq!(account(passwd, "absent"), None);
+        assert_eq!(local_account("root").unwrap(), Some((0, 0)));
+        assert_eq!(local_account("no-such-hatchling-user").unwrap(), None);
+    }
 
     #[test]
     fn a_range_is_found_by_name_or_id_and_must_be_sound() {

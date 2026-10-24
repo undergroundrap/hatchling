@@ -34,6 +34,7 @@
 use std::collections::BTreeSet;
 use std::os::fd::{AsFd as _, AsRawFd as _};
 use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -48,11 +49,16 @@ use zeroize::Zeroizing;
 
 use crate::secrets::{Secrets, handle_vault_op};
 use crate::vault_access::{Caller, Outcome};
-use crate::{Config, Error, RedactionConfig};
+use crate::vault_keyring::KeyringConfig;
+use crate::{Config, Error, RedactionConfig, VaultConfig};
 
 /// The keeper's subcommand: `hatchling-broker vault-keeper`, started only
 /// by the broker.
 pub const VAULT_KEEPER_SUBCOMMAND: &str = "vault-keeper";
+
+/// The vault keeper's user when the broker runs as root (WO-017, step 3):
+/// it owns the vault, its key and its keyring, and the keeper runs as it.
+pub const KEEPER_USER: &str = "hatchling-keeper";
 
 /// The secret recording what cells have had: the secrets a gate scans for.
 ///
@@ -67,6 +73,9 @@ const KEEPER_FD: &str = crate::environment::HATCHLING_KEEPER_FD.name;
 /// The setting that names the keeper's end of its pair with the egress
 /// authority.
 const AUTHORITY_FD: &str = crate::environment::HATCHLING_KEEPER_AUTHORITY_FD.name;
+
+/// The security keys opened for the keeper ([`open_security_keys`]).
+pub(crate) const KEEPER_KEYS: &str = crate::environment::HATCHLING_KEEPER_KEYS.name;
 
 /// What the keeper's first frames are, by their first byte: the keys it
 /// hands the broker,
@@ -182,6 +191,219 @@ pub fn start() -> Result<(StoreKeys, UnixStream), Error> {
     Ok((keys, authority))
 }
 
+/// The keeper's user, its uid and gid, when this process runs as root;
+/// none otherwise, when the keeper runs as this process's own user.
+///
+/// # Errors
+///
+/// [`Error::Keeper`] when this process runs as root and there's no such
+/// user (saying how to make one), or it is root itself.
+pub fn keeper_user() -> Result<Option<(u32, u32)>, Error> {
+    if hatchling_sys::euid() != 0 {
+        return Ok(None);
+    }
+    let found = hatchling_sys::subid::local_account(KEEPER_USER).map_err(|e| Error::Keeper {
+        reason: e.to_string(),
+    })?;
+    match found {
+        Some((0, _)) => Err(Error::Keeper {
+            reason: format!("{KEEPER_USER} is root: it must be a user of its own"),
+        }),
+        Some(ids) => Ok(Some(ids)),
+        None => Err(Error::Keeper {
+            reason: format!(
+                "run as root, the broker gives its vault keeper a user of its own, and there is \
+                 no {KEEPER_USER}: create it with \
+                 `useradd --system --no-create-home --shell /usr/sbin/nologin {KEEPER_USER}`"
+            ),
+        }),
+    }
+}
+
+/// The directories the keeper's user owns: the vault's, its key file's,
+/// its keyring's and its file tier's KEK's, each once.
+#[must_use]
+pub fn keeper_dirs(vault: &VaultConfig, keyring: &KeyringConfig) -> Vec<PathBuf> {
+    let mut dirs = vec![vault.root.clone()];
+    let files = [
+        Some(vault.key_file.clone()),
+        keyring.keyring.clone(),
+        Some(keyring.kek_file(vault)),
+    ];
+    for dir in files.iter().flatten().filter_map(|file| file.parent()) {
+        if !dirs.iter().any(|known| known == dir) {
+            dirs.push(dir.to_path_buf());
+        }
+    }
+    dirs
+}
+
+/// Hands `dirs` to the keeper's user, `uid` and `gid`, before it starts:
+/// each made if absent, and it and everything in it given to the user,
+/// each change logged. A directory the user couldn't reach, below one it
+/// may not search, is refused, naming that one.
+///
+/// # Errors
+///
+/// [`Error::Keeper`] for a directory that can't be made, reached or
+/// given.
+fn hand_to_keeper(dirs: &[PathBuf], uid: u32, gid: u32) -> Result<(), Error> {
+    let failed = |dir: &Path, why: String| Error::Keeper {
+        reason: format!("cannot hand {} to {KEEPER_USER}: {why}", dir.display()),
+    };
+    for dir in dirs {
+        if let Some(closed) = dir
+            .ancestors()
+            .skip(1)
+            .find(|above| !searchable(above, uid, gid))
+        {
+            return Err(failed(
+                dir,
+                format!(
+                    "{KEEPER_USER} can't reach it through {}, which it may not search",
+                    closed.display()
+                ),
+            ));
+        }
+        if std::fs::symlink_metadata(dir).is_err() {
+            hatchling_sys::create_private_dir(dir).map_err(|e| failed(dir, e.to_string()))?;
+        }
+        // Handed over once: on a later start everything is the user's.
+        let changed = not_theirs(dir, uid, gid, NOT_THEIRS_DEPTH);
+        if changed > 0 {
+            hatchling_sys::chown_tree(dir, uid, gid).map_err(|e| failed(dir, e.to_string()))?;
+            tracing::info!(dir = %dir.display(), changed, user = KEEPER_USER, "handed to the vault keeper's user");
+        }
+    }
+    Ok(())
+}
+
+/// How deep [`not_theirs`] looks before it counts what is below as
+/// changed, leaving [`hatchling_sys::chown_tree`] to refuse it.
+const NOT_THEIRS_DEPTH: usize = 16;
+
+/// How many entries of the tree at `dir`, itself included, aren't `uid`'s
+/// and `gid`'s: what [`hatchling_sys::chown_tree`] would change. Nothing
+/// is followed; one that can't be looked at, or lies past `depth`, counts,
+/// so the walk that changes it reports it.
+fn not_theirs(dir: &Path, uid: u32, gid: u32, depth: usize) -> usize {
+    use std::os::unix::fs::MetadataExt as _;
+    let Ok(meta) = std::fs::symlink_metadata(dir) else {
+        return 1;
+    };
+    if depth == 0 {
+        return 1;
+    }
+    let own = usize::from(meta.uid() != uid || meta.gid() != gid);
+    if !meta.is_dir() {
+        return own;
+    }
+    std::fs::read_dir(dir).map_or(own + 1, |entries| {
+        entries.fold(own, |count, entry| {
+            count + entry.map_or(1, |entry| not_theirs(&entry.path(), uid, gid, depth - 1))
+        })
+    })
+}
+
+/// Whether the user `uid`, in group `gid`, may search the directory `dir`
+/// (by its mode, as the kernel decides for a user that isn't root).
+fn searchable(dir: &Path, uid: u32, gid: u32) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    std::fs::metadata(dir).is_ok_and(|meta| {
+        let mode = meta.mode();
+        if meta.uid() == uid {
+            mode & 0o100 != 0
+        } else if meta.gid() == gid {
+            mode & 0o010 != 0
+        } else {
+            mode & 0o001 != 0
+        }
+    })
+}
+
+/// The security keys plugged in now, each opened by its node's name: what
+/// the keeper's user may not open itself. One that can't be opened is
+/// left out, said in the log.
+fn open_security_keys() -> Vec<(String, std::fs::File)> {
+    let bus = hatchling_fido2::linux::Hidraw::new(Box::new(|| None));
+    let nodes = bus.nodes().unwrap_or_else(|error| {
+        tracing::warn!(%error, "cannot list the security keys for the vault keeper");
+        Vec::new()
+    });
+    nodes
+        .into_iter()
+        .filter_map(|node| {
+            let path = Path::new("/dev").join(&node);
+            match std::fs::File::options().read(true).write(true).open(&path) {
+                Ok(file) => Some((node, file)),
+                Err(error) => {
+                    tracing::warn!(key = %path.display(), %error, "cannot open a security key for the vault keeper");
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
+/// `keys` as the keeper reads them ([`KEEPER_KEYS`]): `node=descriptor`,
+/// comma separated.
+fn keys_env(keys: &[(String, std::fs::File)]) -> String {
+    keys.iter()
+        .map(|(node, file)| format!("{node}={}", file.as_raw_fd()))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// The security keys `handed` names ([`keys_env`]), adopted: each a
+/// device this process inherited. One that isn't is left out, said in
+/// the log.
+pub(crate) fn handed_keys(handed: &str) -> Vec<(String, std::fs::File)> {
+    handed
+        .split(',')
+        .filter(|pair| !pair.is_empty())
+        .filter_map(|pair| {
+            let adopted = pair
+                .split_once('=')
+                .and_then(|(node, fd)| Some((node, fd.parse::<i32>().ok()?)))
+                .ok_or_else(|| String::from("not node=descriptor"))
+                .and_then(|(node, fd)| {
+                    hatchling_sys::inherited_device(fd)
+                        .map(|file| (node.to_owned(), file))
+                        .map_err(|error| error.to_string())
+                });
+            adopted
+                .map_err(
+                    |error| tracing::warn!(%pair, %error, "a security key handed over was refused"),
+                )
+                .ok()
+        })
+        .collect()
+}
+
+/// Lets an operator's command, run as root, act for the keeper's user in
+/// its directories ([`hatchling_vault::act_for`]).
+///
+/// They are handed to that user first, as the broker hands them: the
+/// vault, its key and its keyring are opened as that user's, and what the
+/// command makes there is given to it. Not run as root, it changes
+/// nothing.
+///
+/// # Errors
+///
+/// As [`keeper_user`] and [`hand_to_keeper`], and [`Error::Keeper`] when
+/// the acting is refused.
+pub fn act_for_keeper(config: &Config) -> Result<(), Error> {
+    let Some((uid, gid)) = keeper_user()? else {
+        return Ok(());
+    };
+    let dirs = keeper_dirs(&config.vault, &KeyringConfig::from_env()?);
+    hand_to_keeper(&dirs, uid, gid)?;
+    let dirs: Vec<&Path> = dirs.iter().map(PathBuf::as_path).collect();
+    hatchling_vault::act_for(uid, &dirs).map_err(|e| Error::Keeper {
+        reason: format!("cannot act for {KEEPER_USER}: {e}"),
+    })
+}
+
 impl Keeper {
     /// Starts the keeper as `program`, the broker's binary with its
     /// environment, given its subcommand and its ends of two socket pairs
@@ -197,6 +419,29 @@ impl Keeper {
     /// read back.
     pub fn start_with(mut program: Command) -> Result<(Self, StoreKeys, UnixStream), Error> {
         let failed = |reason: String| Error::Keeper { reason };
+        // As root, the keeper runs as its own user, which is given the
+        // vault, its key and its keyring first. The security keys it may
+        // not open are opened here and handed to it (the owner's choice,
+        // 2026-10-24), held until it has started.
+        let _held_keys = match keeper_user()? {
+            Some((uid, gid)) => {
+                let config = Config::from_env()?;
+                hand_to_keeper(
+                    &keeper_dirs(&config.vault, &KeyringConfig::from_env()?),
+                    uid,
+                    gid,
+                )?;
+                let keys = open_security_keys();
+                for (_, key) in &keys {
+                    hatchling_sys::keep_across_exec(key.as_fd()).map_err(|e| {
+                        failed(format!("cannot hand the keeper a security key: {e}"))
+                    })?;
+                }
+                program.env(KEEPER_KEYS, keys_env(&keys)).uid(uid).gid(gid);
+                keys
+            }
+            None => Vec::new(),
+        };
         let pair =
             || UnixStream::pair().map_err(|e| failed(format!("cannot make a socket pair: {e}")));
         let (ours, theirs) = pair()?;
@@ -585,6 +830,8 @@ pub fn vault_keeper_main() -> ExitCode {
                 .with_writer(std::io::stderr)
                 .with_max_level(config.log_level.to_tracing())
                 .try_init();
+            // Which user it runs as: as root, the keeper's own.
+            tracing::info!(euid = hatchling_sys::euid(), "the vault keeper started");
             begin(&stream, config)
         });
     let state = match begun {
@@ -892,8 +1139,140 @@ fn send(stream: &UnixStream, reply: &Reply) -> Result<(), Error> {
 mod tests {
     use super::*;
 
+    /// Security keys cross to the keeper as `node=descriptor` pairs, and
+    /// are adopted there; a pair that isn't one, or a descriptor that
+    /// isn't a device, is left out. A machine without keys hands none.
+    #[test]
+    fn security_keys_cross_to_the_keeper_by_their_descriptors() {
+        use std::os::fd::IntoRawFd as _;
+        let null = || std::fs::File::open("/dev/null").unwrap();
+        let (one, four) = (null(), null());
+        let expected = format!("hidraw1={},hidraw4={}", one.as_raw_fd(), four.as_raw_fd());
+        let keys = vec![
+            (String::from("hidraw1"), one),
+            (String::from("hidraw4"), four),
+        ];
+        assert_eq!(keys_env(&keys), expected);
+        let raw = null().into_raw_fd();
+        let (pipe, _write) = hatchling_sys::pipe().unwrap();
+        let adopted = handed_keys(&format!(
+            "hidraw2={raw},nonsense,hidraw3=x,hidraw5={},",
+            pipe.as_raw_fd()
+        ));
+        let found: Vec<(&str, i32)> = adopted
+            .iter()
+            .map(|(node, file)| (node.as_str(), file.as_raw_fd()))
+            .collect();
+        assert_eq!(found, [("hidraw2", raw)]);
+        assert!(handed_keys("").is_empty());
+        if !Path::new("/sys/class/hidraw").exists() {
+            assert!(open_security_keys().is_empty());
+        }
+    }
+
     fn names(list: &[&str]) -> Vec<SecretName> {
         list.iter().map(|name| name.parse().unwrap()).collect()
+    }
+
+    /// The keeper's user is looked for only as root, where its absence
+    /// stops the broker, saying how to make it; not as root, the keeper is
+    /// this process's user, and an operator's command acts for no one.
+    #[test]
+    fn the_keepers_user_is_root_modes_alone() {
+        let config = crate::api_auth::tests::owner_config(None);
+        if hatchling_sys::euid() != 0 {
+            assert_eq!(keeper_user().unwrap(), None);
+            act_for_keeper(&config).unwrap();
+            return;
+        }
+        match hatchling_sys::subid::local_account(KEEPER_USER).unwrap() {
+            None => {
+                let refused = keeper_user().unwrap_err().to_string();
+                assert!(refused.contains("useradd --system"), "{refused}");
+                assert!(act_for_keeper(&config).is_err());
+            }
+            Some(ids) => assert_eq!(keeper_user().unwrap(), Some(ids)),
+        }
+    }
+
+    /// The keeper's directories: the vault's, and those of its key file,
+    /// keyring and KEK, each once.
+    #[test]
+    fn the_keepers_directories_are_the_vaults_and_its_keys() {
+        let vault = VaultConfig {
+            root: PathBuf::from("/srv/h/vault"),
+            key_file: PathBuf::from("/srv/h/vault.key/key"),
+            grants: Vec::new(),
+        };
+        assert_eq!(
+            keeper_dirs(&vault, &KeyringConfig::default()),
+            [
+                PathBuf::from("/srv/h/vault"),
+                PathBuf::from("/srv/h/vault.key")
+            ]
+        );
+        let keyring = KeyringConfig {
+            keyring: Some(PathBuf::from("/srv/h/ring/keyring")),
+            kek_file: Some(PathBuf::from("/srv/h/kek/kek")),
+            ..KeyringConfig::default()
+        };
+        assert_eq!(
+            keeper_dirs(&vault, &keyring),
+            [
+                PathBuf::from("/srv/h/vault"),
+                PathBuf::from("/srv/h/vault.key"),
+                PathBuf::from("/srv/h/ring"),
+                PathBuf::from("/srv/h/kek"),
+            ]
+        );
+    }
+
+    /// The keeper's directories are made if absent and handed over; one
+    /// below a directory the keeper's user may not search is refused,
+    /// naming that directory, before anything changes.
+    #[test]
+    fn a_directory_is_handed_to_the_keeper_only_where_it_can_reach() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let base =
+            std::env::temp_dir().join(format!("hatchling-keeper-hand-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir(&base).unwrap();
+        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o711)).unwrap();
+        let (uid, gid) = (hatchling_sys::euid(), rustix::process::getegid().as_raw());
+        let vault = base.join("vault");
+        hand_to_keeper(std::slice::from_ref(&vault), uid, gid).unwrap();
+        let made = std::fs::symlink_metadata(&vault).unwrap();
+        assert!(made.is_dir());
+        assert_eq!((made.uid(), made.mode() & 0o777), (uid, 0o700));
+        // What isn't the user's yet is counted, and nothing else.
+        std::fs::write(vault.join("secret"), b"s").unwrap();
+        assert_eq!(not_theirs(&vault, uid, gid, 2), 0);
+        assert_eq!(not_theirs(&vault, uid.wrapping_add(4242), gid, 2), 2);
+        assert_eq!(not_theirs(&vault, uid, gid.wrapping_add(4242), 2), 2);
+        assert_eq!(not_theirs(&base.join("absent"), uid, gid, 2), 1);
+        assert_eq!(
+            not_theirs(&vault, uid, gid, 1),
+            1,
+            "past its depth, counted"
+        );
+        assert!(searchable(
+            &base,
+            uid.wrapping_add(4242),
+            gid.wrapping_add(4242)
+        ));
+        let closed = base.join("closed");
+        std::fs::create_dir(&closed).unwrap();
+        std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let other = (uid.wrapping_add(4242), gid.wrapping_add(4242));
+        assert!(searchable(&closed, uid, gid), "its owner searches it");
+        assert!(!searchable(&closed, other.0, other.1));
+        let refused = hand_to_keeper(&[closed.join("vault")], other.0, other.1)
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains(&closed.display().to_string()), "{refused}");
+        assert!(!closed.join("vault").exists(), "nothing was made");
+        assert!(!searchable(&base.join("absent"), uid, gid));
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     /// The keeper asks the broker for its stores' keys as they keep them,

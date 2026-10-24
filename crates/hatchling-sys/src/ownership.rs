@@ -40,6 +40,35 @@ pub(crate) const fn ids(uid: u32, gid: u32) -> (rustix::fs::Uid, rustix::fs::Gid
     (owner, group)
 }
 
+/// Gives the file open at `file` to `uid`, its group as it is.
+///
+/// What a root process writing for another user does with what it makes
+/// there (WO-017). A file is left as it is when `uid` is this process's
+/// own effective uid.
+///
+/// # Errors
+///
+/// Returns [`Error::Ownership`] if the change is refused.
+pub fn give_to(file: impl rustix::fd::AsFd, uid: u32) -> Result<(), Error> {
+    if uid == rustix::process::geteuid().as_raw() {
+        return Ok(());
+    }
+    let (owner, _) = ids(uid, 0);
+    rustix::fs::fchown(file, Some(owner), None).map_err(failed("give a file to its owner"))
+}
+
+/// [`give_to`] for the directory at `path`, opened without following a
+/// symlink.
+///
+/// # Errors
+///
+/// Returns [`Error::Ownership`] if `path` isn't a directory itself, or
+/// the change is refused.
+pub fn give_dir_to(path: &Path, uid: u32) -> Result<(), Error> {
+    let handle = open_dir_nofollow(path).map_err(failed("open a directory to give"))?;
+    give_to(&handle, uid)
+}
+
 /// Gives the socket at `path` to `uid` and `gid`, the cell's.
 ///
 /// `path` is opened without following symlinks, and what was opened
@@ -260,6 +289,36 @@ pub const fn private_dir_ok(uid: u32, mode: u32, euid: u32) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// A file is given to another user only as root; given to this
+    /// process's own user, it is left as it is, and a symlink is never
+    /// opened as the directory it names.
+    #[test]
+    fn a_file_is_given_to_its_owner() {
+        use std::os::unix::fs::MetadataExt as _;
+        let dir = std::env::temp_dir().join(format!("hatchling-give-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).unwrap();
+        let file = std::fs::File::create(dir.join("f")).unwrap();
+        let euid = rustix::process::geteuid().as_raw();
+        give_to(&file, euid).unwrap();
+        give_dir_to(&dir, euid).unwrap();
+        let other = euid.wrapping_add(4242);
+        let given = give_to(&file, other);
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&dir, &link).unwrap();
+        assert!(give_dir_to(&link, euid).is_err());
+        if euid == 0 {
+            given.unwrap();
+            give_dir_to(&dir, other).unwrap();
+            assert_eq!(file.metadata().unwrap().uid(), other);
+            assert_eq!(std::fs::metadata(&dir).unwrap().uid(), other);
+        } else {
+            assert!(given.is_err());
+            assert_eq!(file.metadata().unwrap().uid(), euid);
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     use super::*;
     use std::path::PathBuf;
 

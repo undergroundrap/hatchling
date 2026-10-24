@@ -18,6 +18,7 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::acting::{give, owner_in};
 use crate::{Error, MAX_SECRET_BYTES, Secret, SecretName};
 
 /// Expected mode of the vault root directory: owner-only.
@@ -37,8 +38,13 @@ static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// one implementation of the check, so the two cannot drift.
 pub(crate) fn ensure_owner_only_dir(path: &Path, owner: u32) -> Result<(), Error> {
     // Made 0700 at once, whatever the umask, and never chmodded by path
-    // afterwards; one already there is only checked below.
-    let _ = hatchling_sys::create_private_dir(path);
+    // afterwards; one already there is only checked below. One made for
+    // the user this process acts for is given to them.
+    if hatchling_sys::create_private_dir(path).is_ok() {
+        hatchling_sys::give_dir_to(path, owner).map_err(|source| Error::Io {
+            source: std::io::Error::other(source),
+        })?;
+    }
     // `symlink_metadata`: a symlink is never accepted, even one
     // pointing at a directory.
     let metadata = std::fs::symlink_metadata(path).map_err(|source| Error::Io { source })?;
@@ -64,6 +70,8 @@ pub(crate) fn ensure_owner_only_dir(path: &Path, owner: u32) -> Result<(), Error
 pub struct Vault {
     /// The validated `0700` root. Secret files live directly under it.
     root: PathBuf,
+    /// Its owner, who is given every file written in it.
+    owner: u32,
 }
 
 impl Vault {
@@ -79,7 +87,7 @@ impl Vault {
     /// Returns [`Error::NotADirectory`], [`Error::InsecurePermissions`],
     /// or [`Error::Io`].
     pub fn open(root: &Path) -> Result<Self, Error> {
-        Self::open_as(root, rustix::process::getuid().as_raw())
+        Self::open_as(root, owner_in(root))
     }
 
     /// Opens the vault, requiring the root to be owned by `owner`.
@@ -98,6 +106,7 @@ impl Vault {
         tracing::debug!(vault_root = %root.display(), "vault opened");
         Ok(Self {
             root: root.to_path_buf(),
+            owner,
         })
     }
 
@@ -137,7 +146,7 @@ impl Vault {
     /// fsync. Split out so [`store`](Self::store) owns the failure
     /// cleanup in one place.
     fn store_inner(&self, target: &Path, temp: &Path, bytes: &[u8]) -> Result<(), Error> {
-        Self::write_temp(temp, bytes)?;
+        self.write_temp(temp, bytes)?;
         crate::fault::at(crate::fault::Step::Rename)?;
         std::fs::rename(temp, target).map_err(|source| Error::Io { source })?;
         // Sync the directory so the rename itself is durable.
@@ -326,7 +335,7 @@ impl Vault {
             .root
             .join(format!("{file}.{}.{id}.tmp", std::process::id()));
         let target = self.root.join(file);
-        let placed = Self::write_temp(&temp, bytes).and_then(|()| {
+        let placed = self.write_temp(&temp, bytes).and_then(|()| {
             if replace {
                 std::fs::rename(&temp, &target).map(|()| true)
             } else {
@@ -356,10 +365,10 @@ impl Vault {
         dir.sync_all().map_err(|source| Error::Io { source })
     }
 
-    /// Writes `bytes` to a new `0600` temp file and fsyncs it. Split
-    /// out so the atomic-write sequence reads as one pipeline in
-    /// [`store`](Self::store).
-    fn write_temp(temp: &Path, bytes: &[u8]) -> Result<(), Error> {
+    /// Writes `bytes` to a new `0600` temp file, the vault owner's, and
+    /// fsyncs it. Split out so the atomic-write sequence reads as one
+    /// pipeline in [`store`](Self::store).
+    fn write_temp(&self, temp: &Path, bytes: &[u8]) -> Result<(), Error> {
         use std::io::Write as _;
         let mut file = OpenOptions::new()
             .write(true)
@@ -367,6 +376,7 @@ impl Vault {
             .mode(SECRET_FILE_MODE)
             .open(temp)
             .map_err(|source| Error::Io { source })?;
+        give(&file, self.owner).map_err(|source| Error::Io { source })?;
         crate::fault::at(crate::fault::Step::TempWrite)?;
         file.write_all(bytes)
             .map_err(|source| Error::Io { source })?;
@@ -426,10 +436,10 @@ mod tests {
         let (vault, root) = open_test_vault("write-parts");
         let name = secret_name("parts");
         let temp = vault.temp_path(&name);
-        Vault::write_temp(&temp, b"first").unwrap();
+        vault.write_temp(&temp, b"first").unwrap();
         assert_eq!(std::fs::read(&temp).unwrap(), b"first");
         assert!(
-            Vault::write_temp(&temp, b"again").is_err(),
+            vault.write_temp(&temp, b"again").is_err(),
             "an existing temp is never reused"
         );
         std::fs::remove_file(&temp).unwrap();

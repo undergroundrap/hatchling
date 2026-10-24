@@ -84,6 +84,18 @@ pub fn sealed_stores(
     stores
 }
 
+/// The broker's own sealed stores: [`sealed_stores`] but the vault, which
+/// is the keeper's (WO-017).
+#[must_use]
+pub(crate) fn broker_stores(
+    config: &Config,
+    redaction: Option<&RedactionConfig>,
+) -> Vec<(Store, PathBuf)> {
+    let mut stores = sealed_stores(config, redaction);
+    stores.retain(|(store, _)| *store != Store::SECRETS);
+    stores
+}
+
 /// The keys of `stores`, unwrapped under `master`, which is dropped here,
 /// zeroized: what the broker serves with (WO-017). Each store's root is
 /// made if absent, and a store without a key is given one.
@@ -686,5 +698,10 @@ mod tests {
         assert_eq!(labels(&config), ["secrets", "artifacts", "spaces"]);
         config.web.grants = PathBuf::from("/srv/sites");
         assert_eq!(labels(&config), ["secrets", "artifacts", "spaces", "sites"]);
+        let brokers: Vec<_> = broker_stores(&config, None)
+            .into_iter()
+            .map(|(store, _)| store.label())
+            .collect();
+        assert_eq!(brokers, ["artifacts", "spaces", "sites"]);
     }
 }

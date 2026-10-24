@@ -89,6 +89,51 @@ pub fn keep_across_exec(fd: BorrowedFd<'_>) -> Result<(), Error> {
     })
 }
 
+/// Takes ownership of the character device this process inherited at
+/// `fd`.
+///
+/// One a launcher that may open it opened for this process, which may
+/// not (WO-017: the vault keeper's security keys). It must be above
+/// stderr and a character device, and is marked close-on-exec again.
+///
+/// Call it once for a descriptor: the file it returns owns it.
+///
+/// # Errors
+///
+/// [`Error::Process`] if `fd` is stdio, isn't open, or isn't a character
+/// device; the descriptor is left as it was.
+pub fn inherited_device(fd: i32) -> Result<std::fs::File, Error> {
+    let refused = |why: &str| Error::Process {
+        operation: "adopt an inherited device",
+        source: std::io::Error::new(std::io::ErrorKind::InvalidInput, why.to_owned()),
+    };
+    if fd <= 2 {
+        return Err(refused("stdio is not a device"));
+    }
+    if fd_flags(fd).is_none() {
+        return Err(refused("the descriptor is not open"));
+    }
+    // SAFETY: `fd` is open (checked above), and the borrow ends before
+    // anything closes it.
+    let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+    let device = rustix::fs::fstat(borrowed).is_ok_and(|stat| {
+        rustix::fs::FileType::from_raw_mode(stat.st_mode) == rustix::fs::FileType::CharacterDevice
+    });
+    if !device {
+        return Err(refused("the descriptor is not a character device"));
+    }
+    rustix::io::fcntl_setfd(borrowed, rustix::io::FdFlags::CLOEXEC).map_err(|source| {
+        Error::Process {
+            operation: "fcntl(F_SETFD, FD_CLOEXEC)",
+            source: std::io::Error::from_raw_os_error(source.raw_os_error()),
+        }
+    })?;
+    // SAFETY: `fd` is an open device this process inherited, and the
+    // caller hands its ownership over: nothing else here owns it.
+    let owned = unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) };
+    Ok(std::fs::File::from(owned))
+}
+
 /// Puts `fds` on the descriptor numbers `first`, `first + 1`, and so on,
 /// in order, each open across the next exec.
 ///
@@ -257,6 +302,29 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    /// An inherited device is adopted, close-on-exec again; stdio, a
+    /// descriptor that isn't open, and one that isn't a device are
+    /// refused and left as they were.
+    #[test]
+    fn an_inherited_device_is_adopted_and_nothing_else() {
+        let null = std::fs::File::open("/dev/null").unwrap();
+        keep_across_exec(null.as_fd()).unwrap();
+        let raw = null.into_raw_fd();
+        let adopted = inherited_device(raw).unwrap();
+        assert_eq!(adopted.as_raw_fd(), raw);
+        assert_ne!(
+            fd_flags(raw).unwrap() & libc::FD_CLOEXEC,
+            0,
+            "close-on-exec again"
+        );
+        let (read, _write) = pipe().unwrap();
+        assert!(inherited_device(read.as_raw_fd()).is_err());
+        assert!(fd_flags(read.as_raw_fd()).is_some(), "left as it was");
+        assert!(inherited_device(2).is_err());
+        drop(adopted);
+        assert!(inherited_device(raw).is_err(), "no longer open");
+    }
     use crate::process::{ForkResult, child_exit_code, exit_child, fork};
 
     /// An inheritable duplicate of stdout: `dup` never sets `FD_CLOEXEC`.

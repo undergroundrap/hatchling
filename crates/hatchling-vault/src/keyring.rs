@@ -52,6 +52,7 @@ use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::Error;
+use crate::acting::{give, owner_in};
 use crate::seal::MasterKey;
 use crate::vault::ensure_owner_only_dir;
 
@@ -460,7 +461,7 @@ impl Keyring {
     /// Returns [`Error::KeyringExists`] if `path` exists, or an I/O or
     /// randomness error.
     pub fn create(path: &Path, dek: &MasterKey, kek: &Kek) -> Result<Self, Error> {
-        Self::create_as(path, dek, kek, rustix::process::getuid().as_raw())
+        Self::create_as(path, dek, kek, owner_of(path))
     }
 
     fn create_as(path: &Path, dek: &MasterKey, kek: &Kek, owner: u32) -> Result<Self, Error> {
@@ -496,7 +497,7 @@ impl Keyring {
     /// Returns [`Error::KeyringLoad`], [`Error::InsecureKeyFile`] or
     /// [`Error::KeyringFormat`].
     pub fn load(path: &Path) -> Result<Self, Error> {
-        Self::load_as(path, rustix::process::getuid().as_raw())
+        Self::load_as(path, owner_of(path))
     }
 
     fn load_as(path: &Path, owner: u32) -> Result<Self, Error> {
@@ -754,7 +755,7 @@ impl Keyring {
     }
 
     fn save(&self) -> Result<(), Error> {
-        self.save_as(rustix::process::getuid().as_raw())
+        self.save_as(owner_of(&self.path))
     }
 
     fn save_as(&self, owner: u32) -> Result<(), Error> {
@@ -796,7 +797,7 @@ impl Keyring {
         let temp = self
             .path
             .with_extension(format!("tmp-{}", std::process::id()));
-        write_atomically(&temp, &self.path, parent, &text)
+        write_atomically(&temp, &self.path, parent, &text, owner)
             .map_err(|source| Error::Io { source })?;
         self.seen.set(Some(digest(&text)));
         Ok(())
@@ -851,6 +852,11 @@ impl EditLock {
         )
         .map_err(|source| failed(source.into()))?;
         let file = std::fs::File::from(fd);
+        // A lock root made for the user it acts for is theirs.
+        let made = file.metadata().map_err(failed)?.uid();
+        if made == 0 && owner != 0 && rustix::process::geteuid().as_raw() == 0 {
+            give(&file, owner).map_err(failed)?;
+        }
         let metadata = file.metadata().map_err(failed)?;
         if !metadata.file_type().is_file() || metadata.uid() != owner {
             return Err(Error::InsecureKeyFile { path });
@@ -880,6 +886,14 @@ impl Drop for EditLock {
     }
 }
 
+/// Who the keyring at `keyring` is, to this process: the owner of its
+/// directory ([`owner_in`]).
+fn owner_of(keyring: &Path) -> u32 {
+    keyring
+        .parent()
+        .map_or_else(|| rustix::process::getuid().as_raw(), owner_in)
+}
+
 /// Where the keyring at `keyring` keeps its edit lock.
 fn lock_path(keyring: &Path) -> PathBuf {
     let mut name = keyring.as_os_str().to_owned();
@@ -887,18 +901,24 @@ fn lock_path(keyring: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// `bytes` to `target` through `temp`: written `0600`, fsynced, renamed,
-/// and the directory fsynced so the rename is durable. If anything fails
-/// once `temp` exists, it is removed.
-fn write_atomically(temp: &Path, target: &Path, dir: &Path, bytes: &[u8]) -> std::io::Result<()> {
+/// `bytes` to `target` through `temp`: written `0600`, `owner`'s,
+/// fsynced, renamed, and the directory fsynced so the rename is durable.
+/// If anything fails once `temp` exists, it is removed.
+fn write_atomically(
+    temp: &Path,
+    target: &Path,
+    dir: &Path,
+    bytes: &[u8],
+    owner: u32,
+) -> std::io::Result<()> {
     use std::io::Write as _;
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(KEYRING_MODE)
         .open(temp)?;
-    let written = file
-        .write_all(bytes)
+    let written = give(&file, owner)
+        .and_then(|()| file.write_all(bytes))
         .and_then(|()| file.sync_all())
         .and_then(|()| std::fs::rename(temp, target));
     if written.is_err() {
@@ -922,6 +942,65 @@ mod tests {
 
     fn fresh_kek() -> Kek {
         Kek::from_bytes(random::<KEY_LEN>().unwrap())
+    }
+
+    /// This process's own uid.
+    fn own() -> u32 {
+        rustix::process::getuid().as_raw()
+    }
+
+    /// Root acts for one user, in the directories it names: there a store,
+    /// a key file and a keyring are that user's, and what root makes there
+    /// is given to them. Anywhere else, and for anyone but root, nothing
+    /// changes. (The only test in this crate that acts for a user: it
+    /// can, once per process.)
+    #[test]
+    fn root_acts_for_one_user_in_the_directories_it_names() {
+        use crate::{FileKey, KeySource as _, Vault, act_for};
+        use std::os::unix::fs::MetadataExt as _;
+        let dir = test_dir("acting");
+        let (vault_dir, keys, elsewhere) =
+            (dir.join("vault"), dir.join("vault.key"), dir.join("other"));
+        assert_eq!(owner_in(&vault_dir), own());
+        assert_eq!(owner_of(&keys.join("keyring")), own());
+        if own() != 0 {
+            assert!(act_for(4242, &[vault_dir.as_path()]).is_err());
+            assert_eq!(owner_in(&vault_dir), own());
+            return;
+        }
+        assert!(
+            act_for(0, &[vault_dir.as_path()]).is_err(),
+            "for root itself"
+        );
+        act_for(4242, &[vault_dir.as_path(), keys.as_path()]).unwrap();
+        assert!(act_for(4243, &[vault_dir.as_path()]).is_err(), "once only");
+        assert_eq!(owner_in(&vault_dir), 4242);
+        assert_eq!(owner_in(&elsewhere), 0);
+        assert_eq!(owner_of(&keys.join("keyring")), 4242);
+        let uid = |path: &Path| std::fs::symlink_metadata(path).unwrap().uid();
+        // A store made there is the user's, and so is what's written in it.
+        let name: SecretName = "token".parse().unwrap();
+        Vault::open(&vault_dir)
+            .unwrap()
+            .store(&name, &Secret::new(b"t".to_vec()).unwrap())
+            .unwrap();
+        assert_eq!(uid(&vault_dir), 4242);
+        assert_eq!(uid(&vault_dir.join("token")), 4242);
+        // A key made there is the user's, and loads again as theirs.
+        let key = FileKey::new(keys.join("key"));
+        key.load_or_create().unwrap();
+        assert_eq!(uid(&keys), 4242);
+        assert_eq!(uid(&keys.join("key")), 4242);
+        key.load().unwrap();
+        // A keyring made there is the user's, its lock too, and it loads.
+        let path = keys.join("keyring");
+        Keyring::create(&path, &MasterKey::generate().unwrap(), &fresh_kek()).unwrap();
+        assert_eq!(uid(&path), 4242);
+        assert_eq!(uid(&lock_path(&path)), 4242);
+        Keyring::load(&path).unwrap();
+        // Elsewhere, root's own, as before.
+        Vault::open(&elsewhere).unwrap();
+        assert_eq!(uid(&elsewhere), 0);
     }
 
     /// `MasterKey` has no equality: two keys are the same if a secret
@@ -996,12 +1075,12 @@ mod tests {
         keyring.save_as(owner).unwrap();
         // write_atomically: 0600, and never over a temp file already there.
         let (target, temp) = (keys.join("atomic"), keys.join("atomic.tmp"));
-        write_atomically(&temp, &target, &keys, b"bytes").unwrap();
+        write_atomically(&temp, &target, &keys, b"bytes", own()).unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"bytes");
         assert_eq!(std::fs::metadata(&target).unwrap().mode() & 0o777, 0o600);
         assert!(!temp.exists());
         std::fs::write(&temp, b"stale").unwrap();
-        assert!(write_atomically(&temp, &target, &keys, b"new").is_err());
+        assert!(write_atomically(&temp, &target, &keys, b"new", own()).is_err());
         assert_eq!(std::fs::read(&target).unwrap(), b"bytes");
     }
 
@@ -1294,7 +1373,7 @@ mod tests {
         // A rename that cannot happen (the target is a directory) cleans up
         // its temp file.
         let temp = keys.join("blocked.tmp-test");
-        assert!(write_atomically(&temp, &keys.join("blocked"), &keys, b"{}").is_err());
+        assert!(write_atomically(&temp, &keys.join("blocked"), &keys, b"{}", own()).is_err());
         assert!(!temp.exists());
         assert!(!std::fs::read_dir(&keys).unwrap().any(|entry| {
             entry

@@ -97,11 +97,10 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
         .as_ref()
         .map(|_| crate::RedactionConfig::from_env(config))
         .transpose()?;
-    // Every sealed store holds current envelopes, each bound to its
-    // store and name (WO-002), or the broker stops here, naming the
-    // files `migrate-vault` must re-seal.
-    let stores = crate::sealed_stores(config, redaction.as_ref());
-    crate::check_sealed_stores(&stores)?;
+    // Every store of the broker's holds current envelopes (WO-002), or
+    // the broker stops here, naming the files `migrate-vault` must
+    // re-seal. The vault is the keeper's, which checks it itself.
+    crate::check_sealed_stores(&crate::vault_ops::broker_stores(config, redaction.as_ref()))?;
     // An earlier broker killed mid-run left its cells' staging and its
     // runs' directories: none is live now, and none is your data.
     let _swept = crate::sweep::sweep_at_start(config, redaction.as_ref());

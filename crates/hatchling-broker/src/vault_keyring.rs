@@ -164,20 +164,31 @@ fn keyring_marker(vault: &VaultConfig) -> PathBuf {
 /// on adoption and on each keyring unlock, so vaults adopted before the
 /// record existed get one too.
 fn mark_keyring(vault: &VaultConfig, path: &Path) -> Result<(), Error> {
+    use std::os::unix::fs::MetadataExt as _;
     use std::os::unix::fs::OpenOptionsExt as _;
     let marker = keyring_marker(vault);
-    if marker.parent().is_none_or(|dir| !dir.is_dir()) {
+    let Some(owner) = marker
+        .parent()
+        .and_then(|dir| std::fs::metadata(dir).ok())
+        .filter(std::fs::Metadata::is_dir)
+        .map(|dir| dir.uid())
+    else {
         return Ok(());
-    }
+    };
     match std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
         .open(&marker)
     {
-        Ok(mut file) => file
-            .write_all(format!("{}\n", path.display()).as_bytes())
-            .map_err(io_error),
+        // The key's directory's owner keeps the record: the keeper's
+        // user, when root writes it for them.
+        Ok(mut file) => hatchling_sys::give_to(&file, owner)
+            .map_err(|e| io_error(std::io::Error::other(e)))
+            .and_then(|()| {
+                file.write_all(format!("{}\n", path.display()).as_bytes())
+                    .map_err(io_error)
+            }),
         Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
         Err(source) => Err(io_error(source)),
     }
@@ -763,7 +774,15 @@ impl<B: Bus> Devices for SecurityKeys<B> {
 /// only), asking for a key's PIN with `pin` when one needs it.
 #[must_use]
 pub fn platform_keys(pin: PinPrompt) -> SecurityKeys<hatchling_fido2::linux::Hidraw> {
-    SecurityKeys::new(hatchling_fido2::linux::Hidraw::new(pin))
+    // The vault keeper's user may not open them: as root, the broker
+    // opened them for it (WO-017).
+    let bus = match std::env::var(crate::keeper::KEEPER_KEYS) {
+        Ok(handed) => {
+            hatchling_fido2::linux::Hidraw::opened(crate::keeper::handed_keys(&handed), pin)
+        }
+        Err(_) => hatchling_fido2::linux::Hidraw::new(pin),
+    };
+    SecurityKeys::new(bus)
 }
 
 /// Where the operator answers: the terminal (answers from stdin, prompts

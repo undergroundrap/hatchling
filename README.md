@@ -103,7 +103,7 @@ runs; it supplies the agent's identity and configuration.
 
 **Requirements:** Linux 5.11+ with unprivileged user namespaces and seccomp-BPF (or WSL2); Rust (the pinned 1.98.1 installs itself through `rust-toolchain.toml`; the minimum supported is 1.85); a C compiler; Python 3 for the examples; Node.js 22.12+ to build the app; root, for the reason [below](#running-without-root), or a [subordinate id range](#quickstart-without-root) for your user.
 
-Build, install the broker, the agent and the app's host, and create the user the cells run as: a system user nothing else runs as.
+Build, install the broker, the agent and the app's host, and create two system users nothing else runs as: the one the cells run as, and the vault keeper's, which alone owns the vault and its key.
 
 ```bash
 git clone https://github.com/undergroundrap/hatchling
@@ -111,6 +111,7 @@ cd hatchling
 cargo build --release
 sudo install -m 755 target/release/hatchling-broker target/release/hatchling-agent target/release/hatchling-host /usr/local/bin/
 sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin hatchling-cell
+sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin hatchling-keeper
 ```
 
 Or install from crates.io: `cargo install hatchling-runtime` builds one `hatchling` binary that is both. Copy it where the cell's user can run it (`sudo install -m 755 ~/.cargo/bin/hatchling /usr/local/bin/`), then below use `hatchling broker` for `hatchling-broker`, and set `HATCHLING_AGENT_BIN=/usr/local/bin/hatchling`. Keep the clone either way: the examples run from it, and the app's host is built there (`cargo build --release -p hatchling-host`, then install `target/release/hatchling-host` as above).
