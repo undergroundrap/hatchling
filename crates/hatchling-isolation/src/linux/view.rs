@@ -506,7 +506,11 @@ pub(super) mod tests {
     #[test]
     fn ldd_is_found_at_a_fixed_path() {
         let found = ldd().unwrap();
-        assert!(LDD.contains(&found.to_str().unwrap()), "{}", found.display());
+        assert!(
+            LDD.contains(&found.to_str().unwrap()),
+            "{}",
+            found.display()
+        );
     }
 
     #[test]

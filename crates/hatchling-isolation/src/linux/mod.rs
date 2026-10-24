@@ -40,7 +40,9 @@ pub struct Linux;
 static SPAWNS_AS: std::sync::OnceLock<(u32, u32)> = std::sync::OnceLock::new();
 
 /// Records that cells are made by a process running as `uid` and `gid`
-/// (WO-017): the spawner, which writes their id maps, while this process,
+/// (WO-017).
+///
+/// That is the spawner, which writes their id maps, while this process,
 /// which builds their specs, may run as another user. Each cell's
 /// identity, and the uid its maker appears as inside it, are then worked
 /// out for that process; until this is called, for this one.
