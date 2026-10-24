@@ -377,13 +377,9 @@ impl Policy {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "request", rename_all = "kebab-case", deny_unknown_fields)]
 enum Request {
-    /// Start `helper` for `spec`, in `run_dir`. Its stdin, stdout and
-    /// stderr follow, as three descriptors.
-    Helper {
-        helper: HelperKind,
-        spec: String,
-        run_dir: PathBuf,
-    },
+    /// Start `helper` for `spec`. Its stdin, stdout and stderr follow,
+    /// as three descriptors.
+    Helper { helper: HelperKind, spec: String },
     /// Kill the helper this connection started.
     Kill,
     /// Give a harness's work trees to its cell's identity, or take them
@@ -514,9 +510,9 @@ impl Spawner {
         Ok(ours)
     }
 
-    /// Starts `helper` for `spec`, in `run_dir`, on `stdio` (its stdin,
-    /// stdout and stderr): the spawner checks the spec, and the helper it
-    /// starts is supervised over the connection.
+    /// Starts `helper` for `spec`, on `stdio` (its stdin, stdout and
+    /// stderr): the spawner checks the spec, and the helper it starts, in a
+    /// directory of the spawner's own, is supervised over the connection.
     ///
     /// # Errors
     ///
@@ -526,7 +522,6 @@ impl Spawner {
         &self,
         helper: HelperKind,
         spec: &str,
-        run_dir: &Path,
         stdio: [OwnedFd; 3],
     ) -> Result<SpawnedProcess, String> {
         let stream = self.connect().map_err(|error| error.to_string())?;
@@ -536,7 +531,6 @@ impl Spawner {
         let request = Request::Helper {
             helper,
             spec: spec.to_owned(),
-            run_dir: run_dir.to_path_buf(),
         };
         send(&stream, &request).map_err(|error| error.to_string())?;
         for fd in &stdio {
@@ -557,20 +551,15 @@ impl Spawner {
         SpawnedProcess::watching(stream, pid)
     }
 
-    /// Starts `cell`, the broker's own agent cell, in `run_dir`: its
-    /// `agent-run` helper hands back the cell's connection, which comes
-    /// back here with the helper's supervision. The helper writes where
-    /// the broker does.
+    /// Starts `cell`, the broker's own agent cell: its `agent-run` helper
+    /// hands back the cell's connection, which comes back here with the
+    /// helper's supervision. The helper writes where the broker does.
     ///
     /// # Errors
     ///
     /// Why it wasn't started, or why its connection didn't come back
     /// within [`START_TIMEOUT`].
-    pub fn agent_cell(
-        &self,
-        cell: &CellConfig,
-        run_dir: &Path,
-    ) -> Result<(SpawnedProcess, UnixStream), String> {
+    pub fn agent_cell(&self, cell: &CellConfig) -> Result<(SpawnedProcess, UnixStream), String> {
         let spec = serde_json::to_string(cell)
             .map_err(|error| format!("cannot encode the agent cell: {error}"))?;
         let (handoff, helper_end) = UnixStream::pair()
@@ -586,7 +575,6 @@ impl Spawner {
         let process = self.helper(
             HelperKind::AgentRun,
             &spec,
-            run_dir,
             [OwnedFd::from(helper_end), OwnedFd::from(null), stderr],
         )?;
         handoff
@@ -830,7 +818,7 @@ pub(crate) fn start_helper(
     };
     let (our_err, their_err) = pipe()?;
     let process = if let Some(spawner) = spawner() {
-        Process::Spawned(spawner.helper(helper, spec, run_dir, [their_in, their_out, their_err])?)
+        Process::Spawned(spawner.helper(helper, spec, [their_in, their_out, their_err])?)
     } else {
         let mut command = Command::new(program);
         command
@@ -941,18 +929,14 @@ fn serve_connection(stream: &UnixStream, program: &Path, policy: &Policy) -> Res
         reason: format!("a request that doesn't parse: {e}"),
     })?;
     match request {
-        Request::Helper {
-            helper,
-            spec,
-            run_dir,
-        } => {
+        Request::Helper { helper, spec } => {
             // The descriptors come whatever's decided of the spec, so the
             // stream stays in step.
             let mut stdio = Vec::with_capacity(3);
             for _ in 0..3 {
                 stdio.push(hatchling_sys::net::recv_fd(stream.as_fd()).map_err(gone)?);
             }
-            serve_helper(stream, program, policy, helper, &spec, &run_dir, stdio)
+            serve_helper(stream, program, policy, helper, &spec, stdio)
         }
         Request::Trees {
             give,
@@ -985,13 +969,17 @@ fn serve_connection(stream: &UnixStream, program: &Path, policy: &Policy) -> Res
 
 /// Starts `helper` for `spec` and supervises it on `stream` until it ends
 /// (reporting how) or the broker asks for a kill, or goes.
+///
+/// The helper runs in a directory of the spawner's own ([`HelperDir`]):
+/// its spec is written there, and it stages its cell there. Nothing of
+/// the broker's is written to, by root, under a name the broker could
+/// change meanwhile (WO-017).
 fn serve_helper(
     stream: &UnixStream,
     program: &Path,
     policy: &Policy,
     helper: HelperKind,
     spec: &str,
-    run_dir: &Path,
     descriptors: Vec<OwnedFd>,
 ) -> Result<(), Error> {
     let refuse = |reason: String| send(stream, &Reply::Refused { reason });
@@ -1006,13 +994,17 @@ fn serve_helper(
         Ok(stdio) => stdio,
         Err(_) => return refuse(String::from("a helper takes three descriptors")),
     };
-    let args = match spec_args(helper.subcommand(), run_dir, spec) {
+    let helper_dir = match HelperDir::make() {
+        Ok(dir) => dir,
+        Err(reason) => return refuse(reason),
+    };
+    let args = match spec_args(helper.subcommand(), &helper_dir.0, spec) {
         Ok(args) => args,
         Err(reason) => return refuse(reason),
     };
     let spawned = Command::new(program)
         .args(args)
-        .env("TMPDIR", run_dir)
+        .env("TMPDIR", &helper_dir.0)
         // A helper watches its parent, and ends with it: here, the
         // spawner, which ends when the broker does.
         .env(BROKER_PID_ENV, std::process::id().to_string())
@@ -1023,7 +1015,6 @@ fn serve_helper(
     let std_child = match spawned {
         Ok(child) => child,
         Err(error) => {
-            forget_spec(run_dir);
             return refuse(format!("cannot start {}: {error}", program.display()));
         }
     };
@@ -1048,7 +1039,34 @@ fn serve_helper(
     };
     drop(std_child);
     send(stream, &Reply::Started { pid })?;
+    // Its directory goes once it has: supervision returns once it ended.
     supervise(stream, &child)
+}
+
+/// A helper's own directory, made by the spawner in its own temp
+/// directory, and removed, with what is in it, when dropped.
+struct HelperDir(PathBuf);
+
+impl HelperDir {
+    /// A new one, private to the spawner's user, named at random.
+    ///
+    /// # Errors
+    ///
+    /// Why it can't be made.
+    fn make() -> Result<Self, String> {
+        let name = crate::approval::random_hex("hatchling-helper-")
+            .map_err(|error| format!("cannot name the helper's directory: {error}"))?;
+        let dir = std::env::temp_dir().join(name);
+        hatchling_sys::create_private_dir(&dir)
+            .map_err(|error| format!("cannot make the helper's directory: {error}"))?;
+        Ok(Self(dir))
+    }
+}
+
+impl Drop for HelperDir {
+    fn drop(&mut self) {
+        let _ = hatchling_sys::remove_dir_tree(&self.0);
+    }
 }
 
 /// Supervises `child` on `stream`: reports how it ended, and kills it
@@ -1200,32 +1218,62 @@ mod tests {
         assert_eq!(HelperKind::BrowserCell.subcommand(), "browser-cell");
     }
 
-    /// A helper the spawner starts runs with the spec file it wrote, on
-    /// the broker's descriptors, and its end comes back over the
+    /// A helper the spawner starts runs on the broker's descriptors, in a
+    /// directory of the spawner's own that holds the spec it wrote and is
+    /// gone once the helper is, and its end comes back over the
     /// connection.
     #[test]
-    fn a_helper_runs_on_the_brokers_descriptors_and_its_end_comes_back() {
-        // `sh` runs `skill-cell` as a script, which isn't there: it says
-        // so on stderr and exits.
-        let (spawner, served) = serving("/bin/sh");
+    fn a_helper_runs_on_the_brokers_descriptors_in_a_directory_of_its_own() {
+        use std::os::unix::fs::PermissionsExt as _;
+        // The helper says where it runs, and what its spec says.
         let dir = run_dir("ends");
+        let program = dir.join("helper.sh");
+        std::fs::write(&program, "#!/bin/sh\necho \"dir=$TMPDIR\" >&2\ncat \"$2\" >&2\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (spawner, served) = serving(program.to_str().unwrap());
         let (stdio, mut errors) = stdio();
         let process = spawner
-            .helper(HelperKind::SkillCell, &skill_spec(), &dir, stdio)
+            .helper(HelperKind::SkillCell, &skill_spec(), stdio)
             .unwrap();
         assert!(process.pid() > 0);
         let exit = process.wait_deadline(Duration::from_secs(10)).unwrap();
-        assert_ne!(exit.code, 0);
+        assert_eq!(exit.code, 0);
         assert_eq!(process.try_wait().unwrap(), Some(exit));
         assert_eq!(process.wait().unwrap(), exit, "and waits say so after");
         let mut said = String::new();
         errors.read_to_string(&mut said).unwrap();
-        assert!(said.contains("skill-cell"), "{said}");
-        let written = std::fs::read_to_string(dir.join("cell-spec.json")).unwrap();
-        assert!(written.contains("spawned"), "the spawner wrote the spec");
+        assert!(said.contains("spawned"), "the spec it wrote: {said}");
+        let helper_dir = said
+            .lines()
+            .find_map(|line| line.strip_prefix("dir="))
+            .map(PathBuf::from)
+            .unwrap();
+        assert_eq!(helper_dir.parent(), Some(std::env::temp_dir().as_path()));
+        assert!(
+            helper_dir
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("hatchling-helper-"))
+        );
         drop((process, spawner));
         served.join().unwrap();
+        assert!(!helper_dir.exists(), "its directory outlived it");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A helper's directory is the spawner's alone, and goes, with what is
+    /// in it, when dropped.
+    #[test]
+    fn a_helpers_directory_is_private_and_goes_with_it() {
+        use std::os::unix::fs::MetadataExt as _;
+        let dir = HelperDir::make().unwrap();
+        let path = dir.0.clone();
+        let made = std::fs::symlink_metadata(&path).unwrap();
+        assert!(made.is_dir());
+        assert_eq!(made.uid(), hatchling_sys::euid());
+        assert_eq!(made.mode() & 0o777, 0o700);
+        std::fs::write(path.join("cell-spec.json"), b"{}").unwrap();
+        drop(dir);
+        assert!(!path.exists());
     }
 
     /// A helper is killed when the broker asks, when its wait runs past
@@ -1234,12 +1282,10 @@ mod tests {
     fn a_helper_is_killed_on_request_on_its_deadline_and_on_drop() {
         // `yes` runs until it's killed.
         let (spawner, served) = serving("/usr/bin/yes");
-        let dir = run_dir("kills");
         let start = || {
-            let _ = std::fs::remove_file(dir.join("cell-spec.json"));
             let (stdio, _) = stdio();
             spawner
-                .helper(HelperKind::SkillCell, &skill_spec(), &dir, stdio)
+                .helper(HelperKind::SkillCell, &skill_spec(), stdio)
                 .unwrap()
         };
         let asked = start();
@@ -1265,7 +1311,6 @@ mod tests {
         assert!(!hatchling_sys::pid_alive(pid), "a dropped helper lived on");
         drop((asked, late, spawner));
         served.join().unwrap();
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// The spawner starts nothing for a spec its helper doesn't start,
@@ -1274,23 +1319,18 @@ mod tests {
     #[test]
     fn the_spawner_refuses_a_spec_its_helper_does_not_start() {
         let (spawner, served) = serving("/bin/sh");
-        let dir = run_dir("refused");
         for (helper, spec) in [
             (HelperKind::SkillCell, String::from("{}")),
             (HelperKind::BrowserCell, skill_spec()),
             (HelperKind::AgentRun, skill_spec()),
         ] {
             let (stdio, _) = stdio();
-            let refused = spawner.helper(helper, &spec, &dir, stdio).unwrap_err();
+            let refused = spawner.helper(helper, &spec, stdio).unwrap_err();
             assert!(
                 refused.contains("the spawner refused the spec"),
                 "{refused}"
             );
         }
-        assert!(
-            std::fs::read_dir(&dir).unwrap().next().is_none(),
-            "a refused spec was written"
-        );
         let stream = spawner.connect().unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(10)))
@@ -1305,7 +1345,7 @@ mod tests {
         let (stdio, _) = stdio();
         assert!(
             gone_spawner
-                .helper(HelperKind::SkillCell, &skill_spec(), &dir, stdio)
+                .helper(HelperKind::SkillCell, &skill_spec(), stdio)
                 .is_err()
         );
         assert!(
@@ -1315,7 +1355,6 @@ mod tests {
                 .to_string()
                 .contains("lost")
         );
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A program the spawner can't start is refused, and leaves no spec;
@@ -1323,23 +1362,20 @@ mod tests {
     #[test]
     fn a_helper_that_cannot_start_leaves_nothing() {
         let (spawner, served) = serving("/nonexistent/hatchling-broker");
-        let dir = run_dir("unstartable");
         let (stdio, _) = stdio();
         let refused = spawner
-            .helper(HelperKind::SkillCell, &skill_spec(), &dir, stdio)
+            .helper(HelperKind::SkillCell, &skill_spec(), stdio)
             .unwrap_err();
         assert!(
             refused.starts_with("cannot start /nonexistent/hatchling-broker"),
             "{refused}"
         );
-        assert!(std::fs::read_dir(&dir).unwrap().next().is_none());
         drop(spawner);
         served.join().unwrap();
         let (broker, theirs) = UnixStream::pair().unwrap();
         write_frame(&broker, br#"{"request":"steal"}"#).unwrap();
         assert!(serve_connection(&theirs, Path::new("/bin/sh"), &policy()).is_err());
         assert!(gone("x").to_string().contains("cannot be reached: x"));
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A helper's watch reads how it ended, or that the spawner went
