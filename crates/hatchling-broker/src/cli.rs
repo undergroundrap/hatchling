@@ -139,7 +139,11 @@ fn valid_args(args: &[String]) -> bool {
 fn run(args: &[String]) -> Result<(), Error> {
     let config = Config::from_env()?;
     // Operator subcommands act on the vault directly and never bind
-    // the socket. Anything else falls through to serving.
+    // the socket; run as root, they act for the keeper's user there.
+    // Anything else falls through to serving.
+    if args.first().is_some_and(|command| command != "clean") {
+        crate::keeper::act_for_keeper(&config)?;
+    }
     match args.first().map(String::as_str) {
         Some("migrate-vault") => run_migrate_vault(&config),
         Some("rekey-vault") => run_rekey_vault(&config, args.get(1).map(Path::new)),
