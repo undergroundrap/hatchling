@@ -65,7 +65,7 @@ fn the_real_spawner_starts_the_real_helper_on_the_spec_it_wrote() {
     // the spawner, its parent.
     assert!(said.contains("hatchling-broker skill-cell:"), "{said}");
     assert!(
-        said.contains("/nonexistent/hatchling-skill-code"),
+        said.contains("hatchling-broker skill-cell: cell spawn failed"),
         "the helper stopped before its cell: {said}"
     );
     assert!(
