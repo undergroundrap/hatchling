@@ -583,11 +583,13 @@ pub fn serve_connection_with_runs(
 
 /// Serves the agent session on `cell`'s own connection.
 ///
-/// There is no peer gate: the broker made the connection and gave its
-/// other end to the cell it spawned, so whoever speaks on it is that
-/// cell's agent. The kernel's report would only name the broker, which
-/// made both ends. The hello must name the cell's own id: a session
-/// never runs, or is recorded, under another.
+/// There is no peer gate: the connection was made for the cell, and its
+/// other end given to the cell alone, so whoever speaks on it is that
+/// cell's agent. The kernel's report would only name the cell's maker,
+/// which made both ends: the spawner's helper, whose uid the agent checks
+/// (the cell's broker uid is worked out for it, see
+/// `hatchling_isolation::linux::spawns_as`). The hello must name the
+/// cell's own id: a session never runs, or is recorded, under another.
 ///
 /// # Errors
 ///
