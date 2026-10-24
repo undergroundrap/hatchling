@@ -290,7 +290,10 @@ pub fn write_new_file_for(dir: &Path, name: &str, bytes: &[u8], owner: u32) -> R
         .union(rustix::fs::OFlags::NOFOLLOW)
         .union(rustix::fs::OFlags::CLOEXEC);
     if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\0') {
-        return Err(refused("make a file in the directory", "not one plain name"));
+        return Err(refused(
+            "make a file in the directory",
+            "not one plain name",
+        ));
     }
     let handle = open_dir_nofollow(dir).map_err(failed("open the directory"))?;
     let stat = rustix::fs::fstat(&handle).map_err(failed("fstat the directory"))?;
@@ -300,13 +303,8 @@ pub fn write_new_file_for(dir: &Path, name: &str, bytes: &[u8], owner: u32) -> R
             "the directory isn't the owner's",
         ));
     }
-    let made = rustix::fs::openat(
-        &handle,
-        name,
-        FLAGS,
-        rustix::fs::Mode::from_raw_mode(0o600),
-    )
-    .map_err(failed("make the file"))?;
+    let made = rustix::fs::openat(&handle, name, FLAGS, rustix::fs::Mode::from_raw_mode(0o600))
+        .map_err(failed("make the file"))?;
     let mut file = std::fs::File::from(made);
     give_to(&file, owner)?;
     file.write_all(bytes)
@@ -351,29 +349,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir(&dir).unwrap();
         let me = rustix::process::geteuid().as_raw();
-        super::write_new_file_for(&dir, "report.md", b"hello", me).unwrap();
+        write_new_file_for(&dir, "report.md", b"hello", me).unwrap();
         let made = std::fs::metadata(dir.join("report.md")).unwrap();
         assert_eq!((made.uid(), made.permissions().mode() & 0o777), (me, 0o600));
         assert_eq!(std::fs::read(dir.join("report.md")).unwrap(), b"hello");
         // Never over a file, a link included.
-        assert!(super::write_new_file_for(&dir, "report.md", b"again", me).is_err());
+        assert!(write_new_file_for(&dir, "report.md", b"again", me).is_err());
         std::os::unix::fs::symlink("/etc/passwd", dir.join("linked")).unwrap();
-        assert!(super::write_new_file_for(&dir, "linked", b"x", me).is_err());
+        assert!(write_new_file_for(&dir, "linked", b"x", me).is_err());
         // Refused by name, before the kernel is asked: "a/b" would
         // otherwise be made in the directory "a".
         std::fs::create_dir(dir.join("a")).unwrap();
         for name in ["", ".", "..", "a/b", "a\0b"] {
-            let refused = super::write_new_file_for(&dir, name, b"x", me).unwrap_err();
-            assert!(refused.to_string().contains("not one plain name"), "{name:?}");
+            let refused = write_new_file_for(&dir, name, b"x", me).unwrap_err();
+            assert!(
+                refused.to_string().contains("not one plain name"),
+                "{name:?}"
+            );
         }
         assert!(!dir.join("a").join("b").exists());
         // Not through a linked directory, nor into another owner's.
         std::os::unix::fs::symlink(&dir, dir.with_extension("link")).unwrap();
-        assert!(super::write_new_file_for(&dir.with_extension("link"), "via", b"x", me).is_err());
-        assert!(super::write_new_file_for(&dir, "theirs", b"x", me.wrapping_add(4242)).is_err());
+        assert!(write_new_file_for(&dir.with_extension("link"), "via", b"x", me).is_err());
+        assert!(write_new_file_for(&dir, "theirs", b"x", me.wrapping_add(4242)).is_err());
         if me == 0 {
             std::os::unix::fs::chown(&dir, Some(4242), None).unwrap();
-            super::write_new_file_for(&dir, "given", b"g", 4242).unwrap();
+            write_new_file_for(&dir, "given", b"g", 4242).unwrap();
             assert_eq!(std::fs::metadata(dir.join("given")).unwrap().uid(), 4242);
         }
         std::fs::remove_file(dir.with_extension("link")).unwrap();

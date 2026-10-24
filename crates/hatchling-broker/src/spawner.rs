@@ -368,7 +368,7 @@ impl Policy {
             group: hatchling_sys::egid(),
         };
         Ok(Self {
-            workspace: config.artifacts.workspace.clone(),
+            workspace: config.artifacts.workspace,
             owner: crate::owner::owner()?,
             ..Self::of(&reference, agent, paths)
         })
@@ -1266,6 +1266,10 @@ fn supervise(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "crate-visible on purpose: the artifact operations' tests deliver through it"
+)]
 pub(crate) mod tests {
     use std::io::Read as _;
     use std::time::Instant;
@@ -1311,7 +1315,10 @@ pub(crate) mod tests {
         let written = workspace.join("report.md");
         assert_eq!(std::fs::read(&written).unwrap(), b"hello");
         assert_eq!(std::fs::metadata(&written).unwrap().uid(), me);
-        assert!(spawner.deliver("report.md", b"again").is_err(), "over a file");
+        assert!(
+            spawner.deliver("report.md", b"again").is_err(),
+            "over a file"
+        );
         assert_eq!(std::fs::read(&written).unwrap(), b"hello");
         assert!(
             spawner
@@ -2173,7 +2180,7 @@ sleep 30 </dev/null >/dev/null 2>&1 &
         assert_eq!(read.workspace, None);
         assert_eq!(read.owner, crate::owner::owner().unwrap());
         let delivering = |key: &str| match key {
-            "HATCHLING_ARTIFACT_DIR" => Some(String::from("/tmp/hatchling-policy/builds")),
+            "HATCHLING_ARTIFACT_DIR" => Some(String::from("/tmp/hatchling-policy-builds")),
             "HATCHLING_ARTIFACT_WORKSPACE" => Some(String::from("/tmp/hatchling-policy-out")),
             _ => get(key),
         };
