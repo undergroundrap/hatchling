@@ -255,9 +255,11 @@ def run(repo, artifacts, work, mode, fixtures):
     subprocess.run(['useradd', '--system', '--user-group', '--no-create-home', '--no-log-init',
                     '--shell', '/usr/sbin/nologin', 'hatchling-hosted-ci'], check=True)
     uid = pwd.getpwnam('hatchling-hosted-ci').pw_uid
-    # As root the broker runs its vault keeper as a user of its own.
-    subprocess.run(['useradd', '--system', '--user-group', '--no-create-home', '--no-log-init',
-                    '--shell', '/usr/sbin/nologin', 'hatchling-keeper'], check=True)
+    # As root the broker runs its vault keeper and its egress authority as
+    # users of their own.
+    for user in ('hatchling-keeper', 'hatchling-egress'):
+        subprocess.run(['useradd', '--system', '--user-group', '--no-create-home', '--no-log-init',
+                        '--shell', '/usr/sbin/nologin', user], check=True)
     # /tmp is a private tmpfs above. A short state path also keeps broker/run
     # Unix sockets below the kernel limit, regardless of RUNNER_TEMP length.
     state = Path('/tmp/hatchling-hosted')
@@ -298,7 +300,11 @@ def run(repo, artifacts, work, mode, fixtures):
                NO_COLOR='1', PYTHONDONTWRITEBYTECODE='1', PYTHONUNBUFFERED='1')
     if mode == 'https':
         certificates(work)
-        env['HATCHLING_EGRESS_CA_BUNDLE'] = str(work / 'ca.crt')
+        # The egress authority's user reads it: beside the state, not in
+        # the private work directory. A CA certificate is public.
+        shutil.copy2(work / 'ca.crt', state / 'ca.crt')
+        (state / 'ca.crt').chmod(0o644)
+        env['HATCHLING_EGRESS_CA_BUNDLE'] = str(state / 'ca.crt')
         command = [sys.executable, str(repo / 'scripts/https_model_fixture.py'), '--repo', str(repo),
                    '--key-file', str(key_file), '--cert-file', str(work / 'server.crt'),
                    '--private-key-file', str(work / 'server.key'), '--port', '18090',

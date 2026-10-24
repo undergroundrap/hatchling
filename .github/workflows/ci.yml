@@ -301,6 +301,7 @@ jobs:
           sudo install -m 755 target/release/hatchling-broker target/release/hatchling-agent target/release/hatchling-host target/release/hatchling-browser /usr/local/bin/
           sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin hatchling-cell
           sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin hatchling-keeper
+          sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin hatchling-egress
           (cd frontend && npm ci && npm run build)
 
       - name: Allow real cells

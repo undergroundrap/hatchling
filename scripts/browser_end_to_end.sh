@@ -8,7 +8,8 @@
 # <browser> is the pinned headless Chromium the cell runs; <app-python> a
 # Python with Playwright for the app's own browser. The binaries are in
 # /usr/local/bin and the app is built in frontend/dist, as the README's
-# quickstart leaves them, and hatchling-cell and hatchling-keeper exist.
+# quickstart leaves them, and its users (hatchling-cell, hatchling-keeper
+# and hatchling-egress) exist.
 set -euo pipefail
 [ "$(id -u)" = 0 ] || { echo "run as root"; exit 64; }
 [ $# = 3 ] || { echo "usage: $0 <browser> <app-python> <logs>"; exit 64; }
