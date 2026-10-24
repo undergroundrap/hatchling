@@ -1068,7 +1068,7 @@ fn serve_helper(
     // The cell's group, made here in the delegated one with the configured
     // limits, is held until the helper has ended, then ended with whatever
     // is left in it.
-    let (config, _group) = match config.supervised_cgroup() {
+    let (config, group) = match config.supervised_cgroup() {
         Ok(grouped) => grouped,
         Err(error) => return refuse(format!("cannot make the cell's group: {error}")),
     };
@@ -1125,8 +1125,9 @@ fn serve_helper(
     };
     drop(std_child);
     send(stream, &Reply::Started { pid })?;
-    // Its directory goes once it has: supervision returns once it ended.
-    supervise(stream, &child)
+    // Its group is ended before the broker hears the helper has: by then
+    // nothing of its cell is left. Its directory goes once it has.
+    supervise(stream, &child, move || drop(group))
 }
 
 /// A helper's own directory, made by the spawner in its own temp
@@ -1155,13 +1156,18 @@ impl Drop for HelperDir {
     }
 }
 
-/// Supervises `child` on `stream`: reports how it ended, and kills it
-/// when the broker asks, or goes. One thread watches both, since a
-/// child's supervision is one thread's.
-fn supervise(stream: &UnixStream, child: &hatchling_sys::Child) -> Result<(), Error> {
+/// Supervises `child` on `stream`: reports how it ended, once `ended` has
+/// run, and kills it when the broker asks, or goes. One thread watches
+/// both, since a child's supervision is one thread's.
+fn supervise(
+    stream: &UnixStream,
+    child: &hatchling_sys::Child,
+    ended: impl FnOnce(),
+) -> Result<(), Error> {
     let mut broker_here = true;
     loop {
         if let Some(status) = child.try_wait().map_err(gone)? {
+            ended();
             return if broker_here {
                 send(stream, &Reply::Exited { status })
             } else {
@@ -1211,7 +1217,7 @@ mod tests {
 
     /// With a delegated group, the spawner makes each cell's group in it,
     /// names it in the spec the helper reads, and ends it once the helper
-    /// has ended.
+    /// has ended, before it says so.
     #[test]
     fn the_spawner_makes_each_cells_group_and_ends_it() {
         use std::os::unix::fs::PermissionsExt as _;
@@ -1257,9 +1263,10 @@ mod tests {
             Some(parent.as_path()),
             "made in the delegated group"
         );
+        // Ended before the helper's end was reported.
+        assert!(!group.exists(), "the cell's group outlived its helper");
         drop((process, spawner));
         served.join().unwrap();
-        assert!(!group.exists(), "the cell's group outlived its helper");
         std::fs::remove_dir_all(&dir).unwrap();
         drop(delegated);
     }
