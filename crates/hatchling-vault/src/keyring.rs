@@ -967,7 +967,10 @@ mod tests {
             assert_eq!(owner_in(&vault_dir), own());
             return;
         }
-        assert!(act_for(0, &[vault_dir.as_path()]).is_err(), "for root itself");
+        assert!(
+            act_for(0, &[vault_dir.as_path()]).is_err(),
+            "for root itself"
+        );
         act_for(4242, &[vault_dir.as_path(), keys.as_path()]).unwrap();
         assert!(act_for(4243, &[vault_dir.as_path()]).is_err(), "once only");
         assert_eq!(owner_in(&vault_dir), 4242);

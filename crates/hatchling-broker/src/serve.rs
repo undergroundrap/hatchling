@@ -97,11 +97,10 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
         .as_ref()
         .map(|_| crate::RedactionConfig::from_env(config))
         .transpose()?;
-    // Every sealed store holds current envelopes, each bound to its
-    // store and name (WO-002), or the broker stops here, naming the
-    // files `migrate-vault` must re-seal.
+    // Every store of the broker's holds current envelopes (WO-002), or
+    // the broker stops here, naming the files `migrate-vault` must
+    // re-seal. The vault is the keeper's, which checks it itself.
     let mut stores = crate::sealed_stores(config, redaction.as_ref());
-    // The vault is the keeper's, which checks it as its own user.
     stores.retain(|(store, _)| *store != hatchling_vault::Store::SECRETS);
     crate::check_sealed_stores(&stores)?;
     // An earlier broker killed mid-run left its cells' staging and its

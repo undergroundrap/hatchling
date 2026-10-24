@@ -34,8 +34,8 @@
 use std::collections::BTreeSet;
 use std::os::fd::{AsFd as _, AsRawFd as _};
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
 use std::os::unix::process::CommandExt as _;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -252,7 +252,11 @@ fn hand_to_keeper(dirs: &[PathBuf], uid: u32, gid: u32) -> Result<(), Error> {
         reason: format!("cannot hand {} to {KEEPER_USER}: {why}", dir.display()),
     };
     for dir in dirs {
-        if let Some(closed) = dir.ancestors().skip(1).find(|above| !searchable(above, uid, gid)) {
+        if let Some(closed) = dir
+            .ancestors()
+            .skip(1)
+            .find(|above| !searchable(above, uid, gid))
+        {
             return Err(failed(
                 dir,
                 format!(
@@ -340,7 +344,9 @@ pub(crate) fn handed_keys(handed: &str) -> Vec<(String, std::fs::File)> {
                         .map_err(|error| error.to_string())
                 });
             adopted
-                .map_err(|error| tracing::warn!(%pair, %error, "a security key handed over was refused"))
+                .map_err(
+                    |error| tracing::warn!(%pair, %error, "a security key handed over was refused"),
+                )
                 .ok()
         })
         .collect()
@@ -1114,7 +1120,10 @@ mod tests {
         let null = || std::fs::File::open("/dev/null").unwrap();
         let (one, four) = (null(), null());
         let expected = format!("hidraw1={},hidraw4={}", one.as_raw_fd(), four.as_raw_fd());
-        let keys = vec![(String::from("hidraw1"), one), (String::from("hidraw4"), four)];
+        let keys = vec![
+            (String::from("hidraw1"), one),
+            (String::from("hidraw4"), four),
+        ];
         assert_eq!(keys_env(&keys), expected);
         let raw = null().into_raw_fd();
         let (pipe, _write) = hatchling_sys::pipe().unwrap();
@@ -1169,7 +1178,10 @@ mod tests {
         };
         assert_eq!(
             keeper_dirs(&vault, &KeyringConfig::default()),
-            [PathBuf::from("/srv/h/vault"), PathBuf::from("/srv/h/vault.key")]
+            [
+                PathBuf::from("/srv/h/vault"),
+                PathBuf::from("/srv/h/vault.key")
+            ]
         );
         let keyring = KeyringConfig {
             keyring: Some(PathBuf::from("/srv/h/ring/keyring")),
@@ -1204,7 +1216,11 @@ mod tests {
         let made = std::fs::symlink_metadata(&vault).unwrap();
         assert!(made.is_dir());
         assert_eq!((made.uid(), made.mode() & 0o777), (uid, 0o700));
-        assert!(searchable(&base, uid.wrapping_add(4242), gid.wrapping_add(4242)));
+        assert!(searchable(
+            &base,
+            uid.wrapping_add(4242),
+            gid.wrapping_add(4242)
+        ));
         let closed = base.join("closed");
         std::fs::create_dir(&closed).unwrap();
         std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o700)).unwrap();

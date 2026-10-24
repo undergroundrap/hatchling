@@ -164,8 +164,8 @@ fn keyring_marker(vault: &VaultConfig) -> PathBuf {
 /// on adoption and on each keyring unlock, so vaults adopted before the
 /// record existed get one too.
 fn mark_keyring(vault: &VaultConfig, path: &Path) -> Result<(), Error> {
-    use std::os::unix::fs::OpenOptionsExt as _;
     use std::os::unix::fs::MetadataExt as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
     let marker = keyring_marker(vault);
     let Some(owner) = marker
         .parent()
