@@ -200,7 +200,9 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
 }
 
 /// Spawns the broker's agent cell from `cell_config`, connected: the
-/// agent's way to the broker is a connection made for it alone. A
+/// agent's way to the broker is a connection made for it alone.
+///
+/// It starts through the spawner when one runs (WO-017), else here. A
 /// reaper thread owns the cell's wait.
 ///
 /// # Errors
@@ -212,6 +214,9 @@ pub fn spawn_agent_cell(config: &Config, mut cell_config: CellConfig) -> Result<
     cell_config.connected = true;
     cell_config.refuse_vault_in_view(&config.vault)?;
     let cell_id: CellId = cell_config.cell_id.parse()?;
+    if let Some(spawner) = crate::spawner::spawner() {
+        return spawn_through(spawner, &cell_config, cell_id, &std::env::temp_dir());
+    }
     let mut handle = spawn_cell(&cell_config, config.log_level)?;
     let connection = handle.connection().ok_or_else(|| Error::CellSpawn {
         reason: String::from("the agent cell came without its connection"),
@@ -240,6 +245,57 @@ pub fn spawn_agent_cell(config: &Config, mut cell_config: CellConfig) -> Result<
         connection,
         cell_id,
         pid: u32::try_from(pid).unwrap_or_default(),
+    })
+}
+
+/// Spawns the agent cell `cell_config` through `spawner`, in a private
+/// directory of its own in `temp`, and in a group of its own when cells
+/// have them. A reaper thread owns the helper's wait, then the group and
+/// the directory.
+///
+/// # Errors
+///
+/// [`Error::CellSpawn`] if the cell can't be prepared or started, or
+/// came without its connection, and as
+/// [`CellConfig::supervised_cgroup`].
+fn spawn_through(
+    spawner: &crate::spawner::Spawner,
+    cell_config: &CellConfig,
+    cell_id: CellId,
+    temp: &std::path::Path,
+) -> Result<AgentCell, Error> {
+    let failed = |reason: String| Error::CellSpawn { reason };
+    let (cell, group) = cell_config.supervised_cgroup()?;
+    let name = crate::approval::random_hex("hatchling-agent-")
+        .map_err(|error| failed(format!("cannot name the agent cell's directory: {error}")))?;
+    let run_dir = temp.join(name);
+    hatchling_sys::create_private_dir(&run_dir)
+        .map_err(|error| failed(format!("cannot make the agent cell's directory: {error}")))?;
+    let (process, connection) = spawner.agent_cell(&cell, &run_dir).map_err(|reason| {
+        let _ = hatchling_sys::remove_dir_tree(&run_dir);
+        failed(reason)
+    })?;
+    let running = crate::machine::Running::start(&cell.cell_id, CellKind::Agent, &cell.limits);
+    tracing::info!(
+        cell_id = %cell_id,
+        helper_pid = process.pid(),
+        uid_base = cell.uid_base,
+        "cell spawned through the spawner"
+    );
+    std::thread::spawn(move || {
+        match process.wait() {
+            Ok(exit) => tracing::info!(status = exit.status, exit_code = exit.code, "cell exited"),
+            Err(err) => tracing::error!(%err, "cell wait failed"),
+        }
+        // Listed, and its group held, until it is reaped.
+        drop((running, group));
+        let _ = hatchling_sys::remove_dir_tree(&run_dir);
+    });
+    // The cell's pid lives in its helper; the audit trail has its id.
+    Ok(AgentCell {
+        connection,
+        cell_id,
+        pid: 0,
     })
 }
 
@@ -1356,6 +1412,29 @@ fn reject(stream: &UnixStream, reason: &str) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Through a spawner that's gone, the agent cell isn't started: the
+    /// spawn says so, and the directory made for it goes with it.
+    #[test]
+    fn an_agent_cell_through_a_gone_spawner_fails_and_leaves_nothing() {
+        let temp =
+            std::env::temp_dir().join(format!("hatchling-serve-agent-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).unwrap();
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        drop(theirs);
+        let spawner = crate::spawner::Spawner::over(ours);
+        let mut cell = CellConfig::skill("agent").unwrap();
+        cell.connected = true;
+        let failed = spawn_through(&spawner, &cell, "agent".parse().unwrap(), &temp).unwrap_err();
+        assert!(matches!(failed, Error::CellSpawn { .. }), "{failed}");
+        assert_eq!(
+            std::fs::read_dir(&temp).unwrap().count(),
+            0,
+            "the agent cell's directory was left"
+        );
+        std::fs::remove_dir(&temp).unwrap();
+    }
     use hatchling_core::VaultOp;
     use hatchling_vault::{SealedVault, Secret};
 
