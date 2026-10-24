@@ -345,6 +345,18 @@ pub const fn private_dir_ok(uid: u32, mode: u32, euid: u32) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// One plain name: no path, no NUL, neither `.` nor `..`; a name
+    /// that merely starts with dots is plain.
+    #[test]
+    fn a_plain_name_is_one_name_in_a_directory() {
+        for plain in ["report.md", "...", "..a", ".hidden"] {
+            assert!(plain_name(plain), "{plain:?}");
+        }
+        for not in ["", ".", "..", "a/b", "/", "a\0b"] {
+            assert!(!plain_name(not), "{not:?}");
+        }
+    }
+
     /// A new file is written only in a directory of its owner's, reached
     /// without a link, under one plain name, never over another file;
     /// written for another user only as root.
