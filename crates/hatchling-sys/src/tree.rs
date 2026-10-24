@@ -276,7 +276,9 @@ pub fn chown_tree(path: &Path, uid: u32, gid: u32) -> Result<u64, Error> {
 }
 
 /// [`chown_tree`] for the directory `rel`, a relative path beneath
-/// `base`, opened without leaving `base` or following a link on the way
+/// `base`.
+///
+/// It is opened without leaving `base` or following a link on the way
 /// (`openat2`, `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS`). A process that
 /// may rename what is below `base` can't point the change anywhere else
 /// (WO-017: the spawner changing a harness's trees in the broker's run
@@ -543,7 +545,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("run/work/sub")).unwrap();
         std::fs::write(base.join("run/work/sub/file"), b"f").unwrap();
-        std::os::unix::fs::symlink(base.join("run"), base.join("link")).unwrap();
+        symlink(base.join("run"), base.join("link")).unwrap();
         let (uid, gid) = (crate::euid(), crate::egid());
         let changed = chown_tree_beneath(&base, Path::new("run/work"), uid, gid).unwrap();
         assert_eq!(changed, 3, "work, sub and file");
@@ -554,6 +556,15 @@ mod tests {
             );
         }
         assert!(chown_tree_beneath(&base.join("absent"), Path::new("run"), uid, gid).is_err());
+        // What was opened is what is changed, wherever its path now leads.
+        let opened = rustix::fs::open(base.join("run"), PATH_FLAGS | OFlags::DIRECTORY, Mode::empty())
+            .unwrap();
+        std::fs::rename(base.join("run"), base.join("moved")).unwrap();
+        assert_eq!(
+            chown_open_tree(&opened, uid, gid, Budget::of(MAX_CHOWN_ENTRIES)).unwrap(),
+            4,
+            "run, work, sub and file"
+        );
         std::fs::remove_dir_all(&base).unwrap();
     }
     use std::os::unix::fs::symlink;

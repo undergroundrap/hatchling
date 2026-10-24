@@ -1268,7 +1268,12 @@ mod tests {
             let linked = own_trees(&policy, TreeOp::Give, &[base.join("linked/sub")], cell);
             assert!(linked.unwrap_err().contains("give"), "opened through a link");
         }
-        let other = own_trees(&policy, TreeOp::Give, &[work.clone()], (cell.0 + 1, cell.1));
+        let other = own_trees(
+            &policy,
+            TreeOp::Give,
+            std::slice::from_ref(&work),
+            (cell.0 + 1, cell.1),
+        );
         assert!(other.unwrap_err().contains("configured cell"));
         let etc = own_trees(&policy, TreeOp::Give, &[PathBuf::from("/etc")], cell);
         assert!(
