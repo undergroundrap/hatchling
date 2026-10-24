@@ -53,7 +53,8 @@ use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::Error;
 use crate::seal::MasterKey;
-use crate::vault::{ensure_owner_only_dir, give, owner_in};
+use crate::acting::{give, owner_in};
+use crate::vault::ensure_owner_only_dir;
 
 /// The keyring format this build writes.
 const FORMAT: u32 = 3;

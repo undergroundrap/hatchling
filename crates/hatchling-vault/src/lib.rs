@@ -33,6 +33,7 @@
 //! the peer-authorized session (the agent never touches these files;
 //! filesystem permissions are the second barrier).
 
+pub mod acting;
 pub mod backup;
 pub mod error;
 pub mod fault;
@@ -65,7 +66,8 @@ pub use seal::{
 };
 pub use secret::Secret;
 pub use totp::{PendingTotp, totp_code};
-pub use vault::{Vault, act_for};
+pub use acting::act_for;
+pub use vault::Vault;
 
 #[cfg(test)]
 pub mod testutil;

@@ -57,7 +57,8 @@ use chacha20poly1305::aead::{Aead, AeadInPlace, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
-use crate::vault::{Vault, ensure_owner_only_dir, give, owner_in};
+use crate::acting::{give, owner_in};
+use crate::vault::{Vault, ensure_owner_only_dir};
 use crate::{Error, Secret, SecretName};
 use hatchling_core::MAX_SECRET_BYTES;
 
