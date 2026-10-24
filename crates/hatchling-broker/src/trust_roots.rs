@@ -437,7 +437,8 @@ mod tests {
         assert!(
             read.as_ref()
                 .map_or_else(|err| !err.contains("must be owned"), |_| true),
-            "root's is never refused for its owner: {read:?}"
+            // Not the read itself: it would hold the file's bytes.
+            "root's is never refused for its owner"
         );
         if hatchling_sys::euid() == 0 {
             let dir = roots_dir("owner");
@@ -445,7 +446,11 @@ mod tests {
             write(&path, b"x", 0o644);
             std::os::unix::fs::chown(&path, Some(4242), None).unwrap();
             let err = read_trust_roots_file(&path).unwrap_err();
-            assert!(err.contains("must be owned by root or"), "{err}");
+            // Not the refusal itself: it names the file's owner.
+            assert!(
+                err.contains("must be owned by root or"),
+                "not refused for its owner"
+            );
             let _ = std::fs::remove_dir_all(&dir);
         }
     }

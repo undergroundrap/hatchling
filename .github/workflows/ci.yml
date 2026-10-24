@@ -293,6 +293,11 @@ jobs:
           done
           shell=$(find "$HOME/.cache/ms-playwright" -path '*chrome-headless-shell-linux64/chrome-headless-shell' -type f)
           echo "20ffc88be1c6f7dc8351bebfaca965ff9a07617bddf696f0b67ef85e5868b29a  $shell" | sha256sum --check
+          # Run as root, the broker reads the bundle as its own user, which
+          # can't search a home: the bundle goes where the README puts it.
+          sudo cp -r "$(dirname "$shell")" /opt/
+          shell=/opt/$(basename "$(dirname "$shell")")/$(basename "$shell")
+          echo "20ffc88be1c6f7dc8351bebfaca965ff9a07617bddf696f0b67ef85e5868b29a  $shell" | sha256sum --check
           echo "CELL_BROWSER=$shell" >> "$GITHUB_ENV"
 
       - name: Build and install
