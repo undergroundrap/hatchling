@@ -1441,6 +1441,13 @@ mod tests {
         ] {
             assert!(paths.allow(&refused).is_err(), "{}", refused.display());
         }
+        // The broker's own, owner-only, but not named as a run directory:
+        // refused.
+        let unnamed = temp.join(format!("hatchling-other-{}", std::process::id()));
+        std::fs::create_dir_all(&unnamed).unwrap();
+        std::fs::set_permissions(&unnamed, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(paths.allow(&unnamed.join("skill")).is_err(), "not a run directory's name");
+        std::fs::remove_dir_all(&unnamed).unwrap();
         // Another owner's, or a directory others can write: refused.
         let elsewhere = Paths {
             owner: hatchling_sys::euid() + 1,
