@@ -74,6 +74,9 @@ const KEEPER_FD: &str = crate::environment::HATCHLING_KEEPER_FD.name;
 /// authority.
 const AUTHORITY_FD: &str = crate::environment::HATCHLING_KEEPER_AUTHORITY_FD.name;
 
+/// The security keys opened for the keeper ([`open_security_keys`]).
+pub(crate) const KEEPER_KEYS: &str = crate::environment::HATCHLING_KEEPER_KEYS.name;
+
 /// What the keeper's first frames are, by their first byte: the keys it
 /// hands the broker,
 const HANDED: u8 = 0;
@@ -286,6 +289,63 @@ fn searchable(dir: &Path, uid: u32, gid: u32) -> bool {
     })
 }
 
+/// The security keys plugged in now, each opened by its node's name: what
+/// the keeper's user may not open itself. One that can't be opened is
+/// left out, said in the log.
+fn open_security_keys() -> Vec<(String, std::fs::File)> {
+    let bus = hatchling_fido2::linux::Hidraw::new(Box::new(|| None));
+    let nodes = bus.nodes().unwrap_or_else(|error| {
+        tracing::warn!(%error, "cannot list the security keys for the vault keeper");
+        Vec::new()
+    });
+    nodes
+        .into_iter()
+        .filter_map(|node| {
+            let path = Path::new("/dev").join(&node);
+            match std::fs::File::options().read(true).write(true).open(&path) {
+                Ok(file) => Some((node, file)),
+                Err(error) => {
+                    tracing::warn!(key = %path.display(), %error, "cannot open a security key for the vault keeper");
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
+/// `keys` as the keeper reads them ([`KEEPER_KEYS`]): `node=descriptor`,
+/// comma separated.
+fn keys_env(keys: &[(String, std::fs::File)]) -> String {
+    keys.iter()
+        .map(|(node, file)| format!("{node}={}", file.as_raw_fd()))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// The security keys `handed` names ([`keys_env`]), adopted: each a
+/// device this process inherited. One that isn't is left out, said in
+/// the log.
+pub(crate) fn handed_keys(handed: &str) -> Vec<(String, std::fs::File)> {
+    handed
+        .split(',')
+        .filter(|pair| !pair.is_empty())
+        .filter_map(|pair| {
+            let adopted = pair
+                .split_once('=')
+                .and_then(|(node, fd)| Some((node, fd.parse::<i32>().ok()?)))
+                .ok_or_else(|| String::from("not node=descriptor"))
+                .and_then(|(node, fd)| {
+                    hatchling_sys::inherited_device(fd)
+                        .map(|file| (node.to_owned(), file))
+                        .map_err(|error| error.to_string())
+                });
+            adopted
+                .map_err(|error| tracing::warn!(%pair, %error, "a security key handed over was refused"))
+                .ok()
+        })
+        .collect()
+}
+
 /// Lets an operator's command, run as root, act for the keeper's user in
 /// its directories ([`hatchling_vault::act_for`]): the vault, its key and
 /// its keyring are opened as that user's, and what the command makes
@@ -321,7 +381,10 @@ impl Keeper {
     pub fn start_with(mut program: Command) -> Result<(Self, StoreKeys, UnixStream), Error> {
         let failed = |reason: String| Error::Keeper { reason };
         // As root, the keeper runs as its own user, which is given the
-        // vault, its key and its keyring first.
+        // vault, its key and its keyring first. The security keys it may
+        // not open are opened here and handed to it (the owner's choice,
+        // 2026-10-24), held until it has started.
+        let mut keys = Vec::new();
         if let Some((uid, gid)) = keeper_user()? {
             let config = Config::from_env()?;
             hand_to_keeper(
@@ -329,7 +392,12 @@ impl Keeper {
                 uid,
                 gid,
             )?;
-            program.uid(uid).gid(gid);
+            keys = open_security_keys();
+            for (_, key) in &keys {
+                hatchling_sys::keep_across_exec(key.as_fd())
+                    .map_err(|e| failed(format!("cannot hand the keeper a security key: {e}")))?;
+            }
+            program.env(KEEPER_KEYS, keys_env(&keys)).uid(uid).gid(gid);
         }
         let pair =
             || UnixStream::pair().map_err(|e| failed(format!("cannot make a socket pair: {e}")));
@@ -1025,6 +1093,33 @@ fn send(stream: &UnixStream, reply: &Reply) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Security keys cross to the keeper as `node=descriptor` pairs, and
+    /// are adopted there; a pair that isn't one, or a descriptor that
+    /// isn't a device, is left out. A machine without keys hands none.
+    #[test]
+    fn security_keys_cross_to_the_keeper_by_their_descriptors() {
+        use std::os::fd::IntoRawFd as _;
+        let null = || std::fs::File::open("/dev/null").unwrap();
+        let (one, four) = (null(), null());
+        let expected = format!("hidraw1={},hidraw4={}", one.as_raw_fd(), four.as_raw_fd());
+        let keys = vec![(String::from("hidraw1"), one), (String::from("hidraw4"), four)];
+        assert_eq!(keys_env(&keys), expected);
+        let raw = null().into_raw_fd();
+        let (pipe, _write) = hatchling_sys::pipe().unwrap();
+        let adopted = handed_keys(&format!(
+            "hidraw2={raw},nonsense,hidraw3=x,hidraw5={},",
+            pipe.as_raw_fd()
+        ));
+        let [(node, file)] = adopted.as_slice() else {
+            panic!("{adopted:?}");
+        };
+        assert_eq!((node.as_str(), file.as_raw_fd()), ("hidraw2", raw));
+        assert!(handed_keys("").is_empty());
+        if !Path::new("/sys/class/hidraw").exists() {
+            assert!(open_security_keys().is_empty());
+        }
+    }
 
     fn names(list: &[&str]) -> Vec<SecretName> {
         list.iter().map(|name| name.parse().unwrap()).collect()

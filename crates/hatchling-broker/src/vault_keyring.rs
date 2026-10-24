@@ -774,7 +774,15 @@ impl<B: Bus> Devices for SecurityKeys<B> {
 /// only), asking for a key's PIN with `pin` when one needs it.
 #[must_use]
 pub fn platform_keys(pin: PinPrompt) -> SecurityKeys<hatchling_fido2::linux::Hidraw> {
-    SecurityKeys::new(hatchling_fido2::linux::Hidraw::new(pin))
+    // The vault keeper's user may not open them: as root, the broker
+    // opened them for it (WO-017).
+    let bus = match std::env::var(crate::keeper::KEEPER_KEYS) {
+        Ok(handed) => {
+            hatchling_fido2::linux::Hidraw::opened(crate::keeper::handed_keys(&handed), pin)
+        }
+        Err(_) => hatchling_fido2::linux::Hidraw::new(pin),
+    };
+    SecurityKeys::new(bus)
 }
 
 /// Where the operator answers: the terminal (answers from stdin, prompts

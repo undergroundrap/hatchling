@@ -133,6 +133,8 @@ pub struct Hidraw {
     sysfs: PathBuf,
     dev: PathBuf,
     pin: std::rc::Rc<std::cell::RefCell<PinPrompt>>,
+    /// The keys opened already, by node: used in place of opening any.
+    opened: Option<Vec<(String, File)>>,
 }
 
 impl Hidraw {
@@ -150,6 +152,18 @@ impl Hidraw {
             sysfs: sysfs.to_path_buf(),
             dev: dev.to_path_buf(),
             pin: std::rc::Rc::new(std::cell::RefCell::new(pin)),
+            opened: None,
+        }
+    }
+
+    /// The keys `opened` already, each by its node's name: what a launcher
+    /// that may open them hands a process that may not. Only these are
+    /// its keys; one plugged in later isn't.
+    #[must_use]
+    pub fn opened(opened: Vec<(String, File)>, pin: PinPrompt) -> Self {
+        Self {
+            opened: Some(opened),
+            ..Self::at(Path::new(""), Path::new(""), pin)
         }
     }
 
@@ -188,6 +202,18 @@ impl Bus for Hidraw {
     type Key = Device<HidFile<File>>;
 
     fn keys(&mut self) -> Result<Vec<Self::Key>, String> {
+        if let Some(opened) = &self.opened {
+            return opened
+                .iter()
+                .map(|(node, file)| {
+                    let file = file
+                        .try_clone()
+                        .map_err(|error| format!("cannot reuse {node}: {error}"))?;
+                    Device::open(HidFile::new(file, node), Some(self.prompt()))
+                        .map_err(|error| format!("{node}: {error}"))
+                })
+                .collect();
+        }
         self.nodes()?
             .into_iter()
             .map(|node| {
@@ -334,6 +360,26 @@ mod tests {
                 .is_empty()
         );
         let _ = std::fs::remove_dir_all(&empty);
+    }
+
+    /// Keys opened elsewhere are the bus's keys, by their names, and no
+    /// node is opened: one that is no key fails its handshake, named.
+    #[test]
+    fn keys_opened_elsewhere_are_the_ones_used() {
+        let root = sysfs("opened", &[("hidraw5", &FIDO)]);
+        let mute = root.join("mute");
+        std::fs::write(&mute, b"").unwrap();
+        let file = File::options().read(true).write(true).open(&mute).unwrap();
+        let mut bus = Hidraw::opened(vec![(String::from("hidraw7"), file)], no_pin());
+        let failed = bus.keys().err().unwrap();
+        assert!(failed.starts_with("hidraw7: "), "{failed}");
+        assert!(
+            Hidraw::opened(Vec::new(), no_pin())
+                .keys()
+                .unwrap()
+                .is_empty()
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
