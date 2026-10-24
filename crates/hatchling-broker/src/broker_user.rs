@@ -156,6 +156,8 @@ mod tests {
             return;
         }
         std::fs::create_dir(&store).unwrap();
+        // A store's root, as a store makes it: its owner's alone.
+        std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::fs::write(store.join("left"), b"x").unwrap();
         act_for_broker_in(std::slice::from_ref(&store), user, group).unwrap();
         let uid = |path: &Path| std::fs::symlink_metadata(path).unwrap().uid();
