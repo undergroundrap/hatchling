@@ -796,7 +796,7 @@ impl Config {
     ///
     /// Split out so tests can inject values without touching process
     /// environment (tests run in parallel; the process env is shared).
-    fn parse(get: impl Fn(&str) -> Option<String>) -> Result<Self, Error> {
+    pub(crate) fn parse(get: impl Fn(&str) -> Option<String>) -> Result<Self, Error> {
         let socket = get(env::HATCHLING_BROKER_SOCKET.name)
             .ok_or(Error::MissingConfig("HATCHLING_BROKER_SOCKET"))?
             .parse::<SocketPath>()?;

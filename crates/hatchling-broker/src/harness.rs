@@ -2115,6 +2115,7 @@ mod tests {
             "the vendor key is not in the vault: store it as the secret harness-codex-cli"
         );
         assert!(Harnesses::default().vendors().is_empty());
+        assert_eq!(Harnesses::default().tools().count(), 0);
     }
 
     #[test]

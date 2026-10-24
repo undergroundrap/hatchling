@@ -666,7 +666,10 @@ impl CellConfig {
     }
 
     /// [`CellConfig::skill`], reading its configuration through `get`.
-    fn skill_with(cell_id: &str, get: impl Fn(&str) -> Option<String>) -> Result<Self, Error> {
+    pub(crate) fn skill_with(
+        cell_id: &str,
+        get: impl Fn(&str) -> Option<String>,
+    ) -> Result<Self, Error> {
         let backend = hatchling_isolation::platform();
         let ids = CellIds::parse(&get)?;
         let identity = cell_identity(&backend, ids, None, None)?;

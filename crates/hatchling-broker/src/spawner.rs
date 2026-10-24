@@ -255,24 +255,40 @@ impl Policy {
     /// [`crate::harness::Harnesses::from_env`] and the browser's
     /// settings.
     fn from_env() -> Result<Self, Error> {
-        let reference = CellConfig::skill("spawner-policy")?;
-        let config = crate::Config::from_env()?;
+        Self::parse(
+            &|key| crate::cell::env_value(std::env::var(key)),
+            std::env::temp_dir(),
+            hatchling_sys::euid(),
+        )
+    }
+
+    /// The policy `get` configures, with the broker's run directories in
+    /// `temp`, owned by `owner`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Policy::from_env`].
+    fn parse(
+        get: &impl Fn(&str) -> Option<String>,
+        temp: PathBuf,
+        owner: u32,
+    ) -> Result<Self, Error> {
+        let reference = CellConfig::skill_with("spawner-policy", get)?;
+        let config = crate::Config::parse(get)?;
         let mut exact = std::collections::BTreeSet::new();
         let mut under = Vec::new();
-        if let Some(agent) = crate::cell::env_value(std::env::var(AGENT_BIN)) {
+        if let Some(agent) = get(AGENT_BIN) {
             exact.insert(PathBuf::from(agent));
         }
         if config.scheduler.enabled() {
             under.push(config.scheduler.run_root());
         }
         exact.extend(
-            crate::harness::Harnesses::from_env(&config)?
+            crate::harness::Harnesses::parse(&config, get)?
                 .tools()
                 .map(Path::to_path_buf),
         );
-        if let Some(browser) =
-            BrowserSettings::parse(|key| crate::cell::env_value(std::env::var(key)))?
-        {
+        if let Some(browser) = BrowserSettings::parse(get)? {
             exact.insert(browser.controller().to_path_buf());
             under.extend(browser.fonts().map(Path::to_path_buf));
             exact.extend(crate::browser_session::host_nss_modules());
@@ -280,8 +296,8 @@ impl Policy {
         let paths = Paths {
             exact,
             under,
-            temp: std::env::temp_dir(),
-            owner: hatchling_sys::euid(),
+            temp,
+            owner,
         };
         Ok(Self::of(&reference, paths))
     }
@@ -999,12 +1015,15 @@ mod tests {
         }
     }
 
-    /// A run directory of the broker's own: named as one, owner-only.
+    /// A run directory of the broker's own: named as one, owner-only, and
+    /// a new one each call (tests run side by side).
     fn broker_run_dir(tag: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt as _;
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "hatchling-skill-code-{tag}-{}",
-            std::process::id()
+            "hatchling-skill-code-{tag}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1410,7 +1429,6 @@ mod tests {
             PathBuf::from("/opt/agent/bin"),
             PathBuf::from("/srv/fonts/../vault"),
             run.join("../hatchling-vault"),
-            run.join("./skill"),
             temp.join("hatchling-other-1"),
             temp.clone(),
             PathBuf::from("/etc/shadow"),
@@ -1497,6 +1515,40 @@ mod tests {
                 .unwrap_err()
                 .contains("/etc isn't a path a cell may be given")
         );
+    }
+
+    /// The policy a broker's settings give: its configured cell, and the
+    /// paths they name, beside its run directories.
+    #[test]
+    fn the_policy_is_read_from_the_brokers_settings() {
+        let owner = hatchling_sys::euid();
+        let settings = std::collections::HashMap::from([
+            ("HATCHLING_BROKER_SOCKET", String::from("/tmp/hatchling-policy/broker.sock")),
+            ("HATCHLING_AGENT_UID", (owner + 1).to_string()),
+            ("HATCHLING_VAULT_DIR", String::from("/tmp/hatchling-policy/vault")),
+            ("HATCHLING_AGENT_BIN", String::from("/opt/hatchling/agent")),
+        ]);
+        let get = |key: &str| settings.get(key).cloned();
+        let temp = PathBuf::from("/tmp/hatchling-policy-temp");
+        let read = Policy::parse(&get, temp.clone(), owner).unwrap();
+        assert_eq!(read.paths.temp, temp);
+        assert_eq!(read.paths.owner, owner);
+        assert!(
+            read.paths
+                .exact
+                .contains(Path::new("/opt/hatchling/agent"))
+        );
+        assert!(read.paths.under.is_empty(), "no scheduler, no fonts");
+        let reference = CellConfig::skill_with("policy", get).unwrap();
+        assert_eq!(read.identity, reference.identity());
+        assert_eq!(read.limits, reference.limits);
+        // Settings that don't parse: no policy.
+        let broken = |key: &str| (key == "HATCHLING_SEARCH").then(|| String::from("bing"));
+        assert!(Policy::parse(&broken, temp, owner).is_err());
+        // This process isn't a broker: without its settings, no policy.
+        if std::env::var_os("HATCHLING_BROKER_SOCKET").is_none() {
+            assert!(Policy::from_env().is_err());
+        }
     }
 
     #[test]

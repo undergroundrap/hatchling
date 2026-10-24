@@ -573,7 +573,8 @@ mod tests {
             Some(Path::new("/usr/share/fonts"))
         );
         let no_fonts: Vec<_> = full().into_iter().take(3).collect();
-        assert_eq!(parse(&no_fonts).unwrap().unwrap().fonts, None);
+        assert_eq!(parse(&no_fonts).unwrap().unwrap().fonts(), None);
+        assert_eq!(settings.fonts(), Some(Path::new("/usr/share/fonts")));
         let dirs = settings.dirs(Path::new("/run/snapshot"), PathBuf::from("/run/h.sock"));
         assert_eq!(dirs.nss, nss_modules(Path::is_file), "as the host has them");
         assert_eq!(
@@ -600,6 +601,7 @@ mod tests {
 
     #[test]
     fn nss_modules_come_from_where_nss_is() {
+        assert_eq!(host_nss_modules(), nss_modules(Path::is_file));
         let host = |files: &'static [&'static str]| {
             move |path: &Path| files.iter().any(|file| path == Path::new(file))
         };
