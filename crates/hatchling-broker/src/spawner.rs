@@ -53,8 +53,9 @@ use hatchling_isolation::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::Error;
+use crate::{Config, Error};
 use crate::browser_session::BrowserSettings;
+use crate::harness::Harnesses;
 use crate::cell::{CellConfig, CellLimits, Process};
 use crate::harness_tree::TreeOp;
 use crate::run_launcher::{BROKER_PID_ENV, broker_pid, forget_spec, spec_args};
@@ -152,7 +153,12 @@ impl Paths {
     /// user: WO-017's slice 3).
     fn allow(&self, path: &Path) -> Result<(), String> {
         use std::os::unix::fs::MetadataExt as _;
-        let refused = || Err(format!("{} isn't a path a cell may be given", path.display()));
+        let refused = || {
+            Err(format!(
+                "{} isn't a path a cell may be given",
+                path.display()
+            ))
+        };
         let plain = path.is_absolute()
             && path
                 .components()
@@ -274,7 +280,7 @@ impl Policy {
         owner: u32,
     ) -> Result<Self, Error> {
         let reference = CellConfig::skill_with("spawner-policy", get)?;
-        let config = crate::Config::parse(get)?;
+        let config = Config::parse(get)?;
         let mut exact = std::collections::BTreeSet::new();
         let mut under = Vec::new();
         if let Some(agent) = get(AGENT_BIN) {
@@ -284,7 +290,7 @@ impl Policy {
             under.push(config.scheduler.run_root());
         }
         exact.extend(
-            crate::harness::Harnesses::parse(&config, get)?
+            Harnesses::parse(&config, get)?
                 .tools()
                 .map(Path::to_path_buf),
         );
@@ -1440,18 +1446,30 @@ mod tests {
             owner: hatchling_sys::euid() + 1,
             ..paths.clone()
         };
-        assert!(elsewhere.allow(&run.join("skill")).is_err(), "another owner's");
+        assert!(
+            elsewhere.allow(&run.join("skill")).is_err(),
+            "another owner's"
+        );
         std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o777)).unwrap();
-        assert!(paths.allow(&run.join("skill")).is_err(), "writable by others");
+        assert!(
+            paths.allow(&run.join("skill")).is_err(),
+            "writable by others"
+        );
         std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o700)).unwrap();
         // A link, as the run directory or on the way into it: refused.
         let linked = temp.join(format!("hatchling-harness-link-{}", std::process::id()));
         let _ = std::fs::remove_file(&linked);
         std::os::unix::fs::symlink("/etc", &linked).unwrap();
-        assert!(paths.allow(&linked.join("shadow")).is_err(), "a linked run dir");
+        assert!(
+            paths.allow(&linked.join("shadow")).is_err(),
+            "a linked run dir"
+        );
         std::fs::remove_file(&linked).unwrap();
         std::os::unix::fs::symlink("/etc", run.join("away")).unwrap();
-        assert!(paths.allow(&run.join("away/shadow")).is_err(), "a link inside");
+        assert!(
+            paths.allow(&run.join("away/shadow")).is_err(),
+            "a link inside"
+        );
         std::fs::remove_dir_all(&run).unwrap();
     }
 
@@ -1523,9 +1541,15 @@ mod tests {
     fn the_policy_is_read_from_the_brokers_settings() {
         let owner = hatchling_sys::euid();
         let settings = std::collections::HashMap::from([
-            ("HATCHLING_BROKER_SOCKET", String::from("/tmp/hatchling-policy/broker.sock")),
+            (
+                "HATCHLING_BROKER_SOCKET",
+                String::from("/tmp/hatchling-policy/broker.sock"),
+            ),
             ("HATCHLING_AGENT_UID", (owner + 1).to_string()),
-            ("HATCHLING_VAULT_DIR", String::from("/tmp/hatchling-policy/vault")),
+            (
+                "HATCHLING_VAULT_DIR",
+                String::from("/tmp/hatchling-policy/vault"),
+            ),
             ("HATCHLING_AGENT_BIN", String::from("/opt/hatchling/agent")),
         ]);
         let get = |key: &str| settings.get(key).cloned();
@@ -1533,11 +1557,7 @@ mod tests {
         let read = Policy::parse(&get, temp.clone(), owner).unwrap();
         assert_eq!(read.paths.temp, temp);
         assert_eq!(read.paths.owner, owner);
-        assert!(
-            read.paths
-                .exact
-                .contains(Path::new("/opt/hatchling/agent"))
-        );
+        assert!(read.paths.exact.contains(Path::new("/opt/hatchling/agent")));
         assert!(read.paths.under.is_empty(), "no scheduler, no fonts");
         let reference = CellConfig::skill_with("policy", get).unwrap();
         assert_eq!(read.identity, reference.identity());
