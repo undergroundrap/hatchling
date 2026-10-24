@@ -1125,9 +1125,9 @@ fn serve_helper(
     };
     drop(std_child);
     send(stream, &Reply::Started { pid })?;
-    // Its group is ended before the broker hears the helper has: by then
-    // nothing of its cell is left. Its directory goes once it has.
-    supervise(stream, &child, move || drop(group))
+    // Its group is ended, and its directory removed, before the broker
+    // hears the helper has: by then nothing of its cell is left.
+    supervise(stream, &child, move || drop((group, helper_dir)))
 }
 
 /// A helper's own directory, made by the spawner in its own temp
@@ -1467,12 +1467,15 @@ sleep 30 </dev/null >/dev/null 2>&1 &
     #[test]
     fn a_helper_runs_on_the_brokers_descriptors_in_a_directory_of_its_own() {
         use std::os::unix::fs::PermissionsExt as _;
-        // The helper says where it runs, and what its spec says.
+        // The helper says where it runs, and what its spec says, and
+        // leaves enough in its directory that removing it takes a while:
+        // removed after its end is reported, it would still be there.
         let dir = run_dir("ends");
         let program = dir.join("helper.sh");
         std::fs::write(
             &program,
-            "#!/bin/sh\necho \"dir=$TMPDIR\" >&2\ncat \"$2\" >&2\n",
+            "#!/bin/sh\necho \"dir=$TMPDIR\" >&2\ncat \"$2\" >&2\n\
+             i=0; while [ $i -lt 1000 ]; do : > \"$TMPDIR/left-$i\"; i=$((i+1)); done\n",
         )
         .unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -1482,10 +1485,8 @@ sleep 30 </dev/null >/dev/null 2>&1 &
             .helper(HelperKind::SkillCell, &skill_spec(), stdio)
             .unwrap();
         assert!(process.pid() > 0);
-        let exit = process.wait_deadline(Duration::from_secs(10)).unwrap();
-        assert_eq!(exit.code, 0);
-        assert_eq!(process.try_wait().unwrap(), Some(exit));
-        assert_eq!(process.wait().unwrap(), exit, "and waits say so after");
+        // What it said, to its end: where it ran, before it is reported
+        // gone.
         let mut said = String::new();
         errors.read_to_string(&mut said).unwrap();
         assert!(said.contains("spawned"), "the spec it wrote: {said}");
@@ -1500,9 +1501,14 @@ sleep 30 </dev/null >/dev/null 2>&1 &
                 .file_name()
                 .is_some_and(|name| name.to_string_lossy().starts_with("hatchling-helper-"))
         );
+        let exit = process.wait_deadline(Duration::from_secs(10)).unwrap();
+        // Gone by the time its end is reported, not some time after.
+        assert!(!helper_dir.exists(), "its directory outlived it");
+        assert_eq!(exit.code, 0);
+        assert_eq!(process.try_wait().unwrap(), Some(exit));
+        assert_eq!(process.wait().unwrap(), exit, "and waits say so after");
         drop((process, spawner));
         served.join().unwrap();
-        assert!(!helper_dir.exists(), "its directory outlived it");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
