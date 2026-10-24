@@ -598,6 +598,27 @@ mod tests {
         );
     }
 
+    /// A count is at most [`MAX_HANDED`], and a store is written as its
+    /// label's length and label, then its root's length and root.
+    #[test]
+    fn counts_and_stores_are_written_as_read() {
+        assert_eq!(count_of(MAX_HANDED).unwrap(), 8);
+        assert_eq!(count_of(0).unwrap(), 0);
+        assert!(count_of(MAX_HANDED + 1).is_err());
+        let mut bytes = Vec::new();
+        push_store(&mut bytes, Store::SPACES, Path::new("/s")).unwrap();
+        let mut written = vec![6];
+        written.extend_from_slice(b"spaces");
+        written.extend_from_slice(&[0, 2]);
+        written.extend_from_slice(b"/s");
+        assert_eq!(bytes, written);
+        assert_eq!(
+            Reader(&bytes).store().unwrap(),
+            (Store::SPACES, PathBuf::from("/s"))
+        );
+        assert!(push_store(&mut bytes, Store::SPACES, Path::new("s")).is_err());
+    }
+
     /// A keeper unwraps the keys the stores' owner read of them, and opens
     /// no store: the keys open the stores, a store keeping none is given a
     /// fresh key it keeps on its first open, and a key given as another
