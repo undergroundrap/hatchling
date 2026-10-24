@@ -564,7 +564,8 @@ pub(super) mod tests {
         std::os::unix::fs::chown(&binary, Some(4444), Some(4545)).unwrap();
         assert_eq!(ldd_identity(&binary), Some((4444, 4545)));
         // And ldd, run as that user, still reads it and its libraries.
-        let output = within_watchdog("ldd_output", || ldd_output(&binary)).unwrap();
+        let owned = binary.clone();
+        let output = within_watchdog("ldd_output", move || ldd_output(&owned)).unwrap();
         assert!(output.status.success(), "{output:?}");
         assert!(String::from_utf8_lossy(&output.stdout).contains("=>"));
         // Root's own binary, 0700, in another user's directory: as that
@@ -572,7 +573,8 @@ pub(super) mod tests {
         std::os::unix::fs::chown(&dir, Some(4242), Some(4343)).unwrap();
         std::os::unix::fs::chown(&binary, Some(0), Some(0)).unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let output = within_watchdog("ldd_output", || ldd_output(&binary)).unwrap();
+        let owned = binary.clone();
+        let output = within_watchdog("ldd_output", move || ldd_output(&owned)).unwrap();
         assert!(!output.status.success(), "{output:?}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
