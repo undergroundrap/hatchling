@@ -297,7 +297,10 @@ def run(repo, artifacts, work, mode, fixtures):
                HATCHLING_SCHEDULER_MODEL_ENDPOINT=endpoint, HATCHLING_SCHEDULER_MODEL_NAME=model,
                HATCHLING_EGRESS_ALLOWLIST=('local:' if mode == 'local' else 'internal:') + destination,
                HATCHLING_EGRESS_GRANTS=destination, HATCHLING_API_GRANTS='egress:' + destination + ',channel-send:local',
-               NO_COLOR='1', PYTHONDONTWRITEBYTECODE='1', PYTHONUNBUFFERED='1')
+               NO_COLOR='1', PYTHONDONTWRITEBYTECODE='1', PYTHONUNBUFFERED='1',
+               # The smoke's client runs as root in its own namespaces: the
+               # broker's owner is root here, not the user who ran sudo.
+               HATCHLING_OWNER_UID='0')
     if mode == 'https':
         certificates(work)
         # The egress authority's user reads it: beside the state, not in
