@@ -5,7 +5,7 @@
 //!
 //! A browser session starts from a session thread, so its cell is spawned
 //! the way a skill's or a run's is: the broker starts its own binary again
-//! as `hatchling-broker browser-cell <spec>` ([`BROWSER_CELL_SUBCOMMAND`]),
+//! as `hatchling-broker browser-cell <spec-file>` ([`BROWSER_CELL_SUBCOMMAND`]),
 //! a fresh single-threaded helper. The helper hands the broker two things
 //! and keeps neither: the controller's connection, on the channel that is
 //! its stdin, and the cell's relay listener, at the handoff socket in the
@@ -346,8 +346,11 @@ impl Helper {
         let mut std_child = {
             let mut command = Command::new(spawner);
             command
-                .arg(BROWSER_CELL_SUBCOMMAND)
-                .arg(spec)
+                .args(crate::run_launcher::spec_args(
+                    BROWSER_CELL_SUBCOMMAND,
+                    run_dir,
+                    spec,
+                )?)
                 .env("TMPDIR", run_dir)
                 .env(BROKER_PID_ENV, broker_pid())
                 .stdin(Stdio::from(OwnedFd::from(channel)))
@@ -357,7 +360,10 @@ impl Helper {
             // dropped here: then the helper's exit is the channel's end.
             crate::skill_run::retry_while_busy(|| command.spawn(), std::thread::sleep)
         }
-        .map_err(|error| format!("cannot start {}: {error}", spawner.display()))?;
+        .map_err(|error| {
+            crate::run_launcher::forget_spec(run_dir);
+            format!("cannot start {}: {error}", spawner.display())
+        })?;
         let process = hatchling_isolation::platform()
             .supervise(&mut std_child)
             .map_err(|error| format!("cannot supervise the browser cell's helper: {error}"))?;
@@ -402,7 +408,7 @@ impl Drop for Helper {
     }
 }
 
-/// The helper: `hatchling-broker browser-cell <spec>`.
+/// The helper: `hatchling-broker browser-cell <spec-file>`.
 ///
 /// Spawns the browser cell the spec describes, hands the broker its
 /// connection (on the channel that is the helper's stdin) and its relay
@@ -422,10 +428,8 @@ pub fn browser_cell_main(spec: Option<&str>) -> ExitCode {
 }
 
 fn run_helper(spec: Option<&str>) -> Result<i32, Error> {
-    let spec = spec.ok_or_else(|| Error::Usage {
-        reason: String::from("browser-cell requires a cell spec"),
-    })?;
-    let config: CellConfig = serde_json::from_str(spec).map_err(|err| Error::Usage {
+    let spec = crate::run_launcher::take_spec(spec, BROWSER_CELL_SUBCOMMAND)?;
+    let config: CellConfig = serde_json::from_str(&spec).map_err(|err| Error::Usage {
         reason: format!("browser-cell spec is not a cell config: {err}"),
     })?;
     let handoff = config
@@ -475,9 +479,10 @@ mod tests {
     #[test]
     fn the_helper_refuses_anything_but_a_browser_cell() {
         assert!(refusal(None).contains("browser-cell requires a cell spec"));
-        assert!(refusal(Some("{}")).contains("browser-cell spec is not a cell config"));
+        let spec = crate::run_launcher::test_spec;
+        assert!(refusal(Some(&spec("{}"))).contains("browser-cell spec is not a cell config"));
         let skill = serde_json::to_string(&CellConfig::skill("browser-spec").unwrap()).unwrap();
-        assert!(refusal(Some(&skill)).contains("browser-cell spawns browser cells only"));
+        assert!(refusal(Some(&spec(&skill))).contains("browser-cell spawns browser cells only"));
         assert_eq!(browser_cell_main(None), ExitCode::FAILURE);
     }
 
@@ -705,10 +710,11 @@ mod tests {
             failed.contains(BROWSER_CELL_SUBCOMMAND),
             "its words: {failed}"
         );
+        let quiet_dir = RunDir::create().unwrap();
         let quiet = Helper::start(
             Path::new("/bin/true"),
             "{}",
-            run_dir.path(),
+            quiet_dir.path(),
             UnixStream::pair().unwrap().0,
         )
         .unwrap();
@@ -752,6 +758,10 @@ mod tests {
         assert!(
             refused.starts_with("cannot start /nonexistent/hatchling-broker"),
             "{refused}"
+        );
+        assert!(
+            std::fs::read_dir(run_dir.path()).unwrap().next().is_none(),
+            "an unstarted helper's spec was left behind"
         );
     }
 

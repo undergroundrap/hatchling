@@ -11,7 +11,7 @@
 //! - `vault-keyring <action>`: adopt, enroll or inspect the vault keyring.
 //! - `redactions <action>`, `vault-audit`: redaction review, credential access.
 //!
-//! Internal: `skill-cell <spec>` and `agent-run <spec>` are the spawner
+//! Internal: `skill-cell <spec-file>` and `agent-run <spec-file>` are the spawner
 //! helpers the broker starts, by re-running its own executable, to run
 //! one skill cell or one scheduled run (see [`crate::skill_run`] and
 //! [`crate::run_launcher`]). They read no broker configuration.
@@ -92,7 +92,7 @@ pub fn help(program: &str) -> String {
     render_help(
         program,
         "[subcommand] | --help | -h",
-        "Serve agents with no subcommand. Operator subcommands:\n  migrate-vault\n  rekey-vault [<new-key-file>]   (no file with a keyring)\n  vault-keyring <action>\n    init, enroll-totp, enroll-keys, use-file-tier, backup-codes,\n    status, add-key, remove-key, label-key\n  redactions list | stats | categories\n  redactions show <id> | raw <id> | override <id> [--any-scope]\n  vault-audit [log [count]]\n  clean [--dry-run]   (a dead broker's leftovers; never your data)\n  browser-digest <browser>   (the digest HATCHLING_BROWSER_SHA256 pins)\n\nThe broker builds and supervises the agent's cell. Internal spawner\ncommands skill-cell <spec>, agent-run <spec>, browser-cell <spec>,\nharness-tree, vault-keeper and egress-authority are broker-owned.",
+        "Serve agents with no subcommand. Operator subcommands:\n  migrate-vault\n  rekey-vault [<new-key-file>]   (no file with a keyring)\n  vault-keyring <action>\n    init, enroll-totp, enroll-keys, use-file-tier, backup-codes,\n    status, add-key, remove-key, label-key\n  redactions list | stats | categories\n  redactions show <id> | raw <id> | override <id> [--any-scope]\n  vault-audit [log [count]]\n  clean [--dry-run]   (a dead broker's leftovers; never your data)\n  browser-digest <browser>   (the digest HATCHLING_BROWSER_SHA256 pins)\n\nThe broker builds and supervises the agent's cell. Internal spawner\ncommands skill-cell <spec-file>, agent-run <spec-file>, browser-cell <spec-file>,\nharness-tree, vault-keeper and egress-authority are broker-owned.",
         crate::environment::ENVIRONMENT,
     )
 }

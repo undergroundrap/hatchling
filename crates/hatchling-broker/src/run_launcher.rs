@@ -29,7 +29,7 @@
 //! # Helper, not fork
 //!
 //! The broker is threaded, so it never forks a cell itself. It starts its
-//! own binary again as `hatchling-broker agent-run <spec>`
+//! own binary again as `hatchling-broker agent-run <spec-file>`
 //! ([`AGENT_RUN_SUBCOMMAND`]) through `Command`, whose fork-to-exec path
 //! is async-signal-safe. The fresh single-threaded helper spawns the cell
 //! (mounts, id map, seccomp, no-new-privs, every fd above stderr closed:
@@ -80,6 +80,94 @@ pub const AGENT_RUN_SUBCOMMAND: &str = "agent-run";
 /// Where a broker tells a helper it spawns (`agent-run`, `skill-cell`)
 /// its own pid, for the helper's watch on it (WO-012).
 pub const BROKER_PID_ENV: &str = crate::environment::HATCHLING_HELPER_BROKER_PID.name;
+
+/// The file a helper's cell spec is written to, in its run's own
+/// directory. A spec never travels in a helper's arguments: any local user
+/// can read those (`/proc/<pid>/cmdline`, `ps`), and a run's spec carries
+/// its task and its chat's history.
+const SPEC_FILE: &str = "cell-spec.json";
+
+/// The longest cell spec a helper reads: 16 MiB.
+const MAX_SPEC_BYTES: u64 = 16 << 20;
+
+/// A helper's arguments for `spec`: its `subcommand`, and the spec
+/// written, owner-only, to a file of its own in `run_dir`, the run's
+/// private directory. The file is new: one already there is refused.
+///
+/// # Errors
+///
+/// Why the spec couldn't be written.
+pub(crate) fn spec_args(
+    subcommand: &str,
+    run_dir: &Path,
+    spec: &str,
+) -> Result<[std::ffi::OsString; 2], String> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let path = run_dir.join(SPEC_FILE);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+        .and_then(|mut file| file.write_all(spec.as_bytes()))
+        .map_err(|err| format!("cannot write the cell spec: {err}"))?;
+    Ok([subcommand.into(), path.into_os_string()])
+}
+
+/// Removes the spec [`spec_args`] wrote in `run_dir`, for a helper that
+/// never started, so it never read it.
+pub(crate) fn forget_spec(run_dir: &Path) {
+    let _ = std::fs::remove_file(run_dir.join(SPEC_FILE));
+}
+
+/// The cell spec a helper's broker wrote for it to `path`
+/// ([`spec_args`]), read once: the file is removed as it's read, so the
+/// spec never outlives the helper's start.
+///
+/// # Errors
+///
+/// [`Error::Usage`] when `path` is missing or not absolute, or the spec
+/// can't be read, is longer than [`MAX_SPEC_BYTES`], or isn't text.
+pub(crate) fn take_spec(path: Option<&str>, helper: &str) -> Result<String, Error> {
+    let usage = |reason: String| Error::Usage { reason };
+    let path = path.ok_or_else(|| usage(format!("{helper} requires a cell spec")))?;
+    let path = Path::new(path);
+    if !path.is_absolute() {
+        return Err(usage(format!(
+            "{helper}'s cell spec must be an absolute path to its file"
+        )));
+    }
+    let file = std::fs::File::open(path)
+        .map_err(|err| usage(format!("{helper} cannot open its cell spec: {err}")))?;
+    let _ = std::fs::remove_file(path);
+    let mut bytes = Vec::new();
+    file.take(MAX_SPEC_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|err| usage(format!("{helper} cannot read its cell spec: {err}")))?;
+    if u64::try_from(bytes.len()).map_or(true, |len| len > MAX_SPEC_BYTES) {
+        return Err(usage(format!(
+            "{helper}'s cell spec is longer than {MAX_SPEC_BYTES} bytes"
+        )));
+    }
+    String::from_utf8(bytes).map_err(|_| usage(format!("{helper}'s cell spec isn't text")))
+}
+
+/// `spec` written as a broker writes a helper's, in a directory of its
+/// own: the path a helper is given.
+#[cfg(test)]
+pub(crate) fn test_spec(spec: &str) -> String {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "hatchling-spec-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let [_, path] = spec_args("test", &dir, spec).unwrap();
+    path.into_string().unwrap()
+}
 
 /// This broker's pid, as a helper's environment gives it.
 #[must_use]
@@ -683,15 +771,17 @@ fn start_helper(
     handoff: UnixStream,
 ) -> Result<Started, String> {
     let mut std_child = Command::new(spawner)
-        .arg(AGENT_RUN_SUBCOMMAND)
-        .arg(spec)
+        .args(spec_args(AGENT_RUN_SUBCOMMAND, run_dir, spec)?)
         .env("TMPDIR", run_dir)
         .env(BROKER_PID_ENV, broker_pid())
         .stdin(Stdio::from(OwnedFd::from(handoff)))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|err| format!("cannot start {}: {err}", spawner.display()))?;
+        .map_err(|err| {
+            forget_spec(run_dir);
+            format!("cannot start {}: {err}", spawner.display())
+        })?;
     // On a refusal the backend has already killed and reaped the helper.
     let child = hatchling_isolation::platform()
         .supervise(&mut std_child)
@@ -797,10 +887,8 @@ pub fn agent_run_main(spec: Option<&str>) -> ExitCode {
 }
 
 fn run_helper(spec: Option<&str>) -> Result<i32, Error> {
-    let spec = spec.ok_or_else(|| Error::Usage {
-        reason: String::from("agent-run requires a cell spec"),
-    })?;
-    let config: CellConfig = serde_json::from_str(spec).map_err(|err| Error::Usage {
+    let spec = take_spec(spec, AGENT_RUN_SUBCOMMAND)?;
+    let config: CellConfig = serde_json::from_str(&spec).map_err(|err| Error::Usage {
         reason: format!("agent-run spec is not a cell config: {err}"),
     })?;
     if config.scheduled.is_none() || config.is_skill_cell() {
@@ -1327,30 +1415,31 @@ mod tests {
 
     #[test]
     fn a_helper_that_cannot_start_is_reported() {
+        let dir = helper_dir("unstarted");
         let (_handoff, helper_end) = UnixStream::pair().unwrap();
-        let error = start_helper(
-            Path::new("/nonexistent/spawner"),
-            "{}",
-            Path::new("/tmp"),
-            helper_end,
-        )
-        .err()
-        .unwrap();
+        let error = start_helper(Path::new("/nonexistent/spawner"), "{}", &dir, helper_end)
+            .err()
+            .unwrap();
         assert!(
             error.starts_with("cannot start /nonexistent/spawner"),
             "{error}"
         );
+        assert!(
+            !dir.join(SPEC_FILE).exists(),
+            "an unstarted helper's spec was left behind"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn the_helper_spawns_run_cells_only() {
         assert!(matches!(run_helper(None), Err(Error::Usage { .. })));
         assert!(matches!(
-            run_helper(Some("not json")),
+            run_helper(Some(&test_spec("not json"))),
             Err(Error::Usage { .. })
         ));
         let agent = serde_json::to_string(&CellConfig::skill("cell-x").unwrap()).unwrap();
-        let err = run_helper(Some(&agent)).unwrap_err();
+        let err = run_helper(Some(&test_spec(&agent))).unwrap_err();
         assert!(
             format!("{err}").contains("scheduled run cells only"),
             "{err}"
@@ -1371,7 +1460,8 @@ mod tests {
             chat: false,
             history: Vec::new(),
         });
-        let err = run_helper(Some(&serde_json::to_string(&skill).unwrap())).unwrap_err();
+        let err =
+            run_helper(Some(&test_spec(&serde_json::to_string(&skill).unwrap()))).unwrap_err();
         assert!(
             format!("{err}").contains("scheduled run cells only"),
             "{err}"
@@ -1555,5 +1645,49 @@ mod tests {
         assert_eq!(env.run_root, PathBuf::from("/srv/hatchling/schedules.runs"));
         assert_eq!(env.timeout, DEFAULT_RUN_TIMEOUT);
         assert_eq!(env.spawner, std::env::current_exe().unwrap());
+    }
+
+    /// A helper's spec never travels in its arguments, which any local
+    /// user can read: it's a file of its own in the run's private
+    /// directory, owner-only, made new, and read once, from an absolute
+    /// path, as text within its bound.
+    #[test]
+    fn a_helpers_spec_is_a_private_file_read_once_never_an_argument() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = helper_dir("spec");
+        let spec = r#"{"history":"what the owner told the agent"}"#;
+        let [subcommand, path] = spec_args(AGENT_RUN_SUBCOMMAND, &dir, spec).unwrap();
+        assert_eq!(subcommand, AGENT_RUN_SUBCOMMAND);
+        let path = path.into_string().unwrap();
+        assert!(!path.contains("owner told"), "the spec is in an argument");
+        assert_eq!(Path::new(&path), dir.join(SPEC_FILE));
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        assert!(
+            spec_args(AGENT_RUN_SUBCOMMAND, &dir, spec).is_err(),
+            "a spec already there was written over"
+        );
+        assert_eq!(take_spec(Some(&path), "agent-run").unwrap(), spec);
+        assert!(!Path::new(&path).exists(), "the spec outlived its read");
+        let reason = |taken: Result<String, Error>| match taken {
+            Err(Error::Usage { reason }) => reason,
+            other => format!("not refused: {other:?}"),
+        };
+        assert!(reason(take_spec(Some(&path), "agent-run")).contains("cannot open"));
+        assert_eq!(
+            reason(take_spec(None, "agent-run")),
+            "agent-run requires a cell spec"
+        );
+        assert!(reason(take_spec(Some("cell-spec.json"), "agent-run")).contains("absolute path"));
+        std::fs::write(&path, [0xff, 0xfe]).unwrap();
+        assert!(reason(take_spec(Some(&path), "agent-run")).contains("isn't text"));
+        let large = std::fs::File::create(&path).unwrap();
+        large.set_len(MAX_SPEC_BYTES + 1).unwrap();
+        assert!(reason(take_spec(Some(&path), "agent-run")).contains("longer than"));
+        // One no helper read, forgotten.
+        spec_args(AGENT_RUN_SUBCOMMAND, &dir, spec).unwrap();
+        forget_spec(&dir);
+        assert!(!Path::new(&path).exists(), "a forgotten spec stayed");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
