@@ -1403,9 +1403,7 @@ fn trees(
     match (cell.ids, op) {
         (CellIds::Own, TreeOp::Give) => hand_over(dirs, cell.uid_base),
         (CellIds::Own, TreeOp::Reclaim) => Ok(()),
-        (CellIds::Subordinate, _) => {
-            change_trees(runtime.spawner(), op, &changed, cell.identity())
-        }
+        (CellIds::Subordinate, _) => change_trees(runtime.spawner(), op, &changed, cell.identity()),
     }
 }
 

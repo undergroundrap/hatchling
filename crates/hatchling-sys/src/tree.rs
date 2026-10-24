@@ -540,8 +540,7 @@ mod tests {
     /// absolutely, is refused before anything changes.
     #[test]
     fn a_tree_beneath_its_base_is_changed_and_nothing_reached_otherwise() {
-        let base =
-            std::env::temp_dir().join(format!("hatchling-beneath-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("hatchling-beneath-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("run/work/sub")).unwrap();
         std::fs::write(base.join("run/work/sub/file"), b"f").unwrap();
@@ -557,8 +556,12 @@ mod tests {
         }
         assert!(chown_tree_beneath(&base.join("absent"), Path::new("run"), uid, gid).is_err());
         // What was opened is what is changed, wherever its path now leads.
-        let opened = rustix::fs::open(base.join("run"), PATH_FLAGS | OFlags::DIRECTORY, Mode::empty())
-            .unwrap();
+        let opened = rustix::fs::open(
+            base.join("run"),
+            PATH_FLAGS | OFlags::DIRECTORY,
+            Mode::empty(),
+        )
+        .unwrap();
         std::fs::rename(base.join("run"), base.join("moved")).unwrap();
         assert_eq!(
             chown_open_tree(&opened, uid, gid, Budget::of(MAX_CHOWN_ENTRIES)).unwrap(),

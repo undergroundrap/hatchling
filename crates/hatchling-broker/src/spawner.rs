@@ -1023,8 +1023,7 @@ fn own_trees(
     cell: (u32, u32),
 ) -> Result<(), String> {
     let configured = policy.skill.identity;
-    if cell != (configured.principal, configured.group) || configured.mapping != Mapping::Direct
-    {
+    if cell != (configured.principal, configured.group) || configured.mapping != Mapping::Direct {
         return Err(String::from(
             "the trees' cell isn't the configured cell's identity",
         ));
@@ -1238,7 +1237,11 @@ mod tests {
             PathBuf::from("/etc"),
             work.join("../../etc"),
         ] {
-            assert!(paths.harness_tree(&refused).is_err(), "{}", refused.display());
+            assert!(
+                paths.harness_tree(&refused).is_err(),
+                "{}",
+                refused.display()
+            );
         }
         // A real directory of the broker's, named as another run's.
         let skill_run = temp.join(format!("hatchling-skill-run-test-{}", std::process::id()));
@@ -1256,17 +1259,17 @@ mod tests {
         };
         assert!(elsewhere.harness_tree(&work).is_err(), "another owner's");
         let policy = policy();
-        let cell = (
-            policy.skill.identity.principal,
-            policy.skill.identity.group,
-        );
+        let cell = (policy.skill.identity.principal, policy.skill.identity.group);
         if policy.skill.identity.mapping == Mapping::Direct {
             own_trees(&policy, TreeOp::Give, std::slice::from_ref(&work), cell).unwrap();
             own_trees(&policy, TreeOp::Reclaim, std::slice::from_ref(&work), cell).unwrap();
             // A link on the way is refused when the tree is opened.
             std::os::unix::fs::symlink(&work, base.join("linked")).unwrap();
             let linked = own_trees(&policy, TreeOp::Give, &[base.join("linked/sub")], cell);
-            assert!(linked.unwrap_err().contains("give"), "opened through a link");
+            assert!(
+                linked.unwrap_err().contains("give"),
+                "opened through a link"
+            );
         }
         let other = own_trees(
             &policy,
