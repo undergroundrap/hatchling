@@ -204,12 +204,13 @@ Filled in at close.
     3. **The broker drops root.** It runs as `hatchling-broker` with an empty capability set, and the sockets admit the recorded owner. The tests read `/proc/<pid>/status` for all four processes' Uid and Cap lines, and a hand mutant that skips the drop fails one.
        *In parts, after mapping what the broker still does as root (2026-10-24). Each lands with the broker still root; the drop comes last.*
        - **3a:** a cell's identity is worked out for its maker. Today it follows the broker's own uid when the spec is built, which would change every identity after the drop. Also, `ldd` runs from a fixed path.
-       - **3b:** spec files and the helpers' staging move out of the broker's run directories, and the spawner learns the broker's uid for its path rule. This closes the TOCTOU left from slice 1.
+       - **3b:** spec files and the helpers' staging move out of the broker's run directories, so nothing root writes is placed under a name the broker could change.
        - **3c:** a harness's trees in `own` mode are given and taken back through the spawner.
        - **3d:** the spawner makes each cell's group. A broker holding the delegated group could lift its cells' limits.
        - **3e:** the owner is recorded at start. The owner-facing sockets and their token files are bound before the drop and given to the owner, and the stale-file checks accept that owner.
        - **3f:** the broker's stores, memory, goals, trust roots and lock are handed to `hatchling-broker`. The keeper's start, which reads the stores' kept keys as root, acts for that user there.
-       - **3g:** the drop itself, after the spawner starts while there is one thread, with the `/proc` tests and the README.
+       - **3g:** the drop itself, after the spawner starts while there is one thread, with the `/proc` tests and the README. The spawner's path rule then takes the broker's uid, not its own, for the broker's run directories.
+       - **3h:** a cell's bind sources are opened by the spawner, which mounts the open files. Today they are checked by path and mounted by path, so a broker that owns a run directory could change one in between. This is the TOCTOU left from slice 1.
 
        *3a landed:* the broker records the spawner's uid and gid when it starts it (`spawns_as`). Identities, subordinate ids and the uid the agent sees its maker as are all worked out for that maker. The agent's check of its maker's uid now holds by design rather than by the broker and the spawner being one user: the cell's connection is made by the spawner's helper, which is the maker.
     4. **Rootless.** The same split on subordinate ids.
