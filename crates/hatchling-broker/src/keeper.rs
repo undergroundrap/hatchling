@@ -461,17 +461,15 @@ impl Releases {
     }
 
     /// What a gate scans for: the held secrets a cell has been given or
-    /// has stored (`released`), and the channel accounts' and egress
-    /// destinations' credentials, which the broker handles itself. A held
-    /// secret no cell has had isn't one a cell can leak.
+    /// has stored (`released`), and the channel accounts' credentials,
+    /// which the broker handles itself. A held secret no cell has had isn't
+    /// one a cell can leak. The egress destinations' credentials are the
+    /// egress authority's alone (WO-017, step 2): the broker never holds
+    /// one, so it can't leak one, and a scan never hands it one.
     fn scan_set(&self, released: &BTreeSet<String>) -> Vec<SecretName> {
         self.held
             .iter()
-            .filter(|name| {
-                released.contains(*name)
-                    || self.accounts.contains(*name)
-                    || self.egress.contains(*name)
-            })
+            .filter(|name| released.contains(*name) || self.accounts.contains(*name))
             .filter_map(|name| name.parse().ok())
             .collect()
     }
@@ -881,10 +879,11 @@ mod tests {
                 .map(|name| name.as_str().to_owned())
                 .collect()
         };
-        assert_eq!(scanned(&[]), [egress, "mail-work"]);
+        // Never an egress credential: the authority's alone.
+        assert_eq!(scanned(&[]), ["mail-work"]);
         assert_eq!(
             scanned(&["token", "harness-claude-code"]),
-            [egress, "mail-work", "token"]
+            ["mail-work", "token"]
         );
         assert!(!broker("scan", &["token"]));
         assert!(authority("egress", &[]));
