@@ -928,6 +928,8 @@ fn hand_over_connection(handoff: &UnixStream, connection: Option<UnixStream>) ->
 
 #[cfg(test)]
 mod tests {
+    use hatchling_isolation::IsolationBackend as _;
+
     use super::*;
     use crate::{
         ChannelAccountSpec, EgressConfig, GoalsConfig, MemoryConfig, VaultConfig, WebConfig,

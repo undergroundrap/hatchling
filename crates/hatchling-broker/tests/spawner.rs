@@ -25,7 +25,7 @@ fn run_dir(tag: &str) -> PathBuf {
 
 /// Stdio for a helper, and the read end of its stderr.
 fn stdio() -> ([OwnedFd; 3], File) {
-    let null = |write| {
+    let null = |write: bool| {
         OwnedFd::from(
             File::options()
                 .read(!write)

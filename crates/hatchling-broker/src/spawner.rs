@@ -86,7 +86,7 @@ impl HelperKind {
 
     /// Whether `config` is a cell this helper starts: what each helper
     /// checks of its own spec, checked first by the spawner.
-    fn starts(self, config: &CellConfig) -> bool {
+    const fn starts(self, config: &CellConfig) -> bool {
         match self {
             Self::AgentRun => config.scheduled.is_some() && !config.is_skill_cell(),
             Self::SkillCell => config.skill_code.is_some(),
@@ -306,6 +306,10 @@ impl Spawner {
     }
 }
 
+/// How a spawned helper ended, once the spawner says: `Err` when the
+/// spawner went first. Its watch fills it, and wakes its waiters.
+type Ended = Arc<(Mutex<Option<Result<Exit, String>>>, Condvar)>;
+
 /// A helper the spawner started: supervised over its connection. Dropping
 /// it kills the helper.
 #[derive(Debug)]
@@ -314,9 +318,8 @@ pub struct SpawnedProcess {
     pid: i32,
     /// Where the broker asks for a kill.
     stream: Mutex<UnixStream>,
-    /// How the helper ended, once the spawner says: `Err` when the
-    /// spawner went first.
-    ended: Arc<(Mutex<Option<Result<Exit, String>>>, Condvar)>,
+    /// How the helper ended, once the spawner says.
+    ended: Ended,
 }
 
 impl SpawnedProcess {
@@ -326,7 +329,7 @@ impl SpawnedProcess {
         let reader = stream
             .try_clone()
             .map_err(|error| format!("cannot watch helper {pid}: {error}"))?;
-        let ended = Arc::new((Mutex::new(None), Condvar::new()));
+        let ended: Ended = Arc::new((Mutex::new(None), Condvar::new()));
         let told = Arc::clone(&ended);
         std::thread::spawn(move || {
             let outcome = match receive(&reader) {
@@ -376,10 +379,12 @@ impl SpawnedProcess {
         let (slot, _) = changed
             .wait_timeout_while(slot, timeout, |slot| slot.is_none())
             .map_err(|_| wait_error("its watch panicked"))?;
-        match slot.as_ref() {
+        let ended = slot.clone();
+        drop(slot);
+        match ended {
             None => Ok(None),
-            Some(Ok(exit)) => Ok(Some(*exit)),
-            Some(Err(reason)) => Err(wait_error(reason)),
+            Some(Ok(exit)) => Ok(Some(exit)),
+            Some(Err(reason)) => Err(wait_error(&reason)),
         }
     }
 }
@@ -638,9 +643,8 @@ fn serve_helper(
     descriptors: Vec<OwnedFd>,
 ) -> Result<(), Error> {
     let refuse = |reason: String| send(stream, &Reply::Refused { reason });
-    let starts = serde_json::from_str::<CellConfig>(spec)
-        .ok()
-        .is_some_and(|config| helper.starts(&config));
+    let starts =
+        serde_json::from_str::<CellConfig>(spec).is_ok_and(|config| helper.starts(&config));
     if !starts {
         tracing::warn!(?helper, "refused a spec its helper doesn't start");
         return refuse(format!(
@@ -715,17 +719,14 @@ fn supervise(stream: &UnixStream, child: &hatchling_sys::Child) -> Result<(), Er
         };
         let ready = hatchling_sys::wait_readable(&fds).map_err(gone)?;
         if broker_here && ready.first().copied().unwrap_or(false) {
-            match read_frame_or_eof(stream).map_err(gone)? {
-                Some(frame) => {
-                    if matches!(serde_json::from_slice(&frame), Ok(Request::Kill)) {
-                        let _ = child.terminate();
-                    }
-                }
-                None => {
-                    // The broker went: so does its helper.
+            if let Some(frame) = read_frame_or_eof(stream).map_err(gone)? {
+                if matches!(serde_json::from_slice(&frame), Ok(Request::Kill)) {
                     let _ = child.terminate();
-                    broker_here = false;
                 }
+            } else {
+                // The broker went: so does its helper.
+                let _ = child.terminate();
+                broker_here = false;
             }
         }
     }
@@ -925,6 +926,65 @@ mod tests {
         assert!(serve_connection(&theirs, Path::new("/bin/sh")).is_err());
         assert!(gone("x").to_string().contains("cannot be reached: x"));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A helper's watch reads how it ended, or that the spawner went
+    /// first; a wait past its deadline asks for a kill.
+    #[test]
+    fn a_watch_reads_the_helpers_end_or_the_spawners() {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let process = SpawnedProcess::watching(ours, 7).unwrap();
+        assert_eq!(process.outcome().unwrap(), None);
+        assert_eq!(process.ended_within(Duration::from_millis(10)).unwrap(), None);
+        send(&theirs, &Reply::Exited { status: 3 << 8 }).unwrap();
+        let exit = process.ended_within(Duration::from_secs(10)).unwrap();
+        assert_eq!(exit.map(|exit| exit.code), Some(3));
+        assert_eq!(process.try_wait().unwrap().map(|exit| exit.code), Some(3));
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let gone_first = SpawnedProcess::watching(ours, 8).unwrap();
+        drop(theirs);
+        assert!(gone_first.ended_within(Duration::from_secs(10)).is_err());
+        assert!(gone_first.outcome().is_err());
+        assert!(wait_error("why").to_string().contains("why"));
+        // A wait past its deadline asks the spawner for a kill.
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let late = SpawnedProcess::watching(ours, 9).unwrap();
+        assert!(late.wait_deadline(Duration::from_millis(10)).is_err());
+        let asked = read_frame(&theirs).unwrap();
+        assert!(matches!(serde_json::from_slice(&asked), Ok(Request::Kill)));
+    }
+
+    /// `serve_helper` and `trees`, called directly: a spec its helper
+    /// doesn't start is refused, and so is a tree change the spawner can't
+    /// make.
+    #[test]
+    fn a_spec_or_a_tree_change_the_spawner_cannot_make_is_refused() {
+        let (broker, theirs) = UnixStream::pair().unwrap();
+        let (fds, _) = stdio();
+        serve_helper(
+            &theirs,
+            Path::new("/bin/sh"),
+            HelperKind::SkillCell,
+            "{}",
+            Path::new("/nonexistent"),
+            "1",
+            fds.into(),
+        )
+        .unwrap();
+        assert!(matches!(receive(&broker).unwrap(), Reply::Refused { .. }));
+        let (spawner, served) = serving("/bin/sh");
+        let cell = CellIdentity {
+            principal: 200_000,
+            group: 200_000,
+            count: 1,
+            mapping: Mapping::Subordinate,
+        };
+        let refused = spawner
+            .trees(TreeOp::Give, &[Path::new("/nonexistent/work")], cell)
+            .unwrap_err();
+        assert!(!refused.is_empty());
+        drop(spawner);
+        served.join().unwrap();
     }
 
     #[test]

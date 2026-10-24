@@ -1394,10 +1394,10 @@ fn trees(
         // The spawner changes them when one runs (WO-017, step 3).
         (CellIds::Subordinate, _) => {
             let changed = [dirs.work.as_path(), dirs.scratch.as_path()];
-            match crate::spawner::spawner() {
-                Some(spawner) => spawner.trees(op, &changed, cell.identity()),
-                None => change_trees(runtime.spawner(), op, &changed, cell.identity()),
-            }
+            crate::spawner::spawner().map_or_else(
+                || change_trees(runtime.spawner(), op, &changed, cell.identity()),
+                |spawner| spawner.trees(op, &changed, cell.identity()),
+            )
         }
     }
 }
