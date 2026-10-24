@@ -479,6 +479,28 @@ fn the_egress_authority_searches_with_what_the_keeper_gives_it() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The broker waits for the egress authority's word that it started: one
+/// that can't (its CA bundle isn't there) is refused at once, with its
+/// reason, not found out at its first request.
+#[test]
+fn an_egress_authority_that_cannot_start_is_refused_with_its_reason() {
+    use hatchling_broker::egress_authority::Authority;
+    use hatchling_broker::keeper::Keeper;
+    let dir = scratch("authority-refused").unwrap();
+    sealed_vault(&dir, &[]).unwrap();
+    let missing = dir.join("no-such-ca.pem");
+    let bundle = [("HATCHLING_EGRESS_CA_BUNDLE", missing.to_str().unwrap())];
+    let (keeper, _, authoritys) = Keeper::start_with(program(&dir, &[])).unwrap();
+    let Err(refused) = Authority::start_with(program(&dir, &bundle), &authoritys) else {
+        unreachable!("an authority without its CA bundle started");
+    };
+    let refused = refused.to_string();
+    assert!(refused.contains("no-such-ca.pem"), "{refused}");
+    drop(authoritys);
+    drop(keeper);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The egress authority runs only as the broker starts it.
 #[test]
 fn the_egress_authority_refuses_to_run_unless_the_broker_started_it() {
