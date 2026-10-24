@@ -1379,10 +1379,13 @@ fn harness_cell(
 /// Moves a harness run's work tree and scratch directory between the
 /// broker and `cell`: `Give` before the run, `Reclaim` after it.
 ///
-/// A root broker gives them by chown ([`hand_over`]) and needs nothing
-/// back: it reads anything. On the owner's subordinate ids both go
-/// through the tree helper ([`change_trees`]), since the broker can
-/// neither give a file away nor read, or remove, what the cell left.
+/// Through the spawner when one runs (WO-017): on the cell's own ids it
+/// gives them and takes them back by chown, held to its policy, so a
+/// broker that isn't root reads what the cell left. Without one, a root
+/// broker gives them by chown ([`hand_over`]) and needs nothing back: it
+/// reads anything. On the owner's subordinate ids both go through the
+/// tree helper ([`change_trees`]), since the broker can neither give a
+/// file away nor read, or remove, what the cell left.
 ///
 /// # Errors
 ///
@@ -1393,16 +1396,15 @@ fn trees(
     dirs: &RunDirs,
     op: TreeOp,
 ) -> Result<(), String> {
+    let changed = [dirs.work.as_path(), dirs.scratch.as_path()];
+    if let Some(spawner) = crate::spawner::spawner() {
+        return spawner.trees(op, &changed, cell.identity());
+    }
     match (cell.ids, op) {
         (CellIds::Own, TreeOp::Give) => hand_over(dirs, cell.uid_base),
         (CellIds::Own, TreeOp::Reclaim) => Ok(()),
-        // The spawner changes them when one runs (WO-017, step 3).
         (CellIds::Subordinate, _) => {
-            let changed = [dirs.work.as_path(), dirs.scratch.as_path()];
-            crate::spawner::spawner().map_or_else(
-                || change_trees(runtime.spawner(), op, &changed, cell.identity()),
-                |spawner| spawner.trees(op, &changed, cell.identity()),
-            )
+            change_trees(runtime.spawner(), op, &changed, cell.identity())
         }
     }
 }

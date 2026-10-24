@@ -71,5 +71,7 @@ pub use process::{
 pub use seccomp::{SeccompProfile, SockFilter};
 pub use sync_pipe::{ChildToParent, ParentToChild, handshake_pipes};
 pub use terminal::EchoOff;
-pub use tree::{DirId, MAX_CHOWN_ENTRIES, Removed, chown_tree, remove_dir_tree, remove_tree};
+pub use tree::{
+    DirId, MAX_CHOWN_ENTRIES, Removed, chown_tree, chown_tree_beneath, remove_dir_tree, remove_tree,
+};
 pub use umask::{current_umask, with_umask};
