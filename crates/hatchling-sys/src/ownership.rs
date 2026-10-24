@@ -289,7 +289,7 @@ pub fn write_new_file_for(dir: &Path, name: &str, bytes: &[u8], owner: u32) -> R
         .union(rustix::fs::OFlags::EXCL)
         .union(rustix::fs::OFlags::NOFOLLOW)
         .union(rustix::fs::OFlags::CLOEXEC);
-    if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\0') {
+    if !plain_name(name) {
         return Err(refused(
             "make a file in the directory",
             "not one plain name",
@@ -313,6 +313,12 @@ pub fn write_new_file_for(dir: &Path, name: &str, bytes: &[u8], owner: u32) -> R
             operation: "write the file",
             source,
         })
+}
+
+/// Whether `name` is one plain name in a directory: not empty, not `.` or
+/// `..`, with no `/` and no NUL.
+fn plain_name(name: &str) -> bool {
+    !(name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\0'))
 }
 
 /// Opens `path` only if it is a directory itself: a symlink, even to a
@@ -371,7 +377,11 @@ mod tests {
         // Not through a linked directory, nor into another owner's.
         std::os::unix::fs::symlink(&dir, dir.with_extension("link")).unwrap();
         assert!(write_new_file_for(&dir.with_extension("link"), "via", b"x", me).is_err());
-        assert!(write_new_file_for(&dir, "theirs", b"x", me.wrapping_add(4242)).is_err());
+        // Refused before anything is made: not refused later, when the file
+        // couldn't be given away.
+        let theirs = write_new_file_for(&dir, "theirs", b"x", me.wrapping_add(4242)).unwrap_err();
+        assert!(theirs.to_string().contains("isn't the owner's"), "{theirs}");
+        assert!(!dir.join("theirs").exists());
         if me == 0 {
             std::os::unix::fs::chown(&dir, Some(4242), None).unwrap();
             write_new_file_for(&dir, "given", b"g", 4242).unwrap();
