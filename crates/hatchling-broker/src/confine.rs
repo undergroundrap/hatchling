@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 
 use hatchling_sys::landlock::{Access, Confinement};
 
+use crate::browser_session::BrowserSettings;
+use crate::harness::Harnesses;
 use crate::{Config, Error, RedactionConfig};
 
 /// The system's paths a broker reads: its configuration, libraries,
@@ -36,12 +38,13 @@ fn writable(config: &Config, redaction: Option<&RedactionConfig>) -> Vec<PathBuf
 }
 
 /// The paths the broker only reads, besides the system's: its skills,
-/// their trust roots, and the browser bundle it snapshots, its fonts and
-/// its controller.
+/// their trust roots, the harnesses' project roots it copies a task's
+/// files from, and the browser bundle it snapshots, its fonts and its
+/// controller.
 ///
 /// # Errors
 ///
-/// As [`crate::browser_session::BrowserSettings::parse`].
+/// As [`Harnesses::parse`] and [`BrowserSettings::parse`].
 fn readable(config: &Config, get: impl Fn(&str) -> Option<String>) -> Result<Vec<PathBuf>, Error> {
     let mut paths: Vec<PathBuf> = SYSTEM_READ.iter().map(PathBuf::from).collect();
     paths.extend(
@@ -50,7 +53,8 @@ fn readable(config: &Config, get: impl Fn(&str) -> Option<String>) -> Result<Vec
             .filter(|path| !path.as_os_str().is_empty())
             .cloned(),
     );
-    if let Some(browser) = crate::browser_session::BrowserSettings::parse(get)? {
+    paths.extend(Harnesses::parse(config, &get)?.roots().map(Path::to_path_buf));
+    if let Some(browser) = BrowserSettings::parse(&get)? {
         paths.push(browser.bundle().to_path_buf());
         paths.push(browser.controller().to_path_buf());
         paths.extend(browser.fonts().map(Path::to_path_buf));

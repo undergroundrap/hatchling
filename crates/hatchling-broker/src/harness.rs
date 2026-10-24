@@ -584,6 +584,11 @@ impl Harnesses {
         &self.vendors
     }
 
+    /// The project roots a task's files are copied from.
+    pub(crate) fn roots(&self) -> impl Iterator<Item = &Path> {
+        self.roots.values().map(PathBuf::as_path)
+    }
+
     /// The host programs a CLI cell may run.
     pub(crate) fn tools(&self) -> impl Iterator<Item = &Path> {
         self.tools.iter().map(|(source, _)| source.as_path())
