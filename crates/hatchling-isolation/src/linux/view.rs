@@ -544,15 +544,18 @@ pub(super) mod tests {
     fn ldd_runs_as_whoever_could_change_the_binary() {
         use std::os::unix::fs::PermissionsExt as _;
         assert_eq!(ldd_identity(Path::new("/bin/true")), None);
-        if hatchling_sys::euid() != 0 {
-            return;
-        }
         let dir = std::env::temp_dir().join(format!("hatchling-ldd-owner-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir(&dir).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
         let binary = dir.join("true");
         std::fs::copy("/bin/true", &binary).unwrap();
+        if hatchling_sys::euid() != 0 {
+            // Not root: as this process, even on its own file.
+            assert_eq!(ldd_identity(&binary), None);
+            std::fs::remove_dir_all(&dir).unwrap();
+            return;
+        }
         // Root's file, in another user's directory: that user's to swap.
         std::os::unix::fs::chown(&dir, Some(4242), Some(4343)).unwrap();
         assert_eq!(ldd_identity(&binary), Some((4242, 4343)));
@@ -564,6 +567,13 @@ pub(super) mod tests {
         let output = within_watchdog("ldd_output", || ldd_output(&binary)).unwrap();
         assert!(output.status.success(), "{output:?}");
         assert!(String::from_utf8_lossy(&output.stdout).contains("=>"));
+        // Root's own binary, 0700, in another user's directory: as that
+        // user, ldd can't read it, which shows it isn't run as root.
+        std::os::unix::fs::chown(&dir, Some(4242), Some(4343)).unwrap();
+        std::os::unix::fs::chown(&binary, Some(0), Some(0)).unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let output = within_watchdog("ldd_output", || ldd_output(&binary)).unwrap();
+        assert!(!output.status.success(), "{output:?}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
