@@ -178,6 +178,9 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
     if crate::broker_user::drop_to_broker()? {
         let _swept = crate::sweep::sweep_at_start(config, redaction.as_ref());
     }
+    // Then it holds itself to what it keeps and reads, root's broker or
+    // not (WO-017, slice 4): nothing else of its user's, nothing to run.
+    crate::confine::confine_broker(config, redaction.as_ref())?;
     std::thread::scope(|scope| {
         // The gate's rules borrow the keys on a thread of their own
         // (see `crate::output_gate`): the gate only queues work for them.
