@@ -790,6 +790,8 @@ pub fn vault_keeper_main() -> ExitCode {
                 .with_writer(std::io::stderr)
                 .with_max_level(config.log_level.to_tracing())
                 .try_init();
+            // Which user it runs as: as root, the keeper's own.
+            tracing::info!(euid = hatchling_sys::euid(), "the vault keeper started");
             begin(&stream, config)
         });
     let state = match begun {
