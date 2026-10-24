@@ -29,16 +29,19 @@ pub fn broker_user() -> Result<Option<(u32, u32)>, Error> {
 
 /// The directories the broker's user owns: each sealed store's root but
 /// the vault, which is the keeper's, and the output gate's directory,
-/// which holds the redaction store, each once.
+/// which holds the redaction store. (The configuration keeps the stores
+/// apart, so none is named twice.)
 #[must_use]
 pub fn broker_dirs(config: &Config, redaction: Option<&RedactionConfig>) -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = redaction.map(|redaction| redaction.dir.clone()).into_iter().collect();
-    for (_, root) in crate::vault_ops::broker_stores(config, redaction) {
-        if !dirs.contains(&root) {
-            dirs.push(root);
-        }
-    }
-    dirs
+    redaction
+        .map(|redaction| redaction.dir.clone())
+        .into_iter()
+        .chain(
+            crate::vault_ops::broker_stores(config, redaction)
+                .into_iter()
+                .map(|(_, root)| root),
+        )
+        .collect()
 }
 
 /// Lets this process, run as root, act for the broker's user in its

@@ -72,18 +72,14 @@ pub fn act_for(owner: u32, dirs: &[&Path]) -> std::io::Result<()> {
 }
 
 /// The user whose `dir` is, to this process: the one it acts for there
-/// ([`act_for`]), or its own real uid.
+/// ([`act_for`], which only root can), or its own real uid.
 pub(crate) fn owner_in(dir: &Path) -> u32 {
-    let own = rustix::process::getuid().as_raw();
-    if own != 0 {
-        return own;
-    }
     ACTING
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .iter()
         .find(|acting| acting.dirs.iter().any(|acted| acted == dir))
-        .map_or(own, |acting| acting.owner)
+        .map_or_else(|| rustix::process::getuid().as_raw(), |acting| acting.owner)
 }
 
 /// Gives `file`, just made, to `owner` ([`hatchling_sys::give_to`]).
