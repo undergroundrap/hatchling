@@ -398,12 +398,18 @@ pub(crate) fn cgroup_parent(
     get(env::HATCHLING_CELL_CGROUP.name)
         .map(|raw| {
             let parent = PathBuf::from(raw);
-            hatchling_sys::cgroup::prepare_parent(&parent).map_err(|source| {
-                Error::InvalidConfig {
-                    key: "HATCHLING_CELL_CGROUP",
-                    reason: source.to_string(),
-                }
-            })?;
+            // With a spawner running, it makes the cells' groups, and its
+            // policy holds each to this one (WO-017): a broker that isn't
+            // root may not write it. The serving broker checked it once,
+            // at its start, before it dropped.
+            if crate::spawner::spawner().is_none() {
+                hatchling_sys::cgroup::prepare_parent(&parent).map_err(|source| {
+                    Error::InvalidConfig {
+                        key: "HATCHLING_CELL_CGROUP",
+                        reason: source.to_string(),
+                    }
+                })?;
+            }
             Ok(parent)
         })
         .transpose()

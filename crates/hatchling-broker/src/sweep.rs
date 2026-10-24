@@ -279,6 +279,11 @@ pub fn clean(config: &Config, dry_run: bool) -> Result<String, Error> {
 /// [`clean`], with staging directories in `staging_root`.
 fn clean_in(config: &Config, staging_root: &Path, dry_run: bool) -> Result<String, Error> {
     let _lock = take_lock(config)?;
+    clean_locked(config, staging_root, dry_run)
+}
+
+/// [`clean_in`], with the serving lock already held.
+fn clean_locked(config: &Config, staging_root: &Path, dry_run: bool) -> Result<String, Error> {
     let found = leftovers(staging_root, run_root(config).as_deref());
     if dry_run {
         let mut lines: Vec<String> = found
@@ -312,7 +317,12 @@ pub fn run_clean(config: &Config, args: &[String]) -> Result<(), Error> {
             });
         }
     };
-    let report = clean(config, dry_run)?;
+    // The lock is taken first, as the user that made it: run as root,
+    // the command then becomes the broker's own user, whose leftovers
+    // they are (WO-017).
+    let _lock = take_lock(config)?;
+    crate::broker_user::drop_to_broker()?;
+    let report = clean_locked(config, &std::env::temp_dir(), dry_run)?;
     writeln!(std::io::stdout().lock(), "{report}").map_err(|e| Error::Sweep {
         reason: format!("cannot write the report: {e}"),
     })

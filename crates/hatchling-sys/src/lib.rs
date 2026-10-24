@@ -59,11 +59,11 @@ pub use mounts::{BindMount, MountPlan};
 pub use namespaces::{unshare_ipc, unshare_mount, unshare_net, unshare_pid, unshare_user};
 pub use ownership::{
     DirShare, chmod_socket, create_private_dir, dir_share, ensure_private_dir, give_dir_to,
-    give_to, hand_over_socket, owner_traverses, share_dir_with_cell, write_new_file_for,
+    give_to, hand_over_socket, owner_traverses, share_dir_with_cell, write_new_file_for, hand_file_to,
 };
 pub use peercred::{RawPeerCred, socket_peercred};
 pub use process::{
-    Child, ChildPid, ForkResult, Limit, ParentWatch, become_cell_user, child_exit_code,
+    Child, ChildPid, ForkResult, Limit, ParentWatch, become_cell_user, drop_to, child_exit_code,
     clear_groups, drop_capabilities, egid, euid, exec, exit_child, fork, hold_core_dumps_off,
     hold_to, pid_alive, reap_as_init, self_pidfd, set_no_new_privs, set_not_dumpable,
     set_pdeathsig, supplementary_groups, uid, watch_parent,
