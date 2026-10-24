@@ -199,24 +199,29 @@ pub fn start() -> Result<(StoreKeys, UnixStream), Error> {
 /// [`Error::Keeper`] when this process runs as root and there's no such
 /// user (saying how to make one), or it is root itself.
 pub fn keeper_user() -> Result<Option<(u32, u32)>, Error> {
+    service_user(KEEPER_USER, "its vault keeper").map_err(|reason| Error::Keeper { reason })
+}
+
+/// The uid and gid of `name`, the user the broker gives `part` of itself
+/// when it runs as root (WO-017); none otherwise, when every part runs as
+/// the broker's own user.
+///
+/// # Errors
+///
+/// Why not, when this process runs as root and there's no such user
+/// (saying how to make one), or it is root itself.
+pub(crate) fn service_user(name: &str, part: &str) -> Result<Option<(u32, u32)>, String> {
     if hatchling_sys::euid() != 0 {
         return Ok(None);
     }
-    let found = hatchling_sys::subid::local_account(KEEPER_USER).map_err(|e| Error::Keeper {
-        reason: e.to_string(),
-    })?;
-    match found {
-        Some((0, _)) => Err(Error::Keeper {
-            reason: format!("{KEEPER_USER} is root: it must be a user of its own"),
-        }),
+    match hatchling_sys::subid::local_account(name).map_err(|e| e.to_string())? {
+        Some((0, _)) => Err(format!("{name} is root: it must be a user of its own")),
         Some(ids) => Ok(Some(ids)),
-        None => Err(Error::Keeper {
-            reason: format!(
-                "run as root, the broker gives its vault keeper a user of its own, and there is \
-                 no {KEEPER_USER}: create it with \
-                 `useradd --system --no-create-home --shell /usr/sbin/nologin {KEEPER_USER}`"
-            ),
-        }),
+        None => Err(format!(
+            "run as root, the broker gives {part} a user of its own, and there is no {name}: \
+             create it with \
+             `useradd --system --user-group --no-create-home --shell /usr/sbin/nologin {name}`"
+        )),
     }
 }
 
@@ -1172,6 +1177,25 @@ mod tests {
 
     fn names(list: &[&str]) -> Vec<SecretName> {
         list.iter().map(|name| name.parse().unwrap()).collect()
+    }
+
+    /// A service user is looked for only as root, where it must exist and
+    /// not be root; not as root, there is none.
+    #[test]
+    fn a_service_user_is_root_modes_alone() {
+        let found = service_user("root", "a part");
+        let missing = service_user("no-such-hatchling-user", "a part");
+        if hatchling_sys::euid() != 0 {
+            assert_eq!(found, Ok(None));
+            assert_eq!(missing, Ok(None));
+            return;
+        }
+        assert!(found.unwrap_err().contains("is root"));
+        let missing = missing.unwrap_err();
+        assert!(
+            missing.contains("gives a part a user of its own") && missing.contains("useradd"),
+            "{missing}"
+        );
     }
 
     /// The keeper's user is looked for only as root, where its absence

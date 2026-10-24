@@ -56,6 +56,7 @@
 
 use std::collections::BTreeMap;
 use std::os::fd::{AsFd as _, AsRawFd as _};
+use std::os::unix::process::CommandExt as _;
 use std::os::unix::net::UnixListener;
 use std::os::unix::net::UnixStream;
 use std::process::{Child, Command, ExitCode};
@@ -84,6 +85,12 @@ use crate::{Config, Error};
 /// The authority's subcommand: `hatchling-broker egress-authority`,
 /// started only by the broker.
 pub const EGRESS_AUTHORITY_SUBCOMMAND: &str = "egress-authority";
+
+/// The authority's user when the broker runs as root (WO-017, step 3).
+pub const EGRESS_USER: &str = "hatchling-egress";
+
+/// How long the broker waits for the authority to say it started.
+const START_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The setting that names the authority's end of its pair with the broker.
 const BROKER_FD: &str = crate::environment::HATCHLING_AUTHORITY_FD.name;
@@ -226,13 +233,19 @@ pub fn start(keeper: UnixStream) -> Result<(), Error> {
 impl Authority {
     /// Starts the authority as `program`, the broker's binary with its
     /// environment, given its subcommand, its end of a new pair with the
-    /// broker, and `keeper`, its end of the pair with the keeper.
+    /// broker, and `keeper`, its end of the pair with the keeper; as root,
+    /// as [`EGRESS_USER`]. Returns once it says it started.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Authority`] when it can't be started.
+    /// Returns [`Error::Authority`] when it can't be started, refuses to
+    /// start (its reason, as it gave it), or doesn't say within
+    /// [`START_TIMEOUT`].
     pub fn start_with(mut program: Command, keeper: &UnixStream) -> Result<Self, Error> {
         let failed = |reason: String| Error::Authority { reason };
+        if let Some((uid, gid)) = egress_user()? {
+            program.uid(uid).gid(gid);
+        }
         let (ours, theirs) =
             UnixStream::pair().map_err(|e| failed(format!("cannot make the socket pair: {e}")))?;
         for end in [theirs.as_fd(), keeper.as_fd()] {
@@ -246,10 +259,38 @@ impl Authority {
             .spawn()
             .map_err(|e| failed(format!("cannot start: {e}")))?;
         drop(theirs);
-        Ok(Self {
+        let authority = Self {
             _child: Some(child),
             ..Self::over(ours)
-        })
+        };
+        authority.started()?;
+        Ok(authority)
+    }
+
+    /// Waits for the authority to say it started: an empty frame, or why
+    /// it won't.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Authority`] with its reason, or when it says nothing.
+    fn started(&self) -> Result<(), Error> {
+        let failed = |reason: String| Error::Authority { reason };
+        let control = self
+            .control
+            .lock()
+            .map_err(|_| failed(String::from("its channel was poisoned")))?;
+        control
+            .set_read_timeout(Some(START_TIMEOUT))
+            .map_err(|e| failed(format!("cannot bound its start: {e}")))?;
+        let said = read_frame(&control).map_err(|e| failed(format!("didn't start: {e}")))?;
+        control
+            .set_read_timeout(None)
+            .map_err(|e| failed(format!("cannot wait on it: {e}")))?;
+        if said.is_empty() {
+            Ok(())
+        } else {
+            Err(failed(String::from_utf8_lossy(&said).into_owned()))
+        }
     }
 
     /// The broker's end, `control`, of an authority already running.
@@ -666,6 +707,8 @@ pub fn egress_authority_main() -> ExitCode {
                 .with_writer(std::io::stderr)
                 .with_max_level(config.log_level.to_tracing())
                 .try_init();
+            // Which user it runs as: as root, its own.
+            tracing::info!(euid = hatchling_sys::euid(), "the egress authority started");
             let tls = egress_tls(|key| std::env::var(key).ok())?;
             let provider = config.web.search.then(|| {
                 let tls = tls.clone();
@@ -687,12 +730,31 @@ pub fn egress_authority_main() -> ExitCode {
             })
         });
     match begun {
+        // The broker waits for its word: started, or why not.
         Ok(shared) => {
+            if let Err(error) = write_frame(&broker, b"") {
+                return refuse_to_run(&format!("cannot tell the broker it started: {error}"));
+            }
             serve(&broker, &Arc::new(shared));
             ExitCode::SUCCESS
         }
-        Err(error) => refuse_to_run(&error.to_string()),
+        Err(error) => {
+            let _ = write_frame(&broker, error.to_string().as_bytes());
+            refuse_to_run(&error.to_string())
+        }
     }
+}
+
+/// The authority's user, its uid and gid, when this process runs as root;
+/// none otherwise.
+///
+/// # Errors
+///
+/// [`Error::Authority`] when this process runs as root and there's no
+/// such user, or it is root itself.
+pub fn egress_user() -> Result<Option<(u32, u32)>, Error> {
+    crate::keeper::service_user(EGRESS_USER, "its egress authority")
+        .map_err(|reason| Error::Authority { reason })
 }
 
 fn refuse_to_run(reason: &str) -> ExitCode {
@@ -1046,6 +1108,29 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
+
+    /// The broker waits for the authority's word: an empty frame is
+    /// started, any other is why not, and an authority gone said nothing.
+    #[test]
+    fn the_broker_hears_whether_the_authority_started() {
+        let said = |word: Option<&[u8]>| {
+            let (ours, theirs) = UnixStream::pair().unwrap();
+            if let Some(word) = word {
+                write_frame(&theirs, word).unwrap();
+            }
+            drop(theirs);
+            Authority::over(ours).started()
+        };
+        said(Some(b"")).unwrap();
+        let refused = said(Some(b"cannot read the CA bundle")).unwrap_err();
+        assert!(refused.to_string().contains("cannot read the CA bundle"), "{refused}");
+        let gone = said(None).unwrap_err();
+        assert!(gone.to_string().contains("didn't start"), "{gone}");
+        // Not as root, the authority is the broker's own user.
+        if hatchling_sys::euid() != 0 {
+            assert!(egress_user().unwrap().is_none());
+        }
+    }
 
     /// The purposes a fake keeper was asked for, in order.
     type Asked = Arc<StdMutex<Vec<String>>>;
