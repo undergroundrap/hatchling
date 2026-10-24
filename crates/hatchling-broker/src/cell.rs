@@ -625,15 +625,23 @@ impl ScheduledRun {
 impl CellConfig {
     /// Holds cleanup ownership in the broker while a helper builds its cell.
     /// The helper gets a private parent; killing it cannot strand its leaves.
-    ///
-    /// With a spawner running, the group is the spawner's to make and to
-    /// end, around its helper (WO-017): the cell is left naming the
-    /// delegated group, and nothing is held here. A broker holding the
-    /// group could lift its cell's limits.
+    /// With a spawner running, the spawner does ([`CellConfig::grouped`]).
     pub(crate) fn supervised_cgroup(
         &self,
     ) -> Result<(Self, Option<hatchling_sys::cgroup::CellCgroup>), Error> {
-        if crate::spawner::spawner().is_some() {
+        self.grouped(crate::spawner::spawner().is_some())
+    }
+
+    /// The cell in a group of its own, held here, unless the spawner makes
+    /// it (`by_spawner`): then the group is the spawner's to make and to
+    /// end, around its helper (WO-017), the cell is left naming the
+    /// delegated group, and nothing is held here. A broker holding the
+    /// group could lift its cell's limits.
+    fn grouped(
+        &self,
+        by_spawner: bool,
+    ) -> Result<(Self, Option<hatchling_sys::cgroup::CellCgroup>), Error> {
+        if by_spawner {
             return Ok((self.clone(), None));
         }
         let group = self
@@ -1821,6 +1829,11 @@ mod tests {
         )
         .unwrap();
         cell.cgroup = Some(root.path().to_path_buf());
+        // Left to a spawner, the cell names the delegated group, and no
+        // group is held here.
+        let (left, none) = cell.grouped(true).unwrap();
+        assert!(none.is_none());
+        assert_eq!(left.cgroup, cell.cgroup);
         let (scoped, mut group) = cell.supervised_cgroup().unwrap();
         let group = group.as_mut().unwrap();
         let path = group.path().to_path_buf();
