@@ -13,7 +13,7 @@
 //! the cell out:
 //!
 //! - **Mode `0600`** ([`INGRESS_SOCKET_MODE`]), set at bind under the
-//!   listen socket's stale-socket rule ([`bind_socket`]). Never `0666`.
+//!   listen socket's stale-socket rule ([`bind_owner_socket`]). Never `0666`.
 //! - **A kernel peer gate:** a connection is served only if its
 //!   `SO_PEERCRED` uid is the socket's owner, the broker's own uid, and
 //!   is closed before a byte is read otherwise.
@@ -35,8 +35,9 @@ use hatchling_channel::{Cleared, IngressEvent, LocalHub, Message, OutputGate};
 use hatchling_core::framing::{read_frame_or_eof, write_frame};
 use hatchling_core::{PeerUid, SocketPath, peer_credentials};
 
+use crate::listener::bind_owner_socket;
 use crate::serve::session_error;
-use crate::{Config, Error, bind_socket};
+use crate::{Config, Error};
 
 /// The ingress socket's permission bits: owner only.
 pub const INGRESS_SOCKET_MODE: u32 = 0o600;
@@ -61,12 +62,12 @@ impl Ingress {
     /// # Errors
     ///
     /// Returns [`Error::SocketPathNotSocket`] or [`Error::SocketSetup`]
-    /// as [`bind_socket`] does.
+    /// as [`bind_owner_socket`] does.
     pub fn bind(socket: &SocketPath, gate: OutputGate) -> Result<Self, Error> {
-        let listener = bind_socket(socket, INGRESS_SOCKET_MODE)?;
-        // The broker made the socket, so it is the broker's: its own uid,
-        // never read back from a path that could be swapped.
-        let owner = hatchling_sys::euid();
+        // Made for the broker's owner, recorded at start, never read back
+        // from a path that could be swapped.
+        let owner = crate::owner::owner()?;
+        let listener = bind_owner_socket(socket, INGRESS_SOCKET_MODE, owner)?;
         Ok(Self {
             listener,
             hub: LocalHub::new(gate),

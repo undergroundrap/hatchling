@@ -43,9 +43,10 @@ use hatchling_space::{
 };
 use hatchling_vault::OpensStores;
 
+use crate::listener::bind_owner_socket;
 use crate::serve::session_error;
 use crate::space_ops::{EndAdmissions, SealedSpaceStore, SpaceSession, handle_space_op, pairings};
-use crate::{Config, Error, bind_socket};
+use crate::{Config, Error};
 
 /// The device socket's permission bits: owner only.
 pub const DEVICE_SOCKET_MODE: u32 = 0o600;
@@ -59,17 +60,17 @@ pub struct DeviceEndpoint {
 
 impl DeviceEndpoint {
     /// Binds the device socket at `socket`, mode [`DEVICE_SOCKET_MODE`],
-    /// and records its owner, the broker's own uid, as the only peer it
+    /// for the broker's owner, who is given it and is the only peer it
     /// serves.
     ///
     /// # Errors
     ///
-    /// The errors of [`bind_socket`].
+    /// The errors of [`bind_owner_socket`].
     pub fn bind(socket: &SocketPath) -> Result<Self, Error> {
-        let listener = bind_socket(socket, DEVICE_SOCKET_MODE)?;
-        // The broker made the socket, so it is the broker's: its own uid,
-        // never read back from a path that could be swapped.
-        let owner = hatchling_sys::euid();
+        // Made for the broker's owner, recorded at start, never read back
+        // from a path that could be swapped.
+        let owner = crate::owner::owner()?;
+        let listener = bind_owner_socket(socket, DEVICE_SOCKET_MODE, owner)?;
         Ok(Self {
             listener,
             peer_uid: PeerUid::from_kernel(owner),

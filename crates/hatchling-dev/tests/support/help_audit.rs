@@ -261,7 +261,8 @@ fn descriptor_key(value: &Expr) -> Option<BTreeSet<String>> {
         return None;
     };
     let name = path.path.segments.last()?.ident.to_string();
-    (name.starts_with("HATCHLING_") || name == "HOME").then(|| BTreeSet::from([name]))
+    (name.starts_with("HATCHLING_") || matches!(name.as_str(), "HOME" | "SUDO_UID"))
+        .then(|| BTreeSet::from([name]))
 }
 
 fn function_keys(

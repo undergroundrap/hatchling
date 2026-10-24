@@ -28,10 +28,11 @@ use hatchling_core::{PeerUid, SocketPath};
 use subtle::ConstantTimeEq as _;
 
 use crate::api::{API_SOCKET_MODE, API_WRITE_TIMEOUT, HELLO_TIMEOUT};
-use crate::api_auth::{ApiConfig, from_owner, mint_ui_token, parse_socket_path, ui_token_path};
+use crate::api_auth::{ApiConfig, from_owner, mint_ui_token_for, parse_socket_path, ui_token_path};
 use crate::connections::ConnectionSlots;
+use crate::listener::bind_owner_socket;
 use crate::serve::session_error;
-use crate::{Config, Error, bind_socket};
+use crate::{Config, Error};
 
 /// Most operator connections served at once.
 pub const OPERATOR_MAX_CONNECTIONS: usize = 4;
@@ -88,8 +89,8 @@ impl std::fmt::Debug for Operator {
 /// # Errors
 ///
 /// Returns [`Error::InvalidConfig`] when cells run as the broker's own
-/// uid (a cell could then ask); the bind errors of [`bind_socket`]; or
-/// [`mint_ui_token`]'s.
+/// uid (a cell could then ask); the bind errors of [`bind_owner_socket`]; or
+/// [`mint_ui_token_for`]'s.
 pub fn open_operator(
     config: &Config,
     socket: Option<&SocketPath>,
@@ -97,19 +98,19 @@ pub fn open_operator(
     let Some(socket) = socket else {
         return Ok(None);
     };
-    let owner = PeerUid::from_kernel(hatchling_sys::euid());
+    let owner = PeerUid::from_kernel(crate::owner::owner()?);
     if owner == config.agent_uid {
         return Err(Error::InvalidConfig {
             key: "HATCHLING_OPERATOR_SOCKET",
             reason: format!(
-                "the operator socket serves uid {owner}, the broker's own, which is also the agent's: \
+                "the operator socket serves uid {owner}, the broker's owner, which is also the agent's: \
                  a cell could ask it; {}",
                 crate::cell::OWN_UID_HINT
             ),
         });
     }
-    let listener = bind_socket(socket, API_SOCKET_MODE)?;
-    let token = mint_ui_token(&ui_token_path(socket))?;
+    let listener = bind_owner_socket(socket, API_SOCKET_MODE, owner.as_u32())?;
+    let token = mint_ui_token_for(&ui_token_path(socket), owner.as_u32())?;
     Ok(Some(Operator::new(listener, token, owner)))
 }
 

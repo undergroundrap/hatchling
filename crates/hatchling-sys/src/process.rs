@@ -784,6 +784,14 @@ pub fn euid() -> u32 {
     unsafe { libc::geteuid() }
 }
 
+/// The calling process's real uid: who started it, which a set-user-ID
+/// program or a later drop leaves apart from its effective uid.
+#[must_use]
+pub fn uid() -> u32 {
+    // SAFETY: `getuid` takes no arguments and always succeeds.
+    unsafe { libc::getuid() }
+}
+
 /// The calling process's effective gid: the one gid an unprivileged
 /// process may map into a user namespace it creates.
 #[must_use]
@@ -1297,6 +1305,12 @@ pub fn exec_uid_egid() -> (u32, u32) {
 
 #[cfg(test)]
 mod tests {
+    /// The real uid is the kernel's, read apart from the effective one.
+    #[test]
+    fn the_real_uid_is_the_kernels() {
+        assert_eq!(uid(), rustix::process::getuid().as_raw());
+    }
+
     /// How long a test waits to reap a child it killed: a `SIGKILL`ed
     /// child is reaped in milliseconds, so a child that was never killed
     /// fails the wait quickly instead of holding the run.

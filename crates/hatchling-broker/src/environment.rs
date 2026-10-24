@@ -8,6 +8,8 @@ hatchling_core::declare_environment! {
     HATCHLING_BROKER_SOCKET_MODE: ("optional; default 600", "Socket permissions as an octal Unix mode."),
     HATCHLING_BROKER_MAX_CONNECTIONS: ("optional", "Maximum simultaneous broker connections."),
     HATCHLING_LOG_LEVEL: ("optional; default info", "Log verbosity: error, warn, info, debug or trace."),
+    HATCHLING_OWNER_UID: ("optional", "The uid the API, UI, operator, device and ingress sockets admit, and are given to; default SUDO_UID for a broker sudo started as root, else the broker's own."),
+    SUDO_UID: ("set by sudo", "Who ran sudo: a root broker's owner when HATCHLING_OWNER_UID is unset."),
     HATCHLING_VAULT_DIR: ("required", "Absolute root of the sealed credential vault."),
     HATCHLING_VAULT_KEY_FILE: ("optional", "Master-key file; defaults to an owner-only sibling keys directory."),
     HATCHLING_VAULT_GRANTS: ("optional; default none", "Comma-separated permitted vault action:name grants."),

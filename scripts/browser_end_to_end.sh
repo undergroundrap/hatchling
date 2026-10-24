@@ -26,6 +26,9 @@ export HATCHLING_AGENT_UID
 HATCHLING_AGENT_UID=$(id -u hatchling-cell)
 export HATCHLING_CELL_UID_BASE=$HATCHLING_AGENT_UID
 export HATCHLING_AGENT_BIN=/usr/local/bin/hatchling-agent
+# The app's host and its browser run as root here, in this script's own
+# namespaces: the broker's owner is root, not the user who ran sudo.
+export HATCHLING_OWNER_UID=0
 export HATCHLING_CELL_ID=cell-01
 export HATCHLING_VAULT_DIR=$HATCHLING_HOME/vault
 export HATCHLING_SCHEDULER_DIR=$HATCHLING_HOME/schedules

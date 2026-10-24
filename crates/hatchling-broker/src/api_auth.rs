@@ -408,6 +408,32 @@ pub fn mint_ui_token(path: &Path) -> Result<ApiToken, Error> {
     mint_ui_token_as(path, hatchling_sys::euid())
 }
 
+/// [`mint_ui_token`] for `owner`, who is given the token.
+///
+/// That is the broker's owner (WO-017), who reads it. An earlier token may
+/// be the owner's, or the broker's own, from a start before tokens were
+/// given to the owner.
+///
+/// # Errors
+///
+/// As [`mint_ui_token`], and [`Error::SocketSetup`] when the token can't
+/// be given to the owner.
+pub fn mint_ui_token_for(path: &Path, owner: u32) -> Result<ApiToken, Error> {
+    let earlier = std::fs::symlink_metadata(path).ok().map_or(owner, |meta| {
+        if meta.uid() == hatchling_sys::euid() {
+            meta.uid()
+        } else {
+            owner
+        }
+    });
+    let token = mint_ui_token_as(path, earlier)?;
+    let file = std::fs::File::open(path).map_err(|source| Error::SocketSetup { source })?;
+    hatchling_sys::give_to(&file, owner).map_err(|source| Error::SocketSetup {
+        source: std::io::Error::other(source),
+    })?;
+    Ok(token)
+}
+
 /// Whether `metadata` is a regular file's, by its file type.
 fn file_by_type(metadata: &Metadata) -> bool {
     metadata.file_type().is_file()
@@ -690,6 +716,29 @@ pub(crate) mod tests {
         // Nothing there: nothing to clear.
         std::fs::remove_file(&path).unwrap();
         assert!(clear_old_token(&path, owner).is_ok());
+    }
+
+    /// A token minted for the owner is given to it, and replaces an
+    /// earlier one of the owner's or the broker's own. Given to another
+    /// user only as root.
+    #[test]
+    fn a_ui_token_is_given_to_its_owner() {
+        let dir = scratch("owner-token");
+        let path = dir.0.join("ui.sock.token");
+        let me = hatchling_sys::euid();
+        let first = mint_ui_token_for(&path, me).unwrap();
+        let second = mint_ui_token_for(&path, me).unwrap();
+        assert_ne!(first.expose(), second.expose());
+        assert_eq!(std::fs::symlink_metadata(&path).unwrap().uid(), me);
+        let other = me.wrapping_add(4242);
+        if me == 0 {
+            mint_ui_token_for(&path, other).unwrap();
+            assert_eq!(std::fs::symlink_metadata(&path).unwrap().uid(), other);
+            mint_ui_token_for(&path, other).unwrap();
+            assert_eq!(std::fs::symlink_metadata(&path).unwrap().uid(), other);
+        } else {
+            assert!(mint_ui_token_for(&path, other).is_err());
+        }
     }
 
     #[test]

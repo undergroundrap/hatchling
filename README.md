@@ -119,7 +119,7 @@ Or install from crates.io: `cargo install hatchling-runtime` builds one `hatchli
 
 Give cells a uid of their own, never `nobody` or any uid another process uses: a process with the cells' uid can't open an agent session (each cell gets a connection of its own), but it shares the cells' file permissions and process limits. The broker refuses to start with `nobody` (65534) as the agent uid unless `HATCHLING_AGENT_ALLOW_NOBODY=true`.
 
-The rest runs as root (`sudo -s`, still in the clone). Configure the broker: where it keeps its state, which uid its cells get, and the one network destination a cell may reach, the model:
+The rest runs as root (`sudo -s`, still in the clone). The broker's API, app and Machine view then answer you alone: the user who ran `sudo` (`SUDO_UID`), its owner. So you run their clients as yourself, with `sudo -u "#$SUDO_UID"`, from the same shell. Configure the broker: where it keeps its state, which uid its cells get, and the one network destination a cell may reach, the model:
 
 ```bash
 export HATCHLING_HOME=/var/lib/hatchling
@@ -150,10 +150,10 @@ hatchling-broker migrate-vault
 hatchling-broker &
 ```
 
-Give the agent its first task:
+Give the agent its first task, as yourself:
 
 ```bash
-python3 docs/examples/first-run.py "$HATCHLING_API_SOCKET"
+sudo -u "#$SUDO_UID" python3 docs/examples/first-run.py "$HATCHLING_API_SOCKET"
 ```
 
 ```text
@@ -170,11 +170,11 @@ That answer took the whole path: the broker started a fresh cell as `hatchling-c
 
 The app is Hatchling's UI: chat with the agent and see what it's doing. `hatchling-host` serves it on `127.0.0.1` and carries its channel to the broker's UI socket. The host decides nothing: the broker asks every connection for the UI token it minted at start, which the host puts in the address it prints, after the `#`, the part a browser never sends to a server.
 
-Build the app and start the host, still in the clone and the broker's shell:
+Build the app and start the host as yourself, still in the clone and the broker's shell:
 
 ```bash
 (cd frontend && npm ci && npm run build)
-HATCHLING_HOST_UI=$PWD/frontend/dist hatchling-host &
+sudo -u "#$SUDO_UID" env HATCHLING_UI_SOCKET="$HATCHLING_UI_SOCKET"   HATCHLING_OPERATOR_SOCKET="$HATCHLING_OPERATOR_SOCKET" HATCHLING_HOST_UI="$PWD/frontend/dist" hatchling-host &
 ```
 
 ```text
