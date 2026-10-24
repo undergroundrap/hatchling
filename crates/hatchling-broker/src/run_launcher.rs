@@ -115,6 +115,12 @@ pub(crate) fn spec_args(
     Ok([subcommand.into(), path.into_os_string()])
 }
 
+/// Removes the spec [`spec_args`] wrote in `run_dir`, for a helper that
+/// never started, so it never read it.
+pub(crate) fn forget_spec(run_dir: &Path) {
+    let _ = std::fs::remove_file(run_dir.join(SPEC_FILE));
+}
+
 /// The cell spec a helper's broker wrote for it to `path`
 /// ([`spec_args`]), read once: the file is removed as it's read, so the
 /// spec never outlives the helper's start.
@@ -772,7 +778,10 @@ fn start_helper(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|err| format!("cannot start {}: {err}", spawner.display()))?;
+        .map_err(|err| {
+            forget_spec(run_dir);
+            format!("cannot start {}: {err}", spawner.display())
+        })?;
     // On a refusal the backend has already killed and reaped the helper.
     let child = hatchling_isolation::platform()
         .supervise(&mut std_child)
@@ -1406,19 +1415,20 @@ mod tests {
 
     #[test]
     fn a_helper_that_cannot_start_is_reported() {
+        let dir = helper_dir("unstarted");
         let (_handoff, helper_end) = UnixStream::pair().unwrap();
-        let error = start_helper(
-            Path::new("/nonexistent/spawner"),
-            "{}",
-            Path::new("/tmp"),
-            helper_end,
-        )
-        .err()
-        .unwrap();
+        let error = start_helper(Path::new("/nonexistent/spawner"), "{}", &dir, helper_end)
+            .err()
+            .unwrap();
         assert!(
             error.starts_with("cannot start /nonexistent/spawner"),
             "{error}"
         );
+        assert!(
+            !dir.join(SPEC_FILE).exists(),
+            "an unstarted helper's spec was left behind"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -1674,6 +1684,10 @@ mod tests {
         let large = std::fs::File::create(&path).unwrap();
         large.set_len(MAX_SPEC_BYTES + 1).unwrap();
         assert!(reason(take_spec(Some(&path), "agent-run")).contains("longer than"));
+        // One no helper read, forgotten.
+        spec_args(AGENT_RUN_SUBCOMMAND, &dir, spec).unwrap();
+        forget_spec(&dir);
+        assert!(!Path::new(&path).exists(), "a forgotten spec stayed");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

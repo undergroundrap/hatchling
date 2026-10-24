@@ -301,6 +301,7 @@ fn supervise(
         .stderr(Stdio::piped());
     let mut std_child =
         retry_while_busy(|| command.spawn(), std::thread::sleep).map_err(|err| {
+            crate::run_launcher::forget_spec(run_dir);
             SkillRunError::Spawn(format!("cannot start {}: {err}", runtime.spawner.display()))
         })?;
     let child = supervised(&mut std_child)?;

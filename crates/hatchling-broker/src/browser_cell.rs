@@ -360,7 +360,10 @@ impl Helper {
             // dropped here: then the helper's exit is the channel's end.
             crate::skill_run::retry_while_busy(|| command.spawn(), std::thread::sleep)
         }
-        .map_err(|error| format!("cannot start {}: {error}", spawner.display()))?;
+        .map_err(|error| {
+            crate::run_launcher::forget_spec(run_dir);
+            format!("cannot start {}: {error}", spawner.display())
+        })?;
         let process = hatchling_isolation::platform()
             .supervise(&mut std_child)
             .map_err(|error| format!("cannot supervise the browser cell's helper: {error}"))?;
@@ -755,6 +758,10 @@ mod tests {
         assert!(
             refused.starts_with("cannot start /nonexistent/hatchling-broker"),
             "{refused}"
+        );
+        assert!(
+            std::fs::read_dir(run_dir.path()).unwrap().next().is_none(),
+            "an unstarted helper's spec was left behind"
         );
     }
 
