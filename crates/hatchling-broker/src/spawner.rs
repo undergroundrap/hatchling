@@ -1238,14 +1238,25 @@ mod tests {
         config.cgroup = Some(parent.clone());
         let (stdio, mut errors) = stdio();
         let process = spawner
-            .helper(HelperKind::SkillCell, &serde_json::to_string(&config).unwrap(), stdio)
+            .helper(
+                HelperKind::SkillCell,
+                &serde_json::to_string(&config).unwrap(),
+                stdio,
+            )
             .unwrap();
-        assert_eq!(process.wait_deadline(Duration::from_secs(10)).unwrap().code, 0);
+        assert_eq!(
+            process.wait_deadline(Duration::from_secs(10)).unwrap().code,
+            0
+        );
         let mut said = String::new();
         errors.read_to_string(&mut said).unwrap();
         let read: CellConfig = serde_json::from_str(said.trim()).unwrap();
         let group = read.cgroup.unwrap();
-        assert_eq!(group.parent(), Some(parent.as_path()), "made in the delegated group");
+        assert_eq!(
+            group.parent(),
+            Some(parent.as_path()),
+            "made in the delegated group"
+        );
         drop((process, spawner));
         served.join().unwrap();
         assert!(!group.exists(), "the cell's group outlived its helper");
