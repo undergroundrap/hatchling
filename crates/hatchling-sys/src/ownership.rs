@@ -394,17 +394,12 @@ mod tests {
         assert!(!dir.join("elsewhere").exists());
         let refused = hand_file_to(&dir, me).unwrap_err();
         assert!(refused.to_string().contains("open the file"), "{refused}");
-        let fifo = dir.join("fifo");
-        rustix::fs::mknodat(
-            rustix::fs::CWD,
-            &fifo,
-            rustix::fs::FileType::Fifo,
-            rustix::fs::Mode::from_raw_mode(0o600),
-            0,
-        )
-        .unwrap();
-        let refused = hand_file_to(&fifo, me).unwrap_err();
+        // A device opens, and is refused for what it is (given to root
+        // as root, and to this user otherwise: nothing changes).
+        let device_owner = std::fs::metadata("/dev/null").unwrap().uid();
+        let refused = hand_file_to(Path::new("/dev/null"), me).unwrap_err();
         assert!(refused.to_string().contains("not a regular file"), "{refused}");
+        assert_eq!(std::fs::metadata("/dev/null").unwrap().uid(), device_owner);
         if me == 0 {
             hand_file_to(&log, 4343).unwrap();
             assert_eq!(std::fs::symlink_metadata(&log).unwrap().uid(), 4343);
