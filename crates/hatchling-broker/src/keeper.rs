@@ -347,10 +347,12 @@ pub(crate) fn handed_keys(handed: &str) -> Vec<(String, std::fs::File)> {
 }
 
 /// Lets an operator's command, run as root, act for the keeper's user in
-/// its directories ([`hatchling_vault::act_for`]), handed to that user
-/// first as the broker hands them: the vault, its key and its keyring are
-/// opened as that user's, and what the command makes there is given to
-/// it. Not run as root, it changes nothing.
+/// its directories ([`hatchling_vault::act_for`]).
+///
+/// They are handed to that user first, as the broker hands them: the
+/// vault, its key and its keyring are opened as that user's, and what the
+/// command makes there is given to it. Not run as root, it changes
+/// nothing.
 ///
 /// # Errors
 ///
@@ -387,21 +389,25 @@ impl Keeper {
         // vault, its key and its keyring first. The security keys it may
         // not open are opened here and handed to it (the owner's choice,
         // 2026-10-24), held until it has started.
-        let mut keys = Vec::new();
-        if let Some((uid, gid)) = keeper_user()? {
-            let config = Config::from_env()?;
-            hand_to_keeper(
-                &keeper_dirs(&config.vault, &KeyringConfig::from_env()?),
-                uid,
-                gid,
-            )?;
-            keys = open_security_keys();
-            for (_, key) in &keys {
-                hatchling_sys::keep_across_exec(key.as_fd())
-                    .map_err(|e| failed(format!("cannot hand the keeper a security key: {e}")))?;
+        let _held_keys = match keeper_user()? {
+            Some((uid, gid)) => {
+                let config = Config::from_env()?;
+                hand_to_keeper(
+                    &keeper_dirs(&config.vault, &KeyringConfig::from_env()?),
+                    uid,
+                    gid,
+                )?;
+                let keys = open_security_keys();
+                for (_, key) in &keys {
+                    hatchling_sys::keep_across_exec(key.as_fd()).map_err(|e| {
+                        failed(format!("cannot hand the keeper a security key: {e}"))
+                    })?;
+                }
+                program.env(KEEPER_KEYS, keys_env(&keys)).uid(uid).gid(gid);
+                keys
             }
-            program.env(KEEPER_KEYS, keys_env(&keys)).uid(uid).gid(gid);
-        }
+            None => Vec::new(),
+        };
         let pair =
             || UnixStream::pair().map_err(|e| failed(format!("cannot make a socket pair: {e}")));
         let (ours, theirs) = pair()?;
@@ -1116,10 +1122,11 @@ mod tests {
             "hidraw2={raw},nonsense,hidraw3=x,hidraw5={},",
             pipe.as_raw_fd()
         ));
-        let [(node, file)] = adopted.as_slice() else {
-            panic!("{adopted:?}");
-        };
-        assert_eq!((node.as_str(), file.as_raw_fd()), ("hidraw2", raw));
+        let found: Vec<(&str, i32)> = adopted
+            .iter()
+            .map(|(node, file)| (node.as_str(), file.as_raw_fd()))
+            .collect();
+        assert_eq!(found, [("hidraw2", raw)]);
         assert!(handed_keys("").is_empty());
         if !Path::new("/sys/class/hidraw").exists() {
             assert!(open_security_keys().is_empty());
@@ -1155,7 +1162,7 @@ mod tests {
     /// keyring and KEK, each once.
     #[test]
     fn the_keepers_directories_are_the_vaults_and_its_keys() {
-        let vault = crate::VaultConfig {
+        let vault = VaultConfig {
             root: PathBuf::from("/srv/h/vault"),
             key_file: PathBuf::from("/srv/h/vault.key/key"),
             grants: Vec::new(),
@@ -1193,7 +1200,7 @@ mod tests {
         std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o711)).unwrap();
         let (uid, gid) = (hatchling_sys::euid(), rustix::process::getegid().as_raw());
         let vault = base.join("vault");
-        hand_to_keeper(&[vault.clone()], uid, gid).unwrap();
+        hand_to_keeper(std::slice::from_ref(&vault), uid, gid).unwrap();
         let made = std::fs::symlink_metadata(&vault).unwrap();
         assert!(made.is_dir());
         assert_eq!((made.uid(), made.mode() & 0o777), (uid, 0o700));

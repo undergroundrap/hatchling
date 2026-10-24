@@ -851,8 +851,9 @@ impl EditLock {
         )
         .map_err(|source| failed(source.into()))?;
         let file = std::fs::File::from(fd);
-        // A lock just made for the user this process acts for is theirs.
-        if file.metadata().map_err(failed)?.uid() != owner {
+        // A lock root made for the user it acts for is theirs.
+        let made = file.metadata().map_err(failed)?.uid();
+        if made == 0 && owner != 0 && rustix::process::geteuid().as_raw() == 0 {
             give(&file, owner).map_err(failed)?;
         }
         let metadata = file.metadata().map_err(failed)?;
@@ -959,17 +960,19 @@ mod tests {
         let dir = test_dir("acting");
         let (vault_dir, keys, elsewhere) =
             (dir.join("vault"), dir.join("vault.key"), dir.join("other"));
-        assert_eq!(crate::vault::owner_in(&vault_dir), own());
+        assert_eq!(owner_in(&vault_dir), own());
+        assert_eq!(owner_of(&keys.join("keyring")), own());
         if own() != 0 {
             assert!(act_for(4242, &[vault_dir.as_path()]).is_err());
-            assert_eq!(crate::vault::owner_in(&vault_dir), own());
+            assert_eq!(owner_in(&vault_dir), own());
             return;
         }
         assert!(act_for(0, &[vault_dir.as_path()]).is_err(), "for root itself");
         act_for(4242, &[vault_dir.as_path(), keys.as_path()]).unwrap();
         assert!(act_for(4243, &[vault_dir.as_path()]).is_err(), "once only");
-        assert_eq!(crate::vault::owner_in(&vault_dir), 4242);
-        assert_eq!(crate::vault::owner_in(&elsewhere), 0);
+        assert_eq!(owner_in(&vault_dir), 4242);
+        assert_eq!(owner_in(&elsewhere), 0);
+        assert_eq!(owner_of(&keys.join("keyring")), 4242);
         let uid = |path: &Path| std::fs::symlink_metadata(path).unwrap().uid();
         // A store made there is the user's, and so is what's written in it.
         let name: SecretName = "token".parse().unwrap();

@@ -100,11 +100,9 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
     // Every sealed store holds current envelopes, each bound to its
     // store and name (WO-002), or the broker stops here, naming the
     // files `migrate-vault` must re-seal.
+    let mut stores = crate::sealed_stores(config, redaction.as_ref());
     // The vault is the keeper's, which checks it as its own user.
-    let stores: Vec<_> = crate::sealed_stores(config, redaction.as_ref())
-        .into_iter()
-        .filter(|(store, _)| *store != hatchling_vault::Store::SECRETS)
-        .collect();
+    stores.retain(|(store, _)| *store != hatchling_vault::Store::SECRETS);
     crate::check_sealed_stores(&stores)?;
     // An earlier broker killed mid-run left its cells' staging and its
     // runs' directories: none is live now, and none is your data.

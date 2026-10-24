@@ -43,9 +43,10 @@ struct Acting {
     dirs: Vec<PathBuf>,
 }
 
-/// Lets this process, run as root, act for `owner` in `dirs` (WO-017):
-/// in each, a store, a key file or a keyring is opened as `owner`'s
-/// (it must be theirs), and what this process makes there is given to
+/// Lets this process, run as root, act for `owner` in `dirs` (WO-017).
+///
+/// In each, a store, a key file or a keyring is opened as `owner`'s (it
+/// must be theirs), and what this process makes there is given to
 /// `owner`. What the operator's commands do for the vault keeper's user,
 /// which owns the vault, its key and its keyring. Anywhere else, root
 /// opens only what is its own, as before.

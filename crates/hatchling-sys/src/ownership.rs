@@ -40,10 +40,11 @@ pub(crate) const fn ids(uid: u32, gid: u32) -> (rustix::fs::Uid, rustix::fs::Gid
     (owner, group)
 }
 
-/// Gives the file open at `file` to `uid`, its group as it is: what a
-/// root process writing for another user does with what it makes there
-/// (WO-017). A file is left as it is when `uid` is this process's own
-/// effective uid.
+/// Gives the file open at `file` to `uid`, its group as it is.
+///
+/// What a root process writing for another user does with what it makes
+/// there (WO-017). A file is left as it is when `uid` is this process's
+/// own effective uid.
 ///
 /// # Errors
 ///
@@ -299,16 +300,16 @@ mod tests {
         std::fs::create_dir(&dir).unwrap();
         let file = std::fs::File::create(dir.join("f")).unwrap();
         let euid = rustix::process::geteuid().as_raw();
-        super::give_to(&file, euid).unwrap();
-        super::give_dir_to(&dir, euid).unwrap();
+        give_to(&file, euid).unwrap();
+        give_dir_to(&dir, euid).unwrap();
         let other = euid.wrapping_add(4242);
-        let given = super::give_to(&file, other);
+        let given = give_to(&file, other);
         let link = dir.join("link");
         std::os::unix::fs::symlink(&dir, &link).unwrap();
-        assert!(super::give_dir_to(&link, euid).is_err());
+        assert!(give_dir_to(&link, euid).is_err());
         if euid == 0 {
             given.unwrap();
-            super::give_dir_to(&dir, other).unwrap();
+            give_dir_to(&dir, other).unwrap();
             assert_eq!(file.metadata().unwrap().uid(), other);
             assert_eq!(std::fs::metadata(&dir).unwrap().uid(), other);
         } else {

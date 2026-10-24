@@ -90,8 +90,10 @@ pub fn keep_across_exec(fd: BorrowedFd<'_>) -> Result<(), Error> {
 }
 
 /// Takes ownership of the character device this process inherited at
-/// `fd`: one a launcher that may open it opened for this process, which
-/// may not (WO-017: the vault keeper's security keys). It must be above
+/// `fd`.
+///
+/// One a launcher that may open it opened for this process, which may
+/// not (WO-017: the vault keeper's security keys). It must be above
 /// stderr and a character device, and is marked close-on-exec again.
 ///
 /// Call it once for a descriptor: the file it returns owns it.
