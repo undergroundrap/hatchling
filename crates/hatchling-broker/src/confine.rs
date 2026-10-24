@@ -196,6 +196,7 @@ mod tests {
             }
             return;
         }
+        let in_temp = std::env::temp_dir().join(format!("hatchling-confine-temp-{}", std::process::id()));
         match fork().unwrap() {
             ForkResult::Parent { child } => {
                 let status = child.wait_deadline(Duration::from_secs(10)).unwrap();
@@ -203,10 +204,11 @@ mod tests {
                 if let Some(probe) = &probe {
                     std::fs::remove_file(probe).unwrap();
                 }
+                let _ = std::fs::remove_file(&in_temp);
                 assert_eq!(
                     code, 0,
                     "1: not confined; 2: its state wasn't made; 3: can't write its store; \
-                     4: read its user's file; 5: ran a program; 6: read beside its state"
+                     4: read its user's file; 5: ran a program; 6: read beside its state;                      7: can't write its temp directory"
                 );
             }
             ForkResult::Child => {
@@ -228,6 +230,9 @@ mod tests {
                 }
                 if std::fs::read(home.join("secret")).is_ok() && !home.starts_with(std::env::temp_dir()) {
                     exit_child(6);
+                }
+                if std::fs::write(&in_temp, b"t").is_err() {
+                    exit_child(7);
                 }
                 exit_child(0);
             }
