@@ -1233,7 +1233,18 @@ mod tests {
         let parent = delegated.path().to_path_buf();
         let dir = run_dir("groups");
         let program = dir.join("helper.sh");
-        std::fs::write(&program, "#!/bin/sh\ncat \"$2\" >&2\n").unwrap();
+        // The helper keeps a copy of its spec, joins its cell's group, and
+        // leaves a sleeper there: ending the group takes killing it.
+        let script = format!(
+            r#"#!/bin/sh
+cp "$2" {spec}
+group=$(sed -n 's/.*"cgroup":"\([^"]*\)".*/\1/p' "$2")
+echo $$ > "$group/cgroup.procs" || exit 3
+sleep 30 </dev/null >/dev/null 2>&1 &
+"#,
+            spec = dir.join("spec.json").display()
+        );
+        std::fs::write(&program, script).unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
         let policy = Policy {
             cgroup: Some(parent.clone()),
@@ -1242,7 +1253,7 @@ mod tests {
         let (spawner, served) = serving_with(program.to_str().unwrap(), policy);
         let mut config: CellConfig = serde_json::from_str(&skill_spec()).unwrap();
         config.cgroup = Some(parent.clone());
-        let (stdio, mut errors) = stdio();
+        let (stdio, _) = stdio();
         let process = spawner
             .helper(
                 HelperKind::SkillCell,
@@ -1250,21 +1261,20 @@ mod tests {
                 stdio,
             )
             .unwrap();
-        assert_eq!(
-            process.wait_deadline(Duration::from_secs(10)).unwrap().code,
-            0
-        );
-        let mut said = String::new();
-        errors.read_to_string(&mut said).unwrap();
-        let read: CellConfig = serde_json::from_str(said.trim()).unwrap();
+        let exit = process.wait_deadline(Duration::from_secs(10)).unwrap();
+        // At once, as its end is heard: the group, its sleeper killed, is
+        // gone already.
+        let read: CellConfig =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("spec.json")).unwrap())
+                .unwrap();
         let group = read.cgroup.unwrap();
+        assert!(!group.exists(), "the cell's group outlived its helper's end");
+        assert_eq!(exit.code, 0, "the helper didn't join its group");
         assert_eq!(
             group.parent(),
             Some(parent.as_path()),
             "made in the delegated group"
         );
-        // Ended before the helper's end was reported.
-        assert!(!group.exists(), "the cell's group outlived its helper");
         drop((process, spawner));
         served.join().unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
