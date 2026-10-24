@@ -1134,17 +1134,16 @@ enum Ids {
 /// This process's real, effective and saved user or group ids, in that
 /// order; none if they can't be read.
 fn resids(ids: Ids) -> Option<[u32; 3]> {
-    let mut read = [0_u32; 3];
-    let [real, effective, saved] = &mut read;
-    // SAFETY: getresuid and getresgid write three ids through pointers
-    // valid and writable for the call's duration.
-    let status = unsafe {
-        match ids {
-            Ids::User => libc::getresuid(real, effective, saved),
-            Ids::Group => libc::getresgid(real, effective, saved),
-        }
+    let mut found = [0_u32; 3];
+    let [real, effective, saved] = &mut found;
+    let status = match ids {
+        // SAFETY: getresuid writes three ids through pointers valid and
+        // writable for the call's duration.
+        Ids::User => unsafe { libc::getresuid(real, effective, saved) },
+        // SAFETY: as getresuid, for the group ids.
+        Ids::Group => unsafe { libc::getresgid(real, effective, saved) },
     };
-    (status == 0).then_some(read)
+    (status == 0).then_some(found)
 }
 
 /// The calling thread's permitted capabilities, as one 64-bit mask.
