@@ -112,6 +112,13 @@ pub fn confine_broker(config: &Config, redaction: Option<&RedactionConfig>) -> R
     }
     for (paths, access) in [(&writable, Access::ReadWrite), (&readable, Access::Read)] {
         for path in paths {
+            if out_of_reach(path) {
+                tracing::warn!(
+                    path = %path.display(),
+                    "the broker's user can't reach this path: what needs it will fail"
+                );
+                continue;
+            }
             rules
                 .allow(path, access)
                 .map_err(|e| failed(format!("cannot confine to {}: {e}", path.display())))?;
@@ -122,6 +129,14 @@ pub fn confine_broker(config: &Config, redaction: Option<&RedactionConfig>) -> R
         .map_err(|e| failed(format!("cannot confine itself: {e}")))?;
     tracing::info!("the broker's file access is confined to what it keeps and reads");
     Ok(true)
+}
+
+/// Whether this process may not even look at `path`, a directory above
+/// it closed to its user: a root broker that has dropped to its own user
+/// can't read a browser bundle in a home, for one.
+fn out_of_reach(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .is_err_and(|error| error.kind() == std::io::ErrorKind::PermissionDenied)
 }
 
 #[cfg(test)]
@@ -197,6 +212,24 @@ mod tests {
         ]);
         let read = readable(&config, |key| vars.get(key).cloned()).unwrap();
         assert!(read.contains(&project), "{read:?}");
+    }
+
+    /// A path below a directory closed to this user is out of its reach;
+    /// one it may look at, or that doesn't exist, isn't. (Root reaches
+    /// every path.)
+    #[test]
+    fn a_path_below_a_closed_directory_is_out_of_reach() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = crate::api_auth::tests::scratch("confine-reach");
+        let closed = dir.0.join("closed");
+        std::fs::create_dir(&closed).unwrap();
+        std::fs::write(closed.join("bundle"), b"b").unwrap();
+        assert!(!out_of_reach(&closed.join("bundle")));
+        assert!(!out_of_reach(&dir.0.join("absent")));
+        std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let reached = !out_of_reach(&closed.join("bundle"));
+        std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(reached, hatchling_sys::euid() == 0);
     }
 
     /// Confined, the broker writes its stores, makes its state, and can't
