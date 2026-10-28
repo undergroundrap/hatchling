@@ -387,8 +387,7 @@ impl Helper {
         let deadline = Instant::now() + SAID_WAIT;
         // Its words are all in once its stderr closes, which it does as it
         // ends.
-        while !self.errors.as_ref().is_none_or(JoinHandle::is_finished)
-            && Instant::now() < deadline
+        while !self.errors.as_ref().is_none_or(JoinHandle::is_finished) && Instant::now() < deadline
         {
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -745,6 +744,17 @@ mod tests {
         );
     }
 
+    /// A reason carries what a helper said, trimmed, when it said
+    /// anything.
+    #[test]
+    fn a_reason_carries_what_the_helper_said() {
+        assert_eq!(worded("it broke", b"  no chrome
+"), "it broke (no chrome)");
+        assert_eq!(worded("it broke", b" 
+"), "it broke");
+        assert_eq!(worded("it broke", b""), "it broke");
+    }
+
     /// A helper that ended says why when an exchange with its cell
     /// breaks; one that said nothing adds nothing, and one still running
     /// is left running.
@@ -752,11 +762,13 @@ mod tests {
     fn a_helper_that_ended_says_why_an_exchange_broke() {
         let run_dir = RunDir::create().unwrap();
         let (_, theirs) = UnixStream::pair().unwrap();
-        let mut helper =
-            Helper::start(Path::new("/bin/sh"), "{}", run_dir.path(), theirs).unwrap();
+        let mut helper = Helper::start(Path::new("/bin/sh"), "{}", run_dir.path(), theirs).unwrap();
         let broke = helper.ended_saying("it broke");
         assert!(broke.starts_with("it broke ("), "{broke}");
-        assert!(broke.contains(BROWSER_CELL_SUBCOMMAND), "its words: {broke}");
+        assert!(
+            broke.contains(BROWSER_CELL_SUBCOMMAND),
+            "its words: {broke}"
+        );
         let quiet_dir = RunDir::create().unwrap();
         let mut quiet = Helper::start(
             Path::new("/bin/true"),
