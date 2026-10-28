@@ -584,6 +584,11 @@ impl Harnesses {
         &self.vendors
     }
 
+    /// The project roots a task's files are copied from.
+    pub(crate) fn roots(&self) -> impl Iterator<Item = &Path> {
+        self.roots.values().map(PathBuf::as_path)
+    }
+
     /// The host programs a CLI cell may run.
     pub(crate) fn tools(&self) -> impl Iterator<Item = &Path> {
         self.tools.iter().map(|(source, _)| source.as_path())
@@ -2371,6 +2376,10 @@ mod tests {
         assert_eq!(
             harnesses.roots,
             BTreeMap::from([(String::from("project"), scratch.join("project"))])
+        );
+        assert_eq!(
+            harnesses.roots().collect::<Vec<_>>(),
+            [scratch.join("project").as_path()]
         );
         assert_eq!(harnesses.timeout, Duration::from_secs(7));
         assert!(!harnesses.tools.is_empty(), "the host's default tools");

@@ -31,6 +31,7 @@ pub mod copy;
 pub mod error;
 pub mod fds;
 pub mod idmap;
+pub mod landlock;
 pub mod lock;
 pub mod mounts;
 pub mod namespaces;
