@@ -748,10 +748,21 @@ mod tests {
     /// anything.
     #[test]
     fn a_reason_carries_what_the_helper_said() {
-        assert_eq!(worded("it broke", b"  no chrome
-"), "it broke (no chrome)");
-        assert_eq!(worded("it broke", b" 
-"), "it broke");
+        assert_eq!(
+            worded(
+                "it broke",
+                b"  no chrome
+"
+            ),
+            "it broke (no chrome)"
+        );
+        assert_eq!(
+            worded(
+                "it broke", b" 
+"
+            ),
+            "it broke"
+        );
         assert_eq!(worded("it broke", b""), "it broke");
     }
 
