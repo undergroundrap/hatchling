@@ -162,10 +162,7 @@ mod tests {
             "/srv/h/schedules.activity",
             "/dev/null",
         ] {
-            assert!(
-                written.contains(&PathBuf::from(path)),
-                "{path}: {written:?}"
-            );
+            assert!(written.contains(&PathBuf::from(path)), "{path}");
         }
         assert!(written.contains(&std::env::temp_dir()));
         assert!(written.contains(&config.socket.as_path().parent().unwrap().to_path_buf()));
@@ -181,7 +178,7 @@ mod tests {
             .copied()
             .chain(["/srv/h/skills", "/etc/hatchling/roots"])
         {
-            assert!(read.contains(&PathBuf::from(path)), "{path}: {read:?}");
+            assert!(read.contains(&PathBuf::from(path)), "{path}");
         }
         assert!(!read.contains(&config.vault.root));
         config.skills.skills_dir = PathBuf::new();
@@ -211,7 +208,7 @@ mod tests {
             ),
         ]);
         let read = readable(&config, |key| vars.get(key).cloned()).unwrap();
-        assert!(read.contains(&project), "{read:?}");
+        assert!(read.contains(&project), "the project root");
     }
 
     /// A path below a directory closed to this user is out of its reach;
