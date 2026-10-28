@@ -1,9 +1,12 @@
 from pathlib import Path
 import hashlib
+import secrets
+import subprocess
+import sys
 import tempfile
 import unittest
 
-from hosted_model_support import checked_file, readonly_mount, sanitize_logs, snapshot
+from hosted_model_support import checked_file, memory_holds, readonly_mount, sanitize_logs, snapshot
 
 
 class SnapshotTests(unittest.TestCase):
@@ -69,6 +72,45 @@ class SnapshotTests(unittest.TestCase):
             self.assertNotIn(key, log.read_bytes())
             self.assertIn(b'<redacted-test-credential>', log.read_bytes())
             self.assertIn('FAILED', (root / 'SANITIZED.txt').read_text())
+
+
+# A child given a credential in two halves, which it joins only across a
+# page boundary: its one whole copy spans two of the scan's chunks.
+STRADDLING = """
+import ctypes, sys
+first, second = sys.stdin.readline().strip().encode(), sys.stdin.readline().strip().encode()
+page = bytearray(3 * 4096)
+at = -ctypes.addressof((ctypes.c_char * len(page)).from_buffer(page)) % 4096 + 4096 - len(first)
+page[at:at + len(first)] = first
+page[at + len(first):at + len(first) + len(second)] = second
+print('ready', flush=True)
+sys.stdin.read()
+"""
+
+
+class MemoryTests(unittest.TestCase):
+    def test_a_credential_across_two_chunks_is_found_and_one_never_held_is_not(self):
+        first, second = 'fixture-held-' + secrets.token_hex(8), secrets.token_hex(8)
+        absent = ('fixture-absent-' + secrets.token_hex(16)).encode('ascii')
+        child = subprocess.Popen([sys.executable, '-c', STRADDLING], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        try:
+            child.stdin.write(f'{first}\n{second}\n'.encode('ascii'))
+            child.stdin.flush()
+            self.assertEqual(child.stdout.readline(), b'ready\n')
+            held = (first + second).encode('ascii')
+            found, scanned = memory_holds(child.pid, held, chunk_size=4096)
+            self.assertTrue(found)
+            self.assertGreater(scanned, 1024 * 1024)
+            self.assertEqual(memory_holds(child.pid, absent)[0], False)
+            with self.assertRaises(ValueError):
+                memory_holds(child.pid, b'')
+            with self.assertRaises(ValueError):
+                memory_holds(child.pid, held, chunk_size=len(held) - 1)
+        finally:
+            child.kill()
+            child.wait()
+            child.stdin.close()
+            child.stdout.close()
 
 
 if __name__ == '__main__':

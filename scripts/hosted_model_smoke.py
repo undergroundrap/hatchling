@@ -25,7 +25,7 @@ import time
 import urllib.error
 import urllib.request
 
-from hosted_model_support import CredentialLeak, sanitize_logs, snapshot
+from hosted_model_support import CredentialLeak, memory_holds, sanitize_logs, snapshot
 from readme_quickstart import expected_answer, git, require_answer
 
 
@@ -80,6 +80,32 @@ def stopped_server(pid):
 
 def start_time(proc):
     return (proc / 'stat').read_text().rsplit(')', 1)[1].split()[19]
+
+
+def process_status(pid):
+    return dict(line.split(':', 1) for line in Path(f'/proc/{pid}/status').read_text().splitlines() if ':' in line)
+
+
+def runs_as(status, user):
+    """Each of its uids and gids the user's, no other group, no capability."""
+    own = pwd.getpwnam(user)
+    return (set(map(int, status['Uid'].split())) == {own.pw_uid}
+            and set(map(int, status['Gid'].split())) == {own.pw_gid}
+            and not status['Groups'].split()
+            and int(status['CapPrm'], 16) == 0 and int(status['CapEff'], 16) == 0)
+
+
+def children_running(parent, program, subcommand):
+    """The pids of the children of `parent` running `program subcommand`."""
+    found = []
+    for item in Path('/proc').iterdir():
+        try:
+            if (item.name.isdigit() and int(process_status(item.name)['PPid']) == parent
+                    and (item / 'cmdline').read_bytes() == f'{program}\0{subcommand}\0'.encode()):
+                found.append(int(item.name))
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+    return found
 
 
 def reap_namespace():
@@ -408,18 +434,30 @@ def run(repo, artifacts, work, mode, fixtures):
             require(time.monotonic() < deadline, 'Documented client exceeded its answer deadline')
             time.sleep(0.05)
         require(client.returncode == 0, 'Documented client did not receive an agent answer')
-        # Run as root, the broker serves as its own user (WO-017): each of
-        # its uids and gids that user's, no other group, no capability, and
-        # no exec that could gain one.
-        status = dict(line.split(':', 1) for line in Path(f'/proc/{broker.pid}/status').read_text().splitlines()
-                      if ':' in line)
-        own = pwd.getpwnam('hatchling-broker')
-        require(set(map(int, status['Uid'].split())) == {own.pw_uid}
-                and set(map(int, status['Gid'].split())) == {own.pw_gid}
-                and not status['Groups'].split()
-                and int(status['CapPrm'], 16) == 0 and int(status['CapEff'], 16) == 0
-                and status['NoNewPrivs'].strip() == '1',
+        # Run as root, the broker serves as its own user (WO-017), with no
+        # exec that could gain a capability. Of the processes it starts,
+        # the keeper and the egress authority run as theirs; the spawner
+        # alone stays root.
+        status = process_status(broker.pid)
+        require(runs_as(status, 'hatchling-broker') and status['NoNewPrivs'].strip() == '1',
                 'The broker did not drop to hatchling-broker')
+        for subcommand, user in (('vault-keeper', 'hatchling-keeper'), ('egress-authority', 'hatchling-egress')):
+            pids = children_running(broker.pid, broker_path, subcommand)
+            require(len(pids) == 1 and runs_as(process_status(pids[0]), user),
+                    f"The broker's {subcommand} is not one process running as {user}")
+        # The broker never holds the credential it had forwarded for it:
+        # the keeper releases it to the egress authority alone. Nor can its
+        # user read the vault the keeper keeps it in.
+        held, scanned = memory_holds(broker.pid, key)
+        require(scanned > 0 and not held, 'The broker\'s memory was unread or held the test credential')
+        broker_user = pwd.getpwnam('hatchling-broker')
+        refused = subprocess.run(['setpriv', f'--reuid={broker_user.pw_uid}', f'--regid={broker_user.pw_gid}',
+                                  '--clear-groups', 'cat', str(secret_file)], capture_output=True)
+        require(refused.returncode != 0 and key not in refused.stdout and b'Permission denied' in refused.stderr,
+                'The broker\'s user was not refused the vault')
+        spawners = children_running(broker.pid, broker_path, 'spawner')
+        require(len(spawners) == 1 and set(map(int, process_status(spawners[0])['Uid'].split())) == {0},
+                "The broker's spawner is not one process running as root")
         stop.set()
         observer.join(timeout=15)
         require(not observer.is_alive() and not errors and len(observations) == 1,
