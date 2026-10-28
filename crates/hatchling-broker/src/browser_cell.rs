@@ -385,7 +385,11 @@ impl Helper {
     /// One still running is left to run.
     fn ended_saying(&mut self, reason: &str) -> String {
         let deadline = Instant::now() + SAID_WAIT;
-        while matches!(self.process.try_wait(), Ok(None)) && Instant::now() < deadline {
+        // Its words are all in once its stderr closes, which it does as it
+        // ends.
+        while !self.errors.as_ref().is_none_or(JoinHandle::is_finished)
+            && Instant::now() < deadline
+        {
             std::thread::sleep(Duration::from_millis(20));
         }
         let said = match self.errors.take() {
