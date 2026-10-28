@@ -1,4 +1,7 @@
+import os
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -88,6 +91,30 @@ class CleanupTests(unittest.TestCase):
                     proof.finalize(artifacts, key, [], [], observer, None, threading.Event())
             self.assertNotIn(key, (artifacts / 'broker.log').read_bytes())
             self.assertIn('FAILED', (artifacts / 'SANITIZED.txt').read_text())
+
+
+class ProcessTests(unittest.TestCase):
+    def test_a_process_runs_as_its_user_alone(self):
+        dropped = {'Uid': '\t994\t994\t994\t994', 'Gid': '\t993\t993\t993\t993', 'Groups': '\t',
+                   'CapPrm': '\t0000000000000000', 'CapEff': '\t0000000000000000'}
+        with patch.object(proof.pwd, 'getpwnam', return_value=Mock(pw_uid=994, pw_gid=993)) as getpwnam:
+            self.assertTrue(proof.runs_as(dropped, 'hatchling-keeper'))
+            getpwnam.assert_called_with('hatchling-keeper')
+            for field, value in (('Uid', '\t994\t0\t994\t994'), ('Gid', '\t993\t0\t993\t993'),
+                                 ('Groups', '\t0'), ('CapPrm', '\t0000000000000400'),
+                                 ('CapEff', '\t0000000000000001')):
+                self.assertFalse(proof.runs_as(dict(dropped, **{field: value}), 'hatchling-keeper'), field)
+
+    def test_only_a_childs_own_program_and_subcommand_are_found(self):
+        program = shutil.which('sleep')
+        child = subprocess.Popen([program, '30'])
+        try:
+            self.assertEqual(proof.children_running(os.getpid(), program, '30'), [child.pid])
+            self.assertEqual(proof.children_running(os.getpid(), program, '31'), [])
+            self.assertEqual(proof.children_running(os.getppid(), program, '30'), [])
+        finally:
+            child.kill()
+            child.wait()
 
 
 if __name__ == '__main__':

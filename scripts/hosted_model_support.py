@@ -86,6 +86,33 @@ def snapshot(proc, key, program, agent_hash, forbidden):
             'initial_environment_argv_and_view_key_absent': True, 'files': entries}
 
 
+def memory_holds(pid, key, chunk_size=1024 * 1024):
+    """Whether any readable mapping of a running process holds the key.
+
+    Returns that and the bytes read: a scan that read nothing proves
+    nothing. Only the verdict leaves this function, never what was read.
+    """
+    if not key or chunk_size < len(key):
+        raise ValueError('Expected a nonempty test credential shorter than a chunk')
+    held, scanned = False, 0
+    with open(f'/proc/{pid}/maps', encoding='utf-8') as maps, open(f'/proc/{pid}/mem', 'rb', 0) as mem:
+        for line in maps:
+            fields = line.split()
+            start, end = (int(bound, 16) for bound in fields[0].split('-'))
+            # The kernel's own pages ([vvar], [vsyscall]) can't be read
+            # through mem; nothing of the process's is there.
+            if not fields[1].startswith('r') or fields[-1] in ('[vvar]', '[vvar_vclock]', '[vsyscall]'):
+                continue
+            previous = b''
+            for offset in range(start, end, chunk_size):
+                mem.seek(offset)
+                data = mem.read(min(chunk_size, end - offset))
+                held = held or key in previous + data
+                scanned += len(data)
+                previous = data[-(len(key) - 1):] if len(key) > 1 else b''
+    return held, scanned
+
+
 def sanitize_logs(artifacts, key):
     """Protect retained logs while preserving a failing credential-leak verdict."""
     contaminated = []

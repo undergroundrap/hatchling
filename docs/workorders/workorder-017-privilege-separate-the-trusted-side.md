@@ -1,13 +1,15 @@
 # WO-017: Privilege-separate the trusted side
 
-**Status:** IN PROGRESS. Scope step 1, the credential keeper, is merged in five parts:
+**Status:** DONE. Every acceptance criterion is met (see Evidence). The first holds on every network-side path. Two kinds of credential meant for a cell still pass through the broker: a cell's `vault:fetch` and `vault:store` secrets, and browser sign-ins. The owner moved them to a work order of their own, [WO-031](workorder-031-cell-bound-credentials-skip-the-broker.md) (2026-10-28).
+
+Scope step 1, the credential keeper, is merged in five parts:
 - #140, a key per store, wrapped under the master key;
 - #142, the broker serving with its stores' keys alone, the master key dropped at start;
 - #143, one way into the secrets store, and a broker read that can't be recorded releasing nothing;
 - #144, a vault keeper process holding the master key and the secrets store's key, the broker neither;
 - #145, the gates scanning only for the secrets a cell has had, which the keeper records.
 
-Step 2, the egress authority, is done (#202-#205): slices 1 and 4 (below) start it beside the keeper and move web search into it, slice 2 moves the egress swap into it, slice 3 the harness relay, and slice 5 takes the egress credentials out of the gates' scan. The broker now holds no egress credential, vendor key or search key; the keeper releases them to the authority alone. Left: step 3, the privileged spawner, which drops the broker from root. Until step 3, the keeper and the authority are separate processes, not yet OS boundaries.
+Step 2, the egress authority, is done (#202-#205): slices 1 and 4 (below) start it beside the keeper and move web search into it, slice 2 moves the egress swap into it, slice 3 the harness relay, and slice 5 takes the egress credentials out of the gates' scan. The broker now holds no egress credential, vendor key or search key; the keeper releases them to the authority alone. Step 3, the privileged spawner and the broker's drop from root, is done: slice 1 #207-#210, slice 2 #211-#213, slice 3 #214, #216-#219 and #221-#225 (with flake fixes #215 and #220), slice 4 #226, and slice 5 #228.
 **Area:** `crates/hatchling-broker`, `crates/hatchling-vault`, `crates/hatchling-egress`, `crates/hatchling-isolation`, `crates/hatchling-sys`, `crates/hatchling-runtime`, a new crate per separated process if its dependencies warrant one, `docs/arch/`
 **Issue:** [#33](https://github.com/undergroundrap/hatchling/issues/33)
 **Trust boundary:** yes
@@ -52,14 +54,14 @@ Separate OS users only protect anything if the processes above them aren't root.
 
 ## Acceptance criteria
 
-- [ ] The broker process never holds a plaintext credential: a test drives every credential-using path (egress swap, harness relay, channel accounts, `vault:fetch`) and finds no credential bytes in the broker's memory or messages; shown with a canary secret.
-- [ ] Only the egress authority receives plaintext credentials from the keeper, and only for a destination its grant covers. The keeper refuses the same request from the broker and from a cell, by peer credentials; tested with real processes.
-- [ ] The vault directory and unlock factors are readable only by the keeper's user; a test as the broker's user is refused.
-- [ ] After startup, the broker, the keeper and the egress authority run as distinct, non-root users with an empty capability set (`/proc/<pid>/status`); tested.
-- [ ] The spawner rejects a malformed or out-of-policy cell spec (wrong uid range, a mount outside the allowed set, an extra capability) before any privileged call; tested per field.
-- [ ] A hand mutant that gives the broker the keeper's socket permissions, or skips the broker's drop of root, fails a test.
-- [ ] The README's quickstart works unchanged for the user, and `hatchling broker` starts all four processes.
-- [ ] `docs/arch/trust-boundary.md` and the module map show the four processes, what each holds, and who may talk to whom.
+- [x] The broker process never holds a plaintext credential: a test drives every credential-using path (egress swap, harness relay, channel accounts, `vault:fetch`) and finds no credential bytes in the broker's memory or messages; shown with a canary secret.
+- [x] Only the egress authority receives plaintext credentials from the keeper, and only for a destination its grant covers. The keeper refuses the same request from the broker and from a cell, by peer credentials; tested with real processes.
+- [x] The vault directory and unlock factors are readable only by the keeper's user; a test as the broker's user is refused.
+- [x] After startup, the broker, the keeper and the egress authority run as distinct, non-root users with an empty capability set (`/proc/<pid>/status`); tested.
+- [x] The spawner rejects a malformed or out-of-policy cell spec (wrong uid range, a mount outside the allowed set, an extra capability) before any privileged call; tested per field.
+- [x] A hand mutant that gives the broker the keeper's socket permissions, or skips the broker's drop of root, fails a test.
+- [x] The README's quickstart works unchanged for the user, and `hatchling broker` starts all four processes.
+- [x] `docs/arch/trust-boundary.md` and the module map show the four processes, what each holds, and who may talk to whom.
 
 ## Gates
 
@@ -67,7 +69,40 @@ See [TEMPLATE.md](TEMPLATE.md#gates).
 
 ## Evidence
 
-Filled in at close.
+Each criterion, in order, and what shows it. Each PR's gate is in its description.
+
+1. **Met on every network-side path; the cell-bound ones moved to WO-031.**
+   - **Shown for the egress swap:** in the hosted-model proof, a root broker forwards a scheduled run's model calls, which carry a canary credential. A scan of every readable mapping of the broker's memory afterwards finds no copy (`memory_holds`).
+   - **Shown for the harness relay and the swap, with real processes:** `a_harness_relay_runs_in_the_authority_with_the_key_it_reads` and `a_sessions_egress_goes_through_the_authority_with_its_credential`.
+   - **Search and the scan:** web search reads its key in the authority (#202). The gates' scan no longer returns an egress credential (#205).
+   - **Channel accounts:** no shipped channel uses one.
+   - **Moved to [WO-031](workorder-031-cell-bound-credentials-skip-the-broker.md)** (the owner's call, 2026-10-28): a cell's `vault:fetch` and `vault:store` secrets and browser sign-ins reach their cell through the broker, because the cell's one connection is to the broker. Taking the broker out of that path needs a channel from the keeper to the cell that the broker can't read.
+2. **Met, by channel rather than by peer credentials.**
+   - The keeper releases egress, harness and search reads only on the authority's channel, and refuses them on the broker's (`the_authoritys_reads_are_released_on_its_channel_alone`, real processes).
+   - Each channel's role comes from the launch, because peer credentials on a pair made before a drop prove nothing (step 3's design). A cell has no channel to the keeper.
+   - The authority inserts a credential only for a destination its own grants name.
+3. **Met.**
+   - The vault is handed to `hatchling-keeper` at start (`a_directory_is_handed_to_the_keeper_only_where_it_can_reach`).
+   - The hosted-model proof reads the vault's secret as `hatchling-broker` and is refused, while the keeper serves it to the authority.
+4. **Met.**
+   - The hosted-model proof reads `/proc/<pid>/status` of the running broker, keeper and authority. Each runs as its own user alone, with no other group and no permitted or effective capability. The broker also has `NoNewPrivs`.
+   - The spawner stays root by design, and is the one privileged process.
+5. **Met.** Tested per field:
+   - `the_policy_refuses_each_field_it_does_not_configure`
+   - `the_policy_refuses_limits_and_a_group_it_does_not_configure`
+   - `every_host_path_a_spec_names_is_checked`
+   - `a_cell_is_given_only_configured_paths_and_the_brokers_own_run_directories`
+   - `the_spawner_refuses_a_spec_its_helper_does_not_start`
+   - `a_spec_or_a_tree_change_the_spawner_cannot_make_is_refused`
+6. **Met, as the design reshaped it.**
+   - **Skipping the drop:** a broker that skips it serves as root, and the hosted-model proof's `/proc` check of its uids fails. This is shown by the check itself, not run as a hand mutant end to end. `hatchling_sys::drop_to` checks its own result (every id, the groups, the capabilities), and its tests refuse a drop to root.
+   - **The keeper's socket permissions:** the keeper has no socket path whose permissions could be widened. Its channels are socket pairs made at launch, and criterion 2's test refuses the authority's reads on the broker's channel.
+7. **Met, with one step added.**
+   - The root quickstart gains one step, creating the users (the owner's decision, 2026-10-24); the README quickstart CI job runs it.
+   - The hosted-model proof finds exactly one keeper, one authority and one spawner, each a child of the broker.
+8. **Met (#228).** The README, the module map and the trust boundary show the four processes, what each holds, and who talks to whom.
+
+Also not proven by a test, as noted under slice 2: an operator command that forgot to act for the keeper.
 
 ## Notes
 

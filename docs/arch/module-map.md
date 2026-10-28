@@ -21,6 +21,13 @@ Every crate has a row below: `hatchling-dev audit` fails the gate if one doesn't
 ```
 
 - **The broker is the trusted side.** It holds the vault, owns the network (the egress proxy), builds cells (isolation), and runs the schedules and the local API. It never executes untrusted code.
+- **Run as root, the trusted side is four processes, each under its own user** (WO-017). `hatchling-broker` starts each from its own binary:
+  - **the vault keeper** (`keeper.rs`, `hatchling-keeper`) holds the master key and the secrets store's key, and releases only what the configuration gives each purpose;
+  - **the egress authority** (`egress_authority.rs`, `hatchling-egress`) alone reads the credentials of the requests it makes: the egress swap, harness relays and search;
+  - **the spawner** (`spawner.rs`, root) starts every cell's helper, holds each spec to its own policy, makes each cell's group, gives and takes back harness trees, and writes approved deliveries as the owner's;
+  - **the broker** drops to `hatchling-broker` once its start is done (`broker_user.rs`) and confines its own file access with Landlock (`confine.rs`, `hatchling_sys::landlock`).
+
+  The owner's sockets admit the owner recorded at start (`owner.rs`). Without root, all four run as the owner, and the broker is still confined.
 - **The agent is the cell side.** It runs inside a cell and reaches the outside only through its one peer-authorized session with the broker.
 - **The cell side never links the trusted side.** `hatchling-agent`'s dependencies, and those of `hatchling-browser` (the browser cell's controller), followed all the way down, never reach `hatchling-broker`, `hatchling-vault`, `hatchling-egress`, `hatchling-isolation`, `hatchling-fido2` or `hatchling-runtime`. The code that runs in a cell is built without the code that holds your keys or the network, and `hatchling-dev audit` fails the gate if that ever changes.
 - **One binary, both sides.** `hatchling-runtime` installs one `hatchling` command that is both the broker and the agent: point `HATCHLING_AGENT_BIN` at it, and the broker runs it inside each cell as the agent. That's the pattern Chrome and OpenSSH use for their sandboxed processes. What keeps the agent away from your keys is the cell (no keys or vault files, no network, a seccomp allowlist, no capabilities), not which code is in the program file, so the broker's code in a cell's program has nothing to work with. The crate split above is about keeping the code honest: the agent's code is written and reviewed without the trusted side. (Building from source also gives a `hatchling-agent` binary, the agent alone; it works as `HATCHLING_AGENT_BIN` too.)
