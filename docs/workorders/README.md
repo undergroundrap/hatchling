@@ -50,7 +50,7 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | [014](workorder-014-running-without-root.md) | Run the full broker without root | yes | DONE |
 | [015](workorder-015-root-cell-tests-in-ci.md) | Run the cell test suites as root in CI | yes | QUEUED |
 | [016](workorder-016-publish-to-crates-io.md) | Publish to crates.io, with `hatchling-runtime` as the front door | yes | CLOSED |
-| [017](workorder-017-privilege-separate-the-trusted-side.md) | Privilege-separate the trusted side: a credential keeper, an egress authority, and a spawner so the broker drops root | yes | QUEUED |
+| [017](workorder-017-privilege-separate-the-trusted-side.md) | Privilege-separate the trusted side: a credential keeper, an egress authority, and a spawner so the broker drops root | yes | DONE |
 | [018](workorder-018-harness-manifests.md) | Harness manifests: add a coding CLI by configuration, with OpenCode first | yes | QUEUED |
 | [019](workorder-019-approved-tools.md) | Approved tools: what a cell can run, pinned and listed | yes | QUEUED |
 | [020](workorder-020-model-reasoning-control.md) | Operator-selected model thinking mode | yes | DONE |
@@ -64,6 +64,7 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | [028](workorder-028-web-search-and-site-approvals.md) | Web search through the broker, and each new site approved by the owner | yes | DONE |
 | [029](workorder-029-browser-cell.md) | A browser cell: a real browser the agent drives, in a cell of its own, reaching only what the broker lets through | yes | IN PROGRESS |
 | [030](workorder-030-signed-in-browsing.md) | Signed-in browsing: sessions sealed per site, sign-in filled by the broker, the agent never in the secret path | yes | QUEUED |
+| [031](workorder-031-cell-bound-credentials-skip-the-broker.md) | Cell-bound credentials skip the broker: a cell's vault secrets and browser sign-ins go from the keeper to the cell | yes | QUEUED |
 
 ## Candidates
 
