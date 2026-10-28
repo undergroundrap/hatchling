@@ -188,6 +188,25 @@ fn ldd() -> std::io::Result<&'static Path> {
 /// Where `ldd` may be, in order.
 const LDD: [&str; 2] = ["/usr/bin/ldd", "/bin/ldd"];
 
+/// Who `ldd` runs as on `binary`, when this process is root: whoever
+/// could change what that path names, the first owner other than root
+/// of the binary or a directory above it (WO-017). The dynamic loader
+/// then never parses, as root, an ELF that another user wrote, such as
+/// the browser in the broker's snapshot: a loader bug would be root's.
+/// None, to run as this process, when it isn't root or root owns them
+/// all; one that can't be looked at is left to `ldd` to fail on.
+fn ldd_identity(binary: &Path) -> Option<(u32, u32)> {
+    use std::os::unix::fs::MetadataExt as _;
+    if hatchling_sys::euid() != 0 {
+        return None;
+    }
+    binary
+        .ancestors()
+        .filter_map(|entry| std::fs::symlink_metadata(entry).ok())
+        .find(|meta| meta.uid() != 0)
+        .map(|meta| (meta.uid(), meta.gid()))
+}
+
 /// Runs `ldd` on the agent binary with a hard timeout: `ldd` only
 /// reads ELF headers, so anything past [`LDD_TIMEOUT`] is a hang.
 ///
@@ -202,13 +221,18 @@ fn ldd_output(agent_bin: &Path) -> Result<std::process::Output, Error> {
     let spawn_err = |source: std::io::Error| Error::Spawn {
         reason: format!("cannot run ldd on {}: {source}", agent_bin.display()),
     };
-    let mut std_child = Command::new(ldd().map_err(spawn_err)?)
+    let mut command = Command::new(ldd().map_err(spawn_err)?);
+    command
         .arg(agent_bin)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(spawn_err)?;
+        .stderr(Stdio::piped());
+    if let Some((uid, gid)) = ldd_identity(agent_bin) {
+        // Root setting another uid also drops every supplementary group.
+        std::os::unix::process::CommandExt::uid(&mut command, uid);
+        std::os::unix::process::CommandExt::gid(&mut command, gid);
+    }
+    let mut std_child = command.spawn().map_err(spawn_err)?;
     // Wrap the validated pid in pidfd supervision before anything
     // else: from here on the child is never unsupervised.
     let pid = i32::try_from(std_child.id()).map_err(|_| Error::Spawn {
@@ -511,6 +535,47 @@ pub(super) mod tests {
             "{}",
             found.display()
         );
+    }
+
+    /// `ldd` runs as root only on what root alone could have changed;
+    /// on a binary in a directory of another user's, as that user, and
+    /// it still reads what it must. Not as root, as this process.
+    #[test]
+    fn ldd_runs_as_whoever_could_change_the_binary() {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(ldd_identity(Path::new("/bin/true")), None);
+        let dir = std::env::temp_dir().join(format!("hatchling-ldd-owner-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let binary = dir.join("true");
+        std::fs::copy("/bin/true", &binary).unwrap();
+        if hatchling_sys::euid() != 0 {
+            // Not root: as this process, even on its own file.
+            assert_eq!(ldd_identity(&binary), None);
+            std::fs::remove_dir_all(&dir).unwrap();
+            return;
+        }
+        // Root's file, in another user's directory: that user's to swap.
+        std::os::unix::fs::chown(&dir, Some(4242), Some(4343)).unwrap();
+        assert_eq!(ldd_identity(&binary), Some((4242, 4343)));
+        // That user's file, in root's directory: that user's to rewrite.
+        std::os::unix::fs::chown(&dir, Some(0), Some(0)).unwrap();
+        std::os::unix::fs::chown(&binary, Some(4444), Some(4545)).unwrap();
+        assert_eq!(ldd_identity(&binary), Some((4444, 4545)));
+        // And ldd, run as that user, still reads it and its libraries.
+        let owned = binary.clone();
+        let output = within_watchdog("ldd_output", move || ldd_output(&owned)).unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(String::from_utf8_lossy(&output.stdout).contains("=>"));
+        // Root's own binary, 0700, in another user's directory: as that
+        // user, ldd can't read it, which shows it isn't run as root.
+        std::os::unix::fs::chown(&dir, Some(4242), Some(4343)).unwrap();
+        std::os::unix::fs::chown(&binary, Some(0), Some(0)).unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let output = within_watchdog("ldd_output", move || ldd_output(&binary)).unwrap();
+        assert!(!output.status.success(), "{output:?}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
