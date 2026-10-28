@@ -163,8 +163,12 @@ impl Snapshot {
             std::process::id(),
             random.chars().take(32).collect::<String>()
         ));
+        // Searchable by all, listed and written by the broker alone: a
+        // cell's setup opens what it binds from here inside a user namespace
+        // where the broker's user, once it isn't root (WO-017), isn't
+        // mapped, so only these bits let it through. The name is random.
         std::fs::DirBuilder::new()
-            .mode(0o700)
+            .mode(0o711)
             .create(&staging)
             .map_err(|error| format!("cannot make the browser's snapshot: {error}"))?;
         // Held from here: a failure below removes what was copied.
@@ -322,8 +326,13 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o444, "read-only");
-        // In a staging directory the sweep knows, named for this broker.
+        // In a staging directory the sweep knows, named for this broker,
+        // which a cell's setup can search and only the broker lists.
         let staging = snapshot.dir().parent().unwrap().to_owned();
+        assert_eq!(
+            std::fs::metadata(&staging).unwrap().permissions().mode() & 0o777,
+            0o711
+        );
         let name = staging.file_name().unwrap().to_str().unwrap().to_owned();
         assert!(
             name.starts_with(&format!("hatchling-staging-{}-", std::process::id())),

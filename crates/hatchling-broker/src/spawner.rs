@@ -321,15 +321,20 @@ impl Policy {
     /// [`crate::harness::Harnesses::from_env`] and the browser's
     /// settings.
     fn from_env() -> Result<Self, Error> {
+        // Run as root, the broker drops to its own user once it has
+        // started this spawner (WO-017): its run directories are that
+        // user's.
+        let broker = crate::broker_user::broker_user()?
+            .unwrap_or_else(|| (hatchling_sys::euid(), hatchling_sys::egid()));
         Self::parse(
             &|key| crate::cell::env_value(std::env::var(key)),
             std::env::temp_dir(),
-            hatchling_sys::euid(),
+            broker,
         )
     }
 
     /// The policy `get` configures, with the broker's run directories in
-    /// `temp`, owned by `owner`.
+    /// `temp`, owned by the broker's user and group, `broker`.
     ///
     /// # Errors
     ///
@@ -337,7 +342,7 @@ impl Policy {
     fn parse(
         get: &impl Fn(&str) -> Option<String>,
         temp: PathBuf,
-        owner: u32,
+        (owner, group): (u32, u32),
     ) -> Result<Self, Error> {
         let reference = CellConfig::skill_with("spawner-policy", get)?;
         let agent = agent_identity(get)?;
@@ -365,7 +370,7 @@ impl Policy {
             under,
             temp,
             owner,
-            group: hatchling_sys::egid(),
+            group,
         };
         Ok(Self {
             workspace: config.artifacts.workspace,
@@ -2266,7 +2271,7 @@ sleep 30 </dev/null >/dev/null 2>&1 &
         ]);
         let get = |key: &str| settings.get(key).cloned();
         let temp = PathBuf::from("/tmp/hatchling-policy-temp");
-        let read = Policy::parse(&get, temp.clone(), owner).unwrap();
+        let read = Policy::parse(&get, temp.clone(), (owner, hatchling_sys::egid())).unwrap();
         assert_eq!(read.paths.temp, temp);
         assert_eq!(read.paths.owner, owner);
         assert!(read.paths.exact.contains(Path::new("/opt/hatchling/agent")));
@@ -2287,7 +2292,8 @@ sleep 30 </dev/null >/dev/null 2>&1 &
             "HATCHLING_ARTIFACT_WORKSPACE" => Some(String::from("/tmp/hatchling-policy-out")),
             _ => get(key),
         };
-        let read = Policy::parse(&delivering, temp.clone(), owner).unwrap();
+        let read =
+            Policy::parse(&delivering, temp.clone(), (owner, hatchling_sys::egid())).unwrap();
         assert_eq!(
             read.workspace.as_deref(),
             Some(Path::new("/tmp/hatchling-policy-out"))
@@ -2303,13 +2309,13 @@ sleep 30 </dev/null >/dev/null 2>&1 &
                     get(key)
                 }
             };
-            let read = Policy::parse(&apart, temp.clone(), owner).unwrap();
+            let read = Policy::parse(&apart, temp.clone(), (owner, hatchling_sys::egid())).unwrap();
             assert_eq!(read.skill.identity, reference.identity());
             assert_eq!(read.agent.identity.principal, reference.uid_base + 1);
         }
         // Settings that don't parse: no policy.
         let broken = |key: &str| (key == "HATCHLING_SEARCH").then(|| String::from("bing"));
-        assert!(Policy::parse(&broken, temp, owner).is_err());
+        assert!(Policy::parse(&broken, temp, (owner, hatchling_sys::egid())).is_err());
         // This process isn't a broker: without its settings, no policy.
         if std::env::var_os("HATCHLING_BROKER_SOCKET").is_none() {
             assert!(Policy::from_env().is_err());

@@ -103,7 +103,7 @@ runs; it supplies the agent's identity and configuration.
 
 **Requirements:** Linux 5.11+ with unprivileged user namespaces and seccomp-BPF (or WSL2); Rust (the pinned 1.98.1 installs itself through `rust-toolchain.toml`; the minimum supported is 1.85); a C compiler; Python 3 for the examples; Node.js 22.12+ to build the app; root, for the reason [below](#running-without-root), or a [subordinate id range](#quickstart-without-root) for your user.
 
-Build, install the broker, the agent and the app's host, and create four system users nothing else runs as: the one the cells run as, the vault keeper's, which alone owns the vault and its key, the egress authority's, which alone reads the credentials of the requests it makes, and the broker's, which owns its stores.
+Build, install the broker, the agent and the app's host, and create four system users nothing else runs as: the one the cells run as, the vault keeper's, which alone owns the vault and its key, the egress authority's, which alone reads the credentials of the requests it makes, and the broker's own, which it runs as once it has started, and which owns what it keeps.
 
 ```bash
 git clone https://github.com/undergroundrap/hatchling
@@ -327,7 +327,7 @@ The agent can drive a real browser: a headless Chromium in a cell of its own, wi
 | `HATCHLING_BROWSER_CONTROLLER` | the `hatchling-browser` controller, absolute: the cell's program, which drives the browser over its DevTools pipe |
 | `HATCHLING_BROWSER_FONTS` | optional: a fonts directory shown to the cell, read-only, so pages render text |
 
-The broker copies the bundle into a snapshot only it can write and starts the browser from that snapshot only if its digest is the pin, so a file changed in the bundle later never reaches a browser. A browser cell needs `HATCHLING_CELL_CGROUP`: the broker refuses to start without one when a browser is configured. Each browser is held to 2 GiB of memory and 512 processes as a whole, at most 4 run at once, and each ends after 30 minutes or with its session.
+The broker copies the bundle into a snapshot only it can write and starts the browser from that snapshot only if its digest is the pin, so a file changed in the bundle later never reaches a browser. Run as root, the broker reads the bundle as its own user, `hatchling-broker`, which can't search your home: put it where that user can read it, such as `/opt`, and let every user read it (`sudo cp -r <bundle> /opt/ && sudo chmod -R a+rX /opt/<bundle>`). The digest pins each file's bytes and whether it runs, not who reads it. A browser cell needs `HATCHLING_CELL_CGROUP`: the broker refuses to start without one when a browser is configured. Each browser is held to 2 GiB of memory and 512 processes as a whole, at most 4 run at once, and each ends after 30 minutes or with its session.
 
 In the app you watch each browser: the site, the step it's on, every action in your words (never the text it types) and a picture of the page. You can stop it, which seals its sites at once. You can take it over: the agent waits, your clicks, typing and keys go to the page, and when you hand it back, the agent looks at the page again before it acts.
 

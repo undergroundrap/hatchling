@@ -1061,6 +1061,121 @@ pub fn become_cell_user() -> Result<(), Error> {
     Ok(())
 }
 
+/// Drops this process, run as root, to the user `uid` and group `gid`
+/// for good (WO-017: the broker becoming `hatchling-broker`).
+///
+/// Every supplementary group goes, then the real, effective and saved
+/// gid and uid all become the user's, for every thread (the C library
+/// sets them process-wide). With no uid left 0, the kernel clears every
+/// capability. Then no exec may gain privileges again
+/// (`PR_SET_NO_NEW_PRIVS`): a setuid-root program, run by a broker an
+/// attacker controls, starts with the broker's own rights. That bit is
+/// the calling thread's, and threads started later inherit it, so call
+/// this while the process has one thread.
+///
+/// Each step is checked after it is taken: the ids read back, no group
+/// is left, and no capability is.
+///
+/// # Errors
+///
+/// [`Error::Process`] for root as the user, a step the kernel refuses
+/// (as when this process isn't root), or a check that doesn't hold.
+pub fn drop_to(uid: u32, gid: u32) -> Result<(), Error> {
+    let not_held = |operation: &'static str| Error::Process {
+        operation,
+        source: io::Error::other("the drop did not hold"),
+    };
+    if uid == 0 {
+        return Err(Error::Process {
+            operation: "drop to root",
+            source: io::Error::from(io::ErrorKind::InvalidInput),
+        });
+    }
+    clear_groups()?;
+    // SAFETY: setresgid only changes this process's group ids; failure
+    // is reported, never assumed.
+    if unsafe { libc::setresgid(gid, gid, gid) } != 0 {
+        return Err(Error::Process {
+            operation: "setresgid",
+            source: io::Error::last_os_error(),
+        });
+    }
+    // SAFETY: as setresgid, for the user ids.
+    if unsafe { libc::setresuid(uid, uid, uid) } != 0 {
+        return Err(Error::Process {
+            operation: "setresuid",
+            source: io::Error::last_os_error(),
+        });
+    }
+    set_no_new_privs()?;
+    if resids(Ids::User) != Some([uid; 3]) {
+        return Err(not_held("getresuid"));
+    }
+    if resids(Ids::Group) != Some([gid; 3]) {
+        return Err(not_held("getresgid"));
+    }
+    // SAFETY: a count of zero asks only how many groups there are.
+    if unsafe { libc::getgroups(0, std::ptr::null_mut()) } != 0 {
+        return Err(not_held("getgroups"));
+    }
+    if permitted_capabilities()? != 0 {
+        return Err(not_held("capget"));
+    }
+    Ok(())
+}
+
+/// Which ids [`resids`] reads.
+#[derive(Clone, Copy)]
+enum Ids {
+    User,
+    Group,
+}
+
+/// This process's real, effective and saved user or group ids, in that
+/// order; none if they can't be read.
+fn resids(ids: Ids) -> Option<[u32; 3]> {
+    let mut found = [0_u32; 3];
+    let [real, effective, saved] = &mut found;
+    let status = match ids {
+        // SAFETY: getresuid writes three ids through pointers valid and
+        // writable for the call's duration.
+        Ids::User => unsafe { libc::getresuid(real, effective, saved) },
+        // SAFETY: as getresuid, for the group ids.
+        Ids::Group => unsafe { libc::getresgid(real, effective, saved) },
+    };
+    (status == 0).then_some(found)
+}
+
+/// The calling thread's permitted capabilities, as one 64-bit mask.
+///
+/// # Errors
+///
+/// [`Error::Process`] when `capget` fails.
+fn permitted_capabilities() -> Result<u64, Error> {
+    let mut header = CapHeader {
+        version: CAPABILITY_VERSION_3,
+        pid: 0,
+    };
+    let mut data = [CapData::default(); 2];
+    // SAFETY: capget writes the header and two data words, both valid
+    // and writable for the call's duration.
+    let ret = unsafe {
+        libc::syscall(
+            libc::SYS_capget,
+            std::ptr::from_mut(&mut header),
+            data.as_mut_ptr(),
+        )
+    };
+    if ret != 0 {
+        return Err(Error::Process {
+            operation: "capget",
+            source: io::Error::last_os_error(),
+        });
+    }
+    let [low, high] = data;
+    Ok((u64::from(high.permitted) << 32) | u64::from(low.permitted))
+}
+
 /// The highest capability number the bounding-set scan tries. The
 /// kernel's own last capability is lower; `PR_CAPBSET_DROP` past it
 /// answers `EINVAL`, which ends the scan.
@@ -1500,6 +1615,69 @@ mod tests {
                 } else {
                     3
                 });
+            }
+        }
+    }
+
+    /// Dropped, a process is the user and group it was dropped to, every
+    /// id of each, with no group and no capability left, and can't gain
+    /// privileges by exec; never to root. Not as root, the kernel refuses
+    /// it. (In a child: the drop is for good.)
+    #[test]
+    fn a_drop_leaves_the_user_alone_with_nothing_more() {
+        assert!(matches!(
+            drop_to(0, 4242),
+            Err(Error::Process {
+                operation: "drop to root",
+                ..
+            })
+        ));
+        assert_eq!(permitted_capabilities().unwrap(), capabilities()[1]);
+        let own = (euid(), rustix::process::getegid().as_raw());
+        assert_eq!(resids(Ids::User).map(|ids| ids[1]), Some(own.0));
+        assert_eq!(resids(Ids::Group).map(|ids| ids[1]), Some(own.1));
+        if own.0 != 0 {
+            let refused = drop_to(4242, 4242);
+            assert!(matches!(refused, Err(Error::Process { .. })), "{refused:?}");
+            return;
+        }
+        match fork().expect("fork helper") {
+            ForkResult::Parent { child } => {
+                let status = child
+                    .wait_deadline(Duration::from_secs(10))
+                    .expect("helper");
+                assert_eq!(
+                    child_exit_code(status),
+                    0,
+                    "1: refused; 2: an id left; 3: a group left; 4: a capability left; \
+                     5: new privileges allowed; 6: became root again"
+                );
+            }
+            ForkResult::Child => {
+                if drop_to(4242, 4343).is_err() {
+                    exit_child(1);
+                }
+                if resids(Ids::User) != Some([4242; 3]) || resids(Ids::Group) != Some([4343; 3]) {
+                    exit_child(2);
+                }
+                // SAFETY: a count of zero asks only how many groups there are.
+                if unsafe { libc::getgroups(0, std::ptr::null_mut()) } != 0 {
+                    exit_child(3);
+                }
+                if capabilities() != [0; 3] {
+                    exit_child(4);
+                }
+                // SAFETY: PR_GET_NO_NEW_PRIVS only reads this thread's bit.
+                if unsafe { libc::prctl(libc::PR_GET_NO_NEW_PRIVS, 0_u64, 0_u64, 0_u64, 0_u64) }
+                    != 1
+                {
+                    exit_child(5);
+                }
+                // SAFETY: setuid only changes this process's ids; it must fail.
+                if unsafe { libc::setuid(0) } == 0 {
+                    exit_child(6);
+                }
+                exit_child(0);
             }
         }
     }

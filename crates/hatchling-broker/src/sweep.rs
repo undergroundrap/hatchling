@@ -279,6 +279,11 @@ pub fn clean(config: &Config, dry_run: bool) -> Result<String, Error> {
 /// [`clean`], with staging directories in `staging_root`.
 fn clean_in(config: &Config, staging_root: &Path, dry_run: bool) -> Result<String, Error> {
     let _lock = take_lock(config)?;
+    clean_locked(config, staging_root, dry_run)
+}
+
+/// [`clean_in`], with the serving lock already held.
+fn clean_locked(config: &Config, staging_root: &Path, dry_run: bool) -> Result<String, Error> {
     let found = leftovers(staging_root, run_root(config).as_deref());
     if dry_run {
         let mut lines: Vec<String> = found
@@ -312,7 +317,14 @@ pub fn run_clean(config: &Config, args: &[String]) -> Result<(), Error> {
             });
         }
     };
-    let report = clean(config, dry_run)?;
+    let _lock = take_lock(config)?;
+    let mut report = clean_locked(config, &std::env::temp_dir(), dry_run)?;
+    // Run as root, the command then becomes the broker's own user, and
+    // cleans what that user left, which root may not remove (WO-017).
+    if crate::broker_user::drop_to_broker()? {
+        let theirs = clean_locked(config, &std::env::temp_dir(), dry_run)?;
+        report = format!("{report}\n{theirs}");
+    }
     writeln!(std::io::stdout().lock(), "{report}").map_err(|e| Error::Sweep {
         reason: format!("cannot write the report: {e}"),
     })
@@ -568,6 +580,10 @@ mod tests {
             .join("\n")
         );
         assert_eq!(snapshot(&dir.0), before, "a dry run changes nothing");
+        // With the lock held already, the same.
+        let held = take_lock(&config).unwrap();
+        assert_eq!(clean_locked(&config, &tmp, true).unwrap(), listed);
+        drop(held);
         let done = clean_in(&config, &tmp, false).unwrap();
         assert_eq!(
             done,

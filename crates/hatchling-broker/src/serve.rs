@@ -47,6 +47,10 @@ use crate::{
 ///
 /// Propagates [`Error`] from the keeper's start (key loading, vault
 /// validation), cell spawn, or socket setup.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the broker's start, in the order it must happen: one step, one line and its comment"
+)]
 pub fn run_serve(config: &Config) -> Result<(), Error> {
     tracing_subscriber::fmt()
         .with_max_level(config.log_level.to_tracing())
@@ -168,6 +172,12 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
         );
         Agents::Listener(&listener)
     };
+    // Everything that needed root is done, on one thread still: run as
+    // root, the broker becomes its own user now, for good (WO-017), and
+    // sweeps what that user left, which root may not remove.
+    if crate::broker_user::drop_to_broker()? {
+        let _swept = crate::sweep::sweep_at_start(config, redaction.as_ref());
+    }
     std::thread::scope(|scope| {
         // The gate's rules borrow the keys on a thread of their own
         // (see `crate::output_gate`): the gate only queues work for them.

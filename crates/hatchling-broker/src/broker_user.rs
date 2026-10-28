@@ -1,12 +1,13 @@
 //! The broker's own user (WO-017, step 3).
 //!
-//! Run as root, the broker's sealed stores (builds, spaces, schedules,
-//! the web stores and the output gate's records) belong to
-//! `hatchling-broker`, a user of their own, so that a broker that stops
-//! being root still opens them. Until it does, the root broker, and an
-//! operator's command run as root, act for that user in them
-//! ([`hatchling_vault::act_for`]): opened as its, and what is made there
-//! given to it.
+//! Run as root, the broker becomes `hatchling-broker`, a user of its own,
+//! once everything that needs root is done ([`drop_to_broker`]). What it
+//! keeps is that user's: its sealed stores (builds, spaces, schedules,
+//! the web stores and the output gate's records), memory, goals, the
+//! scheduler's run directories and its activity log. Until it drops, the
+//! root broker, and an operator's command run as root, act for that user
+//! in the sealed stores ([`hatchling_vault::act_for`]): opened as its,
+//! and what is made there given to it.
 
 use std::path::{Path, PathBuf};
 
@@ -49,8 +50,9 @@ pub fn broker_dirs(config: &Config, redaction: Option<&RedactionConfig>) -> Vec<
 /// directories.
 ///
 /// They are [`broker_dirs`], the output gate's when there is an ingress
-/// for it to guard, handed to that user first. Not run as root, it
-/// changes nothing.
+/// for it to guard, handed to that user first, with the rest of its
+/// state ([`state_dirs`], [`state_files`]). Not run as root, it changes
+/// nothing.
 ///
 /// # Errors
 ///
@@ -66,7 +68,83 @@ pub fn act_for_broker(config: &Config) -> Result<(), Error> {
         .as_ref()
         .map(|_| RedactionConfig::from_env(config))
         .transpose()?;
-    act_for_broker_in(&broker_dirs(config, redaction.as_ref()), uid, gid)
+    act_for_broker_in(&broker_dirs(config, redaction.as_ref()), uid, gid)?;
+    hand_state(config, uid, gid)
+}
+
+/// The broker's state that isn't a sealed store, and is a directory:
+/// memory's and goals' roots, and the scheduler's run directories, each
+/// when it is on.
+#[must_use]
+pub fn state_dirs(config: &Config) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = [&config.memory.root, &config.goals.root]
+        .into_iter()
+        .filter(|root| !root.as_os_str().is_empty())
+        .cloned()
+        .collect();
+    if config.scheduler.enabled() {
+        dirs.push(config.scheduler.run_root());
+    }
+    dirs
+}
+
+/// The broker's state that is a file: the scheduler's activity log, when
+/// it is on. It sits beside the store, where the broker's user may not
+/// make it.
+#[must_use]
+pub fn state_files(config: &Config) -> Vec<PathBuf> {
+    config
+        .scheduler
+        .enabled()
+        .then(|| config.scheduler.activity_log())
+        .into_iter()
+        .collect()
+}
+
+/// Hands the broker's state to its user, `uid` and `gid`: its
+/// directories as its stores are, and each of its files made if absent
+/// (empty, 0600), never through a link, and given to the user.
+///
+/// # Errors
+///
+/// [`Error::BrokerUser`] for one that can't be handed over.
+fn hand_state(config: &Config, uid: u32, gid: u32) -> Result<(), Error> {
+    let failed = |reason: String| Error::BrokerUser { reason };
+    crate::keeper::hand_to(BROKER_USER, &state_dirs(config), uid, gid).map_err(failed)?;
+    for file in state_files(config) {
+        hatchling_sys::hand_file_to(&file, uid).map_err(|e| {
+            failed(format!(
+                "cannot hand {} to {BROKER_USER}: {e}",
+                file.display()
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+/// Run as root, makes this process the broker's user, for good
+/// ([`hatchling_sys::drop_to`]), and says so. Not run as root, it changes
+/// nothing. Whether it dropped.
+///
+/// Call it once everything that needs root is done, while the process
+/// has one thread.
+///
+/// # Errors
+///
+/// As [`broker_user`], and [`Error::BrokerUser`] when the drop fails.
+pub fn drop_to_broker() -> Result<bool, Error> {
+    let Some((uid, gid)) = broker_user()? else {
+        return Ok(false);
+    };
+    hatchling_sys::drop_to(uid, gid).map_err(|e| Error::BrokerUser {
+        reason: format!("cannot become {BROKER_USER}: {e}"),
+    })?;
+    tracing::info!(
+        euid = hatchling_sys::euid(),
+        user = BROKER_USER,
+        "the broker runs as its own user"
+    );
+    Ok(true)
 }
 
 /// [`act_for_broker`] in `dirs`, for `uid` and `gid`.
@@ -113,6 +191,80 @@ mod tests {
             !broker_dirs(&config, Some(&redaction)).contains(&config.vault.root),
             "the vault is the keeper's"
         );
+    }
+
+    /// The broker's other state: memory's, goals' and the scheduler's run
+    /// directories, and its activity log, each when it is on.
+    #[test]
+    fn the_brokers_state_is_memory_goals_and_its_runs() {
+        let mut config = crate::api_auth::tests::owner_config(None);
+        config.scheduler.root = PathBuf::new();
+        assert!(state_dirs(&config).is_empty() && state_files(&config).is_empty());
+        config.memory.root = PathBuf::from("/srv/h/memory");
+        config.goals.root = PathBuf::from("/srv/h/goals");
+        config.scheduler.root = PathBuf::from("/srv/h/schedules");
+        assert_eq!(
+            state_dirs(&config),
+            [
+                PathBuf::from("/srv/h/memory"),
+                PathBuf::from("/srv/h/goals"),
+                PathBuf::from("/srv/h/schedules.runs"),
+            ]
+        );
+        assert_eq!(
+            state_files(&config),
+            [PathBuf::from("/srv/h/schedules.activity")]
+        );
+    }
+
+    /// The broker's state is handed to its user: its directories made if
+    /// absent, its activity log made empty if absent, kept if present,
+    /// never through a link. Given to another user only as root.
+    #[test]
+    fn the_brokers_state_is_handed_to_its_user() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let base =
+            std::env::temp_dir().join(format!("hatchling-broker-state-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir(&base).unwrap();
+        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o711)).unwrap();
+        let mut config = crate::api_auth::tests::owner_config(None);
+        config.memory.root = base.join("memory");
+        config.goals.root = PathBuf::new();
+        config.scheduler.root = base.join("schedules");
+        let me = (hatchling_sys::euid(), hatchling_sys::egid());
+        hand_state(&config, me.0, me.1).unwrap();
+        let meta = |path: &Path| std::fs::symlink_metadata(path).unwrap();
+        assert!(meta(&base.join("memory")).is_dir());
+        assert!(meta(&base.join("schedules.runs")).is_dir());
+        let log = base.join("schedules.activity");
+        assert_eq!((meta(&log).len(), meta(&log).mode() & 0o777), (0, 0o600));
+        std::fs::write(&log, b"kept").unwrap();
+        hand_state(&config, me.0, me.1).unwrap();
+        assert_eq!(std::fs::read(&log).unwrap(), b"kept");
+        // Never through a link.
+        std::fs::remove_file(&log).unwrap();
+        std::os::unix::fs::symlink(base.join("elsewhere"), &log).unwrap();
+        assert!(hand_state(&config, me.0, me.1).is_err());
+        assert!(!base.join("elsewhere").exists());
+        std::fs::remove_file(&log).unwrap();
+        if me.0 == 0 {
+            hand_state(&config, 4343, 4343).unwrap();
+            for handed in ["memory", "schedules.runs", "schedules.activity"] {
+                assert_eq!(meta(&base.join(handed)).uid(), 4343, "{handed}");
+            }
+        }
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// Not run as root, there's no one to drop to, and nothing changes.
+    #[test]
+    fn not_as_root_the_broker_drops_to_no_one() {
+        if hatchling_sys::euid() != 0 {
+            let before = hatchling_sys::euid();
+            assert!(!drop_to_broker().unwrap());
+            assert_eq!(hatchling_sys::euid(), before);
+        }
     }
 
     /// The broker's user is looked for only as root, where its absence

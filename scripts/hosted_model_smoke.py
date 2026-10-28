@@ -408,6 +408,18 @@ def run(repo, artifacts, work, mode, fixtures):
             require(time.monotonic() < deadline, 'Documented client exceeded its answer deadline')
             time.sleep(0.05)
         require(client.returncode == 0, 'Documented client did not receive an agent answer')
+        # Run as root, the broker serves as its own user (WO-017): each of
+        # its uids and gids that user's, no other group, no capability, and
+        # no exec that could gain one.
+        status = dict(line.split(':', 1) for line in Path(f'/proc/{broker.pid}/status').read_text().splitlines()
+                      if ':' in line)
+        own = pwd.getpwnam('hatchling-broker')
+        require(set(map(int, status['Uid'].split())) == {own.pw_uid}
+                and set(map(int, status['Gid'].split())) == {own.pw_gid}
+                and not status['Groups'].split()
+                and int(status['CapPrm'], 16) == 0 and int(status['CapEff'], 16) == 0
+                and status['NoNewPrivs'].strip() == '1',
+                'The broker did not drop to hatchling-broker')
         stop.set()
         observer.join(timeout=15)
         require(not observer.is_alive() and not errors and len(observations) == 1,

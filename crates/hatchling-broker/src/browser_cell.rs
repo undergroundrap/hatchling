@@ -220,7 +220,9 @@ impl BrowserCell {
     /// reply. After any of these the cell takes no more commands: a reply
     /// that came late would answer the wrong one.
     pub fn command(&mut self, command: &BrowserCommand) -> Result<BrowserReply, String> {
-        self.commands.send(command)
+        self.commands
+            .send(command)
+            .map_err(|reason| self.helper.ended_saying(&reason))
     }
 
     /// Closes the browser and ends the cell, and says what its proxy did.
@@ -375,13 +377,28 @@ impl Helper {
             .take()
             .and_then(|errors| errors.join().ok())
             .unwrap_or_default();
-        let said = String::from_utf8_lossy(&said);
-        let said = said.trim();
-        if said.is_empty() {
-            reason.to_owned()
-        } else {
-            format!("{reason} ({said})")
+        worded(reason, &said)
+    }
+
+    /// `reason`, with what the helper said if it has ended, waiting a
+    /// moment for it to: a cell that dies says why in the broker's log.
+    /// One still running is left to run.
+    fn ended_saying(&mut self, reason: &str) -> String {
+        let deadline = Instant::now() + SAID_WAIT;
+        // Its words are all in once its stderr closes, which it does as it
+        // ends.
+        while !self.errors.as_ref().is_none_or(JoinHandle::is_finished) && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(20));
         }
+        let said = match self.errors.take() {
+            Some(errors) if errors.is_finished() => errors.join().unwrap_or_default(),
+            running => {
+                self.errors = running;
+                Vec::new()
+            }
+        };
+        worded(reason, &said)
     }
 
     fn stop(&self) {
@@ -393,6 +410,20 @@ impl Helper {
 impl Drop for Helper {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+/// How long a broken exchange waits for the helper to end, to say why.
+const SAID_WAIT: Duration = Duration::from_secs(2);
+
+/// `reason`, with what a helper `said` on stderr, if it said anything.
+fn worded(reason: &str, said: &[u8]) -> String {
+    let said = String::from_utf8_lossy(said);
+    let said = said.trim();
+    if said.is_empty() {
+        reason.to_owned()
+    } else {
+        format!("{reason} ({said})")
     }
 }
 
@@ -711,6 +742,47 @@ mod tests {
             "it failed",
             "nothing said, nothing added"
         );
+    }
+
+    /// A reason carries what a helper said, trimmed, when it said
+    /// anything.
+    #[test]
+    fn a_reason_carries_what_the_helper_said() {
+        assert_eq!(worded("it broke", b"  no chrome\n"), "it broke (no chrome)");
+        assert_eq!(worded("it broke", b" \n"), "it broke");
+        assert_eq!(worded("it broke", b""), "it broke");
+    }
+
+    /// A helper that ended says why when an exchange with its cell
+    /// breaks; one that said nothing adds nothing, and one still running
+    /// is left running.
+    #[test]
+    fn a_helper_that_ended_says_why_an_exchange_broke() {
+        let run_dir = RunDir::create().unwrap();
+        let (_, theirs) = UnixStream::pair().unwrap();
+        let mut helper = Helper::start(Path::new("/bin/sh"), "{}", run_dir.path(), theirs).unwrap();
+        let broke = helper.ended_saying("it broke");
+        assert!(broke.starts_with("it broke ("), "{broke}");
+        assert!(
+            broke.contains(BROWSER_CELL_SUBCOMMAND),
+            "its words: {broke}"
+        );
+        let quiet_dir = RunDir::create().unwrap();
+        let mut quiet = Helper::start(
+            Path::new("/bin/true"),
+            "{}",
+            quiet_dir.path(),
+            UnixStream::pair().unwrap().0,
+        )
+        .unwrap();
+        assert_eq!(quiet.ended_saying("it broke"), "it broke");
+        let busy_dir = RunDir::create().unwrap();
+        let (_, theirs) = UnixStream::pair().unwrap();
+        let mut busy =
+            Helper::start(Path::new("/usr/bin/yes"), "{}", busy_dir.path(), theirs).unwrap();
+        assert_eq!(busy.ended_saying("it broke"), "it broke");
+        assert!(busy.process.try_wait().unwrap().is_none(), "still running");
+        assert!(busy.errors.is_some(), "its words still kept");
     }
 
     #[test]

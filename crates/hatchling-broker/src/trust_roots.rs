@@ -204,10 +204,12 @@ pub fn read_trust_roots_file(path: &Path) -> Result<Vec<u8>, String> {
     if (meta.dev(), meta.ino()) != (link.dev(), link.ino()) {
         return Err(format!("{shown} changed while being opened"));
     }
+    // Root's, or the broker's own: a broker that has dropped to its own
+    // user (WO-017) reads root's and can't rewrite it, which is better.
     let euid = hatchling_sys::euid();
-    if meta.uid() != euid {
+    if meta.uid() != 0 && meta.uid() != euid {
         return Err(format!(
-            "{shown} must be owned by the broker's uid {euid}, not uid {}",
+            "{shown} must be owned by root or the broker's uid {euid}, not uid {}",
             meta.uid()
         ));
     }
@@ -422,6 +424,35 @@ mod tests {
         write(&path, b"contents", 0o600);
         assert_eq!(read_trust_roots_file(&path).unwrap(), b"contents");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The file may be root's, which a broker that isn't root reads and
+    /// can't rewrite, or the broker's own; another user's is refused.
+    #[test]
+    fn the_file_is_roots_or_the_brokers() {
+        use std::os::unix::fs::MetadataExt as _;
+        let roots = Path::new("/etc/passwd");
+        assert_eq!(std::fs::metadata(roots).unwrap().uid(), 0);
+        let read = read_trust_roots_file(roots);
+        assert!(
+            read.as_ref()
+                .map_or_else(|err| !err.contains("must be owned"), |_| true),
+            // Not the read itself: it would hold the file's bytes.
+            "root's is never refused for its owner"
+        );
+        if hatchling_sys::euid() == 0 {
+            let dir = roots_dir("owner");
+            let path = dir.join("roots");
+            write(&path, b"x", 0o644);
+            std::os::unix::fs::chown(&path, Some(4242), None).unwrap();
+            let err = read_trust_roots_file(&path).unwrap_err();
+            // Not the refusal itself: it names the file's owner.
+            assert!(
+                err.contains("must be owned by root or"),
+                "not refused for its owner"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]

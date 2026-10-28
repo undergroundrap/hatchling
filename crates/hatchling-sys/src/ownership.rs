@@ -315,6 +315,34 @@ pub fn write_new_file_for(dir: &Path, name: &str, bytes: &[u8], owner: u32) -> R
         })
 }
 
+/// Gives the file at `path` to `owner`, made first if absent.
+///
+/// Made, it is empty and 0600 (WO-017: a log the broker's user appends
+/// to, beside a directory it may not make files in). It is opened
+/// without following a link, and must be a regular file.
+///
+/// # Errors
+///
+/// [`Error::Ownership`] when it can't be opened or made, isn't a regular
+/// file, or can't be given.
+pub fn hand_file_to(path: &Path, owner: u32) -> Result<(), Error> {
+    /// How the file is opened: to append, made if absent, never through
+    /// a symlink.
+    const FLAGS: rustix::fs::OFlags = rustix::fs::OFlags::WRONLY
+        .union(rustix::fs::OFlags::APPEND)
+        .union(rustix::fs::OFlags::CREATE)
+        .union(rustix::fs::OFlags::NOFOLLOW)
+        .union(rustix::fs::OFlags::NONBLOCK)
+        .union(rustix::fs::OFlags::CLOEXEC);
+    let file = rustix::fs::open(path, FLAGS, rustix::fs::Mode::from_raw_mode(0o600))
+        .map_err(failed("open the file"))?;
+    let stat = rustix::fs::fstat(&file).map_err(failed("fstat the file"))?;
+    if rustix::fs::FileType::from_raw_mode(stat.st_mode) != rustix::fs::FileType::RegularFile {
+        return Err(refused("give the file", "not a regular file"));
+    }
+    give_to(&file, owner)
+}
+
 /// Whether `name` is one plain name in a directory: not empty, not `.` or
 /// `..`, with no `/` and no NUL.
 fn plain_name(name: &str) -> bool {
@@ -345,6 +373,46 @@ pub const fn private_dir_ok(uid: u32, mode: u32, euid: u32) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// A file is handed over made if absent (empty, 0600) and kept if
+    /// present, never through a link, and only a regular file; given to
+    /// another user only as root.
+    #[test]
+    fn a_file_is_handed_over_made_if_absent_and_never_through_a_link() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let dir = std::env::temp_dir().join(format!("hatchling-hand-file-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).unwrap();
+        let me = rustix::process::geteuid().as_raw();
+        let log = dir.join("activity");
+        hand_file_to(&log, me).unwrap();
+        let made = std::fs::symlink_metadata(&log).unwrap();
+        assert_eq!((made.len(), made.permissions().mode() & 0o777), (0, 0o600));
+        std::fs::write(&log, b"kept").unwrap();
+        hand_file_to(&log, me).unwrap();
+        assert_eq!(std::fs::read(&log).unwrap(), b"kept");
+        std::os::unix::fs::symlink(dir.join("elsewhere"), dir.join("linked")).unwrap();
+        assert!(hand_file_to(&dir.join("linked"), me).is_err());
+        assert!(!dir.join("elsewhere").exists());
+        let refused = hand_file_to(&dir, me).unwrap_err();
+        assert!(refused.to_string().contains("open the file"), "{refused}");
+        // A device opens, and is refused for what it is (given to root
+        // as root, and to this user otherwise: nothing changes).
+        let device_owner = std::fs::metadata("/dev/null").unwrap().uid();
+        let refused = hand_file_to(Path::new("/dev/null"), me).unwrap_err();
+        assert!(
+            refused.to_string().contains("not a regular file"),
+            "{refused}"
+        );
+        assert_eq!(std::fs::metadata("/dev/null").unwrap().uid(), device_owner);
+        if me == 0 {
+            hand_file_to(&log, 4343).unwrap();
+            assert_eq!(std::fs::symlink_metadata(&log).unwrap().uid(), 4343);
+        } else {
+            assert!(hand_file_to(&log, me.wrapping_add(4242)).is_err());
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// One plain name: no path, no NUL, neither `.` nor `..`; a name
     /// that merely starts with dots is plain.
     #[test]
