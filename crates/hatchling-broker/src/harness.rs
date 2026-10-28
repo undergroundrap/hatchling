@@ -3098,7 +3098,11 @@ mod tests {
                 PathBuf::from("scratch")
             ]
         );
-        assert_eq!(mode(&dirs.base), 0o711, "searchable, listed by its owner alone");
+        assert_eq!(
+            mode(&dirs.base),
+            0o711,
+            "searchable, listed by its owner alone"
+        );
         for dir in [&dirs.work, &dirs.pristine, &dirs.scratch] {
             assert_eq!(mode(dir), 0o700, "{}", dir.display());
         }

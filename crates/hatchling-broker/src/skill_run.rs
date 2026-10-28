@@ -704,7 +704,10 @@ mod tests {
             .permissions()
             .mode()
             & 0o777;
-        assert_eq!(mode, 0o711, "searchable, listed and written by its owner alone");
+        assert_eq!(
+            mode, 0o711,
+            "searchable, listed and written by its owner alone"
+        );
         std::fs::write(first.path().join("leftover"), b"x").unwrap();
         let path = first.path().to_path_buf();
         drop(first);
