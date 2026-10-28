@@ -1278,8 +1278,13 @@ impl RunDirs {
         let name = crate::approval::random_hex("hatchling-harness-")
             .map_err(|err| format!("cannot name the run directory: {err}"))?;
         let base = std::env::temp_dir().join(name);
+        // Searchable by all, listed and written by the broker alone: a
+        // cell's setup opens what it binds from here inside a user namespace
+        // where the broker's user, once it isn't root (WO-017), isn't
+        // mapped, so only these bits let it through. The name is random.
+        // What is in it stays owner-only.
         std::fs::DirBuilder::new()
-            .mode(0o700)
+            .mode(0o711)
             .create(&base)
             .map_err(|err| format!("cannot create the run directory: {err}"))?;
         let dirs = Self {
@@ -3093,7 +3098,8 @@ mod tests {
                 PathBuf::from("scratch")
             ]
         );
-        for dir in [&dirs.base, &dirs.work, &dirs.pristine, &dirs.scratch] {
+        assert_eq!(mode(&dirs.base), 0o711, "searchable, listed by its owner alone");
+        for dir in [&dirs.work, &dirs.pristine, &dirs.scratch] {
             assert_eq!(mode(dir), 0o700, "{}", dir.display());
         }
         stage(

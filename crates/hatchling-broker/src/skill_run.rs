@@ -390,8 +390,12 @@ impl RunDir {
             .map_err(|err| format!("cannot name a run dir: {err}"))?;
         let dir = std::env::temp_dir().join(name);
         // A fresh directory, never an existing one reused.
+        // Searchable by all, listed and written by the broker alone: a
+        // cell's setup opens what it binds from here inside a user namespace
+        // where the broker's user, once it isn't root (WO-017), isn't
+        // mapped, so only these bits let it through. The name is random.
         std::fs::DirBuilder::new()
-            .mode(0o700)
+            .mode(0o711)
             .create(&dir)
             .map_err(|err| format!("cannot create run dir {}: {err}", dir.display()))?;
         Ok(Self { dir })
@@ -700,7 +704,7 @@ mod tests {
             .permissions()
             .mode()
             & 0o777;
-        assert_eq!(mode, 0o700);
+        assert_eq!(mode, 0o711, "searchable, listed and written by its owner alone");
         std::fs::write(first.path().join("leftover"), b"x").unwrap();
         let path = first.path().to_path_buf();
         drop(first);
