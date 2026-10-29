@@ -53,6 +53,7 @@ hatchling_core::declare_environment! {
     HATCHLING_HELPER_BROKER_PID: ("internal; set by the broker", "The broker a run or skill helper watches, and ends with."),
     HATCHLING_KEEPER_FD: ("internal; set by the broker", "The vault keeper's end of its socket pair with the broker."),
     HATCHLING_KEEPER_AUTHORITY_FD: ("internal; set by the broker", "The vault keeper's end of its socket pair with the egress authority."),
+    HATCHLING_KEEPER_SPAWNER_FD: ("internal; set by the broker", "The vault keeper's end of its socket pair with the spawner, which hands it each cell's vault channel."),
     HATCHLING_KEEPER_KEYS: ("internal; set by the broker", "The security keys the broker, as root, opened for the vault keeper's user: node=descriptor pairs, comma separated."),
     HATCHLING_AUTHORITY_FD: ("internal; set by the broker", "The egress authority's end of its socket pair with the broker."),
     HATCHLING_AUTHORITY_KEEPER_FD: ("internal; set by the broker", "The egress authority's end of its socket pair with the vault keeper."),

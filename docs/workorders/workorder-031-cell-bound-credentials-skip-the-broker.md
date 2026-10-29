@@ -1,6 +1,6 @@
 # WO-031: Cell-bound credentials skip the broker
 
-**Status:** QUEUED
+**Status:** IN-PROGRESS
 **Area:** `crates/hatchling-broker` (the keeper, the spawner, `browser_credentials`, `browser_ops`, the vault ops), `crates/hatchling-agent`, `crates/hatchling-browser` if the browser cell's controller changes, `docs/arch/`
 **Issue:** [#227](https://github.com/undergroundrap/hatchling/issues/227)
 **Trust boundary:** yes
@@ -53,3 +53,14 @@ Filled in at close.
   - **What the browser cell is shown.** The browser cell runs a real browser on hostile pages, so the origin it reports can't be trusted. The keeper must learn a fill's origin from something the page can't forge.
   - **How the keeper gets a cell's grants.** It could take them from the spawn, or read them from its own configuration as the egress authority does.
 - **Order.** `vault:fetch` and `vault:store` first: the smaller change, and it sets the cell-to-keeper channel the sign-in fill reuses.
+- **Slice 1's design, after mapping the cell's vault path (2026-10-28).**
+  - **What the map turned up:**
+    - The keeper answered every run's vault op under the operator's grants, not the run's: fixed first, in #229.
+    - The broker can name any cell and uid in a `Request::Cell`, so a compromised broker can ask for any granted secret, as any cell. This slice ends that: once every cell has its own channel, the keeper refuses `Request::Cell` on the broker's.
+    - Only agent cells send vault ops: the broker's own agent cell, and the cells of scheduled runs, subagents and chats. Skill cells have no connection, and the broker is the client of a browser cell's.
+    - The spawner has no channel to the keeper. It is multi-threaded, so it can't hand a descriptor to a helper's exec without racing its other spawns. The helper's stdin, stdout and stderr are taken.
+  - **The grants.** The spawner can't know a run's grants, because they come from the broker's schedule store. The broker names them in the cell's spec, and the keeper answers under those it also makes. The broker still decides what a run may do; it never sees the bytes.
+  - **Parts, each landing and gated on its own:**
+    - **1a:** the keeper takes a third pair at launch, for the spawner. On it, the keeper receives each cell's channel, named with the cell, its uid and its grants, and answers vault ops alone on it, as session requests, recorded as that cell's. Until 1b, the broker closes the spawner's end.
+    - **1b:** the spawner holds that end. A cell's spec asks for a vault channel. The isolation layer makes the pair inside the spawn, as it makes the broker's connection, and the cell finds its end in an environment variable. The helper hands the keeper's end back to the spawner, which names it and hands it to the keeper.
+    - **1c:** the agent sends its vault ops on that channel when it has one. The broker answers a vault op on its own session `Denied`, and the keeper refuses `Request::Cell` on the broker's channel. The adversarial probe and the run fixture's descriptor list change with it.

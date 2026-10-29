@@ -314,7 +314,7 @@ fn the_brokers_end_reads_through_the_keeper() {
         .env("HATCHLING_VAULT_GRANTS", "fetch:token")
         .stdin(Stdio::null())
         .stdout(Stdio::null());
-    let (keeper, keys, authoritys) = Keeper::start_with(program).unwrap();
+    let (keeper, keys, authoritys, _) = Keeper::start_with(program).unwrap();
     assert!(keys.stores().all(|(store, _)| store != Store::SECRETS));
     let name = |text: &str| -> hatchling_core::SecretName { text.parse().unwrap() };
     let authority = Keeper::over(authoritys).unwrap();
@@ -381,7 +381,7 @@ fn the_brokers_end_reads_through_the_keeper() {
         .env("HATCHLING_VAULT_GRANTS", "fetch:token")
         .stdin(Stdio::null())
         .stdout(Stdio::null());
-    let (keeper, _, _) = Keeper::start_with(program).unwrap();
+    let (keeper, _, _, _) = Keeper::start_with(program).unwrap();
     let scanned: Vec<Vec<u8>> = keeper
         .scan("output-gate")
         .unwrap()
@@ -409,7 +409,7 @@ fn a_gate_scans_only_for_what_a_cell_has_had() {
         .env("HATCHLING_VAULT_GRANTS", "fetch:token")
         .stdin(Stdio::null())
         .stdout(Stdio::null());
-    let (keeper, _, _) = Keeper::start_with(program).unwrap();
+    let (keeper, _, _, _) = Keeper::start_with(program).unwrap();
     assert!(keeper.scan("output-gate").unwrap().is_empty());
     assert!(keeper.scan("egress").is_err());
     drop(keeper);
@@ -443,7 +443,7 @@ fn the_authoritys_reads_are_released_on_its_channel_alone() {
         ],
     )
     .unwrap();
-    let (keeper, _, authoritys) =
+    let (keeper, _, authoritys, _) =
         Keeper::start_with(program(&dir, &[("HATCHLING_SEARCH", "brave")])).unwrap();
     let name = |text: &str| -> hatchling_core::SecretName { text.parse().unwrap() };
     let refused = format!("{:?}", keeper.read("search", &[name("search-brave")]));
@@ -483,7 +483,7 @@ fn the_egress_authority_searches_with_what_the_keeper_gives_it() {
     let dir = scratch("authority").unwrap();
     sealed_vault(&dir, &[]).unwrap();
     let searching = [("HATCHLING_SEARCH", "brave")];
-    let (keeper, _, authoritys) = Keeper::start_with(program(&dir, &searching)).unwrap();
+    let (keeper, _, authoritys, _) = Keeper::start_with(program(&dir, &searching)).unwrap();
     let authority = Authority::start_with(program(&dir, &searching), &authoritys).unwrap();
     drop(authoritys);
     assert_eq!(
@@ -494,7 +494,7 @@ fn the_egress_authority_searches_with_what_the_keeper_gives_it() {
     );
     drop(authority);
     drop(keeper);
-    let (keeper, _, authoritys) = Keeper::start_with(program(&dir, &[])).unwrap();
+    let (keeper, _, authoritys, _) = Keeper::start_with(program(&dir, &[])).unwrap();
     let authority = Authority::start_with(program(&dir, &[]), &authoritys).unwrap();
     drop(authoritys);
     assert_eq!(authority.search("rust"), Err(String::from("search is off")));
@@ -514,7 +514,7 @@ fn an_egress_authority_that_cannot_start_is_refused_with_its_reason() {
     sealed_vault(&dir, &[]).unwrap();
     let missing = dir.join("no-such-ca.pem");
     let bundle = [("HATCHLING_EGRESS_CA_BUNDLE", missing.to_str().unwrap())];
-    let (keeper, _, authoritys) = Keeper::start_with(program(&dir, &[])).unwrap();
+    let (keeper, _, authoritys, _) = Keeper::start_with(program(&dir, &[])).unwrap();
     let Err(refused) = Authority::start_with(program(&dir, &bundle), &authoritys) else {
         unreachable!("an authority without its CA bundle started");
     };
@@ -593,7 +593,7 @@ fn a_sessions_egress_goes_through_the_authority_with_its_credential() {
         ("HATCHLING_EGRESS_ALLOWLIST", allowlist.as_str()),
         ("HATCHLING_EGRESS_GRANTS", destination.as_str()),
     ];
-    let (keeper, _, authoritys) = Keeper::start_with(program(&dir, &env)).unwrap();
+    let (keeper, _, authoritys, _) = Keeper::start_with(program(&dir, &env)).unwrap();
     let authority = Authority::start_with(program(&dir, &env), &authoritys).unwrap();
     drop(authoritys);
     let name: hatchling_core::SecretName = secret.parse().unwrap();
@@ -692,7 +692,7 @@ fn a_harness_relay_runs_in_the_authority_with_the_key_it_reads() {
         .iter()
         .map(|(name, value)| (*name, value.as_str()))
         .collect();
-    let (keeper, _, authoritys) = Keeper::start_with(program(&dir, &env)).unwrap();
+    let (keeper, _, authoritys, _) = Keeper::start_with(program(&dir, &env)).unwrap();
     let authority = Authority::start_with(program(&dir, &env), &authoritys).unwrap();
     drop(authoritys);
     let name: hatchling_core::SecretName = "harness-claude-code".parse().unwrap();

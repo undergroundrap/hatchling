@@ -42,7 +42,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use hatchling_core::framing::{read_frame, read_frame_or_eof, write_frame};
-use hatchling_core::{CellId, SecretName, VaultOp, VaultResult};
+use hatchling_core::{
+    CellId, MAX_FRAME_BYTES, SecretName, SessionRequest, SessionResponse, VaultOp, VaultResult,
+};
 use hatchling_vault::{MasterKey, Secret, Store, StoreKeys};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
@@ -73,6 +75,10 @@ const KEEPER_FD: &str = crate::environment::HATCHLING_KEEPER_FD.name;
 /// The setting that names the keeper's end of its pair with the egress
 /// authority.
 const AUTHORITY_FD: &str = crate::environment::HATCHLING_KEEPER_AUTHORITY_FD.name;
+
+/// The keeper's end of its pair with the spawner, which hands it each
+/// cell's vault channel (WO-031).
+const SPAWNER_FD: &str = crate::environment::HATCHLING_KEEPER_SPAWNER_FD.name;
 
 /// The security keys opened for the keeper ([`open_security_keys`]).
 pub(crate) const KEEPER_KEYS: &str = crate::environment::HATCHLING_KEEPER_KEYS.name;
@@ -178,7 +184,8 @@ pub(crate) fn keeper() -> Option<&'static Keeper> {
 /// keeper.
 ///
 /// Also returns the egress authority's end of its channel to the keeper,
-/// for [`crate::egress_authority::start`]. Call it once, while the broker has one thread: the keeper's ends of
+/// for [`crate::egress_authority::start`], and the spawner's, on which it
+/// hands the keeper each cell's vault channel (WO-031). Call it once, while the broker has one thread: the keeper's ends of
 /// its socket pairs are the descriptors its exec keeps, and they would be
 /// inherited by anything another thread started meanwhile.
 ///
@@ -186,15 +193,15 @@ pub(crate) fn keeper() -> Option<&'static Keeper> {
 ///
 /// As [`Keeper::start_with`], and [`Error::Keeper`] when the broker's
 /// binary can't be found or a keeper is already running.
-pub fn start() -> Result<(StoreKeys, UnixStream), Error> {
+pub fn start() -> Result<(StoreKeys, UnixStream, UnixStream), Error> {
     let program = std::env::current_exe().map_err(|e| Error::Keeper {
         reason: format!("cannot locate the broker binary: {e}"),
     })?;
-    let (keeper, keys, authority) = Keeper::start_with(Command::new(program))?;
+    let (keeper, keys, authority, spawner) = Keeper::start_with(Command::new(program))?;
     KEEPER.set(keeper).map_err(|_| Error::Keeper {
         reason: String::from("a keeper is already running"),
     })?;
-    Ok((keys, authority))
+    Ok((keys, authority, spawner))
 }
 
 /// The keeper's user, its uid and gid, when this process runs as root;
@@ -415,10 +422,11 @@ pub fn act_for_keeper(config: &Config) -> Result<(), Error> {
 
 impl Keeper {
     /// Starts the keeper as `program`, the broker's binary with its
-    /// environment, given its subcommand and its ends of two socket pairs
-    /// (one with the broker, one with the egress authority), and takes the
-    /// keys of the broker's stores from it. Returns the authority's end of
-    /// its pair, which the broker hands the authority and closes.
+    /// environment, given its subcommand and its ends of three socket
+    /// pairs (with the broker, the egress authority and the spawner), and
+    /// takes the keys of the broker's stores from it. Returns the
+    /// authority's and the spawner's ends of their pairs, which the broker
+    /// hands on and closes.
     ///
     /// # Errors
     ///
@@ -426,7 +434,9 @@ impl Keeper {
     /// to start (its reason, as the keeper gave it: a key that doesn't
     /// load, a store that doesn't open), or hands over keys that don't
     /// read back.
-    pub fn start_with(mut program: Command) -> Result<(Self, StoreKeys, UnixStream), Error> {
+    pub fn start_with(
+        mut program: Command,
+    ) -> Result<(Self, StoreKeys, UnixStream, UnixStream), Error> {
         let failed = |reason: String| Error::Keeper { reason };
         // As root, the keeper runs as its own user, which is given the
         // vault, its key and its keyring first. The security keys it may
@@ -457,7 +467,8 @@ impl Keeper {
             || UnixStream::pair().map_err(|e| failed(format!("cannot make a socket pair: {e}")));
         let (ours, theirs) = pair()?;
         let (for_authority, authoritys) = pair()?;
-        for end in [theirs.as_fd(), for_authority.as_fd()] {
+        let (for_spawner, spawners) = pair()?;
+        for end in [theirs.as_fd(), for_authority.as_fd(), for_spawner.as_fd()] {
             hatchling_sys::keep_across_exec(end)
                 .map_err(|e| failed(format!("cannot hand the keeper its socket: {e}")))?;
         }
@@ -465,10 +476,12 @@ impl Keeper {
             .arg(VAULT_KEEPER_SUBCOMMAND)
             .env(KEEPER_FD, theirs.as_raw_fd().to_string())
             .env(AUTHORITY_FD, for_authority.as_raw_fd().to_string())
+            .env(SPAWNER_FD, for_spawner.as_raw_fd().to_string())
             .spawn()
             .map_err(|e| failed(format!("cannot start: {e}")))?;
         drop(theirs);
         drop(for_authority);
+        drop(for_spawner);
         // The broker's stores are the broker's: the keeper asks for their
         // keys as they keep them, wrapped, and unwraps them, opening none.
         let first = read_frame(&ours).map_err(|e| failed(format!("asked for no keys: {e}")))?;
@@ -506,7 +519,7 @@ impl Keeper {
             _child: Some(child),
             ..Self::over(ours)?
         };
-        Ok((keeper, keys, authoritys))
+        Ok((keeper, keys, authoritys, spawners))
     }
 
     /// A keeper already running, at the other end of `stream`: the egress
@@ -839,6 +852,11 @@ pub fn vault_keeper_main() -> ExitCode {
         Ok(authority) => authority,
         Err(error) => return refuse_to_run(&error.to_string()),
     };
+    // The spawner's, likewise: without one, no cell has a channel here.
+    let spawner = match inherited(std::env::var(SPAWNER_FD)).transpose() {
+        Ok(spawner) => spawner,
+        Err(error) => return refuse_to_run(&error.to_string()),
+    };
     let begun = hatchling_sys::set_not_dumpable()
         .map_err(|source| Error::Keeper {
             reason: format!("cannot keep its memory to itself: {source}"),
@@ -871,8 +889,15 @@ pub fn vault_keeper_main() -> ExitCode {
             }
         });
     }
-    // The keeper leaves when the broker does, the authority's channel
-    // with it.
+    if let Some(spawner) = spawner {
+        let shared = Arc::clone(&state);
+        std::thread::spawn(move || {
+            if let Err(error) = take_cells(&spawner, &shared) {
+                tracing::error!(%error, "the spawner's channel ended");
+            }
+        });
+    }
+    // The keeper leaves when the broker does, the other channels with it.
     match serve(&stream, &state, Role::Broker) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => refuse_to_run(&error.to_string()),
@@ -1041,39 +1066,104 @@ fn serve(stream: &UnixStream, kept: &Mutex<Kept>, role: Role) -> Result<(), Erro
                 uid,
                 grants,
             } => {
-                let vault = held_by(&kept.config.vault, &grants);
-                if let Some(name) = releases_to_cell(&vault, &op) {
-                    if let Err(error) = record_release(kept, &name) {
-                        tracing::error!(%error, "a release not recorded: the op is refused");
-                        send(
-                            stream,
-                            &Reply::Cell {
-                                result: VaultResult::VaultError,
-                            },
-                        )?;
-                        continue;
-                    }
-                }
-                let reply = cell
-                    .parse::<CellId>()
-                    .map_err(|_| Error::SessionProtocol {
-                        reason: String::from("a cell id that doesn't parse"),
-                    })
-                    .and_then(|cell| handle_vault_op(&vault, &kept.keys, &op, &cell, uid));
-                let reply = match reply {
+                let reply = match cell_op_result(kept, &op, &cell, uid, &grants) {
                     Ok(result) => Reply::Cell { result },
-                    Err(Error::SessionProtocol { reason }) => Reply::Protocol { reason },
-                    Err(error) => {
-                        tracing::error!(%error, "vault op failed");
-                        Reply::Cell {
-                            result: VaultResult::VaultError,
-                        }
-                    }
+                    Err(reason) => Reply::Protocol { reason },
                 };
                 send(stream, &reply)?;
             }
         }
         drop(guard);
+    }
+    Ok(())
+}
+
+/// A cell's vault op, answered under the grants its session holds where
+/// the keeper's configuration makes them too, and recorded as that
+/// cell's. A fetch or a store is recorded as released first: one that
+/// can't be recorded fails, and so does a vault that can't be used.
+///
+/// # Errors
+///
+/// Why the op, or the cell's id, is malformed: the cell's session ends.
+fn cell_op_result(
+    kept: &mut Kept,
+    op: &VaultOp,
+    cell: &str,
+    uid: u32,
+    grants: &[String],
+) -> Result<VaultResult, String> {
+    let cell: CellId = cell
+        .parse()
+        .map_err(|_| String::from("a cell id that doesn't parse"))?;
+    let vault = held_by(&kept.config.vault, grants);
+    if let Some(name) = releases_to_cell(&vault, op) {
+        if let Err(error) = record_release(kept, &name) {
+            tracing::error!(%error, "a release not recorded: the op is refused");
+            return Ok(VaultResult::VaultError);
+        }
+    }
+    match handle_vault_op(&vault, &kept.keys, op, &cell, uid) {
+        Ok(result) => Ok(result),
+        Err(Error::SessionProtocol { reason }) => Err(reason),
+        Err(error) => {
+            tracing::error!(%error, "vault op failed");
+            Ok(VaultResult::VaultError)
+        }
+    }
+}
+
+/// A cell's own channel to the keeper (WO-031), as the spawner names it
+/// when it hands it over: which cell, its peer uid, and the grants its
+/// session holds (each `action:name`).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CellChannel {
+    cell: String,
+    uid: u32,
+    grants: Vec<String>,
+}
+
+/// Takes each cell's channel the spawner hands over, named first, and
+/// answers it on a thread of its own, until the spawner goes.
+fn take_cells(spawner: &UnixStream, kept: &Arc<Mutex<Kept>>) -> Result<(), Error> {
+    while let Some(frame) = read_frame_or_eof(spawner).map_err(keeper_gone)? {
+        let named: CellChannel = serde_json::from_slice(&frame).map_err(|e| Error::Keeper {
+            reason: format!("a cell's channel named in a frame that doesn't parse: {e}"),
+        })?;
+        let channel = hatchling_sys::net::recv_fd(spawner.as_fd()).map_err(|e| Error::Keeper {
+            reason: format!("a cell's channel wasn't handed over: {e}"),
+        })?;
+        let channel = UnixStream::from(channel);
+        let kept = Arc::clone(kept);
+        std::thread::spawn(move || {
+            if let Err(error) = serve_cell(&channel, &kept, &named) {
+                tracing::warn!(cell = %named.cell, %error, "a cell's vault channel ended");
+            }
+        });
+    }
+    Ok(())
+}
+
+/// Answers a cell on its own channel: vault ops alone, each a session
+/// request, under the grants the channel was named with, whatever the
+/// cell says. Anything else, or a malformed op, ends the channel.
+fn serve_cell(stream: &UnixStream, kept: &Mutex<Kept>, cell: &CellChannel) -> Result<(), Error> {
+    while let Some(frame) = read_frame_or_eof(stream).map_err(keeper_gone)? {
+        let frame = Zeroizing::new(frame);
+        let Ok(SessionRequest::Vault(op)) = serde_json::from_slice(&frame) else {
+            return Err(Error::SessionProtocol {
+                reason: String::from("a cell's vault channel carries vault ops alone"),
+            });
+        };
+        let mut guard = kept.lock().map_err(|_| Error::Keeper {
+            reason: String::from("an earlier answer panicked"),
+        })?;
+        let result = cell_op_result(&mut guard, &op, &cell.cell, cell.uid, &cell.grants);
+        drop(guard);
+        let result = result.map_err(|reason| Error::SessionProtocol { reason })?;
+        let reply = crate::serve::encode_reply(&SessionResponse::Vault(result), MAX_FRAME_BYTES)?;
+        write_frame(stream, &reply).map_err(keeper_gone)?;
     }
     Ok(())
 }
@@ -1692,6 +1782,102 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    /// A cell's own channel, handed over by the spawner and named with
+    /// its cell, uid and grants, is answered vault ops alone, under those
+    /// grants: a channel named with none is refused, and anything but a
+    /// vault op ends it. A cell id that doesn't parse is a malformed op,
+    /// and a naming frame that doesn't parse stops the spawner's channel.
+    #[test]
+    fn a_cells_own_channel_is_answered_vault_ops_under_its_grants() {
+        let mut config = crate::api_auth::tests::owner_config(None);
+        let dir = crate::api_auth::tests::scratch("keeper-cell-channels");
+        config.vault.root = dir.0.join("vault");
+        config.vault.grants = vec![VaultGrant {
+            action: hatchling_core::VaultAction::Fetch,
+            name: "token".parse().unwrap(),
+        }];
+        let master = MasterKey::generate().unwrap();
+        hatchling_vault::SealedVault::open(&config.vault.root, &master)
+            .unwrap()
+            .store(
+                &"token".parse().unwrap(),
+                &Secret::new(b"t".to_vec()).unwrap(),
+            )
+            .unwrap();
+        let keys = StoreKeys::unwrap(&master, &[(Store::SECRETS, &config.vault.root)]).unwrap();
+        let kept = Arc::new(Mutex::new(Kept {
+            releases: Releases::of(&config, BTreeSet::new()),
+            config,
+            keys,
+            released: BTreeSet::new(),
+        }));
+        let fetch = SessionRequest::Vault(VaultOp::Fetch {
+            name: String::from("token"),
+        });
+        let (spawners, keepers) = UnixStream::pair().unwrap();
+        let taking = std::thread::spawn({
+            let kept = Arc::clone(&kept);
+            move || take_cells(&keepers, &kept)
+        });
+        let hand = |grants: &[&str]| {
+            let (ours, theirs) = UnixStream::pair().unwrap();
+            ours.set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let named = serde_json::json!({ "cell": "run-1", "uid": 7, "grants": grants });
+            write_frame(&spawners, named.to_string().as_bytes()).unwrap();
+            hatchling_sys::net::send_fd(spawners.as_fd(), theirs.as_fd()).unwrap();
+            ours
+        };
+        let ask = |channel: &UnixStream, request: &[u8]| {
+            write_frame(channel, request).unwrap();
+            read_frame_or_eof(channel)
+                .unwrap()
+                .map(|reply| serde_json::from_slice::<SessionResponse>(&reply).unwrap())
+        };
+        let fetching = serde_json::to_vec(&fetch).unwrap();
+        let granted = hand(&["fetch:token"]);
+        let Some(SessionResponse::Vault(VaultResult::Fetched { secret_b64 })) =
+            ask(&granted, &fetching)
+        else {
+            unreachable!("the granted fetch wasn't answered with the secret");
+        };
+        assert_eq!(secret_b64.decode().unwrap().as_slice(), b"t");
+        let ungranted = hand(&[]);
+        assert!(matches!(
+            ask(&ungranted, &fetching),
+            Some(SessionResponse::Vault(VaultResult::Denied))
+        ));
+        assert!(
+            ask(&ungranted, b"{}").is_none(),
+            "a request that isn't a vault op"
+        );
+        // A cell that leaves ends its channel quietly.
+        let (gone, left) = UnixStream::pair().unwrap();
+        drop(gone);
+        let named = CellChannel {
+            cell: String::from("run-2"),
+            uid: 7,
+            grants: Vec::new(),
+        };
+        assert!(serve_cell(&left, &kept, &named).is_ok());
+        let mut guard = kept.lock().unwrap();
+        let op = VaultOp::Fetch {
+            name: String::from("token"),
+        };
+        assert!(cell_op_result(&mut guard, &op, "", 7, &[]).is_err());
+        drop(guard);
+        write_frame(&spawners, b"{}").unwrap();
+        assert!(
+            taking.join().unwrap().is_err(),
+            "a naming frame that doesn't parse"
+        );
+        // The granted channel is still answered after the spawner's ended.
+        assert!(matches!(
+            ask(&granted, &fetching),
+            Some(SessionResponse::Vault(VaultResult::Fetched { .. }))
+        ));
     }
 
     /// A session's vault op goes to the keeper with the session's own
