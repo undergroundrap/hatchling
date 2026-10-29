@@ -1853,6 +1853,15 @@ mod tests {
             ask(&ungranted, b"{}").is_none(),
             "a request that isn't a vault op"
         );
+        // A cell that leaves ends its channel quietly.
+        let (gone, left) = UnixStream::pair().unwrap();
+        drop(gone);
+        let named = CellChannel {
+            cell: String::from("run-2"),
+            uid: 7,
+            grants: Vec::new(),
+        };
+        assert!(serve_cell(&left, &kept, &named).is_ok());
         let mut guard = kept.lock().unwrap();
         let op = VaultOp::Fetch {
             name: String::from("token"),
