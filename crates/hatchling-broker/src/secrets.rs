@@ -138,8 +138,26 @@ pub(crate) fn handle_vault_op(
     cell_id: &CellId,
     uid: u32,
 ) -> Result<VaultResult, Error> {
-    if let Some(keeper) = crate::keeper::keeper() {
-        return keeper.cell_op(op, cell_id, uid);
+    vault_op_through(crate::keeper::keeper(), vault_config, key, op, cell_id, uid)
+}
+
+/// As [`handle_vault_op`], answered by `keeper` when one runs: under the
+/// grants `vault_config` gives the session, which a run, a subagent or a
+/// chat holds fewer of than the agent.
+///
+/// # Errors
+///
+/// As [`handle_vault_op`].
+pub(crate) fn vault_op_through(
+    keeper: Option<&crate::keeper::Keeper>,
+    vault_config: &VaultConfig,
+    key: &dyn OpensStores,
+    op: &VaultOp,
+    cell_id: &CellId,
+    uid: u32,
+) -> Result<VaultResult, Error> {
+    if let Some(keeper) = keeper {
+        return keeper.cell_op(op, cell_id, uid, &vault_config.grants);
     }
     let result = vault_op_result(vault_config, key, op, cell_id)?;
     // Every access is recorded. One that went ahead but cannot be
