@@ -765,6 +765,7 @@ impl CellConfig {
             limits: CellLimits::parse(&get)?,
             cgroup: cgroup_parent(&get)?,
             connected: false,
+            vault_grants: None,
         })
     }
 
@@ -1052,6 +1053,7 @@ impl CellConfig {
             limits: CellLimits::parse(&get)?,
             cgroup: cgroup_parent(&get)?,
             connected: false,
+            vault_grants: None,
         })
     }
 }

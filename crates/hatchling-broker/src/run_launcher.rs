@@ -971,10 +971,8 @@ fn hand_over_vault(handoff: &UnixStream, vault: Option<UnixStream>) -> Result<()
     let vault = vault.ok_or_else(|| Error::CellSpawn {
         reason: String::from("the run cell came without its vault channel"),
     })?;
-    hatchling_sys::net::send_fd(handoff.as_fd(), vault.as_fd()).map_err(|source| {
-        Error::CellSpawn {
-            reason: format!("cannot hand over the run's vault channel: {source}"),
-        }
+    hatchling_sys::net::send_fd(handoff.as_fd(), vault.as_fd()).map_err(|source| Error::CellSpawn {
+        reason: format!("cannot hand over the run's vault channel: {source}"),
     })
 }
 

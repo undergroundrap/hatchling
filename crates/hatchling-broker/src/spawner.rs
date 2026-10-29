@@ -402,7 +402,9 @@ impl Policy {
             return Err(String::from("a cell with an endpoint"));
         }
         if config.vault_grants.is_some() && (helper != HelperKind::AgentRun || !config.connected) {
-            return Err(String::from("a vault channel for a cell that isn't a connected agent"));
+            return Err(String::from(
+                "a vault channel for a cell that isn't a connected agent",
+            ));
         }
         let limits = if helper == HelperKind::BrowserCell {
             crate::browser_session::browser_limits()
@@ -1814,12 +1816,18 @@ sleep 30 </dev/null >/dev/null 2>&1 &
             heard == word
         };
         let brokers = UnixStream::from(hatchling_sys::net::recv_fd(broker.as_fd()).unwrap());
-        assert!(said(&cells_connection, &brokers, b"c"), "the broker's is the connection");
+        assert!(
+            said(&cells_connection, &brokers, b"c"),
+            "the broker's is the connection"
+        );
         let naming: crate::keeper::CellChannel =
             serde_json::from_slice(&read_frame(&keeper).unwrap()).unwrap();
         assert_eq!(naming, named);
         let keepers = UnixStream::from(hatchling_sys::net::recv_fd(keeper.as_fd()).unwrap());
-        assert!(said(&cells_vault, &keepers, b"v"), "the keeper's is the vault channel");
+        assert!(
+            said(&cells_vault, &keepers, b"v"),
+            "the keeper's is the vault channel"
+        );
         broker
             .set_read_timeout(Some(Duration::from_millis(200)))
             .unwrap();
