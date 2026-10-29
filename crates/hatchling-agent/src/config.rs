@@ -31,6 +31,10 @@ pub struct Config {
     /// view. The peer is authorized against this value via
     /// `SO_PEERCRED`; there is no other identity signal.
     pub broker_uid: PeerUid,
+    /// The cell's own vault channel, at this inherited descriptor
+    /// (`HATCHLING_VAULT_FD`), when it was given one: its vault ops go
+    /// there, to the vault keeper, never through its broker (WO-031).
+    pub vault_fd: Option<i32>,
     /// Log verbosity.
     pub log_level: LogLevel,
     /// Model endpoint URL (`HATCHLING_MODEL_ENDPOINT`), e.g.
@@ -99,6 +103,9 @@ impl Config {
                     .parse::<SocketPath>()?,
             ),
         };
+        let vault_fd = get(env::HATCHLING_VAULT_FD.name)
+            .map(|raw| parse_inherited_fd("HATCHLING_VAULT_FD", &raw))
+            .transpose()?;
         let broker_uid = get(env::HATCHLING_BROKER_UID.name)
             .ok_or(Error::MissingConfig("HATCHLING_BROKER_UID"))?
             .parse::<u32>()
@@ -142,6 +149,7 @@ impl Config {
             cell_id,
             broker,
             broker_uid,
+            vault_fd,
             log_level,
             model_endpoint: get(env::HATCHLING_MODEL_ENDPOINT.name),
             model_name: get(env::HATCHLING_MODEL_NAME.name),
@@ -178,11 +186,16 @@ fn parse_run_history(
 
 /// The inherited connection's descriptor: decimal, above stderr.
 fn parse_connection_fd(raw: &str) -> Result<i32, Error> {
+    parse_inherited_fd("HATCHLING_CONNECTION_FD", raw)
+}
+
+/// An inherited descriptor named by `key`: decimal, above stderr.
+fn parse_inherited_fd(key: &'static str, raw: &str) -> Result<i32, Error> {
     raw.parse::<i32>()
         .ok()
         .filter(|fd| *fd > 2)
         .ok_or_else(|| Error::InvalidConfig {
-            key: "HATCHLING_CONNECTION_FD",
+            key,
             reason: String::from("expected a descriptor above stderr, in decimal"),
         })
 }
@@ -361,6 +374,30 @@ mod tests {
             );
         }
         assert_eq!(parse_connection_fd("3").unwrap(), 3);
+    }
+
+    /// A cell's vault channel is its own descriptor, above stderr; a cell
+    /// given none has none.
+    #[test]
+    fn a_cells_vault_channel_is_read_from_its_descriptor() {
+        let mut vars = valid_vars();
+        assert_eq!(Config::parse(lookup(&vars)).unwrap().vault_fd, None);
+        vars.insert("HATCHLING_VAULT_FD", "8");
+        assert_eq!(Config::parse(lookup(&vars)).unwrap().vault_fd, Some(8));
+        for raw in ["2", "-1", "eight", ""] {
+            vars.insert("HATCHLING_VAULT_FD", raw);
+            assert!(
+                matches!(
+                    Config::parse(lookup(&vars)),
+                    Err(Error::InvalidConfig {
+                        key: "HATCHLING_VAULT_FD",
+                        ..
+                    })
+                ),
+                "{raw:?}"
+            );
+        }
+        assert_eq!(parse_inherited_fd("K", "9").unwrap(), 9);
     }
 
     #[test]

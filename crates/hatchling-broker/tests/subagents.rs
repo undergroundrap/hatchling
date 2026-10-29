@@ -692,6 +692,7 @@ fn agent_parent(
         run_subagent: false,
         run_chat: false,
         run_history: Vec::new(),
+        vault_fd: None,
     };
     let cell = hatchling_agent::Cell::new(agent)
         .check_preconditions()

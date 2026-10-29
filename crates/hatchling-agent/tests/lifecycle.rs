@@ -25,6 +25,7 @@ fn config_for(socket_path: &str, broker_uid: u32) -> Result<Config, Error> {
         run_subagent: false,
         run_chat: false,
         run_history: Vec::new(),
+        vault_fd: None,
     })
 }
 

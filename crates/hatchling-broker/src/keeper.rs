@@ -120,14 +120,6 @@ impl Role {
 enum Request {
     /// The broker's own read of `names`, for `purpose`.
     Read { purpose: String, names: Vec<String> },
-    /// A cell's vault op, from the cell `cell` whose peer uid is `uid`,
-    /// whose session holds `grants` (each `action:name`).
-    Cell {
-        op: VaultOp,
-        cell: String,
-        uid: u32,
-        grants: Vec<String>,
-    },
     /// The values a gate scans outgoing text for, for `purpose`: the
     /// keeper chooses them.
     Scan { purpose: String },
@@ -140,13 +132,9 @@ enum Reply {
     /// Which of the names held a secret. Each one that did follows in a
     /// frame of its own: its bytes, raw.
     Read { found: Vec<bool> },
-    /// A cell op's result.
-    Cell { result: VaultResult },
     /// How many values a scan holds. Each follows in a frame of its own:
     /// its bytes, raw.
     Scan { count: usize },
-    /// The cell's request was malformed: its session ends.
-    Protocol { reason: String },
     /// Refused: not a read the configuration gives the purpose, or one
     /// that couldn't be made or recorded.
     Refused { reason: String },
@@ -569,9 +557,7 @@ impl Keeper {
         let found = match reply {
             Reply::Read { found } => found,
             Reply::Refused { reason } => return Err(Error::Keeper { reason }),
-            other @ (Reply::Cell { .. } | Reply::Protocol { .. } | Reply::Scan { .. }) => {
-                return Err(unexpected(&other));
-            }
+            other @ Reply::Scan { .. } => return Err(unexpected(&other)),
         };
         let mut frames = frames.into_iter();
         found
@@ -618,44 +604,7 @@ impl Keeper {
                 .map(|bytes| Secret::new(bytes.to_vec()).map_err(|source| Error::Vault { source }))
                 .collect(),
             Reply::Refused { reason } => Err(Error::Keeper { reason }),
-            other @ (Reply::Read { .. } | Reply::Cell { .. } | Reply::Protocol { .. }) => {
-                Err(unexpected(&other))
-            }
-        }
-    }
-
-    /// A cell's vault op, answered by the keeper: as
-    /// [`handle_vault_op`], under the grants its session holds, `grants`,
-    /// where the keeper's configuration grants them too. The keeper can't
-    /// be reached: the op failed, and the session goes on.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::SessionProtocol`] when the op was malformed.
-    pub fn cell_op(
-        &self,
-        op: &VaultOp,
-        cell: &CellId,
-        uid: u32,
-        grants: &[VaultGrant],
-    ) -> Result<VaultResult, Error> {
-        let request = Request::Cell {
-            op: op.clone(),
-            cell: cell.to_string(),
-            uid,
-            grants: grants.iter().map(grant_word).collect(),
-        };
-        match self.exchange(|stream| ask(stream, &request)) {
-            Ok(Reply::Cell { result }) => Ok(result),
-            Ok(Reply::Protocol { reason }) => Err(Error::SessionProtocol { reason }),
-            Ok(other @ (Reply::Read { .. } | Reply::Refused { .. } | Reply::Scan { .. })) => {
-                tracing::error!(error = %unexpected(&other), "vault op failed at the keeper");
-                Ok(VaultResult::VaultError)
-            }
-            Err(error) => {
-                tracing::error!(%error, "vault op failed at the keeper");
-                Ok(VaultResult::VaultError)
-            }
+            other @ Reply::Read { .. } => Err(unexpected(&other)),
         }
     }
 
@@ -753,9 +702,7 @@ fn keeper_gone(error: impl std::fmt::Display) -> Error {
 fn unexpected(reply: &Reply) -> Error {
     let kind = match reply {
         Reply::Read { .. } => "read",
-        Reply::Cell { .. } => "cell",
         Reply::Scan { .. } => "scan",
-        Reply::Protocol { .. } => "protocol",
         Reply::Refused { .. } => "refused",
     };
     Error::Keeper {
@@ -1060,18 +1007,6 @@ fn serve(stream: &UnixStream, kept: &Mutex<Kept>, role: Role) -> Result<(), Erro
                 answer_read(stream, kept, role, &purpose, &names)?;
             }
             Request::Scan { purpose } => answer_scan(stream, kept, &purpose)?,
-            Request::Cell {
-                op,
-                cell,
-                uid,
-                grants,
-            } => {
-                let reply = match cell_op_result(kept, &op, &cell, uid, &grants) {
-                    Ok(result) => Reply::Cell { result },
-                    Err(reason) => Reply::Protocol { reason },
-                };
-                send(stream, &reply)?;
-            }
         }
         drop(guard);
     }
@@ -1603,10 +1538,8 @@ mod tests {
         assert!(
             serde_json::from_str::<Reply>(r#"{"reply":"read","found":[true],"key":"x"}"#).is_err()
         );
-        let gone = unexpected(&Reply::Protocol {
-            reason: String::new(),
-        });
-        assert!(gone.to_string().contains("(protocol)"), "{gone}");
+        let gone = unexpected(&Reply::Scan { count: 0 });
+        assert!(gone.to_string().contains("(scan)"), "{gone}");
     }
 
     /// No keeper runs in a process that didn't start one; one the broker
@@ -1744,14 +1677,6 @@ mod tests {
             assert!(keeper.read("egress", &names(&["token"])).is_err());
             let scan = format!("{:?}", keeper.scan("output-gate"));
             assert!(scan.contains("only reads"), "{scan}");
-            let op = VaultOp::Fetch {
-                name: String::from("token"),
-            };
-            let cell: CellId = "c".parse().unwrap();
-            assert_eq!(
-                keeper.cell_op(&op, &cell, 7, &[]).unwrap(),
-                VaultResult::VaultError
-            );
             drop(keeper);
             serving.join().unwrap()
         });
@@ -1880,19 +1805,19 @@ mod tests {
         ));
     }
 
-    /// A session's vault op goes to the keeper with the session's own
-    /// grants: a run that holds none of the agent's is refused its secret
-    /// by the keeper, and one that holds the grant is given it.
+    /// With a keeper running, a session's vault op sent to the broker is
+    /// denied, whatever its grants: it is the keeper's, on the cell's own
+    /// channel, and the broker reads no secret for it. Without one, the
+    /// broker answers it as before.
     #[test]
-    fn a_sessions_vault_op_reaches_the_keeper_with_its_own_grants() {
+    fn a_vault_op_sent_to_the_broker_is_denied_when_a_keeper_runs() {
         let mut config = crate::api_auth::tests::owner_config(None);
-        let dir = crate::api_auth::tests::scratch("keeper-session-grants");
+        let dir = crate::api_auth::tests::scratch("keeper-session-denied");
         config.vault.root = dir.0.join("vault");
-        let fetch_token = VaultGrant {
+        config.vault.grants = vec![VaultGrant {
             action: hatchling_core::VaultAction::Fetch,
             name: "token".parse().unwrap(),
-        };
-        config.vault.grants = vec![fetch_token.clone()];
+        }];
         let master = MasterKey::generate().unwrap();
         hatchling_vault::SealedVault::open(&config.vault.root, &master)
             .unwrap()
@@ -1901,37 +1826,17 @@ mod tests {
                 &Secret::new(b"t".to_vec()).unwrap(),
             )
             .unwrap();
-        let keys = || StoreKeys::unwrap(&master, &[(Store::SECRETS, &config.vault.root)]).unwrap();
-        let mut run = config.vault.clone();
-        run.grants = Vec::new();
-        let kept = Mutex::new(Kept {
-            releases: Releases::of(&config, BTreeSet::new()),
-            config: config.clone(),
-            keys: keys(),
-            released: BTreeSet::new(),
-        });
-        let (ours, theirs) = UnixStream::pair().unwrap();
-        std::thread::scope(|scope| {
-            let serving = scope.spawn(|| serve(&theirs, &kept, Role::Broker));
-            let keeper = Keeper::over(ours).unwrap();
-            let op = VaultOp::Fetch {
-                name: String::from("token"),
-            };
-            let cell: CellId = "run-1".parse().unwrap();
-            let through = |vault: &VaultConfig| {
-                crate::secrets::vault_op_through(Some(&keeper), vault, &keys(), &op, &cell, 7)
-                    .unwrap()
-            };
-            assert_eq!(
-                through(&run),
-                VaultResult::Denied,
-                "a run fetched the agent's secret"
-            );
-            run.grants = vec![fetch_token];
-            assert!(matches!(through(&run), VaultResult::Fetched { .. }));
-            drop(keeper);
-            assert!(serving.join().unwrap().is_ok());
-        });
+        let (ours, _theirs) = UnixStream::pair().unwrap();
+        let keeper = Keeper::over(ours).unwrap();
+        let op = VaultOp::Fetch {
+            name: String::from("token"),
+        };
+        let cell: CellId = "run-1".parse().unwrap();
+        let through = |keeper: Option<&Keeper>| {
+            crate::secrets::vault_op_through(keeper, &config.vault, &master, &op, &cell, 7).unwrap()
+        };
+        assert_eq!(through(Some(&keeper)), VaultResult::Denied);
+        assert!(matches!(through(None), VaultResult::Fetched { .. }));
     }
 
     /// On the broker's channel, the keeper answers the broker as before:
@@ -1966,13 +1871,10 @@ mod tests {
             let refused = format!("{:?}", keeper.read("search", &names(&["search-brave"])));
             assert!(refused.contains("no such read"), "{refused}");
             assert!(keeper.scan("output-gate").unwrap().is_empty());
-            let op = VaultOp::Fetch {
-                name: String::from("token"),
-            };
-            let cell: CellId = "c".parse().unwrap();
-            assert_eq!(
-                keeper.cell_op(&op, &cell, 7, &[]).unwrap(),
-                VaultResult::Denied
+            // A cell's vault op isn't a request the broker can make.
+            assert!(
+                serde_json::from_str::<Request>(r#"{"request":"cell","cell":"c","uid":7}"#)
+                    .is_err()
             );
             drop(keeper);
             assert!(serving.join().unwrap().is_ok());
