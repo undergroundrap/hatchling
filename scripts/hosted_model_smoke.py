@@ -303,6 +303,12 @@ def run(repo, artifacts, work, mode, fixtures):
     model = 'qwen3-0.6b'
     secret_file = state / 'vault' / ('egress-' + re.sub(r'[^A-Za-z0-9]', '-', destination))
     private_file(secret_file, key)
+    # A secret the run is granted and, with the stand-in, fetches: it goes
+    # from the vault keeper to the cell on the cell's own vault channel,
+    # never through the broker (WO-031).
+    canary = ('hatchling-canary-' + secrets.token_urlsafe(24)).encode('ascii')
+    private_file(state / 'vault' / 'app-canary', canary)
+    private_file(work / 'canary', canary)
     # The cell's mapped UID cannot traverse a maintainer's private home. Keep
     # only the built programs on a readable path in this namespace's tmpfs.
     binaries = Path('/tmp/hatchling-hosted-bin')
@@ -323,7 +329,8 @@ def run(repo, artifacts, work, mode, fixtures):
                HATCHLING_CHANNEL_INGRESS=str(state / 'ingress.sock'), HATCHLING_API_SOCKET=str(state / 'api.sock'),
                HATCHLING_SCHEDULER_MODEL_ENDPOINT=endpoint, HATCHLING_SCHEDULER_MODEL_NAME=model,
                HATCHLING_EGRESS_ALLOWLIST=('local:' if mode == 'local' else 'internal:') + destination,
-               HATCHLING_EGRESS_GRANTS=destination, HATCHLING_API_GRANTS='egress:' + destination + ',channel-send:local',
+               HATCHLING_EGRESS_GRANTS=destination, HATCHLING_VAULT_GRANTS='fetch:app-canary',
+               HATCHLING_API_GRANTS='egress:' + destination + ',channel-send:local,vault:fetch:app-canary',
                NO_COLOR='1', PYTHONDONTWRITEBYTECODE='1', PYTHONUNBUFFERED='1',
                # The smoke's client runs as root in its own namespaces: the
                # broker's owner is root here, not the user who ran sudo.
@@ -338,7 +345,9 @@ def run(repo, artifacts, work, mode, fixtures):
         command = [sys.executable, str(repo / 'scripts/https_model_fixture.py'), '--repo', str(repo),
                    '--key-file', str(key_file), '--cert-file', str(work / 'server.crt'),
                    '--private-key-file', str(work / 'server.key'), '--port', '18090',
-                   '--armed', str(work / 'armed'), '--release', str(work / 'release')]
+                   '--armed', str(work / 'armed'), '--release', str(work / 'release'),
+                   '--vault-canary', 'app-canary', '--canary-file', str(work / 'canary'),
+                   '--canary-seen', str(work / 'canary-seen')]
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
                     urllib.request.HTTPSHandler(context=ssl.create_default_context(cafile=work / 'ca.crt')))
     else:
@@ -448,6 +457,11 @@ def run(repo, artifacts, work, mode, fixtures):
         # The broker never holds the credential it had forwarded for it:
         # the keeper releases it to the egress authority alone. Nor can its
         # user read the vault the keeper keeps it in.
+        if mode == 'https':
+            seen = (work / 'canary-seen').read_text() if (work / 'canary-seen').exists() else 'no fetch'
+            require(seen == 'fetched-redacted', 'The run did not fetch the canary, redacted: ' + seen)
+        canary_held, _ = memory_holds(broker.pid, canary)
+        require(not canary_held, 'The broker held the vault canary a cell fetched')
         held, scanned = memory_holds(broker.pid, key)
         require(scanned > 0 and not held, 'The broker\'s memory was unread or held the test credential')
         broker_user = pwd.getpwnam('hatchling-broker')
@@ -469,6 +483,7 @@ def run(repo, artifacts, work, mode, fixtures):
         if mode == 'https':
             require_answer([answer], expected_answer(repo / 'docs/examples/stand-in-model.py'))
         broker_text = re.sub(r'\x1b\[[0-9;]*m', '', (pending / 'broker.log').read_text(encoding='utf-8'))
+        require(canary.decode('ascii') not in broker_text, 'The broker logged the vault canary')
         observed = observations[0]
         require(any('agent session established' in line and f'peer_uid={uid}' in line
                     and f'cell_id={observed["run_id"]}' in line for line in broker_text.splitlines()),
