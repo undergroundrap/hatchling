@@ -44,6 +44,23 @@ struct LocalServer {
     handle: Option<JoinHandle<()>>,
 }
 
+/// A loopback port nothing listens on, held for as long as the returned
+/// socket lives: bound, without `SO_REUSEADDR`, and never listening, so the
+/// kernel refuses a connection to it and gives no other socket its port.
+fn unreachable_port() -> (rustix::fd::OwnedFd, u16) {
+    use rustix::net::{AddressFamily, SocketAddrAny, SocketType};
+    let socket = rustix::net::socket(AddressFamily::INET, SocketType::STREAM, None).unwrap();
+    rustix::net::bind_v4(
+        &socket,
+        &std::net::SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 0),
+    )
+    .unwrap();
+    let SocketAddrAny::V4(bound) = rustix::net::getsockname(&socket).unwrap() else {
+        unreachable!("an IPv4 socket's own address is IPv4");
+    };
+    (socket, bound.port())
+}
+
 impl LocalServer {
     fn start(replies: Vec<String>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -432,12 +449,10 @@ fn the_handshake_is_rerun_every_session() {
 
 #[test]
 fn an_unreachable_local_endpoint_fails_loudly_before_the_task() {
-    // A port bound and released: nothing listens on it.
-    let port = TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
+    // A port held by a socket bound and never listening: a connection to
+    // it is refused. A port bound and released could be handed to another
+    // test's server running in parallel, whose script this test would eat.
+    let (_held, port) = unreachable_port();
     let broker = local_broker("local-unreachable", port);
     let cell = ready_cell(&broker);
     let error = cell
