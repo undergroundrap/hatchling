@@ -389,6 +389,7 @@ mod tests {
             run_subagent: false,
             run_chat: false,
             run_history: Vec::new(),
+            vault_fd: None,
         };
         assert_eq!(prompt_for(&config), hatchling_loop::PromptKind::Worker);
         config.run_chat = true;

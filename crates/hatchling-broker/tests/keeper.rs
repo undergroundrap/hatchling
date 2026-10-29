@@ -294,14 +294,15 @@ fn the_keeper_runs_only_as_the_broker_starts_it() {
 }
 
 /// The broker's end of the keeper: a read for a purpose the
-/// configuration gives it comes back as the secret, any other is refused,
-/// and a cell's vault op is answered under the grants both the
-/// configuration and the cell's session hold: a run's session, holding
-/// fewer than the agent, is refused the rest.
+/// configuration gives it comes back as the secret, and any other is
+/// refused. A cell's vault op, on the cell's own channel the spawner hands
+/// over, is answered under the grants both the configuration and the
+/// cell's session hold: a run's session, holding fewer than the agent, is
+/// refused the rest.
 #[test]
 fn the_brokers_end_reads_through_the_keeper() {
     use hatchling_broker::keeper::Keeper;
-    use hatchling_core::{CellId, VaultOp, VaultResult};
+    use hatchling_core::{SessionRequest, SessionResponse, VaultOp, VaultResult};
     let dir = scratch("client").unwrap();
     sealed_vault(
         &dir,
@@ -314,7 +315,7 @@ fn the_brokers_end_reads_through_the_keeper() {
         .env("HATCHLING_VAULT_GRANTS", "fetch:token")
         .stdin(Stdio::null())
         .stdout(Stdio::null());
-    let (keeper, keys, authoritys, _) = Keeper::start_with(program).unwrap();
+    let (keeper, keys, authoritys, spawners) = Keeper::start_with(program).unwrap();
     assert!(keys.stores().all(|(store, _)| store != Store::SECRETS));
     let name = |text: &str| -> hatchling_core::SecretName { text.parse().unwrap() };
     let authority = Keeper::over(authoritys).unwrap();
@@ -337,40 +338,41 @@ fn the_brokers_end_reads_through_the_keeper() {
         .into_iter();
     assert_eq!(read.next().flatten().unwrap().as_bytes(), b"credential");
     assert!(read.next().is_none());
-    let cell: CellId = "cell-keeper".parse().unwrap();
-    let fetch = |secret: &str| VaultOp::Fetch {
-        name: secret.to_owned(),
+    // A cell's vault channel, handed over as the spawner hands it, named
+    // with the grants its session holds.
+    let ask = |grants: &[&str], secret: &str| {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        ours.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let named = serde_json::json!({ "cell": "cell-keeper", "uid": 1000, "grants": grants });
+        write_frame(&spawners, named.to_string().as_bytes()).unwrap();
+        hatchling_sys::net::send_fd(spawners.as_fd(), theirs.as_fd()).unwrap();
+        drop(theirs);
+        let fetch = SessionRequest::Vault(VaultOp::Fetch {
+            name: secret.to_owned(),
+        });
+        write_frame(&ours, &serde_json::to_vec(&fetch).unwrap()).unwrap();
+        let reply = read_frame(&ours).unwrap();
+        match serde_json::from_slice(&reply).unwrap() {
+            SessionResponse::Vault(result) => result,
+            other => panic!("not a vault reply: {other:?}"),
+        }
     };
-    let grant = |text: &str| hatchling_broker::VaultGrant {
-        action: hatchling_core::VaultAction::Fetch,
-        name: name(text),
-    };
-    let agents = [grant("token")];
     assert!(matches!(
-        keeper
-            .cell_op(&fetch("token"), &cell, 1000, &agents)
-            .unwrap(),
+        ask(&["fetch:token"], "token"),
         VaultResult::Fetched { .. }
     ));
     // A run whose schedule granted no secret, or another one, is refused
     // the agent's.
-    for held in [&[][..], &[grant("other")][..]] {
+    for held in [&[][..], &["fetch:other"][..]] {
         assert_eq!(
-            keeper.cell_op(&fetch("token"), &cell, 1000, held).unwrap(),
+            ask(held, "token"),
             VaultResult::Denied,
             "a run fetched a secret its session wasn't granted"
         );
     }
     // A session's grant the configuration doesn't make is no grant.
     assert_eq!(
-        keeper
-            .cell_op(
-                &fetch("egress-localhost-18089"),
-                &cell,
-                1000,
-                &[grant("egress-localhost-18089")]
-            )
-            .unwrap(),
+        ask(&["fetch:egress-localhost-18089"], "egress-localhost-18089"),
         VaultResult::Denied
     );
     drop(keeper);

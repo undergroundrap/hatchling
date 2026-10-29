@@ -65,6 +65,9 @@ pub struct Cell<State> {
     config: Config,
     /// The open broker connection, if this state has one.
     broker: Option<UnixStream>,
+    /// The cell's own vault channel, to the vault keeper, when it was
+    /// given one: adopted with the broker connection (WO-031).
+    vault: Option<UnixStream>,
     /// Lifecycle marker. Zero-sized; exists only at compile time.
     state: PhantomData<State>,
 }
@@ -76,6 +79,7 @@ impl Cell<Configured> {
         Self {
             config,
             broker: None,
+            vault: None,
             state: PhantomData,
         }
     }
@@ -99,6 +103,7 @@ impl Cell<Configured> {
             return Ok(Cell {
                 config: self.config,
                 broker: None,
+                vault: None,
                 state: PhantomData,
             });
         };
@@ -118,6 +123,7 @@ impl Cell<Configured> {
         Ok(Cell {
             config: self.config,
             broker: None,
+            vault: None,
             state: PhantomData,
         })
     }
@@ -154,6 +160,15 @@ impl<State> Cell<State> {
             .as_ref()
             .expect("broker connection missing on a connected cell")
     }
+
+    /// Where this cell's vault ops go: its own vault channel, to the vault
+    /// keeper, when it was given one; else its broker connection.
+    const fn vault_channel(&self) -> &UnixStream {
+        match &self.vault {
+            Some(vault) => vault,
+            None => self.connection(),
+        }
+    }
 }
 
 impl Cell<PreconditionsChecked> {
@@ -184,9 +199,23 @@ impl Cell<PreconditionsChecked> {
                     reason: source.to_string(),
                 })?,
         };
+        // Its vault channel, when it was given one, is adopted the same way.
+        let vault = self
+            .config
+            .vault_fd
+            .map(|fd| {
+                hatchling_sys::net::inherited_unix_stream(fd).map_err(|source| {
+                    Error::BrokerConnection {
+                        fd,
+                        reason: source.to_string(),
+                    }
+                })
+            })
+            .transpose()?;
         Ok(Cell {
             config: self.config,
             broker: Some(stream),
+            vault,
             state: PhantomData,
         })
     }
@@ -214,6 +243,14 @@ impl Cell<BrokerConnected> {
         if actual != expected {
             return Err(Error::BrokerUnauthorized { expected, actual });
         }
+        // The vault channel was made with the connection, by the same
+        // maker: its peer is held to the same uid.
+        if let Some(vault) = &self.vault {
+            let actual = peer_credentials(vault)?.uid();
+            if actual != expected {
+                return Err(Error::BrokerUnauthorized { expected, actual });
+            }
+        }
         tracing::info!(
             broker_uid = %actual,
             broker_pid = %credentials.pid(),
@@ -222,6 +259,7 @@ impl Cell<BrokerConnected> {
         Ok(Cell {
             config: self.config,
             broker: self.broker,
+            vault: self.vault,
             state: PhantomData,
         })
     }
@@ -244,6 +282,7 @@ impl Cell<PeerAuthorized> {
         Ok(Cell {
             config: self.config,
             broker: self.broker,
+            vault: self.vault,
             state: PhantomData,
         })
     }
@@ -272,7 +311,7 @@ impl Cell<Ready> {
     /// [`Error::VaultIo`] on transport failure, or
     /// [`Error::VaultProtocol`] on a malformed broker reply.
     pub fn vault_store(&self, name: &str, secret: &[u8]) -> Result<(), Error> {
-        vault::store(self.connection(), name, secret)
+        vault::store(self.vault_channel(), name, secret)
     }
 
     /// Fetches the secret stored under `name` from the broker-mediated
@@ -282,7 +321,7 @@ impl Cell<Ready> {
     ///
     /// Same as [`vault_store`](Self::vault_store).
     pub fn vault_fetch(&self, name: &str) -> Result<Option<Vec<u8>>, Error> {
-        vault::fetch(self.connection(), name)
+        vault::fetch(self.vault_channel(), name)
     }
 
     /// Removes the secret stored under `name` from the broker-mediated
@@ -292,7 +331,7 @@ impl Cell<Ready> {
     ///
     /// Same as [`vault_store`](Self::vault_store).
     pub fn vault_remove(&self, name: &str) -> Result<(), Error> {
-        vault::remove(self.connection(), name)
+        vault::remove(self.vault_channel(), name)
     }
 
     /// Runs the skill with the exact id `skill` (`name@version`) on
@@ -432,7 +471,7 @@ impl Cell<Ready> {
         let children = crate::subagent::Children::default();
         let mut registry = hatchling_loop::ToolRegistry::new();
         registry.register(Box::new(crate::tools::VaultFetchTool::new(
-            self.connection(),
+            self.vault_channel(),
             redactor,
         )));
         registry.register(Box::new(crate::tools::EgressRequestTool::new(
@@ -554,6 +593,7 @@ mod tests {
             run_subagent: false,
             run_chat: false,
             run_history: Vec::new(),
+            vault_fd: None,
         }
     }
 

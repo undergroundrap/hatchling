@@ -4,6 +4,7 @@ hatchling_core::declare_environment! {
     pub,
     HATCHLING_CELL_ID: ("required", "Identity supplied by the broker."),
     HATCHLING_BROKER_SOCKET: ("required without a connection", "Absolute broker socket path inside the cell."),
+    HATCHLING_VAULT_FD: ("set by the cell", "Inherited descriptor of the cell's own vault channel, to the vault keeper; its vault ops go there, not to the broker."),
     HATCHLING_CONNECTION_FD: ("set by the cell", "Inherited descriptor of the cell's own broker connection; used instead of the socket."),
     HATCHLING_BROKER_UID: ("required", "Expected kernel uid of the broker peer."),
     HATCHLING_LOG_LEVEL: ("optional; default info", "Log verbosity: error, warn, info, debug or trace."),

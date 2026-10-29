@@ -141,9 +141,10 @@ pub(crate) fn handle_vault_op(
     vault_op_through(crate::keeper::keeper(), vault_config, key, op, cell_id, uid)
 }
 
-/// As [`handle_vault_op`], answered by `keeper` when one runs: under the
-/// grants `vault_config` gives the session, which a run, a subagent or a
-/// chat holds fewer of than the agent.
+/// As [`handle_vault_op`], where `keeper` says whether a vault keeper
+/// runs. When one does, a cell's vault ops are the keeper's alone, on the
+/// cell's own vault channel (WO-031): one sent to the broker is denied,
+/// and the broker reads no secret for it.
 ///
 /// # Errors
 ///
@@ -156,8 +157,9 @@ pub(crate) fn vault_op_through(
     cell_id: &CellId,
     uid: u32,
 ) -> Result<VaultResult, Error> {
-    if let Some(keeper) = keeper {
-        return keeper.cell_op(op, cell_id, uid, &vault_config.grants);
+    if keeper.is_some() {
+        tracing::warn!(cell_id = %cell_id, "a vault op sent to the broker: denied, it is the keeper's");
+        return Ok(VaultResult::Denied);
     }
     let result = vault_op_result(vault_config, key, op, cell_id)?;
     // Every access is recorded. One that went ahead but cannot be

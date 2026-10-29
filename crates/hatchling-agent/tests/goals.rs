@@ -47,6 +47,7 @@ fn ready_cell(broker: &FixtureBroker) -> Result<Cell<Ready>, Error> {
         run_subagent: false,
         run_chat: false,
         run_history: Vec::new(),
+        vault_fd: None,
     };
     let cell = Cell::new(config)
         .check_preconditions()?
