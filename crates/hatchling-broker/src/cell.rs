@@ -128,6 +128,12 @@ pub struct CellConfig {
     /// nothing about one. Set for the broker's own agent cell.
     #[serde(default)]
     pub connected: bool,
+    /// The vault grants a connected agent cell's session holds, each
+    /// `action:name`, when it gets a vault channel (WO-031): the spawner
+    /// hands the channel's other end to the vault keeper, named with them,
+    /// never to the broker. `None` without one.
+    #[serde(default)]
+    pub vault_grants: Option<Vec<String>>,
 }
 
 /// Where cells get their uid and gid: `HATCHLING_CELL_IDS`.
@@ -759,6 +765,7 @@ impl CellConfig {
             limits: CellLimits::parse(&get)?,
             cgroup: cgroup_parent(&get)?,
             connected: false,
+            vault_grants: None,
         })
     }
 
@@ -1046,6 +1053,7 @@ impl CellConfig {
             limits: CellLimits::parse(&get)?,
             cgroup: cgroup_parent(&get)?,
             connected: false,
+            vault_grants: None,
         })
     }
 }
@@ -1096,6 +1104,12 @@ impl CellHandle {
     /// for a cell that isn't connected, or once taken.
     pub fn connection(&mut self) -> Option<std::os::unix::net::UnixStream> {
         self.cell.connection()
+    }
+
+    /// The owner's end of the cell's vault channel, once: `None` for a
+    /// cell without one, or once taken.
+    pub fn vault_channel(&mut self) -> Option<std::os::unix::net::UnixStream> {
+        self.cell.vault_channel()
     }
 
     /// Waits for the cell to end, returning the platform's raw status
@@ -1345,7 +1359,7 @@ fn cell_spec(config: &CellConfig, log_level: LogLevel) -> CellSpec {
             dir: config.socket_dir.clone(),
         }),
         connection: !config.is_skill_cell() && config.connected,
-        vault_channel: false,
+        vault_channel: config.connected && config.vault_grants.is_some(),
         exposures: cell_exposures(config),
         tools: config.browser.as_ref().map_or_else(
             || {
@@ -1475,6 +1489,7 @@ mod tests {
         let spec = cell_spec(&cell, LogLevel::Error);
         assert_eq!(spec.filter, Filter::Browser);
         assert!(spec.connection, "its own connection");
+        assert!(!spec.vault_channel, "no vault channel");
         assert!(spec.endpoint.is_none(), "no socket");
         assert_eq!(spec.relay, Some(crate::browser_proxy::RELAY_PORT));
         assert_eq!(spec.cgroup, Some(base.join("group")));
@@ -1539,6 +1554,13 @@ mod tests {
                 ),
             ]
         );
+        // A connected cell named with vault grants gets one; an
+        // unconnected one doesn't.
+        let mut agent = cell;
+        agent.vault_grants = Some(Vec::new());
+        assert!(cell_spec(&agent, LogLevel::Error).vault_channel);
+        agent.connected = false;
+        assert!(!cell_spec(&agent, LogLevel::Error).vault_channel);
         std::fs::remove_dir_all(&base).unwrap();
     }
 

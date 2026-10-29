@@ -487,9 +487,16 @@ impl<'scope> CellLauncher<'scope, '_> {
         let (cell, cgroup) = cell
             .supervised_cgroup()
             .map_err(|err| cleanup(format!("cannot prepare the run cgroup: {err}")))?;
+        let run_config = scoped(&token, socket);
+        // The run's own grants name its vault channel, when the spawner
+        // hands it to the keeper (WO-031).
+        let cell = CellConfig {
+            vault_grants: crate::spawner::spawner()
+                .and_then(|spawner| spawner.vault_grants(&run_config.vault)),
+            ..cell
+        };
         let spec = serde_json::to_string(&cell)
             .map_err(|err| cleanup(format!("cannot encode the run cell: {err}")))?;
-        let run_config = scoped(&token, socket);
         let key = self.key;
         let stop = Arc::new(AtomicBool::new(false));
         let session_stop = Arc::clone(&stop);
@@ -915,6 +922,11 @@ fn run_helper(spec: Option<&str>) -> Result<i32, Error> {
     watch.exit_with_parent(1);
     if let Some(handoff) = handoff {
         hand_over_connection(&handoff, cell.connection())?;
+        // Its vault channel next, when it has one: the spawner, which
+        // reads this handoff, gives it to the keeper, not the broker.
+        if config.vault_grants.is_some() {
+            hand_over_vault(&handoff, cell.vault_channel())?;
+        }
     }
     Ok(cell.wait_exit()?.code)
 }
@@ -946,6 +958,21 @@ fn hand_over_connection(handoff: &UnixStream, connection: Option<UnixStream>) ->
         Error::CellSpawn {
             reason: format!("cannot hand the run's connection to the broker: {source}"),
         }
+    })
+}
+
+/// Sends `vault`, the owner's end of a run cell's vault channel, on
+/// `handoff`, after its connection, and keeps no copy.
+///
+/// # Errors
+///
+/// [`Error::CellSpawn`] if the cell came without it, or the send fails.
+fn hand_over_vault(handoff: &UnixStream, vault: Option<UnixStream>) -> Result<(), Error> {
+    let vault = vault.ok_or_else(|| Error::CellSpawn {
+        reason: String::from("the run cell came without its vault channel"),
+    })?;
+    hatchling_sys::net::send_fd(handoff.as_fd(), vault.as_fd()).map_err(|source| Error::CellSpawn {
+        reason: format!("cannot hand over the run's vault channel: {source}"),
     })
 }
 
@@ -1672,6 +1699,40 @@ mod tests {
         assert!(matches!(
             hand_over_connection(&handoff, Some(cell_end)),
             Err(Error::CellSpawn { reason }) if reason.starts_with("cannot hand the run's connection")
+        ));
+    }
+
+    /// The helper hands over its cell's vault channel as it does the
+    /// connection, and keeps no copy; a cell without one is refused.
+    #[test]
+    fn a_run_cells_helper_hands_over_its_vault_channel() {
+        use std::io::{Read as _, Write as _};
+        let (handoff, spawner) = UnixStream::pair().unwrap();
+        spawner
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let (cell_end, mut program) = UnixStream::pair().unwrap();
+        hand_over_vault(&handoff, Some(cell_end)).unwrap();
+        let mut received = UnixStream::from(hatchling_sys::net::recv_fd(spawner.as_fd()).unwrap());
+        program.write_all(b"v").unwrap();
+        let mut got = [0u8; 1];
+        received.read_exact(&mut got).unwrap();
+        assert_eq!(&got, b"v");
+        drop(received);
+        let mut rest = Vec::new();
+        program
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        assert_eq!(program.read_to_end(&mut rest).unwrap(), 0);
+        assert!(matches!(
+            hand_over_vault(&handoff, None),
+            Err(Error::CellSpawn { reason }) if reason == "the run cell came without its vault channel"
+        ));
+        handoff.shutdown(std::net::Shutdown::Write).unwrap();
+        let (cell_end, _program) = UnixStream::pair().unwrap();
+        assert!(matches!(
+            hand_over_vault(&handoff, Some(cell_end)),
+            Err(Error::CellSpawn { reason }) if reason.starts_with("cannot hand over the run's vault channel")
         ));
     }
 

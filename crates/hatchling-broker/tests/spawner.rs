@@ -3,7 +3,8 @@
 
 use std::fs::File;
 use std::io::{self, Read as _};
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsFd as _, OwnedFd};
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -46,14 +47,16 @@ fn stdio() -> io::Result<([OwnedFd; 3], File)> {
 /// The spawner, started as the broker starts it, with a broker's settings
 /// under `dir`: it reads its policy from them.
 fn spawner(dir: &std::path::Path) -> Result<Spawner, hatchling_broker::Error> {
-    spawner_with(dir, rustix::process::getuid().as_raw(), None)
+    spawner_with(dir, rustix::process::getuid().as_raw(), None, None)
 }
 
-/// [`spawner`], for agents as `agent_uid`, running `agent` if given.
+/// [`spawner`], for agents as `agent_uid`, running `agent` if given, and
+/// handing cells' vault channels on `keeper` if given.
 fn spawner_with(
     dir: &std::path::Path,
     agent_uid: u32,
     agent: Option<&std::path::Path>,
+    keeper: Option<&UnixStream>,
 ) -> Result<Spawner, hatchling_broker::Error> {
     let path = |name: &str| dir.join(name).display().to_string();
     let mut program = Command::new(env!("CARGO_BIN_EXE_hatchling-broker"));
@@ -67,7 +70,7 @@ fn spawner_with(
     if let Some(agent) = agent {
         program.env("HATCHLING_AGENT_BIN", agent);
     }
-    Spawner::start_with(program)
+    Spawner::start_with(program, keeper)
 }
 
 /// A run directory of the broker's own, as the spawner's policy knows
@@ -150,8 +153,8 @@ fn the_real_spawner_starts_the_brokers_agent_cell_and_hands_back_its_connection(
     let dir = run_dir("agent").map_err(|e| format!("run dir: {e}"))?;
     let agent = common::agent_binary()?;
     let uid = common::mapped_agent_uid();
-    let spawner =
-        spawner_with(&dir, uid, Some(&agent)).map_err(|e| format!("start the spawner: {e}"))?;
+    let spawner = spawner_with(&dir, uid, Some(&agent), None)
+        .map_err(|e| format!("start the spawner: {e}"))?;
     let socket = dir.join("broker.sock");
     let config = common::broker_config(&socket, uid)?;
     let mut cell = common::cell_config(&socket, uid)?;
@@ -182,6 +185,90 @@ fn the_real_spawner_starts_the_brokers_agent_cell_and_hands_back_its_connection(
         .map_err(|e| format!("wait for the helper: {e}"))?;
     if exit.code != 0 {
         return Err(format!("the helper exited {}", exit.code));
+    }
+    drop(spawner);
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// With a keeper's channel, the real spawner gives the broker's agent cell
+/// a vault channel: the broker gets the cell's connection, and the keeper,
+/// played here, gets the vault channel, named with the cell, its uid and
+/// the grants the broker gave it. The cell holds the other end until it
+/// exits.
+#[test]
+fn the_real_spawner_hands_an_agent_cells_vault_channel_to_the_keeper() -> Result<(), String> {
+    if !common::guard_cell_available()? {
+        return Ok(());
+    }
+    let dir = run_dir("vault").map_err(|e| format!("run dir: {e}"))?;
+    let agent = common::agent_binary()?;
+    let uid = common::mapped_agent_uid();
+    let (spawners, keeper) = UnixStream::pair().map_err(|e| format!("pair: {e}"))?;
+    let spawner = spawner_with(&dir, uid, Some(&agent), Some(&spawners))
+        .map_err(|e| format!("start the spawner: {e}"))?;
+    drop(spawners);
+    keeper
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .map_err(|e| format!("set timeout: {e}"))?;
+    let socket = dir.join("broker.sock");
+    let config = common::broker_config(&socket, uid)?;
+    let mut cell = common::cell_config(&socket, uid)?;
+    cell.connected = true;
+    cell.vault_grants = Some(vec![String::from("fetch:token")]);
+    let (process, connection) = spawner.agent_cell(&cell)?;
+    connection
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .map_err(|e| format!("set timeout: {e}"))?;
+    let naming = hatchling_core::framing::read_frame(&keeper)
+        .map_err(|e| format!("the keeper wasn't told of a vault channel: {e}"))?;
+    let naming: serde_json::Value =
+        serde_json::from_slice(&naming).map_err(|e| format!("naming: {e}"))?;
+    let expected = serde_json::json!({
+        "cell": cell.cell_id,
+        "uid": cell.uid_base,
+        "grants": ["fetch:token"],
+    });
+    if naming != expected {
+        return Err(format!("named {naming}, not {expected}"));
+    }
+    let mut vault = UnixStream::from(
+        hatchling_sys::net::recv_fd(keeper.as_fd())
+            .map_err(|e| format!("the keeper got no vault channel: {e}"))?,
+    );
+    vault
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .map_err(|e| format!("set timeout: {e}"))?;
+    let cell_id = cell.cell_id.parse().map_err(|e| format!("cell id: {e}"))?;
+    let agent_cell = hatchling_broker::AgentCell {
+        connection,
+        cell_id,
+        pid: 0,
+    };
+    let key = hatchling_vault::MasterKey::generate().map_err(|e| format!("key: {e}"))?;
+    hatchling_broker::serve_cell_connection(
+        &agent_cell,
+        &config,
+        &key,
+        &hatchling_broker::Skills::default(),
+        None,
+        None,
+    )
+    .map_err(|e| format!("serve the cell's session: {e}"))?;
+    let exit = process
+        .wait_deadline(Duration::from_secs(30))
+        .map_err(|e| format!("wait for the helper: {e}"))?;
+    if exit.code != 0 {
+        return Err(format!("the helper exited {}", exit.code));
+    }
+    // The cell held the vault channel's other end, and no one else did:
+    // once it has exited, the channel ends.
+    let mut rest = Vec::new();
+    let read = vault
+        .read_to_end(&mut rest)
+        .map_err(|e| format!("read the vault channel: {e}"))?;
+    if read != 0 {
+        return Err(format!("the vault channel carried {read} bytes"));
     }
     drop(spawner);
     let _ = std::fs::remove_dir_all(&dir);
