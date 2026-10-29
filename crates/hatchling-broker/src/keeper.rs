@@ -1694,6 +1694,60 @@ mod tests {
         );
     }
 
+    /// A session's vault op goes to the keeper with the session's own
+    /// grants: a run that holds none of the agent's is refused its secret
+    /// by the keeper, and one that holds the grant is given it.
+    #[test]
+    fn a_sessions_vault_op_reaches_the_keeper_with_its_own_grants() {
+        let mut config = crate::api_auth::tests::owner_config(None);
+        let dir = crate::api_auth::tests::scratch("keeper-session-grants");
+        config.vault.root = dir.0.join("vault");
+        let fetch_token = VaultGrant {
+            action: hatchling_core::VaultAction::Fetch,
+            name: "token".parse().unwrap(),
+        };
+        config.vault.grants = vec![fetch_token.clone()];
+        let master = MasterKey::generate().unwrap();
+        hatchling_vault::SealedVault::open(&config.vault.root, &master)
+            .unwrap()
+            .store(
+                &"token".parse().unwrap(),
+                &Secret::new(b"t".to_vec()).unwrap(),
+            )
+            .unwrap();
+        let keys = || StoreKeys::unwrap(&master, &[(Store::SECRETS, &config.vault.root)]).unwrap();
+        let mut run = config.vault.clone();
+        run.grants = Vec::new();
+        let kept = Mutex::new(Kept {
+            releases: Releases::of(&config, BTreeSet::new()),
+            config: config.clone(),
+            keys: keys(),
+            released: BTreeSet::new(),
+        });
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        std::thread::scope(|scope| {
+            let serving = scope.spawn(|| serve(&theirs, &kept, Role::Broker));
+            let keeper = Keeper::over(ours).unwrap();
+            let op = VaultOp::Fetch {
+                name: String::from("token"),
+            };
+            let cell: CellId = "run-1".parse().unwrap();
+            let through = |vault: &VaultConfig| {
+                crate::secrets::vault_op_through(Some(&keeper), vault, &keys(), &op, &cell, 7)
+                    .unwrap()
+            };
+            assert_eq!(
+                through(&run),
+                VaultResult::Denied,
+                "a run fetched the agent's secret"
+            );
+            run.grants = vec![fetch_token];
+            assert!(matches!(through(&run), VaultResult::Fetched { .. }));
+            drop(keeper);
+            assert!(serving.join().unwrap().is_ok());
+        });
+    }
+
     /// On the broker's channel, the keeper answers the broker as before:
     /// its reads, its gates' scans and cells' ops; search's key is not the
     /// broker's.
