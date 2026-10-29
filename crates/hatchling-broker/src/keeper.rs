@@ -987,7 +987,9 @@ fn grant_word(grant: &VaultGrant) -> String {
 /// grants narrow the keeper's, and never widen them.
 fn held_by(vault: &VaultConfig, held: &[String]) -> VaultConfig {
     let mut vault = vault.clone();
-    vault.grants.retain(|grant| held.contains(&grant_word(grant)));
+    vault
+        .grants
+        .retain(|grant| held.contains(&grant_word(grant)));
     vault
 }
 
@@ -1057,9 +1059,7 @@ fn serve(stream: &UnixStream, kept: &Mutex<Kept>, role: Role) -> Result<(), Erro
                     .map_err(|_| Error::SessionProtocol {
                         reason: String::from("a cell id that doesn't parse"),
                     })
-                    .and_then(|cell| {
-                        handle_vault_op(&vault, &kept.keys, &op, &cell, uid)
-                    });
+                    .and_then(|cell| handle_vault_op(&vault, &kept.keys, &op, &cell, uid));
                 let reply = match reply {
                     Ok(result) => Reply::Cell { result },
                     Err(Error::SessionProtocol { reason }) => Reply::Protocol { reason },
@@ -1188,7 +1188,10 @@ mod tests {
             action,
             name: name.parse().unwrap(),
         };
-        assert_eq!(grant_word(&grant(VaultAction::Store, "token")), "store:token");
+        assert_eq!(
+            grant_word(&grant(VaultAction::Store, "token")),
+            "store:token"
+        );
         let mut vault = crate::api_auth::tests::owner_config(None).vault;
         vault.grants = vec![
             grant(VaultAction::Fetch, "token"),
@@ -1412,7 +1415,7 @@ mod tests {
     fn a_purpose_reads_only_what_the_configuration_gives_it() {
         let mut config = crate::api_auth::tests::owner_config(None);
         config.egress.grants = vec![String::from("api.example.com:443")];
-        config.vault.grants = vec![crate::VaultGrant {
+        config.vault.grants = vec![VaultGrant {
             action: hatchling_core::VaultAction::Fetch,
             name: "token".parse().unwrap(),
         }];
@@ -1617,7 +1620,7 @@ mod tests {
         let dir = crate::api_auth::tests::scratch("keeper-authority");
         config.vault.root = dir.0.join("vault");
         config.web.search = true;
-        config.vault.grants = vec![crate::VaultGrant {
+        config.vault.grants = vec![VaultGrant {
             action: hatchling_core::VaultAction::Fetch,
             name: "token".parse().unwrap(),
         }];
@@ -1790,11 +1793,11 @@ mod tests {
         let dir = crate::api_auth::tests::scratch("keeper-released");
         config.vault.root = dir.0.join("vault");
         config.vault.grants = vec![
-            crate::VaultGrant {
+            VaultGrant {
                 action: hatchling_core::VaultAction::Fetch,
                 name: "token".parse().unwrap(),
             },
-            crate::VaultGrant {
+            VaultGrant {
                 action: hatchling_core::VaultAction::Remove,
                 name: "old".parse().unwrap(),
             },

@@ -347,7 +347,9 @@ fn the_brokers_end_reads_through_the_keeper() {
     };
     let agents = [grant("token")];
     assert!(matches!(
-        keeper.cell_op(&fetch("token"), &cell, 1000, &agents).unwrap(),
+        keeper
+            .cell_op(&fetch("token"), &cell, 1000, &agents)
+            .unwrap(),
         VaultResult::Fetched { .. }
     ));
     // A run whose schedule granted no secret, or another one, is refused
