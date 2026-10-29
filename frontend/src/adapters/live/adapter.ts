@@ -16,6 +16,7 @@ import { LiveClient } from './client.js';
 import type { UiTransport } from './client.js';
 import type { UiEvent } from './protocol/generated.js';
 import { LiveProfiles } from './profiles.js';
+import { LiveSignIns } from './sign-ins.js';
 import { LiveChatSession } from './session.js';
 import { LiveSites } from './sites.js';
 import { Surfaces } from './surfaces.js';
@@ -31,6 +32,8 @@ export class LiveAdapter implements ProtocolAdapter {
     readonly #surfaces: Surfaces;
     readonly #sites: LiveSites;
     readonly #profiles: LiveProfiles;
+    /** Where the Settings form sends a sign-in to keep: straight to the broker, never as a Command. */
+    readonly signIns: LiveSignIns;
     readonly #listeners = new Set<() => void>();
     #settings: Settings = SETTINGS;
     #clock = '';
@@ -47,6 +50,7 @@ export class LiveAdapter implements ProtocolAdapter {
         this.taskApprovals = new LiveApprovals(this.#client);
         this.#sites = new LiveSites(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.#profiles = new LiveProfiles(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
+        this.signIns = new LiveSignIns(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.chatSession = new LiveChatSession(this.#client, this.#chats, artifactId => this.#surfaces.shelf.latest(artifactId));
         this.#snapshot = this.#build();
         // Registered first, so the snapshot is current before any view hears of a change.
@@ -102,6 +106,8 @@ export class LiveAdapter implements ProtocolAdapter {
                 return this.#profiles.signOut(command.id);
             case 'profile.delete':
                 return this.#profiles.delete(command.id);
+            case 'sign-in.delete':
+                return this.signIns.delete(command.id);
             case 'settings.theme':
                 return this.#prefer({ theme: command.value });
             case 'settings.accent':
@@ -185,7 +191,7 @@ export class LiveAdapter implements ProtocolAdapter {
         const threads = [...this.#activity.threads(), ...this.#surfaces.threads()];
         return {
             websitePermissions: this.#sites.sites().map(site => ({ host: site.site, policy: 'allow' as const })),
-            signedInSites: [...this.#profiles.profiles()],
+            signedInSites: this.#profiles.profiles().map(site => ({ ...site, signIns: this.signIns.of(site.id) })),
             networkPermissions: [],
             version: 1,
             mode: 'live',

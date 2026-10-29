@@ -212,6 +212,25 @@ export const commandSchemas: Readonly<Record<Command['type'], ActionSchema>> = {
         ],
         "additionalProperties": false
     },
+    "sign-in.delete": {
+        "type": "object",
+        "properties": {
+            "type": {
+                "type": "string",
+                "enum": [
+                    "sign-in.delete"
+                ]
+            },
+            "id": {
+                "type": "string"
+            }
+        },
+        "required": [
+            "type",
+            "id"
+        ],
+        "additionalProperties": false
+    },
     "identity.avatar": {
         "type": "object",
         "properties": {

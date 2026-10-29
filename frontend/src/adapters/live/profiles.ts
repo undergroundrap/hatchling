@@ -32,7 +32,7 @@ export class LiveProfiles {
         const outcome = await this.#ask({ op: 'list' });
         if (outcome?.result !== 'listed')
             return;
-        this.#profiles = outcome.profiles.map(profile => ({ id: profile.profile_id, sites: [...profile.sites], signedIn: profile.signed_in, lastUsed: profile.last_used }));
+        this.#profiles = outcome.profiles.map(profile => ({ id: profile.profile_id, sites: [...profile.sites], signedIn: profile.signed_in, lastUsed: profile.last_used, signIns: [] }));
         this.#changed();
     }
     /** Sign out of `id`: its session is dropped, its sites kept. */

@@ -43,7 +43,7 @@ const replay = (transport, frames = SAMPLE_EVENTS) => {
 const answer = (transport, request_id, result) => transport.deliver({ type: 'action_result', request_id, result });
 const flush = () => new Promise(resolve => setImmediate(resolve));
 // The actions the app sent besides the allowed and signed-in sites' lists, which it asks for each time it connects.
-const sentActions = transport => transport.sent.filter(frame => frame.type === 'action' && !(['manage_sites', 'manage_profiles'].includes(frame.action.action) && frame.action.op.op === 'list'));
+const sentActions = transport => transport.sent.filter(frame => frame.type === 'action' && !(['manage_sites', 'manage_profiles', 'manage_sign_ins'].includes(frame.action.action) && frame.action.op.op === 'list'));
 const thread = adapter => adapter.getSnapshot().threads[0];
 const lane = (adapter, id) => thread(adapter).lanes.find(item => item.id === id);
 const confirmation = (seq, revision, summary = 'Post the sample summary?') => sampleEvent(seq, seq, { kind: 'confirmation', confirmation_id: 'confirm-1', revision, chat_id: 'main', summary, expires_at: null, digest: `digest-${revision}`, fields: [{ label: 'Operation', value: summary, source: 'broker' }, { label: 'Text', value: 'Sample text.', source: 'agent' }] });
@@ -518,7 +518,7 @@ test('signed-in sites: the broker\'s list, loaded on connecting; signed out of a
     const profile = { profile_id: 'profile-1', sites: ['a.example:443', 'idp.example:443'], signed_in: true, created_at: '2026-10-22T08:00:00Z', last_used: '2026-10-22T09:00:00Z' };
     answer(transport, listing.request_id, { result: 'profiles', outcome: { result: 'listed', profiles: [profile] } });
     await flush();
-    assert.deepEqual(adapter.getSnapshot().signedInSites, [{ id: 'profile-1', sites: ['a.example:443', 'idp.example:443'], signedIn: true, lastUsed: '2026-10-22T09:00:00Z' }]);
+    assert.deepEqual(adapter.getSnapshot().signedInSites, [{ id: 'profile-1', sites: ['a.example:443', 'idp.example:443'], signedIn: true, lastUsed: '2026-10-22T09:00:00Z', signIns: [] }]);
     for (const [command, op, done, words] of [
         [{ type: 'profile.sign-out', id: 'profile-1' }, { op: 'sign_out', profile_id: 'profile-1' }, 'signed_out', /Signed out\. Its sites still open/],
         [{ type: 'profile.delete', id: 'profile-1' }, { op: 'delete', profile_id: 'profile-1' }, 'deleted', /Deleted\. The agent asks again/],
@@ -564,6 +564,70 @@ test('signed-in sites: the broker\'s list, loaded on connecting; signed out of a
     // Offline, nothing is sent and the owner is told.
     adapter.dispose();
     assert.equal((await adapter.execute({ type: 'profile.delete', id: 'profile-1' })).ok, false);
+});
+test('sign-ins: listed by label on each signed-in site, kept straight to the broker, deleted by the owner', async () => {
+    const { transport, adapter } = connected();
+    const listing = action => transport.sent.find(frame => frame.type === 'action' && frame.action.action === action);
+    const profile = { profile_id: 'profile-1', sites: ['a.example:443'], signed_in: true, created_at: '2026-10-22T08:00:00Z', last_used: '2026-10-22T09:00:00Z' };
+    answer(transport, listing('manage_profiles').request_id, { result: 'profiles', outcome: { result: 'listed', profiles: [profile] } });
+    assert.deepEqual(listing('manage_sign_ins')?.action, { action: 'manage_sign_ins', op: { op: 'list' } }, 'asked for on connecting');
+    const work = { sign_in_id: 'cred-1', profile_id: 'profile-1', origin: 'https://a.example', label: 'Work', created_at: '2026-10-22T08:00:00Z' };
+    const theirs = { ...work, sign_in_id: 'cred-2', profile_id: 'profile-9', label: 'Not this site' };
+    answer(transport, listing('manage_sign_ins').request_id, { result: 'sign_ins', outcome: { result: 'listed', sign_ins: [work, theirs] } });
+    await flush();
+    assert.deepEqual(adapter.getSnapshot().signedInSites[0].signIns, [{ id: 'cred-1', label: 'Work', origin: 'https://a.example' }], 'its own, by label');
+    // Kept: sent once, as its own request, then listed again. Never in the state.
+    const entry = { profileId: 'profile-1', origin: 'https://a.example', label: 'Home', username: 'zoe-user', password: 'hunter2-secret' };
+    const keeping = adapter.signIns.store(entry);
+    await flush();
+    const kept = transport.last();
+    assert.deepEqual(kept.action, { action: 'manage_sign_ins', op: { op: 'store', profile_id: 'profile-1', origin: 'https://a.example', label: 'Home', username: 'zoe-user', password: 'hunter2-secret' } });
+    answer(transport, kept.request_id, { result: 'sign_ins', outcome: { result: 'stored', sign_in: { ...work, sign_in_id: 'cred-3', label: 'Home' } } });
+    await flush();
+    const relisting = transport.last();
+    assert.deepEqual(relisting.action, { action: 'manage_sign_ins', op: { op: 'list' } });
+    answer(transport, relisting.request_id, { result: 'sign_ins', outcome: { result: 'listed', sign_ins: [work, { ...work, sign_in_id: 'cred-3', label: 'Home' }] } });
+    assert.deepEqual(await keeping, { ok: true, message: 'Kept. The agent can sign in with it on this site; it never sees the password.' });
+    const state = JSON.stringify(adapter.getSnapshot());
+    assert.ok(!state.includes('hunter2') && !state.includes('zoe-user'), 'the secrets are in no state');
+    assert.deepEqual(adapter.getSnapshot().signedInSites[0].signIns.map(item => item.label), ['Work', 'Home']);
+    // Deleted, by the owner's command.
+    const deleting = adapter.execute({ type: 'sign-in.delete', id: 'cred-3' });
+    await flush();
+    const deletion = transport.last();
+    assert.deepEqual(deletion.action, { action: 'manage_sign_ins', op: { op: 'delete', sign_in_id: 'cred-3' } });
+    answer(transport, deletion.request_id, { result: 'sign_ins', outcome: { result: 'deleted' } });
+    await flush();
+    answer(transport, transport.last().request_id, { result: 'sign_ins', outcome: { result: 'listed', sign_ins: [work] } });
+    assert.deepEqual(await deleting, { ok: true, message: 'Deleted. The agent can no longer sign in with it.' });
+    // Every other answer is told as what it is; only not found lists again.
+    const refusals = { no_profile: /site is gone/, bad_origin: /site’s own addresses/, not_the_profiles: /not one of the signed-in site’s/, bad_label: /Give the sign-in a name/, no_password: /Type the password/, too_long: /too long/, full: /Delete one first/ };
+    const others = [
+        ...Object.entries(refusals).map(([reason, words]) => [{ result: 'sign_ins', outcome: { result: 'refused', reason } }, words, false]),
+        [{ result: 'sign_ins', outcome: { result: 'deleted' } }, /not confirmed/, false],
+        [{ result: 'sign_ins', outcome: { result: 'not_found' } }, /already gone/, true],
+        [{ result: 'sign_ins', outcome: { result: 'off' } }, /keeps no sign-ins/, false],
+        [{ result: 'sign_ins', outcome: { result: 'failed' } }, /nothing changed/, false],
+        [{ result: 'sign_ins', outcome: { result: 'listed', sign_ins: [] } }, /nothing changed/, false],
+        [{ result: 'refused', reason: 'not_granted' }, /may not change the sign-ins/, false],
+        [{ result: 'profiles', outcome: { result: 'deleted' } }, /not confirmed/, false],
+    ];
+    for (const [outcome, words, relists] of others) {
+        const pending = adapter.signIns.store(entry);
+        await flush();
+        answer(transport, transport.last().request_id, outcome);
+        await flush();
+        if (relists) {
+            assert.deepEqual(transport.last().action.op, { op: 'list' });
+            answer(transport, transport.last().request_id, { result: 'refused', reason: 'unavailable' });
+        }
+        const settled = await pending;
+        assert.equal(settled.ok, false);
+        assert.match(settled.message, words);
+    }
+    assert.deepEqual(adapter.getSnapshot().signedInSites[0].signIns.map(item => item.label), ['Work'], 'a list the broker did not give leaves the last');
+    adapter.dispose();
+    assert.equal((await adapter.signIns.store(entry)).ok, false, 'offline: nothing sent');
 });
 test('a decision is re-validated at dispatch, against the broker\'s latest state, not the card that was drawn', async () => {
     const { transport, adapter } = connected();

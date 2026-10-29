@@ -414,6 +414,15 @@ export interface SignedInSite {
     /** Whether a session is kept for it; signed out, its sites are kept but open signed out. */
     signedIn: boolean;
     lastUsed: string;
+    /** The sign-ins the broker fills on it, by label and origin: never a username or password. */
+    signIns: SiteSignInLabel[];
+}
+/** A sign-in the broker keeps for a signed-in site: what it's called and where it's filled. */
+export interface SiteSignInLabel {
+    id: Id;
+    label: string;
+    /** `https://host[:port]`. */
+    origin: string;
 }
 export interface AppState {
     websitePermissions: WebsitePermission[];
@@ -484,6 +493,9 @@ export type Command = {
     id: Id;
 } | {
     type: 'profile.delete';
+    id: Id;
+} | {
+    type: 'sign-in.delete';
     id: Id;
 } | {
     type: 'identity.avatar';

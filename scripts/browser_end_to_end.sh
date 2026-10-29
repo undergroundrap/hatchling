@@ -20,7 +20,7 @@ export HATCHLING_HOME
 HATCHLING_HOME=$(mktemp -d /var/tmp/hatchling-browser-e2e.XXXXXX)
 # Searchable, not readable: the vault keeper's user reaches the vault inside.
 chmod 711 "$HATCHLING_HOME"
-mkdir -p -m 700 "$HATCHLING_HOME"/{sock,vault,schedules,profiles}
+mkdir -p -m 700 "$HATCHLING_HOME"/{sock,vault,schedules,profiles,sign-ins}
 export HATCHLING_BROKER_SOCKET=$HATCHLING_HOME/sock/broker.sock
 export HATCHLING_AGENT_UID
 HATCHLING_AGENT_UID=$(id -u hatchling-cell)
@@ -49,6 +49,8 @@ export HATCHLING_BROWSER_CONTROLLER=/usr/local/bin/hatchling-browser
 export HATCHLING_BROWSER_FONTS=/usr/share/fonts
 # The owner's signed-in sites (WO-030), sealed in a store of their own.
 export HATCHLING_BROWSER_PROFILES_DIR=$HATCHLING_HOME/profiles
+# The sign-ins the broker fills for them, sealed in a store of their own.
+export HATCHLING_BROWSER_CREDENTIALS_DIR=$HATCHLING_HOME/sign-ins
 # A browser cell has a resource group or doesn't start: an empty, delegated
 # directory, the broker in a leaf of its own.
 cg=/sys/fs/cgroup/hatchling-browser-e2e

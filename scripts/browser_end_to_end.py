@@ -20,6 +20,9 @@ import sys
 from browsing_model import ANSWER_END, BROWSER_URL, SAW_DRIVING, WAIT_SECS
 
 TASK = "Use the browser, then tell me what happened."
+# A sign-in the owner keeps for it: nothing a page would show by chance.
+SIGN_IN_USER = "zoe-user@hatchling-end-to-end.invalid"
+SIGN_IN_PASSWORD = "hunter2-end-to-end"
 # The site the agent's browser visits, as the broker names it.
 SITE = BROWSER_URL.removeprefix("https://").rstrip("/") + ":443"
 TOKEN_FRAGMENT = "#hatchling-ui="
@@ -102,7 +105,8 @@ def drive(page):
 
 
 def signed_in(page):
-    """Raise unless Settings lists the site the owner kept signed in."""
+    """Raise unless Settings lists the site the owner kept signed in, and
+    keeps a sign-in for it that the page then holds nowhere."""
     from playwright.sync_api import expect
 
     page.keyboard.press("Control+,")
@@ -111,6 +115,20 @@ def signed_in(page):
     pane.get_by_role("button", name=re.compile("^Signed-in sites")).click()
     expect(pane.locator(".signed-in-sites").get_by_text(SITE)).to_be_visible(timeout=STEP_TIMEOUT_MS)
     screenshot(page, "browser-5-signed-in-sites.png")
+    # A sign-in, typed in the form and sent straight to the broker.
+    pane.get_by_role("button", name="Add a sign-in").click()
+    pane.get_by_label("Name", exact=True).fill("Work")
+    pane.get_by_label("Username", exact=True).fill(SIGN_IN_USER)
+    pane.get_by_label("Password", exact=True).fill(SIGN_IN_PASSWORD)
+    pane.get_by_role("button", name="Keep sign-in").click()
+    expect(page.get_by_text("Kept. The agent can sign in with it").first).to_be_visible(timeout=STEP_TIMEOUT_MS)
+    listed = pane.locator(".signed-in-sign-in")
+    expect(listed.get_by_text("Work")).to_be_visible(timeout=STEP_TIMEOUT_MS)
+    expect(listed.get_by_text(f"Filled on {BROWSER_URL.rstrip('/')}")).to_be_visible(timeout=STEP_TIMEOUT_MS)
+    screenshot(page, "browser-6-sign-in-kept.png")
+    held = page.evaluate("() => document.documentElement.outerHTML + JSON.stringify(localStorage) + JSON.stringify(sessionStorage)")
+    if SIGN_IN_PASSWORD in held or SIGN_IN_USER in held:
+        raise ValueError("The page still holds the sign-in it sent to the broker")
 
 
 def check(address):

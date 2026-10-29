@@ -17,6 +17,8 @@ export function permissionsTab(ctx: AppContext, nav: SettingsNavigation): HTMLEl
         return network(ctx, nav);
     if (nav.detail === 'signed-in')
         return signedIn(ctx, nav);
+    if (nav.detail === 'sign-in-add')
+        return signInAdd(ctx, nav);
     if (nav.detail === 'permission-connectors') {
         return h('div', { class: 'settings-stack' }, h('h3', { class: 'settings-section-title' }, 'Connected services'), h('div', { class: 'settings-group reference-list' }, ...ctx.state.connectors.filter(item => item.state === 'connected').map(item => h('div', { class: 'reference-setting-row' }, providerMark(item.id, item.icon), h('span', { class: 'setting-row-copy' }, item.name, h('span', { class: 'setting-description' }, item.scope)), icon('check', 16)))), h('p', { class: 'settings-note' }, 'Reading is limited to the displayed scope. Writes, purchases and credential fills require their own approval.'));
     }
@@ -92,9 +94,46 @@ function signedIn(ctx: AppContext, nav: SettingsNavigation): HTMLElement {
         const signOut = item.signedIn ? button('Sign out', () => ctx.dialogs.confirm(`Sign out of ${names}?`, 'Hatchling drops the session it kept. The agent still opens these sites in a browser of their own, signed out, until you delete them.', () => { void ctx.run({ type: 'profile.sign-out', id: item.id }).then(nav.refresh); }, { label: 'Sign out' }), { variant: 'ghost' }) : null;
         const remove = button('Delete', () => ctx.dialogs.confirm(`Delete ${names}?`, 'Hatchling drops the session and the sites. The agent asks you again the next time it wants a page on them.', () => { void ctx.run({ type: 'profile.delete', id: item.id }).then(nav.refresh); }, { label: 'Delete', danger: true }), { variant: 'ghost' });
         group.append(h('div', { class: 'reference-setting-row website-permission' }, h('span', { class: 'website-icon' }, icon('lock', 18)), h('span', { class: 'setting-row-copy' }, names, h('span', { class: 'setting-description' }, item.signedIn ? `Signed in · kept ${item.lastUsed}` : 'Signed out')), signOut, remove));
+        for (const signIn of item.signIns) {
+            const forget = button('Delete', () => ctx.dialogs.confirm(`Delete the sign-in ${signIn.label}?`, 'Hatchling drops its username and password. The agent can no longer sign in with it.', () => { void ctx.run({ type: 'sign-in.delete', id: signIn.id }).then(nav.refresh); }, { label: 'Delete sign-in', danger: true }), { variant: 'ghost' });
+            group.append(h('div', { class: 'reference-setting-row website-permission signed-in-sign-in' }, h('span', { class: 'website-icon' }, icon('key', 18)), h('span', { class: 'setting-row-copy' }, signIn.label, h('span', { class: 'setting-description' }, `Filled on ${signIn.origin}`)), forget));
+        }
+        if (ctx.signIns)
+            group.append(h('div', { class: 'reference-setting-row' }, button('Add a sign-in', () => nav.open('sign-in-add', item.id), { variant: 'link' })));
     }
     const empty = h('p', { class: 'settings-note' }, 'No signed-in sites yet. Take control of the agent’s browser, sign in to a site, and choose Keep me signed in.');
     return h('div', { class: 'settings-stack' }, h('section', {}, h('h3', { class: 'settings-section-title' }, 'Signed-in sites'), ctx.state.signedInSites.length ? group : empty));
+}
+/** A sign-in for one signed-in site: typed here, sent straight to Hatchling, never kept by the app. */
+function signInAdd(ctx: AppContext, nav: SettingsNavigation): HTMLElement {
+    const site = ctx.state.signedInSites.find(item => item.id === nav.id);
+    const port = ctx.signIns;
+    if (!site || !port)
+        return h('div', { class: 'settings-stack' }, h('p', { class: 'settings-note' }, 'This signed-in site is gone.'));
+    const origins = site.sites.map(origin => origin.endsWith(':443') ? `https://${origin.slice(0, -4)}` : `https://${origin}`);
+    const origin = h('select', { id: 'sign-in-origin', name: 'origin', 'aria-label': 'Site' }, ...origins.map(value => h('option', { value }, value)));
+    const label = h('input', { id: 'sign-in-label', type: 'text', name: 'label', autocomplete: 'off', required: true, maxlength: 64, 'aria-label': 'Name' });
+    const username = h('input', { id: 'sign-in-username', type: 'text', name: 'username', autocomplete: 'off', maxlength: 512, 'aria-label': 'Username' });
+    const password = h('input', { id: 'sign-in-password', type: 'password', name: 'password', autocomplete: 'new-password', required: true, 'aria-label': 'Password' });
+    const row = (text: string, id: string, control: HTMLElement): HTMLElement => h('div', { class: 'credential-row' }, h('label', { for: id }, text), control);
+    const submit = h('button', { type: 'submit', class: 'button primary' }, 'Keep sign-in');
+    const form = h('form', { class: 'credential-form', autocomplete: 'off' }, h('div', { class: 'settings-group credential-fields' }, row('Site', origin.id, origin), row('Name', label.id, label), row('Username', username.id, username), row('Password', password.id, password)), h('div', { class: 'dialog-actions' }, button('Cancel', nav.back), submit), h('p', { class: 'credential-safety' }, 'Sent straight to Hatchling, which seals it. The agent never sees it: Hatchling types it into this site’s own sign-in form, in a browser that reaches only this signed-in site.'));
+    form.addEventListener('submit', event => {
+        event.preventDefault();
+        submit.setAttribute('disabled', '');
+        void port.store({ profileId: site.id, origin: origin.value, label: label.value, username: username.value, password: password.value }).then(result => {
+            // The secrets leave the form whatever the answer: typed again, never kept here.
+            password.value = '';
+            submit.removeAttribute('disabled');
+            ctx.toast(result.message, !result.ok);
+            if (result.ok) {
+                username.value = '';
+                nav.back();
+            }
+        });
+    });
+    requestAnimationFrame(() => label.focus({ preventScroll: true }));
+    return form;
 }
 function network(ctx: AppContext, nav: SettingsNavigation): HTMLElement {
     const group = h('div', { class: 'settings-group reference-list network-permissions' });
