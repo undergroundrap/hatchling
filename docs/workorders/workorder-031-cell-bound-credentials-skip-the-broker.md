@@ -69,6 +69,7 @@ Filled in at close.
     4. **The controller types it, and scrubs it.** In the cell, the controller checks the page's top frame is on the sign-in's origin, as `Fill` does now. It types the values, keeps them for the session, and scrubs them from every snapshot and answer before anything leaves the cell. `BrowserSession::filled` goes from the broker.
   - **Parts:**
     - **2a:** the keeper holds the store and answers the app's requests;
+      - *2a landed:* the sign-ins are the keeper's store, beside the vault: the broker is handed no key to them, and its user and its Landlock rules lose their directory. The broker checks a new sign-in is for one of its profile's sites, then asks the keeper to keep it; it asks for the list and each deletion too. Until 2b, a fill still asks the keeper for one sign-in's secrets, which the keeper records in the vault's access log first (`browser-fill`), and sends as raw frames, never as JSON.
     - **2b:** browser cells' vault channels, and the fill through them;
     - **2c:** the scrub moves into the controller, and the broker's copy goes.
 - **Order.** `vault:fetch` and `vault:store` first: the smaller change, and it sets the cell-to-keeper channel the sign-in fill reuses.

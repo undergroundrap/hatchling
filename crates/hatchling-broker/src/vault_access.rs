@@ -47,8 +47,9 @@ pub enum Caller {
     },
     /// The broker itself, reading for its own purpose.
     Broker {
-        /// What for: `egress`, `channel-account`, `artifact-gate` or
-        /// `output-gate`.
+        /// What for: `egress`, `channel-account`, `artifact-gate`,
+        /// `output-gate` or `browser-fill`, a sign-in's secrets for the
+        /// browser to fill (WO-031).
         purpose: String,
     },
     /// The egress authority (WO-017), reading for the request it makes.

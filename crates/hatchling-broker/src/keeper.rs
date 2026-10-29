@@ -1,5 +1,6 @@
 //! The vault keeper (WO-017, step 4): the process that holds the master
-//! key and the secrets store's key, so that the broker holds neither.
+//! key, the secrets store's key and the sign-ins' (WO-031), so that the
+//! broker holds none of them.
 //!
 //! [`start`] runs first in the broker's start, before it touches a key. It
 //! starts the broker's own binary again as `vault-keeper`, joined to the
@@ -7,14 +8,16 @@
 //! own environment, the same as the broker's, and the operator's terminal
 //! stays its own for a keyring's prompts. It loads the master key, unwraps
 //! every sealed store's key, and hands the broker the keys of the
-//! broker's own stores: every one but the secrets. Then it drops the
-//! master key and answers the broker until the broker goes:
+//! broker's own stores: every one but the secrets and the sign-ins. Then
+//! it drops the master key and answers the broker until the broker goes:
 //!
 //! - **a read for one of the broker's purposes**, when every name is one
 //!   the configuration gives that purpose (an egress destination's
 //!   credential, a configured harness vendor's key, a channel account's
 //!   credential, the gates' held secrets);
-//! - **a cell's vault op**, checked against the configuration's grants.
+//! - **a cell's vault op**, checked against the configuration's grants;
+//! - **the sign-ins** ([`crate::browser_credentials`]): the owner's keep,
+//!   list and delete, and a fill's read, recorded.
 //!
 //! Each is recorded in the vault's access log before the keeper answers,
 //! and one that can't be recorded is answered with nothing
@@ -49,6 +52,7 @@ use hatchling_vault::{MasterKey, Secret, Store, StoreKeys};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
+use crate::browser_credentials::{Credentials, SignIn, SignInAnswer, SignInRequest};
 use crate::secrets::{Secrets, handle_vault_op};
 use crate::vault_access::{Caller, Outcome};
 use crate::vault_keyring::KeyringConfig;
@@ -123,6 +127,8 @@ enum Request {
     /// The values a gate scans outgoing text for, for `purpose`: the
     /// keeper chooses them.
     Scan { purpose: String },
+    /// An operation on the sign-ins (WO-031).
+    SignIn { op: SignInRequest },
 }
 
 /// What the keeper answers.
@@ -138,6 +144,8 @@ enum Reply {
     /// Refused: not a read the configuration gives the purpose, or one
     /// that couldn't be made or recorded.
     Refused { reason: String },
+    /// The sign-ins' answer.
+    SignIn { answer: SignInAnswer },
 }
 
 /// The broker's end of the keeper: one request at a time.
@@ -226,11 +234,16 @@ pub(crate) fn service_user(name: &str, part: &str) -> Result<Option<(u32, u32)>,
     }
 }
 
-/// The directories the keeper's user owns: the vault's, its key file's,
-/// its keyring's and its file tier's KEK's, each once.
+/// The directories the keeper's user owns: the vault's, the sign-ins'
+/// when they're kept (WO-031), its key file's, its keyring's and its file
+/// tier's KEK's, each once.
 #[must_use]
-pub fn keeper_dirs(vault: &VaultConfig, keyring: &KeyringConfig) -> Vec<PathBuf> {
+pub fn keeper_dirs(config: &Config, keyring: &KeyringConfig) -> Vec<PathBuf> {
+    let vault = &config.vault;
     let mut dirs = vec![vault.root.clone()];
+    if !config.web.credentials.as_os_str().is_empty() {
+        dirs.push(config.web.credentials.clone());
+    }
     let files = [
         Some(vault.key_file.clone()),
         keyring.keyring.clone(),
@@ -400,7 +413,7 @@ pub fn act_for_keeper(config: &Config) -> Result<(), Error> {
     let Some((uid, gid)) = keeper_user()? else {
         return Ok(());
     };
-    let dirs = keeper_dirs(&config.vault, &KeyringConfig::from_env()?);
+    let dirs = keeper_dirs(config, &KeyringConfig::from_env()?);
     hand_to(KEEPER_USER, &dirs, uid, gid).map_err(|reason| Error::Keeper { reason })?;
     let dirs: Vec<&Path> = dirs.iter().map(PathBuf::as_path).collect();
     hatchling_vault::act_for(uid, &dirs).map_err(|e| Error::Keeper {
@@ -435,7 +448,7 @@ impl Keeper {
                 let config = Config::from_env()?;
                 hand_to(
                     KEEPER_USER,
-                    &keeper_dirs(&config.vault, &KeyringConfig::from_env()?),
+                    &keeper_dirs(&config, &KeyringConfig::from_env()?),
                     uid,
                     gid,
                 )
@@ -557,7 +570,7 @@ impl Keeper {
         let found = match reply {
             Reply::Read { found } => found,
             Reply::Refused { reason } => return Err(Error::Keeper { reason }),
-            other @ Reply::Scan { .. } => return Err(unexpected(&other)),
+            other @ (Reply::Scan { .. } | Reply::SignIn { .. }) => return Err(unexpected(&other)),
         };
         let mut frames = frames.into_iter();
         found
@@ -604,7 +617,40 @@ impl Keeper {
                 .map(|bytes| Secret::new(bytes.to_vec()).map_err(|source| Error::Vault { source }))
                 .collect(),
             Reply::Refused { reason } => Err(Error::Keeper { reason }),
-            other @ Reply::Read { .. } => Err(unexpected(&other)),
+            other @ (Reply::Read { .. } | Reply::SignIn { .. }) => Err(unexpected(&other)),
+        }
+    }
+
+    /// `op` on the sign-ins, which the keeper holds (WO-031): its answer,
+    /// and a read's secrets, sent after it in frames of their own.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Keeper`] when the keeper refuses it or can't be
+    /// reached.
+    pub fn sign_ins(&self, op: SignInRequest) -> Result<(SignInAnswer, Option<SignIn>), Error> {
+        let request = Request::SignIn { op };
+        let (reply, read) = self.exchange(|stream| {
+            let reply = ask(stream, &request)?;
+            let read = if matches!(
+                reply,
+                Reply::SignIn {
+                    answer: SignInAnswer::Read
+                }
+            ) {
+                Some(SignIn {
+                    username: concealed(stream)?,
+                    password: concealed(stream)?,
+                })
+            } else {
+                None
+            };
+            Ok((reply, read))
+        })?;
+        match reply {
+            Reply::SignIn { answer } => Ok((answer, read)),
+            Reply::Refused { reason } => Err(Error::Keeper { reason }),
+            other @ (Reply::Read { .. } | Reply::Scan { .. }) => Err(unexpected(&other)),
         }
     }
 
@@ -626,6 +672,20 @@ impl Keeper {
         drop(stream);
         outcome
     }
+}
+
+/// One of a read sign-in's secrets, from its own frame: its bytes, moved
+/// into the secret and never copied.
+fn concealed(stream: &UnixStream) -> Result<hatchling_core::ui::Concealed, Error> {
+    let mut bytes = Zeroizing::new(read_frame(stream).map_err(keeper_gone)?);
+    String::from_utf8(std::mem::take(&mut *bytes))
+        .map(hatchling_core::ui::Concealed::new)
+        .map_err(|error| {
+            drop(Zeroizing::new(error.into_bytes()));
+            Error::Keeper {
+                reason: String::from("a sign-in's secret that isn't text"),
+            }
+        })
 }
 
 /// Sends `request`, and reads the reply.
@@ -651,9 +711,12 @@ fn ask(stream: &UnixStream, request: &Request) -> Result<Reply, Error> {
 fn kept_keys(asked: &[(Store, PathBuf)]) -> Result<Vec<u8>, Error> {
     let mut kept = Vec::with_capacity(asked.len());
     for (store, root) in asked {
-        if *store == Store::SECRETS {
+        if crate::vault_ops::KEEPERS_STORES.contains(store) {
             return Err(Error::Keeper {
-                reason: String::from("it asked for the vault's key, which is its own"),
+                reason: format!(
+                    "it asked for the key of {}, which is its own",
+                    store.label()
+                ),
             });
         }
         kept.push(
@@ -704,6 +767,7 @@ fn unexpected(reply: &Reply) -> Error {
         Reply::Read { .. } => "read",
         Reply::Scan { .. } => "scan",
         Reply::Refused { .. } => "refused",
+        Reply::SignIn { .. } => "sign-in",
     };
     Error::Keeper {
         reason: format!("an answer that doesn't answer the request ({kind})"),
@@ -860,7 +924,8 @@ fn refuse_to_run(reason: &str) -> ExitCode {
 /// What the keeper keeps after its start.
 struct Kept {
     config: Config,
-    /// The secrets store's key: the only one it keeps.
+    /// The keys of the secrets store and the sign-ins': the only ones it
+    /// keeps.
     keys: StoreKeys,
     releases: Releases,
     /// The secrets a cell has been given or has stored
@@ -878,11 +943,12 @@ fn begin(stream: &UnixStream, config: Config) -> Result<Kept, Error> {
         .map(|_| RedactionConfig::from_env(&config))
         .transpose()?;
     let harness = crate::harness::Harnesses::from_env(&config)?.vendor_secret_names();
-    // The vault is the keeper's alone; the other stores are the broker's,
-    // which checks them, and whose keys it asks the broker for.
+    // The vault and the sign-ins are the keeper's alone; the other stores
+    // are the broker's, which checks them, and whose keys it asks the
+    // broker for.
     let (vault, brokers): (Vec<_>, Vec<_>) = crate::sealed_stores(&config, redaction.as_ref())
         .into_iter()
-        .partition(|(store, _)| *store == Store::SECRETS);
+        .partition(|(store, _)| crate::vault_ops::KEEPERS_STORES.contains(store));
     crate::check_sealed_stores(&vault)?;
     let master = crate::load_master_key(&config.vault)?;
     crate::validate_sealed_vault(&config.vault, &master)?;
@@ -1007,6 +1073,7 @@ fn serve(stream: &UnixStream, kept: &Mutex<Kept>, role: Role) -> Result<(), Erro
                 answer_read(stream, kept, role, &purpose, &names)?;
             }
             Request::Scan { purpose } => answer_scan(stream, kept, &purpose)?,
+            Request::SignIn { op } => answer_sign_in(stream, kept, op)?,
         }
         drop(guard);
     }
@@ -1192,6 +1259,53 @@ fn answer_scan(stream: &UnixStream, kept: &Kept, purpose: &str) -> Result<(), Er
     }
 }
 
+/// Answers the broker's `op` on the sign-ins, from the keeper's own store.
+/// A fill's read is a release: it is recorded in the vault's access log
+/// before its secrets are sent, and one that can't be recorded is refused.
+fn answer_sign_in(stream: &UnixStream, kept: &Kept, op: SignInRequest) -> Result<(), Error> {
+    let Some(credentials) = Credentials::through(None, &kept.config, &kept.keys) else {
+        return send(
+            stream,
+            &Reply::Refused {
+                reason: String::from("the configuration keeps no sign-ins"),
+            },
+        );
+    };
+    let read = if let SignInRequest::Read { id } = &op {
+        Some(id.clone())
+    } else {
+        None
+    };
+    let (answer, sign_in) = crate::browser_credentials::answer(&credentials, op);
+    if let Some(id) = read {
+        let outcome = if sign_in.is_some() {
+            Outcome::Allowed
+        } else {
+            Outcome::Failed
+        };
+        let caller = Caller::Broker {
+            purpose: String::from("browser-fill"),
+        };
+        if let Err(error) =
+            crate::vault_access::record(&kept.config.vault.root, caller, "read", vec![id], outcome)
+        {
+            tracing::error!(%error, "a sign-in's read not recorded: nothing is sent");
+            return send(
+                stream,
+                &Reply::Refused {
+                    reason: String::from("the read couldn't be recorded"),
+                },
+            );
+        }
+    }
+    send(stream, &Reply::SignIn { answer })?;
+    if let Some(sign_in) = sign_in {
+        write_frame(stream, sign_in.username.expose().as_bytes()).map_err(keeper_gone)?;
+        write_frame(stream, sign_in.password.expose().as_bytes()).map_err(keeper_gone)?;
+    }
+    Ok(())
+}
+
 fn send(stream: &UnixStream, reply: &Reply) -> Result<(), Error> {
     let bytes = Zeroizing::new(serde_json::to_vec(reply).map_err(|e| Error::Keeper {
         reason: format!("cannot write an answer: {e}"),
@@ -1307,29 +1421,41 @@ mod tests {
         }
     }
 
-    /// The keeper's directories: the vault's, and those of its key file,
-    /// keyring and KEK, each once.
+    /// The keeper's directories: the vault's, the sign-ins' when they're
+    /// kept, and those of its key file, keyring and KEK, each once.
     #[test]
     fn the_keepers_directories_are_the_vaults_and_its_keys() {
-        let vault = VaultConfig {
+        let mut config = crate::api_auth::tests::owner_config(None);
+        config.vault = VaultConfig {
             root: PathBuf::from("/srv/h/vault"),
             key_file: PathBuf::from("/srv/h/vault.key/key"),
             grants: Vec::new(),
         };
+        config.web.credentials = PathBuf::new();
         assert_eq!(
-            keeper_dirs(&vault, &KeyringConfig::default()),
+            keeper_dirs(&config, &KeyringConfig::default()),
             [
                 PathBuf::from("/srv/h/vault"),
                 PathBuf::from("/srv/h/vault.key")
             ]
         );
+        config.web.credentials = PathBuf::from("/srv/h/sign-ins");
+        assert_eq!(
+            keeper_dirs(&config, &KeyringConfig::default()),
+            [
+                PathBuf::from("/srv/h/vault"),
+                PathBuf::from("/srv/h/sign-ins"),
+                PathBuf::from("/srv/h/vault.key")
+            ]
+        );
+        config.web.credentials = PathBuf::new();
         let keyring = KeyringConfig {
             keyring: Some(PathBuf::from("/srv/h/ring/keyring")),
             kek_file: Some(PathBuf::from("/srv/h/kek/kek")),
             ..KeyringConfig::default()
         };
         assert_eq!(
-            keeper_dirs(&vault, &keyring),
+            keeper_dirs(&config, &keyring),
             [
                 PathBuf::from("/srv/h/vault"),
                 PathBuf::from("/srv/h/vault.key"),
@@ -1427,10 +1553,13 @@ mod tests {
             Err(Error::Vault { .. })
         ));
         answering.join().unwrap();
-        assert!(matches!(
-            kept_keys(&[(Store::SECRETS, root.clone())]),
-            Err(Error::Keeper { .. })
-        ));
+        for own in [Store::SECRETS, Store::CREDENTIALS] {
+            assert!(
+                matches!(kept_keys(&[(own, root.clone())]), Err(Error::Keeper { .. })),
+                "the broker read the key of {}, the keeper's",
+                own.label()
+            );
+        }
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -1879,6 +2008,121 @@ mod tests {
             drop(keeper);
             assert!(serving.join().unwrap().is_ok());
         });
+    }
+
+    /// The sign-ins are the keeper's (WO-031): the broker, whose keys open
+    /// no store of them, keeps, lists, reads and deletes them by asking.
+    /// Each read is recorded before its secrets are sent; one that can't
+    /// be recorded sends none. The egress authority may ask nothing, and a
+    /// keeper whose configuration keeps none refuses.
+    #[test]
+    fn the_sign_ins_are_the_keepers_and_the_broker_asks_for_them() {
+        use crate::browser_profiles::Profiles;
+        use hatchling_core::ui::{Concealed, SignInRefusal};
+        let mut config = crate::api_auth::tests::owner_config(None);
+        let dir = crate::api_auth::tests::scratch("keeper-sign-ins");
+        config.vault.root = dir.0.join("vault");
+        config.web.profiles = dir.0.join("profiles");
+        config.web.credentials = dir.0.join("sign-ins");
+        let master = MasterKey::generate().unwrap();
+        hatchling_vault::SealedVault::open(&config.vault.root, &master).unwrap();
+        let own = [
+            (Store::SECRETS, config.vault.root.as_path()),
+            (Store::CREDENTIALS, config.web.credentials.as_path()),
+        ];
+        let keepers = StoreKeys::unwrap(&master, &own).unwrap();
+        let brokers =
+            StoreKeys::unwrap(&master, &[(Store::PROFILES, config.web.profiles.as_path())])
+                .unwrap();
+        let profile = Profiles::of(&config, &brokers)
+            .unwrap()
+            .keep(&[String::from("a.example:443")], 1)
+            .unwrap();
+        let kept = Mutex::new(Kept {
+            releases: Releases::of(&config, BTreeSet::new()),
+            config: config.clone(),
+            keys: keepers,
+            released: BTreeSet::new(),
+        });
+        let secret = SignIn {
+            username: Concealed::new(String::from("zoe-user")),
+            password: Concealed::new(String::from("pw \"quoted\" \\ secret")),
+        };
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let (authoritys, authority_end) = UnixStream::pair().unwrap();
+        std::thread::scope(|scope| {
+            let serving = scope.spawn(|| serve(&theirs, &kept, Role::Broker));
+            let serving_authority = scope.spawn(|| serve(&authority_end, &kept, Role::Authority));
+            let keeper = Keeper::over(ours).unwrap();
+            let asking = Credentials::through(Some(&keeper), &config, &brokers).unwrap();
+            let shown = format!("{asking:?}");
+            assert!(shown.contains("kept: true"), "{shown}");
+            // Refused by the broker's own check: not one of the profile's sites.
+            assert_eq!(
+                asking.store(&profile, "https://b.example", "Work", &secret, 1),
+                Ok(Err(SignInRefusal::NotTheProfiles))
+            );
+            let stored = asking
+                .store(&profile, "https://a.example", "Work", &secret, 7)
+                .unwrap()
+                .unwrap();
+            assert_eq!(asking.list(), Ok(vec![stored.clone()]));
+            assert_eq!(asking.sign_in(&stored.id), Ok(secret.clone()));
+            assert!(asking.sign_in("cred-none").is_err());
+            let (log, _) = crate::vault_access::read_log(&config.vault.root).unwrap();
+            let reads: Vec<_> = log
+                .iter()
+                .map(|access| (access.caller.clone(), access.names.clone(), access.outcome))
+                .collect();
+            let fill = Caller::Broker {
+                purpose: String::from("browser-fill"),
+            };
+            assert_eq!(
+                reads,
+                [
+                    (fill.clone(), vec![stored.id.clone()], Outcome::Allowed),
+                    (fill, vec![String::from("cred-none")], Outcome::Failed),
+                ]
+            );
+            // The broker's keys open no store of the sign-ins.
+            let local = Credentials::through(None, &config, &brokers).unwrap();
+            assert!(local.list().is_err(), "the broker opened the sign-ins");
+            // The egress authority may ask nothing of them.
+            let authority = Keeper::over(authoritys).unwrap();
+            let refused = format!("{:?}", authority.sign_ins(SignInRequest::List));
+            assert!(refused.contains("only reads"), "{refused}");
+            // A read that can't be recorded sends nothing.
+            let log = config.vault.root.join(crate::vault_access::ACCESS_LOG);
+            std::fs::remove_file(&log).unwrap();
+            std::fs::create_dir(&log).unwrap();
+            let unrecorded = asking.sign_in(&stored.id).map(|_| ());
+            assert!(
+                unrecorded
+                    .as_ref()
+                    .is_err_and(|error| error.contains("recorded")),
+                "{unrecorded:?}"
+            );
+            drop(keeper);
+            drop(authority);
+            assert!(serving.join().unwrap().is_ok());
+            assert!(serving_authority.join().unwrap().is_ok());
+        });
+        // A keeper whose configuration keeps no sign-ins refuses them.
+        let mut guard = kept.lock().unwrap();
+        guard.config.web.credentials = PathBuf::new();
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        answer_sign_in(&theirs, &guard, SignInRequest::List).unwrap();
+        drop(guard);
+        let reply: Reply = serde_json::from_slice(&read_frame(&ours).unwrap()).unwrap();
+        assert!(
+            matches!(&reply, Reply::Refused { reason } if reason.contains("keeps no sign-ins")),
+            "{reply:?}"
+        );
+        // A read's secret is text, moved whole out of its frame.
+        write_frame(&theirs, b"pw \xff").unwrap();
+        assert!(concealed(&ours).is_err(), "a secret that isn't text");
+        write_frame(&theirs, b"pw \"q\"").unwrap();
+        assert_eq!(concealed(&ours).unwrap().expose(), "pw \"q\"");
     }
 
     /// A keeper that answers a read out of step is lost: the broker sends

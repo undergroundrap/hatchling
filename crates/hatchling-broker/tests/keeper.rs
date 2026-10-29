@@ -419,6 +419,64 @@ fn a_gate_scans_only_for_what_a_cell_has_had() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The sign-ins are the keeper's (WO-031): the real keeper hands the
+/// broker the profiles' key and not theirs, keeps one the broker asks it
+/// to, and gives a fill's read back whole, recorded in the vault's log.
+#[test]
+fn the_keeper_holds_the_sign_ins_and_hands_the_broker_no_key_to_them() {
+    use hatchling_broker::browser_credentials::{SignIn, SignInAnswer, SignInRequest};
+    use hatchling_broker::keeper::Keeper;
+    use hatchling_core::ui::Concealed;
+    let dir = scratch("sign-ins").unwrap();
+    sealed_vault(&dir, &[]).unwrap();
+    let path = |name: &str| dir.join(name).to_string_lossy().into_owned();
+    let (profiles, sign_ins) = (path("profiles"), path("sign-ins"));
+    let (keeper, keys, _, _) = Keeper::start_with(program(
+        &dir,
+        &[
+            ("HATCHLING_BROWSER_PROFILES_DIR", profiles.as_str()),
+            ("HATCHLING_BROWSER_CREDENTIALS_DIR", sign_ins.as_str()),
+        ],
+    ))
+    .unwrap();
+    let stores: Vec<Store> = keys.stores().map(|(store, _)| store).collect();
+    assert!(stores.contains(&Store::PROFILES), "{stores:?}");
+    assert!(
+        !stores.contains(&Store::CREDENTIALS) && !stores.contains(&Store::SECRETS),
+        "the broker was handed a key of the keeper's: {stores:?}"
+    );
+    assert!(SealedVault::open_in(Path::new(&sign_ins), &keys, Store::CREDENTIALS).is_err());
+    let secret = || SignIn {
+        username: Concealed::new(String::from("zoe-user")),
+        password: Concealed::new(String::from("hunter2-secret")),
+    };
+    let keep = SignInRequest::Keep {
+        profile_id: String::from("profile-1"),
+        origin: String::from("https://a.example"),
+        label: String::from("Work"),
+        sign_in: secret(),
+        now: 1,
+    };
+    let Ok((SignInAnswer::Kept { sign_in: kept }, None)) = keeper.sign_ins(keep) else {
+        unreachable!("the sign-in wasn't kept");
+    };
+    let read = keeper.sign_ins(SignInRequest::Read {
+        id: kept.id.clone(),
+    });
+    assert!(
+        matches!(&read, Ok((SignInAnswer::Read, Some(whole))) if *whole == secret()),
+        "{read:?}"
+    );
+    let log = std::fs::read_to_string(dir.join("vault/.access.log")).unwrap();
+    assert!(
+        log.contains("browser-fill") && log.contains(&kept.id),
+        "{log}"
+    );
+    assert!(!log.contains("hunter2"), "the log holds a secret");
+    drop(keeper);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The broker's start, as it starts the keeper (and the egress authority
 /// with its `search`), with `env` beside the usual.
 fn program(dir: &Path, env: &[(&str, &str)]) -> Command {

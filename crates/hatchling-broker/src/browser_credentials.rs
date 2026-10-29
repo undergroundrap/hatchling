@@ -13,6 +13,13 @@
 //! - **Bounded:** at most [`MAX_CREDENTIALS`] sign-ins, each part within its
 //!   bound; past them a new one is refused.
 //! - **Deleting a profile deletes its sign-ins.**
+//! - **The keeper's (WO-031, slice 2).** The store and its key are the
+//!   vault keeper's. The broker checks a new sign-in is for one of its
+//!   profile's sites, and asks the keeper to keep, list and delete; it
+//!   holds no key to the store, and a bug that discloses its memory or its
+//!   log finds none there. Until a browser's cell is given a fill itself
+//!   (part 2b), the broker asks for one sign-in's secrets to fill, and the
+//!   keeper records each such read in the vault's access log.
 
 use std::path::Path;
 use std::sync::{Mutex, PoisonError};
@@ -26,6 +33,7 @@ use zeroize::Zeroizing;
 
 use crate::Config;
 use crate::browser_profiles::{Profile, Profiles};
+use crate::keeper::Keeper;
 
 /// The most sign-ins the broker keeps.
 pub const MAX_CREDENTIALS: usize = 64;
@@ -69,27 +77,119 @@ pub struct SignIn {
     pub password: Concealed,
 }
 
-/// The sign-ins the broker keeps, in the store `config` gives it.
+/// What the broker asks the keeper of the sign-ins it holds (WO-031): the
+/// owner's keep, list and delete, a profile's going, and one sign-in's
+/// secrets for a fill.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum SignInRequest {
+    /// Every sign-in, by label.
+    List,
+    /// Keep `sign_in` for the profile `profile_id` on `origin`, a site of
+    /// the profile's, as the broker checked.
+    Keep {
+        /// The profile it signs in.
+        profile_id: String,
+        /// The exact origin it's filled on.
+        origin: String,
+        /// What the owner calls it.
+        label: String,
+        /// Its secrets.
+        sign_in: SignIn,
+        /// When, in seconds.
+        now: i64,
+    },
+    /// The secrets of the sign-in `id`, for a fill.
+    Read {
+        /// The sign-in.
+        id: String,
+    },
+    /// Delete the sign-in `id`.
+    Delete {
+        /// The sign-in.
+        id: String,
+    },
+    /// Delete every sign-in of the profile `profile_id`.
+    DeleteProfiles {
+        /// The profile.
+        profile_id: String,
+    },
+}
+
+/// The keeper's answer to a [`SignInRequest`]. A read's secrets follow it,
+/// the username and then the password, each in a frame of its own: never
+/// in the answer.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "answer", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum SignInAnswer {
+    /// Every sign-in, by label.
+    Listed {
+        /// They, oldest first.
+        sign_ins: Vec<Credential>,
+    },
+    /// The sign-in kept, as listed.
+    Kept {
+        /// It.
+        sign_in: Credential,
+    },
+    /// Not kept, and why.
+    Refused {
+        /// Why.
+        reason: SignInRefusal,
+    },
+    /// The sign-in's secrets follow.
+    Read,
+    /// How many sign-ins went.
+    Deleted {
+        /// How many.
+        count: usize,
+    },
+    /// The store's failure.
+    Failed {
+        /// Why.
+        reason: String,
+    },
+}
+
+/// The sign-ins the broker keeps, in the store `config` gives it: the
+/// keeper's, when one runs.
 pub struct Credentials<'k> {
     root: &'k Path,
     keys: &'k dyn OpensStores,
+    /// The keeper that holds them, when one runs: the store is then its
+    /// own, and `keys` hold no key to it.
+    keeper: Option<&'k Keeper>,
 }
 
 impl std::fmt::Debug for Credentials<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Credentials")
             .field("root", &self.root)
+            .field("kept", &self.keeper.is_some())
             .finish_non_exhaustive()
     }
 }
 
 impl<'k> Credentials<'k> {
-    /// The store `config` gives the broker, opened with `keys`; `None` when
-    /// the operator gave it none, and no sign-in is kept.
+    /// The store `config` gives the broker: the keeper's, when this
+    /// broker started one, or opened with `keys`; `None` when the operator
+    /// gave it none, and no sign-in is kept.
     #[must_use]
     pub fn of(config: &'k Config, keys: &'k dyn OpensStores) -> Option<Self> {
+        Self::through(crate::keeper::keeper(), config, keys)
+    }
+
+    /// The store `config` gives, held by `keeper`, which is asked for
+    /// every sign-in; without one, opened here with `keys`, as the keeper
+    /// opens it. `None` when the operator gave it none.
+    #[must_use]
+    pub fn through(
+        keeper: Option<&'k Keeper>,
+        config: &'k Config,
+        keys: &'k dyn OpensStores,
+    ) -> Option<Self> {
         let root = config.web.credentials.as_path();
-        (!root.as_os_str().is_empty()).then_some(Self { root, keys })
+        (!root.as_os_str().is_empty()).then_some(Self { root, keys, keeper })
     }
 
     fn vault(&self) -> Result<SealedVault<'_>, String> {
@@ -127,6 +227,12 @@ impl<'k> Credentials<'k> {
     ///
     /// Why the store can't be read.
     pub fn list(&self) -> Result<Vec<Credential>, String> {
+        if let Some(keeper) = self.keeper {
+            return match asked(keeper, SignInRequest::List)? {
+                (SignInAnswer::Listed { sign_ins }, _) => Ok(sign_ins),
+                (other, _) => Err(out_of_turn(&other)),
+            };
+        }
         let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
         Self::read_index(&self.vault()?)
     }
@@ -145,10 +251,45 @@ impl<'k> Credentials<'k> {
         sign_in: &SignIn,
         now: i64,
     ) -> Result<Result<Credential, SignInRefusal>, String> {
-        let origin = match refusal(profile, origin, label, sign_in) {
+        match refusal(profile, origin, label, sign_in) {
+            Ok(origin) => self.keep(&profile.id, &origin, label, sign_in, now),
+            Err(refused) => Ok(Err(refused)),
+        }
+    }
+
+    /// Keeps `sign_in` for the profile `profile_id` on `origin`, labelled
+    /// `label`, from `now`, the profile's own site, as the broker checked:
+    /// the keeper's keep, which checks the rest again.
+    ///
+    /// # Errors
+    ///
+    /// The store's failure.
+    fn keep(
+        &self,
+        profile_id: &str,
+        origin: &str,
+        label: &str,
+        sign_in: &SignIn,
+        now: i64,
+    ) -> Result<Result<Credential, SignInRefusal>, String> {
+        let origin = match shape(origin, label, sign_in) {
             Ok(origin) => origin,
             Err(refused) => return Ok(Err(refused)),
         };
+        if let Some(keeper) = self.keeper {
+            let request = SignInRequest::Keep {
+                profile_id: profile_id.to_owned(),
+                origin,
+                label: label.to_owned(),
+                sign_in: sign_in.clone(),
+                now,
+            };
+            return match asked(keeper, request)? {
+                (SignInAnswer::Kept { sign_in }, _) => Ok(Ok(sign_in)),
+                (SignInAnswer::Refused { reason }, _) => Ok(Err(reason)),
+                (other, _) => Err(out_of_turn(&other)),
+            };
+        }
         let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
         let vault = self.vault()?;
         let mut credentials = Self::read_index(&vault)?;
@@ -168,7 +309,7 @@ impl<'k> Credentials<'k> {
             .map_err(|error| format!("a sign-in can't be written: {error}"))?;
         let credential = Credential {
             id,
-            profile_id: profile.id.clone(),
+            profile_id: profile_id.to_owned(),
             origin,
             label: label.trim().to_owned(),
             created_at: now,
@@ -185,6 +326,13 @@ impl<'k> Credentials<'k> {
     ///
     /// Why they can't be read: no such sign-in, or the store's failure.
     pub fn sign_in(&self, id: &str) -> Result<SignIn, String> {
+        if let Some(keeper) = self.keeper {
+            let request = SignInRequest::Read { id: id.to_owned() };
+            return match asked(keeper, request)? {
+                (SignInAnswer::Read, Some(sign_in)) => Ok(sign_in),
+                (other, _) => Err(out_of_turn(&other)),
+            };
+        }
         let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
         let vault = self.vault()?;
         if !Self::read_index(&vault)?
@@ -206,6 +354,10 @@ impl<'k> Credentials<'k> {
     ///
     /// The store's failure.
     pub fn delete(&self, id: &str) -> Result<bool, String> {
+        if let Some(keeper) = self.keeper {
+            let request = SignInRequest::Delete { id: id.to_owned() };
+            return deleted(asked(keeper, request)?).map(|count| count > 0);
+        }
         let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
         let vault = self.vault()?;
         Self::drop_where(&vault, |credential| credential.id == id).map(|dropped| dropped > 0)
@@ -218,6 +370,12 @@ impl<'k> Credentials<'k> {
     ///
     /// The store's failure.
     pub fn delete_profiles(&self, profile_id: &str) -> Result<usize, String> {
+        if let Some(keeper) = self.keeper {
+            let request = SignInRequest::DeleteProfiles {
+                profile_id: profile_id.to_owned(),
+            };
+            return deleted(asked(keeper, request)?);
+        }
         let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
         let vault = self.vault()?;
         Self::drop_where(&vault, |credential| credential.profile_id == profile_id)
@@ -245,6 +403,70 @@ impl<'k> Credentials<'k> {
     }
 }
 
+/// `request` asked of `keeper`: its answer, and a read's secrets; its
+/// store's failure, or the keeper's, as an error.
+fn asked(
+    keeper: &Keeper,
+    request: SignInRequest,
+) -> Result<(SignInAnswer, Option<SignIn>), String> {
+    match keeper.sign_ins(request) {
+        Ok((SignInAnswer::Failed { reason }, _)) => Err(format!("the keeper's sign-ins: {reason}")),
+        Ok(answered) => Ok(answered),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// How many sign-ins a deletion's answer says went.
+fn deleted(answered: (SignInAnswer, Option<SignIn>)) -> Result<usize, String> {
+    match answered {
+        (SignInAnswer::Deleted { count }, _) => Ok(count),
+        (other, _) => Err(out_of_turn(&other)),
+    }
+}
+
+fn out_of_turn(answer: &SignInAnswer) -> String {
+    format!("the keeper answered out of turn: {answer:?}")
+}
+
+/// The keeper's answer to `request` from the sign-ins in `credentials`,
+/// its own store: and a read's secrets, which it sends after.
+pub(crate) fn answer(
+    credentials: &Credentials<'_>,
+    request: SignInRequest,
+) -> (SignInAnswer, Option<SignIn>) {
+    let failed = |reason: String| (SignInAnswer::Failed { reason }, None);
+    match request {
+        SignInRequest::List => credentials
+            .list()
+            .map_or_else(failed, |sign_ins| (SignInAnswer::Listed { sign_ins }, None)),
+        SignInRequest::Keep {
+            profile_id,
+            origin,
+            label,
+            sign_in,
+            now,
+        } => match credentials.keep(&profile_id, &origin, &label, &sign_in, now) {
+            Ok(Ok(sign_in)) => (SignInAnswer::Kept { sign_in }, None),
+            Ok(Err(reason)) => (SignInAnswer::Refused { reason }, None),
+            Err(reason) => failed(reason),
+        },
+        SignInRequest::Read { id } => credentials
+            .sign_in(&id)
+            .map_or_else(failed, |sign_in| (SignInAnswer::Read, Some(sign_in))),
+        SignInRequest::Delete { id } => credentials.delete(&id).map_or_else(failed, |found| {
+            (
+                SignInAnswer::Deleted {
+                    count: usize::from(found),
+                },
+                None,
+            )
+        }),
+        SignInRequest::DeleteProfiles { profile_id } => credentials
+            .delete_profiles(&profile_id)
+            .map_or_else(failed, |count| (SignInAnswer::Deleted { count }, None)),
+    }
+}
+
 /// `raw` as an origin a sign-in is kept for, `https://host[:port]`: an
 /// `https` URL with nothing past its origin, or `None`.
 #[must_use]
@@ -261,6 +483,17 @@ fn refusal(
     label: &str,
     sign_in: &SignIn,
 ) -> Result<String, SignInRefusal> {
+    let canonical = shape(origin, label, sign_in)?;
+    let url = WebUrl::parse(&canonical).map_err(|_| SignInRefusal::BadOrigin)?;
+    if !profile.holds(&url.origin().destination()) {
+        return Err(SignInRefusal::NotTheProfiles);
+    }
+    Ok(canonical)
+}
+
+/// What `origin` is as a sign-in labelled `label`, whatever its profile:
+/// its canonical origin, or why it isn't kept.
+fn shape(origin: &str, label: &str, sign_in: &SignIn) -> Result<String, SignInRefusal> {
     let label = label.trim();
     if label.is_empty() || label.chars().any(char::is_control) {
         return Err(SignInRefusal::BadLabel);
@@ -274,12 +507,7 @@ fn refusal(
     {
         return Err(SignInRefusal::TooLong);
     }
-    let canonical = origin_of(origin).ok_or(SignInRefusal::BadOrigin)?;
-    let url = WebUrl::parse(&canonical).map_err(|_| SignInRefusal::BadOrigin)?;
-    if !profile.holds(&url.origin().destination()) {
-        return Err(SignInRefusal::NotTheProfiles);
-    }
-    Ok(canonical)
+    origin_of(origin).ok_or(SignInRefusal::BadOrigin)
 }
 
 /// `credential` as the owner's app is told it.
@@ -398,6 +626,24 @@ mod tests {
             username: Concealed::new(String::from("ada@a.example")),
             password: Concealed::new(password.to_owned()),
         }
+    }
+
+    /// A deletion's answer says how many went; any other answer is out of
+    /// turn, and says which.
+    #[test]
+    fn a_deletions_answer_is_its_count_and_any_other_is_out_of_turn() {
+        assert_eq!(deleted((SignInAnswer::Deleted { count: 2 }, None)), Ok(2));
+        let other = deleted((SignInAnswer::Read, None));
+        assert!(
+            other
+                .as_ref()
+                .is_err_and(|error| error.contains("out of turn") && error.contains("Read")),
+            "{other:?}"
+        );
+        assert_eq!(
+            out_of_turn(&SignInAnswer::Deleted { count: 1 }),
+            "the keeper answered out of turn: Deleted { count: 1 }"
+        );
     }
 
     #[test]

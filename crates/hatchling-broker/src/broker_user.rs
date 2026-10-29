@@ -30,8 +30,8 @@ pub fn broker_user() -> Result<Option<(u32, u32)>, Error> {
 
 /// The directories the broker's user owns.
 ///
-/// Each sealed store's root but the vault, which is the keeper's, and the
-/// output gate's directory, which holds the redaction store. (The
+/// Each sealed store's root but the vault and the sign-ins, which are the
+/// keeper's, and the output gate's directory, which holds the redaction store. (The
 /// configuration keeps the stores apart, so none is named twice.)
 #[must_use]
 pub fn broker_dirs(config: &Config, redaction: Option<&RedactionConfig>) -> Vec<PathBuf> {
@@ -190,6 +190,11 @@ mod tests {
         assert!(
             !broker_dirs(&config, Some(&redaction)).contains(&config.vault.root),
             "the vault is the keeper's"
+        );
+        config.web.credentials = PathBuf::from("/srv/h/sign-ins");
+        assert!(
+            !broker_dirs(&config, Some(&redaction)).contains(&config.web.credentials),
+            "the sign-ins are the keeper's"
         );
     }
 

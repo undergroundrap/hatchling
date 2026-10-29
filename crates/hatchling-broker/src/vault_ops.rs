@@ -84,15 +84,19 @@ pub fn sealed_stores(
     stores
 }
 
-/// The broker's own sealed stores: [`sealed_stores`] but the vault, which
-/// is the keeper's (WO-017).
+/// The stores the vault keeper holds the keys of, and the broker doesn't:
+/// the vault (WO-017) and the sign-ins (WO-031).
+pub(crate) const KEEPERS_STORES: [Store; 2] = [Store::SECRETS, Store::CREDENTIALS];
+
+/// The broker's own sealed stores: [`sealed_stores`] but the keeper's,
+/// [`KEEPERS_STORES`].
 #[must_use]
 pub(crate) fn broker_stores(
     config: &Config,
     redaction: Option<&RedactionConfig>,
 ) -> Vec<(Store, PathBuf)> {
     let mut stores = sealed_stores(config, redaction);
-    stores.retain(|(store, _)| *store != Store::SECRETS);
+    stores.retain(|(store, _)| !KEEPERS_STORES.contains(store));
     stores
 }
 
@@ -698,6 +702,17 @@ mod tests {
         assert_eq!(labels(&config), ["secrets", "artifacts", "spaces"]);
         config.web.grants = PathBuf::from("/srv/sites");
         assert_eq!(labels(&config), ["secrets", "artifacts", "spaces", "sites"]);
+        let brokers: Vec<_> = broker_stores(&config, None)
+            .into_iter()
+            .map(|(store, _)| store.label())
+            .collect();
+        assert_eq!(brokers, ["artifacts", "spaces", "sites"]);
+        // The sign-ins are a store, and the keeper's (WO-031).
+        config.web.credentials = PathBuf::from("/srv/sign-ins");
+        assert_eq!(
+            labels(&config),
+            ["secrets", "artifacts", "spaces", "sites", "credentials"]
+        );
         let brokers: Vec<_> = broker_stores(&config, None)
             .into_iter()
             .map(|(store, _)| store.label())
