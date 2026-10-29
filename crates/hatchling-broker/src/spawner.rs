@@ -406,6 +406,9 @@ impl Policy {
                 "a vault channel for a cell that isn't a connected agent",
             ));
         }
+        if config.sign_ins_for.is_some() && helper != HelperKind::BrowserCell {
+            return Err(String::from("sign-ins for a cell that isn't a browser"));
+        }
         let limits = if helper == HelperKind::BrowserCell {
             crate::browser_session::browser_limits()
         } else {
@@ -544,14 +547,30 @@ impl Spawner {
         })
     }
 
+    /// Whether it hands cells' vault channels to the keeper (WO-031): only
+    /// then is a cell given one.
+    #[must_use]
+    pub const fn hands_vaults(&self) -> bool {
+        self.vaults
+    }
+
     /// The grants a cell's vault channel is named with, each
     /// `action:name`, from `vault`, the cell's session's: when this
     /// spawner hands cells' vault channels to the keeper. `None`
     /// otherwise: the cell has no vault channel.
     #[must_use]
     pub fn vault_grants(&self, vault: &crate::VaultConfig) -> Option<Vec<String>> {
-        self.vaults
+        self.hands_vaults()
             .then(|| vault.grants.iter().map(crate::keeper::grant_word).collect())
+    }
+
+    /// [`Spawner::over`], handing cells' vault channels to a keeper.
+    #[cfg(test)]
+    pub(crate) fn handing_vaults(control: UnixStream) -> Self {
+        Self {
+            vaults: true,
+            ..Self::over(control)
+        }
     }
 
     /// The broker's end, `control`, of a spawner already running.
@@ -1244,16 +1263,11 @@ fn serve_helper(
     // A cell with a vault channel: the helper hands its channels to the
     // spawner, which passes its connection on to the broker and its vault
     // channel to the keeper (WO-031). The broker never holds that end.
-    let (stdin, relay) = match (&config.vault_grants, keeper) {
+    let (stdin, relay) = match (vault_named(&config), keeper) {
         (None, _) => (stdin, None),
         (Some(_), None) => return refuse(String::from("no keeper takes a vault channel")),
-        (Some(grants), Some(keeper)) => match UnixStream::pair() {
+        (Some(named), Some(keeper)) => match UnixStream::pair() {
             Ok((ours, theirs)) => {
-                let named = crate::keeper::CellChannel {
-                    cell: config.cell_id.clone(),
-                    uid: config.uid_base,
-                    grants: grants.clone(),
-                };
                 let relay = (ours, UnixStream::from(stdin), Arc::clone(keeper), named);
                 (OwnedFd::from(theirs), Some(relay))
             }
@@ -1320,6 +1334,20 @@ fn serve_helper(
 /// The spawner's end of its channel with the vault keeper, shared by its
 /// connections' threads.
 type Keeper = Arc<Mutex<UnixStream>>;
+
+/// How `config`'s vault channel is named to the keeper, when it has one:
+/// with its cell, its uid, and its grants, or the profile a browser cell
+/// is started for, whose sign-ins it may be filled with (WO-031).
+fn vault_named(config: &CellConfig) -> Option<crate::keeper::CellChannel> {
+    config
+        .has_vault_channel()
+        .then(|| crate::keeper::CellChannel {
+            cell: config.cell_id.clone(),
+            uid: config.uid_base,
+            grants: config.vault_grants.clone().unwrap_or_default(),
+            profile: config.sign_ins_for.clone(),
+        })
+}
 
 /// Passes on a helper's channels as it hands them over on `relay`: its
 /// cell's connection to `handoff`, the broker's, then its cell's vault
@@ -1799,6 +1827,7 @@ sleep 30 </dev/null >/dev/null 2>&1 &
             cell: String::from("run-1"),
             uid: 7,
             grants: vec![String::from("fetch:token")],
+            profile: None,
         };
         let (connection, cells_connection) = UnixStream::pair().unwrap();
         let (vault, cells_vault) = UnixStream::pair().unwrap();
@@ -1841,7 +1870,8 @@ sleep 30 </dev/null >/dev/null 2>&1 &
         assert!(silent.contains("connection"), "{silent}");
     }
 
-    /// Only a connected agent cell is given a vault channel; and only a
+    /// Only a connected agent cell is given a vault channel for its vault
+    /// ops, and only a browser one for a profile's sign-ins; and only a
     /// spawner that hands them to the keeper names its grants.
     #[test]
     fn only_a_connected_agent_cell_gets_a_vault_channel() {
@@ -1850,11 +1880,17 @@ sleep 30 </dev/null >/dev/null 2>&1 &
         skill.vault_grants = Some(Vec::new());
         let refused = policy().check(HelperKind::SkillCell, &skill).unwrap_err();
         assert!(refused.contains("vault channel"), "{refused}");
+        skill.vault_grants = None;
+        skill.sign_ins_for = Some(String::from("profile-1"));
+        let refused = policy().check(HelperKind::SkillCell, &skill).unwrap_err();
+        assert!(refused.contains("sign-ins for a cell"), "{refused}");
         let vault = crate::api_auth::tests::owner_config(None).vault;
         let (ours, _theirs) = UnixStream::pair().unwrap();
         let mut spawner = Spawner::over(ours);
         assert!(spawner.vault_grants(&vault).is_none());
+        assert!(!spawner.hands_vaults());
         spawner.vaults = true;
+        assert!(spawner.hands_vaults());
         let mut granted = vault;
         granted.grants = vec![crate::VaultGrant {
             action: hatchling_core::VaultAction::Fetch,
@@ -1864,6 +1900,28 @@ sleep 30 </dev/null >/dev/null 2>&1 &
             spawner.vault_grants(&granted),
             Some(vec![String::from("fetch:token")])
         );
+    }
+
+    /// A vault channel is named to the keeper with its cell, its uid and
+    /// its grants, or the profile a browser cell is started for; a cell
+    /// without one isn't named.
+    #[test]
+    fn a_vault_channel_is_named_with_its_grants_or_its_profile() {
+        let mut cell = CellConfig::skill("named").unwrap();
+        cell.vault_grants = Some(vec![String::from("fetch:token")]);
+        assert_eq!(vault_named(&cell), None, "not connected");
+        cell.connected = true;
+        let named = |grants: &[&str], profile: Option<&str>| crate::keeper::CellChannel {
+            cell: String::from("named"),
+            uid: cell.uid_base,
+            grants: grants.iter().map(|grant| (*grant).to_owned()).collect(),
+            profile: profile.map(String::from),
+        };
+        assert_eq!(vault_named(&cell), Some(named(&["fetch:token"], None)));
+        cell.vault_grants = None;
+        assert_eq!(vault_named(&cell), None, "neither grants nor a profile");
+        cell.sign_ins_for = Some(String::from("profile-1"));
+        assert_eq!(vault_named(&cell), Some(named(&[], Some("profile-1"))));
     }
 
     #[test]

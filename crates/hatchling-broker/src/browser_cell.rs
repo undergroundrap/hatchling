@@ -135,20 +135,30 @@ impl BrowserLauncher {
     }
 
     /// Starts the browser cell `cell_id`, reaching only the `sites` its
-    /// session holds, from the snapshot of the pinned bundle.
+    /// session holds, from the snapshot of the pinned bundle; for the
+    /// signed-in `profile`, if it's given one (WO-030). A browser started
+    /// for a profile gets a vault channel, on which the keeper fills that
+    /// profile's sign-ins (WO-031), when the spawner hands it to a keeper:
+    /// never otherwise, so the broker never holds one.
     ///
     /// # Errors
     ///
     /// A sentence for the broker's log: the browser isn't the pinned one,
     /// the cell couldn't be made or started, or it didn't hand its
     /// connection and relay over in time. Nothing is left running.
-    pub fn start(&self, cell_id: &str, sites: Sites) -> Result<BrowserCell, String> {
+    pub fn start(
+        &self,
+        cell_id: &str,
+        sites: Sites,
+        profile: Option<&str>,
+    ) -> Result<BrowserCell, String> {
         let snapshot = self.snapshot()?;
         let run_dir = RunDir::create()?;
         let handoff_path = run_dir.path().join("relay.sock");
         let handoff = UnixListener::bind(&handoff_path)
             .map_err(|error| format!("cannot make the relay handoff: {error}"))?;
-        let config = self.cell_config(cell_id, &snapshot, handoff_path)?;
+        let mut config = self.cell_config(cell_id, &snapshot, handoff_path)?;
+        config.sign_ins_for = sign_ins_for(profile, crate::spawner::spawner());
         let running = crate::machine::Running::start(cell_id, CellKind::Browser, &config.limits);
         let (config, group) = config
             .supervised_cgroup()
@@ -329,6 +339,18 @@ fn receive_within(
     }
 }
 
+/// What a browser started for `profile` is named with for its sign-ins
+/// (WO-031): the profile, when `spawner` hands cells' vault channels to
+/// the keeper; nothing otherwise, so the broker is never handed one.
+fn sign_ins_for(
+    profile: Option<&str>,
+    spawner: Option<&crate::spawner::Spawner>,
+) -> Option<String> {
+    profile
+        .filter(|_| spawner.is_some_and(crate::spawner::Spawner::hands_vaults))
+        .map(String::from)
+}
+
 /// A browser cell's helper, under the backend's supervision. Dropped, it's
 /// killed and reaped, and its cell dies with it.
 struct Helper {
@@ -468,21 +490,37 @@ fn run_helper(spec: Option<&str>) -> Result<i32, Error> {
     let watch = crate::run_launcher::watch_broker(std::env::var_os(BROKER_PID_ENV))?;
     let mut cell = spawn_cell(&config, LogLevel::Error)?;
     watch.exit_with_parent(1);
-    hand_connection_over(&channel, cell.connection())?;
+    let vault = cell.vault_channel();
+    hand_channels_over(&channel, &config, cell.connection(), vault)?;
     crate::skill_run::hand_relay_over(&mut cell, &handoff)?;
     Ok(cell.wait_exit()?.code)
 }
 
-/// Sends the broker `connection`, the broker's end of the controller's
-/// connection, on `channel`, and keeps no copy.
-fn hand_connection_over(channel: &UnixStream, connection: Option<UnixStream>) -> Result<(), Error> {
-    let connection = connection.ok_or_else(|| Error::CellSpawn {
-        reason: String::from("the browser cell came without its connection"),
+/// Sends the broker's `channel` the cell's `connection`, then its `vault`
+/// channel, when `config` started it for a profile's sign-ins: the
+/// spawner, which reads `channel`, hands that to the keeper, never to the
+/// broker (WO-031).
+fn hand_channels_over(
+    channel: &UnixStream,
+    config: &CellConfig,
+    connection: Option<UnixStream>,
+    vault: Option<UnixStream>,
+) -> Result<(), Error> {
+    hand_over(channel, connection, "connection")?;
+    if config.has_vault_channel() {
+        hand_over(channel, vault, "vault channel")?;
+    }
+    Ok(())
+}
+
+/// Sends `end`, the owner's end of the controller's `what` (its
+/// connection, or its vault channel), on `channel`, and keeps no copy.
+fn hand_over(channel: &UnixStream, end: Option<UnixStream>, what: &str) -> Result<(), Error> {
+    let end = end.ok_or_else(|| Error::CellSpawn {
+        reason: format!("the browser cell came without its {what}"),
     })?;
-    hatchling_sys::net::send_fd(channel.as_fd(), connection.as_fd()).map_err(|source| {
-        Error::CellSpawn {
-            reason: format!("cannot hand the browser cell's connection to the broker: {source}"),
-        }
+    hatchling_sys::net::send_fd(channel.as_fd(), end.as_fd()).map_err(|source| Error::CellSpawn {
+        reason: format!("cannot hand over the browser cell's {what}: {source}"),
     })
 }
 
@@ -508,11 +546,17 @@ mod tests {
     #[test]
     fn a_cell_without_its_connection_is_never_handed_over() {
         let (channel, broker) = UnixStream::pair().unwrap();
-        let refused = hand_connection_over(&channel, None).unwrap_err();
+        let refused = hand_over(&channel, None, "connection").unwrap_err();
         assert!(
             refused
                 .to_string()
                 .contains("the browser cell came without its connection")
+        );
+        let refused = hand_over(&channel, None, "vault channel").unwrap_err();
+        assert!(
+            refused
+                .to_string()
+                .contains("the browser cell came without its vault channel")
         );
         broker.set_nonblocking(true).unwrap();
         assert!(
@@ -521,11 +565,88 @@ mod tests {
         );
     }
 
+    /// A browser cell's connection is handed over first, then its vault
+    /// channel, when it was started for a profile's sign-ins; one that
+    /// should have one and came without is refused.
+    #[test]
+    fn a_browser_cells_vault_channel_follows_its_connection_when_it_has_one() {
+        let mut config = CellConfig::skill("browser-channels").unwrap();
+        config.connected = true;
+        let handed = |config: &CellConfig, vault: bool| {
+            let (channel, broker) = UnixStream::pair().unwrap();
+            let (connection, controllers) = UnixStream::pair().unwrap();
+            let (cells_vault, vaults) = UnixStream::pair().unwrap();
+            let result = hand_channels_over(
+                &channel,
+                config,
+                Some(connection),
+                vault.then_some(cells_vault),
+            );
+            broker.set_nonblocking(true).unwrap();
+            let received: Vec<UnixStream> = std::iter::from_fn(|| {
+                hatchling_sys::net::recv_fd(broker.as_fd())
+                    .ok()
+                    .map(UnixStream::from)
+            })
+            .collect();
+            for peer in [&controllers, &vaults] {
+                peer.set_read_timeout(Some(Duration::from_millis(200)))
+                    .unwrap();
+            }
+            let reaches = |mut end: &UnixStream, mut peer: &UnixStream| {
+                end.write_all(b"x").unwrap();
+                peer.read_exact(&mut [0_u8; 1]).is_ok()
+            };
+            let order: Vec<&str> = received
+                .iter()
+                .map(|end| {
+                    if reaches(end, &controllers) {
+                        "connection"
+                    } else if reaches(end, &vaults) {
+                        "vault channel"
+                    } else {
+                        "neither"
+                    }
+                })
+                .collect();
+            (result.map_err(|error| error.to_string()), order.join(", "))
+        };
+        assert_eq!(handed(&config, false), (Ok(()), String::from("connection")));
+        config.sign_ins_for = Some(String::from("profile-1"));
+        assert_eq!(
+            handed(&config, true),
+            (Ok(()), String::from("connection, vault channel"))
+        );
+        let (refused, order) = handed(&config, false);
+        assert!(
+            refused.is_err_and(|error| error.contains("without its vault channel")),
+            "a cell that came without its vault channel"
+        );
+        assert_eq!(order, "connection");
+    }
+
+    /// A browser is started for a profile's sign-ins only through a
+    /// spawner that hands its vault channel to the keeper.
+    #[test]
+    fn a_browser_is_started_for_sign_ins_only_when_the_keeper_takes_its_channel() {
+        let (ours, _theirs) = UnixStream::pair().unwrap();
+        let alone = crate::spawner::Spawner::over(ours);
+        let (ours, _theirs) = UnixStream::pair().unwrap();
+        let handing = crate::spawner::Spawner::handing_vaults(ours);
+        assert_eq!(sign_ins_for(Some("profile-1"), None), None);
+        assert_eq!(sign_ins_for(Some("profile-1"), Some(&alone)), None);
+        assert_eq!(
+            sign_ins_for(Some("profile-1"), Some(&handing)).as_deref(),
+            Some("profile-1")
+        );
+        assert_eq!(sign_ins_for(None, Some(&handing)), None);
+    }
+
     #[test]
     fn a_connection_is_handed_over_and_kept_nowhere_else() {
         let (channel, broker) = UnixStream::pair().unwrap();
         let (cell_end, controller) = UnixStream::pair().unwrap();
-        hand_connection_over(&channel, Some(cell_end)).unwrap();
+        hand_over(&channel, Some(cell_end), "connection").unwrap();
         let received = receive_connection(&broker).unwrap();
         // The helper kept no copy: the controller's end sees the broker's
         // close as soon as the one it received is gone.
@@ -578,7 +699,9 @@ mod tests {
     #[test]
     fn a_browser_that_isnt_the_pinned_one_is_never_started() {
         let (launcher, dir) = launcher("pin", Some(&"0".repeat(64)), "/nonexistent-group");
-        let refused = launcher.start("browser-pin", Sites::default()).unwrap_err();
+        let refused = launcher
+            .start("browser-pin", Sites::default(), None)
+            .unwrap_err();
         assert!(refused.contains("not the pinned"), "{refused}");
         assert!(!listed("browser-pin"));
         std::fs::remove_dir_all(dir).unwrap();
@@ -619,7 +742,7 @@ mod tests {
     fn a_browser_cell_without_its_group_is_never_started() {
         let (launcher, dir) = launcher("group", None, "/nonexistent-group");
         let refused = launcher
-            .start("browser-group", Sites::default())
+            .start("browser-group", Sites::default(), None)
             .unwrap_err();
         assert!(refused.contains("HATCHLING_CELL_CGROUP"), "{refused}");
         assert!(!listed("browser-group"), "unlisted once it's refused");

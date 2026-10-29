@@ -134,6 +134,12 @@ pub struct CellConfig {
     /// never to the broker. `None` without one.
     #[serde(default)]
     pub vault_grants: Option<Vec<String>>,
+    /// The signed-in profile a browser cell is started for (WO-030), when
+    /// its sign-ins may be filled into it: it then gets a vault channel,
+    /// which the spawner hands the vault keeper named with the profile, and
+    /// on which the keeper sends it a fill (WO-031). `None` otherwise.
+    #[serde(default)]
+    pub sign_ins_for: Option<String>,
 }
 
 /// Where cells get their uid and gid: `HATCHLING_CELL_IDS`.
@@ -766,7 +772,16 @@ impl CellConfig {
             cgroup: cgroup_parent(&get)?,
             connected: false,
             vault_grants: None,
+            sign_ins_for: None,
         })
+    }
+
+    /// Whether the cell gets a vault channel (WO-031): a connected cell
+    /// named with vault grants, or a browser started for a profile's
+    /// sign-ins.
+    #[must_use]
+    pub const fn has_vault_channel(&self) -> bool {
+        self.connected && (self.vault_grants.is_some() || self.sign_ins_for.is_some())
     }
 
     /// The identity the cell runs as.
@@ -1054,6 +1069,7 @@ impl CellConfig {
             cgroup: cgroup_parent(&get)?,
             connected: false,
             vault_grants: None,
+            sign_ins_for: None,
         })
     }
 }
@@ -1359,7 +1375,7 @@ fn cell_spec(config: &CellConfig, log_level: LogLevel) -> CellSpec {
             dir: config.socket_dir.clone(),
         }),
         connection: !config.is_skill_cell() && config.connected,
-        vault_channel: config.connected && config.vault_grants.is_some(),
+        vault_channel: config.has_vault_channel(),
         exposures: cell_exposures(config),
         tools: config.browser.as_ref().map_or_else(
             || {
@@ -1557,10 +1573,18 @@ mod tests {
         // A connected cell named with vault grants gets one; an
         // unconnected one doesn't.
         let mut agent = cell;
+        assert!(!agent.has_vault_channel());
         agent.vault_grants = Some(Vec::new());
+        assert!(agent.has_vault_channel());
         assert!(cell_spec(&agent, LogLevel::Error).vault_channel);
         agent.connected = false;
         assert!(!cell_spec(&agent, LogLevel::Error).vault_channel);
+        // So does a connected cell started for a profile's sign-ins.
+        agent.vault_grants = None;
+        agent.sign_ins_for = Some(String::from("profile-1"));
+        assert!(!cell_spec(&agent, LogLevel::Error).vault_channel);
+        agent.connected = true;
+        assert!(cell_spec(&agent, LogLevel::Error).vault_channel);
         std::fs::remove_dir_all(&base).unwrap();
     }
 

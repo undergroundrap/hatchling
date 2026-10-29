@@ -269,6 +269,22 @@ pub enum SignInField {
     Code,
 }
 
+/// What the vault keeper sends a browser cell to fill a sign-in (WO-031).
+///
+/// On the cell's vault channel: this, then the username and the password,
+/// each a raw frame of its own. The broker, which asked for the fill, is
+/// given the nonce alone, and names it to the controller.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SignInFill {
+    /// The fill's own nonce: the controller types a fill only when the
+    /// broker names it.
+    pub nonce: String,
+    /// The exact origin the sign-in is kept for, `https://host[:port]`,
+    /// from the keeper's store: the top frame must be on it.
+    pub origin: String,
+}
+
 /// A cookie, as the browser keeps it. Its value is a secret: what a
 /// signed-in session is. It reaches the broker, which seals it, and the
 /// browser, and never a snapshot, a log, or anything the agent sees.
