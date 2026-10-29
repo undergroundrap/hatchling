@@ -632,10 +632,12 @@ impl Keeper {
         let request = Request::SignIn { op };
         let (reply, read) = self.exchange(|stream| {
             let reply = ask(stream, &request)?;
-            let read = if let Reply::SignIn {
-                answer: SignInAnswer::Read,
-            } = &reply
-            {
+            let read = if matches!(
+                reply,
+                Reply::SignIn {
+                    answer: SignInAnswer::Read
+                }
+            ) {
                 Some(SignIn {
                     username: concealed(stream)?,
                     password: concealed(stream)?,
@@ -2119,7 +2121,7 @@ mod tests {
         // A read's secret is text, moved whole out of its frame.
         write_frame(&theirs, b"pw \xff").unwrap();
         assert!(concealed(&ours).is_err(), "a secret that isn't text");
-        write_frame(&theirs, "pw \"q\"".as_bytes()).unwrap();
+        write_frame(&theirs, b"pw \"q\"").unwrap();
         assert_eq!(concealed(&ours).unwrap().expose(), "pw \"q\"");
     }
 
