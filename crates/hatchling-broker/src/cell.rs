@@ -1492,7 +1492,7 @@ mod tests {
         assert!(!spec.vault_channel, "no vault channel");
         // A connected cell named with vault grants gets one; an
         // unconnected one doesn't.
-        let mut agent = cell.clone();
+        let mut agent = cell;
         agent.vault_grants = Some(Vec::new());
         assert!(cell_spec(&agent, LogLevel::Error).vault_channel);
         agent.connected = false;
