@@ -34,7 +34,7 @@
 //! user, and a root broker can reach any process. The spawner split, next,
 //! gives the broker a user of its own.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::os::fd::{AsFd as _, AsRawFd as _};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt as _;
@@ -129,6 +129,14 @@ enum Request {
     Scan { purpose: String },
     /// An operation on the sign-ins (WO-031).
     SignIn { op: SignInRequest },
+    /// Fill the sign-in `id` into the browser cell `cell`, whose page the
+    /// broker says is on `origin` (WO-031): sent to the cell, never to the
+    /// broker.
+    Fill {
+        id: String,
+        cell: String,
+        origin: String,
+    },
 }
 
 /// What the keeper answers.
@@ -146,6 +154,9 @@ enum Reply {
     Refused { reason: String },
     /// The sign-ins' answer.
     SignIn { answer: SignInAnswer },
+    /// The fill was sent to the cell, as `nonce`: the broker names it to
+    /// the cell's controller.
+    Filling { nonce: String },
 }
 
 /// The broker's end of the keeper: one request at a time.
@@ -570,7 +581,9 @@ impl Keeper {
         let found = match reply {
             Reply::Read { found } => found,
             Reply::Refused { reason } => return Err(Error::Keeper { reason }),
-            other @ (Reply::Scan { .. } | Reply::SignIn { .. }) => return Err(unexpected(&other)),
+            other @ (Reply::Scan { .. } | Reply::SignIn { .. } | Reply::Filling { .. }) => {
+                return Err(unexpected(&other));
+            }
         };
         let mut frames = frames.into_iter();
         found
@@ -617,7 +630,9 @@ impl Keeper {
                 .map(|bytes| Secret::new(bytes.to_vec()).map_err(|source| Error::Vault { source }))
                 .collect(),
             Reply::Refused { reason } => Err(Error::Keeper { reason }),
-            other @ (Reply::Read { .. } | Reply::SignIn { .. }) => Err(unexpected(&other)),
+            other @ (Reply::Read { .. } | Reply::SignIn { .. } | Reply::Filling { .. }) => {
+                Err(unexpected(&other))
+            }
         }
     }
 
@@ -650,7 +665,34 @@ impl Keeper {
         match reply {
             Reply::SignIn { answer } => Ok((answer, read)),
             Reply::Refused { reason } => Err(Error::Keeper { reason }),
-            other @ (Reply::Read { .. } | Reply::Scan { .. }) => Err(unexpected(&other)),
+            other @ (Reply::Read { .. } | Reply::Scan { .. } | Reply::Filling { .. }) => {
+                Err(unexpected(&other))
+            }
+        }
+    }
+
+    /// Asks the keeper to fill the sign-in `id` into the browser cell
+    /// `cell`, whose page is on `origin` (WO-031): the fill's nonce, which
+    /// the broker names to the cell's controller. The sign-in's secrets go
+    /// to the cell alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Keeper`] when the keeper refuses it (the sign-in
+    /// isn't that browser's profile's, or kept for `origin`, or there's no
+    /// such browser) or can't be reached.
+    pub fn fill(&self, id: &str, cell: &str, origin: &str) -> Result<String, Error> {
+        let request = Request::Fill {
+            id: id.to_owned(),
+            cell: cell.to_owned(),
+            origin: origin.to_owned(),
+        };
+        match self.exchange(|stream| ask(stream, &request))? {
+            Reply::Filling { nonce } => Ok(nonce),
+            Reply::Refused { reason } => Err(Error::Keeper { reason }),
+            other @ (Reply::Read { .. } | Reply::Scan { .. } | Reply::SignIn { .. }) => {
+                Err(unexpected(&other))
+            }
         }
     }
 
@@ -768,6 +810,7 @@ fn unexpected(reply: &Reply) -> Error {
         Reply::Scan { .. } => "scan",
         Reply::Refused { .. } => "refused",
         Reply::SignIn { .. } => "sign-in",
+        Reply::Filling { .. } => "filling",
     };
     Error::Keeper {
         reason: format!("an answer that doesn't answer the request ({kind})"),
@@ -931,6 +974,17 @@ struct Kept {
     /// The secrets a cell has been given or has stored
     /// ([`RELEASED_RECORD`]).
     released: BTreeSet<String>,
+    /// The channels of the browser cells started for a profile's sign-ins,
+    /// by cell (WO-031), until each cell ends its own.
+    browsers: BTreeMap<String, BrowserChannel>,
+}
+
+/// A browser cell's vault channel, as the keeper holds it for fills.
+struct BrowserChannel {
+    /// The profile the cell was started for: only its sign-ins are filled.
+    profile: String,
+    /// The keeper's end, written by fills alone.
+    stream: UnixStream,
 }
 
 /// The keeper's start under `config`: every store's key, the broker's
@@ -967,6 +1021,7 @@ fn begin(stream: &UnixStream, config: Config) -> Result<Kept, Error> {
         keys,
         releases: rules,
         released,
+        browsers: BTreeMap::new(),
     })
 }
 
@@ -1074,6 +1129,7 @@ fn serve(stream: &UnixStream, kept: &Mutex<Kept>, role: Role) -> Result<(), Erro
             }
             Request::Scan { purpose } => answer_scan(stream, kept, &purpose)?,
             Request::SignIn { op } => answer_sign_in(stream, kept, op)?,
+            Request::Fill { id, cell, origin } => answer_fill(stream, kept, &id, &cell, &origin)?,
         }
         drop(guard);
     }
@@ -1117,14 +1173,21 @@ fn cell_op_result(
 
 /// A cell's own channel to the keeper (WO-031), as the spawner names it
 /// when it hands it over: which cell, its peer uid, and the grants its
-/// session holds (each `action:name`).
+/// session holds (each `action:name`); or, for a browser cell, the profile
+/// it was started for, whose sign-ins may be filled into it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CellChannel {
     pub cell: String,
     pub uid: u32,
     pub grants: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
 }
+
+/// How long a fill may take to be written to a browser cell's channel: a
+/// cell that doesn't read it fails the fill, and doesn't hold the keeper.
+const FILL_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Takes each cell's channel the spawner hands over, named first, and
 /// answers it on a thread of its own, until the spawner goes.
@@ -1137,6 +1200,12 @@ fn take_cells(spawner: &UnixStream, kept: &Arc<Mutex<Kept>>) -> Result<(), Error
             reason: format!("a cell's channel wasn't handed over: {e}"),
         })?;
         let channel = UnixStream::from(channel);
+        if let Some(profile) = named.profile.clone() {
+            if let Err(error) = hold_browser(channel, &named.cell, profile, kept) {
+                tracing::warn!(cell = %named.cell, %error, "a browser cell's channel isn't held");
+            }
+            continue;
+        }
         let kept = Arc::clone(kept);
         std::thread::spawn(move || {
             if let Err(error) = serve_cell(&channel, &kept, &named) {
@@ -1144,6 +1213,54 @@ fn take_cells(spawner: &UnixStream, kept: &Arc<Mutex<Kept>>) -> Result<(), Error
             }
         });
     }
+    Ok(())
+}
+
+/// Holds the channel of the browser cell `cell`, started for `profile`,
+/// for the fills the broker asks of that profile's sign-ins (WO-031),
+/// until the cell ends it. The cell sends nothing on it: anything it sends
+/// ends it too. A second channel for a cell already held is refused.
+fn hold_browser(
+    channel: UnixStream,
+    cell: &str,
+    profile: String,
+    kept: &Arc<Mutex<Kept>>,
+) -> Result<(), Error> {
+    let failed = |what: &str, error: std::io::Error| Error::Keeper {
+        reason: format!("cannot {what}: {error}"),
+    };
+    channel
+        .set_write_timeout(Some(FILL_TIMEOUT))
+        .map_err(|error| failed("bound its fills", error))?;
+    let watched = channel
+        .try_clone()
+        .map_err(|error| failed("watch it", error))?;
+    let mut guard = kept.lock().map_err(|_| Error::Keeper {
+        reason: String::from("an earlier answer panicked"),
+    })?;
+    if guard.browsers.contains_key(cell) {
+        return Err(Error::Keeper {
+            reason: String::from("a second channel for a browser cell already held"),
+        });
+    }
+    guard.browsers.insert(
+        cell.to_owned(),
+        BrowserChannel {
+            profile,
+            stream: channel,
+        },
+    );
+    drop(guard);
+    let kept = Arc::clone(kept);
+    let cell = cell.to_owned();
+    std::thread::spawn(move || {
+        use std::io::Read as _;
+        // Until the cell ends the channel, or sends anything at all.
+        let _ = (&watched).read(&mut [0u8; 1]);
+        if let Ok(mut guard) = kept.lock() {
+            guard.browsers.remove(&cell);
+        }
+    });
     Ok(())
 }
 
@@ -1304,6 +1421,100 @@ fn answer_sign_in(stream: &UnixStream, kept: &Kept, op: SignInRequest) -> Result
         write_frame(stream, sign_in.password.expose().as_bytes()).map_err(keeper_gone)?;
     }
     Ok(())
+}
+
+/// Answers the broker's fill of the sign-in `id` into the browser cell
+/// `cell`, whose page it says is on `origin` (WO-031). The sign-in must be
+/// the profile's the cell was started for, and kept for `origin`: one that
+/// isn't, or a cell the keeper holds no channel of, is refused and recorded
+/// as denied. A fill is a release: recorded before it is sent, on the
+/// cell's own channel, and never to the broker, which is told its nonce
+/// alone. A channel a fill can't be written to is dropped.
+fn answer_fill(
+    stream: &UnixStream,
+    kept: &mut Kept,
+    id: &str,
+    cell: &str,
+    origin: &str,
+) -> Result<(), Error> {
+    let refuse = |reason: &str| {
+        send(
+            stream,
+            &Reply::Refused {
+                reason: reason.to_owned(),
+            },
+        )
+    };
+    let Some(credentials) = Credentials::through(None, &kept.config, &kept.keys) else {
+        return refuse("the configuration keeps no sign-ins");
+    };
+    let root = kept.config.vault.root.clone();
+    let recorded = |outcome| {
+        let caller = Caller::Broker {
+            purpose: String::from("browser-fill"),
+        };
+        crate::vault_access::record(&root, caller, "fill", vec![id.to_owned()], outcome)
+    };
+    let denied = |reason: &str| {
+        if let Err(error) = recorded(Outcome::Denied) {
+            tracing::error!(%error, "a refused fill not recorded");
+        }
+        tracing::warn!(cell, reason, "refused a fill");
+        refuse(reason)
+    };
+    let failed = |reason: &str| {
+        if let Err(error) = recorded(Outcome::Failed) {
+            tracing::error!(%error, "a failed fill not recorded");
+        }
+        refuse(reason)
+    };
+    let Some(profile) = kept.browsers.get(cell).map(|held| held.profile.clone()) else {
+        return denied("no browser of a signed-in profile is that cell");
+    };
+    let kept_for = match credentials.list() {
+        Ok(listed) => listed.into_iter().find(|credential| credential.id == id),
+        Err(reason) => return failed(&reason),
+    };
+    let Some(kept_for) = kept_for else {
+        return failed("no such sign-in");
+    };
+    if kept_for.profile_id != profile {
+        return denied("the sign-in isn't the profile's the browser was started for");
+    }
+    if kept_for.origin != origin {
+        return denied("the sign-in isn't kept for the page's site");
+    }
+    let sign_in = match credentials.sign_in(id) {
+        Ok(sign_in) => sign_in,
+        Err(reason) => return failed(&reason),
+    };
+    if let Err(error) = recorded(Outcome::Allowed) {
+        tracing::error!(%error, "a fill not recorded: nothing is sent");
+        return refuse("the fill couldn't be recorded");
+    }
+    let nonce = crate::approval::random_hex("fill-").map_err(|error| Error::Keeper {
+        reason: format!("cannot name a fill: {error}"),
+    })?;
+    let header = serde_json::to_vec(&hatchling_core::browser::SignInFill {
+        nonce: nonce.clone(),
+        origin: kept_for.origin,
+    })
+    .map_err(|error| Error::Keeper {
+        reason: format!("cannot write a fill: {error}"),
+    })?;
+    let sent = kept.browsers.get(cell).map(|held| {
+        write_frame(&held.stream, &header)
+            .and_then(|()| write_frame(&held.stream, sign_in.username.expose().as_bytes()))
+            .and_then(|()| write_frame(&held.stream, sign_in.password.expose().as_bytes()))
+    });
+    if let Some(Err(error)) = sent {
+        tracing::warn!(cell, %error, "a fill couldn't be sent: the browser's channel is dropped");
+        if let Some(held) = kept.browsers.remove(cell) {
+            let _ = held.stream.shutdown(std::net::Shutdown::Both);
+        }
+        return refuse("the browser's channel broke");
+    }
+    send(stream, &Reply::Filling { nonce })
 }
 
 fn send(stream: &UnixStream, reply: &Reply) -> Result<(), Error> {
@@ -1721,6 +1932,7 @@ mod tests {
             keys,
             releases,
             released: BTreeSet::new(),
+            browsers: BTreeMap::new(),
         };
         let (ours, theirs) = UnixStream::pair().unwrap();
         theirs
@@ -1793,6 +2005,7 @@ mod tests {
             keys,
             releases,
             released: BTreeSet::new(),
+            browsers: BTreeMap::new(),
         });
         let (ours, theirs) = UnixStream::pair().unwrap();
         let root = dir.0.join("vault");
@@ -1866,6 +2079,7 @@ mod tests {
             config,
             keys,
             released: BTreeSet::new(),
+            browsers: BTreeMap::new(),
         }));
         let fetch = SessionRequest::Vault(VaultOp::Fetch {
             name: String::from("token"),
@@ -1914,6 +2128,7 @@ mod tests {
             cell: String::from("run-2"),
             uid: 7,
             grants: Vec::new(),
+            profile: None,
         };
         assert!(serve_cell(&left, &kept, &named).is_ok());
         let mut guard = kept.lock().unwrap();
@@ -1992,6 +2207,7 @@ mod tests {
             keys,
             releases,
             released: BTreeSet::new(),
+            browsers: BTreeMap::new(),
         });
         let (ours, theirs) = UnixStream::pair().unwrap();
         std::thread::scope(|scope| {
@@ -2016,6 +2232,10 @@ mod tests {
     /// be recorded sends none. The egress authority may ask nothing, and a
     /// keeper whose configuration keeps none refuses.
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one store's requests, in order, then what the access log holds of them"
+    )]
     fn the_sign_ins_are_the_keepers_and_the_broker_asks_for_them() {
         use crate::browser_profiles::Profiles;
         use hatchling_core::ui::{Concealed, SignInRefusal};
@@ -2043,6 +2263,7 @@ mod tests {
             config: config.clone(),
             keys: keepers,
             released: BTreeSet::new(),
+            browsers: BTreeMap::new(),
         });
         let secret = SignIn {
             username: Concealed::new(String::from("zoe-user")),
@@ -2123,6 +2344,213 @@ mod tests {
         assert!(concealed(&ours).is_err(), "a secret that isn't text");
         write_frame(&theirs, b"pw \"q\"").unwrap();
         assert_eq!(concealed(&ours).unwrap().expose(), "pw \"q\"");
+    }
+
+    /// A browser cell's channel, named with the profile it was started
+    /// for, is held for fills until the cell ends it (WO-031). A fill sends
+    /// the sign-in on that channel alone, and the broker is told its nonce.
+    /// A fill of another profile's sign-in, for another site, or into a
+    /// browser the keeper holds no channel of is refused and recorded as
+    /// denied; each fill is recorded before it's sent, and one that can't
+    /// be sends nothing. A second channel for a cell already held is
+    /// refused, and one a fill can't be written to is dropped.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one browser's channel from its handover to its end, and each fill on it"
+    )]
+    fn a_sign_in_is_filled_on_its_profiles_browser_channel_alone() {
+        use crate::browser_profiles::Profiles;
+        use hatchling_core::browser::SignInFill;
+        use hatchling_core::ui::Concealed;
+        use std::io::Read as _;
+        let mut config = crate::api_auth::tests::owner_config(None);
+        let dir = crate::api_auth::tests::scratch("keeper-fills");
+        config.vault.root = dir.0.join("vault");
+        config.web.profiles = dir.0.join("profiles");
+        config.web.credentials = dir.0.join("sign-ins");
+        let master = MasterKey::generate().unwrap();
+        hatchling_vault::SealedVault::open(&config.vault.root, &master).unwrap();
+        let own = [
+            (Store::SECRETS, config.vault.root.as_path()),
+            (Store::CREDENTIALS, config.web.credentials.as_path()),
+        ];
+        let keepers = StoreKeys::unwrap(&master, &own).unwrap();
+        let brokers =
+            StoreKeys::unwrap(&master, &[(Store::PROFILES, config.web.profiles.as_path())])
+                .unwrap();
+        let profiles = Profiles::of(&config, &brokers).unwrap();
+        let profile = profiles.keep(&[String::from("a.example:443")], 1).unwrap();
+        let other = profiles.keep(&[String::from("b.example:443")], 2).unwrap();
+        let secret = SignIn {
+            username: Concealed::new(String::from("zoe-user")),
+            password: Concealed::new(String::from("pw-secret")),
+        };
+        let local = Credentials::through(None, &config, &keepers).unwrap();
+        let work = local
+            .store(&profile, "https://a.example", "Work", &secret, 1)
+            .unwrap()
+            .unwrap();
+        let home = local
+            .store(&other, "https://b.example", "Home", &secret, 2)
+            .unwrap()
+            .unwrap();
+        let kept = Arc::new(Mutex::new(Kept {
+            releases: Releases::of(&config, BTreeSet::new()),
+            config: config.clone(),
+            keys: keepers,
+            released: BTreeSet::new(),
+            browsers: BTreeMap::new(),
+        }));
+        let (spawners, keepers) = UnixStream::pair().unwrap();
+        let taking = std::thread::spawn({
+            let kept = Arc::clone(&kept);
+            move || take_cells(&keepers, &kept)
+        });
+        let hand = |cell: &str| {
+            let (ours, theirs) = UnixStream::pair().unwrap();
+            ours.set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let named = serde_json::json!({
+                "cell": cell, "uid": 7, "grants": [], "profile": profile.id,
+            });
+            write_frame(&spawners, named.to_string().as_bytes()).unwrap();
+            hatchling_sys::net::send_fd(spawners.as_fd(), theirs.as_fd()).unwrap();
+            ours
+        };
+        let held = |cell: &str| kept.lock().unwrap().browsers.contains_key(cell);
+        let until = |done: &dyn Fn() -> bool| {
+            (0..500).any(|_| {
+                std::thread::sleep(Duration::from_millis(10));
+                done()
+            })
+        };
+        let browser = hand("browser-1");
+        assert!(until(&|| held("browser-1")), "held for fills");
+        let second = hand("browser-1");
+        assert_eq!(
+            (&second).read(&mut [0u8; 1]).unwrap(),
+            0,
+            "a second channel for the cell is refused"
+        );
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        std::thread::scope(|scope| {
+            let serving = scope.spawn(|| serve(&theirs, &kept, Role::Broker));
+            let keeper = Keeper::over(ours).unwrap();
+            let nonce = keeper
+                .fill(&work.id, "browser-1", "https://a.example")
+                .unwrap();
+            let fill: SignInFill = serde_json::from_slice(&read_frame(&browser).unwrap()).unwrap();
+            assert_eq!(
+                fill,
+                SignInFill {
+                    nonce,
+                    origin: String::from("https://a.example"),
+                }
+            );
+            assert_eq!(read_frame(&browser).unwrap(), b"zoe-user");
+            assert_eq!(read_frame(&browser).unwrap(), b"pw-secret");
+            let refused = |id: &str, cell: &str, origin: &str| {
+                keeper.fill(id, cell, origin).unwrap_err().to_string()
+            };
+            let another = refused(&home.id, "browser-1", "https://b.example");
+            assert!(another.contains("the profile's"), "{another}");
+            let elsewhere = refused(&work.id, "browser-1", "https://b.example");
+            assert!(elsewhere.contains("the page's site"), "{elsewhere}");
+            let nowhere = refused(&work.id, "browser-2", "https://a.example");
+            assert!(nowhere.contains("no browser"), "{nowhere}");
+            let missing = refused("cred-none", "browser-1", "https://a.example");
+            assert!(missing.contains("no such sign-in"), "{missing}");
+            let (log, _) = crate::vault_access::read_log(&config.vault.root).unwrap();
+            let fills: Vec<_> = log
+                .iter()
+                .map(|access| (access.action.as_str(), access.names.clone(), access.outcome))
+                .collect();
+            let fill = |id: &str, outcome| ("fill", vec![id.to_owned()], outcome);
+            assert_eq!(
+                fills,
+                [
+                    fill(&work.id, Outcome::Allowed),
+                    fill(&home.id, Outcome::Denied),
+                    fill(&work.id, Outcome::Denied),
+                    fill(&work.id, Outcome::Denied),
+                    fill("cred-none", Outcome::Failed),
+                ]
+            );
+            let filler = Caller::Broker {
+                purpose: String::from("browser-fill"),
+            };
+            assert!(log.iter().all(|access| access.caller == filler));
+            // A fill that can't be recorded sends nothing.
+            let log = config.vault.root.join(crate::vault_access::ACCESS_LOG);
+            std::fs::remove_file(&log).unwrap();
+            std::fs::create_dir(&log).unwrap();
+            let unrecorded = refused(&work.id, "browser-1", "https://a.example");
+            assert!(unrecorded.contains("recorded"), "{unrecorded}");
+            browser.set_nonblocking(true).unwrap();
+            assert!(
+                read_frame(&browser).is_err(),
+                "sent the browser a refused fill"
+            );
+            // The cell ends its channel: no fill reaches it after.
+            drop(browser);
+            assert!(until(&|| !held("browser-1")), "let go");
+            assert!(refused(&work.id, "browser-1", "https://a.example").contains("no browser"));
+            drop(keeper);
+            assert!(serving.join().unwrap().is_ok());
+        });
+        drop(spawners);
+        assert!(taking.join().unwrap().is_ok());
+        // Held directly, as the spawner's channel holds it: once.
+        let (_four, end) = UnixStream::pair().unwrap();
+        hold_browser(end, "browser-4", profile.id.clone(), &kept).unwrap();
+        assert!(held("browser-4"));
+        let (_again, end) = UnixStream::pair().unwrap();
+        let refused = hold_browser(end, "browser-4", profile.id.clone(), &kept);
+        assert!(refused.is_err_and(|error| error.to_string().contains("second channel")));
+        // A channel a fill can't be written to is dropped.
+        let mut guard = kept.lock().unwrap();
+        std::fs::remove_dir(config.vault.root.join(crate::vault_access::ACCESS_LOG)).unwrap();
+        let (gone, end) = UnixStream::pair().unwrap();
+        drop(gone);
+        guard.browsers.insert(
+            String::from("browser-3"),
+            BrowserChannel {
+                profile: profile.id.clone(),
+                stream: end,
+            },
+        );
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        answer_fill(
+            &theirs,
+            &mut guard,
+            &work.id,
+            "browser-3",
+            "https://a.example",
+        )
+        .unwrap();
+        assert!(!guard.browsers.contains_key("browser-3"), "kept");
+        let reply: Reply = serde_json::from_slice(&read_frame(&ours).unwrap()).unwrap();
+        assert!(
+            matches!(&reply, Reply::Refused { reason } if reason.contains("broke")),
+            "{reply:?}"
+        );
+        // A keeper whose configuration keeps no sign-ins fills none.
+        guard.config.web.credentials = PathBuf::new();
+        answer_fill(
+            &theirs,
+            &mut guard,
+            &work.id,
+            "browser-3",
+            "https://a.example",
+        )
+        .unwrap();
+        drop(guard);
+        let reply: Reply = serde_json::from_slice(&read_frame(&ours).unwrap()).unwrap();
+        assert!(
+            matches!(&reply, Reply::Refused { reason } if reason.contains("keeps no sign-ins")),
+            "{reply:?}"
+        );
     }
 
     /// A keeper that answers a read out of step is lost: the broker sends
@@ -2221,6 +2649,7 @@ mod tests {
             keys,
             releases,
             released: BTreeSet::new(),
+            browsers: BTreeMap::new(),
         };
         let (ours, theirs) = UnixStream::pair().unwrap();
         theirs

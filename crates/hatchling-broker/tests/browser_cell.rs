@@ -473,7 +473,7 @@ fn a_browser_cell_reaches_a_site_only_through_the_broker_and_refuses_a_bad_certi
     let cell_id = "browser-launch";
     let sites = Sites::default();
     sites.grant(DESTINATION);
-    let mut cell = launcher.start(cell_id, sites.clone()).unwrap();
+    let mut cell = launcher.start(cell_id, sites.clone(), None).unwrap();
     assert!(
         machine::cells()
             .iter()
@@ -588,7 +588,7 @@ fn a_page_in_a_real_browser_reaches_only_the_sites_its_session_holds() {
     let cell_id = "browser-reach";
     let sites = Sites::default();
     sites.grant(DESTINATION);
-    let mut cell = launcher.start(cell_id, sites.clone()).unwrap();
+    let mut cell = launcher.start(cell_id, sites.clone(), None).unwrap();
     let page = |reply: BrowserReply| match reply {
         BrowserReply::Page { snapshot } => snapshot,
         other @ (BrowserReply::Failed { .. }
@@ -757,7 +757,9 @@ fn a_kept_session_is_its_cookies_alone_and_a_service_worker_dies_with_its_browse
     sites.grant(DESTINATION);
 
     // The first browser signs in: the site's cookie, and a service worker.
-    let mut first = launcher.start("browser-first", sites.clone()).unwrap();
+    let mut first = launcher
+        .start("browser-first", sites.clone(), None)
+        .unwrap();
     first
         .command(&BrowserCommand::Open {
             url: format!("https://{HOST}/signed-in"),
@@ -781,7 +783,7 @@ fn a_kept_session_is_its_cookies_alone_and_a_service_worker_dies_with_its_browse
     let _first = first.finish();
 
     // The next starts empty, and is given the jar alone.
-    let mut later = launcher.start("browser-later", sites).unwrap();
+    let mut later = launcher.start("browser-later", sites, None).unwrap();
     assert_eq!(
         later
             .command(&BrowserCommand::SetCookies { cookies })

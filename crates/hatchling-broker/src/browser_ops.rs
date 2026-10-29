@@ -81,12 +81,19 @@ pub trait Browser: Send {
 
 /// What starts browsers.
 pub trait Browsers: Send + Sync {
-    /// Starts a browser in the cell `cell_id`, reaching only `sites`.
+    /// Starts a browser in the cell `cell_id`, reaching only `sites`, for
+    /// the signed-in `profile`, if it's given one (WO-030): its sign-ins
+    /// may be filled into it (WO-031).
     ///
     /// # Errors
     ///
     /// A sentence for the broker's log: it couldn't start.
-    fn start(&self, cell_id: &str, sites: Sites) -> Result<Box<dyn Browser>, String>;
+    fn start(
+        &self,
+        cell_id: &str,
+        sites: Sites,
+        profile: Option<&str>,
+    ) -> Result<Box<dyn Browser>, String>;
 }
 
 impl Browser for BrowserCell {
@@ -105,8 +112,13 @@ impl Browser for BrowserCell {
 }
 
 impl Browsers for BrowserLauncher {
-    fn start(&self, cell_id: &str, sites: Sites) -> Result<Box<dyn Browser>, String> {
-        let cell: Box<dyn Browser> = Box::new(Self::start(self, cell_id, sites)?);
+    fn start(
+        &self,
+        cell_id: &str,
+        sites: Sites,
+        profile: Option<&str>,
+    ) -> Result<Box<dyn Browser>, String> {
+        let cell: Box<dyn Browser> = Box::new(Self::start(self, cell_id, sites, profile)?);
         Ok(cell)
     }
 }
@@ -136,7 +148,12 @@ impl Capped {
 }
 
 impl Browsers for Capped {
-    fn start(&self, cell_id: &str, sites: Sites) -> Result<Box<dyn Browser>, String> {
+    fn start(
+        &self,
+        cell_id: &str,
+        sites: Sites,
+        profile: Option<&str>,
+    ) -> Result<Box<dyn Browser>, String> {
         if self.live.fetch_add(1, Ordering::SeqCst) >= self.max {
             self.live.fetch_sub(1, Ordering::SeqCst);
             return Err(format!("{} browsers are running already", self.max));
@@ -144,7 +161,7 @@ impl Browsers for Capped {
         // From here the place is the browser's, given back when it ends,
         // or now if it doesn't start.
         let place = Place(Arc::clone(&self.live));
-        let browser = self.browsers.start(cell_id, sites)?;
+        let browser = self.browsers.start(cell_id, sites, profile)?;
         Ok(Box::new(Counted {
             browser: Some(browser),
             _place: place,
@@ -1058,7 +1075,7 @@ fn open(
         };
         let started = cell_id().and_then(|cell_id| {
             browsers
-                .start(&cell_id, browser.sites.clone())
+                .start(&cell_id, browser.sites.clone(), profile_id.as_deref())
                 .map(|started| (cell_id, started))
         });
         match started {
@@ -1291,6 +1308,8 @@ mod tests {
     #[derive(Debug, Default)]
     struct Log {
         started: Vec<String>,
+        /// The profile each was started for (WO-031).
+        started_for: Vec<Option<String>>,
         commands: Vec<BrowserCommand>,
         finished: usize,
     }
@@ -1312,11 +1331,19 @@ mod tests {
     }
 
     impl Browsers for Fake {
-        fn start(&self, cell_id: &str, _sites: Sites) -> Result<Box<dyn Browser>, String> {
+        fn start(
+            &self,
+            cell_id: &str,
+            _sites: Sites,
+            profile: Option<&str>,
+        ) -> Result<Box<dyn Browser>, String> {
             if self.refuse_start {
                 return Err(String::from("no browser here"));
             }
-            self.log.lock().unwrap().started.push(cell_id.to_owned());
+            let mut log = self.log.lock().unwrap();
+            log.started.push(cell_id.to_owned());
+            log.started_for.push(profile.map(String::from));
+            drop(log);
             self.jar.lock().unwrap().clear();
             self.filled.lock().unwrap().clear();
             Ok(Box::new(self.clone()))
@@ -1741,6 +1768,11 @@ mod tests {
         );
         let log = fake.log.lock().unwrap();
         assert_eq!((log.started.len(), log.finished), (2, 1));
+        assert_eq!(
+            log.started_for,
+            [Some(profile.id), None],
+            "the first for its profile's sign-ins, the next for none"
+        );
         let restored = log
             .commands
             .iter()
@@ -2425,7 +2457,7 @@ mod tests {
     #[test]
     fn a_jar_is_read_and_set_a_page_at_a_time_and_a_bad_answer_is_refused() {
         let fake = Fake::default();
-        let started = fake.start("cell", Sites::default()).unwrap();
+        let started = fake.start("cell", Sites::default(), None).unwrap();
         let driven: Driven = Arc::new(Mutex::new(Some(started)));
         let big = |n: usize| Cookie {
             value: "v".repeat(3000),
@@ -3411,13 +3443,16 @@ mod tests {
     fn at_most_max_browsers_run_and_a_place_comes_back_when_one_ends() {
         let fake = Fake::default();
         let capped = Capped::new(Arc::new(fake.clone()), 2);
-        let first = capped.start("browser-a", Sites::default()).unwrap();
-        let second = capped.start("browser-b", Sites::default()).unwrap();
-        let refused = capped.start("browser-c", Sites::default()).err().unwrap();
+        let first = capped.start("browser-a", Sites::default(), None).unwrap();
+        let second = capped.start("browser-b", Sites::default(), None).unwrap();
+        let refused = capped
+            .start("browser-c", Sites::default(), None)
+            .err()
+            .unwrap();
         assert_eq!(refused, "2 browsers are running already");
         first.finish();
         assert_eq!(fake.log.lock().unwrap().finished, 1);
-        let third = capped.start("browser-c", Sites::default()).unwrap();
+        let third = capped.start("browser-c", Sites::default(), None).unwrap();
         drop((second, third));
         // A browser that doesn't start gives its place back.
         let failing = Capped::new(
@@ -3427,8 +3462,8 @@ mod tests {
             }),
             1,
         );
-        assert!(failing.start("browser-d", Sites::default()).is_err());
-        assert!(failing.start("browser-d", Sites::default()).is_err());
+        assert!(failing.start("browser-d", Sites::default(), None).is_err());
+        assert!(failing.start("browser-d", Sites::default(), None).is_err());
         assert_eq!(failing.live.load(Ordering::SeqCst), 0);
         assert_eq!(capped.live.load(Ordering::SeqCst), 0);
     }
@@ -3437,7 +3472,7 @@ mod tests {
     fn a_counted_browser_passes_commands_and_closes_once() {
         let fake = Fake::default();
         let capped = Capped::new(Arc::new(fake.clone()), 1);
-        let mut browser = capped.start("browser-e", Sites::default()).unwrap();
+        let mut browser = capped.start("browser-e", Sites::default(), None).unwrap();
         assert_eq!(
             browser.command(&BrowserCommand::Close).unwrap(),
             BrowserReply::Closed
