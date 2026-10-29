@@ -1,6 +1,7 @@
 """Drive the agent's browser from the app, as the owner would (WO-029): allow
 the site it asks for, open its browser from the chat, take control, scroll
-and type, and hand it back; the agent says it waited while the owner drove.
+and type, keep its sign-in (WO-030), and hand it back; the agent says it
+waited while the owner drove, and Settings lists the site kept signed in.
 
 Usage: python3 scripts/browser_end_to_end.py <address>
 
@@ -13,11 +14,14 @@ Playwright's own.
 
 import os
 from pathlib import Path
+import re
 import sys
 
-from browsing_model import ANSWER_END, SAW_DRIVING, WAIT_SECS
+from browsing_model import ANSWER_END, BROWSER_URL, SAW_DRIVING, WAIT_SECS
 
 TASK = "Use the browser, then tell me what happened."
+# The site the agent's browser visits, as the broker names it.
+SITE = BROWSER_URL.removeprefix("https://").rstrip("/") + ":443"
 TOKEN_FRAGMENT = "#hatchling-ui="
 STEP_TIMEOUT_MS = 90_000
 ANSWER_TIMEOUT_MS = 180_000
@@ -80,6 +84,11 @@ def drive(page):
     newer(page, controls.get_by_role("button", name="Scroll down").click)
     controls.get_by_role("textbox", name="Text to type into the page").fill("by hand")
     newer(page, controls.get_by_role("button", name="Type", exact=True).click)
+    # The owner keeps its sign-in: asked first, then kept by the broker,
+    # which names the site it kept.
+    page.get_by_role("button", name="Keep me signed in").first.click()
+    page.locator("dialog.dialog").get_by_role("button", name="Keep me signed in").click()
+    expect(page.get_by_text(f"opens {SITE} signed in from now on").first).to_be_visible(timeout=STEP_TIMEOUT_MS)
     # Meanwhile the agent's reads wait, for a few of its steps. Handed back
     # from the picture the owner sees, the latest frame.
     back = page.get_by_role("button", name="Return control to agent")
@@ -90,6 +99,18 @@ def drive(page):
     # Handed back: the agent looks again, answers, and its run ends, closing
     # the browser; its answer is what shows the handback reached it.
     back.click()
+
+
+def signed_in(page):
+    """Raise unless Settings lists the site the owner kept signed in."""
+    from playwright.sync_api import expect
+
+    page.keyboard.press("Control+,")
+    page.get_by_role("navigation", name="Settings sections").get_by_role("button", name="Permissions", exact=True).click()
+    pane = page.locator(".settings-pane")
+    pane.get_by_role("button", name=re.compile("^Signed-in sites")).click()
+    expect(pane.locator(".signed-in-sites").get_by_text(SITE)).to_be_visible(timeout=STEP_TIMEOUT_MS)
+    screenshot(page, "browser-5-signed-in-sites.png")
 
 
 def check(address):
@@ -112,6 +133,7 @@ def check(address):
             drive(page)
             page.wait_for_function(ANSWERED, arg=[TASK, f"{SAW_DRIVING}, {ANSWER_END}"], timeout=ANSWER_TIMEOUT_MS)
             screenshot(page, "browser-4-handed-back.png")
+            signed_in(page)
         except Exception:
             screenshot(page, "browser-failed.png")
             raise

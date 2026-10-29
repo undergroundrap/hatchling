@@ -55,7 +55,7 @@ export function createFixtures(): AppState {
     const audio = artifact('audio', 'A small pause', 'audio', 'An original, four-second soft audio cue for this demonstration.', 'A short sample audio artifact.');
     audio.asset = './media/sample-audio.wav';
     const state: AppState = {
-        websitePermissions: [], networkPermissions: [],
+        websitePermissions: [], signedInSites: [], networkPermissions: [],
         version: 1, mode: 'scripted', revision: 0, turn: 'idle', clock: DEMO_TIME,
         chats: [
             { id: 'main', title: 'Main chat', channelId: null, pinned: true, archived: false, unread: false },
