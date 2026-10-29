@@ -471,8 +471,9 @@ fn sign_in_filled(connection: &UnixStream) {
         connection,
         &fill(email, SignInField::Username, "ada@hatchling.test", &origin),
     ));
+    // The page shows what it was given; the controller hides it (WO-031).
     assert!(
-        typed.text.contains("email: ada@hatchling.test"),
+        typed.text.contains("email: [hidden]") && !typed.text.contains("ada@hatchling.test"),
         "{}",
         typed.text
     );
@@ -489,7 +490,17 @@ fn sign_in_filled(connection: &UnixStream) {
         connection,
         &fill(code, SignInField::Code, "481516", &origin),
     ));
-    assert!(coded.text.contains("code: 481516"), "{}", coded.text);
+    assert!(
+        coded.text.contains("code: [hidden]") && !coded.text.contains("481516"),
+        "{}",
+        coded.text
+    );
+    let read = page(send(connection, &BrowserCommand::Snapshot));
+    assert!(
+        !read.text.contains("ada@hatchling.test") && !read.text.contains("481516"),
+        "every snapshot after: {}",
+        read.text
+    );
     let typed = page(send(
         connection,
         &fill(password, SignInField::Password, "hunter2", &origin),

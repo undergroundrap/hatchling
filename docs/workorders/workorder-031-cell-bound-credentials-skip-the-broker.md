@@ -70,8 +70,9 @@ Filled in at close.
   - **Parts:**
     - **2a:** the keeper holds the store and answers the app's requests;
       - *2a landed:* the sign-ins are the keeper's store, beside the vault: the broker is handed no key to them, and its user and its Landlock rules lose their directory. The broker checks a new sign-in is for one of its profile's sites, then asks the keeper to keep it; it asks for the list and each deletion too. Until 2b, a fill still asks the keeper for one sign-in's secrets, which the keeper records in the vault's access log first (`browser-fill`), and sends as raw frames, never as JSON.
-    - **2b:** browser cells' vault channels, and the fill through them;
-    - **2c:** the scrub moves into the controller, and the broker's copy goes.
+    - **2b:** the scrub moves into the controller, and the broker's copy goes. It comes before the fill moves: a broker that scrubbed what was filled would still need the values.
+      - *2b landed:* the controller keeps what each fill types (a sign-in, a one-time code) until the browser closes, and hides it from every snapshot after (`PageSnapshot::hiding`, in `hatchling-core`). The broker keeps none of it; it still hides a signed-in session's cookie values, which it reads to keep the session. Until 2c, the broker still has a fill's values while it sends them.
+    - **2c:** browser cells' vault channels, and the fill through them.
 - **Order.** `vault:fetch` and `vault:store` first: the smaller change, and it sets the cell-to-keeper channel the sign-in fill reuses.
 - **Slice 1's design, after mapping the cell's vault path (2026-10-28).**
   - **What the map turned up:**

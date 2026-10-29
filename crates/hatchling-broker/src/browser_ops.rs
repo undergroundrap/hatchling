@@ -258,9 +258,11 @@ pub struct BrowserSession {
     stopped: bool,
     /// The signed-in profile the running browser holds (WO-030), if one.
     profile: Option<String>,
-    /// What the broker has filled into the running browser (WO-030):
-    /// hidden from every snapshot the agent is given.
-    filled: Vec<Concealed>,
+    /// The running browser's signed-in session's cookie values (WO-030):
+    /// hidden from every snapshot the agent is given. What's filled into
+    /// the browser, its controller hides itself (WO-031): the broker keeps
+    /// none of it.
+    hidden: Vec<Concealed>,
     /// How long a code op waits for the owner's answer.
     code_wait: Duration,
 }
@@ -309,7 +311,7 @@ impl BrowserSession {
             shown: None,
             stopped: false,
             profile: None,
-            filled: Vec::new(),
+            hidden: Vec::new(),
             code_wait: CODE_WAIT,
         }
     }
@@ -368,19 +370,19 @@ impl BrowserSession {
             })
         };
         if let BrowserResult::Page { snapshot, refused } = result {
-            let snapshot = fitted(hidden(snapshot, &self.filled), &refused);
+            let snapshot = fitted(snapshot.hiding(&self.hidden), &refused);
             return BrowserResult::Page { snapshot, refused };
         }
         result
     }
 
     /// Hides `secret` from every snapshot the agent is given from now on,
-    /// until the browser closes: what the broker filled, and a signed-in
-    /// session's cookie values, which a page can show (`document.cookie`)
-    /// and an agent could then carry elsewhere.
+    /// until the browser closes: a signed-in session's cookie values,
+    /// which a page can show (`document.cookie`) and an agent could then
+    /// carry elsewhere.
     fn hide(&mut self, secret: &str) {
-        if !self.filled.iter().any(|known| known.expose() == secret) {
-            self.filled.push(Concealed::new(secret.to_owned()));
+        if !self.hidden.iter().any(|known| known.expose() == secret) {
+            self.hidden.push(Concealed::new(secret.to_owned()));
         }
     }
 
@@ -667,7 +669,7 @@ impl BrowserSession {
         }
         self.shown = None;
         self.profile = None;
-        self.filled.clear();
+        self.hidden.clear();
     }
 
     /// Leaves the visit: every site held only for it is revoked, and its
@@ -719,7 +721,7 @@ impl BrowserSession {
         };
         match reply {
             Ok(BrowserReply::Page { snapshot }) => {
-                let snapshot = hidden(snapshot, &self.filled);
+                let snapshot = snapshot.hiding(&self.hidden);
                 let refused = self.sites.refused();
                 let snapshot = snapshot.fitted_in(|snapshot| {
                     hatchling_core::fits_one_frame(&SessionResponse::Browser(BrowserResult::Page {
@@ -889,7 +891,6 @@ fn code(browser: &mut BrowserSession, element: u32) -> BrowserResult {
             origin,
             code,
         } => {
-            browser.filled.push(code.clone());
             let filled = browser.command(&BrowserCommand::Fill {
                 element,
                 field: SignInField::Code,
@@ -906,37 +907,12 @@ fn code(browser: &mut BrowserSession, element: u32) -> BrowserResult {
     }
 }
 
-/// What a page shows, under [`MIN_HIDDEN_CHARS`] characters, isn't hidden:
-/// a secret that short would hide half the page's words.
-const MIN_HIDDEN_CHARS: usize = 4;
-
-/// What stands in a snapshot for a secret the broker filled.
-const HIDDEN: &str = "[hidden]";
-
-/// `snapshot` with each secret in `filled` hidden wherever the page shows
-/// it: its URL, its title, its text, its elements' names (WO-030). A page
-/// can read a field it was given and show it; the agent never sees it.
-fn hidden(mut snapshot: PageSnapshot, filled: &[Concealed]) -> PageSnapshot {
-    for secret in filled
-        .iter()
-        .map(Concealed::expose)
-        .filter(|secret| secret.chars().count() >= MIN_HIDDEN_CHARS)
-    {
-        snapshot.url = snapshot.url.replace(secret, HIDDEN);
-        snapshot.title = snapshot.title.replace(secret, HIDDEN);
-        snapshot.text = snapshot.text.replace(secret, HIDDEN);
-        for element in &mut snapshot.elements {
-            element.name = element.name.replace(secret, HIDDEN);
-        }
-    }
-    snapshot
-}
-
 /// Fills the page's sign-in form with the sign-in the owner keeps for its
 /// origin (WO-030): only in a browser running a signed-in profile, only a
 /// sign-in of that profile, for the exact origin the browser reports its
 /// page on, and typed by the browser's controller into the fields named.
-/// The agent is told the page after, with what was filled hidden.
+/// The agent is told the page after, with what was filled hidden by the
+/// controller.
 fn sign_in(
     config: &Config,
     keys: &dyn OpensStores,
@@ -994,8 +970,6 @@ fn sign_in(
         }
     };
     tracing::info!(credential = %chosen.id, label = %chosen.label, %origin, "a sign-in is filled");
-    browser.filled.push(sign_in.username.clone());
-    browser.filled.push(sign_in.password.clone());
     if let Some(element) = username {
         let typed = browser.command(&BrowserCommand::Fill {
             element,
@@ -1331,6 +1305,9 @@ mod tests {
         refuse_start: bool,
         /// A page it shows whatever it's asked: what a controller says.
         shows: Arc<Mutex<Option<PageSnapshot>>>,
+        /// What it was filled: hidden from the page it shows, as a
+        /// controller hides it (WO-031).
+        filled: Arc<Mutex<Vec<Concealed>>>,
         jar: Arc<Mutex<Vec<Cookie>>>,
     }
 
@@ -1341,6 +1318,7 @@ mod tests {
             }
             self.log.lock().unwrap().started.push(cell_id.to_owned());
             self.jar.lock().unwrap().clear();
+            self.filled.lock().unwrap().clear();
             Ok(Box::new(self.clone()))
         }
     }
@@ -1351,8 +1329,12 @@ mod tests {
             if self.broken.load(Ordering::SeqCst) {
                 return Err(String::from("broken"));
             }
+            if let BrowserCommand::Fill { text, .. } = command {
+                self.filled.lock().unwrap().push(text.clone());
+            }
             let shown = self.shows.lock().unwrap().clone();
             if let Some(snapshot) = shown {
+                let snapshot = snapshot.hiding(&self.filled.lock().unwrap());
                 if matches!(
                     command,
                     BrowserCommand::Open { .. }
@@ -1970,6 +1952,10 @@ mod tests {
             told.contains("Signed in as [hidden], [hidden]"),
             "what the agent is told"
         );
+        assert!(
+            browser.hidden.is_empty(),
+            "the broker keeps nothing it filled"
+        );
         let origin = String::from("https://a.example");
         assert_eq!(
             fills(&fake),
@@ -1993,7 +1979,6 @@ mod tests {
         let read = format!("{read:?}");
         assert!(!read.contains("hunter2"), "what the agent is told");
         handle_browser_op(&config, &keys, &mut web, &mut browser, &BrowserOp::Close);
-        assert!(browser.filled.is_empty(), "forgotten with the browser");
     }
 
     #[test]
@@ -2221,7 +2206,7 @@ mod tests {
         // Hidden once the browser runs: a new one starts with nothing hidden.
         browser.hide("a-secret");
         browser.hide("a-secret");
-        assert_eq!(browser.filled.len(), 1, "once");
+        assert_eq!(browser.hidden.len(), 1, "once");
         assert_eq!(
             browser.kept(&config, &keys, &BrowserOp::Read, page("a-secret")),
             page("[hidden]")
@@ -2338,6 +2323,10 @@ mod tests {
             !told.contains("481516") && told.contains("[hidden]"),
             "what the agent is told"
         );
+        assert!(
+            browser.hidden.is_empty(),
+            "the broker keeps no code it typed"
+        );
         assert_eq!(
             fills(&fake),
             [(
@@ -2431,39 +2420,6 @@ mod tests {
             &open("https://a.example/"),
         );
         assert!(matches!(code(&mut alone, 3), BrowserResult::Refused { .. }));
-    }
-
-    #[test]
-    fn a_secret_is_hidden_wherever_a_page_shows_it_unless_its_too_short_to_hide() {
-        let page = PageSnapshot {
-            url: String::from("https://a.example/?u=ada@x"),
-            title: String::from("ada@x"),
-            text: String::from("ada@x and abc and wxyz"),
-            elements: vec![hatchling_core::browser::PageElement {
-                id: 1,
-                role: String::from("textbox"),
-                name: String::from("ada@x"),
-            }],
-            truncated: false,
-        };
-        let shown = hidden(
-            page,
-            &[
-                Concealed::new(String::from("ada@x")),
-                Concealed::new(String::from("abc")),
-                Concealed::new(String::from("wxyz")),
-            ],
-        );
-        assert_eq!(shown.url, "https://a.example/?u=[hidden]");
-        assert_eq!(shown.title, "[hidden]");
-        assert_eq!(
-            shown.text, "[hidden] and abc and [hidden]",
-            "three characters: left; four: hidden"
-        );
-        assert_eq!(
-            shown.elements.first().map(|element| element.name.as_str()),
-            Some("[hidden]")
-        );
     }
 
     #[test]
