@@ -36,7 +36,7 @@ serde_json = "1"
 
 [dev-dependencies]
 # Unit and integration tests use the real kernel identity oracle.
-rustix = { version = "0.38", features = ["process"] }
+rustix = { version = "0.38", features = ["net", "process"] }
 # Component tests run the real broker pipeline (peer gate + grant
 # mediation) as the agent's counterpart. Dev-only: never linked into
 # the runtime.
