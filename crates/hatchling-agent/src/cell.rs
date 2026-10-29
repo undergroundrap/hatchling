@@ -675,16 +675,19 @@ mod tests {
         };
         let (keeper, vault) = UnixStream::pair().unwrap();
         let (broker, cell) = adopted(Some(vault.into_raw_fd()));
-        said(&cell.unwrap());
+        // Held while the broker's end is read: a dropped cell is its end.
+        let cell = cell.unwrap();
+        said(&cell);
         let mut heard = [0u8; 1];
         (&keeper).read_exact(&mut heard).unwrap();
         assert_eq!(&heard, b"v", "the keeper's end hears the vault op");
         broker.set_nonblocking(true).unwrap();
         assert_eq!(
             (&broker).read(&mut heard).unwrap_err().kind(),
-            std::io::ErrorKind::WouldBlock,
+            ErrorKind::WouldBlock,
             "the broker heard a vault op"
         );
+        drop(cell);
         let (broker, cell) = adopted(None);
         said(&cell.unwrap());
         (&broker).read_exact(&mut heard).unwrap();
