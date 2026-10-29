@@ -96,6 +96,33 @@ pub trait Browsers: Send + Sync {
     ) -> Result<Box<dyn Browser>, String>;
 }
 
+/// Who fills a sign-in into a browser (WO-031): the vault keeper, which
+/// sends it to the browser cell's controller, and never to the broker.
+pub trait Fills: Send + Sync {
+    /// Fills the sign-in `id` into the browser cell `cell`, whose page is
+    /// on `origin`: the fill's nonce, which the broker names to the cell's
+    /// controller.
+    ///
+    /// # Errors
+    ///
+    /// A sentence for the broker's log: the fill was refused, or couldn't
+    /// be asked for.
+    fn fill_sign_in(&self, id: &str, cell: &str, origin: &str) -> Result<String, String>;
+}
+
+/// The broker's vault keeper, as what fills its sign-ins, when one runs.
+fn keeper_fills() -> Option<&'static dyn Fills> {
+    let keeper = crate::keeper::keeper()?;
+    Some(keeper)
+}
+
+impl Fills for crate::keeper::Keeper {
+    fn fill_sign_in(&self, id: &str, cell: &str, origin: &str) -> Result<String, String> {
+        self.fill(id, cell, origin)
+            .map_err(|error| error.to_string())
+    }
+}
+
 impl Browser for BrowserCell {
     fn command(&mut self, command: &BrowserCommand) -> Result<BrowserReply, String> {
         Self::command(self, command)
@@ -282,6 +309,9 @@ pub struct BrowserSession {
     hidden: Vec<Concealed>,
     /// How long a code op waits for the owner's answer.
     code_wait: Duration,
+    /// Who fills a sign-in into the browser: the broker's vault keeper,
+    /// when one runs (WO-031).
+    fills: Option<&'static dyn Fills>,
 }
 
 /// How long a code op waits for the owner to give the code, before it
@@ -330,6 +360,7 @@ impl BrowserSession {
             profile: None,
             hidden: Vec::new(),
             code_wait: CODE_WAIT,
+            fills: keeper_fills(),
         }
     }
 
@@ -928,7 +959,9 @@ fn code(browser: &mut BrowserSession, element: u32) -> BrowserResult {
 /// origin (WO-030): only in a browser running a signed-in profile, only a
 /// sign-in of that profile, for the exact origin the browser reports its
 /// page on, and typed by the browser's controller into the fields named.
-/// The agent is told the page after, with what was filled hidden by the
+/// The keeper sends the sign-in to the controller, and the broker names
+/// the fill by its nonce alone: it never has the secrets (WO-031). The
+/// agent is told the page after, with what was filled hidden by the
 /// controller.
 fn sign_in(
     config: &Config,
@@ -945,6 +978,12 @@ fn sign_in(
     };
     let Some(credentials) = crate::browser_credentials::Credentials::of(config, keys) else {
         return refused("the owner keeps no sign-ins");
+    };
+    let (Some(fills), Some(cell)) = (
+        browser.fills,
+        browser.shown.as_ref().map(|shown| shown.id.clone()),
+    ) else {
+        return refused("a sign-in is filled by the vault keeper, and none runs here");
     };
     let read = browser.command(&BrowserCommand::Snapshot);
     let BrowserResult::Page { snapshot, .. } = &read else {
@@ -979,30 +1018,21 @@ fn sign_in(
     let Some(chosen) = chosen else {
         return refused(&format!("say which sign-in, by its label: {labels}"));
     };
-    let sign_in = match credentials.sign_in(&chosen.id) {
-        Ok(sign_in) => sign_in,
+    let nonce = match fills.fill_sign_in(&chosen.id, &cell, &origin) {
+        Ok(nonce) => nonce,
         Err(error) => {
-            tracing::error!(%error, "a sign-in can't be read");
-            return refused("the sign-in couldn't be read");
+            tracing::warn!(credential = %chosen.id, %error, "a sign-in wasn't filled");
+            return refused(
+                "the sign-in couldn't be filled in this browser: if the owner kept its sign-in \
+                 while it ran, close it and open the site again",
+            );
         }
     };
     tracing::info!(credential = %chosen.id, label = %chosen.label, %origin, "a sign-in is filled");
-    if let Some(element) = username {
-        let typed = browser.command(&BrowserCommand::Fill {
-            element,
-            field: SignInField::Username,
-            text: sign_in.username,
-            origin: origin.clone(),
-        });
-        if !matches!(typed, BrowserResult::Page { .. }) {
-            return typed;
-        }
-    }
-    browser.command(&BrowserCommand::Fill {
-        element: password,
-        field: SignInField::Password,
-        text: sign_in.password,
-        origin,
+    browser.command(&BrowserCommand::SignIn {
+        nonce,
+        username,
+        password,
     })
 }
 
@@ -1310,6 +1340,8 @@ mod tests {
         started: Vec<String>,
         /// The profile each was started for (WO-031).
         started_for: Vec<Option<String>>,
+        /// What it typed: each fill's element, field, text and origin.
+        typed: Vec<(u32, SignInField, String, String)>,
         commands: Vec<BrowserCommand>,
         finished: usize,
     }
@@ -1327,6 +1359,9 @@ mod tests {
         /// What it was filled: hidden from the page it shows, as a
         /// controller hides it (WO-031).
         filled: Arc<Mutex<Vec<Concealed>>>,
+        /// The fills the keeper sent it, as a cell's vault channel carries
+        /// them (WO-031).
+        vault: Vault,
         jar: Arc<Mutex<Vec<Cookie>>>,
     }
 
@@ -1356,8 +1391,33 @@ mod tests {
             if self.broken.load(Ordering::SeqCst) {
                 return Err(String::from("broken"));
             }
-            if let BrowserCommand::Fill { text, .. } = command {
-                self.filled.lock().unwrap().push(text.clone());
+            if let BrowserCommand::Fill {
+                element,
+                field,
+                text,
+                origin,
+            } = command
+            {
+                self.typed(*element, *field, text, origin);
+            }
+            if let BrowserCommand::SignIn {
+                nonce,
+                username,
+                password,
+            } = command
+            {
+                let mut vault = self.vault.lock().unwrap();
+                let Some(at) = vault.iter().position(|fill| fill.0 == *nonce) else {
+                    return Ok(BrowserReply::Failed {
+                        failure: BrowserFailure::BadCommand,
+                    });
+                };
+                let (_, origin, name, secret) = vault.remove(at);
+                drop(vault);
+                if let Some(element) = username {
+                    self.typed(*element, SignInField::Username, &name, &origin);
+                }
+                self.typed(*password, SignInField::Password, &secret, &origin);
             }
             let shown = self.shows.lock().unwrap().clone();
             if let Some(snapshot) = shown {
@@ -1367,6 +1427,7 @@ mod tests {
                     BrowserCommand::Open { .. }
                         | BrowserCommand::Snapshot
                         | BrowserCommand::Fill { .. }
+                        | BrowserCommand::SignIn { .. }
                 ) {
                     return Ok(BrowserReply::Page { snapshot });
                 }
@@ -1397,6 +1458,7 @@ mod tests {
                 BrowserCommand::Snapshot
                 | BrowserCommand::Act { .. }
                 | BrowserCommand::Fill { .. }
+                | BrowserCommand::SignIn { .. }
                 | BrowserCommand::Scroll { .. } => BrowserReply::Page {
                     snapshot: PageSnapshot::default(),
                 },
@@ -1406,6 +1468,81 @@ mod tests {
         fn finish(self: Box<Self>) {
             self.log.lock().unwrap().finished += 1;
         }
+    }
+
+    impl Fake {
+        /// `text` typed into `element`, as `field`, on `origin`: kept to
+        /// hide, and logged.
+        fn typed(&self, element: u32, field: SignInField, text: &Concealed, origin: &str) {
+            self.filled.lock().unwrap().push(text.clone());
+            self.log.lock().unwrap().typed.push((
+                element,
+                field,
+                text.expose().to_owned(),
+                origin.to_owned(),
+            ));
+        }
+    }
+
+    /// A browser cell's vault channel, as the test browser holds it: each
+    /// fill the keeper sent, by its nonce, with its origin, username and
+    /// password.
+    type Vault = Arc<Mutex<Vec<(String, String, Concealed, Concealed)>>>;
+
+    /// The vault keeper, as the broker asks it to fill (WO-031): it sends
+    /// each sign-in it keeps to the test browser's vault channel, and the
+    /// broker the fill's nonce alone. What it was asked is kept.
+    struct Keeping {
+        kept: BTreeMap<String, (String, crate::browser_credentials::SignIn)>,
+        vault: Vault,
+        asked: Mutex<Vec<(String, String, String)>>,
+    }
+
+    impl Fills for Keeping {
+        fn fill_sign_in(&self, id: &str, cell: &str, origin: &str) -> Result<String, String> {
+            let mut asked = self.asked.lock().unwrap();
+            asked.push((id.to_owned(), cell.to_owned(), origin.to_owned()));
+            let nonce = format!("fill-{}", asked.len());
+            drop(asked);
+            let (kept_for, sign_in) = self.kept.get(id).ok_or("no such sign-in")?;
+            if kept_for != origin {
+                return Err(String::from("the sign-in isn't kept for the page's site"));
+            }
+            self.vault.lock().unwrap().push((
+                nonce.clone(),
+                kept_for.clone(),
+                sign_in.username.clone(),
+                sign_in.password.clone(),
+            ));
+            Ok(nonce)
+        }
+    }
+
+    /// The keeper of `config`'s sign-ins, sending each fill to `fake`'s
+    /// vault channel, given to `browser` to fill with.
+    fn keeping(
+        fake: &Fake,
+        browser: &mut BrowserSession,
+        config: &Config,
+        keys: &MasterKey,
+    ) -> &'static Keeping {
+        let credentials = crate::browser_credentials::Credentials::of(config, keys).unwrap();
+        let kept = credentials
+            .list()
+            .unwrap()
+            .into_iter()
+            .map(|kept| {
+                let sign_in = credentials.sign_in(&kept.id).unwrap();
+                (kept.id, (kept.origin, sign_in))
+            })
+            .collect();
+        let keeping: &'static Keeping = Box::leak(Box::new(Keeping {
+            kept,
+            vault: Arc::clone(&fake.vault),
+            asked: Mutex::default(),
+        }));
+        browser.fills = Some(keeping);
+        keeping
     }
 
     /// `browser`, shared as a session holds it.
@@ -1898,32 +2035,33 @@ mod tests {
         });
     }
 
-    /// The fills the test browser was sent: each one's element, field,
-    /// text and origin.
+    /// What the test browser typed: each fill's element, field, text and
+    /// origin.
     fn fills(fake: &Fake) -> Vec<(u32, SignInField, String, String)> {
-        fake.log
+        fake.log.lock().unwrap().typed.clone()
+    }
+
+    /// Whether the broker sent the test browser any of `secrets`: in a
+    /// command, which carries what the broker has.
+    fn sent_any(fake: &Fake, secrets: &[&str]) -> bool {
+        let sent = format!("{:?}", fake.log.lock().unwrap().commands);
+        let exposed: Vec<String> = fake
+            .log
             .lock()
             .unwrap()
             .commands
             .iter()
-            .filter_map(|command| match command {
-                BrowserCommand::Fill {
-                    element,
-                    field,
-                    text,
-                    origin,
-                } => Some((*element, *field, text.expose().to_owned(), origin.clone())),
-                BrowserCommand::Open { .. }
-                | BrowserCommand::Snapshot
-                | BrowserCommand::Act { .. }
-                | BrowserCommand::Scroll { .. }
-                | BrowserCommand::Frame
-                | BrowserCommand::Input { .. }
-                | BrowserCommand::Cookies { .. }
-                | BrowserCommand::SetCookies { .. }
-                | BrowserCommand::Close => None,
+            .filter_map(|command| {
+                if let BrowserCommand::Fill { text, .. } = command {
+                    Some(text.expose().to_owned())
+                } else {
+                    None
+                }
             })
-            .collect()
+            .collect();
+        secrets
+            .iter()
+            .any(|secret| sent.contains(secret) || exposed.iter().any(|text| text.contains(secret)))
     }
 
     fn sign_in_op(username: Option<u32>, label: Option<&str>) -> BrowserOp {
@@ -1956,6 +2094,7 @@ mod tests {
             .unwrap();
         let fake = Fake::default();
         let (mut web, mut browser) = session("t", &fake);
+        let keeper = keeping(&fake, &mut browser, &config, &keys);
         let opened = open("https://a.example/login");
         handle_browser_op(&config, &keys, &mut web, &mut browser, &opened);
         // The page echoes what it's given: the agent sees none of it.
@@ -1988,6 +2127,24 @@ mod tests {
             browser.hidden.is_empty(),
             "the broker keeps nothing it filled"
         );
+        // The keeper filled it, into this browser's cell, for the page's
+        // origin; the broker named the fill and sent none of it.
+        let cell = fake.log.lock().unwrap().started.first().cloned().unwrap();
+        let work = crate::browser_credentials::Credentials::of(&config, &keys)
+            .unwrap()
+            .list()
+            .unwrap()
+            .into_iter()
+            .find(|kept| kept.label == "Work")
+            .unwrap();
+        assert_eq!(
+            *keeper.asked.lock().unwrap(),
+            [(work.id, cell, String::from("https://a.example"))]
+        );
+        assert!(
+            !sent_any(&fake, &["work@a.example", "Work-hunter2"]),
+            "the broker sent the browser a sign-in's secrets"
+        );
         let origin = String::from("https://a.example");
         assert_eq!(
             fills(&fake),
@@ -2014,6 +2171,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one browser's sign-ins asked for in turn, each refusal and the one fill"
+    )]
     fn a_sign_in_is_refused_off_its_origin_outside_a_profile_and_unless_its_named() {
         let (config, _scratch, keys, _profile) = with_sign_ins("refused", &["Work", "Home"]);
         let fake = Fake::default();
@@ -2035,8 +2196,19 @@ mod tests {
             &mut browser,
             &open("https://a.example/"),
         );
-        // Two sign-ins: say which.
+        // No keeper: refused, nothing filled.
         showing(&fake, "https://a.example/login", "Sign in");
+        let answer = handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &sign_in_op(None, Some("Home")),
+        );
+        assert!(refused_for(&answer, "vault keeper"), "the answer");
+        assert!(keeper_fills().is_none(), "no keeper runs in a unit test");
+        let keeper = keeping(&fake, &mut browser, &config, &keys);
+        // Two sign-ins: say which.
         let answer = handle_browser_op(
             &config,
             &keys,
@@ -2098,6 +2270,24 @@ mod tests {
         );
         assert!(refused_for(&answer, "isn't on an https site"), "the answer");
         assert_eq!(fills(&fake).len(), 1, "nothing more filled");
+        assert_eq!(keeper.asked.lock().unwrap().len(), 1, "nothing more asked");
+        // A fill the keeper refuses: the agent is told, and nothing is typed.
+        let refusing: &'static Keeping = Box::leak(Box::new(Keeping {
+            kept: BTreeMap::new(),
+            vault: Arc::clone(&fake.vault),
+            asked: Mutex::default(),
+        }));
+        browser.fills = Some(refusing);
+        showing(&fake, "https://a.example/login", "Sign in");
+        let answer = handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &sign_in_op(None, Some("Home")),
+        );
+        assert!(refused_for(&answer, "open the site again"), "the answer");
+        assert_eq!(fills(&fake).len(), 1, "nothing typed");
         // A store off: none.
         let mut off = config;
         off.web.credentials = PathBuf::new();
@@ -2137,6 +2327,7 @@ mod tests {
         let fake = Fake::default();
         let ((mut web, mut browser), board, bus) = watched(&fake);
         browser.code_wait = Duration::ZERO;
+        keeping(&fake, &mut browser, &config, &keys);
         let secrets = [
             "work@a.example",
             "Work-hunter2",
@@ -2481,6 +2672,7 @@ mod tests {
                 | BrowserCommand::Input { .. }
                 | BrowserCommand::Cookies { .. }
                 | BrowserCommand::Fill { .. }
+                | BrowserCommand::SignIn { .. }
                 | BrowserCommand::Close => None,
             })
             .collect();

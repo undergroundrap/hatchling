@@ -17,9 +17,10 @@
 //!   vault keeper's. The broker checks a new sign-in is for one of its
 //!   profile's sites, and asks the keeper to keep, list and delete; it
 //!   holds no key to the store, and a bug that discloses its memory or its
-//!   log finds none there. Until a browser's cell is given a fill itself
-//!   (part 2b), the broker asks for one sign-in's secrets to fill, and the
-//!   keeper records each such read in the vault's access log.
+//!   log finds none there. A fill is the keeper's too: it sends the sign-in
+//!   to the browser's cell, on a channel the broker holds no end of, and
+//!   records it in the vault's access log first. The broker can't ask for
+//!   a sign-in's secrets at all.
 
 use std::path::Path;
 use std::sync::{Mutex, PoisonError};
@@ -77,9 +78,11 @@ pub struct SignIn {
     pub password: Concealed,
 }
 
-/// What the broker asks the keeper of the sign-ins it holds (WO-031): the
-/// owner's keep, list and delete, a profile's going, and one sign-in's
-/// secrets for a fill.
+/// What the broker asks the keeper of the sign-ins it holds (WO-031).
+///
+/// The owner's keep, list and delete, and a profile's going: never a
+/// sign-in's secrets, which the keeper sends to the browser it fills
+/// ([`crate::keeper::Keeper::fill`]).
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum SignInRequest {
@@ -99,11 +102,6 @@ pub enum SignInRequest {
         /// When, in seconds.
         now: i64,
     },
-    /// The secrets of the sign-in `id`, for a fill.
-    Read {
-        /// The sign-in.
-        id: String,
-    },
     /// Delete the sign-in `id`.
     Delete {
         /// The sign-in.
@@ -116,9 +114,7 @@ pub enum SignInRequest {
     },
 }
 
-/// The keeper's answer to a [`SignInRequest`]. A read's secrets follow it,
-/// the username and then the password, each in a frame of its own: never
-/// in the answer.
+/// The keeper's answer to a [`SignInRequest`]: never a sign-in's secrets.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "answer", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum SignInAnswer {
@@ -137,8 +133,6 @@ pub enum SignInAnswer {
         /// Why.
         reason: SignInRefusal,
     },
-    /// The sign-in's secrets follow.
-    Read,
     /// How many sign-ins went.
     Deleted {
         /// How many.
@@ -229,8 +223,11 @@ impl<'k> Credentials<'k> {
     pub fn list(&self) -> Result<Vec<Credential>, String> {
         if let Some(keeper) = self.keeper {
             return match asked(keeper, SignInRequest::List)? {
-                (SignInAnswer::Listed { sign_ins }, _) => Ok(sign_ins),
-                (other, _) => Err(out_of_turn(&other)),
+                SignInAnswer::Listed { sign_ins } => Ok(sign_ins),
+                other @ (SignInAnswer::Kept { .. }
+                | SignInAnswer::Refused { .. }
+                | SignInAnswer::Deleted { .. }
+                | SignInAnswer::Failed { .. }) => Err(out_of_turn(&other)),
             };
         }
         let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
@@ -285,9 +282,11 @@ impl<'k> Credentials<'k> {
                 now,
             };
             return match asked(keeper, request)? {
-                (SignInAnswer::Kept { sign_in }, _) => Ok(Ok(sign_in)),
-                (SignInAnswer::Refused { reason }, _) => Ok(Err(reason)),
-                (other, _) => Err(out_of_turn(&other)),
+                SignInAnswer::Kept { sign_in } => Ok(Ok(sign_in)),
+                SignInAnswer::Refused { reason } => Ok(Err(reason)),
+                other @ (SignInAnswer::Listed { .. }
+                | SignInAnswer::Deleted { .. }
+                | SignInAnswer::Failed { .. }) => Err(out_of_turn(&other)),
             };
         }
         let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
@@ -320,18 +319,19 @@ impl<'k> Credentials<'k> {
         Ok(Ok(credential))
     }
 
-    /// The secrets of the sign-in `id`, for the fill alone.
+    /// The secrets of the sign-in `id`, for the keeper's fill alone: read
+    /// from the store here, never asked of a keeper, which sends them to
+    /// the browser it fills and never to the broker (WO-031).
     ///
     /// # Errors
     ///
-    /// Why they can't be read: no such sign-in, or the store's failure.
+    /// Why they can't be read: no such sign-in, the store's failure, or a
+    /// store that's a keeper's.
     pub fn sign_in(&self, id: &str) -> Result<SignIn, String> {
-        if let Some(keeper) = self.keeper {
-            let request = SignInRequest::Read { id: id.to_owned() };
-            return match asked(keeper, request)? {
-                (SignInAnswer::Read, Some(sign_in)) => Ok(sign_in),
-                (other, _) => Err(out_of_turn(&other)),
-            };
+        if self.keeper.is_some() {
+            return Err(String::from(
+                "the keeper sends a sign-in to the browser it fills, never to the broker",
+            ));
         }
         let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
         let vault = self.vault()?;
@@ -403,24 +403,24 @@ impl<'k> Credentials<'k> {
     }
 }
 
-/// `request` asked of `keeper`: its answer, and a read's secrets; its
-/// store's failure, or the keeper's, as an error.
-fn asked(
-    keeper: &Keeper,
-    request: SignInRequest,
-) -> Result<(SignInAnswer, Option<SignIn>), String> {
+/// `request` asked of `keeper`: its answer; its store's failure, or the
+/// keeper's, as an error.
+fn asked(keeper: &Keeper, request: SignInRequest) -> Result<SignInAnswer, String> {
     match keeper.sign_ins(request) {
-        Ok((SignInAnswer::Failed { reason }, _)) => Err(format!("the keeper's sign-ins: {reason}")),
-        Ok(answered) => Ok(answered),
+        Ok(SignInAnswer::Failed { reason }) => Err(format!("the keeper's sign-ins: {reason}")),
+        Ok(answer) => Ok(answer),
         Err(error) => Err(error.to_string()),
     }
 }
 
 /// How many sign-ins a deletion's answer says went.
-fn deleted(answered: (SignInAnswer, Option<SignIn>)) -> Result<usize, String> {
-    match answered {
-        (SignInAnswer::Deleted { count }, _) => Ok(count),
-        (other, _) => Err(out_of_turn(&other)),
+fn deleted(answer: SignInAnswer) -> Result<usize, String> {
+    match answer {
+        SignInAnswer::Deleted { count } => Ok(count),
+        other @ (SignInAnswer::Listed { .. }
+        | SignInAnswer::Kept { .. }
+        | SignInAnswer::Refused { .. }
+        | SignInAnswer::Failed { .. }) => Err(out_of_turn(&other)),
     }
 }
 
@@ -429,16 +429,13 @@ fn out_of_turn(answer: &SignInAnswer) -> String {
 }
 
 /// The keeper's answer to `request` from the sign-ins in `credentials`,
-/// its own store: and a read's secrets, which it sends after.
-pub(crate) fn answer(
-    credentials: &Credentials<'_>,
-    request: SignInRequest,
-) -> (SignInAnswer, Option<SignIn>) {
-    let failed = |reason: String| (SignInAnswer::Failed { reason }, None);
+/// its own store.
+pub(crate) fn answer(credentials: &Credentials<'_>, request: SignInRequest) -> SignInAnswer {
+    let failed = |reason: String| SignInAnswer::Failed { reason };
     match request {
         SignInRequest::List => credentials
             .list()
-            .map_or_else(failed, |sign_ins| (SignInAnswer::Listed { sign_ins }, None)),
+            .map_or_else(failed, |sign_ins| SignInAnswer::Listed { sign_ins }),
         SignInRequest::Keep {
             profile_id,
             origin,
@@ -446,24 +443,20 @@ pub(crate) fn answer(
             sign_in,
             now,
         } => match credentials.keep(&profile_id, &origin, &label, &sign_in, now) {
-            Ok(Ok(sign_in)) => (SignInAnswer::Kept { sign_in }, None),
-            Ok(Err(reason)) => (SignInAnswer::Refused { reason }, None),
+            Ok(Ok(sign_in)) => SignInAnswer::Kept { sign_in },
+            Ok(Err(reason)) => SignInAnswer::Refused { reason },
             Err(reason) => failed(reason),
         },
-        SignInRequest::Read { id } => credentials
-            .sign_in(&id)
-            .map_or_else(failed, |sign_in| (SignInAnswer::Read, Some(sign_in))),
-        SignInRequest::Delete { id } => credentials.delete(&id).map_or_else(failed, |found| {
-            (
-                SignInAnswer::Deleted {
+        SignInRequest::Delete { id } => {
+            credentials
+                .delete(&id)
+                .map_or_else(failed, |found| SignInAnswer::Deleted {
                     count: usize::from(found),
-                },
-                None,
-            )
-        }),
+                })
+        }
         SignInRequest::DeleteProfiles { profile_id } => credentials
             .delete_profiles(&profile_id)
-            .map_or_else(failed, |count| (SignInAnswer::Deleted { count }, None)),
+            .map_or_else(failed, |count| SignInAnswer::Deleted { count }),
     }
 }
 
@@ -632,12 +625,14 @@ mod tests {
     /// turn, and says which.
     #[test]
     fn a_deletions_answer_is_its_count_and_any_other_is_out_of_turn() {
-        assert_eq!(deleted((SignInAnswer::Deleted { count: 2 }, None)), Ok(2));
-        let other = deleted((SignInAnswer::Read, None));
+        assert_eq!(deleted(SignInAnswer::Deleted { count: 2 }), Ok(2));
+        let other = deleted(SignInAnswer::Listed {
+            sign_ins: Vec::new(),
+        });
         assert!(
             other
                 .as_ref()
-                .is_err_and(|error| error.contains("out of turn") && error.contains("Read")),
+                .is_err_and(|error| error.contains("out of turn") && error.contains("Listed")),
             "{other:?}"
         );
         assert_eq!(
