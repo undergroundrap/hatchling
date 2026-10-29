@@ -342,7 +342,8 @@ fn the_brokers_end_reads_through_the_keeper() {
     // with the grants its session holds.
     let ask = |grants: &[&str], secret: &str| {
         let (ours, theirs) = UnixStream::pair().unwrap();
-        ours.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        ours.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
         let named = serde_json::json!({ "cell": "cell-keeper", "uid": 1000, "grants": grants });
         write_frame(&spawners, named.to_string().as_bytes()).unwrap();
         hatchling_sys::net::send_fd(spawners.as_fd(), theirs.as_fd()).unwrap();
@@ -352,10 +353,10 @@ fn the_brokers_end_reads_through_the_keeper() {
         });
         write_frame(&ours, &serde_json::to_vec(&fetch).unwrap()).unwrap();
         let reply = read_frame(&ours).unwrap();
-        match serde_json::from_slice(&reply).unwrap() {
-            SessionResponse::Vault(result) => result,
-            other => panic!("not a vault reply: {other:?}"),
-        }
+        let Ok(SessionResponse::Vault(result)) = serde_json::from_slice(&reply) else {
+            unreachable!("not a vault reply");
+        };
+        result
     };
     assert!(matches!(
         ask(&["fetch:token"], "token"),

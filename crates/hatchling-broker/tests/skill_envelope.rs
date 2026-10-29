@@ -140,6 +140,7 @@ fn ready_cell(socket: &Path) -> Result<hatchling_agent::Cell<hatchling_agent::Re
         run_subagent: false,
         run_chat: false,
         run_history: Vec::new(),
+        vault_fd: None,
     })
     .check_preconditions()
     .and_then(hatchling_agent::Cell::connect_broker)

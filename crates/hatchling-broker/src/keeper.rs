@@ -1833,8 +1833,7 @@ mod tests {
         };
         let cell: CellId = "run-1".parse().unwrap();
         let through = |keeper: Option<&Keeper>| {
-            crate::secrets::vault_op_through(keeper, &config.vault, &master, &op, &cell, 7)
-                .unwrap()
+            crate::secrets::vault_op_through(keeper, &config.vault, &master, &op, &cell, 7).unwrap()
         };
         assert_eq!(through(Some(&keeper)), VaultResult::Denied);
         assert!(matches!(through(None), VaultResult::Fetched { .. }));
