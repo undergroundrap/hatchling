@@ -12,6 +12,11 @@
 //! typed text through `Input.insertText`. The owner's own input, while
 //! they drive, goes the same way, at a point of the viewport or where the
 //! page's focus is, and is answered with a picture of the page.
+//!
+//! What a fill types (a sign-in, a one-time code) is kept until the
+//! browser closes, and hidden from every snapshot after it (WO-031): a
+//! page can read a field it was given and show it, and the agent never
+//! sees it. The broker keeps none of it.
 
 use std::time::{Duration, Instant};
 
@@ -61,6 +66,8 @@ struct Page {
 pub struct Session {
     browser: Option<Browser>,
     page: Option<Page>,
+    /// What the fills typed, each once: hidden from every snapshot.
+    filled: Vec<Concealed>,
 }
 
 impl Session {
@@ -70,6 +77,7 @@ impl Session {
         Self {
             browser: Some(browser),
             page: None,
+            filled: Vec::new(),
         }
     }
 
@@ -225,7 +233,7 @@ impl Session {
         if let Some(page) = self.page.as_mut() {
             page.world = Some(world);
         }
-        Ok(snapshot.fitted())
+        Ok(snapshot.hiding(&self.filled).fitted())
     }
 
     /// `expression`'s value in the isolated world `world`.
@@ -323,6 +331,13 @@ impl Session {
         };
         self.element(element, step, "")?;
         self.on_origin(&session, origin)?;
+        if !self
+            .filled
+            .iter()
+            .any(|known| known.expose() == text.expose())
+        {
+            self.filled.push(text.clone());
+        }
         self.insert(&session, text.expose())?;
         self.settle(&session)?;
         self.snapshot()
@@ -1291,6 +1306,47 @@ mod tests {
                 "https://a.test"
             ),
             Ok(snapshot())
+        );
+    }
+
+    /// What a fill types is hidden from every snapshot after it, and kept
+    /// once (WO-031); a fill refused before typing hides nothing.
+    #[test]
+    fn what_a_fill_types_is_hidden_from_every_snapshot_after_it() {
+        let (mut session, _seen) = fake();
+        let fill = |origin: &str| BrowserCommand::Fill {
+            element: 2,
+            field: SignInField::Password,
+            text: Concealed::new(String::from("hello")),
+            origin: origin.to_owned(),
+        };
+        session.open("http://a.test/").unwrap();
+        assert_eq!(
+            session.handle(fill("https://b.test")),
+            BrowserReply::Failed {
+                failure: BrowserFailure::OtherOrigin
+            }
+        );
+        assert_eq!(
+            session.handle(BrowserCommand::Snapshot),
+            BrowserReply::Page {
+                snapshot: snapshot()
+            },
+            "nothing typed: nothing hidden"
+        );
+        let hidden = BrowserReply::Page {
+            snapshot: PageSnapshot {
+                text: String::from("[hidden]"),
+                ..snapshot()
+            },
+        };
+        assert_eq!(session.handle(fill("https://a.test")), hidden);
+        assert_eq!(session.handle(fill("https://a.test")), hidden);
+        assert_eq!(session.filled.len(), 1, "kept once");
+        assert_eq!(session.handle(BrowserCommand::Snapshot), hidden);
+        assert_eq!(
+            session.handle(BrowserCommand::Scroll { down: true }),
+            hidden
         );
     }
 

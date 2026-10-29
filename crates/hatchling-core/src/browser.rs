@@ -107,7 +107,8 @@ pub enum BrowserCommand {
         /// Which field it is: a username goes only into a text or email
         /// field, a password only into a password field.
         field: SignInField,
-        /// What to type: the broker's, never the agent's.
+        /// What to type: the broker's, never the agent's. The controller
+        /// hides it from every snapshot after (WO-031).
         text: crate::ui::Concealed,
         /// The exact origin the top frame must be on, `https://host[:port]`.
         origin: String,
@@ -357,7 +358,35 @@ pub struct PageElement {
     pub name: String,
 }
 
+/// What stands in a snapshot for a secret the browser was given (WO-030).
+pub const HIDDEN: &str = "[hidden]";
+
+/// What a page shows, under [`MIN_HIDDEN_CHARS`] characters, isn't hidden:
+/// a secret that short would hide half the page's words.
+pub const MIN_HIDDEN_CHARS: usize = 4;
+
 impl PageSnapshot {
+    /// This snapshot with each of `secrets` hidden wherever the page shows
+    /// it: its URL, its title, its text, its elements' names (WO-030). A
+    /// page can read a field it was given and show it; the agent never
+    /// sees it.
+    #[must_use]
+    pub fn hiding(mut self, secrets: &[crate::ui::Concealed]) -> Self {
+        for secret in secrets
+            .iter()
+            .map(crate::ui::Concealed::expose)
+            .filter(|secret| secret.chars().count() >= MIN_HIDDEN_CHARS)
+        {
+            self.url = self.url.replace(secret, HIDDEN);
+            self.title = self.title.replace(secret, HIDDEN);
+            self.text = self.text.replace(secret, HIDDEN);
+            for element in &mut self.elements {
+                element.name = element.name.replace(secret, HIDDEN);
+            }
+        }
+        self
+    }
+
     /// This snapshot held to the bounds: text, elements, and each label
     /// cut to fit, on character boundaries, and `truncated` set if
     /// anything was cut. What a reader of an untrusted snapshot applies
@@ -439,6 +468,36 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
+
+    #[test]
+    fn a_secret_is_hidden_wherever_a_page_shows_it_unless_its_too_short_to_hide() {
+        let page = PageSnapshot {
+            url: String::from("https://a.example/?u=ada@x"),
+            title: String::from("ada@x"),
+            text: String::from("ada@x and abc and wxyz"),
+            elements: vec![PageElement {
+                id: 1,
+                role: String::from("textbox"),
+                name: String::from("ada@x"),
+            }],
+            truncated: false,
+        };
+        let shown = page.hiding(&[
+            crate::ui::Concealed::new(String::from("ada@x")),
+            crate::ui::Concealed::new(String::from("abc")),
+            crate::ui::Concealed::new(String::from("wxyz")),
+        ]);
+        assert_eq!(shown.url, "https://a.example/?u=[hidden]");
+        assert_eq!(shown.title, "[hidden]");
+        assert_eq!(
+            shown.text, "[hidden] and abc and [hidden]",
+            "three characters: left; four: hidden"
+        );
+        assert_eq!(
+            shown.elements.first().map(|element| element.name.as_str()),
+            Some("[hidden]")
+        );
+    }
 
     #[test]
     fn a_snapshot_is_fitted_to_what_carries_it_and_cut_no_further_than_empty() {

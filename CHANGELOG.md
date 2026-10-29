@@ -63,6 +63,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Changed
 
+- **What's typed into a sign-in form is hidden by the browser's controller, not the broker** (WO-031, part 2b). The controller keeps what each fill types (a sign-in's username and password, a one-time code) until the browser closes, and hides it from every page the agent is shown after, as the broker did. The broker keeps none of it; it still hides a signed-in session's cookie values.
 - **The spawner holds every cell spec to its own policy** (WO-017, step 3). It reads the policy from its own configuration, never the broker's word, and refuses a spec before any privileged call when:
   - its identity or the broker's uid in the cell isn't the configured cell's;
   - it has an endpoint, whose socket the spawner would hand to the cell's uid;
