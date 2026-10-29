@@ -52,6 +52,25 @@ Filled in at close.
 - **Open questions:**
   - **What the browser cell is shown.** The browser cell runs a real browser on hostile pages, so the origin it reports can't be trusted. The keeper must learn a fill's origin from something the page can't forge.
   - **How the keeper gets a cell's grants.** It could take them from the spawn, or read them from its own configuration as the egress authority does.
+- **Slice 2's design, after mapping the fill (2026-10-29).**
+  - **Where a sign-in goes today:**
+    - the owner keeps it from the app, which sends it to the broker;
+    - the broker seals it in its own store (`Store::CREDENTIALS`), with a key it holds;
+    - on the agent's `browser_sign_in`, the broker reads it, sends each field to the browser cell in a `BrowserCommand::Fill`, and keeps the values (`BrowserSession::filled`) so it can scrub them from every snapshot and answer before the agent sees them.
+
+    Moving the store alone wouldn't take the broker out of the path: the scrub needs the values too.
+  - **The threat it stops, and the one it doesn't.**
+    - **Stopped:** a broker bug that discloses its memory or its logs reveals no sign-in. The broker would hold no store key, no fill, and no scrub list.
+    - **Narrowed, not stopped:** a fully compromised broker. It runs the browser's network, and the operator's certificate authorities reach the browser through it. So it could open a browser on a site it serves, and ask for a fill there. Every release is then the keeper's decision, bound to a browser cell and its signed-in site, and recorded. The page's origin is still checked in the cell before anything is typed.
+  - **The design:**
+    1. **The store is the keeper's.** `Store::CREDENTIALS` leaves the broker's stores, and its key stays with the keeper. The app's keep, list and delete go through the broker to the keeper. A kept sign-in passes through the broker once, at the owner's own keep, in wiped buffers. The alternative, sealing it in the app to a keeper key, would take that key from the broker, which could swap it, so it isn't worth its complexity.
+    2. **A browser cell gets a vault channel,** as agent cells do since slice 1. The spawner names it with the cell, and the profile and site it was opened for.
+    3. **A fill is the keeper's.** The broker asks the keeper to fill a sign-in (by id) into a browser cell, with the fields' elements. The keeper checks that the sign-in belongs to the profile and site the cell's channel was named with, records the release, and sends the fill on the cell's channel. It never answers the broker with the values.
+    4. **The controller types it, and scrubs it.** In the cell, the controller checks the page's top frame is on the sign-in's origin, as `Fill` does now. It types the values, keeps them for the session, and scrubs them from every snapshot and answer before anything leaves the cell. `BrowserSession::filled` goes from the broker.
+  - **Parts:**
+    - **2a:** the keeper holds the store and answers the app's requests;
+    - **2b:** browser cells' vault channels, and the fill through them;
+    - **2c:** the scrub moves into the controller, and the broker's copy goes.
 - **Order.** `vault:fetch` and `vault:store` first: the smaller change, and it sets the cell-to-keeper channel the sign-in fill reuses.
 - **Slice 1's design, after mapping the cell's vault path (2026-10-28).**
   - **What the map turned up:**
@@ -64,4 +83,5 @@ Filled in at close.
     - **1a:** the keeper takes a third pair at launch, for the spawner. On it, the keeper receives each cell's channel, named with the cell, its uid and its grants, and answers vault ops alone on it, as session requests, recorded as that cell's. Until 1b, the broker closes the spawner's end.
     - **1b:** the spawner holds that end. A cell's spec asks for a vault channel. The isolation layer makes the pair inside the spawn, as it makes the broker's connection, and the cell finds its end in an environment variable. The helper hands the keeper's end back to the spawner, which names it and hands it to the keeper.
     - **1c:** the agent sends its vault ops on that channel when it has one. The broker answers a vault op on its own session `Denied`, and the keeper refuses `Request::Cell` on the broker's channel. The adversarial probe and the run fixture's descriptor list change with it.
+    - *Evidence (#234):* CI's hosted-model proof, on a root broker dropped to `hatchling-broker`, has a chat run fetch a canary through its vault channel. The model is shown it redacted, and neither the broker's memory nor its log holds a copy.
     - *1a landed (#230), 1b in two halves (#231, #232).* *1c landed:* the agent adopts its vault channel with its connection, holds its peer to the broker's uid, and sends its vault ops there. With a keeper running, the broker denies a vault op on its session, and `Request::Cell` and `Keeper::cell_op` are gone, not refused: the keeper's wire has no way for the broker to name a cell. Neither the adversarial probe nor the run fixture changed: their tests run without a keeper, where the broker answers vault ops as before.
