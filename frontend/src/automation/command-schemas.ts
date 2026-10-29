@@ -231,6 +231,25 @@ export const commandSchemas: Readonly<Record<Command['type'], ActionSchema>> = {
         ],
         "additionalProperties": false
     },
+    "browser.decline-code": {
+        "type": "object",
+        "properties": {
+            "type": {
+                "type": "string",
+                "enum": [
+                    "browser.decline-code"
+                ]
+            },
+            "id": {
+                "type": "string"
+            }
+        },
+        "required": [
+            "type",
+            "id"
+        ],
+        "additionalProperties": false
+    },
     "identity.avatar": {
         "type": "object",
         "properties": {

@@ -12,7 +12,7 @@
 // frame the user saw; a resume counts only with a newer frame, one the agent
 // captured after the handback. Until then the session stays switching.
 import type { ActivityRow, ActivityThread, BrowserTask, BrowserTaskState, Message } from '../../protocol/models.js';
-import type { Actor, BrowserAction, BrowserFrame, BrowserSession, BrowserState, Control, Handoff } from './protocol/generated.js';
+import type { Actor, BrowserAction, BrowserFrame, BrowserSession, BrowserState, CodeState, Control, Handoff } from './protocol/generated.js';
 import { imageUrl } from './artifacts.js';
 import { appChat } from './chat.js';
 import { controlAfter, drives, switching } from './control.js';
@@ -40,13 +40,18 @@ interface Desk {
     readonly log: Logged[];
     ignored: number;
     readonly firstSeen: string;
+    /** The one-time code its page asks for, until the user answers or it moves on. */
+    code: {
+        id: string;
+        origin: string;
+    } | null;
 }
 export class BrowserDesk {
     readonly #desks = new Map<string, Desk>();
     session(session: BrowserSession, at: string): void {
         const desk = this.#desks.get(session.session_id);
         if (desk === undefined)
-            this.#desks.set(session.session_id, { session, control: 'agent', frame: null, handedBackAt: null, log: [], ignored: 0, firstSeen: at });
+            this.#desks.set(session.session_id, { session, control: 'agent', frame: null, handedBackAt: null, log: [], ignored: 0, firstSeen: at, code: null });
         else
             desk.session = session;
     }
@@ -87,6 +92,29 @@ export class BrowserDesk {
         desk.control = next;
         return undefined;
     }
+    /** A code request moved: asked, it waits for the user; anything else ends the one it names. */
+    code(sessionId: string, requestId: string, origin: string, state: CodeState): void {
+        const desk = this.#desks.get(sessionId);
+        if (desk === undefined)
+            return;
+        if (state === 'asked')
+            desk.code = { id: requestId, origin };
+        else if (desk.code?.id === requestId)
+            desk.code = null;
+    }
+    /** The code request a session waits on, if one does. */
+    codeRequest(sessionId: string): {
+        id: string;
+        origin: string;
+    } | undefined {
+        return this.#desks.get(sessionId)?.code ?? undefined;
+    }
+    /** The user answered the request `requestId`: it no longer waits on them. */
+    answered(sessionId: string, requestId: string): void {
+        const desk = this.#desks.get(sessionId);
+        if (desk?.code?.id === requestId)
+            desk.code = null;
+    }
     /** Whether a session exists and has not ended. */
     live(sessionId: string): boolean {
         const desk = this.#desks.get(sessionId);
@@ -123,8 +151,9 @@ export class BrowserDesk {
                 lastConfirmedState: session.last_confirmed,
                 ...(typeof session.chat_id === 'string' ? { chatId: appChat(session.chat_id) } : {}),
             };
+            const asked = desk.code !== null && !ENDED.has(session.state) ? { ...task, codeRequest: { ...desk.code } } : task;
             const frame = desk.frame;
-            return frame === null ? task : { ...task, frame: { sequence: frame.sequence, page: 'home', title: frame.title, query: '', capturedAt: frame.captured_at, image: frame.image ? imageUrl(frame.image) : null } };
+            return frame === null ? asked : { ...asked, frame: { sequence: frame.sequence, page: 'home', title: frame.title, query: '', capturedAt: frame.captured_at, image: frame.image ? imageUrl(frame.image) : null } };
         });
     }
     /** The browser card in its chat, for each session a chat asked for. */

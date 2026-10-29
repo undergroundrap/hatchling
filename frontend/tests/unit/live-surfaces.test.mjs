@@ -39,8 +39,8 @@ let seq = 100;
 const event = body => sampleEvent(++seq, 30, body);
 const flush = () => new Promise(resolve => setImmediate(resolve));
 /** Run a command and answer the action it sends with `result`. */
-const answered = async (transport, adapter, command, result) => {
-    const pending = adapter.execute(command);
+const answered = async (transport, adapter, command, result, send = () => adapter.execute(command)) => {
+    const pending = send();
     await flush();
     const sent = transport.last();
     transport.deliver({ type: 'action_result', request_id: sent.request_id, result });
@@ -351,6 +351,49 @@ test('the user keeps the sign-in of a browser they drive, and the signed-in list
         assert.equal(outcome.ok, false);
         assert.match(outcome.message, words);
     }
+});
+test('a one-time code is asked on its browser, given straight to the broker or declined, and never kept', async () => {
+    const { transport, adapter } = connected();
+    const before = transport.actions().length;
+    assert.match((await adapter.codes.give('web-1', '481516')).message, /No code is asked for/);
+    assert.match((await adapter.execute({ type: 'browser.decline-code', id: 'web-1' })).message, /No code is asked for/);
+    assert.equal(transport.actions().length, before, 'nothing sent while no code is asked for');
+    const asked = (request_id, state = 'asked', session_id = 'web-1') => event({ kind: 'browser_code', session_id, request_id, origin: 'https://a.example', state });
+    transport.deliver(asked('code-1'));
+    assert.deepEqual(task(adapter).codeRequest, { id: 'code-1', origin: 'https://a.example' });
+    // Given: sent once, as its own request, and gone from the browser.
+    const given = await answered(transport, adapter, null, { result: 'code_taken', session_id: 'web-1' }, () => adapter.codes.give('web-1', '481516'));
+    assert.deepEqual(given.sent, { action: 'give_code', session_id: 'web-1', request_id: 'code-1', code: '481516' });
+    assert.deepEqual(given.outcome, { ok: true, message: 'Given. Hatchling types it into the page once, and forgets it.' });
+    assert.equal(task(adapter).codeRequest, undefined);
+    assert.ok(!JSON.stringify(adapter.getSnapshot()).includes('481516'), 'the code is in no state');
+    // Declined, by the user's command.
+    transport.deliver(asked('code-2'));
+    const declined = await answered(transport, adapter, { type: 'browser.decline-code', id: 'web-1' }, { result: 'code_declined', session_id: 'web-1' });
+    assert.deepEqual(declined.sent, { action: 'decline_code', session_id: 'web-1', request_id: 'code-2' });
+    assert.equal(declined.outcome.ok, true);
+    assert.equal(task(adapter).codeRequest, undefined);
+    // Every other answer is told as what it is, and the request still waits.
+    transport.deliver(asked('code-3'));
+    const refusals = { no_request: /no longer asked for/, empty: /Type the code first/, too_long: /longer than any code/ };
+    for (const [reason, words] of Object.entries(refusals))
+        assert.match((await answered(transport, adapter, null, { result: 'code_refused', session_id: 'web-1', reason }, () => adapter.codes.give('web-1', 'x'))).outcome.message, words);
+    for (const result of [{ result: 'code_taken', session_id: 'other' }, { result: 'code_refused', session_id: 'other', reason: 'empty' }, { result: 'browser_stopped', session_id: 'web-1' }]) {
+        assert.match((await answered(transport, adapter, null, result, () => adapter.codes.give('web-1', 'x'))).outcome.message, /something else/);
+        assert.match((await answered(transport, adapter, { type: 'browser.decline-code', id: 'web-1' }, result)).outcome.message, /something else/);
+    }
+    assert.match((await answered(transport, adapter, null, { result: 'refused', reason: 'not_granted' }, () => adapter.codes.give('web-1', 'x'))).outcome.message, /./);
+    assert.deepEqual(task(adapter).codeRequest, { id: 'code-3', origin: 'https://a.example' });
+    // The broker moves it on: another request's end, or another browser's, leaves it; its own ends it.
+    transport.deliver(asked('code-9', 'expired'));
+    transport.deliver(asked('code-3', 'asked', 'nobody'));
+    assert.equal(task(adapter).codeRequest?.id, 'code-3');
+    transport.deliver(asked('code-3', 'filled'));
+    assert.equal(task(adapter).codeRequest, undefined);
+    // An ended browser shows no request.
+    transport.deliver(asked('code-4'));
+    transport.deliver(event({ kind: 'browser_session', ...sampleSession('web-1', 'cancelled') }));
+    assert.equal(task(adapter).codeRequest, undefined);
 });
 test("the user's own input goes only to a browser they drive, and the broker answers it", async () => {
     const { transport, adapter } = connected();

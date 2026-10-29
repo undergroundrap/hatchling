@@ -7,7 +7,7 @@
   "files": {
     "src/protocol/codec.ts": "a1270292f3f6cf55c7718e400b8b5bf0e42c0ff1c1556c7c450a3dc9fcb851ad",
     "src/protocol/identity-document.ts": "401cb95b852cb78e8119d85971286fe141533f94666fe6a5d3e65607734f0924",
-    "src/protocol/models.ts": "56ee03430352e3fb314c8fce35e5cc04e588188a83976cf57b85470fbd63befc",
+    "src/protocol/models.ts": "0a989d8141a3eb2c5bcfc6e12e7e49bb330b66492e7231922abece35a6771c08",
     "src/protocol/rules.ts": "6ae575eed661d202f316ec911d1787cb0b2c2a0b084946d8177dd00f887a4bfa"
   },
   "history": [
@@ -52,6 +52,13 @@
       "from": "b198dbe8b86a1e8fbdd8d5977d3df2fd7462aec7ee9b0da45ec20123e6ce99ba",
       "to": "56ee03430352e3fb314c8fce35e5cc04e588188a83976cf57b85470fbd63befc",
       "change": "SignedInSite gains signIns (with SiteSignInLabel: id, label, origin), and Command gains sign-in.delete: the sign-ins the broker fills for a signed-in site, listed by label, never a username or password (WO-030, part 2). Keeping one is not a Command: the Settings form sends it straight to the broker through the live adapter's SignInPort, so it never reaches the command log, automation or the app's state. Approved by the maintainer, 2026-10-22. sign-in.delete is human-only."
+    },
+    {
+      "date": "2026-10-23",
+      "file": "src/protocol/models.ts",
+      "from": "56ee03430352e3fb314c8fce35e5cc04e588188a83976cf57b85470fbd63befc",
+      "to": "0a989d8141a3eb2c5bcfc6e12e7e49bb330b66492e7231922abece35a6771c08",
+      "change": "BrowserTask gains codeRequest (with BrowserCodeRequest: id, origin), and Command gains browser.decline-code: a signed-in site's request for a one-time code, shown on its browser (WO-030, part 3). The code itself is not a Command and never state: the browser view sends it straight to the broker through the live adapter's CodePort, which types it into the page once. Approved by the maintainer, 2026-10-23. browser.decline-code is human-only."
     }
   ]
 }
