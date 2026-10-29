@@ -50,7 +50,7 @@ use zeroize::Zeroizing;
 use crate::secrets::{Secrets, handle_vault_op};
 use crate::vault_access::{Caller, Outcome};
 use crate::vault_keyring::KeyringConfig;
-use crate::{Config, Error, RedactionConfig, VaultConfig};
+use crate::{Config, Error, RedactionConfig, VaultConfig, VaultGrant};
 
 /// The keeper's subcommand: `hatchling-broker vault-keeper`, started only
 /// by the broker.
@@ -114,8 +114,14 @@ impl Role {
 enum Request {
     /// The broker's own read of `names`, for `purpose`.
     Read { purpose: String, names: Vec<String> },
-    /// A cell's vault op, from the cell `cell` whose peer uid is `uid`.
-    Cell { op: VaultOp, cell: String, uid: u32 },
+    /// A cell's vault op, from the cell `cell` whose peer uid is `uid`,
+    /// whose session holds `grants` (each `action:name`).
+    Cell {
+        op: VaultOp,
+        cell: String,
+        uid: u32,
+        grants: Vec<String>,
+    },
     /// The values a gate scans outgoing text for, for `purpose`: the
     /// keeper chooses them.
     Scan { purpose: String },
@@ -606,17 +612,25 @@ impl Keeper {
     }
 
     /// A cell's vault op, answered by the keeper: as
-    /// [`handle_vault_op`]. The keeper can't be reached: the op failed,
-    /// and the session goes on.
+    /// [`handle_vault_op`], under the grants its session holds, `grants`,
+    /// where the keeper's configuration grants them too. The keeper can't
+    /// be reached: the op failed, and the session goes on.
     ///
     /// # Errors
     ///
     /// Returns [`Error::SessionProtocol`] when the op was malformed.
-    pub fn cell_op(&self, op: &VaultOp, cell: &CellId, uid: u32) -> Result<VaultResult, Error> {
+    pub fn cell_op(
+        &self,
+        op: &VaultOp,
+        cell: &CellId,
+        uid: u32,
+        grants: &[VaultGrant],
+    ) -> Result<VaultResult, Error> {
         let request = Request::Cell {
             op: op.clone(),
             cell: cell.to_string(),
             uid,
+            grants: grants.iter().map(grant_word).collect(),
         };
         match self.exchange(|stream| ask(stream, &request)) {
             Ok(Reply::Cell { result }) => Ok(result),
@@ -962,16 +976,30 @@ fn record_release(kept: &mut Kept, name: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// The name a cell's op would release, when the configuration grants it:
-/// a fetch's or a store's. A removal releases nothing.
-fn releases_to_cell(config: &Config, op: &VaultOp) -> Option<String> {
+/// A grant as the broker names it to the keeper: `action:name`.
+fn grant_word(grant: &VaultGrant) -> String {
+    format!("{}:{}", grant.action, grant.name.as_str())
+}
+
+/// The vault configuration a cell's op is answered under: the keeper's
+/// own, with only the grants the cell's session holds too. A scheduled
+/// run, a subagent or a chat holds fewer than the agent: its session's
+/// grants narrow the keeper's, and never widen them.
+fn held_by(vault: &VaultConfig, held: &[String]) -> VaultConfig {
+    let mut vault = vault.clone();
+    vault.grants.retain(|grant| held.contains(&grant_word(grant)));
+    vault
+}
+
+/// The name a cell's op would release, when `vault` grants it: a fetch's
+/// or a store's. A removal releases nothing.
+fn releases_to_cell(vault: &VaultConfig, op: &VaultOp) -> Option<String> {
     let action = op.action();
     if !matches!(op, VaultOp::Fetch { .. } | VaultOp::Store { .. }) {
         return None;
     }
     let name = op.name();
-    config
-        .vault
+    vault
         .grants
         .iter()
         .any(|grant| grant.action == action && grant.name.as_str() == name)
@@ -1005,8 +1033,14 @@ fn serve(stream: &UnixStream, kept: &Mutex<Kept>, role: Role) -> Result<(), Erro
                 answer_read(stream, kept, role, &purpose, &names)?;
             }
             Request::Scan { purpose } => answer_scan(stream, kept, &purpose)?,
-            Request::Cell { op, cell, uid } => {
-                if let Some(name) = releases_to_cell(&kept.config, &op) {
+            Request::Cell {
+                op,
+                cell,
+                uid,
+                grants,
+            } => {
+                let vault = held_by(&kept.config.vault, &grants);
+                if let Some(name) = releases_to_cell(&vault, &op) {
                     if let Err(error) = record_release(kept, &name) {
                         tracing::error!(%error, "a release not recorded: the op is refused");
                         send(
@@ -1024,7 +1058,7 @@ fn serve(stream: &UnixStream, kept: &Mutex<Kept>, role: Role) -> Result<(), Erro
                         reason: String::from("a cell id that doesn't parse"),
                     })
                     .and_then(|cell| {
-                        handle_vault_op(&kept.config.vault, &kept.keys, &op, &cell, uid)
+                        handle_vault_op(&vault, &kept.keys, &op, &cell, uid)
                     });
                 let reply = match reply {
                     Ok(result) => Reply::Cell { result },
@@ -1143,6 +1177,32 @@ fn send(stream: &UnixStream, reply: &Reply) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A grant is named to the keeper as `action:name`, and a session's
+    /// grants keep only those of the keeper's they name: never one the
+    /// keeper's configuration doesn't make.
+    #[test]
+    fn a_sessions_grants_narrow_the_keepers_and_never_widen_them() {
+        use hatchling_core::VaultAction;
+        let grant = |action, name: &str| VaultGrant {
+            action,
+            name: name.parse().unwrap(),
+        };
+        assert_eq!(grant_word(&grant(VaultAction::Store, "token")), "store:token");
+        let mut vault = crate::api_auth::tests::owner_config(None).vault;
+        vault.grants = vec![
+            grant(VaultAction::Fetch, "token"),
+            grant(VaultAction::Store, "token"),
+        ];
+        let held = |words: &[&str]| {
+            let words: Vec<String> = words.iter().map(|word| (*word).to_owned()).collect();
+            held_by(&vault, &words).grants
+        };
+        assert_eq!(held(&["store:token"]), [grant(VaultAction::Store, "token")]);
+        assert_eq!(held(&["fetch:token", "store:token"]), vault.grants);
+        assert!(held(&[]).is_empty());
+        assert!(held(&["fetch:other", "remove:token"]).is_empty());
+    }
 
     /// Security keys cross to the keeper as `node=descriptor` pairs, and
     /// are adopted there; a pair that isn't one, or a descriptor that
@@ -1596,7 +1656,7 @@ mod tests {
             };
             let cell: CellId = "c".parse().unwrap();
             assert_eq!(
-                keeper.cell_op(&op, &cell, 7).unwrap(),
+                keeper.cell_op(&op, &cell, 7, &[]).unwrap(),
                 VaultResult::VaultError
             );
             drop(keeper);
@@ -1667,7 +1727,10 @@ mod tests {
                 name: String::from("token"),
             };
             let cell: CellId = "c".parse().unwrap();
-            assert_eq!(keeper.cell_op(&op, &cell, 7).unwrap(), VaultResult::Denied);
+            assert_eq!(
+                keeper.cell_op(&op, &cell, 7, &[]).unwrap(),
+                VaultResult::Denied
+            );
             drop(keeper);
             assert!(serving.join().unwrap().is_ok());
         });
@@ -1748,14 +1811,19 @@ mod tests {
             name: name.to_owned(),
         };
         assert_eq!(
-            releases_to_cell(&config, &fetch("token")).as_deref(),
+            releases_to_cell(&config.vault, &fetch("token")).as_deref(),
             Some("token")
         );
-        assert_eq!(releases_to_cell(&config, &fetch("other")), None);
+        assert_eq!(releases_to_cell(&config.vault, &fetch("other")), None);
         let remove = VaultOp::Remove {
             name: String::from("old"),
         };
-        assert_eq!(releases_to_cell(&config, &remove), None);
+        assert_eq!(releases_to_cell(&config.vault, &remove), None);
+        // A session that doesn't hold the grant releases nothing.
+        assert_eq!(
+            releases_to_cell(&held_by(&config.vault, &[]), &fetch("token")),
+            None
+        );
         let keys = StoreKeys::unwrap(&master, &[(Store::SECRETS, &config.vault.root)]).unwrap();
         assert!(read_released(&config, &keys).unwrap().is_empty());
         let releases = Releases::of(&config, BTreeSet::new());

@@ -295,7 +295,9 @@ fn the_keeper_runs_only_as_the_broker_starts_it() {
 
 /// The broker's end of the keeper: a read for a purpose the
 /// configuration gives it comes back as the secret, any other is refused,
-/// and a cell's vault op is answered under the configuration's grants.
+/// and a cell's vault op is answered under the grants both the
+/// configuration and the cell's session hold: a run's session, holding
+/// fewer than the agent, is refused the rest.
 #[test]
 fn the_brokers_end_reads_through_the_keeper() {
     use hatchling_broker::keeper::Keeper;
@@ -339,13 +341,33 @@ fn the_brokers_end_reads_through_the_keeper() {
     let fetch = |secret: &str| VaultOp::Fetch {
         name: secret.to_owned(),
     };
+    let grant = |text: &str| hatchling_broker::VaultGrant {
+        action: hatchling_core::VaultAction::Fetch,
+        name: name(text),
+    };
+    let agents = [grant("token")];
     assert!(matches!(
-        keeper.cell_op(&fetch("token"), &cell, 1000).unwrap(),
+        keeper.cell_op(&fetch("token"), &cell, 1000, &agents).unwrap(),
         VaultResult::Fetched { .. }
     ));
+    // A run whose schedule granted no secret, or another one, is refused
+    // the agent's.
+    for held in [&[][..], &[grant("other")][..]] {
+        assert_eq!(
+            keeper.cell_op(&fetch("token"), &cell, 1000, held).unwrap(),
+            VaultResult::Denied,
+            "a run fetched a secret its session wasn't granted"
+        );
+    }
+    // A session's grant the configuration doesn't make is no grant.
     assert_eq!(
         keeper
-            .cell_op(&fetch("egress-localhost-18089"), &cell, 1000)
+            .cell_op(
+                &fetch("egress-localhost-18089"),
+                &cell,
+                1000,
+                &[grant("egress-localhost-18089")]
+            )
             .unwrap(),
         VaultResult::Denied
     );

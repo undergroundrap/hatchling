@@ -139,7 +139,7 @@ pub(crate) fn handle_vault_op(
     uid: u32,
 ) -> Result<VaultResult, Error> {
     if let Some(keeper) = crate::keeper::keeper() {
-        return keeper.cell_op(op, cell_id, uid);
+        return keeper.cell_op(op, cell_id, uid, &vault_config.grants);
     }
     let result = vault_op_result(vault_config, key, op, cell_id)?;
     // Every access is recorded. One that went ahead but cannot be
