@@ -63,6 +63,10 @@ pub const ENDPOINT_DIR: &str = "/sock";
 /// connection to its owner ([`CellSpec::connection`]), in decimal.
 pub const CONNECTION_FD_VAR: &str = "HATCHLING_CONNECTION_FD";
 
+/// The variable that tells a cell's program which descriptor holds its
+/// vault channel ([`CellSpec::vault_channel`]), in decimal.
+pub const VAULT_FD_VAR: &str = "HATCHLING_VAULT_FD";
+
 /// The backend for the platform this build runs on.
 #[cfg(target_os = "linux")]
 pub type Platform = linux::Linux;
@@ -179,6 +183,10 @@ pub trait Cell {
     /// The owner's end of the cell's connection, once. `None` for a cell
     /// without one, or once taken.
     fn connection(&mut self) -> Option<std::os::unix::net::UnixStream>;
+
+    /// The owner's end of the cell's vault channel, once. `None` for a
+    /// cell without one, or once taken.
+    fn vault_channel(&mut self) -> Option<std::os::unix::net::UnixStream>;
 }
 
 /// A helper process under supervision. Dropping it ends the helper.
@@ -279,6 +287,12 @@ pub struct CellSpec {
     /// ([`Cell::connection`]). Unlike an endpoint, nothing outside the
     /// cell can reach it: no other process holds an end.
     pub connection: bool,
+    /// Whether the program gets a second such channel, for its vault ops
+    /// alone: open in the program at the descriptor [`VAULT_FD_VAR`]
+    /// names, while the owner takes the other end
+    /// ([`Cell::vault_channel`]) and hands it to whoever answers vault ops
+    /// (WO-031), never to the one its connection reaches.
+    pub vault_channel: bool,
     /// Further host directories the cell sees, in order.
     pub exposures: Vec<Exposure>,
     /// Host programs the cell may run besides its own, each seen

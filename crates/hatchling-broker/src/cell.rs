@@ -1345,6 +1345,7 @@ fn cell_spec(config: &CellConfig, log_level: LogLevel) -> CellSpec {
             dir: config.socket_dir.clone(),
         }),
         connection: !config.is_skill_cell() && config.connected,
+        vault_channel: false,
         exposures: cell_exposures(config),
         tools: config.browser.as_ref().map_or_else(
             || {

@@ -197,6 +197,7 @@ fn cli_spec(attack: Attack) -> Result<CellSpec, String> {
         workdir: None,
         endpoint: None,
         connection: false,
+        vault_channel: false,
         exposures: Vec::new(),
         tools: Vec::new(),
         relay: None,
