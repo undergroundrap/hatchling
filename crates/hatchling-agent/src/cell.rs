@@ -674,12 +674,18 @@ mod tests {
             channel.write_all(b"v").unwrap();
         };
         let (keeper, vault) = UnixStream::pair().unwrap();
+        // A vault op sent elsewhere must fail this test, not hang it.
+        keeper
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
         let (broker, cell) = adopted(Some(vault.into_raw_fd()));
         // Held while the broker's end is read: a dropped cell is its end.
         let cell = cell.unwrap();
         said(&cell);
         let mut heard = [0u8; 1];
-        (&keeper).read_exact(&mut heard).unwrap();
+        (&keeper)
+            .read_exact(&mut heard)
+            .expect("the keeper's end heard no vault op");
         assert_eq!(&heard, b"v", "the keeper's end hears the vault op");
         broker.set_nonblocking(true).unwrap();
         assert_eq!(
