@@ -67,7 +67,10 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
     // Run as root, its stores are the broker's user's (WO-017), which the
     // keeper's start reads the kept keys of.
     crate::broker_user::act_for_broker(config)?;
-    let (key, authoritys) = crate::keeper::start()?;
+    let (key, authoritys, spawners) = crate::keeper::start()?;
+    // Until the spawner hands the keeper each cell's vault channel
+    // (WO-031), the keeper's channel for it is closed.
+    drop(spawners);
     // The egress authority next, still on one thread (WO-017, step 2): it
     // alone reads the credentials of the requests it makes, from the
     // keeper on the channel just made for it, which the broker closes.
