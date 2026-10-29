@@ -20,7 +20,7 @@ use super::identity::id_map;
 use super::view::{mount_plan, view};
 use crate::{
     CONNECTION_FD_VAR, CellIdentity, CellSpec, Endpoint, Error, Exit, Filter, Limits, Mapping,
-    PROGRAM, PlatformError,
+    PROGRAM, PlatformError, VAULT_FD_VAR,
 };
 
 /// Bound for the cell child's ready byte in [`parent_after_fork`]: the
@@ -288,6 +288,9 @@ pub struct LinuxCell {
     relay: Option<TcpListener>,
     /// The owner's end of the cell's connection, until the owner takes it.
     connection: Option<UnixStream>,
+    /// The owner's end of the cell's vault channel, until the owner takes
+    /// it.
+    vault: Option<UnixStream>,
 }
 
 impl crate::Cell for LinuxCell {
@@ -323,6 +326,10 @@ impl crate::Cell for LinuxCell {
 
     fn connection(&mut self) -> Option<UnixStream> {
         self.connection.take()
+    }
+
+    fn vault_channel(&mut self) -> Option<UnixStream> {
+        self.vault.take()
     }
 }
 
@@ -464,6 +471,14 @@ pub(super) fn isolate(spec: &CellSpec) -> Result<LinuxCell, Error> {
     } else {
         None
     };
+    // Its vault channel likewise, apart from its connection.
+    let vault = if spec.vault_channel {
+        Some(UnixStream::pair().map_err(|source| Error::Spawn {
+            reason: format!("cannot create the cell's vault channel: {source}"),
+        })?)
+    } else {
+        None
+    };
 
     match hatchling_sys::fork().map_err(|source| Error::Start(PlatformError::new(source)))? {
         ForkResult::Parent { child } => {
@@ -478,6 +493,10 @@ pub(super) fn isolate(spec: &CellSpec) -> Result<LinuxCell, Error> {
             // The program's end is the child's alone: a copy here would
             // keep the connection open past the program.
             let connection = connection.map(|(ours, theirs)| {
+                drop(theirs);
+                ours
+            });
+            let vault = vault.map(|(ours, theirs)| {
                 drop(theirs);
                 ours
             });
@@ -510,6 +529,7 @@ pub(super) fn isolate(spec: &CellSpec) -> Result<LinuxCell, Error> {
                 child_to_parent,
                 relay,
                 connection,
+                vault,
                 cgroup,
             })
         }
@@ -521,17 +541,21 @@ pub(super) fn isolate(spec: &CellSpec) -> Result<LinuxCell, Error> {
                 drop(ours);
                 (port, theirs)
             });
-            let connection = connection.map(|(ours, theirs)| {
+            let theirs = |(ours, theirs): (UnixStream, UnixStream)| {
                 drop(ours);
                 theirs
-            });
+            };
+            let ends = Ends {
+                connection: connection.map(theirs),
+                vault: vault.map(theirs),
+            };
             child_main(
                 spec,
                 &plan,
                 broker_pidfd,
                 (child_to_parent, parent_to_child),
                 relay,
-                connection,
+                ends,
             )
         }
     }
@@ -829,7 +853,7 @@ fn child_main(
     broker_pidfd: OwnedFd,
     (mut child_to_parent, mut parent_to_child): (ChildToParent, ParentToChild),
     relay: Option<(u16, UnixStream)>,
-    connection: Option<UnixStream>,
+    ends: Ends,
 ) -> ! {
     let fail = |child_to_parent: &mut ChildToParent, reason: String| -> ! {
         fail_cell(child_to_parent, &reason)
@@ -942,8 +966,8 @@ fn child_main(
             // The reaper's own pidfd is not needed here — the pid-1
             // child holds the inherited copy for its liveness check.
             drop(reaper_pidfd);
-            // The connection is the program's: the reaper keeps no end.
-            drop(connection);
+            // The channels are the program's: the reaper keeps no end.
+            drop(ends);
             if let Err(source) = reaper_keeps_only(&broker_pidfd, &agent, &child_to_parent) {
                 fail(
                     &mut child_to_parent,
@@ -987,7 +1011,7 @@ fn child_main(
             // The liveness fd served its purpose: dropped before the
             // program is forked, so it never leaks into the program.
             drop(reaper_pidfd);
-            run_as_init(spec, child_to_parent, connection)
+            run_as_init(spec, child_to_parent, ends)
         }
         Err(_) => fail(&mut child_to_parent, String::from("fork for pid namespace")),
     }
@@ -1014,17 +1038,14 @@ fn fail_cell(child_to_parent: &mut ChildToParent, reason: &str) -> ! {
 /// and it ends with the program's exit code. It holds no capability,
 /// can't be dumped or traced by the program it shares a uid with, and
 /// runs under `no_new_privs`.
-fn run_as_init(
-    spec: &CellSpec,
-    mut child_to_parent: ChildToParent,
-    connection: Option<UnixStream>,
-) -> ! {
+fn run_as_init(spec: &CellSpec, mut child_to_parent: ChildToParent, ends: Ends) -> ! {
     let program = match hatchling_sys::fork() {
-        Ok(ForkResult::Child) => exec_cell_program(spec, child_to_parent, connection),
+        Ok(ForkResult::Child) => exec_cell_program(spec, child_to_parent, ends),
         Ok(ForkResult::Parent { child }) => {
-            // The connection is the program's: the init keeps no end, and
-            // drops it before the close below can close it under its handle.
-            drop(connection);
+            // The channels are the program's: the init keeps no end, and
+            // drops them before the close below can close them under their
+            // handles.
+            drop(ends);
             child
         }
         Err(source) => fail_cell(&mut child_to_parent, &format!("fork the program: {source}")),
@@ -1057,11 +1078,7 @@ fn run_as_init(
 /// The cell's program, pid 2: capabilities dropped, every fd but stdio
 /// closed on exec, `no_new_privs`, its working directory, its seccomp
 /// filter, then the exec. Setup failures are reported on the pipe.
-fn exec_cell_program(
-    spec: &CellSpec,
-    mut child_to_parent: ChildToParent,
-    connection: Option<UnixStream>,
-) -> ! {
+fn exec_cell_program(spec: &CellSpec, mut child_to_parent: ChildToParent, ends: Ends) -> ! {
     let fail = |child_to_parent: &mut ChildToParent, reason: String| -> ! {
         fail_cell(child_to_parent, &reason)
     };
@@ -1077,16 +1094,15 @@ fn exec_cell_program(
     if let Err(source) = hatchling_sys::cloexec_fds_above_stderr() {
         fail(&mut child_to_parent, format!("close_range: {source}"));
     }
-    // Except its connection, which the program is meant to have.
-    let connection = connection.map(|connection| {
-        if let Err(source) = hatchling_sys::keep_across_exec(connection.as_fd()) {
-            fail(
-                &mut child_to_parent,
-                format!("keep the connection: {source}"),
-            );
+    // Except its channels, which the program is meant to have.
+    let mut keep = |channel: UnixStream, what: &str| {
+        if let Err(source) = hatchling_sys::keep_across_exec(channel.as_fd()) {
+            fail(&mut child_to_parent, format!("keep the {what}: {source}"));
         }
-        std::os::fd::IntoRawFd::into_raw_fd(connection)
-    });
+        std::os::fd::IntoRawFd::into_raw_fd(channel)
+    };
+    let connection = ends.connection.map(|channel| keep(channel, "connection"));
+    let vault = ends.vault.map(|channel| keep(channel, "vault channel"));
     if let Err(source) = hatchling_sys::set_no_new_privs() {
         fail(&mut child_to_parent, format!("no_new_privs: {source}"));
     }
@@ -1103,7 +1119,7 @@ fn exec_cell_program(
     if let Err(source) = hatchling_sys::seccomp::install(&profile) {
         fail(&mut child_to_parent, format!("seccomp install: {source}"));
     }
-    let err = exec_program(spec, connection);
+    let err = exec_program(spec, connection, vault);
     fail(&mut child_to_parent, format!("exec agent: {err}"));
 }
 
@@ -1122,28 +1138,45 @@ fn seccomp_profile(filter: Filter) -> Result<SeccompProfile, hatchling_sys::Erro
 /// Execs the spec's program at [`PROGRAM`] with exactly its argv and
 /// environment, held to its limits from just before the exec. Returns
 /// only on failure.
-fn exec_program(spec: &CellSpec, connection: Option<RawFd>) -> hatchling_sys::Error {
+fn exec_program(
+    spec: &CellSpec,
+    connection: Option<RawFd>,
+    vault: Option<RawFd>,
+) -> hatchling_sys::Error {
     let argv: Vec<&str> = spec.argv.iter().map(String::as_str).collect();
     let connection = connection.map(|fd| fd.to_string());
-    let env = program_env(&spec.env, connection.as_deref());
+    let vault = vault.map(|fd| fd.to_string());
+    let env = program_env(&spec.env, connection.as_deref(), vault.as_deref());
     hatchling_sys::exec(Path::new(PROGRAM), &argv, &env, || {
         hold_to_limits(&spec.limits, spec.cgroup.is_some())
     })
 }
 
 /// The program's environment: the spec's, with [`CONNECTION_FD_VAR`]
-/// naming `connection` when there is one. The spec's own value for that
-/// variable is dropped either way: only the spawn says where a
-/// connection is.
+/// naming `connection` and [`VAULT_FD_VAR`] naming `vault` when there are
+/// such. The spec's own values for those variables are dropped either
+/// way: only the spawn says where a channel is.
 fn program_env<'a>(
     env: &'a [(String, String)],
     connection: Option<&'a str>,
+    vault: Option<&'a str>,
 ) -> Vec<(&'a str, &'a str)> {
     env.iter()
         .map(|(key, value)| (key.as_str(), value.as_str()))
-        .filter(|(key, _)| *key != CONNECTION_FD_VAR)
+        .filter(|(key, _)| *key != CONNECTION_FD_VAR && *key != VAULT_FD_VAR)
         .chain(connection.map(|fd| (CONNECTION_FD_VAR, fd)))
+        .chain(vault.map(|fd| (VAULT_FD_VAR, fd)))
         .collect()
+}
+
+/// The program's ends of a cell's channels, carried from the spawn to its
+/// exec: no process between keeps one.
+#[derive(Debug, Default)]
+struct Ends {
+    /// Its connection to its owner.
+    connection: Option<UnixStream>,
+    /// Its vault channel.
+    vault: Option<UnixStream>,
 }
 
 /// Holds this process to each limit `limits` sets; one it leaves `None`
@@ -1601,6 +1634,7 @@ pub(super) mod tests {
             child_to_parent,
             relay: None,
             connection: None,
+            vault: None,
             cgroup: None,
         };
         // The production wait delegates to `wait_with_deadlines` with
@@ -1642,6 +1676,7 @@ pub(super) mod tests {
             child_to_parent,
             relay: None,
             connection: None,
+            vault: None,
             cgroup: None,
         };
         // Child wrote an E-report: wait must surface it as Spawn.
@@ -1967,6 +2002,7 @@ pub(super) mod tests {
                     child_to_parent: c2p,
                     relay: None,
                     connection: None,
+                    vault: None,
                     cgroup: None,
                 };
                 (pid, cell, staging)
@@ -2151,6 +2187,7 @@ pub(super) mod tests {
             workdir: None,
             endpoint: None,
             connection: false,
+            vault_channel: false,
             exposures: Vec::new(),
             tools: Vec::new(),
             relay: None,
@@ -2161,7 +2198,7 @@ pub(super) mod tests {
         };
         in_child("1: no error; 2: not held to its limits", || {
             let before = limits_now();
-            if exec_program(&spec, None).to_string().is_empty() {
+            if exec_program(&spec, None, None).to_string().is_empty() {
                 return 1;
             }
             if held_to(&HELD, &before) { 0 } else { 2 }
@@ -2616,16 +2653,82 @@ done < /proc/self/mountinfo
         assert_eq!(exit.unwrap().code, 0);
     }
 
+    /// A cell given a vault channel finds it at its own descriptor, apart
+    /// from its connection: the owner takes each end once, and what the
+    /// program says on one never reaches the other.
+    #[test]
+    fn a_cells_vault_channel_is_its_own_beside_its_connection() {
+        use std::io::{BufRead as _, Write as _};
+        if !crate::linux::cell_available() {
+            return;
+        }
+        let scratch = Scratch::new("vault-channel");
+        let (mut spec, _) = specs(&scratch);
+        spec.filter = Filter::Cli;
+        spec.program = PathBuf::from("/bin/bash");
+        spec.argv = vec![
+            String::from(PROGRAM),
+            String::from("-c"),
+            format!(
+                "[ \"${CONNECTION_FD_VAR}\" != \"${VAULT_FD_VAR}\" ] && \
+                 echo \"vault ${VAULT_FD_VAR}\" >&\"${VAULT_FD_VAR}\" && \
+                 echo connection >&\"${CONNECTION_FD_VAR}\" && \
+                 read -r answer <&\"${VAULT_FD_VAR}\" && [ \"$answer\" = ok ]"
+            ),
+        ];
+        spec.env = vec![(String::from(VAULT_FD_VAR), String::from("2"))];
+        spec.connection = true;
+        spec.vault_channel = true;
+        let mut cell = isolate(&spec).unwrap();
+        let vault = cell.vault_channel().unwrap();
+        assert!(cell.vault_channel().is_none(), "handed over once");
+        let connection = cell.connection().unwrap();
+        for channel in [&vault, &connection] {
+            channel
+                .set_read_timeout(Some(Duration::from_secs(30)))
+                .unwrap();
+        }
+        let line = |channel: &UnixStream| {
+            let mut line = String::new();
+            std::io::BufReader::new(channel)
+                .read_line(&mut line)
+                .unwrap();
+            line
+        };
+        let said = line(&vault);
+        let fd: Option<i32> = said
+            .strip_prefix("vault ")
+            .and_then(|fd| fd.trim().parse().ok());
+        assert!(
+            fd.is_some_and(|fd| fd > 2),
+            "the vault channel is a descriptor above stdio, got {said:?}"
+        );
+        assert_eq!(line(&connection), "connection\n");
+        (&vault).write_all(b"ok\n").unwrap();
+        let exit = within_watchdog("vault channel cell", move || cell.wait());
+        assert_eq!(exit.unwrap().code, 0);
+        let (plain, _) = specs(&scratch);
+        let mut cell = isolate(&plain).unwrap();
+        assert!(cell.vault_channel().is_none(), "a cell without one");
+        let exit = within_watchdog("plain cell", move || cell.wait());
+        assert_eq!(exit.unwrap().code, 0);
+    }
+
     #[test]
     fn only_the_spawn_names_the_connection_in_the_programs_environment() {
         let env = vec![
             (String::from("A"), String::from("1")),
             (String::from(CONNECTION_FD_VAR), String::from("2")),
         ];
-        assert_eq!(program_env(&env, None), vec![("A", "1")]);
+        let env = [env, vec![(String::from(VAULT_FD_VAR), String::from("2"))]].concat();
+        assert_eq!(program_env(&env, None, None), vec![("A", "1")]);
         assert_eq!(
-            program_env(&env, Some("7")),
+            program_env(&env, Some("7"), None),
             vec![("A", "1"), (CONNECTION_FD_VAR, "7")]
+        );
+        assert_eq!(
+            program_env(&env, Some("7"), Some("8")),
+            vec![("A", "1"), (CONNECTION_FD_VAR, "7"), (VAULT_FD_VAR, "8")]
         );
     }
 

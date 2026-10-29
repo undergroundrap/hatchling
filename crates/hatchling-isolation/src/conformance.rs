@@ -285,6 +285,7 @@ mod tests {
                 dir: scratch.0.join("sock"),
             }),
             connection: false,
+            vault_channel: false,
             exposures: vec![
                 Exposure {
                     source: scratch.0.join("code"),
@@ -393,6 +394,10 @@ mod tests {
         }
 
         fn connection(&mut self) -> Option<std::os::unix::net::UnixStream> {
+            None
+        }
+
+        fn vault_channel(&mut self) -> Option<std::os::unix::net::UnixStream> {
             None
         }
     }

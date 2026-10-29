@@ -106,6 +106,7 @@ fn prerequisites() -> Option<(PathBuf, hatchling_sys::cgroup::CellCgroup)> {
                 workdir: None,
                 endpoint: None,
                 connection: false,
+                vault_channel: false,
                 exposures: Vec::new(),
                 tools: Vec::new(),
                 relay: None,
@@ -172,6 +173,7 @@ fn spec(browser: &Path, group: &Path, scratch: &Path) -> CellSpec {
         workdir: None,
         endpoint: None,
         connection: true,
+        vault_channel: false,
         exposures: vec![
             Exposure {
                 source: browser.parent().unwrap().to_owned(),

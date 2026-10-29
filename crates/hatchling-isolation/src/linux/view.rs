@@ -424,6 +424,7 @@ pub(super) mod tests {
             workdir: None,
             endpoint: None,
             connection: false,
+            vault_channel: false,
             exposures: vec![Exposure {
                 source: scratch.0.join("code"),
                 name: String::from("skill"),
