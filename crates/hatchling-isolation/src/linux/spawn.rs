@@ -1101,9 +1101,7 @@ fn exec_cell_program(spec: &CellSpec, mut child_to_parent: ChildToParent, ends: 
         }
         std::os::fd::IntoRawFd::into_raw_fd(channel)
     };
-    let connection = ends
-        .connection
-        .map(|channel| keep(channel, "connection"));
+    let connection = ends.connection.map(|channel| keep(channel, "connection"));
     let vault = ends.vault.map(|channel| keep(channel, "vault channel"));
     if let Err(source) = hatchling_sys::set_no_new_privs() {
         fail(&mut child_to_parent, format!("no_new_privs: {source}"));
@@ -2200,7 +2198,7 @@ pub(super) mod tests {
         };
         in_child("1: no error; 2: not held to its limits", || {
             let before = limits_now();
-            if exec_program(&spec, None).to_string().is_empty() {
+            if exec_program(&spec, None, None).to_string().is_empty() {
                 return 1;
             }
             if held_to(&HELD, &before) { 0 } else { 2 }
@@ -2692,7 +2690,9 @@ done < /proc/self/mountinfo
         }
         let line = |channel: &UnixStream| {
             let mut line = String::new();
-            std::io::BufReader::new(channel).read_line(&mut line).unwrap();
+            std::io::BufReader::new(channel)
+                .read_line(&mut line)
+                .unwrap();
             line
         };
         let said = line(&vault);

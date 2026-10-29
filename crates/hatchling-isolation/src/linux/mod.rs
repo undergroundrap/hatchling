@@ -231,7 +231,7 @@ mod tests {
             workdir: None,
             endpoint: None,
             connection: false,
-        vault_channel: false,
+            vault_channel: false,
             exposures: Vec::new(),
             tools: Vec::new(),
             relay: None,
