@@ -1002,7 +1002,7 @@ fn record_release(kept: &mut Kept, name: &str) -> Result<(), Error> {
 }
 
 /// A grant as the broker names it to the keeper: `action:name`.
-fn grant_word(grant: &VaultGrant) -> String {
+pub(crate) fn grant_word(grant: &VaultGrant) -> String {
     format!("{}:{}", grant.action, grant.name.as_str())
 }
 
@@ -1116,12 +1116,12 @@ fn cell_op_result(
 /// A cell's own channel to the keeper (WO-031), as the spawner names it
 /// when it hands it over: which cell, its peer uid, and the grants its
 /// session holds (each `action:name`).
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CellChannel {
-    cell: String,
-    uid: u32,
-    grants: Vec<String>,
+pub(crate) struct CellChannel {
+    pub cell: String,
+    pub uid: u32,
+    pub grants: Vec<String>,
 }
 
 /// Takes each cell's channel the spawner hands over, named first, and

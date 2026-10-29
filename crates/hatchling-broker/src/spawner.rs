@@ -70,6 +70,9 @@ const AGENT_BIN: &str = crate::environment::HATCHLING_AGENT_BIN.name;
 /// The setting that names the spawner's end of its pair with the broker.
 const SPAWNER_FD: &str = crate::environment::HATCHLING_SPAWNER_FD.name;
 
+/// The spawner's end of its pair with the vault keeper (WO-031).
+const SPAWNER_KEEPER_FD: &str = crate::environment::HATCHLING_SPAWNER_KEEPER_FD.name;
+
 /// How long a killed helper has to be reaped before its wait gives up.
 const REAP_AFTER_KILL: Duration = Duration::from_secs(5);
 
@@ -398,6 +401,9 @@ impl Policy {
         if !config.is_skill_cell() && !config.connected {
             return Err(String::from("a cell with an endpoint"));
         }
+        if config.vault_grants.is_some() && (helper != HelperKind::AgentRun || !config.connected) {
+            return Err(String::from("a vault channel for a cell that isn't a connected agent"));
+        }
         let limits = if helper == HelperKind::BrowserCell {
             crate::browser_session::browser_limits()
         } else {
@@ -461,6 +467,8 @@ enum Reply {
 pub struct Spawner {
     /// Carries the connections' ends, one at a time.
     control: Mutex<UnixStream>,
+    /// Whether it hands cells' vault channels to the keeper (WO-031).
+    vaults: bool,
     /// Set once a connection couldn't be handed over: none is again.
     lost: AtomicBool,
     /// Kept so the spawner isn't left a zombie; it leaves when the
@@ -485,11 +493,12 @@ pub(crate) fn spawner() -> Option<&'static Spawner> {
 ///
 /// As [`Spawner::start_with`], and [`Error::Spawner`] when the broker's
 /// binary can't be found or a spawner is already running.
-pub fn start() -> Result<(), Error> {
+pub fn start(keeper: UnixStream) -> Result<(), Error> {
     let program = std::env::current_exe().map_err(|e| Error::Spawner {
         reason: format!("cannot locate the broker binary: {e}"),
     })?;
-    let spawner = Spawner::start_with(Command::new(program))?;
+    let spawner = Spawner::start_with(Command::new(program), Some(&keeper))?;
+    drop(keeper);
     SPAWNER.set(spawner).map_err(|_| Error::Spawner {
         reason: String::from("a spawner is already running"),
     })
@@ -497,12 +506,14 @@ pub fn start() -> Result<(), Error> {
 
 impl Spawner {
     /// Starts the spawner as `program`, the broker's binary with its
-    /// environment, given its subcommand and its end of a new pair.
+    /// environment, given its subcommand and its end of a new pair, and
+    /// `keeper`, its end of a pair with the vault keeper, when there is
+    /// one: on it, it hands the keeper each cell's vault channel (WO-031).
     ///
     /// # Errors
     ///
     /// Returns [`Error::Spawner`] when it can't be started.
-    pub fn start_with(mut program: Command) -> Result<Self, Error> {
+    pub fn start_with(mut program: Command, keeper: Option<&UnixStream>) -> Result<Self, Error> {
         let failed = |reason: String| Error::Spawner { reason };
         // The spawner makes the cells, as this process's ids: recorded,
         // so each cell's identity stays the spawner's whatever this
@@ -513,6 +524,11 @@ impl Spawner {
             UnixStream::pair().map_err(|e| failed(format!("cannot make the socket pair: {e}")))?;
         hatchling_sys::keep_across_exec(theirs.as_fd())
             .map_err(|e| failed(format!("cannot hand the spawner its socket: {e}")))?;
+        if let Some(keeper) = keeper {
+            hatchling_sys::keep_across_exec(keeper.as_fd())
+                .map_err(|e| failed(format!("cannot hand the spawner the keeper's: {e}")))?;
+            program.env(SPAWNER_KEEPER_FD, keeper.as_raw_fd().to_string());
+        }
         let child = program
             .arg(SPAWNER_SUBCOMMAND)
             .env(SPAWNER_FD, theirs.as_raw_fd().to_string())
@@ -520,9 +536,20 @@ impl Spawner {
             .map_err(|e| failed(format!("cannot start: {e}")))?;
         drop(theirs);
         Ok(Self {
+            vaults: keeper.is_some(),
             _child: Some(child),
             ..Self::over(ours)
         })
+    }
+
+    /// The grants a cell's vault channel is named with, each
+    /// `action:name`, from `vault`, the cell's session's: when this
+    /// spawner hands cells' vault channels to the keeper. `None`
+    /// otherwise: the cell has no vault channel.
+    #[must_use]
+    pub fn vault_grants(&self, vault: &crate::VaultConfig) -> Option<Vec<String>> {
+        self.vaults
+            .then(|| vault.grants.iter().map(crate::keeper::grant_word).collect())
     }
 
     /// The broker's end, `control`, of a spawner already running.
@@ -530,6 +557,7 @@ impl Spawner {
     pub const fn over(control: UnixStream) -> Self {
         Self {
             control: Mutex::new(control),
+            vaults: false,
             lost: AtomicBool::new(false),
             _child: None,
         }
@@ -975,7 +1003,18 @@ pub fn spawner_main() -> ExitCode {
         Ok(policy) => policy,
         Err(error) => return refuse_to_run(&format!("cannot read its policy: {error}")),
     };
-    serve(&broker, &Arc::new((program, policy)));
+    // The keeper's channel, when the broker made one: without it, no cell
+    // gets a vault channel.
+    let keeper = match std::env::var(SPAWNER_KEEPER_FD)
+        .ok()
+        .and_then(|fd| fd.parse::<i32>().ok())
+        .map(hatchling_sys::net::inherited_unix_stream)
+        .transpose()
+    {
+        Ok(keeper) => keeper.map(|keeper| Arc::new(Mutex::new(keeper))),
+        Err(error) => return refuse_to_run(&error.to_string()),
+    };
+    serve(&broker, &Arc::new((program, policy)), keeper.as_ref());
     ExitCode::SUCCESS
 }
 
@@ -988,13 +1027,14 @@ fn refuse_to_run(reason: &str) -> ExitCode {
 /// Serves each connection the broker hands over on `broker`, on a thread
 /// of its own, until the broker goes. `held` is the binary helpers are
 /// started as, and the policy every spec is held to.
-fn serve(broker: &UnixStream, held: &Arc<(PathBuf, Policy)>) {
+fn serve(broker: &UnixStream, held: &Arc<(PathBuf, Policy)>, keeper: Option<&Keeper>) {
     while let Ok(fd) = hatchling_sys::net::recv_fd(broker.as_fd()) {
         let held = Arc::clone(held);
+        let keeper = keeper.map(Arc::clone);
         std::thread::spawn(move || {
             let stream = UnixStream::from(fd);
             let (program, policy) = &*held;
-            if let Err(error) = serve_connection(&stream, program, policy) {
+            if let Err(error) = serve_connection(&stream, program, policy, keeper.as_ref()) {
                 tracing::warn!(%error, "a connection from the broker ended");
             }
         });
@@ -1003,7 +1043,12 @@ fn serve(broker: &UnixStream, held: &Arc<(PathBuf, Policy)>) {
 
 /// Answers one connection: one request, then, for a helper, its
 /// supervision until it ends or the broker goes.
-fn serve_connection(stream: &UnixStream, program: &Path, policy: &Policy) -> Result<(), Error> {
+fn serve_connection(
+    stream: &UnixStream,
+    program: &Path,
+    policy: &Policy,
+    keeper: Option<&Keeper>,
+) -> Result<(), Error> {
     let Some(frame) = read_frame_or_eof(stream).map_err(gone)? else {
         return Ok(());
     };
@@ -1018,7 +1063,7 @@ fn serve_connection(stream: &UnixStream, program: &Path, policy: &Policy) -> Res
             for _ in 0..3 {
                 stdio.push(hatchling_sys::net::recv_fd(stream.as_fd()).map_err(gone)?);
             }
-            serve_helper(stream, program, policy, helper, &spec, stdio)
+            serve_helper(stream, program, policy, (helper, &spec), stdio, keeper)
         }
         Request::Trees {
             give,
@@ -1164,9 +1209,9 @@ fn serve_helper(
     stream: &UnixStream,
     program: &Path,
     policy: &Policy,
-    helper: HelperKind,
-    spec: &str,
+    (helper, spec): (HelperKind, &str),
     descriptors: Vec<OwnedFd>,
+    keeper: Option<&Keeper>,
 ) -> Result<(), Error> {
     let refuse = |reason: String| send(stream, &Reply::Refused { reason });
     let checked = serde_json::from_str::<CellConfig>(spec)
@@ -1193,6 +1238,25 @@ fn serve_helper(
     let [stdin, stdout, stderr]: [OwnedFd; 3] = match descriptors.try_into() {
         Ok(stdio) => stdio,
         Err(_) => return refuse(String::from("a helper takes three descriptors")),
+    };
+    // A cell with a vault channel: the helper hands its channels to the
+    // spawner, which passes its connection on to the broker and its vault
+    // channel to the keeper (WO-031). The broker never holds that end.
+    let (stdin, relay) = match (&config.vault_grants, keeper) {
+        (None, _) => (stdin, None),
+        (Some(_), None) => return refuse(String::from("no keeper takes a vault channel")),
+        (Some(grants), Some(keeper)) => match UnixStream::pair() {
+            Ok((ours, theirs)) => {
+                let named = crate::keeper::CellChannel {
+                    cell: config.cell_id.clone(),
+                    uid: config.uid_base,
+                    grants: grants.clone(),
+                };
+                let relay = (ours, UnixStream::from(stdin), Arc::clone(keeper), named);
+                (OwnedFd::from(theirs), Some(relay))
+            }
+            Err(error) => return refuse(format!("cannot make the helper's relay: {error}")),
+        },
     };
     let helper_dir = match HelperDir::make() {
         Ok(dir) => dir,
@@ -1239,9 +1303,57 @@ fn serve_helper(
     };
     drop(std_child);
     send(stream, &Reply::Started { pid })?;
+    if let Some((relay, handoff, keeper, named)) = relay {
+        std::thread::spawn(move || {
+            if let Err(reason) = relay_channels(&relay, &handoff, &keeper, &named) {
+                tracing::warn!(cell = %named.cell, %reason, "a cell's channels weren't passed on");
+            }
+        });
+    }
     // Its group is ended, and its directory removed, before the broker
     // hears the helper has: by then nothing of its cell is left.
     supervise(stream, &child, move || drop((group, helper_dir)))
+}
+
+/// The spawner's end of its channel with the vault keeper, shared by its
+/// connections' threads.
+type Keeper = Arc<Mutex<UnixStream>>;
+
+/// Passes on a helper's channels as it hands them over on `relay`: its
+/// cell's connection to `handoff`, the broker's, then its cell's vault
+/// channel to `keeper`, named as `named` says. Each is waited for within
+/// [`START_TIMEOUT`], and no copy is kept.
+///
+/// # Errors
+///
+/// Why one wasn't passed on.
+fn relay_channels(
+    relay: &UnixStream,
+    handoff: &UnixStream,
+    keeper: &Mutex<UnixStream>,
+    named: &crate::keeper::CellChannel,
+) -> Result<(), String> {
+    relay
+        .set_read_timeout(Some(START_TIMEOUT))
+        .map_err(|error| format!("cannot bound the helper's handover: {error}"))?;
+    let take = |what: &str| {
+        hatchling_sys::net::recv_fd(relay.as_fd())
+            .map_err(|error| format!("the helper didn't hand over its cell's {what}: {error}"))
+    };
+    let connection = take("connection")?;
+    hatchling_sys::net::send_fd(handoff.as_fd(), connection.as_fd())
+        .map_err(|error| format!("cannot pass the connection to the broker: {error}"))?;
+    drop(connection);
+    let vault = take("vault channel")?;
+    let naming = serde_json::to_vec(named)
+        .map_err(|error| format!("cannot name the vault channel: {error}"))?;
+    let keeper = keeper
+        .lock()
+        .map_err(|_| String::from("an earlier handover to the keeper panicked"))?;
+    write_frame(&keeper, &naming)
+        .map_err(|error| format!("cannot name the vault channel to the keeper: {error}"))?;
+    hatchling_sys::net::send_fd(keeper.as_fd(), vault.as_fd())
+        .map_err(|error| format!("cannot hand the keeper the vault channel: {error}"))
 }
 
 /// A helper's own directory, made by the spawner in its own temp
@@ -1340,7 +1452,7 @@ pub(crate) mod tests {
     fn serving_with(program: &str, policy: Policy) -> (Spawner, std::thread::JoinHandle<()>) {
         let (ours, theirs) = UnixStream::pair().unwrap();
         let held = Arc::new((PathBuf::from(program), policy));
-        let served = std::thread::spawn(move || serve(&theirs, &held));
+        let served = std::thread::spawn(move || serve(&theirs, &held, None));
         (Spawner::over(ours), served)
     }
 
@@ -1667,6 +1779,85 @@ sleep 30 </dev/null >/dev/null 2>&1 &
         ([null(false), null(true), write], File::from(read))
     }
 
+    /// A helper's channels are passed on: its cell's connection to the
+    /// broker's handoff, and its vault channel to the keeper, named with
+    /// the cell, its uid and its grants. The broker gets nothing more, and
+    /// a helper that hands over nothing is said so.
+    #[test]
+    fn a_helpers_vault_channel_goes_to_the_keeper_and_its_connection_to_the_broker() {
+        use std::io::{Read as _, Write as _};
+        let (relay, helper) = UnixStream::pair().unwrap();
+        let (handoff, broker) = UnixStream::pair().unwrap();
+        let (ours, keeper) = UnixStream::pair().unwrap();
+        let ours = Mutex::new(ours);
+        for end in [&broker, &keeper] {
+            end.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        }
+        let named = crate::keeper::CellChannel {
+            cell: String::from("run-1"),
+            uid: 7,
+            grants: vec![String::from("fetch:token")],
+        };
+        let (connection, cells_connection) = UnixStream::pair().unwrap();
+        let (vault, cells_vault) = UnixStream::pair().unwrap();
+        for channel in [&connection, &vault] {
+            hatchling_sys::net::send_fd(helper.as_fd(), channel.as_fd()).unwrap();
+        }
+        drop((connection, vault));
+        relay_channels(&relay, &handoff, &ours, &named).unwrap();
+        let said = |to: &UnixStream, from: &UnixStream, word: &[u8]| {
+            let mut to = to;
+            to.write_all(word).unwrap();
+            let mut heard = vec![0u8; word.len()];
+            let mut from = from;
+            from.read_exact(&mut heard).unwrap();
+            heard == word
+        };
+        let brokers = UnixStream::from(hatchling_sys::net::recv_fd(broker.as_fd()).unwrap());
+        assert!(said(&cells_connection, &brokers, b"c"), "the broker's is the connection");
+        let naming: crate::keeper::CellChannel =
+            serde_json::from_slice(&read_frame(&keeper).unwrap()).unwrap();
+        assert_eq!(naming, named);
+        let keepers = UnixStream::from(hatchling_sys::net::recv_fd(keeper.as_fd()).unwrap());
+        assert!(said(&cells_vault, &keepers, b"v"), "the keeper's is the vault channel");
+        broker
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        assert!(
+            hatchling_sys::net::recv_fd(broker.as_fd()).is_err(),
+            "the broker got a second channel"
+        );
+        let (relay, helper) = UnixStream::pair().unwrap();
+        drop(helper);
+        let silent = relay_channels(&relay, &handoff, &ours, &named).unwrap_err();
+        assert!(silent.contains("connection"), "{silent}");
+    }
+
+    /// Only a connected agent cell is given a vault channel; and only a
+    /// spawner that hands them to the keeper names its grants.
+    #[test]
+    fn only_a_connected_agent_cell_gets_a_vault_channel() {
+        let mut skill: CellConfig = serde_json::from_str(&skill_spec()).unwrap();
+        assert!(policy().check(HelperKind::SkillCell, &skill).is_ok());
+        skill.vault_grants = Some(Vec::new());
+        let refused = policy().check(HelperKind::SkillCell, &skill).unwrap_err();
+        assert!(refused.contains("vault channel"), "{refused}");
+        let vault = crate::api_auth::tests::owner_config(None).vault;
+        let (ours, _theirs) = UnixStream::pair().unwrap();
+        let mut spawner = Spawner::over(ours);
+        assert!(spawner.vault_grants(&vault).is_none());
+        spawner.vaults = true;
+        let mut granted = vault;
+        granted.grants = vec![crate::VaultGrant {
+            action: hatchling_core::VaultAction::Fetch,
+            name: "token".parse().unwrap(),
+        }];
+        assert_eq!(
+            spawner.vault_grants(&granted),
+            Some(vec![String::from("fetch:token")])
+        );
+    }
+
     #[test]
     fn each_helper_starts_its_own_cells() {
         let skill: CellConfig = serde_json::from_str(&skill_spec()).unwrap();
@@ -1866,7 +2057,7 @@ sleep 30 </dev/null >/dev/null 2>&1 &
         served.join().unwrap();
         let (broker, theirs) = UnixStream::pair().unwrap();
         write_frame(&broker, br#"{"request":"steal"}"#).unwrap();
-        assert!(serve_connection(&theirs, Path::new("/bin/sh"), &policy()).is_err());
+        assert!(serve_connection(&theirs, Path::new("/bin/sh"), &policy(), None).is_err());
         assert!(gone("x").to_string().contains("cannot be reached: x"));
     }
 
@@ -1919,9 +2110,9 @@ sleep 30 </dev/null >/dev/null 2>&1 &
             &theirs,
             Path::new("/bin/sh"),
             &policy(),
-            HelperKind::SkillCell,
-            "{}",
+            (HelperKind::SkillCell, "{}"),
             fds.into(),
+            None,
         )
         .unwrap();
         assert!(matches!(receive(&broker).unwrap(), Reply::Refused { .. }));

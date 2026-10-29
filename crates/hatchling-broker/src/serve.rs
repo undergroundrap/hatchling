@@ -68,16 +68,15 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
     // keeper's start reads the kept keys of.
     crate::broker_user::act_for_broker(config)?;
     let (key, authoritys, spawners) = crate::keeper::start()?;
-    // Until the spawner hands the keeper each cell's vault channel
-    // (WO-031), the keeper's channel for it is closed.
-    drop(spawners);
     // The egress authority next, still on one thread (WO-017, step 2): it
     // alone reads the credentials of the requests it makes, from the
     // keeper on the channel just made for it, which the broker closes.
     crate::egress_authority::start(authoritys)?;
     // The spawner last, still on one thread (WO-017, step 3): every
     // cell's helper is started through it.
-    crate::spawner::start()?;
+    // It takes the keeper's channel for cells' vault channels (WO-031),
+    // which the broker doesn't keep.
+    crate::spawner::start(spawners)?;
     // Load skills before binding, before any session can name one:
     // each is verified, pinned, and registered, or refused loudly on
     // its own. A broken skill never stops the broker; it never runs.
@@ -233,6 +232,7 @@ pub fn spawn_agent_cell(config: &Config, mut cell_config: CellConfig) -> Result<
     cell_config.refuse_vault_in_view(&config.vault)?;
     let cell_id: CellId = cell_config.cell_id.parse()?;
     if let Some(spawner) = crate::spawner::spawner() {
+        cell_config.vault_grants = spawner.vault_grants(&config.vault);
         return spawn_through(spawner, &cell_config, cell_id);
     }
     let mut handle = spawn_cell(&cell_config, config.log_level)?;
