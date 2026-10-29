@@ -1823,7 +1823,8 @@ mod tests {
         });
         let hand = |grants: &[&str]| {
             let (ours, theirs) = UnixStream::pair().unwrap();
-            ours.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            ours.set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
             let named = serde_json::json!({ "cell": "run-1", "uid": 7, "grants": grants });
             write_frame(&spawners, named.to_string().as_bytes()).unwrap();
             hatchling_sys::net::send_fd(spawners.as_fd(), theirs.as_fd()).unwrap();
@@ -1848,7 +1849,10 @@ mod tests {
             ask(&ungranted, &fetching),
             Some(SessionResponse::Vault(VaultResult::Denied))
         ));
-        assert!(ask(&ungranted, b"{}").is_none(), "a request that isn't a vault op");
+        assert!(
+            ask(&ungranted, b"{}").is_none(),
+            "a request that isn't a vault op"
+        );
         let mut guard = kept.lock().unwrap();
         let op = VaultOp::Fetch {
             name: String::from("token"),
@@ -1856,7 +1860,10 @@ mod tests {
         assert!(cell_op_result(&mut guard, &op, "", 7, &[]).is_err());
         drop(guard);
         write_frame(&spawners, b"{}").unwrap();
-        assert!(taking.join().unwrap().is_err(), "a naming frame that doesn't parse");
+        assert!(
+            taking.join().unwrap().is_err(),
+            "a naming frame that doesn't parse"
+        );
         // The granted channel is still answered after the spawner's ended.
         assert!(matches!(
             ask(&granted, &fetching),
