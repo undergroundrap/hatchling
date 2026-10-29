@@ -648,6 +648,54 @@ mod tests {
         );
     }
 
+    /// A cell given a vault channel adopts it with its connection, holds
+    /// its peer to the broker's uid, and sends its vault ops there, not to
+    /// its broker; a cell without one sends them on its connection. A vault
+    /// descriptor that isn't a connection is refused.
+    #[test]
+    fn a_cells_vault_ops_go_to_its_vault_channel() {
+        use std::io::{Read as _, Write as _};
+        use std::os::fd::IntoRawFd as _;
+        let me = PeerUid::from_kernel(rustix::process::getuid().as_raw());
+        let adopted = |vault: Option<i32>| {
+            let (broker, agent) = UnixStream::pair().unwrap();
+            let mut config = config_with_socket("/no/such/dir-xyz/broker.sock");
+            config.broker = BrokerAddress::Connection(agent.into_raw_fd());
+            config.vault_fd = vault;
+            config.broker_uid = me;
+            let cell = Cell::new(config)
+                .check_preconditions()
+                .and_then(Cell::connect_broker)
+                .and_then(Cell::authorize);
+            (broker, cell)
+        };
+        let said = |cell: &Cell<PeerAuthorized>| {
+            let mut channel = cell.vault_channel();
+            channel.write_all(b"v").unwrap();
+        };
+        let (keeper, vault) = UnixStream::pair().unwrap();
+        let (broker, cell) = adopted(Some(vault.into_raw_fd()));
+        said(&cell.unwrap());
+        let mut heard = [0u8; 1];
+        (&keeper).read_exact(&mut heard).unwrap();
+        assert_eq!(&heard, b"v", "the keeper's end hears the vault op");
+        broker.set_nonblocking(true).unwrap();
+        assert_eq!(
+            (&broker).read(&mut heard).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "the broker heard a vault op"
+        );
+        let (broker, cell) = adopted(None);
+        said(&cell.unwrap());
+        (&broker).read_exact(&mut heard).unwrap();
+        assert_eq!(&heard, b"v", "without a vault channel, the broker hears it");
+        let (_broker, cell) = adopted(Some(i32::MAX - 1));
+        assert!(
+            matches!(cell, Err(Error::BrokerConnection { fd, .. }) if fd == i32::MAX - 1),
+            "a vault descriptor that isn't a connection"
+        );
+    }
+
     /// WO-026: a chat turn's loop gives the model the conversation it was
     /// given, before its message, each side in its own role.
     #[test]
