@@ -628,6 +628,24 @@ mod tests {
         }
     }
 
+    /// A deletion's answer says how many went; any other answer is out of
+    /// turn, and says which.
+    #[test]
+    fn a_deletions_answer_is_its_count_and_any_other_is_out_of_turn() {
+        assert_eq!(deleted((SignInAnswer::Deleted { count: 2 }, None)), Ok(2));
+        let other = deleted((SignInAnswer::Read, None));
+        assert!(
+            other
+                .as_ref()
+                .is_err_and(|error| error.contains("out of turn") && error.contains("Read")),
+            "{other:?}"
+        );
+        assert_eq!(
+            out_of_turn(&SignInAnswer::Deleted { count: 1 }),
+            "the keeper answered out of turn: Deleted { count: 1 }"
+        );
+    }
+
     #[test]
     fn an_origin_is_an_https_origin_alone() {
         assert_eq!(

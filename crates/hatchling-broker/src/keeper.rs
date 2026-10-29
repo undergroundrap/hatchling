@@ -632,14 +632,16 @@ impl Keeper {
         let request = Request::SignIn { op };
         let (reply, read) = self.exchange(|stream| {
             let reply = ask(stream, &request)?;
-            let read = match &reply {
-                Reply::SignIn {
-                    answer: SignInAnswer::Read,
-                } => Some(SignIn {
+            let read = if let Reply::SignIn {
+                answer: SignInAnswer::Read,
+            } = &reply
+            {
+                Some(SignIn {
                     username: concealed(stream)?,
                     password: concealed(stream)?,
-                }),
-                _ => None,
+                })
+            } else {
+                None
             };
             Ok((reply, read))
         })?;
@@ -709,7 +711,10 @@ fn kept_keys(asked: &[(Store, PathBuf)]) -> Result<Vec<u8>, Error> {
     for (store, root) in asked {
         if crate::vault_ops::KEEPERS_STORES.contains(store) {
             return Err(Error::Keeper {
-                reason: format!("it asked for the key of {}, which is its own", store.label()),
+                reason: format!(
+                    "it asked for the key of {}, which is its own",
+                    store.label()
+                ),
             });
         }
         kept.push(
@@ -1264,9 +1269,10 @@ fn answer_sign_in(stream: &UnixStream, kept: &Kept, op: SignInRequest) -> Result
             },
         );
     };
-    let read = match &op {
-        SignInRequest::Read { id } => Some(id.clone()),
-        _ => None,
+    let read = if let SignInRequest::Read { id } = &op {
+        Some(id.clone())
+    } else {
+        None
     };
     let (answer, sign_in) = crate::browser_credentials::answer(&credentials, op);
     if let Some(id) = read {
@@ -2017,11 +2023,12 @@ mod tests {
         config.web.profiles = dir.0.join("profiles");
         config.web.credentials = dir.0.join("sign-ins");
         let master = MasterKey::generate().unwrap();
-        let stores = [
+        hatchling_vault::SealedVault::open(&config.vault.root, &master).unwrap();
+        let own = [
             (Store::SECRETS, config.vault.root.as_path()),
             (Store::CREDENTIALS, config.web.credentials.as_path()),
         ];
-        let keepers = StoreKeys::unwrap(&master, &stores).unwrap();
+        let keepers = StoreKeys::unwrap(&master, &own).unwrap();
         let brokers =
             StoreKeys::unwrap(&master, &[(Store::PROFILES, config.web.profiles.as_path())])
                 .unwrap();
@@ -2046,7 +2053,8 @@ mod tests {
             let serving_authority = scope.spawn(|| serve(&authority_end, &kept, Role::Authority));
             let keeper = Keeper::over(ours).unwrap();
             let asking = Credentials::through(Some(&keeper), &config, &brokers).unwrap();
-            assert!(format!("{asking:?}").contains("kept: true"));
+            let shown = format!("{asking:?}");
+            assert!(shown.contains("kept: true"), "{shown}");
             // Refused by the broker's own check: not one of the profile's sites.
             assert_eq!(
                 asking.store(&profile, "https://b.example", "Work", &secret, 1),
@@ -2092,23 +2100,27 @@ mod tests {
                     .is_err_and(|error| error.contains("recorded")),
                 "{unrecorded:?}"
             );
-            drop(asking);
             drop(keeper);
             drop(authority);
             assert!(serving.join().unwrap().is_ok());
             assert!(serving_authority.join().unwrap().is_ok());
         });
         // A keeper whose configuration keeps no sign-ins refuses them.
-        kept.lock().unwrap().config.web.credentials = PathBuf::new();
+        let mut guard = kept.lock().unwrap();
+        guard.config.web.credentials = PathBuf::new();
         let (ours, theirs) = UnixStream::pair().unwrap();
-        std::thread::scope(|scope| {
-            let serving = scope.spawn(|| serve(&theirs, &kept, Role::Broker));
-            let keeper = Keeper::over(ours).unwrap();
-            let refused = format!("{:?}", keeper.sign_ins(SignInRequest::List));
-            assert!(refused.contains("keeps no sign-ins"), "{refused}");
-            drop(keeper);
-            assert!(serving.join().unwrap().is_ok());
-        });
+        answer_sign_in(&theirs, &guard, SignInRequest::List).unwrap();
+        drop(guard);
+        let reply: Reply = serde_json::from_slice(&read_frame(&ours).unwrap()).unwrap();
+        assert!(
+            matches!(&reply, Reply::Refused { reason } if reason.contains("keeps no sign-ins")),
+            "{reply:?}"
+        );
+        // A read's secret is text, moved whole out of its frame.
+        write_frame(&theirs, b"pw \xff").unwrap();
+        assert!(concealed(&ours).is_err(), "a secret that isn't text");
+        write_frame(&theirs, "pw \"q\"".as_bytes()).unwrap();
+        assert_eq!(concealed(&ours).unwrap().expose(), "pw \"q\"");
     }
 
     /// A keeper that answers a read out of step is lost: the broker sends
