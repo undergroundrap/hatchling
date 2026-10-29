@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 import shutil
@@ -115,6 +116,22 @@ class ProcessTests(unittest.TestCase):
         finally:
             child.kill()
             child.wait()
+
+
+class CanaryTests(unittest.TestCase):
+    def test_a_fetched_canary_is_told_from_a_leaked_or_unfetched_one(self):
+        import https_model_fixture as fixture
+        canary = 'hatchling-canary-fixture'
+        def request(content):
+            body = {'messages': [{'role': 'user', 'content': content}]}
+            return body, json.dumps(body).encode()
+        fetched = '<tool_result tool="vault_fetch" status="ok">{"secret":"[redacted secret]"}</tool_result>'
+        self.assertEqual(fixture.canary_seen(*request(fetched), canary), 'fetched-redacted')
+        leaked = fetched.replace('[redacted secret]', canary)
+        self.assertEqual(fixture.canary_seen(*request(leaked), canary), 'plain')
+        denied = '<tool_result tool="vault_fetch" status="error">denied</tool_result>'
+        self.assertEqual(fixture.canary_seen(*request(denied), canary), 'not-fetched')
+        self.assertEqual(fixture.canary_seen(*request('[redacted secret]'), canary), 'not-fetched')
 
 
 if __name__ == '__main__':
