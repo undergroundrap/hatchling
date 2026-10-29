@@ -3,26 +3,40 @@ the site it asks for, open its browser from the chat, take control, scroll
 and type, keep its sign-in (WO-030), and hand it back; the agent says it
 waited while the owner drove, and Settings lists the site kept signed in.
 
+Then the owner keeps a canary sign-in for the site, and asks the agent to
+sign in with it (WO-031). The site gets the sign-in, the vault keeper
+records its fill, and neither the broker's memory, its log, nor any request
+the model was sent holds the sign-in's username or password.
+
 Usage: python3 scripts/browser_end_to_end.py <address>
 
 The address is the one hatchling-host printed, with the UI token in its
 fragment. The broker behind it must have a browser configured and answer
-with scripts/browsing_model.py. Needs Playwright
+with scripts/browsing_model.py, the site served by scripts/sign_in_site.py;
+scripts/browser_end_to_end.sh names the broker's process, its log, the
+keeper's vault log, and what the site and the model recorded, in the
+HATCHLING_E2E_* variables. Needs Playwright
 (frontend/tests/e2e/requirements.txt) and Chromium: CHROMIUM_PATH, else
 Playwright's own.
 """
 
+import json
 import os
 from pathlib import Path
 import re
+import secrets
 import sys
 
-from browsing_model import ANSWER_END, BROWSER_URL, SAW_DRIVING, WAIT_SECS
+from browsing_model import (ANSWER_END, BROWSER_URL, NOT_SIGNED_IN, SAW_DRIVING, SIGN_IN_TASK,
+                            SIGNED_IN, WAIT_SECS)
+from hosted_model_support import memory_holds
 
 TASK = "Use the browser, then tell me what happened."
-# A sign-in the owner keeps for it: nothing a page would show by chance.
-SIGN_IN_USER = "zoe-user@hatchling-end-to-end.invalid"
-SIGN_IN_PASSWORD = "hunter2-end-to-end"
+# A canary sign-in the owner keeps for it, new each run: nothing a page or
+# a process would hold by chance.
+SIGN_IN_USER = f"zoe-{secrets.token_urlsafe(18)}@hatchling-end-to-end.invalid"
+SIGN_IN_PASSWORD = f"pw-{secrets.token_urlsafe(24)}"
+CANARIES = (SIGN_IN_USER.encode(), SIGN_IN_PASSWORD.encode())
 # The site the agent's browser visits, as the broker names it.
 SITE = BROWSER_URL.removeprefix("https://").rstrip("/") + ":443"
 TOKEN_FRAGMENT = "#hatchling-ui="
@@ -131,6 +145,80 @@ def signed_in(page):
         raise ValueError("The page still holds the sign-in it sent to the broker")
 
 
+def answered(page, task, answers):
+    """Waits for an agent bubble after the user's `task` holding one of
+    `answers`, and returns its text."""
+    page.wait_for_function("""([task, answers]) => {
+        const asked = [...document.querySelectorAll('.user-bubble')].find(b => b.textContent.includes(task));
+        return asked !== undefined && [...document.querySelectorAll('.agent-bubble')].some(b =>
+            answers.some(answer => b.textContent.includes(answer))
+            && (asked.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0);
+    }""", arg=[task, answers], timeout=ANSWER_TIMEOUT_MS)
+    return page.evaluate("""(answers) => [...document.querySelectorAll('.agent-bubble')].map(b => b.textContent)
+        .filter(text => answers.some(answer => text.includes(answer))).pop()""", answers)
+
+
+def sign_in(page):
+    """The owner asks the agent to sign in with the sign-in they kept: raise
+    unless it says the site signed it in."""
+    from playwright.sync_api import expect
+
+    page.keyboard.press("Escape")
+    expect(page.locator("#message-input")).to_be_visible(timeout=STEP_TIMEOUT_MS)
+    page.locator("#message-input").fill(SIGN_IN_TASK)
+    page.get_by_role("button", name="Send message", exact=True).click()
+    said = answered(page, SIGN_IN_TASK, [SIGNED_IN, NOT_SIGNED_IN])
+    screenshot(page, "browser-7-signed-in.png")
+    if SIGNED_IN not in said:
+        raise ValueError("The agent didn't sign in: " + said)
+
+
+def environment(name):
+    value = os.environ.get(name)
+    if not value:
+        raise ValueError(f"{name} isn't set: run this from scripts/browser_end_to_end.sh")
+    return value
+
+
+def broker_holds():
+    """Which of the canary's secrets the broker's memory holds, after a scan
+    that read some of it."""
+    pid = int(environment("HATCHLING_E2E_BROKER_PID"))
+    held = []
+    for canary in CANARIES:
+        found, scanned = memory_holds(pid, canary)
+        if scanned == 0:
+            raise ValueError("The broker's memory couldn't be read")
+        held.append(found)
+    return held
+
+
+def filled(kept_held):
+    """Raise unless the site got the canary sign-in, the keeper recorded its
+    fill, and the broker holds it nowhere: not in its memory, its log, or a
+    request the model was sent. `kept_held` is what the broker's memory
+    held right after the owner kept the sign-in."""
+    sent = [json.loads(line) for line in Path(environment("HATCHLING_E2E_SITE_RECORD")).read_text().splitlines()]
+    if sent != [{"email": SIGN_IN_USER, "password": SIGN_IN_PASSWORD}]:
+        raise ValueError(f"The site got {len(sent)} sign-ins, not the one kept: "
+                         + json.dumps([{name: value is not None for name, value in each.items()} for each in sent]))
+    vault_log = Path(environment("HATCHLING_E2E_VAULT_LOG")).read_text()
+    if "browser-fill" not in vault_log:
+        raise ValueError("The vault keeper recorded no browser fill")
+    held = broker_holds()
+    if any(held):
+        raise ValueError(f"The broker's memory held the canary sign-in after its fill "
+                         f"(username, password: {held}; right after it was kept: {kept_held})")
+    broker_log = Path(environment("HATCHLING_E2E_BROKER_LOG")).read_bytes()
+    if any(canary in broker_log for canary in CANARIES):
+        raise ValueError("The broker logged the canary sign-in")
+    model_requests = Path(environment("HATCHLING_E2E_MODEL_RECORD")).read_bytes()
+    if any(canary in model_requests for canary in CANARIES):
+        raise ValueError("A request the model was sent held the canary sign-in")
+    print(f"browser end to end: the canary sign-in was filled; right after it was kept, "
+          f"the broker's memory held username, password: {kept_held}")
+
+
 def check(address):
     """Raise unless the owner drives the agent's browser from the app at
     `address`, and the agent says it waited while they did."""
@@ -152,6 +240,9 @@ def check(address):
             page.wait_for_function(ANSWERED, arg=[TASK, f"{SAW_DRIVING}, {ANSWER_END}"], timeout=ANSWER_TIMEOUT_MS)
             screenshot(page, "browser-4-handed-back.png")
             signed_in(page)
+            kept_held = broker_holds()
+            sign_in(page)
+            filled(kept_held)
         except Exception:
             screenshot(page, "browser-failed.png")
             raise

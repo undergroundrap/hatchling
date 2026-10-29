@@ -255,6 +255,8 @@ jobs:
   # broker with the pinned Chromium as its browser, the scripted browsing
   # model, the app's host, and Playwright using the app as the owner would:
   # allow the site, open the browser, take control, scroll, hand it back.
+  # Then (WO-031) the agent signs in with a canary sign-in the owner kept,
+  # and the broker's memory and log are scanned for it.
   browser:
     name: browser in the app
     runs-on: ubuntu-24.04
@@ -313,6 +315,9 @@ jobs:
 
       - name: Allow real cells
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Check the browser proof's helpers
+        run: python3 -m unittest discover -s scripts -p 'test_browser_end_to_end.py' -v
 
       - name: Drive the agent's browser from the app
         run: |

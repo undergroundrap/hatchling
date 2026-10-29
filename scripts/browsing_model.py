@@ -1,7 +1,7 @@
 """A scripted stand-in for a model, for the browser's end-to-end test: it
 drives the agent's browser tools as a model would, and says what it saw.
 
-Usage: python3 scripts/browsing_model.py [port]   (default 18090)
+Usage: python3 scripts/browsing_model.py [port [record]]   (default 18090)
 
 Like docs/examples/stand-in-model.py, it passes the agent's tool-calling
 check. Then, for each task, it reads the tool results so far and:
@@ -12,10 +12,18 @@ check. Then, for each task, it reads the tool results so far and:
 - once a read is answered that the owner handed it back, it answers the
   task, saying whether it was ever told the owner was driving.
 
+Asked SIGN_IN_TASK (WO-031), it opens the site again, signs in with the
+sign-in the owner kept for it (browser_sign_in, naming the form's fields),
+sends the form, and says whether the site said it was signed in.
+
+Given a record file, it appends each request's body to it: the test reads
+it for a sign-in's secrets, which no request may carry.
+
 A chat run has a budget of steps, not of time, so it waits in its own
 answers rather than spending steps. Nothing here is a model.
 """
 import json
+import os
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -33,16 +41,78 @@ WAITING = "the owner has been asked to allow this site"
 SAW_DRIVING = "I waited while you drove the browser"
 NEVER_DRIVEN = "You never drove the browser"
 ANSWER_END = "and you handed it back."
+# The sign-in task (WO-031), and what its answer says.
+SIGN_IN_TASK = "Sign in to the site with the sign-in I kept, then tell me how it went."
+SIGN_IN_REASON = "to sign in to it as the owner asked"
+SIGNED_IN = "I signed in, and the site says so."
+NOT_SIGNED_IN = "I couldn't sign in:"
+# What sign_in_site.py's page says once a sign-in was sent.
+SITE_SIGNED_IN = "You are signed in."
+
+
+def text(content):
+    return content if isinstance(content, str) else json.dumps(content)
 
 
 def results(messages):
-    """The text of each tool result so far, oldest first."""
+    """The text of each tool result since the owner's last message, oldest
+    first: a chat's earlier tasks are its history, not this task's."""
     texts = []
     for message in messages:
-        if message.get("role") == "tool":
-            content = message.get("content")
-            texts.append(content if isinstance(content, str) else json.dumps(content))
+        if message.get("role") == "user":
+            texts = []
+        elif message.get("role") == "tool":
+            texts.append(text(message.get("content")))
     return texts
+
+
+def task(messages):
+    """The owner's last message."""
+    asked = [text(message.get("content")) for message in messages if message.get("role") == "user"]
+    return asked[-1] if asked else ""
+
+
+def page(result):
+    """The page a tool result shows, or `None` for a result that isn't one."""
+    start, end = result.find("{"), result.rfind("}")
+    try:
+        shown = json.loads(result[start:end + 1]) if start != -1 else None
+    except ValueError:
+        return None
+    return shown if isinstance(shown, dict) and "elements" in shown else None
+
+
+def element(shown, matches):
+    """The id of the first element of `shown` that `matches`, or `None`."""
+    return next((each["id"] for each in shown["elements"] if matches(each)), None)
+
+
+def failed(why):
+    return {"role": "assistant", "content": f"{NOT_SIGNED_IN} {why[:300]}"}
+
+
+def sign_in_message(seen):
+    """The sign-in task's next step: open the site, sign in, send the form,
+    and say what the site said."""
+    if not seen:
+        return call("browser_open", {"url": BROWSER_URL, "reason": SIGN_IN_REASON})
+    shown = page(seen[-1])
+    if shown is None:
+        return failed(seen[-1])
+    if len(seen) == 1:
+        password = element(shown, lambda each: each["role"] == "password")
+        username = element(shown, lambda each: each["role"] != "password" and each["name"].startswith("Email"))
+        if password is None or username is None:
+            return failed("the page has no sign-in form: " + json.dumps(shown["elements"]))
+        return call("browser_sign_in", {"password_element": password, "username_element": username})
+    if len(seen) == 2:
+        button = element(shown, lambda each: each["role"] == "button" and each["name"] == "Sign in")
+        if button is None:
+            return failed("the form has no Sign in button: " + json.dumps(shown["elements"]))
+        return call("browser_act", {"element": button, "action": "click"})
+    if SITE_SIGNED_IN in shown.get("text", ""):
+        return {"role": "assistant", "content": SIGNED_IN}
+    return failed("the site didn't say I was signed in: " + shown.get("text", "")[:200])
 
 
 def call(name, arguments):
@@ -55,6 +125,8 @@ def call(name, arguments):
 def next_message(messages):
     """What the model says next, given the conversation so far."""
     seen = results(messages)
+    if SIGN_IN_TASK in task(messages):
+        return sign_in_message(seen)
     if not seen:
         return call("browser_open", {"url": BROWSER_URL, "reason": REASON})
     last = seen[-1]
@@ -67,12 +139,25 @@ def next_message(messages):
     return call("browser_read", {})
 
 
+# Where each request's body is appended, when the test names a file.
+RECORD = None
+
+
+def keep(body):
+    if RECORD is not None:
+        descriptor = os.open(RECORD, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(descriptor, "ab") as file:
+            file.write(body + b"\n")
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path.rstrip("/") != "/v1/chat/completions":
             self.send_error(404)
             return
-        request = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+        body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        keep(body)
+        request = json.loads(body)
         tools = request.get("tools") or []
         if request.get("tool_choice") == "required" and tools:
             # The agent's check that the model can call tools: call the one it offers.
@@ -93,4 +178,5 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 18090
+    RECORD = sys.argv[2] if len(sys.argv) > 2 else None
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
