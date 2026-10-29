@@ -1490,13 +1490,6 @@ mod tests {
         assert_eq!(spec.filter, Filter::Browser);
         assert!(spec.connection, "its own connection");
         assert!(!spec.vault_channel, "no vault channel");
-        // A connected cell named with vault grants gets one; an
-        // unconnected one doesn't.
-        let mut agent = cell;
-        agent.vault_grants = Some(Vec::new());
-        assert!(cell_spec(&agent, LogLevel::Error).vault_channel);
-        agent.connected = false;
-        assert!(!cell_spec(&agent, LogLevel::Error).vault_channel);
         assert!(spec.endpoint.is_none(), "no socket");
         assert_eq!(spec.relay, Some(crate::browser_proxy::RELAY_PORT));
         assert_eq!(spec.cgroup, Some(base.join("group")));
@@ -1561,6 +1554,13 @@ mod tests {
                 ),
             ]
         );
+        // A connected cell named with vault grants gets one; an
+        // unconnected one doesn't.
+        let mut agent = cell;
+        agent.vault_grants = Some(Vec::new());
+        assert!(cell_spec(&agent, LogLevel::Error).vault_channel);
+        agent.connected = false;
+        assert!(!cell_spec(&agent, LogLevel::Error).vault_channel);
         std::fs::remove_dir_all(&base).unwrap();
     }
 
