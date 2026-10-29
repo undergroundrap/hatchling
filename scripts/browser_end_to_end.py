@@ -117,9 +117,9 @@ def signed_in(page):
     screenshot(page, "browser-5-signed-in-sites.png")
     # A sign-in, typed in the form and sent straight to the broker.
     pane.get_by_role("button", name="Add a sign-in").click()
-    pane.get_by_label("Name").fill("Work")
-    pane.get_by_label("Username").fill(SIGN_IN_USER)
-    pane.get_by_label("Password").fill(SIGN_IN_PASSWORD)
+    pane.get_by_label("Name", exact=True).fill("Work")
+    pane.get_by_label("Username", exact=True).fill(SIGN_IN_USER)
+    pane.get_by_label("Password", exact=True).fill(SIGN_IN_PASSWORD)
     pane.get_by_role("button", name="Keep sign-in").click()
     expect(page.get_by_text("Kept. The agent can sign in with it").first).to_be_visible(timeout=STEP_TIMEOUT_MS)
     listed = pane.locator(".signed-in-sign-in")
