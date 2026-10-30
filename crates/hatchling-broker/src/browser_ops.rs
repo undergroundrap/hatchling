@@ -2445,6 +2445,12 @@ mod tests {
                 "jar-secret-value page-set-secret",
             );
             op(&BrowserOp::Read);
+            // The owner is told of an action by the field's name, which shows
+            // the cookie the page set since its session was last kept.
+            op(&BrowserOp::Act {
+                element: 2,
+                action: PageAction::Click,
+            });
             op(&sign_in_op(Some(1), None));
             op(&BrowserOp::Code { element: 3 });
             let id = browser_id(&bus);
@@ -2467,6 +2473,10 @@ mod tests {
             // After it, it can show everything it was given.
             showing(&fake, "https://a.example/home", &secrets.join(" "));
             op(&BrowserOp::Read);
+            op(&BrowserOp::Act {
+                element: 2,
+                action: PageAction::Click,
+            });
             op(&BrowserOp::Close);
         });
         assert!(
@@ -2488,6 +2498,44 @@ mod tests {
             told.iter().any(|answer| answer.contains("[hidden]")),
             "what the page showed was hidden, not dropped"
         );
+        sent_none(
+            &bus,
+            &secrets,
+            &[
+                "Filled a sign-in",
+                "Asked the owner for the code",
+                "Clicked password",
+            ],
+        );
+    }
+
+    /// The owner's action log on `bus` tells each of `steps`, and nothing
+    /// the app was sent holds any of `secrets`.
+    fn sent_none(bus: &crate::api_stream::Bus, secrets: &[&str], steps: &[&str]) {
+        let events = bus.wait_after(None, Duration::ZERO);
+        let narrated: Vec<&str> = events
+            .iter()
+            .filter_map(|event| {
+                if let hatchling_core::ui::UiEventBody::BrowserAction(action) = &event.body {
+                    Some(action.narration.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for step in steps {
+            assert!(
+                narrated.iter().any(|narration| narration.starts_with(step)),
+                "not in the action log: {step}"
+            );
+        }
+        let sent: Vec<String> = events.iter().map(|event| format!("{event:?}")).collect();
+        for secret in secrets {
+            assert!(
+                sent.iter().all(|event| !event.contains(secret)),
+                "the app was sent a secret"
+            );
+        }
     }
 
     #[test]

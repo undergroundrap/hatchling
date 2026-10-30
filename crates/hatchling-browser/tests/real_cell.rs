@@ -39,6 +39,12 @@ const PORT: u16 = 8118;
 /// The made-up host the test serves.
 const HOST: &str = "hatchling.test";
 
+/// Another origin the test serves, with the same sign-in form.
+const OTHER: &str = "other.test";
+
+/// A host that starts like [`HOST`] and isn't it: the same form again.
+const LOOKALIKE: &str = "hatchling.test.other.test";
+
 const START: &str = r#"<!doctype html><title>Start</title>
 <h1>Start page</h1>
 <p id="status">waiting</p>
@@ -87,6 +93,14 @@ const SIGN_IN: &str = r#"<!doctype html><title>Sign in</title>
 /// snapshot lists, so no fill can name one.
 const FRAMED: &str = r#"<!doctype html><title>Framed</title>
 <iframe src="/signin" style="width: 600px; height: 400px"></iframe>"#;
+
+/// The sign-in form of another origin, framed.
+const FRAMED_ELSEWHERE: &str = r#"<!doctype html><title>Framed elsewhere</title>
+<iframe src="http://other.test/signin" style="width: 600px; height: 400px"></iframe>"#;
+
+/// A page whose script moves it to the look-alike host's sign-in form.
+const MOVES: &str = r"<!doctype html><title>Moving</title>
+<script>location.replace('http://hatchling.test.other.test/signin');</script>";
 
 /// Whether `name`'s requirement makes a missing prerequisite a failure.
 fn required(name: &str) -> bool {
@@ -249,19 +263,35 @@ fn answer(mut stream: std::net::TcpStream, seen: &Mutex<Vec<String>>) {
     let line = head.lines().next().unwrap_or_default().to_owned();
     seen.lock().unwrap().push(line.clone());
     let target = line.split_whitespace().nth(1).unwrap_or_default();
-    let (status, body) = match target.strip_prefix(&format!("http://{HOST}")) {
-        Some("/") => ("200 OK", START),
-        Some("/next") => ("200 OK", NEXT),
-        Some("/owner") => ("200 OK", OWNER),
-        Some("/cookies") => ("200 OK", COOKIES),
-        Some("/webrtc") => ("200 OK", WEBRTC),
-        Some("/signin") => ("200 OK", SIGN_IN),
-        Some("/framed") => ("200 OK", FRAMED),
+    let (host, path) = [HOST, OTHER, LOOKALIKE]
+        .into_iter()
+        .find_map(|host| {
+            let path = target.strip_prefix(&format!("http://{host}"))?;
+            path.starts_with('/').then_some((host, path))
+        })
+        .unwrap_or_default();
+    let (status, body) = match (host, path) {
+        (HOST, "/") => ("200 OK", START),
+        (HOST, "/next") => ("200 OK", NEXT),
+        (HOST, "/owner") => ("200 OK", OWNER),
+        (HOST, "/cookies") => ("200 OK", COOKIES),
+        (HOST, "/webrtc") => ("200 OK", WEBRTC),
+        (HOST | OTHER | LOOKALIKE, "/signin") => ("200 OK", SIGN_IN),
+        (HOST, "/framed") => ("200 OK", FRAMED),
+        (HOST, "/framed-elsewhere") => ("200 OK", FRAMED_ELSEWHERE),
+        (HOST, "/moves") => ("200 OK", MOVES),
+        (HOST, "/hop") => ("302 Found", ""),
         _ => ("404 Not Found", "not here"),
+    };
+    // The one redirect: from this host to another origin's sign-in form.
+    let location = if status.starts_with("302") {
+        format!("location: http://{OTHER}/signin\r\n")
+    } else {
+        String::new()
     };
     let _ = write!(
         stream,
-        "HTTP/1.1 {status}\r\ncontent-type: text/html\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status}\r\ncontent-type: text/html\r\n{location}content-length: {}\r\nconnection: close\r\n\r\n{body}",
         body.len()
     );
 }
@@ -592,6 +622,116 @@ fn framed_never_filled(connection: &UnixStream) {
     }
 }
 
+/// A sign-in the keeper kept for this test's host, named while the page
+/// is elsewhere (WO-030): after a redirect, after its script moved it to a
+/// look-alike host, and with the form framed from another origin. The
+/// controller fills on the page's own origin, wherever it was opened, so
+/// each types nothing.
+fn kept_sign_in_follows_the_page(connection: &UnixStream, vault: &UnixStream) {
+    let here = format!("http://{HOST}");
+    let mut fills = 0;
+    let mut name = |origin: &str, username: Option<u32>, password: u32| {
+        fills += 1;
+        let nonce = format!("fill-moved-{fills}");
+        let fill = SignInFill {
+            nonce: nonce.clone(),
+            origin: origin.to_owned(),
+        };
+        write_frame(vault, &serde_json::to_vec(&fill).unwrap()).unwrap();
+        write_frame(vault, b"zoe@hatchling.test").unwrap();
+        write_frame(vault, b"Zoe-s3cret!").unwrap();
+        send(
+            connection,
+            &BrowserCommand::SignIn {
+                nonce,
+                username,
+                password,
+            },
+        )
+    };
+    let other_origin = BrowserReply::Failed {
+        failure: BrowserFailure::OtherOrigin,
+    };
+    let untouched = |at: &str| {
+        let shown = page(send(connection, &BrowserCommand::Snapshot));
+        assert!(
+            !shown.text.contains("email:") && !shown.text.contains("password:"),
+            "typed into the form {at}: {}",
+            shown.text
+        );
+    };
+    // Redirected to another origin's form.
+    let hopped = page(send(
+        connection,
+        &BrowserCommand::Open {
+            url: format!("http://{HOST}/hop"),
+        },
+    ));
+    assert_eq!(
+        hopped.url,
+        format!("http://{OTHER}/signin"),
+        "{}",
+        hopped.text
+    );
+    let reply = name(
+        &here,
+        Some(element(&hopped, "textbox", "Email")),
+        element(&hopped, "password", "Password"),
+    );
+    assert_eq!(reply, other_origin, "filled after a redirect");
+    untouched("after a redirect");
+    // Moved by its own script to a look-alike host.
+    page(send(
+        connection,
+        &BrowserCommand::Open {
+            url: format!("http://{HOST}/moves"),
+        },
+    ));
+    let moved_to = format!("http://{LOOKALIKE}/signin");
+    let mut moved = PageSnapshot::default();
+    for _ in 0..50 {
+        moved = page(send(connection, &BrowserCommand::Snapshot));
+        if moved.url == moved_to {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(moved.url, moved_to, "{}", moved.text);
+    let reply = name(
+        &here,
+        Some(element(&moved, "textbox", "Email")),
+        element(&moved, "password", "Password"),
+    );
+    assert_eq!(reply, other_origin, "filled on a look-alike host");
+    untouched("on a look-alike host");
+    // Another origin's form, framed: the frame's own sign-in isn't filled
+    // either, because the page is this host's.
+    let framed = page(send(
+        connection,
+        &BrowserCommand::Open {
+            url: format!("http://{HOST}/framed-elsewhere"),
+        },
+    ));
+    assert_eq!(framed.title, "Framed elsewhere");
+    assert!(
+        framed
+            .elements
+            .iter()
+            .all(|element| element.role != "password" && element.role != "textbox"),
+        "the subframe's fields aren't listed: {:?}",
+        framed.elements
+    );
+    for password in 0..4 {
+        let reply = name(&format!("http://{OTHER}"), None, password);
+        assert_eq!(reply, other_origin, "the framed origin's sign-in, filled");
+        let reply = name(&here, None, password);
+        assert!(
+            matches!(reply, BrowserReply::Failed { .. }),
+            "element {password} of a framed form took a fill: {reply:?}"
+        );
+    }
+}
+
 /// The id of the element `role` named `name`.
 fn element(snapshot: &PageSnapshot, role: &str, name: &str) -> u32 {
     let found = snapshot
@@ -766,6 +906,7 @@ fn the_controller_drives_a_real_browser_in_a_cell_through_the_relay_alone() {
     sign_in_filled(&connection);
     kept_sign_in_filled(&connection, &vault);
     framed_never_filled(&connection);
+    kept_sign_in_follows_the_page(&connection, &vault);
     // A command it doesn't know is answered, not obeyed.
     let unknown = serde_json::json!({"command": "evaluate", "script": "1"});
     write_frame(&connection, &serde_json::to_vec(&unknown).unwrap()).unwrap();
@@ -789,15 +930,19 @@ fn the_controller_drives_a_real_browser_in_a_cell_through_the_relay_alone() {
     assert_eq!(exit.code, 0);
 
     // Every request the browser made reached the relay, for the test's
-    // host: nothing of its own (updates, sync, safe browsing), nothing
+    // hosts: nothing of its own (updates, sync, safe browsing), nothing
     // around the proxy.
     let seen = seen.lock().unwrap().clone();
-    let (first, second, any) = (
+    let (first, second) = (
         format!("GET http://{HOST}/ HTTP/1.1"),
         format!("GET http://{HOST}/next HTTP/1.1"),
-        format!("GET http://{HOST}/"),
     );
+    let any = [HOST, OTHER, LOOKALIKE].map(|host| format!("GET http://{host}/"));
     assert!(seen.contains(&first), "{seen:?}");
     assert!(seen.contains(&second), "{seen:?}");
-    assert!(seen.iter().all(|line| line.starts_with(&any)), "{seen:?}");
+    assert!(
+        seen.iter()
+            .all(|line| any.iter().any(|host| line.starts_with(host))),
+        "{seen:?}"
+    );
 }
