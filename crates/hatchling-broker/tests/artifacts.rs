@@ -65,6 +65,19 @@ fn key() -> &'static MasterKey {
     KEY.get_or_init(|| MasterKey::generate().unwrap())
 }
 
+/// The broker's warnings, printed into the output of the test that caused
+/// them: a build that fails says why (a builder's run, its cell), which the
+/// result alone, `BuilderFailed`, doesn't.
+fn warnings_shown() {
+    static SHOWN: OnceLock<()> = OnceLock::new();
+    SHOWN.get_or_init(|| {
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_test_writer()
+            .try_init();
+    });
+}
+
 /// A test's world: its scratch base, its skills, and its config.
 struct World {
     base: TestDir,
@@ -76,6 +89,7 @@ impl World {
     /// The base, the skills, and a config with the build store, a
     /// workspace, a review policy, and the vault secret `app-token`.
     fn new(name: &str) -> Self {
+        warnings_shown();
         let base = test_dir(&format!("artifact-{name}"));
         std::fs::create_dir_all(&*base).unwrap();
         let skills = artifact_skills(&base, Duration::from_secs(20)).unwrap();
