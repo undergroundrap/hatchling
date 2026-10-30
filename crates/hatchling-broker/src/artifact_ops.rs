@@ -885,6 +885,7 @@ impl Pipeline<'_> {
         // Put to the owner (WO-027), or why the owner wasn't asked.
         match crate::approval_board::board(self.config).propose_activation(
             &proposal,
+            &request,
             &self.scope,
             self.now,
         ) {

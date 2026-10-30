@@ -1081,8 +1081,9 @@ mod tests {
         reason = "one proposal, through the socket and back, in order"
     )]
     fn a_proposed_activation_is_asked_and_decided_through_the_ui_socket() {
+        use hatchling_artifact::PinnedRequest;
         use hatchling_core::ui::{ConfirmationRequest, Decision, DecisionRejection, FieldSource};
-        use hatchling_core::{ActivationInput, ActivationProposal, IdeaRef};
+        use hatchling_core::{ActivationInput, ActivationProposal, ArtifactInput, IdeaRef};
         let dir = scratch("ui-confirm");
         // A vault root of its own: the board is found by it, and another
         // test serving its API would otherwise take this board's stream.
@@ -1133,6 +1134,14 @@ mod tests {
             }],
             request_hash: String::from("cc"),
         };
+        let pinned = PinnedRequest::pin(
+            "page",
+            &[ArtifactInput {
+                name: String::from("idea"),
+                content: String::from("an idea"),
+            }],
+        )
+        .unwrap();
         let now = i64::try_from(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1141,7 +1150,7 @@ mod tests {
         )
         .unwrap();
         let requested = crate::approval_board::board(config)
-            .propose_activation(&proposal, "task-ui", now)
+            .propose_activation(&proposal, &pinned, "task-ui", now)
             .unwrap();
         let asked: ConfirmationRequest = loop {
             let frame =
