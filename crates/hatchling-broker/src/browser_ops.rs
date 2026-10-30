@@ -2057,22 +2057,23 @@ mod tests {
         let log = fake.log.lock().unwrap();
         assert_eq!((log.started.len(), log.finished), (2, 1), "a browser each");
         assert_eq!(log.started_for, [Some(first.id), Some(second.id)]);
-        let restored: Vec<&Vec<Cookie>> = log
+        let restored: Vec<Vec<Cookie>> = log
             .commands
             .iter()
             .filter_map(|command| {
                 if let BrowserCommand::SetCookies { cookies } = command {
-                    Some(cookies)
+                    Some(cookies.clone())
                 } else {
                     None
                 }
             })
             .collect();
+        drop(log);
         assert_eq!(
             restored,
             [
-                &vec![cookie("a.example", "sid")],
-                &vec![cookie("b.example", "sid")]
+                vec![cookie("a.example", "sid")],
+                vec![cookie("b.example", "sid")]
             ],
             "each browser given its own profile's session alone"
         );
