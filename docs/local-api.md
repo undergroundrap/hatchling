@@ -101,6 +101,15 @@ When the agent proposes an action that needs your yes (building an idea into an 
   The agent is told why it couldn't ask (`approval-refused`).
 - **Requests live in the broker's memory:** a restart withdraws them, and you're asked again.
 
+## Signed-in sites
+
+The agent's browser can open a site signed in as you, in a browser of that site's own, without ever seeing a password, a cookie or a code ([WO-030](workorders/workorder-030-signed-in-browsing.md)). Each of these is yours alone: a caller holding less than every grant you hold is refused `not_granted`.
+
+- **Keeping a sign-in:** sign in yourself while you drive the agent's browser (`take_control`), then `keep_signed_in` with its `session_id`. The broker keeps the site, the sites the sign-in went through, and the session as cookies, sealed. From then on the agent opens those sites signed in, in a browser that reaches only them.
+- **Your profiles:** `manage_profiles` with `list` (each profile's `sites`, whether it's `signed_in`, and when it was made and `last_used`), `sign_out` (its kept session is dropped and its sites kept; a browser still running it keeps nothing more) or `delete`. `off` means the broker keeps no profiles (`HATCHLING_BROWSER_PROFILES_DIR` unset).
+- **Sign-ins the broker fills:** `manage_sign_ins` with `store` (a profile, one of its sites' exact origins, a label, a username and a password), `list` (each by its label and origin, never its username or password) or `delete`. They go to the vault keeper, not the broker. The agent can only ask for the form on its page to be filled; it's filled on the sign-in's own origin alone.
+- **One-time codes:** when the page in a signed-in browser asks for one, the stream's `browser_code` event names the `session_id`, the `request_id` and the `origin`. `give_code` with those and the `code` has it typed into that page once, and `decline_code` refuses it. A code isn't kept, and the agent never sees it.
+
 ## How enums appear in JSON
 
 Every enum is *internally tagged*: one field names the variant, beside the variant's own fields. It is never a wrapper object such as `{"Cron": {...}}`.
@@ -124,6 +133,9 @@ Variant names are `snake_case` for the `Ui*` types, and kebab-case for the sched
 | `UiRequest::Action` | `{"type":"action","request_id":"r1","action":{"action":"manage_schedule","op":{"op":"list"}}}` |
 | `UiAction::ManageSchedule` | `{"action":"manage_schedule","op":{"op":"cancel","id":"sch-1"}}` |
 | `UiAction::ManageSites` | `{"action":"manage_sites","op":{"op":"revoke","site":"https://a.example"}}` |
+| `UiAction::ManageProfiles` | `{"action":"manage_profiles","op":{"op":"sign_out","profile_id":"profile-1"}}` |
+| `UiAction::ManageSignIns` | `{"action":"manage_sign_ins","op":{"op":"delete","sign_in_id":"sign-in-1"}}` |
+| `UiAction::GiveCode` | `{"action":"give_code","session_id":"browser-1","request_id":"code-1","code":"481516"}` |
 | `ScheduleOp::Create` | `{"op":"create","when":{"every":"cron","expr":"0 9 * * 1-5","tz":"Europe/Berlin"},"task":"Summarize my open goals.","grants":[{"grant":"goals","action":"query-goals"},{"grant":"channel-send","channel":"local"}],"channel":"local"}` |
 | `ScheduleOp::List` | `{"op":"list","after":"sch-1"}` |
 | `ScheduleOp::Cancel` | `{"op":"cancel","id":"sch-1"}` |
