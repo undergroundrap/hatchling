@@ -1690,6 +1690,7 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
     "ScheduleGrant": {
         "oneOf": [
             {
+                "additionalProperties": false,
                 "properties": {
                     "action": {
                         "type": "string"
@@ -1710,6 +1711,7 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "object"
             },
             {
+                "additionalProperties": false,
                 "properties": {
                     "destination": {
                         "type": "string"
@@ -1726,6 +1728,7 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "object"
             },
             {
+                "additionalProperties": false,
                 "properties": {
                     "action": {
                         "type": "string"
@@ -1746,6 +1749,7 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "object"
             },
             {
+                "additionalProperties": false,
                 "properties": {
                     "action": {
                         "type": "string"
@@ -1762,6 +1766,7 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "object"
             },
             {
+                "additionalProperties": false,
                 "properties": {
                     "channel": {
                         "type": "string"
@@ -1866,6 +1871,7 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
     "ScheduleOp": {
         "oneOf": [
             {
+                "additionalProperties": false,
                 "properties": {
                     "channel": {
                         "type": "string"
@@ -1897,6 +1903,7 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "object"
             },
             {
+                "additionalProperties": false,
                 "properties": {
                     "channel": {
                         "type": "string"
@@ -1921,6 +1928,7 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "object"
             },
             {
+                "additionalProperties": false,
                 "properties": {
                     "id": {
                         "type": "string"
@@ -1937,6 +1945,7 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "object"
             },
             {
+                "additionalProperties": false,
                 "properties": {
                     "after": {
                         "type": [
@@ -1955,6 +1964,7 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "object"
             },
             {
+                "additionalProperties": false,
                 "properties": {
                     "delay_secs": {
                         "minimum": 0,
@@ -1983,6 +1993,7 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "object"
             },
             {
+                "additionalProperties": false,
                 "properties": {
                     "id": {
                         "type": "string"
@@ -1999,6 +2010,7 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "object"
             },
             {
+                "additionalProperties": false,
                 "properties": {
                     "id": {
                         "type": "string"
@@ -2015,6 +2027,7 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "object"
             },
             {
+                "additionalProperties": false,
                 "properties": {
                     "after": {
                         "type": [
@@ -2033,6 +2046,7 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "object"
             },
             {
+                "additionalProperties": false,
                 "properties": {
                     "id": {
                         "type": "string"
@@ -2279,6 +2293,7 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
     "ScheduleSpec": {
         "oneOf": [
             {
+                "additionalProperties": false,
                 "properties": {
                     "every": {
                         "const": "cron",
@@ -2299,6 +2314,7 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "object"
             },
             {
+                "additionalProperties": false,
                 "properties": {
                     "at": {
                         "type": "string"
@@ -2726,6 +2742,7 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
     "SkillOp": {
         "oneOf": [
             {
+                "additionalProperties": false,
                 "properties": {
                     "capability": {
                         "$ref": "#/$defs/CapabilityName"

@@ -230,11 +230,11 @@ fn post_handshake_garbage_frame_closes_session() {
     assert_silent_close(&mut stream, "post-handshake frame").unwrap();
 }
 
-/// What a cell sends is read strictly (WO-027): a request that could be
-/// read two ways, by a key given twice however it's escaped or by a number
-/// that isn't a safe integer, ends the session unanswered, even where the
-/// broker's own reading would ignore it. The same request read one way is
-/// answered.
+/// What a cell sends is read strictly (WO-027). A request that could be
+/// read two ways, or that names a field its op doesn't have, ends the
+/// session unanswered. Each case below is one the broker's own decoding
+/// would take: a number past 2^53 in a 64-bit field, and an unknown field.
+/// The same requests read one way are answered.
 #[test]
 fn a_request_that_could_be_read_two_ways_ends_the_session() {
     let socket = spawn_broker("strict", real_uid()).unwrap();
@@ -250,18 +250,27 @@ fn a_request_that_could_be_read_two_ways_ends_the_session() {
         }
         answered
     };
-    assert!(
-        session(r#"{"kind":"vault","op":"fetch","name":"app-token"}"#),
-        "read one way: answered"
-    );
+    let mint = |ttl: &str| {
+        format!(
+            r#"{{"kind":"egress","op":"mint-surrogate","destination":"api.example.com:443","ttl_secs":{ttl}}}"#
+        )
+    };
     for frame in [
-        r#"{"kind":"vault","op":"fetch","name":"app-token","note":1.5}"#,
-        r#"{"kind":"vault","op":"fetch","name":"app-token","note":9007199254740992}"#,
-        // A JSON escape, written with `\x5c`, the backslash.
-        "{\"kind\":\"vault\",\"op\":\"fetch\",\"name\":\"app-token\",\"note\":{\"a\":1,\"\x5cu0061\":2}}",
-        "{\"kind\":\"vault\",\"\x5cu006bind\":\"egress\",\"op\":\"fetch\",\"name\":\"app-token\"}",
+        String::from(r#"{"kind":"vault","op":"fetch","name":"app-token"}"#),
+        mint("60"),
     ] {
-        assert!(!session(frame), "answered: {frame}");
+        assert!(session(&frame), "read one way, not answered: {frame}");
+    }
+    for frame in [
+        mint("9007199254740993"),
+        mint("18446744073709551615"),
+        String::from(r#"{"kind":"vault","op":"fetch","name":"app-token","note":"x"}"#),
+        // The tag twice, once as a JSON escape: `x5c` is the backslash.
+        String::from(
+            "{\"kind\":\"vault\",\"\x5cu006bind\":\"egress\",\"op\":\"fetch\",\"name\":\"app-token\"}",
+        ),
+    ] {
+        assert!(!session(&frame), "answered: {frame}");
     }
 }
 

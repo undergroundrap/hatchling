@@ -2212,7 +2212,7 @@ mod tests {
     #[test]
     fn browser_read_reads_or_scrolls_first() {
         for (arguments, expected) in [
-            (json!({}), hatchling_core::BrowserOp::Read),
+            (json!({}), hatchling_core::BrowserOp::Read {}),
             (
                 json!({ "scroll": "down" }),
                 hatchling_core::BrowserOp::Scroll { down: true },
@@ -2514,7 +2514,7 @@ mod tests {
             json!({}),
             BrowserResult::Closed,
         );
-        assert_eq!(op, hatchling_core::BrowserOp::Close);
+        assert_eq!(op, hatchling_core::BrowserOp::Close {});
         assert_eq!(output, ToolOutput::Ok(json!({ "closed": true })));
     }
 

@@ -1221,7 +1221,7 @@ pub(crate) fn handle_egress_op(
         EgressOp::MintSurrogate { destination, .. } | EgressOp::Egress { destination, .. } => {
             destination
         }
-        EgressOp::Stage { .. } | EgressOp::Read => return handle_paging_op(op, pages),
+        EgressOp::Stage { .. } | EgressOp::Read {} => return handle_paging_op(op, pages),
     };
 
     // Grant check: the peer must hold a grant for this destination.
@@ -1240,7 +1240,7 @@ pub(crate) fn handle_egress_op(
 
     match op {
         // Answered above: neither names a destination.
-        EgressOp::Stage { .. } | EgressOp::Read => Ok(EgressResult::EgressError),
+        EgressOp::Stage { .. } | EgressOp::Read {} => Ok(EgressResult::EgressError),
         EgressOp::MintSurrogate { ttl_secs, .. } => {
             Ok(mint_for(proxy, cell_id, peer_uid, destination, *ttl_secs))
         }
@@ -1370,7 +1370,7 @@ fn handle_paging_op(
                     held,
                 })
         }
-        EgressOp::Read => pages
+        EgressOp::Read {} => pages
             .next_part()
             .map_or(EgressResult::EgressError, |(part, more)| {
                 EgressResult::Part {
@@ -1700,7 +1700,7 @@ mod tests {
         assert_eq!(op(stage(b"abc")).unwrap(), EgressResult::Staged { held: 3 });
         assert_eq!(op(stage(b"de")).unwrap(), EgressResult::Staged { held: 5 });
         // Nothing held to read.
-        assert_eq!(op(EgressOp::Read).unwrap(), EgressResult::EgressError);
+        assert_eq!(op(EgressOp::Read {}).unwrap(), EgressResult::EgressError);
         // A request whose `staged` doesn't match the stage is refused
         // before it reaches the proxy, and the stage is emptied.
         let request = |staged: u64| EgressOp::Egress {
@@ -1806,7 +1806,7 @@ mod tests {
         let mut pages = crate::egress_pages::Pages::default();
         let _ = pages.hold(b"held".to_vec());
         assert_eq!(
-            handle_paging_op(&EgressOp::Read, &mut pages).unwrap(),
+            handle_paging_op(&EgressOp::Read {}, &mut pages).unwrap(),
             EgressResult::Part {
                 body_b64: encode_secret(b"held"),
                 more: 0,
