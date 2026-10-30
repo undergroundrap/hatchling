@@ -151,15 +151,17 @@ impl World {
     }
 
     fn op(&self, hub: Option<&LocalHub>, op: &ArtifactOp) -> ArtifactResult {
-        handle_artifact_op(
-            &self.config,
-            key(),
-            &self.skills,
-            hub,
-            &principal(),
-            op,
-            NOW,
-        )
+        self.op_as(&principal(), hub, op)
+    }
+
+    /// `op`, from the session `who`.
+    fn op_as(
+        &self,
+        who: &MemoryPrincipal,
+        hub: Option<&LocalHub>,
+        op: &ArtifactOp,
+    ) -> ArtifactResult {
+        handle_artifact_op(&self.config, key(), &self.skills, hub, who, op, NOW)
     }
 
     fn build(&self, kind: &str, builder: &str, inputs: &[(&str, &str)]) -> ArtifactResult {
@@ -1326,7 +1328,20 @@ impl World {
     }
 
     fn propose(&self, idea: &str, kind: &str, builder: &str, description: &str) -> ArtifactResult {
-        self.op(
+        self.propose_as(&principal(), idea, kind, builder, description)
+    }
+
+    /// [`World::propose`], from the session `who`.
+    fn propose_as(
+        &self,
+        who: &MemoryPrincipal,
+        idea: &str,
+        kind: &str,
+        builder: &str,
+        description: &str,
+    ) -> ArtifactResult {
+        self.op_as(
+            who,
             None,
             &ArtifactOp::ProposeActivation {
                 idea: idea.to_owned(),
@@ -1659,6 +1674,63 @@ fn the_owners_approval_in_the_app_builds_exactly_what_was_proposed() {
         world
             .summary()
             .is_some_and(|summary| summary.state == IdeaState::Activated)
+    );
+}
+
+/// The same build asked for again is the request the owner is deciding,
+/// asked once; another asked for meanwhile is refused and leaves that
+/// request standing, so the owner's approval still builds it (WO-027).
+#[test]
+fn asking_again_is_the_waiting_request_and_a_refused_proposal_leaves_it() {
+    if !guard_cell_available().unwrap() {
+        return;
+    }
+    let _confirmations = minting_at_the_clock();
+    let world = World::new("ask-again");
+    let board = approval_board::board(&world.config);
+    let bus = Arc::new(Bus::starting_at(1));
+    board.attach(Arc::clone(&bus));
+    let (idea, _) = saved(world.capture("Short zine", None));
+    // One agent session, asking each time.
+    let agent = principal();
+    let first = proposed(&world.propose_as(&agent, &idea, "page", PAGE_BUILDER, "a zine")).unwrap();
+    let request = last_confirmation(&bus).unwrap();
+    let again = proposed(&world.propose_as(&agent, &idea, "page", PAGE_BUILDER, "a zine"));
+    assert_eq!(
+        again.as_ref(),
+        Some(&first),
+        "asked again: the same proposal"
+    );
+    let asked = bus
+        .after(None)
+        .into_iter()
+        .filter(|event| matches!(event.body, UiEventBody::Confirmation(_)))
+        .count();
+    assert_eq!(asked, 1, "the owner is asked once");
+    let other = world.propose_as(&agent, &idea, "page", PAGE_BUILDER, "something else");
+    let refused = matches!(
+        other,
+        ArtifactResult::ApprovalRefused {
+            reason: hatchling_core::ApprovalRefusal::QueueFull,
+            ..
+        }
+    );
+    assert!(refused, "another build while one waits: {other:?}");
+    assert_eq!(
+        decide(&board, &request, &request.digest),
+        Ok(State::Approved)
+    );
+    let told = approval_board::run_next(
+        &world.config,
+        key(),
+        &world.skills,
+        None,
+        Duration::from_secs(5),
+    )
+    .unwrap();
+    assert!(
+        told.starts_with(&format!("Approved: build idea {idea}. Built art-")),
+        "the waiting request no longer builds: {told}"
     );
 }
 

@@ -855,9 +855,24 @@ impl Pipeline<'_> {
         if builder.parse::<SkillId>().is_err() {
             return failed(BuildFailure::UnknownBuilder);
         }
-        let Ok(activation) = crate::approval::random_hex(ACTIVATION_ID_PREFIX) else {
-            tracing::error!("activation id entropy unavailable");
-            return ArtifactResult::ArtifactError;
+        // The same build asked for again keeps its activation, so it's the
+        // same action, and the owner's waiting request answers it (WO-027).
+        let earlier = idea.proposal.clone();
+        let same = earlier.as_ref().filter(|earlier| {
+            earlier.idea == idea.reference()
+                && earlier.build_kind == request.kind
+                && earlier.builder == builder
+                && earlier.request_hash
+                    == hatchling_artifact::request_hash(&request, builder, description.trim())
+        });
+        let activation = if let Some(earlier) = same {
+            earlier.activation.clone()
+        } else {
+            let Ok(activation) = crate::approval::random_hex(ACTIVATION_ID_PREFIX) else {
+                tracing::error!("activation id entropy unavailable");
+                return ArtifactResult::ArtifactError;
+            };
+            activation
         };
         let proposal = match idea.propose(activation, &request, builder, description) {
             Ok(proposal) => proposal,
@@ -874,10 +889,13 @@ impl Pipeline<'_> {
             self.now,
         ) {
             Ok(_) => ArtifactResult::ActivationProposed { proposal },
-            Err(refusal) => ArtifactResult::ApprovalRefused {
-                reason: crate::approval_board::refused_as(&refusal),
-                proposal,
-            },
+            Err(refusal) => {
+                // Not asked: the idea keeps what the owner may still be
+                // deciding, so a refused proposal doesn't undo it.
+                idea.proposal = earlier;
+                let reason = crate::approval_board::refused_as(&refusal);
+                self.save_idea(&idea, ArtifactResult::ApprovalRefused { reason, proposal })
+            }
         }
     }
 
