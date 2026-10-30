@@ -1,6 +1,6 @@
 # WO-031: Cell-bound credentials skip the broker
 
-**Status:** IN-PROGRESS
+**Status:** DONE. Every acceptance criterion is met (see Evidence). A cell's `vault:store` is shown with real processes rather than end to end, because no shipped tool stores a secret yet (the owner's call, 2026-10-29).
 **Area:** `crates/hatchling-broker` (the keeper, the spawner, `browser_credentials`, `browser_ops`, the vault ops), `crates/hatchling-agent`, `crates/hatchling-browser` if the browser cell's controller changes, `docs/arch/`
 **Issue:** [#227](https://github.com/undergroundrap/hatchling/issues/227)
 **Trust boundary:** yes
@@ -30,12 +30,12 @@ So a compromised broker can read every sign-in, and every secret a cell fetches 
 
 ## Acceptance criteria
 
-- [ ] With a root broker, a cell's `vault:fetch` and `vault:store` of a canary secret, and the fill of a canary sign-in, succeed. Afterwards, a scan of the broker's memory finds no copy of either canary, and neither appears in any message the broker sent or received. Tested end to end in CI, as WO-017's hosted-model proof scans for the model credential.
-- [ ] The keeper refuses a cell's vault op its grants don't allow. One cell's channel can't fetch or store for another cell. Both are tested with real processes.
-- [ ] The sign-in store's directory and files are readable only by the keeper's user; read as the broker's user, it is refused. The broker opens no sign-in store.
-- [ ] A sign-in is released only into its profile's browser, for its own origin: a fill for another origin or another profile is refused and recorded as denied. Tested.
-- [ ] A hand mutant that has the broker relay the bytes again fails a test.
-- [ ] `docs/arch/trust-boundary.md` and the module map show who holds each cell-bound credential, and who may talk to whom.
+- [x] With a root broker, a cell's `vault:fetch` and `vault:store` of a canary secret, and the fill of a canary sign-in, succeed. Afterwards, a scan of the broker's memory finds no copy of either canary, and neither appears in any message the broker sent or received. Tested end to end in CI, as WO-017's hosted-model proof scans for the model credential.
+- [x] The keeper refuses a cell's vault op its grants don't allow. One cell's channel can't fetch or store for another cell. Both are tested with real processes.
+- [x] The sign-in store's directory and files are readable only by the keeper's user; read as the broker's user, it is refused. The broker opens no sign-in store.
+- [x] A sign-in is released only into its profile's browser, for its own origin: a fill for another origin or another profile is refused and recorded as denied. Tested.
+- [x] A hand mutant that has the broker relay the bytes again fails a test.
+- [x] `docs/arch/trust-boundary.md` and the module map show who holds each cell-bound credential, and who may talk to whom.
 
 ## Gates
 
@@ -43,7 +43,36 @@ See [TEMPLATE.md](TEMPLATE.md#gates).
 
 ## Evidence
 
-Filled in at close.
+Each criterion, in order, and what shows it. Each PR's gate is in its description. The parts: 1a (#230), 1b (#231, #232), 1c (#233), 2a (#238), 2b (#239), 2c-i (#240), 2c-ii (#241); the keeper's grants per run, first (#229).
+
+1. **Met for `vault:fetch` and the fill end to end; `vault:store` with real processes** (the owner's call, 2026-10-29).
+   - **`vault:fetch` (#234):** CI's hosted-model proof, on a root broker dropped to `hatchling-broker`, has a chat run fetch a canary through its cell's vault channel. The model is shown it redacted, and neither a scan of the broker's memory (`memory_holds`) nor its log finds a copy.
+   - **The fill (#243):** CI's browser proof keeps a canary sign-in, new each run, and the agent signs in to a test site with it. The site receives exactly that sign-in. Then neither the broker's memory, nor its log, nor any request the model was sent holds either half. Its first run found the owner's API frames left unwiped in the broker's memory, which held both halves; the same PR wipes them.
+   - **`vault:store`:** no shipped tool sends one. The agent library has `Cell::vault_store`, but nothing the model drives calls it, so no run can store end to end. A store goes on the same vault channel as a fetch, of which the broker holds no end. The broker denies one sent to it (`a_vault_op_sent_to_the_broker_is_denied_when_a_keeper_runs`), and the real keeper stores on a cell's channel (`a_cells_vault_channel_is_answered_under_its_own_grants_alone`). The end-to-end store proof comes with the first tool that stores.
+2. **Met, with real processes (#244).**
+   - `a_cells_vault_channel_is_answered_under_its_own_grants_alone` starts the keeper's binary and hands it two cells' channels, as the spawner does. The cell with grants stores and fetches. The cell without is refused the store, and both fetches, before and after the other's store. The vault log records each op as its own cell's.
+   - A hand mutant that answers a channel under the operator's grants, not the cell's, fails it ("another cell's store").
+   - The broker can't name a cell to the keeper at all: `Request::Cell` is gone (#233).
+3. **Met (#238, #244).**
+   - The sign-in store is handed to `hatchling-keeper` at start (2a).
+   - CI's browser proof, as root, checks after the fill that:
+     - the store's directory admits no group or other;
+     - every file in it is the keeper's;
+     - listing or reading it as `hatchling-broker` is refused;
+     - the running broker has no descriptor open under it.
+4. **Met (#240, #241).**
+   - `a_sign_in_is_filled_on_its_profiles_browser_channel_alone` refuses another profile's sign-in, a fill for another site, and a fill into a browser the keeper holds no channel of. The vault log records each as denied, and a fill that can't be recorded sends nothing.
+   - `a_sign_in_is_refused_off_its_origin_outside_a_profile_and_unless_its_named` covers the broker's side. The controller types a fill only on the origin the keeper sent.
+5. **Met.**
+   - **The fill (#241):** a hand mutant that has the broker send the browser a sign-in's secrets again fails `a_sign_in_is_filled_in_its_profiles_browser_on_its_origin_and_never_shown`.
+   - **Vault ops (#233):**
+     - an agent that sends its vault ops to the broker fails `a_cells_vault_ops_go_to_its_vault_channel`;
+     - a broker that answers one itself fails `a_vault_op_sent_to_the_broker_is_denied_when_a_keeper_runs`.
+   - **End to end:** #243's run before the wipe is the browser proof failing on a real copy in the broker.
+6. **Met.**
+   - `docs/arch/trust-boundary.md`'s vault row (#233, #241) and the module map show that the keeper holds a cell's secrets and the sign-ins.
+   - They show that each cell's vault channel goes from the spawner to the keeper, never through the broker.
+   - They show that the broker names a fill to the browser by its nonce alone.
 
 ## Notes
 
