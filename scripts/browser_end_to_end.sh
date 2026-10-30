@@ -106,8 +106,11 @@ export HATCHLING_CELL_CGROUP=$cg
 # canary sign-in, and kept out of the logs.
 export HATCHLING_E2E_SITE_RECORD=$HATCHLING_HOME/site-sign-ins.jsonl
 export HATCHLING_E2E_MODEL_RECORD=$HATCHLING_HOME/model-requests.jsonl
+# The session cookie the site sets on a sign-in, new each run: given to the
+# site and the check alone, never the broker.
+session=$(python3 -c 'import secrets; print("session-" + secrets.token_urlsafe(24))')
 python3 scripts/sign_in_site.py "$site_address" 443 "$tls/chain.pem" "$tls/site.key" "$HATCHLING_E2E_SITE_RECORD" \
-  2> "$logs/site.log" &
+  "$session" 2> "$logs/site.log" &
 python3 scripts/browsing_model.py 18090 "$HATCHLING_E2E_MODEL_RECORD" 2> "$logs/model.log" &
 hatchling-broker migrate-vault > "$logs/migrate.log" 2>&1
 hatchling-broker > "$logs/broker.log" 2>&1 &
@@ -123,4 +126,4 @@ for _ in $(seq 100); do
   sleep 0.1
 done
 [ -n "$address" ] || { echo "the host printed no address"; cat "$logs/host.log"; exit 1; }
-HATCHLING_E2E_SCREENSHOTS=$logs "$app_python" scripts/browser_end_to_end.py "$address"
+HATCHLING_E2E_SCREENSHOTS=$logs HATCHLING_E2E_SESSION=$session "$app_python" scripts/browser_end_to_end.py "$address"

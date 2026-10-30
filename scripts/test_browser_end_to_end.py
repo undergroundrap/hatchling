@@ -69,6 +69,13 @@ class SiteTests(unittest.TestCase):
         self.assertIn(model.SITE_SIGNED_IN, site.DONE)
         self.assertEqual(model.SITE_SIGNED_IN, site.SIGNED_IN)
 
+    def test_a_sign_in_sets_a_session_the_page_can_show(self):
+        cookie = site.session_cookie('session-canary')
+        self.assertTrue(cookie.startswith('session=session-canary;'), cookie)
+        self.assertIn('Secure', cookie)
+        self.assertNotIn('HttpOnly', cookie, 'the page must be able to show it')
+        self.assertIn(f'"{site.SESSION_SHOWN}" + document.cookie', site.DONE)
+
 
 @unittest.skipUnless(sys.platform.startswith('linux'), 'reads /proc')
 class WhereHeldTests(unittest.TestCase):
