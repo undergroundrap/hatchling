@@ -362,12 +362,12 @@ impl<'a> Ops<'a> {
         let kept = crate::browser_ops::read_jar(&driven).and_then(|jar| {
             let cookies = jar.len();
             let profile = profiles.keep(&sites, now)?;
-            let dropped = profiles.keep_jar(&profile.id, jar, now)?;
+            let dropped = profiles.keep_jar(&profile.id, jar, now, profile.signed_out)?;
             Ok((profile, cookies > dropped))
         });
         match kept {
             Ok((profile, signed_in)) => {
-                board.profiled(session_id, &profile.id);
+                board.profiled(session_id, &profile.id, profile.signed_out);
                 (
                     UiActionResult::SignedInKept {
                         session_id: session_id.to_owned(),
@@ -384,9 +384,10 @@ impl<'a> Ops<'a> {
     }
 
     /// The session of the browser `session_id`, kept as its profile's if
-    /// it runs one (WO-030): the owner hands back what they did on it.
+    /// it runs one and the owner hasn't signed it out since (WO-030): the
+    /// owner hands back what they did on it.
     fn keep_session(&self, session_id: &str) {
-        let Some((profile, driven)) =
+        let Some((profile, signed_out, driven)) =
             crate::browser_board::board(self.config).profile_of(session_id)
         else {
             return;
@@ -394,8 +395,9 @@ impl<'a> Ops<'a> {
         let Some(profiles) = crate::browser_profiles::Profiles::of(self.config, self.key) else {
             return;
         };
-        let kept = crate::browser_ops::read_jar(&driven)
-            .and_then(|jar| profiles.keep_jar(&profile, jar, Timestamp::now().as_second()));
+        let kept = crate::browser_ops::read_jar(&driven).and_then(|jar| {
+            profiles.keep_jar(&profile, jar, Timestamp::now().as_second(), signed_out)
+        });
         if let Err(error) = kept {
             tracing::warn!(%profile, %error, "a signed-in session can't be kept");
         }
@@ -1403,6 +1405,14 @@ mod tests {
             profiles.jar(&profile.profile_id).map(|jar| jar.len()),
             Ok(3)
         );
+        // Signed out while the browser runs: handing it back keeps nothing.
+        assert_eq!(profiles.sign_out(&profile.profile_id), Ok(true));
+        ops.keep_session("browser-keep");
+        assert_eq!(
+            profiles.jar(&profile.profile_id),
+            Ok(Vec::new()),
+            "its session kept again after the sign-out"
+        );
         board.end("browser-keep");
     }
 
@@ -1421,7 +1431,7 @@ mod tests {
         let profiles = crate::browser_profiles::Profiles::of(&config, &key).unwrap();
         let profile = profiles.keep(&[String::from("a.example:443")], 1).unwrap();
         profiles
-            .keep_jar(&profile.id, vec![cookie("a.example", "sid")], 1)
+            .keep_jar(&profile.id, vec![cookie("a.example", "sid")], 1, 0)
             .unwrap();
         // A browser that's gone can't be kept.
         let _gone = board.begin(

@@ -138,8 +138,9 @@ struct Watched {
     title: String,
     /// The site it's visiting, `host:port`.
     visit: Option<String>,
-    /// The signed-in profile it runs (WO-030), if one.
-    profile: Option<String>,
+    /// The signed-in profile it runs (WO-030), if one, and how many times
+    /// the owner had signed it out when the browser took it.
+    profile: Option<(String, u64)>,
     /// The one-time code its page asks for (WO-030), if one.
     code: Option<CodeAsk>,
 }
@@ -404,27 +405,31 @@ impl BrowserBoard {
         }
     }
 
-    /// The browser `session_id` runs the signed-in profile `profile_id`
-    /// (WO-030): its session is kept when the owner hands it back.
-    pub(crate) fn profiled(&self, session_id: &str, profile_id: &str) {
+    /// The browser `session_id` runs the signed-in profile `profile_id`,
+    /// taken when it had been signed out `signed_out` times (WO-030): its
+    /// session is kept when the owner hands it back, until it's signed out
+    /// again.
+    pub(crate) fn profiled(&self, session_id: &str, profile_id: &str, signed_out: u64) {
         if let Some(watched) = self
             .sessions
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .get_mut(session_id)
         {
-            watched.profile = Some(profile_id.to_owned());
+            watched.profile = Some((profile_id.to_owned(), signed_out));
         }
     }
 
-    /// The signed-in profile the browser `session_id` runs, and the
-    /// browser, to read its session from: `None` unless it runs one.
+    /// The signed-in profile the browser `session_id` runs, how many times
+    /// it had been signed out when the browser took it, and the browser,
+    /// to read its session from: `None` unless it runs one.
     #[must_use]
-    pub(crate) fn profile_of(&self, session_id: &str) -> Option<(String, Driven)> {
+    pub(crate) fn profile_of(&self, session_id: &str) -> Option<(String, u64, Driven)> {
         let sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
-        let held = sessions
-            .get(session_id)
-            .and_then(|watched| Some((watched.profile.clone()?, Arc::clone(&watched.browser))));
+        let held = sessions.get(session_id).and_then(|watched| {
+            let (profile, signed_out) = watched.profile.clone()?;
+            Some((profile, signed_out, Arc::clone(&watched.browser)))
+        });
         drop(sessions);
         held
     }
@@ -1346,13 +1351,15 @@ mod tests {
             Err(ControlRefusal::UnknownSession)
         );
         assert!(board.profile_of("browser-s").is_none());
-        board.profiled("browser-s", "profile-1");
+        board.profiled("browser-s", "profile-1", 2);
         assert_eq!(
-            board.profile_of("browser-s").map(|(profile, _)| profile),
-            Some(String::from("profile-1"))
+            board
+                .profile_of("browser-s")
+                .map(|(profile, signed_out, _)| (profile, signed_out)),
+            Some((String::from("profile-1"), 2))
         );
         board.visiting("browser-z", "x.example:443");
-        board.profiled("browser-z", "profile-2");
+        board.profiled("browser-z", "profile-2", 0);
         assert!(board.profile_of("browser-z").is_none(), "no such browser");
         // Driven by the owner, but nowhere yet; then stopped.
         let _other = board.begin("browser-n", Sites::default(), Driven::default());

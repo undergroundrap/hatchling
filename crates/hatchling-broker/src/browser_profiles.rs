@@ -62,6 +62,10 @@ pub struct Profile {
     pub created_at: i64,
     /// When its jar was last kept.
     pub last_used: i64,
+    /// How many times the owner signed it out. A browser that took the
+    /// profile before the latest keeps nothing more for it (WO-030).
+    #[serde(default)]
+    pub signed_out: u64,
 }
 
 impl Profile {
@@ -214,6 +218,7 @@ impl<'k> Profiles<'k> {
                 sites: held,
                 created_at: now,
                 last_used: now,
+                signed_out: 0,
             };
             profiles.push(profile.clone());
             profile
@@ -255,10 +260,21 @@ impl<'k> Profiles<'k> {
     /// many entries as they need. The jar it replaces is gone. How many
     /// cookies weren't kept.
     ///
+    /// `signed_out` is how many times the profile was signed out when the
+    /// browser the jar is read from took it: once the owner signs it out
+    /// again, that browser's session is no longer the profile's.
+    ///
     /// # Errors
     ///
-    /// Why it can't be kept: no such profile, or the store's failure.
-    pub fn keep_jar(&self, id: &str, cookies: Vec<Cookie>, now: i64) -> Result<usize, String> {
+    /// Why it can't be kept: no such profile, the owner signed it out since
+    /// the browser took it, or the store's failure.
+    pub fn keep_jar(
+        &self,
+        id: &str,
+        cookies: Vec<Cookie>,
+        now: i64,
+        signed_out: u64,
+    ) -> Result<usize, String> {
         let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
         let vault = self.vault()?;
         let mut profiles = Self::read_index(&vault)?;
@@ -266,6 +282,11 @@ impl<'k> Profiles<'k> {
             .iter_mut()
             .find(|profile| profile.id == id)
             .ok_or_else(|| format!("no profile {id}"))?;
+        if profile.signed_out != signed_out {
+            return Err(String::from(
+                "the owner signed the profile out since this browser took it",
+            ));
+        }
         let offered = cookies.len();
         let mut kept = only_its_own(profile, cookies);
         kept.truncate(MAX_JAR_COOKIES);
@@ -298,8 +319,9 @@ impl<'k> Profiles<'k> {
         Ok(())
     }
 
-    /// Signs the profile `id` out: its jar is dropped, its sites kept.
-    /// Whether there was such a profile.
+    /// Signs the profile `id` out: its jar is dropped, its sites kept, and
+    /// a browser still running it keeps nothing more for it. Whether there
+    /// was such a profile.
     ///
     /// # Errors
     ///
@@ -307,12 +329,14 @@ impl<'k> Profiles<'k> {
     pub fn sign_out(&self, id: &str) -> Result<bool, String> {
         let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
         let vault = self.vault()?;
-        if !Self::read_index(&vault)?
-            .iter()
-            .any(|profile| profile.id == id)
-        {
+        let mut profiles = Self::read_index(&vault)?;
+        let Some(profile) = profiles.iter_mut().find(|profile| profile.id == id) else {
             return Ok(false);
-        }
+        };
+        // Counted before the jar goes: a browser that took the profile
+        // before can't keep its session again, even if the drop fails.
+        profile.signed_out = profile.signed_out.saturating_add(1);
+        Self::write_index(&vault, &profiles)?;
         Self::drop_jar_from(&vault, id, 0)?;
         Ok(true)
     }
@@ -605,7 +629,10 @@ mod tests {
             })
             .collect();
         jar.push(cookie("evil.example", "planted", "x"));
-        assert_eq!(profiles.keep_jar(&profile.id, jar.clone(), 50).unwrap(), 1);
+        assert_eq!(
+            profiles.keep_jar(&profile.id, jar.clone(), 50, 0).unwrap(),
+            1
+        );
         let read = profiles.jar(&profile.id).unwrap();
         jar.pop();
         assert_eq!(read, jar);
@@ -616,7 +643,9 @@ mod tests {
         // A smaller jar replaces it whole: nothing of the last outlives it.
         let small = vec![cookie("login.a.example", "sid", "2")];
         assert_eq!(
-            profiles.keep_jar(&profile.id, small.clone(), 60).unwrap(),
+            profiles
+                .keep_jar(&profile.id, small.clone(), 60, 0)
+                .unwrap(),
             0
         );
         assert_eq!(profiles.jar(&profile.id).unwrap(), small);
@@ -626,9 +655,9 @@ mod tests {
         let many: Vec<Cookie> = (0..=MAX_JAR_COOKIES)
             .map(|n| cookie("login.a.example", &format!("m{n}"), "1"))
             .collect();
-        assert_eq!(profiles.keep_jar(&profile.id, many, 70).unwrap(), 1);
+        assert_eq!(profiles.keep_jar(&profile.id, many, 70, 0).unwrap(), 1);
         assert_eq!(profiles.jar(&profile.id).unwrap().len(), MAX_JAR_COOKIES);
-        assert!(profiles.keep_jar("profile-none", Vec::new(), 1).is_err());
+        assert!(profiles.keep_jar("profile-none", Vec::new(), 1, 0).is_err());
         assert!(profiles.jar("profile-none").is_err());
     }
 
@@ -662,7 +691,7 @@ mod tests {
         let profiles = Profiles::of(&config, &key).unwrap();
         let profile = profiles.keep(&sites(&["a.example:443"]), 1).unwrap();
         profiles
-            .keep_jar(&profile.id, vec![cookie("a.example", "sid", "1")], 2)
+            .keep_jar(&profile.id, vec![cookie("a.example", "sid", "1")], 2, 0)
             .unwrap();
         assert!(profiles.sign_out(&profile.id).unwrap());
         assert_eq!(profiles.jar(&profile.id).unwrap(), []);
@@ -675,9 +704,26 @@ mod tests {
             "its sites kept"
         );
         assert!(!profiles.sign_out("profile-none").unwrap());
+        // A browser that took the profile before the sign-out keeps nothing
+        // more for it: only one that took it since does.
+        let since = profiles.covering("a.example:443").unwrap().unwrap();
+        assert_eq!(since.signed_out, 1);
+        let stale = profiles.keep_jar(&profile.id, vec![cookie("a.example", "sid", "1")], 3, 0);
+        assert!(stale.unwrap_err().contains("signed the profile out"));
+        assert_eq!(profiles.jar(&profile.id).unwrap(), [], "still signed out");
         profiles
-            .keep_jar(&profile.id, vec![cookie("a.example", "sid", "1")], 3)
+            .keep_jar(&profile.id, vec![cookie("a.example", "sid", "1")], 3, 1)
             .unwrap();
+        assert!(profiles.sign_out(&profile.id).unwrap());
+        assert_eq!(
+            profiles
+                .covering("a.example:443")
+                .unwrap()
+                .unwrap()
+                .signed_out,
+            2,
+            "each sign-out counts"
+        );
         assert!(profiles.delete(&profile.id).unwrap());
         assert!(!profiles.delete(&profile.id).unwrap());
         assert_eq!(profiles.list().unwrap(), []);
@@ -699,9 +745,23 @@ mod tests {
             sites: sites(&["a.example:443"]),
             created_at: 1,
             last_used: 2,
+            signed_out: 3,
         }];
         Profiles::write_index(&vault, &one).unwrap();
         assert_eq!(Profiles::read_index(&vault).unwrap(), one);
+        // An index from before sign-outs were counted reads as never
+        // signed out.
+        let older =
+            br#"[{"id":"profile-1","sites":["a.example:443"],"created_at":1,"last_used":2}]"#;
+        vault
+            .store(
+                &Profiles::entry(INDEX).unwrap(),
+                &Secret::new(older.to_vec()).unwrap(),
+            )
+            .unwrap();
+        let older = Profiles::read_index(&vault).unwrap();
+        let counts: Vec<u64> = older.iter().map(|profile| profile.signed_out).collect();
+        assert_eq!(counts, [0], "an older index reads as never signed out");
         assert_eq!(
             Profiles::jar_entry("profile-1", 3).unwrap().as_str(),
             "jar-profile-1-3"
@@ -768,6 +828,7 @@ mod tests {
                 &profile.id,
                 vec![cookie("a.example", "sid", "1")],
                 1_790_000_060,
+                0,
             )
             .unwrap();
         let listed = handle_profile_op(&config, &key, &ProfileOp::List);
@@ -835,6 +896,7 @@ mod tests {
             sites: sites(&["a.example:443"]),
             created_at: 1,
             last_used: 1,
+            signed_out: 0,
         };
         let kept = only_its_own(
             &profile,
