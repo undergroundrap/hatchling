@@ -6,7 +6,10 @@ waited while the owner drove, and Settings lists the site kept signed in.
 Then the owner keeps a canary sign-in for the site, and asks the agent to
 sign in with it (WO-031). The site gets the sign-in, the vault keeper
 records its fill, and neither the broker's memory, its log, nor any request
-the model was sent holds the sign-in's username or password.
+the model was sent holds the sign-in's username or password. The site
+answers the sign-in with a session cookie, and its page shows it: the model
+is shown it hidden, and neither the broker's log, a request the model was
+sent, nor the app holds it (WO-030).
 
 Usage: python3 scripts/browser_end_to_end.py <address>
 
@@ -32,6 +35,10 @@ import sys
 from browsing_model import (ANSWER_END, BROWSER_URL, NOT_SIGNED_IN, SAW_DRIVING, SIGN_IN_TASK,
                             SIGNED_IN, WAIT_SECS)
 from hosted_model_support import memory_holds
+from sign_in_site import SESSION_SHOWN
+
+# What the page shows of its session cookie once the broker has hidden it.
+SESSION_HIDDEN = f"{SESSION_SHOWN}session=[hidden]".encode()
 
 TASK = "Use the browser, then tell me what happened."
 # A canary sign-in the owner keeps for it, new each run: nothing a page or
@@ -173,6 +180,9 @@ def sign_in(page):
     screenshot(page, "browser-7-signed-in.png")
     if SIGNED_IN not in said:
         raise ValueError("The agent didn't sign in: " + said)
+    shown = page.evaluate("() => document.documentElement.outerHTML")
+    if environment("HATCHLING_E2E_SESSION") in shown:
+        raise ValueError("The app shows the site's session cookie")
 
 
 def environment(name):
@@ -250,6 +260,13 @@ def filled(kept_held):
     model_requests = Path(environment("HATCHLING_E2E_MODEL_RECORD")).read_bytes()
     if any(canary in model_requests for canary in CANARIES):
         raise ValueError("A request the model was sent held the canary sign-in")
+    session = environment("HATCHLING_E2E_SESSION").encode()
+    if session in broker_log:
+        raise ValueError("The broker logged the site's session cookie")
+    if session in model_requests:
+        raise ValueError("A request the model was sent held the site's session cookie")
+    if SESSION_HIDDEN not in model_requests:
+        raise ValueError("The model was never shown the page's session cookie hidden")
     print(f"browser end to end: the canary sign-in was filled; right after it was kept, "
           f"the broker's memory held username, password: {kept_held}")
 

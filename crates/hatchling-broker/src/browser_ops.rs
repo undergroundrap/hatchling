@@ -2008,6 +2008,78 @@ mod tests {
     }
 
     #[test]
+    fn a_browser_moving_to_another_profile_is_another_browser_with_that_profiles_session_alone() {
+        let (config, _scratch, keys, first) = profiled(
+            "profile-switch",
+            &["a.example:443"],
+            vec![cookie("a.example", "sid")],
+        );
+        let profiles = crate::browser_profiles::Profiles::of(&config, &keys).unwrap();
+        let second = profiles.keep(&[String::from("b.example:443")], 2).unwrap();
+        profiles
+            .keep_jar(&second.id, vec![cookie("b.example", "sid")], 2, 0)
+            .unwrap();
+        let fake = Fake::default();
+        let (mut web, mut browser) = session("t", &fake);
+        let answer = handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &open("https://a.example/"),
+        );
+        assert_eq!(answer, page("https://a.example/"));
+        fake.jar.lock().unwrap().push(cookie("a.example", "fresh"));
+        // The other profile's site: no owner to ask, and not this browser.
+        let answer = handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &open("https://b.example/"),
+        );
+        assert_eq!(answer, page("https://b.example/"), "not put to the owner");
+        assert_eq!(browser.profile.as_deref(), Some(second.id.as_str()));
+        assert!(
+            browser.sites().holds("b.example:443") && !browser.sites().holds("a.example:443"),
+            "the first profile's sites held by the second's browser"
+        );
+        assert_eq!(
+            kept_jar(&config, &keys, &first.id),
+            [cookie("a.example", "sid"), cookie("a.example", "fresh")],
+            "the first kept as it was left"
+        );
+        assert_eq!(
+            kept_jar(&config, &keys, &second.id),
+            [cookie("b.example", "sid")],
+            "the second kept with its own session alone"
+        );
+        let log = fake.log.lock().unwrap();
+        assert_eq!((log.started.len(), log.finished), (2, 1), "a browser each");
+        assert_eq!(log.started_for, [Some(first.id), Some(second.id)]);
+        let restored: Vec<Vec<Cookie>> = log
+            .commands
+            .iter()
+            .filter_map(|command| {
+                if let BrowserCommand::SetCookies { cookies } = command {
+                    Some(cookies.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        drop(log);
+        assert_eq!(
+            restored,
+            [
+                vec![cookie("a.example", "sid")],
+                vec![cookie("b.example", "sid")]
+            ],
+            "each browser given its own profile's session alone"
+        );
+    }
+
+    #[test]
     fn a_sign_in_the_owner_kept_is_its_browsers_profile_from_then_on() {
         let config = web_config("profile-adopt");
         let keys = MasterKey::generate().unwrap();
@@ -2445,6 +2517,12 @@ mod tests {
                 "jar-secret-value page-set-secret",
             );
             op(&BrowserOp::Read);
+            // The owner is told of an action by the field's name, which shows
+            // the cookie the page set since its session was last kept.
+            op(&BrowserOp::Act {
+                element: 2,
+                action: PageAction::Click,
+            });
             op(&sign_in_op(Some(1), None));
             op(&BrowserOp::Code { element: 3 });
             let id = browser_id(&bus);
@@ -2467,6 +2545,10 @@ mod tests {
             // After it, it can show everything it was given.
             showing(&fake, "https://a.example/home", &secrets.join(" "));
             op(&BrowserOp::Read);
+            op(&BrowserOp::Act {
+                element: 2,
+                action: PageAction::Click,
+            });
             op(&BrowserOp::Close);
         });
         assert!(
@@ -2488,6 +2570,44 @@ mod tests {
             told.iter().any(|answer| answer.contains("[hidden]")),
             "what the page showed was hidden, not dropped"
         );
+        sent_none(
+            &bus,
+            &secrets,
+            &[
+                "Filled a sign-in",
+                "Asked the owner for the code",
+                "Clicked password",
+            ],
+        );
+    }
+
+    /// The owner's action log on `bus` tells each of `steps`, and nothing
+    /// the app was sent holds any of `secrets`.
+    fn sent_none(bus: &crate::api_stream::Bus, secrets: &[&str], steps: &[&str]) {
+        let events = bus.wait_after(None, Duration::ZERO);
+        let narrated: Vec<&str> = events
+            .iter()
+            .filter_map(|event| {
+                if let hatchling_core::ui::UiEventBody::BrowserAction(action) = &event.body {
+                    Some(action.narration.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for step in steps {
+            assert!(
+                narrated.iter().any(|narration| narration.starts_with(step)),
+                "not in the action log: {step}"
+            );
+        }
+        let sent: Vec<String> = events.iter().map(|event| format!("{event:?}")).collect();
+        for secret in secrets {
+            assert!(
+                sent.iter().all(|event| !event.contains(secret)),
+                "the app was sent a secret"
+            );
+        }
     }
 
     #[test]

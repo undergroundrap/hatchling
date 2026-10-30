@@ -36,7 +36,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use hatchling_broker::CellIds;
 use hatchling_broker::browser_cell::BrowserLauncher;
@@ -57,6 +57,10 @@ const DESTINATION: &str = "hatchling.test:443";
 
 /// A site the session never holds.
 const UNGRANTED: &str = "elsewhere.test";
+
+/// Where the trusted site's redirect leads: a site nothing else names, so
+/// its refusal is the redirect's alone.
+const REDIRECTED: &str = "redirected.test";
 
 /// Whether `name`'s requirement makes a missing prerequisite a failure.
 fn required(name: &str) -> bool {
@@ -335,8 +339,8 @@ fn serve(config: &Arc<rustls::ServerConfig>, mut tcp: TcpStream, requests: &Mute
             "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{PROBE}",
             PROBE.len()
         ),
-        "/away" => String::from(
-            "HTTP/1.1 302 Found\r\nlocation: https://elsewhere.test/landed\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+        "/away" => format!(
+            "HTTP/1.1 302 Found\r\nlocation: https://{REDIRECTED}/landed\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
         ),
         "/signed-in" => format!(
             "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\nset-cookie: session=from-the-site; Path=/; Secure; Max-Age=3600\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{SIGNED_IN}",
@@ -689,6 +693,14 @@ fn a_page_in_a_real_browser_reaches_only_the_sites_its_session_holds() {
         refused.contains(&String::from("elsewhere.test:443")),
         "{refused:?}"
     );
+    // The redirect's site, which only the redirect names: refused by the
+    // proxy, never looked up (above), and never shown.
+    assert!(
+        refused.contains(&format!("{REDIRECTED}:443")),
+        "the redirect wasn't refused: {refused:?}"
+    );
+    let landed = matches!(&away, BrowserReply::Page { snapshot } if snapshot.url.contains(REDIRECTED) && !snapshot.text.is_empty());
+    assert!(!landed, "the redirect landed: {away:?}");
     assert!(
         !refused
             .iter()
@@ -808,4 +820,142 @@ fn a_kept_session_is_its_cookies_alone_and_a_service_worker_dies_with_its_browse
         found.contains("session=from-the-site"),
         "the session does: {found}"
     );
+}
+
+/// What of a browser's profile is on this host under `dir`, written since
+/// `since`: a file or directory a profile is made of, by its name, or a file
+/// holding the signed-in page's service worker.
+fn profile_files(dir: &Path, since: SystemTime) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return found;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let (path, name) = (entry.path(), entry.file_name());
+        let fresh = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .is_ok_and(|modified| modified >= since);
+        let named = ["Cookies", "Preferences", "Local State", "Service Worker"]
+            .iter()
+            .any(|own| name == *own);
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_dir() {
+            if fresh && named {
+                found.push(path.clone());
+            }
+            found.extend(profile_files(&path, since));
+        } else if kind.is_file() && fresh {
+            let worker = || {
+                std::fs::read(&path).is_ok_and(|bytes| {
+                    bytes
+                        .windows(WORKER.len())
+                        .any(|window| window == WORKER.as_bytes())
+                })
+            };
+            if named || worker() {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn a_browser_cell_killed_mid_session_leaves_no_profile_on_the_host() {
+    let Some((browser, controller, group)) = prerequisites() else {
+        return;
+    };
+    let since = SystemTime::now();
+    let (certificate, key) = self_signed();
+    let scratch =
+        std::env::temp_dir().join(format!("hatchling-browser-killed-{}", std::process::id()));
+    std::fs::create_dir_all(&scratch).unwrap();
+    let ca = pem(&scratch, &certificate);
+    let stop = Arc::new(AtomicBool::new(false));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let (addr, serving) = trusted_site(certificate, key, &stop, &requests);
+    let route = Route::with(
+        move |destination| {
+            if destination == DESTINATION {
+                Ok(vec![addr])
+            } else {
+                Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+            }
+        },
+        |_| false,
+    );
+    // A group of its own, so the one cell in it is this test's.
+    let mut parent = hatchling_sys::cgroup::CellCgroup::create(
+        &group,
+        hatchling_sys::cgroup::CgroupLimits::default(),
+    )
+    .unwrap();
+    let launcher = BrowserLauncher::new(
+        common::spawner(),
+        settings_trusting(&browser, &controller, Some(&ca)),
+        CellIds::default(),
+        parent.path().to_path_buf(),
+        route,
+        Duration::from_secs(300),
+    );
+    let sites = Sites::default();
+    sites.grant(DESTINATION);
+
+    // Signed in: the site's cookie, and a service worker, in its profile.
+    let mut cell = launcher.start("browser-killed", sites, None).unwrap();
+    cell.command(&BrowserCommand::Open {
+        url: format!("https://{HOST}/signed-in"),
+    })
+    .unwrap();
+    let registered = waited_for(&mut cell, "workers:");
+    assert!(registered.contains("workers: 1"), "{registered}");
+    let jar = cell.command(&BrowserCommand::Cookies { from: 0 }).unwrap();
+    let signed_in = matches!(&jar, BrowserReply::Cookies { cookies, .. }
+        if cookies.iter().any(|cookie| cookie.value == "from-the-site"));
+    assert!(signed_in, "the browser holds no session");
+    let temp = std::env::temp_dir();
+    assert_eq!(
+        profile_files(&temp, since),
+        Vec::<PathBuf>::new(),
+        "its profile is on the host while it runs"
+    );
+
+    // Killed mid-session, as the kernel kills a cell: every process in its
+    // group at once, with no word to the browser.
+    let leaves: Vec<PathBuf> = std::fs::read_dir(parent.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .map(|entry| entry.path())
+        .collect();
+    assert_eq!(leaves.len(), 1, "one cell's group: {leaves:?}");
+    let leaf = leaves.first().unwrap().clone();
+    std::fs::write(leaf.join("cgroup.kill"), "1").unwrap();
+    let mut emptied = false;
+    for _ in 0..100 {
+        emptied = std::fs::read_to_string(leaf.join("cgroup.procs"))
+            .is_ok_and(|procs| procs.trim().is_empty());
+        if emptied {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(emptied, "the cell outlived its kill");
+    let after = cell.command(&BrowserCommand::Snapshot);
+    assert!(after.is_err(), "a killed cell answered: {after:?}");
+    // The broker lets it go, as a session whose browser broke does.
+    drop(cell);
+    stop.store(true, Ordering::SeqCst);
+    serving.join().unwrap();
+    std::fs::remove_dir_all(&scratch).unwrap();
+    assert!(!leaf.exists(), "the cell's group outlived it");
+    assert_eq!(
+        profile_files(&temp, since),
+        Vec::<PathBuf>::new(),
+        "its profile is on the host after the kill"
+    );
+    parent.finish().unwrap();
 }
