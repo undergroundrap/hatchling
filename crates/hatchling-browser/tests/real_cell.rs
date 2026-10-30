@@ -721,13 +721,13 @@ fn kept_sign_in_follows_the_page(connection: &UnixStream, vault: &UnixStream) {
         "the subframe's fields aren't listed: {:?}",
         framed.elements
     );
-    for password in 0..4 {
-        let reply = name(&format!("http://{OTHER}"), None, password);
+    for field in 0..4 {
+        let reply = name(&format!("http://{OTHER}"), None, field);
         assert_eq!(reply, other_origin, "the framed origin's sign-in, filled");
-        let reply = name(&here, None, password);
+        let reply = name(&here, None, field);
         assert!(
             matches!(reply, BrowserReply::Failed { .. }),
-            "element {password} of a framed form took a fill: {reply:?}"
+            "element {field} of a framed form took a fill: {reply:?}"
         );
     }
 }
