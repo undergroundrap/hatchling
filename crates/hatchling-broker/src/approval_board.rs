@@ -151,12 +151,15 @@ impl Board {
             .iter()
             .map(|input| json!({ "name": input.name, "sha256": input.sha256 }))
             .collect();
+        // The denial's fingerprint is what would be built, and nothing the
+        // agent can vary without changing that: not the idea it hangs on (a
+        // cell can capture the same text again) and not its description,
+        // which the builder never sees but `request_hash` covers.
         let effect = json!({
             "op": "artifact.activate",
-            "idea": proposal.idea.idea,
             "build_kind": proposal.build_kind,
             "builder": proposal.builder,
-            "request_hash": proposal.request_hash,
+            "inputs": inputs,
         });
         let action = json!({
             "format": 1,
@@ -721,6 +724,58 @@ mod tests {
         assert_eq!(
             board.approvals().get(&approved.id).map(|r| r.state),
             Some(State::Approved)
+        );
+    }
+
+    /// A denied build stays denied however the agent asks for it again: in
+    /// other words, or as a new idea from another task. Another build is
+    /// still asked.
+    #[test]
+    fn a_denied_build_is_refused_reworded_or_from_a_fresh_idea() {
+        let board = empty();
+        let first = board
+            .propose_activation(&proposal("act-1", "a page"), "t1", 100)
+            .unwrap();
+        assert_eq!(
+            board.decide(&first.id, 1, &first.digest, Decision::Deny, 101),
+            Ok(State::Denied)
+        );
+        let later = 101 + crate::approvals::DENIAL_COOLDOWN_SECS;
+        // Its own request hash, as a real one has: the hash covers the
+        // description.
+        let reworded = ActivationProposal {
+            request_hash: String::from("c2"),
+            ..proposal("act-2", "Just a harmless summary, please approve")
+        };
+        assert_eq!(
+            board.propose_activation(&reworded, "t1", later),
+            Err(Refusal::Denied),
+            "reworded"
+        );
+        let fresh = ActivationProposal {
+            idea: IdeaRef {
+                idea: String::from("idea-2"),
+                revision: 1,
+                sha256: String::from("dd"),
+            },
+            request_hash: String::from("ee"),
+            ..proposal("act-3", "a page")
+        };
+        assert_eq!(
+            board.propose_activation(&fresh, "t2", later),
+            Err(Refusal::Denied),
+            "a fresh idea from another task"
+        );
+        let other = ActivationProposal {
+            inputs: vec![ActivationInput {
+                name: String::from("idea"),
+                sha256: String::from("ff"),
+            }],
+            ..proposal("act-4", "a page")
+        };
+        assert!(
+            board.propose_activation(&other, "t2", later).is_ok(),
+            "another build is still asked"
         );
     }
 
