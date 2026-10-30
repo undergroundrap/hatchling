@@ -44,6 +44,7 @@ use hatchling_core::ui::{
     ActionRefusal, ApiOutcome, ApiRequest, UiActionResult, UiRequest, UiResponse, negotiate,
 };
 use hatchling_vault::OpensStores;
+use zeroize::Zeroizing;
 
 use crate::api_auth::{
     ApiConfig, Caller, PeerProvider, Provider, TokenProvider, admit, mint_ui_token_for,
@@ -306,7 +307,7 @@ impl Api {
             .set_write_timeout(Some(API_WRITE_TIMEOUT))
             .map_err(io)?;
         let writer = Mutex::new(stream.try_clone().map_err(io)?);
-        let Some(first) = read_frame_or_eof(stream).map_err(session_error)? else {
+        let Some(first) = next_frame(stream)? else {
             return Ok(());
         };
         let request = decode(&first)?;
@@ -370,7 +371,7 @@ fn requests(
 ) -> Result<(), Error> {
     let mut replies = Replies::default();
     let mut subscribed = false;
-    while let Some(frame) = read_frame_or_eof(stream).map_err(session_error)? {
+    while let Some(frame) = next_frame(stream)? {
         match decode(&frame)? {
             UiRequest::Hello { .. } => {
                 audit.record(Some(caller), ApiRequest::Hello, ApiOutcome::Refused);
@@ -410,6 +411,17 @@ fn follow(bus: &Bus, writer: &Mutex<UnixStream>, ended: &AtomicBool, after: Opti
             }
         }
     }
+}
+
+/// The caller's next frame, or `None` at a clean close: wiped once it's
+/// dropped. A frame can carry what the owner typed for the broker to pass
+/// on and never keep, a sign-in's username and password or a one-time code
+/// (WO-030, WO-031): unwiped, its bytes would stay in the broker's freed
+/// memory, for anything that reads it later to find.
+fn next_frame(stream: &UnixStream) -> Result<Option<Zeroizing<Vec<u8>>>, Error> {
+    read_frame_or_eof(stream)
+        .map(|frame| frame.map(Zeroizing::new))
+        .map_err(session_error)
 }
 
 /// One request frame.
@@ -1284,6 +1296,20 @@ mod tests {
             "start-up must stop at the lock or the vault"
         );
     }
+
+    #[test]
+    fn the_callers_frames_are_read_whole_and_a_clean_close_ends_them() {
+        let (client, server) = UnixStream::pair().unwrap();
+        write_frame(&client, br#"{"type":"subscribe"}"#).unwrap();
+        drop(client);
+        let frame = next_frame(&server).unwrap();
+        assert_eq!(
+            frame.as_deref().map(Vec::as_slice),
+            Some(&br#"{"type":"subscribe"}"#[..])
+        );
+        assert!(next_frame(&server).unwrap().is_none(), "a clean close");
+    }
+
     #[test]
     fn a_first_frame_cannot_forge_a_line_in_the_brokers_log() {
         let dir = scratch("forge");

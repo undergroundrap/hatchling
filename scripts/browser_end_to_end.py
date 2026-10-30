@@ -180,6 +180,37 @@ def environment(name):
     return value
 
 
+# Runs of hex or base64 long enough to be a key or a token: masked in what a
+# failure shows of the broker's memory.
+SECRET_LIKE = re.compile(rb"[A-Za-z0-9+/=_-]{16,}")
+
+
+def where_held(pid, canary, limit=4):
+    """Where the process `pid` holds `canary`, for a failure to show: each
+    copy's mapping, and the 96 bytes before it, with the canaries, anything
+    shaped like a key or a token, and every byte that isn't printable
+    masked."""
+    found = []
+    with open(f"/proc/{pid}/maps", encoding="utf-8") as maps, open(f"/proc/{pid}/mem", "rb", 0) as mem:
+        for line in maps:
+            fields = line.split()
+            start, end = (int(bound, 16) for bound in fields[0].split("-"))
+            if not fields[1].startswith("r") or fields[-1] in ("[vvar]", "[vvar_vclock]", "[vsyscall]"):
+                continue
+            mem.seek(start)
+            data = mem.read(end - start)
+            at = data.find(canary)
+            while at != -1 and len(found) < limit:
+                before = data[max(0, at - 96):at]
+                for each in CANARIES:
+                    before = before.replace(each, b"<canary>")
+                before = SECRET_LIKE.sub(b"<masked>", before)
+                shown = "".join(chr(byte) if 32 <= byte < 127 else "." for byte in before)
+                found.append((fields[5] if len(fields) > 5 else "[anonymous]", shown))
+                at = data.find(canary, at + 1)
+    return found
+
+
 def broker_holds():
     """Which of the canary's secrets the broker's memory holds, after a scan
     that read some of it."""
@@ -207,8 +238,10 @@ def filled(kept_held):
         raise ValueError("The vault keeper recorded no browser fill")
     held = broker_holds()
     if any(held):
+        pid = int(environment("HATCHLING_E2E_BROKER_PID"))
         raise ValueError(f"The broker's memory held the canary sign-in after its fill "
-                         f"(username, password: {held}; right after it was kept: {kept_held})")
+                         f"(username, password: {held}; right after it was kept: {kept_held}); "
+                         f"where: {[where_held(pid, canary) for canary in CANARIES]}")
     broker_log = Path(environment("HATCHLING_E2E_BROKER_LOG")).read_bytes()
     if any(canary in broker_log for canary in CANARIES):
         raise ValueError("The broker logged the canary sign-in")

@@ -1,4 +1,6 @@
 import json
+import os
+import sys
 import unittest
 
 import browsing_model as model
@@ -66,6 +68,22 @@ class SiteTests(unittest.TestCase):
     def test_the_model_looks_for_what_the_site_says(self):
         self.assertIn(model.SITE_SIGNED_IN, site.DONE)
         self.assertEqual(model.SITE_SIGNED_IN, site.SIGNED_IN)
+
+
+@unittest.skipUnless(sys.platform.startswith('linux'), 'reads /proc')
+class WhereHeldTests(unittest.TestCase):
+    def test_a_copy_is_placed_with_what_is_before_it_masked(self):
+        import browser_end_to_end as proof
+        username, password = proof.CANARIES
+        token = b'0123456789abcdef0123456789abcdef'
+        held = bytearray(b'"token":"' + token + b'","username":"' + username + b'","password":"' + password + b'"')
+        found = proof.where_held(os.getpid(), password)
+        self.assertTrue(found, 'the copy planted here')
+        shown = [before for _, before in found if before.endswith('"password":"')]
+        self.assertTrue(shown, found)
+        self.assertIn('"username":"<canary>"', shown[0])
+        self.assertNotIn(token.decode(), ''.join(before for _, before in found))
+        del held
 
 
 if __name__ == '__main__':
