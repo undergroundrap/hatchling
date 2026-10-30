@@ -1892,9 +1892,9 @@ mod tests {
         let told = format!("{read:?}");
         assert!(
             !told.contains("sid-value") && !told.contains("set-after-sign-out"),
-            "a cookie value shown after the sign-out: {told}"
+            "a cookie value shown after the sign-out"
         );
-        assert!(told.contains("[hidden]"), "{told}");
+        assert!(told.contains("[hidden]"), "hidden, not dropped");
         assert_eq!(
             kept_jar(&config, &keys, &profile.id),
             [],
