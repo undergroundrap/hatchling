@@ -302,6 +302,10 @@ pub struct BrowserSession {
     stopped: bool,
     /// The signed-in profile the running browser holds (WO-030), if one.
     profile: Option<String>,
+    /// How many times the owner had signed that profile out when the
+    /// browser took it: once they sign it out again, its session is no
+    /// longer kept.
+    signed_out: u64,
     /// The running browser's signed-in session's cookie values (WO-030):
     /// hidden from every snapshot the agent is given. What's filled into
     /// the browser, its controller hides itself (WO-031): the broker keeps
@@ -358,6 +362,7 @@ impl BrowserSession {
             shown: None,
             stopped: false,
             profile: None,
+            signed_out: 0,
             hidden: Vec::new(),
             code_wait: CODE_WAIT,
             fills: keeper_fills(),
@@ -365,7 +370,9 @@ impl BrowserSession {
     }
 
     /// Keeps the running browser's session as its profile's, if it runs
-    /// one (WO-030): its cookies read out, and sealed, only its sites'.
+    /// one (WO-030): its cookies read out, and sealed, only its sites',
+    /// unless the owner signed the profile out since the browser took it.
+    /// Kept or not, every cookie value read is hidden from the agent.
     fn keep_jar(&mut self, config: &Config, keys: &dyn OpensStores) {
         let (Some(profile), Some(driven)) = (self.profile.clone(), self.browser.clone()) else {
             return;
@@ -373,23 +380,21 @@ impl BrowserSession {
         let Some(profiles) = crate::browser_profiles::Profiles::of(config, keys) else {
             return;
         };
-        let kept = read_jar(&driven).and_then(|jar| {
-            let values: Vec<String> = jar.iter().map(|cookie| cookie.value.clone()).collect();
-            profiles
-                .keep_jar(
-                    &profile,
-                    jar,
-                    hatchling_scheduler::Timestamp::now().as_second(),
-                )
-                .map(|dropped| (dropped, values))
-        });
-        match kept {
-            Ok((dropped, values)) => {
-                for value in &values {
-                    self.hide(value);
-                }
-                tracing::info!(%profile, dropped, "a signed-in session is kept");
+        let jar = match read_jar(&driven) {
+            Ok(jar) => jar,
+            Err(error) => {
+                tracing::warn!(%profile, %error, "a signed-in session can't be read");
+                return;
             }
+        };
+        // Hidden before it's kept: a session the store refuses, or the
+        // owner signed out, is still the page's to show.
+        for cookie in &jar {
+            self.hide(&cookie.value);
+        }
+        let now = hatchling_scheduler::Timestamp::now().as_second();
+        match profiles.keep_jar(&profile, jar, now, self.signed_out) {
+            Ok(dropped) => tracing::info!(%profile, dropped, "a signed-in session is kept"),
             Err(error) => tracing::warn!(%profile, %error, "a signed-in session can't be kept"),
         }
     }
@@ -489,7 +494,10 @@ impl BrowserSession {
             return;
         }
         if let (Some(board), Some(shown)) = (self.board.as_ref(), self.shown.as_ref()) {
-            self.profile = board.profile_of(&shown.id).map(|(profile, _)| profile);
+            if let Some((profile, signed_out, _)) = board.profile_of(&shown.id) {
+                self.profile = Some(profile);
+                self.signed_out = signed_out;
+            }
         }
     }
 
@@ -503,8 +511,9 @@ impl BrowserSession {
         profile: &crate::browser_profiles::Profile,
     ) {
         self.profile = Some(profile.id.clone());
+        self.signed_out = profile.signed_out;
         if let (Some(board), Some(shown)) = (self.board.as_ref(), self.shown.as_ref()) {
-            board.profiled(&shown.id, &profile.id);
+            board.profiled(&shown.id, &profile.id, profile.signed_out);
         }
         let Some(profiles) = crate::browser_profiles::Profiles::of(config, keys) else {
             return;
@@ -1760,7 +1769,7 @@ mod tests {
         let profiles = crate::browser_profiles::Profiles::of(&config, &keys).unwrap();
         let sites: Vec<String> = sites.iter().map(|site| (*site).to_owned()).collect();
         let profile = profiles.keep(&sites, 1).unwrap();
-        profiles.keep_jar(&profile.id, jar, 1).unwrap();
+        profiles.keep_jar(&profile.id, jar, 1, 0).unwrap();
         (config, scratch, keys, profile)
     }
 
@@ -1849,6 +1858,84 @@ mod tests {
             kept_jar(&config, &keys, &profile.id),
             [cookie("a.example", "sid"), cookie("idp.example", "token")],
             "kept on close: only its own sites' cookies"
+        );
+    }
+
+    #[test]
+    fn a_profile_signed_out_while_its_browser_runs_stays_signed_out_and_its_cookies_hidden() {
+        let (config, _scratch, keys, profile) = profiled(
+            "profile-signed-out",
+            &["a.example:443"],
+            vec![cookie("a.example", "sid")],
+        );
+        let fake = Fake::default();
+        let (mut web, mut browser) = session("t", &fake);
+        let first = open("https://a.example/");
+        handle_browser_op(&config, &keys, &mut web, &mut browser, &first);
+        assert_eq!(browser.profile.as_deref(), Some(profile.id.as_str()));
+        // The owner signs it out while its browser runs.
+        let out = hatchling_core::ui::ProfileOp::SignOut {
+            profile_id: profile.id.clone(),
+        };
+        assert_eq!(
+            crate::browser_profiles::handle_profile_op(&config, &keys, &out),
+            hatchling_core::ui::ProfileResult::SignedOut
+        );
+        // The page still has its session, sets a cookie of its own, and
+        // shows them.
+        fake.jar.lock().unwrap().push(Cookie {
+            value: String::from("set-after-sign-out"),
+            ..cookie("a.example", "late")
+        });
+        showing(&fake, "https://a.example/", "sid-value set-after-sign-out");
+        let read = handle_browser_op(&config, &keys, &mut web, &mut browser, &BrowserOp::Read);
+        let told = format!("{read:?}");
+        assert!(
+            !told.contains("sid-value") && !told.contains("set-after-sign-out"),
+            "a cookie value shown after the sign-out"
+        );
+        assert!(told.contains("[hidden]"), "hidden, not dropped");
+        assert_eq!(
+            kept_jar(&config, &keys, &profile.id),
+            [],
+            "its session kept again after an op"
+        );
+        assert_eq!(
+            handle_browser_op(&config, &keys, &mut web, &mut browser, &BrowserOp::Close),
+            BrowserResult::Closed
+        );
+        assert_eq!(
+            kept_jar(&config, &keys, &profile.id),
+            [],
+            "its session kept again on close"
+        );
+        // The next browser for it starts signed out, and keeps a new
+        // sign-in.
+        let next = Fake::default();
+        let (mut web, mut browser) = session("t", &next);
+        handle_browser_op(&config, &keys, &mut web, &mut browser, &first);
+        assert!(
+            next.log
+                .lock()
+                .unwrap()
+                .commands
+                .iter()
+                .all(|command| !matches!(
+                    command,
+                    BrowserCommand::SetCookies { cookies } if !cookies.is_empty()
+                )),
+            "a session restored after the sign-out"
+        );
+        next.jar.lock().unwrap().push(cookie("a.example", "again"));
+        let act = BrowserOp::Act {
+            element: 1,
+            action: PageAction::Click,
+        };
+        handle_browser_op(&config, &keys, &mut web, &mut browser, &act);
+        assert_eq!(
+            kept_jar(&config, &keys, &profile.id),
+            [cookie("a.example", "again")],
+            "a sign-in after the sign-out is kept"
         );
     }
 
@@ -1953,14 +2040,15 @@ mod tests {
             .as_ref()
             .map(|shown| shown.id.clone())
             .unwrap();
-        board.profiled(&id, "profile-1");
+        board.profiled(&id, "profile-1", 4);
         browser.adopt_profile();
         assert_eq!(browser.profile.as_deref(), Some("profile-1"));
-        board.profiled(&id, "profile-2");
+        assert_eq!(browser.signed_out, 4, "as it was taken");
+        board.profiled(&id, "profile-2", 0);
         browser.adopt_profile();
         assert_eq!(
-            browser.profile.as_deref(),
-            Some("profile-1"),
+            (browser.profile.as_deref(), browser.signed_out),
+            (Some("profile-1"), 4),
             "adopted once"
         );
     }
@@ -2322,7 +2410,7 @@ mod tests {
         };
         crate::browser_profiles::Profiles::of(&config, &keys)
             .unwrap()
-            .keep_jar(&profile.id, vec![restored], 1)
+            .keep_jar(&profile.id, vec![restored], 1, 0)
             .unwrap();
         let fake = Fake::default();
         let ((mut web, mut browser), board, bus) = watched(&fake);
