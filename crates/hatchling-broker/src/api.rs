@@ -1110,7 +1110,9 @@ mod tests {
         let token = std::fs::read_to_string(&token_path).unwrap();
         std::thread::spawn(move || api.serve(config, key, skills, None));
         let screen = UnixStream::connect(ui_socket.as_path()).unwrap();
-        screen.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        screen
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         write(&screen, &hello(Some(&token)));
         assert!(matches!(read(&screen), UiResponse::Welcome { .. }));
         write(&screen, &UiRequest::Subscribe { after_seq: None });
