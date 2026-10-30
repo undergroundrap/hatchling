@@ -52,12 +52,16 @@ export HATCHLING_EGRESS_GRANTS=localhost:18090
 export HATCHLING_API_GRANTS=egress:localhost:18090,channel-send:local
 export HATCHLING_WEB=sites
 # The site: a name for a documentation address (RFC 5737), which isn't
-# internal, so the browser's relay reaches it as it would a public site, on
-# this namespace's loopback.
+# internal, so the browser's relay reaches it as it would a public site, in
+# this network namespace.
 site_name=$(python3 -c 'import sys; sys.path.insert(0, "scripts"); from browsing_model import BROWSER_URL; print(BROWSER_URL.split("/")[2])')
 site_address=198.51.100.7
 ip link set lo up
-ip addr add "$site_address/32" dev lo
+# On an interface of its own, not loopback: with loopback alone, the app's
+# browser says it's offline, and holds the owner's messages back.
+ip link add site0 type dummy
+ip addr add "$site_address/24" dev site0
+ip link set site0 up
 cp /etc/hosts "$HATCHLING_HOME/hosts"
 echo "$site_address $site_name" >> "$HATCHLING_HOME/hosts"
 chmod 644 "$HATCHLING_HOME/hosts"

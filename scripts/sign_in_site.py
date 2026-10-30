@@ -86,6 +86,7 @@ def main():
         return 64
     address, port, chain, key, record_path = sys.argv[1:]
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(chain, key)
     server = ThreadingHTTPServer((address, int(port)), handler(Path(record_path)))
     server.socket = context.wrap_socket(server.socket, server_side=True)
