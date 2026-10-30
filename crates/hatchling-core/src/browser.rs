@@ -113,6 +113,20 @@ pub enum BrowserCommand {
         /// The exact origin the top frame must be on, `https://host[:port]`.
         origin: String,
     },
+    /// Fill a sign-in form with the sign-in the vault keeper sent the cell
+    /// as `nonce`, on its vault channel (WO-031): its username into
+    /// `username`, if one is named, and its password into `password`, each
+    /// as [`BrowserCommand::Fill`] does, on the origin the keeper sent. The
+    /// broker names the fill and never has it. The reply is the snapshot
+    /// after.
+    SignIn {
+        /// The fill's nonce, as the keeper told the broker.
+        nonce: String,
+        /// The username field's element, from the last snapshot.
+        username: Option<u32>,
+        /// The password field's element.
+        password: u32,
+    },
     /// Close the page and the browser. The reply is [`BrowserReply::Closed`].
     Close,
 }

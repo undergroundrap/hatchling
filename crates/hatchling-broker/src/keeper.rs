@@ -52,7 +52,7 @@ use hatchling_vault::{MasterKey, Secret, Store, StoreKeys};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-use crate::browser_credentials::{Credentials, SignIn, SignInAnswer, SignInRequest};
+use crate::browser_credentials::{Credentials, SignInAnswer, SignInRequest};
 use crate::secrets::{Secrets, handle_vault_op};
 use crate::vault_access::{Caller, Outcome};
 use crate::vault_keyring::KeyringConfig;
@@ -637,33 +637,16 @@ impl Keeper {
     }
 
     /// `op` on the sign-ins, which the keeper holds (WO-031): its answer,
-    /// and a read's secrets, sent after it in frames of their own.
+    /// which never holds a sign-in's secrets.
     ///
     /// # Errors
     ///
     /// Returns [`Error::Keeper`] when the keeper refuses it or can't be
     /// reached.
-    pub fn sign_ins(&self, op: SignInRequest) -> Result<(SignInAnswer, Option<SignIn>), Error> {
+    pub fn sign_ins(&self, op: SignInRequest) -> Result<SignInAnswer, Error> {
         let request = Request::SignIn { op };
-        let (reply, read) = self.exchange(|stream| {
-            let reply = ask(stream, &request)?;
-            let read = if matches!(
-                reply,
-                Reply::SignIn {
-                    answer: SignInAnswer::Read
-                }
-            ) {
-                Some(SignIn {
-                    username: concealed(stream)?,
-                    password: concealed(stream)?,
-                })
-            } else {
-                None
-            };
-            Ok((reply, read))
-        })?;
-        match reply {
-            Reply::SignIn { answer } => Ok((answer, read)),
+        match self.exchange(|stream| ask(stream, &request))? {
+            Reply::SignIn { answer } => Ok(answer),
             Reply::Refused { reason } => Err(Error::Keeper { reason }),
             other @ (Reply::Read { .. } | Reply::Scan { .. } | Reply::Filling { .. }) => {
                 Err(unexpected(&other))
@@ -714,20 +697,6 @@ impl Keeper {
         drop(stream);
         outcome
     }
-}
-
-/// One of a read sign-in's secrets, from its own frame: its bytes, moved
-/// into the secret and never copied.
-fn concealed(stream: &UnixStream) -> Result<hatchling_core::ui::Concealed, Error> {
-    let mut bytes = Zeroizing::new(read_frame(stream).map_err(keeper_gone)?);
-    String::from_utf8(std::mem::take(&mut *bytes))
-        .map(hatchling_core::ui::Concealed::new)
-        .map_err(|error| {
-            drop(Zeroizing::new(error.into_bytes()));
-            Error::Keeper {
-                reason: String::from("a sign-in's secret that isn't text"),
-            }
-        })
 }
 
 /// Sends `request`, and reads the reply.
@@ -1376,9 +1345,9 @@ fn answer_scan(stream: &UnixStream, kept: &Kept, purpose: &str) -> Result<(), Er
     }
 }
 
-/// Answers the broker's `op` on the sign-ins, from the keeper's own store.
-/// A fill's read is a release: it is recorded in the vault's access log
-/// before its secrets are sent, and one that can't be recorded is refused.
+/// Answers the broker's `op` on the sign-ins, from the keeper's own store:
+/// never with a sign-in's secrets, which go to the browser a fill is for
+/// alone ([`answer_fill`]).
 fn answer_sign_in(stream: &UnixStream, kept: &Kept, op: SignInRequest) -> Result<(), Error> {
     let Some(credentials) = Credentials::through(None, &kept.config, &kept.keys) else {
         return send(
@@ -1388,39 +1357,8 @@ fn answer_sign_in(stream: &UnixStream, kept: &Kept, op: SignInRequest) -> Result
             },
         );
     };
-    let read = if let SignInRequest::Read { id } = &op {
-        Some(id.clone())
-    } else {
-        None
-    };
-    let (answer, sign_in) = crate::browser_credentials::answer(&credentials, op);
-    if let Some(id) = read {
-        let outcome = if sign_in.is_some() {
-            Outcome::Allowed
-        } else {
-            Outcome::Failed
-        };
-        let caller = Caller::Broker {
-            purpose: String::from("browser-fill"),
-        };
-        if let Err(error) =
-            crate::vault_access::record(&kept.config.vault.root, caller, "read", vec![id], outcome)
-        {
-            tracing::error!(%error, "a sign-in's read not recorded: nothing is sent");
-            return send(
-                stream,
-                &Reply::Refused {
-                    reason: String::from("the read couldn't be recorded"),
-                },
-            );
-        }
-    }
-    send(stream, &Reply::SignIn { answer })?;
-    if let Some(sign_in) = sign_in {
-        write_frame(stream, sign_in.username.expose().as_bytes()).map_err(keeper_gone)?;
-        write_frame(stream, sign_in.password.expose().as_bytes()).map_err(keeper_gone)?;
-    }
-    Ok(())
+    let answer = crate::browser_credentials::answer(&credentials, op);
+    send(stream, &Reply::SignIn { answer })
 }
 
 /// Answers the broker's fill of the sign-in `id` into the browser cell
@@ -1527,6 +1465,7 @@ fn send(stream: &UnixStream, reply: &Reply) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::browser_credentials::SignIn;
 
     /// A grant is named to the keeper as `action:name`, and a session's
     /// grants keep only those of the keeper's they name: never one the
@@ -2227,15 +2166,11 @@ mod tests {
     }
 
     /// The sign-ins are the keeper's (WO-031): the broker, whose keys open
-    /// no store of them, keeps, lists, reads and deletes them by asking.
-    /// Each read is recorded before its secrets are sent; one that can't
-    /// be recorded sends none. The egress authority may ask nothing, and a
-    /// keeper whose configuration keeps none refuses.
+    /// no store of them, keeps, lists and deletes them by asking, and can't
+    /// ask for one's secrets: the keeper sends those to a browser it fills
+    /// alone. The egress authority may ask nothing, and a keeper whose
+    /// configuration keeps none refuses.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one store's requests, in order, then what the access log holds of them"
-    )]
     fn the_sign_ins_are_the_keepers_and_the_broker_asks_for_them() {
         use crate::browser_profiles::Profiles;
         use hatchling_core::ui::{Concealed, SignInRefusal};
@@ -2288,22 +2223,24 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert_eq!(asking.list(), Ok(vec![stored.clone()]));
-            assert_eq!(asking.sign_in(&stored.id), Ok(secret.clone()));
-            assert!(asking.sign_in("cred-none").is_err());
-            let (log, _) = crate::vault_access::read_log(&config.vault.root).unwrap();
-            let reads: Vec<_> = log
-                .iter()
-                .map(|access| (access.caller.clone(), access.names.clone(), access.outcome))
-                .collect();
-            let fill = Caller::Broker {
-                purpose: String::from("browser-fill"),
-            };
-            assert_eq!(
-                reads,
-                [
-                    (fill.clone(), vec![stored.id.clone()], Outcome::Allowed),
-                    (fill, vec![String::from("cred-none")], Outcome::Failed),
-                ]
+            let read = asking.sign_in(&stored.id);
+            assert!(
+                read.as_ref()
+                    .is_err_and(|error| error.contains("never to the broker")),
+                "the broker read a sign-in's secrets"
+            );
+            assert!(
+                crate::vault_access::read_log(&config.vault.root)
+                    .unwrap()
+                    .0
+                    .is_empty(),
+                "nothing was released"
+            );
+            let request =
+                serde_json::json!({"request": "sign-in", "op": {"op": "read", "id": stored.id}});
+            assert!(
+                serde_json::from_value::<Request>(request).is_err(),
+                "the keeper's wire carries no read of a sign-in"
             );
             // The broker's keys open no store of the sign-ins.
             let local = Credentials::through(None, &config, &brokers).unwrap();
@@ -2312,17 +2249,6 @@ mod tests {
             let authority = Keeper::over(authoritys).unwrap();
             let refused = format!("{:?}", authority.sign_ins(SignInRequest::List));
             assert!(refused.contains("only reads"), "{refused}");
-            // A read that can't be recorded sends nothing.
-            let log = config.vault.root.join(crate::vault_access::ACCESS_LOG);
-            std::fs::remove_file(&log).unwrap();
-            std::fs::create_dir(&log).unwrap();
-            let unrecorded = asking.sign_in(&stored.id).map(|_| ());
-            assert!(
-                unrecorded
-                    .as_ref()
-                    .is_err_and(|error| error.contains("recorded")),
-                "{unrecorded:?}"
-            );
             drop(keeper);
             drop(authority);
             assert!(serving.join().unwrap().is_ok());
@@ -2339,11 +2265,6 @@ mod tests {
             matches!(&reply, Reply::Refused { reason } if reason.contains("keeps no sign-ins")),
             "{reply:?}"
         );
-        // A read's secret is text, moved whole out of its frame.
-        write_frame(&theirs, b"pw \xff").unwrap();
-        assert!(concealed(&ours).is_err(), "a secret that isn't text");
-        write_frame(&theirs, b"pw \"q\"").unwrap();
-        assert_eq!(concealed(&ours).unwrap().expose(), "pw \"q\"");
     }
 
     /// A browser cell's channel, named with the profile it was started
@@ -2459,6 +2380,12 @@ mod tests {
             assert!(elsewhere.contains("the page's site"), "{elsewhere}");
             let nowhere = refused(&work.id, "browser-2", "https://a.example");
             assert!(nowhere.contains("no browser"), "{nowhere}");
+            // As the broker's sessions ask it.
+            let asked = {
+                use crate::browser_ops::Fills as _;
+                keeper.fill_sign_in(&work.id, "browser-2", "https://a.example")
+            };
+            assert!(asked.is_err_and(|error| error.contains("no browser")));
             let missing = refused("cred-none", "browser-1", "https://a.example");
             assert!(missing.contains("no such sign-in"), "{missing}");
             let (log, _) = crate::vault_access::read_log(&config.vault.root).unwrap();
@@ -2472,6 +2399,7 @@ mod tests {
                 [
                     fill(&work.id, Outcome::Allowed),
                     fill(&home.id, Outcome::Denied),
+                    fill(&work.id, Outcome::Denied),
                     fill(&work.id, Outcome::Denied),
                     fill(&work.id, Outcome::Denied),
                     fill("cred-none", Outcome::Failed),

@@ -17,13 +17,20 @@
 //! browser closes, and hidden from every snapshot after it (WO-031): a
 //! page can read a field it was given and show it, and the agent never
 //! sees it. The broker keeps none of it.
+//!
+//! A sign-in comes from the vault keeper, on the cell's vault channel, and
+//! is typed when the broker names it ([`BrowserCommand::SignIn`]), on the
+//! origin the keeper sent: the broker never has it (WO-031).
 
+use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
 use hatchling_core::browser::{
     BrowserCommand, BrowserFailure, BrowserReply, Cookie, Key, MAX_COOKIE_PAGE_BYTES, MAX_COOKIES,
-    MAX_TYPED_CHARS, OwnerInput, PageAction, PageSnapshot, SameSite, SignInField, VIEWPORT,
+    MAX_TYPED_CHARS, OwnerInput, PageAction, PageSnapshot, SameSite, SignInField, SignInFill,
+    VIEWPORT,
 };
+use hatchling_core::framing::read_frame;
 use hatchling_core::ui::Concealed;
 use serde_json::{Value, json};
 
@@ -38,6 +45,16 @@ pub const LOAD: Duration = Duration::from_secs(30);
 
 /// How long, after an action, a navigation it started has to show itself.
 pub const SETTLE: Duration = Duration::from_millis(500);
+
+/// How long a sign-in the broker names may take to come on the vault
+/// channel: the keeper sends it before it tells the broker its nonce, so
+/// it's there already.
+pub const FILL_WAIT: Duration = Duration::from_secs(5);
+
+/// The most fills read past, on the vault channel, looking for the one the
+/// broker names: each was sent for a sign-in the broker then didn't ask
+/// to be typed.
+pub const MAX_FILLS_PAST: usize = 8;
 
 /// The JPEG qualities a frame is tried at, best first, until it's within
 /// [`hatchling_core::browser::MAX_FRAME_JPEG_BASE64`].
@@ -68,6 +85,9 @@ pub struct Session {
     page: Option<Page>,
     /// What the fills typed, each once: hidden from every snapshot.
     filled: Vec<Concealed>,
+    /// The cell's vault channel, on which the keeper sends the sign-ins
+    /// to fill (WO-031), if the cell has one.
+    vault: Option<UnixStream>,
 }
 
 impl Session {
@@ -78,7 +98,16 @@ impl Session {
             browser: Some(browser),
             page: None,
             filled: Vec::new(),
+            vault: None,
         }
+    }
+
+    /// This session, filling the sign-ins the vault keeper sends on
+    /// `vault`, the cell's vault channel (WO-031).
+    #[must_use]
+    pub fn with_vault(mut self, vault: UnixStream) -> Self {
+        self.vault = Some(vault);
+        self
     }
 
     /// Does `command`, and says what came of it.
@@ -118,6 +147,11 @@ impl Session {
                 text,
                 origin,
             } => self.fill(element, field, &text, &origin),
+            BrowserCommand::SignIn {
+                nonce,
+                username,
+                password,
+            } => self.sign_in(&nonce, username, password),
             BrowserCommand::Close => {
                 self.close();
                 return BrowserReply::Closed;
@@ -341,6 +375,51 @@ impl Session {
         self.insert(&session, text.expose())?;
         self.settle(&session)?;
         self.snapshot()
+    }
+
+    /// Fills the page's sign-in form with the sign-in the keeper sent as
+    /// `nonce` (WO-031): its username into `username`, if one is named,
+    /// then its password into `password`, each as [`Session::fill`] types
+    /// it, on the origin the keeper sent. One the keeper didn't send, or a
+    /// cell without a vault channel, is refused, and nothing is typed.
+    fn sign_in(
+        &mut self,
+        nonce: &str,
+        username: Option<u32>,
+        password: u32,
+    ) -> Result<PageSnapshot, BrowserFailure> {
+        let (origin, sign_in) = self.kept_fill(nonce)?;
+        if let Some(element) = username {
+            self.fill(element, SignInField::Username, &sign_in[0], &origin)?;
+        }
+        self.fill(password, SignInField::Password, &sign_in[1], &origin)
+    }
+
+    /// The fill the keeper sent as `nonce`: its origin, and its username
+    /// and password. Fills sent before it are read past, at most
+    /// [`MAX_FILLS_PAST`]; a channel that breaks, or carries something that
+    /// isn't a fill, gives none.
+    fn kept_fill(&self, nonce: &str) -> Result<(String, [Concealed; 2]), BrowserFailure> {
+        let vault = self.vault.as_ref().ok_or(BrowserFailure::BadCommand)?;
+        vault
+            .set_read_timeout(Some(FILL_WAIT))
+            .map_err(|_| BrowserFailure::BadCommand)?;
+        let secret = || {
+            read_frame(vault)
+                .ok()
+                .and_then(Concealed::from_bytes)
+                .ok_or(BrowserFailure::BadCommand)
+        };
+        for _ in 0..=MAX_FILLS_PAST {
+            let header = read_frame(vault).map_err(|_| BrowserFailure::BadCommand)?;
+            let fill: SignInFill =
+                serde_json::from_slice(&header).map_err(|_| BrowserFailure::BadCommand)?;
+            let sign_in = [secret()?, secret()?];
+            if fill.nonce == nonce {
+                return Ok((fill.origin, sign_in));
+            }
+        }
+        Err(BrowserFailure::BadCommand)
     }
 
     /// Whether the top frame is on `origin` now, as the browser reports it
@@ -1307,6 +1386,131 @@ mod tests {
             ),
             Ok(snapshot())
         );
+    }
+
+    /// The sign-in the keeper sent as `nonce`, on the session's vault
+    /// channel (WO-031), in frames as the keeper sends them.
+    fn sent_fill(keeper: &UnixStream, nonce: &str, origin: &str, sign_in: [&str; 2]) {
+        use hatchling_core::framing::write_frame;
+        let fill = SignInFill {
+            nonce: nonce.to_owned(),
+            origin: origin.to_owned(),
+        };
+        write_frame(keeper, &serde_json::to_vec(&fill).unwrap()).unwrap();
+        for secret in sign_in {
+            write_frame(keeper, secret.as_bytes()).unwrap();
+        }
+    }
+
+    /// A sign-in is typed from the vault channel when the broker names its
+    /// fill, on the origin the keeper sent, and hidden after (WO-031). A
+    /// fill the broker names that the keeper didn't send, one it sent for
+    /// another site, or a session without a channel types nothing; a fill
+    /// sent before the one named is read past.
+    #[test]
+    fn a_sign_in_is_typed_from_the_vault_channel_when_the_broker_names_it() {
+        use hatchling_core::framing::write_frame;
+        let named = |nonce: &str, username: Option<u32>| BrowserCommand::SignIn {
+            nonce: nonce.to_owned(),
+            username,
+            password: 2,
+        };
+        let failed = |failure| BrowserReply::Failed { failure };
+        let (mut alone, _) = fake();
+        alone.open("http://a.test/").unwrap();
+        assert_eq!(
+            alone.handle(named("fill-1", Some(1))),
+            failed(BrowserFailure::BadCommand),
+            "no vault channel"
+        );
+        assert_eq!(
+            alone.kept_fill("fill-1").map(|_| ()),
+            Err(BrowserFailure::BadCommand)
+        );
+        let (session, seen) = fake();
+        let (vault, keeper) = UnixStream::pair().unwrap();
+        let mut session = session.with_vault(vault);
+        session.open("http://a.test/").unwrap();
+        sent_fill(
+            &keeper,
+            "fill-0",
+            "https://a.test",
+            ["old@a.test", "old-pw"],
+        );
+        sent_fill(
+            &keeper,
+            "fill-1",
+            "https://a.test",
+            ["ada@a.test", "s3cret"],
+        );
+        let hidden = BrowserReply::Page {
+            snapshot: PageSnapshot {
+                text: String::from("[hidden]"),
+                ..snapshot()
+            },
+        };
+        assert_eq!(
+            session.handle(named("fill-1", Some(1))),
+            BrowserReply::Page {
+                snapshot: snapshot()
+            }
+        );
+        let typed = || {
+            sent(&seen, "Input.insertText")
+                .iter()
+                .filter_map(|call| {
+                    call.pointer("/params/text")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(typed(), ["ada@a.test", "s3cret"], "the fill named, alone");
+        assert_eq!(session.filled.len(), 2, "both kept to hide");
+        // No username named: the password alone.
+        sent_fill(&keeper, "fill-2", "https://a.test", ["ada@a.test", "hello"]);
+        assert_eq!(session.handle(named("fill-2", None)), hidden);
+        assert_eq!(typed().len(), 3);
+        // Sent for another site: nothing typed.
+        sent_fill(&keeper, "fill-3", "https://b.test", ["ada@b.test", "b-pw"]);
+        assert_eq!(
+            session.handle(named("fill-3", Some(1))),
+            failed(BrowserFailure::OtherOrigin)
+        );
+        // Named but never sent: nothing typed, whatever was sent before.
+        for nonce in 0..=MAX_FILLS_PAST {
+            sent_fill(
+                &keeper,
+                &format!("past-{nonce}"),
+                "https://a.test",
+                ["x@a.test", "x-pw"],
+            );
+        }
+        assert_eq!(
+            session.handle(named("fill-4", Some(1))),
+            failed(BrowserFailure::BadCommand)
+        );
+        // Not a fill: nothing typed.
+        write_frame(&keeper, b"{}").unwrap();
+        assert_eq!(
+            session.handle(named("fill-5", Some(1))),
+            failed(BrowserFailure::BadCommand)
+        );
+        write_frame(&keeper, br#"{"nonce":"fill-7","origin":"https://a.test"}"#).unwrap();
+        write_frame(&keeper, b"ada@a.test").unwrap();
+        write_frame(&keeper, b"pw \xff").unwrap();
+        assert_eq!(
+            session.handle(named("fill-7", Some(1))),
+            failed(BrowserFailure::BadCommand),
+            "a secret that isn't text"
+        );
+        drop(keeper);
+        assert_eq!(
+            session.handle(named("fill-8", Some(1))),
+            failed(BrowserFailure::BadCommand),
+            "the channel ended"
+        );
+        assert_eq!(typed().len(), 3, "nothing more typed");
     }
 
     /// What a fill types is hidden from every snapshot after it, and kept

@@ -609,6 +609,19 @@ impl Concealed {
         Self(secret)
     }
 
+    /// `bytes` as a secret, when they're text: `None` otherwise, and they
+    /// are wiped either way.
+    #[must_use]
+    pub fn from_bytes(bytes: Vec<u8>) -> Option<Self> {
+        match String::from_utf8(bytes) {
+            Ok(secret) => Some(Self(secret)),
+            Err(error) => {
+                zeroize::Zeroize::zeroize(&mut error.into_bytes());
+                None
+            }
+        }
+    }
+
     /// The secret itself: for the broker's store, and nothing else.
     #[must_use]
     pub fn expose(&self) -> &str {
@@ -1928,6 +1941,14 @@ mod tests {
         );
         assert!(shown.contains("Concealed(..)"), "{shown}");
         assert_eq!(Concealed::new(s("x")).expose(), "x");
+        assert_eq!(
+            Concealed::from_bytes(b"pw \"q\"".to_vec()).map(|secret| secret.expose().to_owned()),
+            Some(s("pw \"q\""))
+        );
+        assert!(
+            Concealed::from_bytes(b"pw \xff".to_vec()).is_none(),
+            "a secret that isn't text"
+        );
         let credential = SiteSignIn {
             sign_in_id: s("cred-1"),
             profile_id: s("profile-1"),

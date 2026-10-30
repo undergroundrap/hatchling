@@ -52,9 +52,11 @@ use crate::{
     reason = "the broker's start, in the order it must happen: one step, one line and its comment"
 )]
 pub fn run_serve(config: &Config) -> Result<(), Error> {
-    tracing_subscriber::fmt()
+    // A process that set its subscriber already keeps it: the broker's
+    // start never panics over its log.
+    let _ = tracing_subscriber::fmt()
         .with_max_level(config.log_level.to_tracing())
-        .init();
+        .try_init();
     // One broker per socket: the lock beside it is held for this
     // broker's life, before anything is written, and `clean` and a
     // second broker are refused while it is (WO-012).

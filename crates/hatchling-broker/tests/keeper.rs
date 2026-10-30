@@ -420,8 +420,10 @@ fn a_gate_scans_only_for_what_a_cell_has_had() {
 }
 
 /// The sign-ins are the keeper's (WO-031): the real keeper hands the
-/// broker the profiles' key and not theirs, keeps one the broker asks it
-/// to, and gives a fill's read back whole, recorded in the vault's log.
+/// broker the profiles' key and not theirs, and keeps one the broker asks
+/// it to. It fills it into a profile's browser on the channel the spawner
+/// handed it, named with the profile, recorded in the vault's log first;
+/// the broker is told the fill's nonce, and no secret.
 #[test]
 fn the_keeper_holds_the_sign_ins_and_hands_the_broker_no_key_to_them() {
     use hatchling_broker::browser_credentials::{SignIn, SignInAnswer, SignInRequest};
@@ -431,7 +433,7 @@ fn the_keeper_holds_the_sign_ins_and_hands_the_broker_no_key_to_them() {
     sealed_vault(&dir, &[]).unwrap();
     let path = |name: &str| dir.join(name).to_string_lossy().into_owned();
     let (profiles, sign_ins) = (path("profiles"), path("sign-ins"));
-    let (keeper, keys, _, _) = Keeper::start_with(program(
+    let (keeper, keys, _, spawner) = Keeper::start_with(program(
         &dir,
         &[
             ("HATCHLING_BROWSER_PROFILES_DIR", profiles.as_str()),
@@ -446,7 +448,7 @@ fn the_keeper_holds_the_sign_ins_and_hands_the_broker_no_key_to_them() {
         "the broker was handed a key of the keeper's: {stores:?}"
     );
     assert!(SealedVault::open_in(Path::new(&sign_ins), &keys, Store::CREDENTIALS).is_err());
-    let secret = || SignIn {
+    let secret = SignIn {
         username: Concealed::new(String::from("zoe-user")),
         password: Concealed::new(String::from("hunter2-secret")),
     };
@@ -454,22 +456,52 @@ fn the_keeper_holds_the_sign_ins_and_hands_the_broker_no_key_to_them() {
         profile_id: String::from("profile-1"),
         origin: String::from("https://a.example"),
         label: String::from("Work"),
-        sign_in: secret(),
+        sign_in: secret,
         now: 1,
     };
-    let Ok((SignInAnswer::Kept { sign_in: kept }, None)) = keeper.sign_ins(keep) else {
+    let Ok(SignInAnswer::Kept { sign_in: kept }) = keeper.sign_ins(keep) else {
         unreachable!("the sign-in wasn't kept");
     };
-    let read = keeper.sign_ins(SignInRequest::Read {
-        id: kept.id.clone(),
+    let fill = || keeper.fill(&kept.id, "browser-1", "https://a.example");
+    assert!(fill().is_err(), "no browser's channel yet");
+    // The spawner hands it the browser's channel, named with its profile.
+    let (browser, theirs) = UnixStream::pair().unwrap();
+    browser
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let named = serde_json::json!({
+        "cell": "browser-1", "uid": 7, "grants": [], "profile": "profile-1",
     });
+    write_frame(&spawner, named.to_string().as_bytes()).unwrap();
+    hatchling_sys::net::send_fd(spawner.as_fd(), theirs.as_fd()).unwrap();
+    drop(theirs);
+    // Held once the keeper has read it.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let nonce = loop {
+        match fill() {
+            Ok(nonce) => break nonce,
+            Err(error) => {
+                assert!(Instant::now() < deadline, "never filled: {error}");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    };
+    let sent: serde_json::Value = serde_json::from_slice(&read_frame(&browser).unwrap()).unwrap();
+    assert_eq!(
+        sent,
+        serde_json::json!({ "nonce": nonce, "origin": "https://a.example" })
+    );
+    assert_eq!(read_frame(&browser).unwrap(), b"zoe-user");
+    assert_eq!(read_frame(&browser).unwrap(), b"hunter2-secret");
     assert!(
-        matches!(&read, Ok((SignInAnswer::Read, Some(whole))) if *whole == secret()),
-        "{read:?}"
+        keeper
+            .fill(&kept.id, "browser-1", "https://b.example")
+            .is_err(),
+        "another site's"
     );
     let log = std::fs::read_to_string(dir.join("vault/.access.log")).unwrap();
     assert!(
-        log.contains("browser-fill") && log.contains(&kept.id),
+        log.contains("browser-fill") && log.contains("\"fill\"") && log.contains(&kept.id),
         "{log}"
     );
     assert!(!log.contains("hunter2"), "the log holds a secret");

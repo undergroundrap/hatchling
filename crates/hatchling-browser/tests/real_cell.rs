@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use hatchling_core::browser::{
     BrowserCommand, BrowserFailure, BrowserReply, Cookie, Key, OwnerInput, PageAction,
-    PageSnapshot, SignInField,
+    PageSnapshot, SignInField, SignInFill,
 };
 use hatchling_core::framing::{read_frame, write_frame};
 use hatchling_core::ui::Concealed;
@@ -173,7 +173,7 @@ fn spec(browser: &Path, group: &Path, scratch: &Path) -> CellSpec {
         workdir: None,
         endpoint: None,
         connection: true,
-        vault_channel: false,
+        vault_channel: true,
         exposures: vec![
             Exposure {
                 source: browser.parent().unwrap().to_owned(),
@@ -513,6 +513,50 @@ fn sign_in_filled(connection: &UnixStream) {
     assert!(!typed.text.contains("comment: h"), "{}", typed.text);
 }
 
+/// A sign-in the vault keeper sends on the cell's vault channel, `vault`
+/// (WO-031), played here: typed when the broker names its fill, on the
+/// origin the keeper sent, and hidden; one sent for another origin types
+/// nothing.
+fn kept_sign_in_filled(connection: &UnixStream, vault: &UnixStream) {
+    let form = page(send(
+        connection,
+        &BrowserCommand::Open {
+            url: format!("http://{HOST}/signin"),
+        },
+    ));
+    let kept = |nonce: &str, origin: &str| {
+        let fill = SignInFill {
+            nonce: nonce.to_owned(),
+            origin: origin.to_owned(),
+        };
+        write_frame(vault, &serde_json::to_vec(&fill).unwrap()).unwrap();
+        write_frame(vault, b"zoe@hatchling.test").unwrap();
+        write_frame(vault, b"Zoe-s3cret!").unwrap();
+    };
+    let named = |nonce: &str| BrowserCommand::SignIn {
+        nonce: nonce.to_owned(),
+        username: Some(element(&form, "textbox", "Email")),
+        password: element(&form, "password", "Password"),
+    };
+    kept("fill-elsewhere", "http://other.test");
+    assert_eq!(
+        send(connection, &named("fill-elsewhere")),
+        BrowserReply::Failed {
+            failure: BrowserFailure::OtherOrigin
+        },
+        "kept for another origin: nothing typed"
+    );
+    kept("fill-here", &format!("http://{HOST}"));
+    let typed = page(send(connection, &named("fill-here")));
+    assert!(
+        typed.text.contains("email: [hidden]")
+            && typed.text.contains("password: 11 characters")
+            && !typed.text.contains("zoe@hatchling.test"),
+        "{}",
+        typed.text
+    );
+}
+
 /// A sign-in form in a subframe (WO-030): its fields aren't the page's, so
 /// none is listed, and a fill naming any id types nothing.
 fn framed_never_filled(connection: &UnixStream) {
@@ -582,6 +626,7 @@ fn the_controller_drives_a_real_browser_in_a_cell_through_the_relay_alone() {
     connection
         .set_read_timeout(Some(Duration::from_secs(90)))
         .unwrap();
+    let vault = cell.vault_channel().unwrap();
     let stop = Arc::new(AtomicBool::new(false));
     let seen = Arc::new(Mutex::new(Vec::new()));
     let server = {
@@ -719,6 +764,7 @@ fn the_controller_drives_a_real_browser_in_a_cell_through_the_relay_alone() {
     cookies_kept(&connection);
     webrtc_loads(&connection);
     sign_in_filled(&connection);
+    kept_sign_in_filled(&connection, &vault);
     framed_never_filled(&connection);
     // A command it doesn't know is answered, not obeyed.
     let unknown = serde_json::json!({"command": "evaluate", "script": "1"});

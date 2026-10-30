@@ -1,7 +1,9 @@
 //! `hatchling-browser`: the controller that runs in a browser cell
 //! (WO-029). It starts a headless Chromium, drives it over the DevTools
 //! protocol on a pipe (never a port), and answers the broker's commands
-//! on the cell's one connection with snapshots of the page.
+//! on the cell's one connection with snapshots of the page. A browser
+//! started for a signed-in profile has a vault channel too, on which the
+//! vault keeper sends the sign-ins it fills (WO-031).
 //!
 //! Part of [Hatchling](https://github.com/undergroundrap/hatchling).
 //! Licensed AGPL-3.0-or-later, with the additional terms in
@@ -36,6 +38,9 @@ use crate::page::Session;
 
 /// The descriptor of the cell's connection to the broker.
 pub const CONNECTION_FD: &str = "HATCHLING_CONNECTION_FD";
+/// The descriptor of the cell's vault channel to the vault keeper, if it
+/// has one (WO-031).
+pub const VAULT_FD: &str = "HATCHLING_VAULT_FD";
 /// The browser, as the cell sees it.
 pub const BROWSER: &str = "HATCHLING_BROWSER";
 /// The cell's relay port: the broker's proxy, on the cell's loopback.
@@ -57,6 +62,8 @@ pub const CA_KEYS: &str = "HATCHLING_BROWSER_CA_KEYS";
 pub struct Config {
     /// The connection to the broker.
     pub connection: i32,
+    /// The vault channel to the keeper, if the cell has one.
+    pub vault: Option<i32>,
     /// The browser.
     pub browser: PathBuf,
     /// The proxy port, if the cell has one.
@@ -89,6 +96,9 @@ pub enum RunError {
     /// The connection to the broker couldn't be taken.
     #[error("the broker connection: {0}")]
     Connection(hatchling_sys::Error),
+    /// The vault channel couldn't be taken.
+    #[error("the vault channel: {0}")]
+    Vault(hatchling_sys::Error),
     /// The font configuration couldn't be written.
     #[error("the font configuration: {0}")]
     Fonts(std::io::Error),
@@ -115,6 +125,14 @@ impl Config {
             .ok()
             .filter(|fd| *fd > 2)
             .ok_or_else(|| invalid(CONNECTION_FD, "not a descriptor above stderr"))?;
+        let vault = get(VAULT_FD)
+            .map(|fd| {
+                fd.parse::<i32>()
+                    .ok()
+                    .filter(|fd| *fd > 2 && *fd != connection)
+                    .ok_or_else(|| invalid(VAULT_FD, "not a descriptor above stderr"))
+            })
+            .transpose()?;
         let browser = get(BROWSER)
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
@@ -162,6 +180,7 @@ impl Config {
         }
         Ok(Self {
             connection,
+            vault,
             browser,
             proxy,
             profile,
@@ -211,6 +230,11 @@ pub fn fonts_conf(fonts: &Path, cache: &Path) -> String {
 pub fn run(config: &Config) -> Result<(), RunError> {
     let connection = hatchling_sys::net::inherited_unix_stream(config.connection)
         .map_err(RunError::Connection)?;
+    let vault = config
+        .vault
+        .map(hatchling_sys::net::inherited_unix_stream)
+        .transpose()
+        .map_err(RunError::Vault)?;
     if let Some(fonts) = &config.fonts {
         let conf = fonts_conf(fonts, &config.tmp.join("fontconfig"));
         std::fs::write(config.tmp.join("fonts.conf"), conf).map_err(RunError::Fonts)?;
@@ -220,7 +244,12 @@ pub fn run(config: &Config) -> Result<(), RunError> {
         args: chromium_args(&config.profile, config.proxy, &config.ca_keys),
         env: config.env.clone(),
     })?;
-    serve::serve(&connection, Session::new(browser))?;
+    let session = Session::new(browser);
+    let session = match vault {
+        Some(vault) => session.with_vault(vault),
+        None => session,
+    };
+    serve::serve(&connection, session)?;
     Ok(())
 }
 
@@ -292,6 +321,16 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(full.connection, 3);
+        assert_eq!(full.vault, None, "none unless the cell has one");
+        let vaulted = config(&[(CONNECTION_FD, "3"), (BROWSER, "/b"), (VAULT_FD, "4")]).unwrap();
+        assert_eq!(vaulted.vault, Some(4));
+        for fd in ["2", "3", "x"] {
+            assert_eq!(
+                refused(&[(CONNECTION_FD, "3"), (BROWSER, "/b"), (VAULT_FD, fd)]),
+                (VAULT_FD, "not a descriptor above stderr"),
+                "{fd}"
+            );
+        }
         assert_eq!(full.browser, Path::new("/browser/chrome-headless-shell"));
         assert_eq!(full.proxy, Some(8080));
         assert_eq!(full.profile, Path::new("/scratch/profile"));
