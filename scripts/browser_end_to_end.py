@@ -23,8 +23,10 @@ Playwright's own.
 import json
 import os
 from pathlib import Path
+import pwd
 import re
 import secrets
+import subprocess
 import sys
 
 from browsing_model import (ANSWER_END, BROWSER_URL, NOT_SIGNED_IN, SAW_DRIVING, SIGN_IN_TASK,
@@ -252,6 +254,33 @@ def filled(kept_held):
           f"the broker's memory held username, password: {kept_held}")
 
 
+def store_is_the_keepers():
+    """Raise unless the sign-in store holds the kept sign-in and is the
+    vault keeper's user's alone: its user is refused it, as the broker's,
+    and the broker has nothing of it open (WO-031)."""
+    store = Path(environment("HATCHLING_BROWSER_CREDENTIALS_DIR"))
+    keeper, broker = pwd.getpwnam("hatchling-keeper"), pwd.getpwnam("hatchling-broker")
+    files = [path for path in store.rglob("*") if path.is_file()]
+    if not files:
+        raise ValueError("The sign-in store holds nothing")
+    if store.stat().st_mode & 0o077:
+        raise ValueError(f"The sign-in store is open to others: {oct(store.stat().st_mode & 0o777)}")
+    owners = {path.stat().st_uid for path in [store, *files]}
+    if owners != {keeper.pw_uid}:
+        raise ValueError(f"The sign-in store isn't the keeper's user's alone: {sorted(owners)}")
+    for read in (["ls", "-A", str(store)], ["cat", str(files[0])]):
+        refused = subprocess.run(["setpriv", f"--reuid={broker.pw_uid}", f"--regid={broker.pw_gid}",
+                                  "--clear-groups", *read], capture_output=True)
+        if refused.returncode == 0 or b"Permission denied" not in refused.stderr:
+            raise ValueError(f"The broker's user wasn't refused the sign-in store ({read[0]})")
+    descriptors = Path(f"/proc/{environment('HATCHLING_E2E_BROKER_PID')}/fd")
+    opened = [os.readlink(each) for each in descriptors.iterdir()]
+    if not opened or any(link.startswith(str(store)) for link in opened):
+        raise ValueError("The broker has the sign-in store open, or its descriptors couldn't be read")
+    print(f"browser end to end: the sign-in store's {len(files)} files are the keeper's; "
+          f"the broker's user is refused it, and the broker has none of it open")
+
+
 def check(address):
     """Raise unless the owner drives the agent's browser from the app at
     `address`, and the agent says it waited while they did."""
@@ -276,6 +305,7 @@ def check(address):
             kept_held = broker_holds()
             sign_in(page)
             filled(kept_held)
+            store_is_the_keepers()
         except Exception:
             screenshot(page, "browser-failed.png")
             raise
