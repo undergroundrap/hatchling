@@ -747,6 +747,7 @@
       ]
     },
     "ArtifactInput": {
+      "additionalProperties": false,
       "description": "One build input: a name and its content.",
       "properties": {
         "content": {
@@ -789,262 +790,6 @@
         "findings"
       ],
       "type": "object"
-    },
-    "ArtifactOp": {
-      "description": "An artifact operation: build an artifact from pinned\ninputs, or deliver a completed one.\n\nA build runs a builder, which is a registered skill declaring the\n`artifact.build` capability, inside a skill cell. The broker pins the\ninputs when it receives them, records provenance it observed itself,\nand keeps the result. A delivery names a build by its id; the broker\nre-checks that the build completed, re-hashes its bytes, and passes\nthem through the share-review gate before anything leaves.\n\nPublic because the artifact protocol is a cross-crate contract.",
-      "oneOf": [
-        {
-          "description": "Build an artifact.",
-          "properties": {
-            "build_kind": {
-              "description": "The build kind, a lowercase token (`document`, `preview`, …).\nNot `kind`: that is the session request's own tag.",
-              "type": "string"
-            },
-            "builder": {
-              "description": "The builder: an exact registered skill id, `name@version`.",
-              "type": "string"
-            },
-            "inputs": {
-              "description": "The inputs. The broker pins each by its content hash; the\nbuilder receives exactly these bytes.",
-              "items": {
-                "$ref": "#/$defs/ArtifactInput"
-              },
-              "type": "array"
-            },
-            "op": {
-              "const": "build",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "build_kind",
-            "builder",
-            "inputs"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Deliver a completed build.",
-          "properties": {
-            "build": {
-              "description": "The build id `Build` returned.",
-              "type": "string"
-            },
-            "op": {
-              "const": "deliver",
-              "type": "string"
-            },
-            "to": {
-              "$ref": "#/$defs/DeliveryTarget",
-              "description": "Where it goes."
-            }
-          },
-          "required": [
-            "op",
-            "build",
-            "to"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Describe a build as a UI shows it: who built it, as the\nbroker can vouch for now, and what the inspector found.",
-          "properties": {
-            "build": {
-              "description": "The build id.",
-              "type": "string"
-            },
-            "op": {
-              "const": "describe",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "build"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Capture an idea: its first revision.",
-          "properties": {
-            "from": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/IdeaSource"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Where it was captured from. A feed item is re-read by\nthe broker, which records its provenance; absent, the idea says\nits source was not stated."
-            },
-            "op": {
-              "const": "capture-idea",
-              "type": "string"
-            },
-            "text": {
-              "description": "The idea's text. Untrusted.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "text"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "List the ideas, a page at a time, oldest first.",
-          "properties": {
-            "after": {
-              "description": "Resume after this idea id: the previous page's `next`.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "op": {
-              "const": "list-ideas",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Add a development note to an idea. A note withdraws any\nactivation awaiting confirmation: what was proposed has changed.",
-          "properties": {
-            "idea": {
-              "description": "The idea id.",
-              "type": "string"
-            },
-            "note": {
-              "description": "The note. Untrusted.",
-              "type": "string"
-            },
-            "op": {
-              "const": "note-idea",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "idea",
-            "note"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Propose activating an idea: the broker pins the exact\nbuild request (kind, builder, description, and the hash of every\ninput) and answers with it, for the user to confirm.",
-          "properties": {
-            "build_kind": {
-              "description": "The build kind.",
-              "type": "string"
-            },
-            "builder": {
-              "description": "The builder: an exact registered skill id, `name@version`.",
-              "type": "string"
-            },
-            "description": {
-              "description": "What the build is for, as the user will confirm it.",
-              "type": "string"
-            },
-            "idea": {
-              "description": "The idea id.",
-              "type": "string"
-            },
-            "op": {
-              "const": "propose-activation",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "idea",
-            "build_kind",
-            "builder",
-            "description"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Activate a proposed activation, with the confirmation the\nbroker minted when the user confirmed it. Builds exactly the\npinned request.",
-          "properties": {
-            "activation": {
-              "description": "The activation id `ProposeActivation` returned.",
-              "type": "string"
-            },
-            "confirmation": {
-              "description": "The broker-minted confirmation.",
-              "type": "string"
-            },
-            "op": {
-              "const": "activate",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "activation",
-            "confirmation"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Refine an idea: its text is replaced, and its revision moves on.",
-          "properties": {
-            "idea": {
-              "description": "The idea id `CaptureIdea` returned.",
-              "type": "string"
-            },
-            "op": {
-              "const": "refine-idea",
-              "type": "string"
-            },
-            "text": {
-              "description": "The refined text. Untrusted.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "idea",
-            "text"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Build from an idea's current revision, through the same pipeline\nas `Build`: the revision is pinned as the one input, `idea`.",
-          "properties": {
-            "build_kind": {
-              "description": "The build kind.",
-              "type": "string"
-            },
-            "builder": {
-              "description": "The builder: an exact registered skill id, `name@version`.",
-              "type": "string"
-            },
-            "idea": {
-              "description": "The idea id.",
-              "type": "string"
-            },
-            "op": {
-              "const": "build-idea",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "idea",
-            "build_kind",
-            "builder"
-          ],
-          "type": "object"
-        }
-      ]
     },
     "ArtifactRefusal": {
       "description": "Why an artifact action found nothing to act on.",
@@ -1718,182 +1463,6 @@
       ],
       "type": "object"
     },
-    "BrowserOp": {
-      "description": "A browser operation (WO-029): the agent driving a real browser, in a\ncell of its own, through the broker.\n\nEvery session is strict: the browser reaches only the sites the\nsession holds. Opening a page on a site it doesn't hold is put to the\nowner first, as a [`WebOp::Fetch`] is, and a site allowed for one is\nallowed for the other. A page's own requests to other sites are refused\nand listed with its snapshot.",
-      "oneOf": [
-        {
-          "description": "Open `url`, starting the session's browser if there is none.",
-          "properties": {
-            "op": {
-              "const": "open",
-              "type": "string"
-            },
-            "reason": {
-              "description": "Why the agent wants it. Shown to the owner when the site needs\ntheir approval, labeled as the agent's words.",
-              "type": "string"
-            },
-            "url": {
-              "description": "The page's absolute `https` URL.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "url",
-            "reason"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "The page as it is now.",
-          "properties": {
-            "op": {
-              "const": "read",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Act on an element of the last snapshot.",
-          "properties": {
-            "action": {
-              "$ref": "#/$defs/PageAction",
-              "description": "What to do to it. Text to type is refused if it holds a secret\nthe broker keeps."
-            },
-            "element": {
-              "description": "The element's id, from the last snapshot.",
-              "format": "uint32",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "op": {
-              "const": "act",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "element",
-            "action"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Scroll the page by most of a screen.",
-          "properties": {
-            "down": {
-              "description": "Down, or up.",
-              "type": "boolean"
-            },
-            "op": {
-              "const": "scroll",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "down"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Ask the owner to allow a site the browser was refused, which a page\nasked for: one of the last page's `refused`.",
-          "properties": {
-            "op": {
-              "const": "allow",
-              "type": "string"
-            },
-            "reason": {
-              "description": "Why the page needs it. Shown to the owner, labeled as the\nagent's words.",
-              "type": "string"
-            },
-            "site": {
-              "description": "The site, as the page's `refused` named it (`host:port`).",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "site",
-            "reason"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Close the browser: its cell, profile and files go with it.",
-          "properties": {
-            "op": {
-              "const": "close",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Sign in on the page with the sign-in the owner keeps for its site\n(WO-030, v16): the broker types it into the fields named, and the\nagent never sees it.",
-          "properties": {
-            "label": {
-              "description": "Which sign-in, by its label, when the site has more than one.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "op": {
-              "const": "sign_in",
-              "type": "string"
-            },
-            "password": {
-              "description": "The password field's element, from the last snapshot.",
-              "format": "uint32",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "username": {
-              "description": "The username field's element, from the last snapshot; none for a\nform that asks for the password alone.",
-              "format": "uint32",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "op",
-            "password"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "The page asks for a one-time code (WO-030, v17): ask the owner for\nit, and type it into the field named once they give it. The agent\nnever sees it. Asked again while the owner hasn't answered, it\nwaits for them a while.",
-          "properties": {
-            "element": {
-              "description": "The code field's element, from the last snapshot.",
-              "format": "uint32",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "op": {
-              "const": "code",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "element"
-          ],
-          "type": "object"
-        }
-      ]
-    },
     "BrowserResult": {
       "description": "The broker's reply to one [`BrowserOp`].",
       "oneOf": [
@@ -2434,96 +2003,6 @@
         "label"
       ],
       "type": "object"
-    },
-    "ChannelOp": {
-      "description": "A channel operation: the agent's post-handshake messaging vocabulary.\n\nThe agent never touches a channel socket directly. It asks the broker\nto receive or send; the broker owns the endpoints, stamps identities,\nand enforces the confirmation-rail boundary on state-changing sends.\n\nAccounts: a channel that authenticates to its backend has\none or more accounts, whose secrets only the broker holds. The cell\nnames an account by the opaque handle [`Accounts`](ChannelOp::Accounts)\nreturned, never by anything secret; a credential-less channel (the\nlocal one) takes no account.\n\nPublic because the channel protocol is a cross-crate contract.",
-      "oneOf": [
-        {
-          "description": "Receive the next inbound message on `channel`, or\n[`NoMessage`](ChannelResult::NoMessage) if none is waiting.",
-          "properties": {
-            "account": {
-              "description": "The account handle to receive as, for a credentialed\nchannel; absent for a credential-less one.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "channel": {
-              "description": "The broker-assigned channel id.",
-              "type": "string"
-            },
-            "op": {
-              "const": "receive",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "channel"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "List the accounts of `channel`, as broker-minted handles.",
-          "properties": {
-            "channel": {
-              "description": "The broker-assigned channel id.",
-              "type": "string"
-            },
-            "op": {
-              "const": "accounts",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "channel"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Send `text` on `channel`. The broker stamps the sender from the\nauthenticated peer before delivery — the agent cannot spoof it.\n\nThe broker decides whether the send needs the confirmation rail\n: only a conversational reply — answering an inbound\nmessage the broker delivered on this channel, once — goes\nwithout an approval. Anything else is refused with\n[`Denied`](ChannelResult::Denied) unless `approval` carries a\nbroker-minted token for exactly this channel and text.",
-          "properties": {
-            "account": {
-              "description": "The account handle to send as, for a credentialed channel;\nabsent for a credential-less one.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "approval": {
-              "description": "A broker-minted rail approval (`rail-v1-…`) for exactly this\nchannel and text. Presenting one spends it; a string the\nbroker did not mint, or an expired or mismatched token, is\nrefused.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "channel": {
-              "description": "The broker-assigned channel id.",
-              "type": "string"
-            },
-            "op": {
-              "const": "send",
-              "type": "string"
-            },
-            "state_changing": {
-              "description": "The cell's own view that the message triggers external\nactions. It can put a send on the rail, never take one off:\nthe broker classifies regardless.",
-              "type": "boolean"
-            },
-            "text": {
-              "description": "The message text. Untrusted on receipt; the loop places it\nbelow the system prompt.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "channel",
-            "text",
-            "state_changing"
-          ],
-          "type": "object"
-        }
-      ]
     },
     "ChannelResult": {
       "description": "The broker's reply to one [`ChannelOp`].\n\nReplies are per-operation and carry no more than the op asked for.\nFailures that would leak internals collapse to opaque variants.",
@@ -3208,6 +2687,7 @@
       "description": "Where a delivery goes.",
       "oneOf": [
         {
+          "additionalProperties": false,
           "description": "A channel the session may send on.",
           "properties": {
             "channel": {
@@ -3226,6 +2706,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "A file in the operator's artifact workspace.",
           "properties": {
             "name": {
@@ -3468,130 +2949,6 @@
         "verdict"
       ],
       "type": "object"
-    },
-    "EgressOp": {
-      "description": "An egress operation: the agent's post-handshake outbound-network\nrequest vocabulary.\n\nThe agent never touches the network directly. It presents a\nbroker-minted surrogate (see `hatchling-egress`); the broker\nvalidates the surrogate, checks the destination against the\nallowlist, swaps in the real credential, and forwards the request.\n\nThere are two ops: `MintSurrogate` (ask the broker for a surrogate\nfor a destination the peer is granted for) and `Egress` (perform a\nrequest with a previously minted surrogate). Two more move a body\ntoo large for one frame (v13): `Stage` sends a request body's parts\nbefore its `Egress` op, and `Read` fetches an answer's body after\nits `Ok`, a part at a time.\n\nPublic because the egress protocol is a cross-crate contract.",
-      "oneOf": [
-        {
-          "description": "Mints a surrogate for `destination`. The broker checks the\npeer's grant for the destination, then the egress allowlist.\nThe surrogate is bound to (`peer_uid`, `destination`, `expiry`).",
-          "properties": {
-            "destination": {
-              "description": "Destination `host:port` to mint the surrogate for.",
-              "type": "string"
-            },
-            "op": {
-              "const": "mint-surrogate",
-              "type": "string"
-            },
-            "ttl_secs": {
-              "description": "Time-to-live in seconds.",
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "required": [
-            "op",
-            "destination",
-            "ttl_secs"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Performs an outbound request with a previously minted surrogate.",
-          "properties": {
-            "body_b64": {
-              "description": "Request body bytes, base64-encoded: all of it, or what\nfollows the `staged` bytes. Bounded.",
-              "type": "string"
-            },
-            "destination": {
-              "description": "Destination `host:port`. Must match the surrogate's binding\nand the allowlist.",
-              "type": "string"
-            },
-            "headers": {
-              "description": "Request headers (name, value). `Authorization` and `Host`\nare forbidden — they come from the swap.",
-              "items": {
-                "maxItems": 2,
-                "minItems": 2,
-                "prefixItems": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "string"
-                  }
-                ],
-                "type": "array"
-              },
-              "type": "array"
-            },
-            "method": {
-              "description": "HTTP method (`GET`, `POST`, etc.).",
-              "type": "string"
-            },
-            "op": {
-              "const": "egress",
-              "type": "string"
-            },
-            "path": {
-              "description": "Request path, starting with `/`.",
-              "type": "string"
-            },
-            "staged": {
-              "default": 0,
-              "description": "How many bytes the body begins with, sent before this op in\n`Stage` parts (v13); 0 when `body_b64` is all of it. The\nbroker refuses the request if its stage holds a different\ncount, and empties the stage either way.",
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "surrogate_b64": {
-              "description": "The broker-minted surrogate authorizing this request.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "method",
-            "destination",
-            "path",
-            "headers",
-            "body_b64",
-            "surrogate_b64"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Adds a part of a request body to the session's stage (v13), for\nan `Egress` op to send. The stage holds at most the egress\nproxy's request bound.",
-          "properties": {
-            "op": {
-              "const": "stage",
-              "type": "string"
-            },
-            "part_b64": {
-              "description": "The part, base64-encoded: at most [`EGRESS_PART_BYTES`] bytes.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "part_b64"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Reads the next part of the body the broker holds from the last\n`Ok` answer (v13): what its `more` said was left.",
-          "properties": {
-            "op": {
-              "const": "read",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op"
-          ],
-          "type": "object"
-        }
-      ]
     },
     "EgressResult": {
       "description": "The broker's reply to one [`EgressOp`].\n\nReplies are per-operation. Failures that would leak internals\ncollapse to opaque variants: the agent learns that the op failed,\nnot why.",
@@ -3976,112 +3333,6 @@
         }
       ]
     },
-    "GoalsOp": {
-      "description": "A goals operation: the agent's post-handshake write vocabulary for\nthe goals and tracking store.\n\nEvery variant writes, and nothing else does: reads are a separate\nsession kind ([`QueryOp`]). A read-only holder — the feed — speaks a\nvocabulary with no write in it, and no goals op can be spelled as a\nquery. Every op is bound to the broker-asserted peer uid; none names\na user.\n\nPublic because the goals protocol is a cross-crate contract: the\nagent, the broker, and test fixtures all speak it.",
-      "oneOf": [
-        {
-          "description": "Records a new open goal the user explicitly asked for. The broker\nmints the id: a create never overwrites a goal.",
-          "properties": {
-            "detail": {
-              "description": "Free-form detail; may be empty.",
-              "type": "string"
-            },
-            "op": {
-              "const": "goal-create",
-              "type": "string"
-            },
-            "title": {
-              "description": "One-line title.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "title",
-            "detail"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Changes the title and/or detail of an open goal. At least one\nmust be set.",
-          "properties": {
-            "detail": {
-              "description": "A new detail, or `None` to keep it.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "id": {
-              "description": "The goal id, as minted at create.",
-              "type": "string"
-            },
-            "op": {
-              "const": "goal-update",
-              "type": "string"
-            },
-            "title": {
-              "description": "A new title, or `None` to keep it.",
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "op",
-            "id"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Closes an open goal with the outcome the user named. Final: a\nclosed goal is kept but never changes again.",
-          "properties": {
-            "id": {
-              "description": "The goal id.",
-              "type": "string"
-            },
-            "op": {
-              "const": "goal-close",
-              "type": "string"
-            },
-            "outcome": {
-              "description": "`achieved` or `abandoned`.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "id",
-            "outcome"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Appends one entry to the user's append-only tracking log.",
-          "properties": {
-            "op": {
-              "const": "tracking-append",
-              "type": "string"
-            },
-            "source": {
-              "description": "Where the report came from (`user`, `whatsapp`, …), carried\nverbatim as the entry's original source.",
-              "type": "string"
-            },
-            "text": {
-              "description": "What happened.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "source",
-            "text"
-          ],
-          "type": "object"
-        }
-      ]
-    },
     "GoalsResult": {
       "description": "The broker's reply to one [`GoalsOp`].",
       "oneOf": [
@@ -4317,65 +3568,6 @@
       ],
       "type": "object"
     },
-    "HookOp": {
-      "description": "A hook operation: the agent's vocabulary for the\nbroker-owned hook registry.\n\nAs for schedules, there is no list or read op: the registry is\nbroker-private. Hooks are created and cancelled through the\npeer-authorized session only, never from a scheduled run's session.",
-      "oneOf": [
-        {
-          "description": "Register a hook.",
-          "properties": {
-            "channel": {
-              "description": "The channel a hook run's output is delivered to. Must be one\nthe grants may send on.",
-              "type": "string"
-            },
-            "grants": {
-              "description": "The capabilities a hook run may use: a subset of the\ncreator's, checked when it is created and again when it fires.",
-              "items": {
-                "$ref": "#/$defs/ScheduleGrant"
-              },
-              "type": "array"
-            },
-            "op": {
-              "const": "create",
-              "type": "string"
-            },
-            "source": {
-              "$ref": "#/$defs/HookSource",
-              "description": "The event it fires on."
-            },
-            "task": {
-              "description": "The task a hook run is given. Untrusted text.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "source",
-            "task",
-            "grants",
-            "channel"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Cancel a hook by the id `Create` returned.",
-          "properties": {
-            "id": {
-              "description": "The hook id.",
-              "type": "string"
-            },
-            "op": {
-              "const": "cancel",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "id"
-          ],
-          "type": "object"
-        }
-      ]
-    },
     "HookResult": {
       "description": "The broker's reply to one [`HookOp`].",
       "oneOf": [
@@ -4473,6 +3665,7 @@
       "description": "What a hook fires on: a closed set of event sources, each\nnamed by the broker when it observes the event.\n\nThere is no free-form source. A string-typed source could be claimed\nby anything that can write text; these can only be asserted by the\nbroker code that observes them. A frame naming any other source does\nnot decode, and ends the session.",
       "oneOf": [
         {
+          "additionalProperties": false,
           "description": "A message arrived on a local channel through the broker's\nauthenticated ingress.",
           "properties": {
             "channel": {
@@ -4491,6 +3684,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "A run of one schedule finished.",
           "properties": {
             "schedule_id": {
@@ -4594,6 +3788,7 @@
       "description": "Where an idea was captured from.",
       "oneOf": [
         {
+          "additionalProperties": false,
           "description": "A chat with the user.",
           "properties": {
             "source": {
@@ -4607,6 +3802,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "An explicit command from the user.",
           "properties": {
             "source": {
@@ -4620,6 +3816,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "A feed item, which the broker re-reads to record its provenance.",
           "properties": {
             "id": {
@@ -4856,166 +4053,6 @@
         "value"
       ],
       "type": "object"
-    },
-    "MemoryOp": {
-      "description": "A memory operation: the agent's post-handshake memory vocabulary.\n\nEach variant names exactly one item and performs exactly one\naction. There is deliberately no list, bulk-read, or dump variant —\nthe protocol cannot express enumeration, so a compromised agent\ncannot bulk-read the store. The no-list rule applies by\nanalogy: scoped reads, no dumps.\n\nPublic because the memory protocol is a cross-crate contract: the\nagent, the broker, and test fixtures all speak it.",
-      "oneOf": [
-        {
-          "description": "Stores `content` under (`scope`, `id`), replacing any existing\nvalue. `retention` is `keep` or `ttl-secs:<n>`: there is no\ndefault, the caller names it explicitly.",
-          "properties": {
-            "content": {
-              "description": "The item content.",
-              "type": "string"
-            },
-            "id": {
-              "description": "The item id within the scope.",
-              "type": "string"
-            },
-            "op": {
-              "const": "write",
-              "type": "string"
-            },
-            "retention": {
-              "description": "`keep` or `ttl-secs:<n>`.",
-              "type": "string"
-            },
-            "scope": {
-              "description": "`user`, `project`, or `session`. The broker re-validates:\nthe agent's bytes are never trusted.",
-              "type": "string"
-            },
-            "tags": {
-              "description": "Tags for scoped recall.",
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            }
-          },
-          "required": [
-            "op",
-            "scope",
-            "id",
-            "content",
-            "tags",
-            "retention"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Recalls the item stored under (`scope`, `id`).",
-          "properties": {
-            "id": {
-              "description": "The item id within the scope.",
-              "type": "string"
-            },
-            "op": {
-              "const": "recall",
-              "type": "string"
-            },
-            "scope": {
-              "description": "`user`, `project`, or `session`.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "scope",
-            "id"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Recalls items under `scope` carrying `tag`, ordered by id, one\npage per op. Scoped, not a dump: the caller must already know the\ntag.",
-          "properties": {
-            "after": {
-              "description": "Resume after this cursor (a memory id): the previous page's\n`next`. Absent for the first page.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "op": {
-              "const": "recall-by-tag",
-              "type": "string"
-            },
-            "scope": {
-              "description": "`user`, `project`, or `session`.",
-              "type": "string"
-            },
-            "tag": {
-              "description": "The tag to match.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "scope",
-            "tag"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Removes the item stored under (`scope`, `id`). Idempotent:\nremoving a missing item reports\n[`Removed`](MemoryResult::Removed) with `removed: false`.",
-          "properties": {
-            "id": {
-              "description": "The item id within the scope.",
-              "type": "string"
-            },
-            "op": {
-              "const": "remove",
-              "type": "string"
-            },
-            "scope": {
-              "description": "`user`, `project`, or `session`.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "scope",
-            "id"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Appends `text` to the session's append-only context log.",
-          "properties": {
-            "op": {
-              "const": "context-append",
-              "type": "string"
-            },
-            "text": {
-              "description": "The note to append.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "text"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Reads the session's context entries in sequence order, one page\nper op.",
-          "properties": {
-            "after": {
-              "description": "Resume after this cursor (a sequence number): the previous\npage's `next`. Absent for the first page.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "op": {
-              "const": "context-read",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op"
-          ],
-          "type": "object"
-        }
-      ]
     },
     "MemoryResult": {
       "description": "The broker's reply to one [`MemoryOp`].\n\nMirrors the request: write ops get [`Stored`](MemoryResult::Stored),\nrecall ops get [`Item`](MemoryResult::Item) or\n[`NotFound`](MemoryResult::NotFound).",
@@ -5629,6 +4666,7 @@
       "description": "What to do to an element.",
       "oneOf": [
         {
+          "additionalProperties": false,
           "description": "Click it.",
           "properties": {
             "action": {
@@ -5642,6 +4680,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Focus it and type `text`, as keystrokes would.",
           "properties": {
             "action": {
@@ -5660,6 +4699,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Focus it and press one key.",
           "properties": {
             "action": {
@@ -5678,6 +4718,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Choose the option of a list whose text is `option`.",
           "properties": {
             "action": {
@@ -5942,115 +4983,6 @@
         }
       ]
     },
-    "QueryOp": {
-      "description": "A read-scoped query: the vocabulary the feed reads through.\n\nEvery variant reads, and nothing else is expressible here: the\nwrites live in [`GoalsOp`], a different session kind. Each query\nselects one store; every reply item is a feed item carrying its\nprovenance (which store, and its original source) from the store\nlayer.\n\n`after` resumes a paged query past the `next` cursor of the previous\nreply.",
-      "oneOf": [
-        {
-          "description": "The user's goals, ordered by id.",
-          "properties": {
-            "after": {
-              "description": "Resume after this cursor (a goal id).",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "op": {
-              "const": "goals",
-              "type": "string"
-            },
-            "status": {
-              "description": "`open`, `closed`, or `any`.",
-              "type": "string"
-            },
-            "updated_since_secs": {
-              "description": "Only goals changed at or after this unix time.",
-              "format": "uint64",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "op",
-            "status"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "The user's tracking entries, in log order.",
-          "properties": {
-            "after": {
-              "description": "Resume after this cursor (a sequence number).",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "op": {
-              "const": "tracking",
-              "type": "string"
-            },
-            "since_secs": {
-              "description": "Only entries recorded at or after this unix time.",
-              "format": "uint64",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "source": {
-              "description": "Only entries reported from this source.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "until_secs": {
-              "description": "Only entries recorded before this unix time.",
-              "format": "uint64",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "op"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "The user's memory items carrying `tag`, ordered by id. Tag\nscoped like every memory read, and gated by the memory grants.",
-          "properties": {
-            "after": {
-              "description": "Resume after this cursor (a memory id).",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "op": {
-              "const": "memory",
-              "type": "string"
-            },
-            "tag": {
-              "description": "The tag to recall.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "tag"
-          ],
-          "type": "object"
-        }
-      ]
-    },
     "QueryResult": {
       "description": "The broker's reply to one [`QueryOp`].",
       "oneOf": [
@@ -6114,6 +5046,7 @@
       "description": "One capability a scheduled run may hold. The vocabulary mirrors the\nbroker's own grants, so \"subset of the creator's\" is an exact set\ncomparison.",
       "oneOf": [
         {
+          "additionalProperties": false,
           "description": "A vault grant: `action` on the secret `name`.",
           "properties": {
             "action": {
@@ -6137,6 +5070,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "An egress grant for one `host:port` destination.",
           "properties": {
             "destination": {
@@ -6155,6 +5089,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "A memory grant: `action` in `scope`.",
           "properties": {
             "action": {
@@ -6178,6 +5113,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "A goals or query grant, by action name.",
           "properties": {
             "action": {
@@ -6196,6 +5132,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Sending on a channel.",
           "properties": {
             "channel": {
@@ -6316,6 +5253,7 @@
       "description": "A schedule operation: the agent's vocabulary for the\nbroker-owned schedule store.\n\nThere is no list, read, or describe op: the store is broker-private,\nand the cell never sees it, not even read-only. It creates a schedule\n(and learns only its id) and cancels one by that id. Every op is\nbound to the broker-asserted peer; a schedule's grants must be a\nsubset of the creator's, checked when it is created and again when\nit fires.\n\nPublic because the schedule protocol is a cross-crate contract.",
       "oneOf": [
         {
+          "additionalProperties": false,
           "description": "Create a schedule.",
           "properties": {
             "channel": {
@@ -6352,6 +5290,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Create a feed: a schedule whose run is a digest of the\nuser's own records, generated by the broker, read-only.\n\nThere is no task and no grants field: the broker derives the read\ngrants from `feed` (one per section), so a feed can never hold a\nwrite. They must be a subset of the creator's, as for `Create`.",
           "properties": {
             "channel": {
@@ -6380,6 +5319,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Cancel a schedule by the id `Create` returned.",
           "properties": {
             "id": {
@@ -6398,6 +5338,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "List the schedules the caller may see, a page at a time:\nthose whose every grant the caller holds, in id order. Read-only;\nnothing says how many others exist.",
           "properties": {
             "after": {
@@ -6418,6 +5359,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Ask for one follow-up of this run: a one-shot run of\n`task`, `delay_secs` from now, delivered to this run's channel.\n\nOnly a scheduled or hook run's own session may ask, and only once\nper run. The broker knows the run's grants and its depth in the\nfollow-up chain; the request carries neither. `grants` must be a\nsubset of the *run's* grants, and a run at the chain's depth bound\nis refused.",
           "properties": {
             "delay_secs": {
@@ -6451,6 +5393,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Mark a schedule's fire of unknown outcome resolved: the owner's\nword, after looking at what it did (WO-025). The schedule resumes\nits cadence; a one-shot is done. The owner's alone.",
           "properties": {
             "id": {
@@ -6469,6 +5412,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Run a schedule's fire of unknown outcome again, as a new attempt:\nit is due now, and runs as any fire does, under the grants the\ncreator holds then (WO-025). The owner's alone.",
           "properties": {
             "id": {
@@ -6487,6 +5431,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "List the results that couldn't be delivered, kept for the owner, a\npage at a time, oldest first. The owner's alone.",
           "properties": {
             "after": {
@@ -6507,6 +5452,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Dismiss a parked result, once the owner has read it. The owner's\nalone.",
           "properties": {
             "id": {
@@ -6788,6 +5734,7 @@
       "description": "When a schedule fires. Every form names an IANA timezone explicitly:\nthere is no server-local default that shifts when the host moves.\n\n`tz` is required, in the type and in the published schema. A\nrequest that leaves it out or sends `null` still decodes, with an empty\nname, so the broker refuses it by name (`missing-timezone`) instead of\nfailing the whole frame; nothing is ever defaulted.",
       "oneOf": [
         {
+          "additionalProperties": false,
           "description": "A five-field cron expression (`minute hour day-of-month month\nday-of-week`), evaluated in `tz`.",
           "properties": {
             "every": {
@@ -6811,6 +5758,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Once, at a local date and time (`2026-10-01T09:00`) in `tz`.",
           "properties": {
             "at": {
@@ -6892,8 +5840,68 @@
       "description": "A post-handshake session request: a vault op, an egress op, or a\nchannel op.\n\nv4 unifies the session vocabulary. The `kind` tag discriminates:\n`vault` frames carry a [`VaultOp`], `egress` frames carry an\n[`EgressOp`], `channel` frames carry a [`ChannelOp`]. Unknown kinds\nare protocol violations — the session ends, unknown traffic is never\nacted on.\n\nPublic because the session protocol is a cross-crate contract.",
       "oneOf": [
         {
-          "$ref": "#/$defs/VaultOp",
           "description": "A vault operation.",
+          "oneOf": [
+            {
+              "description": "Stores `secret_b64` under `name`, replacing any existing value.\nThe secret is base64: arbitrary bytes inside framed JSON.",
+              "properties": {
+                "name": {
+                  "description": "Validated [`SecretName`](crate::SecretName), as a string.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "store",
+                  "type": "string"
+                },
+                "secret_b64": {
+                  "description": "Base64-encoded secret bytes.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "name",
+                "secret_b64"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Fetches the secret stored under `name`.",
+              "properties": {
+                "name": {
+                  "description": "Validated [`SecretName`](crate::SecretName), as a string.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "fetch",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "name"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Removes the secret stored under `name`. Idempotent: removing a\nmissing secret reports [`Removed`](VaultResult::Removed).",
+              "properties": {
+                "name": {
+                  "description": "Validated [`SecretName`](crate::SecretName), as a string.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "remove",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "name"
+              ],
+              "type": "object"
+            }
+          ],
           "properties": {
             "kind": {
               "const": "vault",
@@ -6906,8 +5914,128 @@
           "type": "object"
         },
         {
-          "$ref": "#/$defs/EgressOp",
           "description": "An egress operation.",
+          "oneOf": [
+            {
+              "description": "Mints a surrogate for `destination`. The broker checks the\npeer's grant for the destination, then the egress allowlist.\nThe surrogate is bound to (`peer_uid`, `destination`, `expiry`).",
+              "properties": {
+                "destination": {
+                  "description": "Destination `host:port` to mint the surrogate for.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "mint-surrogate",
+                  "type": "string"
+                },
+                "ttl_secs": {
+                  "description": "Time-to-live in seconds.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "op",
+                "destination",
+                "ttl_secs"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Performs an outbound request with a previously minted surrogate.",
+              "properties": {
+                "body_b64": {
+                  "description": "Request body bytes, base64-encoded: all of it, or what\nfollows the `staged` bytes. Bounded.",
+                  "type": "string"
+                },
+                "destination": {
+                  "description": "Destination `host:port`. Must match the surrogate's binding\nand the allowlist.",
+                  "type": "string"
+                },
+                "headers": {
+                  "description": "Request headers (name, value). `Authorization` and `Host`\nare forbidden — they come from the swap.",
+                  "items": {
+                    "maxItems": 2,
+                    "minItems": 2,
+                    "prefixItems": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ],
+                    "type": "array"
+                  },
+                  "type": "array"
+                },
+                "method": {
+                  "description": "HTTP method (`GET`, `POST`, etc.).",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "egress",
+                  "type": "string"
+                },
+                "path": {
+                  "description": "Request path, starting with `/`.",
+                  "type": "string"
+                },
+                "staged": {
+                  "default": 0,
+                  "description": "How many bytes the body begins with, sent before this op in\n`Stage` parts (v13); 0 when `body_b64` is all of it. The\nbroker refuses the request if its stage holds a different\ncount, and empties the stage either way.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "surrogate_b64": {
+                  "description": "The broker-minted surrogate authorizing this request.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "method",
+                "destination",
+                "path",
+                "headers",
+                "body_b64",
+                "surrogate_b64"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Adds a part of a request body to the session's stage (v13), for\nan `Egress` op to send. The stage holds at most the egress\nproxy's request bound.",
+              "properties": {
+                "op": {
+                  "const": "stage",
+                  "type": "string"
+                },
+                "part_b64": {
+                  "description": "The part, base64-encoded: at most [`EGRESS_PART_BYTES`] bytes.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "part_b64"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Reads the next part of the body the broker holds from the last\n`Ok` answer (v13): what its `more` said was left.",
+              "properties": {
+                "op": {
+                  "const": "read",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
           "properties": {
             "kind": {
               "const": "egress",
@@ -6920,8 +6048,94 @@
           "type": "object"
         },
         {
-          "$ref": "#/$defs/ChannelOp",
           "description": "A channel operation.",
+          "oneOf": [
+            {
+              "description": "Receive the next inbound message on `channel`, or\n[`NoMessage`](ChannelResult::NoMessage) if none is waiting.",
+              "properties": {
+                "account": {
+                  "description": "The account handle to receive as, for a credentialed\nchannel; absent for a credential-less one.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "channel": {
+                  "description": "The broker-assigned channel id.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "receive",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "channel"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "List the accounts of `channel`, as broker-minted handles.",
+              "properties": {
+                "channel": {
+                  "description": "The broker-assigned channel id.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "accounts",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "channel"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Send `text` on `channel`. The broker stamps the sender from the\nauthenticated peer before delivery — the agent cannot spoof it.\n\nThe broker decides whether the send needs the confirmation rail\n: only a conversational reply — answering an inbound\nmessage the broker delivered on this channel, once — goes\nwithout an approval. Anything else is refused with\n[`Denied`](ChannelResult::Denied) unless `approval` carries a\nbroker-minted token for exactly this channel and text.",
+              "properties": {
+                "account": {
+                  "description": "The account handle to send as, for a credentialed channel;\nabsent for a credential-less one.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "approval": {
+                  "description": "A broker-minted rail approval (`rail-v1-…`) for exactly this\nchannel and text. Presenting one spends it; a string the\nbroker did not mint, or an expired or mismatched token, is\nrefused.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "channel": {
+                  "description": "The broker-assigned channel id.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "send",
+                  "type": "string"
+                },
+                "state_changing": {
+                  "description": "The cell's own view that the message triggers external\nactions. It can put a send on the rail, never take one off:\nthe broker classifies regardless.",
+                  "type": "boolean"
+                },
+                "text": {
+                  "description": "The message text. Untrusted on receipt; the loop places it\nbelow the system prompt.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "channel",
+                "text",
+                "state_changing"
+              ],
+              "type": "object"
+            }
+          ],
           "properties": {
             "kind": {
               "const": "channel",
@@ -6934,8 +6148,164 @@
           "type": "object"
         },
         {
-          "$ref": "#/$defs/MemoryOp",
           "description": "A memory operation.",
+          "oneOf": [
+            {
+              "description": "Stores `content` under (`scope`, `id`), replacing any existing\nvalue. `retention` is `keep` or `ttl-secs:<n>`: there is no\ndefault, the caller names it explicitly.",
+              "properties": {
+                "content": {
+                  "description": "The item content.",
+                  "type": "string"
+                },
+                "id": {
+                  "description": "The item id within the scope.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "write",
+                  "type": "string"
+                },
+                "retention": {
+                  "description": "`keep` or `ttl-secs:<n>`.",
+                  "type": "string"
+                },
+                "scope": {
+                  "description": "`user`, `project`, or `session`. The broker re-validates:\nthe agent's bytes are never trusted.",
+                  "type": "string"
+                },
+                "tags": {
+                  "description": "Tags for scoped recall.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "op",
+                "scope",
+                "id",
+                "content",
+                "tags",
+                "retention"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Recalls the item stored under (`scope`, `id`).",
+              "properties": {
+                "id": {
+                  "description": "The item id within the scope.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "recall",
+                  "type": "string"
+                },
+                "scope": {
+                  "description": "`user`, `project`, or `session`.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "scope",
+                "id"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Recalls items under `scope` carrying `tag`, ordered by id, one\npage per op. Scoped, not a dump: the caller must already know the\ntag.",
+              "properties": {
+                "after": {
+                  "description": "Resume after this cursor (a memory id): the previous page's\n`next`. Absent for the first page.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "op": {
+                  "const": "recall-by-tag",
+                  "type": "string"
+                },
+                "scope": {
+                  "description": "`user`, `project`, or `session`.",
+                  "type": "string"
+                },
+                "tag": {
+                  "description": "The tag to match.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "scope",
+                "tag"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Removes the item stored under (`scope`, `id`). Idempotent:\nremoving a missing item reports\n[`Removed`](MemoryResult::Removed) with `removed: false`.",
+              "properties": {
+                "id": {
+                  "description": "The item id within the scope.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "remove",
+                  "type": "string"
+                },
+                "scope": {
+                  "description": "`user`, `project`, or `session`.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "scope",
+                "id"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Appends `text` to the session's append-only context log.",
+              "properties": {
+                "op": {
+                  "const": "context-append",
+                  "type": "string"
+                },
+                "text": {
+                  "description": "The note to append.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Reads the session's context entries in sequence order, one page\nper op.",
+              "properties": {
+                "after": {
+                  "description": "Resume after this cursor (a sequence number): the previous\npage's `next`. Absent for the first page.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "op": {
+                  "const": "context-read",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
           "properties": {
             "kind": {
               "const": "memory",
@@ -6948,8 +6318,37 @@
           "type": "object"
         },
         {
-          "$ref": "#/$defs/SkillOp",
           "description": "A skill operation.",
+          "oneOf": [
+            {
+              "description": "Runs `skill` on `input`, exercising `capability`.",
+              "properties": {
+                "capability": {
+                  "$ref": "#/$defs/CapabilityName",
+                  "description": "The declared capability this invocation exercises. Typed on\nthe wire: a malformed name fails to decode, which makes the\nframe a protocol violation and ends the session."
+                },
+                "input": {
+                  "description": "The skill's input. Opaque to the broker.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "invoke",
+                  "type": "string"
+                },
+                "skill": {
+                  "description": "The exact registered skill id, `name@version`. Looked up\nverbatim: a bare name or another version matches nothing.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "skill",
+                "capability",
+                "input"
+              ],
+              "type": "object"
+            }
+          ],
           "properties": {
             "kind": {
               "const": "skill",
@@ -6962,8 +6361,110 @@
           "type": "object"
         },
         {
-          "$ref": "#/$defs/GoalsOp",
           "description": "A goals or tracking write.",
+          "oneOf": [
+            {
+              "description": "Records a new open goal the user explicitly asked for. The broker\nmints the id: a create never overwrites a goal.",
+              "properties": {
+                "detail": {
+                  "description": "Free-form detail; may be empty.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "goal-create",
+                  "type": "string"
+                },
+                "title": {
+                  "description": "One-line title.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "title",
+                "detail"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Changes the title and/or detail of an open goal. At least one\nmust be set.",
+              "properties": {
+                "detail": {
+                  "description": "A new detail, or `None` to keep it.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "id": {
+                  "description": "The goal id, as minted at create.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "goal-update",
+                  "type": "string"
+                },
+                "title": {
+                  "description": "A new title, or `None` to keep it.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "op",
+                "id"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Closes an open goal with the outcome the user named. Final: a\nclosed goal is kept but never changes again.",
+              "properties": {
+                "id": {
+                  "description": "The goal id.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "goal-close",
+                  "type": "string"
+                },
+                "outcome": {
+                  "description": "`achieved` or `abandoned`.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "id",
+                "outcome"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Appends one entry to the user's append-only tracking log.",
+              "properties": {
+                "op": {
+                  "const": "tracking-append",
+                  "type": "string"
+                },
+                "source": {
+                  "description": "Where the report came from (`user`, `whatsapp`, …), carried\nverbatim as the entry's original source.",
+                  "type": "string"
+                },
+                "text": {
+                  "description": "What happened.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "source",
+                "text"
+              ],
+              "type": "object"
+            }
+          ],
           "properties": {
             "kind": {
               "const": "goals",
@@ -6976,8 +6477,113 @@
           "type": "object"
         },
         {
-          "$ref": "#/$defs/QueryOp",
           "description": "A read-scoped query over goals, tracking, and memory.",
+          "oneOf": [
+            {
+              "description": "The user's goals, ordered by id.",
+              "properties": {
+                "after": {
+                  "description": "Resume after this cursor (a goal id).",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "op": {
+                  "const": "goals",
+                  "type": "string"
+                },
+                "status": {
+                  "description": "`open`, `closed`, or `any`.",
+                  "type": "string"
+                },
+                "updated_since_secs": {
+                  "description": "Only goals changed at or after this unix time.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "op",
+                "status"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "The user's tracking entries, in log order.",
+              "properties": {
+                "after": {
+                  "description": "Resume after this cursor (a sequence number).",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "op": {
+                  "const": "tracking",
+                  "type": "string"
+                },
+                "since_secs": {
+                  "description": "Only entries recorded at or after this unix time.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "source": {
+                  "description": "Only entries reported from this source.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "until_secs": {
+                  "description": "Only entries recorded before this unix time.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "The user's memory items carrying `tag`, ordered by id. Tag\nscoped like every memory read, and gated by the memory grants.",
+              "properties": {
+                "after": {
+                  "description": "Resume after this cursor (a memory id).",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "op": {
+                  "const": "memory",
+                  "type": "string"
+                },
+                "tag": {
+                  "description": "The tag to recall.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "tag"
+              ],
+              "type": "object"
+            }
+          ],
           "properties": {
             "kind": {
               "const": "query",
@@ -6990,8 +6596,218 @@
           "type": "object"
         },
         {
-          "$ref": "#/$defs/ScheduleOp",
           "description": "A schedule operation.",
+          "oneOf": [
+            {
+              "description": "Create a schedule.",
+              "properties": {
+                "channel": {
+                  "description": "The channel the run's output is delivered to. Must be one the\ngrants may send on.",
+                  "type": "string"
+                },
+                "grants": {
+                  "description": "The capabilities the run may use: a subset of the creator's.",
+                  "items": {
+                    "$ref": "#/$defs/ScheduleGrant"
+                  },
+                  "type": "array"
+                },
+                "op": {
+                  "const": "create",
+                  "type": "string"
+                },
+                "task": {
+                  "description": "The task the scheduled run is given. Untrusted text: it\nenters the run below the system prompt, as a user task.",
+                  "type": "string"
+                },
+                "when": {
+                  "$ref": "#/$defs/ScheduleSpec",
+                  "description": "When it fires."
+                }
+              },
+              "required": [
+                "op",
+                "when",
+                "task",
+                "grants",
+                "channel"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Create a feed: a schedule whose run is a digest of the\nuser's own records, generated by the broker, read-only.\n\nThere is no task and no grants field: the broker derives the read\ngrants from `feed` (one per section), so a feed can never hold a\nwrite. They must be a subset of the creator's, as for `Create`.",
+              "properties": {
+                "channel": {
+                  "description": "The channel each digest is delivered to.",
+                  "type": "string"
+                },
+                "feed": {
+                  "$ref": "#/$defs/FeedSpec",
+                  "description": "What each digest gathers."
+                },
+                "op": {
+                  "const": "create-feed",
+                  "type": "string"
+                },
+                "when": {
+                  "$ref": "#/$defs/ScheduleSpec",
+                  "description": "When it fires."
+                }
+              },
+              "required": [
+                "op",
+                "when",
+                "channel",
+                "feed"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Cancel a schedule by the id `Create` returned.",
+              "properties": {
+                "id": {
+                  "description": "The schedule id.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "cancel",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "id"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "List the schedules the caller may see, a page at a time:\nthose whose every grant the caller holds, in id order. Read-only;\nnothing says how many others exist.",
+              "properties": {
+                "after": {
+                  "description": "Resume after this schedule id: a previous page's `next`.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "op": {
+                  "const": "list",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Ask for one follow-up of this run: a one-shot run of\n`task`, `delay_secs` from now, delivered to this run's channel.\n\nOnly a scheduled or hook run's own session may ask, and only once\nper run. The broker knows the run's grants and its depth in the\nfollow-up chain; the request carries neither. `grants` must be a\nsubset of the *run's* grants, and a run at the chain's depth bound\nis refused.",
+              "properties": {
+                "delay_secs": {
+                  "description": "How long from now it fires, in seconds.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "grants": {
+                  "description": "The capabilities it may use: a subset of this run's.",
+                  "items": {
+                    "$ref": "#/$defs/ScheduleGrant"
+                  },
+                  "type": "array"
+                },
+                "op": {
+                  "const": "followup",
+                  "type": "string"
+                },
+                "task": {
+                  "description": "The follow-up run's task. Untrusted text, as for `Create`.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "task",
+                "delay_secs",
+                "grants"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Mark a schedule's fire of unknown outcome resolved: the owner's\nword, after looking at what it did (WO-025). The schedule resumes\nits cadence; a one-shot is done. The owner's alone.",
+              "properties": {
+                "id": {
+                  "description": "The schedule id.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "resolve",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "id"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Run a schedule's fire of unknown outcome again, as a new attempt:\nit is due now, and runs as any fire does, under the grants the\ncreator holds then (WO-025). The owner's alone.",
+              "properties": {
+                "id": {
+                  "description": "The schedule id.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "retry",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "id"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "List the results that couldn't be delivered, kept for the owner, a\npage at a time, oldest first. The owner's alone.",
+              "properties": {
+                "after": {
+                  "description": "Resume after this parked result: a previous page's `next`.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "op": {
+                  "const": "list-parked",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Dismiss a parked result, once the owner has read it. The owner's\nalone.",
+              "properties": {
+                "id": {
+                  "description": "The parked result's id, as `ListParked` gave it.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "dismiss",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "id"
+              ],
+              "type": "object"
+            }
+          ],
           "properties": {
             "kind": {
               "const": "schedule",
@@ -7004,8 +6820,63 @@
           "type": "object"
         },
         {
-          "$ref": "#/$defs/HookOp",
           "description": "A hook operation.",
+          "oneOf": [
+            {
+              "description": "Register a hook.",
+              "properties": {
+                "channel": {
+                  "description": "The channel a hook run's output is delivered to. Must be one\nthe grants may send on.",
+                  "type": "string"
+                },
+                "grants": {
+                  "description": "The capabilities a hook run may use: a subset of the\ncreator's, checked when it is created and again when it fires.",
+                  "items": {
+                    "$ref": "#/$defs/ScheduleGrant"
+                  },
+                  "type": "array"
+                },
+                "op": {
+                  "const": "create",
+                  "type": "string"
+                },
+                "source": {
+                  "$ref": "#/$defs/HookSource",
+                  "description": "The event it fires on."
+                },
+                "task": {
+                  "description": "The task a hook run is given. Untrusted text.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "source",
+                "task",
+                "grants",
+                "channel"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Cancel a hook by the id `Create` returned.",
+              "properties": {
+                "id": {
+                  "description": "The hook id.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "cancel",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "id"
+              ],
+              "type": "object"
+            }
+          ],
           "properties": {
             "kind": {
               "const": "hook",
@@ -7018,8 +6889,260 @@
           "type": "object"
         },
         {
-          "$ref": "#/$defs/ArtifactOp",
           "description": "An artifact operation.",
+          "oneOf": [
+            {
+              "description": "Build an artifact.",
+              "properties": {
+                "build_kind": {
+                  "description": "The build kind, a lowercase token (`document`, `preview`, …).\nNot `kind`: that is the session request's own tag.",
+                  "type": "string"
+                },
+                "builder": {
+                  "description": "The builder: an exact registered skill id, `name@version`.",
+                  "type": "string"
+                },
+                "inputs": {
+                  "description": "The inputs. The broker pins each by its content hash; the\nbuilder receives exactly these bytes.",
+                  "items": {
+                    "$ref": "#/$defs/ArtifactInput"
+                  },
+                  "type": "array"
+                },
+                "op": {
+                  "const": "build",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "build_kind",
+                "builder",
+                "inputs"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Deliver a completed build.",
+              "properties": {
+                "build": {
+                  "description": "The build id `Build` returned.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "deliver",
+                  "type": "string"
+                },
+                "to": {
+                  "$ref": "#/$defs/DeliveryTarget",
+                  "description": "Where it goes."
+                }
+              },
+              "required": [
+                "op",
+                "build",
+                "to"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Describe a build as a UI shows it: who built it, as the\nbroker can vouch for now, and what the inspector found.",
+              "properties": {
+                "build": {
+                  "description": "The build id.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "describe",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "build"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Capture an idea: its first revision.",
+              "properties": {
+                "from": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/IdeaSource"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Where it was captured from. A feed item is re-read by\nthe broker, which records its provenance; absent, the idea says\nits source was not stated."
+                },
+                "op": {
+                  "const": "capture-idea",
+                  "type": "string"
+                },
+                "text": {
+                  "description": "The idea's text. Untrusted.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "List the ideas, a page at a time, oldest first.",
+              "properties": {
+                "after": {
+                  "description": "Resume after this idea id: the previous page's `next`.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "op": {
+                  "const": "list-ideas",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Add a development note to an idea. A note withdraws any\nactivation awaiting confirmation: what was proposed has changed.",
+              "properties": {
+                "idea": {
+                  "description": "The idea id.",
+                  "type": "string"
+                },
+                "note": {
+                  "description": "The note. Untrusted.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "note-idea",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "idea",
+                "note"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Propose activating an idea: the broker pins the exact\nbuild request (kind, builder, description, and the hash of every\ninput) and answers with it, for the user to confirm.",
+              "properties": {
+                "build_kind": {
+                  "description": "The build kind.",
+                  "type": "string"
+                },
+                "builder": {
+                  "description": "The builder: an exact registered skill id, `name@version`.",
+                  "type": "string"
+                },
+                "description": {
+                  "description": "What the build is for, as the user will confirm it.",
+                  "type": "string"
+                },
+                "idea": {
+                  "description": "The idea id.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "propose-activation",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "idea",
+                "build_kind",
+                "builder",
+                "description"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Activate a proposed activation, with the confirmation the\nbroker minted when the user confirmed it. Builds exactly the\npinned request.",
+              "properties": {
+                "activation": {
+                  "description": "The activation id `ProposeActivation` returned.",
+                  "type": "string"
+                },
+                "confirmation": {
+                  "description": "The broker-minted confirmation.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "activate",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "activation",
+                "confirmation"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Refine an idea: its text is replaced, and its revision moves on.",
+              "properties": {
+                "idea": {
+                  "description": "The idea id `CaptureIdea` returned.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "refine-idea",
+                  "type": "string"
+                },
+                "text": {
+                  "description": "The refined text. Untrusted.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "idea",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Build from an idea's current revision, through the same pipeline\nas `Build`: the revision is pinned as the one input, `idea`.",
+              "properties": {
+                "build_kind": {
+                  "description": "The build kind.",
+                  "type": "string"
+                },
+                "builder": {
+                  "description": "The builder: an exact registered skill id, `name@version`.",
+                  "type": "string"
+                },
+                "idea": {
+                  "description": "The idea id.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "build-idea",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "idea",
+                "build_kind",
+                "builder"
+              ],
+              "type": "object"
+            }
+          ],
           "properties": {
             "kind": {
               "const": "artifact",
@@ -7032,8 +7155,386 @@
           "type": "object"
         },
         {
-          "$ref": "#/$defs/SpaceOp",
           "description": "A space operation.",
+          "oneOf": [
+            {
+              "description": "Create a space owned by the caller, holding `grants` for its tasks.",
+              "properties": {
+                "grants": {
+                  "description": "The grants the space's tasks may draw on: a subset of the\ncaller's own.",
+                  "items": {
+                    "$ref": "#/$defs/ScheduleGrant"
+                  },
+                  "type": "array"
+                },
+                "name": {
+                  "description": "The display name. Untrusted text; never the space's identity.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "create",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "name",
+                "grants"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Join a space: admission, checked factor by factor.",
+              "properties": {
+                "op": {
+                  "const": "join",
+                  "type": "string"
+                },
+                "space": {
+                  "description": "The space id `Create` returned.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "space"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Store an item in a space.",
+              "properties": {
+                "key": {
+                  "description": "The item's key, a lowercase token.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "put",
+                  "type": "string"
+                },
+                "space": {
+                  "description": "The space id.",
+                  "type": "string"
+                },
+                "ticket": {
+                  "description": "The admission ticket for that space.",
+                  "type": "string"
+                },
+                "value": {
+                  "description": "The item's value. Untrusted text.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "space",
+                "ticket",
+                "key",
+                "value"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Read an item from a space.",
+              "properties": {
+                "key": {
+                  "description": "The item's key.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "get",
+                  "type": "string"
+                },
+                "space": {
+                  "description": "The space id.",
+                  "type": "string"
+                },
+                "ticket": {
+                  "description": "The admission ticket for that space.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "space",
+                "ticket",
+                "key"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Remove an item from a space.",
+              "properties": {
+                "key": {
+                  "description": "The item's key.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "remove",
+                  "type": "string"
+                },
+                "space": {
+                  "description": "The space id.",
+                  "type": "string"
+                },
+                "ticket": {
+                  "description": "The admission ticket for that space.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "space",
+                "ticket",
+                "key"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Add a task to a space: a work item a run can do with a subset of\nthe space's grants.",
+              "properties": {
+                "channel": {
+                  "description": "Where the run's output goes; the grants must include sending\nthere.",
+                  "type": "string"
+                },
+                "grants": {
+                  "description": "The grants the run may use: a subset of the space's.",
+                  "items": {
+                    "$ref": "#/$defs/ScheduleGrant"
+                  },
+                  "type": "array"
+                },
+                "op": {
+                  "const": "add-task",
+                  "type": "string"
+                },
+                "space": {
+                  "description": "The space id.",
+                  "type": "string"
+                },
+                "task": {
+                  "description": "The task text the run is given.",
+                  "type": "string"
+                },
+                "ticket": {
+                  "description": "The admission ticket for that space.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "space",
+                "ticket",
+                "task",
+                "grants",
+                "channel"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Run a space's task: the broker queues a run bound to the space.",
+              "properties": {
+                "op": {
+                  "const": "run-task",
+                  "type": "string"
+                },
+                "space": {
+                  "description": "The space id.",
+                  "type": "string"
+                },
+                "task": {
+                  "description": "The task id `AddTask` returned.",
+                  "type": "string"
+                },
+                "ticket": {
+                  "description": "The admission ticket for that space.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "space",
+                "ticket",
+                "task"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Issue a pairing code for a device to join this space:\nsingle-use, short-lived, and redeemed only on the broker's device\nendpoint.",
+              "properties": {
+                "op": {
+                  "const": "pair",
+                  "type": "string"
+                },
+                "space": {
+                  "description": "The space id.",
+                  "type": "string"
+                },
+                "ticket": {
+                  "description": "The admission ticket for that space.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "space",
+                "ticket"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Pull this space's changes since a version. Only the named\nspace's items move, and only to a member.",
+              "properties": {
+                "op": {
+                  "const": "sync-pull",
+                  "type": "string"
+                },
+                "since": {
+                  "description": "The version the puller already has: changes after it come back.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "space": {
+                  "description": "The space id.",
+                  "type": "string"
+                },
+                "ticket": {
+                  "description": "The admission ticket for that space.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "space",
+                "ticket",
+                "since"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Push changes to this space: last writer wins, and every\nwrite it overwrote unseen goes to the conflict log.",
+              "properties": {
+                "changes": {
+                  "description": "The changes, applied in order.",
+                  "items": {
+                    "$ref": "#/$defs/SyncChange"
+                  },
+                  "type": "array"
+                },
+                "op": {
+                  "const": "sync-push",
+                  "type": "string"
+                },
+                "space": {
+                  "description": "The space id.",
+                  "type": "string"
+                },
+                "ticket": {
+                  "description": "The admission ticket for that space.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "space",
+                "ticket",
+                "changes"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Read this space's conflict log after a sequence number.",
+              "properties": {
+                "after": {
+                  "description": "The last conflict already seen: entries after it come back.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "op": {
+                  "const": "conflicts",
+                  "type": "string"
+                },
+                "space": {
+                  "description": "The space id.",
+                  "type": "string"
+                },
+                "ticket": {
+                  "description": "The admission ticket for that space.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "space",
+                "ticket",
+                "after"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Upload media into this space, bounded and typed by the\nbroker before it is admitted.",
+              "properties": {
+                "data": {
+                  "description": "The bytes, base64.",
+                  "type": "string"
+                },
+                "media_kind": {
+                  "description": "What the uploader says it is: `image` or `audio`. The broker\nchecks the bytes agree; it never takes a content type from the\nuploader.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "put-media",
+                  "type": "string"
+                },
+                "space": {
+                  "description": "The space id.",
+                  "type": "string"
+                },
+                "ticket": {
+                  "description": "The admission ticket for that space.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "media_kind",
+                "space",
+                "ticket",
+                "data"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Fetch media from this space, with headers the broker\nsets.",
+              "properties": {
+                "media": {
+                  "description": "The media id `PutMedia` returned.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "get-media",
+                  "type": "string"
+                },
+                "space": {
+                  "description": "The space id.",
+                  "type": "string"
+                },
+                "ticket": {
+                  "description": "The admission ticket for that space.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "space",
+                "ticket",
+                "media"
+              ],
+              "type": "object"
+            }
+          ],
           "properties": {
             "kind": {
               "const": "space",
@@ -7046,8 +7547,83 @@
           "type": "object"
         },
         {
-          "$ref": "#/$defs/SubagentOp",
           "description": "A subagent operation.",
+          "oneOf": [
+            {
+              "description": "Start a child on `task`, with `budget` steps drawn from the\nparent's and `capabilities` narrowed from the parent's grants.",
+              "properties": {
+                "budget": {
+                  "description": "Steps allocated to the child, spent at allocation.",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "capabilities": {
+                  "description": "What the child may use: a subset of the parent's grants.",
+                  "items": {
+                    "$ref": "#/$defs/ScheduleGrant"
+                  },
+                  "type": "array"
+                },
+                "op": {
+                  "const": "spawn",
+                  "type": "string"
+                },
+                "task": {
+                  "description": "The brief. Untrusted text: it enters the child below its\nsystem prompt, as the child's task.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "task",
+                "budget",
+                "capabilities"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Wait for a child to end, and take its report.",
+              "properties": {
+                "child": {
+                  "description": "The child id `Spawn` returned.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "wait",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "child"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Kill a running child.",
+              "properties": {
+                "child": {
+                  "description": "The child id `Spawn` returned.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "kill",
+                  "type": "string"
+                },
+                "reason": {
+                  "description": "Why, for the activity record.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "child",
+                "reason"
+              ],
+              "type": "object"
+            }
+          ],
           "properties": {
             "kind": {
               "const": "subagent",
@@ -7060,8 +7636,50 @@
           "type": "object"
         },
         {
-          "$ref": "#/$defs/WebOp",
           "description": "A web operation (WO-028).",
+          "oneOf": [
+            {
+              "description": "Read one page.",
+              "properties": {
+                "op": {
+                  "const": "fetch",
+                  "type": "string"
+                },
+                "reason": {
+                  "description": "Why the agent wants it. Shown to the owner when the site needs\ntheir approval, labeled as the agent's words.",
+                  "type": "string"
+                },
+                "url": {
+                  "description": "The page's absolute `https` URL.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "url",
+                "reason"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Search the web, through the search provider the operator chose.",
+              "properties": {
+                "op": {
+                  "const": "search",
+                  "type": "string"
+                },
+                "query": {
+                  "description": "What to search for. It leaves to the provider.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "query"
+              ],
+              "type": "object"
+            }
+          ],
           "properties": {
             "kind": {
               "const": "web",
@@ -7074,8 +7692,180 @@
           "type": "object"
         },
         {
-          "$ref": "#/$defs/BrowserOp",
           "description": "A browser operation (WO-029).",
+          "oneOf": [
+            {
+              "description": "Open `url`, starting the session's browser if there is none.",
+              "properties": {
+                "op": {
+                  "const": "open",
+                  "type": "string"
+                },
+                "reason": {
+                  "description": "Why the agent wants it. Shown to the owner when the site needs\ntheir approval, labeled as the agent's words.",
+                  "type": "string"
+                },
+                "url": {
+                  "description": "The page's absolute `https` URL.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "url",
+                "reason"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "The page as it is now.",
+              "properties": {
+                "op": {
+                  "const": "read",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Act on an element of the last snapshot.",
+              "properties": {
+                "action": {
+                  "$ref": "#/$defs/PageAction",
+                  "description": "What to do to it. Text to type is refused if it holds a secret\nthe broker keeps."
+                },
+                "element": {
+                  "description": "The element's id, from the last snapshot.",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "op": {
+                  "const": "act",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "element",
+                "action"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Scroll the page by most of a screen.",
+              "properties": {
+                "down": {
+                  "description": "Down, or up.",
+                  "type": "boolean"
+                },
+                "op": {
+                  "const": "scroll",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "down"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Ask the owner to allow a site the browser was refused, which a page\nasked for: one of the last page's `refused`.",
+              "properties": {
+                "op": {
+                  "const": "allow",
+                  "type": "string"
+                },
+                "reason": {
+                  "description": "Why the page needs it. Shown to the owner, labeled as the\nagent's words.",
+                  "type": "string"
+                },
+                "site": {
+                  "description": "The site, as the page's `refused` named it (`host:port`).",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "site",
+                "reason"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Close the browser: its cell, profile and files go with it.",
+              "properties": {
+                "op": {
+                  "const": "close",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Sign in on the page with the sign-in the owner keeps for its site\n(WO-030, v16): the broker types it into the fields named, and the\nagent never sees it.",
+              "properties": {
+                "label": {
+                  "description": "Which sign-in, by its label, when the site has more than one.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "op": {
+                  "const": "sign_in",
+                  "type": "string"
+                },
+                "password": {
+                  "description": "The password field's element, from the last snapshot.",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "username": {
+                  "description": "The username field's element, from the last snapshot; none for a\nform that asks for the password alone.",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "op",
+                "password"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "The page asks for a one-time code (WO-030, v17): ask the owner for\nit, and type it into the field named once they give it. The agent\nnever sees it. Asked again while the owner hasn't answered, it\nwaits for them a while.",
+              "properties": {
+                "element": {
+                  "description": "The code field's element, from the last snapshot.",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "op": {
+                  "const": "code",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "element"
+              ],
+              "type": "object"
+            }
+          ],
           "properties": {
             "kind": {
               "const": "browser",
@@ -7720,6 +8510,7 @@
       "description": "A skill operation: the agent's post-handshake skill vocabulary.\n\nOne op, one action: invoke one registered skill, exercising one\ncapability it declared, on one input. The broker owns the registry;\nthe agent names a skill and the broker decides. There is no list or\ndescribe op: the agent learns which skills exist from its\nconfiguration, not by asking the broker to enumerate them.\n\nPublic because the skill protocol is a cross-crate contract.",
       "oneOf": [
         {
+          "additionalProperties": false,
           "description": "Runs `skill` on `input`, exercising `capability`.",
           "properties": {
             "capability": {
@@ -7806,388 +8597,6 @@
           },
           "required": [
             "r"
-          ],
-          "type": "object"
-        }
-      ]
-    },
-    "SpaceOp": {
-      "description": "A space operation.\n\nA space is a named, persistent scope with members. The broker mints\nits id; the caller only gives it a display name. Every op that touches\na space names it **and** presents the admission ticket `Join` returned,\nand the broker re-checks on every call that the ticket was minted for\nexactly that space, in this live session, for this peer, and that the\nsession's broker-asserted principal is still a member. Naming another\ncaller's space gets nothing.\n\nThere is deliberately no op that lists, dumps, or exports spaces or a\nspace's items: the protocol cannot express enumeration.\n\nPublic because the space protocol is a cross-crate contract.",
-      "oneOf": [
-        {
-          "description": "Create a space owned by the caller, holding `grants` for its tasks.",
-          "properties": {
-            "grants": {
-              "description": "The grants the space's tasks may draw on: a subset of the\ncaller's own.",
-              "items": {
-                "$ref": "#/$defs/ScheduleGrant"
-              },
-              "type": "array"
-            },
-            "name": {
-              "description": "The display name. Untrusted text; never the space's identity.",
-              "type": "string"
-            },
-            "op": {
-              "const": "create",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "name",
-            "grants"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Join a space: admission, checked factor by factor.",
-          "properties": {
-            "op": {
-              "const": "join",
-              "type": "string"
-            },
-            "space": {
-              "description": "The space id `Create` returned.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "space"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Store an item in a space.",
-          "properties": {
-            "key": {
-              "description": "The item's key, a lowercase token.",
-              "type": "string"
-            },
-            "op": {
-              "const": "put",
-              "type": "string"
-            },
-            "space": {
-              "description": "The space id.",
-              "type": "string"
-            },
-            "ticket": {
-              "description": "The admission ticket for that space.",
-              "type": "string"
-            },
-            "value": {
-              "description": "The item's value. Untrusted text.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "space",
-            "ticket",
-            "key",
-            "value"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Read an item from a space.",
-          "properties": {
-            "key": {
-              "description": "The item's key.",
-              "type": "string"
-            },
-            "op": {
-              "const": "get",
-              "type": "string"
-            },
-            "space": {
-              "description": "The space id.",
-              "type": "string"
-            },
-            "ticket": {
-              "description": "The admission ticket for that space.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "space",
-            "ticket",
-            "key"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Remove an item from a space.",
-          "properties": {
-            "key": {
-              "description": "The item's key.",
-              "type": "string"
-            },
-            "op": {
-              "const": "remove",
-              "type": "string"
-            },
-            "space": {
-              "description": "The space id.",
-              "type": "string"
-            },
-            "ticket": {
-              "description": "The admission ticket for that space.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "space",
-            "ticket",
-            "key"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Add a task to a space: a work item a run can do with a subset of\nthe space's grants.",
-          "properties": {
-            "channel": {
-              "description": "Where the run's output goes; the grants must include sending\nthere.",
-              "type": "string"
-            },
-            "grants": {
-              "description": "The grants the run may use: a subset of the space's.",
-              "items": {
-                "$ref": "#/$defs/ScheduleGrant"
-              },
-              "type": "array"
-            },
-            "op": {
-              "const": "add-task",
-              "type": "string"
-            },
-            "space": {
-              "description": "The space id.",
-              "type": "string"
-            },
-            "task": {
-              "description": "The task text the run is given.",
-              "type": "string"
-            },
-            "ticket": {
-              "description": "The admission ticket for that space.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "space",
-            "ticket",
-            "task",
-            "grants",
-            "channel"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Run a space's task: the broker queues a run bound to the space.",
-          "properties": {
-            "op": {
-              "const": "run-task",
-              "type": "string"
-            },
-            "space": {
-              "description": "The space id.",
-              "type": "string"
-            },
-            "task": {
-              "description": "The task id `AddTask` returned.",
-              "type": "string"
-            },
-            "ticket": {
-              "description": "The admission ticket for that space.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "space",
-            "ticket",
-            "task"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Issue a pairing code for a device to join this space:\nsingle-use, short-lived, and redeemed only on the broker's device\nendpoint.",
-          "properties": {
-            "op": {
-              "const": "pair",
-              "type": "string"
-            },
-            "space": {
-              "description": "The space id.",
-              "type": "string"
-            },
-            "ticket": {
-              "description": "The admission ticket for that space.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "space",
-            "ticket"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Pull this space's changes since a version. Only the named\nspace's items move, and only to a member.",
-          "properties": {
-            "op": {
-              "const": "sync-pull",
-              "type": "string"
-            },
-            "since": {
-              "description": "The version the puller already has: changes after it come back.",
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "space": {
-              "description": "The space id.",
-              "type": "string"
-            },
-            "ticket": {
-              "description": "The admission ticket for that space.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "space",
-            "ticket",
-            "since"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Push changes to this space: last writer wins, and every\nwrite it overwrote unseen goes to the conflict log.",
-          "properties": {
-            "changes": {
-              "description": "The changes, applied in order.",
-              "items": {
-                "$ref": "#/$defs/SyncChange"
-              },
-              "type": "array"
-            },
-            "op": {
-              "const": "sync-push",
-              "type": "string"
-            },
-            "space": {
-              "description": "The space id.",
-              "type": "string"
-            },
-            "ticket": {
-              "description": "The admission ticket for that space.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "space",
-            "ticket",
-            "changes"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Read this space's conflict log after a sequence number.",
-          "properties": {
-            "after": {
-              "description": "The last conflict already seen: entries after it come back.",
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "op": {
-              "const": "conflicts",
-              "type": "string"
-            },
-            "space": {
-              "description": "The space id.",
-              "type": "string"
-            },
-            "ticket": {
-              "description": "The admission ticket for that space.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "space",
-            "ticket",
-            "after"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Upload media into this space, bounded and typed by the\nbroker before it is admitted.",
-          "properties": {
-            "data": {
-              "description": "The bytes, base64.",
-              "type": "string"
-            },
-            "media_kind": {
-              "description": "What the uploader says it is: `image` or `audio`. The broker\nchecks the bytes agree; it never takes a content type from the\nuploader.",
-              "type": "string"
-            },
-            "op": {
-              "const": "put-media",
-              "type": "string"
-            },
-            "space": {
-              "description": "The space id.",
-              "type": "string"
-            },
-            "ticket": {
-              "description": "The admission ticket for that space.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "media_kind",
-            "space",
-            "ticket",
-            "data"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Fetch media from this space, with headers the broker\nsets.",
-          "properties": {
-            "media": {
-              "description": "The media id `PutMedia` returned.",
-              "type": "string"
-            },
-            "op": {
-              "const": "get-media",
-              "type": "string"
-            },
-            "space": {
-              "description": "The space id.",
-              "type": "string"
-            },
-            "ticket": {
-              "description": "The admission ticket for that space.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "space",
-            "ticket",
-            "media"
           ],
           "type": "object"
         }
@@ -8657,85 +9066,6 @@
         }
       ]
     },
-    "SubagentOp": {
-      "description": "A subagent operation, from a parent session.",
-      "oneOf": [
-        {
-          "description": "Start a child on `task`, with `budget` steps drawn from the\nparent's and `capabilities` narrowed from the parent's grants.",
-          "properties": {
-            "budget": {
-              "description": "Steps allocated to the child, spent at allocation.",
-              "format": "uint32",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "capabilities": {
-              "description": "What the child may use: a subset of the parent's grants.",
-              "items": {
-                "$ref": "#/$defs/ScheduleGrant"
-              },
-              "type": "array"
-            },
-            "op": {
-              "const": "spawn",
-              "type": "string"
-            },
-            "task": {
-              "description": "The brief. Untrusted text: it enters the child below its\nsystem prompt, as the child's task.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "task",
-            "budget",
-            "capabilities"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Wait for a child to end, and take its report.",
-          "properties": {
-            "child": {
-              "description": "The child id `Spawn` returned.",
-              "type": "string"
-            },
-            "op": {
-              "const": "wait",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "child"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Kill a running child.",
-          "properties": {
-            "child": {
-              "description": "The child id `Spawn` returned.",
-              "type": "string"
-            },
-            "op": {
-              "const": "kill",
-              "type": "string"
-            },
-            "reason": {
-              "description": "Why, for the activity record.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "child",
-            "reason"
-          ],
-          "type": "object"
-        }
-      ]
-    },
     "SubagentRefusal": {
       "description": "Why a subagent op was refused.",
       "oneOf": [
@@ -8865,6 +9195,7 @@
       ]
     },
     "SyncChange": {
+      "additionalProperties": false,
       "description": "One change a sync push carries.",
       "properties": {
         "base": {
@@ -10410,70 +10741,6 @@
         }
       ]
     },
-    "VaultOp": {
-      "description": "A vault operation: the agent's post-handshake request vocabulary.\n\nEach variant names exactly one secret and performs exactly one\naction. There is deliberately no list, bulk-read, or dump variant —\nthe protocol cannot express enumeration, so a compromised agent\ncannot bulk-read the store. See the `hatchling-dev` no-bulk-read\nratchet, which fails the gate if such a variant is ever added.\n\nPublic because the vault protocol is a cross-crate contract: the\nagent, the broker, and test fixtures all speak it.",
-      "oneOf": [
-        {
-          "description": "Stores `secret_b64` under `name`, replacing any existing value.\nThe secret is base64: arbitrary bytes inside framed JSON.",
-          "properties": {
-            "name": {
-              "description": "Validated [`SecretName`](crate::SecretName), as a string.",
-              "type": "string"
-            },
-            "op": {
-              "const": "store",
-              "type": "string"
-            },
-            "secret_b64": {
-              "description": "Base64-encoded secret bytes.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "name",
-            "secret_b64"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Fetches the secret stored under `name`.",
-          "properties": {
-            "name": {
-              "description": "Validated [`SecretName`](crate::SecretName), as a string.",
-              "type": "string"
-            },
-            "op": {
-              "const": "fetch",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "name"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Removes the secret stored under `name`. Idempotent: removing a\nmissing secret reports [`Removed`](VaultResult::Removed).",
-          "properties": {
-            "name": {
-              "description": "Validated [`SecretName`](crate::SecretName), as a string.",
-              "type": "string"
-            },
-            "op": {
-              "const": "remove",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "name"
-          ],
-          "type": "object"
-        }
-      ]
-    },
     "VaultResult": {
       "description": "The broker's reply to one [`VaultOp`].\n\nReplies are per-operation and carry no more than the op asked for: a\nfetch returns one secret, never the store. Failures that would leak\ninternals (filesystem errors, oversize values) collapse to the opaque\n[`VaultError`](VaultResult::VaultError): the agent learns that the op\nfailed, not why.",
       "oneOf": [
@@ -10584,52 +10851,6 @@
         "snippet"
       ],
       "type": "object"
-    },
-    "WebOp": {
-      "description": "A web operation (WO-028): a page read through the broker, from a site\nthe owner allows.\n\nA site is an origin: `https`, a host and a port. A page from a site the\nsession hasn't been allowed is put to the owner first, in the app; the\nagent is told it's waiting, and nothing is fetched until the owner\nsays yes.",
-      "oneOf": [
-        {
-          "description": "Read one page.",
-          "properties": {
-            "op": {
-              "const": "fetch",
-              "type": "string"
-            },
-            "reason": {
-              "description": "Why the agent wants it. Shown to the owner when the site needs\ntheir approval, labeled as the agent's words.",
-              "type": "string"
-            },
-            "url": {
-              "description": "The page's absolute `https` URL.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "url",
-            "reason"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Search the web, through the search provider the operator chose.",
-          "properties": {
-            "op": {
-              "const": "search",
-              "type": "string"
-            },
-            "query": {
-              "description": "What to search for. It leaves to the provider.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "query"
-          ],
-          "type": "object"
-        }
-      ]
     },
     "WebResult": {
       "description": "The broker's reply to one [`WebOp`].",

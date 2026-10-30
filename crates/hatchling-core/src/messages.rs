@@ -71,7 +71,7 @@ pub enum BrokerMessage {
 /// agent, the broker, and test fixtures all speak it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "op")]
+#[serde(tag = "op", deny_unknown_fields)]
 pub enum VaultOp {
     /// Stores `secret_b64` under `name`, replacing any existing value.
     /// The secret is base64: arbitrary bytes inside framed JSON.
@@ -168,7 +168,7 @@ pub enum VaultResult {
 /// agent, the broker, and test fixtures all speak it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "op")]
+#[serde(tag = "op", deny_unknown_fields)]
 pub enum MemoryOp {
     /// Stores `content` under (`scope`, `id`), replacing any existing
     /// value. `retention` is `keep` or `ttl-secs:<n>`: there is no
@@ -307,7 +307,7 @@ pub enum MemoryResult {
 /// agent, the broker, and test fixtures all speak it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "op")]
+#[serde(tag = "op", deny_unknown_fields)]
 pub enum GoalsOp {
     /// Records a new open goal the user explicitly asked for. The broker
     /// mints the id: a create never overwrites a goal.
@@ -403,7 +403,7 @@ pub enum GoalsResult {
 /// reply.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "op")]
+#[serde(tag = "op", deny_unknown_fields)]
 pub enum QueryOp {
     /// The user's goals, ordered by id.
     #[serde(rename = "goals")]
@@ -473,7 +473,7 @@ pub enum QueryResult {
 /// Public because the schedule protocol is a cross-crate contract.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "op")]
+#[serde(tag = "op", deny_unknown_fields)]
 pub enum ScheduleOp {
     /// Create a schedule.
     #[serde(rename = "create")]
@@ -604,7 +604,7 @@ pub struct FeedSpec {
 /// not decode, and ends the session.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "source")]
+#[serde(tag = "source", deny_unknown_fields)]
 pub enum HookSource {
     /// A message arrived on a local channel through the broker's
     /// authenticated ingress.
@@ -640,7 +640,7 @@ impl fmt::Display for HookSource {
 /// peer-authorized session only, never from a scheduled run's session.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "op")]
+#[serde(tag = "op", deny_unknown_fields)]
 pub enum HookOp {
     /// Register a hook.
     #[serde(rename = "create")]
@@ -704,7 +704,7 @@ pub enum HookResult {
 /// failing the whole frame; nothing is ever defaulted.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "every")]
+#[serde(tag = "every", deny_unknown_fields)]
 pub enum ScheduleSpec {
     /// A five-field cron expression (`minute hour day-of-month month
     /// day-of-week`), evaluated in `tz`.
@@ -734,7 +734,7 @@ impl<'de> Deserialize<'de> for ScheduleSpec {
 /// [`ScheduleSpec`] as it decodes: the same forms, with `tz` possibly
 /// absent or `null`, which becomes the empty name the broker refuses.
 #[derive(Deserialize)]
-#[serde(tag = "every")]
+#[serde(tag = "every", deny_unknown_fields)]
 enum WireSpec {
     #[serde(rename = "cron")]
     Cron {
@@ -770,7 +770,7 @@ impl From<WireSpec> for ScheduleSpec {
 /// comparison.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "grant")]
+#[serde(tag = "grant", deny_unknown_fields)]
 pub enum ScheduleGrant {
     /// A vault grant: `action` on the secret `name`.
     #[serde(rename = "vault")]
@@ -1046,7 +1046,7 @@ pub const EGRESS_PART_BYTES: usize = 32_768;
 /// Public because the egress protocol is a cross-crate contract.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "op")]
+#[serde(tag = "op", deny_unknown_fields)]
 pub enum EgressOp {
     /// Mints a surrogate for `destination`. The broker checks the
     /// peer's grant for the destination, then the egress allowlist.
@@ -1094,7 +1094,7 @@ pub enum EgressOp {
     /// Reads the next part of the body the broker holds from the last
     /// `Ok` answer (v13): what its `more` said was left.
     #[serde(rename = "read")]
-    Read,
+    Read {},
 }
 
 /// The broker's reply to one [`EgressOp`].
@@ -1282,7 +1282,7 @@ pub enum SessionResponse {
 /// Public because the space protocol is a cross-crate contract.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "op")]
+#[serde(tag = "op", deny_unknown_fields)]
 pub enum SpaceOp {
     /// Create a space owned by the caller, holding `grants` for its tasks.
     #[serde(rename = "create")]
@@ -1430,6 +1430,7 @@ pub enum SpaceOp {
 /// One change a sync push carries.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct SyncChange {
     /// The item's key.
     pub key: String,
@@ -1789,7 +1790,7 @@ pub enum DeviceRefusal {
 /// Public because the artifact protocol is a cross-crate contract.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "op")]
+#[serde(tag = "op", deny_unknown_fields)]
 pub enum ArtifactOp {
     /// Build an artifact.
     #[serde(rename = "build")]
@@ -1893,7 +1894,7 @@ pub enum ArtifactOp {
 /// Where an idea was captured from.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "source")]
+#[serde(tag = "source", deny_unknown_fields)]
 pub enum IdeaSource {
     /// A chat with the user.
     #[serde(rename = "chat")]
@@ -1918,6 +1919,7 @@ pub enum IdeaSource {
 /// One build input: a name and its content.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct ArtifactInput {
     /// The input's name, a lowercase token, unique within the build.
     pub name: String,
@@ -1928,7 +1930,7 @@ pub struct ArtifactInput {
 /// Where a delivery goes.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "target")]
+#[serde(tag = "target", deny_unknown_fields)]
 pub enum DeliveryTarget {
     /// A channel the session may send on.
     #[serde(rename = "channel")]
@@ -2211,7 +2213,7 @@ pub enum ApprovalRefusal {
 /// says yes.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "op")]
+#[serde(tag = "op", deny_unknown_fields)]
 pub enum WebOp {
     /// Read one page.
     #[serde(rename = "fetch")]
@@ -2323,7 +2325,7 @@ pub enum WebResult {
 /// and listed with its snapshot.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "op")]
+#[serde(tag = "op", deny_unknown_fields)]
 pub enum BrowserOp {
     /// Open `url`, starting the session's browser if there is none.
     #[serde(rename = "open")]
@@ -2336,7 +2338,7 @@ pub enum BrowserOp {
     },
     /// The page as it is now.
     #[serde(rename = "read")]
-    Read,
+    Read {},
     /// Act on an element of the last snapshot.
     #[serde(rename = "act")]
     Act {
@@ -2364,7 +2366,7 @@ pub enum BrowserOp {
     },
     /// Close the browser: its cell, profile and files go with it.
     #[serde(rename = "close")]
-    Close,
+    Close {},
     /// Sign in on the page with the sign-in the owner keeps for its site
     /// (WO-030, v16): the broker types it into the fields named, and the
     /// agent never sees it.
@@ -2619,7 +2621,7 @@ pub enum DeliveryRefusal {
 /// Public because the skill protocol is a cross-crate contract.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "op")]
+#[serde(tag = "op", deny_unknown_fields)]
 pub enum SkillOp {
     /// Runs `skill` on `input`, exercising `capability`.
     #[serde(rename = "invoke")]
@@ -2690,7 +2692,7 @@ pub const MAX_SKILL_OUTPUT_BYTES: usize = 8 * 1024;
 /// Public because the channel protocol is a cross-crate contract.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "op")]
+#[serde(tag = "op", deny_unknown_fields)]
 pub enum ChannelOp {
     /// Receive the next inbound message on `channel`, or
     /// [`NoMessage`](ChannelResult::NoMessage) if none is waiting.
@@ -2839,6 +2841,48 @@ mod tests {
         assert_eq!(remove.name(), "c");
     }
 
+    /// What a cell sends names no field its request doesn't (WO-027): at
+    /// the top, in a nested input, schedule or grant, and in an op that
+    /// takes no fields.
+    #[test]
+    fn a_session_request_with_a_field_it_doesnt_name_is_refused() {
+        let read = |json: &str| serde_json::from_str::<SessionRequest>(json);
+        let build = r#"{"kind":"artifact","op":"build","build_kind":"page","builder":"b@1.0.0","inputs":[{"name":"a","content":"x"}]}"#;
+        let create = r#"{"kind":"schedule","op":"create","when":{"every":"once","at":"2026-12-01T09:00","tz":"UTC"},"task":"t","grants":[{"grant":"channel-send","channel":"local"}],"channel":"local"}"#;
+        for json in [
+            r#"{"kind":"vault","op":"fetch","name":"token"}"#,
+            build,
+            create,
+            r#"{"kind":"browser","op":"read"}"#,
+        ] {
+            assert!(read(json).is_ok(), "{json}: {:?}", read(json).err());
+        }
+        for (json, what) in [
+            (
+                r#"{"kind":"vault","op":"fetch","name":"token","note":"x"}"#.to_owned(),
+                "at the top",
+            ),
+            (
+                build.replace(r#""content":"x"}"#, r#""content":"x","note":"y"}"#),
+                "in an input",
+            ),
+            (
+                create.replace(r#""tz":"UTC"}"#, r#""tz":"UTC","note":1}"#),
+                "in a schedule",
+            ),
+            (
+                create.replace(r#""channel":"local"}]"#, r#""channel":"local","note":1}]"#),
+                "in a grant",
+            ),
+            (
+                r#"{"kind":"browser","op":"read","note":"x"}"#.to_owned(),
+                "in an op that takes no fields",
+            ),
+        ] {
+            assert!(read(&json).is_err(), "taken {what}: {json}");
+        }
+    }
+
     #[test]
     fn vault_op_serde_round_trip() {
         // Pins the wire tags: the JSON shape is the cross-crate contract.
@@ -2939,7 +2983,7 @@ mod tests {
                 },
                 br#"{"op":"stage","part_b64":"cGFydA=="}"#,
             ),
-            (EgressOp::Read, br#"{"op":"read"}"#),
+            (EgressOp::Read {}, br#"{"op":"read"}"#),
         ];
         for (op, json) in cases {
             assert_eq!(serde_json::to_vec(&op).unwrap(), json);

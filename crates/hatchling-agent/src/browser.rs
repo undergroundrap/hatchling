@@ -38,7 +38,7 @@ pub fn open(stream: &UnixStream, url: &str, reason: &str) -> Result<BrowserResul
 pub fn read(stream: &UnixStream, scroll: Option<bool>) -> Result<BrowserResult, Error> {
     request(
         stream,
-        scroll.map_or(BrowserOp::Read, |down| BrowserOp::Scroll { down }),
+        scroll.map_or(BrowserOp::Read {}, |down| BrowserOp::Scroll { down }),
     )
 }
 
@@ -106,7 +106,7 @@ pub fn code(stream: &UnixStream, element: u32) -> Result<BrowserResult, Error> {
 ///
 /// As [`open`].
 pub fn close(stream: &UnixStream) -> Result<BrowserResult, Error> {
-    request(stream, BrowserOp::Close)
+    request(stream, BrowserOp::Close {})
 }
 
 /// Sends `op` and reads the broker's browser reply.
@@ -196,7 +196,7 @@ mod tests {
                     reason: String::from("why"),
                 },
             ),
-            (|stream| read(stream, None), BrowserOp::Read),
+            (|stream| read(stream, None), BrowserOp::Read {}),
             (
                 |stream| read(stream, Some(false)),
                 BrowserOp::Scroll { down: false },
@@ -215,7 +215,7 @@ mod tests {
                     reason: String::from("fonts"),
                 },
             ),
-            (close, BrowserOp::Close),
+            (close, BrowserOp::Close {}),
         ];
         for (call, op) in calls {
             let (agent, theirs) = pair();

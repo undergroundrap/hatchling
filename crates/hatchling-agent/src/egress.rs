@@ -158,7 +158,7 @@ fn stage(stream: &UnixStream, body: &[u8]) -> Result<(), Error> {
 /// doesn't add up is a protocol violation, never a loop.
 fn read_held(stream: &UnixStream, body: &mut Vec<u8>, mut more: u64) -> Result<(), Error> {
     while more > 0 {
-        let op = EgressOp::Read;
+        let op = EgressOp::Read {};
         match request(stream, &op)? {
             EgressResult::Part {
                 body_b64,
@@ -384,7 +384,9 @@ mod tests {
             .iter()
             .filter_map(|op| match op {
                 EgressOp::Stage { part_b64 } => decode_secret(part_b64).ok(),
-                EgressOp::MintSurrogate { .. } | EgressOp::Egress { .. } | EgressOp::Read => None,
+                EgressOp::MintSurrogate { .. } | EgressOp::Egress { .. } | EgressOp::Read {} => {
+                    None
+                }
             })
             .collect();
         assert!(parts.iter().all(|part| part.len() <= EGRESS_PART_BYTES));
@@ -404,7 +406,11 @@ mod tests {
         let seen = broker.join().unwrap();
         assert!(matches!(
             seen.as_slice(),
-            [EgressOp::Egress { .. }, EgressOp::Read, EgressOp::Read]
+            [
+                EgressOp::Egress { .. },
+                EgressOp::Read {},
+                EgressOp::Read {}
+            ]
         ));
     }
 
@@ -455,7 +461,10 @@ mod tests {
         let mut body = b"ab".to_vec();
         read_held(&client, &mut body, 5).unwrap();
         assert_eq!(body, b"abcdefg");
-        assert_eq!(broker.join().unwrap(), [EgressOp::Read, EgressOp::Read]);
+        assert_eq!(
+            broker.join().unwrap(),
+            [EgressOp::Read {}, EgressOp::Read {}]
+        );
         // Nothing held: nothing read, nothing sent.
         let (client, broker) = scripted(Vec::new());
         let mut body = b"ab".to_vec();
@@ -489,7 +498,9 @@ mod tests {
             .iter()
             .filter_map(|op| match op {
                 EgressOp::Stage { part_b64 } => decode_secret(part_b64).ok().map(|part| part.len()),
-                EgressOp::MintSurrogate { .. } | EgressOp::Egress { .. } | EgressOp::Read => None,
+                EgressOp::MintSurrogate { .. } | EgressOp::Egress { .. } | EgressOp::Read {} => {
+                    None
+                }
             })
             .collect();
         assert_eq!(sizes, [EGRESS_PART_BYTES, 1]);

@@ -32,8 +32,9 @@ ends the session unanswered, as any malformed request does:
 - a number that isn't an integer within ±(2^53 - 1);
 - a lone surrogate.
 
-This holds even in a field the request doesn't use. The vault keeper reads
-a cell's vault channel the same way.
+A request that names a field its op doesn't have ends the session the same
+way, at any depth: an op, a build input, a schedule's time or a grant. The
+vault keeper reads a cell's vault channel the same way.
 
 ## Op families
 

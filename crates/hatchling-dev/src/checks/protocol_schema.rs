@@ -297,6 +297,72 @@ mod tests {
         }
     }
 
+    /// What a cell sends is read strictly (WO-027): every object a session
+    /// request can hold, at any depth, refuses a field it doesn't name.
+    /// Each family is drawn on its own: inside `SessionRequest` its
+    /// variants sit beside the `kind` tag, where a schema can't close them.
+    /// Every family is listed, so a new one can't be left open.
+    #[test]
+    fn every_object_a_session_request_holds_refuses_an_unknown_field() {
+        use hatchling_core::messages::{
+            ArtifactOp, BrowserOp, ChannelOp, EgressOp, GoalsOp, HookOp, MemoryOp, QueryOp,
+            ScheduleOp, SkillOp, SpaceOp, VaultOp, WebOp,
+        };
+        let families = [
+            ("vault", schemars::schema_for!(VaultOp)),
+            ("egress", schemars::schema_for!(EgressOp)),
+            ("channel", schemars::schema_for!(ChannelOp)),
+            ("memory", schemars::schema_for!(MemoryOp)),
+            ("skill", schemars::schema_for!(SkillOp)),
+            ("goals", schemars::schema_for!(GoalsOp)),
+            ("query", schemars::schema_for!(QueryOp)),
+            ("schedule", schemars::schema_for!(ScheduleOp)),
+            ("hook", schemars::schema_for!(HookOp)),
+            ("artifact", schemars::schema_for!(ArtifactOp)),
+            ("space", schemars::schema_for!(SpaceOp)),
+            (
+                "subagent",
+                schemars::schema_for!(hatchling_core::subagent::SubagentOp),
+            ),
+            ("web", schemars::schema_for!(WebOp)),
+            ("browser", schemars::schema_for!(BrowserOp)),
+        ];
+        let doc = document();
+        let kinds = doc
+            .pointer("/$defs/SessionRequest/oneOf")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        assert_eq!(kinds, families.len(), "a session family isn't listed here");
+        let mut open = Vec::new();
+        for (family, schema) in families {
+            open_objects(&schema.to_value(), family, &mut open);
+        }
+        assert!(open.is_empty(), "open to unknown fields: {open:?}");
+    }
+
+    /// Every object schema in `value`, named by where it is, that has
+    /// properties and takes others.
+    fn open_objects(value: &Value, at: &str, out: &mut Vec<String>) {
+        match value {
+            Value::Object(map) => {
+                if map.contains_key("properties")
+                    && map.get("additionalProperties") != Some(&Value::Bool(false))
+                {
+                    out.push(at.to_owned());
+                }
+                for (key, inner) in map {
+                    open_objects(inner, &format!("{at}/{key}"), out);
+                }
+            }
+            Value::Array(items) => {
+                for (index, inner) in items.iter().enumerate() {
+                    open_objects(inner, &format!("{at}/{index}"), out);
+                }
+            }
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+        }
+    }
+
     #[test]
     fn the_schema_covers_every_session_family_and_the_interrupted_state() {
         let text = generate();

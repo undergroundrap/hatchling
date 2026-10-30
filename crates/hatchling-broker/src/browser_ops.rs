@@ -410,7 +410,7 @@ impl BrowserSession {
         op: &BrowserOp,
         result: BrowserResult,
     ) -> BrowserResult {
-        if matches!(op, BrowserOp::Close) || self.profile.is_none() || !self.is_open() {
+        if matches!(op, BrowserOp::Close {}) || self.profile.is_none() || !self.is_open() {
             return result;
         }
         self.keep_jar(config, keys);
@@ -586,7 +586,7 @@ impl BrowserSession {
         };
         let said = match op {
             BrowserOp::Open { url, .. } => format!("Opened {url}"),
-            BrowserOp::Read => String::from("Read the page"),
+            BrowserOp::Read {} => String::from("Read the page"),
             BrowserOp::Act { element, action } => match action {
                 PageAction::Click => format!("Clicked {}", named(*element)),
                 PageAction::Type { text } => format!(
@@ -602,7 +602,7 @@ impl BrowserSession {
             BrowserOp::Scroll { down: true } => String::from("Scrolled down"),
             BrowserOp::Scroll { down: false } => String::from("Scrolled up"),
             BrowserOp::Allow { site, .. } => format!("Asked the owner to allow {site}"),
-            BrowserOp::Close => String::from("Closed the browser"),
+            BrowserOp::Close {} => String::from("Closed the browser"),
             BrowserOp::Code { element } => {
                 format!("Asked the owner for the code {}", named(*element))
             }
@@ -872,7 +872,7 @@ fn answer(
 ) -> BrowserResult {
     match op {
         BrowserOp::Open { url, reason } => open(config, keys, web, browser, url, reason),
-        BrowserOp::Read => browser.command(&BrowserCommand::Snapshot),
+        BrowserOp::Read {} => browser.command(&BrowserCommand::Snapshot),
         BrowserOp::Act { element, action } => {
             if let PageAction::Type { text } = action {
                 if let Some(refusal) = typed_secret(config, keys, text) {
@@ -886,7 +886,7 @@ fn answer(
         }
         BrowserOp::Scroll { down } => browser.command(&BrowserCommand::Scroll { down: *down }),
         BrowserOp::Allow { site, reason } => allow_site(config, keys, web, browser, site, reason),
-        BrowserOp::Close => {
+        BrowserOp::Close {} => {
             browser.keep_jar(config, keys);
             browser.close();
             BrowserResult::Closed
@@ -1710,7 +1710,7 @@ mod tests {
             !sessions.1.sites().holds("evil.example:443"),
             "no grant for where it says it is"
         );
-        let (sessions, answer) = ask(&config, sessions, &BrowserOp::Read);
+        let (sessions, answer) = ask(&config, sessions, &BrowserOp::Read {});
         assert!(matches!(answer, BrowserResult::Page { .. }), "{answer:?}");
         assert!(!sessions.1.sites().holds("evil.example:443"));
         // Asked to go there, the agent is put to the owner like any site.
@@ -1851,7 +1851,7 @@ mod tests {
             .unwrap()
             .extend([cookie("idp.example", "token"), cookie("b.example", "track")]);
         assert_eq!(
-            handle_browser_op(&config, &keys, &mut web, &mut browser, &BrowserOp::Close),
+            handle_browser_op(&config, &keys, &mut web, &mut browser, &BrowserOp::Close {}),
             BrowserResult::Closed
         );
         assert_eq!(
@@ -1888,7 +1888,7 @@ mod tests {
             ..cookie("a.example", "late")
         });
         showing(&fake, "https://a.example/", "sid-value set-after-sign-out");
-        let read = handle_browser_op(&config, &keys, &mut web, &mut browser, &BrowserOp::Read);
+        let read = handle_browser_op(&config, &keys, &mut web, &mut browser, &BrowserOp::Read {});
         let told = format!("{read:?}");
         assert!(
             !told.contains("sid-value") && !told.contains("set-after-sign-out"),
@@ -1901,7 +1901,7 @@ mod tests {
             "its session kept again after an op"
         );
         assert_eq!(
-            handle_browser_op(&config, &keys, &mut web, &mut browser, &BrowserOp::Close),
+            handle_browser_op(&config, &keys, &mut web, &mut browser, &BrowserOp::Close {}),
             BrowserResult::Closed
         );
         assert_eq!(
@@ -2324,10 +2324,10 @@ mod tests {
             ]
         );
         // Every page after hides them too, until the browser is closed.
-        let read = handle_browser_op(&config, &keys, &mut web, &mut browser, &BrowserOp::Read);
+        let read = handle_browser_op(&config, &keys, &mut web, &mut browser, &BrowserOp::Read {});
         let read = format!("{read:?}");
         assert!(!read.contains("hunter2"), "what the agent is told");
-        handle_browser_op(&config, &keys, &mut web, &mut browser, &BrowserOp::Close);
+        handle_browser_op(&config, &keys, &mut web, &mut browser, &BrowserOp::Close {});
     }
 
     #[test]
@@ -2516,7 +2516,7 @@ mod tests {
                 "https://a.example/login",
                 "jar-secret-value page-set-secret",
             );
-            op(&BrowserOp::Read);
+            op(&BrowserOp::Read {});
             // The owner is told of an action by the field's name, which shows
             // the cookie the page set since its session was last kept.
             op(&BrowserOp::Act {
@@ -2544,12 +2544,12 @@ mod tests {
             op(&BrowserOp::Code { element: 3 });
             // After it, it can show everything it was given.
             showing(&fake, "https://a.example/home", &secrets.join(" "));
-            op(&BrowserOp::Read);
+            op(&BrowserOp::Read {});
             op(&BrowserOp::Act {
                 element: 2,
                 action: PageAction::Click,
             });
-            op(&BrowserOp::Close);
+            op(&BrowserOp::Close {});
         });
         assert!(
             logged.contains("a sign-in is filled"),
@@ -2624,7 +2624,7 @@ mod tests {
         };
         // No browser, or not a signed-in one: as it was.
         assert_eq!(
-            browser.kept(&config, &keys, &BrowserOp::Read, page("a-secret")),
+            browser.kept(&config, &keys, &BrowserOp::Read {}, page("a-secret")),
             page("a-secret")
         );
         handle_browser_op(
@@ -2639,11 +2639,11 @@ mod tests {
         browser.hide("a-secret");
         assert_eq!(browser.hidden.len(), 1, "once");
         assert_eq!(
-            browser.kept(&config, &keys, &BrowserOp::Read, page("a-secret")),
+            browser.kept(&config, &keys, &BrowserOp::Read {}, page("a-secret")),
             page("[hidden]")
         );
         assert_eq!(
-            browser.kept(&config, &keys, &BrowserOp::Close, page("a-secret")),
+            browser.kept(&config, &keys, &BrowserOp::Close {}, page("a-secret")),
             page("a-secret"),
             "closing keeps it before, not after"
         );
@@ -2651,7 +2651,7 @@ mod tests {
             browser.kept(
                 &config,
                 &keys,
-                &BrowserOp::Read,
+                &BrowserOp::Read {},
                 BrowserResult::CodeDeclined
             ),
             BrowserResult::CodeDeclined
@@ -2671,7 +2671,7 @@ mod tests {
             &open("https://a.example/"),
         );
         fake.jar.lock().unwrap().push(cookie("a.example", "late"));
-        handle_browser_op(&config, &keys, &mut web, &mut browser, &BrowserOp::Read);
+        handle_browser_op(&config, &keys, &mut web, &mut browser, &BrowserOp::Read {});
         // Gone without a close: its cell killed, as a crashed session's is.
         drop(browser);
         assert_eq!(
@@ -2969,9 +2969,9 @@ mod tests {
         let mut browser = BrowserSession::new(None);
         for op in [
             open("https://a.example/"),
-            BrowserOp::Read,
+            BrowserOp::Read {},
             BrowserOp::Scroll { down: true },
-            BrowserOp::Close,
+            BrowserOp::Close {},
         ] {
             assert_eq!(
                 handle_browser_op(&config, &keys, &mut web, &mut browser, &op),
@@ -3327,7 +3327,7 @@ mod tests {
         };
         assert_eq!(frame.sequence, 2);
         // Closed: shown completed, and nothing left to stop.
-        let (sessions, _) = ask(&config, sessions, &BrowserOp::Close);
+        let (sessions, _) = ask(&config, sessions, &BrowserOp::Close {});
         let closed = carried_after(&bus, 6);
         let finished = matches!(
             closed.last(),
@@ -3410,7 +3410,7 @@ mod tests {
         assert!(!sessions.1.is_open());
         fake.broken.store(false, Ordering::SeqCst);
         assert_eq!(board.hand_back(&id, 1), Ok(()));
-        let (sessions, answer) = ask(&config, sessions, &BrowserOp::Read);
+        let (sessions, answer) = ask(&config, sessions, &BrowserOp::Read {});
         assert_eq!(
             answer,
             BrowserResult::Failed {
@@ -3510,7 +3510,7 @@ mod tests {
         let act = |action: PageAction| BrowserOp::Act { element: 3, action };
         for (op, said) in [
             (open("https://a.example/"), "Opened https://a.example/"),
-            (BrowserOp::Read, "Read the page"),
+            (BrowserOp::Read {}, "Read the page"),
             (act(PageAction::Click), "Clicked textbox \"Search\""),
             (
                 act(PageAction::Type {
@@ -3543,7 +3543,7 @@ mod tests {
                 allow("cdn.example:443"),
                 "Asked the owner to allow cdn.example:443",
             ),
-            (BrowserOp::Close, "Closed the browser"),
+            (BrowserOp::Close {}, "Closed the browser"),
         ] {
             assert_eq!(browser.narrate(&op), said);
         }
@@ -3563,7 +3563,7 @@ mod tests {
         let id = shown_id(&sessions);
         assert_eq!(board.stop(&id), Ok(()));
         assert!(!sessions.1.sites().holds("a.example:443"), "sealed at once");
-        let (sessions, answer) = ask(&config, sessions, &BrowserOp::Read);
+        let (sessions, answer) = ask(&config, sessions, &BrowserOp::Read {});
         assert_eq!(answer, BrowserResult::Stopped);
         assert!(!sessions.1.is_open());
         assert_eq!(fake.log.lock().unwrap().finished, 1);
@@ -3605,7 +3605,7 @@ mod tests {
         owner_decides(&config, "t", "https://a.example", Decision::ApproveSession);
         let (sessions, _) = ask(&config, sessions, &open("https://a.example/"));
         fake.broken.store(true, Ordering::SeqCst);
-        let (sessions, _) = ask(&config, sessions, &BrowserOp::Read);
+        let (sessions, _) = ask(&config, sessions, &BrowserOp::Read {});
         let failed = carried_after(&bus, 0).into_iter().any(|body| {
             matches!(body, UiEventBody::BrowserSession(session) if session.state == BrowserState::Failed)
         });
@@ -3658,7 +3658,7 @@ mod tests {
             ..Fake::default()
         };
         let sessions = session("t", &fake);
-        let (sessions, answer) = ask(&config, sessions, &BrowserOp::Read);
+        let (sessions, answer) = ask(&config, sessions, &BrowserOp::Read {});
         assert_eq!(
             answer,
             BrowserResult::Failed {
@@ -3694,7 +3694,7 @@ mod tests {
         assert_eq!(answer, page("https://a.example/"));
         assert_eq!(fake.log.lock().unwrap().started.len(), 2);
         // Closed by the agent, then by the session's end: once each.
-        let (sessions, answer) = ask(&config, sessions, &BrowserOp::Close);
+        let (sessions, answer) = ask(&config, sessions, &BrowserOp::Close {});
         assert_eq!(answer, BrowserResult::Closed);
         assert_eq!(fake.log.lock().unwrap().finished, 2);
         let (sessions, _) = ask(&config, sessions, &open("https://a.example/"));

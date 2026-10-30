@@ -351,132 +351,6 @@ export type ArtifactInspection = {
     readonly verdict: InspectionVerdict;
 };
 /**
- * An artifact operation: build an artifact from pinned
- * inputs, or deliver a completed one.
- *
- * A build runs a builder, which is a registered skill declaring the
- * `artifact.build` capability, inside a skill cell. The broker pins the
- * inputs when it receives them, records provenance it observed itself,
- * and keeps the result. A delivery names a build by its id; the broker
- * re-checks that the build completed, re-hashes its bytes, and passes
- * them through the share-review gate before anything leaves.
- *
- * Public because the artifact protocol is a cross-crate contract.
- */
-export type ArtifactOp = {
-    /**
-     * The build kind, a lowercase token (`document`, `preview`, …).
-     * Not `kind`: that is the session request's own tag.
-     */
-    readonly build_kind: string;
-    /**
-     * The builder: an exact registered skill id, `name@version`.
-     */
-    readonly builder: string;
-    /**
-     * The inputs. The broker pins each by its content hash; the
-     * builder receives exactly these bytes.
-     */
-    readonly inputs: readonly (ArtifactInput)[];
-    readonly op: 'build';
-} | {
-    /**
-     * The build id `Build` returned.
-     */
-    readonly build: string;
-    readonly op: 'deliver';
-    /**
-     * Where it goes.
-     */
-    readonly to: DeliveryTarget;
-} | {
-    /**
-     * The build id.
-     */
-    readonly build: string;
-    readonly op: 'describe';
-} | {
-    /**
-     * Where it was captured from. A feed item is re-read by
-     * the broker, which records its provenance; absent, the idea says
-     * its source was not stated.
-     */
-    readonly from?: IdeaSource | null;
-    readonly op: 'capture-idea';
-    /**
-     * The idea's text. Untrusted.
-     */
-    readonly text: string;
-} | {
-    /**
-     * Resume after this idea id: the previous page's `next`.
-     */
-    readonly after?: string | null;
-    readonly op: 'list-ideas';
-} | {
-    /**
-     * The idea id.
-     */
-    readonly idea: string;
-    /**
-     * The note. Untrusted.
-     */
-    readonly note: string;
-    readonly op: 'note-idea';
-} | {
-    /**
-     * The build kind.
-     */
-    readonly build_kind: string;
-    /**
-     * The builder: an exact registered skill id, `name@version`.
-     */
-    readonly builder: string;
-    /**
-     * What the build is for, as the user will confirm it.
-     */
-    readonly description: string;
-    /**
-     * The idea id.
-     */
-    readonly idea: string;
-    readonly op: 'propose-activation';
-} | {
-    /**
-     * The activation id `ProposeActivation` returned.
-     */
-    readonly activation: string;
-    /**
-     * The broker-minted confirmation.
-     */
-    readonly confirmation: string;
-    readonly op: 'activate';
-} | {
-    /**
-     * The idea id `CaptureIdea` returned.
-     */
-    readonly idea: string;
-    readonly op: 'refine-idea';
-    /**
-     * The refined text. Untrusted.
-     */
-    readonly text: string;
-} | {
-    /**
-     * The build kind.
-     */
-    readonly build_kind: string;
-    /**
-     * The builder: an exact registered skill id, `name@version`.
-     */
-    readonly builder: string;
-    /**
-     * The idea id.
-     */
-    readonly idea: string;
-    readonly op: 'build-idea';
-};
-/**
  * Why an artifact action found nothing to act on.
  */
 export type ArtifactRefusal = 'unknown_artifact' | 'unknown_revision';
@@ -773,81 +647,6 @@ export type BrowserFrame = {
     readonly title: string;
 };
 /**
- * A browser operation (WO-029): the agent driving a real browser, in a
- * cell of its own, through the broker.
- *
- * Every session is strict: the browser reaches only the sites the
- * session holds. Opening a page on a site it doesn't hold is put to the
- * owner first, as a [`WebOp::Fetch`] is, and a site allowed for one is
- * allowed for the other. A page's own requests to other sites are refused
- * and listed with its snapshot.
- */
-export type BrowserOp = {
-    readonly op: 'open';
-    /**
-     * Why the agent wants it. Shown to the owner when the site needs
-     * their approval, labeled as the agent's words.
-     */
-    readonly reason: string;
-    /**
-     * The page's absolute `https` URL.
-     */
-    readonly url: string;
-} | {
-    readonly op: 'read';
-} | {
-    /**
-     * What to do to it. Text to type is refused if it holds a secret
-     * the broker keeps.
-     */
-    readonly action: PageAction;
-    /**
-     * The element's id, from the last snapshot.
-     */
-    readonly element: number;
-    readonly op: 'act';
-} | {
-    /**
-     * Down, or up.
-     */
-    readonly down: boolean;
-    readonly op: 'scroll';
-} | {
-    readonly op: 'allow';
-    /**
-     * Why the page needs it. Shown to the owner, labeled as the
-     * agent's words.
-     */
-    readonly reason: string;
-    /**
-     * The site, as the page's `refused` named it (`host:port`).
-     */
-    readonly site: string;
-} | {
-    readonly op: 'close';
-} | {
-    /**
-     * Which sign-in, by its label, when the site has more than one.
-     */
-    readonly label?: string | null;
-    readonly op: 'sign_in';
-    /**
-     * The password field's element, from the last snapshot.
-     */
-    readonly password: number;
-    /**
-     * The username field's element, from the last snapshot; none for a
-     * form that asks for the password alone.
-     */
-    readonly username?: number | null;
-} | {
-    /**
-     * The code field's element, from the last snapshot.
-     */
-    readonly element: number;
-    readonly op: 'code';
-};
-/**
  * The broker's reply to one [`BrowserOp`].
  */
 export type BrowserResult = {
@@ -1041,68 +840,6 @@ export type ChannelAccount = {
      * The operator's name for the account (`work`, `personal`).
      */
     readonly label: string;
-};
-/**
- * A channel operation: the agent's post-handshake messaging vocabulary.
- *
- * The agent never touches a channel socket directly. It asks the broker
- * to receive or send; the broker owns the endpoints, stamps identities,
- * and enforces the confirmation-rail boundary on state-changing sends.
- *
- * Accounts: a channel that authenticates to its backend has
- * one or more accounts, whose secrets only the broker holds. The cell
- * names an account by the opaque handle [`Accounts`](ChannelOp::Accounts)
- * returned, never by anything secret; a credential-less channel (the
- * local one) takes no account.
- *
- * Public because the channel protocol is a cross-crate contract.
- */
-export type ChannelOp = {
-    /**
-     * The account handle to receive as, for a credentialed
-     * channel; absent for a credential-less one.
-     */
-    readonly account?: string | null;
-    /**
-     * The broker-assigned channel id.
-     */
-    readonly channel: string;
-    readonly op: 'receive';
-} | {
-    /**
-     * The broker-assigned channel id.
-     */
-    readonly channel: string;
-    readonly op: 'accounts';
-} | {
-    /**
-     * The account handle to send as, for a credentialed channel;
-     * absent for a credential-less one.
-     */
-    readonly account?: string | null;
-    /**
-     * A broker-minted rail approval (`rail-v1-…`) for exactly this
-     * channel and text. Presenting one spends it; a string the
-     * broker did not mint, or an expired or mismatched token, is
-     * refused.
-     */
-    readonly approval?: string | null;
-    /**
-     * The broker-assigned channel id.
-     */
-    readonly channel: string;
-    readonly op: 'send';
-    /**
-     * The cell's own view that the message triggers external
-     * actions. It can put a send on the rail, never take one off:
-     * the broker classifies regardless.
-     */
-    readonly state_changing: boolean;
-    /**
-     * The message text. Untrusted on receipt; the loop places it
-     * below the system prompt.
-     */
-    readonly text: string;
 };
 /**
  * The broker's reply to one [`ChannelOp`].
@@ -1518,82 +1255,6 @@ export type EgressDecision = {
     readonly verdict: EgressVerdict;
 };
 /**
- * An egress operation: the agent's post-handshake outbound-network
- * request vocabulary.
- *
- * The agent never touches the network directly. It presents a
- * broker-minted surrogate (see `hatchling-egress`); the broker
- * validates the surrogate, checks the destination against the
- * allowlist, swaps in the real credential, and forwards the request.
- *
- * There are two ops: `MintSurrogate` (ask the broker for a surrogate
- * for a destination the peer is granted for) and `Egress` (perform a
- * request with a previously minted surrogate). Two more move a body
- * too large for one frame (v13): `Stage` sends a request body's parts
- * before its `Egress` op, and `Read` fetches an answer's body after
- * its `Ok`, a part at a time.
- *
- * Public because the egress protocol is a cross-crate contract.
- */
-export type EgressOp = {
-    /**
-     * Destination `host:port` to mint the surrogate for.
-     */
-    readonly destination: string;
-    readonly op: 'mint-surrogate';
-    /**
-     * Time-to-live in seconds.
-     */
-    readonly ttl_secs: number;
-} | {
-    /**
-     * Request body bytes, base64-encoded: all of it, or what
-     * follows the `staged` bytes. Bounded.
-     */
-    readonly body_b64: string;
-    /**
-     * Destination `host:port`. Must match the surrogate's binding
-     * and the allowlist.
-     */
-    readonly destination: string;
-    /**
-     * Request headers (name, value). `Authorization` and `Host`
-     * are forbidden — they come from the swap.
-     */
-    readonly headers: readonly (readonly [
-        string,
-        string
-    ])[];
-    /**
-     * HTTP method (`GET`, `POST`, etc.).
-     */
-    readonly method: string;
-    readonly op: 'egress';
-    /**
-     * Request path, starting with `/`.
-     */
-    readonly path: string;
-    /**
-     * How many bytes the body begins with, sent before this op in
-     * `Stage` parts (v13); 0 when `body_b64` is all of it. The
-     * broker refuses the request if its stage holds a different
-     * count, and empties the stage either way.
-     */
-    readonly staged?: number;
-    /**
-     * The broker-minted surrogate authorizing this request.
-     */
-    readonly surrogate_b64: string;
-} | {
-    readonly op: 'stage';
-    /**
-     * The part, base64-encoded: at most [`EGRESS_PART_BYTES`] bytes.
-     */
-    readonly part_b64: string;
-} | {
-    readonly op: 'read';
-};
-/**
  * The broker's reply to one [`EgressOp`].
  *
  * Replies are per-operation. Failures that would leak internals
@@ -1722,65 +1383,6 @@ export type FileRefusal = {
     readonly refusal: 'full';
 };
 /**
- * A goals operation: the agent's post-handshake write vocabulary for
- * the goals and tracking store.
- *
- * Every variant writes, and nothing else does: reads are a separate
- * session kind ([`QueryOp`]). A read-only holder — the feed — speaks a
- * vocabulary with no write in it, and no goals op can be spelled as a
- * query. Every op is bound to the broker-asserted peer uid; none names
- * a user.
- *
- * Public because the goals protocol is a cross-crate contract: the
- * agent, the broker, and test fixtures all speak it.
- */
-export type GoalsOp = {
-    /**
-     * Free-form detail; may be empty.
-     */
-    readonly detail: string;
-    readonly op: 'goal-create';
-    /**
-     * One-line title.
-     */
-    readonly title: string;
-} | {
-    /**
-     * A new detail, or `None` to keep it.
-     */
-    readonly detail?: string | null;
-    /**
-     * The goal id, as minted at create.
-     */
-    readonly id: string;
-    readonly op: 'goal-update';
-    /**
-     * A new title, or `None` to keep it.
-     */
-    readonly title?: string | null;
-} | {
-    /**
-     * The goal id.
-     */
-    readonly id: string;
-    readonly op: 'goal-close';
-    /**
-     * `achieved` or `abandoned`.
-     */
-    readonly outcome: string;
-} | {
-    readonly op: 'tracking-append';
-    /**
-     * Where the report came from (`user`, `whatsapp`, …), carried
-     * verbatim as the entry's original source.
-     */
-    readonly source: string;
-    /**
-     * What happened.
-     */
-    readonly text: string;
-};
-/**
  * The broker's reply to one [`GoalsOp`].
  */
 export type GoalsResult = {
@@ -1851,41 +1453,6 @@ export type HeldFire = {
      * Whether its run had been started.
      */
     readonly started: boolean;
-};
-/**
- * A hook operation: the agent's vocabulary for the
- * broker-owned hook registry.
- *
- * As for schedules, there is no list or read op: the registry is
- * broker-private. Hooks are created and cancelled through the
- * peer-authorized session only, never from a scheduled run's session.
- */
-export type HookOp = {
-    /**
-     * The channel a hook run's output is delivered to. Must be one
-     * the grants may send on.
-     */
-    readonly channel: string;
-    /**
-     * The capabilities a hook run may use: a subset of the
-     * creator's, checked when it is created and again when it fires.
-     */
-    readonly grants: readonly (ScheduleGrant)[];
-    readonly op: 'create';
-    /**
-     * The event it fires on.
-     */
-    readonly source: HookSource;
-    /**
-     * The task a hook run is given. Untrusted text.
-     */
-    readonly task: string;
-} | {
-    /**
-     * The hook id.
-     */
-    readonly id: string;
-    readonly op: 'cancel';
 };
 /**
  * The broker's reply to one [`HookOp`].
@@ -2064,90 +1631,6 @@ export type MediaHeader = {
      * Its value.
      */
     readonly value: string;
-};
-/**
- * A memory operation: the agent's post-handshake memory vocabulary.
- *
- * Each variant names exactly one item and performs exactly one
- * action. There is deliberately no list, bulk-read, or dump variant —
- * the protocol cannot express enumeration, so a compromised agent
- * cannot bulk-read the store. The no-list rule applies by
- * analogy: scoped reads, no dumps.
- *
- * Public because the memory protocol is a cross-crate contract: the
- * agent, the broker, and test fixtures all speak it.
- */
-export type MemoryOp = {
-    /**
-     * The item content.
-     */
-    readonly content: string;
-    /**
-     * The item id within the scope.
-     */
-    readonly id: string;
-    readonly op: 'write';
-    /**
-     * `keep` or `ttl-secs:<n>`.
-     */
-    readonly retention: string;
-    /**
-     * `user`, `project`, or `session`. The broker re-validates:
-     * the agent's bytes are never trusted.
-     */
-    readonly scope: string;
-    /**
-     * Tags for scoped recall.
-     */
-    readonly tags: readonly (string)[];
-} | {
-    /**
-     * The item id within the scope.
-     */
-    readonly id: string;
-    readonly op: 'recall';
-    /**
-     * `user`, `project`, or `session`.
-     */
-    readonly scope: string;
-} | {
-    /**
-     * Resume after this cursor (a memory id): the previous page's
-     * `next`. Absent for the first page.
-     */
-    readonly after?: string | null;
-    readonly op: 'recall-by-tag';
-    /**
-     * `user`, `project`, or `session`.
-     */
-    readonly scope: string;
-    /**
-     * The tag to match.
-     */
-    readonly tag: string;
-} | {
-    /**
-     * The item id within the scope.
-     */
-    readonly id: string;
-    readonly op: 'remove';
-    /**
-     * `user`, `project`, or `session`.
-     */
-    readonly scope: string;
-} | {
-    readonly op: 'context-append';
-    /**
-     * The note to append.
-     */
-    readonly text: string;
-} | {
-    /**
-     * Resume after this cursor (a sequence number): the previous
-     * page's `next`. Absent for the first page.
-     */
-    readonly after?: string | null;
-    readonly op: 'context-read';
 };
 /**
  * The broker's reply to one [`MemoryOp`].
@@ -2522,61 +2005,6 @@ export type ProfileResult = {
     readonly result: 'failed';
 };
 /**
- * A read-scoped query: the vocabulary the feed reads through.
- *
- * Every variant reads, and nothing else is expressible here: the
- * writes live in [`GoalsOp`], a different session kind. Each query
- * selects one store; every reply item is a feed item carrying its
- * provenance (which store, and its original source) from the store
- * layer.
- *
- * `after` resumes a paged query past the `next` cursor of the previous
- * reply.
- */
-export type QueryOp = {
-    /**
-     * Resume after this cursor (a goal id).
-     */
-    readonly after?: string | null;
-    readonly op: 'goals';
-    /**
-     * `open`, `closed`, or `any`.
-     */
-    readonly status: string;
-    /**
-     * Only goals changed at or after this unix time.
-     */
-    readonly updated_since_secs?: number | null;
-} | {
-    /**
-     * Resume after this cursor (a sequence number).
-     */
-    readonly after?: string | null;
-    readonly op: 'tracking';
-    /**
-     * Only entries recorded at or after this unix time.
-     */
-    readonly since_secs?: number | null;
-    /**
-     * Only entries reported from this source.
-     */
-    readonly source?: string | null;
-    /**
-     * Only entries recorded before this unix time.
-     */
-    readonly until_secs?: number | null;
-} | {
-    /**
-     * Resume after this cursor (a memory id).
-     */
-    readonly after?: string | null;
-    readonly op: 'memory';
-    /**
-     * The tag to recall.
-     */
-    readonly tag: string;
-};
-/**
  * The broker's reply to one [`QueryOp`].
  */
 export type QueryResult = {
@@ -2905,35 +2333,855 @@ export type ScheduleSummary = {
  *
  * Public because the session protocol is a cross-crate contract.
  */
-export type SessionRequest = VaultOp & {
+export type SessionRequest = {
     readonly kind: 'vault';
-} | EgressOp & {
+} & ({
+    /**
+     * Validated [`SecretName`](crate::SecretName), as a string.
+     */
+    readonly name: string;
+    readonly op: 'store';
+    /**
+     * Base64-encoded secret bytes.
+     */
+    readonly secret_b64: string;
+} | {
+    /**
+     * Validated [`SecretName`](crate::SecretName), as a string.
+     */
+    readonly name: string;
+    readonly op: 'fetch';
+} | {
+    /**
+     * Validated [`SecretName`](crate::SecretName), as a string.
+     */
+    readonly name: string;
+    readonly op: 'remove';
+}) | {
     readonly kind: 'egress';
-} | ChannelOp & {
+} & ({
+    /**
+     * Destination `host:port` to mint the surrogate for.
+     */
+    readonly destination: string;
+    readonly op: 'mint-surrogate';
+    /**
+     * Time-to-live in seconds.
+     */
+    readonly ttl_secs: number;
+} | {
+    /**
+     * Request body bytes, base64-encoded: all of it, or what
+     * follows the `staged` bytes. Bounded.
+     */
+    readonly body_b64: string;
+    /**
+     * Destination `host:port`. Must match the surrogate's binding
+     * and the allowlist.
+     */
+    readonly destination: string;
+    /**
+     * Request headers (name, value). `Authorization` and `Host`
+     * are forbidden — they come from the swap.
+     */
+    readonly headers: readonly (readonly [
+        string,
+        string
+    ])[];
+    /**
+     * HTTP method (`GET`, `POST`, etc.).
+     */
+    readonly method: string;
+    readonly op: 'egress';
+    /**
+     * Request path, starting with `/`.
+     */
+    readonly path: string;
+    /**
+     * How many bytes the body begins with, sent before this op in
+     * `Stage` parts (v13); 0 when `body_b64` is all of it. The
+     * broker refuses the request if its stage holds a different
+     * count, and empties the stage either way.
+     */
+    readonly staged?: number;
+    /**
+     * The broker-minted surrogate authorizing this request.
+     */
+    readonly surrogate_b64: string;
+} | {
+    readonly op: 'stage';
+    /**
+     * The part, base64-encoded: at most [`EGRESS_PART_BYTES`] bytes.
+     */
+    readonly part_b64: string;
+} | {
+    readonly op: 'read';
+}) | {
     readonly kind: 'channel';
-} | MemoryOp & {
+} & ({
+    /**
+     * The account handle to receive as, for a credentialed
+     * channel; absent for a credential-less one.
+     */
+    readonly account?: string | null;
+    /**
+     * The broker-assigned channel id.
+     */
+    readonly channel: string;
+    readonly op: 'receive';
+} | {
+    /**
+     * The broker-assigned channel id.
+     */
+    readonly channel: string;
+    readonly op: 'accounts';
+} | {
+    /**
+     * The account handle to send as, for a credentialed channel;
+     * absent for a credential-less one.
+     */
+    readonly account?: string | null;
+    /**
+     * A broker-minted rail approval (`rail-v1-…`) for exactly this
+     * channel and text. Presenting one spends it; a string the
+     * broker did not mint, or an expired or mismatched token, is
+     * refused.
+     */
+    readonly approval?: string | null;
+    /**
+     * The broker-assigned channel id.
+     */
+    readonly channel: string;
+    readonly op: 'send';
+    /**
+     * The cell's own view that the message triggers external
+     * actions. It can put a send on the rail, never take one off:
+     * the broker classifies regardless.
+     */
+    readonly state_changing: boolean;
+    /**
+     * The message text. Untrusted on receipt; the loop places it
+     * below the system prompt.
+     */
+    readonly text: string;
+}) | {
     readonly kind: 'memory';
-} | SkillOp & {
+} & ({
+    /**
+     * The item content.
+     */
+    readonly content: string;
+    /**
+     * The item id within the scope.
+     */
+    readonly id: string;
+    readonly op: 'write';
+    /**
+     * `keep` or `ttl-secs:<n>`.
+     */
+    readonly retention: string;
+    /**
+     * `user`, `project`, or `session`. The broker re-validates:
+     * the agent's bytes are never trusted.
+     */
+    readonly scope: string;
+    /**
+     * Tags for scoped recall.
+     */
+    readonly tags: readonly (string)[];
+} | {
+    /**
+     * The item id within the scope.
+     */
+    readonly id: string;
+    readonly op: 'recall';
+    /**
+     * `user`, `project`, or `session`.
+     */
+    readonly scope: string;
+} | {
+    /**
+     * Resume after this cursor (a memory id): the previous page's
+     * `next`. Absent for the first page.
+     */
+    readonly after?: string | null;
+    readonly op: 'recall-by-tag';
+    /**
+     * `user`, `project`, or `session`.
+     */
+    readonly scope: string;
+    /**
+     * The tag to match.
+     */
+    readonly tag: string;
+} | {
+    /**
+     * The item id within the scope.
+     */
+    readonly id: string;
+    readonly op: 'remove';
+    /**
+     * `user`, `project`, or `session`.
+     */
+    readonly scope: string;
+} | {
+    readonly op: 'context-append';
+    /**
+     * The note to append.
+     */
+    readonly text: string;
+} | {
+    /**
+     * Resume after this cursor (a sequence number): the previous
+     * page's `next`. Absent for the first page.
+     */
+    readonly after?: string | null;
+    readonly op: 'context-read';
+}) | {
     readonly kind: 'skill';
-} | GoalsOp & {
+} & ({
+    /**
+     * The declared capability this invocation exercises. Typed on
+     * the wire: a malformed name fails to decode, which makes the
+     * frame a protocol violation and ends the session.
+     */
+    readonly capability: CapabilityName;
+    /**
+     * The skill's input. Opaque to the broker.
+     */
+    readonly input: string;
+    readonly op: 'invoke';
+    /**
+     * The exact registered skill id, `name@version`. Looked up
+     * verbatim: a bare name or another version matches nothing.
+     */
+    readonly skill: string;
+}) | {
     readonly kind: 'goals';
-} | QueryOp & {
+} & ({
+    /**
+     * Free-form detail; may be empty.
+     */
+    readonly detail: string;
+    readonly op: 'goal-create';
+    /**
+     * One-line title.
+     */
+    readonly title: string;
+} | {
+    /**
+     * A new detail, or `None` to keep it.
+     */
+    readonly detail?: string | null;
+    /**
+     * The goal id, as minted at create.
+     */
+    readonly id: string;
+    readonly op: 'goal-update';
+    /**
+     * A new title, or `None` to keep it.
+     */
+    readonly title?: string | null;
+} | {
+    /**
+     * The goal id.
+     */
+    readonly id: string;
+    readonly op: 'goal-close';
+    /**
+     * `achieved` or `abandoned`.
+     */
+    readonly outcome: string;
+} | {
+    readonly op: 'tracking-append';
+    /**
+     * Where the report came from (`user`, `whatsapp`, …), carried
+     * verbatim as the entry's original source.
+     */
+    readonly source: string;
+    /**
+     * What happened.
+     */
+    readonly text: string;
+}) | {
     readonly kind: 'query';
-} | ScheduleOp & {
+} & ({
+    /**
+     * Resume after this cursor (a goal id).
+     */
+    readonly after?: string | null;
+    readonly op: 'goals';
+    /**
+     * `open`, `closed`, or `any`.
+     */
+    readonly status: string;
+    /**
+     * Only goals changed at or after this unix time.
+     */
+    readonly updated_since_secs?: number | null;
+} | {
+    /**
+     * Resume after this cursor (a sequence number).
+     */
+    readonly after?: string | null;
+    readonly op: 'tracking';
+    /**
+     * Only entries recorded at or after this unix time.
+     */
+    readonly since_secs?: number | null;
+    /**
+     * Only entries reported from this source.
+     */
+    readonly source?: string | null;
+    /**
+     * Only entries recorded before this unix time.
+     */
+    readonly until_secs?: number | null;
+} | {
+    /**
+     * Resume after this cursor (a memory id).
+     */
+    readonly after?: string | null;
+    readonly op: 'memory';
+    /**
+     * The tag to recall.
+     */
+    readonly tag: string;
+}) | {
     readonly kind: 'schedule';
-} | HookOp & {
+} & ({
+    /**
+     * The channel the run's output is delivered to. Must be one the
+     * grants may send on.
+     */
+    readonly channel: string;
+    /**
+     * The capabilities the run may use: a subset of the creator's.
+     */
+    readonly grants: readonly (ScheduleGrant)[];
+    readonly op: 'create';
+    /**
+     * The task the scheduled run is given. Untrusted text: it
+     * enters the run below the system prompt, as a user task.
+     */
+    readonly task: string;
+    /**
+     * When it fires.
+     */
+    readonly when: ScheduleSpec;
+} | {
+    /**
+     * The channel each digest is delivered to.
+     */
+    readonly channel: string;
+    /**
+     * What each digest gathers.
+     */
+    readonly feed: FeedSpec;
+    readonly op: 'create-feed';
+    /**
+     * When it fires.
+     */
+    readonly when: ScheduleSpec;
+} | {
+    /**
+     * The schedule id.
+     */
+    readonly id: string;
+    readonly op: 'cancel';
+} | {
+    /**
+     * Resume after this schedule id: a previous page's `next`.
+     */
+    readonly after?: string | null;
+    readonly op: 'list';
+} | {
+    /**
+     * How long from now it fires, in seconds.
+     */
+    readonly delay_secs: number;
+    /**
+     * The capabilities it may use: a subset of this run's.
+     */
+    readonly grants: readonly (ScheduleGrant)[];
+    readonly op: 'followup';
+    /**
+     * The follow-up run's task. Untrusted text, as for `Create`.
+     */
+    readonly task: string;
+} | {
+    /**
+     * The schedule id.
+     */
+    readonly id: string;
+    readonly op: 'resolve';
+} | {
+    /**
+     * The schedule id.
+     */
+    readonly id: string;
+    readonly op: 'retry';
+} | {
+    /**
+     * Resume after this parked result: a previous page's `next`.
+     */
+    readonly after?: string | null;
+    readonly op: 'list-parked';
+} | {
+    /**
+     * The parked result's id, as `ListParked` gave it.
+     */
+    readonly id: string;
+    readonly op: 'dismiss';
+}) | {
     readonly kind: 'hook';
-} | ArtifactOp & {
+} & ({
+    /**
+     * The channel a hook run's output is delivered to. Must be one
+     * the grants may send on.
+     */
+    readonly channel: string;
+    /**
+     * The capabilities a hook run may use: a subset of the
+     * creator's, checked when it is created and again when it fires.
+     */
+    readonly grants: readonly (ScheduleGrant)[];
+    readonly op: 'create';
+    /**
+     * The event it fires on.
+     */
+    readonly source: HookSource;
+    /**
+     * The task a hook run is given. Untrusted text.
+     */
+    readonly task: string;
+} | {
+    /**
+     * The hook id.
+     */
+    readonly id: string;
+    readonly op: 'cancel';
+}) | {
     readonly kind: 'artifact';
-} | SpaceOp & {
+} & ({
+    /**
+     * The build kind, a lowercase token (`document`, `preview`, …).
+     * Not `kind`: that is the session request's own tag.
+     */
+    readonly build_kind: string;
+    /**
+     * The builder: an exact registered skill id, `name@version`.
+     */
+    readonly builder: string;
+    /**
+     * The inputs. The broker pins each by its content hash; the
+     * builder receives exactly these bytes.
+     */
+    readonly inputs: readonly (ArtifactInput)[];
+    readonly op: 'build';
+} | {
+    /**
+     * The build id `Build` returned.
+     */
+    readonly build: string;
+    readonly op: 'deliver';
+    /**
+     * Where it goes.
+     */
+    readonly to: DeliveryTarget;
+} | {
+    /**
+     * The build id.
+     */
+    readonly build: string;
+    readonly op: 'describe';
+} | {
+    /**
+     * Where it was captured from. A feed item is re-read by
+     * the broker, which records its provenance; absent, the idea says
+     * its source was not stated.
+     */
+    readonly from?: IdeaSource | null;
+    readonly op: 'capture-idea';
+    /**
+     * The idea's text. Untrusted.
+     */
+    readonly text: string;
+} | {
+    /**
+     * Resume after this idea id: the previous page's `next`.
+     */
+    readonly after?: string | null;
+    readonly op: 'list-ideas';
+} | {
+    /**
+     * The idea id.
+     */
+    readonly idea: string;
+    /**
+     * The note. Untrusted.
+     */
+    readonly note: string;
+    readonly op: 'note-idea';
+} | {
+    /**
+     * The build kind.
+     */
+    readonly build_kind: string;
+    /**
+     * The builder: an exact registered skill id, `name@version`.
+     */
+    readonly builder: string;
+    /**
+     * What the build is for, as the user will confirm it.
+     */
+    readonly description: string;
+    /**
+     * The idea id.
+     */
+    readonly idea: string;
+    readonly op: 'propose-activation';
+} | {
+    /**
+     * The activation id `ProposeActivation` returned.
+     */
+    readonly activation: string;
+    /**
+     * The broker-minted confirmation.
+     */
+    readonly confirmation: string;
+    readonly op: 'activate';
+} | {
+    /**
+     * The idea id `CaptureIdea` returned.
+     */
+    readonly idea: string;
+    readonly op: 'refine-idea';
+    /**
+     * The refined text. Untrusted.
+     */
+    readonly text: string;
+} | {
+    /**
+     * The build kind.
+     */
+    readonly build_kind: string;
+    /**
+     * The builder: an exact registered skill id, `name@version`.
+     */
+    readonly builder: string;
+    /**
+     * The idea id.
+     */
+    readonly idea: string;
+    readonly op: 'build-idea';
+}) | {
     readonly kind: 'space';
-} | SubagentOp & {
+} & ({
+    /**
+     * The grants the space's tasks may draw on: a subset of the
+     * caller's own.
+     */
+    readonly grants: readonly (ScheduleGrant)[];
+    /**
+     * The display name. Untrusted text; never the space's identity.
+     */
+    readonly name: string;
+    readonly op: 'create';
+} | {
+    readonly op: 'join';
+    /**
+     * The space id `Create` returned.
+     */
+    readonly space: string;
+} | {
+    /**
+     * The item's key, a lowercase token.
+     */
+    readonly key: string;
+    readonly op: 'put';
+    /**
+     * The space id.
+     */
+    readonly space: string;
+    /**
+     * The admission ticket for that space.
+     */
+    readonly ticket: string;
+    /**
+     * The item's value. Untrusted text.
+     */
+    readonly value: string;
+} | {
+    /**
+     * The item's key.
+     */
+    readonly key: string;
+    readonly op: 'get';
+    /**
+     * The space id.
+     */
+    readonly space: string;
+    /**
+     * The admission ticket for that space.
+     */
+    readonly ticket: string;
+} | {
+    /**
+     * The item's key.
+     */
+    readonly key: string;
+    readonly op: 'remove';
+    /**
+     * The space id.
+     */
+    readonly space: string;
+    /**
+     * The admission ticket for that space.
+     */
+    readonly ticket: string;
+} | {
+    /**
+     * Where the run's output goes; the grants must include sending
+     * there.
+     */
+    readonly channel: string;
+    /**
+     * The grants the run may use: a subset of the space's.
+     */
+    readonly grants: readonly (ScheduleGrant)[];
+    readonly op: 'add-task';
+    /**
+     * The space id.
+     */
+    readonly space: string;
+    /**
+     * The task text the run is given.
+     */
+    readonly task: string;
+    /**
+     * The admission ticket for that space.
+     */
+    readonly ticket: string;
+} | {
+    readonly op: 'run-task';
+    /**
+     * The space id.
+     */
+    readonly space: string;
+    /**
+     * The task id `AddTask` returned.
+     */
+    readonly task: string;
+    /**
+     * The admission ticket for that space.
+     */
+    readonly ticket: string;
+} | {
+    readonly op: 'pair';
+    /**
+     * The space id.
+     */
+    readonly space: string;
+    /**
+     * The admission ticket for that space.
+     */
+    readonly ticket: string;
+} | {
+    readonly op: 'sync-pull';
+    /**
+     * The version the puller already has: changes after it come back.
+     */
+    readonly since: number;
+    /**
+     * The space id.
+     */
+    readonly space: string;
+    /**
+     * The admission ticket for that space.
+     */
+    readonly ticket: string;
+} | {
+    /**
+     * The changes, applied in order.
+     */
+    readonly changes: readonly (SyncChange)[];
+    readonly op: 'sync-push';
+    /**
+     * The space id.
+     */
+    readonly space: string;
+    /**
+     * The admission ticket for that space.
+     */
+    readonly ticket: string;
+} | {
+    /**
+     * The last conflict already seen: entries after it come back.
+     */
+    readonly after: number;
+    readonly op: 'conflicts';
+    /**
+     * The space id.
+     */
+    readonly space: string;
+    /**
+     * The admission ticket for that space.
+     */
+    readonly ticket: string;
+} | {
+    /**
+     * The bytes, base64.
+     */
+    readonly data: string;
+    /**
+     * What the uploader says it is: `image` or `audio`. The broker
+     * checks the bytes agree; it never takes a content type from the
+     * uploader.
+     */
+    readonly media_kind: string;
+    readonly op: 'put-media';
+    /**
+     * The space id.
+     */
+    readonly space: string;
+    /**
+     * The admission ticket for that space.
+     */
+    readonly ticket: string;
+} | {
+    /**
+     * The media id `PutMedia` returned.
+     */
+    readonly media: string;
+    readonly op: 'get-media';
+    /**
+     * The space id.
+     */
+    readonly space: string;
+    /**
+     * The admission ticket for that space.
+     */
+    readonly ticket: string;
+}) | {
     readonly kind: 'subagent';
-} | WebOp & {
+} & ({
+    /**
+     * Steps allocated to the child, spent at allocation.
+     */
+    readonly budget: number;
+    /**
+     * What the child may use: a subset of the parent's grants.
+     */
+    readonly capabilities: readonly (ScheduleGrant)[];
+    readonly op: 'spawn';
+    /**
+     * The brief. Untrusted text: it enters the child below its
+     * system prompt, as the child's task.
+     */
+    readonly task: string;
+} | {
+    /**
+     * The child id `Spawn` returned.
+     */
+    readonly child: string;
+    readonly op: 'wait';
+} | {
+    /**
+     * The child id `Spawn` returned.
+     */
+    readonly child: string;
+    readonly op: 'kill';
+    /**
+     * Why, for the activity record.
+     */
+    readonly reason: string;
+}) | {
     readonly kind: 'web';
-} | BrowserOp & {
+} & ({
+    readonly op: 'fetch';
+    /**
+     * Why the agent wants it. Shown to the owner when the site needs
+     * their approval, labeled as the agent's words.
+     */
+    readonly reason: string;
+    /**
+     * The page's absolute `https` URL.
+     */
+    readonly url: string;
+} | {
+    readonly op: 'search';
+    /**
+     * What to search for. It leaves to the provider.
+     */
+    readonly query: string;
+}) | {
     readonly kind: 'browser';
-};
+} & ({
+    readonly op: 'open';
+    /**
+     * Why the agent wants it. Shown to the owner when the site needs
+     * their approval, labeled as the agent's words.
+     */
+    readonly reason: string;
+    /**
+     * The page's absolute `https` URL.
+     */
+    readonly url: string;
+} | {
+    readonly op: 'read';
+} | {
+    /**
+     * What to do to it. Text to type is refused if it holds a secret
+     * the broker keeps.
+     */
+    readonly action: PageAction;
+    /**
+     * The element's id, from the last snapshot.
+     */
+    readonly element: number;
+    readonly op: 'act';
+} | {
+    /**
+     * Down, or up.
+     */
+    readonly down: boolean;
+    readonly op: 'scroll';
+} | {
+    readonly op: 'allow';
+    /**
+     * Why the page needs it. Shown to the owner, labeled as the
+     * agent's words.
+     */
+    readonly reason: string;
+    /**
+     * The site, as the page's `refused` named it (`host:port`).
+     */
+    readonly site: string;
+} | {
+    readonly op: 'close';
+} | {
+    /**
+     * Which sign-in, by its label, when the site has more than one.
+     */
+    readonly label?: string | null;
+    readonly op: 'sign_in';
+    /**
+     * The password field's element, from the last snapshot.
+     */
+    readonly password: number;
+    /**
+     * The username field's element, from the last snapshot; none for a
+     * form that asks for the password alone.
+     */
+    readonly username?: number | null;
+} | {
+    /**
+     * The code field's element, from the last snapshot.
+     */
+    readonly element: number;
+    readonly op: 'code';
+});
 /**
  * The broker's reply to one [`SessionRequest`].
  *
@@ -3175,209 +3423,6 @@ export type SkillResult = {
     readonly r: 'skill-error';
 };
 /**
- * A space operation.
- *
- * A space is a named, persistent scope with members. The broker mints
- * its id; the caller only gives it a display name. Every op that touches
- * a space names it **and** presents the admission ticket `Join` returned,
- * and the broker re-checks on every call that the ticket was minted for
- * exactly that space, in this live session, for this peer, and that the
- * session's broker-asserted principal is still a member. Naming another
- * caller's space gets nothing.
- *
- * There is deliberately no op that lists, dumps, or exports spaces or a
- * space's items: the protocol cannot express enumeration.
- *
- * Public because the space protocol is a cross-crate contract.
- */
-export type SpaceOp = {
-    /**
-     * The grants the space's tasks may draw on: a subset of the
-     * caller's own.
-     */
-    readonly grants: readonly (ScheduleGrant)[];
-    /**
-     * The display name. Untrusted text; never the space's identity.
-     */
-    readonly name: string;
-    readonly op: 'create';
-} | {
-    readonly op: 'join';
-    /**
-     * The space id `Create` returned.
-     */
-    readonly space: string;
-} | {
-    /**
-     * The item's key, a lowercase token.
-     */
-    readonly key: string;
-    readonly op: 'put';
-    /**
-     * The space id.
-     */
-    readonly space: string;
-    /**
-     * The admission ticket for that space.
-     */
-    readonly ticket: string;
-    /**
-     * The item's value. Untrusted text.
-     */
-    readonly value: string;
-} | {
-    /**
-     * The item's key.
-     */
-    readonly key: string;
-    readonly op: 'get';
-    /**
-     * The space id.
-     */
-    readonly space: string;
-    /**
-     * The admission ticket for that space.
-     */
-    readonly ticket: string;
-} | {
-    /**
-     * The item's key.
-     */
-    readonly key: string;
-    readonly op: 'remove';
-    /**
-     * The space id.
-     */
-    readonly space: string;
-    /**
-     * The admission ticket for that space.
-     */
-    readonly ticket: string;
-} | {
-    /**
-     * Where the run's output goes; the grants must include sending
-     * there.
-     */
-    readonly channel: string;
-    /**
-     * The grants the run may use: a subset of the space's.
-     */
-    readonly grants: readonly (ScheduleGrant)[];
-    readonly op: 'add-task';
-    /**
-     * The space id.
-     */
-    readonly space: string;
-    /**
-     * The task text the run is given.
-     */
-    readonly task: string;
-    /**
-     * The admission ticket for that space.
-     */
-    readonly ticket: string;
-} | {
-    readonly op: 'run-task';
-    /**
-     * The space id.
-     */
-    readonly space: string;
-    /**
-     * The task id `AddTask` returned.
-     */
-    readonly task: string;
-    /**
-     * The admission ticket for that space.
-     */
-    readonly ticket: string;
-} | {
-    readonly op: 'pair';
-    /**
-     * The space id.
-     */
-    readonly space: string;
-    /**
-     * The admission ticket for that space.
-     */
-    readonly ticket: string;
-} | {
-    readonly op: 'sync-pull';
-    /**
-     * The version the puller already has: changes after it come back.
-     */
-    readonly since: number;
-    /**
-     * The space id.
-     */
-    readonly space: string;
-    /**
-     * The admission ticket for that space.
-     */
-    readonly ticket: string;
-} | {
-    /**
-     * The changes, applied in order.
-     */
-    readonly changes: readonly (SyncChange)[];
-    readonly op: 'sync-push';
-    /**
-     * The space id.
-     */
-    readonly space: string;
-    /**
-     * The admission ticket for that space.
-     */
-    readonly ticket: string;
-} | {
-    /**
-     * The last conflict already seen: entries after it come back.
-     */
-    readonly after: number;
-    readonly op: 'conflicts';
-    /**
-     * The space id.
-     */
-    readonly space: string;
-    /**
-     * The admission ticket for that space.
-     */
-    readonly ticket: string;
-} | {
-    /**
-     * The bytes, base64.
-     */
-    readonly data: string;
-    /**
-     * What the uploader says it is: `image` or `audio`. The broker
-     * checks the bytes agree; it never takes a content type from the
-     * uploader.
-     */
-    readonly media_kind: string;
-    readonly op: 'put-media';
-    /**
-     * The space id.
-     */
-    readonly space: string;
-    /**
-     * The admission ticket for that space.
-     */
-    readonly ticket: string;
-} | {
-    /**
-     * The media id `PutMedia` returned.
-     */
-    readonly media: string;
-    readonly op: 'get-media';
-    /**
-     * The space id.
-     */
-    readonly space: string;
-    /**
-     * The admission ticket for that space.
-     */
-    readonly ticket: string;
-};
-/**
  * Why a space op was refused.
  */
 export type SpaceRefusal = 'no-such-space' | 'not-admitted' | 'stale-admission' | 'peer-changed' | 'expired' | 'bad-name' | 'bad-key' | 'bad-value' | 'no-such-item' | 'exceeds-grants' | 'bad-task' | 'no-such-task' | 'full' | 'not-allowed' | 'scheduler-off' | 'too-many-changes' | 'bad-media' | 'media-too-large' | 'wrong-media-type' | 'no-such-media';
@@ -3518,41 +3563,6 @@ export type SpaceResult = {
     readonly result: 'denied';
 } | {
     readonly result: 'space-error';
-};
-/**
- * A subagent operation, from a parent session.
- */
-export type SubagentOp = {
-    /**
-     * Steps allocated to the child, spent at allocation.
-     */
-    readonly budget: number;
-    /**
-     * What the child may use: a subset of the parent's grants.
-     */
-    readonly capabilities: readonly (ScheduleGrant)[];
-    readonly op: 'spawn';
-    /**
-     * The brief. Untrusted text: it enters the child below its
-     * system prompt, as the child's task.
-     */
-    readonly task: string;
-} | {
-    /**
-     * The child id `Spawn` returned.
-     */
-    readonly child: string;
-    readonly op: 'wait';
-} | {
-    /**
-     * The child id `Spawn` returned.
-     */
-    readonly child: string;
-    readonly op: 'kill';
-    /**
-     * Why, for the activity record.
-     */
-    readonly reason: string;
 };
 /**
  * Why a subagent op was refused.
@@ -4240,41 +4250,6 @@ export type UiResponse = {
     readonly type: 'action_result';
 };
 /**
- * A vault operation: the agent's post-handshake request vocabulary.
- *
- * Each variant names exactly one secret and performs exactly one
- * action. There is deliberately no list, bulk-read, or dump variant —
- * the protocol cannot express enumeration, so a compromised agent
- * cannot bulk-read the store. See the `hatchling-dev` no-bulk-read
- * ratchet, which fails the gate if such a variant is ever added.
- *
- * Public because the vault protocol is a cross-crate contract: the
- * agent, the broker, and test fixtures all speak it.
- */
-export type VaultOp = {
-    /**
-     * Validated [`SecretName`](crate::SecretName), as a string.
-     */
-    readonly name: string;
-    readonly op: 'store';
-    /**
-     * Base64-encoded secret bytes.
-     */
-    readonly secret_b64: string;
-} | {
-    /**
-     * Validated [`SecretName`](crate::SecretName), as a string.
-     */
-    readonly name: string;
-    readonly op: 'fetch';
-} | {
-    /**
-     * Validated [`SecretName`](crate::SecretName), as a string.
-     */
-    readonly name: string;
-    readonly op: 'remove';
-};
-/**
  * The broker's reply to one [`VaultOp`].
  *
  * Replies are per-operation and carry no more than the op asked for: a
@@ -4317,33 +4292,6 @@ export type WebHit = {
      * site's approval like any other.
      */
     readonly url: string;
-};
-/**
- * A web operation (WO-028): a page read through the broker, from a site
- * the owner allows.
- *
- * A site is an origin: `https`, a host and a port. A page from a site the
- * session hasn't been allowed is put to the owner first, in the app; the
- * agent is told it's waiting, and nothing is fetched until the owner
- * says yes.
- */
-export type WebOp = {
-    readonly op: 'fetch';
-    /**
-     * Why the agent wants it. Shown to the owner when the site needs
-     * their approval, labeled as the agent's words.
-     */
-    readonly reason: string;
-    /**
-     * The page's absolute `https` URL.
-     */
-    readonly url: string;
-} | {
-    readonly op: 'search';
-    /**
-     * What to search for. It leaves to the provider.
-     */
-    readonly query: string;
 };
 /**
  * The broker's reply to one [`WebOp`].

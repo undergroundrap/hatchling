@@ -69,7 +69,7 @@ pub const ORPHANED: &str = "the parent's run ended";
 /// A subagent operation, from a parent session.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "op")]
+#[serde(tag = "op", deny_unknown_fields)]
 pub enum SubagentOp {
     /// Start a child on `task`, with `budget` steps drawn from the
     /// parent's and `capabilities` narrowed from the parent's grants.
