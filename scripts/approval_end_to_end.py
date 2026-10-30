@@ -11,8 +11,9 @@ the build once only. The owner allows it once. The card goes, the agent
 can't redeem the request itself, and the broker tells the owner, in the
 chat, what became of the build it ran.
 
-Usage: approval_end_to_end.py <app-address>, with HATCHLING_BROKER_SOCKET
-set, and HATCHLING_E2E_SCREENSHOTS naming a directory for screenshots.
+Usage, as root: approval_end_to_end.py <app-address>, with
+HATCHLING_BROKER_SOCKET and HATCHLING_AGENT_UID set, and
+HATCHLING_E2E_SCREENSHOTS naming a directory for screenshots.
 """
 import json
 import os
@@ -57,11 +58,16 @@ def receive(stream):
     return json.loads(exactly(length))
 
 
-def agent_session(path):
-    """An agent's session on the broker's socket, past the handshake."""
+def agent_session(path, uid):
+    """An agent's session on the broker's socket, past the handshake: made
+    as `uid`, which the broker reads from the connection when it's made."""
     stream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     stream.settimeout(30)
-    stream.connect(path)
+    os.seteuid(uid)
+    try:
+        stream.connect(path)
+    finally:
+        os.seteuid(0)
     send(stream, {"t": "hello", "v": protocol_version(), "cell_id": "cell-e2e"})
     welcome = receive(stream)
     if welcome.get("t") != "welcome":
@@ -136,7 +142,7 @@ def main():
     from playwright.sync_api import expect, sync_playwright
 
     address = sys.argv[1]
-    agent = agent_session(os.environ["HATCHLING_BROKER_SOCKET"])
+    agent = agent_session(os.environ["HATCHLING_BROKER_SOCKET"], int(os.environ["HATCHLING_AGENT_UID"]))
     idea, proposal = propose(agent)
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True, args=["--no-sandbox"])
