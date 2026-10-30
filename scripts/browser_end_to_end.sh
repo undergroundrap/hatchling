@@ -1,7 +1,10 @@
 #!/bin/bash
 # The agent's browser, driven from the app (WO-029): a root broker with a
 # browser configured, the scripted browsing model, the app's host, and
-# scripts/browser_end_to_end.py using the app as the owner would.
+# scripts/browser_end_to_end.py using the app as the owner would. The site
+# the agent's browser visits is scripts/sign_in_site.py, served over HTTPS
+# with a CA of the test's own (WO-031): the agent signs in to it with the
+# sign-in the owner kept.
 #
 # Usage, as root, in a disposable PID namespace, from the clone:
 #   scripts/browser_end_to_end.sh <browser> <app-python> <logs>
@@ -13,6 +16,13 @@
 set -euo pipefail
 [ "$(id -u)" = 0 ] || { echo "run as root"; exit 64; }
 [ $# = 3 ] || { echo "usage: $0 <browser> <app-python> <logs>"; exit 64; }
+# The site is on an address of a network namespace of the proof's own, and
+# its name in a hosts file of its own mount namespace: it takes both,
+# whatever it was run in, and is run again in them. Its process is the
+# same, so its own PID marks that it was.
+if [ "${HATCHLING_E2E_NAMESPACES:-}" != "$$" ]; then
+  exec unshare --mount --propagation private --net -- env "HATCHLING_E2E_NAMESPACES=$$" "$BASH" "$0" "$@"
+fi
 browser=$1 app_python=$2 logs=$3
 mkdir -p "$logs"
 
@@ -41,6 +51,38 @@ export HATCHLING_EGRESS_ALLOWLIST=local-keyless:localhost:18090
 export HATCHLING_EGRESS_GRANTS=localhost:18090
 export HATCHLING_API_GRANTS=egress:localhost:18090,channel-send:local
 export HATCHLING_WEB=sites
+# The site: a name for a documentation address (RFC 5737), which isn't
+# internal, so the browser's relay reaches it as it would a public site, in
+# this network namespace.
+site_name=$(python3 -c 'import sys; sys.path.insert(0, "scripts"); from browsing_model import BROWSER_URL; print(BROWSER_URL.split("/")[2])')
+site_address=198.51.100.7
+ip link set lo up
+# On an interface of its own, not loopback: with loopback alone, the app's
+# browser says it's offline, and holds the owner's messages back.
+ip link add site0 type dummy
+ip addr add "$site_address/24" dev site0
+ip link set site0 up
+cp /etc/hosts "$HATCHLING_HOME/hosts"
+echo "$site_address $site_name" >> "$HATCHLING_HOME/hosts"
+chmod 644 "$HATCHLING_HOME/hosts"
+mount --bind "$HATCHLING_HOME/hosts" /etc/hosts
+# Its certificate, from a CA the browser is given and nothing else trusts.
+tls=$HATCHLING_HOME/tls
+mkdir -m 700 "$tls"
+# Both carry the extensions a strict verifier asks for, as a real CA's do.
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=Hatchling end-to-end CA" \
+  -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign" \
+  -keyout "$tls/ca.key" -out "$tls/ca.crt" 2> "$logs/tls.log"
+openssl req -newkey rsa:2048 -nodes -subj "/CN=$site_name" -keyout "$tls/site.key" -out "$tls/site.csr" 2>> "$logs/tls.log"
+printf '%s\n' "subjectAltName=DNS:$site_name" "basicConstraints=critical,CA:FALSE" \
+  "keyUsage=critical,digitalSignature,keyEncipherment" "extendedKeyUsage=serverAuth" \
+  "subjectKeyIdentifier=hash" "authorityKeyIdentifier=keyid,issuer" > "$tls/site.ext"
+openssl x509 -req -in "$tls/site.csr" -CA "$tls/ca.crt" -CAkey "$tls/ca.key" -CAcreateserial -days 1 \
+  -extfile "$tls/site.ext" -out "$tls/site.crt" 2>> "$logs/tls.log"
+cat "$tls/site.crt" "$tls/ca.crt" > "$tls/chain.pem"
+cp "$tls/ca.crt" "$HATCHLING_HOME/browser-ca.pem"
+chmod 644 "$HATCHLING_HOME/browser-ca.pem"
+export HATCHLING_BROWSER_CA=$HATCHLING_HOME/browser-ca.pem
 # The browser: pinned by its bundle's digest, run from a verified snapshot.
 export HATCHLING_BROWSER=$browser
 export HATCHLING_BROWSER_SHA256
@@ -60,9 +102,18 @@ mkdir "$cg/broker"
 echo $$ > "$cg/broker/cgroup.procs"
 export HATCHLING_CELL_CGROUP=$cg
 
-python3 scripts/browsing_model.py 18090 2> "$logs/model.log" &
+# What the site was sent, and every request the model was: read for the
+# canary sign-in, and kept out of the logs.
+export HATCHLING_E2E_SITE_RECORD=$HATCHLING_HOME/site-sign-ins.jsonl
+export HATCHLING_E2E_MODEL_RECORD=$HATCHLING_HOME/model-requests.jsonl
+python3 scripts/sign_in_site.py "$site_address" 443 "$tls/chain.pem" "$tls/site.key" "$HATCHLING_E2E_SITE_RECORD" \
+  2> "$logs/site.log" &
+python3 scripts/browsing_model.py 18090 "$HATCHLING_E2E_MODEL_RECORD" 2> "$logs/model.log" &
 hatchling-broker migrate-vault > "$logs/migrate.log" 2>&1
 hatchling-broker > "$logs/broker.log" 2>&1 &
+export HATCHLING_E2E_BROKER_PID=$!
+export HATCHLING_E2E_BROKER_LOG=$logs/broker.log
+export HATCHLING_E2E_VAULT_LOG=$HATCHLING_VAULT_DIR/.access.log
 for _ in $(seq 100); do [ -S "$HATCHLING_UI_SOCKET" ] && break; sleep 0.1; done
 HATCHLING_HOST_UI=$PWD/frontend/dist hatchling-host > "$logs/host.log" 2>&1 &
 address=
