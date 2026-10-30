@@ -1,6 +1,6 @@
 # WO-030: Signed-in browsing: sessions sealed per site, sign-in filled by the broker, the agent never in the secret path
 
-**Status:** QUEUED
+**Status:** DONE (2026-10-30)
 **Area:** `crates/hatchling-broker` (profiles, the fill, the session's sites), `crates/hatchling-vault` (two sealed stores: cookie jars and site credentials), `crates/hatchling-browser` (reading and restoring cookies, the fill), `crates/hatchling-core` (the ops; the UI's surfaces), `crates/hatchling-agent` (the fill tool), `frontend/` (signed-in sites, credentials, codes)
 **Issue:** none yet
 **Trust boundary:** yes
@@ -43,14 +43,14 @@ The fix isn't to loosen the browser cell. It's what WO-017 did for keys and WO-0
 
 ## Acceptance criteria
 
-- [ ] A credential stored for origin A is never filled on origin B, along every navigation path the tests can build: a redirect, a subframe, a look-alike host, a page that changes its URL with script, a controller that reports A while the page is B.
-- [ ] After a full sign-in flow, the agent's transcript, its snapshots, the action log and the broker's log contain no credential, cookie value or code: checked by scanning for each.
-- [ ] A cookie for a domain outside the profile's sites, planted in the jar by a page, isn't restored next session; a service worker a page registers isn't there next session.
-- [ ] A signed-in cell can't reach an origin outside its profile without the owner: tested with a page's script, a redirect and a subresource.
-- [ ] Two profiles never share a cell; a profile's credentials and cookies are only ever sent to its own cell.
-- [ ] Killing a cell mid-session leaves no readable profile anywhere: the cell's storage is gone, and the jar sealed is the last one read.
-- [ ] Signing out ends the site's session at the next launch.
-- [ ] A one-time code typed in the app is filled once, into the page that asked, and not kept.
+- [x] A credential stored for origin A is never filled on origin B, along every navigation path the tests can build: a redirect, a subframe, a look-alike host, a page that changes its URL with script, a controller that reports A while the page is B.
+- [x] After a full sign-in flow, the agent's transcript, its snapshots, the action log and the broker's log contain no credential, cookie value or code: checked by scanning for each.
+- [x] A cookie for a domain outside the profile's sites, planted in the jar by a page, isn't restored next session; a service worker a page registers isn't there next session.
+- [x] A signed-in cell can't reach an origin outside its profile without the owner: tested with a page's script, a redirect and a subresource.
+- [x] Two profiles never share a cell; a profile's credentials and cookies are only ever sent to its own cell.
+- [x] Killing a cell mid-session leaves no readable profile anywhere: the cell's storage is gone, and the jar sealed is the last one read.
+- [x] Signing out ends the site's session at the next launch.
+- [x] A one-time code typed in the app is filled once, into the page that asked, and not kept.
 
 ## Gates
 
@@ -58,7 +58,89 @@ See [TEMPLATE.md](TEMPLATE.md#gates). The browser tests run on the pinned Chromi
 
 ## Evidence
 
-Filled in at close.
+Built in #187, #188, #194, #196, #198, #199 and #200 (the broker and the browser), and #195, #235 and #236 (the app). WO-031 then moved the fill out of the broker: the keeper sends a sign-in to the profile's browser on a channel of its own (#238 to #243).
+
+An audit at close mapped each criterion to the tests behind it, and read the code beside them:
+- It found a real bug, fixed in #246: signing a profile out didn't hold while a browser for it ran.
+- It found criteria proven only in part; #247 adds those tests.
+
+Each change was gated in the sandbox on real cells, with a delegated cgroup and the pinned Chromium:
+- fmt and clippy on 1.98.1 and 1.85.0;
+- preflight;
+- the tests with `REQUIRE_CELL=1` and `REQUIRE_BROWSER=1`;
+- a hand mutant for each claim, each read for failing at its intended check;
+- then CI.
+
+"Fake" below means the broker's tests with a scripted browser (`crates/hatchling-broker/src/browser_ops.rs`). "Real" means real Chromium in a real cell.
+
+- **A credential for origin A is never filled on origin B.**
+  - **A controller that reports A while the page is B:** `sign_in_filled` and `kept_sign_in_filled` (`crates/hatchling-browser/tests/real_cell.rs`, real). The controller checks the top frame's own `securityOrigin`, whatever it was told, and a fill for another origin or another port is refused (`crates/hatchling-browser/src/page.rs`).
+  - **A redirect, a script that moves the page, a look-alike host, and a form framed from another site:** `kept_sign_in_follows_the_page` (real, #247). The script moves the page to `hatchling.test.other.test`. Each fill is refused `OtherOrigin`, and the form is checked untouched. A hand mutant comparing origins by prefix fails it with "filled on a look-alike host".
+  - **Another profile's sign-in, or another site's:** refused by the keeper (`a_sign_in_is_filled_on_its_profiles_browser_channel_alone`, `crates/hatchling-broker/src/keeper.rs`) and by the broker (`a_sign_in_is_refused_off_its_origin_outside_a_profile_and_unless_its_named`, Fake).
+- **After a full sign-in flow, no credential, cookie value or code is anywhere the agent or a log can see.**
+  - **Fake:** `after_a_whole_signed_in_session_neither_the_agent_nor_the_log_holds_a_secret`. Through a sign-in, a code, a page that sets and shows a cookie, and clicks, it scans for the username, the password, the restored cookie, the page-set cookie and the code in three places:
+    - every result the agent is given;
+    - the broker's captured log;
+    - the action log the owner's app is sent (#247).
+
+    A hand mutant that tells the owner of an action before its result is hidden fails it with "the app was sent a secret".
+  - **CI, real processes** (`scripts/browser_end_to_end.py`): the agent signs in with a canary sign-in the owner kept, and the site answers with a fresh session cookie, which its page shows (#247). The run checks:
+    - the broker's memory holds neither half of the sign-in, after it was kept or after the fill;
+    - its log and the model's requests hold none of the canaries;
+    - the model was shown the cookie as `session=[hidden]`;
+    - the app shows none of it.
+- **A foreign cookie isn't restored; a service worker doesn't survive.**
+  - **Foreign cookies:** a cookie is kept only for the profile's own domains, when the jar is kept and again when it's read back:
+    - `a_jar_keeps_only_its_profiles_cookies_across_entries_and_replaces_the_last`, `a_planted_cookie_in_the_store_is_never_read_back` and `only_a_profiles_own_cookies_are_kept` (`browser_profiles.rs`);
+    - `a_site_the_owner_signed_in_to_opens_in_its_profile_with_its_session` (Fake), where a page's cookie for another site isn't kept.
+
+    A real page can't set a cookie for another domain. One can arrive only from another site's response, and that site loads only once the owner allows it, so these tests plant it in the jar directly.
+  - **Service workers:** `a_kept_session_is_its_cookies_alone_and_a_service_worker_dies_with_its_browser` (`crates/hatchling-broker/tests/browser_cell.rs`, real). A page registers a service worker. The next browser is given the jar, and has the session and no worker.
+- **A signed-in cell reaches nothing outside its profile without the owner.**
+  - **The proxy:** `a_page_in_a_real_browser_reaches_only_the_sites_its_session_holds` (real). These are refused, with no name looked up:
+    - a page's script reaching an image, a script and a `fetch` on another site, an internal address and a loopback port;
+    - a WebRTC peer, which gets no UDP candidate;
+    - a redirect to a site only it names (#247).
+  - **A profile's cell is the same cell and proxy, holding the sites `open` grants it:** the profile's own, and nothing held for a visit before (`a_site_the_owner_signed_in_to_opens_in_its_profile_with_its_session`, Fake).
+  - **The owner:** another site is put to the owner first, and the signed-in browser runs on meanwhile (`leaving_a_profile_keeps_its_session_once_the_next_site_is_allowed`, Fake).
+- **Two profiles never share a cell; a profile's secrets go only to its own.**
+  - **Switching:** `a_browser_moving_to_another_profile_is_another_browser_with_that_profiles_session_alone` (Fake, #247) checks four things:
+    - the first browser ends with its session kept into its own profile;
+    - a second starts for the other;
+    - each is given its own profile's cookies alone;
+    - the second holds none of the first's sites.
+
+    Three hand mutants fail it: a switch that keeps nothing, one that carries the sites over, and one that counts only leaving a profile for none.
+  - **Sign-ins:** the keeper fills a sign-in only on the channel of a browser started for its profile (`keeper.rs`, and `the_keeper_holds_the_sign_ins_and_hands_the_broker_no_key_to_them`, `crates/hatchling-broker/tests/keeper.rs`, a real keeper process).
+- **Killing a cell mid-session leaves no readable profile.**
+  - **Real:** `a_browser_cell_killed_mid_session_leaves_no_profile_on_the_host` (#247). A browser signs in, with a cookie and a service worker. Then every process in its group is killed at once through `cgroup.kill`. The checks:
+    - no file of a profile (`Cookies`, `Preferences`, `Local State`, `Service Worker`, or the worker's script) is on the host while it runs, or after;
+    - the cell answers nothing more;
+    - its group is gone.
+
+    The cell's only writable place is a tmpfs of its own (`a_browser_cell_sees_its_browser_fonts_and_scratch_and_nothing_else`, `crates/hatchling-broker/src/cell.rs`). A hand mutant that binds it from a host directory fails the test, finding Chromium's `Service Worker` directory on the host.
+  - **The jar:** the jar sealed is the last one read (`a_session_killed_mid_page_has_its_last_read_jar_sealed`, Fake).
+- **Signing out ends the site's session at the next launch.** `a_profile_signed_out_while_its_browser_runs_stays_signed_out_and_its_cookies_hidden` (Fake, #246) signs the profile out through the owner's op while its browser runs. It checks:
+  - nothing is kept again, after an op or on close;
+  - a cookie set after the sign-out is hidden from the agent;
+  - the next browser restores nothing, and keeps a new sign-in.
+
+  The owner's hand-back keeps nothing after a sign-out (`only_the_owner_keeps_a_sign_in_and_only_while_they_drive`, `api_ops.rs`). Five hand mutants each fail these tests.
+- **A one-time code is filled once, into the page that asked, and not kept.**
+  - `a_code_is_asked_of_the_owner_typed_once_given_and_never_shown` (Fake): the code is typed into the field asked for, not one named later, through the same exact-origin fill as a sign-in. A second give is refused, and nothing of it is left to hide.
+  - `a_code_declined_or_expired_is_never_typed_and_one_off_https_or_unwatched_is_refused` (Fake).
+  - The board's tests in `browser_board.rs`.
+  - `sign_in_filled` (real): the controller types a code only into its field, on its origin.
+  - The app keeps it in no state (`frontend/tests/unit/live-surfaces.test.mjs`).
+
+**Docs:**
+- the threat model: a signed-in site's row in `docs/arch/trust-boundary.md`;
+- the configuration: `HATCHLING_BROWSER_PROFILES_DIR` and `HATCHLING_BROWSER_CREDENTIALS_DIR` in `docs/storage.md`;
+- the local API: "Signed-in sites" in `docs/local-api.md`, its examples checked by `local_api_doc.rs`;
+- the agent's ops: `docs/session-protocol.md` v16;
+- the CHANGELOG.
+
+**Left for later:** passkeys (out of scope above), and a code typed into a real page through the board end to end. That one is shown in parts: the board with a scripted browser, the controller with real Chromium.
 
 ## Parts
 
