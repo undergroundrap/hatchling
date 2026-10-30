@@ -943,8 +943,13 @@ fn serve_session(
 ///
 /// # Errors
 ///
-/// Returns [`Error::SessionProtocol`] for a frame that is not a request.
+/// Returns [`Error::SessionProtocol`] for a frame that is not a request,
+/// or that could be read two ways: a key repeated in one object, or a
+/// number that isn't a safe integer (WO-027).
 fn request_of(frame: &Zeroizing<Vec<u8>>) -> Result<SessionRequest, Error> {
+    hatchling_core::strict_json::check(frame).map_err(|e| Error::SessionProtocol {
+        reason: format!("session request is not a valid protocol message: {e}"),
+    })?;
     serde_json::from_slice(frame).map_err(|e| Error::SessionProtocol {
         reason: format!("session request is not a valid protocol message: {e}"),
     })

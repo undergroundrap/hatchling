@@ -24,6 +24,7 @@ pub mod messages;
 pub mod model_reasoning;
 pub mod peer;
 pub mod secret;
+pub mod strict_json;
 pub mod subagent;
 #[cfg(test)]
 mod test_socket;

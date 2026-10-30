@@ -25,6 +25,16 @@ Every message fits one frame. An egress body that wouldn't (a long
 model conversation, or a long answer) moves in parts instead: see
 v13.
 
+A request is read strictly (WO-027). A frame that could be read two ways
+ends the session unanswered, as any malformed request does:
+- a key given twice in one object, compared once unescaped, so a key
+  spelled with a JSON escape is the same key spelled plainly;
+- a number that isn't an integer within ±(2^53 - 1);
+- a lone surrogate.
+
+This holds even in a field the request doesn't use. The vault keeper reads
+a cell's vault channel the same way.
+
 ## Op families
 
 | Family | Request | Response | Since |

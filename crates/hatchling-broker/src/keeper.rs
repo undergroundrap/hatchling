@@ -1239,6 +1239,12 @@ fn hold_browser(
 fn serve_cell(stream: &UnixStream, kept: &Mutex<Kept>, cell: &CellChannel) -> Result<(), Error> {
     while let Some(frame) = read_frame_or_eof(stream).map_err(keeper_gone)? {
         let frame = Zeroizing::new(frame);
+        // Read strictly, as the broker reads a cell (WO-027).
+        if hatchling_core::strict_json::check(&frame).is_err() {
+            return Err(Error::SessionProtocol {
+                reason: String::from("a cell's vault op isn't strict JSON"),
+            });
+        }
         let Ok(SessionRequest::Vault(op)) = serde_json::from_slice(&frame) else {
             return Err(Error::SessionProtocol {
                 reason: String::from("a cell's vault channel carries vault ops alone"),
@@ -2060,6 +2066,10 @@ mod tests {
             ask(&ungranted, b"{}").is_none(),
             "a request that isn't a vault op"
         );
+        // Read strictly (WO-027), even in a field the op doesn't use.
+        let strict = hand(&["fetch:token"]);
+        let loose = br#"{"kind":"vault","op":"fetch","name":"token","note":1.5}"#;
+        assert!(ask(&strict, loose).is_none(), "an inexact number, answered");
         // A cell that leaves ends its channel quietly.
         let (gone, left) = UnixStream::pair().unwrap();
         drop(gone);
