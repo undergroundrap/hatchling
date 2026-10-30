@@ -58,6 +58,10 @@ const DESTINATION: &str = "hatchling.test:443";
 /// A site the session never holds.
 const UNGRANTED: &str = "elsewhere.test";
 
+/// Where the trusted site's redirect leads: a site nothing else names, so
+/// its refusal is the redirect's alone.
+const REDIRECTED: &str = "redirected.test";
+
 /// Whether `name`'s requirement makes a missing prerequisite a failure.
 fn required(name: &str) -> bool {
     std::env::var(name).is_ok_and(|value| value == "1")
@@ -335,8 +339,8 @@ fn serve(config: &Arc<rustls::ServerConfig>, mut tcp: TcpStream, requests: &Mute
             "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{PROBE}",
             PROBE.len()
         ),
-        "/away" => String::from(
-            "HTTP/1.1 302 Found\r\nlocation: https://elsewhere.test/landed\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+        "/away" => format!(
+            "HTTP/1.1 302 Found\r\nlocation: https://{REDIRECTED}/landed\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
         ),
         "/signed-in" => format!(
             "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\nset-cookie: session=from-the-site; Path=/; Secure; Max-Age=3600\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{SIGNED_IN}",
@@ -689,6 +693,14 @@ fn a_page_in_a_real_browser_reaches_only_the_sites_its_session_holds() {
         refused.contains(&String::from("elsewhere.test:443")),
         "{refused:?}"
     );
+    // The redirect's site, which only the redirect names: refused by the
+    // proxy, never looked up (above), and never shown.
+    assert!(
+        refused.contains(&format!("{REDIRECTED}:443")),
+        "the redirect wasn't refused: {refused:?}"
+    );
+    let landed = matches!(&away, BrowserReply::Page { snapshot } if snapshot.url.contains(REDIRECTED) && !snapshot.text.is_empty());
+    assert!(!landed, "the redirect landed: {away:?}");
     assert!(
         !refused
             .iter()
