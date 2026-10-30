@@ -419,6 +419,78 @@ fn a_gate_scans_only_for_what_a_cell_has_had() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A cell's vault channel is its own (WO-031): the real keeper answers a
+/// cell's store and fetch on the channel the spawner handed it, under the
+/// grants it was named with, and another cell's channel, named with none,
+/// is denied the same ops, before the store and after it. An op names no
+/// cell: a channel can't speak for another.
+#[test]
+fn a_cells_vault_channel_is_answered_under_its_own_grants_alone() {
+    use hatchling_broker::keeper::Keeper;
+    use hatchling_core::SecretB64;
+    use hatchling_core::messages::{SessionRequest, SessionResponse, VaultOp, VaultResult};
+    let dir = scratch("cell-channels").unwrap();
+    sealed_vault(&dir, &[("token", "t0ken-value")]).unwrap();
+    let (keeper, _, _, spawner) = Keeper::start_with(program(
+        &dir,
+        &[(
+            "HATCHLING_VAULT_GRANTS",
+            "fetch:token,store:kept,fetch:kept",
+        )],
+    ))
+    .unwrap();
+    let hand = |cell: &str, grants: &[&str]| {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        ours.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let named = serde_json::json!({ "cell": cell, "uid": 7, "grants": grants });
+        write_frame(&spawner, named.to_string().as_bytes()).unwrap();
+        hatchling_sys::net::send_fd(spawner.as_fd(), theirs.as_fd()).unwrap();
+        ours
+    };
+    let ask = |channel: &UnixStream, op: VaultOp| {
+        let request = serde_json::to_vec(&SessionRequest::Vault(op)).unwrap();
+        write_frame(channel, &request).unwrap();
+        let SessionResponse::Vault(result) =
+            serde_json::from_slice(&read_frame(channel).unwrap()).unwrap()
+        else {
+            unreachable!("not a vault answer");
+        };
+        result
+    };
+    let fetch = |name: &str| VaultOp::Fetch {
+        name: name.to_owned(),
+    };
+    let store = || VaultOp::Store {
+        name: String::from("kept"),
+        secret_b64: SecretB64::encode(b"st0red-value"),
+    };
+    let fetched = |result: VaultResult| {
+        let VaultResult::Fetched { secret_b64 } = result else {
+            unreachable!("not fetched");
+        };
+        secret_b64.decode().unwrap().to_vec()
+    };
+    let granted = hand("run-a", &["fetch:token", "store:kept", "fetch:kept"]);
+    let other = hand("run-b", &[]);
+    assert!(
+        matches!(ask(&other, store()), VaultResult::Denied),
+        "another cell's store"
+    );
+    assert!(matches!(ask(&granted, store()), VaultResult::Stored));
+    assert_eq!(fetched(ask(&granted, fetch("kept"))), b"st0red-value");
+    assert_eq!(fetched(ask(&granted, fetch("token"))), b"t0ken-value");
+    for name in ["kept", "token"] {
+        assert!(
+            matches!(ask(&other, fetch(name)), VaultResult::Denied),
+            "another cell's fetch of {name}"
+        );
+    }
+    let log = std::fs::read_to_string(dir.join("vault/.access.log")).unwrap();
+    assert!(log.contains("run-a") && log.contains("run-b"), "{log}");
+    drop(keeper);
+}
+
 /// The sign-ins are the keeper's (WO-031): the real keeper hands the
 /// broker the profiles' key and not theirs, and keeps one the broker asks
 /// it to. It fills it into a profile's browser on the channel the spawner
