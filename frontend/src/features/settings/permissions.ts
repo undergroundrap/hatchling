@@ -132,7 +132,13 @@ function signInAdd(ctx: AppContext, nav: SettingsNavigation): HTMLElement {
             }
         });
     });
-    requestAnimationFrame(() => label.focus({ preventScroll: true }));
+    // Once it's on the page, unless a field already has the focus: a frame
+    // that comes late would otherwise take it mid-typing, and the next keys
+    // (a username, a password) would land in the name, which is shown.
+    requestAnimationFrame(() => {
+        if (!form.contains(document.activeElement))
+            label.focus({ preventScroll: true });
+    });
     return form;
 }
 function network(ctx: AppContext, nav: SettingsNavigation): HTMLElement {

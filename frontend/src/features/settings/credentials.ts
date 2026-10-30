@@ -39,7 +39,12 @@ export function secureStoreTab(ctx: AppContext, nav: SettingsNavigation): HTMLEl
                 }
             });
         });
-        requestAnimationFrame(() => url.focus({ preventScroll: true }));
+        // Unless a field already has the focus: a late frame mustn't take it
+        // mid-typing.
+        requestAnimationFrame(() => {
+            if (!form.contains(document.activeElement))
+                url.focus({ preventScroll: true });
+        });
         return form;
     }
     const root = h('div', { class: 'settings-stack secure-store-stack' }, h('div', { class: 'secure-store-intro' }, h('p', {}, 'Securely store passwords for your agent to use.'), button('Add', () => nav.open('credential-add'), { variant: 'primary' })));
