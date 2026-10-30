@@ -127,6 +127,18 @@ def drive(page):
     back.click()
 
 
+# The page's animation frames held, then run, and the page's own frames back.
+HOLD_FRAMES = """() => {
+    window.heldFrames = [];
+    window.ownFrame = window.requestAnimationFrame;
+    window.requestAnimationFrame = callback => window.heldFrames.push(callback);
+}"""
+RELEASE_FRAMES = """() => {
+    window.requestAnimationFrame = window.ownFrame;
+    for (const callback of window.heldFrames.splice(0)) callback(performance.now());
+}"""
+
+
 def signed_in(page):
     """Raise unless Settings lists the site the owner kept signed in, and
     keeps a sign-in for it that the page then holds nowhere."""
@@ -138,15 +150,23 @@ def signed_in(page):
     pane.get_by_role("button", name=re.compile("^Signed-in sites")).click()
     expect(pane.locator(".signed-in-sites").get_by_text(SITE)).to_be_visible(timeout=STEP_TIMEOUT_MS)
     screenshot(page, "browser-5-signed-in-sites.png")
-    # A sign-in, typed in the form and sent straight to the broker.
+    # A sign-in, typed in the form and sent straight to the broker. The
+    # page's frames are held while it opens, and come only once the owner is
+    # typing the username: as a slow machine's would. Focus stays where they
+    # type, so the username never lands in the name, which the list shows.
+    page.evaluate(HOLD_FRAMES)
     pane.get_by_role("button", name="Add a sign-in").click()
     pane.get_by_label("Name", exact=True).fill("Work")
-    pane.get_by_label("Username", exact=True).fill(SIGN_IN_USER)
+    pane.get_by_label("Username", exact=True).click()
+    page.evaluate(RELEASE_FRAMES)
+    page.keyboard.type(SIGN_IN_USER)
     pane.get_by_label("Password", exact=True).fill(SIGN_IN_PASSWORD)
     pane.get_by_role("button", name="Keep sign-in").click()
     expect(page.get_by_text("Kept. The agent can sign in with it").first).to_be_visible(timeout=STEP_TIMEOUT_MS)
     listed = pane.locator(".signed-in-sign-in")
     expect(listed.get_by_text("Work")).to_be_visible(timeout=STEP_TIMEOUT_MS)
+    if SIGN_IN_USER in listed.first.inner_text():
+        raise ValueError("The username went into the sign-in's name: the form took the focus while the owner typed")
     expect(listed.get_by_text(f"Filled on {BROWSER_URL.rstrip('/')}")).to_be_visible(timeout=STEP_TIMEOUT_MS)
     screenshot(page, "browser-6-sign-in-kept.png")
     held = page.evaluate("() => document.documentElement.outerHTML + JSON.stringify(localStorage) + JSON.stringify(sessionStorage)")
