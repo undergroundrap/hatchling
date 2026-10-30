@@ -230,6 +230,41 @@ fn post_handshake_garbage_frame_closes_session() {
     assert_silent_close(&mut stream, "post-handshake frame").unwrap();
 }
 
+/// What a cell sends is read strictly (WO-027): a request that could be
+/// read two ways, by a key given twice however it's escaped or by a number
+/// that isn't a safe integer, ends the session unanswered, even where the
+/// broker's own reading would ignore it. The same request read one way is
+/// answered.
+#[test]
+fn a_request_that_could_be_read_two_ways_ends_the_session() {
+    let socket = spawn_broker("strict", real_uid()).unwrap();
+    let session = |frame: &str| {
+        let mut stream = connect(&socket).unwrap();
+        send_hello(&stream, PROTOCOL_VERSION, "cell-01").unwrap();
+        let reply = read_broker_message(&stream).unwrap();
+        assert!(matches!(reply, BrokerMessage::Welcome { .. }));
+        write_frame(&stream, frame.as_bytes()).unwrap();
+        let answered = read_frame(&stream).is_ok();
+        if !answered {
+            assert_silent_close(&mut stream, frame).unwrap();
+        }
+        answered
+    };
+    assert!(
+        session(r#"{"kind":"vault","op":"fetch","name":"app-token"}"#),
+        "read one way: answered"
+    );
+    for frame in [
+        r#"{"kind":"vault","op":"fetch","name":"app-token","note":1.5}"#,
+        r#"{"kind":"vault","op":"fetch","name":"app-token","note":9007199254740992}"#,
+        // A JSON escape, written with `\x5c`, the backslash.
+        "{\"kind\":\"vault\",\"op\":\"fetch\",\"name\":\"app-token\",\"note\":{\"a\":1,\"\x5cu0061\":2}}",
+        "{\"kind\":\"vault\",\"\x5cu006bind\":\"egress\",\"op\":\"fetch\",\"name\":\"app-token\"}",
+    ] {
+        assert!(!session(frame), "answered: {frame}");
+    }
+}
+
 /// A cell the broker spawned speaks on its own connection: there is no
 /// peer gate (the configured agent uid here is one the kernel would never
 /// report for this process), and the hello must name the cell's own id.

@@ -65,6 +65,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Changed
 
+- **What a cell sends is read strictly** (WO-027). A session request, or a vault op on a cell's own channel, that could be read two ways now ends the session unanswered: a key given twice in one object (compared once unescaped), a number that isn't an integer within ±(2^53 - 1), or a lone surrogate, even in a field the request doesn't use. Before, a field the broker didn't use was skipped whatever it held, so a key given twice or an inexact number there passed unseen. `hatchling_core::strict_json::check` is the reading.
 - **What's typed into a sign-in form is hidden by the browser's controller, not the broker** (WO-031, part 2b). The controller keeps what each fill types (a sign-in's username and password, a one-time code) until the browser closes, and hides it from every page the agent is shown after, as the broker did. The broker keeps none of it; it still hides a signed-in session's cookie values.
 - **The spawner holds every cell spec to its own policy** (WO-017, step 3). It reads the policy from its own configuration, never the broker's word, and refuses a spec before any privileged call when:
   - its identity or the broker's uid in the cell isn't the configured cell's;
