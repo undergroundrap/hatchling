@@ -323,12 +323,17 @@ jobs:
         run: |
           sudo env "PATH=$PATH" "PLAYWRIGHT_BROWSERS_PATH=$HOME/.cache/ms-playwright"             unshare --mount --pid --fork --kill-child --mount-proc             scripts/browser_end_to_end.sh "$CELL_BROWSER" "$RUNNER_TEMP/app-venv/bin/python" "$RUNNER_TEMP/browser-e2e"
 
+      - name: Approve a build from the app
+        run: scripts/approval_end_to_end.sh "$RUNNER_TEMP/app-venv/bin/python" "$RUNNER_TEMP/approval-e2e"
+
       - name: Retain the logs and screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: browser-in-the-app
-          path: ${{ runner.temp }}/browser-e2e
+          path: |
+            ${{ runner.temp }}/browser-e2e
+            ${{ runner.temp }}/approval-e2e
 
   rootless:
     name: without root
