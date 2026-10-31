@@ -74,6 +74,7 @@ The README's quickstart sets these, along with the broker's own required variabl
 - **The stream follows it:** an `agent_status` of `working` once a message is queued, with the message's first line as the detail, and `idle` when the answer arrives.
 - **A run that fails** answers with a fixed sentence; why it failed is in the broker's log.
 - **A chat run sees the conversation so far** (WO-026): its message, and the last exchanges before it, up to 8 and 24 KiB, newest kept. An exchange is kept only when its answer reached you as written: a failed run's sentence, or an answer the output gate blocked or replaced, is never given back. The broker keeps the conversation in its memory, so a broker restart starts a new one, and a run can't add to it.
+- **`new_conversation` on the `local` chat starts a new one** (WO-026): the owner's alone. The next run is given nothing said before it, and the stream shows a `chat_message` from `system` where it starts. A message you sent before it isn't part of it, and neither is the answer to a message the agent was working on.
 - **A chat run can propose builds** (WO-032), when the operator names a builder for each kind (`HATCHLING_ARTIFACT_BUILDERS`, as `kind=name@version`, beside `HATCHLING_ARTIFACT_DIR`). It keeps ideas in the broker's build store, and asks you to build one with the builder named for its kind: you decide under [Approvals](#approvals). It can't build, deliver or describe a build itself, or record an idea as yours. A scheduled run has no build store.
 
 ## Approvals

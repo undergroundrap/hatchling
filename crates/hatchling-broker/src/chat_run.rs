@@ -24,6 +24,12 @@
 //! blocked or replaced are never given back. The record is the broker's
 //! and lives in its memory: a run can't write to it, and a broker
 //! restart starts a new conversation.
+//!
+//! The owner can start a new conversation from the app, which moves the
+//! local hub's conversation number on. The chat then forgets what it
+//! kept. A message sent before the new conversation started isn't part
+//! of it: its run is given nothing, and its exchange isn't kept. Nor is
+//! the exchange of a run in flight when it started.
 
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -73,9 +79,12 @@ pub enum Step {
 /// The chat's one run in flight, and the conversation so far.
 #[derive(Debug)]
 pub struct Chat<R> {
-    /// The run in flight, and the message it answers.
-    running: Option<(R, String)>,
+    /// The run in flight, the message it answers, and the conversation
+    /// that message was sent in.
+    running: Option<(R, String, u64)>,
     grants: Vec<ScheduleGrant>,
+    /// The conversation the exchanges kept are in.
+    conversation: u64,
     /// The exchanges kept, oldest first: no more than a run is given.
     exchanges: Vec<ChatExchange>,
 }
@@ -87,6 +96,7 @@ impl<R: Run> Chat<R> {
         Self {
             running: None,
             grants,
+            conversation: 0,
             exchanges: Vec::new(),
         }
     }
@@ -111,11 +121,14 @@ impl<R: Run> Chat<R> {
         self.exchanges.drain(..over);
     }
 
-    /// One step at `now`: a running run is polled, and a finished one
-    /// answered; with none running, the message `next` gives starts one.
+    /// One step at `now`, in the local channel's `conversation`: a
+    /// running run is polled, and a finished one answered; with none
+    /// running, the message `next` gives, with the conversation it was
+    /// sent in, starts one.
     pub fn step<L, D>(
         &mut self,
-        next: impl FnOnce() -> Option<Message>,
+        next: impl FnOnce() -> Option<(Message, u64)>,
+        conversation: u64,
         launcher: &L,
         delivery: &D,
         now: Timestamp,
@@ -124,11 +137,15 @@ impl<R: Run> Chat<R> {
         L: Launcher<Run = R>,
         D: Delivery,
     {
-        if let Some((run, _)) = &mut self.running {
+        if conversation != self.conversation {
+            self.conversation = conversation;
+            self.exchanges.clear();
+        }
+        if let Some((run, _, _)) = &mut self.running {
             let Some(outcome) = run.poll() else {
                 return Step::Running;
             };
-            let Some((_, user)) = self.running.take() else {
+            let Some((_, user, sent_in)) = self.running.take() else {
                 return Step::Idle;
             };
             let answer = match outcome {
@@ -140,7 +157,7 @@ impl<R: Run> Chat<R> {
             };
             return match delivery.deliver_verbatim(&ChannelId::local().0, &answer) {
                 Ok(shown) => {
-                    if shown {
+                    if shown && sent_in == self.conversation {
                         self.keep(user, answer);
                     }
                     Step::Answered
@@ -151,8 +168,13 @@ impl<R: Run> Chat<R> {
                 }
             };
         }
-        let Some(message) = next() else {
+        let Some((message, sent_in)) = next() else {
             return Step::Idle;
+        };
+        let history = if sent_in == self.conversation {
+            self.history()
+        } else {
+            Vec::new()
         };
         let request = RunRequest {
             schedule_id: String::from(CHAT_LABEL),
@@ -166,11 +188,11 @@ impl<R: Run> Chat<R> {
             space: None,
             feed: None,
             chat: true,
-            history: self.history(),
+            history,
         };
         match launcher.launch(request) {
             Ok(run) => {
-                self.running = Some((run, message.text));
+                self.running = Some((run, message.text, sent_in));
                 Step::Started
             }
             Err(reason) => {
@@ -206,7 +228,14 @@ pub fn chat_forever<'scope, 'env>(
     let delivery = crate::schedule_ops::HubDelivery::new(Some(hub));
     let mut chat = Chat::new(grants);
     loop {
-        match chat.step(|| hub.take(), &launcher, &delivery, Timestamp::now()) {
+        let step = chat.step(
+            || hub.take_in_conversation(),
+            hub.conversation(),
+            &launcher,
+            &delivery,
+            Timestamp::now(),
+        );
+        match step {
             Step::Idle | Step::Running => std::thread::sleep(CHAT_POLL),
             Step::Started | Step::Answered | Step::Undelivered => {}
         }
@@ -297,10 +326,10 @@ mod tests {
     ) -> Step {
         let now = Timestamp::now();
         assert_eq!(
-            chat.step(|| Some(message(text)), launches, answers, now),
+            chat.step(|| Some((message(text), 0)), 0, launches, answers, now),
             Step::Started
         );
-        chat.step(|| None, launches, answers, now)
+        chat.step(|| None, 0, launches, answers, now)
     }
 
     fn histories(launches: &Launches) -> Vec<Vec<(String, String)>> {
@@ -380,7 +409,7 @@ mod tests {
         );
         let now = Timestamp::now();
         assert_eq!(
-            chat.step(|| Some(message("unstarted")), &launches, &answers, now),
+            chat.step(|| Some((message("unstarted"), 0)), 0, &launches, &answers, now),
             Step::Answered
         );
         answers.replace.set(true);
@@ -436,6 +465,64 @@ mod tests {
         );
     }
 
+    /// WO-026: after the owner starts a new conversation, a run is given
+    /// nothing said before it. A message sent before it started isn't
+    /// part of it, nor is the exchange of a run in flight across it.
+    #[test]
+    fn a_new_conversation_is_given_nothing_said_before_it() {
+        let launches = Launches::default();
+        launches
+            .outcomes
+            .borrow_mut()
+            .extend((0..6).map(|n| Ok(answering(&format!("a{n}")))));
+        let answers = Answers::default();
+        let mut chat = Chat::new(vec![send_local()]);
+        let now = Timestamp::now();
+        let mut step = |chat: &mut Chat<Scripted>, sent: Option<(&str, u64)>, now_in: u64| {
+            chat.step(
+                || sent.map(|(text, n)| (message(text), n)),
+                now_in,
+                &launches,
+                &answers,
+                now,
+            )
+        };
+        // Two exchanges in the first conversation.
+        assert_eq!(step(&mut chat, Some(("q0", 0)), 0), Step::Started);
+        assert_eq!(step(&mut chat, None, 0), Step::Answered);
+        assert_eq!(step(&mut chat, Some(("q1", 0)), 0), Step::Started);
+        // The owner starts a new conversation while q1's run is working:
+        // its answer is shown, and not kept.
+        assert_eq!(step(&mut chat, None, 1), Step::Answered);
+        assert!(chat.history().is_empty());
+        // A message sent before the new conversation started: its run is
+        // given nothing, and its exchange isn't kept.
+        assert_eq!(step(&mut chat, Some(("q2", 0)), 1), Step::Started);
+        assert_eq!(step(&mut chat, None, 1), Step::Answered);
+        // The new conversation's own messages.
+        assert_eq!(step(&mut chat, Some(("q3", 1)), 1), Step::Started);
+        assert_eq!(step(&mut chat, None, 1), Step::Answered);
+        assert_eq!(step(&mut chat, Some(("q4", 1)), 1), Step::Started);
+        assert_eq!(step(&mut chat, None, 1), Step::Answered);
+        assert_eq!(
+            histories(&launches),
+            [
+                vec![],
+                vec![turn("q0", "a0")],
+                vec![],
+                vec![],
+                vec![turn("q3", "a3")],
+            ]
+        );
+        let shown: Vec<String> = answers
+            .delivered
+            .borrow()
+            .iter()
+            .map(|(_, text)| text.clone())
+            .collect();
+        assert_eq!(shown, ["a0", "a1", "a2", "a3", "a4"], "every answer is shown");
+    }
+
     fn message(text: &str) -> Message {
         Message {
             sender: SenderId(String::from("api")),
@@ -479,10 +566,10 @@ mod tests {
         let grants = vec![egress(), send_local()];
         let mut chat = Chat::new(grants.clone());
         let now = Timestamp::now();
-        assert_eq!(chat.step(|| None, &launches, &answers, now), Step::Idle);
+        assert_eq!(chat.step(|| None, 0, &launches, &answers, now), Step::Idle);
         assert_eq!(
             chat.step(
-                || Some(message("What is on today?")),
+                || Some((message("What is on today?"), 0)), 0,
                 &launches,
                 &answers,
                 now
@@ -493,14 +580,14 @@ mod tests {
         let taken = std::cell::Cell::new(false);
         let untouched = || {
             taken.set(true);
-            Some(message("too soon"))
+            Some((message("too soon"), 0))
         };
         assert_eq!(
-            chat.step(untouched, &launches, &answers, now),
+            chat.step(untouched, 0, &launches, &answers, now),
             Step::Running
         );
         assert_eq!(
-            chat.step(untouched, &launches, &answers, now),
+            chat.step(untouched, 0, &launches, &answers, now),
             Step::Answered
         );
         assert!(!taken.get(), "a message was taken while a run was working");
@@ -530,7 +617,7 @@ mod tests {
         );
         drop(requests);
         // Answered, it is idle again.
-        assert_eq!(chat.step(|| None, &launches, &answers, now), Step::Idle);
+        assert_eq!(chat.step(|| None, 0, &launches, &answers, now), Step::Idle);
     }
 
     #[test]
@@ -547,12 +634,12 @@ mod tests {
         let mut chat = Chat::new(vec![send_local()]);
         let now = Timestamp::now();
         assert_eq!(
-            chat.step(|| Some(message("one")), &launches, &answers, now),
+            chat.step(|| Some((message("one"), 0)), 0, &launches, &answers, now),
             Step::Started
         );
-        assert_eq!(chat.step(|| None, &launches, &answers, now), Step::Answered);
+        assert_eq!(chat.step(|| None, 0, &launches, &answers, now), Step::Answered);
         assert_eq!(
-            chat.step(|| Some(message("two")), &launches, &answers, now),
+            chat.step(|| Some((message("two"), 0)), 0, &launches, &answers, now),
             Step::Answered
         );
         let local = String::from("local");
@@ -563,7 +650,7 @@ mod tests {
                 (local, String::from(CHAT_FAILED))
             ]
         );
-        assert_eq!(chat.step(|| None, &launches, &answers, now), Step::Idle);
+        assert_eq!(chat.step(|| None, 0, &launches, &answers, now), Step::Idle);
     }
 
     #[test]
@@ -583,15 +670,15 @@ mod tests {
         let mut chat = Chat::new(vec![send_local()]);
         let now = Timestamp::now();
         assert_eq!(
-            chat.step(|| Some(message("one")), &launches, &answers, now),
+            chat.step(|| Some((message("one"), 0)), 0, &launches, &answers, now),
             Step::Started
         );
         assert_eq!(
-            chat.step(|| None, &launches, &answers, now),
+            chat.step(|| None, 0, &launches, &answers, now),
             Step::Undelivered
         );
         assert_eq!(
-            chat.step(|| Some(message("two")), &launches, &answers, now),
+            chat.step(|| Some((message("two"), 0)), 0, &launches, &answers, now),
             Step::Undelivered
         );
         assert_eq!(answers.delivered.borrow().len(), 2);
