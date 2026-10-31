@@ -31,7 +31,7 @@ trap cleanup EXIT
 # Searchable, not readable: the vault keeper's user reaches the vault
 # inside, and the agent's uid the broker's socket.
 chmod 711 "$home"
-mkdir -p -m 700 "$home"/{vault,artifacts}
+mkdir -p -m 700 "$home"/{vault,schedules,artifacts}
 mkdir -m 711 "$home/sock"
 export HATCHLING_BROKER_SOCKET=$home/sock/broker.sock
 # Anyone may connect; the broker serves the agent's uid alone.
@@ -42,6 +42,7 @@ export HATCHLING_CELL_UID_BASE=$HATCHLING_AGENT_UID
 export HATCHLING_OWNER_UID=0
 unset HATCHLING_AGENT_BIN
 export HATCHLING_VAULT_DIR=$home/vault
+export HATCHLING_SCHEDULER_DIR=$home/schedules
 export HATCHLING_ARTIFACT_DIR=$home/artifacts
 export HATCHLING_CHANNEL_INGRESS=$home/ingress.sock
 export HATCHLING_API_SOCKET=$home/api.sock
