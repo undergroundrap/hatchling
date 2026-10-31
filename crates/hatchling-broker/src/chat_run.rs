@@ -480,7 +480,7 @@ mod tests {
         launches
             .outcomes
             .borrow_mut()
-            .extend((0..6).map(|n| Ok(answering(&format!("a{n}")))));
+            .extend((0..7).map(|n| Ok(answering(&format!("a{n}")))));
         let answers = Answers::default();
         let mut chat = Chat::new(vec![send_local()]);
         let now = Timestamp::now();
@@ -510,6 +510,12 @@ mod tests {
         assert_eq!(step(&mut chat, None, 1), Step::Answered);
         assert_eq!(step(&mut chat, Some(("q4", 1)), 1), Step::Started);
         assert_eq!(step(&mut chat, None, 1), Step::Answered);
+        // The owner starts another between the chat reading the number and
+        // taking the message: the message is the new conversation's, and is
+        // given nothing kept in the last.
+        assert_eq!(step(&mut chat, Some(("q5", 2)), 1), Step::Started);
+        assert_eq!(step(&mut chat, None, 2), Step::Answered);
+        assert_eq!(chat.history().len(), 1, "only q5's exchange is kept");
         assert_eq!(
             histories(&launches),
             [
@@ -518,6 +524,7 @@ mod tests {
                 vec![],
                 vec![],
                 vec![turn("q3", "a3")],
+                vec![],
             ]
         );
         let shown: Vec<String> = answers
@@ -528,7 +535,7 @@ mod tests {
             .collect();
         assert_eq!(
             shown,
-            ["a0", "a1", "a2", "a3", "a4"],
+            ["a0", "a1", "a2", "a3", "a4", "a5"],
             "every answer is shown"
         );
     }
