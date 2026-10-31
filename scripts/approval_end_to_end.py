@@ -155,9 +155,12 @@ def main():
         request = card.get_attribute("data-task-approval")
         page.locator(f"#approval-once-{request}").click()
         expect(page.locator(".task-approval-card")).to_have_count(0, timeout=STEP_TIMEOUT_MS)
-        # The broker ran it and says what became of it, as the broker.
-        told = page.get_by_text(f"Approved: build idea {idea}.").first
-        expect(told).to_be_visible(timeout=STEP_TIMEOUT_MS)
+        # The broker ran it and says what became of it, though the owner
+        # sent no message: Hatchling's notice, never the agent's words.
+        outcome = f"Approved: build idea {idea}."
+        told = page.locator(".message-row.kind-notice").filter(has_text=outcome)
+        expect(told).to_have_count(1, timeout=STEP_TIMEOUT_MS)
+        expect(page.locator(".message-row.kind-text").filter(has_text=outcome)).to_have_count(0)
         screenshot(page, "approval-2-decided.png")
         browser.close()
         if errors:

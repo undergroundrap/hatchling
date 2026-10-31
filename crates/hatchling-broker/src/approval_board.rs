@@ -15,7 +15,8 @@
 //! - **Only the worker runs it** ([`work_forever`]). It claims the request,
 //!   mints the activation's confirmation, and activates exactly the pinned
 //!   request, which builds only if the idea still pins it unchanged. The
-//!   outcome goes to the owner on the local channel, as the broker's.
+//!   outcome goes to the owner in the app's local chat, as Hatchling's
+//!   notice, never as the agent's words.
 //!
 //! A site the agent asks to read (WO-028) is put to the owner on the same
 //! board ([`Board::propose_site`]), under the same limits, and offers
@@ -32,10 +33,11 @@ use std::time::Duration;
 use hatchling_artifact::PinnedRequest;
 use hatchling_channel::LocalHub;
 use hatchling_core::ui::{
-    ConfirmationField, ConfirmationRequest, Decision, DecisionRejection, FieldSource, UiEventBody,
+    ChatAuthor, ChatMessage, ConfirmationField, ConfirmationRequest, Decision, DecisionRejection,
+    FieldSource, UiEventBody,
 };
 use hatchling_core::{ActivationProposal, ApprovalRefusal, ArtifactResult};
-use hatchling_scheduler::{Delivery as _, Timestamp};
+use hatchling_scheduler::Timestamp;
 use hatchling_vault::OpensStores;
 use serde_json::json;
 
@@ -301,16 +303,37 @@ impl Board {
             .pop_front()
     }
 
-    /// Pushes `body` to the owner's app, if one is attached.
-    fn publish(&self, body: UiEventBody) {
+    /// Tells the owner `text`, the broker's, in the app's local chat, where
+    /// they decided: Hatchling's notice, never the agent's words. Not on the
+    /// local channel, whose replies the app shows as the agent's, and which
+    /// has no one to deliver to until the owner sends a message.
+    pub fn tell_owner(&self, text: &str) {
+        let Ok(message_id) = crate::approval::random_hex("msg-") else {
+            tracing::warn!("an approval's outcome was not told: no entropy for its id");
+            return;
+        };
+        let told = self.publish(UiEventBody::ChatMessage(ChatMessage {
+            chat_id: String::from(crate::api_ops::LOCAL_CHAT),
+            message_id,
+            author: ChatAuthor::System,
+            text: text.to_owned(),
+        }));
+        if !told {
+            tracing::warn!("an approval's outcome was not told: no app is attached");
+        }
+    }
+
+    /// Pushes `body` to the owner's app, if one is attached: whether one was.
+    fn publish(&self, body: UiEventBody) -> bool {
         let bus = self
             .bus
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
-        if let Some(bus) = bus {
+        bus.is_some_and(|bus| {
             bus.push(Timestamp::now().to_string(), body);
-        }
+            true
+        })
     }
 }
 
@@ -447,7 +470,7 @@ pub fn work_forever(
 }
 
 /// One step of the worker: waits up to `wait` for an approval on
-/// `config`'s board, runs it once, and tells the owner on `hub`. What the
+/// `config`'s board, runs it once, and tells the owner in the app. What the
 /// owner was told, if anything was approved.
 pub fn run_next(
     config: &Config,
@@ -467,7 +490,7 @@ pub fn run_next(
         hub,
         Timestamp::now().as_second(),
     );
-    tell_owner(hub, &told);
+    board.tell_owner(&told);
     Some(told)
 }
 
@@ -565,13 +588,6 @@ pub fn run_approved(
                 run.idea
             )
         }
-    }
-}
-
-/// Tells the owner `text` on the local channel, as the broker's.
-pub fn tell_owner(hub: Option<&LocalHub>, text: &str) {
-    if let Err(error) = crate::schedule_ops::HubDelivery::new(hub).deliver("local", text) {
-        tracing::warn!(%error, "an approval's outcome was not delivered");
     }
 }
 
@@ -801,6 +817,37 @@ mod tests {
         assert_eq!(
             board.approvals().get(&requested.id).map(|r| r.state),
             Some(State::Denied)
+        );
+    }
+
+    /// What became of an approval is told in the app's local chat, as
+    /// Hatchling's notice and never the agent's words, whether or not the
+    /// owner has sent a message there; with no app attached, to no one.
+    #[test]
+    fn the_outcome_is_told_in_the_app_as_hatchlings_notice() {
+        let board = empty();
+        board.tell_owner("Approved: build idea x. Built y.");
+        let bus = Arc::new(Bus::starting_at(1));
+        board.attach(Arc::clone(&bus));
+        board.tell_owner("Approved: build idea x. Built y.");
+        let told: Vec<(String, ChatAuthor, String)> = bus
+            .after(None)
+            .into_iter()
+            .filter_map(|event| {
+                if let UiEventBody::ChatMessage(message) = event.body {
+                    Some((message.chat_id, message.author, message.text))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            told,
+            [(
+                String::from(crate::api_ops::LOCAL_CHAT),
+                ChatAuthor::System,
+                String::from("Approved: build idea x. Built y.")
+            )]
         );
     }
 
