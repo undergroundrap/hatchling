@@ -784,6 +784,21 @@ mod tests {
         );
     }
 
+    /// The record an activation's approval binds, pinned by its digest: its
+    /// shape, its canonical form and the domain tag. The expected digest was
+    /// computed outside this code, from RFC 8785 and the record as written:
+    /// a change to what the owner approves changes it.
+    #[test]
+    fn an_activations_record_has_the_digest_computed_from_its_form() {
+        let requested = empty()
+            .propose_activation(&proposal("act-1", "a"), &pinned("an idea"), "t1", 100)
+            .unwrap();
+        assert_eq!(
+            requested.digest,
+            "d7bdb75208a40760d988cd633d5b55115c724b4a416b100c54d221932e1db44d"
+        );
+    }
+
     /// A denial is final: deciding the request again, with the digest the
     /// owner was shown, is refused, goes nowhere on the stream, and queues
     /// nothing for the worker.

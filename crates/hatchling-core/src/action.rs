@@ -172,6 +172,33 @@ mod tests {
         assert!(form.starts_with("{\"\\r\":"), "{form}");
     }
 
+    /// RFC 8785, section 3.2.3's example, written out whole: the exact form,
+    /// not only its order. The expected bytes were written by hand from the
+    /// RFC, not by this code.
+    #[test]
+    fn the_rfc_8785_sorting_example_is_written_exactly() {
+        let value = json!({
+            "\u{20ac}": "Euro Sign",
+            "\r": "Carriage Return",
+            "\u{fb33}": "Hebrew Letter Dalet With Dagesh",
+            "1": "One",
+            "\u{1f600}": "Emoji: Grinning Face",
+            "\u{80}": "Control",
+            "\u{f6}": "Latin Small Letter O With Diaeresis",
+        });
+        assert_eq!(
+            canonical(&value).unwrap(),
+            concat!(
+                "{\"\\r\":\"Carriage Return\",\"1\":\"One\",",
+                "\"\u{80}\":\"Control\",",
+                "\"\u{f6}\":\"Latin Small Letter O With Diaeresis\",",
+                "\"\u{20ac}\":\"Euro Sign\",",
+                "\"\u{1f600}\":\"Emoji: Grinning Face\",",
+                "\"\u{fb33}\":\"Hebrew Letter Dalet With Dagesh\"}",
+            )
+        );
+    }
+
     /// RFC 8785's string escaping, and no normalization.
     #[test]
     fn strings_escape_as_jcs_escapes_them_and_are_never_normalized() {
