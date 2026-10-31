@@ -419,6 +419,7 @@ impl hatchling_scheduler::Delivery for Shown {
 
 /// WO-026, end to end: a chat's second run, a fresh real cell, is given
 /// the first exchange as the broker recorded it, typed, and nothing more.
+/// After the owner starts a new conversation, the next is given nothing.
 #[test]
 fn a_chats_next_cell_is_given_the_exchange_before_it() {
     if !guard_cell_available().unwrap() {
@@ -431,16 +432,20 @@ fn a_chats_next_cell_is_given_the_exchange_before_it() {
     std::thread::scope(|scope| {
         let launcher = CellLauncher::new(scope, &config, &key, env(&config, RUN_DEADLINE));
         let mut chat = hatchling_broker::chat_run::Chat::new(vec![send()]);
-        for text in ["history one", "history two"] {
-            let mut message = Some(Message {
-                sender: hatchling_channel::SenderId(String::from("api")),
-                channel: hatchling_channel::ChannelId::local(),
-                text: text.to_owned(),
-            });
+        for (text, conversation) in [("history one", 0), ("history two", 0), ("history three", 1)] {
+            let mut message = Some((
+                Message {
+                    sender: hatchling_channel::SenderId(String::from("api")),
+                    channel: hatchling_channel::ChannelId::local(),
+                    text: text.to_owned(),
+                },
+                conversation,
+            ));
             let deadline = Instant::now() + RUN_DEADLINE;
             loop {
                 let step = chat.step(
                     || message.take(),
+                    conversation,
                     &launcher,
                     &shown,
                     ts("2026-09-21T12:01:00Z"),
@@ -465,6 +470,11 @@ fn a_chats_next_cell_is_given_the_exchange_before_it() {
             user: String::from("history one"),
             assistant: String::from("chat=1 history="),
         }]
+    );
+    assert_eq!(
+        shown.get(2).map(String::as_str),
+        Some("chat=1 history="),
+        "a new conversation's run is given nothing said before it"
     );
     assert!(run_dirs(&config.scheduler.run_root()).is_empty());
 }
@@ -492,14 +502,18 @@ fn only_a_chat_run_is_told_the_builders_and_keeps_ideas() {
     let scheduled = std::thread::scope(|scope| {
         let launcher = CellLauncher::new(scope, &config, &key, env(&config, RUN_DEADLINE));
         let mut chat = hatchling_broker::chat_run::Chat::new(vec![send()]);
-        let mut message = Some(Message {
-            sender: hatchling_channel::SenderId(String::from("api")),
-            channel: hatchling_channel::ChannelId::local(),
-            text: String::from("builders idea"),
-        });
+        let mut message = Some((
+            Message {
+                sender: hatchling_channel::SenderId(String::from("api")),
+                channel: hatchling_channel::ChannelId::local(),
+                text: String::from("builders idea"),
+            },
+            0,
+        ));
         let deadline = Instant::now() + RUN_DEADLINE;
         while chat.step(
             || message.take(),
+            0,
             &launcher,
             &shown,
             ts("2026-09-21T12:01:00Z"),

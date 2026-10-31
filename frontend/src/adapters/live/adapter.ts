@@ -11,18 +11,26 @@
 import type { AppState, Command, CommandResult, DeepReadonly, ProtocolAdapter, Settings } from '../../protocol/models.js';
 import { ActivityBook } from './activity.js';
 import { LiveApprovals } from './approvals.js';
-import { ChatBook } from './chat.js';
+import { ChatBook, wireChat } from './chat.js';
 import { LiveClient } from './client.js';
 import type { UiTransport } from './client.js';
-import type { UiEvent } from './protocol/generated.js';
+import type { ActionRefusal, UiEvent } from './protocol/generated.js';
 import { LiveProfiles } from './profiles.js';
 import { LiveSignIns } from './sign-ins.js';
 import type { CodePort } from '../../session/codes.js';
+import type { ConversationPort } from '../../session/conversations.js';
 import { LiveChatSession } from './session.js';
 import { LiveSites } from './sites.js';
 import { Surfaces } from './surfaces.js';
 const SETTINGS: Settings = { interfaceSize: 'comfortable', theme: 'dark', accent: 'white', avatarAccent: '#a78c57', keepChatPanelVisible: true, language: 'English', name: 'hatchling', vibe: '', feedPrompt: '', captchaStanding: false, telemetry: false, quietStart: '22:00', quietEnd: '08:00', digestTime: '08:30', dailyAllowance: 0, allowlist: [] };
 const NOT_YET = 'Hatchling cannot do this from the app yet.';
+/** Why the broker didn't start a new conversation: the agent still has the last one. */
+const NOT_STARTED: Readonly<Record<ActionRefusal, string>> = {
+    not_connected: 'Hatchling is not connected to its broker, so the agent still has the last conversation.',
+    bad_request: 'Hatchling has no such conversation, so nothing changed.',
+    unavailable: 'Hatchling cannot start a new conversation right now, so the agent still has the last one.',
+    not_granted: 'This connection may not start a new conversation, so the agent still has the last one.',
+};
 export class LiveAdapter implements ProtocolAdapter {
     readonly mode = 'live';
     readonly chatSession: LiveChatSession;
@@ -37,6 +45,8 @@ export class LiveAdapter implements ProtocolAdapter {
     readonly signIns: LiveSignIns;
     /** Where the browser view sends a one-time code: straight to the broker, never as a Command. */
     readonly codes: CodePort;
+    /** Where the chat's header starts a new conversation: straight to the broker, never as a Command. */
+    readonly conversations: ConversationPort;
     readonly #listeners = new Set<() => void>();
     #settings: Settings = SETTINGS;
     #clock = '';
@@ -55,6 +65,7 @@ export class LiveAdapter implements ProtocolAdapter {
         this.#profiles = new LiveProfiles(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.signIns = new LiveSignIns(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.codes = { give: (sessionId, code) => this.#surfaces.giveCode(sessionId, code) };
+        this.conversations = { start: chatId => this.#newConversation(chatId) };
         this.chatSession = new LiveChatSession(this.#client, this.#chats, artifactId => this.#surfaces.shelf.latest(artifactId));
         this.#snapshot = this.#build();
         // Registered first, so the snapshot is current before any view hears of a change.
@@ -138,6 +149,18 @@ export class LiveAdapter implements ProtocolAdapter {
     dispose(): void {
         this.#client.dispose();
         this.#listeners.clear();
+    }
+    /** Start a new conversation: the agent is given nothing said before it. The broker's notice shows where. */
+    async #newConversation(chatId: string): Promise<CommandResult> {
+        const reply = await this.#client.request(`live-command-${++this.#serial}`, { action: 'new_conversation', chat_id: wireChat(chatId) });
+        if (reply.kind !== 'answered')
+            return { ok: false, message: reply.detail };
+        const result = reply.result;
+        if (result.result === 'conversation_started')
+            return { ok: true, message: 'New conversation started.' };
+        if (result.result === 'refused')
+            return { ok: false, message: NOT_STARTED[result.reason] };
+        return { ok: false, message: 'Hatchling answered with something else, so the new conversation is not confirmed.' };
     }
     /** Keep the sign-in of a browser the user drives; the list shows it once the broker has kept it. */
     async #keepSignedIn(sessionId: string): Promise<CommandResult> {

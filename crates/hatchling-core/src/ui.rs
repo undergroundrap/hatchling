@@ -781,6 +781,12 @@ pub enum UiAction {
         /// Plain text.
         text: String,
     },
+    /// Start a new conversation in a chat (WO-026): the agent is given
+    /// nothing said before it.
+    NewConversation {
+        /// The chat.
+        chat_id: String,
+    },
     /// Approve or deny a confirmation, at the revision and the action
     /// digest the user saw.
     Decide {
@@ -917,6 +923,11 @@ pub enum UiActionResult {
     MessageAccepted {
         /// Its id, as it will appear in the chat's events.
         message_id: String,
+    },
+    /// A new conversation started in the chat (WO-026).
+    ConversationStarted {
+        /// The chat.
+        chat_id: String,
     },
     /// The decision was recorded.
     Decided {
@@ -1536,6 +1547,18 @@ mod tests {
                 text: String::from("hello"),
             },
             &json!({"action": "send_message", "chat_id": "main", "text": "hello"}),
+        );
+        pinned(
+            &UiAction::NewConversation {
+                chat_id: String::from("local"),
+            },
+            &json!({"action": "new_conversation", "chat_id": "local"}),
+        );
+        pinned(
+            &UiActionResult::ConversationStarted {
+                chat_id: String::from("local"),
+            },
+            &json!({"result": "conversation_started", "chat_id": "local"}),
         );
         pinned(
             &UiAction::ManageSchedule {
