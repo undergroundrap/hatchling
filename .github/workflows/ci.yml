@@ -316,8 +316,10 @@ jobs:
       - name: Allow real cells
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
-      - name: Check the browser proof's helpers
-        run: python3 -m unittest discover -s scripts -p 'test_browser_end_to_end.py' -v
+      - name: Check the browser proofs' helpers
+        run: |
+          python3 -m unittest discover -s scripts -p 'test_browser_end_to_end.py' -v
+          python3 -m unittest discover -s scripts -p 'test_idea_model.py' -v
 
       - name: Drive the agent's browser from the app
         run: |
@@ -327,6 +329,10 @@ jobs:
         run: |
           sudo env "PATH=$PATH" "PLAYWRIGHT_BROWSERS_PATH=$HOME/.cache/ms-playwright"             unshare --mount --pid --fork --kill-child --mount-proc             scripts/approval_end_to_end.sh "$RUNNER_TEMP/app-venv/bin/python" "$RUNNER_TEMP/approval-e2e"
 
+      - name: Propose a build from the chat
+        run: |
+          sudo env "PATH=$PATH" "PLAYWRIGHT_BROWSERS_PATH=$HOME/.cache/ms-playwright"             unshare --mount --pid --fork --kill-child --mount-proc             scripts/chat_build_end_to_end.sh "$RUNNER_TEMP/app-venv/bin/python" "$RUNNER_TEMP/chat-build-e2e"
+
       - name: Retain the logs and screenshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -335,6 +341,7 @@ jobs:
           path: |
             ${{ runner.temp }}/browser-e2e
             ${{ runner.temp }}/approval-e2e
+            ${{ runner.temp }}/chat-build-e2e
 
   rootless:
     name: without root

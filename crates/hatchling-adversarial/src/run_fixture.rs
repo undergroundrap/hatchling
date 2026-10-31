@@ -34,6 +34,8 @@
 //! - `connect:<path>`: try to connect to a unix socket at `path`.
 //! - `subagent`: try to spawn a child of its own.
 //! - `model-reasoning`: report the thinking-mode setting in the cell environment.
+//! - `builders`: report the builders the run was told (WO-032).
+//! - `idea`: capture an idea through the session.
 //! - `hang`: spin forever (the cell's seccomp profile has no `nanosleep`).
 //!
 //! Two tasks replace the report entirely:
@@ -52,9 +54,9 @@ use std::process::ExitCode;
 
 use hatchling_core::framing::{read_frame, write_frame};
 use hatchling_core::{
-    AgentMessage, ChannelOp, ChildEnvelope, ChildVerdict, HookOp, HookSource, PROTOCOL_VERSION,
-    ScheduleGrant, ScheduleOp, ScheduleSpec, SessionRequest, SessionResponse, SpaceOp, SpaceResult,
-    SubagentOp, VaultOp, VaultResult,
+    AgentMessage, ArtifactOp, ChannelOp, ChildEnvelope, ChildVerdict, HookOp, HookSource,
+    PROTOCOL_VERSION, ScheduleGrant, ScheduleOp, ScheduleSpec, SessionRequest, SessionResponse,
+    SpaceOp, SpaceResult, SubagentOp, VaultOp, VaultResult,
 };
 
 /// A chat turn's view of the conversation (WO-026): what it was given,
@@ -206,6 +208,9 @@ fn run_probe(session: Result<&UnixStream, &String>, probe: &str) -> String {
     if probe == "model-reasoning" {
         return std::env::var("HATCHLING_MODEL_REASONING").unwrap_or_default();
     }
+    if probe == "builders" {
+        return std::env::var("HATCHLING_RUN_BUILDERS").unwrap_or_default();
+    }
     if let Some(path) = probe.strip_prefix("connect:") {
         return match UnixStream::connect(path) {
             Ok(_) => String::from("reached"),
@@ -265,6 +270,11 @@ fn run_probe(session: Result<&UnixStream, &String>, probe: &str) -> String {
             task: String::from("a grandchild"),
             budget: 1,
             capabilities: Vec::new(),
+        })
+    } else if probe == "idea" {
+        SessionRequest::Artifact(ArtifactOp::CaptureIdea {
+            text: String::from("A zine"),
+            from: None,
         })
     } else if probe == "space-create" {
         SessionRequest::Space(SpaceOp::Create {

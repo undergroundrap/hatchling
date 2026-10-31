@@ -584,6 +584,11 @@ pub struct ScheduledRun {
     /// (WO-026): the broker's record, never a cell's.
     #[serde(default)]
     pub history: Vec<hatchling_core::conversation::ChatExchange>,
+    /// For a chat run, the builder the operator names for each kind
+    /// (WO-032): what its agent may propose with. Empty for every other
+    /// run.
+    #[serde(default)]
+    pub builders: std::collections::BTreeMap<String, String>,
 }
 
 impl ScheduledRun {
@@ -616,6 +621,12 @@ impl ScheduledRun {
                 if let Ok(history) = serde_json::to_string(&self.history) {
                     env.push(("HATCHLING_RUN_HISTORY", history));
                 }
+            }
+            if !self.builders.is_empty() {
+                env.push((
+                    "HATCHLING_RUN_BUILDERS",
+                    hatchling_core::builders::format(&self.builders),
+                ));
             }
         }
         if let Some(endpoint) = &self.model_endpoint {
@@ -2572,6 +2583,7 @@ mod run_cell_tests {
             subagent: false,
             chat: false,
             history: Vec::new(),
+            builders: std::collections::BTreeMap::new(),
         }
     }
 
@@ -2742,6 +2754,7 @@ mod run_cell_tests {
         let turn = ScheduledRun {
             chat: true,
             history: history.clone(),
+            builders: std::collections::BTreeMap::new(),
             ..run()
         };
         let raw = given(&turn).unwrap();
@@ -2756,6 +2769,36 @@ mod run_cell_tests {
         assert_eq!(given(&first), None, "nothing said yet, nothing given");
         let worker = ScheduledRun { history, ..run() };
         assert_eq!(given(&worker), None, "only a chat turn is given one");
+    }
+
+    /// WO-032: a chat run is told the operator's builders, as the list
+    /// reads back; no other run is, even holding some.
+    #[test]
+    fn only_a_chat_turn_is_told_the_builders() {
+        let builders = std::collections::BTreeMap::from([
+            (String::from("page"), String::from("page-builder@1.0.0")),
+            (String::from("document"), String::from("doc-builder@2.0.0")),
+        ]);
+        let told = |run: &ScheduledRun| {
+            run.env()
+                .into_iter()
+                .find(|(name, _)| *name == "HATCHLING_RUN_BUILDERS")
+                .map(|(_, value)| value)
+        };
+        let turn = ScheduledRun {
+            chat: true,
+            builders: builders.clone(),
+            ..run()
+        };
+        let raw = told(&turn).unwrap();
+        assert_eq!(hatchling_core::builders::parse(&raw).unwrap(), builders);
+        let none = ScheduledRun {
+            chat: true,
+            ..run()
+        };
+        assert_eq!(told(&none), None, "no builders, nothing told");
+        let worker = ScheduledRun { builders, ..run() };
+        assert_eq!(told(&worker), None, "only a chat turn is told");
     }
 
     #[test]

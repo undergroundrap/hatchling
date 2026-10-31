@@ -22,7 +22,8 @@
 //!   under the run's own cell id, and under a configuration cut down to
 //!   the run's grants
 //!   ([`scoped_config`]): the schedule's grants minus any revoked at fire
-//!   time, with scheduling, skills, channel accounts, and ingress off.
+//!   time, with scheduling, skills, channel accounts, and ingress off, and
+//!   the build store too, but for a chat run's ideas.
 //!   The session code is the same one the agent speaks to, so every
 //!   grant check is the one already tested.
 //!
@@ -259,7 +260,9 @@ impl RunEnv {
 /// Only grants the vocabulary can name survive (a grant that does not
 /// parse is dropped, never widened). Channels are limited to granted,
 /// credential-less ones. A run cannot create or cancel schedules or
-/// hooks, invoke skills, use channel accounts, or reach the ingress.
+/// hooks, invoke skills, use channel accounts, or reach the ingress. A
+/// chat run's build store holds ideas alone ([`run_artifacts`]); any
+/// other run has none.
 ///
 /// Its one scheduler surface is the follow-up scope: asking
 /// for one follow-up of itself, within `request`'s grants and depth,
@@ -343,7 +346,7 @@ pub fn scoped_config(
     run.channel_accounts = Vec::new();
     run.channel_ingress = None;
     run.skills = SkillConfig::disabled();
-    run.artifacts = ArtifactConfig::disabled();
+    run.artifacts = run_artifacts(config, request);
     // A space task's run may use its own space and no other; any other
     // run has no spaces at all.
     run.spaces = request
@@ -696,6 +699,23 @@ fn scheduled_run(config: &Config, request: &RunRequest) -> ScheduledRun {
         subagent: false,
         chat: request.chat,
         history: request.history.clone(),
+        builders: run_artifacts(config, request).builders,
+    }
+}
+
+/// A run's build store (WO-032): for a chat run, when the operator named
+/// builders, the broker's with ideas alone, and no workspace or review
+/// policy to deliver by. Every other run has none.
+fn run_artifacts(config: &Config, request: &RunRequest) -> ArtifactConfig {
+    if request.chat && config.artifacts.enabled() && !config.artifacts.builders.is_empty() {
+        ArtifactConfig {
+            workspace: None,
+            policy: None,
+            ideas_only: true,
+            ..config.artifacts.clone()
+        }
+    } else {
+        ArtifactConfig::disabled()
     }
 }
 
@@ -1221,6 +1241,68 @@ mod tests {
         );
     }
 
+    /// WO-032: a chat run gets the build store with ideas alone, when the
+    /// operator named builders, and nothing to deliver by; it's told the
+    /// builders. No other run gets a store, or is told any.
+    #[test]
+    fn only_a_chat_run_gets_ideas_and_is_told_the_builders() {
+        let builders = std::collections::BTreeMap::from([(
+            String::from("page"),
+            String::from("page-builder@1.0.0"),
+        )]);
+        let mut broker = config();
+        broker.artifacts = ArtifactConfig {
+            root: PathBuf::from("/srv/hatchling/artifacts"),
+            workspace: Some(PathBuf::from("/home/user/out")),
+            policy: Some(hatchling_artifact::ReviewPolicy {
+                max_bytes: 4096,
+                deny: Vec::new(),
+            }),
+            builders: builders.clone(),
+            ..ArtifactConfig::disabled()
+        };
+        let chat = RunRequest {
+            chat: true,
+            ..request(Vec::new())
+        };
+        let run = scoped_config(&broker, &chat, "run-1", run_socket());
+        assert!(run.artifacts.enabled());
+        assert!(run.artifacts.ideas_only);
+        assert_eq!(run.artifacts.root, broker.artifacts.root);
+        assert_eq!(run.artifacts.builders, builders);
+        assert_eq!(run.artifacts.workspace, None);
+        assert_eq!(run.artifacts.policy, None);
+        assert_eq!(scheduled_run(&broker, &chat).builders, builders);
+        // A scheduled run: no store, and told no builders.
+        let scheduled = request(Vec::new());
+        assert!(
+            !scoped_config(&broker, &scheduled, "run-1", run_socket())
+                .artifacts
+                .enabled()
+        );
+        assert!(scheduled_run(&broker, &scheduled).builders.is_empty());
+        // No builders named: a chat run has no store either.
+        broker.artifacts.builders.clear();
+        assert!(
+            !scoped_config(&broker, &chat, "run-1", run_socket())
+                .artifacts
+                .enabled()
+        );
+        // No store: nothing to propose into, so nothing told.
+        broker.artifacts = ArtifactConfig {
+            builders,
+            ..ArtifactConfig::disabled()
+        };
+        assert!(scheduled_run(&broker, &chat).builders.is_empty());
+        assert!(
+            !scoped_config(&broker, &chat, "run-1", run_socket())
+                .artifacts
+                .ideas_only
+        );
+        assert!(!run_artifacts(&broker, &chat).enabled());
+        assert!(run_artifacts(&config(), &chat).builders.is_empty());
+    }
+
     #[test]
     fn a_run_with_no_grants_holds_nothing() {
         let run = scoped_config(&config(), &request(Vec::new()), "run-1", run_socket());
@@ -1350,6 +1432,7 @@ mod tests {
             subagent: false,
             chat: false,
             history: Vec::new(),
+            builders: std::collections::BTreeMap::new(),
         };
         std::thread::scope(|scope| {
             let env = RunEnv {
@@ -1516,6 +1599,7 @@ mod tests {
             subagent: false,
             chat: false,
             history: Vec::new(),
+            builders: std::collections::BTreeMap::new(),
         });
         let err =
             run_helper(Some(&test_spec(&serde_json::to_string(&skill).unwrap()))).unwrap_err();
@@ -1546,6 +1630,7 @@ mod tests {
             subagent: false,
             chat: false,
             history: Vec::new(),
+            builders: std::collections::BTreeMap::new(),
         });
         assert_eq!(agent_log_level(&agent, Some("debug")), LogLevel::Error);
     }

@@ -64,6 +64,11 @@ pub struct Config {
     /// (`HATCHLING_RUN_HISTORY`, WO-026): the broker's record of its last
     /// exchanges, oldest first, bounded. Empty for every other run.
     pub run_history: Vec<hatchling_core::conversation::ChatExchange>,
+    /// The builder the operator names for each build kind
+    /// (`HATCHLING_RUN_BUILDERS`, WO-032): what a chat turn may propose
+    /// for the owner to approve. Empty for every other run, and then the
+    /// idea tools aren't offered.
+    pub run_builders: std::collections::BTreeMap<String, String>,
 }
 
 impl Config {
@@ -145,6 +150,8 @@ impl Config {
         )?;
         let run_history =
             parse_run_history(get(env::HATCHLING_RUN_HISTORY.name).as_deref(), run_chat)?;
+        let run_builders =
+            parse_run_builders(get(env::HATCHLING_RUN_BUILDERS.name).as_deref(), run_chat)?;
         Ok(Self {
             cell_id,
             broker,
@@ -159,6 +166,7 @@ impl Config {
             run_subagent,
             run_chat,
             run_history,
+            run_builders,
         })
     }
 }
@@ -180,6 +188,27 @@ fn parse_run_history(
     }
     hatchling_core::conversation::parse_history(raw).map_err(|reason| Error::InvalidConfig {
         key: "HATCHLING_RUN_HISTORY",
+        reason,
+    })
+}
+
+/// `HATCHLING_RUN_BUILDERS`: the builders a chat turn may propose with,
+/// which only a chat turn may be given.
+fn parse_run_builders(
+    value: Option<&str>,
+    run_chat: bool,
+) -> Result<std::collections::BTreeMap<String, String>, Error> {
+    let Some(raw) = value else {
+        return Ok(std::collections::BTreeMap::new());
+    };
+    if !run_chat {
+        return Err(Error::InvalidConfig {
+            key: "HATCHLING_RUN_BUILDERS",
+            reason: String::from("only a chat run (HATCHLING_RUN_CHAT=1) proposes builds"),
+        });
+    }
+    hatchling_core::builders::parse(raw).map_err(|reason| Error::InvalidConfig {
+        key: "HATCHLING_RUN_BUILDERS",
         reason,
     })
 }
@@ -534,6 +563,38 @@ mod tests {
         ));
         assert!(parse_run_history(None, false).unwrap().is_empty());
         assert!(parse_run_history(Some("[]"), true).unwrap().is_empty());
+    }
+
+    /// WO-032: a chat turn reads the builders it was told; nothing else
+    /// may be told any, and a malformed list isn't the broker's.
+    #[test]
+    fn only_a_chat_turn_reads_the_builders() {
+        let mut vars = valid_vars();
+        assert!(
+            Config::parse(lookup(&vars))
+                .unwrap()
+                .run_builders
+                .is_empty()
+        );
+        vars.insert("HATCHLING_RUN_BUILDERS", "page=page-builder@1.0.0");
+        let key_of = |vars: &HashMap<&'static str, &'static str>| match Config::parse(lookup(vars))
+        {
+            Err(Error::InvalidConfig { key, .. }) => Some(key),
+            _ => None,
+        };
+        assert_eq!(key_of(&vars), Some("HATCHLING_RUN_BUILDERS"));
+        vars.insert("HATCHLING_RUN_CHAT", "1");
+        assert_eq!(
+            Config::parse(lookup(&vars))
+                .unwrap()
+                .run_builders
+                .into_iter()
+                .collect::<Vec<_>>(),
+            [(String::from("page"), String::from("page-builder@1.0.0"))]
+        );
+        vars.insert("HATCHLING_RUN_BUILDERS", "page=page-builder");
+        assert_eq!(key_of(&vars), Some("HATCHLING_RUN_BUILDERS"));
+        assert!(parse_run_builders(None, false).unwrap().is_empty());
     }
 
     #[test]

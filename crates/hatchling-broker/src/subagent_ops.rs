@@ -420,6 +420,7 @@ impl<'scope, 'env> Subagents<'scope, 'env> {
             subagent: true,
             chat: false,
             history: Vec::new(),
+            builders: BTreeMap::new(),
         };
         let config = self.config;
         let started = launcher.launch_cell("subagent", run, |token, socket| {

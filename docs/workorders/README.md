@@ -65,6 +65,7 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | [029](workorder-029-browser-cell.md) | A browser cell: a real browser the agent drives, in a cell of its own, reaching only what the broker lets through | yes | DONE |
 | [030](workorder-030-signed-in-browsing.md) | Signed-in browsing: sessions sealed per site, sign-in filled by the broker, the agent never in the secret path | yes | DONE |
 | [031](workorder-031-cell-bound-credentials-skip-the-broker.md) | Cell-bound credentials skip the broker: a cell's vault secrets and browser sign-ins go from the keeper to the cell | yes | DONE |
+| [032](workorder-032-ideas-and-builds-from-the-chat.md) | Ideas and builds from the chat: the agent proposes, the owner decides | yes | IN-PROGRESS |
 
 ## Candidates
 

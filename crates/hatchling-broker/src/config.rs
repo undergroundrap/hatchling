@@ -4,7 +4,7 @@
 //! may assume validity without re-checking. Untrusted input (environment
 //! variables) becomes validated types here, at the edge, exactly once.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -96,6 +96,16 @@ pub struct ArtifactConfig {
     /// which the inspector checks every completed build against. A kind
     /// with no profile is refused.
     pub kinds: hatchling_artifact::Kinds,
+    /// The builder the operator names for each kind
+    /// (`HATCHLING_ARTIFACT_BUILDERS`, WO-032): a chat run proposes with
+    /// these, and only these.
+    pub builders: BTreeMap<String, String>,
+    /// Whether the session gets ideas alone (WO-032): set only by
+    /// [`crate::scoped_config`], for a chat run. It may capture, list,
+    /// refine and note ideas and propose an activation, with the
+    /// operator's builder for its kind; it can't build, deliver or
+    /// describe, or say an idea is the owner's.
+    pub ideas_only: bool,
 }
 
 impl ArtifactConfig {
@@ -107,6 +117,8 @@ impl ArtifactConfig {
             workspace: None,
             policy: None,
             kinds: hatchling_artifact::Kinds::standard(),
+            builders: BTreeMap::new(),
+            ideas_only: false,
         }
     }
 
@@ -1155,6 +1167,8 @@ fn overlaps(a: &Path, b: &Path) -> bool {
 /// `HATCHLING_ARTIFACT_MAX_BYTES` (a positive size) with the optional
 /// `HATCHLING_ARTIFACT_DENY` (comma-separated substrings); with no size,
 /// there is no policy, and the gate refuses every delivery.
+/// `HATCHLING_ARTIFACT_BUILDERS` names a builder per kind, and needs the
+/// store.
 fn parse_artifacts(
     get: &impl Fn(&str) -> Option<String>,
     vault_root: &Path,
@@ -1162,6 +1176,12 @@ fn parse_artifacts(
 ) -> Result<ArtifactConfig, Error> {
     let Some(dir) = get(env::HATCHLING_ARTIFACT_DIR.name).filter(|dir| !dir.trim().is_empty())
     else {
+        if get(env::HATCHLING_ARTIFACT_BUILDERS.name).is_some_and(|raw| !raw.trim().is_empty()) {
+            return Err(Error::InvalidConfig {
+                key: "HATCHLING_ARTIFACT_BUILDERS",
+                reason: String::from("builders build into a store: set HATCHLING_ARTIFACT_DIR"),
+            });
+        }
         return Ok(ArtifactConfig::disabled());
     };
     let place = |key: &'static str, raw: &str| -> Result<PathBuf, Error> {
@@ -1237,12 +1257,39 @@ fn parse_artifacts(
             });
         }
     };
+    let kinds = hatchling_artifact::Kinds::standard();
+    let builders = parse_builders(get, &kinds)?;
     Ok(ArtifactConfig {
         root,
         workspace,
         policy,
-        kinds: hatchling_artifact::Kinds::standard(),
+        kinds,
+        builders,
+        ideas_only: false,
     })
+}
+
+/// Parses `HATCHLING_ARTIFACT_BUILDERS` (WO-032): each kind registered in
+/// `kinds`, named once, with a skill id for its builder (the list's own
+/// shape, [`hatchling_core::builders::parse`], is narrower than a skill
+/// id's).
+fn parse_builders(
+    get: &impl Fn(&str) -> Option<String>,
+    kinds: &hatchling_artifact::Kinds,
+) -> Result<BTreeMap<String, String>, Error> {
+    let invalid = |reason: String| Error::InvalidConfig {
+        key: "HATCHLING_ARTIFACT_BUILDERS",
+        reason,
+    };
+    let raw = get(env::HATCHLING_ARTIFACT_BUILDERS.name).unwrap_or_default();
+    let builders = hatchling_core::builders::parse(&raw).map_err(invalid)?;
+    if let Some(kind) = builders.keys().find(|kind| kinds.get(kind).is_none()) {
+        return Err(invalid(format!(
+            "{kind:?} is not a build kind: one of {}",
+            kinds.names().join(", ")
+        )));
+    }
+    Ok(builders)
 }
 
 /// Longest unix socket path, in bytes (`sun_path` less its NUL).
@@ -1798,7 +1845,7 @@ fn refuse_shared_egress_secrets(
     egress_grants: &[String],
     allowlist_raw: &str,
 ) -> Result<(), Error> {
-    let mut owners = std::collections::BTreeMap::new();
+    let mut owners = BTreeMap::new();
     for destination in configured_destinations(egress_grants, allowlist_raw) {
         let secret = crate::serve::destination_to_secret_name(destination);
         match owners.get(&secret) {
@@ -2097,6 +2144,75 @@ mod tests {
         let artifacts = Config::parse(lookup(&vars)).unwrap().artifacts;
         assert_eq!(artifacts.policy, None);
         assert!(artifacts.enabled());
+    }
+
+    /// WO-032: the operator names one builder per registered kind, with a
+    /// skill id, and only beside a build store.
+    #[test]
+    fn the_builders_are_read_strictly_and_only_with_a_store() {
+        let mut vars = valid_vars();
+        vars.insert("HATCHLING_ARTIFACT_DIR", "/srv/hatchling/artifacts");
+        assert!(
+            Config::parse(lookup(&vars))
+                .unwrap()
+                .artifacts
+                .builders
+                .is_empty()
+        );
+        vars.insert(
+            "HATCHLING_ARTIFACT_BUILDERS",
+            "page=page-builder@1.0.0, document=doc-builder@2.0.0",
+        );
+        let artifacts = Config::parse(lookup(&vars)).unwrap().artifacts;
+        assert_eq!(
+            artifacts.builders.into_iter().collect::<Vec<_>>(),
+            [
+                (String::from("document"), String::from("doc-builder@2.0.0")),
+                (String::from("page"), String::from("page-builder@1.0.0")),
+            ]
+        );
+        assert!(!artifacts.ideas_only);
+        for (raw, says) in [
+            (
+                "poster=p@1.0.0",
+                "not a build kind: one of document, page, video",
+            ),
+            ("page=p q@1.0.0", "not a builder's name@version"),
+            ("page=p@1.0.0,page=q@1.0.0", "named twice"),
+            ("page", "not kind=name@version"),
+        ] {
+            vars.insert("HATCHLING_ARTIFACT_BUILDERS", raw);
+            let refused = Config::parse(lookup(&vars));
+            assert!(
+                matches!(&refused, Err(Error::InvalidConfig { key, reason })
+                    if *key == "HATCHLING_ARTIFACT_BUILDERS" && reason.contains(says)),
+                "{raw}: {refused:?}"
+            );
+        }
+        // Builders build into a store: without one, they're refused.
+        let mut vars = valid_vars();
+        vars.insert("HATCHLING_ARTIFACT_BUILDERS", "page=page-builder@1.0.0");
+        let refused = Config::parse(lookup(&vars));
+        assert!(
+            matches!(&refused, Err(Error::InvalidConfig { key, reason })
+                if *key == "HATCHLING_ARTIFACT_BUILDERS" && reason.contains("HATCHLING_ARTIFACT_DIR")),
+            "{refused:?}"
+        );
+        vars.insert("HATCHLING_ARTIFACT_BUILDERS", " ");
+        assert!(!Config::parse(lookup(&vars)).unwrap().artifacts.enabled());
+        // Read alone: the kinds it checks against are the ones given.
+        let only_page = hatchling_artifact::Kinds::empty().with(hatchling_artifact::PageProfile);
+        let set = |raw: &'static str| move |_: &str| Some(String::from(raw));
+        assert_eq!(
+            parse_builders(&set("page=p@1"), &only_page).unwrap().len(),
+            1
+        );
+        assert!(parse_builders(&set("document=d@1"), &only_page).is_err());
+        assert!(
+            parse_builders(&|_: &str| None, &only_page)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

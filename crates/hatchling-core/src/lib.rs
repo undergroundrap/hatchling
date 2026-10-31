@@ -15,6 +15,7 @@
 
 pub mod action;
 pub mod browser;
+pub mod builders;
 pub mod cli;
 pub mod conversation;
 pub mod error;

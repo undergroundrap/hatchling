@@ -46,6 +46,7 @@ hatchling_core::declare_environment! {
     HATCHLING_ARTIFACT_WORKSPACE: ("required with a configured harness", "Absolute workspace destination for approved deliveries."),
     HATCHLING_ARTIFACT_DENY: ("optional", "Comma-separated output categories the review policy refuses."),
     HATCHLING_ARTIFACT_MAX_BYTES: ("optional", "Maximum delivery size in bytes for the share-review policy."),
+    HATCHLING_ARTIFACT_BUILDERS: ("optional; default none", "The builder for each build kind, as kind=name@version, comma-separated; a chat run may propose these builds for the owner to approve."),
     HATCHLING_SPACE_DIR: ("optional; default disabled", "Absolute sealed space-store root."),
     HATCHLING_DEVICE_SOCKET: ("optional", "Absolute socket for paired device connections."),
     HATCHLING_AGENT_BIN: ("optional; enables cell spawning", "Absolute agent executable path; may point at hatchling."),

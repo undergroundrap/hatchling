@@ -389,6 +389,7 @@ mod tests {
             run_subagent: false,
             run_chat: false,
             run_history: Vec::new(),
+            run_builders: std::collections::BTreeMap::new(),
             vault_fd: None,
         };
         assert_eq!(prompt_for(&config), hatchling_loop::PromptKind::Worker);

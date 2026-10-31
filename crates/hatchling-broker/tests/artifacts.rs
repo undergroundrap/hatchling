@@ -138,6 +138,8 @@ impl World {
                     deny: Vec::new(),
                 }),
                 kinds: test_kinds(),
+                builders: std::collections::BTreeMap::new(),
+                ideas_only: false,
             },
             goals: hatchling_broker::GoalsConfig::disabled(),
             spaces: hatchling_broker::SpaceConfig::disabled(),
@@ -1679,6 +1681,103 @@ fn the_owners_approval_in_the_app_builds_exactly_what_was_proposed() {
         world
             .summary()
             .is_some_and(|summary| summary.state == IdeaState::Activated)
+    );
+}
+
+/// WO-032, with real builder cells: a chat run's session has ideas alone.
+/// It can't build, deliver, describe, or say an idea is the owner's; it
+/// proposes only with the operator's builder for the kind. Its proposal
+/// reaches the owner's app, and the owner's approval builds it on the
+/// broker's worker. A scheduled run's session has no ideas at all.
+#[test]
+fn a_chat_runs_proposal_reaches_the_owner_and_builds_nothing_on_its_own() {
+    if !guard_cell_available().unwrap() {
+        return;
+    }
+    let _confirmations = minting_at_the_clock();
+    let mut world = World::new("chat-ideas");
+    world.config.artifacts.builders =
+        std::collections::BTreeMap::from([(String::from("page"), String::from(PAGE_BUILDER))]);
+    let broker = world.config;
+    let run = |chat: bool| hatchling_scheduler::RunRequest {
+        schedule_id: String::from("chat"),
+        task: String::from("t"),
+        grants: Vec::new(),
+        due: hatchling_scheduler::Timestamp::from_second(1_790_000_000).unwrap(),
+        missed: false,
+        channel: String::from("local"),
+        depth: 0,
+        event: None,
+        space: None,
+        feed: None,
+        chat,
+        history: Vec::new(),
+    };
+    let socket = || "/tmp/hatchling-test-artifacts-chat.sock".parse().unwrap();
+    world.config = hatchling_broker::scoped_config(&broker, &run(false), "run-s", socket());
+    assert_eq!(world.capture("Short zine", None), ArtifactResult::Denied);
+    world.config = hatchling_broker::scoped_config(&broker, &run(true), "run-c", socket());
+    let board = approval_board::board(&world.config);
+    let bus = Arc::new(Bus::starting_at(1));
+    board.attach(Arc::clone(&bus));
+    // What the owner says is the owner's: a run can't claim it.
+    for from in [IdeaSource::Chat, IdeaSource::Command] {
+        assert_eq!(
+            world.capture("Short zine", Some(from)),
+            ArtifactResult::Denied
+        );
+    }
+    let (idea, _) = saved(world.capture("Short zine", None));
+    // Nothing builds, delivers or describes on its own say.
+    assert_eq!(
+        world.build("page", PAGE_BUILDER, &[("idea", "Short zine")]),
+        ArtifactResult::Denied
+    );
+    assert_eq!(
+        world.deliver(None, "art-1", local()),
+        ArtifactResult::Denied
+    );
+    for op in [
+        ArtifactOp::Describe {
+            build: String::from("art-1"),
+        },
+        ArtifactOp::BuildIdea {
+            idea: idea.clone(),
+            build_kind: String::from("page"),
+            builder: String::from(PAGE_BUILDER),
+        },
+    ] {
+        assert_eq!(world.op(None, &op), ArtifactResult::Denied, "{op:?}");
+    }
+    // Only the operator's builder for the kind.
+    for (kind, builder) in [("page", FIXTURE_BUILDER), ("document", DOCUMENT_BUILDER)] {
+        assert_eq!(
+            world.propose(&idea, kind, builder, "a zine"),
+            ArtifactResult::BuildFailed {
+                reason: BuildFailure::UnknownBuilder
+            },
+            "{kind} by {builder}"
+        );
+    }
+    assert_eq!(last_confirmation(&bus), None, "the owner wasn't asked");
+    let proposal = proposed(&world.propose(&idea, "page", PAGE_BUILDER, "a zine")).unwrap();
+    let request = last_confirmation(&bus).unwrap();
+    assert!(
+        request
+            .fields
+            .iter()
+            .any(|field| field.label == "Request hash" && field.value == proposal.request_hash)
+    );
+    assert_eq!(
+        decide(&board, &request, &request.digest),
+        Ok(State::Approved)
+    );
+    let told =
+        approval_board::run_next(&broker, key(), &world.skills, None, Duration::from_secs(5))
+            .unwrap();
+    assert!(
+        told.starts_with(&format!("Approved: build idea {idea}. Built art-")),
+        "{told}"
     );
 }
 

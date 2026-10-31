@@ -469,6 +469,65 @@ fn a_chats_next_cell_is_given_the_exchange_before_it() {
     assert!(run_dirs(&config.scheduler.run_root()).is_empty());
 }
 
+/// WO-032, in real cells: a chat run is told the operator's builders, and
+/// its session can capture an idea; a scheduled run is told none, and its
+/// session can't.
+#[test]
+fn only_a_chat_run_is_told_the_builders_and_keeps_ideas() {
+    if !guard_cell_available().unwrap() {
+        return;
+    }
+    let base = base("ideas");
+    let mut config = config(&base, &[]);
+    config.artifacts = hatchling_broker::ArtifactConfig {
+        root: base.join("artifacts"),
+        builders: std::collections::BTreeMap::from([(
+            String::from("page"),
+            String::from("page-builder@1.0.0"),
+        )]),
+        ..hatchling_broker::ArtifactConfig::disabled()
+    };
+    let key = MasterKey::generate().unwrap();
+    let shown = Shown::default();
+    let scheduled = std::thread::scope(|scope| {
+        let launcher = CellLauncher::new(scope, &config, &key, env(&config, RUN_DEADLINE));
+        let mut chat = hatchling_broker::chat_run::Chat::new(vec![send()]);
+        let mut message = Some(Message {
+            sender: hatchling_channel::SenderId(String::from("api")),
+            channel: hatchling_channel::ChannelId::local(),
+            text: String::from("builders idea"),
+        });
+        let deadline = Instant::now() + RUN_DEADLINE;
+        while chat.step(
+            || message.take(),
+            &launcher,
+            &shown,
+            ts("2026-09-21T12:01:00Z"),
+        ) != hatchling_broker::chat_run::Step::Answered
+        {
+            assert!(Instant::now() < deadline, "the chat run never answered");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        run_to_end(&launcher, "builders idea").unwrap()
+    });
+    let shown = shown.0.lock().unwrap().clone();
+    let answer = shown.first().unwrap();
+    assert!(
+        answer.contains("\nbuilders=page=page-builder@1.0.0\n"),
+        "{answer}"
+    );
+    assert!(
+        answer.contains("\nidea=Artifact(IdeaSaved { idea: \"idea-"),
+        "{answer}"
+    );
+    assert!(scheduled.contains("\nbuilders=\n"), "{scheduled}");
+    assert!(
+        scheduled.ends_with("\nidea=Artifact(Denied)"),
+        "{scheduled}"
+    );
+    assert!(run_dirs(&config.scheduler.run_root()).is_empty());
+}
+
 #[test]
 fn a_run_that_never_connects_still_ends_and_cleans_up() {
     if !guard_cell_available().unwrap() {

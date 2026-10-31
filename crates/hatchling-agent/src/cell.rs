@@ -505,6 +505,11 @@ impl Cell<Ready> {
         registry.register(Box::new(crate::tools::BrowserCloseTool::new(
             self.connection(),
         )));
+        // A chat turn told the operator's builders proposes builds from
+        // ideas, for the owner to approve (WO-032).
+        for tool in crate::tools::IdeaTool::all(self.connection(), &self.config().run_builders) {
+            registry.register(Box::new(tool));
+        }
         registry.register(Box::new(crate::tools::SpawnSubagentTool::new(
             self.connection(),
             std::sync::Arc::clone(&ledger),
@@ -593,6 +598,7 @@ mod tests {
             run_subagent: false,
             run_chat: false,
             run_history: Vec::new(),
+            run_builders: std::collections::BTreeMap::new(),
             vault_fd: None,
         }
     }

@@ -16,4 +16,5 @@ hatchling_core::declare_environment! {
     HATCHLING_RUN_SUBAGENT: ("optional; default 0", "Broker-supplied subagent mode, 0 or 1."),
     HATCHLING_RUN_CHAT: ("optional; default 0", "Broker-supplied: the run answers the user's chat message, 0 or 1."),
     HATCHLING_RUN_HISTORY: ("optional; chat runs only", "Broker-supplied: the conversation's last exchanges, a JSON array of {user, assistant}."),
+    HATCHLING_RUN_BUILDERS: ("optional; chat runs only", "Broker-supplied: the builder the operator names for each build kind, as kind=name@version, comma-separated; offers the idea tools."),
 }
