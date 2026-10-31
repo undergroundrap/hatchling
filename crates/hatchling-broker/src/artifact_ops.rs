@@ -380,9 +380,10 @@ pub(crate) fn held_secret_names(config: &Config) -> BTreeSet<String> {
 
 /// Handles one [`ArtifactOp`] at `now` (Unix seconds).
 ///
-/// `Denied` when artifacts are off, which they always are in a run's own
-/// session. Builds run through `skills`; channel deliveries go to `hub`,
-/// the session's local channel.
+/// `Denied` when artifacts are off, which they are in every run's own
+/// session but a chat run's. A chat run's has ideas alone
+/// ([`beyond_ideas`]). Builds run through `skills`; channel deliveries go
+/// to `hub`, the session's local channel.
 pub fn handle_artifact_op(
     config: &Config,
     key: &dyn OpensStores,
@@ -394,6 +395,9 @@ pub fn handle_artifact_op(
 ) -> ArtifactResult {
     if !config.artifacts.enabled() {
         return ArtifactResult::Denied;
+    }
+    if let Some(refused) = beyond_ideas(&config.artifacts, op) {
+        return refused;
     }
     let pipeline = Pipeline {
         config,
@@ -437,6 +441,45 @@ pub fn handle_artifact_op(
             activation,
             confirmation,
         } => pipeline.activate(activation, confirmation),
+    }
+}
+
+/// What a session with ideas alone, a chat run's (WO-032), is refused
+/// before anything runs; `None` for what it may do, and for every op of a
+/// session with the whole store.
+///
+/// What it reads can steer it, so it proposes, and the owner decides:
+/// - nothing that builds, delivers or describes a build;
+/// - no idea said to be the owner's (`chat` or `command`): what it
+///   captures is its own;
+/// - a proposal only with the builder the operator named for its kind.
+fn beyond_ideas(artifacts: &crate::ArtifactConfig, op: &ArtifactOp) -> Option<ArtifactResult> {
+    if !artifacts.ideas_only {
+        return None;
+    }
+    match op {
+        ArtifactOp::Build { .. }
+        | ArtifactOp::Deliver { .. }
+        | ArtifactOp::Describe { .. }
+        | ArtifactOp::BuildIdea { .. }
+        | ArtifactOp::CaptureIdea {
+            from: Some(IdeaSource::Chat | IdeaSource::Command),
+            ..
+        } => Some(ArtifactResult::Denied),
+        ArtifactOp::ProposeActivation {
+            build_kind,
+            builder,
+            ..
+        } => (artifacts.builders.get(build_kind) != Some(builder)).then_some(
+            ArtifactResult::BuildFailed {
+                reason: BuildFailure::UnknownBuilder,
+            },
+        ),
+        ArtifactOp::CaptureIdea { .. }
+        | ArtifactOp::ListIdeas { .. }
+        | ArtifactOp::RefineIdea { .. }
+        | ArtifactOp::NoteIdea { .. }
+        | ArtifactOp::Activate { .. } => None,
     }
 }
 
@@ -1104,6 +1147,102 @@ fn describe_target(to: &DeliveryTarget) -> String {
 mod tests {
     use super::*;
     use hatchling_vault::MasterKey;
+
+    /// WO-032: a session with ideas alone may capture, list, refine and
+    /// note ideas, propose with the operator's builder, and activate (which
+    /// only the owner's confirmation completes); everything else is
+    /// refused before it runs. A session with the whole store is never
+    /// stopped here.
+    #[test]
+    fn a_session_with_ideas_alone_proposes_and_nothing_more() {
+        let text = String::from;
+        let ideas = crate::ArtifactConfig {
+            root: PathBuf::from("/srv/hatchling/artifacts"),
+            builders: std::collections::BTreeMap::from([(text("page"), text("page@1.0.0"))]),
+            ideas_only: true,
+            ..crate::ArtifactConfig::disabled()
+        };
+        let whole = crate::ArtifactConfig {
+            ideas_only: false,
+            ..ideas.clone()
+        };
+        let capture = |from| ArtifactOp::CaptureIdea {
+            text: text("t"),
+            from,
+        };
+        let propose = |kind: &str, builder: &str| ArtifactOp::ProposeActivation {
+            idea: text("idea-1"),
+            build_kind: kind.to_owned(),
+            builder: builder.to_owned(),
+            description: text("d"),
+        };
+        let allowed = [
+            capture(None),
+            capture(Some(IdeaSource::Feed {
+                store: text("goal"),
+                id: text("1"),
+                tag: None,
+            })),
+            ArtifactOp::ListIdeas { after: None },
+            ArtifactOp::RefineIdea {
+                idea: text("idea-1"),
+                text: text("t"),
+            },
+            ArtifactOp::NoteIdea {
+                idea: text("idea-1"),
+                note: text("n"),
+            },
+            ArtifactOp::Activate {
+                activation: text("act-1"),
+                confirmation: text("c"),
+            },
+            propose("page", "page@1.0.0"),
+        ];
+        for op in &allowed {
+            assert_eq!(beyond_ideas(&ideas, op), None, "{op:?}");
+        }
+        let denied = [
+            capture(Some(IdeaSource::Chat)),
+            capture(Some(IdeaSource::Command)),
+            ArtifactOp::Build {
+                build_kind: text("page"),
+                builder: text("page@1.0.0"),
+                inputs: Vec::new(),
+            },
+            ArtifactOp::Deliver {
+                build: text("art-1"),
+                to: DeliveryTarget::Workspace { name: text("a") },
+            },
+            ArtifactOp::Describe {
+                build: text("art-1"),
+            },
+            ArtifactOp::BuildIdea {
+                idea: text("idea-1"),
+                build_kind: text("page"),
+                builder: text("page@1.0.0"),
+            },
+        ];
+        for op in &denied {
+            assert_eq!(
+                beyond_ideas(&ideas, op),
+                Some(ArtifactResult::Denied),
+                "{op:?}"
+            );
+        }
+        let unknown = Some(ArtifactResult::BuildFailed {
+            reason: BuildFailure::UnknownBuilder,
+        });
+        for (kind, builder) in [("page", "other@1.0.0"), ("document", "page@1.0.0")] {
+            assert_eq!(beyond_ideas(&ideas, &propose(kind, builder)), unknown);
+        }
+        for op in allowed.iter().chain(&denied) {
+            assert_eq!(beyond_ideas(&whole, op), None, "{op:?}");
+        }
+        assert_eq!(
+            beyond_ideas(&whole, &propose("document", "other@1.0.0")),
+            None
+        );
+    }
 
     #[test]
     fn workspace_names_are_one_plain_component() {

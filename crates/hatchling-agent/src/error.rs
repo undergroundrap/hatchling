@@ -344,6 +344,21 @@ pub enum Error {
         reason: String,
     },
 
+    /// I/O failed during an idea operation (WO-032).
+    #[error("idea operation I/O failed: {source}")]
+    IdeaIo {
+        /// The underlying I/O failure.
+        source: std::io::Error,
+    },
+
+    /// The broker's reply to an idea op was not a well-formed
+    /// [`ArtifactResult`](hatchling_core::ArtifactResult). Fail-closed.
+    #[error("idea protocol violation: {reason}")]
+    IdeaProtocol {
+        /// What was wrong with the broker's bytes.
+        reason: String,
+    },
+
     /// I/O failed during a browser operation (WO-029).
     #[error("browser operation I/O failed: {source}")]
     BrowserIo {

@@ -684,6 +684,7 @@ mod tests {
             subagent: false,
             chat: false,
             history: Vec::new(),
+            builders: std::collections::BTreeMap::new(),
         };
         let request = hatchling_scheduler::RunRequest {
             schedule_id: String::from(PLANTED[0]),

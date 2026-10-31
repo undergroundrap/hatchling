@@ -26,6 +26,7 @@ pub mod environment;
 pub mod error;
 pub mod goals;
 pub mod handshake;
+pub mod ideas;
 pub mod memory;
 pub mod memory_provider;
 pub mod model;

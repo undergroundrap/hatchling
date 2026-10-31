@@ -70,7 +70,7 @@ Other agents ask in the conversation, where whatever the agent read can argue fo
 **Then (later slices):**
 
 - Denials and pending requests that survive a restart, sealed like the schedules, and the owner's app reconsidering a denial. Moved here at close: while denials live in the broker's memory, a restart lifts every one, and a way to lift one alone matters once they persist.
-- Agent tools for ideas and builds. The agent's model loop has no tool that captures an idea or proposes a build, and a run's session has artifacts off, so only a session that sends the op itself reaches an approval today.
+- Agent tools for ideas and builds, now [WO-032](workorder-032-ideas-and-builds-from-the-chat.md). The agent's model loop has no tool that captures an idea or proposes a build, and a run's session has artifacts off, so only a session that sends the op itself reaches an approval today.
 - Typed outcome events in the conversation (WO-026), so the next turn knows what happened.
 - Reusable grants once a broker-owned task record exists ("this task" isn't a cell). The search WO's sites match on the exact origin (scheme, canonical ASCII host, port), and each redirect is checked before it's followed.
 - The channel rail's state-changing sends, once a channel other than the local one exists. Unattended runs, whose proposals wait instead of failing.
