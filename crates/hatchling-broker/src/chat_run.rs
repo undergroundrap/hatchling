@@ -409,7 +409,13 @@ mod tests {
         );
         let now = Timestamp::now();
         assert_eq!(
-            chat.step(|| Some((message("unstarted"), 0)), 0, &launches, &answers, now),
+            chat.step(
+                || Some((message("unstarted"), 0)),
+                0,
+                &launches,
+                &answers,
+                now
+            ),
             Step::Answered
         );
         answers.replace.set(true);
@@ -478,7 +484,7 @@ mod tests {
         let answers = Answers::default();
         let mut chat = Chat::new(vec![send_local()]);
         let now = Timestamp::now();
-        let mut step = |chat: &mut Chat<Scripted>, sent: Option<(&str, u64)>, now_in: u64| {
+        let step = |chat: &mut Chat<Scripted>, sent: Option<(&str, u64)>, now_in: u64| {
             chat.step(
                 || sent.map(|(text, n)| (message(text), n)),
                 now_in,
@@ -520,7 +526,11 @@ mod tests {
             .iter()
             .map(|(_, text)| text.clone())
             .collect();
-        assert_eq!(shown, ["a0", "a1", "a2", "a3", "a4"], "every answer is shown");
+        assert_eq!(
+            shown,
+            ["a0", "a1", "a2", "a3", "a4"],
+            "every answer is shown"
+        );
     }
 
     fn message(text: &str) -> Message {
@@ -569,7 +579,8 @@ mod tests {
         assert_eq!(chat.step(|| None, 0, &launches, &answers, now), Step::Idle);
         assert_eq!(
             chat.step(
-                || Some((message("What is on today?"), 0)), 0,
+                || Some((message("What is on today?"), 0)),
+                0,
                 &launches,
                 &answers,
                 now
@@ -637,7 +648,10 @@ mod tests {
             chat.step(|| Some((message("one"), 0)), 0, &launches, &answers, now),
             Step::Started
         );
-        assert_eq!(chat.step(|| None, 0, &launches, &answers, now), Step::Answered);
+        assert_eq!(
+            chat.step(|| None, 0, &launches, &answers, now),
+            Step::Answered
+        );
         assert_eq!(
             chat.step(|| Some((message("two"), 0)), 0, &launches, &answers, now),
             Step::Answered

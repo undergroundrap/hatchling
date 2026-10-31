@@ -2141,12 +2141,7 @@ mod tests {
         let new = |chat: &str| UiAction::NewConversation {
             chat_id: chat.to_owned(),
         };
-        let refused = |reason| {
-            (
-                UiActionResult::Refused { reason },
-                ApiOutcome::Refused,
-            )
-        };
+        let refused = |reason| (UiActionResult::Refused { reason }, ApiOutcome::Refused);
         // A caller holding less than the owner's grants can't.
         let other = caller(&[ScheduleGrant::ChannelSend {
             channel: String::from("elsewhere"),

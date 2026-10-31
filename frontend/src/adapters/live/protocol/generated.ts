@@ -278,7 +278,7 @@ export type ApiOutcome = 'served' | 'refused';
  * What one API call asked for: the request's kind, never its content
  * (a message's text, a file, a schedule's task).
  */
-export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'give_code' | 'decline_code';
+export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'give_code' | 'decline_code';
 /**
  * A bearer token, presented in `Hello` for a token provider.
  *
@@ -3653,6 +3653,12 @@ export type UiAction = {
      */
     readonly text: string;
 } | {
+    readonly action: 'new_conversation';
+    /**
+     * The chat.
+     */
+    readonly chat_id: string;
+} | {
     readonly action: 'decide';
     /**
      * The confirmation.
@@ -3824,6 +3830,12 @@ export type UiActionResult = {
      */
     readonly message_id: string;
     readonly result: 'message_accepted';
+} | {
+    /**
+     * The chat.
+     */
+    readonly chat_id: string;
+    readonly result: 'conversation_started';
 } | {
     /**
      * The confirmation.

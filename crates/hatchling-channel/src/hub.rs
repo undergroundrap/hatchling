@@ -159,12 +159,11 @@ impl LocalHub {
         self.state().conversation
     }
 
-    /// Starts a new conversation, and returns its number. Messages
-    /// already queued stay queued, in the conversation they were sent in.
-    pub fn new_conversation(&self) -> u64 {
+    /// Starts a new conversation. Messages already queued stay queued, in
+    /// the conversation they were sent in.
+    pub fn new_conversation(&self) {
         let mut state = self.state();
         state.conversation = state.conversation.wrapping_add(1);
-        state.conversation
     }
 
     /// How many messages wait unreceived.
@@ -266,10 +265,10 @@ mod tests {
         let hub = LocalHub::new(OutputGate::disabled());
         assert_eq!(hub.conversation(), 0);
         assert_eq!(hub.inject(msg("before")), IngressEvent::Queued);
-        assert_eq!(hub.new_conversation(), 1);
+        hub.new_conversation();
         assert_eq!(hub.conversation(), 1);
         assert_eq!(hub.inject(msg("after")), IngressEvent::Queued);
-        assert_eq!(hub.new_conversation(), 2);
+        hub.new_conversation();
         // Nothing queued is dropped: each is taken in its own order, with
         // the conversation it was sent in.
         let taken = |hub: &LocalHub| hub.take_in_conversation().map(|(m, n)| (m.text, n));
