@@ -43,7 +43,7 @@ use hatchling_broker::{
 use hatchling_channel::{LocalHub, Message};
 use hatchling_core::framing::{read_frame, write_frame};
 use hatchling_core::ui::{
-    ConfirmationRequest, Decision, DecisionRejection, FieldSource, UiEventBody,
+    ChatAuthor, ConfirmationRequest, Decision, DecisionRejection, FieldSource, UiEventBody,
 };
 use hatchling_core::{
     ActivationProposal, AgentMessage, ArtifactInput, ArtifactInspection, ArtifactOp,
@@ -1643,6 +1643,11 @@ fn the_owners_approval_in_the_app_builds_exactly_what_was_proposed() {
         "{told}"
     );
     assert_eq!(
+        told_in_the_app(&bus),
+        std::slice::from_ref(&told),
+        "told in the app, though the owner sent no message"
+    );
+    assert_eq!(
         board
             .approvals()
             .get(&request.confirmation_id)
@@ -1784,15 +1789,26 @@ fn the_workers_steps_run_only_what_was_approved_and_tell_the_owner() {
     );
     let record = world.record(&built(&reply));
     assert_eq!(record.idea.as_ref(), Some(&proposal.idea));
-    let (hub, received) = hub_with_client();
-    approval_board::tell_owner(Some(&hub), "Approved: build idea x.");
-    assert!(
-        received
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|message| message.text == "Approved: build idea x.")
-    );
+    let board = approval_board::board(&world.config);
+    let bus = Arc::new(Bus::starting_at(1));
+    board.attach(Arc::clone(&bus));
+    board.tell_owner("Approved: build idea x.");
+    assert_eq!(told_in_the_app(&bus), ["Approved: build idea x."]);
+}
+
+/// What the owner was told in the app: Hatchling's notices in the local chat.
+fn told_in_the_app(bus: &Bus) -> Vec<String> {
+    bus.after(None)
+        .into_iter()
+        .filter_map(|event| {
+            if let UiEventBody::ChatMessage(message) = event.body {
+                (message.author == ChatAuthor::System && message.chat_id == "local")
+                    .then_some(message.text)
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// WO-027: an approval doesn't outlive what it approved. The idea changed

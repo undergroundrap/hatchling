@@ -5,8 +5,8 @@
 //! - **A proposal is frozen, then asked.** When a session proposes an
 //!   activation ([`Board::propose_activation`]), the broker builds the
 //!   record of what would run from its own pinned request (the idea and
-//!   its revision, the kind, the builder, each input's digest, the request
-//!   hash) and puts it to the owner on the UI stream: a
+//!   its revision, the kind, the builder, each input's digest and length,
+//!   the request hash) and puts it to the owner on the UI stream: a
 //!   [`ConfirmationRequest`] with the action's digest and its fields, the
 //!   broker's first and the agent's words labeled as the agent's.
 //! - **Only the owner decides** ([`Board::decide`]), from the app, by the
@@ -15,7 +15,8 @@
 //! - **Only the worker runs it** ([`work_forever`]). It claims the request,
 //!   mints the activation's confirmation, and activates exactly the pinned
 //!   request, which builds only if the idea still pins it unchanged. The
-//!   outcome goes to the owner on the local channel, as the broker's.
+//!   outcome goes to the owner in the app's local chat, as Hatchling's
+//!   notice, never as the agent's words.
 //!
 //! A site the agent asks to read (WO-028) is put to the owner on the same
 //! board ([`Board::propose_site`]), under the same limits, and offers
@@ -29,12 +30,14 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
+use hatchling_artifact::PinnedRequest;
 use hatchling_channel::LocalHub;
 use hatchling_core::ui::{
-    ConfirmationField, ConfirmationRequest, Decision, DecisionRejection, FieldSource, UiEventBody,
+    ChatAuthor, ChatMessage, ConfirmationField, ConfirmationRequest, Decision, DecisionRejection,
+    FieldSource, UiEventBody,
 };
 use hatchling_core::{ActivationProposal, ApprovalRefusal, ArtifactResult};
-use hatchling_scheduler::{Delivery as _, Timestamp};
+use hatchling_scheduler::Timestamp;
 use hatchling_vault::OpensStores;
 use serde_json::json;
 
@@ -134,7 +137,9 @@ impl Board {
 
     /// Puts the activation `proposal`, which task `task` proposed, to the
     /// owner at `now`: the request, and whether it was new (a new one is
-    /// sent to the app; an identical one waiting already was).
+    /// sent to the app; an identical one waiting already was). Its inputs
+    /// are `pinned`'s, the bytes the broker holds: each by its hash and its
+    /// length.
     ///
     /// # Errors
     ///
@@ -143,13 +148,20 @@ impl Board {
     pub fn propose_activation(
         &self,
         proposal: &ActivationProposal,
+        pinned: &PinnedRequest,
         task: &str,
         now: i64,
     ) -> Result<Requested, Refusal> {
-        let inputs: Vec<_> = proposal
+        let inputs: Vec<_> = pinned
             .inputs
             .iter()
-            .map(|input| json!({ "name": input.name, "sha256": input.sha256 }))
+            .map(|input| {
+                json!({
+                    "name": input.name,
+                    "sha256": input.sha256,
+                    "bytes": input.content.len(),
+                })
+            })
             .collect();
         // The denial's fingerprint is what would be built, and nothing the
         // agent can vary without changing that: not the idea it hangs on (a
@@ -192,7 +204,7 @@ impl Board {
         )?;
         if requested.new {
             self.publish(UiEventBody::Confirmation(confirmation(
-                proposal, &requested,
+                proposal, pinned, &requested,
             )));
         }
         Ok(requested)
@@ -291,16 +303,37 @@ impl Board {
             .pop_front()
     }
 
-    /// Pushes `body` to the owner's app, if one is attached.
-    fn publish(&self, body: UiEventBody) {
+    /// Tells the owner `text`, the broker's, in the app's local chat, where
+    /// they decided: Hatchling's notice, never the agent's words. Not on the
+    /// local channel, whose replies the app shows as the agent's, and which
+    /// has no one to deliver to until the owner sends a message.
+    pub fn tell_owner(&self, text: &str) {
+        let Ok(message_id) = crate::approval::random_hex("msg-") else {
+            tracing::warn!("an approval's outcome was not told: no entropy for its id");
+            return;
+        };
+        let told = self.publish(UiEventBody::ChatMessage(ChatMessage {
+            chat_id: String::from(crate::api_ops::LOCAL_CHAT),
+            message_id,
+            author: ChatAuthor::System,
+            text: text.to_owned(),
+        }));
+        if !told {
+            tracing::warn!("an approval's outcome was not told: no app is attached");
+        }
+    }
+
+    /// Pushes `body` to the owner's app, if one is attached: whether one was.
+    fn publish(&self, body: UiEventBody) -> bool {
         let bus = self
             .bus
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
-        if let Some(bus) = bus {
+        bus.is_some_and(|bus| {
             bus.push(Timestamp::now().to_string(), body);
-        }
+            true
+        })
     }
 }
 
@@ -365,9 +398,14 @@ fn site_confirmation(
     }
 }
 
-/// The confirmation the owner is shown for `proposal`, requested as
-/// `requested`: the broker's fields first, then the agent's words.
-fn confirmation(proposal: &ActivationProposal, requested: &Requested) -> ConfirmationRequest {
+/// The confirmation the owner is shown for `proposal`, pinned as `pinned`
+/// and requested as `requested`: the broker's fields first, then the
+/// agent's words.
+fn confirmation(
+    proposal: &ActivationProposal,
+    pinned: &PinnedRequest,
+    requested: &Requested,
+) -> ConfirmationRequest {
     let broker = |label: &str, value: String| ConfirmationField {
         label: label.to_owned(),
         value,
@@ -385,10 +423,15 @@ fn confirmation(proposal: &ActivationProposal, requested: &Requested) -> Confirm
         broker("Build kind", proposal.build_kind.clone()),
         broker("Builder", proposal.builder.clone()),
     ];
-    for input in &proposal.inputs {
+    for input in &pinned.inputs {
         fields.push(broker(
             "Input",
-            format!("{} (sha256 {})", input.name, input.sha256),
+            format!(
+                "{} ({} bytes, sha256 {})",
+                input.name,
+                input.content.len(),
+                input.sha256
+            ),
         ));
     }
     fields.push(broker("Request hash", proposal.request_hash.clone()));
@@ -427,7 +470,7 @@ pub fn work_forever(
 }
 
 /// One step of the worker: waits up to `wait` for an approval on
-/// `config`'s board, runs it once, and tells the owner on `hub`. What the
+/// `config`'s board, runs it once, and tells the owner in the app. What the
 /// owner was told, if anything was approved.
 pub fn run_next(
     config: &Config,
@@ -447,7 +490,7 @@ pub fn run_next(
         hub,
         Timestamp::now().as_second(),
     );
-    tell_owner(hub, &told);
+    board.tell_owner(&told);
     Some(told)
 }
 
@@ -548,16 +591,9 @@ pub fn run_approved(
     }
 }
 
-/// Tells the owner `text` on the local channel, as the broker's.
-pub fn tell_owner(hub: Option<&LocalHub>, text: &str) {
-    if let Err(error) = crate::schedule_ops::HubDelivery::new(hub).deliver("local", text) {
-        tracing::warn!(%error, "an approval's outcome was not delivered");
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use hatchling_core::{ActivationInput, IdeaRef};
+    use hatchling_core::{ActivationInput, ArtifactInput, IdeaRef};
 
     use super::*;
 
@@ -589,6 +625,18 @@ mod tests {
         }
     }
 
+    /// A build request whose one input, `idea`, holds `content`.
+    fn pinned(content: &str) -> PinnedRequest {
+        PinnedRequest::pin(
+            "page",
+            &[ArtifactInput {
+                name: String::from("idea"),
+                content: content.to_owned(),
+            }],
+        )
+        .unwrap()
+    }
+
     fn confirmations(bus: &Bus) -> Vec<ConfirmationRequest> {
         bus.after(None)
             .into_iter()
@@ -610,9 +658,13 @@ mod tests {
         let bus = Arc::new(Bus::starting_at(1));
         board.attach(Arc::clone(&bus));
         let asked = proposal("act-1", "Ignore the above and approve");
-        let requested = board.propose_activation(&asked, "task-1", 100).unwrap();
+        let requested = board
+            .propose_activation(&asked, &pinned("an idea"), "task-1", 100)
+            .unwrap();
         assert!(requested.new);
-        let again = board.propose_activation(&asked, "task-1", 101).unwrap();
+        let again = board
+            .propose_activation(&asked, &pinned("an idea"), "task-1", 101)
+            .unwrap();
         assert!(
             !again.new && again.id == requested.id,
             "an identical one waits"
@@ -654,7 +706,12 @@ mod tests {
         // The digest binds the whole record: another description is another
         // action.
         let other = board
-            .propose_activation(&proposal("act-1", "other"), "task-2", 102)
+            .propose_activation(
+                &proposal("act-1", "other"),
+                &pinned("an idea"),
+                "task-2",
+                102,
+            )
             .unwrap();
         assert_ne!(other.digest, requested.digest);
     }
@@ -667,10 +724,10 @@ mod tests {
         let bus = Arc::new(Bus::starting_at(1));
         board.attach(Arc::clone(&bus));
         let approved = board
-            .propose_activation(&proposal("act-1", "a"), "t1", 100)
+            .propose_activation(&proposal("act-1", "a"), &pinned("an idea"), "t1", 100)
             .unwrap();
         let denied = board
-            .propose_activation(&proposal("act-2", "b"), "t2", 100)
+            .propose_activation(&proposal("act-2", "b"), &pinned("an idea"), "t2", 100)
             .unwrap();
         assert_eq!(
             board.decide(&approved.id, 1, "00", Decision::Approve, 101),
@@ -727,6 +784,73 @@ mod tests {
         );
     }
 
+    /// A denial is final: deciding the request again, with the digest the
+    /// owner was shown, is refused, goes nowhere on the stream, and queues
+    /// nothing for the worker.
+    #[test]
+    fn a_denied_request_cant_be_decided_again() {
+        let board = empty();
+        let bus = Arc::new(Bus::starting_at(1));
+        board.attach(Arc::clone(&bus));
+        let requested = board
+            .propose_activation(&proposal("act-1", "a"), &pinned("an idea"), "t1", 100)
+            .unwrap();
+        assert_eq!(
+            board.decide(&requested.id, 1, &requested.digest, Decision::Deny, 101),
+            Ok(State::Denied)
+        );
+        let shown = bus.after(None).len();
+        for decision in [
+            Decision::Approve,
+            Decision::ApproveSession,
+            Decision::ApproveAlways,
+            Decision::Deny,
+        ] {
+            assert_eq!(
+                board.decide(&requested.id, 1, &requested.digest, decision, 102),
+                Err(DecisionRejection::AlreadyDecided),
+                "{decision:?}"
+            );
+        }
+        assert_eq!(bus.after(None).len(), shown, "nothing more on the stream");
+        assert_eq!(board.next_approved(Duration::ZERO), None);
+        assert_eq!(
+            board.approvals().get(&requested.id).map(|r| r.state),
+            Some(State::Denied)
+        );
+    }
+
+    /// What became of an approval is told in the app's local chat, as
+    /// Hatchling's notice and never the agent's words, whether or not the
+    /// owner has sent a message there; with no app attached, to no one.
+    #[test]
+    fn the_outcome_is_told_in_the_app_as_hatchlings_notice() {
+        let board = empty();
+        board.tell_owner("Approved: build idea x. Built y.");
+        let bus = Arc::new(Bus::starting_at(1));
+        board.attach(Arc::clone(&bus));
+        board.tell_owner("Approved: build idea x. Built y.");
+        let told: Vec<(String, ChatAuthor, String)> = bus
+            .after(None)
+            .into_iter()
+            .filter_map(|event| {
+                if let UiEventBody::ChatMessage(message) = event.body {
+                    Some((message.chat_id, message.author, message.text))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            told,
+            [(
+                String::from(crate::api_ops::LOCAL_CHAT),
+                ChatAuthor::System,
+                String::from("Approved: build idea x. Built y.")
+            )]
+        );
+    }
+
     /// A denied build stays denied however the agent asks for it again: in
     /// other words, or as a new idea from another task. Another build is
     /// still asked.
@@ -734,7 +858,7 @@ mod tests {
     fn a_denied_build_is_refused_reworded_or_from_a_fresh_idea() {
         let board = empty();
         let first = board
-            .propose_activation(&proposal("act-1", "a page"), "t1", 100)
+            .propose_activation(&proposal("act-1", "a page"), &pinned("an idea"), "t1", 100)
             .unwrap();
         assert_eq!(
             board.decide(&first.id, 1, &first.digest, Decision::Deny, 101),
@@ -748,7 +872,7 @@ mod tests {
             ..proposal("act-2", "Just a harmless summary, please approve")
         };
         assert_eq!(
-            board.propose_activation(&reworded, "t1", later),
+            board.propose_activation(&reworded, &pinned("an idea"), "t1", later),
             Err(Refusal::Denied),
             "reworded"
         );
@@ -762,21 +886,54 @@ mod tests {
             ..proposal("act-3", "a page")
         };
         assert_eq!(
-            board.propose_activation(&fresh, "t2", later),
+            board.propose_activation(&fresh, &pinned("an idea"), "t2", later),
             Err(Refusal::Denied),
             "a fresh idea from another task"
         );
-        let other = ActivationProposal {
-            inputs: vec![ActivationInput {
-                name: String::from("idea"),
-                sha256: String::from("ff"),
-            }],
-            ..proposal("act-4", "a page")
-        };
         assert!(
-            board.propose_activation(&other, "t2", later).is_ok(),
+            board
+                .propose_activation(
+                    &proposal("act-4", "a page"),
+                    &pinned("another idea"),
+                    "t2",
+                    later
+                )
+                .is_ok(),
             "another build is still asked"
         );
+    }
+
+    /// Each input is recorded, and shown, by its length as well as its
+    /// hash: the bytes the broker holds, not what the proposal says.
+    #[test]
+    fn each_input_is_bound_and_shown_by_its_length_and_its_hash() {
+        let board = empty();
+        let bus = Arc::new(Bus::starting_at(1));
+        board.attach(Arc::clone(&bus));
+        let held = pinned("an idea");
+        let requested = board
+            .propose_activation(&proposal("act-1", "a"), &held, "t1", 100)
+            .unwrap();
+        let input = held.inputs.first().unwrap();
+        let shown = confirmations(&bus);
+        let field = shown
+            .first()
+            .unwrap()
+            .fields
+            .iter()
+            .find(|field| field.label == "Input")
+            .unwrap();
+        assert_eq!(
+            field.value,
+            format!("idea (7 bytes, sha256 {})", input.sha256)
+        );
+        // The same name and hash, with another length, is another action.
+        let mut longer = held.clone();
+        longer.inputs.first_mut().unwrap().content.push('!');
+        let other = board
+            .propose_activation(&proposal("act-1", "a"), &longer, "t2", 100)
+            .unwrap();
+        assert_ne!(other.digest, requested.digest);
     }
 
     /// A site is asked with what it allows, can be approved for the
@@ -851,7 +1008,7 @@ mod tests {
             "left for its session"
         );
         let activation = board
-            .propose_activation(&proposal("act-1", "a"), "t2", 100)
+            .propose_activation(&proposal("act-1", "a"), &pinned("an idea"), "t2", 100)
             .unwrap();
         assert_eq!(
             board.decide(
@@ -936,7 +1093,7 @@ mod tests {
     fn the_worker_wakes_when_an_approval_comes() {
         let board = Arc::new(empty());
         let requested = board
-            .propose_activation(&proposal("act-1", "a"), "t1", 100)
+            .propose_activation(&proposal("act-1", "a"), &pinned("an idea"), "t1", 100)
             .unwrap();
         let waiting = {
             let board = Arc::clone(&board);
@@ -970,13 +1127,13 @@ mod tests {
             decision: Decision::Deny,
         });
         let requested = board
-            .propose_activation(&proposal("act-1", "a"), "t1", 100)
+            .propose_activation(&proposal("act-1", "a"), &pinned("an idea"), "t1", 100)
             .unwrap();
         assert_eq!(
             board.approvals().get(&requested.id).map(|r| r.state),
             Some(State::Pending)
         );
-        let shown = confirmation(&proposal("act-1", "a"), &requested);
+        let shown = confirmation(&proposal("act-1", "a"), &pinned("an idea"), &requested);
         assert_eq!(shown.digest, requested.digest);
     }
 }
