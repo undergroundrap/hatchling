@@ -2182,21 +2182,21 @@ mod tests {
             ("page", "not kind=name@version"),
         ] {
             vars.insert("HATCHLING_ARTIFACT_BUILDERS", raw);
-            let refused = Config::parse(lookup(&vars));
+            let err = Config::parse(lookup(&vars)).unwrap_err();
             assert!(
-                matches!(&refused, Err(Error::InvalidConfig { key, reason })
+                matches!(&err, Error::InvalidConfig { key, reason }
                     if *key == "HATCHLING_ARTIFACT_BUILDERS" && reason.contains(says)),
-                "{raw}: {refused:?}"
+                "{raw}: {err:?}"
             );
         }
         // Builders build into a store: without one, they're refused.
         let mut vars = valid_vars();
         vars.insert("HATCHLING_ARTIFACT_BUILDERS", "page=page-builder@1.0.0");
-        let refused = Config::parse(lookup(&vars));
+        let err = Config::parse(lookup(&vars)).unwrap_err();
         assert!(
-            matches!(&refused, Err(Error::InvalidConfig { key, reason })
+            matches!(&err, Error::InvalidConfig { key, reason }
                 if *key == "HATCHLING_ARTIFACT_BUILDERS" && reason.contains("HATCHLING_ARTIFACT_DIR")),
-            "{refused:?}"
+            "{err:?}"
         );
         vars.insert("HATCHLING_ARTIFACT_BUILDERS", " ");
         assert!(!Config::parse(lookup(&vars)).unwrap().artifacts.enabled());
