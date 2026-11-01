@@ -119,6 +119,9 @@ impl Store {
     pub const PROFILES: Self = Self("profiles");
     /// The sign-ins the broker fills for signed-in profiles (WO-030).
     pub const CREDENTIALS: Self = Self("credentials");
+    /// The owner's conversation with the agent, as the chat keeps it
+    /// (WO-026).
+    pub const CONVERSATION: Self = Self("conversation");
 
     /// The store's label.
     #[must_use]
@@ -138,6 +141,7 @@ impl Store {
             Self::SITES,
             Self::PROFILES,
             Self::CREDENTIALS,
+            Self::CONVERSATION,
         ]
         .into_iter()
         .find(|store| store.0 == label)

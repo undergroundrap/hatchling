@@ -209,6 +209,11 @@ impl Api {
         hub: Option<&LocalHub>,
     ) -> ! {
         let ops = Ops::new(config, key, skills, hub, Arc::clone(&self.bus));
+        // The conversation the chat resumes is shown first (WO-026).
+        let kept = hub.and_then(|_| crate::conversation_store::ConversationStore::of(config, key));
+        if let Some(store) = kept {
+            crate::conversation_store::show(&self.bus, crate::conversation_store::at_start(&store));
+        }
         // What the owner is asked to approve, and what they decided, go
         // out on this stream (WO-027).
         crate::approval_board::board(config).attach(Arc::clone(&self.bus));

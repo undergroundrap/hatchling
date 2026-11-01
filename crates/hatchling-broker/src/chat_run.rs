@@ -21,9 +21,11 @@
 //! exchanges ([`hatchling_core::conversation`]): the message it started
 //! a run for, and the answer, once the person was shown that answer as
 //! written. A failed run, a fixed sentence, and an answer the output gate
-//! blocked or replaced are never given back. The record is the broker's
-//! and lives in its memory: a run can't write to it, and a broker
-//! restart starts a new conversation.
+//! blocked or replaced are never given back. The record is the broker's:
+//! a run can't write to it. It lives in the broker's memory, and, when the
+//! operator gives it a store (`HATCHLING_CONVERSATION_DIR`), sealed there
+//! too ([`crate::conversation_store`]), so a broker restart resumes it.
+//! Without one, a restart starts a new conversation.
 //!
 //! The owner can start a new conversation from the app, which moves the
 //! local hub's conversation number on. The chat then forgets what it
@@ -39,6 +41,8 @@ use hatchling_core::conversation::{self, ChatExchange};
 use hatchling_channel::{ChannelId, LocalHub, Message};
 use hatchling_core::ScheduleGrant;
 use hatchling_scheduler::{Delivery, Launcher, Run, RunRequest, Timestamp};
+
+use crate::conversation_store::{self, ConversationStore, Resumed, SealedConversation};
 
 /// How often an idle chat looks for a message, and a running one for its
 /// answer.
@@ -76,9 +80,29 @@ pub enum Step {
     Undelivered,
 }
 
+/// Where the chat keeps the conversation beyond the broker's memory.
+pub trait Keeps {
+    /// Keeps `exchange`, the newest of the conversation `sent_in`, so that
+    /// its last `kept` exchanges are what a run is given.
+    fn keep(&self, sent_in: u64, exchange: &ChatExchange, kept: usize);
+}
+
+/// Nowhere: the conversation lives in the broker's memory alone.
+impl Keeps for () {
+    fn keep(&self, _: u64, _: &ChatExchange, _: usize) {}
+}
+
+impl<K: Keeps> Keeps for Option<K> {
+    fn keep(&self, sent_in: u64, exchange: &ChatExchange, kept: usize) {
+        if let Some(keeps) = self {
+            keeps.keep(sent_in, exchange, kept);
+        }
+    }
+}
+
 /// The chat's one run in flight, and the conversation so far.
 #[derive(Debug)]
-pub struct Chat<R> {
+pub struct Chat<R, K = ()> {
     /// The run in flight, the message it answers, and the conversation
     /// that message was sent in.
     running: Option<(R, String, u64)>,
@@ -87,17 +111,36 @@ pub struct Chat<R> {
     conversation: u64,
     /// The exchanges kept, oldest first: no more than a run is given.
     exchanges: Vec<ChatExchange>,
+    /// Where each exchange is kept beyond memory.
+    keeps: K,
 }
 
 impl<R: Run> Chat<R> {
-    /// A chat whose runs hold `grants`.
+    /// A chat whose runs hold `grants`, keeping the conversation in memory
+    /// alone.
     #[must_use]
     pub const fn new(grants: Vec<ScheduleGrant>) -> Self {
+        Self::resuming(grants, 0, Vec::new(), ())
+    }
+}
+
+impl<R: Run, K: Keeps> Chat<R, K> {
+    /// A chat whose runs hold `grants`, going on with `exchanges`, the
+    /// local channel's `conversation` so far, and keeping each exchange in
+    /// `keeps` too.
+    #[must_use]
+    pub const fn resuming(
+        grants: Vec<ScheduleGrant>,
+        conversation: u64,
+        exchanges: Vec<ChatExchange>,
+        keeps: K,
+    ) -> Self {
         Self {
             running: None,
             grants,
-            conversation: 0,
-            exchanges: Vec::new(),
+            conversation,
+            exchanges,
+            keeps,
         }
     }
 
@@ -110,15 +153,18 @@ impl<R: Run> Chat<R> {
     /// Keeps the exchange of `user` and `answer`, the person having been
     /// shown `answer` as written; the oldest goes past the bound.
     fn keep(&mut self, user: String, answer: String) {
-        self.exchanges.push(ChatExchange {
+        let exchange = ChatExchange {
             user,
             assistant: answer,
-        });
+        };
+        self.exchanges.push(exchange.clone());
         let over = self
             .exchanges
             .len()
             .saturating_sub(conversation::MAX_EXCHANGES);
         self.exchanges.drain(..over);
+        let kept = conversation::recent(&self.exchanges).len();
+        self.keeps.keep(self.conversation, &exchange, kept);
     }
 
     /// One step at `now`, in the local channel's `conversation`: a
@@ -226,7 +272,13 @@ pub fn chat_forever<'scope, 'env>(
 ) -> ! {
     let launcher = crate::CellLauncher::new(scope, config, key, env);
     let delivery = crate::schedule_ops::HubDelivery::new(Some(hub));
-    let mut chat = Chat::new(grants);
+    let store = ConversationStore::of(config, key);
+    let kept = match store.as_ref().map(conversation_store::at_start) {
+        Some(Resumed::Kept(kept)) => kept.clone(),
+        Some(Resumed::Unreadable) | None => Vec::new(),
+    };
+    let keeps = store.map(|store| SealedConversation::new(store, hub));
+    let mut chat = Chat::resuming(grants, hub.conversation(), kept, keeps);
     loop {
         let step = chat.step(
             || hub.take_in_conversation(),
@@ -318,8 +370,8 @@ mod tests {
     }
 
     /// Runs `text` to its end in `chat`: started, then answered.
-    fn exchange(
-        chat: &mut Chat<Scripted>,
+    fn exchange<K: Keeps>(
+        chat: &mut Chat<Scripted, K>,
         text: &str,
         launches: &Launches,
         answers: &Answers,
@@ -349,6 +401,81 @@ mod tests {
 
     fn turn(user: &str, assistant: &str) -> (String, String) {
         (user.to_owned(), assistant.to_owned())
+    }
+
+    /// Records each exchange kept beyond memory: its conversation, the
+    /// exchange, and how many a run is given.
+    #[derive(Default)]
+    struct Recorded(RefCell<Vec<Kept>>);
+
+    /// One exchange kept beyond memory: its conversation, the exchange,
+    /// and how many a run is given.
+    type Kept = (u64, (String, String), usize);
+
+    impl Keeps for &Recorded {
+        fn keep(&self, sent_in: u64, exchange: &ChatExchange, kept: usize) {
+            let turn = turn(&exchange.user, &exchange.assistant);
+            self.0.borrow_mut().push((sent_in, turn, kept));
+        }
+    }
+
+    /// WO-026: a chat resumed from what was kept gives its first run that,
+    /// and each exchange it keeps is kept beyond its memory too, with its
+    /// conversation and how many a run is given.
+    #[test]
+    fn a_resumed_chat_goes_on_and_keeps_each_exchange_beyond_memory() {
+        let launches = Launches::default();
+        let huge = "x".repeat(conversation::MAX_HISTORY_BYTES);
+        launches.outcomes.borrow_mut().extend([
+            Ok(answering("a1")),
+            Ok(answering("a2")),
+            Ok(answering(&huge)),
+        ]);
+        let answers = Answers::default();
+        let recorded = Recorded::default();
+        let kept = vec![ChatExchange {
+            user: String::from("q0"),
+            assistant: String::from("a0"),
+        }];
+        let mut chat = Chat::resuming(vec![send_local()], 2, kept, &recorded);
+        let now = Timestamp::now();
+        let mut ask = |text: &str| {
+            assert_eq!(
+                chat.step(|| Some((message(text), 2)), 2, &launches, &answers, now),
+                Step::Started
+            );
+            assert_eq!(
+                chat.step(|| None, 2, &launches, &answers, now),
+                Step::Answered
+            );
+        };
+        ask("q1");
+        // Replaced, it isn't kept anywhere.
+        answers.replace.set(true);
+        ask("q2");
+        answers.replace.set(false);
+        // Too big to give, it's kept, and a run is given nothing.
+        ask("q3");
+        assert_eq!(
+            histories(&launches),
+            [
+                vec![turn("q0", "a0")],
+                vec![turn("q0", "a0"), turn("q1", "a1")],
+                vec![turn("q0", "a0"), turn("q1", "a1")],
+            ]
+        );
+        assert_eq!(
+            *recorded.0.borrow(),
+            [(2, turn("q1", "a1"), 2), (2, turn("q3", &huge), 0)]
+        );
+        // Given no store, nothing is kept beyond memory.
+        let q4 = ChatExchange {
+            user: String::from("q4"),
+            assistant: String::from("a4"),
+        };
+        None::<&Recorded>.keep(5, &q4, 1);
+        Some(&recorded).keep(5, &q4, 1);
+        assert_eq!(recorded.0.borrow().len(), 3);
     }
 
     /// WO-026: a follow-up's run is given the exchange before it, as the

@@ -1,8 +1,9 @@
 #!/bin/bash
-# A new conversation, from the app (WO-026): a root broker, the scripted
-# turns model, the app's host, and scripts/conversation_end_to_end.py, which
-# talks to the agent in the app, starts a new conversation as the owner
-# would, and reads what the agent was given each turn.
+# The conversation, from the app (WO-026): a root broker keeping it sealed,
+# the scripted turns model, the app's host, and
+# scripts/conversation_end_to_end.py, which talks to the agent in the app and
+# reads what the agent was given each turn. The broker is restarted twice:
+# after the owner's first exchanges, and after a new conversation.
 #
 # Usage, as root, in a disposable PID namespace, from the clone:
 #   scripts/conversation_end_to_end.sh <app-python> <logs>
@@ -29,7 +30,7 @@ cleanup() {
 trap cleanup EXIT
 # Searchable, not readable: the vault keeper's user reaches the vault inside.
 chmod 711 "$home"
-mkdir -p -m 700 "$home"/{sock,vault,schedules}
+mkdir -p -m 700 "$home"/{sock,vault,schedules,conversation}
 export HATCHLING_BROKER_SOCKET=$home/sock/broker.sock
 export HATCHLING_AGENT_UID
 HATCHLING_AGENT_UID=$(id -u hatchling-cell)
@@ -41,6 +42,7 @@ export HATCHLING_OWNER_UID=0
 export HATCHLING_CELL_ID=cell-01
 export HATCHLING_VAULT_DIR=$home/vault
 export HATCHLING_SCHEDULER_DIR=$home/schedules
+export HATCHLING_CONVERSATION_DIR=$home/conversation
 export HATCHLING_CHANNEL_INGRESS=$home/ingress.sock
 export HATCHLING_API_SOCKET=$home/api.sock
 export HATCHLING_UI_SOCKET=$home/ui.sock
@@ -53,17 +55,39 @@ export HATCHLING_API_GRANTS=egress:localhost:18092,channel-send:local
 python3 scripts/turns_model.py 18092 2> "$logs/model.log" &
 model=$!
 hatchling-broker migrate-vault > "$logs/migrate.log" 2>&1
-hatchling-broker > "$logs/broker.log" 2>&1 &
-broker=$!
-for _ in $(seq 100); do [ -S "$HATCHLING_UI_SOCKET" ] && break; sleep 0.1; done
-[ -S "$HATCHLING_UI_SOCKET" ] || { echo "the broker didn't start"; cat "$logs/broker.log"; exit 1; }
-HATCHLING_HOST_UI=$PWD/frontend/dist hatchling-host > "$logs/host.log" 2>&1 &
-host=$!
 address=
-for _ in $(seq 100); do
-  address=$(grep -oE "http://127\.0\.0\.1:[0-9]+/#hatchling-ui=[0-9a-f]+" "$logs/host.log" | head -1 || true)
-  [ -n "$address" ] && break
-  sleep 0.1
-done
-[ -n "$address" ] || { echo "the host printed no address"; cat "$logs/host.log"; exit 1; }
-HATCHLING_E2E_SCREENSHOTS=$logs "$app_python" scripts/conversation_end_to_end.py "$address"
+# Starts the broker and the app's host, as start number $1: the host prints
+# the app's address with the token the broker minted at this start.
+start() {
+  rm -f "$HATCHLING_UI_SOCKET"
+  hatchling-broker > "$logs/broker-$1.log" 2>&1 &
+  broker=$!
+  for _ in $(seq 100); do [ -S "$HATCHLING_UI_SOCKET" ] && break; sleep 0.1; done
+  [ -S "$HATCHLING_UI_SOCKET" ] || { echo "the broker didn't start"; cat "$logs/broker-$1.log"; exit 1; }
+  HATCHLING_HOST_UI=$PWD/frontend/dist hatchling-host > "$logs/host-$1.log" 2>&1 &
+  host=$!
+  address=
+  for _ in $(seq 100); do
+    address=$(grep -oE "http://127\.0\.0\.1:[0-9]+/#hatchling-ui=[0-9a-f]+" "$logs/host-$1.log" | head -1 || true)
+    [ -n "$address" ] && break
+    sleep 0.1
+  done
+  [ -n "$address" ] || { echo "the host printed no address"; cat "$logs/host-$1.log"; exit 1; }
+}
+# Stops the host and the broker, and waits until each is gone.
+stop() {
+  kill "$host" "$broker"
+  wait "$host" "$broker" || true
+  host= broker=
+}
+phase() {
+  HATCHLING_E2E_SCREENSHOTS=$logs "$app_python" scripts/conversation_end_to_end.py "$address" "$1"
+}
+start 1
+phase talk
+stop
+start 2
+phase resumed
+stop
+start 3
+phase new

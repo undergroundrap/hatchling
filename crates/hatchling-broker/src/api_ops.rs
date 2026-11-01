@@ -47,6 +47,7 @@ use hatchling_vault::OpensStores;
 use crate::api_auth::Caller;
 use crate::api_stream::Bus;
 use crate::browser_board::{InputRefusal, OwnerAct};
+use crate::conversation_store::ConversationStore;
 use crate::schedule_ops::{held_grants, list_schedules};
 use crate::skills::Skills;
 use crate::{Config, handle_schedule_op, handle_skill_op};
@@ -534,7 +535,17 @@ impl Ops<'_> {
         let Ok(message_id) = crate::approval::random_hex("msg-") else {
             return refused(ActionRefusal::Unavailable);
         };
-        hub.new_conversation();
+        // What was kept is removed before the hub moves on, so a new
+        // conversation the owner is told started outlives a restart.
+        match ConversationStore::of(self.config, self.key) {
+            Some(store) => {
+                if let Err(error) = store.start_new(|| hub.new_conversation()) {
+                    tracing::error!(%error, "a new conversation couldn't start");
+                    return refused(ActionRefusal::Unavailable);
+                }
+            }
+            None => hub.new_conversation(),
+        }
         self.bus.push(
             Timestamp::now().to_string(),
             UiEventBody::ChatMessage(ChatMessage {
@@ -2179,6 +2190,54 @@ mod tests {
         assert_eq!(
             alone.handle(&owner, &new(LOCAL_CHAT), &mut replies),
             refused(ActionRefusal::Unavailable)
+        );
+    }
+
+    /// WO-026: with a store, what was kept is removed before the hub moves
+    /// on; one that can't be removed starts nothing, and the owner is told.
+    #[test]
+    fn a_new_conversation_removes_what_was_kept_first() {
+        let scratch = scratch("api-new-conversation");
+        let mut config = owner_config(Some("/srv/hatchling/schedules"));
+        config.goals.grants = Vec::new();
+        config.scheduler.conversation = scratch.0.join("conversation");
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());
+        let bus = Arc::new(Bus::starting_at(1));
+        let mut replies = Replies::default();
+        let new = UiAction::NewConversation {
+            chat_id: String::from(LOCAL_CHAT),
+        };
+        let owner = caller(&[local_send()]);
+        let store = ConversationStore::of(&config, &key).unwrap();
+        let q0 = hatchling_core::conversation::ChatExchange {
+            user: String::from("q0"),
+            assistant: String::from("a0"),
+        };
+        assert!(store.keep_if(|| true, &q0, 1).unwrap());
+        let ops = Ops::new(&config, &key, &skills, Some(&hub), Arc::clone(&bus));
+        assert_eq!(ops.handle(&owner, &new, &mut replies).1, ApiOutcome::Served);
+        assert_eq!(hub.conversation(), 1);
+        assert_eq!(store.resume().unwrap(), []);
+        let mut broken = config.clone();
+        std::fs::write(scratch.0.join("file"), b"").unwrap();
+        broken.scheduler.conversation = scratch.0.join("file").join("conversation");
+        let ops = Ops::new(&broken, &key, &skills, Some(&hub), Arc::clone(&bus));
+        let mut replies = Replies::default();
+        assert_eq!(
+            ops.handle(&owner, &new, &mut replies),
+            (
+                UiActionResult::Refused {
+                    reason: ActionRefusal::Unavailable
+                },
+                ApiOutcome::Refused
+            )
+        );
+        assert_eq!(hub.conversation(), 1);
+        assert_eq!(
+            chats(&bus),
+            [(ChatAuthor::System, String::from(NEW_CONVERSATION))]
         );
     }
 
