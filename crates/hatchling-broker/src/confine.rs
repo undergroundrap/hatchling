@@ -62,11 +62,10 @@ fn readable(config: &Config, get: impl Fn(&str) -> Option<String>) -> Result<Vec
             .filter(|path| !path.as_os_str().is_empty())
             .cloned(),
     );
-    paths.extend(
-        Harnesses::parse(config, &get)?
-            .roots()
-            .map(Path::to_path_buf),
-    );
+    let harnesses = Harnesses::parse(config, &get)?;
+    paths.extend(harnesses.roots().map(Path::to_path_buf));
+    // What a harness run reads again before it starts (WO-019).
+    paths.extend(harnesses.pinned_paths().map(Path::to_path_buf));
     if let Some(browser) = BrowserSettings::parse(&get)? {
         paths.push(browser.bundle().to_path_buf());
         paths.push(browser.controller().to_path_buf());
@@ -209,6 +208,18 @@ mod tests {
         ]);
         let read = readable(&config, |key| vars.get(key).cloned()).unwrap();
         assert!(read.contains(&project), "the project root");
+        // And what a run reads again: the harness's binary, its tools.
+        let tool = dir.0.join("tool");
+        std::fs::write(&tool, b"a tool").unwrap();
+        let mut vars = vars;
+        vars.insert(
+            "HATCHLING_HARNESS_CLAUDE_CODE_API",
+            String::from("local:localhost:8443"),
+        );
+        vars.insert("HATCHLING_HARNESS_TOOLS", tool.display().to_string());
+        let read = readable(&config, |key| vars.get(key).cloned()).unwrap();
+        assert!(read.contains(&pinned), "the harness binary");
+        assert!(read.contains(&tool), "its tool");
     }
 
     /// A path below a directory closed to this user is out of its reach;

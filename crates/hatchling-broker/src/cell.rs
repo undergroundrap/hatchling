@@ -491,7 +491,8 @@ pub struct HarnessNetwork {
     /// The unix socket, in the broker's private run directory, where the
     /// spawner hands the cell's relay listener to the broker.
     pub handoff: PathBuf,
-    /// Host programs the cell may run, and the name it sees each at.
+    /// The programs the cell may run, and the name it sees each at: the
+    /// broker's copies of the pinned tools (WO-019), and the Codex host's.
     pub tools: Vec<(PathBuf, String)>,
     /// The CLI's own environment: its relay URL, its surrogate key, its
     /// `PATH`, and its quiet settings.

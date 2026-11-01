@@ -443,6 +443,7 @@ impl Deployment {
 
     fn skills(&self) -> Result<Skills, String> {
         let harnesses = Harnesses::parse(&self.config, |key| self.vars.get(key).cloned())
+            .and_then(Harnesses::pin_tools)
             .map_err(|e| format!("harnesses: {e}"))?;
         let runtime = SkillRuntime::new(common::spawner());
         Ok(Skills::default()
@@ -606,6 +607,61 @@ fn a_hostile_harness_reaches_its_vendor_only_through_the_relay_and_only_with_its
             })
         );
     }
+    Ok(())
+}
+
+/// WO-019: a tool the operator named runs in its CLI cell, from a copy
+/// nothing there can write, and it's the only one there. Once its program
+/// changes on the host, the next run is refused before anything runs, and
+/// says which tool.
+#[test]
+fn a_pinned_tool_runs_in_its_cell_and_a_changed_one_refuses_the_run() -> Result<(), String> {
+    if !guard_cell_available()? {
+        return Ok(());
+    }
+    let kind = HarnessKind::ClaudeCode;
+    let vendor = MockVendor::start()?;
+    let mut deployment = Deployment::new(
+        "harness-cli-tools",
+        kind,
+        &harness_fixture_binary()?,
+        None,
+        &vendor,
+    )?;
+    let (tool, _) = pin(&deployment.dir, Path::new("/usr/bin/echo"), "echo")?;
+    deployment
+        .vars
+        .insert("HATCHLING_HARNESS_TOOLS", tool.clone());
+    let skills = deployment.skills()?;
+    let keys = |kind| Some(Zeroizing::new(String::from(vendor_key(kind))));
+    let task = format!("STUB run {tool} pinned\nSTUB overwrite {tool}\nSTUB probe /usr/bin/ls");
+    let report = invoke(&skills, kind, &task, &keys)?;
+    assert_eq!(report.get("outcome"), Some(&json!("done")), "{report}");
+    let said = text(&report, "/harness_said/message");
+    for line in [
+        format!("run {tool} pinned: 0 pinned"),
+        format!("overwrite {tool}: false"),
+        String::from("probe /usr/bin/ls: false"),
+    ] {
+        assert!(
+            said.lines().any(|said| said == line),
+            "{line} not in:\n{said}"
+        );
+    }
+    // Another program at its path: the run is refused, naming the tool.
+    std::fs::copy("/usr/bin/true", &tool).map_err(|e| format!("swap the tool: {e}"))?;
+    let report = invoke(&skills, kind, &task, &keys)?;
+    assert_eq!(report.get("outcome"), Some(&json!("refused")), "{report}");
+    assert_eq!(
+        text(&report, "/reason"),
+        format!(
+            "the tool {tool} is unreadable or not the program the broker started with: it is never substituted"
+        )
+    );
+    assert!(
+        text(&report, "/harness_said/message").is_empty(),
+        "{report}"
+    );
     Ok(())
 }
 

@@ -39,6 +39,13 @@
 //!   key stays in the vault (secret [`HarnessKind::secret_name`]), read by
 //!   the authority for the run's relay, never given to the cell or the
 //!   broker. A harness without an API runs offline, as before.
+//! - **Pinned tools** (WO-019). A CLI cell's tools are hashed when the
+//!   broker starts. Every CLI cell runs a copy of them, in a directory of
+//!   the broker's own, made at the first run that gets them from bytes
+//!   that still hash to their pins: a write to a tool's path never reaches
+//!   a cell. Before every such run, each tool is checked: one whose file
+//!   changed is hashed again, and if it's another program the run is
+//!   refused, saying which tool.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -386,6 +393,351 @@ const BINARY_REFUSED: &str =
 const HOST_REFUSED: &str =
     "the Codex host binary is unreadable or not the pinned one: it is never substituted";
 
+/// The most a tool may hold: a program, never a file that would fill the
+/// broker's memory as it's read.
+const MAX_TOOL_BYTES: u64 = 256 * 1024 * 1024;
+
+/// A program a CLI cell may run, as configured: its host path, and the
+/// name the cell sees it at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Tool {
+    path: PathBuf,
+    name: String,
+}
+
+/// What a tool's path named: the file, and when it last changed. The
+/// kernel sets a file's change time on every write to it, and only root
+/// can set it back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Seen {
+    dev: u64,
+    ino: u64,
+    size: u64,
+    ctime: (i64, i64),
+}
+
+impl Seen {
+    fn of(meta: &std::fs::Metadata) -> Self {
+        use std::os::unix::fs::MetadataExt as _;
+        Self {
+            dev: meta.dev(),
+            ino: meta.ino(),
+            size: meta.size(),
+            ctime: (meta.ctime(), meta.ctime_nsec()),
+        }
+    }
+}
+
+/// A tool as the broker pinned it: its SHA-256, and what its path named
+/// then.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PinnedTool {
+    tool: Tool,
+    sha256: String,
+    seen: Seen,
+}
+
+impl PinnedTool {
+    /// Whether the tool is still the program pinned. One whose path names
+    /// the file it did, unchanged since, is; any other is hashed again.
+    ///
+    /// # Errors
+    ///
+    /// What the run's report says, naming the tool, and the detail for
+    /// the broker's log: the tool is unreadable, or another program.
+    fn check(&self) -> Result<(), (String, String)> {
+        let path = &self.tool.path;
+        let unchanged = std::fs::metadata(path)
+            .is_ok_and(|meta| meta.is_file() && Seen::of(&meta) == self.seen);
+        if unchanged {
+            return Ok(());
+        }
+        let (bytes, _) = read_program(path).map_err(|detail| (self.refusal(), detail))?;
+        let actual = CodeHash::of(&bytes).to_string();
+        if actual == self.sha256 {
+            Ok(())
+        } else {
+            Err((self.refusal(), self.differs(&actual)))
+        }
+    }
+
+    /// What a run's report says when this tool isn't the program pinned.
+    fn refusal(&self) -> String {
+        format!(
+            "the tool {} is unreadable or not the program the broker started with: it is never substituted",
+            self.tool.path.display()
+        )
+    }
+
+    /// The broker log's detail when this tool hashes to `actual`.
+    fn differs(&self, actual: &str) -> String {
+        format!(
+            "the tool {}'s SHA-256 is {actual}, not the pinned {}",
+            self.tool.path.display(),
+            self.sha256
+        )
+    }
+}
+
+/// A CLI cell's tools, pinned when the broker starts, and the copy every
+/// CLI cell runs them from, made at the first run that gets them: by
+/// then the broker runs as its own user (WO-017), whose the copy must be.
+#[derive(Debug)]
+pub(crate) struct PinnedTools {
+    tools: Vec<PinnedTool>,
+    copy: std::sync::Mutex<Option<Arc<ToolCopy>>>,
+}
+
+impl PinnedTools {
+    /// Pins `tools`, reading each file once.
+    ///
+    /// # Errors
+    ///
+    /// A sentence for the operator: a tool can't be read.
+    fn take(tools: &[Tool]) -> Result<Self, String> {
+        let mut hashed: BTreeMap<(u64, u64), (Seen, String)> = BTreeMap::new();
+        let mut pinned = Vec::new();
+        for tool in tools {
+            let (file, meta) = open_program(&tool.path)?;
+            let seen = Seen::of(&meta);
+            let known = hashed
+                .get(&(seen.dev, seen.ino))
+                .filter(|(was, _)| *was == seen)
+                .map(|(_, sha256)| sha256.clone());
+            let sha256 = if let Some(sha256) = known {
+                sha256
+            } else {
+                let bytes = read_file(file, &tool.path, MAX_TOOL_BYTES)?;
+                let sha256 = CodeHash::of(&bytes).to_string();
+                hashed.insert((seen.dev, seen.ino), (seen, sha256.clone()));
+                sha256
+            };
+            pinned.push(PinnedTool {
+                tool: tool.clone(),
+                sha256,
+                seen,
+            });
+        }
+        Ok(Self {
+            tools: pinned,
+            copy: std::sync::Mutex::new(None),
+        })
+    }
+
+    /// Whether every tool is still the program pinned.
+    ///
+    /// # Errors
+    ///
+    /// As [`PinnedTool::check`], for the first tool that isn't.
+    fn check(&self) -> Result<(), (String, String)> {
+        self.tools.iter().try_for_each(PinnedTool::check)
+    }
+
+    /// The copy cells run the tools from: made the first time, and the
+    /// same one after.
+    ///
+    /// # Errors
+    ///
+    /// As [`ToolCopy::take`]: the next run tries again.
+    fn copy(&self) -> Result<Arc<ToolCopy>, ToolsRefused> {
+        let mut kept = self
+            .copy
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(copy) = kept.as_ref() {
+            return Ok(Arc::clone(copy));
+        }
+        let copy = Arc::new(ToolCopy::take(&self.tools)?);
+        *kept = Some(Arc::clone(&copy));
+        drop(kept);
+        Ok(copy)
+    }
+}
+
+/// Why a run wasn't given its tools.
+#[derive(Debug, PartialEq, Eq)]
+enum ToolsRefused {
+    /// The broker didn't pin them at its start.
+    Unpinned,
+    /// A tool changed or went: what the report says, and the detail for
+    /// the broker's log.
+    Changed(String, String),
+    /// Their copy couldn't be made: the broker's failure.
+    Failed(String),
+}
+
+/// The tools' copy: a directory of the broker's own, holding one file per
+/// program, read and execute only, and each other name the program has as
+/// a hard link to it. Removed when dropped. It's named as a staging
+/// directory, so one a broker leaves is the next one's sweep's.
+#[derive(Debug)]
+struct ToolCopy {
+    staging: PathBuf,
+    dir: PathBuf,
+    names: Vec<String>,
+}
+
+impl ToolCopy {
+    /// Copies `pinned`, each program from bytes that still hash to its pin.
+    ///
+    /// # Errors
+    ///
+    /// A tool that changed or went since it was pinned, or a copy that
+    /// can't be made.
+    fn take(pinned: &[PinnedTool]) -> Result<Self, ToolsRefused> {
+        let made = |error: std::io::Error| {
+            ToolsRefused::Failed(format!("cannot make the tools' copy: {error}"))
+        };
+        let random = crate::approval::random_hex("").map_err(made)?;
+        let staging = std::env::temp_dir().join(format!(
+            "hatchling-staging-{}-{}",
+            std::process::id(),
+            random.chars().take(32).collect::<String>()
+        ));
+        // Searchable by all, listed and written by the broker alone, as the
+        // browser's snapshot is: a cell's setup opens what it binds from
+        // here where the broker's user may not be mapped.
+        std::fs::DirBuilder::new()
+            .mode(0o711)
+            .create(&staging)
+            .map_err(made)?;
+        // Held from here: a failure below removes what was copied.
+        let copy = Self {
+            dir: staging.join("tools"),
+            staging,
+            names: pinned
+                .iter()
+                .map(|pinned| pinned.tool.name.clone())
+                .collect(),
+        };
+        set_mode(&copy.staging, 0o711).map_err(made)?;
+        std::fs::DirBuilder::new()
+            .mode(0o755)
+            .create(&copy.dir)
+            .map_err(made)?;
+        set_mode(&copy.dir, 0o755).map_err(made)?;
+        let mut copied: BTreeMap<&str, &str> = BTreeMap::new();
+        for pinned in pinned {
+            let name = pinned.tool.name.as_str();
+            if let Some(first) = copied.get(pinned.sha256.as_str()) {
+                copy.link(first, name).map_err(made)?;
+                continue;
+            }
+            let path = &pinned.tool.path;
+            let told = || pinned.refusal();
+            let (bytes, _) =
+                read_program(path).map_err(|detail| ToolsRefused::Changed(told(), detail))?;
+            let actual = CodeHash::of(&bytes).to_string();
+            if actual != pinned.sha256 {
+                return Err(ToolsRefused::Changed(told(), pinned.differs(&actual)));
+            }
+            copy.add(name, &bytes).map_err(made)?;
+            copied.insert(pinned.sha256.as_str(), name);
+        }
+        Ok(copy)
+    }
+
+    /// Writes `bytes` at `name` in the copy, read and execute only.
+    fn add(&self, name: &str, bytes: &[u8]) -> std::io::Result<()> {
+        use std::io::Write as _;
+        let path = self.place(name)?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o555)
+            .open(&path)?;
+        file.write_all(bytes)?;
+        set_mode(&path, 0o555)
+    }
+
+    /// Gives the program at `first` in the copy the name `name` too.
+    fn link(&self, first: &str, name: &str) -> std::io::Result<()> {
+        let path = self.place(name)?;
+        std::fs::hard_link(self.dir.join(first), path)
+    }
+
+    /// Where `name` goes in the copy, its directories made, each `0755`
+    /// whatever the umask.
+    fn place(&self, name: &str) -> std::io::Result<PathBuf> {
+        let mut dir = self.dir.clone();
+        let parts: Vec<_> = Path::new(name).components().collect();
+        for part in parts.iter().take(parts.len().saturating_sub(1)) {
+            dir.push(part);
+            match std::fs::DirBuilder::new().mode(0o755).create(&dir) {
+                Ok(()) => set_mode(&dir, 0o755)?,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(self.dir.join(name))
+    }
+
+    /// The tools a run's cell is given: each one's copy, at its own name.
+    /// Never a tool's host path.
+    fn for_cell(&self) -> Vec<(PathBuf, String)> {
+        self.names
+            .iter()
+            .map(|name| (self.dir.join(name), name.clone()))
+            .collect()
+    }
+}
+
+impl Drop for ToolCopy {
+    fn drop(&mut self) {
+        // Through `remove_tree`: nothing outside the copy goes.
+        let _ = hatchling_sys::remove_dir_tree(&self.staging);
+    }
+}
+
+/// Sets `path`'s mode, whatever the umask.
+fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+}
+
+/// The program at `path`, through its links (`/bin/sh` is one on most
+/// hosts), open to read, and what it is.
+///
+/// # Errors
+///
+/// Why it can't be: missing, or not a regular file.
+fn open_program(path: &Path) -> Result<(std::fs::File, std::fs::Metadata), String> {
+    let unreadable = |err: std::io::Error| format!("{} is unreadable: {err}", path.display());
+    let file = hatchling_sys::open_regular(path)
+        .map_err(unreadable)?
+        .ok_or_else(|| format!("{} is not a regular file", path.display()))?;
+    let meta = file.metadata().map_err(unreadable)?;
+    Ok((file, meta))
+}
+
+/// The program at `path`, as [`open_program`] opens it, read whole if it
+/// holds at most [`MAX_TOOL_BYTES`].
+///
+/// # Errors
+///
+/// As [`open_program`] and [`read_file`].
+fn read_program(path: &Path) -> Result<(Vec<u8>, Seen), String> {
+    let (file, meta) = open_program(path)?;
+    Ok((read_file(file, path, MAX_TOOL_BYTES)?, Seen::of(&meta)))
+}
+
+/// `file`, opened at `path`, if it holds at most `limit` bytes.
+///
+/// # Errors
+///
+/// It can't be read, or holds more.
+fn read_file(file: std::fs::File, path: &Path, limit: u64) -> Result<Vec<u8>, String> {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    file.take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|err| format!("{} is unreadable: {err}", path.display()))?;
+    if bytes.len() > usize::try_from(limit).unwrap_or(usize::MAX) {
+        return Err(format!("{} is more than {limit} bytes", path.display()));
+    }
+    Ok(bytes)
+}
+
 /// Up to `limit` bytes of the file at `path`, and whether it holds more.
 ///
 /// A file a cell wrote is never read whole: its size is the cell's to
@@ -428,7 +780,8 @@ fn read_regular(path: &Path) -> Result<Vec<u8>, String> {
 pub struct Harnesses {
     binaries: BTreeMap<HarnessKind, PinnedBinary>,
     vendors: BTreeMap<HarnessKind, Vendor>,
-    tools: Vec<(PathBuf, String)>,
+    tools: Vec<Tool>,
+    pinned: Option<Arc<PinnedTools>>,
     codex_host: Option<PinnedBinary>,
     granted: BTreeSet<HarnessKind>,
     roots: BTreeMap<String, PathBuf>,
@@ -549,6 +902,7 @@ impl Harnesses {
             binaries,
             vendors,
             tools,
+            pinned: None,
             codex_host,
             granted,
             roots,
@@ -572,6 +926,24 @@ impl Harnesses {
         self
     }
 
+    /// The same harnesses, their tools pinned: each file read once and
+    /// hashed (WO-019). The broker does this once, at its start. A run
+    /// checks each tool is still the program pinned, and its cell runs a
+    /// copy of them, made from bytes that hash to their pins.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidConfig`] naming `HATCHLING_HARNESS_TOOLS`, when a
+    /// tool can't be read.
+    pub fn pin_tools(mut self) -> Result<Self, Error> {
+        if !self.tools.is_empty() {
+            let pinned =
+                PinnedTools::take(&self.tools).map_err(|reason| invalid(TOOLS_KEY, reason))?;
+            self.pinned = Some(Arc::new(pinned));
+        }
+        Ok(self)
+    }
+
     /// Whether no harness is configured.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -589,9 +961,14 @@ impl Harnesses {
         self.roots.values().map(PathBuf::as_path)
     }
 
-    /// The host programs a CLI cell may run.
-    pub(crate) fn tools(&self) -> impl Iterator<Item = &Path> {
-        self.tools.iter().map(|(source, _)| source.as_path())
+    /// The host files a run reads again before it starts: each harness's
+    /// binary, the Codex host, and the tools.
+    pub(crate) fn pinned_paths(&self) -> impl Iterator<Item = &Path> {
+        self.binaries
+            .values()
+            .chain(&self.codex_host)
+            .map(|binary| binary.path.as_path())
+            .chain(self.tools.iter().map(|tool| tool.path.as_path()))
     }
 
     /// The vault secrets holding the keys of the vendors these harnesses
@@ -682,9 +1059,23 @@ impl Harnesses {
             Ok(host) => host,
             Err(reason) => return report.refused_for(HOST_REFUSED, &reason),
         };
+        let tools = match self.tools_for(kind) {
+            Ok(tools) => tools,
+            Err(ToolsRefused::Changed(told, detail)) => return report.refused_for(&told, &detail),
+            Err(ToolsRefused::Unpinned) => {
+                return report.failed("the harness's tools weren't pinned at start");
+            }
+            Err(ToolsRefused::Failed(reason)) => return report.failed(&reason),
+        };
         let (network, relaying) = match self.vendors.get(&kind) {
             None => (None, None),
-            Some(vendor) => match self.network(kind, vendor, keys, &scratch, host.as_ref()) {
+            Some(vendor) => match Self::network(
+                kind,
+                vendor,
+                keys,
+                &scratch,
+                (host.as_ref(), tools.as_deref()),
+            ) {
                 Ok((network, relaying)) => (Some(network), Some(relaying)),
                 Err(reason) => return report.refused(reason),
             },
@@ -772,22 +1163,41 @@ impl Harnesses {
             .map_err(|error| error.to_string())
     }
 
+    /// The copy of the pinned tools `kind`'s run is given, after checking
+    /// each is still the program pinned; none for a harness without a
+    /// network.
+    ///
+    /// # Errors
+    ///
+    /// The tools weren't pinned, one changed or went, or their copy
+    /// couldn't be made.
+    fn tools_for(&self, kind: HarnessKind) -> Result<Option<Arc<ToolCopy>>, ToolsRefused> {
+        if !self.vendors.contains_key(&kind) || self.tools.is_empty() {
+            return Ok(None);
+        }
+        let pinned = self.pinned.as_ref().ok_or(ToolsRefused::Unpinned)?;
+        pinned
+            .check()
+            .map_err(|(told, detail)| ToolsRefused::Changed(told, detail))?;
+        pinned.copy().map(Some)
+    }
+
     /// A real CLI's network for one run: a fresh surrogate, its relay
     /// made ready with its vendor key, the handoff socket in the run's own
-    /// directory, its tools, and its environment. The relay's parts come
-    /// back with it.
+    /// directory, its tools (the pinned tools' copies, and the Codex
+    /// host's), and its environment. The relay's parts come back
+    /// with it.
     ///
     /// The egress authority makes the relay ready, reading the key itself
     /// (WO-017, step 2), when one runs; in-process, with none, the broker
     /// reads it with `keys`. A run with no key is refused here, before its
     /// cell starts.
     fn network(
-        &self,
         kind: HarnessKind,
         vendor: &Vendor,
         keys: HarnessKeys<'_>,
         dirs: &RunDirs,
-        host: Option<&VerifiedCode>,
+        (host, tools): (Option<&VerifiedCode>, Option<&ToolCopy>),
     ) -> Result<(HarnessNetwork, Relaying), String> {
         // Set-up failures are the broker's, and their detail stays in its
         // log: the report says only that the network couldn't be made.
@@ -815,7 +1225,7 @@ impl Harnesses {
         let handoff_path = dirs.base.join("relay.sock");
         let handoff = UnixListener::bind(&handoff_path)
             .map_err(|error| unavailable("relay handoff", &error))?;
-        let mut tools = self.tools.clone();
+        let mut tools = tools.map_or_else(Vec::new, ToolCopy::for_cell);
         if let Some(host) = host {
             tools.push((host.dir().join(CODEX_HOST), String::from(CODEX_HOST)));
         }
@@ -1037,10 +1447,11 @@ fn parse_vendor(
     }))
 }
 
-/// A CLI cell's tools, each with the name the cell sees it at:
-/// those `raw` names, each an absolute path to a program, or else the
-/// defaults this host has. None for harnesses without a network.
-fn parse_tools(raw: Option<&str>, networked: bool) -> Result<Vec<(PathBuf, String)>, Error> {
+/// A CLI cell's tools, each with the name the cell sees it at: those
+/// `raw` names, each an absolute path to a program, or else the defaults
+/// this host has. None for harnesses without a network. They're pinned
+/// at the broker's start ([`Harnesses::pin_tools`]).
+fn parse_tools(raw: Option<&str>, networked: bool) -> Result<Vec<Tool>, Error> {
     let explicit = raw.map(str::trim).filter(|raw| !raw.is_empty());
     if !networked {
         return match explicit {
@@ -1060,7 +1471,7 @@ fn parse_tools(raw: Option<&str>, networked: bool) -> Result<Vec<(PathBuf, Strin
                 .collect()
         },
     );
-    let mut tools = Vec::new();
+    let mut tools: Vec<Tool> = Vec::new();
     for path in paths {
         let program = PathBuf::from(path);
         let plain = program.is_absolute()
@@ -1068,13 +1479,26 @@ fn parse_tools(raw: Option<&str>, networked: bool) -> Result<Vec<(PathBuf, Strin
                 .components()
                 .skip(1)
                 .all(|component| matches!(component, Component::Normal(_)));
-        if plain && std::fs::metadata(&program).is_ok_and(|meta| meta.is_file()) {
-            tools.push((program, path.trim_start_matches('/').to_owned()));
-        } else if explicit.is_some() {
-            return Err(invalid(
-                TOOLS_KEY,
-                format!("{path} is not an absolute path to a program"),
-            ));
+        let pinned = if plain {
+            open_program(&program).map(|_| Tool {
+                path: program,
+                name: path.trim_start_matches('/').to_owned(),
+            })
+        } else {
+            Err(format!("{path} is not an absolute path"))
+        };
+        match pinned {
+            Ok(tool) if tools.iter().any(|known| known.name == tool.name) => {
+                return Err(invalid(TOOLS_KEY, format!("{path} is named twice")));
+            }
+            Ok(tool) => tools.push(tool),
+            Err(reason) if explicit.is_some() => {
+                return Err(invalid(
+                    TOOLS_KEY,
+                    format!("{path} is not a program to run: {reason}"),
+                ));
+            }
+            Err(_) => {}
         }
     }
     Ok(tools)
@@ -2126,7 +2550,7 @@ mod tests {
             "the vendor key is not in the vault: store it as the secret harness-codex-cli"
         );
         assert!(Harnesses::default().vendors().is_empty());
-        assert_eq!(Harnesses::default().tools().count(), 0);
+        assert!(Harnesses::default().tools.is_empty());
     }
 
     #[test]
@@ -2274,31 +2698,301 @@ mod tests {
         );
         assert_eq!(
             parse_tools(Some(&format!(" ,{shown}, ")), true).unwrap(),
-            vec![(tool, shown.trim_start_matches('/').to_owned())]
+            vec![named(&tool)]
         );
-        for bad in [
-            String::from("bin/tool"),
-            format!("{}/../tool", scratch.join("bin").display()),
-            scratch.join("bin").display().to_string(),
-            scratch.join("missing").display().to_string(),
+        assert_eq!(
+            refusal(parse_tools(Some(&format!("{shown},{shown}")), true)),
+            (TOOLS_KEY, format!("{shown} is named twice"))
+        );
+        let fifo = scratch.join("fifo");
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            &fifo,
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::from_raw_mode(0o600),
+            0,
+        )
+        .unwrap();
+        for (bad, why) in [
+            (
+                String::from("bin/tool"),
+                String::from("bin/tool is not an absolute path"),
+            ),
+            (
+                format!("{}/../tool", scratch.join("bin").display()),
+                format!(
+                    "{}/../tool is not an absolute path",
+                    scratch.join("bin").display()
+                ),
+            ),
+            (
+                scratch.join("bin").display().to_string(),
+                format!("{} is not a regular file", scratch.join("bin").display()),
+            ),
+            // A FIFO is refused, not waited on.
+            (
+                fifo.display().to_string(),
+                format!("{} is not a regular file", fifo.display()),
+            ),
+            (
+                scratch.join("missing").display().to_string(),
+                format!("{} is unreadable: ", scratch.join("missing").display()),
+            ),
         ] {
-            assert_eq!(
-                refusal(parse_tools(Some(&bad), true)),
-                (
-                    TOOLS_KEY,
-                    format!("{bad} is not an absolute path to a program")
-                )
+            let (key, reason) = refusal(parse_tools(Some(&bad), true));
+            assert_eq!(key, TOOLS_KEY);
+            assert!(
+                reason.starts_with(&format!("{bad} is not a program to run: {why}")),
+                "{reason}"
             );
         }
         // The defaults: each one that is a program on this host, named by
         // its own path.
-        let expected: Vec<(PathBuf, String)> = DEFAULT_TOOLS
+        let expected: Vec<Tool> = DEFAULT_TOOLS
             .iter()
-            .filter(|path| Path::new(path).is_file())
-            .map(|path| (PathBuf::from(path), path.trim_start_matches('/').to_owned()))
+            .map(Path::new)
+            .filter(|path| path.is_file())
+            .map(named)
             .collect();
         assert!(!expected.is_empty());
         assert_eq!(parse_tools(None, true).unwrap(), expected);
+    }
+
+    /// `path`, as `parse_tools` names it.
+    fn named(path: &Path) -> Tool {
+        Tool {
+            path: path.to_path_buf(),
+            name: path
+                .display()
+                .to_string()
+                .trim_start_matches('/')
+                .to_owned(),
+        }
+    }
+
+    /// WO-019: a program is read through its links, and never past its
+    /// bound.
+    #[test]
+    fn a_program_is_read_through_its_links_within_its_bound() {
+        let scratch = Scratch::new("tool-read");
+        let path = scratch.write("tool", b"abc");
+        let link = scratch.join("link");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        let (bytes, seen) = read_program(&link).unwrap();
+        assert_eq!(bytes, b"abc");
+        assert_eq!(seen, Seen::of(&std::fs::metadata(&path).unwrap()));
+        let (file, _) = open_program(&path).unwrap();
+        assert_eq!(read_file(file, &path, 3).unwrap(), b"abc");
+        let (file, _) = open_program(&path).unwrap();
+        assert_eq!(
+            read_file(file, &path, 2).unwrap_err(),
+            format!("{} is more than 2 bytes", path.display())
+        );
+    }
+
+    /// WO-019: each program is pinned, and copied once: read and execute
+    /// only, with its other names hard links to it. The copy is what a cell
+    /// is given, never a host path, and it goes when dropped.
+    #[test]
+    fn the_tools_are_pinned_and_copied_once_per_program() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let scratch = Scratch::new("tool-pins");
+        let first = scratch.write("bin/first", b"one program");
+        let same = scratch.write("usr/bin/same", b"one program");
+        let linked = scratch.join("bin/linked");
+        std::fs::hard_link(&first, &linked).unwrap();
+        let other = scratch.write("usr/bin/other", b"another program");
+        let tools = [named(&first), named(&same), named(&linked), named(&other)];
+        let pinned = PinnedTools::take(&tools).unwrap();
+        let pins: Vec<_> = pinned
+            .tools
+            .iter()
+            .map(|pinned| (pinned.tool.clone(), pinned.sha256.clone()))
+            .collect();
+        let one = CodeHash::of(b"one program").to_string();
+        let another = CodeHash::of(b"another program").to_string();
+        let [first, same, linked, other] = &tools;
+        assert_eq!(
+            pins,
+            [
+                (first.clone(), one.clone()),
+                (same.clone(), one.clone()),
+                (linked.clone(), one),
+                (other.clone(), another)
+            ]
+        );
+        assert_eq!(pinned.check(), Ok(()));
+        let copy = pinned.copy().unwrap();
+        assert!(Arc::ptr_eq(&copy, &pinned.copy().unwrap()), "made once");
+        let at = |tool: &Tool| copy.dir.join(&tool.name);
+        assert_eq!(
+            copy.for_cell(),
+            tools
+                .iter()
+                .map(|tool| (at(tool), tool.name.clone()))
+                .collect::<Vec<_>>()
+        );
+        for (tool, bytes) in tools.iter().zip([
+            "one program",
+            "one program",
+            "one program",
+            "another program",
+        ]) {
+            assert_eq!(std::fs::read_to_string(at(tool)).unwrap(), bytes);
+            let mode = std::fs::metadata(at(tool)).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o555, "{}", tool.name);
+        }
+        let file = |tool: &Tool| std::fs::metadata(at(tool)).unwrap().ino();
+        assert_eq!(file(first), file(same), "one copy per program");
+        assert_eq!(file(first), file(linked), "one copy per program");
+        assert_ne!(file(first), file(other));
+        copy.link(&first.name, "more/names/first").unwrap();
+        assert_eq!(
+            std::fs::metadata(copy.dir.join("more/names/first"))
+                .unwrap()
+                .ino(),
+            file(first),
+            "a link is the same program"
+        );
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&copy.staging), 0o711);
+        assert_eq!(mode(&copy.dir), 0o755);
+        assert_eq!(
+            mode(at(same).parent().unwrap()),
+            0o755,
+            "a directory made for a tool"
+        );
+        let staging = copy.staging.clone();
+        drop(copy);
+        drop(pinned);
+        assert!(!staging.exists(), "the copy goes when dropped");
+    }
+
+    /// WO-019: a tool is given only while it's the program pinned. One
+    /// written over, or replaced, or gone, is refused, naming it, and only
+    /// the log hears its hashes; one written back as it was is fine. A
+    /// copy made once a tool changed is refused too, and one made before
+    /// keeps what was pinned.
+    #[test]
+    fn a_tool_is_given_only_while_it_is_the_program_pinned() {
+        let scratch = Scratch::new("tool-check");
+        let path = scratch.write("bin/tool", b"the program");
+        let tool = named(&path);
+        let pinned = PinnedTools::take(std::slice::from_ref(&tool)).unwrap();
+        let copy = pinned.copy().unwrap();
+        assert_eq!(pinned.check(), Ok(()));
+        let told = format!(
+            "the tool {} is unreadable or not the program the broker started with: it is never substituted",
+            path.display()
+        );
+        let differs = format!(
+            "the tool {}'s SHA-256 is {}, not the pinned {}",
+            path.display(),
+            CodeHash::of(b"another program"),
+            CodeHash::of(b"the program")
+        );
+        let pin = pinned.tools.first().unwrap();
+        assert_eq!(pin.refusal(), told);
+        assert_eq!(
+            pin.differs(&CodeHash::of(b"another program").to_string()),
+            differs
+        );
+        std::fs::write(&path, b"another program").unwrap();
+        assert_eq!(pinned.check(), Err((told.clone(), differs.clone())));
+        let later = PinnedTools::take(std::slice::from_ref(&tool)).unwrap();
+        let mut stale = later.tools;
+        if let Some(first) = stale.first_mut() {
+            first.sha256 = CodeHash::of(b"the program").to_string();
+        }
+        assert_eq!(
+            ToolCopy::take(&stale).unwrap_err(),
+            ToolsRefused::Changed(told.clone(), differs)
+        );
+        let in_copy = copy.dir.join(&tool.name);
+        assert_eq!(std::fs::read(&in_copy).unwrap(), b"the program");
+        std::fs::write(&path, b"the program").unwrap();
+        assert_eq!(pinned.check(), Ok(()), "the same program, written again");
+        let third = scratch.write("bin/third", b"a third program");
+        std::fs::rename(&third, &path).unwrap();
+        assert!(
+            matches!(pinned.check(), Err((said, _)) if said == told),
+            "replaced"
+        );
+        std::fs::remove_file(&path).unwrap();
+        let Err((said, detail)) = pinned.check() else {
+            unreachable!("a tool that's gone is refused")
+        };
+        assert_eq!(said, told);
+        assert!(
+            detail.starts_with(&format!("{} is unreadable: ", path.display())),
+            "{detail}"
+        );
+        assert_eq!(std::fs::read(&in_copy).unwrap(), b"the program");
+    }
+
+    /// WO-019: only a networked harness's run is given tools: the copy of
+    /// the pinned ones, after their check. Unpinned, it isn't run at all.
+    #[test]
+    fn a_networked_run_is_given_the_pinned_tools_once_checked() {
+        let scratch = Scratch::new("tools-for");
+        let config = config(&scratch);
+        let (binary, mut vars) = settings(&scratch);
+        let tool = scratch.write("bin/tool", b"tool");
+        vars.insert(
+            "HATCHLING_HARNESS_CLAUDE_CODE_API",
+            String::from("local:localhost:8443"),
+        );
+        vars.insert(TOOLS_KEY, tool.display().to_string());
+        let unpinned = parsed(&config, &vars).unwrap();
+        assert!(unpinned.pinned.is_none());
+        assert_eq!(
+            unpinned.tools_for(HarnessKind::ClaudeCode).unwrap_err(),
+            ToolsRefused::Unpinned
+        );
+        let harnesses = unpinned.pin_tools().unwrap();
+        assert!(
+            harnesses
+                .tools_for(HarnessKind::CodexCli)
+                .unwrap()
+                .is_none()
+        );
+        let given = harnesses
+            .tools_for(HarnessKind::ClaudeCode)
+            .unwrap()
+            .unwrap();
+        assert_eq!(given.names, [named(&tool).name]);
+        // What a run reads again before it starts: the binary, the tool.
+        assert_eq!(
+            harnesses.pinned_paths().collect::<Vec<_>>(),
+            [binary.path.as_path(), tool.as_path()]
+        );
+        // The cell's network carries the copy, never the host path.
+        let dirs = RunDirs::create().unwrap();
+        let vendor = harnesses.vendors.get(&HarnessKind::ClaudeCode).unwrap();
+        let keys = |_| Some(Zeroizing::new(String::from("vendor-key")));
+        let (network, relaying) = Harnesses::network(
+            HarnessKind::ClaudeCode,
+            vendor,
+            &keys,
+            &dirs,
+            (None, Some(&given)),
+        )
+        .unwrap();
+        assert_eq!(network.tools, given.for_cell());
+        assert_eq!(network.relay, RELAY_PORT);
+        drop(relaying);
+        std::fs::write(&tool, b"changed").unwrap();
+        assert!(matches!(
+            harnesses.tools_for(HarnessKind::ClaudeCode),
+            Err(ToolsRefused::Changed(told, _)) if told.starts_with(&format!("the tool {} is", tool.display()))
+        ));
+        std::fs::remove_file(&tool).unwrap();
+        assert_eq!(
+            refusal(parsed(&config, &vars).and_then(Harnesses::pin_tools)).0,
+            TOOLS_KEY
+        );
+        // No tools: nothing to pin.
+        assert!(Harnesses::default().pin_tools().unwrap().pinned.is_none());
     }
 
     #[test]
