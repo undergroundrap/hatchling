@@ -59,7 +59,7 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | [023](workorder-023-internal-destinations.md) | Refuse internal addresses for destinations that aren't declared internal | yes | DONE |
 | [024](workorder-024-two-guards-on-every-delete.md) | Two guards on every delete and signal | yes | DONE |
 | [025](workorder-025-durable-scheduled-runs.md) | Scheduled runs and their results survive a crash or a failed write | yes | DONE |
-| [026](workorder-026-conversation-continuity.md) | Conversation continuity: the broker keeps the chat, a cell can't write it | yes | IN-PROGRESS |
+| [026](workorder-026-conversation-continuity.md) | Conversation continuity: the broker keeps the chat, a cell can't write it | yes | DONE |
 | [027](workorder-027-approvals.md) | Approvals delivered to the owner: a frozen action, decided in the app, run by the broker | yes | DONE |
 | [028](workorder-028-web-search-and-site-approvals.md) | Web search through the broker, and each new site approved by the owner | yes | DONE |
 | [029](workorder-029-browser-cell.md) | A browser cell: a real browser the agent drives, in a cell of its own, reaching only what the broker lets through | yes | DONE |

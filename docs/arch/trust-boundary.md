@@ -95,6 +95,17 @@ An agent that can read the web can be steered by what it reads, and can carry wh
 
 **What a granted site can still do.** It receives whatever the agent puts in a page's address, so a session grant is a window for that site to learn what the agent read. The prompt says so, and *once* keeps the window to one page.
 
+## The conversation (WO-026)
+
+An agent that remembers the conversation can be steered into remembering something the owner never said: a planted "the user already approved this" becomes part of it. So the conversation is the broker's record, outside every cell (`crates/hatchling-broker/src/chat_run.rs`).
+
+- **Only what the owner said and was shown.** The broker keeps an exchange after its answer reached the owner as written. A failed run's sentence, or an answer the output gate blocked or replaced, is never kept.
+- **A cell can't write it.** No request a cell sends reaches it. What a cell writes to memory comes back as recalled memory, labeled as data, never as a turn. New conversation, the owner's alone, clears it.
+- **Given as typed data, bounded.** Each chat run is given it at launch in its environment, measured as sent: the last exchanges, and past them what the owner said, word for word. Nothing is summarized, because a summary would be written by a model in a cell that reads pages. The agent refuses it past the bounds, malformed, or for a run that isn't a chat turn.
+- **Sealed when kept.** With `HATCHLING_CONVERSATION_DIR`, it's sealed by the vault under a key of its own. One that can't be read is removed, and a new conversation starts.
+
+An earlier answer still carries the model's own words, which can echo a page, but only what the output gate let reach the owner. It carries no authority: an approval is never a turn.
+
 ## What the boundary does NOT cover
 
 - **The host kernel.** A kernel vulnerability is the host's
