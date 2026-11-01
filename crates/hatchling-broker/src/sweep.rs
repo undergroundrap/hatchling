@@ -26,6 +26,7 @@ use std::path::{Path, PathBuf};
 
 use hatchling_sys::{DirId, HeldLock, Removed};
 
+use crate::environment as env;
 use crate::output_gate::RedactionConfig;
 use crate::{Config, Error};
 
@@ -185,12 +186,46 @@ pub fn state_dirs(config: &Config, redaction: Option<&RedactionConfig>) -> Vec<P
         config.artifacts.root.clone(),
         config.spaces.root.clone(),
         config.scheduler.conversation.clone(),
+        config.web.grants.clone(),
+        config.web.profiles.clone(),
+        config.web.credentials.clone(),
     ];
     dirs.extend(config.artifacts.workspace.clone());
     dirs.extend(config.vault.key_file.parent().map(Path::to_path_buf));
     dirs.extend(redaction.map(|redaction| redaction.dir.clone()));
     dirs.retain(|dir| !dir.as_os_str().is_empty());
     dirs
+}
+
+/// The project roots `raw`, the operator's `HATCHLING_HARNESS_ROOTS`,
+/// names: every absolute path after a `=`. Read loosely, unchecked, since
+/// keeping more is safe and the sweep never fails: a setting the harness
+/// would refuse still keeps what it names.
+fn harness_roots(raw: Option<&str>) -> Vec<PathBuf> {
+    raw.unwrap_or_default()
+        .split(',')
+        .filter_map(|entry| entry.split_once('='))
+        .map(|(_, dir)| PathBuf::from(dir.trim()))
+        .filter(|dir| dir.is_absolute())
+        .collect()
+}
+
+/// What the sweep keeps whole: every state directory, and the project
+/// roots `harness` (`HATCHLING_HARNESS_ROOTS`) names.
+fn kept_dirs(
+    config: &Config,
+    redaction: Option<&RedactionConfig>,
+    harness: Option<&str>,
+) -> Vec<PathBuf> {
+    let mut dirs = state_dirs(config, redaction);
+    dirs.extend(harness_roots(harness));
+    dirs
+}
+
+/// [`kept_dirs`], with the project roots this process was given.
+fn kept(config: &Config, redaction: Option<&RedactionConfig>) -> Vec<PathBuf> {
+    let harness = std::env::var(env::HATCHLING_HARNESS_ROOTS.name).ok();
+    kept_dirs(config, redaction, harness.as_deref())
 }
 
 /// `config`'s run root, when scheduling is on.
@@ -262,7 +297,7 @@ fn sweep_in(
     staging_root: &Path,
 ) -> Vec<String> {
     let found = leftovers(staging_root, run_root(config).as_deref());
-    remove(&found, &state_dirs(config, redaction))
+    remove(&found, &kept(config, redaction))
 }
 
 /// `hatchling-broker clean [--dry-run]`: the startup sweep on demand,
@@ -299,7 +334,7 @@ fn clean_locked(config: &Config, staging_root: &Path, dry_run: bool) -> Result<S
         .as_ref()
         .map(|_| RedactionConfig::from_env(config))
         .transpose()?;
-    Ok(remove(&found, &state_dirs(config, redaction.as_ref())).join("\n"))
+    Ok(remove(&found, &kept(config, redaction.as_ref())).join("\n"))
 }
 
 /// Runs `hatchling-broker clean`, printing what it did.
@@ -682,6 +717,9 @@ mod tests {
         };
         config.artifacts.workspace = Some(dir.0.join("workspace"));
         config.scheduler.conversation = dir.0.join("conversation");
+        config.web.grants = dir.0.join("sites");
+        config.web.profiles = dir.0.join("profiles");
+        config.web.credentials = dir.0.join("sign-ins");
         let kept = state_dirs(&config, Some(&redaction));
         for expected in [
             &config.vault.root,
@@ -690,6 +728,9 @@ mod tests {
             &redaction.dir,
             &dir.0.join("workspace"),
             &dir.0.join("conversation"),
+            &dir.0.join("sites"),
+            &dir.0.join("profiles"),
+            &dir.0.join("sign-ins"),
         ] {
             assert!(kept.contains(expected), "{expected:?} in {kept:?}");
         }
@@ -702,5 +743,56 @@ mod tests {
         let lines = remove(&[vanished], &[]);
         assert!(lines.first().is_some_and(|line| line.ends_with(": in use")));
         assert_eq!(lines.last().unwrap(), "0 of 1 leftover(s) removed");
+    }
+
+    /// The always-allowed sites, or a project root, set inside a leftover
+    /// run's directory survive the sweep, and the rest of the run goes.
+    #[test]
+    fn a_web_store_or_a_project_root_inside_a_leftover_survives() {
+        let dir = scratch("sweep-web");
+        let mut config = config_in(&dir.0);
+        let (tmp, runs) = (dir.0.join("tmp"), config.scheduler.run_root());
+        let ran = runs.join(run("e5"));
+        let (sites, project) = (ran.join("sites"), ran.join("project"));
+        for kept in [&sites, &project] {
+            std::fs::create_dir_all(kept).unwrap();
+            std::fs::write(kept.join("item"), b"k").unwrap();
+        }
+        std::fs::write(ran.join("scratch"), b"s").unwrap();
+        config.web.grants = sites.clone();
+        let roots = format!("app={}", project.display());
+        let found = leftovers(&tmp, Some(&runs));
+        let lines = remove(&found, &kept_dirs(&config, None, Some(&roots)));
+        for kept in [&sites, &project] {
+            assert_eq!(std::fs::read(kept.join("item")).unwrap(), b"k", "{kept:?}");
+        }
+        assert!(!ran.join("scratch").exists());
+        assert_eq!(lines.last().unwrap(), "1 of 1 leftover(s) removed");
+    }
+
+    /// The project roots a harness may work in are kept whole too, as the
+    /// operator named them: every absolute path after a `=`.
+    #[test]
+    fn the_project_roots_a_harness_names_are_kept_too() {
+        let dir = scratch("sweep-roots");
+        let config = config_in(&dir.0);
+        let state = state_dirs(&config, None);
+        let roots = "app=/srv/projects/app, bad, site = /srv/projects/site ,x=relative";
+        let kept = kept_dirs(&config, None, Some(roots));
+        assert_eq!(kept.get(..state.len()).unwrap(), state);
+        assert_eq!(
+            kept.get(state.len()..).unwrap(),
+            [
+                PathBuf::from("/srv/projects/app"),
+                PathBuf::from("/srv/projects/site")
+            ]
+        );
+        assert_eq!(kept_dirs(&config, None, None), state);
+        assert!(harness_roots(Some("")).is_empty());
+        // Without HATCHLING_HARNESS_ROOTS set, as in this test's process,
+        // the sweep keeps the state directories.
+        if std::env::var_os("HATCHLING_HARNESS_ROOTS").is_none() {
+            assert_eq!(super::kept(&config, None), state);
+        }
     }
 }
