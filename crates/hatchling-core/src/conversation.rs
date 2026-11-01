@@ -12,14 +12,21 @@
 //! is never given back as context. What a run is given is bounded, by
 //! count ([`MAX_EXCHANGES`]) and size ([`MAX_HISTORY_BYTES`]), and only
 //! whole exchanges, newest kept.
+//!
+//! The size is measured as a run is sent it, escaped as JSON, where a
+//! control character takes six bytes. Measured as text, an answer the
+//! model was led to fill with them is kept, and its history is then too
+//! big for the agent to accept (or, past 128 KiB, for the kernel to
+//! pass): every run after it would fail until a new conversation.
 
 use serde::{Deserialize, Serialize};
 
 /// The most exchanges a chat run is given.
 pub const MAX_EXCHANGES: usize = 8;
 
-/// The most bytes of text, both sides of every exchange, a chat run is
-/// given: well within a model's context, beside the tools and the task.
+/// The most bytes, both sides of every exchange escaped as JSON, a chat
+/// run is given: well within a model's context, beside the tools and the
+/// task.
 pub const MAX_HISTORY_BYTES: usize = 24 * 1024;
 
 /// One exchange of the owner's conversation: a message and the answer the
@@ -34,11 +41,23 @@ pub struct ChatExchange {
 }
 
 impl ChatExchange {
-    /// Its text's size, both sides.
+    /// Its size as a run is sent it: both sides, escaped as JSON.
     #[must_use]
     pub fn bytes(&self) -> usize {
-        self.user.len().saturating_add(self.assistant.len())
+        escaped(&self.user).saturating_add(escaped(&self.assistant))
     }
+}
+
+/// The size of `text` in a JSON string, quotes aside: what `serde_json`
+/// writes for it.
+fn escaped(text: &str) -> usize {
+    text.chars()
+        .map(|c| match c {
+            '"' | '\\' | '\n' | '\r' | '\t' | '\u{8}' | '\u{c}' => 2,
+            '\0'..='\u{1f}' => 6,
+            _ => c.len_utf8(),
+        })
+        .fold(0, usize::saturating_add)
 }
 
 /// The newest of `exchanges` (oldest first) that fit the bounds.
@@ -101,6 +120,46 @@ mod tests {
     fn an_exchange_is_the_size_of_both_its_sides() {
         assert_eq!(exchange("four", "seven!!").bytes(), 11);
         assert_eq!(exchange("", "").bytes(), 0);
+        // As sent: escaped as JSON.
+        assert_eq!(exchange("a\"b", "\u{1}é").bytes(), 4 + 6 + 2);
+    }
+
+    /// Each character is measured as `serde_json` writes it.
+    #[test]
+    fn a_side_is_measured_as_json_writes_it() {
+        let chars = ('\0'..='\u{80}').chain(['é', '€', '\u{2028}', '😀']);
+        for c in chars {
+            let text = c.to_string();
+            let json = serde_json::to_string(&text).unwrap();
+            assert_eq!(escaped(&text), json.len() - 2, "{c:?}");
+        }
+    }
+
+    /// WO-026: a history of control characters, which a model can be led
+    /// to answer with, is bounded as it's sent, so the agent reads back
+    /// every history it's given, and the kernel can pass it.
+    #[test]
+    fn a_run_reads_back_whatever_it_is_given() {
+        let control = "\u{1}".repeat(MAX_HISTORY_BYTES / 3);
+        let newlines = "\n".repeat(MAX_HISTORY_BYTES / 2 - 100);
+        let conversation = [
+            exchange("Say it back.", &control),
+            exchange("Now newlines.", &newlines),
+            exchange("q", "a"),
+        ];
+        for start in 0..conversation.len() {
+            let given = recent(conversation.get(start..).unwrap());
+            let raw = serde_json::to_string(&given).unwrap();
+            assert_eq!(parse_history(&raw).unwrap(), given, "from {start}");
+            assert!(raw.len() < 128 * 1024 - "HATCHLING_RUN_HISTORY=".len());
+        }
+        // A third of the bound in control characters is two bounds as
+        // sent: it isn't given, and ends the history there. The newlines,
+        // twice their text as sent, still fit.
+        assert_eq!(
+            recent(&conversation),
+            conversation.get(1..).unwrap().to_vec()
+        );
     }
 
     #[test]

@@ -7,8 +7,8 @@
 //!   the owner as written. No session op reaches this store, so a cell
 //!   can't add to it, read it or clear it.
 //! - **Each side is an entry of its own,** raw. A side is at most
-//!   [`conversation::MAX_HISTORY_BYTES`], which fits one sealed entry; the
-//!   same text as JSON might not. The index says which exchanges are the
+//!   [`conversation::MAX_HISTORY_BYTES`] as a run is sent it, so less as
+//!   text, and fits one sealed entry. The index says which exchanges are the
 //!   conversation, and their sides live in [`SLOTS`] slots, one more than
 //!   a conversation holds, so a new exchange never overwrites one kept.
 //! - **A new conversation removes every slot,** whatever the index says,
@@ -471,15 +471,15 @@ mod tests {
         assert!(ConversationStore::of(&config, &key).is_none());
     }
 
-    /// What's kept comes back as the owner said it and was shown it, even
-    /// text that as JSON wouldn't fit one sealed entry.
+    /// What's kept comes back as the owner said it and was shown it,
+    /// control characters and all.
     #[test]
     fn the_conversation_kept_is_resumed_as_it_was() {
         let (config, _scratch, key) = kept("resume");
         let store = ConversationStore::of(&config, &key).unwrap();
         assert_eq!(store.resume().unwrap(), []);
-        // Each control character is six bytes as JSON.
-        let wide = "\u{1}".repeat(MAX_HISTORY_BYTES / 2 - 100);
+        // Each control character is six bytes as a run is sent it.
+        let wide = "\u{1}".repeat(MAX_HISTORY_BYTES / 12 - 100);
         let exchanges = [
             exchange("Remember the word heron.", "Noted."),
             exchange(&wide, &wide),
