@@ -493,6 +493,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A handoff names each store by its label, which names that store
+    /// back.
+    #[test]
+    fn every_store_is_named_by_its_label() {
+        for store in [
+            Store::SECRETS,
+            Store::SCHEDULES,
+            Store::ARTIFACTS,
+            Store::SPACES,
+            Store::REDACTIONS,
+            Store::SITES,
+            Store::PROFILES,
+            Store::CREDENTIALS,
+            Store::CONVERSATION,
+        ] {
+            assert_eq!(Store::from_label(store.label()), Some(store));
+        }
+        assert_eq!(Store::CONVERSATION.label(), "conversation");
+    }
+
     /// The reader's parts, called directly: a root is handed only when
     /// absolute and short enough, a byte is read until none is left, and
     /// each refusal says why.

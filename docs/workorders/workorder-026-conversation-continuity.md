@@ -21,8 +21,8 @@ Hatchling's version must keep the property the rest of the design has: a cell ca
   - The broker gives them as typed data (`HATCHLING_RUN_HISTORY`, a JSON array of `{user, assistant}`). The agent refuses any past the bounds, and any given to a run that isn't a chat turn.
   - The loop places them as user and assistant turns between the system prompt and the new message, before recalled memory and evidence.
 - **Next slices:**
-  - The conversation survives a broker restart, sealed by the vault like the schedules.
-  - A way to start a new conversation from the app.
+  - A way to start a new conversation from the app. *Done in part 2 (#258).*
+  - The conversation survives a broker restart, sealed by the vault like the schedules, and the app shows it after one. *Part 3.*
   - Compaction past the bounds (`hatchling-memory`'s `compact`), keeping decisions and corrections verbatim.
   - Turn ids, so a redelivered message isn't kept twice.
 
@@ -40,7 +40,7 @@ Hatchling's version must keep the property the rest of the design has: a cell ca
 - [ ] The agent refuses history past the bounds, malformed, or given to a run that isn't a chat turn; tested.
 - [ ] The model sees the prior exchanges in their own roles, before the new message; tested in the loop.
 - [ ] A cell has no way to add to the conversation: no request writes it, and what it writes elsewhere (a note, a memory) never comes back as a turn.
-- [ ] Later slices: the conversation survives a restart, sealed; a correction made two turns back survives a new cell and a compaction.
+- [ ] Later slices: the owner starts a new conversation from the app, and the next run is given nothing said before it (part 2); the conversation survives a restart, sealed, and the app shows what the agent is still given (part 3); a correction made two turns back survives a new cell and a compaction.
 
 ## Gates
 
@@ -54,4 +54,7 @@ Filled in at close.
 
 - **Why the environment, not a request over the cell's connection.** The broker writes it once, at launch, before any of the cell's code runs. The agent reads it as typed data. There is no request a cell could send to change it, and nothing to keep in sync. A run that isn't a chat turn is never given one, and the agent refuses one if it is.
 - **What the model is told.** Prior assistant turns are the model's own earlier words, as the owner saw them. They can echo text that came from a tool or a page, but only text the output gate let reach the owner. They carry no authority: an approval is never a turn.
-- **Kept in memory for now.** A broker restart starts a new conversation. Persisting it means a sealed store like the schedules', in the next slice. Until then the transcript never touches disk.
+- **Kept on disk only when the operator says (part 3).** With `HATCHLING_CONVERSATION_DIR` set, the conversation is sealed in a store of its own (`conversation`), under its own key, which the keeper hands the broker like the schedules'. Without it, a broker restart starts a new conversation, and the transcript never touches disk.
+- **What's on disk is what a run is given:** the exchanges within the bounds, nothing more. Each side is an entry of its own, raw, because 24 KiB of text can be more than a sealed entry's 32 KiB as JSON. An index names the exchanges; their sides live in nine slots, one more than a conversation holds, so a new exchange never overwrites one still kept, and a keep the broker didn't finish leaves its sides in the one slot the index says is next, which the next start removes.
+- **A new conversation is durable when the owner is told.** The API removes every slot, whatever the index says, and only then moves the hub on, with the store locked. The chat keeps an exchange only if, with the store locked, the hub's conversation is still the one its message was sent in.
+- **After a restart, the owner sees what the agent is given.** The store is read once, at the broker's start: the chat resumes it, and the app is shown each exchange under Hatchling's notice. One that can't be read (another key, a changed file) is removed, the broker's log says why, and the app says a new conversation started.

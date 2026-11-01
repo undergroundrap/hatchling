@@ -199,6 +199,11 @@ pub struct SchedulerConfig {
     /// child's scoped configuration sets it, and a session at
     /// [`hatchling_core::subagent::MAX_DEPTH`] spawns nothing.
     pub subagent_depth: u8,
+    /// Where the chat keeps the owner's conversation
+    /// (`HATCHLING_CONVERSATION_DIR`, a sealed store, WO-026); empty, and
+    /// it is kept in the broker's memory alone, so a restart starts a new
+    /// one. A run's own session never has it.
+    pub conversation: PathBuf,
 }
 
 /// A run session's follow-up scope: the one scheduler surface a run's
@@ -230,6 +235,7 @@ impl SchedulerConfig {
             agent_bin: None,
             followup: None,
             subagent_depth: 0,
+            conversation: PathBuf::new(),
         }
     }
 
@@ -1053,6 +1059,13 @@ fn parse_stores(
         socket_dir,
         &[&scheduler.root, &artifacts.root],
     )?;
+    scheduler.conversation = parse_conversation(
+        get(env::HATCHLING_CONVERSATION_DIR.name).as_deref(),
+        &scheduler,
+        vault_root,
+        socket_dir,
+        &[&artifacts.root, &spaces.root],
+    )?;
     Ok((
         parse_memory(
             get(env::HATCHLING_MEMORY_DIR.name),
@@ -1349,7 +1362,63 @@ fn parse_scheduler(
         agent_bin: None,
         followup: None,
         subagent_depth: 0,
+        conversation: PathBuf::new(),
     })
+}
+
+/// Parses the conversation store's root (WO-026).
+///
+/// Unset or empty means none: the chat keeps the conversation in memory.
+/// Otherwise it needs scheduling on (a chat message is a run), and must be
+/// absolute, apart from the vault root, the schedule store and its runs,
+/// and every other configured store in `stores`, and out of the broker
+/// socket directory the cell mounts.
+fn parse_conversation(
+    raw: Option<&str>,
+    scheduler: &SchedulerConfig,
+    vault_root: &Path,
+    socket_dir: Option<&Path>,
+    stores: &[&Path],
+) -> Result<PathBuf, Error> {
+    let Some(raw) = raw.map(str::trim).filter(|raw| !raw.is_empty()) else {
+        return Ok(PathBuf::new());
+    };
+    let invalid = |reason: String| Error::InvalidConfig {
+        key: "HATCHLING_CONVERSATION_DIR",
+        reason,
+    };
+    if !scheduler.enabled() {
+        return Err(invalid(String::from(
+            "the chat runs on the scheduler: set HATCHLING_SCHEDULER_DIR",
+        )));
+    }
+    let root = PathBuf::from(raw);
+    if !root.is_absolute() {
+        return Err(invalid(format!(
+            "must be an absolute path: {}",
+            root.display()
+        )));
+    }
+    let runs = scheduler.run_root();
+    let other = [vault_root, scheduler.root.as_path(), runs.as_path()]
+        .into_iter()
+        .chain(stores.iter().copied())
+        .filter(|other| !other.as_os_str().is_empty())
+        .find(|other| overlaps(&root, other));
+    if let Some(other) = other {
+        return Err(invalid(format!(
+            "{} overlaps another store at {}",
+            root.display(),
+            other.display()
+        )));
+    }
+    if socket_dir.is_some_and(|socket_dir| root.starts_with(socket_dir)) {
+        return Err(invalid(format!(
+            "{} is inside the broker socket directory, which the cell mounts",
+            root.display()
+        )));
+    }
+    Ok(root)
 }
 
 fn parse_goals(dir: Option<String>, grants_raw: Option<String>) -> Result<GoalsConfig, Error> {
@@ -2285,6 +2354,114 @@ mod tests {
                 ("HATCHLING_DEVICE_SOCKET", socket),
             ]);
         }
+    }
+
+    /// WO-026: the conversation's store is off unless set, needs the
+    /// scheduler, and is kept apart from every other store and the cell.
+    #[test]
+    fn the_conversation_store_is_placed_apart() {
+        let parsed = |pairs: &[(&'static str, &'static str)]| {
+            let mut vars = valid_vars();
+            vars.insert("HATCHLING_SCHEDULER_DIR", "/srv/hatchling/schedules");
+            vars.extend(pairs.iter().copied());
+            Config::parse(lookup(&vars))
+        };
+        let conversation =
+            |pairs: &[(&'static str, &'static str)]| parsed(pairs).unwrap().scheduler.conversation;
+        assert_eq!(conversation(&[]), PathBuf::new());
+        assert_eq!(
+            conversation(&[("HATCHLING_CONVERSATION_DIR", " ")]),
+            PathBuf::new()
+        );
+        assert_eq!(
+            conversation(&[(
+                "HATCHLING_CONVERSATION_DIR",
+                " /srv/hatchling/conversation "
+            )]),
+            PathBuf::from("/srv/hatchling/conversation")
+        );
+        let refused = |pairs: &[(&'static str, &'static str)]| {
+            let result = parsed(pairs);
+            assert!(
+                matches!(
+                    &result,
+                    Err(Error::InvalidConfig {
+                        key: "HATCHLING_CONVERSATION_DIR",
+                        ..
+                    })
+                ),
+                "{pairs:?} gave {:?}",
+                result.err()
+            );
+        };
+        refused(&[("HATCHLING_CONVERSATION_DIR", "conversation")]);
+        // Inside the vault, the socket directory, the schedules or their
+        // runs, or holding one of them.
+        for dir in [
+            "/tmp/hatchling-test/vault/c",
+            "/tmp/hatchling-test/c",
+            "/srv/hatchling/schedules/c",
+            "/srv/hatchling/schedules.runs/c",
+            "/srv",
+        ] {
+            refused(&[("HATCHLING_CONVERSATION_DIR", dir)]);
+        }
+        // Overlapping the build store or the spaces, either way.
+        for (store, dir) in [
+            ("HATCHLING_ARTIFACT_DIR", "/srv/hatchling/c/artifacts"),
+            ("HATCHLING_ARTIFACT_DIR", "/srv/hatchling/c"),
+            ("HATCHLING_SPACE_DIR", "/srv/hatchling/c/spaces"),
+            ("HATCHLING_SPACE_DIR", "/srv/hatchling/c"),
+        ] {
+            refused(&[
+                ("HATCHLING_CONVERSATION_DIR", "/srv/hatchling/c"),
+                (store, dir),
+            ]);
+        }
+        // Read here, as parsing reads it.
+        let scheduler = SchedulerConfig {
+            root: PathBuf::from("/srv/hatchling/schedules"),
+            ..SchedulerConfig::disabled()
+        };
+        let stores = [Path::new("/srv/hatchling/artifacts")];
+        let vault = Path::new("/tmp/hatchling-test/vault");
+        assert_eq!(
+            parse_conversation(Some("/srv/hatchling/c"), &scheduler, vault, None, &stores).unwrap(),
+            PathBuf::from("/srv/hatchling/c")
+        );
+        assert!(
+            parse_conversation(
+                Some("/srv/hatchling/artifacts/c"),
+                &scheduler,
+                vault,
+                None,
+                &stores
+            )
+            .is_err()
+        );
+        assert!(
+            parse_conversation(
+                Some("/srv/hatchling/c"),
+                &SchedulerConfig::disabled(),
+                vault,
+                None,
+                &stores
+            )
+            .is_err()
+        );
+        // Without the scheduler there is no chat to keep.
+        let mut vars = valid_vars();
+        vars.insert("HATCHLING_CONVERSATION_DIR", "/srv/hatchling/conversation");
+        let result = Config::parse(lookup(&vars));
+        assert!(
+            matches!(
+                &result,
+                Err(Error::InvalidConfig { key: "HATCHLING_CONVERSATION_DIR", reason })
+                    if reason.contains("HATCHLING_SCHEDULER_DIR")
+            ),
+            "{:?}",
+            result.err()
+        );
     }
 
     #[test]

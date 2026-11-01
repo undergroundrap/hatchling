@@ -184,6 +184,7 @@ pub fn state_dirs(config: &Config, redaction: Option<&RedactionConfig>) -> Vec<P
         config.scheduler.root.clone(),
         config.artifacts.root.clone(),
         config.spaces.root.clone(),
+        config.scheduler.conversation.clone(),
     ];
     dirs.extend(config.artifacts.workspace.clone());
     dirs.extend(config.vault.key_file.parent().map(Path::to_path_buf));
@@ -680,6 +681,7 @@ mod tests {
             builtins: crate::output_gate::Builtins::ALL,
         };
         config.artifacts.workspace = Some(dir.0.join("workspace"));
+        config.scheduler.conversation = dir.0.join("conversation");
         let kept = state_dirs(&config, Some(&redaction));
         for expected in [
             &config.vault.root,
@@ -687,6 +689,7 @@ mod tests {
             &config.scheduler.root,
             &redaction.dir,
             &dir.0.join("workspace"),
+            &dir.0.join("conversation"),
         ] {
             assert!(kept.contains(expected), "{expected:?} in {kept:?}");
         }

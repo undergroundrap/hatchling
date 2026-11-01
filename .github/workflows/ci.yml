@@ -334,7 +334,7 @@ jobs:
         run: |
           sudo env "PATH=$PATH" "PLAYWRIGHT_BROWSERS_PATH=$HOME/.cache/ms-playwright"             unshare --mount --pid --fork --kill-child --mount-proc             scripts/chat_build_end_to_end.sh "$RUNNER_TEMP/app-venv/bin/python" "$RUNNER_TEMP/chat-build-e2e"
 
-      - name: Start a new conversation from the app
+      - name: Keep the conversation across restarts, and start a new one, from the app
         run: |
           sudo env "PATH=$PATH" "PLAYWRIGHT_BROWSERS_PATH=$HOME/.cache/ms-playwright"             unshare --mount --pid --fork --kill-child --mount-proc             scripts/conversation_end_to_end.sh "$RUNNER_TEMP/app-venv/bin/python" "$RUNNER_TEMP/conversation-e2e"
 
