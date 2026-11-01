@@ -147,6 +147,7 @@ export class LiveApprovals implements TaskApprovalPort {
             case 'refused':
                 return rejected(REFUSALS[result.reason]);
             case 'message_accepted':
+            case 'conversation_started':
             case 'schedule':
             case 'sites':
             case 'skill':

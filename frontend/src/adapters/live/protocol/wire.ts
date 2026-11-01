@@ -377,6 +377,10 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "string"
             },
             {
+                "const": "new_conversation",
+                "type": "string"
+            },
+            {
                 "const": "decide",
                 "type": "string"
             },
@@ -2849,6 +2853,22 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             {
                 "properties": {
                     "action": {
+                        "const": "new_conversation",
+                        "type": "string"
+                    },
+                    "chat_id": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "action",
+                    "chat_id"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
                         "const": "decide",
                         "type": "string"
                     },
@@ -3202,6 +3222,22 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "required": [
                     "result",
                     "message_id"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "chat_id": {
+                        "type": "string"
+                    },
+                    "result": {
+                        "const": "conversation_started",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "chat_id"
                 ],
                 "type": "object"
             },

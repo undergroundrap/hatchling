@@ -109,6 +109,7 @@ const REQUESTS: Readonly<Record<ApiRequest, string>> = {
     hello: 'Connected',
     subscribe: 'Followed the activity',
     send_message: 'Sent a message',
+    new_conversation: 'Started a new conversation',
     decide: 'Answered a request',
     manage_sites: 'Managed the sites the agent is always allowed to read',
     manage_schedule: 'Changed a schedule',

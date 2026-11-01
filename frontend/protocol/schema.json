@@ -547,6 +547,11 @@
           "type": "string"
         },
         {
+          "const": "new_conversation",
+          "description": "[`UiAction::NewConversation`].",
+          "type": "string"
+        },
+        {
           "const": "decide",
           "description": "[`UiAction::Decide`].",
           "type": "string"
@@ -9281,6 +9286,24 @@
           "type": "object"
         },
         {
+          "description": "Start a new conversation in a chat (WO-026): the agent is given\nnothing said before it.",
+          "properties": {
+            "action": {
+              "const": "new_conversation",
+              "type": "string"
+            },
+            "chat_id": {
+              "description": "The chat.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "chat_id"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Approve or deny a confirmation, at the revision and the action\ndigest the user saw.",
           "properties": {
             "action": {
@@ -9693,6 +9716,24 @@
           "required": [
             "result",
             "message_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A new conversation started in the chat (WO-026).",
+          "properties": {
+            "chat_id": {
+              "description": "The chat.",
+              "type": "string"
+            },
+            "result": {
+              "const": "conversation_started",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "chat_id"
           ],
           "type": "object"
         },

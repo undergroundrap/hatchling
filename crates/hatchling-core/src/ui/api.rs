@@ -57,6 +57,8 @@ pub enum ApiRequest {
     Subscribe,
     /// [`UiAction::SendMessage`].
     SendMessage,
+    /// [`UiAction::NewConversation`].
+    NewConversation,
     /// [`UiAction::Decide`].
     Decide,
     /// [`UiAction::ManageSchedule`].
@@ -109,6 +111,7 @@ impl ApiRequest {
     pub const fn of_action(action: &UiAction) -> Self {
         match action {
             UiAction::SendMessage { .. } => Self::SendMessage,
+            UiAction::NewConversation { .. } => Self::NewConversation,
             UiAction::Decide { .. } => Self::Decide,
             UiAction::ManageSchedule { .. } => Self::ManageSchedule,
             UiAction::ManageSites { .. } => Self::ManageSites,
@@ -191,6 +194,10 @@ mod tests {
                     text: id(),
                 }),
                 ApiRequest::SendMessage,
+            ),
+            (
+                action(UiAction::NewConversation { chat_id: id() }),
+                ApiRequest::NewConversation,
             ),
             (
                 action(UiAction::Decide {

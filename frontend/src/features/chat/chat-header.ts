@@ -38,6 +38,18 @@ export function renderChatHeader(ctx: AppContext, chat: DeepReadonly<Chat> | und
         toggle.dataset['tooltip'] = breadcrumb.label;
     toggle.addEventListener('click', () => setChatNavigationOpen(ctx, !ctx.ui.navOpen, true));
     group.append(toggle);
+    // The owner's reset of what the agent is given: the messages stay, the agent forgets them.
+    const port = ctx.conversations;
+    if (port && chat && !browserOpen && !chat.archived && chat.channelId === null) {
+        const fresh = iconButton('plus', 'New conversation', () => {
+            void port.start(chat.id).then(result => {
+                if (!result.ok)
+                    ctx.toast(result.message, true);
+            });
+        }, 'conversation-new');
+        fresh.id = 'chat-new-conversation';
+        group.append(fresh);
+    }
     header.append(group);
     return header;
 }

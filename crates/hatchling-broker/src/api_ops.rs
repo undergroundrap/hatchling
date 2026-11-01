@@ -159,6 +159,12 @@ impl<'a> Ops<'a> {
                 }
                 self.send(chat_id, text, replies)
             }
+            UiAction::NewConversation { chat_id } => {
+                if !owns {
+                    return refused(ActionRefusal::NotGranted);
+                }
+                self.new_conversation(chat_id)
+            }
             UiAction::InvokeSkill { op } => {
                 if !owns {
                     return refused(ActionRefusal::NotGranted);
@@ -512,6 +518,44 @@ impl<'a> Ops<'a> {
         }
     }
 }
+
+impl Ops<'_> {
+    /// Starts a new conversation on the local channel (WO-026): the next
+    /// run is given nothing said before it. Every app is told, in
+    /// Hatchling's words, where the new one starts.
+    fn new_conversation(&self, chat_id: &str) -> (UiActionResult, ApiOutcome) {
+        let refused = |reason| (UiActionResult::Refused { reason }, ApiOutcome::Refused);
+        if chat_id != LOCAL_CHAT {
+            return refused(ActionRefusal::BadRequest);
+        }
+        let Some(hub) = self.hub else {
+            return refused(ActionRefusal::Unavailable);
+        };
+        let Ok(message_id) = crate::approval::random_hex("msg-") else {
+            return refused(ActionRefusal::Unavailable);
+        };
+        hub.new_conversation();
+        self.bus.push(
+            Timestamp::now().to_string(),
+            UiEventBody::ChatMessage(ChatMessage {
+                chat_id: String::from(LOCAL_CHAT),
+                message_id,
+                author: ChatAuthor::System,
+                text: String::from(NEW_CONVERSATION),
+            }),
+        );
+        (
+            UiActionResult::ConversationStarted {
+                chat_id: String::from(LOCAL_CHAT),
+            },
+            ApiOutcome::Served,
+        )
+    }
+}
+
+/// What the app shows where a new conversation starts.
+pub const NEW_CONVERSATION: &str =
+    "New conversation. The agent isn't given anything said before this.";
 
 /// The grants a schedule op needs the caller to hold: a create's own, a
 /// feed's derived ones, and for a cancel or a follow-up the owner's
@@ -2082,6 +2126,60 @@ mod tests {
         );
         let shown = format!("{:?}", Replies::default());
         assert!(shown.contains("attached: false"));
+    }
+
+    #[test]
+    fn only_the_owner_starts_a_new_conversation_and_every_app_is_told() {
+        let mut config = owner_config(Some("/srv/hatchling/schedules"));
+        config.goals.grants = Vec::new();
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());
+        let bus = Arc::new(Bus::starting_at(1));
+        let ops = Ops::new(&config, &key, &skills, Some(&hub), Arc::clone(&bus));
+        let mut replies = Replies::default();
+        let new = |chat: &str| UiAction::NewConversation {
+            chat_id: chat.to_owned(),
+        };
+        let refused = |reason| (UiActionResult::Refused { reason }, ApiOutcome::Refused);
+        // A caller holding less than the owner's grants can't.
+        let other = caller(&[ScheduleGrant::ChannelSend {
+            channel: String::from("elsewhere"),
+        }]);
+        assert_eq!(
+            ops.handle(&other, &new(LOCAL_CHAT), &mut replies),
+            refused(ActionRefusal::NotGranted)
+        );
+        // Nor in a chat that isn't the local one.
+        let owner = caller(&[local_send()]);
+        assert_eq!(
+            ops.handle(&owner, &new("main"), &mut replies),
+            refused(ActionRefusal::BadRequest)
+        );
+        assert_eq!(hub.conversation(), 0);
+        assert!(chats(&bus).is_empty());
+        // The owner can: the hub's conversation moves on, and the app is
+        // told in Hatchling's words.
+        assert_eq!(
+            ops.handle(&owner, &new(LOCAL_CHAT), &mut replies),
+            (
+                UiActionResult::ConversationStarted {
+                    chat_id: String::from(LOCAL_CHAT)
+                },
+                ApiOutcome::Served
+            )
+        );
+        assert_eq!(hub.conversation(), 1);
+        assert_eq!(
+            chats(&bus),
+            [(ChatAuthor::System, String::from(NEW_CONVERSATION))]
+        );
+        // Without the local channel's hub there is no conversation.
+        let alone = Ops::new(&config, &key, &skills, None, Arc::clone(&bus));
+        assert_eq!(
+            alone.handle(&owner, &new(LOCAL_CHAT), &mut replies),
+            refused(ActionRefusal::Unavailable)
+        );
     }
 
     #[test]

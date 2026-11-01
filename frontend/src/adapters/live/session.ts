@@ -80,6 +80,7 @@ export class LiveChatSession implements ChatSessionPort {
                 return { state: 'rejected', detail: REFUSALS[reply.result.reason] };
             case 'decided':
             case 'decision_rejected':
+            case 'conversation_started':
             case 'schedule':
             case 'sites':
             case 'skill':

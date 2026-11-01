@@ -14,6 +14,12 @@
 //! Every reply passes the hub's [`OutputGate`] before its sink sees it
 //!: the sink takes a [`Cleared`] message, which only the gate
 //! makes, so no delivery skips it.
+//!
+//! The hub also numbers the local channel's conversation (WO-026): the
+//! owner starts a new one with [`LocalHub::new_conversation`], and each
+//! queued message carries the number it was sent in, so a message sent
+//! before the owner started a new conversation is never taken as part of
+//! it.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -59,7 +65,9 @@ pub struct SinkId(u64);
 
 #[derive(Default)]
 struct HubState {
-    inbound: VecDeque<Message>,
+    /// Each queued message, with the conversation it was sent in.
+    inbound: VecDeque<(Message, u64)>,
+    conversation: u64,
     sink: Option<(SinkId, Sink)>,
     attached: u64,
     arrivals: usize,
@@ -116,7 +124,8 @@ impl LocalHub {
         if msg.text.len() > MAX_INGRESS_TEXT_BYTES || state.inbound.len() >= MAX_QUEUED_MESSAGES {
             return IngressEvent::Refused;
         }
-        state.inbound.push_back(msg);
+        let conversation = state.conversation;
+        state.inbound.push_back((msg, conversation));
         state.arrivals = state.arrivals.saturating_add(1);
         IngressEvent::Queued
     }
@@ -133,7 +142,28 @@ impl LocalHub {
     /// Takes the oldest queued message, if any.
     #[must_use]
     pub fn take(&self) -> Option<Message> {
+        self.take_in_conversation().map(|(msg, _)| msg)
+    }
+
+    /// Takes the oldest queued message, if any, with the number of the
+    /// conversation it was sent in.
+    #[must_use]
+    pub fn take_in_conversation(&self) -> Option<(Message, u64)> {
         self.state().inbound.pop_front()
+    }
+
+    /// The number of the conversation now: messages queued from here on
+    /// are sent in it.
+    #[must_use]
+    pub fn conversation(&self) -> u64 {
+        self.state().conversation
+    }
+
+    /// Starts a new conversation. Messages already queued stay queued, in
+    /// the conversation they were sent in.
+    pub fn new_conversation(&self) {
+        let mut state = self.state();
+        state.conversation = state.conversation.wrapping_add(1);
     }
 
     /// How many messages wait unreceived.
@@ -228,6 +258,26 @@ mod tests {
         assert_eq!(hub.take_arrivals(), 0, "taking resets the count");
         assert_eq!(hub.inject(msg("three")), IngressEvent::Queued);
         assert_eq!(hub.take_arrivals(), 1);
+    }
+
+    #[test]
+    fn a_queued_message_keeps_the_conversation_it_was_sent_in() {
+        let hub = LocalHub::new(OutputGate::disabled());
+        assert_eq!(hub.conversation(), 0);
+        assert_eq!(hub.inject(msg("before")), IngressEvent::Queued);
+        hub.new_conversation();
+        assert_eq!(hub.conversation(), 1);
+        assert_eq!(hub.inject(msg("after")), IngressEvent::Queued);
+        hub.new_conversation();
+        // Nothing queued is dropped: each is taken in its own order, with
+        // the conversation it was sent in.
+        let taken = |hub: &LocalHub| hub.take_in_conversation().map(|(m, n)| (m.text, n));
+        assert_eq!(taken(&hub), Some((String::from("before"), 0)));
+        assert_eq!(taken(&hub), Some((String::from("after"), 1)));
+        assert_eq!(taken(&hub), None);
+        assert_eq!(hub.inject(msg("now")), IngressEvent::Queued);
+        assert_eq!(hub.take().map(|m| m.text), Some(String::from("now")));
+        assert_eq!(hub.conversation(), 2);
     }
 
     fn msg(text: &str) -> Message {

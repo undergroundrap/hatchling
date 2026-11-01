@@ -233,12 +233,12 @@ test('local API calls are a thread of their own: one lane per caller, one row pe
     assert.equal(skill.report, 'uid 1000: ran a skill. The API refused it before any part of Hatchling acted on it. The caller held 1 capability.');
     assert.deepEqual([hello.id, hello.laneId, hello.startedAt, hello.endedAt, hello.durationMs], ['api-2', 'api:0', sampleTime(2), sampleTime(2), null]);
     // Every kind of request has its own words.
-    const kinds = ['hello', 'subscribe', 'send_message', 'decide', 'manage_schedule', 'invoke_skill', 'open_artifact', 'share_artifact', 'attach_artifact', 'save_file', 'take_control', 'return_control', 'stop_browser'];
+    const kinds = ['hello', 'subscribe', 'send_message', 'new_conversation', 'decide', 'manage_schedule', 'invoke_skill', 'open_artifact', 'share_artifact', 'attach_artifact', 'save_file', 'take_control', 'return_control', 'stop_browser'];
     const every = connected();
     replay(every.transport, kinds.map((request, index) => call(index + 1, 'uid 1000', request, 'served', [])));
     const titles = every.adapter.getSnapshot().threads[0].lanes[0].rows.map(row => row.title);
     assert.equal(new Set(titles).size, kinds.length);
-    assert.equal(every.adapter.getSnapshot().threads[0].subtitle, '13 calls · 13 served, 0 refused');
+    assert.equal(every.adapter.getSnapshot().threads[0].subtitle, '14 calls · 14 served, 0 refused');
 });
 test('coding-harness runs are a thread of their own: one lane per harness, one row per run, never a hash', () => {
     const { transport, adapter } = connected();
@@ -749,6 +749,36 @@ test('sending: the typed send_message action under the UI\'s request id, with ho
     transport.open();
     transport.deliver(SAMPLE_WELCOME);
     assert.equal(heard, 1, 'a stopped listener hears nothing more');
+});
+test('a new conversation: the typed new_conversation action on the local chat, never a Command, with honest outcomes', async () => {
+    const { transport, adapter } = connected();
+    const start = () => adapter.conversations.start('main');
+    const started = start();
+    await flush();
+    assert.deepEqual(transport.last().action, { action: 'new_conversation', chat_id: 'local' });
+    answer(transport, transport.last().request_id, { result: 'conversation_started', chat_id: 'local' });
+    assert.deepEqual(await started, { ok: true, message: 'New conversation started.' });
+    for (const [result, words] of [
+        [{ result: 'refused', reason: 'not_connected' }, /not connected to its broker, so the agent still has the last conversation/],
+        [{ result: 'refused', reason: 'bad_request' }, /no such conversation/],
+        [{ result: 'refused', reason: 'unavailable' }, /cannot start a new conversation right now/],
+        [{ result: 'refused', reason: 'not_granted' }, /may not start a new conversation/],
+        [{ result: 'message_accepted', message_id: 'm' }, /not confirmed/],
+    ]) {
+        const outcome = start();
+        await flush();
+        answer(transport, transport.last().request_id, result);
+        const settled = await outcome;
+        assert.equal(settled.ok, false);
+        assert.match(settled.message, words);
+    }
+    // The broker's notice shows where it starts, as Hatchling's words.
+    transport.deliver(sampleEvent(40, 40, { kind: 'chat_message', chat_id: 'local', message_id: 'notice-1', author: 'system', text: 'New conversation. The agent is given nothing said before this.' }));
+    assert.deepEqual(adapter.getSnapshot().messages.filter(message => message.id === 'notice-1').map(message => [message.kind, message.chatId]), [['notice', 'main']]);
+    transport.drop();
+    const offline = await start();
+    assert.equal(offline.ok, false);
+    assert.match(offline.message, /not connected to Hatchling/);
 });
 test('history retry asks for what came after the last event', async () => {
     const { transport, adapter } = connected();

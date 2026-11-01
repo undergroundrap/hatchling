@@ -20,6 +20,10 @@
 .conversation-back svg { width: 18px; height: 18px; transform: rotate(-90deg); }
 .conversation-back:hover { background: var(--surface-control); }
 .conversation-back:active { transform: scale(.93); }
+.conversation-new.icon-button { border-radius: 50%; width: 30px; height: 30px; min-width: 30px; flex-shrink: 0; background: var(--composer-bg); color: var(--text); }
+.conversation-new svg { width: 18px; height: 18px; }
+.conversation-new:hover { background: var(--surface-control); }
+.conversation-new:active { transform: scale(.93); }
 .conversation-location :focus-visible { outline: 2px solid var(--focus, #2196f3); outline-offset: 3px; }
 .chat-view > .empty-state { padding-top: 90px; }
 /* A click-open flyout must remain visible when the pointer travels from the header to the list. */

@@ -320,6 +320,7 @@ jobs:
         run: |
           python3 -m unittest discover -s scripts -p 'test_browser_end_to_end.py' -v
           python3 -m unittest discover -s scripts -p 'test_idea_model.py' -v
+          python3 -m unittest discover -s scripts -p 'test_turns_model.py' -v
 
       - name: Drive the agent's browser from the app
         run: |
@@ -333,6 +334,10 @@ jobs:
         run: |
           sudo env "PATH=$PATH" "PLAYWRIGHT_BROWSERS_PATH=$HOME/.cache/ms-playwright"             unshare --mount --pid --fork --kill-child --mount-proc             scripts/chat_build_end_to_end.sh "$RUNNER_TEMP/app-venv/bin/python" "$RUNNER_TEMP/chat-build-e2e"
 
+      - name: Start a new conversation from the app
+        run: |
+          sudo env "PATH=$PATH" "PLAYWRIGHT_BROWSERS_PATH=$HOME/.cache/ms-playwright"             unshare --mount --pid --fork --kill-child --mount-proc             scripts/conversation_end_to_end.sh "$RUNNER_TEMP/app-venv/bin/python" "$RUNNER_TEMP/conversation-e2e"
+
       - name: Retain the logs and screenshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -342,6 +347,7 @@ jobs:
             ${{ runner.temp }}/browser-e2e
             ${{ runner.temp }}/approval-e2e
             ${{ runner.temp }}/chat-build-e2e
+            ${{ runner.temp }}/conversation-e2e
 
   rootless:
     name: without root
