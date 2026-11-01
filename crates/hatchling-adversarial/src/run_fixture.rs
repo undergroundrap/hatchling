@@ -60,14 +60,19 @@ use hatchling_core::{
 };
 
 /// A chat turn's view of the conversation (WO-026): what it was given,
-/// as given, without connecting.
+/// as given, without connecting. What the owner said earlier follows,
+/// when it was given any.
 fn history(out: &mut impl std::io::Write) -> ExitCode {
     let env = |key: &str| std::env::var(key).unwrap_or_default();
-    let line = format!(
+    let mut line = format!(
         "chat={} history={}",
         env("HATCHLING_RUN_CHAT"),
         env("HATCHLING_RUN_HISTORY")
     );
+    if let Ok(earlier) = std::env::var("HATCHLING_RUN_EARLIER") {
+        line.push_str(" earlier=");
+        line.push_str(&earlier);
+    }
     if writeln!(out, "{line}").and_then(|()| out.flush()).is_ok() {
         ExitCode::SUCCESS
     } else {
@@ -379,10 +384,13 @@ mod tests {
             format!("{:?}", ExitCode::SUCCESS)
         );
         let env = |key: &str| std::env::var(key).unwrap_or_default();
+        let earlier = std::env::var("HATCHLING_RUN_EARLIER")
+            .map(|earlier| format!(" earlier={earlier}"))
+            .unwrap_or_default();
         assert_eq!(
             String::from_utf8(out).unwrap(),
             format!(
-                "chat={} history={}\n",
+                "chat={} history={}{earlier}\n",
                 env("HATCHLING_RUN_CHAT"),
                 env("HATCHLING_RUN_HISTORY")
             )

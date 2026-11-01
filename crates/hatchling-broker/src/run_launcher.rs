@@ -699,6 +699,7 @@ fn scheduled_run(config: &Config, request: &RunRequest) -> ScheduledRun {
         subagent: false,
         chat: request.chat,
         history: request.history.clone(),
+        earlier: request.earlier.clone(),
         builders: run_artifacts(config, request).builders,
     }
 }
@@ -1087,6 +1088,7 @@ mod tests {
             feed: None,
             chat: false,
             history: Vec::new(),
+            earlier: Vec::new(),
         }
     }
 
@@ -1432,6 +1434,7 @@ mod tests {
             subagent: false,
             chat: false,
             history: Vec::new(),
+            earlier: Vec::new(),
             builders: std::collections::BTreeMap::new(),
         };
         std::thread::scope(|scope| {
@@ -1599,6 +1602,7 @@ mod tests {
             subagent: false,
             chat: false,
             history: Vec::new(),
+            earlier: Vec::new(),
             builders: std::collections::BTreeMap::new(),
         });
         let err =
@@ -1630,6 +1634,7 @@ mod tests {
             subagent: false,
             chat: false,
             history: Vec::new(),
+            earlier: Vec::new(),
             builders: std::collections::BTreeMap::new(),
         });
         assert_eq!(agent_log_level(&agent, Some("debug")), LogLevel::Error);

@@ -22,9 +22,9 @@ Hatchling's version must keep the property the rest of the design has: a cell ca
   - The loop places them as user and assistant turns between the system prompt and the new message, before recalled memory and evidence.
 - **Next slices:**
   - A way to start a new conversation from the app. *Done in part 2 (#258).*
-  - The conversation survives a broker restart, sealed by the vault like the schedules, and the app shows it after one. *Part 3.*
-  - Compaction past the bounds (`hatchling-memory`'s `compact`), keeping decisions and corrections verbatim.
-  - Turn ids, so a redelivered message isn't kept twice.
+  - The conversation survives a broker restart, sealed by the vault like the schedules, and the app shows it after one. *Part 3 (#259).*
+  - Compaction past the bounds, keeping decisions and corrections verbatim. *Part 4:* the owner's own messages are kept, and the answers go (see the notes).
+  - ~~Turn ids, so a redelivered message isn't kept twice.~~ Dropped: nothing redelivers a message. The app sends each under its own request id, so a retry on one connection is answered once. When no answer comes, it tells the owner the message is unconfirmed and never sends it again itself. A message the owner sends twice is theirs to send twice. This comes back if a channel that redelivers ever feeds the chat.
 
 **Not in scope:**
 
@@ -40,7 +40,7 @@ Hatchling's version must keep the property the rest of the design has: a cell ca
 - [ ] The agent refuses history past the bounds, malformed, or given to a run that isn't a chat turn; tested.
 - [ ] The model sees the prior exchanges in their own roles, before the new message; tested in the loop.
 - [ ] A cell has no way to add to the conversation: no request writes it, and what it writes elsewhere (a note, a memory) never comes back as a turn.
-- [ ] Later slices: the owner starts a new conversation from the app, and the next run is given nothing said before it (part 2); the conversation survives a restart, sealed, and the app shows what the agent is still given (part 3); a correction made two turns back survives a new cell and a compaction.
+- [ ] Later slices: the owner starts a new conversation from the app, and the next run is given nothing said before it (part 2); the conversation survives a restart, sealed, and the app shows what the agent is still given (part 3); a correction made two turns back survives a new cell and a compaction, and what the owner said past the bounds is still given, verbatim (part 4).
 
 ## Gates
 
@@ -58,3 +58,4 @@ Filled in at close.
 - **What's on disk is what a run is given:** the exchanges within the bounds, nothing more. Each side is an entry of its own, raw, so a side never needs more than one sealed entry. An index names the exchanges; their sides live in nine slots, one more than a conversation holds, so a new exchange never overwrites one still kept, and a keep the broker didn't finish leaves its sides in the one slot the index says is next, which the next start removes.
 - **A new conversation is durable when the owner is told.** The API removes every slot, whatever the index says, and only then moves the hub on, with the store locked. The chat keeps an exchange only if, with the store locked, the hub's conversation is still the one its message was sent in.
 - **After a restart, the owner sees what the agent is given.** The store is read once, at the broker's start: the chat resumes it, and the app is shown each exchange under Hatchling's notice. One that can't be read (another key, a changed file) is removed, the broker's log says why, and the app says a new conversation started.
+- **Compaction keeps the owner's words, not a summary (part 4).** A summary would be written by a model, in a cell that reads pages and tool output, so a planted line could become part of what the agent is told the owner decided. Past the bounds, an exchange's answer goes, and what the owner said in it is kept verbatim: up to 32 messages and 8 KiB as sent, newest kept, whole messages. A decision or a correction the owner made is their own message, so it survives word for word, and nothing is classified or paraphrased. A run is given them typed (`HATCHLING_RUN_EARLIER`, a JSON array of strings), which the agent refuses past the bounds or for a run that isn't a chat turn. The model sees them as one message in the owner's role, labeled as Hatchling's record, before the exchanges. With a store, they're kept in the index, which is one write, so they change with the exchanges they were said in. After a restart the app shows them under a notice of their own, saying the agent no longer has its answers to them.

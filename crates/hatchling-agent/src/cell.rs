@@ -537,6 +537,9 @@ impl Cell<Ready> {
                     .map(|turn| (turn.user.clone(), turn.assistant.clone()))
                     .collect(),
             )
+            .with_earlier(hatchling_core::conversation::render_earlier(
+                &self.config().run_earlier,
+            ))
             .run(model, request);
         // The orphan rule: no child outlives the run that spawned it.
         let _ = children.reap(self.connection(), hatchling_core::subagent::ORPHANED);
@@ -598,6 +601,7 @@ mod tests {
             run_subagent: false,
             run_chat: false,
             run_history: Vec::new(),
+            run_earlier: Vec::new(),
             run_builders: std::collections::BTreeMap::new(),
             vault_fd: None,
         }
@@ -712,7 +716,8 @@ mod tests {
     }
 
     /// WO-026: a chat turn's loop gives the model the conversation it was
-    /// given, before its message, each side in its own role.
+    /// given, before its message: what the owner said earlier, then each
+    /// exchange's sides in their own roles.
     #[test]
     fn a_chat_turns_loop_gives_the_model_its_conversation() {
         use hatchling_core::framing::{read_frame, write_frame};
@@ -727,6 +732,7 @@ mod tests {
             user: String::from("Two drinks?"),
             assistant: String::from("1. Tea. 2. Coffee."),
         }];
+        config.run_earlier = vec![String::from("I only drink hot drinks.")];
         // The broker welcomes the cell, then goes: recall finds nothing.
         let welcome = std::thread::spawn(move || -> Result<(), String> {
             read_frame(&broker).map_err(|e| e.to_string())?;
@@ -758,12 +764,18 @@ mod tests {
         let seen = model.seen_histories();
         let history = seen.first().unwrap();
         assert!(matches!(history.first(), Some(Message::System(_))));
-        assert!(matches!(history.get(1), Some(Message::User(text)) if text == "Two drinks?"));
+        let earlier = hatchling_core::conversation::render_earlier(&[String::from(
+            "I only drink hot drinks.",
+        )]);
         assert!(
-            matches!(history.get(2), Some(Message::Assistant(text)) if text == "1. Tea. 2. Coffee.")
+            matches!(history.get(1), Some(Message::User(text)) if Some(text) == earlier.as_ref())
         );
-        assert!(matches!(history.get(3), Some(Message::User(text)) if text == "The second one."));
-        assert_eq!(history.len(), 4, "{history:?}");
+        assert!(matches!(history.get(2), Some(Message::User(text)) if text == "Two drinks?"));
+        assert!(
+            matches!(history.get(3), Some(Message::Assistant(text)) if text == "1. Tea. 2. Coffee.")
+        );
+        assert!(matches!(history.get(4), Some(Message::User(text)) if text == "The second one."));
+        assert_eq!(history.len(), 5, "{history:?}");
     }
 
     #[test]

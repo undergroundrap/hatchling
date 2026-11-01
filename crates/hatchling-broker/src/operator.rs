@@ -684,6 +684,7 @@ mod tests {
             subagent: false,
             chat: false,
             history: Vec::new(),
+            earlier: Vec::new(),
             builders: std::collections::BTreeMap::new(),
         };
         let request = hatchling_scheduler::RunRequest {
@@ -699,6 +700,7 @@ mod tests {
             feed: None,
             chat: false,
             history: Vec::new(),
+            earlier: Vec::new(),
         };
         (run, request)
     }

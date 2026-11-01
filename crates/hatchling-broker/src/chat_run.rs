@@ -27,6 +27,10 @@
 //! too ([`crate::conversation_store`]), so a broker restart resumes it.
 //! Without one, a restart starts a new conversation.
 //!
+//! Past the bounds, the chat keeps what the owner said in an exchange,
+//! and lets its answer go ([`Conversation`]): each run is also given the
+//! owner's earlier messages, verbatim, as the broker recorded them.
+//!
 //! The owner can start a new conversation from the app, which moves the
 //! local hub's conversation number on. The chat then forgets what it
 //! kept. A message sent before the new conversation started isn't part
@@ -36,7 +40,7 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use hatchling_core::conversation::{self, ChatExchange};
+use hatchling_core::conversation::{self, ChatExchange, Conversation};
 
 use hatchling_channel::{ChannelId, LocalHub, Message};
 use hatchling_core::ScheduleGrant;
@@ -82,20 +86,20 @@ pub enum Step {
 
 /// Where the chat keeps the conversation beyond the broker's memory.
 pub trait Keeps {
-    /// Keeps `exchange`, the newest of the conversation `sent_in`, so that
-    /// its last `kept` exchanges are what a run is given.
-    fn keep(&self, sent_in: u64, exchange: &ChatExchange, kept: usize);
+    /// Keeps `kept`, the conversation `sent_in` as the chat holds it once
+    /// its newest exchange, the last of `kept.exchanges` if any, is kept.
+    fn keep(&self, sent_in: u64, kept: &Conversation);
 }
 
 /// Nowhere: the conversation lives in the broker's memory alone.
 impl Keeps for () {
-    fn keep(&self, _: u64, _: &ChatExchange, _: usize) {}
+    fn keep(&self, _: u64, _: &Conversation) {}
 }
 
 impl<K: Keeps> Keeps for Option<K> {
-    fn keep(&self, sent_in: u64, exchange: &ChatExchange, kept: usize) {
+    fn keep(&self, sent_in: u64, kept: &Conversation) {
         if let Some(keeps) = self {
-            keeps.keep(sent_in, exchange, kept);
+            keeps.keep(sent_in, kept);
         }
     }
 }
@@ -107,10 +111,10 @@ pub struct Chat<R, K = ()> {
     /// that message was sent in.
     running: Option<(R, String, u64)>,
     grants: Vec<ScheduleGrant>,
-    /// The conversation the exchanges kept are in.
+    /// The conversation kept is in.
     conversation: u64,
-    /// The exchanges kept, oldest first: no more than a run is given.
-    exchanges: Vec<ChatExchange>,
+    /// The conversation kept: no more than a run is given.
+    kept: Conversation,
     /// Where each exchange is kept beyond memory.
     keeps: K,
 }
@@ -120,26 +124,30 @@ impl<R: Run> Chat<R> {
     /// alone.
     #[must_use]
     pub const fn new(grants: Vec<ScheduleGrant>) -> Self {
-        Self::resuming(grants, 0, Vec::new(), ())
+        let kept = Conversation {
+            earlier: Vec::new(),
+            exchanges: Vec::new(),
+        };
+        Self::resuming(grants, 0, kept, ())
     }
 }
 
 impl<R: Run, K: Keeps> Chat<R, K> {
-    /// A chat whose runs hold `grants`, going on with `exchanges`, the
-    /// local channel's `conversation` so far, and keeping each exchange in
+    /// A chat whose runs hold `grants`, going on with `kept`, the local
+    /// channel's `conversation` so far, and keeping each exchange in
     /// `keeps` too.
     #[must_use]
     pub const fn resuming(
         grants: Vec<ScheduleGrant>,
         conversation: u64,
-        exchanges: Vec<ChatExchange>,
+        kept: Conversation,
         keeps: K,
     ) -> Self {
         Self {
             running: None,
             grants,
             conversation,
-            exchanges,
+            kept,
             keeps,
         }
     }
@@ -147,24 +155,25 @@ impl<R: Run, K: Keeps> Chat<R, K> {
     /// The exchanges a run started now is given, oldest first.
     #[must_use]
     pub fn history(&self) -> Vec<ChatExchange> {
-        conversation::recent(&self.exchanges)
+        conversation::recent(&self.kept.exchanges)
+    }
+
+    /// What the owner said earlier that a run started now is given,
+    /// oldest first.
+    #[must_use]
+    pub fn earlier(&self) -> Vec<String> {
+        conversation::earlier(&self.kept.earlier)
     }
 
     /// Keeps the exchange of `user` and `answer`, the person having been
-    /// shown `answer` as written; the oldest goes past the bound.
+    /// shown `answer` as written; past the bounds, the oldest answers go,
+    /// and what the owner said in them is kept as earlier.
     fn keep(&mut self, user: String, answer: String) {
-        let exchange = ChatExchange {
+        self.kept.push(ChatExchange {
             user,
             assistant: answer,
-        };
-        self.exchanges.push(exchange.clone());
-        let over = self
-            .exchanges
-            .len()
-            .saturating_sub(conversation::MAX_EXCHANGES);
-        self.exchanges.drain(..over);
-        let kept = conversation::recent(&self.exchanges).len();
-        self.keeps.keep(self.conversation, &exchange, kept);
+        });
+        self.keeps.keep(self.conversation, &self.kept);
     }
 
     /// One step at `now`, in the local channel's `conversation`: a
@@ -185,7 +194,7 @@ impl<R: Run, K: Keeps> Chat<R, K> {
     {
         if conversation != self.conversation {
             self.conversation = conversation;
-            self.exchanges.clear();
+            self.kept = Conversation::default();
         }
         if let Some((run, _, _)) = &mut self.running {
             let Some(outcome) = run.poll() else {
@@ -217,10 +226,10 @@ impl<R: Run, K: Keeps> Chat<R, K> {
         let Some((message, sent_in)) = next() else {
             return Step::Idle;
         };
-        let history = if sent_in == self.conversation {
-            self.history()
+        let (history, earlier) = if sent_in == self.conversation {
+            (self.history(), self.earlier())
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
         let request = RunRequest {
             schedule_id: String::from(CHAT_LABEL),
@@ -235,6 +244,7 @@ impl<R: Run, K: Keeps> Chat<R, K> {
             feed: None,
             chat: true,
             history,
+            earlier,
         };
         match launcher.launch(request) {
             Ok(run) => {
@@ -275,7 +285,7 @@ pub fn chat_forever<'scope, 'env>(
     let store = ConversationStore::of(config, key);
     let kept = match store.as_ref().map(conversation_store::at_start) {
         Some(Resumed::Kept(kept)) => kept.clone(),
-        Some(Resumed::Unreadable) | None => Vec::new(),
+        Some(Resumed::Unreadable) | None => Conversation::default(),
     };
     let keeps = store.map(|store| SealedConversation::new(store, hub));
     let mut chat = Chat::resuming(grants, hub.conversation(), kept, keeps);
@@ -403,25 +413,31 @@ mod tests {
         (user.to_owned(), assistant.to_owned())
     }
 
-    /// Records each exchange kept beyond memory: its conversation, the
-    /// exchange, and how many a run is given.
+    /// Records the conversation kept beyond memory, with its number, at
+    /// each exchange kept.
     #[derive(Default)]
-    struct Recorded(RefCell<Vec<Kept>>);
-
-    /// One exchange kept beyond memory: its conversation, the exchange,
-    /// and how many a run is given.
-    type Kept = (u64, (String, String), usize);
+    struct Recorded(RefCell<Vec<(u64, Conversation)>>);
 
     impl Keeps for &Recorded {
-        fn keep(&self, sent_in: u64, exchange: &ChatExchange, kept: usize) {
-            let turn = turn(&exchange.user, &exchange.assistant);
-            self.0.borrow_mut().push((sent_in, turn, kept));
+        fn keep(&self, sent_in: u64, kept: &Conversation) {
+            self.0.borrow_mut().push((sent_in, kept.clone()));
         }
+    }
+
+    fn exchanged(user: &str, assistant: &str) -> ChatExchange {
+        ChatExchange {
+            user: user.to_owned(),
+            assistant: assistant.to_owned(),
+        }
+    }
+
+    fn said(texts: &[&str]) -> Vec<String> {
+        texts.iter().map(|text| (*text).to_owned()).collect()
     }
 
     /// WO-026: a chat resumed from what was kept gives its first run that,
     /// and each exchange it keeps is kept beyond its memory too, with its
-    /// conversation and how many a run is given.
+    /// conversation, as the chat holds it then.
     #[test]
     fn a_resumed_chat_goes_on_and_keeps_each_exchange_beyond_memory() {
         let launches = Launches::default();
@@ -433,10 +449,10 @@ mod tests {
         ]);
         let answers = Answers::default();
         let recorded = Recorded::default();
-        let kept = vec![ChatExchange {
-            user: String::from("q0"),
-            assistant: String::from("a0"),
-        }];
+        let kept = Conversation {
+            earlier: said(&["said before"]),
+            exchanges: vec![exchanged("q0", "a0")],
+        };
         let mut chat = Chat::resuming(vec![send_local()], 2, kept, &recorded);
         let now = Timestamp::now();
         let mut ask = |text: &str| {
@@ -454,7 +470,8 @@ mod tests {
         answers.replace.set(true);
         ask("q2");
         answers.replace.set(false);
-        // Too big to give, it's kept, and a run is given nothing.
+        // Too big to give, its answer goes, as do those before it, and
+        // what the owner said in each is kept as earlier.
         ask("q3");
         assert_eq!(
             histories(&launches),
@@ -464,17 +481,40 @@ mod tests {
                 vec![turn("q0", "a0"), turn("q1", "a1")],
             ]
         );
-        assert_eq!(
-            *recorded.0.borrow(),
-            [(2, turn("q1", "a1"), 2), (2, turn("q3", &huge), 0)]
-        );
-        // Given no store, nothing is kept beyond memory.
-        let q4 = ChatExchange {
-            user: String::from("q4"),
-            assistant: String::from("a4"),
+        let earliers: Vec<_> = launches
+            .requests
+            .borrow()
+            .iter()
+            .map(|request| request.earlier.clone())
+            .collect();
+        assert_eq!(earliers, vec![said(&["said before"]); 3]);
+        let after_q1 = Conversation {
+            earlier: said(&["said before"]),
+            exchanges: vec![exchanged("q0", "a0"), exchanged("q1", "a1")],
         };
-        None::<&Recorded>.keep(5, &q4, 1);
-        Some(&recorded).keep(5, &q4, 1);
+        let after_q3 = Conversation {
+            earlier: said(&["said before", "q0", "q1", "q3"]),
+            exchanges: Vec::new(),
+        };
+        assert_eq!(*recorded.0.borrow(), [(2, after_q1), (2, after_q3.clone())]);
+        assert_eq!(chat.earlier(), after_q3.earlier);
+        assert!(chat.history().is_empty());
+        // A new conversation's run is given nothing said before it.
+        launches.outcomes.borrow_mut().push(Ok(answering("a5")));
+        assert_eq!(
+            chat.step(|| Some((message("q5"), 3)), 3, &launches, &answers, now),
+            Step::Started
+        );
+        let given = launches
+            .requests
+            .borrow()
+            .last()
+            .map(|request| (request.history.clone(), request.earlier.clone()));
+        assert_eq!(given, Some((Vec::new(), Vec::new())));
+        assert!(chat.earlier().is_empty());
+        // Given no store, nothing is kept beyond memory.
+        None::<&Recorded>.keep(5, &after_q3);
+        Some(&recorded).keep(5, &after_q3);
         assert_eq!(recorded.0.borrow().len(), 3);
     }
 
@@ -588,7 +628,9 @@ mod tests {
                 Step::Answered
             );
         }
-        assert_eq!(chat.exchanges.len(), conversation::MAX_EXCHANGES);
+        assert_eq!(chat.kept.exchanges.len(), conversation::MAX_EXCHANGES);
+        // What the owner said in those past the bound is kept.
+        assert_eq!(chat.earlier(), ["q0", "q1", "q2"]);
         let history = chat.history();
         assert_eq!(history.len(), conversation::MAX_EXCHANGES);
         assert_eq!(history.first().map(|turn| turn.user.as_str()), Some("q3"));

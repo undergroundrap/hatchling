@@ -123,6 +123,7 @@ fn agent(path: &str) -> Cell<Ready> {
         run_subagent: false,
         run_chat: false,
         run_history: Vec::new(),
+        run_earlier: Vec::new(),
         run_builders: std::collections::BTreeMap::new(),
         vault_fd: None,
     };

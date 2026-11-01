@@ -2248,6 +2248,7 @@ sleep 30 </dev/null >/dev/null 2>&1 &
                 subagent: false,
                 chat: false,
                 history: Vec::new(),
+                earlier: Vec::new(),
                 builders: std::collections::BTreeMap::new(),
             });
         };
@@ -2303,6 +2304,7 @@ sleep 30 </dev/null >/dev/null 2>&1 &
             subagent: false,
             chat: false,
             history: Vec::new(),
+            earlier: Vec::new(),
             builders: std::collections::BTreeMap::new(),
         });
         run.connected = true;

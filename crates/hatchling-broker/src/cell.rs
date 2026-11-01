@@ -584,6 +584,10 @@ pub struct ScheduledRun {
     /// (WO-026): the broker's record, never a cell's.
     #[serde(default)]
     pub history: Vec<hatchling_core::conversation::ChatExchange>,
+    /// For a chat run, what the owner said earlier, in exchanges past the
+    /// history's bounds, oldest first (WO-026): the broker's record too.
+    #[serde(default)]
+    pub earlier: Vec<String>,
     /// For a chat run, the builder the operator names for each kind
     /// (WO-032): what its agent may propose with. Empty for every other
     /// run.
@@ -620,6 +624,11 @@ impl ScheduledRun {
             if !self.history.is_empty() {
                 if let Ok(history) = serde_json::to_string(&self.history) {
                     env.push(("HATCHLING_RUN_HISTORY", history));
+                }
+            }
+            if !self.earlier.is_empty() {
+                if let Ok(earlier) = serde_json::to_string(&self.earlier) {
+                    env.push(("HATCHLING_RUN_EARLIER", earlier));
                 }
             }
             if !self.builders.is_empty() {
@@ -2583,6 +2592,7 @@ mod run_cell_tests {
             subagent: false,
             chat: false,
             history: Vec::new(),
+            earlier: Vec::new(),
             builders: std::collections::BTreeMap::new(),
         }
     }
@@ -2737,23 +2747,27 @@ mod run_cell_tests {
         );
     }
 
-    /// WO-026: a chat run's history reaches its agent typed, as sent,
-    /// and no other run carries one.
+    /// WO-026: a chat run's history, and what the owner said earlier,
+    /// reach its agent typed, as sent, and no other run carries them.
     #[test]
     fn only_a_chat_turn_carries_its_history() {
+        let earlier = vec![String::from("Call me Sam.")];
         let history = vec![hatchling_core::conversation::ChatExchange {
             user: String::from("Pick a number from 1 to 10."),
             assistant: String::from("7."),
         }];
-        let given = |run: &ScheduledRun| {
+        let named = |run: &ScheduledRun, wanted: &str| {
             run.env()
                 .into_iter()
-                .find(|(name, _)| *name == "HATCHLING_RUN_HISTORY")
+                .find(|(name, _)| *name == wanted)
                 .map(|(_, value)| value)
         };
+        let given = |run: &ScheduledRun| named(run, "HATCHLING_RUN_HISTORY");
+        let said = |run: &ScheduledRun| named(run, "HATCHLING_RUN_EARLIER");
         let turn = ScheduledRun {
             chat: true,
             history: history.clone(),
+            earlier: earlier.clone(),
             builders: std::collections::BTreeMap::new(),
             ..run()
         };
@@ -2762,13 +2776,24 @@ mod run_cell_tests {
             hatchling_core::conversation::parse_history(&raw).unwrap(),
             history
         );
+        let raw = said(&turn).unwrap();
+        assert_eq!(
+            hatchling_core::conversation::parse_earlier(&raw).unwrap(),
+            earlier
+        );
         let first = ScheduledRun {
             chat: true,
             ..run()
         };
         assert_eq!(given(&first), None, "nothing said yet, nothing given");
-        let worker = ScheduledRun { history, ..run() };
+        assert_eq!(said(&first), None, "nothing said earlier, nothing given");
+        let worker = ScheduledRun {
+            history,
+            earlier,
+            ..run()
+        };
         assert_eq!(given(&worker), None, "only a chat turn is given one");
+        assert_eq!(said(&worker), None, "only a chat turn is given it");
     }
 
     /// WO-032: a chat run is told the operator's builders, as the list
