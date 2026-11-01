@@ -160,6 +160,7 @@ pub fn child_config(
         feed: None,
         chat: false,
         history: Vec::new(),
+        earlier: Vec::new(),
     };
     let mut child = scoped_config(parent, &request, token, socket);
     child.scheduler = SchedulerConfig {
@@ -420,6 +421,7 @@ impl<'scope, 'env> Subagents<'scope, 'env> {
             subagent: true,
             chat: false,
             history: Vec::new(),
+            earlier: Vec::new(),
             builders: BTreeMap::new(),
         };
         let config = self.config;

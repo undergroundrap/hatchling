@@ -48,6 +48,7 @@ pub struct Loop<'t, 'r, 'm> {
     memory_provider: Option<Box<dyn MemoryProvider + 'm>>,
     ledger: Option<Arc<StepLedger>>,
     prior_turns: Vec<(String, String)>,
+    earlier: Option<String>,
 }
 
 impl std::fmt::Debug for Loop<'_, '_, '_> {
@@ -57,6 +58,7 @@ impl std::fmt::Debug for Loop<'_, '_, '_> {
             .field("system_prompt", &self.system_prompt)
             .field("memory_provider", &self.memory_provider.is_some())
             .field("prior_turns", &self.prior_turns.len())
+            .field("earlier", &self.earlier.is_some())
             .finish()
     }
 }
@@ -77,6 +79,7 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
             memory_provider: None,
             ledger: None,
             prior_turns: Vec::new(),
+            earlier: None,
         }
     }
 
@@ -88,6 +91,16 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
     #[must_use]
     pub fn with_prior_turns(mut self, turns: Vec<(String, String)>) -> Self {
         self.prior_turns = turns;
+        self
+    }
+
+    /// What the person said earlier in the conversation, before the prior
+    /// turns, as one [`Message::User`] right after the system prompt.
+    /// Only the broker's record goes here (a chat run's earlier messages,
+    /// as `hatchling_core::conversation::render_earlier` shows them).
+    #[must_use]
+    pub fn with_earlier(mut self, earlier: Option<String>) -> Self {
+        self.earlier = earlier;
         self
     }
 
@@ -164,6 +177,7 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
         evidence: Vec<String>,
     ) -> Result<LoopResult, Error> {
         let mut history = vec![Message::System(self.system_prompt.clone())];
+        history.extend(self.earlier.clone().map(Message::User));
         for (user, assistant) in &self.prior_turns {
             history.push(Message::User(user.clone()));
             history.push(Message::Assistant(assistant.clone()));
@@ -533,6 +547,33 @@ mod tests {
         assert!(
             matches!(result.history.last(), Some(Message::Assistant(text)) if text == "Coffee.")
         );
+    }
+
+    /// WO-026: what the person said earlier comes first, after the system
+    /// prompt, in their role, before the prior turns.
+    #[test]
+    fn what_was_said_earlier_comes_before_the_prior_turns() {
+        let registry = empty_registry();
+        let agent_loop = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .with_earlier(Some("Earlier: call me Sam.".to_owned()))
+            .with_prior_turns(vec![("Hi.".to_owned(), "Hello, Sam.".to_owned())]);
+        let model = FakeModel::new(vec![ModelAction::Text("Sure.".to_owned())]);
+        agent_loop.run(&model, "Thanks.".to_owned()).unwrap();
+        let seen = model.seen_histories();
+        let history = seen.first().expect("model saw one history");
+        assert_eq!(history.len(), 5, "{history:?}");
+        assert!(matches!(history.first(), Some(Message::System(_))));
+        assert!(
+            matches!(history.get(1), Some(Message::User(text)) if text == "Earlier: call me Sam.")
+        );
+        assert!(matches!(history.get(2), Some(Message::User(text)) if text == "Hi."));
+        assert!(matches!(history.get(3), Some(Message::Assistant(text)) if text == "Hello, Sam."));
+        assert!(matches!(history.get(4), Some(Message::User(text)) if text == "Thanks."));
+        // Without any, nothing is added.
+        let plain = Loop::new(&registry, hatchling_prompt::PromptKind::Chat).with_earlier(None);
+        let model = FakeModel::new(vec![ModelAction::Text("Sure.".to_owned())]);
+        plain.run(&model, "Thanks.".to_owned()).unwrap();
+        assert_eq!(model.seen_histories().first().map(Vec::len), Some(2));
     }
 
     #[test]

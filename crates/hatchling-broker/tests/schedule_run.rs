@@ -390,6 +390,7 @@ fn run_to_end(launcher: &CellLauncher<'_, '_>, task: &str) -> Result<String, Str
             feed: None,
             chat: false,
             history: Vec::new(),
+            earlier: Vec::new(),
         })
         .unwrap();
     let deadline = Instant::now() + RUN_DEADLINE;
@@ -475,6 +476,71 @@ fn a_chats_next_cell_is_given_the_exchange_before_it() {
         shown.get(2).map(String::as_str),
         Some("chat=1 history="),
         "a new conversation's run is given nothing said before it"
+    );
+    assert!(run_dirs(&config.scheduler.run_root()).is_empty());
+}
+
+/// WO-026, end to end: a chat's cell is given what the owner said
+/// earlier, past the history's bounds, typed, beside the exchanges since.
+#[test]
+fn a_chats_cell_is_given_what_the_owner_said_earlier() {
+    if !guard_cell_available().unwrap() {
+        return;
+    }
+    let base = base("earlier");
+    let config = config(&base, &[]);
+    let key = MasterKey::generate().unwrap();
+    let shown = Shown::default();
+    let kept = hatchling_core::conversation::Conversation {
+        earlier: vec![String::from("Call me Sam.")],
+        exchanges: vec![hatchling_core::conversation::ChatExchange {
+            user: String::from("Hi."),
+            assistant: String::from("Hello, Sam."),
+        }],
+    };
+    std::thread::scope(|scope| {
+        let launcher = CellLauncher::new(scope, &config, &key, env(&config, RUN_DEADLINE));
+        let mut chat = hatchling_broker::chat_run::Chat::resuming(vec![send()], 0, kept, ());
+        let mut message = Some((
+            Message {
+                sender: hatchling_channel::SenderId(String::from("api")),
+                channel: hatchling_channel::ChannelId::local(),
+                text: String::from("history please"),
+            },
+            0,
+        ));
+        let deadline = Instant::now() + RUN_DEADLINE;
+        loop {
+            let step = chat.step(
+                || message.take(),
+                0,
+                &launcher,
+                &shown,
+                ts("2026-09-21T12:01:00Z"),
+            );
+            if step == hatchling_broker::chat_run::Step::Answered {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the chat run never answered");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    });
+    let shown = shown.0.lock().unwrap().clone();
+    let line = shown.first().unwrap();
+    let (history, earlier) = line
+        .strip_prefix("chat=1 history=")
+        .and_then(|rest| rest.split_once(" earlier="))
+        .unwrap();
+    assert_eq!(
+        hatchling_core::conversation::parse_history(history).unwrap(),
+        [hatchling_core::conversation::ChatExchange {
+            user: String::from("Hi."),
+            assistant: String::from("Hello, Sam."),
+        }]
+    );
+    assert_eq!(
+        hatchling_core::conversation::parse_earlier(earlier).unwrap(),
+        ["Call me Sam."]
     );
     assert!(run_dirs(&config.scheduler.run_root()).is_empty());
 }
@@ -600,6 +666,7 @@ fn one_run_cannot_reach_another_run_s_socket() {
         feed: None,
         chat: false,
         history: Vec::new(),
+        earlier: Vec::new(),
     };
     std::thread::scope(|scope| {
         let launcher = CellLauncher::new(scope, &config, &key, env(&config, RUN_DEADLINE));
@@ -812,6 +879,7 @@ fn a_space_tasks_run_uses_its_own_space_and_nothing_outside_it() {
         feed: None,
         chat: false,
         history: Vec::new(),
+        earlier: Vec::new(),
     };
     std::thread::scope(|scope| {
         let launcher = CellLauncher::new(scope, &config, &key, env(&config, RUN_DEADLINE));
@@ -886,6 +954,7 @@ fn dropping_a_running_cell_cancels_it_and_cleans_its_resources() {
                 feed: None,
                 chat: false,
                 history: Vec::new(),
+                earlier: Vec::new(),
             })
             .unwrap();
         assert_eq!(run_dirs(&config.scheduler.run_root()).len(), 1);

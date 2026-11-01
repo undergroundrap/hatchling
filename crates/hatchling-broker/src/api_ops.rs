@@ -2211,15 +2211,19 @@ mod tests {
         };
         let owner = caller(&[local_send()]);
         let store = ConversationStore::of(&config, &key).unwrap();
-        let q0 = hatchling_core::conversation::ChatExchange {
+        let mut kept = hatchling_core::conversation::Conversation::default();
+        kept.push(hatchling_core::conversation::ChatExchange {
             user: String::from("q0"),
             assistant: String::from("a0"),
-        };
-        assert!(store.keep_if(|| true, &q0, 1).unwrap());
+        });
+        assert!(store.keep_if(|| true, &kept).unwrap());
         let ops = Ops::new(&config, &key, &skills, Some(&hub), Arc::clone(&bus));
         assert_eq!(ops.handle(&owner, &new, &mut replies).1, ApiOutcome::Served);
         assert_eq!(hub.conversation(), 1);
-        assert_eq!(store.resume().unwrap(), []);
+        assert_eq!(
+            store.resume().unwrap(),
+            hatchling_core::conversation::Conversation::default()
+        );
         let mut broken = config.clone();
         std::fs::write(scratch.0.join("file"), b"").unwrap();
         broken.scheduler.conversation = scratch.0.join("file").join("conversation");

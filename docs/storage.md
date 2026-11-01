@@ -23,7 +23,7 @@ Deleting any of these loses credentials or history. Each lives where its setting
 | `HATCHLING_ARTIFACT_WORKSPACE` | What the agent delivered to your workspace. |
 | `HATCHLING_SPACE_DIR` | Spaces, sealed. |
 | `HATCHLING_WEB_GRANTS_DIR` | The sites you always allow the agent to read, sealed (WO-028). |
-| `HATCHLING_CONVERSATION_DIR` | Your conversation with the agent, as a chat run is given it: up to 8 exchanges, each side an entry of its own, sealed (WO-026). New conversation removes it. |
+| `HATCHLING_CONVERSATION_DIR` | Your conversation with the agent, as a chat run is given it: up to 8 exchanges, each side an entry of its own, and what you said before them, sealed (WO-026). New conversation removes it. |
 | `HATCHLING_BROWSER_PROFILES_DIR` | The browser's signed-in profiles: each one's sites, and its session as cookies, sealed (WO-030). |
 | `HATCHLING_BROWSER_CREDENTIALS_DIR` | The sign-ins filled for signed-in profiles: each one's profile, exact origin and label, and its username and password, sealed (WO-030). The vault keeper holds its key, not the broker (WO-031); run as root, it's `hatchling-keeper`'s. |
 | `HATCHLING_HARNESS_ROOTS` | Your projects, where a coding harness may work. Hatchling doesn't own them: a harness run changes files there as you asked it to. |

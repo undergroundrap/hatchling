@@ -821,6 +821,7 @@ fn a_hook_fires_on_its_event_and_delivers_to_its_channel() {
             feed: None,
             chat: false,
             history: Vec::new(),
+            earlier: Vec::new(),
         }
     );
     world.launcher.run(0).finish(Ok("triaged 2 messages"));

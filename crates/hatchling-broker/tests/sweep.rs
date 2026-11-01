@@ -207,6 +207,7 @@ fn killed(config: &Config) {
                 feed: None,
                 chat: false,
                 history: Vec::new(),
+                earlier: Vec::new(),
             })
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(60);

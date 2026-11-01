@@ -712,6 +712,7 @@ fn spaces_are_denied_without_a_store_and_admissions_per_session_are_bounded() {
             feed: None,
             chat: false,
             history: Vec::new(),
+            earlier: Vec::new(),
         },
         "run-x",
         "/tmp/hatchling-test-space-run.sock".parse().unwrap(),

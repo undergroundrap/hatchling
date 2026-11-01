@@ -64,6 +64,11 @@ pub struct Config {
     /// (`HATCHLING_RUN_HISTORY`, WO-026): the broker's record of its last
     /// exchanges, oldest first, bounded. Empty for every other run.
     pub run_history: Vec<hatchling_core::conversation::ChatExchange>,
+    /// What the owner said earlier in a chat turn's conversation
+    /// (`HATCHLING_RUN_EARLIER`, WO-026): the broker's record of their
+    /// messages in exchanges past the history's bounds, oldest first,
+    /// bounded. Empty for every other run.
+    pub run_earlier: Vec<String>,
     /// The builder the operator names for each build kind
     /// (`HATCHLING_RUN_BUILDERS`, WO-032): what a chat turn may propose
     /// for the owner to approve. Empty for every other run, and then the
@@ -150,6 +155,8 @@ impl Config {
         )?;
         let run_history =
             parse_run_history(get(env::HATCHLING_RUN_HISTORY.name).as_deref(), run_chat)?;
+        let run_earlier =
+            parse_run_earlier(get(env::HATCHLING_RUN_EARLIER.name).as_deref(), run_chat)?;
         let run_builders =
             parse_run_builders(get(env::HATCHLING_RUN_BUILDERS.name).as_deref(), run_chat)?;
         Ok(Self {
@@ -166,6 +173,7 @@ impl Config {
             run_subagent,
             run_chat,
             run_history,
+            run_earlier,
             run_builders,
         })
     }
@@ -188,6 +196,24 @@ fn parse_run_history(
     }
     hatchling_core::conversation::parse_history(raw).map_err(|reason| Error::InvalidConfig {
         key: "HATCHLING_RUN_HISTORY",
+        reason,
+    })
+}
+
+/// `HATCHLING_RUN_EARLIER`: what the owner said earlier in a chat turn's
+/// conversation, which only a chat turn may be given.
+fn parse_run_earlier(value: Option<&str>, run_chat: bool) -> Result<Vec<String>, Error> {
+    let Some(raw) = value else {
+        return Ok(Vec::new());
+    };
+    if !run_chat {
+        return Err(Error::InvalidConfig {
+            key: "HATCHLING_RUN_EARLIER",
+            reason: String::from("only a chat run (HATCHLING_RUN_CHAT=1) has a conversation"),
+        });
+    }
+    hatchling_core::conversation::parse_earlier(raw).map_err(|reason| Error::InvalidConfig {
+        key: "HATCHLING_RUN_EARLIER",
         reason,
     })
 }
@@ -563,6 +589,39 @@ mod tests {
         ));
         assert!(parse_run_history(None, false).unwrap().is_empty());
         assert!(parse_run_history(Some("[]"), true).unwrap().is_empty());
+    }
+
+    /// WO-026: a chat turn reads what the owner said earlier; nothing
+    /// else may be given it, and more than the bounds isn't the broker's.
+    #[test]
+    fn only_a_chat_turn_reads_what_was_said_earlier() {
+        let mut vars = valid_vars();
+        assert!(Config::parse(lookup(&vars)).unwrap().run_earlier.is_empty());
+        vars.insert("HATCHLING_RUN_EARLIER", r#"["Call me Sam."]"#);
+        let refused = Config::parse(lookup(&vars)).unwrap_err();
+        assert!(
+            matches!(
+                &refused,
+                Error::InvalidConfig {
+                    key: "HATCHLING_RUN_EARLIER",
+                    ..
+                }
+            ),
+            "{refused:?}"
+        );
+        vars.insert("HATCHLING_RUN_CHAT", "1");
+        let config = Config::parse(lookup(&vars)).unwrap();
+        assert_eq!(config.run_earlier, ["Call me Sam."]);
+        vars.insert("HATCHLING_RUN_EARLIER", r#"[{"user":"q"}]"#);
+        assert!(matches!(
+            Config::parse(lookup(&vars)),
+            Err(Error::InvalidConfig {
+                key: "HATCHLING_RUN_EARLIER",
+                ..
+            })
+        ));
+        assert!(parse_run_earlier(None, false).unwrap().is_empty());
+        assert!(parse_run_earlier(Some("[]"), true).unwrap().is_empty());
     }
 
     /// WO-032: a chat turn reads the builders it was told; nothing else
