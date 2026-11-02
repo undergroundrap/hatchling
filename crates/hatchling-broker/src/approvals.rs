@@ -272,7 +272,9 @@ impl<A: Clone> Approvals<A> {
             .requests
             .values()
             .filter(|request| {
-                request.state == State::Pending && request.task == task && ends_with_it(&request.run)
+                request.state == State::Pending
+                    && request.task == task
+                    && ends_with_it(&request.run)
             })
             .map(|request| request.id.clone())
             .collect();
@@ -372,8 +374,7 @@ impl<A: Clone> Ledger<A> {
             ledger.made.pop_front();
         }
         ledger.paused.retain(|_, until| now < *until);
-        if ledger.paused.contains_key(&proposal.task)
-            || ledger.made.len() >= MAX_REQUESTS_PER_HOUR
+        if ledger.paused.contains_key(&proposal.task) || ledger.made.len() >= MAX_REQUESTS_PER_HOUR
         {
             return Err(Refusal::Paused);
         }
