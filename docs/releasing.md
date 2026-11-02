@@ -17,7 +17,7 @@ How a Hatchling version is cut and published, and how a new crate gets onto crat
    - all required checks green, including "crates.io dry run", and the `release` workflow's dry run (it runs on a pull request that changes `Cargo.toml` or `Cargo.lock`): both builds of each target the same, the SBOMs made, and the notes taken from the version's section;
    - the [release security checklist](release-security-checklist.md) run, each item's result recorded in the pull request's description.
 2. **Merge it**, and wait for `main`'s CI to pass.
-3. **Tag the merge commit and push the tag.** That's the release:
+3. **Tag the merge commit and push the tag.** That's the release. Only an admin can create, move or delete a `v*` tag (the "Protect release tags" rule set), and only a `v*` tag's run may use the `release` environment, the one crates.io trusts:
 
    ```bash
    git fetch origin && git tag -a vX.Y.Z origin/main -m "Hatchling X.Y.Z"

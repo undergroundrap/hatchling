@@ -6,6 +6,8 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-02
+
 ### Added
 
 - **Release binaries you can check, and rebuild to the same bytes** (WO-013). A version tag on `main` now releases it: the `release` workflow builds `hatchling-broker`, `hatchling-agent`, `hatchling-host`, `hatchling-browser` and `hatchling` for x86_64 and aarch64 Linux, with the pinned toolchain and `Cargo.lock`'s dependencies, each target twice on separate runners from different paths, and releases only if the two builds are byte-identical. Each program comes with a CycloneDX SBOM, and its dependency list embedded by `cargo auditable`; every file, `SHA256SUMS` included, has a build-provenance attestation, so `gh attestation verify <file> --repo undergroundrap/hatchling` checks it was built by this repository's release workflow from the tag. The release notes are the version's section of this file, and a tag without one, or whose commit isn't on `main`, is refused. crates.io publishing moved into the same workflow, still through trusted publishing. [Releasing](docs/releasing.md) says how to cut a release, verify one, and reproduce its builds.
@@ -355,7 +357,8 @@ The first public release. [Release notes](https://github.com/undergroundrap/hatc
 
 Published in [the trust boundary](docs/arch/trust-boundary.md#known-limitations), each with a work order and an issue.
 
-[Unreleased]: https://github.com/undergroundrap/hatchling/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/undergroundrap/hatchling/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/undergroundrap/hatchling/releases/tag/v0.5.0
 [0.4.0]: https://github.com/undergroundrap/hatchling/releases/tag/v0.4.0
 [0.3.0]: https://github.com/undergroundrap/hatchling/releases/tag/v0.3.0
 [0.2.0]: https://github.com/undergroundrap/hatchling/releases/tag/v0.2.0
