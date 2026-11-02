@@ -930,8 +930,10 @@ impl CellConfig {
 
     /// Builds a cell config for tests without touching process
     /// environment: the agent binary, cell id, and socket directory
-    /// are given directly; the uid base defaults exactly as
-    /// [`CellConfig::from_env`] would, and must equal `agent_uid`.
+    /// are given directly, and the uid base is `agent_uid`, as a
+    /// deployment sets `HATCHLING_CELL_UID_BASE` to its
+    /// `HATCHLING_AGENT_UID` (the README's root setup; unprivileged, the
+    /// only base there is). It must be a map the backend accepts.
     ///
     /// This is `pub` so integration tests can construct the exact
     /// config `spawn_cell` needs. Production code uses `from_env`.
@@ -949,6 +951,7 @@ impl CellConfig {
         let get = |key: &str| match key {
             "HATCHLING_AGENT_BIN" => Some(agent_bin.to_string_lossy().into_owned()),
             "HATCHLING_CELL_ID" => Some(cell_id.to_owned()),
+            "HATCHLING_CELL_UID_BASE" => Some(agent_uid.to_string()),
             _ => None,
         };
         let socket_path = socket_dir.join("broker.sock");
