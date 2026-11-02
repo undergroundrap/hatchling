@@ -1,6 +1,6 @@
 # WO-013: A release process: signed, reproducible binaries and an SBOM
 
-**Status:** QUEUED
+**Status:** IN-PROGRESS. The workflow, the scripts and the docs are in; the criteria that need a real release are checked at the first one (0.5.0).
 **Area:** `.github/workflows/`, `Cargo.toml` (release profile), `docs/`, `README.md`, `CHANGELOG.md`
 **Issue:** [#22](https://github.com/undergroundrap/hatchling/issues/22)
 **Trust boundary:** yes
@@ -39,7 +39,23 @@ See [TEMPLATE.md](TEMPLATE.md#gates).
 
 ## Evidence
 
-Filled in at close.
+So far, before the first release:
+
+- **What the comparison needs.** Two release builds of 3f2edc78 in a sandbox, from different checkout paths and `CARGO_HOME`s:
+  - with only `CARGO_HOME` remapped, all five programs were byte-identical;
+  - with nothing remapped, every program differed, by `CARGO_HOME`'s path in dependencies' panic messages (147 in `hatchling-broker`).
+
+  The checkout's path never appears, since cargo names a workspace's files relative to it. So the build remaps `CARGO_HOME` alone. `SOURCE_DATE_EPOCH` and `codegen-units = 1` weren't needed: nothing in the build reads the time, and the default codegen units gave the same bytes every time.
+- **The dry run on GitHub's runners** (pull request #270). Each target was built twice, by `cargo auditable`, on separate runners from different paths and `CARGO_HOME`s, and all ten programs were byte-identical. The SBOMs came out for all ten program/target pairs, and the notes from 0.4.0's section.
+- **glibc.** Built on Ubuntu 24.04, `hatchling-broker` and `hatchling` needed glibc 2.39, for the standard library's weak `pidfd_spawnp` and `pidfd_getpid`: the version is required even though the symbols are weak. Built on 22.04, every program needs 2.34.
+- **`scripts/release-notes.sh`.** Its tests cover:
+  - a section alone;
+  - the last section ending at the compare links;
+  - `--latest`;
+  - refusals for a missing, undated, empty or doubled section;
+  - usage errors.
+
+  Breaking the dot-escaping in its heading match fails the "dot is a dot" case.
 
 ## Notes
 
