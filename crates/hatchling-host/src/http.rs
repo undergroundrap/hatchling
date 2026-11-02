@@ -268,7 +268,7 @@ fn respond(
 ) -> Result<(), Error> {
     writer.write_all(
         format!(
-            "HTTP/1.1 {status} {phrase}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n",
+            "HTTP/1.1 {status} {phrase}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: frame-ancestors 'self'\r\nX-Frame-Options: SAMEORIGIN\r\nConnection: close\r\n\r\n",
             body.len()
         )
         .as_bytes(),
@@ -426,6 +426,10 @@ mod tests {
         assert!(index.contains("Content-Type: text/html; charset=utf-8\r\n"));
         assert!(index.contains("Content-Length: 9\r\n"));
         assert!(index.contains("X-Content-Type-Options: nosniff\r\n"));
+        // No other site may frame the app: a page laid over it could take
+        // the owner's clicks.
+        assert!(index.contains("Content-Security-Policy: frame-ancestors 'self'\r\n"));
+        assert!(index.contains("X-Frame-Options: SAMEORIGIN\r\n"));
         assert!(index.ends_with("\r\n\r\n<p>hi</p>"));
         assert!(served("GET /assets/app.js HTTP/1.1\r\n\r\n").contains("text/javascript"));
         for missing in ["/linked.txt", "/assets", "/nope.html", "/../x"] {
@@ -447,7 +451,7 @@ mod tests {
         respond(&mut out, 418, "I'm a teapot", "text/plain", b"tea").unwrap();
         assert_eq!(
             String::from_utf8(out).unwrap(),
-            "HTTP/1.1 418 I'm a teapot\r\nContent-Type: text/plain\r\nContent-Length: 3\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\ntea"
+            "HTTP/1.1 418 I'm a teapot\r\nContent-Type: text/plain\r\nContent-Length: 3\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: frame-ancestors 'self'\r\nX-Frame-Options: SAMEORIGIN\r\nConnection: close\r\n\r\ntea"
         );
     }
 
