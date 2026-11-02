@@ -849,7 +849,11 @@ mod tests {
 
     /// Each case is `manifest` with `pointer` set (or removed), refused
     /// naming `field`, its reason holding `reason`.
-    fn refuses_each(scratch: &Scratch, good: &Value, cases: Vec<(&str, Option<Value>, &str, &str)>) {
+    fn refuses_each(
+        scratch: &Scratch,
+        good: &Value,
+        cases: Vec<(&str, Option<Value>, &str, &str)>,
+    ) {
         for (pointer, value, field, reason) in cases {
             let refused = refused_as(scratch, &with(good.clone(), pointer, value));
             assert_eq!(refused.0, field, "{pointer}: {refused:?}");
@@ -868,15 +872,50 @@ mod tests {
             &good,
             vec![
                 ("/version", Some(json!(2)), "version", "the one format"),
-                ("/name", Some(json!("OpenCode")), "name", "isn't a harness name"),
+                (
+                    "/name",
+                    Some(json!("OpenCode")),
+                    "name",
+                    "isn't a harness name",
+                ),
                 ("/name", Some(json!("other")), "name", "the file's name"),
-                ("/binary/sha256", Some(json!(other_sha)), "binary.sha256", "hashes to"),
-                ("/binary/sha256", Some(json!("abc")), "binary.sha256", "64 hexadecimal"),
-                ("/binary/path", Some(json!("opencode")), "binary.path", "absolute"),
-                ("/binary/path", Some(json!(gone)), "binary.path", "unreadable"),
+                (
+                    "/binary/sha256",
+                    Some(json!(other_sha)),
+                    "binary.sha256",
+                    "hashes to",
+                ),
+                (
+                    "/binary/sha256",
+                    Some(json!("abc")),
+                    "binary.sha256",
+                    "64 hexadecimal",
+                ),
+                (
+                    "/binary/path",
+                    Some(json!("opencode")),
+                    "binary.path",
+                    "absolute",
+                ),
+                (
+                    "/binary/path",
+                    Some(json!(gone)),
+                    "binary.path",
+                    "unreadable",
+                ),
                 ("/api", Some(json!("gemini")), "api", "anthropic or openai"),
-                ("/destination", Some(json!("a:1,b:2")), "destination", "one vendor API"),
-                ("/destination", Some(json!("")), "destination", "one vendor API"),
+                (
+                    "/destination",
+                    Some(json!("a:1,b:2")),
+                    "destination",
+                    "one vendor API",
+                ),
+                (
+                    "/destination",
+                    Some(json!("")),
+                    "destination",
+                    "one vendor API",
+                ),
                 ("/unknown", Some(json!(1)), "json", "unknown field"),
                 ("/args", None, "json", "missing field"),
             ],
@@ -891,22 +930,67 @@ mod tests {
             &scratch,
             &good,
             vec![
-                ("/args/3", Some(json!("go")), "args", "no {task} placeholder"),
+                (
+                    "/args/3",
+                    Some(json!("go")),
+                    "args",
+                    "no {task} placeholder",
+                ),
                 ("/args/2", Some(json!("{task}")), "args", "more than once"),
-                ("/args/0", Some(json!("--key={key}")), "args", "goes in the environment"),
+                (
+                    "/args/0",
+                    Some(json!("--key={key}")),
+                    "args",
+                    "goes in the environment",
+                ),
                 ("/args/0", Some(json!("a\u{0}b")), "args", "NUL"),
-                ("/env/0/name", Some(json!("PATH")), "env", "the cell's to set"),
-                ("/env/0/name", Some(json!("HATCHLING_X")), "env", "the cell's to set"),
-                ("/env/0/name", Some(json!("1BAD")), "env", "isn't a variable name"),
-                ("/env/1/name", Some(json!("ANTHROPIC_API_KEY")), "env", "set twice"),
-                ("/env/1/value", Some(json!("{task}")), "env", "goes in an argument"),
-                ("/env/0/value", Some(json!("fixed")), "env", "no {key} placeholder"),
-                ("/env/1/value", Some(json!("{}")), "env", "nothing points the CLI at its relay"),
+                (
+                    "/env/0/name",
+                    Some(json!("PATH")),
+                    "env",
+                    "the cell's to set",
+                ),
+                (
+                    "/env/0/name",
+                    Some(json!("HATCHLING_X")),
+                    "env",
+                    "the cell's to set",
+                ),
+                (
+                    "/env/0/name",
+                    Some(json!("1BAD")),
+                    "env",
+                    "isn't a variable name",
+                ),
+                (
+                    "/env/1/name",
+                    Some(json!("ANTHROPIC_API_KEY")),
+                    "env",
+                    "set twice",
+                ),
+                (
+                    "/env/1/value",
+                    Some(json!("{task}")),
+                    "env",
+                    "goes in an argument",
+                ),
+                (
+                    "/env/0/value",
+                    Some(json!("fixed")),
+                    "env",
+                    "no {key} placeholder",
+                ),
+                (
+                    "/env/1/value",
+                    Some(json!("{}")),
+                    "env",
+                    "nothing points the CLI at its relay",
+                ),
             ],
         );
         // The relay may be named in an argument instead.
         let relayed_in_args = with(
-            with(good.clone(), "/env/1", None),
+            with(good, "/env/1", None),
             "/args/0",
             Some(json!("--base={relay}")),
         );
