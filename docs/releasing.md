@@ -32,13 +32,14 @@ How a Hatchling version is cut and published, and how a new crate gets onto crat
    - **It builds:**
      - the released programs (`hatchling-broker`, `hatchling-agent`, `hatchling-host`, `hatchling-browser` and `hatchling`) for `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`, with [`scripts/release-artifacts.sh`](../scripts/release-artifacts.sh): the pinned toolchain, `--locked`, and `cargo auditable`;
      - each target twice, on separate runners, from different checkout paths and `CARGO_HOME`s; the release goes out only if the two builds are byte-identical.
+   - **It builds the app** (`scripts/release-artifacts.sh ui`) twice, from different paths, into `hatchling-ui.tar.gz`, and refuses to release unless the two are byte-identical.
    - **It describes them:** a CycloneDX SBOM per program and target, `SHA256SUMS` of every file, and a build-provenance attestation of each file, SBOMs and `SHA256SUMS` included.
    - **It publishes:**
      - the GitHub release, with those files and the version's changelog section as its notes;
      - every crate on crates.io: each is packaged and built from its package in a job with no token, then a short-lived token through trusted publishing, and [`scripts/publish-crates.sh --existing-only --no-verify`](../scripts/publish-crates.sh), which publishes each crate in dependency order without building it, and skips any already there at this version.
 
    No crates.io token is stored anywhere, and no job that builds, or runs a dependency's build script or macro, holds a token that can write, sign or publish. Watch the run under Actions.
-5. **Check:** the release has its 23 files (10 programs, 10 SBOMs, 2 build infos and `SHA256SUMS`); one binary verifies as [below](#verifying-a-release); each crate shows the new version on crates.io, and docs.rs builds its docs. A warning on the crates.io job means a crate new to crates.io was skipped; see [Adding a crate](#adding-a-crate).
+5. **Check:** the release has its 24 files (10 programs, 10 SBOMs, 2 build infos, the app and `SHA256SUMS`); one binary verifies as [below](#verifying-a-release); each crate shows the new version on crates.io, and docs.rs builds its docs. A warning on the crates.io job means a crate new to crates.io was skipped; see [Adding a crate](#adding-a-crate).
 
 If the workflow fails before the GitHub release, nothing was published: fix the cause on `main`, delete the tag (`git push origin :vX.Y.Z`, then `git tag -d vX.Y.Z`) and tag the fixed commit. If it fails in the crates.io job, the crates it already published stay published (crates.io never deletes a version): fix the cause, then re-run the job; the script skips what's already there and publishes the rest. A bad version can be **yanked** on crates.io (`cargo yank --version X.Y.Z <crate>`), which stops new projects from picking it up without breaking existing lockfiles; then release a fixed version.
 
@@ -48,6 +49,7 @@ Each release from 0.5.0 on has, for each target (`x86_64-unknown-linux-gnu`, `aa
 - the programs, each `<program>-<target>`;
 - an SBOM of each, `<program>-<target>.cdx.json`;
 - `build-info-<target>.txt`, the toolchain and runner image that built them, and the oldest glibc each runs on (2.34: Debian 12, Ubuntu 22.04, RHEL 9 and later);
+- `hatchling-ui.tar.gz`, the app `hatchling-host` serves, built twice like the programs: extract it and point `HATCHLING_HOST_UI` at its `ui` directory;
 - and `SHA256SUMS`, of all of them.
 
 **That it's the file the release published:**
