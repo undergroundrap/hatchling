@@ -103,6 +103,8 @@ pub use space_ops::{EndAdmissions, MediaMeta, SealedSpaceStore, SpaceSession, ha
 #[cfg(test)]
 mod test_log;
 #[cfg(test)]
+mod test_port;
+#[cfg(test)]
 mod test_socket;
 pub mod trust_roots;
 pub mod vault_access;
