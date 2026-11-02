@@ -802,6 +802,13 @@ impl Pipeline<'_> {
         if let Err(reason) = idea.refine(text, self.now) {
             return ArtifactResult::IdeaRefused { reason };
         }
+        // A session with ideas alone (a chat run) may not say an idea is
+        // the owner's words (`beyond_ideas`), so text it wrote never keeps
+        // a label saying where the owner's came from: the owner would see
+        // it on their approval card as what they said.
+        if self.config.artifacts.ideas_only {
+            idea.origin = IdeaOrigin::Unstated;
+        }
         match self.store.put_idea(&idea) {
             Ok(true) => ArtifactResult::IdeaSaved {
                 idea: idea.idea,
@@ -1424,6 +1431,61 @@ mod tests {
             accesses.last().map(|access| access.outcome),
             Some(crate::vault_access::Outcome::Failed)
         );
+    }
+
+    /// A session with ideas alone (a chat run) refines an idea under no
+    /// label saying it's the owner's words; the agent's own session keeps
+    /// the label.
+    #[test]
+    fn refining_with_ideas_alone_takes_the_owners_label_off() {
+        fn pipeline<'a>(
+            config: &'a Config,
+            key: &'a MasterKey,
+            skills: &'a Skills,
+        ) -> Pipeline<'a> {
+            Pipeline {
+                config,
+                key,
+                skills,
+                hub: None,
+                scope: String::from("session-1"),
+                store: SealedArtifactStore::new(&config.artifacts.root, key),
+                now: 1,
+            }
+        }
+        let root = std::env::temp_dir().join(format!(
+            "hatchling-test-artifacts-refine-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::default();
+        let session = |ideas_only| {
+            let mut config = crate::api_auth::tests::owner_config(None);
+            config.artifacts.root = root.clone();
+            config.artifacts.ideas_only = ideas_only;
+            config
+        };
+        let (config, ideas) = (session(false), session(true));
+        let owner = pipeline(&config, &key, &skills);
+        let ArtifactResult::IdeaSaved { idea, .. } =
+            owner.capture_idea("Short zine", IdeaOrigin::Chat)
+        else {
+            unreachable!("captured")
+        };
+        let origin = || owner.idea(&idea).map(|idea| idea.origin);
+        assert!(matches!(
+            owner.refine_idea(&idea, "Shorter zine"),
+            ArtifactResult::IdeaSaved { revision: 2, .. }
+        ));
+        assert_eq!(origin(), Ok(IdeaOrigin::Chat), "the agent's own session");
+        assert!(matches!(
+            pipeline(&ideas, &key, &skills).refine_idea(&idea, "The run's own zine"),
+            ArtifactResult::IdeaSaved { revision: 3, .. }
+        ));
+        let relabelled = origin();
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(relabelled, Ok(IdeaOrigin::Unstated));
     }
 
     #[test]

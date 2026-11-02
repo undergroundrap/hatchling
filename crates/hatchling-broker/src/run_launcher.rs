@@ -281,6 +281,16 @@ pub fn scoped_config(
     // A chat has its person there to decide on a site (WO-028); a
     // scheduled run asks, and goes on without the page.
     run.web.attended = request.chat;
+    // The owner's signed-in profiles, and the sign-ins filled into them,
+    // are used only where the owner is there to see it: their agent's own
+    // session and a chat (WO-030). A scheduled run, a hook's and a
+    // subagent act unattended, under the grants they were given, and none
+    // of those is the owner's sign-ins: they browse signed out, a site put
+    // to the owner as for any other page.
+    if !request.chat {
+        run.web.profiles = PathBuf::new();
+        run.web.credentials = PathBuf::new();
+    }
     run.vault.grants = grants
         .iter()
         .filter_map(|grant| match grant {
@@ -1241,6 +1251,26 @@ mod tests {
                 .web
                 .attended
         );
+    }
+
+    /// The owner's signed-in profiles and sign-ins go to a chat run, which
+    /// the owner is there for, and to no other run: a scheduled run's
+    /// grants never include them.
+    #[test]
+    fn only_a_chat_run_browses_signed_in() {
+        let mut broker = config();
+        broker.web.profiles = PathBuf::from("/srv/h/profiles");
+        broker.web.credentials = PathBuf::from("/srv/h/sign-ins");
+        let scheduled = scoped_config(&broker, &request(Vec::new()), "run-1", run_socket());
+        assert_eq!(scheduled.web.profiles, PathBuf::new());
+        assert_eq!(scheduled.web.credentials, PathBuf::new());
+        let chat = RunRequest {
+            chat: true,
+            ..request(Vec::new())
+        };
+        let chat = scoped_config(&broker, &chat, "run-1", run_socket());
+        assert_eq!(chat.web.profiles, broker.web.profiles);
+        assert_eq!(chat.web.credentials, broker.web.credentials);
     }
 
     /// WO-032: a chat run gets the build store with ideas alone, when the

@@ -22,7 +22,7 @@
 
 use std::io::{Read as _, Write as _};
 use std::os::fd::{AsFd as _, OwnedFd};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
@@ -155,7 +155,10 @@ impl BrowserLauncher {
         let snapshot = self.snapshot()?;
         let run_dir = RunDir::create()?;
         let handoff_path = run_dir.path().join("relay.sock");
-        let handoff = UnixListener::bind(&handoff_path)
+        // The broker's alone, whatever its umask: whoever connects first
+        // hands in the browser's proxy listener, so no other user may.
+        let handoff = crate::listener::OwnerOnlyListener::bind(&handoff_path)
+            .and_then(|bound| bound.with_mode(0o600))
             .map_err(|error| format!("cannot make the relay handoff: {error}"))?;
         let mut config = self.cell_config(cell_id, &snapshot, handoff_path)?;
         config.sign_ins_for = sign_ins_for(profile, crate::spawner::spawner());

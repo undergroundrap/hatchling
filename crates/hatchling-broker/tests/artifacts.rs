@@ -1685,6 +1685,45 @@ fn the_owners_approval_in_the_app_builds_exactly_what_was_proposed() {
     );
 }
 
+/// A chat run can't say an idea is the owner's words, so one it rewrites
+/// no longer says so either: the owner never sees text a run wrote under a
+/// label saying they said it. The agent's own session keeps the label.
+#[test]
+fn an_idea_a_chat_run_rewrites_is_no_longer_labelled_the_owners() {
+    let mut world = World::new("chat-refine");
+    world.config.artifacts.builders =
+        std::collections::BTreeMap::from([(String::from("page"), String::from(PAGE_BUILDER))]);
+    let origin = |world: &World| world.summary().map(|summary| summary.origin);
+    let owners = Some(String::from("captured from chat"));
+    let (idea, _) = saved(world.capture("Short zine", Some(IdeaSource::Chat)));
+    assert_eq!(origin(&world), owners);
+    assert_eq!(saved(world.refine(&idea, "Shorter zine")).1, 2);
+    assert_eq!(origin(&world), owners, "the agent's own session");
+    let chat = hatchling_scheduler::RunRequest {
+        schedule_id: String::from("chat"),
+        task: String::from("t"),
+        grants: Vec::new(),
+        due: hatchling_scheduler::Timestamp::from_second(1_790_000_000).unwrap(),
+        missed: false,
+        channel: String::from("local"),
+        depth: 0,
+        event: None,
+        space: None,
+        feed: None,
+        chat: true,
+        history: Vec::new(),
+        earlier: Vec::new(),
+    };
+    let socket = "/tmp/hatchling-test-artifacts-refine.sock".parse().unwrap();
+    world.config = hatchling_broker::scoped_config(&world.config, &chat, "run-c", socket);
+    assert!(world.config.artifacts.ideas_only);
+    assert_eq!(saved(world.refine(&idea, "The run's own zine")).1, 3);
+    assert_eq!(
+        origin(&world),
+        Some(String::from("captured (source not stated)"))
+    );
+}
+
 /// WO-032, with real builder cells: a chat run's session has ideas alone.
 /// It can't build, deliver, describe, or say an idea is the owner's; it
 /// proposes only with the operator's builder for the kind. Its proposal

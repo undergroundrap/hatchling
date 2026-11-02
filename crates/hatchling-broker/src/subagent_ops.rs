@@ -698,6 +698,8 @@ mod tests {
     fn a_childs_session_holds_its_capabilities_and_its_depth_only() {
         let mut parent = config();
         parent.scheduler.model_reasoning = hatchling_core::ModelReasoning::Disabled;
+        parent.web.profiles = std::path::PathBuf::from("/srv/h/profiles");
+        parent.web.credentials = std::path::PathBuf::from("/srv/h/sign-ins");
         let socket: SocketPath = "/tmp/hatchling-child/broker.sock".parse().unwrap();
         let child = child_config(&parent, &[vault("app-token")], "run-1", socket.clone());
         assert_eq!(held_grants(&child), [vault("app-token")].into());
@@ -711,6 +713,10 @@ mod tests {
         assert!(!child.scheduler.enabled());
         assert!(child.egress.grants.is_empty());
         assert!(child.channels.is_empty());
+        // Not the owner's signed-in profiles, or their sign-ins: no
+        // capability a child is given covers them.
+        assert!(child.web.profiles.as_os_str().is_empty());
+        assert!(child.web.credentials.as_os_str().is_empty());
         let none = child_config(&parent, &[], "run-2", socket);
         assert!(held_grants(&none).is_empty());
         assert_eq!(
