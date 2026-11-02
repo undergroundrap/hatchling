@@ -62,6 +62,38 @@ pub enum Approved {
     Activation(ActivationRun),
     /// A site the agent may read, which the session that asked reads.
     Site(SiteVisit),
+    /// A use of the owner's signed-in profile, which the session that
+    /// asked makes: browsing signed in, or an act there.
+    Signed(SignedUse),
+}
+
+/// The owner's signed-in profile the agent asks to use.
+///
+/// It's to browse its sites signed in, or to act there in a way that could
+/// send or change something. The session that asked makes the use; the
+/// worker never does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedUse {
+    /// The profile, by the broker's id.
+    pub profile: String,
+}
+
+/// A signed-in use put to the owner: the record the approval binds, what a
+/// denial covers, and the card they're shown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedAsk {
+    /// The profile it uses.
+    pub profile: String,
+    /// The record the approval binds: the same use asked again is the same
+    /// request, and anything changed is a new one.
+    pub action: serde_json::Value,
+    /// What a denial covers.
+    pub fingerprint: serde_json::Value,
+    /// The card's summary.
+    pub summary: String,
+    /// The card's fields: the broker's first, then the agent's and the
+    /// page's words, labelled as theirs.
+    pub fields: Vec<ConfirmationField>,
 }
 
 /// A site the agent asks to read, as the owner is asked about it (WO-028).
@@ -255,6 +287,56 @@ impl Board {
             self.publish(UiEventBody::Confirmation(site_confirmation(
                 site, url, reason, led, always, visit, &requested,
             )));
+        }
+        Ok(requested)
+    }
+
+    /// Puts the signed-in use `ask` to the owner for `task`'s session, at
+    /// `now`: its card goes out unless the same use already waits. Approved,
+    /// it's the session that asked that makes it, once.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal`]: the owner said no to this use, requests are paused or
+    /// full, or the record has no canonical form.
+    pub fn propose_signed(
+        &self,
+        ask: SignedAsk,
+        task: &str,
+        now: i64,
+    ) -> Result<Requested, Refusal> {
+        let SignedAsk {
+            profile,
+            action,
+            fingerprint,
+            summary,
+            fields,
+        } = ask;
+        let requested = self.approvals.propose(
+            Proposal {
+                run: Approved::Signed(SignedUse { profile }),
+                action,
+                fingerprint,
+                task: task.to_owned(),
+                session: false,
+                always: false,
+            },
+            now,
+        )?;
+        if requested.new {
+            self.publish(UiEventBody::Confirmation(ConfirmationRequest {
+                confirmation_id: requested.id.clone(),
+                revision: requested.revision,
+                chat_id: Some(String::from(CONFIRMATION_CHAT)),
+                summary,
+                expires_at: Timestamp::from_second(requested.expires_at)
+                    .ok()
+                    .map(|at| at.to_string()),
+                digest: requested.digest.clone(),
+                fields,
+                session: false,
+                always: false,
+            }));
         }
         Ok(requested)
     }
@@ -543,10 +625,11 @@ pub fn run_approved(
     let site = board
         .approvals()
         .get(id)
-        .is_some_and(|request| matches!(request.run(), Approved::Site(_)));
+        .is_some_and(|request| matches!(request.run(), Approved::Site(_) | Approved::Signed(_)));
     if site {
-        // A site is read by the session that asked, never by the worker,
-        // and its approval is left for that session.
+        // A site is read, and a signed-in use made, by the session that
+        // asked, never by the worker: its approval is left for that
+        // session.
         return format!("Approval {id} was not run: it is not the worker's to run.");
     }
     let Some((Approved::Activation(run), claim)) = board.approvals().claim(id) else {

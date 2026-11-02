@@ -113,6 +113,18 @@ impl std::fmt::Debug for WebSession {
 }
 
 impl WebSession {
+    /// The session's task, as the broker knows it: whose approvals are
+    /// whose.
+    pub(crate) fn task(&self) -> &str {
+        &self.task
+    }
+
+    /// How long the session waits for the owner's decision: a person is
+    /// there in a chat, and nobody is in a scheduled run.
+    pub(crate) const fn wait(&self) -> Duration {
+        self.wait
+    }
+
     /// The web of the session the broker knows as `task`, under `config`:
     /// it waits for the owner only when a person is there, reads with
     /// `tls`, the egress proxy's roots (none while the web is off), and
@@ -401,7 +413,12 @@ fn ask_owner(
 
 /// Waits up to `wait` for the owner to approve request `id` for `site`:
 /// `Ok` once approved, or what the agent is told.
-fn decided(board: &Board, id: &str, site: &str, wait: Duration) -> Result<(), WebResult> {
+pub(crate) fn decided(
+    board: &Board,
+    id: &str,
+    site: &str,
+    wait: Duration,
+) -> Result<(), WebResult> {
     let until = Instant::now() + wait;
     loop {
         let state = board.approvals().get(id).map(|request| request.state);
