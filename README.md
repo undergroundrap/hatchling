@@ -90,6 +90,8 @@ The **broker** is the trusted side: it owns the vault, the proxy, the schedules 
 
 ## Quickstart
 
+**To install it as a service that starts at boot**, from a release, in three commands: [Install Hatchling as a service](docs/install.md). What follows runs the same pieces by hand, in a shell, to see each one.
+
 CI extracts and runs the shell blocks below as root with the stand-in model,
 and fails unless the agent's answer arrives.
 
