@@ -28,6 +28,7 @@ import os
 from pathlib import Path
 import pwd
 import re
+import time
 import secrets
 import subprocess
 import sys
@@ -187,15 +188,50 @@ def answered(page, task, answers):
         .filter(text => answers.some(answer => text.includes(answer))).pop()""", answers)
 
 
+# Whether an agent bubble after the user's `task` holds one of `answers`.
+HAS_ANSWERED = """([task, answers]) => {
+    const asked = [...document.querySelectorAll('.user-bubble')].find(b => b.textContent.includes(task));
+    return asked !== undefined && [...document.querySelectorAll('.agent-bubble')].some(b =>
+        answers.some(answer => b.textContent.includes(answer))
+        && (asked.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0);
+}"""
+
+
+def allowing(page, task, answers):
+    """Allows each card the owner is shown, as they would, until the agent
+    answers `task`: browsing signed in, and each act there that could send,
+    wait for the owner. Returns the summaries of the cards allowed."""
+    allowed = []
+    deadline = time.monotonic() + ANSWER_TIMEOUT_MS / 1000
+    while time.monotonic() < deadline:
+        if page.evaluate(HAS_ANSWERED, [task, answers]):
+            return allowed
+        allow = page.locator("[id^='approval-once-']:enabled").first
+        if allow.count():
+            request = (allow.get_attribute("id") or "").removeprefix("approval-once-")
+            card = page.locator(f"section[data-task-approval='{request}']")
+            allowed.append(card.inner_text() if card.count() else "")
+            screenshot(page, f"browser-7-asked-{len(allowed)}.png")
+            allow.click()
+        page.wait_for_timeout(500)
+    raise ValueError(f"The agent didn't answer; the owner allowed {len(allowed)} cards")
+
+
 def sign_in(page):
     """The owner asks the agent to sign in with the sign-in they kept: raise
-    unless it says the site signed it in."""
+    unless they're asked before it browses signed in and before it submits
+    the form, and it says the site signed it in."""
     from playwright.sync_api import expect
 
     page.keyboard.press("Escape")
     expect(page.locator("#message-input")).to_be_visible(timeout=STEP_TIMEOUT_MS)
     page.locator("#message-input").fill(SIGN_IN_TASK)
     page.get_by_role("button", name="Send message", exact=True).click()
+    allowed = allowing(page, SIGN_IN_TASK, [SIGNED_IN, NOT_SIGNED_IN])
+    if len(allowed) != 2:
+        raise ValueError(f"The owner was asked {len(allowed)} times, not twice: {allowed}")
+    if "signed in as you" not in allowed[0] or "signed in as you" not in allowed[1]:
+        raise ValueError(f"The cards weren't the signed-in ones: {allowed}")
     said = answered(page, SIGN_IN_TASK, [SIGNED_IN, NOT_SIGNED_IN])
     screenshot(page, "browser-7-signed-in.png")
     if SIGNED_IN not in said:

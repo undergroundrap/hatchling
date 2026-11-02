@@ -2238,7 +2238,7 @@ mod tests {
             &open("https://a.example/inbox"),
         );
         let BrowserResult::Waiting { request, site } = &answer else {
-            unreachable!("not put to the owner: {answer:?}");
+            unreachable!("not put to the owner");
         };
         assert_eq!(site, "https://a.example");
         assert!(
@@ -2284,7 +2284,7 @@ mod tests {
         );
         assert!(
             matches!(answer, BrowserResult::Waiting { .. }),
-            "{answer:?}"
+            "another session wasn't asked"
         );
     }
 
@@ -2316,7 +2316,7 @@ mod tests {
             &mut browser,
             &open("https://mail.example/compose"),
         );
-        assert!(matches!(opened, BrowserResult::Page { .. }), "{opened:?}");
+        assert!(matches!(opened, BrowserResult::Page { .. }), "the browser answered otherwise");
         let acts = |fake: &Fake| {
             fake.log
                 .lock()
@@ -2340,13 +2340,13 @@ mod tests {
                 },
             ),
         );
-        assert!(matches!(typed, BrowserResult::Page { .. }), "{typed:?}");
+        assert!(matches!(typed, BrowserResult::Page { .. }), "the browser answered otherwise");
         assert_eq!(acts(&fake), 1);
         // Sending is, with what was typed.
         let send = act(3, PageAction::Click);
         let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, &send);
         let BrowserResult::Waiting { request, .. } = &answer else {
-            unreachable!("sent without the owner: {answer:?}");
+            unreachable!("sent without the owner");
         };
         assert_eq!(acts(&fake), 1, "the browser was told to send");
         let card = signed_card(&config, &cards, request);
@@ -2366,15 +2366,15 @@ mod tests {
         ] {
             assert!(
                 card.contains(&(wanted.0.to_owned(), wanted.1.to_owned(), wanted.2)),
-                "{wanted:?} not in {card:?}"
+                "a field the owner should see isn't on the card"
             );
         }
         let allowed = as_owner_allows(&config, &keys, &mut web, &mut browser, &send);
-        assert!(matches!(allowed, BrowserResult::Page { .. }), "{allowed:?}");
+        assert!(matches!(allowed, BrowserResult::Page { .. }), "the browser answered otherwise");
         assert_eq!(acts(&fake), 2, "sent once the owner said yes");
         // Allowed once: the next send is asked again.
         let again = handle_browser_op(&config, &keys, &mut web, &mut browser, &send);
-        assert!(matches!(again, BrowserResult::Waiting { .. }), "{again:?}");
+        assert!(matches!(again, BrowserResult::Waiting { .. }), "the browser answered otherwise");
         // Enter is asked; a link followed isn't.
         let enter = handle_browser_op(
             &config,
@@ -2383,7 +2383,7 @@ mod tests {
             &mut browser,
             &act(1, PageAction::Key { key: Key::Enter }),
         );
-        assert!(!matches!(enter, BrowserResult::Page { .. }), "{enter:?}");
+        assert!(!matches!(enter, BrowserResult::Page { .. }), "the browser answered otherwise");
         let link = handle_browser_op(
             &config,
             &keys,
@@ -2391,7 +2391,7 @@ mod tests {
             &mut browser,
             &act(4, PageAction::Click),
         );
-        assert!(matches!(link, BrowserResult::Page { .. }), "{link:?}");
+        assert!(matches!(link, BrowserResult::Page { .. }), "the browser answered otherwise");
         assert_eq!(acts(&fake), 3, "only the link was followed");
     }
 
@@ -2429,7 +2429,7 @@ mod tests {
         handle_browser_op(&config, &keys, &mut web, &mut browser, &type_in("hello"));
         let shown = handle_browser_op(&config, &keys, &mut web, &mut browser, &send);
         let BrowserResult::Waiting { request, .. } = &shown else {
-            unreachable!("{shown:?}");
+            unreachable!("answered otherwise");
         };
         let board = crate::approval_board::board(&config);
         let asked = board.approvals().get(request).unwrap();
@@ -2454,7 +2454,7 @@ mod tests {
         let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, &send);
         assert!(
             !matches!(answer, BrowserResult::Page { .. }),
-            "sent what the owner wasn't shown: {answer:?}"
+            "sent what the owner wasn't shown"
         );
     }
 
