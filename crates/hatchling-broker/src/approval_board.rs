@@ -1078,7 +1078,10 @@ mod tests {
             (text.value.as_str(), text.source),
             ("an idea", FieldSource::Agent)
         );
-        assert_eq!(shown_text(&"x".repeat(SHOWN_CHARS)), "x".repeat(SHOWN_CHARS));
+        assert_eq!(
+            shown_text(&"x".repeat(SHOWN_CHARS)),
+            "x".repeat(SHOWN_CHARS)
+        );
         assert_eq!(
             shown_text(&"x".repeat(SHOWN_CHARS + 5)),
             format!("{}… (5 more characters)", "x".repeat(SHOWN_CHARS))
