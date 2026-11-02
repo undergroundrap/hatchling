@@ -1737,10 +1737,8 @@ mod tests {
 
     #[test]
     fn a_vendor_that_cannot_be_reached_is_a_bad_gateway() {
-        let closed = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = closed.local_addr().unwrap().port();
-        drop(closed);
-        let context = context(vendor(Wire::OpenAi, port));
+        let closed = crate::test_port::RefusingPort::new();
+        let context = context(vendor(Wire::OpenAi, closed.addr().port()));
         let (forwarded, answer) = relay_once(
             &context,
             b"GET /v1/models HTTP/1.1\r\nAuthorization: Bearer sk-ant-hatchling-cell\r\n\r\n",

@@ -955,10 +955,8 @@ mod tests {
     #[test]
     fn a_site_that_takes_no_connection_is_a_bad_gateway() {
         // A port nothing listens on: resolved, public, refused.
-        let closed = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let site = closed.local_addr().unwrap();
-        drop(closed);
-        let (proxy, addr) = proxy(site, "browser-proxy-closed");
+        let closed = crate::test_port::RefusingPort::new();
+        let (proxy, addr) = proxy(closed.addr(), "browser-proxy-closed");
         let (status, _) = ask(addr, b"CONNECT site.test:443 HTTP/1.1\r\n\r\n");
         assert_eq!(status, "HTTP/1.1 502 Bad Gateway");
         assert_eq!(
