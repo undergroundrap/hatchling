@@ -134,6 +134,111 @@ pub fn inherited_device(fd: i32) -> Result<std::fs::File, Error> {
     Ok(std::fs::File::from(owned))
 }
 
+/// What a descriptor handed to a cell as its stdio is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StdioKind {
+    /// A pipe.
+    Pipe,
+    /// `/dev/null`.
+    Null,
+    /// One end of an unnamed pair of local sockets.
+    PairedSocket,
+    /// A file opened to be written only: a log.
+    WrittenFile,
+    /// A terminal. A cell's filter refuses the `ioctl` that would type
+    /// into it (`TIOCSTI`).
+    Terminal,
+    /// The journal's stream socket, which systemd connects a service's
+    /// output to.
+    Journal,
+}
+
+impl StdioKind {
+    /// Whether it's only for output: a cell's stdout or stderr may be,
+    /// its stdin may not.
+    #[must_use]
+    pub const fn output_only(self) -> bool {
+        matches!(self, Self::WrittenFile | Self::Terminal | Self::Journal)
+    }
+}
+
+/// Where the journal takes a service's output.
+const JOURNAL_STREAM: &[u8] = b"/run/systemd/journal/stdout";
+
+/// What `fd` is, when it's one a cell may have as its stdio.
+///
+/// It may be a pipe, `/dev/null`, one end of an unnamed pair of local
+/// sockets, a file opened to be written only, a terminal, or the
+/// journal's stream socket.
+///
+/// Anything else is refused, since a cell's stdio reaches past its own
+/// root. An `O_PATH` descriptor or a directory lets its holder open what's
+/// under it (`openat(1, ".ssh/id_ed25519")`); a file it may read is the
+/// host's to read; another device is the host's hardware; and a socket
+/// connected to another named one (a container runtime's, a session bus)
+/// is a way into that service.
+///
+/// # Errors
+///
+/// [`Error::Process`] saying what it is instead, or why it can't be told.
+pub fn stdio_kind(fd: BorrowedFd<'_>) -> Result<StdioKind, Error> {
+    use rustix::fs::{FileType, OFlags};
+    let refused = |what: String| Error::Process {
+        operation: "check a cell's stdio",
+        source: std::io::Error::new(std::io::ErrorKind::InvalidInput, what),
+    };
+    let flags = rustix::fs::fcntl_getfl(fd)
+        .map_err(|err| refused(format!("its flags can't be read: {err}")))?;
+    if flags.contains(OFlags::PATH) {
+        return Err(refused(String::from(
+            "an O_PATH descriptor, which names a place rather than a stream",
+        )));
+    }
+    let stat =
+        rustix::fs::fstat(fd).map_err(|err| refused(format!("it can't be examined: {err}")))?;
+    match FileType::from_raw_mode(stat.st_mode) {
+        FileType::Fifo => Ok(StdioKind::Pipe),
+        FileType::CharacterDevice if stat.st_rdev == rustix::fs::makedev(1, 3) => {
+            Ok(StdioKind::Null)
+        }
+        FileType::CharacterDevice if rustix::termios::isatty(fd) => Ok(StdioKind::Terminal),
+        // Opened to be written only: what's in it isn't the cell's to read.
+        FileType::RegularFile
+            if flags.contains(OFlags::WRONLY) && !flags.contains(OFlags::RDWR) =>
+        {
+            Ok(StdioKind::WrittenFile)
+        }
+        // An unnamed peer, as a socket pair's is: no address at all, or an
+        // empty one. A named or an abstract one is another service's.
+        FileType::Socket => match rustix::net::getpeername(fd) {
+            Ok(None) => Ok(StdioKind::PairedSocket),
+            Ok(Some(rustix::net::SocketAddrAny::Unix(peer)))
+                if peer.path().is_none_or(|path| path.to_bytes().is_empty())
+                    && peer.abstract_name().is_none_or(<[u8]>::is_empty) =>
+            {
+                Ok(StdioKind::PairedSocket)
+            }
+            Ok(Some(rustix::net::SocketAddrAny::Unix(peer)))
+                if peer
+                    .path()
+                    .is_some_and(|path| path.to_bytes() == JOURNAL_STREAM) =>
+            {
+                Ok(StdioKind::Journal)
+            }
+            Ok(Some(_)) => Err(refused(String::from(
+                "a socket connected to a named one, or not a local one",
+            ))),
+            Err(err) => Err(refused(format!("a socket with no peer: {err}"))),
+        },
+        other @ (FileType::RegularFile
+        | FileType::Directory
+        | FileType::Symlink
+        | FileType::CharacterDevice
+        | FileType::BlockDevice
+        | FileType::Unknown) => Err(refused(format!("a {other:?}"))),
+    }
+}
+
 /// Puts `fds` on the descriptor numbers `first`, `first + 1`, and so on,
 /// in order, each open across the next exec.
 ///
@@ -302,6 +407,89 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    /// A cell's stdio is a pipe, `/dev/null` or a socket pair's end, and
+    /// nothing else: not a place to open files under, a file, another
+    /// device, or a socket connected to a named one.
+    #[test]
+    fn a_cells_stdio_is_a_stream_and_nothing_else() {
+        use std::os::linux::net::SocketAddrExt as _;
+        use std::os::unix::net::{UnixListener, UnixStream};
+        let (read, write) = pipe().unwrap();
+        assert_eq!(stdio_kind(read.as_fd()).unwrap(), StdioKind::Pipe);
+        assert_eq!(stdio_kind(write.as_fd()).unwrap(), StdioKind::Pipe);
+        let null = std::fs::File::open("/dev/null").unwrap();
+        assert_eq!(stdio_kind(null.as_fd()).unwrap(), StdioKind::Null);
+        for kind in [StdioKind::Pipe, StdioKind::Null, StdioKind::PairedSocket] {
+            assert!(!kind.output_only(), "{kind:?}");
+        }
+        for kind in [
+            StdioKind::WrittenFile,
+            StdioKind::Terminal,
+            StdioKind::Journal,
+        ] {
+            assert!(kind.output_only(), "{kind:?}");
+        }
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        assert_eq!(stdio_kind(ours.as_fd()).unwrap(), StdioKind::PairedSocket);
+        drop(theirs);
+        let dir = std::env::temp_dir().join(format!("hatchling-stdio-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).unwrap();
+        let file = dir.join("file");
+        std::fs::write(&file, b"the host's").unwrap();
+        // A log, opened to be written only.
+        let log = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .unwrap();
+        assert_eq!(stdio_kind(log.as_fd()).unwrap(), StdioKind::WrittenFile);
+        let listening = UnixListener::bind(dir.join("service.sock")).unwrap();
+        let connected = UnixStream::connect(dir.join("service.sock")).unwrap();
+        // A service in the abstract namespace, as a session bus can be.
+        let abstract_name = format!("hatchling-stdio-{}", std::process::id());
+        let address =
+            std::os::unix::net::SocketAddr::from_abstract_name(abstract_name.as_bytes()).unwrap();
+        let abstract_listening = UnixListener::bind_addr(&address).unwrap();
+        let abstract_connected = UnixStream::connect_addr(&address).unwrap();
+        let place = rustix::fs::open(
+            &dir,
+            rustix::fs::OFlags::PATH | rustix::fs::OFlags::DIRECTORY,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+        let refused = [
+            ("O_PATH", place),
+            (
+                "directory",
+                OwnedFd::from(std::fs::File::open(&dir).unwrap()),
+            ),
+            ("file", OwnedFd::from(std::fs::File::open(&file).unwrap())),
+            (
+                "file read and written",
+                OwnedFd::from(
+                    std::fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(&file)
+                        .unwrap(),
+                ),
+            ),
+            (
+                "device",
+                OwnedFd::from(std::fs::File::open("/dev/zero").unwrap()),
+            ),
+            ("named", OwnedFd::from(connected)),
+            ("abstract", OwnedFd::from(abstract_connected)),
+            ("listening", OwnedFd::from(listening)),
+        ];
+        for (what, fd) in &refused {
+            let error = stdio_kind(fd.as_fd()).unwrap_err().to_string();
+            assert!(error.contains("check a cell's stdio"), "{what}: {error}");
+        }
+        drop((refused, abstract_listening));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     /// An inherited device is adopted, close-on-exec again; stdio, a
     /// descriptor that isn't open, and one that isn't a device are

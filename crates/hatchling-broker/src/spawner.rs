@@ -1271,6 +1271,24 @@ fn serve_helper(
         Ok(stdio) => stdio,
         Err(_) => return refuse(String::from("a helper takes three descriptors")),
     };
+    // They become the cell's stdio: streams only, never a place the cell
+    // could open the host's files under, or a way into another service.
+    // Its output may also go to a log, a terminal or the journal.
+    for (name, fd, output) in [
+        ("stdin", &stdin, false),
+        ("stdout", &stdout, true),
+        ("stderr", &stderr, true),
+    ] {
+        let refused = match hatchling_sys::stdio_kind(fd.as_fd()) {
+            Ok(kind) if kind.output_only() && !output => {
+                format!("{kind:?} is for output, and this is the cell's input")
+            }
+            Ok(_) => continue,
+            Err(error) => error.to_string(),
+        };
+        tracing::warn!(?helper, name, %refused, "refused a helper's stdio");
+        return refuse(format!("the helper's {name}: {refused}"));
+    }
     // A cell with a vault channel: the helper hands its channels to the
     // spawner, which passes its connection on to the broker and its vault
     // channel to the keeper (WO-031). The broker never holds that end.
@@ -2147,6 +2165,40 @@ sleep 30 </dev/null >/dev/null 2>&1 &
                 .to_string()
                 .contains("lost")
         );
+    }
+
+    /// A helper's stdio is three streams: a directory, as the place to
+    /// open the host's files under, is refused for each of them, and
+    /// nothing is started; and a log is no cell's input.
+    #[test]
+    fn a_helpers_stdio_that_isnt_a_stream_is_refused() {
+        let (spawner, served) = serving("/bin/sh");
+        let log = std::env::temp_dir().join(format!("hatchling-stdio-log-{}", std::process::id()));
+        let (mut logged, _) = stdio();
+        *logged.first_mut().unwrap() = OwnedFd::from(File::create(&log).unwrap());
+        let refused = spawner
+            .helper(HelperKind::SkillCell, &skill_spec(), logged)
+            .unwrap_err();
+        std::fs::remove_file(&log).unwrap();
+        assert!(
+            refused.starts_with("the helper's stdin: WrittenFile is for output"),
+            "{refused}"
+        );
+        for at in 0..3 {
+            let (mut stdio, _) = stdio();
+            let place = OwnedFd::from(File::open(std::env::temp_dir()).unwrap());
+            let named = ["stdin", "stdout", "stderr"].get(at).unwrap();
+            *stdio.get_mut(at).unwrap() = place;
+            let refused = spawner
+                .helper(HelperKind::SkillCell, &skill_spec(), stdio)
+                .unwrap_err();
+            assert!(
+                refused.starts_with(&format!("the helper's {named}: ")),
+                "{refused}"
+            );
+        }
+        drop(spawner);
+        served.join().unwrap();
     }
 
     /// A program the spawner can't start is refused, and leaves no spec;
