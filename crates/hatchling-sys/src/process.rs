@@ -695,6 +695,11 @@ pub fn set_no_new_privs() -> Result<bool, Error> {
     Ok(before != 1)
 }
 
+/// How many times [`exec`] tries a program another process holds open
+/// for writing, and how long it waits between tries: a second in all.
+const BUSY_TRIES: u32 = 100;
+const BUSY_WAIT_MS: i32 = 10;
+
 /// Replaces the process image.
 ///
 /// `path` is the in-cell absolute path of the binary, `argv` its
@@ -707,6 +712,15 @@ pub fn set_no_new_privs() -> Result<bool, Error> {
 ///
 /// This function never returns successfully: it yields the error when
 /// `execve` fails.
+///
+/// A program another process holds open for writing (`ETXTBSY`) is tried
+/// again, for up to a second. The broker writes each skill's verified
+/// copy, then a cell runs it; a process forked meanwhile by another of the
+/// broker's threads holds the copy's descriptor until its own exec, and
+/// the kernel runs no file that's open for writing anywhere. It's the
+/// race golang/go#22315 describes, and the holder lets go in moments. The
+/// wait is a `poll` on no descriptors, which a cell's filter allows on
+/// `x86_64` where it allows no sleep call.
 ///
 /// # Errors
 ///
@@ -758,19 +772,31 @@ pub fn exec(
     if let Err(error) = last() {
         return error;
     }
-    // SAFETY: the pointer arrays are NUL-terminated, borrow live
-    // CStrings for the duration of the call, and execve only returns on
-    // error. argv/env aliasing rules for execve are satisfied.
-    unsafe {
-        libc::execve(
-            c_path.as_ptr(),
-            argv_ptrs.as_ptr().cast_mut(),
-            env_ptrs.as_ptr().cast_mut(),
-        );
-    }
-    Error::Process {
-        operation: "execve",
-        source: io::Error::last_os_error(),
+    let mut tries = 0;
+    loop {
+        // SAFETY: the pointer arrays are NUL-terminated, borrow live
+        // CStrings for the duration of the call, and execve only returns on
+        // error. argv/env aliasing rules for execve are satisfied.
+        unsafe {
+            libc::execve(
+                c_path.as_ptr(),
+                argv_ptrs.as_ptr().cast_mut(),
+                env_ptrs.as_ptr().cast_mut(),
+            );
+        }
+        let source = io::Error::last_os_error();
+        tries += 1;
+        if source.raw_os_error() != Some(libc::ETXTBSY) || tries >= BUSY_TRIES {
+            return Error::Process {
+                operation: "execve",
+                source,
+            };
+        }
+        // SAFETY: poll on no descriptors (a null array, of length 0) only
+        // waits out its timeout; nothing is read or written.
+        unsafe {
+            libc::poll(std::ptr::null_mut(), 0, BUSY_WAIT_MS);
+        }
     }
 }
 
@@ -1525,6 +1551,67 @@ mod tests {
     }
 
     #[test]
+    fn exec_waits_out_a_writer_that_holds_its_program_open() {
+        // The broker's race, held still: a program just written, open for
+        // writing in another process for a moment after a child first
+        // tries to run it. All of it in a child of its own: a descriptor
+        // this test process held would go to every child its other tests
+        // fork meanwhile, some of which live for seconds.
+        let dir = std::env::temp_dir().join(format!("hatchling-busy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).unwrap();
+        let program = dir.join("true");
+        let code = std::fs::read("/bin/true").unwrap();
+        match fork().expect("fork") {
+            ForkResult::Parent { child } => {
+                let status = child.wait_deadline(REAP).expect("child");
+                std::fs::remove_dir_all(&dir).unwrap();
+                assert_eq!(
+                    child_exit_code(status),
+                    0,
+                    "1: it gave up while held; 2: the program wasn't written"
+                );
+            }
+            ForkResult::Child => exit_child(run_while_held(&program, &code)),
+        }
+    }
+
+    /// Writes `code` at `program`, runs it in a child while it's still
+    /// open for writing here, and lets go 200 ms later: the child's exit
+    /// code, 2 if the program couldn't be written.
+    fn run_while_held(program: &std::path::Path, code: &[u8]) -> i32 {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let Ok(mut writer) = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o755)
+            .open(program)
+        else {
+            return 2;
+        };
+        if writer.write_all(code).is_err() {
+            return 2;
+        }
+        match fork() {
+            Ok(ForkResult::Parent { child }) => {
+                std::thread::sleep(Duration::from_millis(200));
+                drop(writer);
+                child
+                    .wait_deadline(REAP)
+                    .map_or(2, child_exit_code)
+            }
+            Ok(ForkResult::Child) => {
+                // Its own copy of the descriptor goes; its parent's stays.
+                drop(writer);
+                let _ = exec(program, &["true"], &[], || Ok(()));
+                exit_child(1);
+            }
+            Err(_) => 2,
+        }
+    }
+
+    #[test]
     fn exec_runs_its_last_step_and_answers_with_its_error() {
         // In a child: an exec that ran would end it with false's 1.
         match fork().expect("fork") {
@@ -1550,6 +1637,8 @@ mod tests {
             }
         }
         let ran = Cell::new(false);
+        // Only a busy program is tried again: a missing one fails at once.
+        let started = std::time::Instant::now();
         let missing = exec(
             std::path::Path::new("/nonexistent/hatchling-exec"),
             &["missing"],
@@ -1559,6 +1648,7 @@ mod tests {
                 Ok(())
             },
         );
+        assert!(started.elapsed() < Duration::from_millis(500));
         assert!(ran.get());
         assert!(matches!(
             missing,
