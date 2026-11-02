@@ -279,6 +279,22 @@ impl<A: Clone> Approvals<A> {
             .map(|request| request.id.clone())
     }
 
+    /// The id of a request of `task`'s in `state` whose run `matches`: for
+    /// tests, which find a request by what it runs rather than its record.
+    #[cfg(test)]
+    pub(crate) fn find_run(
+        &self,
+        task: &str,
+        state: State,
+        matches: impl Fn(&A) -> bool,
+    ) -> Option<String> {
+        self.ledger()
+            .requests
+            .values()
+            .find(|request| request.state == state && request.task == task && matches(&request.run))
+            .map(|request| request.id.clone())
+    }
+
     /// Records the end of request `id`'s run.
     fn finish(&self, id: &str, end: State) {
         self.ledger().finish(id, end);
