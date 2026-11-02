@@ -221,7 +221,10 @@ pub(crate) fn root_cell_uid() -> u32 {
 /// Hands the session socket at `path` to the agent's user, as a root
 /// broker hands its endpoint to its cells' user (WO-015); unprivileged,
 /// the agent's user is this process's, which has it already.
-#[allow(dead_code, reason = "shared test helper: used by only some test targets")]
+#[allow(
+    dead_code,
+    reason = "shared test helper: used by only some test targets"
+)]
 pub(crate) fn hand_to_agent(path: &Path) -> std::io::Result<()> {
     if hatchling_sys::euid() != 0 {
         return Ok(());
@@ -235,7 +238,10 @@ pub(crate) fn hand_to_agent(path: &Path) -> std::io::Result<()> {
 /// process's uid. Unprivileged, that's this process; as root, a child
 /// that has dropped to [`ROOT_CELL_USER`] connects and hands the
 /// connection back (WO-015).
-#[allow(dead_code, reason = "shared test helper: used by only some test targets")]
+#[allow(
+    dead_code,
+    reason = "shared test helper: used by only some test targets"
+)]
 pub(crate) fn connect_as_agent(path: &Path) -> std::io::Result<std::os::unix::net::UnixStream> {
     use std::os::fd::AsFd as _;
     use std::os::unix::net::UnixStream;

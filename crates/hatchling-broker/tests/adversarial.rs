@@ -652,7 +652,8 @@ fn fold_merged_usr(writes: &serde_json::Value) -> serde_json::Value {
 fn fold_program_owner(writes: &serde_json::Value) -> serde_json::Value {
     let mut writes = writes.clone();
     for write in writes.as_array_mut().into_iter().flatten() {
-        let running_program = write.get("path").and_then(serde_json::Value::as_str) == Some("/agent")
+        let running_program = write.get("path").and_then(serde_json::Value::as_str)
+            == Some("/agent")
             && write.get("op").and_then(serde_json::Value::as_str) == Some("open_write")
             && write.get("errno").and_then(serde_json::Value::as_i64) == Some(26);
         if let (true, Some(object)) = (running_program, write.as_object_mut()) {
