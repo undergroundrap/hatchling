@@ -1326,7 +1326,10 @@ impl Harnesses {
             ),
         };
         let handoff_path = dirs.base.join("relay.sock");
-        let handoff = UnixListener::bind(&handoff_path)
+        // The broker's alone, whatever its umask: whoever connects first
+        // hands in the run's relay listener, so no other user may.
+        let handoff = crate::listener::OwnerOnlyListener::bind(&handoff_path)
+            .and_then(|bound| bound.with_mode(0o600))
             .map_err(|error| unavailable("relay handoff", &error))?;
         let mut tools = tools.map_or_else(Vec::new, ToolCopy::for_cell);
         if let Some(host) = host {
@@ -3082,6 +3085,16 @@ mod tests {
         .unwrap();
         assert_eq!(network.tools, given.for_cell());
         assert_eq!(network.relay, RELAY_PORT);
+        // The handoff is the broker's alone: the first to connect hands
+        // in the run's relay listener.
+        assert_eq!(
+            std::fs::symlink_metadata(&network.handoff)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
         drop(relaying);
         std::fs::write(&tool, b"changed").unwrap();
         assert!(matches!(
