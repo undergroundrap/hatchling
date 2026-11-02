@@ -1597,9 +1597,7 @@ mod tests {
             Ok(ForkResult::Parent { child }) => {
                 std::thread::sleep(Duration::from_millis(200));
                 drop(writer);
-                child
-                    .wait_deadline(REAP)
-                    .map_or(2, child_exit_code)
+                child.wait_deadline(REAP).map_or(2, child_exit_code)
             }
             Ok(ForkResult::Child) => {
                 // Its own copy of the descriptor goes; its parent's stays.
@@ -1638,7 +1636,7 @@ mod tests {
         }
         let ran = Cell::new(false);
         // Only a busy program is tried again: a missing one fails at once.
-        let started = std::time::Instant::now();
+        let started = Instant::now();
         let missing = exec(
             std::path::Path::new("/nonexistent/hatchling-exec"),
             &["missing"],
