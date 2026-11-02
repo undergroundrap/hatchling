@@ -528,41 +528,41 @@ fn check_env(vars: &[StoredVar]) -> Result<Vec<(String, String)>, String> {
         return Err(format!("more than {MAX_ENV} variables"));
     }
     let mut env: Vec<(String, String)> = Vec::new();
-    for var in vars {
-        let plain = var
+    for variable in vars {
+        let plain = variable
             .name
             .starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
-            && var
+            && variable
                 .name
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
         if !plain {
-            return Err(format!("{:?} isn't a variable name", var.name));
+            return Err(format!("{:?} isn't a variable name", variable.name));
         }
-        if ["PATH", "HOME", "TMPDIR"].contains(&var.name.as_str())
-            || var.name.starts_with("HATCHLING_")
+        if ["PATH", "HOME", "TMPDIR"].contains(&variable.name.as_str())
+            || variable.name.starts_with("HATCHLING_")
         {
             return Err(format!(
                 "{} is the cell's to set: PATH, HOME, TMPDIR and HATCHLING_ variables are",
-                var.name
+                variable.name
             ));
         }
-        if env.iter().any(|(name, _)| *name == var.name) {
-            return Err(format!("{} is set twice", var.name));
+        if env.iter().any(|(name, _)| *name == variable.name) {
+            return Err(format!("{} is set twice", variable.name));
         }
-        if var.value.len() > MAX_VALUE_BYTES || var.value.contains('\0') {
+        if variable.value.len() > MAX_VALUE_BYTES || variable.value.contains('\0') {
             return Err(format!(
                 "{} is over {MAX_VALUE_BYTES} bytes or holds a NUL",
-                var.name
+                variable.name
             ));
         }
-        if var.value.contains(TASK) {
+        if variable.value.contains(TASK) {
             return Err(format!(
                 "{} holds {TASK}: the task goes in an argument",
-                var.name
+                variable.name
             ));
         }
-        env.push((var.name.clone(), var.value.clone()));
+        env.push((variable.name.clone(), variable.value.clone()));
     }
     if !env.iter().any(|(_, value)| value.contains(KEY)) {
         return Err(format!(
@@ -1082,31 +1082,31 @@ mod tests {
         ] {
             assert!(check_args(&bad).is_err(), "{bad:?}");
         }
-        let var = |name: &str, value: &str| StoredVar {
+        let stored = |name: &str, value: &str| StoredVar {
             name: name.to_owned(),
             value: value.to_owned(),
         };
         assert_eq!(
-            check_env(&[var("API_KEY", "{key}"), var("_X1", "v")]),
+            check_env(&[stored("API_KEY", "{key}"), stored("_X1", "v")]),
             Ok(vec![
                 (String::from("API_KEY"), String::from("{key}")),
                 (String::from("_X1"), String::from("v")),
             ])
         );
         for bad in [
-            vec![var("A", "v")],
-            vec![var("A", "{key}"), var("A", "v")],
-            vec![var("HOME", "{key}")],
-            vec![var("TMPDIR", "{key}")],
-            vec![var("HATCHLING_ANY", "{key}")],
-            vec![var("A-B", "{key}")],
-            vec![var("A", "{key}"), var("B", "{task}")],
-            vec![var("A", "{key}\u{0}")],
+            vec![stored("A", "v")],
+            vec![stored("A", "{key}"), stored("A", "v")],
+            vec![stored("HOME", "{key}")],
+            vec![stored("TMPDIR", "{key}")],
+            vec![stored("HATCHLING_ANY", "{key}")],
+            vec![stored("A-B", "{key}")],
+            vec![stored("A", "{key}"), stored("B", "{task}")],
+            vec![stored("A", "{key}\u{0}")],
         ] {
             assert!(
                 check_env(&bad).is_err(),
                 "{:?}",
-                bad.first().map(|var| &var.name)
+                bad.first().map(|stored| &stored.name)
             );
         }
         let scratch = Scratch::new("parts");
