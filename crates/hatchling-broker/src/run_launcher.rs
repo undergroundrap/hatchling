@@ -126,11 +126,18 @@ pub(crate) fn forget_spec(run_dir: &Path) {
 /// ([`spec_args`]), read once: the file is removed as it's read, so the
 /// spec never outlives the helper's start.
 ///
+/// The path is the helper's argument, so before anything is removed, two
+/// guards: it names a spec ([`SPEC_FILE`]), and what it names is no link
+/// but a file this user made owner-only, as [`spec_args`] does. A helper
+/// started by hand with any other path refuses it and leaves it as it is.
+///
 /// # Errors
 ///
-/// [`Error::Usage`] when `path` is missing or not absolute, or the spec
-/// can't be read, is longer than [`MAX_SPEC_BYTES`], or isn't text.
+/// [`Error::Usage`] when `path` is missing, not absolute, or not a spec
+/// file, or the spec can't be read, is longer than [`MAX_SPEC_BYTES`], or
+/// isn't text.
 pub(crate) fn take_spec(path: Option<&str>, helper: &str) -> Result<String, Error> {
+    use std::os::unix::fs::MetadataExt as _;
     let usage = |reason: String| Error::Usage { reason };
     let path = path.ok_or_else(|| usage(format!("{helper} requires a cell spec")))?;
     let path = Path::new(path);
@@ -139,8 +146,26 @@ pub(crate) fn take_spec(path: Option<&str>, helper: &str) -> Result<String, Erro
             "{helper}'s cell spec must be an absolute path to its file"
         )));
     }
+    if path.file_name() != Some(std::ffi::OsStr::new(SPEC_FILE)) {
+        return Err(usage(format!(
+            "{helper}'s cell spec must be a file named {SPEC_FILE}"
+        )));
+    }
     let file = std::fs::File::open(path)
         .map_err(|err| usage(format!("{helper} cannot open its cell spec: {err}")))?;
+    let unreadable =
+        |err: std::io::Error| usage(format!("{helper} cannot read its cell spec: {err}"));
+    let made = file.metadata().map_err(unreadable)?;
+    // The path itself, not a link: the very file opened.
+    let named = std::fs::symlink_metadata(path).map_err(unreadable)?;
+    if named.file_type().is_symlink() || (named.dev(), named.ino()) != (made.dev(), made.ino()) {
+        return Err(usage(format!("{helper}'s cell spec must not be a link")));
+    }
+    if !made.is_file() || made.uid() != hatchling_sys::euid() || made.mode() & 0o777 != 0o600 {
+        return Err(usage(format!(
+            "{helper}'s cell spec must be a file of its own user's, owner-only"
+        )));
+    }
     let _ = std::fs::remove_file(path);
     let mut bytes = Vec::new();
     file.take(MAX_SPEC_BYTES + 1)
@@ -1914,11 +1939,48 @@ mod tests {
             "agent-run requires a cell spec"
         );
         assert!(reason(take_spec(Some("cell-spec.json"), "agent-run")).contains("absolute path"));
-        std::fs::write(&path, [0xff, 0xfe]).unwrap();
+        let owner_only = |at: &Path| {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(at)
+                .unwrap()
+        };
+        std::io::Write::write_all(&mut owner_only(Path::new(&path)), &[0xff, 0xfe]).unwrap();
         assert!(reason(take_spec(Some(&path), "agent-run")).contains("isn't text"));
-        let large = std::fs::File::create(&path).unwrap();
-        large.set_len(MAX_SPEC_BYTES + 1).unwrap();
+        owner_only(Path::new(&path))
+            .set_len(MAX_SPEC_BYTES + 1)
+            .unwrap();
         assert!(reason(take_spec(Some(&path), "agent-run")).contains("longer than"));
+        // A path a helper was started with by hand is never removed unless
+        // it's a spec: named one, and a file of the helper's user's,
+        // owner-only, not a link.
+        let elsewhere = dir.join("notes.json");
+        owner_only(&elsewhere);
+        let elsewhere = elsewhere.to_str().unwrap();
+        assert!(reason(take_spec(Some(elsewhere), "agent-run")).contains("named cell-spec.json"));
+        assert!(
+            Path::new(elsewhere).exists(),
+            "a file not named a spec was removed"
+        );
+        std::os::unix::fs::symlink(elsewhere, &path).unwrap();
+        assert!(reason(take_spec(Some(&path), "agent-run")).contains("not be a link"));
+        assert!(Path::new(elsewhere).exists(), "a link's target was removed");
+        assert!(
+            std::fs::symlink_metadata(&path).is_ok(),
+            "a link named a spec was removed"
+        );
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, spec).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(reason(take_spec(Some(&path), "agent-run")).contains("owner-only"));
+        assert!(
+            Path::new(&path).exists(),
+            "a file others can read was removed"
+        );
+        std::fs::remove_file(&path).unwrap();
         // One no helper read, forgotten.
         spec_args(AGENT_RUN_SUBCOMMAND, &dir, spec).unwrap();
         forget_spec(&dir);
