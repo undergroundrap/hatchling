@@ -2392,7 +2392,9 @@ pub(super) mod tests {
     }
 
     fn browser_spec(scratch: &Scratch, browser: &Path, filter: Filter, page: &str) -> CellSpec {
-        give_to_cell(&scratch.0.join("work"));
+        for dir in ["work", "scratch"] {
+            give_to_cell(&scratch.0.join(dir));
+        }
         let (_, mut spec) = specs(scratch);
         spec.filter = filter;
         spec.limits.memory = Some(2 << 30);
