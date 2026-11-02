@@ -22,11 +22,14 @@
 //! - **Asking is bounded.** At most [`MAX_PENDING`] requests wait, one per
 //!   task, each for [`DECIDE_SECS`], and at most [`MAX_REQUESTS_PER_HOUR`]
 //!   are made in an hour. An identical pending proposal gets the request
-//!   that's already waiting.
+//!   that's already waiting. A task's waiting requests are withdrawn when
+//!   its session ends ([`Approvals::withdraw_task`]), so one that's gone
+//!   holds no place.
 //! - **A denial sticks.** Its fingerprint (the effect, without request ids,
 //!   timestamps or a rationale) is refused for the broker's life, however
-//!   it's worded and from whichever cell, and every new request waits out
-//!   [`DENIAL_COOLDOWN_SECS`].
+//!   it's worded and from whichever cell, and the task it denied waits out
+//!   [`DENIAL_COOLDOWN_SECS`] before asking again. Other tasks don't: one
+//!   that's denied can't keep the owner's own from asking.
 //!
 //! The ledger lives in the broker's memory: a restart withdraws every
 //! request, which fails safe, and forgets denials, which a cell can't
@@ -47,7 +50,7 @@ pub const MAX_PENDING_PER_TASK: usize = 1;
 pub const DECIDE_SECS: i64 = 15 * 60;
 /// Most requests made in any hour.
 pub const MAX_REQUESTS_PER_HOUR: usize = 20;
-/// How long every new request waits after a denial, in seconds.
+/// How long a task waits after a denial of its own, in seconds.
 pub const DENIAL_COOLDOWN_SECS: i64 = 10 * 60;
 /// Most decided requests kept, to answer a late decision with what
 /// became of them.
@@ -177,7 +180,8 @@ struct Ledger<A> {
     /// Decided requests, oldest first, for pruning.
     decided: VecDeque<String>,
     denied: BTreeSet<String>,
-    paused_until: i64,
+    /// Until when each task denied is paused.
+    paused: BTreeMap<String, i64>,
     made: VecDeque<i64>,
 }
 
@@ -196,7 +200,7 @@ impl<A: Clone> Approvals<A> {
                 requests: BTreeMap::new(),
                 decided: VecDeque::new(),
                 denied: BTreeSet::new(),
-                paused_until: 0,
+                paused: BTreeMap::new(),
                 made: VecDeque::new(),
             }),
         }
@@ -256,6 +260,25 @@ impl<A: Clone> Approvals<A> {
     /// what it would act on changed. Whether it was taken back.
     pub fn withdraw(&self, id: &str) -> bool {
         self.ledger().withdraw(id)
+    }
+
+    /// Takes back each request `task` has waiting whose run `ends_with_it`:
+    /// its session ended, and nothing is left to act on the owner's answer.
+    /// (A run the worker makes, such as a build, outlives the session.) How
+    /// many it took back.
+    pub fn withdraw_task(&self, task: &str, ends_with_it: impl Fn(&A) -> bool) -> usize {
+        let mut ledger = self.ledger();
+        let waiting: Vec<String> = ledger
+            .requests
+            .values()
+            .filter(|request| {
+                request.state == State::Pending && request.task == task && ends_with_it(&request.run)
+            })
+            .map(|request| request.id.clone())
+            .collect();
+        let taken = waiting.iter().filter(|id| ledger.withdraw(id)).count();
+        drop(ledger);
+        taken
     }
 
     /// Request `id`, as it stands.
@@ -348,7 +371,10 @@ impl<A: Clone> Ledger<A> {
         {
             ledger.made.pop_front();
         }
-        if now < ledger.paused_until || ledger.made.len() >= MAX_REQUESTS_PER_HOUR {
+        ledger.paused.retain(|_, until| now < *until);
+        if ledger.paused.contains_key(&proposal.task)
+            || ledger.made.len() >= MAX_REQUESTS_PER_HOUR
+        {
             return Err(Refusal::Paused);
         }
         let id = crate::approval::random_hex(REQUEST_PREFIX).map_err(|_| Refusal::Entropy)?;
@@ -427,7 +453,10 @@ impl<A: Clone> Ledger<A> {
         request.decision = Some(decision);
         if decided == State::Denied {
             ledger.denied.insert(fingerprint);
-            ledger.paused_until = now.saturating_add(DENIAL_COOLDOWN_SECS);
+            let task = request.task.clone();
+            ledger
+                .paused
+                .insert(task, now.saturating_add(DENIAL_COOLDOWN_SECS));
         }
         ledger.keep_decided(id);
         Ok(decided)
@@ -742,9 +771,10 @@ mod tests {
     }
 
     /// A denied effect stays denied, reworded or from another task or a
-    /// fresh cell, and every new request waits out the cooldown.
+    /// fresh cell, and the task denied waits out the cooldown. Another task
+    /// doesn't: one denied can't keep the owner's own from asking.
     #[test]
-    fn a_denial_sticks_and_pauses_every_new_request() {
+    fn a_denial_sticks_and_pauses_the_task_it_denied() {
         let ledger = Approvals::new();
         let requested = ledger.propose(proposal("one", "t1"), 0).unwrap();
         assert_eq!(
@@ -761,15 +791,38 @@ mod tests {
             Err(Refusal::Denied)
         );
         assert_eq!(
-            ledger.propose(proposal("two", "t2"), 20),
+            ledger.propose(proposal("two", "t1"), 20),
             Err(Refusal::Paused)
         );
         assert!(
+            ledger.propose(proposal("three", "t2"), 20).unwrap().new,
+            "another task waited out the denied one's pause"
+        );
+        assert!(
             ledger
-                .propose(proposal("two", "t2"), 10 + DENIAL_COOLDOWN_SECS)
+                .propose(proposal("two", "t1"), 10 + DENIAL_COOLDOWN_SECS)
                 .unwrap()
                 .new
         );
+    }
+
+    /// A session that ended takes back what it had waiting: it holds no
+    /// place, and the owner's answer reaches nothing. Another task's stay.
+    #[test]
+    fn a_tasks_waiting_requests_are_withdrawn_when_it_ends() {
+        let ledger = Approvals::new();
+        let mine = ledger.propose(proposal("one", "gone"), 0).unwrap();
+        let theirs = ledger.propose(proposal("two", "stays"), 0).unwrap();
+        assert_eq!(ledger.withdraw_task("gone", |_| true), 1);
+        assert_eq!(ledger.get(&mine.id).unwrap().state, State::Withdrawn);
+        assert_eq!(ledger.get(&theirs.id).unwrap().state, State::Pending);
+        assert!(
+            ledger.propose(proposal("three", "gone"), 1).unwrap().new,
+            "its place is free"
+        );
+        assert_eq!(ledger.withdraw_task("nobody", |_| true), 0);
+        // A run that outlives the session stays.
+        assert_eq!(ledger.withdraw_task("gone", |_| false), 0);
     }
 
     #[test]
