@@ -75,7 +75,6 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::egress_path::{EgressPath, Refusal, RefusalKind};
-use crate::harness::HarnessKind;
 use crate::harness_relay::{Relay, RelayCount, Vendor};
 use crate::keeper::Keeper;
 use crate::serve::{destination_to_secret_name, egress_tls};
@@ -443,11 +442,11 @@ impl Connection {
     /// report.
     pub fn relay(
         self,
-        harness: HarnessKind,
+        harness: &str,
         surrogate: &str,
     ) -> Result<Result<PendingRelay, String>, Error> {
         let request = Request::Relay {
-            harness: harness.name().to_owned(),
+            harness: harness.to_owned(),
             surrogate: surrogate.to_owned(),
         };
         send(&self.stream, &request)?;
@@ -778,8 +777,9 @@ struct Shared {
     provider: Option<Provider>,
     /// How long a search may take.
     deadline: Duration,
-    /// Each harness's vendor, from the authority's own configuration.
-    vendors: BTreeMap<HarnessKind, Vendor>,
+    /// Each harness's vendor, by name, from the authority's own
+    /// configuration: the built-in harnesses' and the manifests'.
+    vendors: BTreeMap<String, Vendor>,
 }
 
 /// Serves each connection the broker hands over on `broker`, on a thread
@@ -939,24 +939,18 @@ struct ReadyRelay {
 /// and the relay when it's ready.
 fn ready_relay(shared: &Shared, harness: &str, surrogate: String) -> (Reply, Option<ReadyRelay>) {
     let refused = |reason: String| (Reply::Refused { reason }, None);
-    let Some(kind) = HarnessKind::ALL
-        .into_iter()
-        .find(|kind| kind.name() == harness)
-    else {
-        return refused(format!("{harness:?} is not a harness"));
-    };
-    let Some(vendor) = shared.vendors.get(&kind) else {
+    let Some(vendor) = shared.vendors.get(harness) else {
         return refused(format!(
-            "the {harness} harness has no vendor API configured"
+            "{harness:?} is not a harness with a vendor API configured"
         ));
     };
+    let secret = crate::harness::secret_name(harness);
     let no_key = || {
         refused(format!(
-            "the vendor key is not in the vault: store it as the secret {}",
-            kind.secret_name()
+            "the vendor key is not in the vault: store it as the secret {secret}"
         ))
     };
-    let Ok(name) = kind.secret_name().parse::<SecretName>() else {
+    let Ok(name) = secret.parse::<SecretName>() else {
         return no_key();
     };
     let key = shared
@@ -1730,7 +1724,7 @@ mod tests {
             FETCH_DEADLINE,
         );
         shared.vendors.insert(
-            HarnessKind::ClaudeCode,
+            String::from("claude-code"),
             Vendor {
                 wire: crate::harness_relay::Wire::Anthropic,
                 destination,
@@ -1743,15 +1737,15 @@ mod tests {
             authority
                 .connect()
                 .unwrap()
-                .relay(HarnessKind::CodexCli, "s")
+                .relay("codex-cli", "s")
                 .unwrap()
                 .unwrap_err(),
-            "the codex-cli harness has no vendor API configured"
+            "\"codex-cli\" is not a harness with a vendor API configured"
         );
         let pending = authority
             .connect()
             .unwrap()
-            .relay(HarnessKind::ClaudeCode, "sk-surrogate-zq")
+            .relay("claude-code", "sk-surrogate-zq")
             .unwrap()
             .unwrap();
         let dir = crate::api_auth::tests::scratch("authority-relay");
@@ -1803,7 +1797,7 @@ mod tests {
         );
         let allowlist = hatchling_egress::Allowlist::parse("local:localhost:1").unwrap();
         shared.vendors.insert(
-            HarnessKind::ClaudeCode,
+            String::from("claude-code"),
             Vendor {
                 wire: crate::harness_relay::Wire::Anthropic,
                 destination: String::from("localhost:1"),
@@ -1819,7 +1813,7 @@ mod tests {
         let (unknown, none) = ready_relay(&shared, "vim", String::from("s"));
         assert!(none.is_none());
         assert!(
-            matches!(unknown, Reply::Refused { reason } if reason == "\"vim\" is not a harness")
+            matches!(unknown, Reply::Refused { reason } if reason == "\"vim\" is not a harness with a vendor API configured")
         );
     }
 

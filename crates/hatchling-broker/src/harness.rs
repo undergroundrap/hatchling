@@ -39,6 +39,11 @@
 //!   key stays in the vault (secret [`HarnessKind::secret_name`]), read by
 //!   the authority for the run's relay, never given to the cell or the
 //!   broker. A harness without an API runs offline, as before.
+//! - **Harnesses by manifest** (WO-018). Beside the two built in, an
+//!   operator may define a harness by a manifest
+//!   ([`crate::harness_manifest`]): its binary and companions pinned, its
+//!   API and destination, its command line and environment. It runs as a
+//!   built-in harness does, every check the broker's.
 //! - **Approved, pinned tools** (WO-019). A CLI cell's tools are the
 //!   operator's approved tools ([`crate::approved_tools`]), each pinned to
 //!   the SHA-256 it was approved with, and read when the broker starts.
@@ -73,6 +78,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cell::{CellIds, HarnessDirs, HarnessNetwork};
 use crate::environment as env;
+use crate::harness_manifest::Manifest;
 use crate::harness_relay::{RELAY_PORT, Relay, RunRelay, Vendor, Wire};
 use crate::harness_tree::{TreeOp, change_trees};
 use crate::skill_cell::VerifiedCode;
@@ -186,9 +192,10 @@ const DEFAULT_TOOLS: [&str; 46] = [
 /// when the cell is stopped ends on its own.
 const RELAY_GRACE: Duration = Duration::from_secs(30);
 
-/// Reads a harness's vendor key for its relay, in-process, with no egress
-/// authority running: with one, the authority reads it.
-pub type HarnessKeys<'a> = &'a dyn Fn(HarnessKind) -> Option<Zeroizing<String>>;
+/// Reads a harness's vendor key, the vault secret it names, for its relay,
+/// in-process, with no egress authority running: with one, the authority
+/// reads it.
+pub type HarnessKeys<'a> = &'a dyn Fn(&str) -> Option<Zeroizing<String>>;
 
 /// The activity thread every harness run is recorded on.
 pub const HARNESS_RUN_ID: &str = "harness";
@@ -356,14 +363,130 @@ impl HarnessKind {
     }
 }
 
+/// The vault secret holding the vendor key of the harness named `name`:
+/// `harness-<name>`, for the built-in harnesses and manifests alike.
+#[must_use]
+pub fn secret_name(name: &str) -> String {
+    format!("harness-{name}")
+}
+
+/// A configured harness: one built in, or one an operator's manifest
+/// defines ([`crate::harness_manifest`], WO-018). Both run the same way.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Harness {
+    /// Claude Code or the Codex CLI.
+    BuiltIn(HarnessKind),
+    /// A CLI the operator's manifest defines.
+    Defined(Arc<Manifest>),
+}
+
+impl Harness {
+    /// The harness skill's name, as grants name it.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::BuiltIn(kind) => kind.name(),
+            Self::Defined(manifest) => manifest.name(),
+        }
+    }
+
+    /// The harness skill's id, as the agent invokes it.
+    #[must_use]
+    pub fn skill_id(&self) -> &str {
+        match self {
+            Self::BuiltIn(kind) => kind.skill_id(),
+            Self::Defined(manifest) => manifest.skill_id(),
+        }
+    }
+
+    /// The vault secret holding its vendor key.
+    #[must_use]
+    pub fn secret_name(&self) -> String {
+        secret_name(self.name())
+    }
+
+    /// The surrogate key's prefix: the shape a key of its API has.
+    fn surrogate_prefix(&self) -> &'static str {
+        match self {
+            Self::BuiltIn(kind) => kind.surrogate_prefix(),
+            Self::Defined(manifest) => match manifest.wire() {
+                Wire::Anthropic => HarnessKind::ClaudeCode.surrogate_prefix(),
+                Wire::OpenAi => HarnessKind::CodexCli.surrogate_prefix(),
+            },
+        }
+    }
+
+    /// Its pinned companion files, each with the name the cell sees it
+    /// at: a manifest's own; the Codex host is the broker's setting.
+    fn companions(&self) -> &[(PinnedBinary, String)] {
+        match self {
+            Self::BuiltIn(_) => &[],
+            Self::Defined(manifest) => manifest.companions(),
+        }
+    }
+
+    /// Its arguments for `prompt`, its relay on `relay`.
+    #[must_use]
+    pub fn args(&self, prompt: &str, relay: u16) -> Vec<String> {
+        match self {
+            Self::BuiltIn(kind) => kind.args(prompt, relay),
+            Self::Defined(manifest) => manifest.args(prompt, relay),
+        }
+    }
+
+    /// Its environment for its relay on `relay` and its surrogate key: a
+    /// manifest's variables after the tools' `PATH` and, unless it sets
+    /// its own, `LANG`.
+    #[must_use]
+    pub fn env(&self, relay: u16, surrogate: &str) -> Vec<(String, String)> {
+        match self {
+            Self::BuiltIn(kind) => kind.env(relay, surrogate),
+            Self::Defined(manifest) => {
+                let own = manifest.env(relay, surrogate);
+                let mut env = vec![(String::from("PATH"), String::from("/usr/bin:/bin"))];
+                if !own.iter().any(|(name, _)| name == "LANG") {
+                    env.push((String::from("LANG"), String::from("C.UTF-8")));
+                }
+                env.extend(own);
+                env
+            }
+        }
+    }
+}
+
 /// A harness binary and the SHA-256 it is pinned to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PinnedBinary {
-    path: PathBuf,
-    sha256: String,
+    pub(crate) path: PathBuf,
+    pub(crate) sha256: String,
 }
 
 impl PinnedBinary {
+    /// The program at `path`, pinned to `sha256`, if it hashes to it now;
+    /// otherwise the field that's wrong (`path` or `sha256`) and why.
+    pub(crate) fn checked(path: &str, sha256: &str) -> Result<Self, (&'static str, String)> {
+        let path = PathBuf::from(path.trim());
+        let sha256 = sha256.trim().to_ascii_lowercase();
+        if !path.is_absolute() {
+            return Err((
+                "path",
+                format!("must be an absolute path: {}", path.display()),
+            ));
+        }
+        if !is_sha256(&sha256) {
+            return Err(("sha256", String::from("a SHA-256 is 64 hexadecimal digits")));
+        }
+        let bytes = read_regular(&path).map_err(|reason| ("path", reason))?;
+        let actual = CodeHash::of(&bytes).to_string();
+        if actual != sha256 {
+            return Err((
+                "sha256",
+                format!("the program at {} hashes to {actual}", path.display()),
+            ));
+        }
+        Ok(Self { path, sha256 })
+    }
+
     /// The binary's bytes, if they still hash to the pinned value.
     ///
     /// # Errors
@@ -394,6 +517,11 @@ const BINARY_REFUSED: &str =
 /// no longer hashes to its pin.
 const HOST_REFUSED: &str =
     "the Codex host binary is unreadable or not the pinned one: it is never substituted";
+
+/// What a run's report says when a manifest's companion file can't be
+/// read or no longer hashes to its pin.
+const COMPANION_REFUSED: &str =
+    "a companion file of the harness is unreadable or not the pinned one: it is never substituted";
 
 /// The most a tool may hold: a program, never a file that would fill the
 /// broker's memory as it's read.
@@ -840,8 +968,10 @@ fn read_regular(path: &Path) -> Result<Vec<u8>, String> {
 /// The broker's harness skills: what is configured, and how each runs.
 #[derive(Debug, Clone, Default)]
 pub struct Harnesses {
-    binaries: BTreeMap<HarnessKind, PinnedBinary>,
-    vendors: BTreeMap<HarnessKind, Vendor>,
+    /// Each configured harness, by name, and its pinned binary.
+    binaries: BTreeMap<String, (Harness, PinnedBinary)>,
+    /// Each networked harness's vendor, by name.
+    vendors: BTreeMap<String, Vendor>,
     tools: Vec<Tool>,
     /// Whether `HATCHLING_HARNESS_TOOLS` names the tools.
     named: bool,
@@ -849,7 +979,7 @@ pub struct Harnesses {
     approved: PathBuf,
     pinned: Option<Arc<PinnedTools>>,
     codex_host: Option<PinnedBinary>,
-    granted: BTreeSet<HarnessKind>,
+    granted: BTreeSet<String>,
     roots: BTreeMap<String, PathBuf>,
     timeout: Duration,
     workspace: Option<PathBuf>,
@@ -886,6 +1016,8 @@ impl Harnesses {
     ///   ripgrep and the usual coreutils.
     /// - `HATCHLING_HARNESS_CODEX_CLI_HOST` and its `_SHA256`: the Codex
     ///   CLI's code-mode host, pinned like a harness binary.
+    /// - `HATCHLING_HARNESS_MANIFESTS`: a directory of manifests, each a
+    ///   harness of the operator's ([`crate::harness_manifest`]).
     ///
     /// A harness runs only with its skill grant (`HATCHLING_SKILL_GRANTS`,
     /// e.g. `claude-code:code`), and needs `HATCHLING_ARTIFACT_WORKSPACE`
@@ -896,7 +1028,9 @@ impl Harnesses {
     ///
     /// Returns [`Error::InvalidConfig`] for a malformed setting, a path
     /// without its hash (or the reverse), a binary that does not hash to
-    /// its pin, a bad root, or a harness with no workspace or no roots.
+    /// its pin, a bad root, or a harness with no workspace or no roots;
+    /// [`Error::HarnessManifest`] for a manifest that's wrong or open to
+    /// another user.
     pub fn parse(config: &Config, get: impl Fn(&str) -> Option<String>) -> Result<Self, Error> {
         let mut binaries = BTreeMap::new();
         for kind in HarnessKind::ALL {
@@ -905,7 +1039,7 @@ impl Harnesses {
                 get(kind.path_key()).as_deref(),
                 get(kind.hash_key()).as_deref(),
             )? {
-                binaries.insert(kind, binary);
+                binaries.insert(kind.name().to_owned(), (Harness::BuiltIn(kind), binary));
             }
         }
         let tls = TlsClient::bundled()
@@ -913,21 +1047,32 @@ impl Harnesses {
         let mut vendors = BTreeMap::new();
         for kind in HarnessKind::ALL {
             if let Some(vendor) = parse_vendor(kind, get(kind.api_key()).as_deref(), &tls)? {
-                if !binaries.contains_key(&kind) {
+                if !binaries.contains_key(kind.name()) {
                     return Err(invalid(
                         kind.api_key(),
                         String::from("a vendor API needs its harness binary"),
                     ));
                 }
-                vendors.insert(kind, vendor);
+                vendors.insert(kind.name().to_owned(), vendor);
             }
+        }
+        let manifests = crate::harness_manifest::load(
+            get(crate::harness_manifest::MANIFESTS_KEY).as_deref(),
+            &tls,
+        )?;
+        for (manifest, vendor) in manifests {
+            let name = manifest.name().to_owned();
+            refuse_key_grants(config, &name)?;
+            let binary = manifest.binary().clone();
+            binaries.insert(name.clone(), (Harness::Defined(Arc::new(manifest)), binary));
+            vendors.insert(name, vendor);
         }
         let codex_host = parse_pin(
             (CODEX_HOST_KEY, CODEX_HOST_HASH_KEY),
             get(CODEX_HOST_KEY).as_deref(),
             get(CODEX_HOST_HASH_KEY).as_deref(),
         )?;
-        if codex_host.is_some() && !binaries.contains_key(&HarnessKind::CodexCli) {
+        if codex_host.is_some() && !binaries.contains_key(HarnessKind::CodexCli.name()) {
             return Err(invalid(
                 CODEX_HOST_KEY,
                 String::from("the code-mode host needs the Codex CLI"),
@@ -958,12 +1103,12 @@ impl Harnesses {
         let granted =
             binaries
                 .keys()
-                .copied()
-                .filter(|kind| {
-                    config.skills.grants.get(kind.name()).is_some_and(|caps| {
+                .filter(|name| {
+                    config.skills.grants.get(name.as_str()).is_some_and(|caps| {
                         capability.as_ref().is_some_and(|cap| caps.contains(cap))
                     })
                 })
+                .cloned()
                 .collect();
         Ok(Self {
             binaries,
@@ -1055,7 +1200,7 @@ impl Harnesses {
 
     /// Each harness's vendor.
     #[must_use]
-    pub(crate) const fn vendors(&self) -> &BTreeMap<HarnessKind, Vendor> {
+    pub(crate) const fn vendors(&self) -> &BTreeMap<String, Vendor> {
         &self.vendors
     }
 
@@ -1065,10 +1210,13 @@ impl Harnesses {
     }
 
     /// The host files a run reads again before it starts: each harness's
-    /// binary, the Codex host, and the tools.
+    /// binary and companions, the Codex host, and the tools.
     pub(crate) fn pinned_paths(&self) -> impl Iterator<Item = &Path> {
         self.binaries
             .values()
+            .flat_map(|(harness, binary)| {
+                std::iter::once(binary).chain(harness.companions().iter().map(|(file, _)| file))
+            })
             .chain(&self.codex_host)
             .map(|binary| binary.path.as_path())
             .chain(self.tools.iter().map(|tool| tool.path.as_path()))
@@ -1078,10 +1226,7 @@ impl Harnesses {
     /// relay to: the only harness keys the egress authority may read.
     #[must_use]
     pub fn vendor_secret_names(&self) -> BTreeSet<String> {
-        self.vendors
-            .keys()
-            .map(|kind| kind.secret_name().to_owned())
-            .collect()
+        self.vendors.keys().map(|name| secret_name(name)).collect()
     }
 
     /// Handles `op` when it names a harness skill; `None` for any other
@@ -1098,12 +1243,16 @@ impl Harnesses {
             capability,
             input,
         } = op;
-        let kind = HarnessKind::from_skill_id(skill)?;
-        let Some(binary) = self.binaries.get(&kind) else {
+        let Some((harness, binary)) = self
+            .binaries
+            .values()
+            .find(|(harness, _)| harness.skill_id() == skill.as_str())
+        else {
+            HarnessKind::from_skill_id(skill)?;
             tracing::warn!(skill = %skill, "denied skill op: the harness is not configured");
             return Some(SkillResult::UnknownSkill);
         };
-        if capability.as_str() != HARNESS_CAPABILITY || !self.granted.contains(&kind) {
+        if capability.as_str() != HARNESS_CAPABILITY || !self.granted.contains(harness.name()) {
             tracing::warn!(skill = %skill, capability = %capability, "denied skill op: the harness grant does not cover it");
             return Some(SkillResult::CapabilityDenied);
         }
@@ -1111,8 +1260,8 @@ impl Harnesses {
             tracing::error!(skill = %skill, "harness run impossible: the broker has no skill runtime");
             return Some(SkillResult::SkillError);
         };
-        let report = self.run(kind, binary, input, runtime, keys);
-        self.record(kind, &report);
+        let report = self.run(harness, binary, input, runtime, keys);
+        self.record(harness, &report);
         match serde_json::to_string(&report.fitted()) {
             Ok(output) => Some(SkillResult::Output { output }),
             Err(error) => {
@@ -1129,13 +1278,13 @@ impl Harnesses {
     )]
     fn run(
         &self,
-        kind: HarnessKind,
+        harness: &Harness,
         binary: &PinnedBinary,
         input: &str,
         runtime: &SkillRuntime,
         keys: HarnessKeys<'_>,
     ) -> Report {
-        let mut report = Report::new(kind, binary, input);
+        let mut report = Report::new(harness, binary, input);
         let brief = match Brief::parse(input) {
             Ok(brief) => brief,
             Err(reason) => return report.refused(reason),
@@ -1158,11 +1307,11 @@ impl Harnesses {
             Ok(verified) => verified,
             Err(error) => return report.failed(&error.to_string()),
         };
-        let host = match self.host_copy(kind) {
-            Ok(host) => host,
-            Err(reason) => return report.refused_for(HOST_REFUSED, &reason),
+        let companions = match self.companion_copies(harness) {
+            Ok(companions) => companions,
+            Err((told, reason)) => return report.refused_for(told, &reason),
         };
-        let tools = match self.tools_for(kind) {
+        let tools = match self.tools_for(harness) {
             Ok(tools) => tools,
             Err(ToolsRefused::Changed(told, detail)) => return report.refused_for(&told, &detail),
             Err(ToolsRefused::Unpinned) => {
@@ -1170,21 +1319,21 @@ impl Harnesses {
             }
             Err(ToolsRefused::Failed(reason)) => return report.failed(&reason),
         };
-        let (network, relaying) = match self.vendors.get(&kind) {
+        let (network, relaying) = match self.vendors.get(harness.name()) {
             None => (None, None),
             Some(vendor) => match Self::network(
-                kind,
+                harness,
                 vendor,
                 keys,
                 &scratch,
-                (host.as_ref(), tools.as_deref()),
+                (&companions, tools.as_deref()),
             ) {
                 Ok((network, relaying)) => (Some(network), Some(relaying)),
                 Err(reason) => return report.refused(reason),
             },
         };
         let cell = match harness_cell(
-            kind,
+            harness,
             &brief.prompt(),
             verified.dir(),
             &scratch,
@@ -1206,8 +1355,8 @@ impl Harnesses {
             MAX_HARNESS_OUTPUT_BYTES,
         );
         drop(verified);
-        drop(host);
-        report.finish_relay(kind, relay);
+        drop(companions);
+        report.finish_relay(harness.name(), relay);
         report.outcome = match &ran {
             Ok(_) => HarnessOutcome::Done,
             Err(SkillRunError::TimedOut) => HarnessOutcome::TimedOut,
@@ -1250,20 +1399,41 @@ impl Harnesses {
         report
     }
 
-    /// The Codex CLI's code-mode host, copied from its verified bytes, for
-    /// a Codex run with one pinned; `None` otherwise.
-    fn host_copy(&self, kind: HarnessKind) -> Result<Option<VerifiedCode>, String> {
-        let Some(host) = self
-            .codex_host
-            .as_ref()
-            .filter(|_| kind == HarnessKind::CodexCli)
-        else {
-            return Ok(None);
+    /// The pinned files `harness`'s run is given beside its binary, each
+    /// copied from its verified bytes, with the name its cell sees it at:
+    /// the Codex host for a Codex run with one pinned, a manifest's
+    /// companions for its harness, and none otherwise.
+    ///
+    /// # Errors
+    ///
+    /// What the report says, and the detail for the broker's log: a file
+    /// is unreadable or not the one pinned, or couldn't be copied.
+    fn companion_copies(
+        &self,
+        harness: &Harness,
+    ) -> Result<Vec<(VerifiedCode, String)>, (&'static str, String)> {
+        let pinned: Vec<(&PinnedBinary, &str, &'static str)> = match harness {
+            Harness::BuiltIn(HarnessKind::CodexCli) => self
+                .codex_host
+                .iter()
+                .map(|host| (host, CODEX_HOST, HOST_REFUSED))
+                .collect(),
+            Harness::BuiltIn(HarnessKind::ClaudeCode) => Vec::new(),
+            Harness::Defined(_) => harness
+                .companions()
+                .iter()
+                .map(|(file, name)| (file, name.as_str(), COMPANION_REFUSED))
+                .collect(),
         };
-        let bytes = host.verified()?;
-        VerifiedCode::write("harness-host", CODEX_HOST, &bytes)
-            .map(Some)
-            .map_err(|error| error.to_string())
+        pinned
+            .into_iter()
+            .map(|(file, name, told)| {
+                let bytes = file.verified().map_err(|reason| (told, reason))?;
+                VerifiedCode::write("harness-companion", name, &bytes)
+                    .map(|copy| (copy, name.to_owned()))
+                    .map_err(|error| (told, error.to_string()))
+            })
+            .collect()
     }
 
     /// The copy of the pinned tools `kind`'s run is given, after checking
@@ -1274,8 +1444,8 @@ impl Harnesses {
     ///
     /// The tools weren't pinned, one changed or went, or their copy
     /// couldn't be made.
-    fn tools_for(&self, kind: HarnessKind) -> Result<Option<Arc<ToolCopy>>, ToolsRefused> {
-        if !self.vendors.contains_key(&kind) || self.tools.is_empty() {
+    fn tools_for(&self, harness: &Harness) -> Result<Option<Arc<ToolCopy>>, ToolsRefused> {
+        if !self.vendors.contains_key(harness.name()) || self.tools.is_empty() {
             return Ok(None);
         }
         let pinned = self.pinned.as_ref().ok_or(ToolsRefused::Unpinned)?;
@@ -1287,8 +1457,8 @@ impl Harnesses {
 
     /// A real CLI's network for one run: a fresh surrogate, its relay
     /// made ready with its vendor key, the handoff socket in the run's own
-    /// directory, its tools (the pinned tools' copies, and the Codex
-    /// host's), and its environment. The relay's parts come back
+    /// directory, its tools (the pinned tools' copies, and its companions':
+    /// the Codex host's, or a manifest's), and its environment. The relay's parts come back
     /// with it.
     ///
     /// The egress authority makes the relay ready, reading the key itself
@@ -1296,11 +1466,11 @@ impl Harnesses {
     /// reads it with `keys`. A run with no key is refused here, before its
     /// cell starts.
     fn network(
-        kind: HarnessKind,
+        harness: &Harness,
         vendor: &Vendor,
         keys: HarnessKeys<'_>,
         dirs: &RunDirs,
-        (host, tools): (Option<&VerifiedCode>, Option<&ToolCopy>),
+        (companions, tools): (&[(VerifiedCode, String)], Option<&ToolCopy>),
     ) -> Result<(HarnessNetwork, Relaying), String> {
         // Set-up failures are the broker's, and their detail stays in its
         // log: the report says only that the network couldn't be made.
@@ -1308,20 +1478,21 @@ impl Harnesses {
             tracing::warn!(%error, what, "harness network setup failed");
             String::from("the harness network could not be set up")
         };
-        let surrogate = crate::approval::random_hex(kind.surrogate_prefix())
+        let surrogate = crate::approval::random_hex(harness.surrogate_prefix())
             .map(Zeroizing::new)
             .map_err(|error| unavailable("surrogate key", &error))?;
+        let secret = harness.secret_name();
         let ready = match crate::egress_authority::authority() {
             Some(authority) => {
                 let pending = authority
                     .connect()
-                    .and_then(|connection| connection.relay(kind, &surrogate))
+                    .and_then(|connection| connection.relay(harness.name(), &surrogate))
                     .map_err(|error| unavailable("relay", &error))??;
                 Ready::Authority(pending)
             }
             None => Ready::Local(
                 vendor.clone(),
-                keys(kind).ok_or_else(|| no_key(kind))?,
+                keys(&secret).ok_or_else(|| no_key(&secret))?,
                 surrogate.clone(),
             ),
         };
@@ -1332,14 +1503,16 @@ impl Harnesses {
             .and_then(|bound| bound.with_mode(0o600))
             .map_err(|error| unavailable("relay handoff", &error))?;
         let mut tools = tools.map_or_else(Vec::new, ToolCopy::for_cell);
-        if let Some(host) = host {
-            tools.push((host.dir().join(CODEX_HOST), String::from(CODEX_HOST)));
-        }
+        tools.extend(
+            companions
+                .iter()
+                .map(|(copy, name)| (copy.dir().join(name), name.clone())),
+        );
         let network = HarnessNetwork {
             relay: RELAY_PORT,
             handoff: handoff_path,
             tools,
-            env: kind.env(RELAY_PORT, &surrogate),
+            env: harness.env(RELAY_PORT, &surrogate),
         };
         let relaying = Relaying {
             handoff,
@@ -1372,7 +1545,7 @@ impl Harnesses {
 
     /// Records one run in the activity log (when scheduling is on) and
     /// the broker's log.
-    fn record(&self, kind: HarnessKind, report: &Report) {
+    fn record(&self, harness: &Harness, report: &Report) {
         static SEQUENCE: AtomicU64 = AtomicU64::new(0);
         let event = ActivityEvent {
             event_id: format!(
@@ -1383,7 +1556,7 @@ impl Harnesses {
             ts: Timestamp::now().to_string(),
             run_id: String::from(HARNESS_RUN_ID),
             kind: SubagentEvent::HarnessRun {
-                harness: String::from(kind.name()),
+                harness: harness.name().to_owned(),
                 binary_sha256: report.binary_sha256.clone(),
                 brief_sha256: report.brief_sha256.clone(),
                 outcome: report.outcome,
@@ -1419,12 +1592,31 @@ const fn invalid(key: &'static str, reason: String) -> Error {
     Error::InvalidConfig { key, reason }
 }
 
-/// The refusal of a run whose vendor key isn't stored.
-fn no_key(kind: HarnessKind) -> String {
-    format!(
-        "the vendor key is not in the vault: store it as the secret {}",
-        kind.secret_name()
-    )
+/// The refusal of a run whose vendor key, the vault secret `secret`,
+/// isn't stored.
+fn no_key(secret: &str) -> String {
+    format!("the vendor key is not in the vault: store it as the secret {secret}")
+}
+
+/// Refuses a vault grant naming the vendor key of the manifest's harness
+/// `name`, as [`Config`] does the built-in harnesses': a grant would hand
+/// it to the agent's cell, defeating the surrogate.
+fn refuse_key_grants(config: &Config, name: &str) -> Result<(), Error> {
+    let secret = secret_name(name);
+    config
+        .vault
+        .grants
+        .iter()
+        .find(|grant| grant.name.as_str() == secret)
+        .map_or(Ok(()), |grant| {
+            Err(invalid(
+                "HATCHLING_VAULT_GRANTS",
+                format!(
+                    "grant {}:{secret} names the vendor key the broker holds for the {name} harness",
+                    grant.action
+                ),
+            ))
+        })
 }
 
 /// What a run's relay starts from: the handoff socket, the vendor's
@@ -1505,7 +1697,7 @@ fn parse_pin(
             ),
         ));
     }
-    if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if !is_sha256(&hash) {
         return Err(invalid(
             hash_key,
             String::from("a SHA-256 is 64 hexadecimal digits"),
@@ -1516,6 +1708,11 @@ fn parse_pin(
         .verified()
         .map_err(|reason| invalid(path_key, reason))?;
     Ok(Some(binary))
+}
+
+/// Whether `hash` is a SHA-256 as hex.
+fn is_sha256(hash: &str) -> bool {
+    hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 /// A harness's vendor API: one HTTPS destination `host:port` (written
@@ -1530,16 +1727,27 @@ fn parse_vendor(
     let Some(raw) = raw.map(str::trim).filter(|raw| !raw.is_empty()) else {
         return Ok(None);
     };
-    if raw.contains(',') || raw.starts_with("public:") || raw.starts_with("local-keyless:") {
-        return Err(invalid(
-            kind.api_key(),
-            String::from("one vendor API: host:port, internal:host:port, or local:localhost:PORT"),
+    vendor(raw, kind.wire(), tls)
+        .map(Some)
+        .map_err(|reason| invalid(kind.api_key(), reason))
+}
+
+/// The vendor `raw` names, speaking `wire`: as [`parse_vendor`], for a
+/// built-in harness's setting or a manifest's destination.
+pub(crate) fn vendor(raw: &str, wire: Wire, tls: &TlsClient) -> Result<Vendor, String> {
+    let raw = raw.trim();
+    if raw.is_empty()
+        || raw.contains(',')
+        || raw.starts_with("public:")
+        || raw.starts_with("local-keyless:")
+    {
+        return Err(String::from(
+            "one vendor API: host:port, internal:host:port, or local:localhost:PORT",
         ));
     }
-    let allowlist =
-        Allowlist::parse(raw).map_err(|source| invalid(kind.api_key(), source.to_string()))?;
-    Ok(Some(Vendor {
-        wire: kind.wire(),
+    let allowlist = Allowlist::parse(raw).map_err(|source| source.to_string())?;
+    Ok(Vendor {
+        wire,
         destination: [
             hatchling_egress::LOCAL_PREFIX,
             hatchling_egress::INTERNAL_PREFIX,
@@ -1550,7 +1758,7 @@ fn parse_vendor(
         .to_owned(),
         allowlist: Arc::new(allowlist),
         tls: tls.clone(),
-    }))
+    })
 }
 
 /// A CLI cell's tools, each with the name the cell sees it at: those
@@ -1600,19 +1808,16 @@ pub(crate) fn parse_tools(raw: Option<&str>, networked: bool) -> Result<Vec<Tool
 /// The vendor keys the broker reads for its harness relays, served
 /// in-process, with no egress authority running.
 ///
-/// Each is the vault secret [`HarnessKind::secret_name`], read with the
+/// Each is the vault secret [`secret_name`] names, read with the
 /// broker's own keys and logged as the broker's read before it is used
 /// ([`crate::secrets::Secrets::broker_read`]). No vault grant may
 /// name it.
 pub fn vault_keys<'a>(
     vault_root: &'a Path,
     key: &'a dyn OpensStores,
-) -> impl Fn(HarnessKind) -> Option<Zeroizing<String>> + 'a {
-    move |kind| {
-        let name = kind
-            .secret_name()
-            .parse::<hatchling_core::SecretName>()
-            .ok()?;
+) -> impl Fn(&str) -> Option<Zeroizing<String>> + 'a {
+    move |secret| {
+        let name = secret.parse::<hatchling_core::SecretName>().ok()?;
         let secret = crate::secrets::Secrets::new(vault_root, key)
             .broker_read("harness", std::slice::from_ref(&name))
             .ok()?
@@ -1885,7 +2090,7 @@ fn write_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 /// The harness cell for one run of `kind` on `prompt`.
 fn harness_cell(
-    kind: HarnessKind,
+    harness: &Harness,
     prompt: &str,
     code_dir: &Path,
     dirs: &RunDirs,
@@ -1898,7 +2103,7 @@ fn harness_cell(
     cell.harness = Some(HarnessDirs {
         work: dirs.work.clone(),
         scratch: dirs.scratch.clone(),
-        args: kind.args(prompt, RELAY_PORT),
+        args: harness.args(prompt, RELAY_PORT),
         network,
     });
     Ok(cell)
@@ -1958,7 +2163,8 @@ fn hand_over(dirs: &RunDirs, uid: u32) -> Result<(), String> {
 
 /// What the harness finally said: a JSON object's `result` (Claude
 /// Code's form), the last agent message of its JSON lines (the Codex
-/// CLI's), or its whole output.
+/// CLI's), the last text part of its JSON lines (`OpenCode`'s), or its
+/// whole output.
 fn final_message(stdout: &[u8]) -> String {
     let text = String::from_utf8_lossy(stdout);
     let result = serde_json::from_str::<serde_json::Value>(text.trim())
@@ -1981,8 +2187,16 @@ fn final_message(stdout: &[u8]) -> String {
             })
             .next_back()
     };
+    let last_text = || {
+        text.lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|event| event.get("type").and_then(serde_json::Value::as_str) == Some("text"))
+            .filter_map(|event| event.get("part")?.get("text")?.as_str().map(str::to_owned))
+            .next_back()
+    };
     result
         .or_else(last_message)
+        .or_else(last_text)
         .unwrap_or_else(|| text.into_owned())
 }
 
@@ -2216,7 +2430,7 @@ struct HarnessSaid {
 /// A run's report, as the agent receives it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct Report {
-    harness: &'static str,
+    harness: String,
     binary_sha256: String,
     brief_sha256: String,
     outcome: HarnessOutcome,
@@ -2251,11 +2465,11 @@ const fn is_zero(n: &u32) -> bool {
 }
 
 impl Report {
-    /// A report for `kind` running `binary` on the brief `input`, before
-    /// it ran.
-    fn new(kind: HarnessKind, binary: &PinnedBinary, input: &str) -> Self {
+    /// A report for `harness` running `binary` on the brief `input`,
+    /// before it ran.
+    fn new(harness: &Harness, binary: &PinnedBinary, input: &str) -> Self {
         Self {
-            harness: kind.name(),
+            harness: harness.name().to_owned(),
             binary_sha256: binary.sha256.clone(),
             brief_sha256: CodeHash::of(input.as_bytes()).to_string(),
             outcome: HarnessOutcome::Refused,
@@ -2295,13 +2509,13 @@ impl Report {
 
     /// The relay's account of the run, once its cell has ended:
     /// where the requests went and how many, for the activity event.
-    fn finish_relay(&mut self, kind: HarnessKind, relay: Option<(String, RunRelay)>) {
+    fn finish_relay(&mut self, harness: &str, relay: Option<(String, RunRelay)>) {
         let Some((destination, relay)) = relay else {
             return;
         };
         let (count, problem) = relay.finish();
         if let Some(problem) = problem {
-            tracing::warn!(%problem, harness = kind.name(), "harness relay");
+            tracing::warn!(%problem, harness, "harness relay");
         }
         self.network = Some(HarnessNetworkUse {
             destination,
@@ -2639,7 +2853,7 @@ mod tests {
         assert!(key_text(&secret(b"  \n")).is_none());
         assert!(key_text(&secret(&[0xff, 0xfe])).is_none());
         assert_eq!(
-            no_key(HarnessKind::CodexCli),
+            no_key(HarnessKind::CodexCli.secret_name()),
             "the vendor key is not in the vault: store it as the secret harness-codex-cli"
         );
         assert!(Harnesses::default().vendors().is_empty());
@@ -2649,7 +2863,7 @@ mod tests {
     #[test]
     fn a_relayed_run_reports_where_its_requests_went() {
         let mut report = sample_report();
-        report.finish_relay(HarnessKind::ClaudeCode, None);
+        report.finish_relay("claude-code", None);
         assert_eq!(report.network, None, "no relay, no network use");
         let scratch = Scratch::new("relay-report");
         let handoff = UnixListener::bind(scratch.join("handoff")).unwrap();
@@ -2668,7 +2882,7 @@ mod tests {
             Instant::now(),
         );
         report.finish_relay(
-            HarnessKind::ClaudeCode,
+            "claude-code",
             Some((destination.clone(), RunRelay::Local(relay))),
         );
         assert_eq!(
@@ -2679,6 +2893,56 @@ mod tests {
                 refused: 0
             })
         );
+    }
+
+    #[test]
+    fn a_checked_pin_names_the_part_that_is_wrong() {
+        let scratch = Scratch::new("checked-pin");
+        let path = scratch.write("bin/tool", b"tool bytes");
+        let hash = CodeHash::of(b"tool bytes").to_string();
+        let shown = path.display().to_string();
+        let pinned = PinnedBinary::checked(&format!(" {shown} "), &hash.to_uppercase()).unwrap();
+        assert_eq!(
+            pinned,
+            PinnedBinary {
+                path,
+                sha256: hash.clone()
+            }
+        );
+        let field =
+            |path: &str, hash: &str| PinnedBinary::checked(path, hash).map_err(|(field, _)| field);
+        assert_eq!(field("bin/tool", &hash), Err("path"));
+        assert_eq!(field(&format!("{shown}-gone"), &hash), Err("path"));
+        assert_eq!(field(&shown, "abc"), Err("sha256"));
+        assert_eq!(field(&shown, &"0".repeat(64)), Err("sha256"));
+        let (_, reason) = PinnedBinary::checked(&shown, &"0".repeat(64)).unwrap_err();
+        assert!(reason.contains(&hash), "{reason}");
+        assert!(is_sha256(&hash));
+        assert!(is_sha256(&"A".repeat(64)));
+        for bad in [
+            "0".repeat(63),
+            "0".repeat(65),
+            "g".repeat(64),
+            String::new(),
+        ] {
+            assert!(!is_sha256(&bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_vault_grant_on_a_manifests_key_refuses_its_harness() {
+        let scratch = Scratch::new("key-grants");
+        let mut config = config(&scratch);
+        assert!(refuse_key_grants(&config, "opencode").is_ok());
+        config.vault.grants = vec![crate::VaultGrant {
+            action: hatchling_core::VaultAction::Store,
+            name: "harness-opencode".parse().unwrap(),
+        }];
+        assert_eq!(
+            refusal(refuse_key_grants(&config, "opencode")).0,
+            "HATCHLING_VAULT_GRANTS"
+        );
+        assert!(refuse_key_grants(&config, "aider").is_ok());
     }
 
     #[test]
@@ -3051,20 +3315,12 @@ mod tests {
         let unpinned = parsed(&config, &vars).unwrap();
         assert!(unpinned.pinned.is_none());
         assert_eq!(
-            unpinned.tools_for(HarnessKind::ClaudeCode).unwrap_err(),
+            unpinned.tools_for(&CLAUDE).unwrap_err(),
             ToolsRefused::Unpinned
         );
         let harnesses = unpinned.pin_tools().unwrap();
-        assert!(
-            harnesses
-                .tools_for(HarnessKind::CodexCli)
-                .unwrap()
-                .is_none()
-        );
-        let given = harnesses
-            .tools_for(HarnessKind::ClaudeCode)
-            .unwrap()
-            .unwrap();
+        assert!(harnesses.tools_for(&CODEX).unwrap().is_none());
+        let given = harnesses.tools_for(&CLAUDE).unwrap().unwrap();
         assert_eq!(given.names, [named(&tool).name]);
         // What a run reads again before it starts: the binary, the tool.
         assert_eq!(
@@ -3073,16 +3329,10 @@ mod tests {
         );
         // The cell's network carries the copy, never the host path.
         let dirs = RunDirs::create().unwrap();
-        let vendor = harnesses.vendors.get(&HarnessKind::ClaudeCode).unwrap();
-        let keys = |_| Some(Zeroizing::new(String::from("vendor-key")));
-        let (network, relaying) = Harnesses::network(
-            HarnessKind::ClaudeCode,
-            vendor,
-            &keys,
-            &dirs,
-            (None, Some(&given)),
-        )
-        .unwrap();
+        let vendor = harnesses.vendors.get("claude-code").unwrap();
+        let keys = |_: &str| Some(Zeroizing::new(String::from("vendor-key")));
+        let (network, relaying) =
+            Harnesses::network(&CLAUDE, vendor, &keys, &dirs, (&[], Some(&given))).unwrap();
         assert_eq!(network.tools, given.for_cell());
         assert_eq!(network.relay, RELAY_PORT);
         // The handoff is the broker's alone: the first to connect hands
@@ -3098,7 +3348,7 @@ mod tests {
         drop(relaying);
         std::fs::write(&tool, b"changed").unwrap();
         assert!(matches!(
-            harnesses.tools_for(HarnessKind::ClaudeCode),
+            harnesses.tools_for(&CLAUDE),
             Err(ToolsRefused::Changed(told, _)) if told.starts_with(&format!("the tool {} is", tool.display()))
         ));
         std::fs::remove_file(&tool).unwrap();
@@ -3141,7 +3391,7 @@ mod tests {
             approved.pins(),
             [(named(&tool), CodeHash::of(b"tool").to_string())]
         );
-        assert!(first.tools_for(HarnessKind::ClaudeCode).unwrap().is_some());
+        assert!(first.tools_for(&CLAUDE).unwrap().is_some());
         // Later starts: the list's tools, whether the setting names them or not.
         assert_eq!(start(&vars).unwrap().tools, [named(&tool)]);
         vars.remove(TOOLS_KEY);
@@ -3163,20 +3413,15 @@ mod tests {
         std::fs::write(&tool, b"changed").unwrap();
         let changed = start(&vars).unwrap();
         assert!(matches!(
-            changed.tools_for(HarnessKind::ClaudeCode),
+            changed.tools_for(&CLAUDE),
             Err(ToolsRefused::Changed(told, _)) if told.starts_with(&format!("the tool {} is", tool.display()))
         ));
         std::fs::write(&tool, b"tool").unwrap();
-        assert!(
-            changed
-                .tools_for(HarnessKind::ClaudeCode)
-                .unwrap()
-                .is_some()
-        );
+        assert!(changed.tools_for(&CLAUDE).unwrap().is_some());
         std::fs::remove_file(&tool).unwrap();
         let gone = start(&vars).unwrap();
         assert!(matches!(
-            gone.tools_for(HarnessKind::ClaudeCode),
+            gone.tools_for(&CLAUDE),
             Err(ToolsRefused::Changed(..))
         ));
         // Open to another user: the start stops.
@@ -3208,10 +3453,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(approved.tools(), defaults);
-        let given = harnesses
-            .tools_for(HarnessKind::ClaudeCode)
-            .unwrap()
-            .unwrap();
+        let given = harnesses.tools_for(&CLAUDE).unwrap().unwrap();
         assert_eq!(given.names.len(), defaults.len());
         // Without a network, no list is made.
         let scratch = Scratch::new("tools-offline");
@@ -3236,8 +3478,12 @@ mod tests {
         vars.insert(TOOLS_KEY, tool.display().to_string());
         let networked = parsed(&config, &vars).unwrap();
         assert_eq!(
-            networked.vendors.keys().copied().collect::<Vec<_>>(),
-            [HarnessKind::ClaudeCode]
+            networked
+                .vendors
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["claude-code"]
         );
         // Only a relayed vendor's key is one the broker may read.
         assert_eq!(
@@ -3286,12 +3532,12 @@ mod tests {
         let harnesses = parsed(&config, &vars).unwrap().with_tls(&tls);
         assert_eq!(
             harnesses.binaries,
-            BTreeMap::from([(HarnessKind::ClaudeCode, binary)])
+            BTreeMap::from([(String::from("claude-code"), (CLAUDE, binary))])
         );
         assert_eq!(
             harnesses
                 .vendors
-                .get(&HarnessKind::ClaudeCode)
+                .get("claude-code")
                 .map(|vendor| vendor.destination.as_str()),
             Some("localhost:8443")
         );
@@ -3319,20 +3565,25 @@ mod tests {
             CodeHash::of(b"codex").to_string(),
         );
         let unhosted = parsed(&config, &vars).unwrap();
-        assert!(unhosted.host_copy(HarnessKind::CodexCli).unwrap().is_none());
+        assert!(unhosted.companion_copies(&CODEX).unwrap().is_empty());
         let host = scratch.write("bin/host", b"host bytes");
         vars.insert(CODEX_HOST_KEY, host.display().to_string());
         vars.insert(CODEX_HOST_HASH_KEY, CodeHash::of(b"host bytes").to_string());
         let hosted = parsed(&config, &vars).unwrap();
-        assert!(hosted.host_copy(HarnessKind::ClaudeCode).unwrap().is_none());
-        let copy = hosted.host_copy(HarnessKind::CodexCli).unwrap().unwrap();
+        assert!(hosted.companion_copies(&CLAUDE).unwrap().is_empty());
+        let copies = hosted.companion_copies(&CODEX).unwrap();
+        let [(copy, name)] = copies.as_slice() else {
+            unreachable!("one host: {copies:?}")
+        };
+        assert_eq!(name, CODEX_HOST);
         assert_eq!(
             std::fs::read(copy.dir().join(CODEX_HOST)).unwrap(),
             b"host bytes"
         );
         std::fs::write(&host, b"changed").unwrap();
-        let refused = hosted.host_copy(HarnessKind::CodexCli).unwrap_err();
-        assert!(refused.contains("never substituted"), "{refused}");
+        let (told, refused) = hosted.companion_copies(&CODEX).unwrap_err();
+        assert_eq!(told, HOST_REFUSED);
+        assert!(refused.contains("not the pinned"), "{refused}");
     }
 
     #[test]
@@ -3350,20 +3601,20 @@ mod tests {
             .unwrap();
         let keys = vault_keys(&root, &key);
         assert_eq!(
-            keys(HarnessKind::ClaudeCode).as_deref().map(String::as_str),
+            keys("harness-claude-code").as_deref().map(String::as_str),
             Some("sk-ant-real")
         );
-        assert!(keys(HarnessKind::CodexCli).is_none(), "not stored");
+        assert!(keys("harness-codex-cli").is_none(), "not stored");
         vault
             .store(
                 &"harness-codex-cli".parse().unwrap(),
                 &hatchling_vault::Secret::new(b" \n".to_vec()).unwrap(),
             )
             .unwrap();
-        assert!(keys(HarnessKind::CodexCli).is_none(), "a blank key is none");
+        assert!(keys("harness-codex-cli").is_none(), "a blank key is none");
         let other = MasterKey::generate().unwrap();
         assert!(
-            vault_keys(&root, &other)(HarnessKind::ClaudeCode).is_none(),
+            vault_keys(&root, &other)("harness-claude-code").is_none(),
             "another key reads nothing"
         );
         let (log, unparsed) = read_log(&root).unwrap();
@@ -3657,7 +3908,7 @@ mod tests {
         assert!(!ungranted.is_empty());
         assert_eq!(
             ungranted.binaries,
-            BTreeMap::from([(HarnessKind::ClaudeCode, binary)])
+            BTreeMap::from([(String::from("claude-code"), (CLAUDE, binary))])
         );
         assert!(ungranted.granted.is_empty(), "configured is not granted");
         assert_eq!(
@@ -3678,7 +3929,7 @@ mod tests {
         let granted = parsed(&config, &vars).unwrap();
         assert_eq!(
             granted.granted,
-            BTreeSet::from([HarnessKind::ClaudeCode]),
+            BTreeSet::from([String::from("claude-code")]),
             "a grant without a binary is nothing"
         );
         assert_eq!(
@@ -3750,6 +4001,238 @@ mod tests {
             harnesses.handle(&invoke("claude-code@1", "code", brief), None, &no_keys),
             Some(SkillResult::SkillError)
         );
+    }
+
+    /// Writes two manifests into `scratch`'s `manifests`: `opencode`,
+    /// speaking Anthropic's API with a companion, and `aider`, speaking
+    /// `OpenAI`'s with a `LANG` of its own; the directory and the companion.
+    fn manifests(scratch: &Scratch) -> (PathBuf, PathBuf) {
+        let opencode = scratch.write("bin/opencode", b"opencode");
+        let aider = scratch.write("bin/aider", b"aider");
+        let helper = scratch.write("bin/helper", b"helper");
+        let dir = scratch.dir("manifests");
+        let pin = |path: &Path, bytes: &[u8]| json!({"path": path.display().to_string(), "sha256": CodeHash::of(bytes).to_string()});
+        let helper_pin = json!({
+            "path": helper.display().to_string(),
+            "sha256": CodeHash::of(b"helper").to_string(),
+            "name": "helper",
+        });
+        let write = |name: &str, manifest: &Value| {
+            let path = dir.join(format!("{name}.json"));
+            std::fs::write(&path, manifest.to_string()).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        };
+        write(
+            "opencode",
+            &json!({
+                "version": 1,
+                "name": "opencode",
+                "binary": pin(&opencode, b"opencode"),
+                "companions": [helper_pin],
+                "api": "anthropic",
+                "destination": "local:localhost:8443",
+                "args": ["run", "{task}"],
+                "env": [
+                    {"name": "ANTHROPIC_API_KEY", "value": "{key}"},
+                    {"name": "ANTHROPIC_BASE_URL", "value": "{relay}"}
+                ]
+            }),
+        );
+        write(
+            "aider",
+            &json!({
+                "version": 1,
+                "name": "aider",
+                "binary": pin(&aider, b"aider"),
+                "api": "openai",
+                "destination": "local:localhost:8444",
+                "args": ["--message", "{task}", "--openai-api-base", "{relay}/v1"],
+                "env": [
+                    {"name": "OPENAI_API_KEY", "value": "{key}"},
+                    {"name": "LANG", "value": "en_GB.UTF-8"}
+                ]
+            }),
+        );
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (dir, helper)
+    }
+
+    /// A configuration with the two manifests of [`manifests`]: the
+    /// config, its settings, the manifests' directory and the companion.
+    fn with_manifests(
+        scratch: &Scratch,
+    ) -> (Config, HashMap<&'static str, String>, PathBuf, PathBuf) {
+        let config = config(scratch);
+        let (_, mut vars) = settings(scratch);
+        let (dir, helper) = manifests(scratch);
+        vars.insert(
+            crate::harness_manifest::MANIFESTS_KEY,
+            dir.display().to_string(),
+        );
+        (config, vars, dir, helper)
+    }
+
+    #[test]
+    fn a_manifests_harness_is_configured_granted_and_named_as_a_built_in_one() {
+        let scratch = Scratch::new("manifests");
+        let (mut config, vars, _, helper) = with_manifests(&scratch);
+        let ungranted = parsed(&config, &vars).unwrap();
+        assert_eq!(
+            ungranted
+                .binaries
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["aider", "claude-code", "opencode"]
+        );
+        assert!(ungranted.granted.is_empty());
+        grant(&mut config, "opencode", HARNESS_CAPABILITY);
+        let harnesses = parsed(&config, &vars).unwrap();
+        assert_eq!(
+            harnesses.granted,
+            BTreeSet::from([String::from("opencode")])
+        );
+        let (opencode, binary) = harnesses.binaries.get("opencode").unwrap();
+        assert_eq!(opencode.name(), "opencode");
+        assert_eq!(opencode.skill_id(), "opencode@1");
+        assert_eq!(opencode.secret_name(), "harness-opencode");
+        assert_eq!(binary.sha256, CodeHash::of(b"opencode").to_string());
+        let vendor = |name: &str| harnesses.vendors.get(name).unwrap();
+        assert_eq!(vendor("opencode").destination, "localhost:8443");
+        assert_eq!(vendor("aider").wire, Wire::OpenAi);
+        assert_eq!(
+            harnesses.vendor_secret_names(),
+            BTreeSet::from([
+                String::from("harness-aider"),
+                String::from("harness-opencode")
+            ])
+        );
+        // Its binary and companion are read again before each run.
+        let pinned: Vec<&Path> = harnesses.pinned_paths().collect();
+        assert!(pinned.contains(&binary.path.as_path()), "{pinned:?}");
+        assert!(pinned.contains(&helper.as_path()), "{pinned:?}");
+        // Each name's secret is the vault's `harness-<name>`, the built-in
+        // harnesses' too.
+        for kind in HarnessKind::ALL {
+            assert_eq!(secret_name(kind.name()), kind.secret_name());
+            assert_eq!(Harness::BuiltIn(kind).secret_name(), kind.secret_name());
+        }
+        // The key's shape and the environment are its API's and its own.
+        let (aider, _) = harnesses.binaries.get("aider").unwrap();
+        assert_eq!(opencode.surrogate_prefix(), "sk-ant-hatchling-");
+        assert_eq!(aider.surrogate_prefix(), "sk-hatchling-");
+        assert_eq!(opencode.args("Go.", 9), ["run", "Go."]);
+        let pair = |name: &str, value: &str| (name.to_owned(), value.to_owned());
+        assert_eq!(
+            opencode.env(9, "sk-x"),
+            [
+                pair("PATH", "/usr/bin:/bin"),
+                pair("LANG", "C.UTF-8"),
+                pair("ANTHROPIC_API_KEY", "sk-x"),
+                pair("ANTHROPIC_BASE_URL", "http://127.0.0.1:9"),
+            ]
+        );
+        assert_eq!(
+            aider.env(9, "sk-y"),
+            [
+                pair("PATH", "/usr/bin:/bin"),
+                pair("OPENAI_API_KEY", "sk-y"),
+                pair("LANG", "en_GB.UTF-8"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_manifests_harness_runs_with_its_own_key_companions_and_grant() {
+        let scratch = Scratch::new("manifest-runs");
+        let (mut config, vars, dir, helper) = with_manifests(&scratch);
+        grant(&mut config, "opencode", HARNESS_CAPABILITY);
+        let harnesses = parsed(&config, &vars).unwrap();
+        let (opencode, _) = harnesses.binaries.get("opencode").unwrap();
+        let (aider, _) = harnesses.binaries.get("aider").unwrap();
+        let vendor = |name: &str| harnesses.vendors.get(name).unwrap();
+        // Its companion is copied from verified bytes, at its name, and
+        // refused once it isn't the program pinned.
+        assert!(harnesses.companion_copies(aider).unwrap().is_empty());
+        let copies = harnesses.companion_copies(opencode).unwrap();
+        let [(copy, name)] = copies.as_slice() else {
+            unreachable!("one companion: {copies:?}")
+        };
+        assert_eq!(name, "helper");
+        assert_eq!(std::fs::read(copy.dir().join("helper")).unwrap(), b"helper");
+        // Its run's network: its key read from its own secret, its
+        // surrogate its API's shape, its companion among its tools.
+        let dirs = RunDirs::create().unwrap();
+        let keys = |secret: &str| {
+            (secret == "harness-opencode").then(|| Zeroizing::new(String::from("vendor-key")))
+        };
+        let (network, _) =
+            Harnesses::network(opencode, vendor("opencode"), &keys, &dirs, (&copies, None))
+                .unwrap();
+        assert_eq!(
+            network.tools,
+            [(copy.dir().join("helper"), String::from("helper"))]
+        );
+        let key = network
+            .env
+            .iter()
+            .find(|(name, _)| name == "ANTHROPIC_API_KEY")
+            .map(|(_, value)| value.as_str())
+            .unwrap();
+        assert!(key.starts_with("sk-ant-hatchling-"), "{key}");
+        drop(copies);
+        let dirs = RunDirs::create().unwrap();
+        assert_eq!(
+            Harnesses::network(aider, vendor("aider"), &keys, &dirs, (&[], None)).err(),
+            Some(no_key("harness-aider"))
+        );
+        std::fs::write(&helper, b"changed").unwrap();
+        let (told, detail) = harnesses.companion_copies(opencode).unwrap_err();
+        assert_eq!(told, COMPANION_REFUSED);
+        assert!(detail.contains("not the pinned"), "{detail}");
+        std::fs::write(&helper, b"helper").unwrap();
+        // The agent calls it by its skill id; its grant and a runtime are
+        // needed, as for the built-in harnesses.
+        let brief = r#"{"task":"Go.","root":"project","paths":["a"]}"#;
+        assert_eq!(
+            harnesses.handle(&invoke("opencode@1", "code", brief), None, &no_keys),
+            Some(SkillResult::SkillError)
+        );
+        assert_eq!(
+            harnesses.handle(&invoke("aider@1", "code", brief), None, &no_keys),
+            Some(SkillResult::CapabilityDenied)
+        );
+        assert_eq!(
+            Harnesses::default().handle(&invoke("opencode@1", "code", brief), None, &no_keys),
+            None,
+            "unconfigured, it's no harness"
+        );
+        // A vault grant naming its key refuses the start.
+        config.vault.grants = vec![crate::VaultGrant {
+            action: hatchling_core::VaultAction::Fetch,
+            name: "harness-opencode".parse().unwrap(),
+        }];
+        assert_eq!(
+            refusal(parsed(&config, &vars)),
+            (
+                "HATCHLING_VAULT_GRANTS",
+                String::from(
+                    "grant fetch:harness-opencode names the vendor key the broker holds for the \
+                     opencode harness"
+                )
+            )
+        );
+        config.vault.grants = vec![crate::VaultGrant {
+            action: hatchling_core::VaultAction::Fetch,
+            name: "harness-other".parse().unwrap(),
+        }];
+        assert!(parsed(&config, &vars).is_ok());
+        // A wrong manifest refuses the start, naming it.
+        std::fs::write(dir.join("aider.json"), "{}").unwrap();
+        assert!(matches!(
+            parsed(&config, &vars),
+            Err(Error::HarnessManifest { field, .. }) if field == "json"
+        ));
     }
 
     /// The report's field at `pointer` (`Null` when absent).
@@ -3878,7 +4361,7 @@ mod tests {
             path,
             sha256: CodeHash::of(b"stub harness").to_string(),
         };
-        let report = Report::new(HarnessKind::ClaudeCode, &binary, "{}").refused_for(
+        let report = Report::new(&CLAUDE, &binary, "{}").refused_for(
             HOST_REFUSED,
             "/opt/codex/bin/host is unreadable: Permission denied (os error 13)",
         );
@@ -3895,7 +4378,7 @@ mod tests {
         let harnesses = parsed(&config, &vars).unwrap();
         let runtime = SkillRuntime::new(PathBuf::from("/nonexistent/hatchling-spawner"));
         let input = r#"{"task":"Go.","root":"project","paths":["a"]}"#;
-        let report = harnesses.run(HarnessKind::ClaudeCode, &binary, input, &runtime, &no_keys);
+        let report = harnesses.run(&CLAUDE, &binary, input, &runtime, &no_keys);
         assert_eq!(report.outcome, HarnessOutcome::Failed);
         assert_eq!(report.reason.as_deref(), Some("the harness could not run"));
         assert_eq!((report.change_count(), report.patch.as_ref()), (0, None));
@@ -4106,8 +4589,12 @@ mod tests {
         );
     }
 
+    /// The built-in harnesses.
+    const CLAUDE: Harness = Harness::BuiltIn(HarnessKind::ClaudeCode);
+    const CODEX: Harness = Harness::BuiltIn(HarnessKind::CodexCli);
+
     /// A key reader with no key: an offline harness never asks it.
-    const fn no_keys(_: HarnessKind) -> Option<Zeroizing<String>> {
+    const fn no_keys(_: &str) -> Option<Zeroizing<String>> {
         None
     }
 
@@ -4115,7 +4602,7 @@ mod tests {
     fn a_harness_cell_runs_the_verified_copy_on_the_run_trees() {
         let dirs = RunDirs::create().unwrap();
         let cell = harness_cell(
-            HarnessKind::CodexCli,
+            &CODEX,
             "The prompt.",
             Path::new("/staged/code"),
             &dirs,
@@ -4227,6 +4714,22 @@ mod tests {
             unanswered,
             "no completed agent message: the words as they came"
         );
+        // OpenCode's JSON lines: the last text part, not a tool's output.
+        let opencode = concat!(
+            r#"{"type":"step_start","part":{"type":"step-start"}}"#,
+            "\n",
+            r#"{"type":"text","part":{"type":"text","text":"first"}}"#,
+            "\n",
+            r#"{"type":"tool_use","part":{"type":"tool","text":"tool"}}"#,
+            "\n",
+            r#"{"type":"text","part":{"type":"text","text":"last"}}"#,
+            "\n",
+            r#"{"type":"text","text":"no part"}"#,
+            "\n",
+            r#"{"type":"step_finish","part":{"type":"step-finish","text":"finish"}}"#,
+            "\n",
+        );
+        assert_eq!(final_message(opencode.as_bytes()), "last");
         assert_eq!(truncate("h\u{e9}llo", 3), "h\u{e9}");
         assert_eq!(truncate("abc", 3), "abc");
         assert_eq!(truncate("abc", 0), "");
@@ -4446,10 +4949,7 @@ mod tests {
         harnesses.workspace = None;
         assert_eq!(harnesses.deliver_patch("nowhere"), None);
         // With no activity log a run is still recorded in the broker's log.
-        harnesses.record(
-            HarnessKind::ClaudeCode,
-            &Report::new(HarnessKind::ClaudeCode, &settings(&scratch).0, "[]"),
-        );
+        harnesses.record(&CLAUDE, &Report::new(&CLAUDE, &settings(&scratch).0, "[]"));
         assert!(!scratch.join("schedules.activity").exists());
     }
 
@@ -4458,7 +4958,7 @@ mod tests {
             path: PathBuf::from("/h"),
             sha256: "ab".repeat(32),
         };
-        Report::new(HarnessKind::CodexCli, &binary, "{\"brief\":1}")
+        Report::new(&CODEX, &binary, "{\"brief\":1}")
     }
 
     #[test]

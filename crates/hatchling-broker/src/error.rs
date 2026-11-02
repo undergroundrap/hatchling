@@ -315,6 +315,17 @@ pub enum Error {
         /// What failed.
         reason: String,
     },
+
+    /// A harness manifest is wrong, or open to another user (WO-018).
+    #[error("harness manifest {}: {field}: {reason}", path.display())]
+    HarnessManifest {
+        /// The manifest, or its directory.
+        path: std::path::PathBuf,
+        /// The field that's wrong, or what of the file.
+        field: String,
+        /// Why.
+        reason: String,
+    },
 }
 
 /// Maps the shared contract's errors onto the broker's vocabulary.

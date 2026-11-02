@@ -25,7 +25,7 @@ use hatchling_skill::CodeHash;
 use serde_json::{Value, json};
 
 /// A key reader with no key: an offline harness never asks it.
-const fn no_keys(_: hatchling_broker::harness::HarnessKind) -> Option<zeroize::Zeroizing<String>> {
+const fn no_keys(_: &str) -> Option<zeroize::Zeroizing<String>> {
     None
 }
 

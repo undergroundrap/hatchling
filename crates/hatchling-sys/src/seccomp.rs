@@ -262,11 +262,16 @@ const SYSCALL_TABLE: &[(&str, u32)] = &[
     // Seen only in a real cell: Claude Code reads its children's pipes
     // with preadv2(RWF_NOWAIT).
     ("preadv2", 327),
+    // Seen only in a real cell: OpenCode writes with pwritev2 (WO-018).
+    ("pwritev2", 328),
     ("pidfd_open", 434),
     ("clone3", 435),
     ("close_range", 436),
     ("faccessat2", 439),
     ("epoll_pwait2", 441),
+    // Refused in a CLI cell: glibc's resolver sends a name's two queries
+    // with it. Seen only in a real cell, from OpenCode (WO-018).
+    ("sendmmsg", 307),
 ];
 
 /// aarch64 has no `arch_prctl`; the rest of the surface is the same
@@ -401,8 +406,12 @@ const IOCTL_REQUESTS: [u32; 6] = [
 
 /// The calls the real harness CLIs were traced making, beyond the harness
 /// profile and the ones [`SeccompProfile::harness_cli`] checks by argument.
+/// Seen only in a real cell, from `OpenCode` (WO-018): `epoll_wait`, from
+/// its file watcher, the same as `epoll_pwait` with no signal mask; and
+/// `pwritev2`, the write that `preadv2` reads with, to a descriptor the
+/// cell holds as `pwrite64` and `writev` do.
 #[cfg(target_arch = "x86_64")]
-const CLI_CALLS: [&str; 61] = [
+const CLI_CALLS: [&str; 63] = [
     "open",
     "stat",
     "lstat",
@@ -464,6 +473,8 @@ const CLI_CALLS: [&str; 61] = [
     "close_range",
     "faccessat2",
     "epoll_pwait2",
+    "epoll_wait",
+    "pwritev2",
 ];
 
 /// The calls a headless Chromium makes beyond the CLI profile's (WO-029),
@@ -479,10 +490,10 @@ const CLI_CALLS: [&str; 61] = [
 /// And the old `epoll_create`, which WebRTC's network thread opens its
 /// event loop with when a page makes an `RTCPeerConnection`: the same as
 /// `epoll_create1`, which the cell has. Killed for it, the page's renderer
-/// died and the page never finished loading.
+/// died and the page never finished loading. (`epoll_wait`, which it waits
+/// with too, the CLI profile has.)
 #[cfg(target_arch = "x86_64")]
-const BROWSER_CALLS: [&str; 11] = [
-    "epoll_wait",
+const BROWSER_CALLS: [&str; 10] = [
     "epoll_create",
     "recvmsg",
     "sendmsg",
@@ -740,6 +751,10 @@ impl SeccompProfile {
     /// - `clone` never takes a namespace flag: that is the kill. `clone3`,
     ///   whose flags sit behind a pointer the filter cannot read, answers
     ///   `ENOSYS`, and threads fall back to `clone`.
+    /// - `sendmmsg` answers `ENOSYS`: glibc's resolver sends a name's two
+    ///   queries with it, and a cell has no resolver to reach. A CLI that
+    ///   looks a name up (`OpenCode`, for its package registry) is told it
+    ///   can't, as with no network, rather than killed.
     /// - `socket` is `AF_UNIX` or `AF_INET` only; any other family answers
     ///   `EAFNOSUPPORT`. `socketpair` is `AF_UNIX` only, answered the
     ///   same way otherwise: a pair is never a network socket.
@@ -783,6 +798,7 @@ impl SeccompProfile {
                 Refusal::Kill,
             )?;
             profile.refuse("clone3", ENOSYS)?;
+            profile.refuse("sendmmsg", ENOSYS)?;
             profile.allow_if(
                 "prctl",
                 Check::OneOf {
@@ -1876,6 +1892,8 @@ mod tests {
         }
         assert_eq!(call(&prog, "clone3", no), errno(ENOSYS));
         assert_eq!(call(&prog, "clone3", [0, 88, 0, 0, 0, 0]), errno(ENOSYS));
+        // sendmmsg: a name's lookup is told there's no resolver.
+        assert_eq!(call(&prog, "sendmmsg", no), errno(ENOSYS));
         // prctl and ioctl: only what the CLIs use; the request is the
         // second argument, and only its low 32 bits count, as for the kernel.
         for option in PRCTL_OPTIONS {
@@ -2089,8 +2107,9 @@ mod tests {
             );
             assert_eq!(
                 SeccompProfile::harness_cli().unwrap().ruled_numbers(),
-                // ioctl, socket, socketpair, clone, prctl, prlimit64, clone3.
-                vec![16, 41, 53, 56, 157, 302, 435]
+                // ioctl, socket, socketpair, clone, prctl, prlimit64,
+                // sendmmsg, clone3.
+                vec![16, 41, 53, 56, 157, 302, 307, 435]
             );
         }
         #[cfg(not(target_arch = "x86_64"))]
