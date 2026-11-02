@@ -79,7 +79,7 @@ done
 declare -A crate_of
 for suite in "${SUITES[@]}"; do
     exe=$(cargo test --locked --all-features $suite --no-run --message-format=json \
-        | grep -o '"executable":"[^"]*"' | tail -1 | cut -d'"' -f4)
+        | grep -o '"executable":"[^"]*/deps/[^"]*"' | tail -1 | cut -d'"' -f4)
     if [ -z "$exe" ]; then
         echo "error: no test binary for: $suite"
         exit 1
