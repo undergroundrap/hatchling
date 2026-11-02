@@ -54,7 +54,7 @@ case " $TARGETS " in *" $target "*) ;; *) echo "$target isn't a released target"
 packages=()
 for entry in $PROGRAMS; do packages+=(-p "${entry%%:*}"); done
 
-export RUSTFLAGS="--remap-path-prefix=$cargo_home=/cargo"
+export RUSTFLAGS=""  # HAND-BREAK: no remap; the comparison must fail
 cargo auditable build --release --locked "${packages[@]}" --bins
 
 for entry in $PROGRAMS; do
