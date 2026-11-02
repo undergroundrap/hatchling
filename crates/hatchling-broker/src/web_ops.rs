@@ -321,9 +321,11 @@ pub(crate) fn allow(
         }
     }
     let board = board(config);
-    let found = board
-        .approvals()
-        .find(&web.task, &site_action(&site, &url.to_string()), State::Approved);
+    let found = board.approvals().find(
+        &web.task,
+        &site_action(&site, &url.to_string()),
+        State::Approved,
+    );
     let always = grants.is_some();
     let id = found.map_or_else(
         || ask_owner(&board, web, url, reason, &site, always, visit),
@@ -741,7 +743,11 @@ pub(crate) mod tests {
         owner_decides(&config, "t", "https://a.example", Decision::Approve);
         let (web, answer) = ask(&config, web, &fetch(leak));
         assert!(waiting(&answer, "https://a.example"), "{answer:?}");
-        assert!(asked.lock().unwrap().is_empty(), "{:?}", asked.lock().unwrap());
+        assert!(
+            asked.lock().unwrap().is_empty(),
+            "{:?}",
+            asked.lock().unwrap()
+        );
         let (_, answer) = ask(&config, web, &fetch("https://a.example/docs"));
         assert!(matches!(answer, WebResult::Page { .. }), "{answer:?}");
         assert_eq!(*asked.lock().unwrap(), ["https://a.example/docs"]);
@@ -1059,7 +1065,15 @@ pub(crate) mod tests {
         };
         let other = WebUrl::parse("https://b.example/").unwrap();
         assert_eq!(
-            ask_owner(&board, &web, &other, "why", "https://b.example", false, false),
+            ask_owner(
+                &board,
+                &web,
+                &other,
+                "why",
+                "https://b.example",
+                false,
+                false
+            ),
             Err(WebResult::Unasked {
                 reason: ApprovalRefusal::QueueFull
             }),
@@ -1098,7 +1112,15 @@ pub(crate) mod tests {
             Duration::from_secs(5),
             fetcher,
         );
-        let approved = ask_owner(&board, &attended, &url, "why", "https://a.example", false, false);
+        let approved = ask_owner(
+            &board,
+            &attended,
+            &url,
+            "why",
+            "https://a.example",
+            false,
+            false,
+        );
         assert!(
             matches!(approved, Ok(ref id) if id.starts_with("approval-")),
             "{approved:?}"
