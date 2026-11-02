@@ -85,7 +85,7 @@ hatchling_core::declare_environment! {
     HATCHLING_HARNESS_CODEX_CLI_API: ("optional", "Codex CLI vendor API allowlist; unset runs the harness offline."),
     HATCHLING_HARNESS_CODEX_CLI_HOST: ("optional, paired with CODEX_CLI_HOST_SHA256", "Absolute pinned CLI host executable path."),
     HATCHLING_HARNESS_CODEX_CLI_HOST_SHA256: ("required with CODEX_CLI_HOST", "SHA-256 of the configured CLI host executable."),
-    HATCHLING_HARNESS_TOOLS: ("optional", "Comma-separated absolute tool paths; networked harnesses default to available standard tools, explicit paths need a vendor API. Each is pinned to its SHA-256 at start, and a cell runs a copy of it."),
+    HATCHLING_HARNESS_TOOLS: ("optional", "Comma-separated absolute tool paths; networked harnesses default to available standard tools, explicit paths need a vendor API. Read once, at the first start, to make the approved-tools list (<vault dir>.tools); after that, it must name the list's tools or be unset (hatchling-broker tools add/remove)."),
     HATCHLING_HARNESS_ROOTS: ("required with a configured harness", "Permitted host roots for harness work trees."),
     HATCHLING_HARNESS_TIMEOUT_SECS: ("optional", "Harness execution deadline in seconds."),
     HATCHLING_BROWSER: ("optional; paired with its SHA256", "Absolute pinned headless browser executable path (WO-029); unset, no browser sessions. Needs HATCHLING_CELL_CGROUP."),

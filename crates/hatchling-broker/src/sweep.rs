@@ -192,6 +192,10 @@ pub fn state_dirs(config: &Config, redaction: Option<&RedactionConfig>) -> Vec<P
     ];
     dirs.extend(config.artifacts.workspace.clone());
     dirs.extend(config.vault.key_file.parent().map(Path::to_path_buf));
+    // The approved-tools list's, beside the vault's (WO-019).
+    if !config.vault.root.as_os_str().is_empty() {
+        dirs.push(crate::approved_tools::dir(config));
+    }
     dirs.extend(redaction.map(|redaction| redaction.dir.clone()));
     dirs.retain(|dir| !dir.as_os_str().is_empty());
     dirs
@@ -723,6 +727,7 @@ mod tests {
         let kept = state_dirs(&config, Some(&redaction));
         for expected in [
             &config.vault.root,
+            &crate::approved_tools::dir(&config),
             &memory,
             &config.scheduler.root,
             &redaction.dir,
