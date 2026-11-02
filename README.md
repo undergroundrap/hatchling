@@ -45,7 +45,7 @@ The full model, what it deliberately doesn't cover, and the gaps our own pre-lau
 | | |
 | --- | --- |
 | **Your model** | Any OpenAI-compatible chat-completions endpoint: Ollama, llama.cpp, LM Studio and vLLM locally, or a hosted API. Every secret a run fetches is redacted from what it sends, local endpoint or not. |
-| **Coding harnesses** | Claude Code and Codex CLI, pinned to a SHA-256 and verified before they run, inside cells, with only the tools you approve: **[approved tools](docs/approved-tools.md)**. |
+| **Coding harnesses** | Claude Code and Codex CLI, pinned to a SHA-256 and verified before they run, inside cells, with only the tools you approve: **[approved tools](docs/approved-tools.md)**. Add another CLI, OpenCode for one, by a manifest: **[harness manifests](docs/harness-manifests.md)**. |
 | **Chat** | Each message you send on the local chat is answered by the agent in a fresh cell, holding your API client's grants and nothing more. It's given the conversation so far, as the broker recorded it: what you said, and what you were shown. |
 | **Scheduling** | Cron or one-off tasks in explicit IANA timezones; each schedule runs with exactly the grants it was created with. |
 | **Memory and goals** | Broker-owned durable memory and goal tracking, paged so no reply outgrows its frame. |

@@ -923,7 +923,7 @@ fn cli_denied_syscalls_each_sigsys() -> Result<(), String> {
 
 /// The CLI profile's argument rules under the live kernel, with the
 /// probe's `-1` arguments: a `clone` asking for namespaces is killed;
-/// another socket family, any `clone3`, another `prctl` option and
+/// another socket family, any `clone3` or `sendmmsg`, another `prctl` option and
 /// another `ioctl` request are each answered with their errno, and the
 /// probe lives to report exactly that.
 fn cli_rules_refuse_as_designed() -> Result<(), String> {
@@ -940,6 +940,7 @@ fn cli_rules_refuse_as_designed() -> Result<(), String> {
         ("socket", 97),
         ("socketpair", 97),
         ("clone3", 38),
+        ("sendmmsg", 38),
         ("prctl", 1),
         ("ioctl", 25),
     ] {

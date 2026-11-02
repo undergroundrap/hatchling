@@ -847,7 +847,6 @@ fn a_harness_relay_runs_in_the_authority_with_the_key_it_reads() {
     use std::os::unix::net::UnixListener;
 
     use hatchling_broker::egress_authority::Authority;
-    use hatchling_broker::harness::HarnessKind;
     use hatchling_broker::keeper::Keeper;
     let (port, vendor) = upstream(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok").unwrap();
     let dir = scratch("authority-relay").unwrap();
@@ -868,17 +867,17 @@ fn a_harness_relay_runs_in_the_authority_with_the_key_it_reads() {
     let refused = authority
         .connect()
         .unwrap()
-        .relay(HarnessKind::CodexCli, "sk-surrogate")
+        .relay("codex-cli", "sk-surrogate")
         .unwrap()
         .unwrap_err();
     assert_eq!(
         refused,
-        "the codex-cli harness has no vendor API configured"
+        "\"codex-cli\" is not a harness with a vendor API configured"
     );
     let pending = authority
         .connect()
         .unwrap()
-        .relay(HarnessKind::ClaudeCode, "sk-surrogate-qz")
+        .relay("claude-code", "sk-surrogate-qz")
         .unwrap()
         .unwrap();
     let handoff_path = dir.join("relay.sock");

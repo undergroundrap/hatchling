@@ -86,6 +86,7 @@ hatchling_core::declare_environment! {
     HATCHLING_HARNESS_CODEX_CLI_HOST: ("optional, paired with CODEX_CLI_HOST_SHA256", "Absolute pinned CLI host executable path."),
     HATCHLING_HARNESS_CODEX_CLI_HOST_SHA256: ("required with CODEX_CLI_HOST", "SHA-256 of the configured CLI host executable."),
     HATCHLING_HARNESS_TOOLS: ("optional", "Comma-separated absolute tool paths; networked harnesses default to available standard tools, explicit paths need a vendor API. Read once, at the first start, to make the approved-tools list (<vault dir>.tools); after that, it must name the list's tools or be unset (hatchling-broker tools add/remove)."),
+    HATCHLING_HARNESS_MANIFESTS: ("optional", "Absolute directory of harness manifests (WO-018): one <name>.json per coding CLI the operator adds, run as the built-in harnesses are. The directory and each manifest must be the broker's user's or root's, writable by no one else. Read at the start; a wrong manifest refuses it, naming the field."),
     HATCHLING_HARNESS_ROOTS: ("required with a configured harness", "Permitted host roots for harness work trees."),
     HATCHLING_HARNESS_TIMEOUT_SECS: ("optional", "Harness execution deadline in seconds."),
     HATCHLING_BROWSER: ("optional; paired with its SHA256", "Absolute pinned headless browser executable path (WO-029); unset, no browser sessions. Needs HATCHLING_CELL_CGROUP."),

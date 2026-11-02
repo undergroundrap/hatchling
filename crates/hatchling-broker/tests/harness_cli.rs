@@ -8,12 +8,16 @@
 //!   hostile harness could: the relay with its surrogate, with a forged
 //!   key, on another path, with ambiguous framing; any other address; the
 //!   files around it. Always run where cells can be built.
-//! - **The real CLIs**, Claude Code and the Codex CLI, play a scripted
-//!   session (an edit, a shell command, an answer) and must return a patch.
-//!   They run only when `HATCHLING_TEST_CLAUDE_CODE` /
-//!   `HATCHLING_TEST_CODEX_CLI` (and `HATCHLING_TEST_CODEX_HOST`, its
-//!   code-mode host) name the binaries; `HATCHLING_REQUIRE_REAL_HARNESS=1`
-//!   makes their absence a failure.
+//! - **A harness defined by a manifest** (WO-018): the stub harness
+//!   again, configured only by the operator's manifest, runs as the
+//!   built-in harnesses do.
+//! - **The real CLIs**, Claude Code and the Codex CLI, and `OpenCode` by
+//!   its manifest, play a scripted session (an edit, a shell command, an
+//!   answer) and must return a patch. They run only when
+//!   `HATCHLING_TEST_CLAUDE_CODE` / `HATCHLING_TEST_CODEX_CLI` (and
+//!   `HATCHLING_TEST_CODEX_HOST`, its code-mode host) /
+//!   `HATCHLING_TEST_OPENCODE` name the binaries;
+//!   `HATCHLING_REQUIRE_REAL_HARNESS=1` makes their absence a failure.
 //!
 //! Cells need user namespaces: without them this skips, and
 //! `HATCHLING_REQUIRE_CELL=1` makes the skip a failure.
@@ -66,7 +70,7 @@ fn presented_key(kind: HarnessKind) -> String {
     }
 }
 
-const fn no_keys(_: HarnessKind) -> Option<Zeroizing<String>> {
+const fn no_keys(_: &str) -> Option<Zeroizing<String>> {
     None
 }
 
@@ -226,7 +230,52 @@ fn model(body: &Value) -> Value {
     body.get("model").cloned().unwrap_or(Value::Null)
 }
 
-/// Anthropic's Messages API: a `Write`, then a `Bash`, then the answer.
+/// The shell command each scripted session runs.
+const SHELL: &str = "ls && git --version && rg --version | head -1 && echo shell-ran > shell.txt";
+
+/// The tools a scripted session calls, by the names the CLI offers:
+/// Claude Code's `Write` then `Bash`, or `OpenCode`'s `read`, `write` (it
+/// reads a file before it overwrites it, by its absolute path) then `bash`.
+fn tool_script(body: &Value) -> Vec<(&'static str, Value)> {
+    let offers = |name: &str| {
+        body.get("tools")
+            .and_then(Value::as_array)
+            .is_some_and(|tools| {
+                tools
+                    .iter()
+                    .any(|tool| tool.get("name").and_then(Value::as_str) == Some(name))
+            })
+    };
+    if offers("Write") {
+        vec![
+            (
+                "Write",
+                json!({"file_path": "notes.txt", "content": "new notes from the mock\n"}),
+            ),
+            (
+                "Bash",
+                json!({"command": SHELL, "description": "list and write"}),
+            ),
+        ]
+    } else if offers("write") {
+        vec![
+            ("read", json!({"filePath": "/work/notes.txt"})),
+            (
+                "write",
+                json!({"filePath": "/work/notes.txt", "content": "new notes from the mock\n"}),
+            ),
+            (
+                "bash",
+                json!({"command": SHELL, "description": "list and write"}),
+            ),
+        ]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Anthropic's Messages API: the session's tools ([`tool_script`]), one
+/// a turn, then the answer.
 fn anthropic(body: &Value) -> (&'static str, String) {
     let done = body
         .get("messages")
@@ -237,14 +286,6 @@ fn anthropic(body: &Value) -> (&'static str, String) {
         .flatten()
         .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_result"))
         .count();
-    let tooled = body
-        .get("tools")
-        .and_then(Value::as_array)
-        .is_some_and(|tools| {
-            tools
-                .iter()
-                .any(|tool| tool.get("name").and_then(Value::as_str) == Some("Write"))
-        });
     let usage = json!({"input_tokens": 10, "output_tokens": 1});
     if !streams(body) {
         let whole = json!({"id": "msg_mock", "type": "message", "role": "assistant", "model": model(body),
@@ -254,17 +295,8 @@ fn anthropic(body: &Value) -> (&'static str, String) {
     }
     let message = json!({"id": "msg_mock", "type": "message", "role": "assistant", "model": model(body),
         "content": [], "stop_reason": null, "stop_sequence": null, "usage": usage});
-    let script = [
-        (
-            "Write",
-            json!({"file_path": "notes.txt", "content": "new notes from the mock\n"}),
-        ),
-        (
-            "Bash",
-            json!({"command": "ls && git --version && rg --version | head -1 && echo shell-ran > shell.txt", "description": "list and write"}),
-        ),
-    ];
-    let (block, stop) = match script.get(done).filter(|_| tooled) {
+    let script = tool_script(body);
+    let (block, stop) = match script.get(done) {
         Some((name, input)) => (
             vec![
                 (
@@ -441,6 +473,53 @@ impl Deployment {
         Ok(Self { dir, config, vars })
     }
 
+    /// A deployment of `binary` as the harness `harness`, defined only by
+    /// a manifest (WO-018) speaking Anthropic's API to the mock vendor,
+    /// with `shape`'s `args` and `env`.
+    fn defined(
+        name: &str,
+        harness: &str,
+        binary: &Path,
+        vendor: &MockVendor,
+        shape: &Value,
+    ) -> Result<Self, String> {
+        let mut deployment = Self::new(name, HarnessKind::ClaudeCode, binary, None, vendor)?;
+        for key in [
+            "HATCHLING_HARNESS_CLAUDE_CODE",
+            "HATCHLING_HARNESS_CLAUDE_CODE_SHA256",
+            "HATCHLING_HARNESS_CLAUDE_CODE_API",
+        ] {
+            deployment.vars.remove(key);
+        }
+        let (path, sha256) = pin(&deployment.dir, binary, harness)?;
+        let manifest = json!({
+            "version": 1,
+            "name": harness,
+            "binary": {"path": path, "sha256": sha256},
+            "api": "anthropic",
+            "destination": format!("local:localhost:{}", vendor.port),
+            "args": shape.get("args"),
+            "env": shape.get("env"),
+        });
+        let manifests = deployment.dir.join("manifests");
+        std::fs::create_dir_all(&manifests).map_err(|e| format!("manifests: {e}"))?;
+        std::fs::write(
+            manifests.join(format!("{harness}.json")),
+            manifest.to_string(),
+        )
+        .map_err(|e| format!("manifest: {e}"))?;
+        deployment.vars.insert(
+            "HATCHLING_HARNESS_MANIFESTS",
+            manifests.display().to_string(),
+        );
+        let code: HashSet<_> = [HARNESS_CAPABILITY
+            .parse()
+            .map_err(|e| format!("capability: {e}"))?]
+        .into();
+        deployment.config.skills.grants = HashMap::from([(String::from(harness), code)]);
+        Ok(deployment)
+    }
+
     fn skills(&self) -> Result<Skills, String> {
         let harnesses = Harnesses::parse(&self.config, |key| self.vars.get(key).cloned())
             .and_then(Harnesses::pin_tools)
@@ -477,8 +556,19 @@ fn invoke(
     task: &str,
     keys: HarnessKeys<'_>,
 ) -> Result<Value, String> {
+    invoke_skill(skills, kind.skill_id(), task, keys)
+}
+
+/// Runs the harness skill `skill` on `task` over the project's
+/// `notes.txt`; its report.
+fn invoke_skill(
+    skills: &Skills,
+    skill: &str,
+    task: &str,
+    keys: HarnessKeys<'_>,
+) -> Result<Value, String> {
     let op = SkillOp::Invoke {
-        skill: kind.skill_id().to_owned(),
+        skill: skill.to_owned(),
         capability: "code".parse().map_err(|e| format!("capability: {e}"))?,
         input: json!({"task": task, "root": "project", "paths": ["notes.txt"]}).to_string(),
     };
@@ -542,7 +632,9 @@ fn a_hostile_harness_reaches_its_vendor_only_through_the_relay_and_only_with_its
             String::from("STUB probe /dev/null"),
         ]
         .join("\n");
-        let keys = |kind| Some(Zeroizing::new(String::from(vendor_key(kind))));
+        let keys = |secret: &str| {
+            (secret == kind.secret_name()).then(|| Zeroizing::new(String::from(vendor_key(kind))))
+        };
         let report = invoke(&deployment.skills()?, kind, &task, &keys)?;
         assert_eq!(report.get("outcome"), Some(&json!("done")), "{report}");
         let said = text(&report, "/harness_said/message");
@@ -610,6 +702,126 @@ fn a_hostile_harness_reaches_its_vendor_only_through_the_relay_and_only_with_its
     Ok(())
 }
 
+/// WO-018: a harness the operator defines only by a manifest runs as a
+/// built-in one does: in a CLI cell, reaching its vendor only through the
+/// relay with a surrogate, the relay's policy on what it sends, its patch
+/// computed by Hatchling, its run in the activity feed. Once its binary
+/// changes on the host, the next run is refused before anything runs.
+#[test]
+#[allow(
+    clippy::literal_string_with_formatting_args,
+    reason = "a manifest's placeholders, {task}, {relay} and {key}, look like format arguments"
+)]
+fn a_harness_defined_by_a_manifest_runs_as_a_built_in_one() -> Result<(), String> {
+    if !guard_cell_available()? {
+        return Ok(());
+    }
+    let vendor = MockVendor::start()?;
+    // Claude Code's arguments and variables, so the stub answers as it
+    // does.
+    let shape = json!({
+        "args": ["-p", "{task}", "--output-format", "json"],
+        "env": [
+            {"name": "ANTHROPIC_API_KEY", "value": "{key}"},
+            {"name": "ANTHROPIC_BASE_URL", "value": "{relay}"}
+        ]
+    });
+    let deployment = Deployment::defined(
+        "harness-cli-manifest",
+        "stub-cli",
+        &harness_fixture_binary()?,
+        &vendor,
+        &shape,
+    )?;
+    let skills = deployment.skills()?;
+    let keys = |secret: &str| {
+        (secret == "harness-stub-cli").then(|| Zeroizing::new(String::from(CLAUDE_KEY)))
+    };
+    let task = [
+        String::from("STUB edit notes.txt"),
+        String::from("STUB relay /v1/messages"),
+        String::from("STUB relay /v1/files"),
+        format!("STUB relay-key {CLAUDE_KEY} /v1/messages"),
+        format!("STUB dial 127.0.0.1:{}", vendor.port),
+        String::from("STUB env"),
+    ]
+    .join("\n");
+    let report = invoke_skill(&skills, "stub-cli@1", &task, &keys)?;
+    assert_eq!(report.get("outcome"), Some(&json!("done")), "{report}");
+    assert_eq!(report.get("harness"), Some(&json!("stub-cli")), "{report}");
+    let said = text(&report, "/harness_said/message");
+    let says = |line: &str| {
+        assert!(
+            said.lines().any(|said| said == line),
+            "{line} not in:\n{said}"
+        );
+    };
+    says("edit notes.txt: true");
+    // Through its relay, with its surrogate, under the relay's policy.
+    says("relay /v1/messages: HTTP/1.1 200 OK");
+    says("relay /v1/files: HTTP/1.1 404 Not Found");
+    says("relay-key /v1/messages: HTTP/1.1 401 Unauthorized");
+    says(&format!("dial 127.0.0.1:{}: false", vendor.port));
+    // Its manifest's variables, the surrogate in place of the key.
+    assert!(
+        said.lines()
+            .any(|line| line.starts_with("ANTHROPIC_API_KEY=sk-ant-hatchling-")),
+        "{said}"
+    );
+    says("ANTHROPIC_BASE_URL=http://127.0.0.1:8787");
+    assert!(
+        !said
+            .lines()
+            .any(|line| line.contains('=') && line.ends_with(CLAUDE_KEY)),
+        "the vendor key is in the cell:\n{said}"
+    );
+    // The vendor saw the one good request, with the real key.
+    let seen = vendor.seen();
+    let first = seen
+        .first()
+        .map(|seen| (seen.path.as_str(), seen.key.as_str()));
+    assert_eq!(first, Some(("/v1/messages", CLAUDE_KEY)), "{seen:?}");
+    assert_eq!(seen.len(), 1, "{seen:?}");
+    // Hatchling's patch, and the run in the activity feed.
+    assert_eq!(
+        report.get("files_changed"),
+        Some(&json!(["notes.txt"])),
+        "{report}"
+    );
+    assert!(
+        report.get("patch").is_some_and(Value::is_string),
+        "{report}"
+    );
+    assert_eq!(
+        deployment.network(),
+        Some(HarnessNetworkUse {
+            destination: format!("localhost:{}", vendor.port),
+            requests: 1,
+            refused: 2,
+        })
+    );
+    let last = deployment.activity().into_iter().next_back();
+    assert!(
+        matches!(
+            last.map(|event| event.kind),
+            Some(SubagentEvent::HarnessRun { harness, .. }) if harness == "stub-cli"
+        ),
+        "the run is recorded under its name"
+    );
+    // Its binary changes on the host: the next run is refused, and
+    // nothing reaches the vendor.
+    std::fs::write(deployment.dir.join("bin/stub-cli"), b"#!/bin/sh\nexit 0\n")
+        .map_err(|e| format!("change the binary: {e}"))?;
+    let refused = invoke_skill(&skills, "stub-cli@1", "STUB relay /v1/messages", &keys)?;
+    assert_eq!(refused.get("outcome"), Some(&json!("refused")), "{refused}");
+    assert!(
+        text(&refused, "/reason").contains("never substituted"),
+        "{refused}"
+    );
+    assert_eq!(vendor.seen().len(), 1);
+    Ok(())
+}
+
 /// WO-019: a tool the operator named runs in its CLI cell, from a copy
 /// nothing there can write, and it's the only one there. Once its program
 /// changes on the host, the next run is refused before anything runs, and
@@ -634,7 +846,9 @@ fn a_pinned_tool_runs_in_its_cell_and_a_changed_one_refuses_the_run() -> Result<
         .vars
         .insert("HATCHLING_HARNESS_TOOLS", tool.clone());
     let skills = deployment.skills()?;
-    let keys = |kind| Some(Zeroizing::new(String::from(vendor_key(kind))));
+    let keys = |secret: &str| {
+        (secret == kind.secret_name()).then(|| Zeroizing::new(String::from(vendor_key(kind))))
+    };
     let task = format!("STUB run {tool} pinned\nSTUB overwrite {tool}\nSTUB probe /usr/bin/ls");
     let report = invoke(&skills, kind, &task, &keys)?;
     assert_eq!(report.get("outcome"), Some(&json!("done")), "{report}");
@@ -757,10 +971,39 @@ fn a_real_cli_edits_runs_a_command_and_answers(
         host,
         &vendor,
     )?;
-    let keys = |kind| Some(Zeroizing::new(String::from(vendor_key(kind))));
-    let report = invoke(
+    let session = Session {
+        skill: kind.skill_id(),
+        secret: kind.secret_name(),
+        key: vendor_key(kind),
+        presented: &presented_key(kind),
+    };
+    a_scripted_session_ends_in_a_patch(&deployment, &vendor, &session)
+}
+
+/// Whose session [`a_scripted_session_ends_in_a_patch`] plays: the
+/// harness skill, its vault secret, the key the vault holds there, and
+/// the key header's value the vendor must see.
+struct Session<'a> {
+    skill: &'a str,
+    secret: &'a str,
+    key: &'a str,
+    presented: &'a str,
+}
+
+/// The scripted session in `deployment`: an edit, a shell command through
+/// its tools, an answer; a patch back, and every request with the vendor
+/// key.
+fn a_scripted_session_ends_in_a_patch(
+    deployment: &Deployment,
+    vendor: &MockVendor,
+    session: &Session<'_>,
+) -> Result<(), String> {
+    let keys = |secret: &str| {
+        (secret == session.secret).then(|| Zeroizing::new(String::from(session.key)))
+    };
+    let report = invoke_skill(
         &deployment.skills()?,
-        kind,
+        session.skill,
         "Update notes.txt, then list the files.",
         &keys,
     )?;
@@ -791,8 +1034,10 @@ fn a_real_cli_edits_runs_a_command_and_answers(
     );
     let seen = vendor.seen();
     assert!(seen.len() >= 3, "{seen:?}");
-    let wanted = presented_key(kind);
-    assert!(seen.iter().all(|request| request.key == wanted), "{seen:?}");
+    assert!(
+        seen.iter().all(|request| request.key == session.presented),
+        "{seen:?}"
+    );
     let network = deployment
         .network()
         .ok_or_else(|| String::from("the run recorded no network use"))?;
@@ -811,6 +1056,51 @@ fn real_claude_code_runs_in_its_cell_through_the_relay() -> Result<(), String> {
     real("HATCHLING_TEST_CLAUDE_CODE").map_or(Ok(()), |binary| {
         a_real_cli_edits_runs_a_command_and_answers(HarnessKind::ClaudeCode, &binary, None)
     })
+}
+
+/// WO-018: `OpenCode`, defined only by its manifest (the one
+/// `docs/harness-manifests.md` shows, pointed at the mock vendor), plays the
+/// scripted session in its cell.
+#[test]
+#[allow(
+    clippy::literal_string_with_formatting_args,
+    reason = "a manifest's placeholders, {task}, {relay} and {key}, look like format arguments"
+)]
+fn real_opencode_runs_by_its_manifest_in_its_cell_through_the_relay() -> Result<(), String> {
+    if !guard_cell_available()? {
+        return Ok(());
+    }
+    let Some(binary) = real("HATCHLING_TEST_OPENCODE") else {
+        return Ok(());
+    };
+    let vendor = MockVendor::start()?;
+    let config = r#"{"provider":{"anthropic":{"options":{"baseURL":"{relay}/v1"}}},"autoupdate":false,"share":"disabled"}"#;
+    let shape = json!({
+        "args": ["run", "--format", "json", "--auto", "--model", "anthropic/claude-sonnet-4-5", "{task}"],
+        "env": [
+            {"name": "ANTHROPIC_API_KEY", "value": "{key}"},
+            {"name": "OPENCODE_CONFIG_CONTENT", "value": config},
+            {"name": "OPENCODE_DISABLE_AUTOUPDATE", "value": "1"},
+            {"name": "OPENCODE_DISABLE_MODELS_FETCH", "value": "1"},
+            {"name": "OPENCODE_DISABLE_LSP_DOWNLOAD", "value": "1"},
+            {"name": "OPENCODE_DISABLE_DEFAULT_PLUGINS", "value": "1"},
+            {"name": "OPENCODE_DISABLE_CLAUDE_CODE", "value": "1"}
+        ]
+    });
+    let deployment = Deployment::defined(
+        "harness-cli-real-opencode",
+        "opencode",
+        &binary,
+        &vendor,
+        &shape,
+    )?;
+    let session = Session {
+        skill: "opencode@1",
+        secret: "harness-opencode",
+        key: CLAUDE_KEY,
+        presented: CLAUDE_KEY,
+    };
+    a_scripted_session_ends_in_a_patch(&deployment, &vendor, &session)
 }
 
 #[test]

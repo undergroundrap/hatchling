@@ -498,6 +498,7 @@ fn the_cli_catalog_is_everything_the_cli_profile_does_not_decide() -> Result<(),
         ("clone", 56),
         ("socket", 41),
         ("clone3", 435),
+        ("sendmmsg", 307),
         ("wait4", 61),
     ] {
         if nrs.contains(&nr) {
