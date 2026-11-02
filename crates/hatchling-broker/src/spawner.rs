@@ -1710,7 +1710,10 @@ sleep 30 </dev/null >/dev/null 2>&1 &
             under: vec![base.clone()],
             ..paths()
         };
-        for allowed in [base.join("runs/run-1"), base.join("runs/run-1/not/yet/made")] {
+        for allowed in [
+            base.join("runs/run-1"),
+            base.join("runs/run-1/not/yet/made"),
+        ] {
             assert_eq!(paths.allow(&allowed), Ok(()), "{}", allowed.display());
         }
         for refused in [
