@@ -500,6 +500,20 @@ fn site_confirmation(
     }
 }
 
+/// Most of an input's text a build's card shows.
+const SHOWN_CHARS: usize = 1000;
+
+/// `text` as a card shows it: whole, or its first [`SHOWN_CHARS`]
+/// characters and how many more there are.
+fn shown_text(text: &str) -> String {
+    let total = text.chars().count();
+    if total <= SHOWN_CHARS {
+        return text.to_owned();
+    }
+    let head: String = text.chars().take(SHOWN_CHARS).collect();
+    format!("{head}… ({} more characters)", total - SHOWN_CHARS)
+}
+
 /// The confirmation the owner is shown for `proposal`, pinned as `pinned`
 /// and requested as `requested`: the broker's fields first, then the
 /// agent's words.
@@ -535,6 +549,13 @@ fn confirmation(
                 input.sha256
             ),
         ));
+        // What will be built, not only its hash: the text the builder
+        // gets, written by the agent or the owner, and shown as theirs.
+        fields.push(ConfirmationField {
+            label: format!("The text of {}", input.name),
+            value: shown_text(&input.content),
+            source: FieldSource::Agent,
+        });
     }
     fields.push(broker("Request hash", proposal.request_hash.clone()));
     fields.push(ConfirmationField {
@@ -792,6 +813,7 @@ mod tests {
                 ("Build kind", FieldSource::Broker),
                 ("Builder", FieldSource::Broker),
                 ("Input", FieldSource::Broker),
+                ("The text of idea", FieldSource::Agent),
                 ("Request hash", FieldSource::Broker),
                 ("What the build is for", FieldSource::Agent),
             ]
@@ -1044,6 +1066,25 @@ mod tests {
         assert_eq!(
             field.value,
             format!("idea (7 bytes, sha256 {})", input.sha256)
+        );
+        // And the text itself, as the agent's or the owner's words.
+        let card = shown.first().unwrap();
+        let text = card
+            .fields
+            .iter()
+            .find(|field| field.label == "The text of idea")
+            .unwrap();
+        assert_eq!(
+            (text.value.as_str(), text.source),
+            ("an idea", FieldSource::Agent)
+        );
+        assert_eq!(
+            shown_text(&"x".repeat(SHOWN_CHARS)),
+            "x".repeat(SHOWN_CHARS)
+        );
+        assert_eq!(
+            shown_text(&"x".repeat(SHOWN_CHARS + 5)),
+            format!("{}… (5 more characters)", "x".repeat(SHOWN_CHARS))
         );
         // The same name and hash, with another length, is another action.
         let mut longer = held.clone();

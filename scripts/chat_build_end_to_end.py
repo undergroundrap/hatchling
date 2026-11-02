@@ -5,7 +5,7 @@ broker, the scripted idea model and the app's host.
 The owner asks the agent, in the chat, to save an idea and propose building
 it. The agent's model calls idea_capture, then build_propose: a card shows
 the build the broker pinned, with the builder the operator named for the
-kind, the idea's bytes by their length and hash, and the agent's words last,
+kind, the idea's bytes by their length and hash, then its text, and the agent's words last,
 as the agent's. The agent answers that it asked. The owner allows it once,
 the card goes, and the broker tells the owner, as Hatchling's notice, what
 became of the build.
@@ -16,7 +16,7 @@ HATCHLING_E2E_SCREENSHOTS naming a directory for screenshots.
 import hashlib
 import sys
 
-from approval_end_to_end import AGENT_FIELD, BROKER_FIELDS, screenshot
+from approval_end_to_end import AGENT_FIELDS, BROKER_FIELDS, screenshot
 from idea_model import DESCRIPTION, IDEA, KIND, PROPOSED, TASK
 
 BUILDER = "page-builder@1.0.0"
@@ -35,10 +35,10 @@ def review(page):
     expect(card).to_be_visible(timeout=TURN_TIMEOUT_MS)
     fields = card.locator(".task-approval-field")
     labels = [label.strip() for label in fields.locator("dt > span:first-child").all_inner_texts()]
-    if labels != BROKER_FIELDS + [AGENT_FIELD]:
+    if labels != BROKER_FIELDS + AGENT_FIELDS:
         raise AssertionError(f"the fields, in order: {labels}")
     sources = [f.get_attribute("class").split()[-1] for f in fields.all()]
-    if sources != ["broker"] * len(BROKER_FIELDS) + ["agent"]:
+    if sources != ["broker"] * len(BROKER_FIELDS) + ["agent"] * len(AGENT_FIELDS):
         raise AssertionError(f"the fields' sources: {sources}")
     values = fields.locator("dd").all_inner_texts()
     shown = dict(zip(BROKER_FIELDS, values))
@@ -47,6 +47,10 @@ def review(page):
     held = IDEA.encode()
     if shown["Input"] != f"idea ({len(held)} bytes, sha256 {hashlib.sha256(held).hexdigest()})":
         raise AssertionError(f"the input shown: {values}")
+    # The text the builder gets, as the agent captured it (the page may
+    # wrap its line).
+    if values[-2].split() != IDEA.split():
+        raise AssertionError(f"the idea's text shown: {values[-2]!r}")
     if values[-1] != DESCRIPTION:
         raise AssertionError(f"the agent's words shown: {values[-1]!r}")
     return card
