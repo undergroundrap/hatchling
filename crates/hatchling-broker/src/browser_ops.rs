@@ -2316,7 +2316,7 @@ mod tests {
             &mut browser,
             &open("https://mail.example/compose"),
         );
-        assert!(matches!(opened, BrowserResult::Page { .. }), "the browser answered otherwise");
+        assert!(matches!(opened, BrowserResult::Page { .. }), "not opened");
         let acts = |fake: &Fake| {
             fake.log
                 .lock()
@@ -2340,7 +2340,7 @@ mod tests {
                 },
             ),
         );
-        assert!(matches!(typed, BrowserResult::Page { .. }), "the browser answered otherwise");
+        assert!(matches!(typed, BrowserResult::Page { .. }), "not typed");
         assert_eq!(acts(&fake), 1);
         // Sending is, with what was typed.
         let send = act(3, PageAction::Click);
@@ -2370,11 +2370,11 @@ mod tests {
             );
         }
         let allowed = as_owner_allows(&config, &keys, &mut web, &mut browser, &send);
-        assert!(matches!(allowed, BrowserResult::Page { .. }), "the browser answered otherwise");
+        assert!(matches!(allowed, BrowserResult::Page { .. }), "not sent");
         assert_eq!(acts(&fake), 2, "sent once the owner said yes");
         // Allowed once: the next send is asked again.
         let again = handle_browser_op(&config, &keys, &mut web, &mut browser, &send);
-        assert!(matches!(again, BrowserResult::Waiting { .. }), "the browser answered otherwise");
+        assert!(matches!(again, BrowserResult::Waiting { .. }), "not asked");
         // Enter is asked; a link followed isn't.
         let enter = handle_browser_op(
             &config,
@@ -2383,7 +2383,7 @@ mod tests {
             &mut browser,
             &act(1, PageAction::Key { key: Key::Enter }),
         );
-        assert!(!matches!(enter, BrowserResult::Page { .. }), "the browser answered otherwise");
+        assert!(!matches!(enter, BrowserResult::Page { .. }), "not asked");
         let link = handle_browser_op(
             &config,
             &keys,
@@ -2391,7 +2391,7 @@ mod tests {
             &mut browser,
             &act(4, PageAction::Click),
         );
-        assert!(matches!(link, BrowserResult::Page { .. }), "the browser answered otherwise");
+        assert!(matches!(link, BrowserResult::Page { .. }), "not followed");
         assert_eq!(acts(&fake), 3, "only the link was followed");
     }
 
