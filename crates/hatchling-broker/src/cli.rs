@@ -19,6 +19,9 @@
 //! one skill cell or one scheduled run (see [`crate::skill_run`] and
 //! [`crate::run_launcher`]). They read no broker configuration.
 //!
+//! An operator command from a shell with no settings, where Hatchling is
+//! installed as a service, runs with the service's ([`crate::service_settings`]).
+//!
 //! Note the denied lints: no `println!`/`eprint!`/`process::exit`. Startup
 //! diagnostics go to stderr via `io::Write`, and the process outcome is a
 //! returned [`ExitCode`].
@@ -78,6 +81,18 @@ pub fn main(program: &str, args: &[String]) -> ExitCode {
         // parse rather than stopping at it.
         Some("doctor") => return crate::doctor::doctor_main(args.get(1..).unwrap_or_default()),
         Some(_) | None => {}
+    }
+    // An operator command from a shell with no settings, on a service
+    // install: it runs again with the service's (the call returns only
+    // when it can't).
+    if let Some(unread) = crate::service_settings::rerun_if_wanted(args) {
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "{program}: {}\n{}",
+            unread.what,
+            unread.fix
+        );
+        return ExitCode::FAILURE;
     }
     match run(args) {
         Ok(()) => ExitCode::SUCCESS,
