@@ -35,9 +35,9 @@ How a Hatchling version is cut and published, and how a new crate gets onto crat
    - **It describes them:** a CycloneDX SBOM per program and target, `SHA256SUMS` of every file, and a build-provenance attestation of each file, SBOMs and `SHA256SUMS` included.
    - **It publishes:**
      - the GitHub release, with those files and the version's changelog section as its notes;
-     - every crate on crates.io: a short-lived token through trusted publishing, then [`scripts/publish-crates.sh --existing-only`](../scripts/publish-crates.sh), which publishes each crate in dependency order and skips any already there at this version.
+     - every crate on crates.io: each is packaged and built from its package in a job with no token, then a short-lived token through trusted publishing, and [`scripts/publish-crates.sh --existing-only --no-verify`](../scripts/publish-crates.sh), which publishes each crate in dependency order without building it, and skips any already there at this version.
 
-   No crates.io token is stored anywhere, and the jobs that build hold no token that can write or sign. Watch the run under Actions.
+   No crates.io token is stored anywhere, and no job that builds, or runs a dependency's build script or macro, holds a token that can write, sign or publish. Watch the run under Actions.
 5. **Check:** the release has its 23 files (10 programs, 10 SBOMs, 2 build infos and `SHA256SUMS`); one binary verifies as [below](#verifying-a-release); each crate shows the new version on crates.io, and docs.rs builds its docs. A warning on the crates.io job means a crate new to crates.io was skipped; see [Adding a crate](#adding-a-crate).
 
 If the workflow fails before the GitHub release, nothing was published: fix the cause on `main`, delete the tag (`git push origin :vX.Y.Z`, then `git tag -d vX.Y.Z`) and tag the fixed commit. If it fails in the crates.io job, the crates it already published stay published (crates.io never deletes a version): fix the cause, then re-run the job; the script skips what's already there and publishes the rest. A bad version can be **yanked** on crates.io (`cargo yank --version X.Y.Z <crate>`), which stops new projects from picking it up without breaking existing lockfiles; then release a fixed version.

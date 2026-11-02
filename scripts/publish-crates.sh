@@ -3,8 +3,8 @@
 # dependencies first. See docs/releasing.md.
 #
 # Usage, from a checkout of the release commit:
-#   scripts/publish-crates.sh                  # the maintainer, after `cargo login`
-#   scripts/publish-crates.sh --existing-only  # the release workflow
+#   scripts/publish-crates.sh                              # the maintainer, after `cargo login`
+#   scripts/publish-crates.sh --existing-only --no-verify  # the release workflow
 #
 # - A crate already on crates.io at this version is skipped, so a failed
 #   or interrupted run can simply be run again.
@@ -13,16 +13,23 @@
 #   gets its first publish by hand (the release workflow can't create it).
 # - On a crates.io rate limit (new crates: a burst, then about one per ten
 #   minutes), it waits ten minutes and tries the same crate again.
+# - --no-verify publishes without building: cargo otherwise compiles each
+#   crate and its dependencies, running their build scripts and macros,
+#   while the publish token is in the environment. The release workflow
+#   verifies every crate in a job with no token first.
 #
 # Exit status: 0 when everything this run was asked to publish is on
 # crates.io; 1 on a publish failure.
 set -u
 EXISTING_ONLY=false
-case "${1:-}" in
-  --existing-only) EXISTING_ONLY=true ;;
-  "") ;;
-  *) echo "usage: scripts/publish-crates.sh [--existing-only]" >&2; exit 64 ;;
-esac
+VERIFY=()
+for arg in "$@"; do
+  case "$arg" in
+    --existing-only) EXISTING_ONLY=true ;;
+    --no-verify) VERIFY=(--no-verify) ;;
+    *) echo "usage: scripts/publish-crates.sh [--existing-only] [--no-verify]" >&2; exit 64 ;;
+  esac
+done
 
 # One line per publishable workspace crate, dependencies before dependents:
 # "<crate> <version> <its workspace dependencies...>".
@@ -79,7 +86,7 @@ while read -r crate _ deps; do
   fi
   while true; do
     echo "+ publishing $crate $VERSION"
-    if cargo publish -p "$crate" --locked < /dev/null > "$LOG" 2>&1; then
+    if cargo publish -p "$crate" --locked ${VERIFY[@]+"${VERIFY[@]}"} < /dev/null > "$LOG" 2>&1; then
       echo "  ok"
       break
     fi

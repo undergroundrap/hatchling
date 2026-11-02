@@ -6,6 +6,10 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ## [Unreleased]
 
+### Fixed
+
+- **No dependency's build code runs where the crates.io token is.** The release workflow published with `cargo publish`, which builds each crate and its dependencies first, so every dependency's build script and macro ran in the job holding the publish token and the job's means to mint another. Every crate is now packaged and built in a job with no token, the GitHub release and crates.io both wait for it, and the token's job publishes with `--no-verify`, building nothing (`scripts/publish-crates.sh --no-verify`). Found by the post-0.5.0 audit.
+
 ## [0.5.0] - 2026-11-02
 
 ### Added
