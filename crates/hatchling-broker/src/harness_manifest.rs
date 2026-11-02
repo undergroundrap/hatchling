@@ -70,7 +70,7 @@ const TASK: &str = "{task}";
 const RELAY: &str = "{relay}";
 
 /// The run's surrogate key: in the environment only.
-const KEY: &str = "{key}";
+const SURROGATE: &str = "{key}";
 
 /// Names a companion can't take: what a cell's root already holds.
 const RESERVED_NAMES: [&str; 20] = [
@@ -180,7 +180,7 @@ impl Manifest {
             .map(|(name, value)| {
                 (
                     name.clone(),
-                    expand(value, &[(RELAY, &relay), (KEY, surrogate)]),
+                    expand(value, &[(RELAY, &relay), (SURROGATE, surrogate)]),
                 )
             })
             .collect()
@@ -513,9 +513,9 @@ fn check_args(args: &[String]) -> Result<(), String> {
         1 => {}
         _ => return Err(format!("{TASK} more than once: the task goes in one place")),
     }
-    if args.iter().any(|arg| arg.contains(KEY)) {
+    if args.iter().any(|arg| arg.contains(SURROGATE)) {
         return Err(format!(
-            "{KEY} is in an argument: the surrogate key goes in the environment"
+            "{SURROGATE} is in an argument: the surrogate key goes in the environment"
         ));
     }
     Ok(())
@@ -564,9 +564,9 @@ fn check_env(vars: &[StoredVar]) -> Result<Vec<(String, String)>, String> {
         }
         env.push((variable.name.clone(), variable.value.clone()));
     }
-    if !env.iter().any(|(_, value)| value.contains(KEY)) {
+    if !env.iter().any(|(_, value)| value.contains(SURROGATE)) {
         return Err(format!(
-            "no {KEY} placeholder: the CLI would have no key to present to its relay"
+            "no {SURROGATE} placeholder: the CLI would have no key to present to its relay"
         ));
     }
     Ok(env)
