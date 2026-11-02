@@ -2195,6 +2195,7 @@ pub(super) mod tests {
             limits: HELD,
             cgroup: None,
             scratch: None,
+            resolved: false,
         };
         in_child("1: no error; 2: not held to its limits", || {
             let before = limits_now();

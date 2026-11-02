@@ -128,6 +128,7 @@ fn prerequisites() -> Option<(PathBuf, hatchling_sys::cgroup::CellCgroup)> {
                 limits: Limits::default(),
                 cgroup: None,
                 scratch: None,
+                resolved: false,
             })
             .ok()
             .and_then(|cell| cell.wait().ok())
@@ -223,6 +224,7 @@ fn spec(browser: &Path, group: &Path, scratch: &Path) -> CellSpec {
         },
         cgroup: Some(group.to_owned()),
         scratch: None,
+        resolved: false,
     }
 }
 
