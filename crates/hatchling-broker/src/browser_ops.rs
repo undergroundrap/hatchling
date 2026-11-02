@@ -2282,7 +2282,10 @@ mod tests {
             &mut other,
             &open("https://a.example/inbox"),
         );
-        assert!(matches!(answer, BrowserResult::Waiting { .. }), "{answer:?}");
+        assert!(
+            matches!(answer, BrowserResult::Waiting { .. }),
+            "{answer:?}"
+        );
     }
 
     /// Signed in, what could send or change something is the owner's to
@@ -2299,7 +2302,11 @@ mod tests {
         page_with(
             &fake,
             "https://mail.example/compose",
-            &[(1, "textbox", "To"), (3, "button", "Send"), (4, "link", "Inbox")],
+            &[
+                (1, "textbox", "To"),
+                (3, "button", "Send"),
+                (4, "link", "Inbox"),
+            ],
         );
         let (mut web, mut browser) = session("t", &fake);
         let opened = as_owner_allows(
@@ -2344,12 +2351,12 @@ mod tests {
         assert_eq!(acts(&fake), 1, "the browser was told to send");
         let card = signed_card(&config, &cards, request);
         for wanted in [
+            ("Page", "https://mail.example/compose", FieldSource::Broker),
             (
-                "Page",
-                "https://mail.example/compose",
+                "What it does",
+                "Click the page's button",
                 FieldSource::Broker,
             ),
-            ("What it does", "Click the page's button", FieldSource::Broker),
             ("What the page calls it", "Send", FieldSource::Agent),
             (
                 "Typed on this page",
@@ -4113,9 +4120,7 @@ mod tests {
                 "Typed 7 characters into textbox \"Search\"",
             ),
             (
-                act(PageAction::Key {
-                    key: Key::Enter,
-                }),
+                act(PageAction::Key { key: Key::Enter }),
                 "Pressed Enter in textbox \"Search\"",
             ),
             (
