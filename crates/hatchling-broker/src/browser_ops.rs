@@ -1883,9 +1883,10 @@ mod tests {
         );
         // The page still has its session, sets a cookie of its own, and
         // shows them.
-        fake.jar.lock().unwrap().push(Cookie {
-            value: String::from("set-after-sign-out"),
-            ..cookie("a.example", "late")
+        fake.jar.lock().unwrap().push({
+            let mut made = cookie("a.example", "late");
+            made.value = String::from("set-after-sign-out");
+            made
         });
         showing(&fake, "https://a.example/", "sid-value set-after-sign-out");
         let read = handle_browser_op(&config, &keys, &mut web, &mut browser, &BrowserOp::Read {});
@@ -2476,9 +2477,10 @@ mod tests {
     #[test]
     fn after_a_whole_signed_in_session_neither_the_agent_nor_the_log_holds_a_secret() {
         let (config, _scratch, keys, profile) = with_sign_ins("whole", &["Work"]);
-        let restored = Cookie {
-            value: String::from("jar-secret-value"),
-            ..cookie("a.example", "sid")
+        let restored = {
+            let mut made = cookie("a.example", "sid");
+            made.value = String::from("jar-secret-value");
+            made
         };
         crate::browser_profiles::Profiles::of(&config, &keys)
             .unwrap()
@@ -2506,9 +2508,10 @@ mod tests {
             };
             op(&open("https://a.example/login"));
             // The page sets a cookie of its own, and shows everything it holds.
-            fake.jar.lock().unwrap().push(Cookie {
-                value: String::from("page-set-secret"),
-                ..cookie("a.example", "csrf")
+            fake.jar.lock().unwrap().push({
+                let mut made = cookie("a.example", "csrf");
+                made.value = String::from("page-set-secret");
+                made
             });
             // Before the fill, a page can show only its cookies.
             showing(
@@ -2858,9 +2861,10 @@ mod tests {
         let fake = Fake::default();
         let started = fake.start("cell", Sites::default(), None).unwrap();
         let driven: Driven = Arc::new(Mutex::new(Some(started)));
-        let big = |n: usize| Cookie {
-            value: "v".repeat(3000),
-            ..cookie("a.example", &format!("c{n}"))
+        let big = |n: usize| {
+            let mut made = cookie("a.example", &format!("c{n}"));
+            made.value = "v".repeat(3000);
+            made
         };
         let jar: Vec<Cookie> = (0..40).map(big).collect();
         assert_eq!(set_jar(&driven, &jar), Ok(()));
