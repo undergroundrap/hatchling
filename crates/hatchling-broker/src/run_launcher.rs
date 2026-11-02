@@ -153,7 +153,8 @@ pub(crate) fn take_spec(path: Option<&str>, helper: &str) -> Result<String, Erro
     }
     let file = std::fs::File::open(path)
         .map_err(|err| usage(format!("{helper} cannot open its cell spec: {err}")))?;
-    let unreadable = |err: std::io::Error| usage(format!("{helper} cannot read its cell spec: {err}"));
+    let unreadable =
+        |err: std::io::Error| usage(format!("{helper} cannot read its cell spec: {err}"));
     let made = file.metadata().map_err(unreadable)?;
     // The path itself, not a link: the very file opened.
     let named = std::fs::symlink_metadata(path).map_err(unreadable)?;
@@ -1960,7 +1961,10 @@ mod tests {
         owner_only(&elsewhere);
         let elsewhere = elsewhere.to_str().unwrap();
         assert!(reason(take_spec(Some(elsewhere), "agent-run")).contains("named cell-spec.json"));
-        assert!(Path::new(elsewhere).exists(), "a file not named a spec was removed");
+        assert!(
+            Path::new(elsewhere).exists(),
+            "a file not named a spec was removed"
+        );
         std::os::unix::fs::symlink(elsewhere, &path).unwrap();
         assert!(reason(take_spec(Some(&path), "agent-run")).contains("not be a link"));
         assert!(Path::new(elsewhere).exists(), "a link's target was removed");
@@ -1972,7 +1976,10 @@ mod tests {
         std::fs::write(&path, spec).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         assert!(reason(take_spec(Some(&path), "agent-run")).contains("owner-only"));
-        assert!(Path::new(&path).exists(), "a file others can read was removed");
+        assert!(
+            Path::new(&path).exists(),
+            "a file others can read was removed"
+        );
         std::fs::remove_file(&path).unwrap();
         // One no helper read, forgotten.
         spec_args(AGENT_RUN_SUBCOMMAND, &dir, spec).unwrap();
