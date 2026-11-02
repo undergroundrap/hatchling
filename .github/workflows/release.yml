@@ -3,9 +3,9 @@ name: release
 # A version tag (vX.Y.Z) on a commit on main releases it:
 #
 #   - the released programs, built for x86_64 and aarch64 Linux with the
-#     pinned toolchain from Cargo.lock, each target twice, on separate
-#     runners from different paths; the release goes out only if the two
-#     builds are byte-identical;
+#     pinned toolchain and Cargo.lock's dependencies, each target twice, on
+#     separate runners from different paths; the release goes out only if
+#     the two builds are byte-identical;
 #   - a CycloneDX SBOM per program and target, and SHA256SUMS;
 #   - a build-provenance attestation for every file, so
 #     `gh attestation verify <file> --repo undergroundrap/hatchling` checks it
@@ -30,6 +30,7 @@ on:
     paths:
       - .github/workflows/release.yml
       - scripts/release-*.sh
+      - scripts/test_release_notes.py
       - scripts/publish-crates.sh
       - Cargo.toml
       - Cargo.lock
@@ -55,6 +56,9 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      - name: The notes script's tests
+        run: python3 -m unittest discover -s scripts -p 'test_release_notes.py' -v
 
       # A release whose tag, workspace version and changelog disagree would
       # ship the wrong version, or one with no notes; one from a commit
@@ -93,11 +97,14 @@ jobs:
         # Two independent builds of each target: b is checked out at
         # another path, with a CARGO_HOME of its own.
         copy: [a, b]
+        # Ubuntu 22.04's glibc (2.35), so the programs run on glibc 2.34 and
+        # later: Debian 12, Ubuntu 22.04, RHEL 9. Linked against 2.39, the
+        # standard library's process spawning needs 2.39's symbols.
         include:
           - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-24.04
+            runner: ubuntu-22.04
           - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-22.04-arm
     steps:
       - name: Checkout
         # actions/checkout v4

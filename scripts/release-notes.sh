@@ -19,10 +19,12 @@ case "${1:-}" in
   *) echo "usage: scripts/release-notes.sh X.Y.Z | --latest" >&2; exit 64 ;;
 esac
 
-# The heading, exactly once, with the version's date.
-headings=$(grep -c "^## \[$version\]" CHANGELOG.md || true)
+# The heading, exactly once, with the version's date. A dot in the version
+# is a dot.
+pattern="^## \[${version//./\\.}\]"
+headings=$(grep -c "$pattern" CHANGELOG.md || true)
 [ "$headings" = 1 ] || { echo "CHANGELOG.md has $headings sections for $version, not 1" >&2; exit 1; }
-grep -qE "^## \[${version//./\\.}\] - [0-9]{4}-[0-9]{2}-[0-9]{2}\$" CHANGELOG.md \
+grep -qE "$pattern - [0-9]{4}-[0-9]{2}-[0-9]{2}\$" CHANGELOG.md \
   || { echo "CHANGELOG.md's $version heading isn't \`## [$version] - YYYY-MM-DD\`" >&2; exit 1; }
 
 # Its body: up to the next section, or the compare links at the bottom,

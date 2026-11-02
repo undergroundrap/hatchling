@@ -14,24 +14,79 @@ How a Hatchling version is cut and published, and how a new crate gets onto crat
 1. **A release pull request:**
    - bump the version in the root `Cargo.toml`: `[workspace.package] version` and every `[workspace.dependencies]` entry (all the same string), then `cargo update --workspace` so `Cargo.lock` follows;
    - rename `## [Unreleased]` in `CHANGELOG.md` to `## [X.Y.Z] - YYYY-MM-DD`, add an empty Unreleased above it, and update the compare links at the bottom;
-   - all required checks green, including "crates.io dry run";
+   - all required checks green, including "crates.io dry run", and the `release` workflow's dry run (it runs on a pull request that changes `Cargo.toml` or `Cargo.lock`): both builds of each target the same, the SBOMs made, and the notes taken from the version's section;
    - the [release security checklist](release-security-checklist.md) run, each item's result recorded in the pull request's description.
 2. **Merge it**, and wait for `main`'s CI to pass.
-3. **Publish a GitHub release** with the tag `vX.Y.Z` on that commit, and the version's changelog section as the notes:
+3. **Tag the merge commit and push the tag.** That's the release:
 
    ```bash
-   gh release create vX.Y.Z --target <commit> --title "Hatchling X.Y.Z" --notes-file notes.md
+   git fetch origin && git tag -a vX.Y.Z origin/main -m "Hatchling X.Y.Z"
    ```
 
-4. **CI publishes every crate.** The `release` workflow (`.github/workflows/release.yml`) starts when the release is published:
-   - it checks that the tag, the workspace version and the changelog agree;
-   - it gets a short-lived crates.io token through trusted publishing;
-   - it runs [`scripts/publish-crates.sh --existing-only`](../scripts/publish-crates.sh), which publishes each crate in dependency order and skips any already on crates.io at this version.
+   ```bash
+   git push origin vX.Y.Z
+   ```
 
-   No crates.io token is stored anywhere. Watch the run under Actions.
-5. **Check:** each crate shows the new version on crates.io, and docs.rs builds its docs. A warning on the run means a crate new to crates.io was skipped; see [Adding a crate](#adding-a-crate).
+4. **CI releases it.** The `release` workflow (`.github/workflows/release.yml`) starts on the tag:
+   - **It refuses a bad tag:** one that isn't `vX.Y.Z`, whose commit isn't on `main`, that disagrees with the workspace version, or whose version has no dated, non-empty section in `CHANGELOG.md` ([`scripts/release-notes.sh`](../scripts/release-notes.sh) takes the section).
+   - **It builds:**
+     - the released programs (`hatchling-broker`, `hatchling-agent`, `hatchling-host`, `hatchling-browser` and `hatchling`) for `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`, with [`scripts/release-artifacts.sh`](../scripts/release-artifacts.sh): the pinned toolchain, `--locked`, and `cargo auditable`;
+     - each target twice, on separate runners, from different checkout paths and `CARGO_HOME`s; the release goes out only if the two builds are byte-identical.
+   - **It describes them:** a CycloneDX SBOM per program and target, `SHA256SUMS` of every file, and a build-provenance attestation of each file, SBOMs and `SHA256SUMS` included.
+   - **It publishes:**
+     - the GitHub release, with those files and the version's changelog section as its notes;
+     - every crate on crates.io: a short-lived token through trusted publishing, then [`scripts/publish-crates.sh --existing-only`](../scripts/publish-crates.sh), which publishes each crate in dependency order and skips any already there at this version.
 
-If the workflow fails partway, the crates it already published stay published (crates.io never deletes a version). Fix the cause, then re-run the job: the script skips what's already there and publishes the rest. A bad version can be **yanked** on crates.io (`cargo yank --version X.Y.Z <crate>`), which stops new projects from picking it up without breaking existing lockfiles; then release a fixed version.
+   No crates.io token is stored anywhere, and the jobs that build hold no token that can write or sign. Watch the run under Actions.
+5. **Check:** the release has its 23 files (10 programs, 10 SBOMs, 2 build infos and `SHA256SUMS`); one binary verifies as [below](#verifying-a-release); each crate shows the new version on crates.io, and docs.rs builds its docs. A warning on the crates.io job means a crate new to crates.io was skipped; see [Adding a crate](#adding-a-crate).
+
+If the workflow fails before the GitHub release, nothing was published: fix the cause on `main`, delete the tag (`git push origin :vX.Y.Z`, then `git tag -d vX.Y.Z`) and tag the fixed commit. If it fails in the crates.io job, the crates it already published stay published (crates.io never deletes a version): fix the cause, then re-run the job; the script skips what's already there and publishes the rest. A bad version can be **yanked** on crates.io (`cargo yank --version X.Y.Z <crate>`), which stops new projects from picking it up without breaking existing lockfiles; then release a fixed version.
+
+## Verifying a release
+
+Each release from 0.5.0 on has, for each target (`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`):
+- the programs, each `<program>-<target>`;
+- an SBOM of each, `<program>-<target>.cdx.json`;
+- `build-info-<target>.txt`, the toolchain and runner image that built them, and the oldest glibc each runs on (2.34: Debian 12, Ubuntu 22.04, RHEL 9 and later);
+- and `SHA256SUMS`, of all of them.
+
+**That it's the file the release published:**
+
+```bash
+sha256sum --check --ignore-missing SHA256SUMS
+```
+
+**That this repository's release workflow built it, from the tag:** with the [GitHub CLI](https://cli.github.com/), for each file:
+
+```bash
+gh attestation verify hatchling-broker-x86_64-unknown-linux-gnu --repo undergroundrap/hatchling --signer-workflow undergroundrap/hatchling/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z
+```
+
+It checks the file's SHA-256 against an attestation signed for this repository's workflow, on GitHub's runners, at that tag. A file that any of those differs for fails, including one built anywhere else, unless it's byte-identical to the release's (see the next section). Verifying works on the file under any name, so it can check an installed program too (`/usr/local/bin/hatchling-broker`).
+
+**What's in it:** the SBOM lists every crate the program is built from, with its version and license. The same list is embedded in the binary itself; [`cargo audit`](https://crates.io/crates/cargo-audit) checks it against the RustSec advisories:
+
+```bash
+cargo audit bin hatchling-broker-x86_64-unknown-linux-gnu
+```
+
+## Reproducing a build
+
+The release's programs can be rebuilt byte for byte. On the target's machine, with the runner image `build-info-<target>.txt` names (Ubuntu 22.04: its linker and C library are part of the build), from a clone of the tag:
+
+```bash
+git clone --branch vX.Y.Z https://github.com/undergroundrap/hatchling hatchling-vX.Y.Z
+```
+
+```bash
+cd hatchling-vX.Y.Z && cargo install cargo-auditable --version 0.7.7 --locked
+```
+
+```bash
+bash scripts/release-artifacts.sh build out
+```
+
+Then compare `out/`'s programs with `SHA256SUMS`. The script prints the toolchain it used; if a program differs, compare that with `build-info-<target>.txt` first. The release workflow does this for every release, twice per target.
 
 ## Trusted publishing setup
 
