@@ -180,19 +180,102 @@ pub(crate) fn probe_binary() -> Result<PathBuf, String> {
     find_binary("hatchling-probe", "HATCHLING_PROBE_BIN")
 }
 
+/// The user a root broker's cells run as, as the README's root quickstart
+/// makes it (WO-015). Never `nobody`: other processes share it, and the
+/// broker refuses it as the agent's uid.
+pub(crate) const ROOT_CELL_USER: &str = "hatchling-cell";
+
 /// The host uid the cell's user maps to: what the broker's peer gate
 /// sees. Mirrors the spawn's id-map choice — a root broker maps
-/// in-cell 0 to an unprivileged uid; an unprivileged broker can only
-/// map its own uid.
+/// in-cell 0 to its cells' own user ([`ROOT_CELL_USER`]); an
+/// unprivileged broker can only map its own uid.
 #[allow(
     dead_code,
     reason = "shared test helper: used by only some test targets"
 )]
 pub(crate) fn mapped_agent_uid() -> u32 {
     if hatchling_sys::euid() == 0 {
-        65534
+        root_cell_uid()
     } else {
         hatchling_sys::euid()
+    }
+}
+
+/// The uid of [`ROOT_CELL_USER`]. A root run without that user fails
+/// here, saying how to make it, rather than giving cells a uid the
+/// broker would refuse.
+pub(crate) fn root_cell_uid() -> u32 {
+    let found = hatchling_sys::subid::local_account(ROOT_CELL_USER)
+        .ok()
+        .flatten()
+        .filter(|(uid, _)| *uid != 0);
+    assert!(
+        found.is_some(),
+        "run as root, the cell suites give cells the user {ROOT_CELL_USER}, as the README \
+         does: create it with `useradd --system --user-group --no-create-home \
+         --shell /usr/sbin/nologin {ROOT_CELL_USER}`"
+    );
+    found.map_or(0, |(uid, _)| uid)
+}
+
+/// Hands the session socket at `path` to the agent's user, as a root
+/// broker hands its endpoint to its cells' user (WO-015); unprivileged,
+/// the agent's user is this process's, which has it already.
+#[allow(
+    dead_code,
+    reason = "shared test helper: used by only some test targets"
+)]
+pub(crate) fn hand_to_agent(path: &Path) -> std::io::Result<()> {
+    if hatchling_sys::euid() != 0 {
+        return Ok(());
+    }
+    let uid = root_cell_uid();
+    std::os::unix::fs::chown(path, Some(uid), Some(uid))
+}
+
+/// Connects to the session socket at `path` as the agent's user, as a
+/// real agent cell would: the broker's peer gate reads the connecting
+/// process's uid. Unprivileged, that's this process; as root, a child
+/// that has dropped to [`ROOT_CELL_USER`] connects and hands the
+/// connection back (WO-015).
+#[allow(
+    dead_code,
+    reason = "shared test helper: used by only some test targets"
+)]
+pub(crate) fn connect_as_agent(path: &Path) -> std::io::Result<std::os::unix::net::UnixStream> {
+    use std::os::fd::AsFd as _;
+    use std::os::unix::net::UnixStream;
+    if hatchling_sys::euid() != 0 {
+        return UnixStream::connect(path);
+    }
+    let uid = root_cell_uid();
+    let (ours, theirs) = UnixStream::pair()?;
+    match hatchling_sys::fork().map_err(std::io::Error::other)? {
+        hatchling_sys::ForkResult::Parent { child } => {
+            drop(theirs);
+            // The child's end closes as it exits: a child that fails never
+            // leaves this waiting.
+            let received = hatchling_sys::net::recv_fd(ours.as_fd());
+            let exited = matches!(
+                child.wait_deadline(Duration::from_secs(30)),
+                Ok(status) if hatchling_sys::child_exit_code(status) == 0
+            );
+            match (received, exited) {
+                (Ok(fd), true) => Ok(UnixStream::from(fd)),
+                _ => Err(std::io::Error::other(format!(
+                    "no connection to {} as uid {uid}",
+                    path.display()
+                ))),
+            }
+        }
+        hatchling_sys::ForkResult::Child => {
+            drop(ours);
+            let ok = hatchling_sys::drop_to(uid, uid).is_ok()
+                && UnixStream::connect(path).is_ok_and(|stream| {
+                    hatchling_sys::net::send_fd(theirs.as_fd(), stream.as_fd()).is_ok()
+                });
+            hatchling_sys::exit_child(i32::from(!ok));
+        }
     }
 }
 
@@ -333,7 +416,11 @@ pub(crate) fn probe_spawn_pipeline(stage: &Path) -> bool {
     // to an unprivileged uid; an unprivileged broker can only map its
     // own uid (the only map the kernel accepts from it).
     let broker_euid = hatchling_sys::euid();
-    let base = if broker_euid == 0 { 65534 } else { broker_euid };
+    let base = if broker_euid == 0 {
+        root_cell_uid()
+    } else {
+        broker_euid
+    };
     let Ok(map) = hatchling_sys::IdMap::new(base, 1) else {
         return false;
     };

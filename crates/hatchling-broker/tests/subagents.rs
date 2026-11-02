@@ -164,11 +164,19 @@ struct Parent {
 
 impl Parent {
     fn open(config: &Config, key: MasterKey, timeout: Duration) -> Self {
-        let (client, server) = UnixStream::pair().unwrap();
-        client.set_read_timeout(Some(RUN_DEADLINE * 2)).unwrap();
+        static OPENED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        // The parent's session socket, connected to as the agent's user:
+        // the session's peer gate takes it for an agent cell.
+        let socket = config.scheduler.root.with_file_name(format!(
+            "parent-{}.sock",
+            OPENED.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let listener = UnixListener::bind(&socket).unwrap();
+        common::hand_to_agent(&socket).unwrap();
         let session_config = config.clone();
         let runs = env(config, timeout);
         let server = std::thread::spawn(move || {
+            let (server, _) = listener.accept().unwrap();
             let _ = serve_connection_with_runs(
                 &server,
                 &session_config,
@@ -178,6 +186,8 @@ impl Parent {
                 Some(runs),
             );
         });
+        let client = common::connect_as_agent(&socket).unwrap();
+        client.set_read_timeout(Some(RUN_DEADLINE * 2)).unwrap();
         let hello = AgentMessage::Hello {
             v: hatchling_core::PROTOCOL_VERSION,
             cell_id: String::from("cell-parent"),
@@ -666,6 +676,7 @@ fn agent_parent(
 ) {
     let socket = base.join("parent.sock");
     let listener = UnixListener::bind(&socket).unwrap();
+    common::hand_to_agent(&socket).unwrap();
     let session_config = config.clone();
     let runs = env(config, RUN_DEADLINE);
     let server = std::thread::spawn(move || {
@@ -681,7 +692,16 @@ fn agent_parent(
     });
     let agent = hatchling_agent::Config {
         cell_id: "cell-parent".parse().unwrap(),
-        broker: hatchling_agent::BrokerAddress::Socket(socket.to_string_lossy().parse().unwrap()),
+        // As root, the test's process isn't the agent's user: the agent
+        // gets a connection made as that user, as a connected cell does.
+        broker: if hatchling_sys::euid() == 0 {
+            use std::os::fd::IntoRawFd as _;
+            hatchling_agent::BrokerAddress::Connection(
+                common::connect_as_agent(&socket).unwrap().into_raw_fd(),
+            )
+        } else {
+            hatchling_agent::BrokerAddress::Socket(socket.to_string_lossy().parse().unwrap())
+        },
         broker_uid: PeerUid::from_kernel(hatchling_sys::euid()),
         log_level: LogLevel::Error,
         model_endpoint: None,

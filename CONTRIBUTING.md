@@ -61,6 +61,40 @@ variable set, fail) until you lift it:
 `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`. CI
 does the same.
 
+### The root pass
+
+The README's quickstart runs the broker as root, and a root broker takes
+paths an unprivileged one never does:
+- its cells run as a user of their own;
+- it hands its sockets and run directories to other users;
+- it drops to users of its own once it has started.
+
+CI's "cells as root" job runs the cell suites as root
+(`scripts/root-pass.sh`), and every suite must run. Run it yourself
+before you push a change to any of these:
+- how a cell is spawned, or which user it runs as;
+- whose a file, socket or directory is, or who it's handed to;
+- the spawner's policy;
+- anything that branches on running as root.
+
+```bash
+for u in hatchling-cell hatchling-broker hatchling-keeper hatchling-egress; do
+  sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin "$u"
+done
+HATCHLING_ROOT_PASS=1 bash scripts/check.sh
+```
+
+It builds as you, then runs each suite's test binary under `sudo`, from
+a copy in `/tmp` the cells' user can read. Those users are the README's,
+and the pass never makes them itself. Set `HATCHLING_TEST_BROWSER` to a
+headless Chromium every user can read (not under your home) to run the
+browser cells' suites too. A test that can't apply to a root run says
+so, and the pass lists each one at the end with its reason.
+
+On WSL2, run it in a distribution you keep for testing, not the one you
+work in: it adds system users and runs tests as root. Its kernel needs
+no AppArmor change.
+
 ## Backend (Rust)
 
 ### Mutation testing is mandatory

@@ -584,7 +584,14 @@ fn check_or_regen(attack: &str, actual: &serde_json::Value) -> Result<(), String
     })?;
     let expected: serde_json::Value = serde_json::from_str(&expected_json)
         .map_err(|e| format!("parse committed inventory {}: {e}", path.display()))?;
-    if attack == "mount-escape" || attack == "setuid-scan" {
+    if attack == "mount-escape" {
+        return check_inventory(
+            attack,
+            &fold_merged_usr(&fold_program_owner(actual)),
+            &fold_merged_usr(&fold_program_owner(&expected)),
+        );
+    }
+    if attack == "setuid-scan" {
         return check_inventory(
             attack,
             &fold_merged_usr(actual),
@@ -633,6 +640,68 @@ fn fold_merged_usr(writes: &serde_json::Value) -> serde_json::Value {
         .unwrap_or_default();
     folded.sort_by_cached_key(ToString::to_string);
     serde_json::Value::Array(folded)
+}
+
+/// A mount-escape inventory with who owns the cell's program folded
+/// (WO-015). Writing `/agent` is refused either way: a root broker's cell
+/// isn't its program's user, so the open is refused `EACCES`; an
+/// unprivileged broker's cell is, and the running image refuses it
+/// `ETXTBSY`. Which one is the broker's uid, not the boundary, so the
+/// latter is read as the former. Each entry is still checked on its own,
+/// unfolded ([`is_refused_write`]).
+fn fold_program_owner(writes: &serde_json::Value) -> serde_json::Value {
+    let mut writes = writes.clone();
+    for write in writes.as_array_mut().into_iter().flatten() {
+        let running_program = write.get("path").and_then(serde_json::Value::as_str)
+            == Some("/agent")
+            && write.get("op").and_then(serde_json::Value::as_str) == Some("open_write")
+            && write.get("errno").and_then(serde_json::Value::as_i64) == Some(26);
+        if let (true, Some(object)) = (running_program, write.as_object_mut()) {
+            object.insert(String::from("errno"), serde_json::Value::from(13));
+        }
+    }
+    writes
+}
+
+/// The fold is exact: the committed mount-escape inventory and the one a
+/// root broker's cell produced (`tests/inventory/mount-escape.root.json`)
+/// fold to the same document, and one changed outcome (the program's
+/// write allowed) still shows. Needs no cell.
+fn inventories_fold_only_the_programs_owner() -> Result<(), String> {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("inventory");
+    let read = |name: &str| -> Result<serde_json::Value, String> {
+        let text =
+            std::fs::read_to_string(dir.join(name)).map_err(|e| format!("read {name}: {e}"))?;
+        serde_json::from_str(&text).map_err(|e| format!("parse {name}: {e}"))
+    };
+    let committed = read("mount-escape.json")?;
+    let as_root = read("mount-escape.root.json")?;
+    if committed == as_root {
+        return Err(String::from(
+            "the two brokers' inventories should differ before folding",
+        ));
+    }
+    if fold_program_owner(&committed) != fold_program_owner(&as_root) {
+        return Err(String::from(
+            "a root broker's cell must fold to the committed inventory",
+        ));
+    }
+    let mut allowed = as_root;
+    for write in allowed.as_array_mut().into_iter().flatten() {
+        if write.get("path").and_then(serde_json::Value::as_str) == Some("/agent") {
+            if let Some(object) = write.as_object_mut() {
+                object.insert(String::from("errno"), serde_json::Value::from(0));
+            }
+        }
+    }
+    if fold_program_owner(&committed) == fold_program_owner(&allowed) {
+        return Err(String::from(
+            "a write to the program that succeeds must still change the folded inventory",
+        ));
+    }
+    Ok(())
 }
 
 /// The fold is exact: each committed inventory and the one an Ubuntu 24.04
@@ -1405,6 +1474,11 @@ fn peer_decoy_closes_silently() -> Result<(), String> {
     let decoy_uid = agent_uid.wrapping_add(1);
     let decoy_config = broker_config(&socket_dir.join("decoy.sock"), decoy_uid)?;
     let listener = bind_listener(&decoy_config).map_err(|e| format!("bind decoy socket: {e}"))?;
+    // As root the socket is root's, and its permissions would stop the
+    // probe before the peer gate this checks: it's handed to the agent's
+    // user, as the spawn hands the broker's own (WO-015).
+    common::hand_to_agent(&socket_dir.join("decoy.sock"))
+        .map_err(|e| format!("hand the decoy socket over: {e}"))?;
     // `spawn_cell` requires the cell's own broker socket: bind it
     // (never served) so the cell starts and reaches the decoy beside it.
     let broker = broker_config(&socket_dir.join("broker.sock"), agent_uid)?;
@@ -1585,6 +1659,10 @@ const CHECKS: &[Check] = &[
     (
         "inventories_fold_only_the_lib_spelling",
         inventories_fold_only_the_lib_spelling,
+    ),
+    (
+        "inventories_fold_only_the_programs_owner",
+        inventories_fold_only_the_programs_owner,
     ),
     ("denied_syscalls_each_sigsys", denied_syscalls_each_sigsys),
     (
