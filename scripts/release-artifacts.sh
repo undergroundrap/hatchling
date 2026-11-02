@@ -4,6 +4,7 @@
 #
 #   scripts/release-artifacts.sh build <out dir>  # this machine's target
 #   scripts/release-artifacts.sh sbom <out dir>   # every released target
+#   scripts/release-artifacts.sh ui <out dir>     # the app, built
 #
 # build: the released programs, each `<program>-<target>`, and
 # `build-info-<target>.txt`, the toolchain that built them. The same commit
@@ -12,16 +13,24 @@
 # CARGO_HOME's, in the dependencies' panic messages, and it's remapped; the
 # checkout's files are named relative to it, so its path never shows. The
 # release workflow builds each target twice, on separate runners from
-# different paths, and refuses to release unless the two agree. It needs the pinned toolchain (rust-toolchain.toml) and
-# cargo-auditable, which embeds each binary's dependency list in a section
-# of its own (`cargo audit bin` reads it).
+# different paths, and refuses to release unless the two agree. It needs
+# the pinned toolchain (rust-toolchain.toml) and cargo-auditable, which
+# embeds each binary's dependency list in a section of its own (`cargo
+# audit bin` reads it).
 #
 # sbom: a CycloneDX SBOM per program and target, `<program>-<target>.cdx.json`:
 # the crates it's built from, as Cargo.lock pins them. It needs
 # cargo-cyclonedx.
+#
+# ui: the app, built from frontend/ as `npm run build` builds it, in
+# `hatchling-ui.tar.gz`: the static files `hatchling-host` serves
+# (HATCHLING_HOST_UI), under `ui/`. Its entries are sorted, dated 0 and
+# owned by 0, and gzip records no name or time, so the same commit gives
+# the same bytes. It needs Node 22 and npm; the app's only dependency is
+# TypeScript, which builds it.
 set -euo pipefail
-[ $# = 2 ] && { [ "$1" = build ] || [ "$1" = sbom ]; } \
-  || { echo "usage: scripts/release-artifacts.sh build|sbom <out dir>" >&2; exit 64; }
+[ $# = 2 ] && { [ "$1" = build ] || [ "$1" = sbom ] || [ "$1" = ui ]; } \
+  || { echo "usage: scripts/release-artifacts.sh build|sbom|ui <out dir>" >&2; exit 64; }
 mode=$1
 mkdir -p "$2"
 out=$(cd "$2" && pwd -P)
@@ -31,6 +40,16 @@ cd "$(dirname "$0")/.."
 PROGRAMS="hatchling-broker:hatchling-broker hatchling-agent:hatchling-agent
 hatchling-host:hatchling-host hatchling-browser:hatchling-browser hatchling-runtime:hatchling"
 TARGETS="x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu"
+
+if [ "$mode" = ui ]; then
+  (cd frontend && npm ci --no-audit --no-fund && npm run build)
+  rm -rf "$out/ui" && cp -R frontend/dist "$out/ui"
+  (cd "$out" && tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+    -cf - ui | gzip -n -9 > hatchling-ui.tar.gz)
+  rm -rf "$out/ui"
+  ls -l "$out/hatchling-ui.tar.gz"
+  exit 0
+fi
 
 if [ "$mode" = sbom ]; then
   for target in $TARGETS; do

@@ -9,6 +9,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 ### Added
 
 - **A page for security reviewers** ([docs/security](docs/security/README.md)). It covers what leaves the machine and who turns each part on; that Hatchling sends nothing on its own (no telemetry or update checks); what's kept and how it's sealed; each log and what it records; a hardening checklist; and what to do after a suspected compromise. SECURITY.md now gives response and fix targets, a disclosure deadline, the supported versions, and a CVE for every confirmed vulnerability in a release. The distribution page is current: it was written before the first release.
+- **The app comes built with each release** (`hatchling-ui.tar.gz`). Running Hatchling from the release's programs needed Node 22 and a clone of the repository, only to build the app the host serves. The release workflow now builds it twice from different paths, releases it only if the two builds are byte-identical, and attests it with the rest: extract it and point `HATCHLING_HOST_UI` at it. `scripts/release-artifacts.sh ui` builds it the same way.
 
 ### Fixed
 
