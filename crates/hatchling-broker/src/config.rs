@@ -1729,6 +1729,7 @@ pub const NOBODY_UID: u32 = 65534;
 
 /// `HATCHLING_AGENT_UID`, which must not be `nobody` unless
 /// `HATCHLING_AGENT_ALLOW_NOBODY` says so ([`refuse_shared_agent_uid`]).
+/// It's a uid, or the name of a local account ([`agent_uid_value`]).
 ///
 /// With `HATCHLING_CELL_IDS=subordinate` it may be left out: the agent's
 /// uid is then the one its cells run as, the owner's first subordinate
@@ -1739,14 +1740,7 @@ fn parse_agent_uid(
     subordinate: impl FnOnce() -> Result<u32, Error>,
 ) -> Result<PeerUid, Error> {
     let agent_uid = match get(env::HATCHLING_AGENT_UID.name) {
-        Some(raw) => {
-            raw.parse::<u32>()
-                .map(PeerUid::from_kernel)
-                .map_err(|_| Error::InvalidConfig {
-                    key: "HATCHLING_AGENT_UID",
-                    reason: String::from("expected a kernel uid as a base-10 u32"),
-                })?
-        }
+        Some(raw) => PeerUid::from_kernel(agent_uid_value(&raw)?),
         None if CellIds::parse(get)? == CellIds::Subordinate => {
             PeerUid::from_kernel(subordinate()?)
         }
@@ -1757,6 +1751,34 @@ fn parse_agent_uid(
         get(env::HATCHLING_AGENT_ALLOW_NOBODY.name).as_deref(),
     )?;
     Ok(agent_uid)
+}
+
+/// The uid `raw` names for `HATCHLING_AGENT_UID`: a kernel uid in base 10,
+/// or the name of a local account, such as the README's `hatchling-cell`,
+/// so a configuration file needs no `id -u`.
+///
+/// # Errors
+///
+/// [`Error::InvalidConfig`] when it's neither: no account has that name.
+pub(crate) fn agent_uid_value(raw: &str) -> Result<u32, Error> {
+    if let Ok(uid) = raw.parse::<u32>() {
+        return Ok(uid);
+    }
+    let invalid = |reason: String| Error::InvalidConfig {
+        key: "HATCHLING_AGENT_UID",
+        reason,
+    };
+    match hatchling_sys::subid::local_account(raw) {
+        Ok(Some((uid, _))) => Ok(uid),
+        Ok(None) => Err(invalid(format!(
+            "expected a uid, or the name of a local account: there's no local account {}",
+            raw.escape_debug()
+        ))),
+        Err(error) => Err(invalid(format!(
+            "the local account {} couldn't be looked up: {error}",
+            raw.escape_debug()
+        ))),
+    }
 }
 
 /// Refuses `nobody` as the agent uid unless `allow` (the
@@ -3248,6 +3270,18 @@ mod tests {
         );
         vars.insert("HATCHLING_AGENT_UID", "65534");
         assert!(parse_agent_uid(&lookup(&vars), unused).is_err());
+        // A local account's name is its uid.
+        vars.insert("HATCHLING_AGENT_UID", "root");
+        assert_eq!(
+            parse_agent_uid(&lookup(&vars), unused).unwrap(),
+            PeerUid::from_kernel(0)
+        );
+        vars.insert("HATCHLING_AGENT_UID", "hatchling-no-such-account");
+        let refused = parse_agent_uid(&lookup(&vars), unused).unwrap_err();
+        assert!(
+            refused.to_string().contains("no local account"),
+            "{refused}"
+        );
     }
 
     /// WO-014: on subordinate ids the agent's uid can be left out, and is

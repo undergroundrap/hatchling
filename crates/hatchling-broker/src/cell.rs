@@ -238,6 +238,11 @@ fn agent_ids(
             key: "HATCHLING_CELL_UID_BASE",
             reason: String::from("expected a kernel uid as a base-10 u32"),
         })?),
+        // Unset, a cell on the broker's own map takes the agent's uid: the
+        // one base its peer gate admits, so it needn't be said twice.
+        None if ids == CellIds::Own => get(env::HATCHLING_AGENT_UID.name)
+            .map(|raw| crate::config::agent_uid_value(&raw))
+            .transpose()?,
         None => None,
     };
     let count = match get(env::HATCHLING_CELL_UID_COUNT.name) {
@@ -2055,6 +2060,15 @@ mod tests {
         let base = identity.principal.to_string();
         let get = |asked: &str| (asked == "HATCHLING_CELL_UID_BASE").then(|| base.clone());
         assert_eq!(agent_ids(&backend, &get).unwrap().1, identity);
+        // With no base, the agent's uid is the base: given as that uid, the
+        // same identity; given as an account no one has, refused, never the
+        // backend's default in its place.
+        let get = |asked: &str| (asked == "HATCHLING_AGENT_UID").then(|| base.clone());
+        assert_eq!(agent_ids(&backend, &get).unwrap().1, identity);
+        let get = |asked: &str| {
+            (asked == "HATCHLING_AGENT_UID").then(|| String::from("hatchling-no-such-account"))
+        };
+        assert!(agent_ids(&backend, &get).is_err());
     }
 
     #[test]

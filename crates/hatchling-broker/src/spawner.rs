@@ -2512,12 +2512,15 @@ sleep 30 </dev/null >/dev/null 2>&1 &
     #[test]
     fn the_policy_is_read_from_the_brokers_settings() {
         let owner = hatchling_sys::euid();
+        // An agent uid a broker here could map, as its cells' base is now
+        // that uid: unprivileged, its own; as root, any but root's.
+        let agent = if owner == 0 { 1 } else { owner };
         let settings = std::collections::HashMap::from([
             (
                 "HATCHLING_BROKER_SOCKET",
                 String::from("/tmp/hatchling-policy/broker.sock"),
             ),
-            ("HATCHLING_AGENT_UID", (owner + 1).to_string()),
+            ("HATCHLING_AGENT_UID", agent.to_string()),
             (
                 "HATCHLING_VAULT_DIR",
                 String::from("/tmp/hatchling-policy/vault"),
