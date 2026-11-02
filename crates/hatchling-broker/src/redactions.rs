@@ -1703,7 +1703,7 @@ mod tests {
         assert!(
             matches!(&unknown, Err(Error::Usage { reason }) if reason.starts_with("unknown subcommand \"nope\"; usage: hatchling-broker [")
                 && reason.contains("| vault-audit [log [count]] | tools <list | add | remove> | secret add <name | --for host:port> [--replace] | clean [--dry-run]]")),
-            "{unknown:?}"
+            "an unknown command is a usage error naming the rest"
         );
         assert!(!SUBCOMMANDS.contains("  "), "{SUBCOMMANDS}");
     }
