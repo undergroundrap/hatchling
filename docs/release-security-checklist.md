@@ -66,13 +66,13 @@ Check each `%` field, the shorthand `%name` too, for a value a cell or a client 
 
 - Types holding a secret, key or token redact their `Debug`, and no log line prints one.
 - Every new secret-bearing type is zeroized where it's dropped.
-- Credentials never enter a cell: the egress swap and the harness relay attach them at the boundary.
+- Credentials never enter an agent's or a harness's cell: the egress swap and the harness relay attach them at the boundary. The one cell given one is a browser started for a signed-in profile: its cookies are restored over its connection, and the vault keeper fills a sign-in on its vault channel (WO-030, WO-031). The agent driving it never sees either: snapshots hide what was filled, and the agent names fields by id.
 
 ## 6. The cell's surface is what was reviewed
 
 - **The seccomp allowlist:** any syscall added since the last release has a reason in the change that added it.
-- **What a cell inherits:** only stdio, plus its connection or relay where it has one (`schedule_run.rs` checks a run's open fds and stdin).
-- **What a cell sees:** no new mount or environment variable that names a host path or a secret.
+- **What a cell inherits:** only stdio, plus its connection or relay where it has one, and its vault channel (`HATCHLING_VAULT_FD`) when its session holds vault grants or its browser fills sign-ins. `schedule_run.rs` checks a run's open fds and stdin; the isolation layer closes every other descriptor at exec.
+- **What a cell sees:** no new mount or environment variable that names a host path or a secret. A harness manifest's `env` values are the operator's, as its binary is, and reach the CLI's cell as written ([Harness manifests](harness-manifests.md)).
 
 ```bash
 git diff vPREVIOUS..HEAD -- crates/hatchling-sys/src/seccomp.rs crates/hatchling-isolation crates/hatchling-broker/src/cell.rs
@@ -80,7 +80,17 @@ git diff vPREVIOUS..HEAD -- crates/hatchling-sys/src/seccomp.rs crates/hatchling
 
 ## 7. Egress has one way out
 
-Every outbound connection goes through the egress proxy or the harness relay, to an allowlisted, pinned destination. A new outbound path is a new row in this item.
+Every outbound connection is one of these, to a destination someone allowed, connected only to the addresses checked. A new outbound path is a new row in this item.
+
+| Path | Runs in | Who allows a destination | Checks |
+| --- | --- | --- | --- |
+| Egress proxy | the egress authority | the operator's allowlist | an internal address refused unless the operator marked it `internal:`; credentials attached here |
+| Harness relay | the egress authority | the harness's one vendor API | the surrogate swapped for the key here; anything else refused |
+| Web search | the egress authority | fixed: the provider's host | resolved and pinned per search; the key only in the request's wiped buffer |
+| Web fetch (`web_fetch`) | the broker | the owner, per site; the operator's refuse list | strict URL, no IP literal; an internal address refused before connecting; one bounded `GET` with no credential |
+| Browser proxy | the broker | the owner, per site of the session | `https` on 443 only; the site checked before any lookup; an internal address refused; connects only to the addresses checked; TLS end to end, so the browser checks the certificate |
+
+The last two run in the broker, not the egress authority, so the owner's site grants bound them only while the broker is sound: a compromised broker can reach any site through them.
 
 ## 8. Dependencies
 

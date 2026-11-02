@@ -315,7 +315,7 @@ impl<'k> Credentials<'k> {
         };
         credentials.push(credential.clone());
         Self::write_index(&vault, &credentials)?;
-        tracing::info!(credential = %credential.id, label = %credential.label, origin = %credential.origin, "a sign-in is kept");
+        tracing::info!(credential = %credential.id, label = ?credential.label, origin = %credential.origin, "a sign-in is kept");
         Ok(Ok(credential))
     }
 

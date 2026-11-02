@@ -172,6 +172,13 @@ impl LocalHub {
         self.state().inbound.len()
     }
 
+    /// Whether a client's sink is attached: without one, every delivery
+    /// fails.
+    #[must_use]
+    pub fn attached(&self) -> bool {
+        self.state().sink.is_some()
+    }
+
     /// Attaches `sink` as the reply path, replacing any earlier one.
     #[must_use]
     pub fn attach(&self, sink: Sink) -> SinkId {

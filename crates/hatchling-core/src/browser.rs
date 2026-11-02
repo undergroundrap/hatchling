@@ -333,6 +333,13 @@ impl std::fmt::Debug for Cookie {
     }
 }
 
+/// Its value is wiped when it's dropped, as a held secret's is.
+impl Drop for Cookie {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.value);
+    }
+}
+
 impl Cookie {
     /// Whether it's within the bounds a jar holds every cookie to:
     /// [`MAX_COOKIE_BYTES`] of name and value, and a domain and a path each

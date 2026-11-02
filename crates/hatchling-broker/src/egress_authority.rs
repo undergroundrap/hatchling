@@ -1056,6 +1056,10 @@ fn open_proxy(
     .map_err(|source| Error::Egress { source })
 }
 
+/// Why a search was refused when its key couldn't be read, as the agent
+/// is told it.
+const KEY_UNREAD: &str = "the search key couldn't be read";
+
 /// Searches for `query` with the provider's key, read from the keeper,
 /// giving up after the shared deadline.
 fn search(shared: &Shared, query: &str) -> Result<Vec<Hit>, String> {
@@ -1072,7 +1076,12 @@ fn search(shared: &Shared, query: &str) -> Result<Vec<Hit>, String> {
     let read = shared
         .keeper
         .read("search", std::slice::from_ref(&name))
-        .map_err(|error| format!("the search key couldn't be read: {error}"))?;
+        .map_err(|error| {
+            // The keeper's error can carry an OS error's or the vault's
+            // text, and the reason goes to the agent: it goes to the log.
+            tracing::warn!(?error, "the search key couldn't be read");
+            String::from(KEY_UNREAD)
+        })?;
     let secret =
         read.into_iter().next().flatten().ok_or_else(|| {
             format!("no search key is stored: keep it in the vault as {SEARCH_KEY}")
@@ -1310,10 +1319,8 @@ mod tests {
             deadline: FETCH_DEADLINE,
             vendors: BTreeMap::new(),
         };
-        assert!(matches!(
-            search(&gone_keeper, "q"),
-            Err(reason) if reason.starts_with("the search key couldn't be read")
-        ));
+        // The keeper's own error, an OS error's text, stays in the log.
+        assert_eq!(search(&gone_keeper, "q"), Err(String::from(KEY_UNREAD)));
     }
 
     /// Each connection is served on its own: a session's egress opens and

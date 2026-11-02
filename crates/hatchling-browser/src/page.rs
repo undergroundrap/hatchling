@@ -927,20 +927,17 @@ mod tests {
             json!({"name": "sid", "value": "1", "domain": "a.test", "path": "/", "secure": true,
                    "httpOnly": true, "expires": 1_900_000_000, "sameSite": "Lax"})
         );
-        let bare = Cookie {
-            expires: None,
-            same_site: None,
-            ..kept("a.test", "sid", "1")
-        };
+        let mut bare = kept("a.test", "sid", "1");
+        bare.expires = None;
+        bare.same_site = None;
         assert_eq!(
             cookie_param(&bare),
             json!({"name": "sid", "value": "1", "domain": "a.test", "path": "/", "secure": true, "httpOnly": true})
         );
         for (same_site, wire) in [(SameSite::Strict, "Strict"), (SameSite::None, "None")] {
-            let param = cookie_param(&Cookie {
-                same_site: Some(same_site),
-                ..bare.clone()
-            });
+            let mut sent = bare.clone();
+            sent.same_site = Some(same_site);
+            let param = cookie_param(&sent);
             assert_eq!(param.get("sameSite"), Some(&json!(wire)));
         }
     }
@@ -1018,10 +1015,8 @@ mod tests {
             Some(json!(cookies.iter().map(cookie_param).collect::<Vec<_>>()))
         );
         // Past the bounds: nothing is set.
-        let too_big = Cookie {
-            value: "v".repeat(MAX_COOKIE_BYTES),
-            ..kept("a.test", "sid", "1")
-        };
+        let mut too_big = kept("a.test", "sid", "1");
+        too_big.value = "v".repeat(MAX_COOKIE_BYTES);
         let too_many = vec![kept("a.test", "sid", "1"); MAX_COOKIES + 1];
         for cookies in [vec![too_big], too_many] {
             assert_eq!(
