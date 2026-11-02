@@ -294,6 +294,16 @@ jobs:
           timeout 180 python3 docs/examples/first-run.py /var/lib/hatchling/api.sock
           curl -fsS http://127.0.0.1:7340/ > /dev/null
 
+      - name: Doctor finds nothing wrong, then names a stopped model
+        run: |
+          sudo hatchling-broker doctor | tee "$RUNNER_TEMP/doctor.log"
+          grep -q "^Nothing found wrong.$" "$RUNNER_TEMP/doctor.log"
+          pkill -f "stand-in-model.py 18089"
+          if sudo hatchling-broker doctor > "$RUNNER_TEMP/doctor.log"; then exit 1; fi
+          cat "$RUNNER_TEMP/doctor.log"
+          grep -q "^  PROBLEM  model          nothing answers at localhost:18089" "$RUNNER_TEMP/doctor.log"
+          grep -q "^1 problem to fix.$" "$RUNNER_TEMP/doctor.log"
+
       - name: The services' logs
         if: always()
         run: |
@@ -503,6 +513,31 @@ jobs:
           cargo build --locked --workspace --bins
           cargo test --locked -p hatchling-sys -p hatchling-isolation -p hatchling-broker --no-run
 
+      # Doctor, as a new user would meet it: the restriction stops cells,
+      # and it says so, and what to do.
+      - name: Doctor names AppArmor
+        run: |
+          mkdir -p -m 700 "$RUNNER_TEMP/doctor/sock" "$RUNNER_TEMP/doctor/vault"
+          cat > "$RUNNER_TEMP/doctor.env" <<EOF
+          HATCHLING_BROKER_SOCKET=$RUNNER_TEMP/doctor/sock/broker.sock
+          HATCHLING_AGENT_UID=$(id -u)
+          HATCHLING_AGENT_BIN=$GITHUB_WORKSPACE/target/debug/hatchling-agent
+          HATCHLING_CELL_ID=cell-01
+          HATCHLING_VAULT_DIR=$RUNNER_TEMP/doctor/vault
+          HATCHLING_SCHEDULER_MODEL_ENDPOINT=http://localhost:18089/v1
+          HATCHLING_SCHEDULER_MODEL_NAME=stand-in
+          EOF
+          python3 docs/examples/stand-in-model.py 18089 2> /dev/null &
+          curl -fsS --retry 10 --retry-connrefused --retry-delay 1 http://localhost:18089/v1/models > /dev/null
+          doctor() { target/debug/hatchling-broker doctor --env "$RUNNER_TEMP/doctor.env"; }
+          if doctor > "$RUNNER_TEMP/doctor.log"; then exit 1; fi
+          cat "$RUNNER_TEMP/doctor.log"
+          grep -q "^  ok       settings " "$RUNNER_TEMP/doctor.log"
+          grep -q "^  ok       agent program " "$RUNNER_TEMP/doctor.log"
+          grep -q "^  PROBLEM  cells          AppArmor " "$RUNNER_TEMP/doctor.log"
+          grep -q "^  ok       model          stand-in at " "$RUNNER_TEMP/doctor.log"
+          echo "DOCTOR_PID=$!" >> "$GITHUB_ENV"
+
       # The tests create user namespaces from the build tree's binaries.
       - name: Allow the build tree user namespaces
         run: |
@@ -515,6 +550,12 @@ jobs:
           }
           EOF
           sudo apparmor_parser -r /etc/apparmor.d/hatchling-ci-tests
+
+      - name: Doctor finds nothing wrong once the profile allows it
+        run: |
+          target/debug/hatchling-broker doctor --env "$RUNNER_TEMP/doctor.env" | tee "$RUNNER_TEMP/doctor.log"
+          grep -q "^Nothing found wrong.$" "$RUNNER_TEMP/doctor.log"
+          kill "$DOCTOR_PID"
 
       - name: Cells on subordinate ids
         env:

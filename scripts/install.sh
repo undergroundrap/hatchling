@@ -155,6 +155,11 @@ if [ -z "$(ls -A /var/lib/hatchling/vault)" ]; then
   (set -a; . "$ENV"; set +a; /usr/local/bin/hatchling-broker migrate-vault)
 fi
 
+say "checking it can work here"
+if ! /usr/local/bin/hatchling-broker doctor --env "$ENV"; then
+  fail "fix what doctor found, then run this again: it keeps your configuration"
+fi
+
 say "starting the broker"
 systemctl daemon-reload
 systemctl enable hatchling.service > /dev/null
@@ -170,7 +175,7 @@ TOKEN=/var/lib/hatchling/ui.sock.token
 tries=0
 until [ -s "$TOKEN" ]; do
   tries=$((tries + 1))
-  [ "$tries" -le 30 ] || fail "the broker didn't start: see journalctl -u hatchling"
+  [ "$tries" -le 30 ] || fail "the broker didn't start: see journalctl -u hatchling, and sudo hatchling-broker doctor"
   sleep 1
 done
 echo
