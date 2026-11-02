@@ -6,7 +6,7 @@ Every path below comes from a setting in the broker's environment (see `hatchlin
 
 ## Your data
 
-Deleting any of these loses credentials or history. Each lives where its setting points, readable by one user alone. The vault, its master key and its keyring are the vault keeper's: `hatchling-keeper` when the broker runs as root, which hands them to that user at its start. Every other store is the broker's user's.
+Deleting any of these loses credentials or history. Each lives where its setting points, readable by one user alone. The vault, its master key and its keyring are the vault keeper's: `hatchling-keeper` when the broker runs as root, which hands them to that user at its start. The approved-tools list is the user's the broker starts as. Every other store is the broker's user's.
 
 | Setting | What is there |
 | --- | --- |
@@ -14,6 +14,7 @@ Deleting any of these loses credentials or history. Each lives where its setting
 | `HATCHLING_VAULT_KEY_FILE` | The master key (default `<vault dir>.key/key`). It wraps each sealed store's own key, so without it, or the keyring below, nothing in any store can be read. Beside it, `keyring-in-use` records that the key lives in the keyring. |
 | `HATCHLING_VAULT_KEYRING` | The keyring, when the master key is wrapped by a passphrase file, TOTP or security keys. `<keyring>.lock` beside it is the edit lock, made again when needed. |
 | `HATCHLING_VAULT_KEK_FILE` | The key that opens the keyring at its file tier. |
+| `<vault dir>.tools/` | The approved-tools list, `approved.json`: each program a coding CLI's cell may run, its SHA-256 and when it was approved (WO-019). Made at the first start with a harness's API set. It's the user's the broker starts as (root, for a root broker), and writable by no one else, or the broker won't start. Change it with `hatchling-broker tools`: see [Approved tools](approved-tools.md). |
 | `HATCHLING_SKILLS_DIR` | The signed skills the broker loads. |
 | `HATCHLING_SKILL_TRUST_ROOTS` | The skill-signing keys the broker trusts. |
 | `HATCHLING_MEMORY_DIR` | Memory items. |

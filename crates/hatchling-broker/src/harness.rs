@@ -39,13 +39,15 @@
 //!   key stays in the vault (secret [`HarnessKind::secret_name`]), read by
 //!   the authority for the run's relay, never given to the cell or the
 //!   broker. A harness without an API runs offline, as before.
-//! - **Pinned tools** (WO-019). A CLI cell's tools are hashed when the
-//!   broker starts. Every CLI cell runs a copy of them, in a directory of
-//!   the broker's own, made at the first run that gets them from bytes
-//!   that still hash to their pins: a write to a tool's path never reaches
-//!   a cell. Before every such run, each tool is checked: one whose file
-//!   changed is hashed again, and if it's another program the run is
-//!   refused, saying which tool.
+//! - **Approved, pinned tools** (WO-019). A CLI cell's tools are the
+//!   operator's approved tools ([`crate::approved_tools`]), each pinned to
+//!   the SHA-256 it was approved with, and read when the broker starts.
+//!   Every CLI cell runs a copy of them, in a directory of the broker's
+//!   own, made at the first run that gets them from bytes that still hash
+//!   to their pins: a write to a tool's path never reaches a cell. Before
+//!   every such run, each tool is checked: one whose file changed is
+//!   hashed again, and if it's another program the run is refused, saying
+//!   which tool.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -400,16 +402,48 @@ const MAX_TOOL_BYTES: u64 = 256 * 1024 * 1024;
 /// A program a CLI cell may run, as configured: its host path, and the
 /// name the cell sees it at.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Tool {
+pub(crate) struct Tool {
     path: PathBuf,
     name: String,
+}
+
+impl Tool {
+    /// The tool at `path`: an absolute path of plain names, with no
+    /// control character. Nothing is opened.
+    ///
+    /// # Errors
+    ///
+    /// Why `path` can't name a tool.
+    pub(crate) fn at(path: &str) -> Result<Self, String> {
+        let program = PathBuf::from(path);
+        let plain = program.is_absolute()
+            && program
+                .components()
+                .skip(1)
+                .all(|component| matches!(component, Component::Normal(_)));
+        if !plain {
+            return Err(format!("{} is not an absolute path", path.escape_debug()));
+        }
+        if path.chars().any(char::is_control) {
+            return Err(format!("{} holds a control character", path.escape_debug()));
+        }
+        Ok(Self {
+            path: program,
+            name: path.trim_start_matches('/').to_owned(),
+        })
+    }
+
+    /// The name a cell sees the tool at: its path, without the leading `/`.
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 /// What a tool's path named: the file, and when it last changed. The
 /// kernel sets a file's change time on every write to it, and only root
 /// can set it back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Seen {
+pub(crate) struct Seen {
     dev: u64,
     ino: u64,
     size: u64,
@@ -428,13 +462,38 @@ impl Seen {
     }
 }
 
-/// A tool as the broker pinned it: its SHA-256, and what its path named
-/// then.
+/// What each of `tools` holds now: its SHA-256 and what its path names,
+/// or why it can't be read. A file named more than once (coreutils is one
+/// program under many names) is read once.
+pub(crate) fn read_tools(tools: &[Tool]) -> Vec<Result<(String, Seen), String>> {
+    let mut hashed: BTreeMap<(u64, u64), (Seen, String)> = BTreeMap::new();
+    tools
+        .iter()
+        .map(|tool| {
+            let (file, meta) = open_program(&tool.path)?;
+            let seen = Seen::of(&meta);
+            if let Some((_, sha256)) = hashed
+                .get(&(seen.dev, seen.ino))
+                .filter(|(was, _)| *was == seen)
+            {
+                return Ok((sha256.clone(), seen));
+            }
+            let bytes = read_file(file, &tool.path, MAX_TOOL_BYTES)?;
+            let sha256 = CodeHash::of(&bytes).to_string();
+            hashed.insert((seen.dev, seen.ino), (seen, sha256.clone()));
+            Ok((sha256, seen))
+        })
+        .collect()
+}
+
+/// A tool as the broker pinned it: the SHA-256 it was approved with, and
+/// what its path named when the broker found it that program; none when
+/// it didn't, so every run reads it again.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PinnedTool {
     tool: Tool,
     sha256: String,
-    seen: Seen,
+    seen: Option<Seen>,
 }
 
 impl PinnedTool {
@@ -447,8 +506,9 @@ impl PinnedTool {
     /// the broker's log: the tool is unreadable, or another program.
     fn check(&self) -> Result<(), (String, String)> {
         let path = &self.tool.path;
-        let unchanged = std::fs::metadata(path)
-            .is_ok_and(|meta| meta.is_file() && Seen::of(&meta) == self.seen);
+        let unchanged = self.seen.is_some_and(|seen| {
+            std::fs::metadata(path).is_ok_and(|meta| meta.is_file() && Seen::of(&meta) == seen)
+        });
         if unchanged {
             return Ok(());
         }
@@ -464,7 +524,7 @@ impl PinnedTool {
     /// What a run's report says when this tool isn't the program pinned.
     fn refusal(&self) -> String {
         format!(
-            "the tool {} is unreadable or not the program the broker started with: it is never substituted",
+            "the tool {} is unreadable or not the program approved: it is never substituted",
             self.tool.path.display()
         )
     }
@@ -472,7 +532,7 @@ impl PinnedTool {
     /// The broker log's detail when this tool hashes to `actual`.
     fn differs(&self, actual: &str) -> String {
         format!(
-            "the tool {}'s SHA-256 is {actual}, not the pinned {}",
+            "the tool {}'s SHA-256 is {actual}, not the approved {}",
             self.tool.path.display(),
             self.sha256
         )
@@ -489,39 +549,41 @@ pub(crate) struct PinnedTools {
 }
 
 impl PinnedTools {
-    /// Pins `tools`, reading each file once.
-    ///
-    /// # Errors
-    ///
-    /// A sentence for the operator: a tool can't be read.
-    fn take(tools: &[Tool]) -> Result<Self, String> {
-        let mut hashed: BTreeMap<(u64, u64), (Seen, String)> = BTreeMap::new();
-        let mut pinned = Vec::new();
-        for tool in tools {
-            let (file, meta) = open_program(&tool.path)?;
-            let seen = Seen::of(&meta);
-            let known = hashed
-                .get(&(seen.dev, seen.ino))
-                .filter(|(was, _)| *was == seen)
-                .map(|(_, sha256)| sha256.clone());
-            let sha256 = if let Some(sha256) = known {
-                sha256
-            } else {
-                let bytes = read_file(file, &tool.path, MAX_TOOL_BYTES)?;
-                let sha256 = CodeHash::of(&bytes).to_string();
-                hashed.insert((seen.dev, seen.ino), (seen, sha256.clone()));
-                sha256
-            };
-            pinned.push(PinnedTool {
-                tool: tool.clone(),
-                sha256,
-                seen,
-            });
-        }
-        Ok(Self {
-            tools: pinned,
+    /// Pins each of `approved`, a tool and the SHA-256 it was approved
+    /// with, given what [`read_tools`] found it holds now. One that isn't
+    /// the program approved, or can't be read, is pinned all the same, and
+    /// logged: every run that would get it is refused until it is.
+    fn pin(approved: Vec<(Tool, String)>, read: Vec<Result<(String, Seen), String>>) -> Self {
+        let tools = approved
+            .into_iter()
+            .zip(read)
+            .map(|((tool, sha256), read)| {
+                let mut pinned = PinnedTool {
+                    tool,
+                    sha256,
+                    seen: None,
+                };
+                let detail = match read {
+                    Ok((actual, seen)) if actual == pinned.sha256 => {
+                        pinned.seen = Some(seen);
+                        return pinned;
+                    }
+                    Ok((actual, _)) => pinned.differs(&actual),
+                    Err(detail) => detail,
+                };
+                tracing::warn!(
+                    tool = %pinned.tool.path.display(),
+                    detail,
+                    "a tool isn't the program approved: a run that would get it is refused \
+                     until it is, or it's approved again (tools add) and the broker restarts"
+                );
+                pinned
+            })
+            .collect();
+        Self {
+            tools,
             copy: std::sync::Mutex::new(None),
-        })
+        }
     }
 
     /// Whether every tool is still the program pinned.
@@ -781,6 +843,10 @@ pub struct Harnesses {
     binaries: BTreeMap<HarnessKind, PinnedBinary>,
     vendors: BTreeMap<HarnessKind, Vendor>,
     tools: Vec<Tool>,
+    /// Whether `HATCHLING_HARNESS_TOOLS` names the tools.
+    named: bool,
+    /// The approved-tools list's directory ([`crate::approved_tools`]).
+    approved: PathBuf,
     pinned: Option<Arc<PinnedTools>>,
     codex_host: Option<PinnedBinary>,
     granted: BTreeSet<HarnessKind>,
@@ -867,6 +933,7 @@ impl Harnesses {
                 String::from("the code-mode host needs the Codex CLI"),
             ));
         }
+        let named = get(TOOLS_KEY).is_some_and(|raw| !raw.trim().is_empty());
         let tools = parse_tools(get(TOOLS_KEY).as_deref(), !vendors.is_empty())?;
         let roots = parse_roots(get(env::HATCHLING_HARNESS_ROOTS.name).as_deref(), config)?;
         let timeout = parse_timeout(get(env::HATCHLING_HARNESS_TIMEOUT_SECS.name).as_deref())?;
@@ -902,6 +969,8 @@ impl Harnesses {
             binaries,
             vendors,
             tools,
+            named,
+            approved: crate::approved_tools::dir(config),
             pinned: None,
             codex_host,
             granted,
@@ -926,21 +995,55 @@ impl Harnesses {
         self
     }
 
-    /// The same harnesses, their tools pinned: each file read once and
-    /// hashed (WO-019). The broker does this once, at its start. A run
-    /// checks each tool is still the program pinned, and its cell runs a
-    /// copy of them, made from bytes that hash to their pins.
+    /// The same harnesses, their tools the approved ones, pinned to the
+    /// SHA-256 each was approved with (WO-019). The broker does this once,
+    /// at its start, when a harness has a network. A run checks each tool
+    /// is still the program approved, and its cell runs a copy of them,
+    /// made from bytes that hash to their pins.
+    ///
+    /// The tools are the approved-tools list's ([`crate::approved_tools`]).
+    /// With no list yet, they're the tools `HATCHLING_HARNESS_TOOLS` names,
+    /// or the defaults this host has, and the list is made of them, each
+    /// hashed now: the cells get what they did before.
     ///
     /// # Errors
     ///
-    /// [`Error::InvalidConfig`] naming `HATCHLING_HARNESS_TOOLS`, when a
-    /// tool can't be read.
+    /// [`Error::ApprovedTools`] when the list can't be read or made, or
+    /// is open to another user; [`Error::InvalidConfig`] naming
+    /// `HATCHLING_HARNESS_TOOLS`, when it names other tools than the list,
+    /// or, with no list, a tool that can't be read.
     pub fn pin_tools(mut self) -> Result<Self, Error> {
-        if !self.tools.is_empty() {
-            let pinned =
-                PinnedTools::take(&self.tools).map_err(|reason| invalid(TOOLS_KEY, reason))?;
-            self.pinned = Some(Arc::new(pinned));
+        use crate::approved_tools::{Approved, read, write};
+        if self.vendors.is_empty() {
+            return Ok(self);
         }
+        let (approved, found) = if let Some(approved) = read(&self.approved)? {
+            if self.named && !approved.names_the_same(&self.tools) {
+                return Err(invalid(
+                    TOOLS_KEY,
+                    format!(
+                        "names other tools than the approved-tools list in {}: change the list \
+                         with `tools add` or `tools remove`, and unset {TOOLS_KEY}",
+                        self.approved.display()
+                    ),
+                ));
+            }
+            let found = read_tools(&approved.tools());
+            (approved, found)
+        } else {
+            let found = read_tools(&self.tools);
+            let approved = Approved::of(&self.tools, &found, crate::approved_tools::now())
+                .map_err(|reason| invalid(TOOLS_KEY, reason))?;
+            write(&self.approved, &approved)?;
+            tracing::info!(
+                dir = %self.approved.display(),
+                tools = self.tools.len(),
+                "the approved-tools list is made, of the tools the broker was given"
+            );
+            (approved, found)
+        };
+        self.tools = approved.tools();
+        self.pinned = Some(Arc::new(PinnedTools::pin(approved.pins(), found)));
         Ok(self)
     }
 
@@ -1451,7 +1554,7 @@ fn parse_vendor(
 /// `raw` names, each an absolute path to a program, or else the defaults
 /// this host has. None for harnesses without a network. They're pinned
 /// at the broker's start ([`Harnesses::pin_tools`]).
-fn parse_tools(raw: Option<&str>, networked: bool) -> Result<Vec<Tool>, Error> {
+pub(crate) fn parse_tools(raw: Option<&str>, networked: bool) -> Result<Vec<Tool>, Error> {
     let explicit = raw.map(str::trim).filter(|raw| !raw.is_empty());
     if !networked {
         return match explicit {
@@ -1473,20 +1576,7 @@ fn parse_tools(raw: Option<&str>, networked: bool) -> Result<Vec<Tool>, Error> {
     );
     let mut tools: Vec<Tool> = Vec::new();
     for path in paths {
-        let program = PathBuf::from(path);
-        let plain = program.is_absolute()
-            && program
-                .components()
-                .skip(1)
-                .all(|component| matches!(component, Component::Normal(_)));
-        let pinned = if plain {
-            open_program(&program).map(|_| Tool {
-                path: program,
-                name: path.trim_start_matches('/').to_owned(),
-            })
-        } else {
-            Err(format!("{path} is not an absolute path"))
-        };
+        let pinned = Tool::at(path).and_then(|tool| open_program(&tool.path).map(|_| tool));
         match pinned {
             Ok(tool) if tools.iter().any(|known| known.name == tool.name) => {
                 return Err(invalid(TOOLS_KEY, format!("{path} is named twice")));
@@ -2770,6 +2860,17 @@ mod tests {
         }
     }
 
+    /// `tools`, each pinned as the program it holds now.
+    fn pinned_as_now(tools: &[Tool]) -> PinnedTools {
+        let found = read_tools(tools);
+        let pins = tools
+            .iter()
+            .zip(&found)
+            .map(|(tool, found)| (tool.clone(), found.as_ref().unwrap().0.clone()))
+            .collect();
+        PinnedTools::pin(pins, found)
+    }
+
     /// WO-019: a program is read through its links, and never past its
     /// bound.
     #[test]
@@ -2803,7 +2904,7 @@ mod tests {
         std::fs::hard_link(&first, &linked).unwrap();
         let other = scratch.write("usr/bin/other", b"another program");
         let tools = [named(&first), named(&same), named(&linked), named(&other)];
-        let pinned = PinnedTools::take(&tools).unwrap();
+        let pinned = pinned_as_now(&tools);
         let pins: Vec<_> = pinned
             .tools
             .iter()
@@ -2878,15 +2979,15 @@ mod tests {
         let scratch = Scratch::new("tool-check");
         let path = scratch.write("bin/tool", b"the program");
         let tool = named(&path);
-        let pinned = PinnedTools::take(std::slice::from_ref(&tool)).unwrap();
+        let pinned = pinned_as_now(std::slice::from_ref(&tool));
         let copy = pinned.copy().unwrap();
         assert_eq!(pinned.check(), Ok(()));
         let told = format!(
-            "the tool {} is unreadable or not the program the broker started with: it is never substituted",
+            "the tool {} is unreadable or not the program approved: it is never substituted",
             path.display()
         );
         let differs = format!(
-            "the tool {}'s SHA-256 is {}, not the pinned {}",
+            "the tool {}'s SHA-256 is {}, not the approved {}",
             path.display(),
             CodeHash::of(b"another program"),
             CodeHash::of(b"the program")
@@ -2899,13 +3000,14 @@ mod tests {
         );
         std::fs::write(&path, b"another program").unwrap();
         assert_eq!(pinned.check(), Err((told.clone(), differs.clone())));
-        let later = PinnedTools::take(std::slice::from_ref(&tool)).unwrap();
-        let mut stale = later.tools;
-        if let Some(first) = stale.first_mut() {
-            first.sha256 = CodeHash::of(b"the program").to_string();
-        }
+        // Pinned while it's another program: it's read again for every run.
+        let stale = PinnedTools::pin(
+            vec![(tool.clone(), CodeHash::of(b"the program").to_string())],
+            read_tools(std::slice::from_ref(&tool)),
+        );
+        assert_eq!(stale.tools.first().unwrap().seen, None);
         assert_eq!(
-            ToolCopy::take(&stale).unwrap_err(),
+            ToolCopy::take(&stale.tools).unwrap_err(),
             ToolsRefused::Changed(told.clone(), differs)
         );
         let in_copy = copy.dir.join(&tool.name);
@@ -2993,6 +3095,119 @@ mod tests {
         );
         // No tools: nothing to pin.
         assert!(Harnesses::default().pin_tools().unwrap().pinned.is_none());
+    }
+
+    /// WO-019: the first start with a networked harness makes the
+    /// approved-tools list, of the tools it was given, each hashed. Later
+    /// starts take their tools from the list, pinned to what was approved:
+    /// a setting naming other tools stops the start. A tool that changed
+    /// or went before a start doesn't stop it: every run that would get it
+    /// is refused, until it's the program approved again. A list open to
+    /// another user stops the start.
+    #[test]
+    fn the_approved_list_names_the_tools_from_the_first_start() {
+        use crate::approved_tools::{FILE, dir, read};
+        let scratch = Scratch::new("tools-list");
+        let config = config(&scratch);
+        let (_, mut vars) = settings(&scratch);
+        let tool = scratch.write("bin/tool", b"tool");
+        let other = scratch.write("bin/other", b"other");
+        vars.insert(
+            "HATCHLING_HARNESS_CLAUDE_CODE_API",
+            String::from("local:localhost:8443"),
+        );
+        vars.insert(TOOLS_KEY, tool.display().to_string());
+        let start = |vars: &HashMap<&'static str, String>| {
+            parsed(&config, vars).and_then(Harnesses::pin_tools)
+        };
+        let dir = dir(&config);
+        assert_eq!(read(&dir).unwrap(), None);
+        let first = start(&vars).unwrap();
+        let approved = read(&dir).unwrap().unwrap();
+        assert_eq!(
+            approved.pins(),
+            [(named(&tool), CodeHash::of(b"tool").to_string())]
+        );
+        assert!(first.tools_for(HarnessKind::ClaudeCode).unwrap().is_some());
+        // Later starts: the list's tools, whether the setting names them or not.
+        assert_eq!(start(&vars).unwrap().tools, [named(&tool)]);
+        vars.remove(TOOLS_KEY);
+        assert_eq!(start(&vars).unwrap().tools, [named(&tool)]);
+        assert_eq!(read(&dir).unwrap(), Some(approved), "kept as it was");
+        vars.insert(TOOLS_KEY, other.display().to_string());
+        let (key, reason) = refusal(start(&vars));
+        assert_eq!(key, TOOLS_KEY);
+        assert!(
+            reason.starts_with(&format!(
+                "names other tools than the approved-tools list in {}",
+                dir.display()
+            )),
+            "{reason}"
+        );
+        vars.remove(TOOLS_KEY);
+        // Changed before the start: started, and its runs refused until
+        // it's the program approved.
+        std::fs::write(&tool, b"changed").unwrap();
+        let changed = start(&vars).unwrap();
+        assert!(matches!(
+            changed.tools_for(HarnessKind::ClaudeCode),
+            Err(ToolsRefused::Changed(told, _)) if told.starts_with(&format!("the tool {} is", tool.display()))
+        ));
+        std::fs::write(&tool, b"tool").unwrap();
+        assert!(
+            changed
+                .tools_for(HarnessKind::ClaudeCode)
+                .unwrap()
+                .is_some()
+        );
+        std::fs::remove_file(&tool).unwrap();
+        let gone = start(&vars).unwrap();
+        assert!(matches!(
+            gone.tools_for(HarnessKind::ClaudeCode),
+            Err(ToolsRefused::Changed(..))
+        ));
+        // Open to another user: the start stops.
+        std::fs::set_permissions(dir.join(FILE), std::fs::Permissions::from_mode(0o620)).unwrap();
+        assert!(matches!(
+            start(&vars).unwrap_err(),
+            Error::ApprovedTools { reason } if reason.contains("writable by no one else")
+        ));
+    }
+
+    /// WO-019: with no list and no tools named, the list is made of the
+    /// defaults this host has, and the cells get those, as before it.
+    #[test]
+    fn a_first_start_approves_the_default_tools() {
+        let scratch = Scratch::new("tools-defaults");
+        let config = config(&scratch);
+        let (_, mut vars) = settings(&scratch);
+        vars.insert(
+            "HATCHLING_HARNESS_CLAUDE_CODE_API",
+            String::from("local:localhost:8443"),
+        );
+        let harnesses = parsed(&config, &vars)
+            .and_then(Harnesses::pin_tools)
+            .unwrap();
+        let defaults = parse_tools(None, true).unwrap();
+        assert!(!defaults.is_empty());
+        assert_eq!(harnesses.tools, defaults);
+        let approved = crate::approved_tools::read(&crate::approved_tools::dir(&config))
+            .unwrap()
+            .unwrap();
+        assert_eq!(approved.tools(), defaults);
+        let given = harnesses
+            .tools_for(HarnessKind::ClaudeCode)
+            .unwrap()
+            .unwrap();
+        assert_eq!(given.names.len(), defaults.len());
+        // Without a network, no list is made.
+        let scratch = Scratch::new("tools-offline");
+        let config = self::config(&scratch);
+        let (_, offline) = settings(&scratch);
+        parsed(&config, &offline)
+            .and_then(Harnesses::pin_tools)
+            .unwrap();
+        assert!(!crate::approved_tools::dir(&config).exists());
     }
 
     #[test]

@@ -613,7 +613,8 @@ fn a_hostile_harness_reaches_its_vendor_only_through_the_relay_and_only_with_its
 /// WO-019: a tool the operator named runs in its CLI cell, from a copy
 /// nothing there can write, and it's the only one there. Once its program
 /// changes on the host, the next run is refused before anything runs, and
-/// says which tool.
+/// says which tool. Approved again (`tools add`), the next start's cells
+/// have it; removed (`tools remove`), they don't.
 #[test]
 fn a_pinned_tool_runs_in_its_cell_and_a_changed_one_refuses_the_run() -> Result<(), String> {
     if !guard_cell_available()? {
@@ -655,14 +656,47 @@ fn a_pinned_tool_runs_in_its_cell_and_a_changed_one_refuses_the_run() -> Result<
     assert_eq!(
         text(&report, "/reason"),
         format!(
-            "the tool {tool} is unreadable or not the program the broker started with: it is never substituted"
+            "the tool {tool} is unreadable or not the program approved: it is never substituted"
         )
     );
     assert!(
         text(&report, "/harness_said/message").is_empty(),
         "{report}"
     );
+    // The operator approves the new program, and the broker restarts: its
+    // cells have the tool again.
+    let probe = format!("STUB probe {tool}");
+    let probed = |skills: &Skills| -> Result<String, String> {
+        let report = invoke(skills, kind, &probe, &keys)?;
+        assert_eq!(report.get("outcome"), Some(&json!("done")), "{report}");
+        let said = text(&report, "/harness_said/message");
+        Ok(said.lines().next().unwrap_or_default().to_owned())
+    };
+    run_tools(&deployment.config, ["add", &tool])?;
+    assert_eq!(
+        probed(&deployment.skills()?)?,
+        format!("probe {tool}: true")
+    );
+    // Removed, and the broker restarted: the next cell doesn't have it.
+    // The list names the tools now: a setting naming others stops the start.
+    run_tools(&deployment.config, ["remove", &tool])?;
+    let refused = deployment.skills().err().unwrap_or_default();
+    assert!(
+        refused.contains("names other tools than the approved-tools list"),
+        "{refused}"
+    );
+    deployment.vars.remove("HATCHLING_HARNESS_TOOLS");
+    assert_eq!(
+        probed(&deployment.skills()?)?,
+        format!("probe {tool}: false")
+    );
     Ok(())
+}
+
+/// `hatchling-broker tools <args>` against `config`'s list.
+fn run_tools(config: &Config, args: [&str; 2]) -> Result<(), String> {
+    hatchling_broker::approved_tools::run_tools(config, args.map(String::from))
+        .map_err(|e| format!("tools {args:?}: {e}"))
 }
 
 #[test]

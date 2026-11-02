@@ -307,6 +307,14 @@ pub enum Error {
         /// What failed.
         reason: String,
     },
+
+    /// The approved-tools list could not be read or written, is open to
+    /// another user, or an operator action on it was refused (WO-019).
+    #[error("approved tools: {reason}")]
+    ApprovedTools {
+        /// What failed.
+        reason: String,
+    },
 }
 
 /// Maps the shared contract's errors onto the broker's vocabulary.
