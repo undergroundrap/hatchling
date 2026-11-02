@@ -1206,6 +1206,11 @@ fn open(
     if config.web.refuses(url.origin().host()) {
         return refused("the operator refuses this site");
     }
+    if let Some(reason) =
+        crate::web_ops::held_secret_in(config, keys, &url.to_string(), "page's address")
+    {
+        return refused(&reason);
+    }
     let destination = url.origin().destination();
     // A site the owner signed in to is opened in its profile's own cell
     // (WO-030): a browser holding another profile, or none, is left.
@@ -4384,6 +4389,17 @@ mod tests {
             BrowserResult::Failed {
                 failure: BrowserFailure::NoPage
             }
+        );
+        // An address holding one is never opened, nor put to the owner.
+        assert_eq!(
+            handle_browser_op(
+                &config,
+                &keys,
+                &mut web,
+                &mut browser,
+                &open("https://a.example/c?d=hunter2-sesame")
+            ),
+            refused("the page's address holds a secret the broker keeps: it isn't sent")
         );
         // Secrets that can't be read: nothing is typed.
         let wrong = MasterKey::generate().unwrap();

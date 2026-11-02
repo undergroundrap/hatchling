@@ -217,18 +217,26 @@ pub fn handle_web_op(
 ) -> WebResult {
     match op {
         WebOp::Fetch { url, reason } => fetch(config, keys, web, url, reason),
-        WebOp::Search { query } => search(config, web, query),
+        WebOp::Search { query } => search(config, keys, web, query),
     }
 }
 
 /// Searches for `query`: the results, remembered by the session.
-fn search(config: &Config, web: &mut WebSession, query: &str) -> WebResult {
+fn search(
+    config: &Config,
+    keys: &dyn OpensStores,
+    web: &mut WebSession,
+    query: &str,
+) -> WebResult {
     if !config.web.search {
         return WebResult::Off;
     }
     let Some(searcher) = web.searcher.clone() else {
         return WebResult::Off;
     };
+    if let Some(reason) = held_secret_in(config, keys, query, "search") {
+        return refused(reason);
+    }
     let chars = query.chars().count();
     if config.web.search_log == crate::SearchLog::Queries {
         tracing::info!(task = %web.task, chars, query, "web search");
@@ -273,6 +281,41 @@ fn bounded_search(
     })
 }
 
+/// Why `text`, which would leave the machine (a page's address, or a
+/// search), is refused: it holds a secret the broker keeps, in any form
+/// the output gate looks for, or those secrets can't be read to check.
+/// `None` when it holds none.
+///
+/// A held secret the model has seen, shown on a page or echoed by a
+/// service, would otherwise leave in an address or a search: to the site,
+/// in its log, or to the search provider. Typed text is checked the same
+/// way (`browser_ops`).
+pub(crate) fn held_secret_in(
+    config: &Config,
+    keys: &dyn OpensStores,
+    text: &str,
+    what: &str,
+) -> Option<String> {
+    // No keeper, and no secret the configuration names: nothing is held
+    // that could leave, and the vault isn't read.
+    if crate::keeper::keeper().is_none() && crate::artifact_ops::held_secret_names(config).is_empty()
+    {
+        return None;
+    }
+    match crate::held_secrets(config, keys) {
+        Ok(secrets) if secrets.exposed_in(text.as_bytes()) => Some(format!(
+            "the {what} holds a secret the broker keeps: it isn't sent"
+        )),
+        Ok(_) => None,
+        Err(error) => {
+            tracing::error!(%error, what, "the held secrets couldn't be read: refused");
+            Some(format!(
+                "the broker couldn't check the {what} for secrets: it isn't sent"
+            ))
+        }
+    }
+}
+
 /// Reads the page at `url`, which the agent wants for `reason`.
 fn fetch(
     config: &Config,
@@ -295,6 +338,9 @@ fn fetch(
     };
     if config.web.refuses(url.origin().host()) {
         return refused(String::from("the operator refuses this site"));
+    }
+    if let Some(reason) = held_secret_in(config, keys, &url.to_string(), "page's address") {
+        return refused(reason);
     }
     if let Err(answer) = allow(config, keys, web, &url, reason, false) {
         return answer;
@@ -526,8 +572,9 @@ pub(crate) mod tests {
     use std::path::PathBuf;
     use std::sync::Mutex;
 
-    use hatchling_core::ApprovalRefusal;
+    use hatchling_core::{ApprovalRefusal, VaultAction};
     use hatchling_egress::web::Page;
+    use hatchling_vault::{MasterKey, SealedVault, Secret};
 
     use super::*;
 
@@ -596,7 +643,7 @@ pub(crate) mod tests {
         let (config, op) = (config.clone(), op.clone());
         std::thread::spawn(move || {
             let mut web = web;
-            let keys = hatchling_vault::MasterKey::generate().unwrap();
+            let keys = MasterKey::generate().unwrap();
             let answer = handle_web_op(&config, &keys, &mut web, &op);
             let _ = sender.send((web, answer));
         });
@@ -1159,19 +1206,19 @@ pub(crate) mod tests {
     ) -> (
         Config,
         crate::api_auth::tests::Scratch,
-        hatchling_vault::MasterKey,
+        MasterKey,
     ) {
         let scratch = crate::api_auth::tests::scratch(&format!("web-search-{name}"));
         let mut config = web_config(name);
         config.vault.root = scratch.0.join("vault");
         config.web.search = true;
-        let master = hatchling_vault::MasterKey::generate().unwrap();
-        let vault = hatchling_vault::SealedVault::open(&config.vault.root, &master).unwrap();
+        let master = MasterKey::generate().unwrap();
+        let vault = SealedVault::open(&config.vault.root, &master).unwrap();
         if let Some(key) = key {
             vault
                 .store(
                     &SEARCH_KEY.parse().unwrap(),
-                    &hatchling_vault::Secret::new(key.to_vec()).unwrap(),
+                    &Secret::new(key.to_vec()).unwrap(),
                 )
                 .unwrap();
         }
@@ -1191,6 +1238,59 @@ pub(crate) mod tests {
 
     /// Answers every search with `hits`, recording the query each was
     /// given.
+    /// A held secret the model has seen never leaves in a page's address or
+    /// a search: refused before the owner is asked, a page is read or the
+    /// provider is asked, raw or encoded as the output gate looks for it.
+    #[test]
+    fn a_held_secret_never_leaves_in_an_address_or_a_search() {
+        let mut config = web_config("held-in-address");
+        config.web.search = true;
+        // A vault of its own, private, holding the secret.
+        let root = std::env::temp_dir().join(format!(
+            "hatchling-web-held-in-address-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700)
+            .create(&root)
+            .unwrap();
+        config.vault.root = root.clone();
+        let master = MasterKey::generate().unwrap();
+        config.vault.grants = vec![crate::VaultGrant {
+            action: VaultAction::Fetch,
+            name: "token".parse().unwrap(),
+        }];
+        SealedVault::open(&config.vault.root, &master)
+            .unwrap()
+            .store(
+                &"token".parse().unwrap(),
+                &Secret::new(b"hunter2-sesame".to_vec()).unwrap(),
+            )
+            .unwrap();
+        let (fetcher, pages) = scripted(Vec::new());
+        let (searcher, asked) = scripted_search(Vec::new());
+        let mut web = unattended("t", &fetcher).searching(searcher);
+        let held = |answer: &WebResult| {
+            matches!(answer, WebResult::Refused { reason } if reason.contains("holds a secret"))
+        };
+        for url in [
+            "https://a.example/c?d=hunter2-sesame",
+            "https://a.example/c?d=aHVudGVyMi1zZXNhbWU",
+        ] {
+            let answer = handle_web_op(&config, &master, &mut web, &fetch(url));
+            assert!(held(&answer), "{url} wasn't refused");
+        }
+        let answer = handle_web_op(&config, &master, &mut web, &search("is hunter2-sesame it"));
+        assert!(held(&answer), "the search wasn't refused");
+        assert!(pages.lock().unwrap().is_empty(), "a page was read");
+        assert!(asked.lock().unwrap().is_empty(), "the provider was asked");
+        assert!(!board_has_pending(&config, "t", "https://a.example"));
+        // Without it, the same page is put to the owner.
+        let answer = handle_web_op(&config, &master, &mut web, &fetch("https://a.example/c?d=x"));
+        assert!(waiting(&answer, "https://a.example"), "not asked");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     fn scripted_search(hits: Vec<Hit>) -> (Searcher, Asked) {
         let asked = Arc::new(Mutex::new(Vec::new()));
         let log = Arc::clone(&asked);
@@ -1521,7 +1621,7 @@ pub(crate) mod tests {
             .unwrap()
             .allow("https://a.example", 1)
             .unwrap();
-        let stranger = hatchling_vault::MasterKey::generate().unwrap();
+        let stranger = MasterKey::generate().unwrap();
         let mut web = unattended("t", &fetcher);
         let answer = handle_web_op(
             &unreadable,
