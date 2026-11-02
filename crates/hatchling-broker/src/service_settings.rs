@@ -68,9 +68,7 @@ pub(crate) fn read_trusted(path: &Path, owner: u32) -> Result<BTreeMap<String, S
 /// itself), from an environment with no settings, where the service has
 /// a settings file.
 fn wanted(args: &[String], environment_set: bool, service_exists: bool) -> bool {
-    let operator = args
-        .first()
-        .is_some_and(|command| command != "doctor");
+    let operator = args.first().is_some_and(|command| command != "doctor");
     operator && !environment_set && service_exists
 }
 
@@ -131,7 +129,11 @@ mod tests {
 
     #[test]
     fn an_operator_command_from_a_bare_shell_takes_the_services_settings() {
-        for command in [&["secret", "add", "x"][..], &["tools", "list"], &["migrate-vault"]] {
+        for command in [
+            &["secret", "add", "x"][..],
+            &["tools", "list"],
+            &["migrate-vault"],
+        ] {
             assert!(wanted(&args(command), false, true), "{command:?}");
             // Not with settings of its own, or with no service.
             assert!(!wanted(&args(command), true, true));
@@ -151,7 +153,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("hatchling.env");
-        std::fs::write(&path, "# the service's\nHATCHLING_VAULT_DIR=/var/lib/hatchling/vault\n").unwrap();
+        std::fs::write(
+            &path,
+            "# the service's\nHATCHLING_VAULT_DIR=/var/lib/hatchling/vault\n",
+        )
+        .unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
         path
     }
@@ -183,6 +189,11 @@ mod tests {
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
         // None at all.
         let missing = read_trusted(Path::new("/nonexistent/hatchling.env"), me).unwrap_err();
-        assert!(missing.what.starts_with("can't read /nonexistent/hatchling.env"), "{missing:?}");
+        assert!(
+            missing
+                .what
+                .starts_with("can't read /nonexistent/hatchling.env"),
+            "{missing:?}"
+        );
     }
 }
