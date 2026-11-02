@@ -222,12 +222,7 @@ pub fn handle_web_op(
 }
 
 /// Searches for `query`: the results, remembered by the session.
-fn search(
-    config: &Config,
-    keys: &dyn OpensStores,
-    web: &mut WebSession,
-    query: &str,
-) -> WebResult {
+fn search(config: &Config, keys: &dyn OpensStores, web: &mut WebSession, query: &str) -> WebResult {
     if !config.web.search {
         return WebResult::Off;
     }
@@ -298,7 +293,8 @@ pub(crate) fn held_secret_in(
 ) -> Option<String> {
     // No keeper, and no secret the configuration names: nothing is held
     // that could leave, and the vault isn't read.
-    if crate::keeper::keeper().is_none() && crate::artifact_ops::held_secret_names(config).is_empty()
+    if crate::keeper::keeper().is_none()
+        && crate::artifact_ops::held_secret_names(config).is_empty()
     {
         return None;
     }
@@ -1203,11 +1199,7 @@ pub(crate) mod tests {
     fn search_config(
         name: &str,
         key: Option<&[u8]>,
-    ) -> (
-        Config,
-        crate::api_auth::tests::Scratch,
-        MasterKey,
-    ) {
+    ) -> (Config, crate::api_auth::tests::Scratch, MasterKey) {
         let scratch = crate::api_auth::tests::scratch(&format!("web-search-{name}"));
         let mut config = web_config(name);
         config.vault.root = scratch.0.join("vault");
@@ -1270,9 +1262,7 @@ pub(crate) mod tests {
         let (fetcher, pages) = scripted(Vec::new());
         let (searcher, asked) = scripted_search(Vec::new());
         let mut web = unattended("t", &fetcher).searching(searcher);
-        let held = |answer: &WebResult| {
-            matches!(answer, WebResult::Refused { reason } if reason.contains("holds a secret"))
-        };
+        let held = |answer: &WebResult| matches!(answer, WebResult::Refused { reason } if reason.contains("holds a secret"));
         for url in [
             "https://a.example/c?d=hunter2-sesame",
             "https://a.example/c?d=aHVudGVyMi1zZXNhbWU",
@@ -1286,7 +1276,12 @@ pub(crate) mod tests {
         assert!(asked.lock().unwrap().is_empty(), "the provider was asked");
         assert!(!board_has_pending(&config, "t", "https://a.example"));
         // Without it, the same page is put to the owner.
-        let answer = handle_web_op(&config, &master, &mut web, &fetch("https://a.example/c?d=x"));
+        let answer = handle_web_op(
+            &config,
+            &master,
+            &mut web,
+            &fetch("https://a.example/c?d=x"),
+        );
         assert!(waiting(&answer, "https://a.example"), "not asked");
         std::fs::remove_dir_all(&root).unwrap();
     }
