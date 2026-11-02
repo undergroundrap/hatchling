@@ -123,6 +123,19 @@ impl HelperKind {
     }
 }
 
+/// Whether anything on the way from `base` down to `path` is a link, as
+/// the filesystem has it now. A path not below `base` counts as linked.
+fn linked_beneath(base: &Path, path: &Path) -> bool {
+    let Ok(rest) = path.strip_prefix(base) else {
+        return true;
+    };
+    let mut walked = base.to_path_buf();
+    rest.components().any(|part| {
+        walked.push(part);
+        std::fs::symlink_metadata(&walked).is_ok_and(|meta| meta.file_type().is_symlink())
+    })
+}
+
 /// The names the broker's own fresh run directories begin with, in its
 /// temp directory: a verified code copy, a harness run's trees, a skill
 /// run's directory, and a browser bundle's snapshot.
@@ -153,9 +166,13 @@ pub(crate) struct Paths {
 impl Paths {
     /// Why `path` isn't one a cell may be given, if it isn't.
     ///
-    /// A run directory is a real directory, not a link, owned by the
-    /// broker and writable by no one else, and nothing on the way from it
-    /// to `path` is a link. Checked here, before the spawn; a broker that
+    /// Below a configured directory, nothing on the way from it to `path`
+    /// is a link. The directory is the operator's, but what's in it may be
+    /// the broker's (the scheduler's run root is), and a link the broker
+    /// made there would take a cell anywhere it points: the owner's home,
+    /// writable. A run directory is a real directory, not a link, owned by
+    /// the broker and writable by no one else, and nothing on the way from
+    /// it to `path` is a link either. Checked here, before the spawn; a broker that
     /// owns the directory could change it after (the spawner opening
     /// each source itself closes that, when the broker runs as its own
     /// user: WO-017's slice 3).
@@ -175,8 +192,15 @@ impl Paths {
         if !plain {
             return refused();
         }
-        if self.exact.contains(path) || self.under.iter().any(|dir| path.starts_with(dir)) {
+        if self.exact.contains(path) {
             return Ok(());
+        }
+        if let Some(dir) = self.under.iter().find(|dir| path.starts_with(dir)) {
+            return if linked_beneath(dir, path) {
+                refused()
+            } else {
+                Ok(())
+            };
         }
         let Ok(inside) = path.strip_prefix(&self.temp) else {
             return refused();
@@ -192,15 +216,8 @@ impl Paths {
         let owned = std::fs::symlink_metadata(&run_dir).is_ok_and(|meta| {
             meta.is_dir() && meta.uid() == self.owner && meta.mode() & 0o022 == 0
         });
-        if !named || !owned {
+        if !named || !owned || linked_beneath(&run_dir, path) {
             return refused();
-        }
-        let mut walked = run_dir;
-        for part in parts {
-            walked.push(part);
-            if std::fs::symlink_metadata(&walked).is_ok_and(|meta| meta.file_type().is_symlink()) {
-                return refused();
-            }
         }
         Ok(())
     }
@@ -1676,6 +1693,35 @@ sleep 30 </dev/null >/dev/null 2>&1 &
             owner: hatchling_sys::euid(),
             group: hatchling_sys::egid(),
         }
+    }
+
+    /// Below a configured directory, a link is refused, wherever it is
+    /// on the way: the broker writes in the scheduler's run root, and a
+    /// link there to the owner's home would put it in a cell, writable.
+    /// What's real below it is allowed, made yet or not.
+    #[test]
+    fn a_link_below_a_configured_directory_is_refused() {
+        let base = std::env::temp_dir().join(format!("hatchling-under-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("runs/run-1")).unwrap();
+        std::os::unix::fs::symlink("/etc", base.join("runs/escape")).unwrap();
+        std::os::unix::fs::symlink(base.join("runs"), base.join("linked")).unwrap();
+        let paths = Paths {
+            under: vec![base.clone()],
+            ..paths()
+        };
+        for allowed in [base.join("runs/run-1"), base.join("runs/run-1/not/yet/made")] {
+            assert_eq!(paths.allow(&allowed), Ok(()), "{}", allowed.display());
+        }
+        for refused in [
+            base.join("runs/escape"),
+            base.join("runs/escape/shadow"),
+            base.join("linked/run-1"),
+        ] {
+            assert!(paths.allow(&refused).is_err(), "{}", refused.display());
+        }
+        assert!(linked_beneath(&base, Path::new("/elsewhere")));
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     /// A harness's tree is one in the broker's harness run directories:
