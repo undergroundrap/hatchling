@@ -1080,7 +1080,7 @@ fn open(
     // for the visit, isn't asked for again until it's left. A profile's
     // sites the owner allowed when they kept it.
     if profile.is_none() && !(same_visit && browser.once.contains(&destination)) {
-        if let Err(answer) = crate::web_ops::allow(config, keys, web, &url, reason) {
+        if let Err(answer) = crate::web_ops::allow(config, keys, web, &url, reason, true) {
             return from_web(answer);
         }
     }
@@ -1271,7 +1271,7 @@ fn allow_site(
     if config.web.refuses(url.origin().host()) {
         return refused("the operator refuses this site");
     }
-    if let Err(answer) = crate::web_ops::allow(config, keys, web, &url, reason) {
+    if let Err(answer) = crate::web_ops::allow(config, keys, web, &url, reason, true) {
         return from_web(answer);
     }
     browser.sites.grant(site);

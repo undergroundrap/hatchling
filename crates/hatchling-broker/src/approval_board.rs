@@ -77,6 +77,10 @@ pub struct SiteAsk<'a> {
     pub led: Option<(&'a str, usize)>,
     /// Whether the owner may allow the site always: the broker keeps sites.
     pub always: bool,
+    /// Whether it's for the agent's browser, whose once is the visit: the
+    /// pages it opens on the site until it leaves. A page read is once
+    /// that page.
+    pub visit: bool,
 }
 
 /// A site the agent asked to read (WO-028).
@@ -232,13 +236,14 @@ impl Board {
             reason,
             led,
             always,
+            visit,
         } = *ask;
         let requested = self.approvals.propose(
             Proposal {
                 run: Approved::Site(SiteVisit {
                     site: site.to_owned(),
                 }),
-                action: site_action(site),
+                action: site_action(site, url),
                 fingerprint: json!({ "op": "web.visit", "site": site }),
                 task: task.to_owned(),
                 session: true,
@@ -248,7 +253,7 @@ impl Board {
         )?;
         if requested.new {
             self.publish(UiEventBody::Confirmation(site_confirmation(
-                site, url, reason, led, always, &requested,
+                site, url, reason, led, always, visit, &requested,
             )));
         }
         Ok(requested)
@@ -337,10 +342,16 @@ impl Board {
     }
 }
 
-/// The record a site's approval binds: the site alone (WO-028).
+/// The record a site's approval binds: the site, and the page the owner
+/// is shown (WO-028).
+///
+/// Approved once, it's that page the agent may read, not another on the
+/// site: a page's address is how a site can be told what the agent read,
+/// so a once is for the address the owner saw. A denial is the site's:
+/// its fingerprint names the site alone.
 #[must_use]
-pub fn site_action(site: &str) -> serde_json::Value {
-    json!({ "format": 1, "op": "web.visit", "site": site })
+pub fn site_action(site: &str, page: &str) -> serde_json::Value {
+    json!({ "format": 2, "op": "web.visit", "site": site, "page": page })
 }
 
 /// The confirmation the owner is shown for reading `site`: the broker's
@@ -351,6 +362,7 @@ fn site_confirmation(
     reason: &str,
     led: Option<(&str, usize)>,
     always: bool,
+    visit: bool,
     requested: &Requested,
 ) -> ConfirmationRequest {
     let field = |label: &str, value: &str, source: FieldSource| ConfirmationField {
@@ -373,11 +385,19 @@ fn site_confirmation(
                 field("Site", site, FieldSource::Broker),
                 field(
                     "What it allows",
-                    if always {
-                        "Once: this page, now. For this task: any page on this site until the agent's session ends; in a chat, that's this answer. Always: any page on this site, in every session, until you revoke it in the app. The site sees whatever the agent puts in a page's address."
-                    } else {
-                        "Once: this page, now. For this task: any page on this site until the agent's session ends; in a chat, that's this answer. The site sees whatever the agent puts in a page's address."
-                    },
+                    &format!(
+                        "{} For this task: any page on this site until the agent's session ends; in a chat, that's this answer.{} The site sees whatever the agent puts in a page's address.",
+                        if visit {
+                            "Once: this visit, in the agent's browser: this page, and the pages it opens on this site until it leaves it."
+                        } else {
+                            "Once: this page, now."
+                        },
+                        if always {
+                            " Always: any page on this site, in every session, until you revoke it in the app."
+                        } else {
+                            ""
+                        }
+                    ),
                     FieldSource::Broker,
                 ),
             ];
@@ -967,27 +987,47 @@ mod tests {
                     reason: "to read it",
                     led: None,
                     always: false,
+                    visit: false,
                 },
                 "t1",
                 100,
             )
             .unwrap();
         assert!(site.new);
+        // The same page asked again is the request waiting.
         let again = board
             .propose_site(
                 &SiteAsk {
                     site: "https://a.example",
-                    url: "https://a.example/y",
+                    url: "https://a.example/x",
                     reason: "again",
                     led: None,
                     always: false,
+                    visit: false,
                 },
                 "t1",
                 100,
             )
             .unwrap();
-        assert!(!again.new, "one request per site and session");
+        assert!(!again.new, "one request per page and session");
         assert_eq!(again.id, site.id);
+        // Another page on the site is not: it would be approved by the
+        // owner's answer about the page they were shown.
+        assert_eq!(
+            board.propose_site(
+                &SiteAsk {
+                    site: "https://a.example",
+                    url: "https://a.example/c?d=what-the-agent-read",
+                    reason: "again",
+                    led: None,
+                    always: false,
+                    visit: false,
+                },
+                "t1",
+                100,
+            ),
+            Err(Refusal::QueueFull)
+        );
         let asked = bus
             .after(None)
             .into_iter()
@@ -1036,8 +1076,8 @@ mod tests {
             Err(DecisionRejection::NotOffered)
         );
         assert_eq!(
-            site_action("https://a.example"),
-            json!({ "format": 1, "op": "web.visit", "site": "https://a.example" })
+            site_action("https://a.example", "https://a.example/x"),
+            json!({ "format": 2, "op": "web.visit", "site": "https://a.example", "page": "https://a.example/x" })
         );
     }
 
@@ -1058,6 +1098,7 @@ mod tests {
             "https://a.example/x",
             "to read it",
             None,
+            false,
             false,
             &requested,
         );
@@ -1101,6 +1142,27 @@ mod tests {
                 ("Why it wants it", "to read it", FieldSource::Agent),
             ])
         );
+        // What once allows is what it does: a page read is that page; the
+        // browser's is the visit.
+        let allows = |visit: bool| {
+            site_confirmation(
+                "https://a.example",
+                "https://a.example/x",
+                "to read it",
+                None,
+                false,
+                visit,
+                &requested,
+            )
+            .fields
+            .into_iter()
+            .find(|field| field.label == "What it allows")
+            .map(|field| field.value)
+            .unwrap_or_default()
+        };
+        assert!(allows(false).starts_with("Once: this page, now."));
+        assert!(allows(true).starts_with("Once: this visit, in the agent's browser"));
+        assert!(!allows(false).contains("Always"));
     }
 
     /// The worker waits for an approval, and wakes when one comes.

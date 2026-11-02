@@ -284,7 +284,7 @@ fn fetch(
     if config.web.refuses(url.origin().host()) {
         return refused(String::from("the operator refuses this site"));
     }
-    if let Err(answer) = allow(config, keys, web, &url, reason) {
+    if let Err(answer) = allow(config, keys, web, &url, reason, false) {
         return answer;
     }
     read(web, url)
@@ -293,12 +293,17 @@ fn fetch(
 /// `Ok` when the session may read `url`'s site now: it holds the site, the
 /// owner always allows it, or the owner allows it now, once, for the
 /// session, or always. Otherwise what the agent is told.
+///
+/// Approved once, it's `url` the owner was shown and allowed: another page
+/// on the site is asked about again. `visit` asks for the agent's browser,
+/// whose once is the visit, and the owner is told so.
 pub(crate) fn allow(
     config: &Config,
     keys: &dyn OpensStores,
     web: &mut WebSession,
     url: &WebUrl,
     reason: &str,
+    visit: bool,
 ) -> Result<(), WebResult> {
     let origin = url.origin();
     if web.holds(origin) {
@@ -316,11 +321,16 @@ pub(crate) fn allow(
         }
     }
     let board = board(config);
-    let found = board
-        .approvals()
-        .find(&web.task, &site_action(&site), State::Approved);
+    let found = board.approvals().find(
+        &web.task,
+        &site_action(&site, &url.to_string()),
+        State::Approved,
+    );
     let always = grants.is_some();
-    let id = found.map_or_else(|| ask_owner(&board, web, url, reason, &site, always), Ok)?;
+    let id = found.map_or_else(
+        || ask_owner(&board, web, url, reason, &site, always, visit),
+        Ok,
+    )?;
     let decision = board
         .approvals()
         .get(&id)
@@ -358,6 +368,7 @@ fn ask_owner(
     reason: &str,
     site: &str,
     always: bool,
+    visit: bool,
 ) -> Result<String, WebResult> {
     let now = Timestamp::now().as_second();
     let requested = board
@@ -368,6 +379,7 @@ fn ask_owner(
                 reason,
                 led: web.led_to(url),
                 always,
+                visit,
             },
             &web.task,
             now,
@@ -581,7 +593,7 @@ pub(crate) mod tests {
         let board = board(config);
         let id = board
             .approvals()
-            .find(task, &site_action(site), State::Pending)
+            .find_run(task, State::Pending, |run| matches!(run, crate::approval_board::Approved::Site(visit) if visit.site == site))
             .expect("no request waits for the site");
         let digest = board.approvals().get(&id).unwrap().digest;
         board
@@ -699,6 +711,48 @@ pub(crate) mod tests {
         assert_eq!(*asked.lock().unwrap(), ["https://a.example/one"]);
     }
 
+    /// Once is the page the owner was shown. Another page on the site, asked
+    /// for while they decide (say, with what the agent read in its
+    /// address), isn't folded into their answer: it's refused while one
+    /// waits, and asked about itself after. Nothing but the page shown is
+    /// fetched on the owner's once.
+    #[test]
+    fn once_is_the_page_the_owner_was_shown() {
+        let config = web_config("once-shown");
+        let leak = "https://a.example/c?d=what-the-agent-read";
+        let (fetcher, asked) = scripted(vec![
+            page("https://a.example/docs", "docs"),
+            page(leak, "got it"),
+        ]);
+        let (web, answer) = ask(
+            &config,
+            unattended("t", &fetcher),
+            &fetch("https://a.example/docs"),
+        );
+        assert!(waiting(&answer, "https://a.example"), "{answer:?}");
+        let (web, answer) = ask(&config, web, &fetch(leak));
+        assert!(
+            matches!(
+                answer,
+                WebResult::Unasked {
+                    reason: ApprovalRefusal::QueueFull
+                }
+            ),
+            "{answer:?}"
+        );
+        owner_decides(&config, "t", "https://a.example", Decision::Approve);
+        let (web, answer) = ask(&config, web, &fetch(leak));
+        assert!(waiting(&answer, "https://a.example"), "{answer:?}");
+        assert!(
+            asked.lock().unwrap().is_empty(),
+            "{:?}",
+            asked.lock().unwrap()
+        );
+        let (_, answer) = ask(&config, web, &fetch("https://a.example/docs"));
+        assert!(matches!(answer, WebResult::Page { .. }), "{answer:?}");
+        assert_eq!(*asked.lock().unwrap(), ["https://a.example/docs"]);
+    }
+
     /// This session: every page on the site, and nothing past it: not a
     /// subdomain, another port, or another site.
     #[test]
@@ -794,10 +848,10 @@ pub(crate) mod tests {
         let owner = config.clone();
         std::thread::spawn(move || {
             for _ in 0..100 {
-                let found = board(&owner).approvals().find(
+                let found = board(&owner).approvals().find_run(
                     "t",
-                    &site_action("https://a.example"),
                     State::Pending,
+                    |run| matches!(run, crate::approval_board::Approved::Site(visit) if visit.site == "https://a.example"),
                 );
                 if found.is_some() {
                     owner_decides(&owner, "t", "https://a.example", Decision::Approve);
@@ -820,6 +874,7 @@ pub(crate) mod tests {
             reason: "why",
             led: None,
             always: false,
+            visit: false,
         }
     }
 
@@ -1004,13 +1059,21 @@ pub(crate) mod tests {
         let (fetcher, _) = scripted(Vec::new());
         let web = unattended("t", &fetcher);
         let url = WebUrl::parse("https://a.example/x").unwrap();
-        let waiting = ask_owner(&board, &web, &url, "why", "https://a.example", false);
+        let waiting = ask_owner(&board, &web, &url, "why", "https://a.example", false, false);
         let Err(WebResult::Waiting { request, .. }) = waiting else {
             unreachable!("{waiting:?}");
         };
         let other = WebUrl::parse("https://b.example/").unwrap();
         assert_eq!(
-            ask_owner(&board, &web, &other, "why", "https://b.example", false),
+            ask_owner(
+                &board,
+                &web,
+                &other,
+                "why",
+                "https://b.example",
+                false,
+                false
+            ),
             Err(WebResult::Unasked {
                 reason: ApprovalRefusal::QueueFull
             }),
@@ -1027,7 +1090,7 @@ pub(crate) mod tests {
             )
             .unwrap();
         assert_eq!(
-            ask_owner(&board, &web, &url, "why", "https://a.example", false),
+            ask_owner(&board, &web, &url, "why", "https://a.example", false, false),
             Err(WebResult::Denied {
                 site: String::from("https://a.example")
             })
@@ -1049,7 +1112,15 @@ pub(crate) mod tests {
             Duration::from_secs(5),
             fetcher,
         );
-        let approved = ask_owner(&board, &attended, &url, "why", "https://a.example", false);
+        let approved = ask_owner(
+            &board,
+            &attended,
+            &url,
+            "why",
+            "https://a.example",
+            false,
+            false,
+        );
         assert!(
             matches!(approved, Ok(ref id) if id.starts_with("approval-")),
             "{approved:?}"
@@ -1059,7 +1130,7 @@ pub(crate) mod tests {
     pub(crate) fn board_has_pending(config: &Config, task: &str, site: &str) -> bool {
         board(config)
             .approvals()
-            .find(task, &site_action(site), State::Pending)
+            .find_run(task, State::Pending, |run| matches!(run, crate::approval_board::Approved::Site(visit) if visit.site == site))
             .is_some()
     }
 
@@ -1414,7 +1485,7 @@ pub(crate) mod tests {
         let board = board(&config);
         let id = board
             .approvals()
-            .find("t", &site_action("https://a.example"), State::Pending)
+            .find_run("t", State::Pending, |run| matches!(run, crate::approval_board::Approved::Site(visit) if visit.site == "https://a.example"))
             .unwrap();
         let digest = board.approvals().get(&id).unwrap().digest;
         assert_eq!(

@@ -8,6 +8,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Fixed
 
+- **Allow once is the page you were shown.** A site's approval named the site alone, and a request for another page on it, made while you decided, joined the one waiting without a new card. So the address you approved once could be swapped for another on the same site, one carrying what the agent had read. Once now approves the page shown: another page is refused while one waits, then asked about itself. In the agent's browser, once covers the visit, and the card now says so. Found by the post-0.5.0 audit. **Breaking for `hatchling-broker`:** `site_action` takes the page, and `SiteAsk` has a new field, `visit`.
 - **No dependency's build code runs where the crates.io token is.** The release workflow published with `cargo publish`, which builds each crate and its dependencies first, so every dependency's build script and macro ran in the job holding the publish token and the job's means to mint another. Every crate is now packaged and built in a job with no token, the GitHub release and crates.io both wait for it, and the token's job publishes with `--no-verify`, building nothing (`scripts/publish-crates.sh --no-verify`). Found by the post-0.5.0 audit.
 
 ## [0.5.0] - 2026-11-02
