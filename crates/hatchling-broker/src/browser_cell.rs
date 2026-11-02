@@ -913,7 +913,10 @@ mod tests {
         )
         .unwrap_err();
         cell.join().unwrap();
-        assert!(reason.starts_with("the browser's answer isn't a reply"), "{reason}");
+        assert!(
+            reason.starts_with("the browser's answer isn't a reply"),
+            "{reason}"
+        );
         assert!(reason.contains("WARN forged line"), "{reason}");
         assert!(!reason.contains('\n'), "{reason}");
     }
