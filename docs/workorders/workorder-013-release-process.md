@@ -48,6 +48,8 @@ So far, before the first release:
   The checkout's path never appears, since cargo names a workspace's files relative to it. So the build remaps `CARGO_HOME` alone. `SOURCE_DATE_EPOCH` and `codegen-units = 1` weren't needed: nothing in the build reads the time, and the default codegen units gave the same bytes every time.
 - **The dry run on GitHub's runners** (pull request #270). Each target was built twice, by `cargo auditable`, on separate runners from different paths and `CARGO_HOME`s, and all ten programs were byte-identical. The SBOMs came out for all ten program/target pairs, and the notes from 0.4.0's section.
 - **glibc.** Built on Ubuntu 24.04, `hatchling-broker` and `hatchling` needed glibc 2.39, for the standard library's weak `pidfd_spawnp` and `pidfd_getpid`: the version is required even though the symbols are weak. Built on 22.04, every program needs 2.34.
+- **On Ubuntu 22.04** (run 41475110112), both targets' ten programs were byte-identical again, and every one needs glibc 2.34.
+- **A broken build is caught.** A hand-break that dropped the `CARGO_HOME` remap (run 41475733338) made all ten programs DIFFERENT. "reproducible builds" failed, and nothing went on to release.
 - **`scripts/release-notes.sh`.** Its tests cover:
   - a section alone;
   - the last section ending at the compare links;
