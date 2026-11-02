@@ -88,8 +88,10 @@ enum Source {
 /// `--env <file>`. Exits 0 when it found nothing wrong, 1 otherwise.
 #[must_use]
 pub fn doctor_main(args: &[String]) -> ExitCode {
-    let environment_set = std::env::vars_os()
-        .any(|(key, _)| key.to_str().is_some_and(|key| key.starts_with("HATCHLING_")));
+    let environment_set = std::env::vars_os().any(|(key, _)| {
+        key.to_str()
+            .is_some_and(|key| key.starts_with("HATCHLING_"))
+    });
     let source = source(args, environment_set, Path::new(SERVICE_SETTINGS));
     if source == Source::Environment && !environment_set {
         let finding = Finding::problem(
@@ -117,14 +119,18 @@ pub fn doctor_main(args: &[String]) -> ExitCode {
                 } else {
                     "Name the broker's settings file with --env, or set them in the environment."
                 };
-                let finding = Finding::problem(format!("can't read {}: {err}", path.display()), fix);
+                let finding =
+                    Finding::problem(format!("can't read {}: {err}", path.display()), fix);
                 return report(&path.display().to_string(), &[("settings", finding)]);
             }
         },
     };
     let checks = [
         ("settings", check_settings(&lookup)),
-        ("agent program", check_program(lookup(env::HATCHLING_AGENT_BIN.name).as_deref())),
+        (
+            "agent program",
+            check_program(lookup(env::HATCHLING_AGENT_BIN.name).as_deref()),
+        ),
         ("cells", check_cells(&lookup)),
         (
             "model",
@@ -297,7 +303,9 @@ fn errno(err: &hatchling_sys::Error) -> Option<i32> {
 
 /// The errno as a byte for the probe's socket: every errno is under 256.
 fn errno_byte(errno: Option<i32>) -> u8 {
-    errno.and_then(|errno| u8::try_from(errno).ok()).unwrap_or(0)
+    errno
+        .and_then(|errno| u8::try_from(errno).ok())
+        .unwrap_or(0)
 }
 
 /// Makes the environment-dependent half of a cell at `stage`, as the
@@ -420,7 +428,10 @@ impl Facts {
         };
         let restriction = if says("/proc/sys/user/max_user_namespaces", "0") {
             Restriction::NoneAllowed
-        } else if says("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", "1") {
+        } else if says(
+            "/proc/sys/kernel/apparmor_restrict_unprivileged_userns",
+            "1",
+        ) {
             Restriction::AppArmor
         } else if says("/proc/sys/kernel/unprivileged_userns_clone", "0") {
             Restriction::RootOnly
@@ -435,10 +446,12 @@ impl Facts {
 }
 
 /// Run on the host or a VM, where a container's policy is the cause.
-const NOT_IN_A_CONTAINER: &str = "Usually a container's or a hardened kernel's policy: run Hatchling on the host, or in a VM.";
+const NOT_IN_A_CONTAINER: &str =
+    "Usually a container's or a hardened kernel's policy: run Hatchling on the host, or in a VM.";
 
 /// Install as a service, whose broker runs as root.
-const AS_A_SERVICE: &str = "Install Hatchling as a service (docs/install.md): its broker runs as root";
+const AS_A_SERVICE: &str =
+    "Install Hatchling as a service (docs/install.md): its broker runs as root";
 
 /// What went wrong making a cell at `step`, and the fix.
 fn cell_advice(step: Step, errno: Option<i32>, facts: Facts) -> (String, String) {
@@ -447,7 +460,9 @@ fn cell_advice(step: Step, errno: Option<i32>, facts: Facts) -> (String, String)
     });
     let refused = |kind: &str| {
         (
-            format!("this machine gives a cell its user namespace, but not a {kind} namespace{because}"),
+            format!(
+                "this machine gives a cell its user namespace, but not a {kind} namespace{because}"
+            ),
             String::from(NOT_IN_A_CONTAINER),
         )
     };
@@ -684,7 +699,10 @@ mod tests {
     }
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("hatchling-doctor-test-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "hatchling-doctor-test-{}-{name}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -701,7 +719,10 @@ mod tests {
         assert_eq!(source(&[], false, &service), Source::File(service.clone()));
         assert_eq!(source(&[], true, &service), Source::Environment);
         for set in [false, true] {
-            assert_eq!(source(&named, set, &service), Source::File("/etc/other.env".into()));
+            assert_eq!(
+                source(&named, set, &service),
+                Source::File("/etc/other.env".into())
+            );
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -736,13 +757,25 @@ mod tests {
         let program = dir.join("hatchling-agent");
         let missing = program.to_str().unwrap();
         assert!(matches!(check_program(None), Finding::Problem { .. }));
-        assert!(matches!(check_program(Some(missing)), Finding::Problem { .. }));
+        assert!(matches!(
+            check_program(Some(missing)),
+            Finding::Problem { .. }
+        ));
         std::fs::write(&program, "#!/bin/sh\n").unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(matches!(check_program(Some(missing)), Finding::Problem { .. }));
-        assert!(matches!(check_program(dir.to_str()), Finding::Problem { .. }));
+        assert!(matches!(
+            check_program(Some(missing)),
+            Finding::Problem { .. }
+        ));
+        assert!(matches!(
+            check_program(dir.to_str()),
+            Finding::Problem { .. }
+        ));
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
-        assert_eq!(check_program(Some(missing)), Finding::Fine(missing.to_owned()));
+        assert_eq!(
+            check_program(Some(missing)),
+            Finding::Fine(missing.to_owned())
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -782,7 +815,8 @@ mod tests {
         if euid == 0 {
             return;
         }
-        let stage = std::env::temp_dir().join(format!("hatchling-doctor-refused-{}", std::process::id()));
+        let stage =
+            std::env::temp_dir().join(format!("hatchling-doctor-refused-{}", std::process::id()));
         let refused = probe_cell(&CellIdentity::direct(euid.saturating_add(1), 1), &stage);
         assert!(!stage.exists());
         let required = std::env::var("HATCHLING_REQUIRE_CELL").is_ok_and(|value| value == "1");
@@ -799,22 +833,34 @@ mod tests {
         let user = facts(false, Restriction::None);
         let what = cell_advice;
         let (said, fix) = what(Step::User, Some(1), facts(false, Restriction::AppArmor));
-        assert!(said.contains("AppArmor") && fix.contains("Quickstart without root"), "{said}");
+        assert!(
+            said.contains("AppArmor") && fix.contains("Quickstart without root"),
+            "{said}"
+        );
         // Root is let through AppArmor: that isn't the cause there.
         let (said, fix) = what(Step::User, Some(1), facts(true, Restriction::AppArmor));
-        assert!(said.ends_with(": Operation not permitted (os error 1)"), "{said}");
+        assert!(
+            said.ends_with(": Operation not permitted (os error 1)"),
+            "{said}"
+        );
         assert_eq!(fix, NOT_IN_A_CONTAINER);
         // Nor root, where none is allowed.
         for root in [false, true] {
             let (said, fix) = what(Step::User, None, facts(root, Restriction::NoneAllowed));
-            assert!(said.contains("max_user_namespaces") && fix.contains("sysctl"), "{said}");
+            assert!(
+                said.contains("max_user_namespaces") && fix.contains("sysctl"),
+                "{said}"
+            );
         }
         let (said, fix) = what(Step::User, None, facts(false, Restriction::RootOnly));
         assert!(said.contains("unprivileged_userns_clone") && fix.starts_with(AS_A_SERVICE));
         let (said, _) = what(Step::User, None, facts(true, Restriction::RootOnly));
         assert!(!said.contains("unprivileged_userns_clone"), "{said}");
         let (said, fix) = what(Step::User, Some(1), user);
-        assert!(said.starts_with("this machine refused a cell its user namespace: "), "{said}");
+        assert!(
+            said.starts_with("this machine refused a cell its user namespace: "),
+            "{said}"
+        );
         assert_eq!(fix, NOT_IN_A_CONTAINER);
         assert!(what(Step::Maps, None, user).1.contains("hatchling-cell"));
         for (step, kind) in [
@@ -864,7 +910,9 @@ mod tests {
                 }
             };
             stream.set_nonblocking(false).unwrap();
-            stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
             let mut request = Vec::new();
             let mut byte = [0u8; 1];
             while !request.ends_with(b"\r\n\r\n") && stream.read_exact(&mut byte).is_ok() {
@@ -898,10 +946,16 @@ mod tests {
     #[test]
     fn a_missing_model_is_named_with_what_the_server_has() {
         let (address, served) = server(MODELS);
-        let (what, fix) = problem(check_model(Some(&format!("http://{address}")), Some("mistral")));
+        let (what, fix) = problem(check_model(
+            Some(&format!("http://{address}")),
+            Some("mistral"),
+        ));
         served.join().unwrap();
         // The server's escape reaches the terminal as text.
-        assert!(what.ends_with("has no model mistral (it has: llama3.2:latest, qwen\\u{1b}[2J)"), "{what}");
+        assert!(
+            what.ends_with("has no model mistral (it has: llama3.2:latest, qwen\\u{1b}[2J)"),
+            "{what}"
+        );
         assert!(!what.contains('\u{1b}'));
         assert!(fix.contains("ollama pull mistral"));
     }
@@ -918,7 +972,10 @@ mod tests {
             let found = check_model(Some(&format!("http://{address}/v1")), Some("llama3.2"));
             served.join().unwrap();
             let (what, _) = problem(found);
-            assert!(what.contains("not with a list of models at /v1/models"), "{what}");
+            assert!(
+                what.contains("not with a list of models at /v1/models"),
+                "{what}"
+            );
         }
     }
 
@@ -926,10 +983,19 @@ mod tests {
     fn no_model_server_unset_or_unreadable_is_a_problem_and_hosted_isnt_reached() {
         let refusing = RefusingPort::new();
         let address = refusing.addr();
-        let (what, fix) = problem(check_model(Some(&format!("http://{address}/v1")), Some("llama3.2")));
-        assert!(what.starts_with(&format!("nothing answers at {address}: ")), "{what}");
+        let (what, fix) = problem(check_model(
+            Some(&format!("http://{address}/v1")),
+            Some("llama3.2"),
+        ));
+        assert!(
+            what.starts_with(&format!("nothing answers at {address}: ")),
+            "{what}"
+        );
         assert!(fix.contains("ollama serve"));
-        for (endpoint, name) in [(None, Some("llama3.2")), (Some("http://localhost:1/v1"), None)] {
+        for (endpoint, name) in [
+            (None, Some("llama3.2")),
+            (Some("http://localhost:1/v1"), None),
+        ] {
             let (what, _) = problem(check_model(endpoint, name));
             assert!(what.starts_with("no model is set"));
         }
@@ -945,7 +1011,10 @@ mod tests {
 
     #[test]
     fn a_status_is_read_from_the_head_only() {
-        assert_eq!(body_if_ok(b"HTTP/1.1 200 OK\r\n\r\nbody"), Some(b"body".to_vec()));
+        assert_eq!(
+            body_if_ok(b"HTTP/1.1 200 OK\r\n\r\nbody"),
+            Some(b"body".to_vec())
+        );
         assert_eq!(body_if_ok(b"HTTP/1.1 200 OK\r\n\r\n"), Some(Vec::new()));
         assert_eq!(body_if_ok(b"HTTP/1.1 500 Error\r\n\r\n200"), None);
         assert_eq!(body_if_ok(b"HTTP/1.1 200 OK\r\n"), None);
@@ -964,7 +1033,10 @@ mod tests {
         );
         let (text, problems) = rendered("x", &[fine, problem.clone()]);
         assert_eq!(problems, 1);
-        let shown = format!("  PROBLEM  cells          refused\n{}fix: run elsewhere\n", " ".repeat(26));
+        let shown = format!(
+            "  PROBLEM  cells          refused\n{}fix: run elsewhere\n",
+            " ".repeat(26)
+        );
         assert!(text.contains(&shown), "{text}");
         assert!(text.ends_with("\n1 problem to fix.\n"));
         let (text, problems) = rendered("x", &[problem.clone(), problem]);
