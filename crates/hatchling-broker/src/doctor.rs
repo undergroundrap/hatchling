@@ -72,9 +72,6 @@ impl Finding {
     }
 }
 
-/// A setting's value by its name.
-type Lookup = Box<dyn Fn(&str) -> Option<String>>;
-
 /// Where the settings came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Source {
@@ -100,19 +97,19 @@ pub fn doctor_main(args: &[String]) -> ExitCode {
         );
         return report("the environment", &[("settings", finding)]);
     }
-    let (label, lookup): (String, Lookup) = match &source {
+    // The settings as one map, from either: the environment's as it is
+    // now (the variables that aren't text can't be settings).
+    let (label, settings) = match &source {
         Source::Environment => (
             String::from("the environment"),
-            Box::new(|key: &str| std::env::var(key).ok()),
+            std::env::vars_os()
+                .filter_map(|(key, value)| {
+                    Some((key.into_string().ok()?, value.into_string().ok()?))
+                })
+                .collect::<BTreeMap<String, String>>(),
         ),
         Source::File(path) => match std::fs::read_to_string(path) {
-            Ok(text) => {
-                let settings = parse_settings(&text);
-                (
-                    path.display().to_string(),
-                    Box::new(move |key: &str| settings.get(key).cloned()),
-                )
-            }
+            Ok(text) => (path.display().to_string(), parse_settings(&text)),
             Err(err) => {
                 let fix = if err.kind() == std::io::ErrorKind::PermissionDenied {
                     "It's root's: run doctor with sudo."
@@ -125,6 +122,7 @@ pub fn doctor_main(args: &[String]) -> ExitCode {
             }
         },
     };
+    let lookup = |key: &str| settings.get(key).cloned();
     let checks = [
         ("settings", check_settings(&lookup)),
         (
@@ -453,6 +451,13 @@ const NOT_IN_A_CONTAINER: &str =
 const AS_A_SERVICE: &str =
     "Install Hatchling as a service (docs/install.md): its broker runs as root";
 
+/// Whether `errno` is a refusal of permission (`EPERM` or `EACCES`).
+fn refused_permission(errno: Option<i32>) -> bool {
+    errno.is_some_and(|errno| {
+        std::io::Error::from_raw_os_error(errno).kind() == std::io::ErrorKind::PermissionDenied
+    })
+}
+
 /// What went wrong making a cell at `step`, and the fix.
 fn cell_advice(step: Step, errno: Option<i32>, facts: Facts) -> (String, String) {
     let because = errno.map_or_else(String::new, |errno| {
@@ -473,14 +478,22 @@ fn cell_advice(step: Step, errno: Option<i32>, facts: Facts) -> (String, String)
                 "Allow them: `sudo sysctl -w user.max_user_namespaces=15000`, and set it in /etc/sysctl.d to keep it.",
             ),
         ),
-        Step::User if !facts.root && facts.restriction == Restriction::AppArmor => (
-            String::from(
-                "AppArmor lets a program make a user namespace only with a profile that allows it (Ubuntu 23.10 and later), and the broker has none",
-            ),
-            format!(
-                "{AS_A_SERVICE}, or give the broker the profile in the README's \"Quickstart without root\"."
-            ),
-        ),
+        // Ubuntu lets the namespace be made, without the capabilities to
+        // use it: the refusal comes at whichever step needs one.
+        step if !facts.root
+            && facts.restriction == Restriction::AppArmor
+            && step != Step::Ended
+            && (step == Step::User || refused_permission(errno)) =>
+        {
+            (
+                String::from(
+                    "AppArmor lets a program use a user namespace only with a profile that allows it (Ubuntu 23.10 and later), and the broker has none",
+                ),
+                format!(
+                    "{AS_A_SERVICE}, or give the broker the profile in the README's \"Quickstart without root\"."
+                ),
+            )
+        }
         Step::User if !facts.root && facts.restriction == Restriction::RootOnly => (
             String::from(
                 "this kernel lets only root make a user namespace (kernel.unprivileged_userns_clone is 0)",
@@ -837,7 +850,31 @@ mod tests {
             said.contains("AppArmor") && fix.contains("Quickstart without root"),
             "{said}"
         );
+        // Ubuntu 24.04 makes the namespace, then refuses its first use:
+        // a refusal of permission at any step is AppArmor's.
+        for step in [
+            Step::Maps,
+            Step::Mount,
+            Step::Net,
+            Step::Ipc,
+            Step::Root,
+            Step::Pid,
+        ] {
+            for errno in [1, 13] {
+                let (said, _) = what(step, Some(errno), facts(false, Restriction::AppArmor));
+                assert!(said.starts_with("AppArmor"), "{step:?} {errno}: {said}");
+            }
+            // Another failure is the step's own.
+            let (said, _) = what(step, Some(28), facts(false, Restriction::AppArmor));
+            assert!(!said.starts_with("AppArmor"), "{step:?}: {said}");
+        }
+        let (said, _) = what(Step::Mount, None, facts(false, Restriction::AppArmor));
+        assert!(said.ends_with("not a mount namespace"), "{said}");
+        let (said, _) = what(Step::Ended, Some(1), facts(false, Restriction::AppArmor));
+        assert!(said.starts_with("the cell probe ended"), "{said}");
         // Root is let through AppArmor: that isn't the cause there.
+        let (said, _) = what(Step::Mount, Some(1), facts(true, Restriction::AppArmor));
+        assert!(said.contains("not a mount namespace"), "{said}");
         let (said, fix) = what(Step::User, Some(1), facts(true, Restriction::AppArmor));
         assert!(
             said.ends_with(": Operation not permitted (os error 1)"),
