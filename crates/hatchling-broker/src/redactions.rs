@@ -574,7 +574,8 @@ pub fn run_redactions(
 pub const SUBCOMMANDS: &str = "usage: hatchling-broker [migrate-vault | rekey-vault [<new-key-file>] | \
      vault-keyring <init | enroll-totp | backup-codes | status | add-key | remove-key | label-key> | \
      redactions <list | show | stats | override | categories | raw> | vault-audit [log [count]] | \
-     tools <list | add | remove> | clean [--dry-run]]";
+     tools <list | add | remove> | secret add <name | --for host:port> [--replace] | \
+     clean [--dry-run]]";
 
 /// Runs the operator command `name` (`redactions`, `vault-audit` or
 /// `tools`) with `args`, printing to stdout. Any other name
@@ -591,6 +592,7 @@ pub fn run_operator(
     match name {
         "redactions" => run_redactions(config, args),
         "tools" => crate::approved_tools::run_tools(config, args),
+        "secret" => crate::secret_ops::run_secret(config, args),
         "vault-audit" => {
             let args: Vec<String> = args.into_iter().collect();
             let args: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -1700,7 +1702,7 @@ mod tests {
         let unknown = run_operator("nope", &config, Vec::new());
         assert!(
             matches!(&unknown, Err(Error::Usage { reason }) if reason.starts_with("unknown subcommand \"nope\"; usage: hatchling-broker [")
-                && reason.contains("| vault-audit [log [count]] | tools <list | add | remove> | clean [--dry-run]]")),
+                && reason.contains("| vault-audit [log [count]] | tools <list | add | remove> | secret add <name | --for host:port> [--replace] | clean [--dry-run]]")),
             "{unknown:?}"
         );
         assert!(!SUBCOMMANDS.contains("  "), "{SUBCOMMANDS}");

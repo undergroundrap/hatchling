@@ -316,6 +316,14 @@ pub enum Error {
         reason: String,
     },
 
+    /// `secret add` was refused: a name that's taken, or a secret that
+    /// isn't one line (WO-033).
+    #[error("secret: {reason}")]
+    Secret {
+        /// Why.
+        reason: String,
+    },
+
     /// A harness manifest is wrong, or open to another user (WO-018).
     #[error("harness manifest {}: {field}: {reason}", path.display())]
     HarnessManifest {

@@ -13,6 +13,8 @@
 //! - `tools <action>`: the approved tools a CLI cell may run (WO-019).
 //! - `doctor [--env <file>]`: what stops Hatchling working on this
 //!   machine, and the fix for each ([`crate::doctor`]).
+//! - `secret add <name> | --for <host:port> [--replace]`: a key into the
+//!   vault, typed unseen or piped in ([`crate::secret_ops`]).
 //!
 //! Internal: `skill-cell <spec-file>` and `agent-run <spec-file>` are the spawner
 //! helpers the broker starts, by re-running its own executable, to run
@@ -115,7 +117,7 @@ pub fn help(program: &str) -> String {
     render_help(
         program,
         "[subcommand] | --help | -h",
-        "Serve agents with no subcommand. Operator subcommands:\n  doctor [--env <file>]   (what stops it working here, and the fix)\n  migrate-vault\n  rekey-vault [<new-key-file>]   (no file with a keyring)\n  vault-keyring <action>\n    init, enroll-totp, enroll-keys, use-file-tier, backup-codes,\n    status, add-key, remove-key, label-key\n  redactions list | stats | categories\n  redactions show <id> | raw <id> | override <id> [--any-scope]\n  vault-audit [log [count]]\n  tools list | add <path> | remove <path>   (what a CLI cell may run)\n  clean [--dry-run]   (a dead broker's leftovers; never your data)\n  browser-digest <browser>   (the digest HATCHLING_BROWSER_SHA256 pins)\n\nThe broker builds and supervises the agent's cell. Internal spawner\ncommands skill-cell <spec-file>, agent-run <spec-file>, browser-cell <spec-file>,\nharness-tree, vault-keeper, egress-authority and spawner are broker-owned.",
+        "Serve agents with no subcommand. Operator subcommands:\n  doctor [--env <file>]   (what stops it working here, and the fix)\n  migrate-vault\n  rekey-vault [<new-key-file>]   (no file with a keyring)\n  vault-keyring <action>\n    init, enroll-totp, enroll-keys, use-file-tier, backup-codes,\n    status, add-key, remove-key, label-key\n  redactions list | stats | categories\n  redactions show <id> | raw <id> | override <id> [--any-scope]\n  vault-audit [log [count]]\n  tools list | add <path> | remove <path>   (what a CLI cell may run)\n  secret add <name> | --for <host:port> [--replace]   (a key, typed unseen)\n  clean [--dry-run]   (a dead broker's leftovers; never your data)\n  browser-digest <browser>   (the digest HATCHLING_BROWSER_SHA256 pins)\n\nThe broker builds and supervises the agent's cell. Internal spawner\ncommands skill-cell <spec-file>, agent-run <spec-file>, browser-cell <spec-file>,\nharness-tree, vault-keeper, egress-authority and spawner are broker-owned.",
         crate::environment::ENVIRONMENT,
     )
 }
@@ -140,6 +142,9 @@ fn valid_args(args: &[String]) -> bool {
         | ["vault-audit", "log"]
         | ["tools", "list"]
         | ["tools", "add" | "remove", _]
+        | ["secret", "add", _]
+        | ["secret", "add", _, _]
+        | ["secret", "add", "--for", _, "--replace"]
         | [HARNESS_TREE_SUBCOMMAND, "give" | "reclaim", _, ..] => true,
         [VAULT_KEEPER_SUBCOMMAND | EGRESS_AUTHORITY_SUBCOMMAND | SPAWNER_SUBCOMMAND] => {
             args.len() == 1
@@ -227,6 +232,7 @@ mod tests {
         assert!(text.contains("vault-keyring <action>"));
         assert!(text.contains("browser-digest <browser>"));
         assert!(text.contains("doctor [--env <file>]"));
+        assert!(text.contains("secret add <name> | --for <host:port> [--replace]"));
         // The digest is the operator's to ask for before any setting.
         assert_eq!(
             main(
@@ -260,6 +266,10 @@ mod tests {
             args(&["vault-audit"]),
             args(&["vault-audit", "log"]),
             args(&["vault-audit", "log", "12"]),
+            args(&["secret", "add", "search-brave"]),
+            args(&["secret", "add", "search-brave", "--replace"]),
+            args(&["secret", "add", "--for", "openrouter.ai:443"]),
+            args(&["secret", "add", "--for", "openrouter.ai:443", "--replace"]),
             args(&["clean"]),
             args(&["clean", "--dry-run"]),
             args(&["doctor"]),
@@ -302,6 +312,10 @@ mod tests {
             args(&["redactions", "bogus"]),
             args(&["redactions", "override", "id", "--bogus"]),
             args(&["vault-audit", "stats"]),
+            args(&["secret"]),
+            args(&["secret", "add"]),
+            args(&["secret", "list"]),
+            args(&["secret", "add", "a", "b", "c"]),
             args(&["clean", "--force"]),
             args(&["clean", "--dry-run", "extra"]),
             args(&["doctor", "--env"]),

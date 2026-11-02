@@ -302,7 +302,6 @@ def run(repo, artifacts, work, mode, fixtures):
     endpoint = ('http://' if mode == 'local' else 'https://') + destination + '/v1'
     model = 'qwen3-0.6b'
     secret_file = state / 'vault' / ('egress-' + re.sub(r'[^A-Za-z0-9]', '-', destination))
-    private_file(secret_file, key)
     # A secret the run is granted and, with the stand-in, fetches: it goes
     # from the vault keeper to the cell on the cell's own vault channel,
     # never through the broker (WO-031).
@@ -388,6 +387,13 @@ def run(repo, artifacts, work, mode, fixtures):
     try:
         migration = launch('migration', [str(broker_path), 'migrate-vault'])
         require(migration.wait(timeout=30) == 0, 'Vault migration failed')
+        # The model's key goes in as an owner's would: piped to `secret
+        # add`, under the name its egress reads, never a file or an argument.
+        sealing = subprocess.run([str(broker_path), 'secret', 'add', '--for', destination], env=env, input=key,
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30, check=False)
+        (pending / 'secret.log').write_bytes(sealing.stdout)
+        require(sealing.returncode == 0, 'secret add failed')
+        require(key not in sealing.stdout, 'secret add showed the key')
         envelope = secret_file.read_bytes()
         require(envelope.startswith(b'HVL3') and key not in envelope, 'Vault entry was not sealed')
         require(secret_file.stat().st_mode & 0o777 == 0o600 and (state / 'vault').stat().st_mode & 0o777 == 0o700,
