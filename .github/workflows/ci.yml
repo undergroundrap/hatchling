@@ -187,6 +187,59 @@ jobs:
           echo 'kernel log tail:'
           sudo dmesg -T | tail -40 || true
 
+  # WO-015: the cell suites as root, as the README's quickstart runs the
+  # broker. Built as the runner, run as root from a copy the cells' user can
+  # read (scripts/root-pass.sh), with the README's users, every suite
+  # required to run.
+  root:
+    name: cells as root
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: 1.98.1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+
+      - name: Allow real cells
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      # As the gate: a seccomp kill dumps core, and apport must not get it.
+      - name: Don't hand core dumps to apport
+        run: sudo sysctl -w kernel.core_pattern=/var/tmp/core
+
+      # The browser cells' suites run the gate's pinned headless Chromium.
+      # Run as root, the broker reads it as its own user and the cells as
+      # theirs: it goes where both can, not under the runner's home.
+      - name: Install the pinned headless Chromium
+        run: |
+          python3 -m venv "$RUNNER_TEMP/browser-venv"
+          "$RUNNER_TEMP/browser-venv/bin/python" -m pip install -r frontend/tests/e2e/requirements.txt
+          "$RUNNER_TEMP/browser-venv/bin/python" -m playwright install-deps chromium-headless-shell
+          for attempt in 1 2 3; do
+            timeout -k 10 300 "$RUNNER_TEMP/browser-venv/bin/python" -m playwright install chromium-headless-shell && break
+            [ "$attempt" = 3 ] && exit 1
+            sleep 15
+          done
+          shell=$(find "$HOME/.cache/ms-playwright" -path '*chrome-headless-shell-linux64/chrome-headless-shell' -type f)
+          echo "20ffc88be1c6f7dc8351bebfaca965ff9a07617bddf696f0b67ef85e5868b29a  $shell" | sha256sum --check
+          sudo cp -r "$(dirname "$shell")" /opt/
+          sudo chmod -R a+rX /opt/chrome-headless-shell-linux64
+          echo "HATCHLING_TEST_BROWSER=/opt/chrome-headless-shell-linux64/chrome-headless-shell" >> "$GITHUB_ENV"
+
+      - name: The README's users
+        run: |
+          for u in hatchling-cell hatchling-broker hatchling-keeper hatchling-egress; do
+            sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin "$u"
+          done
+
+      - name: Run the cell suites as root
+        run: HATCHLING_ROOT_PASS=1 bash scripts/check.sh
+
   quickstart:
     name: README quickstart
     runs-on: ubuntu-latest

@@ -4,6 +4,13 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# The root pass (WO-015): CI's "cells as root" job, the cell suites run as
+# root. It needs sudo and the README's users; see scripts/root-pass.sh.
+if [ "${HATCHLING_ROOT_PASS:-}" = 1 ]; then
+    echo "==> the root pass"
+    exec bash scripts/root-pass.sh
+fi
+
 echo "==> cargo fmt --check"
 cargo fmt --all -- --check
 

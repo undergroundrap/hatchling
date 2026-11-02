@@ -2381,7 +2381,18 @@ pub(super) mod tests {
     /// `/work/err`. Chromium finds its files beside its binary, so its
     /// directory is the cell's `/browser`; the binary is also a tool, which
     /// binds the libraries it links.
+    /// Gives `dir`, which a test's cell writes, to the cell's user, as a
+    /// run's trees are: as root, the cell isn't this process's user
+    /// (WO-015). Unprivileged, it is, and `dir` is left as it is.
+    fn give_to_cell(dir: &Path) {
+        if hatchling_sys::euid() == 0 {
+            let principal = super::super::identity::default_principal(0);
+            std::os::unix::fs::chown(dir, Some(principal), Some(principal)).unwrap();
+        }
+    }
+
     fn browser_spec(scratch: &Scratch, browser: &Path, filter: Filter, page: &str) -> CellSpec {
+        give_to_cell(&scratch.0.join("work"));
         let (_, mut spec) = specs(scratch);
         spec.filter = filter;
         spec.limits.memory = Some(2 << 30);
@@ -2472,12 +2483,7 @@ done < /proc/self/mountinfo
         let (mut spec, _) = specs(&host);
         let work = host.0.join("work");
         std::fs::create_dir_all(&work).unwrap();
-        // The cell writes it: as root, the cell isn't the directory's
-        // user, so it's given to the cell's, as a run's trees are.
-        if hatchling_sys::euid() == 0 {
-            let principal = super::super::identity::default_principal(0);
-            std::os::unix::fs::chown(&work, Some(principal), Some(principal)).unwrap();
-        }
+        give_to_cell(&work);
         spec.exposures.push(crate::Exposure {
             source: work.clone(),
             name: String::from("work"),
