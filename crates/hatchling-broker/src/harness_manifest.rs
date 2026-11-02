@@ -847,130 +847,63 @@ mod tests {
         assert!(reason.contains("more than 32"), "{reason}");
     }
 
+    /// Each case is `manifest` with `pointer` set (or removed), refused
+    /// naming `field`, its reason holding `reason`.
+    fn refuses_each(scratch: &Scratch, good: &Value, cases: Vec<(&str, Option<Value>, &str, &str)>) {
+        for (pointer, value, field, reason) in cases {
+            let refused = refused_as(scratch, &with(good.clone(), pointer, value));
+            assert_eq!(refused.0, field, "{pointer}: {refused:?}");
+            assert!(refused.1.contains(reason), "{pointer}: {refused:?}");
+        }
+    }
+
     #[test]
     fn a_wrong_field_refuses_the_start_naming_it() {
         let scratch = Scratch::new("fields");
         let good = opencode(&scratch);
         let (other, other_sha) = scratch.program("other", b"other bytes");
         let gone = format!("{other}-gone");
-        let cases: Vec<(&str, Option<Value>, &str, &str)> = vec![
-            ("/version", Some(json!(2)), "version", "the one format"),
-            (
-                "/name",
-                Some(json!("OpenCode")),
-                "name",
-                "isn't a harness name",
-            ),
-            ("/name", Some(json!("other")), "name", "the file's name"),
-            (
-                "/binary/sha256",
-                Some(json!(other_sha)),
-                "binary.sha256",
-                "hashes to",
-            ),
-            (
-                "/binary/sha256",
-                Some(json!("abc")),
-                "binary.sha256",
-                "64 hexadecimal",
-            ),
-            (
-                "/binary/path",
-                Some(json!("opencode")),
-                "binary.path",
-                "absolute",
-            ),
-            (
-                "/binary/path",
-                Some(json!(gone)),
-                "binary.path",
-                "unreadable",
-            ),
-            ("/api", Some(json!("gemini")), "api", "anthropic or openai"),
-            (
-                "/destination",
-                Some(json!("a:1,b:2")),
-                "destination",
-                "one vendor API",
-            ),
-            (
-                "/destination",
-                Some(json!("")),
-                "destination",
-                "one vendor API",
-            ),
-            (
-                "/args/3",
-                Some(json!("go")),
-                "args",
-                "no {task} placeholder",
-            ),
-            ("/args/2", Some(json!("{task}")), "args", "more than once"),
-            (
-                "/args/0",
-                Some(json!("--key={key}")),
-                "args",
-                "goes in the environment",
-            ),
-            ("/args/0", Some(json!("a\u{0}b")), "args", "NUL"),
-            (
-                "/env/0/name",
-                Some(json!("PATH")),
-                "env",
-                "the cell's to set",
-            ),
-            (
-                "/env/0/name",
-                Some(json!("HATCHLING_X")),
-                "env",
-                "the cell's to set",
-            ),
-            (
-                "/env/0/name",
-                Some(json!("1BAD")),
-                "env",
-                "isn't a variable name",
-            ),
-            (
-                "/env/1/name",
-                Some(json!("ANTHROPIC_API_KEY")),
-                "env",
-                "set twice",
-            ),
-            (
-                "/env/1/value",
-                Some(json!("{task}")),
-                "env",
-                "goes in an argument",
-            ),
-            (
-                "/env/0/value",
-                Some(json!("fixed")),
-                "env",
-                "no {key} placeholder",
-            ),
-            (
-                "/env/1/value",
-                Some(json!("{}")),
-                "env",
-                "nothing points the CLI at its relay",
-            ),
-            ("/unknown", Some(json!(1)), "json", "unknown field"),
-            ("/args", None, "json", "missing field"),
-        ];
-        for (pointer, value, field, reason) in cases {
-            let refused = refused_as(&scratch, &with(good.clone(), pointer, value));
-            assert_eq!(refused.0, field, "{pointer}: {refused:?}");
-            assert!(refused.1.contains(reason), "{pointer}: {refused:?}");
-        }
-        // A built-in harness's name is never a manifest's.
-        std::fs::remove_file(scratch.manifests().join("opencode.json")).unwrap();
-        let builtin = with(good.clone(), "/name", Some(json!("claude-code")));
-        scratch.write("claude-code", &builtin);
-        let (field, reason) = refusal(scratch.load());
-        assert_eq!(field, "name");
-        assert!(reason.contains("built-in"), "{reason}");
-        std::fs::remove_file(scratch.manifests().join("claude-code.json")).unwrap();
+        refuses_each(
+            &scratch,
+            &good,
+            vec![
+                ("/version", Some(json!(2)), "version", "the one format"),
+                ("/name", Some(json!("OpenCode")), "name", "isn't a harness name"),
+                ("/name", Some(json!("other")), "name", "the file's name"),
+                ("/binary/sha256", Some(json!(other_sha)), "binary.sha256", "hashes to"),
+                ("/binary/sha256", Some(json!("abc")), "binary.sha256", "64 hexadecimal"),
+                ("/binary/path", Some(json!("opencode")), "binary.path", "absolute"),
+                ("/binary/path", Some(json!(gone)), "binary.path", "unreadable"),
+                ("/api", Some(json!("gemini")), "api", "anthropic or openai"),
+                ("/destination", Some(json!("a:1,b:2")), "destination", "one vendor API"),
+                ("/destination", Some(json!("")), "destination", "one vendor API"),
+                ("/unknown", Some(json!(1)), "json", "unknown field"),
+                ("/args", None, "json", "missing field"),
+            ],
+        );
+    }
+
+    #[test]
+    fn a_wrong_command_line_or_variable_refuses_the_start_naming_it() {
+        let scratch = Scratch::new("command");
+        let good = opencode(&scratch);
+        refuses_each(
+            &scratch,
+            &good,
+            vec![
+                ("/args/3", Some(json!("go")), "args", "no {task} placeholder"),
+                ("/args/2", Some(json!("{task}")), "args", "more than once"),
+                ("/args/0", Some(json!("--key={key}")), "args", "goes in the environment"),
+                ("/args/0", Some(json!("a\u{0}b")), "args", "NUL"),
+                ("/env/0/name", Some(json!("PATH")), "env", "the cell's to set"),
+                ("/env/0/name", Some(json!("HATCHLING_X")), "env", "the cell's to set"),
+                ("/env/0/name", Some(json!("1BAD")), "env", "isn't a variable name"),
+                ("/env/1/name", Some(json!("ANTHROPIC_API_KEY")), "env", "set twice"),
+                ("/env/1/value", Some(json!("{task}")), "env", "goes in an argument"),
+                ("/env/0/value", Some(json!("fixed")), "env", "no {key} placeholder"),
+                ("/env/1/value", Some(json!("{}")), "env", "nothing points the CLI at its relay"),
+            ],
+        );
         // The relay may be named in an argument instead.
         let relayed_in_args = with(
             with(good.clone(), "/env/1", None),
@@ -979,6 +912,19 @@ mod tests {
         );
         scratch.write("opencode", &relayed_in_args);
         assert!(scratch.load().is_ok());
+    }
+
+    #[test]
+    fn a_manifest_names_no_built_in_harness_and_stays_within_bounds() {
+        let scratch = Scratch::new("bounds");
+        let good = opencode(&scratch);
+        // A built-in harness's name is never a manifest's.
+        let builtin = with(good.clone(), "/name", Some(json!("claude-code")));
+        scratch.write("claude-code", &builtin);
+        let (field, reason) = refusal(scratch.load());
+        assert_eq!(field, "name");
+        assert!(reason.contains("built-in"), "{reason}");
+        std::fs::remove_file(scratch.manifests().join("claude-code.json")).unwrap();
         // Within bounds, and no more.
         let many: Vec<Value> = (0..=MAX_ARGS).map(|_| json!("x")).collect();
         let refused = refused_as(&scratch, &with(good.clone(), "/args", Some(json!(many))));
