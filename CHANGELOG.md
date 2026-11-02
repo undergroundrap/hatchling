@@ -6,6 +6,10 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ## [Unreleased]
 
+### Added
+
+- **A page for security reviewers** ([docs/security](docs/security/README.md)). It covers what leaves the machine and who turns each part on; that Hatchling sends nothing on its own (no telemetry or update checks); what's kept and how it's sealed; each log and what it records; a hardening checklist; and what to do after a suspected compromise. SECURITY.md now gives response and fix targets, a disclosure deadline, the supported versions, and a CVE for every confirmed vulnerability in a release. The distribution page is current: it was written before the first release.
+
 ### Fixed
 
 - **Allow once is the page you were shown.** A site's approval named the site alone, and a request for another page on it, made while you decided, joined the one waiting without a new card. So the address you approved once could be swapped for another on the same site, one carrying what the agent had read. Once now approves the page shown: another page is refused while one waits, then asked about itself. In the agent's browser, once covers the visit, and the card now says so. Found by the post-0.5.0 audit. **Breaking for `hatchling-broker`:** `site_action` takes the page, and `SiteAsk` has a new field, `visit`.
