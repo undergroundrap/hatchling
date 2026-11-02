@@ -17,10 +17,28 @@ from hello import receive, send
 
 TASK = "Introduce yourself in one sentence."
 
+# How long to wait for a broker that was just started to make its socket.
+START_WAIT_SECS = 30
+
+
+def connect(path, wait=START_WAIT_SECS):
+    """A connection to the API socket at `path`, once there is one: the
+    broker started a moment ago (`hatchling-broker &`) makes it as it starts."""
+    deadline = time.monotonic() + wait
+    while True:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.connect(path)
+            return sock
+        except (FileNotFoundError, ConnectionRefusedError):
+            sock.close()
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.2)
+
 
 def main(path):
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    sock.connect(path)
+    sock = connect(path)
     send(sock, {"type": "hello", "schema_version": 4, "client": "first-run.py", "token": None})
     if receive(sock).get("type") != "welcome":
         print("handshake failed")
