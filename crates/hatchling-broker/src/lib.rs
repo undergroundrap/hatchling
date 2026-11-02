@@ -79,6 +79,7 @@ pub use output_gate::{RedactionConfig, Rules, RulesHandle, RulesWorker};
 pub mod run_launcher;
 pub use run_launcher::{AGENT_RUN_SUBCOMMAND, CellLauncher, RunEnv, agent_run_main, scoped_config};
 pub mod redactions;
+pub mod secret_ops;
 pub use redactions::{FileAudit, FileOverrides, run_operator, run_redactions};
 pub mod broker_user;
 pub mod confine;

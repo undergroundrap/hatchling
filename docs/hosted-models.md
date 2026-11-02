@@ -6,17 +6,17 @@ agent checks that capability before asking its task. The agent currently sends
 `model`, `messages` and `tools`, plus `reasoning` when thinking is turned off
 ([model thinking mode](model-thinking.md)); it does not send `response_format`.
 
-Follow the README's build/install and root configuration steps. Keep the broker
-stopped while importing its credential. The endpoint is the API base URL, before
+Follow the README's build/install and root configuration steps, or
+[install it as a service](install.md). The endpoint is the API base URL, before
 `/chat/completions`; allowlist entries and grants use exactly `host:port`.
 Hosted destinations use HTTPS. `local:localhost:PORT` is credentialed local HTTP;
 `local-keyless:` is the explicit choice for a local server needing no key.
 
 ## OpenRouter example
 
-Use an OpenRouter key with a $0 credit limit for the free-model check. Store it in
-an owner-only file outside your clone, or enter it at the hidden prompt below.
-Use the exact model, rather than an automatic router:
+Use an OpenRouter key with a $0 credit limit for the free-model check. You
+enter it at a prompt that doesn't show it, or pipe it in from a password
+manager. Use the exact model, rather than an automatic router:
 
 ```bash
 export HATCHLING_SCHEDULER_MODEL_ENDPOINT=https://openrouter.ai/api/v1
@@ -33,42 +33,18 @@ Other models may work with the provider's default. A free endpoint can still
 fail now and then; if `first-run.py` reports no answer within five minutes,
 check the broker's log and run it again.
 
-The credential name is `egress-` plus the destination, keeping ASCII letters and
-digits and replacing every other character with `-`. Thus this destination needs the vault
-file `egress-openrouter-ai-443`, with no filename extension.
-
-In the configured root shell, import into a fresh vault entry without putting
-the key in a command argument, environment variable or shell history:
+The broker reads a hosted API's key from its vault, under a name it makes from
+the destination. `hatchling-broker secret add --for` makes the same name
+(`egress-openrouter-ai-443` here). It reads the key at a prompt that doesn't
+show it, or from a pipe, and seals it at once. The key is never in a file,
+an argument, the environment or your shell's history:
 
 ```bash
-python3 - "$HATCHLING_VAULT_DIR/egress-openrouter-ai-443" <<'PY'
-import getpass
-import os
-import sys
-
-# A terminal is required: never fall back to an echoed stdin prompt.
-import warnings
-warnings.simplefilter("error", getpass.GetPassWarning)
-try:
-    key = getpass.getpass("Hosted API key (hidden): ").encode()
-except getpass.GetPassWarning:
-    raise SystemExit("Open an interactive terminal; no key was read or stored")
-if not key or b"\n" in key or b"\r" in key:
-    raise SystemExit("Expected one nonempty API key")
-fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-with os.fdopen(fd, "wb") as output:
-    output.write(key)
-PY
 hatchling-broker migrate-vault
+hatchling-broker secret add --for openrouter.ai:443
 hatchling-broker &
 sudo -u "#$SUDO_UID" python3 docs/examples/first-run.py "$HATCHLING_API_SOCKET"
 ```
-
-The import briefly creates an owner-only plaintext entry while the broker is
-stopped; migration replaces it with a sealed `HVL3` envelope, bound to its name, before startup.
-Keep the vault's master key as well as its sealed files (and its `.store-key`) when backing it up.
-For an existing credential, use a deliberate rotation/import procedure rather
-than overwriting a sealed entry: this example refuses an existing filename.
 
 The first output is a schedule acknowledgment. Success is the later `agent:`
 answer. The cell asks the broker for a destination-bound surrogate; the broker
@@ -76,8 +52,26 @@ checks the grant, replaces it with the vault credential, and supplies the
 Authorization header over verified TLS. The agent receives no provider key.
 No vault-fetch grant is needed for model access.
 
-For another compatible provider, replace the base URL, model, destination and
-matching vault filename together. OpenRouter is an example, not a runtime
+A broker that's running uses the key from its next request: there's no need
+to stop it. To change the key, add `--replace`; without it, `secret add`
+refuses a name that's already in the vault, before it asks for anything.
+Keep the vault's master key as well as its sealed files (and its `.store-key`)
+when backing it up.
+
+**Installed as a service,** set the model in `/etc/hatchling/hatchling.env`
+(the endpoint, the name, the allowlist entry and the grants above), then add
+the key with `sudo`: the command takes the service's settings.
+
+```bash
+sudo hatchling-broker secret add --for openrouter.ai:443
+```
+
+```bash
+sudo systemctl restart hatchling
+```
+
+For another compatible provider, replace the base URL, model and destination
+together, and give `secret add --for` the new destination. OpenRouter is an example, not a runtime
 dependency. See its [model page](https://openrouter.ai/nvidia/nemotron-3-ultra-550b-a55b:free)
 and [API documentation](https://openrouter.ai/docs/api/reference/overview).
 
@@ -88,7 +82,7 @@ CI runs two checks without a provider account or operational credential:
 through `local:localhost:18090`; `https` uses a named HTTPS stand-in with a
 disposable CA and matching certificate. The CA is supplied only to the broker,
 without changing the machine's trusted roots. Both refuse missing and wrong
-keys, seal a generated credential, run the documented first-run client, and
+keys, seal a generated credential with `secret add`, run the documented first-run client, and
 require the scheduled agent's answer.
 
 On a disposable Linux VM, after building the broker and agent:
