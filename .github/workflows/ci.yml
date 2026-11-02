@@ -153,8 +153,12 @@ jobs:
           cp "$bin" "$copy/deps/adversarial"
           cp target/debug/hatchling-probe "$copy/"
           chmod -R a+rX "$copy"
+          # Its cell runs as the README's cell user, the id map's base
+          # (WO-015).
+          sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin hatchling-cell
           cd crates/hatchling-broker
-          sudo env HATCHLING_REQUIRE_CELL=1 HATCHLING_CORE_PATTERN_TEST=1 "$copy/deps/adversarial" \
+          sudo env HATCHLING_REQUIRE_CELL=1 HATCHLING_CORE_PATTERN_TEST=1 \
+            HATCHLING_CELL_UID_BASE="$(id -u hatchling-cell)" "$copy/deps/adversarial" \
             a_seccomp_kill_hands_no_core_to_the_hosts_crash_handler --exact
           echo "core_pattern after: $(cat /proc/sys/kernel/core_pattern)"
 
