@@ -58,13 +58,12 @@ refuses a name that's already in the vault, before it asks for anything.
 Keep the vault's master key as well as its sealed files (and its `.store-key`)
 when backing it up.
 
-**Installed as a service,** the broker's settings are in
-`/etc/hatchling/hatchling.env`, so give the command those. Set the model in
-that file (the endpoint, the name, the allowlist entry and the grants above),
-then:
+**Installed as a service,** set the model in `/etc/hatchling/hatchling.env`
+(the endpoint, the name, the allowlist entry and the grants above), then add
+the key with `sudo`: the command takes the service's settings.
 
 ```bash
-sudo sh -c 'set -a; . /etc/hatchling/hatchling.env; exec hatchling-broker secret add --for openrouter.ai:443'
+sudo hatchling-broker secret add --for openrouter.ai:443
 ```
 
 ```bash
