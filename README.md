@@ -168,6 +168,8 @@ agent: Hello from inside a Hatchling cell. This answer came from the stand-in mo
 
 That answer took the whole path: the broker started a fresh cell as `hatchling-cell` for your message, the agent in it checked that the model can call tools, asked it the task through the egress proxy (the cell's only way out), and replied on the local channel, back through the API to you. The run held the API's grants and nothing more.
 
+**If no answer came:** run `hatchling-broker doctor` in the same shell. It checks what a start trips on (the settings, whether this machine can make a cell, whether the model's server answers with the model named) and says how to fix each problem it finds.
+
 **A real model:** run one locally with an OpenAI-compatible API (Ollama, llama.cpp, LM Studio, vLLM), and use its port and model name instead. For Ollama: `http://localhost:11434/v1`, `local-keyless:localhost:11434`, `localhost:11434`, and `egress:localhost:11434` in the API grants. For a hosted API, follow [Using a hosted model](docs/hosted-models.md): the vault holds its key, and the broker supplies it over HTTPS. For endpoints that need thinking disabled, see [model thinking mode](docs/model-thinking.md).
 
 ### Using the app

@@ -28,6 +28,8 @@ gh release download v0.6.0 --repo undergroundrap/hatchling --dir release
 sudo scripts/install.sh --from release --model-endpoint http://localhost:11434/v1 --model llama3.2
 ```
 
+Before it starts anything, it runs `hatchling-broker doctor`, which checks the settings, that this machine can make the agent's cells, and that the model's server answers with the model named. If one isn't so, it stops and says what to do. Run it again after: it keeps your configuration.
+
 It ends with the app's address. Open it in a browser on this machine, and say something. **The address is a key to your agent: don't share it.** Before you install, you can also check that the release's files were built by this project's release workflow: [Verifying a release](releasing.md#verifying-a-release).
 
 **From your own build** instead of a release:
@@ -58,6 +60,7 @@ With systemd 254 or later, the broker gets a cgroup of its own to give each cell
   echo "http://127.0.0.1:7340/#hatchling-ui=$(cat /var/lib/hatchling/ui.sock.token)"
   ```
 
+- **Something not working?** `sudo hatchling-broker doctor` checks what a start trips on, and says how to fix each problem it finds.
 - **Change a setting:** edit `/etc/hatchling/hatchling.env`, then `sudo systemctl restart hatchling`.
 - **The logs:** `journalctl -u hatchling` for the broker, `journalctl --user -u hatchling-host` for the app's host.
 - **Stop it:** `sudo systemctl stop hatchling`. **Start it again:** `sudo systemctl start hatchling`.

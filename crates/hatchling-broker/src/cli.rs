@@ -11,6 +11,8 @@
 //! - `vault-keyring <action>`: adopt, enroll or inspect the vault keyring.
 //! - `redactions <action>`, `vault-audit`: redaction review, credential access.
 //! - `tools <action>`: the approved tools a CLI cell may run (WO-019).
+//! - `doctor [--env <file>]`: what stops Hatchling working on this
+//!   machine, and the fix for each ([`crate::doctor`]).
 //!
 //! Internal: `skill-cell <spec-file>` and `agent-run <spec-file>` are the spawner
 //! helpers the broker starts, by re-running its own executable, to run
@@ -72,6 +74,9 @@ pub fn main(program: &str, args: &[String]) -> ExitCode {
         Some(VAULT_KEEPER_SUBCOMMAND) => return vault_keeper_main(),
         Some(EGRESS_AUTHORITY_SUBCOMMAND) => return egress_authority_main(),
         Some(SPAWNER_SUBCOMMAND) => return spawner_main(),
+        // It reads the settings itself, and reports one that doesn't
+        // parse rather than stopping at it.
+        Some("doctor") => return crate::doctor::doctor_main(args.get(1..).unwrap_or_default()),
         Some(_) | None => {}
     }
     match run(args) {
@@ -95,7 +100,7 @@ pub fn help(program: &str) -> String {
     render_help(
         program,
         "[subcommand] | --help | -h",
-        "Serve agents with no subcommand. Operator subcommands:\n  migrate-vault\n  rekey-vault [<new-key-file>]   (no file with a keyring)\n  vault-keyring <action>\n    init, enroll-totp, enroll-keys, use-file-tier, backup-codes,\n    status, add-key, remove-key, label-key\n  redactions list | stats | categories\n  redactions show <id> | raw <id> | override <id> [--any-scope]\n  vault-audit [log [count]]\n  tools list | add <path> | remove <path>   (what a CLI cell may run)\n  clean [--dry-run]   (a dead broker's leftovers; never your data)\n  browser-digest <browser>   (the digest HATCHLING_BROWSER_SHA256 pins)\n\nThe broker builds and supervises the agent's cell. Internal spawner\ncommands skill-cell <spec-file>, agent-run <spec-file>, browser-cell <spec-file>,\nharness-tree, vault-keeper, egress-authority and spawner are broker-owned.",
+        "Serve agents with no subcommand. Operator subcommands:\n  doctor [--env <file>]   (what stops it working here, and the fix)\n  migrate-vault\n  rekey-vault [<new-key-file>]   (no file with a keyring)\n  vault-keyring <action>\n    init, enroll-totp, enroll-keys, use-file-tier, backup-codes,\n    status, add-key, remove-key, label-key\n  redactions list | stats | categories\n  redactions show <id> | raw <id> | override <id> [--any-scope]\n  vault-audit [log [count]]\n  tools list | add <path> | remove <path>   (what a CLI cell may run)\n  clean [--dry-run]   (a dead broker's leftovers; never your data)\n  browser-digest <browser>   (the digest HATCHLING_BROWSER_SHA256 pins)\n\nThe broker builds and supervises the agent's cell. Internal spawner\ncommands skill-cell <spec-file>, agent-run <spec-file>, browser-cell <spec-file>,\nharness-tree, vault-keeper, egress-authority and spawner are broker-owned.",
         crate::environment::ENVIRONMENT,
     )
 }
@@ -105,8 +110,9 @@ fn valid_args(args: &[String]) -> bool {
     let values: Vec<&str> = args.iter().map(String::as_str).collect();
     match values.as_slice() {
         []
-        | ["migrate-vault" | "vault-audit" | "rekey-vault" | "clean"]
+        | ["migrate-vault" | "vault-audit" | "rekey-vault" | "clean" | "doctor"]
         | ["clean", "--dry-run"]
+        | ["doctor", "--env", _]
         | ["rekey-vault" | BROWSER_DIGEST_SUBCOMMAND, _]
         | [
             "vault-keyring",
@@ -205,6 +211,7 @@ mod tests {
         assert!(text.contains("rekey-vault [<new-key-file>]"));
         assert!(text.contains("vault-keyring <action>"));
         assert!(text.contains("browser-digest <browser>"));
+        assert!(text.contains("doctor [--env <file>]"));
         // The digest is the operator's to ask for before any setting.
         assert_eq!(
             main(
@@ -240,6 +247,8 @@ mod tests {
             args(&["vault-audit", "log", "12"]),
             args(&["clean"]),
             args(&["clean", "--dry-run"]),
+            args(&["doctor"]),
+            args(&["doctor", "--env", "/etc/hatchling/hatchling.env"]),
             args(&[SKILL_CELL_SUBCOMMAND]),
             args(&[AGENT_RUN_SUBCOMMAND, "/spec"]),
             args(&[BROWSER_DIGEST_SUBCOMMAND, "/opt/chrome/chrome"]),
@@ -280,6 +289,9 @@ mod tests {
             args(&["vault-audit", "stats"]),
             args(&["clean", "--force"]),
             args(&["clean", "--dry-run", "extra"]),
+            args(&["doctor", "--env"]),
+            args(&["doctor", "--fix"]),
+            args(&["doctor", "--env", "/a", "/b"]),
             args(&[SKILL_CELL_SUBCOMMAND, "/spec", "extra"]),
         ] {
             assert!(!valid_args(&given), "{given:?}");

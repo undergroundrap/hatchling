@@ -21,6 +21,18 @@ SLOW_SECS = 5
 
 
 class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        # The list of models, which `hatchling-broker doctor` checks.
+        if self.path.rstrip("/") != "/v1/models":
+            self.send_error(404)
+            return
+        body = json.dumps({"object": "list", "data": [{"id": "stand-in", "object": "model"}]}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_POST(self):
         if self.path.rstrip("/") != "/v1/chat/completions":
             self.send_error(404)
