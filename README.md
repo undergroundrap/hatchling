@@ -128,8 +128,7 @@ The rest runs as root (`sudo -s`, still in the clone). The broker's API, app and
 export HATCHLING_HOME=/var/lib/hatchling
 mkdir -p -m 700 "$HATCHLING_HOME"/{sock,vault,schedules}
 export HATCHLING_BROKER_SOCKET=$HATCHLING_HOME/sock/broker.sock
-export HATCHLING_AGENT_UID=$(id -u hatchling-cell)   # cells run as hatchling-cell
-export HATCHLING_CELL_UID_BASE=$HATCHLING_AGENT_UID
+export HATCHLING_AGENT_UID=hatchling-cell   # cells run as hatchling-cell
 export HATCHLING_AGENT_BIN=/usr/local/bin/hatchling-agent
 export HATCHLING_CELL_ID=cell-01
 export HATCHLING_VAULT_DIR=$HATCHLING_HOME/vault
