@@ -100,6 +100,27 @@ pub struct WebSession {
     fetcher: Option<Fetcher>,
     searcher: Option<Searcher>,
     found: VecDeque<Found>,
+    /// The approval board its requests wait on: those it would act on are
+    /// withdrawn when it ends.
+    board: Option<Arc<Board>>,
+}
+
+impl Drop for WebSession {
+    /// A session that ended takes back the site visits and signed-in uses
+    /// it had waiting for the owner: nothing is left to make them, and they
+    /// would hold places another session needs. A build it proposed stays:
+    /// the worker makes that.
+    fn drop(&mut self) {
+        if let Some(board) = &self.board {
+            board.approvals().withdraw_task(&self.task, |run| {
+                matches!(
+                    run,
+                    crate::approval_board::Approved::Site(_)
+                        | crate::approval_board::Approved::Signed(_)
+                )
+            });
+        }
+    }
 }
 
 impl std::fmt::Debug for WebSession {
@@ -152,6 +173,7 @@ impl WebSession {
             }),
             searcher,
             found: VecDeque::new(),
+            board: Some(board(config)),
         }
     }
 
@@ -167,6 +189,7 @@ impl WebSession {
             fetcher: Some(fetcher),
             searcher: None,
             found: VecDeque::new(),
+            board: None,
         }
     }
 
@@ -879,9 +902,10 @@ pub(crate) mod tests {
             &fetch("https://a.example/x"),
         );
         assert_eq!(answer, denied, "another session");
+        // The session denied waits out its pause; another is asked.
         let (_, answer) = ask(
             &config,
-            unattended("t3", &fetcher),
+            unattended("t", &fetcher),
             &fetch("https://b.example/"),
         );
         assert_eq!(
@@ -890,6 +914,12 @@ pub(crate) mod tests {
                 reason: ApprovalRefusal::Paused
             }
         );
+        let (_, answer) = ask(
+            &config,
+            unattended("t3", &fetcher),
+            &fetch("https://b.example/"),
+        );
+        assert!(waiting(&answer, "https://b.example"), "another session");
         assert!(asked.lock().unwrap().is_empty());
     }
 
@@ -1284,6 +1314,20 @@ pub(crate) mod tests {
         );
         assert!(waiting(&answer, "https://a.example"), "not asked");
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A session that ends takes back the site it had waiting for the
+    /// owner: it holds no place in the queue after it's gone.
+    #[test]
+    fn a_session_that_ends_takes_back_what_it_had_waiting() {
+        let config = web_config("ends");
+        let mut web = WebSession::new(&config, "ends-t", None);
+        let master = MasterKey::generate().unwrap();
+        let answer = handle_web_op(&config, &master, &mut web, &fetch("https://a.example/x"));
+        assert!(waiting(&answer, "https://a.example"), "not asked");
+        assert!(board_has_pending(&config, "ends-t", "https://a.example"));
+        drop(web);
+        assert!(!board_has_pending(&config, "ends-t", "https://a.example"));
     }
 
     fn scripted_search(hits: Vec<Hit>) -> (Searcher, Asked) {
