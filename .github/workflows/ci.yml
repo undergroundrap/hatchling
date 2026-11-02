@@ -244,6 +244,62 @@ jobs:
       - name: Run the cell suites as root
         run: HATCHLING_ROOT_PASS=1 bash scripts/check.sh
 
+  service:
+    # WO-033: scripts/install.sh on a fresh runner with systemd, from this
+    # commit's own build, as a stock Ubuntu has it (Ubuntu's AppArmor
+    # restriction on user namespaces left on): the broker and the app's
+    # host start as services, the agent answers through the API, and again
+    # after the broker restarts.
+    name: install as a service
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build the programs and the app
+        run: |
+          cargo build --release --locked -p hatchling-broker -p hatchling-agent -p hatchling-host -p hatchling-browser
+          (cd frontend && npm ci --no-audit --no-fund && npm run build)
+          mkdir -p "$RUNNER_TEMP/files"
+          cp target/release/hatchling-broker target/release/hatchling-agent target/release/hatchling-host target/release/hatchling-browser "$RUNNER_TEMP/files/"
+          cp -R frontend/dist "$RUNNER_TEMP/files/ui"
+
+      - name: Install, and ask the agent, before and after a restart
+        run: |
+          python3 docs/examples/stand-in-model.py 18089 > "$RUNNER_TEMP/model.log" 2>&1 &
+          sudo scripts/install.sh --from "$RUNNER_TEMP/files" --model-endpoint http://localhost:18089/v1 --model stand-in | tee "$RUNNER_TEMP/install.log"
+          grep -q "http://127.0.0.1:7340/#hatchling-ui=" "$RUNNER_TEMP/install.log"
+          timeout 180 python3 docs/examples/first-run.py /var/lib/hatchling/api.sock
+          curl -fsS --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:7340/ > /dev/null
+          token=$(cat /var/lib/hatchling/ui.sock.token)
+          sudo systemctl restart hatchling.service
+          for _ in $(seq 60); do
+            [ -s /var/lib/hatchling/ui.sock.token ] && [ "$(cat /var/lib/hatchling/ui.sock.token)" != "$token" ] && break
+            sleep 1
+          done
+          [ "$(cat /var/lib/hatchling/ui.sock.token)" != "$token" ]
+          timeout 180 python3 docs/examples/first-run.py /var/lib/hatchling/api.sock
+          curl -fsS http://127.0.0.1:7340/ > /dev/null
+
+      - name: The services' logs
+        if: always()
+        run: |
+          sudo journalctl -u hatchling.service --no-pager | tail -80
+          journalctl --user -u hatchling-host.service --no-pager | tail -40 || true
+
   quickstart:
     name: README quickstart
     runs-on: ubuntu-latest

@@ -1,0 +1,25 @@
+# Hatchling's broker, as a system service. scripts/install.sh installs it
+# at /etc/systemd/system/hatchling.service; see docs/install.md.
+#
+# The broker starts as root, as the README's quickstart runs it, so each
+# cell gets a uid of its own (hatchling-cell). Once started it drops to
+# hatchling-broker; the vault keeper and the egress authority run as
+# hatchling-keeper and hatchling-egress. Its whole configuration is
+# /etc/hatchling/hatchling.env.
+[Unit]
+Description=Hatchling: your agent, in kernel-isolated cells
+Documentation=https://github.com/undergroundrap/hatchling/blob/main/docs/install.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=exec
+EnvironmentFile=/etc/hatchling/hatchling.env
+ExecStart=/usr/local/bin/hatchling-broker
+Restart=on-failure
+RestartSec=5s
+# Every cell, and every process the broker starts, ends with the service.
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

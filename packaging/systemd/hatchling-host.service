@@ -1,0 +1,24 @@
+# The app's host, as the owner's own user service. scripts/install.sh
+# installs it at /etc/systemd/user/hatchling-host.service, and enables it
+# for the owner, with lingering so it runs without a login; see
+# docs/install.md.
+#
+# It serves the app on 127.0.0.1:7340 and carries its channel to the
+# broker's UI socket, which answers the owner alone. The broker mints a new
+# UI token each start: the host carries what the browser sends, so it needs
+# no restart; `hatchling-host url` prints the address with the token now.
+[Unit]
+Description=Hatchling's app, on 127.0.0.1
+Documentation=https://github.com/undergroundrap/hatchling/blob/main/docs/install.md
+
+[Service]
+Type=exec
+Environment=HATCHLING_UI_SOCKET=/var/lib/hatchling/ui.sock
+Environment=HATCHLING_OPERATOR_SOCKET=/var/lib/hatchling/operator.sock
+Environment=HATCHLING_HOST_UI=/usr/local/share/hatchling/ui
+ExecStart=/usr/local/bin/hatchling-host
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target
