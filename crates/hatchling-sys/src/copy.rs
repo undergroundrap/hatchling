@@ -294,6 +294,27 @@ fn copy_error(operation: &'static str, path: &str, source: io::Error) -> Error {
     }
 }
 
+/// The regular file at `path`, through its links, open to read; `None`
+/// when it's anything else.
+///
+/// It's opened without waiting, so a FIFO put there is refused rather
+/// than waited on (WO-019: a harness's tools).
+///
+/// # Errors
+///
+/// When `path` can't be opened or looked at.
+pub fn open_regular(path: &Path) -> io::Result<Option<std::fs::File>> {
+    const FLAGS: OFlags = OFlags::RDONLY
+        .union(OFlags::NONBLOCK)
+        .union(OFlags::CLOEXEC);
+    let fd = rustix::fs::open(path, FLAGS, Mode::empty())?;
+    let stat = rustix::fs::fstat(&fd)?;
+    Ok(
+        (FileType::from_raw_mode(stat.st_mode) == FileType::RegularFile)
+            .then(|| std::fs::File::from(fd)),
+    )
+}
+
 /// `path` refused, for `reason`.
 fn refused(path: &str, reason: &'static str) -> Error {
     copy_error("walk the tree", path, io::Error::other(reason))
@@ -311,6 +332,41 @@ mod tests {
         bytes: 1 << 20,
         depth: 8,
     };
+
+    /// WO-019: a regular file is opened through its links; a directory
+    /// or a FIFO is none, the FIFO without waiting for a writer.
+    #[test]
+    fn only_a_regular_file_is_opened_and_a_fifo_never_waits() {
+        let scratch = Scratch::new("open-regular");
+        let file = scratch.0.join("file");
+        std::fs::write(&file, b"bytes").unwrap();
+        let link = scratch.0.join("link");
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        let fifo = scratch.0.join("fifo");
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            &fifo,
+            FileType::Fifo,
+            Mode::from_raw_mode(0o600),
+            0,
+        )
+        .unwrap();
+        for path in [&file, &link] {
+            let mut read = String::new();
+            open_regular(path)
+                .unwrap()
+                .unwrap()
+                .read_to_string(&mut read)
+                .unwrap();
+            assert_eq!(read, "bytes");
+        }
+        assert!(open_regular(&scratch.0).unwrap().is_none());
+        assert!(open_regular(&fifo).unwrap().is_none());
+        assert_eq!(
+            open_regular(&scratch.0.join("missing")).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+    }
 
     /// A fresh directory for `name`, removed when dropped.
     struct Scratch(PathBuf);

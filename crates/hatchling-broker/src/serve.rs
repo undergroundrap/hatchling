@@ -99,7 +99,11 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
     crate::browser_ops::configure_from_env(spawner.clone())?;
     let skills = Skills::load(&config.skills)?
         .with_runtime(SkillRuntime::new(spawner))
-        .with_harnesses(crate::harness::Harnesses::from_env(config)?.with_tls(&tls));
+        .with_harnesses(
+            crate::harness::Harnesses::from_env(config)?
+                .with_tls(&tls)
+                .pin_tools()?,
+        );
     // The output gate, when there is an ingress for it to guard:
     // from the operator's environment only, its settings recorded before
     // anything is served.

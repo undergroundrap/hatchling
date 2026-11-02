@@ -55,7 +55,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::browser_session::BrowserSettings;
 use crate::cell::{CellConfig, CellLimits, Process, agent_identity};
-use crate::harness::Harnesses;
 use crate::harness_tree::TreeOp;
 use crate::run_launcher::{BROKER_PID_ENV, broker_pid, forget_spec, spec_args};
 use crate::{Config, Error};
@@ -315,14 +314,14 @@ impl Policy {
 
     /// The policy the environment configures: its cell, and the paths
     /// its configuration names (the agent binary, the scheduler's run
-    /// directories, the harnesses' tools, the browser's controller, fonts
-    /// and NSS modules).
+    /// directories, the browser's controller, fonts and NSS modules). A
+    /// harness's tools aren't among them: its cell is given copies, in the
+    /// broker's own run directories, of the programs it pinned.
     ///
     /// # Errors
     ///
-    /// As [`CellConfig::skill`], [`crate::Config::from_env`],
-    /// [`crate::harness::Harnesses::from_env`] and the browser's
-    /// settings.
+    /// As [`CellConfig::skill`], [`crate::Config::from_env`] and the
+    /// browser's settings.
     fn from_env() -> Result<Self, Error> {
         // Run as root, the broker drops to its own user once it has
         // started this spawner (WO-017): its run directories are that
@@ -358,11 +357,6 @@ impl Policy {
         if config.scheduler.enabled() {
             under.push(config.scheduler.run_root());
         }
-        exact.extend(
-            Harnesses::parse(&config, get)?
-                .tools()
-                .map(Path::to_path_buf),
-        );
         if let Some(browser) = BrowserSettings::parse(get)? {
             exact.insert(browser.controller().to_path_buf());
             under.extend(browser.fonts().map(Path::to_path_buf));
@@ -2529,13 +2523,19 @@ sleep 30 </dev/null >/dev/null 2>&1 &
                 String::from("/tmp/hatchling-policy/vault"),
             ),
             ("HATCHLING_AGENT_BIN", String::from("/opt/hatchling/agent")),
+            ("HATCHLING_HARNESS_TOOLS", String::from("/usr/bin/env")),
         ]);
         let get = |key: &str| settings.get(key).cloned();
         let temp = PathBuf::from("/tmp/hatchling-policy-temp");
         let read = Policy::parse(&get, temp.clone(), (owner, hatchling_sys::egid())).unwrap();
         assert_eq!(read.paths.temp, temp);
         assert_eq!(read.paths.owner, owner);
-        assert!(read.paths.exact.contains(Path::new("/opt/hatchling/agent")));
+        // A harness's tools aren't among them (WO-019): its cell is given
+        // copies, in the broker's own run directories.
+        assert_eq!(
+            read.paths.exact,
+            std::collections::BTreeSet::from([PathBuf::from("/opt/hatchling/agent")])
+        );
         assert!(read.paths.under.is_empty(), "no scheduler, no fonts");
         let reference = CellConfig::skill_with("policy", get).unwrap();
         assert_eq!(read.skill.identity, reference.identity());

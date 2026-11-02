@@ -48,7 +48,7 @@ mod test_socket;
 pub mod tree;
 pub mod umask;
 
-pub use copy::{TreeEntry, TreeLimits, copy_tree};
+pub use copy::{TreeEntry, TreeLimits, copy_tree, open_regular};
 pub use error::Error;
 pub use fds::{
     cloexec_fds_above_stderr, close_fds_above_stderr_except, fd_flags, inherited_device,
