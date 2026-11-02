@@ -117,9 +117,9 @@ fi
 chmod -R a+rX /usr/local/share/hatchling
 
 say "making Hatchling's users and its state directory"
-install -m 644 "$PACKAGING/sysusers.d/hatchling.conf" /etc/sysusers.d/hatchling.conf
+install -D -m 644 "$PACKAGING/sysusers.d/hatchling.conf" /etc/sysusers.d/hatchling.conf
 systemd-sysusers /etc/sysusers.d/hatchling.conf
-install -m 644 "$PACKAGING/tmpfiles.d/hatchling.conf" /etc/tmpfiles.d/hatchling.conf
+install -D -m 644 "$PACKAGING/tmpfiles.d/hatchling.conf" /etc/tmpfiles.d/hatchling.conf
 systemd-tmpfiles --create /etc/tmpfiles.d/hatchling.conf
 for dir in sock vault schedules; do
   [ -d "/var/lib/hatchling/$dir" ] || mkdir -m 700 "/var/lib/hatchling/$dir"
@@ -139,16 +139,16 @@ else
 fi
 
 say "installing the services"
-install -m 644 "$PACKAGING/systemd/hatchling.service" /etc/systemd/system/hatchling.service
+install -D -m 644 "$PACKAGING/systemd/hatchling.service" /etc/systemd/system/hatchling.service
 SYSTEMD=$(systemctl --version | sed -n '1s/^systemd \([0-9]*\).*/\1/p')
 if [ "${SYSTEMD:-0}" -ge 254 ]; then
   mkdir -p /etc/systemd/system/hatchling.service.d
-  install -m 644 "$PACKAGING/systemd/hatchling-cgroup.conf" /etc/systemd/system/hatchling.service.d/cgroup.conf
+  install -D -m 644 "$PACKAGING/systemd/hatchling-cgroup.conf" /etc/systemd/system/hatchling.service.d/cgroup.conf
 else
   rm -f /etc/systemd/system/hatchling.service.d/cgroup.conf
   say "systemd $SYSTEMD has no DelegateSubgroup: cells run without a cgroup of their own (README, Cell limits)"
 fi
-install -m 644 "$PACKAGING/systemd/hatchling-host.service" /etc/systemd/user/hatchling-host.service
+install -D -m 644 "$PACKAGING/systemd/hatchling-host.service" /etc/systemd/user/hatchling-host.service
 
 if [ -z "$(ls -A /var/lib/hatchling/vault)" ]; then
   say "sealing the vault"
