@@ -218,6 +218,61 @@ pub(crate) fn root_cell_uid() -> u32 {
     found.map_or(0, |(uid, _)| uid)
 }
 
+/// Hands the session socket at `path` to the agent's user, as a root
+/// broker hands its endpoint to its cells' user (WO-015); unprivileged,
+/// the agent's user is this process's, which has it already.
+#[allow(dead_code, reason = "shared test helper: used by only some test targets")]
+pub(crate) fn hand_to_agent(path: &Path) -> std::io::Result<()> {
+    if hatchling_sys::euid() != 0 {
+        return Ok(());
+    }
+    let uid = root_cell_uid();
+    std::os::unix::fs::chown(path, Some(uid), Some(uid))
+}
+
+/// Connects to the session socket at `path` as the agent's user, as a
+/// real agent cell would: the broker's peer gate reads the connecting
+/// process's uid. Unprivileged, that's this process; as root, a child
+/// that has dropped to [`ROOT_CELL_USER`] connects and hands the
+/// connection back (WO-015).
+#[allow(dead_code, reason = "shared test helper: used by only some test targets")]
+pub(crate) fn connect_as_agent(path: &Path) -> std::io::Result<std::os::unix::net::UnixStream> {
+    use std::os::fd::AsFd as _;
+    use std::os::unix::net::UnixStream;
+    if hatchling_sys::euid() != 0 {
+        return UnixStream::connect(path);
+    }
+    let uid = root_cell_uid();
+    let (ours, theirs) = UnixStream::pair()?;
+    match hatchling_sys::fork().map_err(std::io::Error::other)? {
+        hatchling_sys::ForkResult::Parent { child } => {
+            drop(theirs);
+            // The child's end closes as it exits: a child that fails never
+            // leaves this waiting.
+            let received = hatchling_sys::net::recv_fd(ours.as_fd());
+            let exited = matches!(
+                child.wait_deadline(Duration::from_secs(30)),
+                Ok(status) if hatchling_sys::child_exit_code(status) == 0
+            );
+            match (received, exited) {
+                (Ok(fd), true) => Ok(UnixStream::from(fd)),
+                _ => Err(std::io::Error::other(format!(
+                    "no connection to {} as uid {uid}",
+                    path.display()
+                ))),
+            }
+        }
+        hatchling_sys::ForkResult::Child => {
+            drop(ours);
+            let ok = hatchling_sys::drop_to(uid, uid).is_ok()
+                && UnixStream::connect(path).is_ok_and(|stream| {
+                    hatchling_sys::net::send_fd(theirs.as_fd(), stream.as_fd()).is_ok()
+                });
+            hatchling_sys::exit_child(i32::from(!ok));
+        }
+    }
+}
+
 /// Builds a [`CellConfig`] for an arbitrary binary and cell id.
 #[allow(dead_code, reason = "shared test helper: used by only one test target")]
 pub(crate) fn cell_config_for(

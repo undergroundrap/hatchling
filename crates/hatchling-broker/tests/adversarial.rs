@@ -1473,6 +1473,11 @@ fn peer_decoy_closes_silently() -> Result<(), String> {
     let decoy_uid = agent_uid.wrapping_add(1);
     let decoy_config = broker_config(&socket_dir.join("decoy.sock"), decoy_uid)?;
     let listener = bind_listener(&decoy_config).map_err(|e| format!("bind decoy socket: {e}"))?;
+    // As root the socket is root's, and its permissions would stop the
+    // probe before the peer gate this checks: it's handed to the agent's
+    // user, as the spawn hands the broker's own (WO-015).
+    common::hand_to_agent(&socket_dir.join("decoy.sock"))
+        .map_err(|e| format!("hand the decoy socket over: {e}"))?;
     // `spawn_cell` requires the cell's own broker socket: bind it
     // (never served) so the cell starts and reaches the decoy beside it.
     let broker = broker_config(&socket_dir.join("broker.sock"), agent_uid)?;
