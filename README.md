@@ -353,6 +353,10 @@ Core work is planned as **work orders**, specs in **[docs/workorders/](docs/work
 
 Everyone here follows the **[code of conduct](CODE_OF_CONDUCT.md)**. Found a security problem? Please don't open a public issue — see **[SECURITY.md](SECURITY.md)**.
 
+## Security
+
+Report a vulnerability privately: [SECURITY.md](SECURITY.md). Reviewing Hatchling for your organization: [Hatchling for security reviewers](docs/security/README.md) says what leaves the machine, what's kept and how, the logs, a hardening checklist and what to do after a compromise. The full threat model is [the trust boundary](docs/arch/trust-boundary.md).
+
 ## License
 
 Hatchling is dual-licensed.

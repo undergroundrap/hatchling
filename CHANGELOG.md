@@ -6,6 +6,10 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ## [Unreleased]
 
+### Added
+
+- **A page for security reviewers** ([docs/security](docs/security/README.md)). It covers what leaves the machine and who turns each part on; that Hatchling sends nothing on its own (no telemetry or update checks); what's kept and how it's sealed; each log and what it records; a hardening checklist; and what to do after a suspected compromise. SECURITY.md now gives response and fix targets, a disclosure deadline, the supported versions, and a CVE for every confirmed vulnerability in a release. The distribution page is current: it was written before the first release.
+
 ### Fixed
 
 - **No dependency's build code runs where the crates.io token is.** The release workflow published with `cargo publish`, which builds each crate and its dependencies first, so every dependency's build script and macro ran in the job holding the publish token and the job's means to mint another. Every crate is now packaged and built in a job with no token, the GitHub release and crates.io both wait for it, and the token's job publishes with `--no-verify`, building nothing (`scripts/publish-crates.sh --no-verify`). Found by the post-0.5.0 audit.

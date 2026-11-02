@@ -2,11 +2,13 @@
 
 Hatchling runs code it doesn't trust (skills, coding harnesses, model-generated code) next to secrets it must protect. Security reports are the most valuable contribution you can make. Thank you for taking the time.
 
+Reviewing Hatchling for your organization? [Hatchling for security reviewers](docs/security/README.md) covers what leaves the machine, what's kept and how, the logs, a hardening checklist and what to do after a compromise.
+
 ## Reporting a vulnerability
 
 **Please don't open a public issue, discussion or pull request for a vulnerability.**
 
-Report it privately through GitHub: on this repository's **Security** tab, choose **Report a vulnerability**. Only the maintainers can see the report.
+Report it privately through GitHub: on this repository's **Security** tab, choose **Report a vulnerability**. Only the maintainers can see the report. If you can't use GitHub, open an issue that says only that you have a security report and need another way to send it, and we'll arrange one.
 
 A useful report has:
 
@@ -15,11 +17,27 @@ A useful report has:
 - steps or a proof of concept, ideally as a failing test;
 - whether you've told anyone else.
 
-**What to expect:** an acknowledgement within 7 days. We'll keep you updated as we fix it, agree a disclosure date with you, and credit you in the advisory unless you'd rather not be named.
+**What to expect:**
+
+| | Target |
+| --- | --- |
+| Acknowledgement | within 7 days |
+| Our assessment (whether it's a vulnerability, and how severe) | within 14 days |
+| A fix released, for a critical or high severity issue | within 30 days of the assessment |
+| A fix released, for anything else | in the next release |
+| Disclosure | when the fix is released, or 90 days after your report, whichever comes first, unless we agree otherwise |
+
+We'll keep you updated as we fix it, and credit you in the advisory unless you'd rather not be named. Every confirmed vulnerability in a released version gets a GitHub security advisory and a CVE, requested through GitHub, and its fix is named in the changelog.
 
 ## Supported versions
 
-Hatchling is pre-1.0 and has no releases yet. Fixes land on `main`; please test against its latest commit.
+| Version | Security fixes |
+| --- | --- |
+| The latest release (0.5.x today) | Yes: a critical or high severity fix comes as a patch release |
+| Earlier 0.x releases | No: upgrade to the latest |
+| `main` | Yes: fixes land here first |
+
+Before 1.0, only the latest minor version is supported. Please test against the latest release, or `main`'s latest commit. Releases are signed and reproducible: [Verifying a release](docs/releasing.md#verifying-a-release).
 
 ## The threat model
 

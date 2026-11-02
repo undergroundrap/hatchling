@@ -1,87 +1,38 @@
-# Distribution and API Review
+# Distribution and stability
 
-Pre-launch decisions about what ships, where, and under what
-stability guarantees. Semver is a promise — these choices bind
-us from the first public release.
+What ships, where, and what each part promises.
 
-## Crates.io publication
+## How you get it
 
-### Publish
-
-These crates are independently useful and have stable APIs:
-
-- `hatchling-core` — protocol types, grants, errors. The
-  foundation others build on.
-- `hatchling-isolation` — the `IsolationBackend` trait and cell
-  lifecycle. Useful standalone.
-- `hatchling-vault` — secret storage with the egress-proxy
-  boundary. Useful standalone.
-
-### Do NOT publish (yet)
-
-- `hatchling-broker`, `hatchling-agent`, `hatchling-loop` —
-  the runtime. Ships as a binary, not a library. Publishing
-  would imply API stability we're not ready to promise.
-- `hatchling-dev` — **never.** Dev-only tooling. Publishing
-  it would be a mistake.
-- `hatchling-research` — the agent's research mode. Ships inside
-  the agent, not as a library.
-- Everything else — evaluate per-crate after launch based on
-  actual external demand. Don't publish speculatively.
-
-### Versioning
-
-- All published crates start at 0.x. No 1.0 until the API has
-  survived real external use.
-- The workspace uses unified versioning — all crates share
-  the same version number, bumped together.
-- Breaking changes bump the minor version (0.x → 0.y).
-  No breaking changes in patch releases, ever.
-
-## Public API surface
-
-The public API is:
-
-1. **The local API** (Unix socket, JSON). Versioned by
-   `UI_SCHEMA_VERSION` (currently 4). The broker session
-   protocol is at v12. Documented in `docs/local-api.md`.
-   Breaking changes bump the version.
-2. **The CLIs** (`hatchling-broker`, `hatchling-agent`).
-   Subcommand names and flags are the user-facing API. Don't
-   rename flags lightly.
-3. **Published crate APIs** (the three above). Semver-bound
-   from first publish.
-
-Everything else is internal, even if it's technically `pub`
-in Rust. We reserve the right to refactor internals without
-notice until 1.0.
-
-## Installation paths
-
-Planned. None of these exist yet: today, build from source (see the
-README's quickstart).
-
-| Method | Target | Priority |
+| Way | What you get | State |
 | --- | --- | --- |
-| `cargo install --git https://github.com/undergroundrap/hatchling` | Rust users | First release |
-| AUR (`hatchling-bin` / `hatchling`) | Arch users | First release |
-| Release binaries (GitHub) | Linux x86_64, ARM64 | First release |
-| Homebrew | macOS users | Post-launch |
-| Native packages (.deb, .rpm) | Broader Linux | Post-launch |
+| Release binaries ([releases](https://github.com/undergroundrap/hatchling/releases)) | `hatchling-broker`, `hatchling-agent`, `hatchling-host`, `hatchling-browser` and `hatchling` for x86_64 and aarch64 Linux (glibc 2.34+). Each comes with an SBOM and a provenance attestation, and can be rebuilt to the same bytes. | From 0.5.0 ([Verifying a release](../releasing.md#verifying-a-release)) |
+| `cargo install --locked hatchling-runtime` | One `hatchling` binary that is both the broker and the agent | From 0.1.1 |
+| From source | Every program, and the app | Always ([README](../../README.md#quickstart)) |
+| Native packages (.deb, .rpm), a systemd unit, a one-command setup | | Planned |
+| macOS, native Windows | | Not yet: WSL2 on Windows |
+
+## Versions
+
+- **One version for the whole workspace.** Every crate shares it and is released together. A release publishes every crate, changed or not.
+- **Before 1.0, a breaking change bumps the minor version** (0.5.0 to 0.6.0), and anything else the patch. The `semver checks` job compares each crate's public API with its last release on crates.io, and fails a breaking change that doesn't bump the minor version.
+- **Each version's changelog entry** names every breaking change, and the crates it breaks.
+- **1.0** comes once the local API and the configuration have held up to outside use.
+
+## What's stable, and what isn't
+
+| Surface | Promise before 1.0 |
+| --- | --- |
+| **The local API** (`docs/local-api.md`) | Versioned: the UI schema is version 4 (`UI_SCHEMA_VERSION`), and the broker's session protocol version 17 (`PROTOCOL_VERSION`). A breaking change bumps the version, and a client and broker that disagree refuse each other. |
+| **Configuration** (the `HATCHLING_*` variables, `--help`) | A breaking change is a minor version, and the changelog says how to move. |
+| **The command lines** (`hatchling-broker`, `hatchling-agent`, `hatchling`) | Subcommand names are kept; a rename is a breaking change. |
+| **The crates' Rust APIs** | Semver, checked by CI, but no stability beyond it: any 0.x minor may break any crate. They're published so that Hatchling can be installed from crates.io. Depend on one directly only if you'll follow Hatchling's releases. |
+| **The skill format** | May change before 1.0, with a minor version. |
+
+Everything not listed is internal, even if it's `pub` in Rust.
 
 ## System requirements
 
-- **Linux:** kernel 5.11+ with unprivileged user namespaces
-  and seccomp-BPF. Isolation is mandatory — without these
-  primitives the agent refuses to start; there is no degraded
-  or unsandboxed fallback.
-- **Windows:** WSL2 (primary). Native Windows backend is
-  post-launch.
-- **macOS:** post-launch via the isolation trait's platform
-  backends.
-
-## What we're NOT promising yet
-
-- Plugin API stability (skills format may evolve).
-- Multi-model support (single-model-first by design).
-- Enterprise features (post-launch).
+- **Linux:** kernel 5.11 or later, with unprivileged user namespaces and seccomp-BPF. Isolation is mandatory: without these, the broker refuses to start. There's no unsandboxed fallback.
+- **Windows:** WSL2.
+- **macOS:** not yet. The isolation layer is a platform-neutral trait, with no macOS backend.
