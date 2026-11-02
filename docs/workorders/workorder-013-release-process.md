@@ -1,6 +1,6 @@
 # WO-013: A release process: signed, reproducible binaries and an SBOM
 
-**Status:** IN-PROGRESS. The workflow, the scripts and the docs are in; the criteria that need a real release are checked at the first one (0.5.0).
+**Status:** DONE (2026-11-02). Every acceptance criterion is met, on the first release through the workflow, 0.5.0 (see Evidence).
 **Area:** `.github/workflows/`, `Cargo.toml` (release profile), `docs/`, `README.md`, `CHANGELOG.md`
 **Issue:** [#22](https://github.com/undergroundrap/hatchling/issues/22)
 **Trust boundary:** yes
@@ -27,11 +27,11 @@ A release today is also a manual job: someone tags a commit and writes notes. As
 
 ## Acceptance criteria
 
-- [ ] Pushing a `v*` tag produces a GitHub release with binaries for both targets, `SHA256SUMS`, and a CycloneDX SBOM, with the version's changelog section as its notes.
-- [ ] `gh attestation verify <binary> --repo undergroundrap/hatchling` succeeds for each released binary, and fails for a binary built anywhere else.
-- [ ] Two independent builds of the same tag are byte-identical; a CI job compares them and fails on any difference.
-- [ ] Pushing a `v*` tag publishes the crates to crates.io through trusted publishing, and no crates.io token exists in the repository's secrets.
-- [ ] `docs/releasing.md` lets a maintainer who has never cut a release do it, and lets a user verify a binary, each step tested on a real release.
+- [x] Pushing a `v*` tag produces a GitHub release with binaries for both targets, `SHA256SUMS`, and a CycloneDX SBOM, with the version's changelog section as its notes.
+- [x] `gh attestation verify <binary> --repo undergroundrap/hatchling` succeeds for each released binary, and fails for a binary built anywhere else.
+- [x] Two independent builds of the same tag are byte-identical; a CI job compares them and fails on any difference.
+- [x] Pushing a `v*` tag publishes the crates to crates.io through trusted publishing, and no crates.io token exists in the repository's secrets.
+- [x] `docs/releasing.md` lets a maintainer who has never cut a release do it, and lets a user verify a binary, each step tested on a real release.
 
 ## Gates
 
@@ -39,7 +39,29 @@ See [TEMPLATE.md](TEMPLATE.md#gates).
 
 ## Evidence
 
-So far, before the first release:
+**The release: 0.5.0.** Tag `v0.5.0` on 76003bcf (#273), pushed by the maintainer's account. Release run 41491340635 passed every job: notes, both builds of both targets, the comparison, SBOMs, the GitHub release, and crates.io.
+
+- **The release:**
+  - 23 files: 10 programs, 10 SBOMs, 2 build infos and `SHA256SUMS`;
+  - its notes are 0.5.0's changelog section;
+  - every program needs glibc 2.34 (`build-info-*.txt`).
+- **Verified as a user would**, following [Verifying a release](../releasing.md#verifying-a-release), from a fresh download:
+  - `sha256sum --check --ignore-missing SHA256SUMS`: OK.
+  - `gh attestation verify` with `--repo`, `--signer-workflow undergroundrap/hatchling/.github/workflows/release.yml` and `--source-ref refs/tags/v0.5.0`: exit 0 for `hatchling-broker-x86_64-unknown-linux-gnu`, its SBOM and `SHA256SUMS`.
+  - What the attestation shows:
+    - signer `release.yml@refs/tags/v0.5.0`, source commit 76003bcf, a GitHub-hosted runner;
+    - 23 subjects, whose digests are exactly `SHA256SUMS`'s plus `SHA256SUMS`'s own, so every released file is covered.
+- **Refused:**
+  - the broker with one byte changed: exit 1, no attestation for its digest;
+  - the right file with `--source-ref refs/tags/v0.4.0`: exit 1, "expected SourceRepositoryRef to be refs/tags/v0.4.0, got refs/tags/v0.5.0".
+- **The embedded dependency list:** the released broker's `.dep-v0` section holds 113 packages, root `hatchling-broker 0.5.0`, which `cargo audit bin` reads.
+- **crates.io:** all 22 publishable crates are at 0.5.0, published by the workflow through trusted publishing. Neither the repository nor its `release` environment has any secret.
+- **Protections, set at the release** (the maintainer's call):
+  - the rule set "Protect release tags": only an admin creates, moves or deletes a `v*` tag;
+  - the `release` environment takes only `v*` tag runs.
+- **Reproducing:** each release builds each target twice, on separate runners, from different paths and `CARGO_HOME`s, and compares them. The release went out only because they matched. No one has yet rebuilt one outside CI on an Ubuntu 22.04 machine.
+
+Before the first release:
 
 - **What the comparison needs.** Two release builds of 3f2edc78 in a sandbox, from different checkout paths and `CARGO_HOME`s:
   - with only `CARGO_HOME` remapped, all five programs were byte-identical;
