@@ -85,10 +85,7 @@ enum Source {
 /// `--env <file>`. Exits 0 when it found nothing wrong, 1 otherwise.
 #[must_use]
 pub fn doctor_main(args: &[String]) -> ExitCode {
-    let environment_set = std::env::vars_os().any(|(key, _)| {
-        key.to_str()
-            .is_some_and(|key| key.starts_with("HATCHLING_"))
-    });
+    let environment_set = crate::service_settings::environment_set();
     let source = source(args, environment_set, Path::new(SERVICE_SETTINGS));
     if source == Source::Environment && !environment_set {
         let finding = Finding::problem(
@@ -108,19 +105,17 @@ pub fn doctor_main(args: &[String]) -> ExitCode {
                 })
                 .collect::<BTreeMap<String, String>>(),
         ),
-        Source::File(path) => match std::fs::read_to_string(path) {
-            Ok(text) => (path.display().to_string(), parse_settings(&text)),
-            Err(err) => {
-                let fix = if err.kind() == std::io::ErrorKind::PermissionDenied {
-                    "It's root's: run doctor with sudo."
-                } else {
-                    "Name the broker's settings file with --env, or set them in the environment."
-                };
-                let finding =
-                    Finding::problem(format!("can't read {}: {err}", path.display()), fix);
-                return report(&path.display().to_string(), &[("settings", finding)]);
+        // As the broker would read it: its runner's own, and nobody else's
+        // to change.
+        Source::File(path) => {
+            match crate::service_settings::read_trusted(path, hatchling_sys::euid()) {
+                Ok(settings) => (path.display().to_string(), settings),
+                Err(unread) => {
+                    let finding = Finding::problem(unread.what, unread.fix);
+                    return report(&path.display().to_string(), &[("settings", finding)]);
+                }
             }
-        },
+        }
     };
     let lookup = |key: &str| settings.get(key).cloned();
     let checks = [
@@ -155,7 +150,7 @@ fn source(args: &[String], environment_set: bool, service: &Path) -> Source {
 /// The settings in `text`, in systemd's `EnvironmentFile` form: a
 /// `KEY=VALUE` a line, `#` and `;` lines comments, a value's surrounding
 /// quotes not part of it.
-fn parse_settings(text: &str) -> BTreeMap<String, String> {
+pub(crate) fn parse_settings(text: &str) -> BTreeMap<String, String> {
     text.lines()
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with(['#', ';']))

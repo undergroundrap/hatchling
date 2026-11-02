@@ -8,6 +8,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Added
 
+- **The broker's commands take the service's settings** (WO-033). Installed as a service, the broker's settings are in `/etc/hatchling/hatchling.env`, which systemd gives it, and a command run from a shell had none of them. Now an operator command run with `sudo` from a shell with no settings runs again with all of the service's, so `sudo hatchling-broker tools list` just works. It never runs with only some, which could, say, take a keyring's absence for a key file. The file is read only while it's root's and nobody else can write it: it says what a root broker runs. `doctor` holds a settings file to the same rule, and names one that fails it.
 - **`hatchling-broker doctor`: what stops Hatchling working here, and the fix** (WO-033). A first start fails on a few things, which the broker met one at a time, each in its own words. `doctor` checks them all at once:
   - the settings parse;
   - the agent's program is a program;

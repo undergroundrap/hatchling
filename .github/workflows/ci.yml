@@ -304,6 +304,20 @@ jobs:
           grep -q "^  PROBLEM  model          nothing answers at localhost:18089" "$RUNNER_TEMP/doctor.log"
           grep -q "^1 problem to fix.$" "$RUNNER_TEMP/doctor.log"
 
+      - name: Operator commands take the service's settings, from a file only root can change
+        run: |
+          sudo hatchling-broker tools list 2> "$RUNNER_TEMP/settings.err"
+          grep -q "with the service's settings, from /etc/hatchling/hatchling.env" "$RUNNER_TEMP/settings.err"
+          sudo chmod 666 /etc/hatchling/hatchling.env
+          if sudo hatchling-broker tools list 2> "$RUNNER_TEMP/settings.err"; then exit 1; fi
+          cat "$RUNNER_TEMP/settings.err"
+          grep -q "it isn't read" "$RUNNER_TEMP/settings.err"
+          if sudo hatchling-broker doctor > "$RUNNER_TEMP/doctor.log"; then exit 1; fi
+          cat "$RUNNER_TEMP/doctor.log"
+          grep -q "^  PROBLEM  settings       /etc/hatchling/hatchling.env can be changed by someone else" "$RUNNER_TEMP/doctor.log"
+          sudo chmod 600 /etc/hatchling/hatchling.env
+          sudo hatchling-broker tools list > /dev/null
+
       - name: The services' logs
         if: always()
         run: |
