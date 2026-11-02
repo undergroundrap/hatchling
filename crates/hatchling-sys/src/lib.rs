@@ -51,8 +51,8 @@ pub mod umask;
 pub use copy::{TreeEntry, TreeLimits, copy_tree, open_regular};
 pub use error::Error;
 pub use fds::{
-    cloexec_fds_above_stderr, close_fds_above_stderr_except, fd_flags, inherited_device,
-    keep_across_exec, open_fds, pipe, place_across_exec, take_stdin, wait_readable,
+    StdioKind, cloexec_fds_above_stderr, close_fds_above_stderr_except, fd_flags, inherited_device,
+    keep_across_exec, open_fds, pipe, place_across_exec, stdio_kind, take_stdin, wait_readable,
 };
 pub use idmap::IdMap;
 pub use lock::{HeldLock, claim_dir, hold_dir, in_use, try_lock};
