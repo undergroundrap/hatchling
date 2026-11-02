@@ -47,7 +47,7 @@ fn stdio() -> io::Result<([OwnedFd; 3], File)> {
 /// The spawner, started as the broker starts it, with a broker's settings
 /// under `dir`: it reads its policy from them.
 fn spawner(dir: &std::path::Path) -> Result<Spawner, hatchling_broker::Error> {
-    spawner_with(dir, rustix::process::getuid().as_raw(), None, None)
+    spawner_with(dir, common::mapped_agent_uid(), None, None)
 }
 
 /// [`spawner`], for agents as `agent_uid`, running `agent` if given, and
@@ -74,7 +74,9 @@ fn spawner_with(
 }
 
 /// A run directory of the broker's own, as the spawner's policy knows
-/// one: in the temp directory, named as one, owner-only.
+/// one: in the temp directory, named as one, owner-only. Run as root, it's
+/// the broker's own user's, as a root broker's are once it has dropped to
+/// that user (WO-017).
 fn broker_run_dir(tag: &str) -> io::Result<PathBuf> {
     use std::os::unix::fs::PermissionsExt as _;
     let dir = std::env::temp_dir().join(format!(
@@ -84,6 +86,11 @@ fn broker_run_dir(tag: &str) -> io::Result<PathBuf> {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)?;
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    if let Some((uid, gid)) =
+        hatchling_broker::broker_user::broker_user().map_err(io::Error::other)?
+    {
+        std::os::unix::fs::chown(&dir, Some(uid), Some(gid))?;
+    }
     Ok(dir)
 }
 

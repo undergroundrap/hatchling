@@ -2472,6 +2472,12 @@ done < /proc/self/mountinfo
         let (mut spec, _) = specs(&host);
         let work = host.0.join("work");
         std::fs::create_dir_all(&work).unwrap();
+        // The cell writes it: as root, the cell isn't the directory's
+        // user, so it's given to the cell's, as a run's trees are.
+        if hatchling_sys::euid() == 0 {
+            let principal = super::super::identity::default_principal(0);
+            std::os::unix::fs::chown(&work, Some(principal), Some(principal)).unwrap();
+        }
         spec.exposures.push(crate::Exposure {
             source: work.clone(),
             name: String::from("work"),
