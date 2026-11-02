@@ -28,6 +28,7 @@ use hatchling_core::SecretName;
 use hatchling_core::browser::Cookie;
 use hatchling_vault::{OpensStores, SealedVault, Secret, Store};
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use crate::Config;
 
@@ -295,7 +296,7 @@ impl<'k> Profiles<'k> {
             return Err(String::from("a profile's jar doesn't fit its store"));
         }
         for (n, page) in pages.iter().enumerate() {
-            let secret = Secret::new(page.clone())
+            let secret = Secret::new(page.to_vec())
                 .map_err(|error| format!("a profile's jar doesn't fit: {error}"))?;
             vault
                 .store(&Self::jar_entry(id, n)?, &secret)
@@ -433,8 +434,9 @@ fn only_its_own(profile: &Profile, cookies: Vec<Cookie>) -> Vec<Cookie> {
             if !own {
                 tracing::warn!(
                     profile = %profile.id,
-                    name = %cookie.name,
-                    domain = %cookie.domain,
+                    // Escaped: the browser cell chose them.
+                    name = ?cookie.name,
+                    domain = ?cookie.domain,
                     "a cookie for a site outside the profile: dropped"
                 );
             }
@@ -444,29 +446,27 @@ fn only_its_own(profile: &Profile, cookies: Vec<Cookie>) -> Vec<Cookie> {
 }
 
 /// `cookies` as sealed entries, each a JSON list that fits one.
-fn pages_of(cookies: &[Cookie]) -> Result<Vec<Vec<u8>>, String> {
+fn pages_of(cookies: &[Cookie]) -> Result<Vec<Zeroizing<Vec<u8>>>, String> {
+    // Every encoding holds the cookies' values, so each is wiped once
+    // used, the trial ones too.
+    let encode = |page: &[&Cookie]| {
+        serde_json::to_vec(page)
+            .map(Zeroizing::new)
+            .map_err(|error| format!("a profile's jar doesn't encode: {error}"))
+    };
     let mut pages = Vec::new();
     let mut page: Vec<&Cookie> = Vec::new();
     for cookie in cookies {
         page.push(cookie);
-        let fits = serde_json::to_vec(&page)
-            .map_err(|error| format!("a profile's jar doesn't encode: {error}"))?
-            .len()
-            <= hatchling_core::MAX_SECRET_BYTES;
+        let fits = encode(&page)?.len() <= hatchling_core::MAX_SECRET_BYTES;
         if !fits {
             page.pop();
-            pages.push(
-                serde_json::to_vec(&page)
-                    .map_err(|error| format!("a profile's jar doesn't encode: {error}"))?,
-            );
+            pages.push(encode(&page)?);
             page = vec![cookie];
         }
     }
     if !page.is_empty() {
-        pages.push(
-            serde_json::to_vec(&page)
-                .map_err(|error| format!("a profile's jar doesn't encode: {error}"))?,
-        );
+        pages.push(encode(&page)?);
     }
     Ok(pages)
 }
@@ -501,6 +501,30 @@ mod tests {
 
     fn sites(sites: &[&str]) -> Vec<String> {
         sites.iter().map(|site| (*site).to_owned()).collect()
+    }
+
+    /// A cookie dropped as another site's is logged by its name and
+    /// domain, which the browser cell chose: escaped, so it can't forge a
+    /// line of the broker's log.
+    #[test]
+    fn a_dropped_cookie_cant_forge_a_log_line() {
+        let profile = Profile {
+            id: String::from("profile-1"),
+            sites: sites(&["a.example:443"]),
+            created_at: 1,
+            last_used: 1,
+            signed_out: 0,
+        };
+        let forged = [
+            cookie("b.example\nFORGED cookie domain", "sid", "v"),
+            cookie("b.example", "sid\nFORGED cookie name", "v"),
+        ];
+        for dropped in forged {
+            let logged = crate::test_log::captured(|| {
+                assert_eq!(only_its_own(&profile, vec![dropped]), []);
+            });
+            crate::test_log::assert_no_forged_line(&logged, "FORGED cookie");
+        }
     }
 
     #[test]
@@ -790,7 +814,7 @@ mod tests {
             .flat_map(|page| serde_json::from_slice::<Vec<Cookie>>(page).unwrap())
             .collect();
         assert_eq!(back, big);
-        assert_eq!(pages_of(&[]).unwrap(), Vec::<Vec<u8>>::new());
+        assert!(pages_of(&[]).unwrap().is_empty());
         let corrupt = Profiles::of(&config, &key).unwrap();
         corrupt
             .vault()

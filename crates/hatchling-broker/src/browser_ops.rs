@@ -1037,7 +1037,7 @@ fn sign_in(
             );
         }
     };
-    tracing::info!(credential = %chosen.id, label = %chosen.label, %origin, "a sign-in is filled");
+    tracing::info!(credential = %chosen.id, label = ?chosen.label, %origin, "a sign-in is filled");
     browser.command(&BrowserCommand::SignIn {
         nonce,
         username,

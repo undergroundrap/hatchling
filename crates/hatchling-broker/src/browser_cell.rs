@@ -294,15 +294,26 @@ impl Commands {
 }
 
 /// `command` sent on `connection`, and the reply read back.
+///
+/// Both frames are wiped once used: they can hold a profile's cookies or
+/// a code being typed. A reply that isn't one is the cell's own text,
+/// which serde quotes, so the reason carries it escaped: it reaches log
+/// lines, and must not forge one.
 fn exchange(connection: &UnixStream, command: &BrowserCommand) -> Result<BrowserReply, String> {
     let bytes = serde_json::to_vec(command)
+        .map(zeroize::Zeroizing::new)
         .map_err(|error| format!("cannot encode a browser command: {error}"))?;
     write_frame(connection, &bytes)
         .map_err(|error| format!("cannot send the browser a command: {error}"))?;
-    let frame =
-        read_frame(connection).map_err(|error| format!("no answer from the browser: {error}"))?;
-    serde_json::from_slice(&frame)
-        .map_err(|error| format!("the browser's answer isn't a reply: {error}"))
+    let frame = read_frame(connection)
+        .map(zeroize::Zeroizing::new)
+        .map_err(|error| format!("no answer from the browser: {error}"))?;
+    serde_json::from_slice(&frame).map_err(|error| {
+        format!(
+            "the browser's answer isn't a reply: {}",
+            error.to_string().escape_debug()
+        )
+    })
 }
 
 /// The controller's connection, which the helper sends on `channel`.
@@ -441,14 +452,15 @@ impl Drop for Helper {
 /// How long a broken exchange waits for the helper to end, to say why.
 const SAID_WAIT: Duration = Duration::from_secs(2);
 
-/// `reason`, with what a helper `said` on stderr, if it said anything.
+/// `reason`, with what a helper `said` on stderr, if it said anything,
+/// escaped: its cell shares that stderr, and the reason reaches log lines.
 fn worded(reason: &str, said: &[u8]) -> String {
     let said = String::from_utf8_lossy(said);
     let said = said.trim();
     if said.is_empty() {
         reason.to_owned()
     } else {
-        format!("{reason} ({said})")
+        format!("{reason} ({})", said.escape_debug())
     }
 }
 
@@ -877,6 +889,33 @@ mod tests {
         assert_eq!(worded("it broke", b"  no chrome\n"), "it broke (no chrome)");
         assert_eq!(worded("it broke", b" \n"), "it broke");
         assert_eq!(worded("it broke", b""), "it broke");
+        // Escaped: the cell shares the helper's stderr.
+        assert_eq!(
+            worded("it broke", b"no chrome\nWARN forged line"),
+            "it broke (no chrome\\nWARN forged line)"
+        );
+    }
+
+    /// A reply that isn't one is the cell's own text, and its reason
+    /// carries it escaped: no line of the broker's log can be forged.
+    #[test]
+    fn a_reply_that_isnt_one_is_told_escaped() {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let cell = std::thread::spawn(move || {
+            let _command = read_frame(&theirs).unwrap();
+            write_frame(&theirs, br#"{"reply":"x\nWARN forged line"}"#).unwrap();
+        });
+        let reason = exchange(
+            &ours,
+            &BrowserCommand::Open {
+                url: String::from("https://example.com/"),
+            },
+        )
+        .unwrap_err();
+        cell.join().unwrap();
+        assert!(reason.starts_with("the browser's answer isn't a reply"), "{reason}");
+        assert!(reason.contains("WARN forged line"), "{reason}");
+        assert!(!reason.contains('\n'), "{reason}");
     }
 
     /// A helper that ended says why when an exchange with its cell

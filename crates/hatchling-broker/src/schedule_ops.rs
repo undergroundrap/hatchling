@@ -1169,10 +1169,19 @@ impl Delivery for HubDelivery<'_> {
                 tracing::warn!(%category, %event_id, "scheduled output was redacted");
                 Ok(false)
             }
-            other => other.map(|()| true).map_err(|error| error.to_string()),
+            // The channel's error can carry an OS error's text, and the
+            // reason is the owner's to read on a parked result: it goes
+            // to the log, and the reason is a fixed sentence.
+            other => other.map(|()| true).map_err(|error| {
+                tracing::warn!(?error, "scheduled output couldn't be delivered");
+                String::from(UNDELIVERED)
+            }),
         }
     }
 }
+
+/// Why scheduled output wasn't delivered, as a parked result says it.
+const UNDELIVERED: &str = "the local channel couldn't take it; the broker's log says why";
 
 /// One dispatcher tick at `now` against the broker's real store,
 /// grants, and delivery path, with `launcher` starting the runs.
@@ -1290,6 +1299,28 @@ mod tests {
         assert!(
             !seen.iter().any(|text| text.contains("hunter2")),
             "{seen:?}"
+        );
+    }
+
+    /// A failed delivery's reason is the owner's to read on a parked
+    /// result: a fixed sentence, never the channel's error, which can carry
+    /// an OS error's text.
+    #[test]
+    fn an_undelivered_outputs_reason_is_a_fixed_sentence() {
+        let hub = LocalHub::new(hatchling_channel::OutputGate::new(
+            std::sync::Arc::new(Flags),
+            std::sync::Arc::new(hatchling_channel::NoAudit),
+            std::sync::Arc::new(hatchling_channel::NoOverrides),
+            std::time::Duration::from_secs(2),
+        ));
+        let _ = hub.attach(Box::new(|_: &hatchling_channel::Cleared| {
+            Err(hatchling_channel::Error::Backend(String::from(
+                "broker session I/O failed: Broken pipe (os error 32)",
+            )))
+        }));
+        assert_eq!(
+            HubDelivery::new(Some(&hub)).deliver_verbatim("local", "Coffee."),
+            Err(String::from(UNDELIVERED))
         );
     }
 
