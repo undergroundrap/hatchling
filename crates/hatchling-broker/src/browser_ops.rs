@@ -34,15 +34,17 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use hatchling_core::browser::{
-    BrowserCommand, BrowserFailure, BrowserReply, Cookie, MAX_COOKIE_PAGE_BYTES, PageAction,
+    BrowserCommand, BrowserFailure, BrowserReply, Cookie, Key, MAX_COOKIE_PAGE_BYTES, PageAction,
     PageSnapshot, SignInField,
 };
-use hatchling_core::ui::Concealed;
 use hatchling_core::ui::{BrowserState, CodeState};
+use hatchling_core::ui::{Concealed, ConfirmationField, FieldSource};
 use hatchling_core::{BrowserOp, BrowserResult, SessionResponse, WebResult};
 use hatchling_egress::web::WebUrl;
 use hatchling_vault::OpensStores;
 
+use crate::approval_board::SignedAsk;
+use crate::approvals::{Refusal, State};
 use crate::browser_board::{BrowserBoard, CodeTurn, Turn};
 use crate::browser_cell::{BrowserCell, BrowserLauncher};
 use crate::browser_proxy::{Route, Sites};
@@ -316,7 +318,20 @@ pub struct BrowserSession {
     /// Who fills a sign-in into the browser: the broker's vault keeper,
     /// when one runs (WO-031).
     fills: Option<&'static dyn Fills>,
+    /// The signed-in profiles the owner let this session browse with:
+    /// each is put to them before its first page.
+    allowed_profiles: BTreeSet<String>,
+    /// The page the browser last showed, and its elements by id: their
+    /// role and name.
+    page: Option<(String, Elements)>,
+    /// What the agent typed on that page, in order: each field's role and
+    /// name, and the text. It's put to the owner with any act in a
+    /// signed-in browser that could send it.
+    typed: Vec<(String, String, String)>,
 }
+
+/// A page's elements, by id: their role and name.
+type Elements = BTreeMap<u32, (String, String)>;
 
 /// How long a code op waits for the owner to give the code, before it
 /// tells the agent to ask again.
@@ -366,6 +381,9 @@ impl BrowserSession {
             hidden: Vec::new(),
             code_wait: CODE_WAIT,
             fills: keeper_fills(),
+            allowed_profiles: BTreeSet::new(),
+            page: None,
+            typed: Vec::new(),
         }
     }
 
@@ -786,6 +804,7 @@ impl BrowserSession {
                         refused: refused.clone(),
                     }))
                 });
+                self.saw(&snapshot);
                 BrowserResult::Page { snapshot, refused }
             }
             Ok(BrowserReply::Failed { failure }) => BrowserResult::Failed { failure },
@@ -815,6 +834,111 @@ impl BrowserSession {
                 }
             }
         }
+    }
+
+    /// Remembers the page the browser showed: its address and elements.
+    /// What was typed is the page's: another page starts with nothing.
+    fn saw(&mut self, snapshot: &PageSnapshot) {
+        let same = self
+            .page
+            .as_ref()
+            .is_some_and(|(url, _)| *url == snapshot.url);
+        if !same {
+            self.typed.clear();
+        }
+        let elements = snapshot
+            .elements
+            .iter()
+            .map(|element| (element.id, (element.role.clone(), element.name.clone())))
+            .collect();
+        self.page = Some((snapshot.url.clone(), elements));
+    }
+
+    /// The role and name of the element `id` on the page last shown.
+    fn element(&self, id: u32) -> (String, String) {
+        self.page
+            .as_ref()
+            .and_then(|(_, elements)| elements.get(&id))
+            .cloned()
+            .unwrap_or_else(|| (String::from("unknown element"), String::new()))
+    }
+
+    /// What the owner is asked before `action` on `element`, in the
+    /// signed-in browser of `profile`: `None` when it can't send or change
+    /// anything, so it needs no one's yes.
+    fn act_ask(&self, profile: &str, element: u32, action: &PageAction) -> Option<SignedAsk> {
+        let (role, name) = self.element(element);
+        let what = match action {
+            PageAction::Click if role != "link" => format!("Click the page's {role}"),
+            PageAction::Key { key: Key::Enter } => format!("Press Enter in the page's {role}"),
+            PageAction::Choose { .. } => format!("Choose an option in the page's {role}"),
+            PageAction::Click | PageAction::Key { .. } | PageAction::Type { .. } => return None,
+        };
+        let page = self
+            .page
+            .as_ref()
+            .map_or_else(String::new, |(url, _)| url.clone());
+        let typed: Vec<serde_json::Value> = self
+            .typed
+            .iter()
+            .map(|(role, name, text)| serde_json::json!({ "role": role, "name": name, "text": text }))
+            .collect();
+        let act = serde_json::to_value(action).unwrap_or(serde_json::Value::Null);
+        let mut fields = vec![
+            broker_field("Operation", "Act on a site signed in as you"),
+            broker_field("Page", &page),
+            broker_field("What it does", &what),
+            page_field("What the page calls it", &name),
+        ];
+        if let PageAction::Choose { option } = action {
+            fields.push(page_field("The option", option));
+        }
+        if self.typed.is_empty() {
+            fields.push(broker_field("Typed on this page", "nothing"));
+        }
+        for (role, name, text) in &self.typed {
+            fields.push(ConfirmationField {
+                label: String::from("Typed on this page"),
+                value: format!("into the {role} the page calls \"{name}\": {text}"),
+                source: FieldSource::Agent,
+            });
+        }
+        fields.push(broker_field(
+            "What it allows",
+            "This, once, as you: the site takes it as yours. Allow only what you'd do yourself.",
+        ));
+        let record = serde_json::json!({
+            "op": "browser.act",
+            "profile": profile,
+            "page": page,
+            "element": element,
+            "role": role,
+            "name": name,
+            "action": act,
+            "typed": typed,
+        });
+        Some(SignedAsk {
+            profile: profile.to_owned(),
+            action: versioned(&record),
+            fingerprint: record,
+            summary: String::from("Let the agent act signed in as you"),
+            fields,
+        })
+    }
+
+    /// Records that the agent typed `text` into `element` on the page last
+    /// shown.
+    fn typed_into(&mut self, element: u32, text: &str) {
+        let (role, name) = self.element(element);
+        self.typed.push((role, name, text.to_owned()));
+    }
+
+    /// The site of the page last shown, as the agent is told it.
+    fn page_site(&self) -> String {
+        self.page
+            .as_ref()
+            .and_then(|(url, _)| WebUrl::parse(url).ok())
+            .map_or_else(String::new, |url| url.origin().to_string())
     }
 
     /// Closes the browser, if it's running. The sites stay the session's.
@@ -879,10 +1003,24 @@ fn answer(
                     return refusal;
                 }
             }
-            browser.command(&BrowserCommand::Act {
+            // Signed in, an act that could send or change something is the
+            // owner's to allow, with what was typed on the page.
+            if let Some(profile) = browser.profile.clone() {
+                if let Some(ask) = browser.act_ask(&profile, *element, action) {
+                    let site = browser.page_site();
+                    if let Some(answer) = owner_approves(config, web, ask, &site) {
+                        return answer;
+                    }
+                }
+            }
+            let result = browser.command(&BrowserCommand::Act {
                 element: *element,
                 action: action.clone(),
-            })
+            });
+            if let (PageAction::Type { text }, BrowserResult::Page { .. }) = (action, &result) {
+                browser.typed_into(*element, text);
+            }
+            result
         }
         BrowserOp::Scroll { down } => browser.command(&BrowserCommand::Scroll { down: *down }),
         BrowserOp::Allow { site, reason } => allow_site(config, keys, web, browser, site, reason),
@@ -1079,7 +1217,19 @@ fn open(
     // On the site it's visiting, the browser stays: a site allowed once,
     // for the visit, isn't asked for again until it's left. A profile's
     // sites the owner allowed when they kept it.
-    if profile.is_none() && !(same_visit && browser.once.contains(&destination)) {
+    // A profile's sites the owner kept: browsing them signed in is put to
+    // the owner before the session's first page there, as a site is.
+    if let Some(profile) = &profile {
+        if !browser.allowed_profiles.contains(&profile.id) {
+            let site = url.origin().to_string();
+            if let Some(answer) =
+                owner_approves(config, web, profile_ask(profile, &url, reason), &site)
+            {
+                return answer;
+            }
+            browser.allowed_profiles.insert(profile.id.clone());
+        }
+    } else if !(same_visit && browser.once.contains(&destination)) {
         if let Err(answer) = crate::web_ops::allow(config, keys, web, &url, reason, true) {
             return from_web(answer);
         }
@@ -1310,6 +1460,109 @@ fn typed_secret(config: &Config, keys: &dyn OpensStores, text: &str) -> Option<B
     }
 }
 
+/// A field of the broker's own words.
+fn broker_field(label: &str, value: &str) -> ConfirmationField {
+    ConfirmationField {
+        label: label.to_owned(),
+        value: value.to_owned(),
+        source: FieldSource::Broker,
+    }
+}
+
+/// A field of the page's words: shown as words the broker didn't write or
+/// check, as the agent's are.
+fn page_field(label: &str, value: &str) -> ConfirmationField {
+    ConfirmationField {
+        label: label.to_owned(),
+        value: value.to_owned(),
+        source: FieldSource::Agent,
+    }
+}
+
+/// `record`, versioned: the form an approval binds.
+fn versioned(record: &serde_json::Value) -> serde_json::Value {
+    let mut action = record.clone();
+    if let Some(object) = action.as_object_mut() {
+        object.insert(String::from("format"), serde_json::json!(1));
+    }
+    action
+}
+
+/// What the owner is asked before the agent's first page signed in to
+/// `profile`: its sites, what browsing signed in allows, then the page and
+/// the reason in the agent's words.
+fn profile_ask(
+    profile: &crate::browser_profiles::Profile,
+    url: &WebUrl,
+    reason: &str,
+) -> SignedAsk {
+    let record = serde_json::json!({ "op": "browser.profile", "profile": profile.id });
+    SignedAsk {
+        profile: profile.id.clone(),
+        action: versioned(&record),
+        fingerprint: record,
+        summary: String::from("Let the agent browse signed in as you"),
+        fields: vec![
+            broker_field("Operation", "Browse signed in as you"),
+            broker_field("Signed-in sites", &profile.sites.join(", ")),
+            broker_field(
+                "What it allows",
+                "For this task: the agent's browser opens these sites signed in as you, until its session ends; in a chat, that's this answer. Anything there that could send or change something (pressing Enter, clicking a button, choosing an option) is put to you first, with what it typed.",
+            ),
+            page_field("Page it asked for", &url.to_string()),
+            page_field("Why it wants it", reason),
+        ],
+    }
+}
+
+/// Puts `ask` to the owner for `web`'s session, and waits for them as the
+/// session does: `None` once they approved it, the approval used. The same
+/// use already approved and not used is used now. Otherwise what the agent
+/// is told, as for a site: `site`'s.
+fn owner_approves(
+    config: &Config,
+    web: &WebSession,
+    ask: SignedAsk,
+    site: &str,
+) -> Option<BrowserResult> {
+    let board = crate::approval_board::board(config);
+    let approved = board
+        .approvals()
+        .find(web.task(), &ask.action, State::Approved);
+    let id = if let Some(id) = approved {
+        id
+    } else {
+        let now = hatchling_scheduler::Timestamp::now().as_second();
+        let requested = match board.propose_signed(ask, web.task(), now) {
+            Ok(requested) => requested,
+            Err(Refusal::Denied) => {
+                return Some(BrowserResult::Denied {
+                    site: site.to_owned(),
+                });
+            }
+            Err(
+                refusal @ (Refusal::Paused
+                | Refusal::QueueFull
+                | Refusal::Unfrozen(_)
+                | Refusal::Entropy),
+            ) => {
+                return Some(BrowserResult::Unasked {
+                    reason: crate::approval_board::refused_as(&refusal),
+                });
+            }
+        };
+        if let Err(answer) = crate::web_ops::decided(&board, &requested.id, site, web.wait()) {
+            return Some(from_web(answer));
+        }
+        requested.id
+    };
+    let Some((_, claim)) = board.approvals().claim(&id) else {
+        return Some(refused("the owner's approval was already used: ask again"));
+    };
+    claim.succeeded();
+    None
+}
+
 /// A site's approval, as the browser's agent is told it.
 fn from_web(answer: WebResult) -> BrowserResult {
     match answer {
@@ -1435,6 +1688,7 @@ mod tests {
                     command,
                     BrowserCommand::Open { .. }
                         | BrowserCommand::Snapshot
+                        | BrowserCommand::Act { .. }
                         | BrowserCommand::Fill { .. }
                         | BrowserCommand::SignIn { .. }
                 ) {
@@ -1568,6 +1822,75 @@ mod tests {
             WebSession::with(task, Duration::ZERO, Duration::from_secs(5), fetcher),
             BrowserSession::new(Some(Arc::new(fake.clone()))),
         )
+    }
+
+    /// `op`, with the owner allowing the signed-in use it waits on, if it
+    /// waits on one: the op is made again once they have, as the agent
+    /// would. Any other answer is the op's.
+    fn as_owner_allows(
+        config: &Config,
+        keys: &dyn OpensStores,
+        web: &mut WebSession,
+        browser: &mut BrowserSession,
+        op: &BrowserOp,
+    ) -> BrowserResult {
+        let answer = handle_browser_op(config, keys, web, browser, op);
+        let BrowserResult::Waiting { request, .. } = &answer else {
+            return answer;
+        };
+        let board = crate::approval_board::board(config);
+        let Some(asked) = board.approvals().get(request) else {
+            return answer;
+        };
+        if !matches!(asked.run(), crate::approval_board::Approved::Signed(_)) {
+            return answer;
+        }
+        board
+            .decide(
+                request,
+                asked.revision,
+                &asked.digest,
+                Decision::Approve,
+                hatchling_scheduler::Timestamp::now().as_second(),
+            )
+            .unwrap();
+        handle_browser_op(config, keys, web, browser, op)
+    }
+
+    /// A bus on `config`'s approval board, to see the cards it sends.
+    fn watch_cards(config: &Config) -> Arc<crate::api_stream::Bus> {
+        let bus = Arc::new(crate::api_stream::Bus::starting_at(1));
+        crate::approval_board::board(config).attach(Arc::clone(&bus));
+        bus
+    }
+
+    /// The fields of the signed-in card the request `id` waits on, as
+    /// `cards` saw it sent.
+    fn signed_card(
+        config: &Config,
+        cards: &crate::api_stream::Bus,
+        id: &str,
+    ) -> Vec<(String, String, FieldSource)> {
+        let board = crate::approval_board::board(config);
+        let request = board.approvals().get(id).expect("no such request");
+        assert!(
+            matches!(request.run(), crate::approval_board::Approved::Signed(_)),
+            "not a signed-in use"
+        );
+        cards
+            .after(None)
+            .into_iter()
+            .find_map(|event| {
+                if let hatchling_core::ui::UiEventBody::Confirmation(card) = event.body {
+                    (card.confirmation_id == id).then_some(card.fields)
+                } else {
+                    None
+                }
+            })
+            .expect("no card for the request")
+            .into_iter()
+            .map(|field| (field.label, field.value, field.source))
+            .collect()
     }
 
     fn open(url: &str) -> BrowserOp {
@@ -1773,6 +2096,34 @@ mod tests {
         (config, scratch, keys, profile)
     }
 
+    /// The test browser's page: on `url`, with `elements` (id, role,
+    /// name), whatever it's told to do.
+    fn page_with(fake: &Fake, url: &str, elements: &[(u32, &str, &str)]) {
+        *fake.shows.lock().unwrap() = Some(PageSnapshot {
+            url: url.to_owned(),
+            elements: elements
+                .iter()
+                .map(|(id, role, name)| hatchling_core::browser::PageElement {
+                    id: *id,
+                    role: (*role).to_owned(),
+                    name: (*name).to_owned(),
+                })
+                .collect(),
+            ..PageSnapshot::default()
+        });
+    }
+
+    /// `config` with a vault of its own under `scratch`, holding nothing:
+    /// typed text can be checked against it.
+    fn with_vault(mut config: Config, scratch: &crate::api_auth::tests::Scratch) -> Config {
+        let root = scratch.0.join("vault");
+        std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700)
+            .create(&root)
+            .unwrap();
+        config.vault.root = root;
+        config
+    }
+
     fn kept_jar(config: &Config, keys: &MasterKey, profile: &str) -> Vec<Cookie> {
         crate::browser_profiles::Profiles::of(config, keys)
             .unwrap()
@@ -1794,14 +2145,18 @@ mod tests {
         assert!(covering(&config, &keys, "b.example:443").is_none());
         let fake = Fake::default();
         let (mut web, mut browser) = session("t", &fake);
-        let answer = handle_browser_op(
+        let answer = as_owner_allows(
             &config,
             &keys,
             &mut web,
             &mut browser,
             &open("https://a.example/"),
         );
-        assert_eq!(answer, page("https://a.example/"), "not put to the owner");
+        assert_eq!(
+            answer,
+            page("https://a.example/"),
+            "opened in its profile, once the owner allowed browsing signed in"
+        );
         assert_eq!(
             fake.log.lock().unwrap().commands,
             [
@@ -1829,7 +2184,7 @@ mod tests {
             element: 1,
             action: PageAction::Click,
         };
-        handle_browser_op(&config, &keys, &mut web, &mut browser, &act);
+        as_owner_allows(&config, &keys, &mut web, &mut browser, &act);
         assert_eq!(
             kept_jar(&config, &keys, &profile.id),
             [cookie("a.example", "sid"), cookie("a.example", "acted")],
@@ -1837,7 +2192,7 @@ mod tests {
         );
         fake.jar.lock().unwrap().push(cookie("a.example", "opened"));
         let next = open("https://a.example/next");
-        handle_browser_op(&config, &keys, &mut web, &mut browser, &next);
+        as_owner_allows(&config, &keys, &mut web, &mut browser, &next);
         assert_eq!(
             kept_jar(&config, &keys, &profile.id).len(),
             3,
@@ -1851,13 +2206,255 @@ mod tests {
             .unwrap()
             .extend([cookie("idp.example", "token"), cookie("b.example", "track")]);
         assert_eq!(
-            handle_browser_op(&config, &keys, &mut web, &mut browser, &BrowserOp::Close {}),
+            as_owner_allows(&config, &keys, &mut web, &mut browser, &BrowserOp::Close {}),
             BrowserResult::Closed
         );
         assert_eq!(
             kept_jar(&config, &keys, &profile.id),
             [cookie("a.example", "sid"), cookie("idp.example", "token")],
             "kept on close: only its own sites' cookies"
+        );
+    }
+
+    /// Browsing signed in is the owner's to allow, before the session's
+    /// first page there: the agent is told it waits, and the browser is
+    /// given nothing. Allowed, every site of the profile opens for the rest
+    /// of the session without asking again.
+    #[test]
+    fn browsing_signed_in_is_put_to_the_owner_before_the_first_page() {
+        let (config, _scratch, keys, profile) = profiled(
+            "profile-asked",
+            &["a.example:443", "idp.example:443"],
+            vec![cookie("a.example", "sid")],
+        );
+        let cards = watch_cards(&config);
+        let fake = Fake::default();
+        let (mut web, mut browser) = session("t", &fake);
+        let answer = handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &open("https://a.example/inbox"),
+        );
+        let BrowserResult::Waiting { request, site } = &answer else {
+            unreachable!("not put to the owner");
+        };
+        assert_eq!(site, "https://a.example");
+        assert!(
+            fake.log.lock().unwrap().commands.is_empty(),
+            "the browser was given something before the owner said yes"
+        );
+        let card = signed_card(&config, &cards, request);
+        assert!(card.contains(&(
+            String::from("Signed-in sites"),
+            profile.sites.join(", "),
+            FieldSource::Broker
+        )));
+        assert!(card.contains(&(
+            String::from("Page it asked for"),
+            String::from("https://a.example/inbox"),
+            FieldSource::Agent
+        )));
+        let answer = as_owner_allows(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &open("https://a.example/inbox"),
+        );
+        assert_eq!(answer, page("https://a.example/inbox"));
+        // The session holds it now: another of its sites isn't asked.
+        let answer = handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &open("https://idp.example/account"),
+        );
+        assert_eq!(answer, page("https://idp.example/account"));
+        // Another session is asked again.
+        let (mut other_web, mut other) = session("t2", &fake);
+        let answer = handle_browser_op(
+            &config,
+            &keys,
+            &mut other_web,
+            &mut other,
+            &open("https://a.example/inbox"),
+        );
+        assert!(
+            matches!(answer, BrowserResult::Waiting { .. }),
+            "another session wasn't asked"
+        );
+    }
+
+    /// Signed in, what could send or change something is the owner's to
+    /// allow, each time, with what the agent typed on the page: pressing
+    /// Enter, clicking anything but a link, choosing an option. Typing and
+    /// following a link aren't asked. Signed out, nothing is.
+    #[test]
+    fn signed_in_what_could_send_waits_for_the_owner_with_what_was_typed() {
+        let (config, scratch, keys, _profile) =
+            profiled("profile-acts", &["mail.example:443"], Vec::new());
+        let config = with_vault(config, &scratch);
+        let cards = watch_cards(&config);
+        let fake = Fake::default();
+        page_with(
+            &fake,
+            "https://mail.example/compose",
+            &[
+                (1, "textbox", "To"),
+                (3, "button", "Send"),
+                (4, "link", "Inbox"),
+            ],
+        );
+        let (mut web, mut browser) = session("t", &fake);
+        let opened = as_owner_allows(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &open("https://mail.example/compose"),
+        );
+        assert!(matches!(opened, BrowserResult::Page { .. }), "not opened");
+        let acts = |fake: &Fake| {
+            fake.log
+                .lock()
+                .unwrap()
+                .commands
+                .iter()
+                .filter(|command| matches!(command, BrowserCommand::Act { .. }))
+                .count()
+        };
+        let act = |element: u32, action: PageAction| BrowserOp::Act { element, action };
+        // Typing isn't asked: it sends nothing.
+        let typed = handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &act(
+                1,
+                PageAction::Type {
+                    text: String::from("someone@elsewhere.example"),
+                },
+            ),
+        );
+        assert!(matches!(typed, BrowserResult::Page { .. }), "not typed");
+        assert_eq!(acts(&fake), 1);
+        // Sending is, with what was typed.
+        let send = act(3, PageAction::Click);
+        let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, &send);
+        let BrowserResult::Waiting { request, .. } = &answer else {
+            unreachable!("sent without the owner");
+        };
+        assert_eq!(acts(&fake), 1, "the browser was told to send");
+        let card = signed_card(&config, &cards, request);
+        for wanted in [
+            ("Page", "https://mail.example/compose", FieldSource::Broker),
+            (
+                "What it does",
+                "Click the page's button",
+                FieldSource::Broker,
+            ),
+            ("What the page calls it", "Send", FieldSource::Agent),
+            (
+                "Typed on this page",
+                "into the textbox the page calls \"To\": someone@elsewhere.example",
+                FieldSource::Agent,
+            ),
+        ] {
+            assert!(
+                card.contains(&(wanted.0.to_owned(), wanted.1.to_owned(), wanted.2)),
+                "a field the owner should see isn't on the card"
+            );
+        }
+        let allowed = as_owner_allows(&config, &keys, &mut web, &mut browser, &send);
+        assert!(matches!(allowed, BrowserResult::Page { .. }), "not sent");
+        assert_eq!(acts(&fake), 2, "sent once the owner said yes");
+        // Allowed once: the next send is asked again.
+        let again = handle_browser_op(&config, &keys, &mut web, &mut browser, &send);
+        assert!(matches!(again, BrowserResult::Waiting { .. }), "not asked");
+        // Enter is asked; a link followed isn't.
+        let enter = handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &act(1, PageAction::Key { key: Key::Enter }),
+        );
+        assert!(!matches!(enter, BrowserResult::Page { .. }), "not asked");
+        let link = handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &act(4, PageAction::Click),
+        );
+        assert!(matches!(link, BrowserResult::Page { .. }), "not followed");
+        assert_eq!(acts(&fake), 3, "only the link was followed");
+    }
+
+    /// Typed text that changed since the owner allowed an act is another
+    /// act: what they allowed was what they were shown.
+    #[test]
+    fn an_act_allowed_is_the_one_shown_and_more_typed_is_asked_again() {
+        let (config, scratch, keys, _profile) =
+            profiled("profile-act-shown", &["mail.example:443"], Vec::new());
+        let config = with_vault(config, &scratch);
+        let fake = Fake::default();
+        page_with(
+            &fake,
+            "https://mail.example/compose",
+            &[(1, "textbox", "Body"), (3, "button", "Send")],
+        );
+        let (mut web, mut browser) = session("t", &fake);
+        as_owner_allows(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &open("https://mail.example/compose"),
+        );
+        let type_in = |text: &str| BrowserOp::Act {
+            element: 1,
+            action: PageAction::Type {
+                text: text.to_owned(),
+            },
+        };
+        let send = BrowserOp::Act {
+            element: 3,
+            action: PageAction::Click,
+        };
+        handle_browser_op(&config, &keys, &mut web, &mut browser, &type_in("hello"));
+        let shown = handle_browser_op(&config, &keys, &mut web, &mut browser, &send);
+        let BrowserResult::Waiting { request, .. } = &shown else {
+            unreachable!("answered otherwise");
+        };
+        let board = crate::approval_board::board(&config);
+        let asked = board.approvals().get(request).unwrap();
+        board
+            .decide(
+                request,
+                asked.revision,
+                &asked.digest,
+                Decision::Approve,
+                hatchling_scheduler::Timestamp::now().as_second(),
+            )
+            .unwrap();
+        // More typed after the owner said yes: the send they allowed isn't
+        // this one.
+        handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &type_in(" and what the agent read"),
+        );
+        let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, &send);
+        assert!(
+            !matches!(answer, BrowserResult::Page { .. }),
+            "sent what the owner wasn't shown"
         );
     }
 
@@ -1871,7 +2468,7 @@ mod tests {
         let fake = Fake::default();
         let (mut web, mut browser) = session("t", &fake);
         let first = open("https://a.example/");
-        handle_browser_op(&config, &keys, &mut web, &mut browser, &first);
+        as_owner_allows(&config, &keys, &mut web, &mut browser, &first);
         assert_eq!(browser.profile.as_deref(), Some(profile.id.as_str()));
         // The owner signs it out while its browser runs.
         let out = hatchling_core::ui::ProfileOp::SignOut {
@@ -1889,7 +2486,7 @@ mod tests {
             made
         });
         showing(&fake, "https://a.example/", "sid-value set-after-sign-out");
-        let read = handle_browser_op(&config, &keys, &mut web, &mut browser, &BrowserOp::Read {});
+        let read = as_owner_allows(&config, &keys, &mut web, &mut browser, &BrowserOp::Read {});
         let told = format!("{read:?}");
         assert!(
             !told.contains("sid-value") && !told.contains("set-after-sign-out"),
@@ -1902,7 +2499,7 @@ mod tests {
             "its session kept again after an op"
         );
         assert_eq!(
-            handle_browser_op(&config, &keys, &mut web, &mut browser, &BrowserOp::Close {}),
+            as_owner_allows(&config, &keys, &mut web, &mut browser, &BrowserOp::Close {}),
             BrowserResult::Closed
         );
         assert_eq!(
@@ -1914,7 +2511,7 @@ mod tests {
         // sign-in.
         let next = Fake::default();
         let (mut web, mut browser) = session("t", &next);
-        handle_browser_op(&config, &keys, &mut web, &mut browser, &first);
+        as_owner_allows(&config, &keys, &mut web, &mut browser, &first);
         assert!(
             next.log
                 .lock()
@@ -1932,7 +2529,7 @@ mod tests {
             element: 1,
             action: PageAction::Click,
         };
-        handle_browser_op(&config, &keys, &mut web, &mut browser, &act);
+        as_owner_allows(&config, &keys, &mut web, &mut browser, &act);
         assert_eq!(
             kept_jar(&config, &keys, &profile.id),
             [cookie("a.example", "again")],
@@ -1949,7 +2546,7 @@ mod tests {
         );
         let fake = Fake::default();
         let (mut web, mut browser) = session("t", &fake);
-        let answer = handle_browser_op(
+        let answer = as_owner_allows(
             &config,
             &keys,
             &mut web,
@@ -1959,7 +2556,7 @@ mod tests {
         assert_eq!(answer, page("https://a.example/"));
         // Another site: put to the owner first, and the signed-in browser
         // runs on meanwhile.
-        let answer = handle_browser_op(
+        let answer = as_owner_allows(
             &config,
             &keys,
             &mut web,
@@ -1973,7 +2570,7 @@ mod tests {
         assert_eq!(fake.log.lock().unwrap().finished, 0);
         fake.jar.lock().unwrap().push(cookie("a.example", "fresh"));
         owner_decides(&config, "t", "https://b.example", Decision::Approve);
-        let answer = handle_browser_op(
+        let answer = as_owner_allows(
             &config,
             &keys,
             &mut web,
@@ -2022,7 +2619,7 @@ mod tests {
             .unwrap();
         let fake = Fake::default();
         let (mut web, mut browser) = session("t", &fake);
-        let answer = handle_browser_op(
+        let answer = as_owner_allows(
             &config,
             &keys,
             &mut web,
@@ -2032,7 +2629,7 @@ mod tests {
         assert_eq!(answer, page("https://a.example/"));
         fake.jar.lock().unwrap().push(cookie("a.example", "fresh"));
         // The other profile's site: no owner to ask, and not this browser.
-        let answer = handle_browser_op(
+        let answer = as_owner_allows(
             &config,
             &keys,
             &mut web,
@@ -2088,7 +2685,7 @@ mod tests {
         let ((mut web, mut browser), board, _bus) = watched(&fake);
         browser.adopt_profile();
         assert_eq!(browser.profile, None, "no browser yet");
-        let answer = handle_browser_op(
+        let answer = as_owner_allows(
             &config,
             &keys,
             &mut web,
@@ -2098,7 +2695,7 @@ mod tests {
         let asked = matches!(answer, BrowserResult::Waiting { .. });
         assert!(asked, "put to the owner first");
         owner_decides(&config, "t", "https://a.example", Decision::Approve);
-        let answer = handle_browser_op(
+        let answer = as_owner_allows(
             &config,
             &keys,
             &mut web,
@@ -2257,14 +2854,14 @@ mod tests {
         let (mut web, mut browser) = session("t", &fake);
         let keeper = keeping(&fake, &mut browser, &config, &keys);
         let opened = open("https://a.example/login");
-        handle_browser_op(&config, &keys, &mut web, &mut browser, &opened);
+        as_owner_allows(&config, &keys, &mut web, &mut browser, &opened);
         // The page echoes what it's given: the agent sees none of it.
         showing(
             &fake,
             "https://a.example/login",
             "Signed in as work@a.example, Work-hunter2",
         );
-        let answer = handle_browser_op(
+        let answer = as_owner_allows(
             &config,
             &keys,
             &mut web,
@@ -2325,10 +2922,10 @@ mod tests {
             ]
         );
         // Every page after hides them too, until the browser is closed.
-        let read = handle_browser_op(&config, &keys, &mut web, &mut browser, &BrowserOp::Read {});
+        let read = as_owner_allows(&config, &keys, &mut web, &mut browser, &BrowserOp::Read {});
         let read = format!("{read:?}");
         assert!(!read.contains("hunter2"), "what the agent is told");
-        handle_browser_op(&config, &keys, &mut web, &mut browser, &BrowserOp::Close {});
+        as_owner_allows(&config, &keys, &mut web, &mut browser, &BrowserOp::Close {});
     }
 
     #[test]
@@ -2342,7 +2939,7 @@ mod tests {
         let (mut web, mut browser) = session("t", &fake);
         let refused_for = |answer: &BrowserResult, words: &str| matches!(answer, BrowserResult::Refused { reason } if reason.contains(words));
         // No browser of a profile: refused, nothing read.
-        let answer = handle_browser_op(
+        let answer = as_owner_allows(
             &config,
             &keys,
             &mut web,
@@ -2350,7 +2947,7 @@ mod tests {
             &sign_in_op(None, None),
         );
         assert!(refused_for(&answer, "isn't signed in"), "the answer");
-        handle_browser_op(
+        as_owner_allows(
             &config,
             &keys,
             &mut web,
@@ -2359,7 +2956,7 @@ mod tests {
         );
         // No keeper: refused, nothing filled.
         showing(&fake, "https://a.example/login", "Sign in");
-        let answer = handle_browser_op(
+        let answer = as_owner_allows(
             &config,
             &keys,
             &mut web,
@@ -2370,7 +2967,7 @@ mod tests {
         assert!(keeper_fills().is_none(), "no keeper runs in a unit test");
         let keeper = keeping(&fake, &mut browser, &config, &keys);
         // Two sign-ins: say which.
-        let answer = handle_browser_op(
+        let answer = as_owner_allows(
             &config,
             &keys,
             &mut web,
@@ -2384,7 +2981,7 @@ mod tests {
             ),
             "the answer"
         );
-        let answer = handle_browser_op(
+        let answer = as_owner_allows(
             &config,
             &keys,
             &mut web,
@@ -2392,7 +2989,7 @@ mod tests {
             &sign_in_op(None, Some("Gym")),
         );
         assert!(refused_for(&answer, "say which"), "the answer");
-        let answer = handle_browser_op(
+        let answer = as_owner_allows(
             &config,
             &keys,
             &mut web,
@@ -2410,7 +3007,7 @@ mod tests {
         );
         // The profile's other site: no sign-in kept for it.
         showing(&fake, "https://idp.example/", "Sign in");
-        let answer = handle_browser_op(
+        let answer = as_owner_allows(
             &config,
             &keys,
             &mut web,
@@ -2422,7 +3019,7 @@ mod tests {
             "the answer"
         );
         showing(&fake, "about:blank", "");
-        let answer = handle_browser_op(
+        let answer = as_owner_allows(
             &config,
             &keys,
             &mut web,
@@ -2440,7 +3037,7 @@ mod tests {
         }));
         browser.fills = Some(refusing);
         showing(&fake, "https://a.example/login", "Sign in");
-        let answer = handle_browser_op(
+        let answer = as_owner_allows(
             &config,
             &keys,
             &mut web,
@@ -2503,7 +3100,7 @@ mod tests {
                 // Tests on other threads hit the same log lines: the cache of
                 // which are wanted is rebuilt with this capture in place.
                 tracing::callsite::rebuild_interest_cache();
-                let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, op);
+                let answer = as_owner_allows(&config, &keys, &mut web, &mut browser, op);
                 told.push(format!("{answer:?}"));
             };
             op(&open("https://a.example/login"));
@@ -2541,7 +3138,7 @@ mod tests {
                 // Tests on other threads hit the same log lines: the cache of
                 // which are wanted is rebuilt with this capture in place.
                 tracing::callsite::rebuild_interest_cache();
-                let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, op);
+                let answer = as_owner_allows(&config, &keys, &mut web, &mut browser, op);
                 told.push(format!("{answer:?}"));
             };
             op(&BrowserOp::Code { element: 3 });
@@ -2630,7 +3227,7 @@ mod tests {
             browser.kept(&config, &keys, &BrowserOp::Read {}, page("a-secret")),
             page("a-secret")
         );
-        handle_browser_op(
+        as_owner_allows(
             &config,
             &keys,
             &mut web,
@@ -2666,7 +3263,7 @@ mod tests {
         let (config, _scratch, keys, profile) = with_sign_ins("killed", &[]);
         let fake = Fake::default();
         let (mut web, mut browser) = session("t", &fake);
-        handle_browser_op(
+        as_owner_allows(
             &config,
             &keys,
             &mut web,
@@ -2674,7 +3271,7 @@ mod tests {
             &open("https://a.example/"),
         );
         fake.jar.lock().unwrap().push(cookie("a.example", "late"));
-        handle_browser_op(&config, &keys, &mut web, &mut browser, &BrowserOp::Read {});
+        as_owner_allows(&config, &keys, &mut web, &mut browser, &BrowserOp::Read {});
         // Gone without a close: its cell killed, as a crashed session's is.
         drop(browser);
         assert_eq!(
@@ -2706,12 +3303,12 @@ mod tests {
         browser.code_wait = Duration::ZERO;
         let ask = BrowserOp::Code { element: 3 };
         // Not a signed-in browser: refused.
-        let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, &ask);
+        let answer = as_owner_allows(&config, &keys, &mut web, &mut browser, &ask);
         assert!(
             matches!(answer, BrowserResult::Refused { .. }),
             "the answer"
         );
-        handle_browser_op(
+        as_owner_allows(
             &config,
             &keys,
             &mut web,
@@ -2719,7 +3316,7 @@ mod tests {
             &open("https://a.example/"),
         );
         showing(&fake, "https://a.example/verify", "Enter the code");
-        let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, &ask);
+        let answer = as_owner_allows(&config, &keys, &mut web, &mut browser, &ask);
         assert_eq!(
             answer,
             BrowserResult::CodeWaiting {
@@ -2733,7 +3330,7 @@ mod tests {
             .unwrap();
         let asked = latest_code(&bus);
         // Still waiting: told so again, nothing typed.
-        let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, &ask);
+        let answer = as_owner_allows(&config, &keys, &mut web, &mut browser, &ask);
         assert!(
             matches!(answer, BrowserResult::CodeWaiting { .. }),
             "the answer"
@@ -2745,7 +3342,7 @@ mod tests {
             Ok(())
         );
         showing(&fake, "https://a.example/verify", "Code 481516 accepted");
-        let answer = handle_browser_op(
+        let answer = as_owner_allows(
             &config,
             &keys,
             &mut web,
@@ -2785,7 +3382,7 @@ mod tests {
         let ((mut web, mut browser), board, bus) = watched(&fake);
         browser.code_wait = Duration::ZERO;
         let ask = BrowserOp::Code { element: 3 };
-        handle_browser_op(
+        as_owner_allows(
             &config,
             &keys,
             &mut web,
@@ -2798,26 +3395,26 @@ mod tests {
             .map(|shown| shown.id.clone())
             .unwrap();
         showing(&fake, "https://a.example/verify", "Enter the code");
-        let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, &ask);
+        let answer = as_owner_allows(&config, &keys, &mut web, &mut browser, &ask);
         assert!(
             matches!(answer, BrowserResult::CodeWaiting { .. }),
             "the answer"
         );
         assert_eq!(board.decline_code(&id, &latest_code(&bus)), Ok(()));
         assert_eq!(
-            handle_browser_op(&config, &keys, &mut web, &mut browser, &ask),
+            as_owner_allows(&config, &keys, &mut web, &mut browser, &ask),
             BrowserResult::CodeDeclined
         );
-        handle_browser_op(&config, &keys, &mut web, &mut browser, &ask);
+        as_owner_allows(&config, &keys, &mut web, &mut browser, &ask);
         board.age_code(&id);
         assert_eq!(
-            handle_browser_op(&config, &keys, &mut web, &mut browser, &ask),
+            as_owner_allows(&config, &keys, &mut web, &mut browser, &ask),
             BrowserResult::CodeExpired
         );
         assert!(fills(&fake).is_empty(), "no code typed");
         // Not on an https page: refused.
         showing(&fake, "about:blank", "");
-        let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, &ask);
+        let answer = as_owner_allows(&config, &keys, &mut web, &mut browser, &ask);
         assert!(
             matches!(answer, BrowserResult::Refused { .. }),
             "the answer"
@@ -2828,12 +3425,12 @@ mod tests {
         plain = plain.with_board(Arc::clone(&plain_board));
         plain.code_wait = Duration::ZERO;
         let other = open("https://b.example/");
-        handle_browser_op(&config, &keys, &mut web, &mut plain, &other);
+        as_owner_allows(&config, &keys, &mut web, &mut plain, &other);
         owner_decides(&config, "t", "https://b.example", Decision::Approve);
-        handle_browser_op(&config, &keys, &mut web, &mut plain, &other);
+        as_owner_allows(&config, &keys, &mut web, &mut plain, &other);
         assert!(plain.is_open() && plain.profile.is_none());
         showing(&fake, "https://b.example/verify", "Enter the code");
-        let answer = handle_browser_op(&config, &keys, &mut web, &mut plain, &ask);
+        let answer = as_owner_allows(&config, &keys, &mut web, &mut plain, &ask);
         assert!(
             matches!(answer, BrowserResult::Refused { .. }),
             "the answer"
@@ -2846,7 +3443,7 @@ mod tests {
         );
         // No board, no owner to ask.
         let (mut web, mut alone) = session("t", &fake);
-        handle_browser_op(
+        as_owner_allows(
             &config,
             &keys,
             &mut web,
@@ -3523,9 +4120,7 @@ mod tests {
                 "Typed 7 characters into textbox \"Search\"",
             ),
             (
-                act(PageAction::Key {
-                    key: hatchling_core::browser::Key::Enter,
-                }),
+                act(PageAction::Key { key: Key::Enter }),
                 "Pressed Enter in textbox \"Search\"",
             ),
             (
