@@ -540,6 +540,52 @@ pub enum SiteResult {
     Failed,
 }
 
+/// The model usage the broker counted, as the model server reported it
+/// with each reply: never what the agent says it used.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct UsageReport {
+    /// Whether the broker counts usage: it does wherever scheduling is on,
+    /// which every chat and run needs.
+    pub counted: bool,
+    /// Each of the last seven days on this machine's clock, today first,
+    /// days without a call included.
+    pub days: Vec<UsageDay>,
+    /// Each model's use over those days, the most tokens first.
+    pub models: Vec<UsageModel>,
+}
+
+/// One day's model usage.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct UsageDay {
+    /// The day, `YYYY-MM-DD` on this machine's clock.
+    pub date: String,
+    /// Model calls answered.
+    pub calls: u32,
+    /// Tokens the model read: prompts, history and tool results.
+    pub input_tokens: u64,
+    /// Tokens the model wrote, thinking included.
+    pub output_tokens: u64,
+    /// Calls whose reply reported no usage, so their tokens aren't in the
+    /// counts.
+    pub unreported: u32,
+}
+
+/// One model's usage over the report's days.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct UsageModel {
+    /// The model, as its server named it in replies.
+    pub model: String,
+    /// Model calls answered.
+    pub calls: u32,
+    /// Tokens the model read.
+    pub input_tokens: u64,
+    /// Tokens the model wrote.
+    pub output_tokens: u64,
+}
+
 /// An operation on the owner's signed-in profiles (WO-030).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -900,6 +946,8 @@ pub enum UiAction {
         /// The operation.
         op: SignInOp,
     },
+    /// Read the model usage the broker counted: the owner's alone.
+    ReadUsage {},
     /// Give the one-time code a browser session's page asks for (WO-030):
     /// typed into the page by the broker, used once and not kept.
     GiveCode {
@@ -1040,6 +1088,11 @@ pub enum UiActionResult {
     SignIns {
         /// The result.
         outcome: SignInResult,
+    },
+    /// The model usage the broker counted.
+    Usage {
+        /// The report.
+        usage: UsageReport,
     },
     /// The code was taken: the broker types it into the page next.
     CodeTaken {
@@ -2034,6 +2087,40 @@ mod tests {
                 },
             },
             &json!({"action": "manage_sign_ins", "op": {"op": "delete", "sign_in_id": "cred-1"}}),
+        );
+    }
+
+    #[test]
+    fn usage_is_read_as_counted_days_and_models() {
+        pinned(&UiAction::ReadUsage {}, &json!({"action": "read_usage"}));
+        let day = |date: &str, calls| UsageDay {
+            date: s(date),
+            calls,
+            input_tokens: 1200,
+            output_tokens: 300,
+            unreported: 1,
+        };
+        pinned(
+            &UiActionResult::Usage {
+                usage: UsageReport {
+                    counted: true,
+                    days: vec![day("2026-11-03", 4), day("2026-11-02", 0)],
+                    models: vec![UsageModel {
+                        model: s("qwen3.5:9b"),
+                        calls: 4,
+                        input_tokens: 2400,
+                        output_tokens: 600,
+                    }],
+                },
+            },
+            &json!({"result": "usage", "usage": {
+                "counted": true,
+                "days": [
+                    {"date": "2026-11-03", "calls": 4, "input_tokens": 1200, "output_tokens": 300, "unreported": 1},
+                    {"date": "2026-11-02", "calls": 0, "input_tokens": 1200, "output_tokens": 300, "unreported": 1},
+                ],
+                "models": [{"model": "qwen3.5:9b", "calls": 4, "input_tokens": 2400, "output_tokens": 600}],
+            }}),
         );
     }
 }

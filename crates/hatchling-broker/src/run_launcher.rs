@@ -401,6 +401,8 @@ pub fn scoped_config(
             channel: request.channel.clone(),
             depth: request.depth,
         }),
+        // A run's model calls are the owner's usage too.
+        usage: config.scheduler.usage.clone(),
         ..SchedulerConfig::disabled()
     };
     run
@@ -1093,6 +1095,7 @@ mod tests {
             max_connections: 16,
             scheduler: SchedulerConfig {
                 root: PathBuf::from("/srv/hatchling/schedules"),
+                usage: PathBuf::from("/srv/hatchling/schedules.usage"),
                 ..SchedulerConfig::disabled()
             },
             log_level: LogLevel::Error,
@@ -1304,6 +1307,9 @@ mod tests {
             config.scheduler.followup.is_none(),
             "the broker's own has none"
         );
+        // Its model calls are counted with the owner's.
+        assert_eq!(run.scheduler.usage, config.scheduler.usage);
+        assert!(!run.scheduler.usage.as_os_str().is_empty());
         assert!(
             run.skills.skills_dir.as_os_str().is_empty(),
             "a run invokes no skills"

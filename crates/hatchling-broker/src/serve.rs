@@ -875,6 +875,7 @@ fn serve_session(
                     cell_id,
                     creds.uid().as_u32(),
                     &mut egress_pages,
+                    &config.scheduler.usage,
                 )?),
                 SessionRequest::Channel(op) => SessionResponse::Channel(
                     crate::channel::handle_channel_op(&mut channels, &op, creds.uid().as_u32())?,
@@ -1228,6 +1229,7 @@ pub(crate) fn handle_egress_op(
     cell_id: &CellId,
     peer_uid: u32,
     pages: &mut crate::egress_pages::Pages,
+    usage: &std::path::Path,
 ) -> Result<EgressResult, Error> {
     let destination = match op {
         EgressOp::MintSurrogate { destination, .. } | EgressOp::Egress { destination, .. } => {
@@ -1289,7 +1291,11 @@ pub(crate) fn handle_egress_op(
             let forwarded = proxy.forward(peer_uid, &request);
             crate::machine::decided(cell_id.as_str(), destination, egress_verdict(&forwarded));
             match forwarded {
-                Ok(response) => Ok(ok_reply(response, pages)),
+                Ok(response) => {
+                    let at = hatchling_scheduler::Timestamp::now().as_second();
+                    crate::usage::count(usage, &request, &response, at);
+                    Ok(ok_reply(response, pages))
+                }
                 Err(refusal) if refusal.kind == RefusalKind::Failed => {
                     tracing::error!(
                         cell_id = %cell_id,
@@ -1441,6 +1447,26 @@ fn reject(stream: &UnixStream, reason: &str) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [`handle_egress_op`] for peer 1000, in a session that counts no
+    /// usage.
+    fn egress_op(
+        proxy: &dyn EgressPath,
+        egress: &EgressConfig,
+        op: &EgressOp,
+        cell_id: &CellId,
+        pages: &mut crate::egress_pages::Pages,
+    ) -> Result<EgressResult, Error> {
+        handle_egress_op(
+            proxy,
+            egress,
+            op,
+            cell_id,
+            1000,
+            pages,
+            std::path::Path::new(""),
+        )
+    }
 
     /// Through a spawner that's gone, the agent cell isn't started, and
     /// the spawn says so.
@@ -1704,8 +1730,7 @@ mod tests {
         let proxy = init_egress_proxy(&egress, &vault, &key).unwrap();
         let cell_id: CellId = "cell-pages".parse().unwrap();
         let mut pages = crate::egress_pages::Pages::default();
-        let mut op =
-            |op: EgressOp| handle_egress_op(&proxy, &egress, &op, &cell_id, 1000, &mut pages);
+        let mut op = |op: EgressOp| egress_op(&proxy, &egress, &op, &cell_id, &mut pages);
         let stage = |part: &[u8]| EgressOp::Stage {
             part_b64: encode_secret(part),
         };
@@ -1755,15 +1780,7 @@ mod tests {
             ttl_secs: 60,
         };
         assert_eq!(
-            handle_egress_op(
-                &proxy,
-                &granted_elsewhere,
-                &mint,
-                &cell_id,
-                1000,
-                &mut pages
-            )
-            .unwrap(),
+            egress_op(&proxy, &granted_elsewhere, &mint, &cell_id, &mut pages).unwrap(),
             EgressResult::Denied
         );
         // Minting directly: an allowlisted destination gets its surrogate,
@@ -2263,5 +2280,88 @@ mod gate_scope_tests {
         let mut seen = Vec::new();
         std::io::Read::read_to_end(&mut peer, &mut seen).unwrap();
         assert!(seen.is_empty(), "{seen:?}");
+    }
+
+    /// A model call the server answered through the egress is counted,
+    /// from the server's reply; where the broker has no place for usage,
+    /// nothing is.
+    #[test]
+    fn an_answered_model_call_is_counted() {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let reply = br#"{"model":"m","usage":{"prompt_tokens":11,"completion_tokens":3}}"#;
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .unwrap();
+                let mut seen = Vec::new();
+                let mut byte = [0_u8; 1];
+                while !seen.ends_with(b"\r\n\r\n") {
+                    stream.read_exact(&mut byte).unwrap();
+                    seen.extend_from_slice(&byte);
+                }
+                let head = String::from_utf8_lossy(&seen).into_owned();
+                let length: usize = head
+                    .lines()
+                    .find_map(|line| line.strip_prefix("Content-Length: "))
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                let mut body = vec![0; length];
+                stream.read_exact(&mut body).unwrap();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
+                    reply.len()
+                )
+                .unwrap();
+                stream.write_all(reply).unwrap();
+            }
+        });
+        let destination = format!("localhost:{port}");
+        let allowlist = format!("local-keyless:{destination}");
+        let proxy = Proxy::new(&allowlist, |_: &str| None::<Zeroizing<Vec<u8>>>).unwrap();
+        let egress = EgressConfig {
+            allowlist: crate::EgressAllowlist::new(&allowlist),
+            grants: vec![destination.clone()],
+        };
+        let cell_id: CellId = "cell-usage".parse().unwrap();
+        let mut pages = crate::egress_pages::Pages::default();
+        let call = || EgressOp::Egress {
+            method: String::from("POST"),
+            destination: destination.clone(),
+            path: String::from("/v1/chat/completions"),
+            headers: Vec::new(),
+            body_b64: encode_secret(br#"{"model":"m","messages":[]}"#),
+            surrogate_b64: proxy.mint_surrogate(1000, &destination, 60).unwrap(),
+            staged: 0,
+        };
+        let usage =
+            std::env::temp_dir().join(format!("hatchling-serve-usage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&usage);
+        for place in [usage.as_path(), std::path::Path::new("")] {
+            let answered =
+                handle_egress_op(&proxy, &egress, &call(), &cell_id, 1000, &mut pages, place)
+                    .unwrap();
+            assert!(
+                matches!(answered, EgressResult::Ok { status: 200, .. }),
+                "{answered:?}"
+            );
+        }
+        server.join().unwrap();
+        let report = crate::usage::report(
+            &usage,
+            hatchling_scheduler::Timestamp::now().as_second(),
+            None,
+        );
+        let today = report.days.first().unwrap();
+        assert_eq!(
+            (today.calls, today.input_tokens, today.output_tokens),
+            (1, 11, 3)
+        );
+        let _ = std::fs::remove_dir_all(&usage);
     }
 }

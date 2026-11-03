@@ -81,7 +81,12 @@ test('a listed schedule is read back in words, its own text only when the owner 
     assert.equal(cron('0 8 * *'), `cron 0 8 * * (${ZONE})`, 'not five fields: as written');
     assert.equal(cron('x'), `cron x (${ZONE})`);
     assert.equal(grantsInWords([]), 'May do nothing beyond answering');
-    assert.equal(grantsInWords([LOCAL, MODEL, { grant: 'channel-send', channel: 'signal' }, { grant: 'vault', action: 'fetch', name: 'api-key' }, { grant: 'memory', scope: 'user', action: 'recall' }, { grant: 'goals', action: 'query-goals' }]), 'May post in this chat, reach localhost:11434, post on signal, fetch the secret api-key, recall user memory, query goals');
+    assert.equal(grantsInWords([LOCAL, MODEL, { grant: 'channel-send', channel: 'signal' }, { grant: 'vault', action: 'fetch', name: 'api-key' }, { grant: 'memory', scope: 'user', action: 'recall' }, { grant: 'goals', action: 'query-goals' }]), 'May post in this chat, reach localhost:11434, post on signal, fetch the secret api-key, recall things about you, read your goals');
+    // A store's grants read as one phrase: the install's own, in full.
+    const memory = action => ({ grant: 'memory', scope: 'user', action });
+    const goals = action => ({ grant: 'goals', action });
+    assert.equal(grantsInWords([MODEL, LOCAL, memory('write'), memory('recall'), memory('remove'), goals('goal-create'), goals('goal-update'), goals('query-goals')]), 'May reach localhost:11434, post in this chat, remember, recall and forget things about you, keep your goals and their tracking');
+    assert.equal(grantsInWords([goals('query-goals'), goals('tracking-append'), { grant: 'memory', scope: 'session', action: 'context-append' }, { grant: 'memory', scope: 'session', action: 'context-read' }, { grant: 'memory', scope: 'project', action: 'new-kind' }]), 'May keep your goals and their tracking, note and read notes of session memory, new-kind project memory');
     const owners = jobOf(summary('sch-1', { task: 'Stretch for five minutes' }));
     assert.deepEqual({ ...owners, nextRun: typeof owners.nextRun }, { id: 'sch-1', title: 'Stretch for five minutes', kind: 'time', schedule: `Weekdays at 08:00 (${ZONE})`, recurring: true, limit: 'May post in this chat', source: '', event: '', goalId: null, health: 'ok', lastRun: '—', nextRun: 'string' });
     assert.notEqual(owners.nextRun, 'Not scheduled');
