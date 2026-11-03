@@ -17,7 +17,8 @@ use crate::Config;
 use crate::api_stream::Bus;
 
 /// A failed or undelivered run's detail, as the app's activity says it.
-pub const KEPT: &str = "It didn't finish, or its result couldn't be delivered: it's kept for you to review.";
+pub const KEPT: &str =
+    "It didn't finish, or its result couldn't be delivered: it's kept for you to review.";
 
 /// One broker's stream to the owner's app, once the API has attached it.
 #[derive(Debug, Default)]
@@ -54,7 +55,12 @@ impl AppStream {
     /// Tells the app what one scheduler tick did: each run started, each
     /// result delivered, and each kept. Whether an app was attached.
     pub fn tell(&self, report: &TickReport) -> bool {
-        let Some(bus) = self.bus.lock().unwrap_or_else(PoisonError::into_inner).clone() else {
+        let Some(bus) = self
+            .bus
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+        else {
             return false;
         };
         let notices = report
