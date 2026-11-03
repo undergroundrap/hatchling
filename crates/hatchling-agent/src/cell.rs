@@ -547,10 +547,7 @@ impl Cell<Ready> {
         // word, so it neither offers nor tries what's off.
         let note = crate::capabilities::note(self.config().run_tools.as_ref());
         let result = hatchling_loop::Loop::new(&registry, kind)
-            .with_system_prompt(format!(
-                "{}\n\n{note}",
-                hatchling_loop::system_prompt_for(kind)
-            ))
+            .with_system_note(&note)
             .with_budget(budget)
             .with_ledger(ledger)
             .with_memory_provider(Box::new(crate::memory_provider::BrokerMemoryProvider::new(
