@@ -117,6 +117,34 @@ pub fn local_time(seconds: i64, tz: &str) -> Option<String> {
     Some(at.strftime("%Y-%m-%d %H:%M").to_string())
 }
 
+/// The `days` dates up to the one `seconds` (Unix) falls on, newest first.
+///
+/// Each is `YYYY-MM-DD` on the clock of `tz`, or of this machine when `tz`
+/// is `None`. Empty for a zone it doesn't know or an instant out of range.
+#[must_use]
+pub fn recent_dates(seconds: i64, tz: Option<&str>, days: usize) -> Vec<String> {
+    let zone = match tz {
+        Some(tz) => match timezone(tz) {
+            Ok(zone) => zone,
+            Err(_) => return Vec::new(),
+        },
+        None => TimeZone::system(),
+    };
+    let Ok(at) = Timestamp::from_second(seconds) else {
+        return Vec::new();
+    };
+    let mut date = at.to_zoned(zone).date();
+    let mut dates = Vec::with_capacity(days);
+    for _ in 0..days {
+        dates.push(date.to_string());
+        let Ok(before) = date.yesterday() else {
+            break;
+        };
+        date = before;
+    }
+    dates
+}
+
 /// Who created a schedule. The broker records it; a cell lists and
 /// cancels only the agent's.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -495,6 +523,33 @@ mod tests {
         );
         assert_eq!(local_time(1_790_000_000, "Mars/Olympus"), None);
         assert_eq!(local_time(i64::MAX, "UTC"), None);
+    }
+
+    #[test]
+    fn recent_dates_count_back_from_the_day_on_a_zones_clock() {
+        // 1_790_000_000 is 2026-09-21 14:13:20 UTC; 1_789_960_000 is
+        // 2026-09-21 03:06:40 UTC, still the 20th in New York.
+        assert_eq!(
+            recent_dates(1_790_000_000, Some("UTC"), 3),
+            ["2026-09-21", "2026-09-20", "2026-09-19"]
+        );
+        assert_eq!(
+            recent_dates(1_789_960_000, Some("America/New_York"), 2),
+            ["2026-09-20", "2026-09-19"]
+        );
+        assert_eq!(
+            recent_dates(1_790_000_000, Some("UTC"), 0),
+            Vec::<String>::new()
+        );
+        assert_eq!(recent_dates(1_790_000_000, None, 1).len(), 1);
+        assert_eq!(
+            recent_dates(1_790_000_000, Some("Mars/Olympus"), 3),
+            Vec::<String>::new()
+        );
+        assert_eq!(recent_dates(i64::MAX, Some("UTC"), 3), Vec::<String>::new());
+        // Near the first day there is, it stops there.
+        let first = recent_dates(Timestamp::MIN.as_second(), Some("UTC"), 5);
+        assert!(!first.is_empty() && first.len() < 5, "{first:?}");
     }
 
     #[test]

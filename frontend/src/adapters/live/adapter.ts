@@ -20,8 +20,10 @@ import { LiveSignIns } from './sign-ins.js';
 import type { CodePort } from '../../session/codes.js';
 import type { AttentionPort } from '../../session/attention.js';
 import type { ConversationPort } from '../../session/conversations.js';
+import type { UsagePort } from '../../session/usage.js';
 import { LiveChatSession } from './session.js';
 import { LiveSchedules } from './schedules.js';
+import { LiveUsage } from './usage.js';
 import { LiveSites } from './sites.js';
 import { Surfaces } from './surfaces.js';
 const SETTINGS: Settings = { interfaceSize: 'comfortable', theme: 'dark', accent: 'white', avatarAccent: '#a78c57', keepChatPanelVisible: true, language: 'English', name: 'hatchling', vibe: '', feedPrompt: '', captchaStanding: false, telemetry: false, quietStart: '22:00', quietEnd: '08:00', digestTime: '08:30', dailyAllowance: 0, allowlist: [] };
@@ -50,6 +52,9 @@ export class LiveAdapter implements ProtocolAdapter {
     readonly codes: CodePort;
     /** Where the chat's header starts a new conversation: straight to the broker, never as a Command. */
     readonly conversations: ConversationPort;
+    /** The model usage the broker counted: read, never a Command. */
+    readonly usage: UsagePort;
+    readonly #usage: LiveUsage;
     /** Scheduled work that needs the owner: straight to the broker, never as a Command. */
     readonly attention: AttentionPort;
     readonly #listeners = new Set<() => void>();
@@ -73,6 +78,8 @@ export class LiveAdapter implements ProtocolAdapter {
         this.signIns = new LiveSignIns(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.codes = { give: (sessionId, code) => this.#surfaces.giveCode(sessionId, code) };
         this.conversations = { start: chatId => this.#newConversation(chatId) };
+        this.#usage = new LiveUsage(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
+        this.usage = this.#usage;
         this.chatSession = new LiveChatSession(this.#client, this.#chats, artifactId => this.#surfaces.shelf.latest(artifactId));
         this.#snapshot = this.#build();
         // Registered first, so the snapshot is current before any view hears of a change.
@@ -206,6 +213,7 @@ export class LiveAdapter implements ProtocolAdapter {
             case 'chat_message':
                 this.#chats.apply(body, event.ts);
                 this.#activity.chat(body, event.ts);
+                this.#usage.observe(body);
                 return undefined;
             case 'attachment':
                 this.#chats.attach(body, event.ts);

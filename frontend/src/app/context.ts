@@ -3,6 +3,7 @@ import type { SignInPort } from '../session/sign-ins.js';
 import type { CodePort } from '../session/codes.js';
 import type { AttentionPort } from '../session/attention.js';
 import type { ConversationPort } from '../session/conversations.js';
+import type { UsagePort } from '../session/usage.js';
 import type { ApprovalReview } from '../features/approvals/review.js';
 import type { ChatDelivery } from '../features/chat/delivery.js';
 import type { AppState, ArtifactFormat, Command, CommandResult, DeepReadonly, ProtocolAdapter } from '../protocol/models.js';
@@ -63,6 +64,8 @@ export interface AppContext {
     readonly codes: CodePort | undefined;
     /** Where a new conversation is started, when the app is connected to Hatchling (WO-026). */
     readonly conversations: ConversationPort | undefined;
+    /** The model usage the broker counted, when the app is connected to Hatchling. */
+    readonly usage: UsagePort | undefined;
     /** Scheduled work that needs the owner, when the app is connected to Hatchling. */
     readonly attention: AttentionPort | undefined;
     readonly delivery: ChatDelivery;

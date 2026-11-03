@@ -278,7 +278,7 @@ export type ApiOutcome = 'served' | 'refused';
  * What one API call asked for: the request's kind, never its content
  * (a message's text, a file, a schedule's task).
  */
-export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'give_code' | 'decline_code';
+export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'read_usage' | 'give_code' | 'decline_code';
 /**
  * A bearer token, presented in `Hello` for a token provider.
  *
@@ -3807,6 +3807,8 @@ export type UiAction = {
      */
     readonly op: SignInOp;
 } | {
+    readonly action: 'read_usage';
+} | {
     readonly action: 'give_code';
     /**
      * The code.
@@ -3992,6 +3994,12 @@ export type UiActionResult = {
      */
     readonly outcome: SignInResult;
     readonly result: 'sign_ins';
+} | {
+    readonly result: 'usage';
+    /**
+     * The report.
+     */
+    readonly usage: UsageReport;
 } | {
     readonly result: 'code_taken';
     /**
@@ -4276,6 +4284,73 @@ export type UiResponse = {
      */
     readonly result: UiActionResult;
     readonly type: 'action_result';
+};
+/**
+ * One day's model usage.
+ */
+export type UsageDay = {
+    /**
+     * Model calls answered.
+     */
+    readonly calls: number;
+    /**
+     * The day, `YYYY-MM-DD` on this machine's clock.
+     */
+    readonly date: string;
+    /**
+     * Tokens the model read: prompts, history and tool results.
+     */
+    readonly input_tokens: number;
+    /**
+     * Tokens the model wrote, thinking included.
+     */
+    readonly output_tokens: number;
+    /**
+     * Calls whose reply reported no usage, so their tokens aren't in the
+     * counts.
+     */
+    readonly unreported: number;
+};
+/**
+ * One model's usage over the report's days.
+ */
+export type UsageModel = {
+    /**
+     * Model calls answered.
+     */
+    readonly calls: number;
+    /**
+     * Tokens the model read.
+     */
+    readonly input_tokens: number;
+    /**
+     * The model, as its server named it in replies.
+     */
+    readonly model: string;
+    /**
+     * Tokens the model wrote.
+     */
+    readonly output_tokens: number;
+};
+/**
+ * The model usage the broker counted, as the model server reported it
+ * with each reply: never what the agent says it used.
+ */
+export type UsageReport = {
+    /**
+     * Whether the broker counts usage: it does wherever scheduling is on,
+     * which every chat and run needs.
+     */
+    readonly counted: boolean;
+    /**
+     * Each of the last seven days on this machine's clock, today first,
+     * days without a call included.
+     */
+    readonly days: readonly (UsageDay)[];
+    /**
+     * Each model's use over those days, the most tokens first.
+     */
+    readonly models: readonly (UsageModel)[];
 };
 /**
  * The broker's reply to one [`VaultOp`].

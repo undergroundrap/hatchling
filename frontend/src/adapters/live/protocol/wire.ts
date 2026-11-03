@@ -441,6 +441,10 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "string"
             },
             {
+                "const": "read_usage",
+                "type": "string"
+            },
+            {
                 "const": "give_code",
                 "type": "string"
             },
@@ -3170,6 +3174,18 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             {
                 "properties": {
                     "action": {
+                        "const": "read_usage",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "action"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
                         "const": "give_code",
                         "type": "string"
                     },
@@ -3563,6 +3579,22 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "required": [
                     "result",
                     "outcome"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "usage",
+                        "type": "string"
+                    },
+                    "usage": {
+                        "$ref": "#/$defs/UsageReport"
+                    }
+                },
+                "required": [
+                    "result",
+                    "usage"
                 ],
                 "type": "object"
             },
@@ -4157,5 +4189,87 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "object"
             }
         ]
+    },
+    "UsageDay": {
+        "properties": {
+            "calls": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "date": {
+                "type": "string"
+            },
+            "input_tokens": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "output_tokens": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "unreported": {
+                "minimum": 0,
+                "type": "integer"
+            }
+        },
+        "required": [
+            "date",
+            "calls",
+            "input_tokens",
+            "output_tokens",
+            "unreported"
+        ],
+        "type": "object"
+    },
+    "UsageModel": {
+        "properties": {
+            "calls": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "input_tokens": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "model": {
+                "type": "string"
+            },
+            "output_tokens": {
+                "minimum": 0,
+                "type": "integer"
+            }
+        },
+        "required": [
+            "model",
+            "calls",
+            "input_tokens",
+            "output_tokens"
+        ],
+        "type": "object"
+    },
+    "UsageReport": {
+        "properties": {
+            "counted": {
+                "type": "boolean"
+            },
+            "days": {
+                "items": {
+                    "$ref": "#/$defs/UsageDay"
+                },
+                "type": "array"
+            },
+            "models": {
+                "items": {
+                    "$ref": "#/$defs/UsageModel"
+                },
+                "type": "array"
+            }
+        },
+        "required": [
+            "counted",
+            "days",
+            "models"
+        ],
+        "type": "object"
     }
 };

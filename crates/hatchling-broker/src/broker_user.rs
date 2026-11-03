@@ -73,8 +73,8 @@ pub fn act_for_broker(config: &Config) -> Result<(), Error> {
 }
 
 /// The broker's state that isn't a sealed store, and is a directory:
-/// memory's and goals' roots, and the scheduler's run directories, each
-/// when it is on.
+/// memory's and goals' roots, the scheduler's run directories, and the
+/// model usage it counts beside them, each when it is on.
 #[must_use]
 pub fn state_dirs(config: &Config) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = [&config.memory.root, &config.goals.root]
@@ -84,6 +84,10 @@ pub fn state_dirs(config: &Config) -> Vec<PathBuf> {
         .collect();
     if config.scheduler.enabled() {
         dirs.push(config.scheduler.run_root());
+    }
+    // Beside the store too, where the broker's user may not make it.
+    if !config.scheduler.usage.as_os_str().is_empty() {
+        dirs.push(config.scheduler.usage.clone());
     }
     dirs
 }
@@ -199,7 +203,8 @@ mod tests {
     }
 
     /// The broker's other state: memory's, goals' and the scheduler's run
-    /// directories, and its activity log, each when it is on.
+    /// directories, the usage it counts, and its activity log, each when it
+    /// is on.
     #[test]
     fn the_brokers_state_is_memory_goals_and_its_runs() {
         let mut config = crate::api_auth::tests::owner_config(None);
@@ -208,12 +213,14 @@ mod tests {
         config.memory.root = PathBuf::from("/srv/h/memory");
         config.goals.root = PathBuf::from("/srv/h/goals");
         config.scheduler.root = PathBuf::from("/srv/h/schedules");
+        config.scheduler.usage = PathBuf::from("/srv/h/schedules.usage");
         assert_eq!(
             state_dirs(&config),
             [
                 PathBuf::from("/srv/h/memory"),
                 PathBuf::from("/srv/h/goals"),
                 PathBuf::from("/srv/h/schedules.runs"),
+                PathBuf::from("/srv/h/schedules.usage"),
             ]
         );
         assert_eq!(
