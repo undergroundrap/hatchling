@@ -898,7 +898,11 @@ pub struct HeldFire {
 }
 
 /// What a schedule list shows of one schedule: enough to inspect
-/// and cancel it. The task text, untrusted run input, is not shown.
+/// and cancel it.
+///
+/// Its task text only when the owner wrote it, through the API, the
+/// app or the CLI: an agent's schedule's text is untrusted run input,
+/// and shown beside the owner's it would read as theirs.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ScheduleSummary {
@@ -918,6 +922,11 @@ pub struct ScheduleSummary {
     /// until the owner resolves or retries it (WO-025).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held: Option<HeldFire>,
+    /// The task text, for a schedule the owner created; `None` for any
+    /// other (an agent's, a space's, a feed's, or one stored before
+    /// the broker recorded this).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
 }
 
 /// What a schedule's runs are.
@@ -3263,6 +3272,7 @@ mod tests {
                 }],
                 next_due: 1_790_000_000,
                 held: None,
+                task: None,
             }],
             next: Some(String::from("sch-1")),
         };
@@ -3270,6 +3280,18 @@ mod tests {
         assert_eq!(
             json,
             r#"{"result":"listed","schedules":[{"id":"sch-1","kind":"feed","when":{"every":"cron","expr":"0 8 * * *","tz":"UTC"},"channel":"local","grants":[{"grant":"channel-send","channel":"local"}],"next_due":1790000000}],"next":"sch-1"}"#
+        );
+        // The owner's task text, when shown, is one more field.
+        let ScheduleResult::Listed { schedules, .. } = &listed else {
+            unreachable!("built as a listing");
+        };
+        let mut owners = schedules[0].clone();
+        owners.task = Some(String::from("Stretch for five minutes"));
+        let shown = serde_json::to_value(&owners).unwrap();
+        assert_eq!(shown["task"], "Stretch for five minutes");
+        assert_eq!(
+            serde_json::from_value::<ScheduleSummary>(shown).unwrap(),
+            owners
         );
         assert_eq!(
             serde_json::from_str::<ScheduleResult>(&json).unwrap(),

@@ -871,7 +871,8 @@ fn page_of(mut visible: Vec<ScheduleSummary>, budget_bytes: usize) -> ScheduleRe
     }
 }
 
-/// What a list shows of `schedule`: never its task text.
+/// What a list shows of `schedule`: its task text only if the owner wrote
+/// it.
 fn summary(schedule: &Schedule) -> ScheduleSummary {
     ScheduleSummary {
         id: schedule.id.clone(),
@@ -884,6 +885,7 @@ fn summary(schedule: &Schedule) -> ScheduleSummary {
         channel: schedule.channel.clone(),
         grants: schedule.grants.clone(),
         next_due: schedule.next_due,
+        task: schedule.task_shown.then(|| schedule.task.clone()),
         held: schedule
             .ledger
             .occurrence
@@ -932,6 +934,8 @@ fn create_schedule(
         Err(reason) => return ScheduleResult::Refused { reason },
     };
     schedule.creator = creator;
+    // The owner's own words, shown back to them in a listing.
+    schedule.task_shown = creator == Creator::Owner;
     match SealedScheduleStore::new(&config.scheduler.root, key).insert(&schedule) {
         Ok(true) => ScheduleResult::Created { id: schedule.id },
         Ok(false) => ScheduleResult::Refused {
@@ -1405,6 +1409,7 @@ mod tests {
             space: None,
             feed: None,
             creator: Creator::Agent,
+            task_shown: false,
             ledger: hatchling_scheduler::Ledger::default(),
         };
         let shown = summary(&schedule);
@@ -1418,9 +1423,22 @@ mod tests {
                 grants: schedule.grants.clone(),
                 next_due: 42,
                 held: None,
+                task: None,
             }
         );
         assert!(!serde_json::to_string(&shown).unwrap().contains("task text"));
+        // The owner's own words are shown back to them.
+        let owners = Schedule {
+            creator: Creator::Owner,
+            task_shown: true,
+            ..schedule.clone()
+        };
+        assert_eq!(summary(&owners).task.as_deref(), Some("the task text"));
+        // One stored before this was recorded may be a cell's: not shown.
+        let mut stored = serde_json::to_value(&owners).unwrap();
+        stored.as_object_mut().unwrap().remove("task_shown");
+        let older: Schedule = serde_json::from_value(stored).unwrap();
+        assert_eq!(summary(&older).task, None);
         let feed = Schedule {
             feed: Some(FeedSpec {
                 goals: None,
@@ -1464,6 +1482,7 @@ mod tests {
             grants: Vec::new(),
             next_due: 0,
             held: None,
+            task: None,
         };
         let cost = |summary: &ScheduleSummary| {
             hatchling_memory::reply_encoded_len(serde_json::to_string(summary).unwrap().as_bytes())
@@ -1540,9 +1559,16 @@ mod tests {
         let owners = create(Creator::Owner);
         let agents = create(Creator::Agent);
         let store = SealedScheduleStore::new(&root, &key);
-        let creators: Vec<(String, Creator)> = store
-            .load()
-            .unwrap()
+        let loaded = store.load().unwrap();
+        for schedule in &loaded {
+            assert_eq!(
+                schedule.task_shown,
+                schedule.creator == Creator::Owner,
+                "{:?}",
+                schedule.creator
+            );
+        }
+        let creators: Vec<(String, Creator)> = loaded
             .into_iter()
             .map(|schedule| (schedule.id, schedule.creator))
             .collect();

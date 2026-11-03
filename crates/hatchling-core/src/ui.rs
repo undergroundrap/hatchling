@@ -124,6 +124,11 @@ pub enum UiResponse {
         /// The backend's session protocol version
         /// ([`PROTOCOL_VERSION`]).
         session_protocol: u16,
+        /// The grants this connection holds: what a schedule it creates
+        /// may be given, and what the app shows such a schedule may do.
+        /// Empty from an older broker.
+        #[serde(default)]
+        grants: Vec<crate::ScheduleGrant>,
     },
     /// The versions differ. The connection is refused, and `message`
     /// says what to do about it.
@@ -1135,6 +1140,7 @@ fn negotiate_between(frontend: u16, backend: u16) -> UiResponse {
         UiResponse::Welcome {
             schema_version: backend,
             session_protocol: PROTOCOL_VERSION,
+            grants: Vec::new(),
         },
         |message| UiResponse::Incompatible {
             frontend,
@@ -1409,6 +1415,7 @@ mod tests {
             UiResponse::Welcome {
                 schema_version: 4,
                 session_protocol: PROTOCOL_VERSION,
+                grants: Vec::new(),
             }
         );
         let older_backend = negotiate_between(5, 4);
