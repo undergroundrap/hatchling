@@ -19,7 +19,7 @@ Deleting any of these loses credentials or history. Each lives where its setting
 | `HATCHLING_SKILL_TRUST_ROOTS` | The skill-signing keys the broker trusts. |
 | `HATCHLING_MEMORY_DIR` | Memory items. |
 | `HATCHLING_GOALS_DIR` | Goals and their tracking log. |
-| `HATCHLING_SCHEDULER_DIR` | Schedules, sealed. Beside it, `<scheduler dir>.activity` is the subagent activity log, and `<scheduler dir>.usage/` the model usage the broker counted: a file a day (`YYYY-MM-DD.jsonl`, UTC), a line per model call with when, the model and the tokens read and written, never what was said. Not sealed; days past 40 are removed. (`<scheduler dir>.runs` is disposable; see below.) |
+| `HATCHLING_SCHEDULER_DIR` | Schedules, sealed. Beside it, `<scheduler dir>.activity` is the subagent activity log, `<scheduler dir>.decisions` the decisions you made on what the agent asked, each with the card as you were shown it (the newest 200), and `<scheduler dir>.usage/` the model usage the broker counted: a file a day (`YYYY-MM-DD.jsonl`, UTC), a line per model call with when, the model and the tokens read and written, never what was said. Not sealed; days past 40 are removed. (`<scheduler dir>.runs` is disposable; see below.) |
 | `HATCHLING_ARTIFACT_DIR` | Built artifacts and their build records, sealed. |
 | `HATCHLING_ARTIFACT_WORKSPACE` | What the agent delivered to your workspace. |
 | `HATCHLING_SPACE_DIR` | Spaces, sealed. |

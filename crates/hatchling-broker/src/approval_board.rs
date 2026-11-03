@@ -33,8 +33,8 @@ use std::time::Duration;
 use hatchling_artifact::PinnedRequest;
 use hatchling_channel::LocalHub;
 use hatchling_core::ui::{
-    ChatAuthor, ChatMessage, ConfirmationField, ConfirmationRequest, Decision, DecisionRejection,
-    FieldSource, UiEventBody,
+    ChatAuthor, ChatMessage, ConfirmationField, ConfirmationRequest, Decision, DecisionRecord,
+    DecisionRejection, FieldSource, UiEventBody,
 };
 use hatchling_core::{ActivationProposal, ApprovalRefusal, ArtifactResult};
 use hatchling_scheduler::Timestamp;
@@ -159,6 +159,10 @@ pub struct Board {
     bus: Mutex<Option<Arc<Bus>>>,
     queue: Mutex<VecDeque<String>>,
     wake: Condvar,
+    /// Each card the owner was shown, by its id, until it's decided.
+    cards: Mutex<BTreeMap<String, ConfirmationRequest>>,
+    /// Where decisions are kept, once the API says ([`Board::keep_decisions`]).
+    decisions: Mutex<Option<std::path::PathBuf>>,
 }
 
 /// The boards, by the vault root of the broker each belongs to.
@@ -178,6 +182,8 @@ pub fn board(config: &Config) -> Arc<Board> {
                     bus: Mutex::new(None),
                     queue: Mutex::new(VecDeque::new()),
                     wake: Condvar::new(),
+                    cards: Mutex::new(BTreeMap::new()),
+                    decisions: Mutex::new(None),
                 })
             }),
     )
@@ -187,6 +193,15 @@ impl Board {
     /// Sends what the board asks and decides to the owner's app on `bus`.
     pub fn attach(&self, bus: Arc<Bus>) {
         *self.bus.lock().unwrap_or_else(PoisonError::into_inner) = Some(bus);
+    }
+
+    /// Keeps each decision the owner makes from now on at `path`
+    /// ([`crate::decisions`]).
+    pub fn keep_decisions(&self, path: std::path::PathBuf) {
+        *self
+            .decisions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(path);
     }
 
     /// The ledger.
@@ -510,6 +525,7 @@ impl Board {
         now: i64,
     ) -> Result<State, DecisionRejection> {
         let decided = self.approvals.decide(id, revision, digest, decision, now)?;
+        self.keep(id, decision, now);
         self.publish(UiEventBody::ConfirmationDecided {
             confirmation_id: id.to_owned(),
             revision,
@@ -566,8 +582,45 @@ impl Board {
         }
     }
 
+    /// Keeps the owner's `decision` on the card `id`, made at `now`, where
+    /// decisions are kept: the card as they were shown it.
+    fn keep(&self, id: &str, decision: Decision, now: i64) {
+        let card = self
+            .cards
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(id);
+        let path = self
+            .decisions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let (Some(card), Some(path)) = (card, path) {
+            let decided_at = Timestamp::from_second(now)
+                .unwrap_or_else(|_| Timestamp::now())
+                .to_string();
+            crate::decisions::record(
+                &path,
+                &DecisionRecord {
+                    confirmation_id: card.confirmation_id,
+                    summary: card.summary,
+                    fields: card.fields,
+                    decision,
+                    decided_at,
+                },
+            );
+        }
+    }
+
     /// Pushes `body` to the owner's app, if one is attached: whether one was.
+    /// A card is remembered, for its decision to be kept with it.
     fn publish(&self, body: UiEventBody) -> bool {
+        if let UiEventBody::Confirmation(card) = &body {
+            self.cards
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(card.confirmation_id.clone(), card.clone());
+        }
         let bus = self
             .bus
             .lock()
@@ -946,6 +999,8 @@ mod tests {
             bus: Mutex::new(None),
             queue: Mutex::new(VecDeque::new()),
             wake: Condvar::new(),
+            cards: Mutex::new(BTreeMap::new()),
+            decisions: Mutex::new(None),
         }
     }
 

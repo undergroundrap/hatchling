@@ -93,6 +93,8 @@ pub enum ApiRequest {
     ManageGoals,
     /// [`UiAction::ManageMemory`].
     ManageMemory,
+    /// [`UiAction::ListDecisions`].
+    ListDecisions,
     /// [`UiAction::ReadUsage`].
     ReadUsage,
     /// [`UiAction::GiveCode`].
@@ -135,6 +137,7 @@ impl ApiRequest {
             UiAction::ManageSignIns { .. } => Self::ManageSignIns,
             UiAction::ManageGoals { .. } => Self::ManageGoals,
             UiAction::ManageMemory { .. } => Self::ManageMemory,
+            UiAction::ListDecisions {} => Self::ListDecisions,
             UiAction::ReadUsage {} => Self::ReadUsage,
             UiAction::GiveCode { .. } => Self::GiveCode,
             UiAction::DeclineCode { .. } => Self::DeclineCode,
@@ -313,6 +316,10 @@ mod tests {
                     op: crate::ui::KeptOp::List,
                 }),
                 ApiRequest::ManageMemory,
+            ),
+            (
+                action(UiAction::ListDecisions {}),
+                ApiRequest::ListDecisions,
             ),
             (action(UiAction::ReadUsage {}), ApiRequest::ReadUsage),
             (

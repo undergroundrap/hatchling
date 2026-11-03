@@ -252,6 +252,13 @@ impl SchedulerConfig {
         self.root.with_extension("runs")
     }
 
+    /// Where the owner's decisions are kept: the store root's sibling
+    /// `<root>.decisions`, one per line ([`crate::decisions`]).
+    #[must_use]
+    pub fn decisions_log(&self) -> PathBuf {
+        self.root.with_extension("decisions")
+    }
+
     /// Where subagent activity is recorded: the store root's
     /// sibling `<root>.activity`, one JSON event per line.
     #[must_use]

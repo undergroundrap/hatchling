@@ -26,6 +26,14 @@ use crate::error::Error;
 use crate::redact::Redactor;
 use crate::transport::Transport;
 
+/// How many times one request is tried when the model's reply is a stray.
+///
+/// A stray is an empty reply, or the capability probe answered without
+/// its tool. A small local model's odd reply now and then isn't its last
+/// word; one that can't do the job fails every time. Nothing runs before a
+/// reply is used, so asking again is safe.
+pub const ATTEMPTS: usize = 3;
+
 /// The smallest context window, in tokens, a model may declare.
 ///
 /// The system prompt, the tool descriptions, and a working history
@@ -159,28 +167,28 @@ impl<T: Transport> ChatCompletionsProvider<T> {
     /// [`Error::Transport`] when the endpoint cannot be reached or
     /// refuses the probe.
     pub fn verify_capabilities(&self) -> Result<(), Error> {
-        let reply = self.post(&self.probe_body())?;
-        let refused = |reason: &str| {
-            Err(Error::Incapable {
-                reason: reason.to_owned(),
-            })
-        };
-        match Self::parse_response(&reply) {
-            Ok(ModelAction::ToolCalls(calls))
-                if calls.iter().any(|call| call.name == PROBE_TOOL) =>
-            {
-                Ok(())
-            }
-            Ok(ModelAction::ToolCalls(_)) => {
-                refused("it answered the capability probe by calling another tool")
-            }
-            Ok(ModelAction::Text(_)) => {
-                refused("it answered the capability probe in text: it does not call tools")
-            }
-            Err(error) => refused(&format!(
-                "it answered the capability probe without a usable tool call ({error})"
-            )),
+        let body = self.probe_body();
+        let mut refusal = String::new();
+        for _ in 0..ATTEMPTS {
+            let reply = self.post(&body)?;
+            refusal = match Self::parse_response(&reply) {
+                Ok(ModelAction::ToolCalls(calls))
+                    if calls.iter().any(|call| call.name == PROBE_TOOL) =>
+                {
+                    return Ok(());
+                }
+                Ok(ModelAction::ToolCalls(_)) => {
+                    String::from("it answered the capability probe by calling another tool")
+                }
+                Ok(ModelAction::Text(_)) => {
+                    String::from("it answered the capability probe in text: it does not call tools")
+                }
+                Err(error) => {
+                    format!("it answered the capability probe without a usable tool call ({error})")
+                }
+            };
         }
+        Err(Error::Incapable { reason: refusal })
     }
 
     /// The probe request: the probe instruction, the one probe tool,
@@ -214,8 +222,14 @@ impl<T: Transport> ChatCompletionsProvider<T> {
         // Nothing the session fetched as a secret leaves in a request,
         // whatever the endpoint.
         self.redactor.redact_value(&mut body);
-        let reply = self.post(&body)?;
-        Self::parse_response(&reply)
+        let mut tries = 1;
+        loop {
+            let reply = self.post(&body)?;
+            match Self::parse_response(&reply) {
+                Err(Error::EmptyReply) if tries < ATTEMPTS => tries += 1,
+                parsed => return parsed,
+            }
+        }
     }
 
     /// Sends `body` to the endpoint and returns the raw reply.
@@ -382,7 +396,7 @@ impl<T: Transport> ChatCompletionsProvider<T> {
         }
         match message.get("content") {
             Some(Value::String(text)) if !text.is_empty() => Ok(ModelAction::Text(text.clone())),
-            _ => Err(bad("message has no usable content or tool calls")),
+            _ => Err(Error::EmptyReply),
         }
     }
 
@@ -442,7 +456,8 @@ impl<T: Transport> Model for ChatCompletionsProvider<T> {
                 | Error::EmptyModelName
                 | Error::Transport(_)
                 | Error::Incapable { .. }
-                | Error::BadResponse { .. } => LoopError::ModelFailed(error.reason()),
+                | Error::BadResponse { .. }
+                | Error::EmptyReply => LoopError::ModelFailed(error.reason()),
             })
     }
 }
@@ -1174,5 +1189,120 @@ mod tests {
             refused.verify_capabilities(),
             Err(Error::Transport(TransportError::HttpStatus(400)))
         ));
+    }
+
+    /// A transport that answers each request with the next of `replies`,
+    /// and counts them.
+    struct Sequence {
+        replies: Mutex<std::collections::VecDeque<String>>,
+        sent: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Sequence {
+        fn of(replies: &[&str]) -> Self {
+            Self {
+                replies: Mutex::new(replies.iter().map(|reply| (*reply).to_owned()).collect()),
+                sent: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn sent(&self) -> usize {
+            self.sent.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl Transport for &Sequence {
+        fn post(
+            &self,
+            _destination: &str,
+            _path: &str,
+            _headers: &[(&str, &str)],
+            _body: &[u8],
+        ) -> Result<Vec<u8>, TransportError> {
+            self.sent.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.replies
+                .lock()
+                .unwrap()
+                .pop_front()
+                .map(String::into_bytes)
+                .ok_or_else(|| TransportError::Failed(String::from("no more replies")))
+        }
+    }
+
+    fn sequenced(transport: &Sequence) -> ChatCompletionsProvider<&Sequence> {
+        ChatCompletionsProvider::new(
+            ProviderConfig {
+                endpoint: String::from("http://localhost:11434/v1"),
+                model: String::from("test-model"),
+                bearer: None,
+                context_window: None,
+            },
+            transport,
+        )
+        .unwrap()
+    }
+
+    const EMPTY: &str = r#"{"choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": ""}}]}"#;
+    const SAID: &str = r#"{"choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "done"}}]}"#;
+
+    #[test]
+    fn an_empty_reply_is_asked_again_and_the_first_answer_used() {
+        let transport = Sequence::of(&[EMPTY, EMPTY, SAID]);
+        let action = sequenced(&transport)
+            .next_action(&[Message::User(String::from("hi"))], &no_tools())
+            .unwrap();
+        assert!(matches!(action, ModelAction::Text(text) if text == "done"));
+        assert_eq!(transport.sent(), ATTEMPTS);
+    }
+
+    #[test]
+    fn a_model_that_says_nothing_every_time_fails_as_before() {
+        let transport = Sequence::of(&[EMPTY, EMPTY, EMPTY, SAID]);
+        let error = sequenced(&transport)
+            .next_action(&[Message::User(String::from("hi"))], &no_tools())
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            LoopError::ModelFailed(Error::EmptyReply.reason()).to_string()
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("message has no usable content or tool calls")
+        );
+        assert_eq!(transport.sent(), ATTEMPTS, "never more than {ATTEMPTS}");
+        // A transport failure isn't asked again.
+        let gone = Sequence::of(&[]);
+        assert!(
+            sequenced(&gone)
+                .next_action(&[Message::User(String::from("hi"))], &no_tools())
+                .is_err()
+        );
+        assert_eq!(gone.sent(), 1);
+    }
+
+    #[test]
+    fn a_stray_answer_to_the_probe_is_asked_again() {
+        let probe = format!(
+            r#"{{"choices": [{{"message": {{"role": "assistant", "content": null, "tool_calls": [{{"id": "c1", "type": "function", "function": {{"name": "{PROBE_TOOL}", "arguments": "{{\"ready\": true}}"}}}}]}}}}]}}"#
+        );
+        let transport = Sequence::of(&[SAID, EMPTY, &probe]);
+        sequenced(&transport).verify_capabilities().unwrap();
+        assert_eq!(transport.sent(), ATTEMPTS);
+        // One that never calls the probe is refused, for its last reason.
+        let never = Sequence::of(&[SAID, EMPTY, SAID, &probe]);
+        let refused = sequenced(&never).verify_capabilities().unwrap_err();
+        assert!(
+            matches!(&refused, Error::Incapable { reason } if reason.contains("in text: it does not call tools")),
+            "{refused}"
+        );
+        assert_eq!(never.sent(), ATTEMPTS);
+        // A transport failure ends it at once.
+        let gone = Sequence::of(&[]);
+        assert!(matches!(
+            sequenced(&gone).verify_capabilities(),
+            Err(Error::Transport(_))
+        ));
+        assert_eq!(gone.sent(), 1);
     }
 }

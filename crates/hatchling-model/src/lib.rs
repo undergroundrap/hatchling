@@ -40,7 +40,7 @@ pub mod transport;
 pub use endpoint::{Endpoint, LOCAL_HOST};
 pub use error::Error;
 pub use provider::{
-    ChatCompletionsProvider, MIN_CONTEXT_WINDOW, ProviderConfig, check_context_window,
+    ATTEMPTS, ChatCompletionsProvider, MIN_CONTEXT_WINDOW, ProviderConfig, check_context_window,
 };
 pub use redact::{REDACTED, Redactor};
 pub use transport::{Transport, TransportError};

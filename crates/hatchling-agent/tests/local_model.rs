@@ -395,7 +395,12 @@ fn the_budget_holds_against_a_local_endpoint() {
 
 #[test]
 fn a_model_that_does_not_call_tools_is_refused_before_the_task() {
-    let server = LocalServer::start(vec![text_reply("I only chat.")]);
+    // Asked as often as a stray reply is, it answers in text every time.
+    let server = LocalServer::start(
+        (0..hatchling_model::ATTEMPTS)
+            .map(|_| text_reply("I only chat."))
+            .collect(),
+    );
     let broker = local_broker("local-incapable", server.port);
     let cell = ready_cell(&broker);
     let error = cell
@@ -412,8 +417,12 @@ fn a_model_that_does_not_call_tools_is_refused_before_the_task() {
     );
     assert!(matches!(error, Error::ModelRefused(_)));
     let seen = server.seen();
-    assert_eq!(seen.len(), 1, "the task never started");
-    assert!(is_probe(seen.first().unwrap()));
+    assert_eq!(
+        seen.len(),
+        hatchling_model::ATTEMPTS,
+        "probes only: the task never started"
+    );
+    assert!(seen.iter().all(is_probe));
 }
 
 #[test]
