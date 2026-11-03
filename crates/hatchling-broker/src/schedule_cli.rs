@@ -76,7 +76,9 @@ pub fn parse(args: &[String], zone: Option<String>) -> Result<Command, String> {
         ["add", task, flag, value, rest @ ..] => {
             let tz = match rest {
                 [] => zone.ok_or_else(|| {
-                    String::from("this machine names no time zone: add --tz, such as --tz Europe/Berlin")
+                    String::from(
+                        "this machine names no time zone: add --tz, such as --tz Europe/Berlin",
+                    )
                 })?,
                 ["--tz", tz] => (*tz).to_owned(),
                 _ => return Err(String::from("after the timing, only --tz <zone>")),
@@ -103,7 +105,10 @@ fn clock(value: &str) -> Option<(u8, u8)> {
 
 /// The timing `flag value` names, in `tz`.
 fn when(flag: &str, value: &str, tz: String) -> Result<ScheduleSpec, String> {
-    let cron = |expr: String| ScheduleSpec::Cron { expr, tz: tz.clone() };
+    let cron = |expr: String| ScheduleSpec::Cron {
+        expr,
+        tz: tz.clone(),
+    };
     match flag {
         "--at" => {
             let (date, time) = value
@@ -141,7 +146,9 @@ fn when(flag: &str, value: &str, tz: String) -> Result<ScheduleSpec, String> {
             }
             Ok(cron(value.split_whitespace().collect::<Vec<_>>().join(" ")))
         }
-        _ => Err(format!("{flag} isn't a timing: use --at, --every, --daily, --weekdays or --cron")),
+        _ => Err(format!(
+            "{flag} isn't a timing: use --at, --every, --daily, --weekdays or --cron"
+        )),
     }
 }
 
@@ -191,12 +198,12 @@ pub fn ask(
                 request_id: answered,
                 result,
             } if answered == request_id => {
-                return match result {
-                    UiActionResult::Schedule { outcome } => Ok(outcome),
-                    UiActionResult::Refused { .. } => {
-                        Err(String::from("this connection may not change schedules"))
-                    }
-                    _ => Err(String::from("the broker answered with something else")),
+                return if let UiActionResult::Schedule { outcome } = result {
+                    Ok(outcome)
+                } else if let UiActionResult::Refused { .. } = result {
+                    Err(String::from("this connection may not change schedules"))
+                } else {
+                    Err(String::from("the broker answered with something else"))
                 };
             }
             // Nothing is subscribed to, but whatever else arrives isn't
@@ -210,7 +217,7 @@ pub fn ask(
 }
 
 /// Why the broker refused, in words.
-fn refusal(reason: ScheduleRefusal) -> &'static str {
+const fn refusal(reason: ScheduleRefusal) -> &'static str {
     match reason {
         ScheduleRefusal::ExceedsGrants | ScheduleRefusal::TooManyGrants => {
             "this connection may not give a schedule those permissions"
@@ -218,7 +225,9 @@ fn refusal(reason: ScheduleRefusal) -> &'static str {
         ScheduleRefusal::MissingTimezone => "the schedule needs a time zone: add --tz",
         ScheduleRefusal::UnknownTimezone => "the broker doesn't know that time zone",
         ScheduleRefusal::InvalidSpec => "that timing never happens",
-        ScheduleRefusal::NotInFuture => "that time has passed, or doesn't exist there (a daylight-saving change)",
+        ScheduleRefusal::NotInFuture => {
+            "that time has passed, or doesn't exist there (a daylight-saving change)"
+        }
         ScheduleRefusal::ChannelNotGranted => "this connection may not post in the chat",
         ScheduleRefusal::BadTask => "say what should happen, in fewer words",
         ScheduleRefusal::Full => "Hatchling keeps as many schedules as it can: remove one first",
@@ -273,7 +282,11 @@ pub fn report(command: &Command, outcome: ScheduleResult) -> Result<Vec<String>,
                     .task
                     .as_deref()
                     .unwrap_or("(its task isn't shown: you didn't write it here)");
-                format!("{}  {}  {next}  {task}", schedule.id, describe(&schedule.when))
+                format!(
+                    "{}  {}  {next}  {task}",
+                    schedule.id,
+                    describe(&schedule.when)
+                )
             })
             .collect()),
         (_, ScheduleResult::Refused { reason }) => Err(String::from(refusal(reason))),
@@ -298,7 +311,10 @@ pub fn schedule_main(program: &str, args: &[String]) -> ExitCode {
     let command = match parse(args, hatchling_scheduler::system_zone()) {
         Ok(command) => command,
         Err(why) => {
-            let _ = writeln!(std::io::stderr().lock(), "{program} schedule: {why}\n\n{USAGE}");
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "{program} schedule: {why}\n\n{USAGE}"
+            );
             return ExitCode::from(EX_USAGE);
         }
     };
@@ -351,8 +367,8 @@ mod tests {
 
     const ZONE: &str = "America/New_York";
 
-    fn zone() -> Option<String> {
-        Some(String::from(ZONE))
+    fn zone() -> String {
+        String::from(ZONE)
     }
 
     fn cron(expr: &str) -> ScheduleSpec {
@@ -363,18 +379,27 @@ mod tests {
     }
 
     fn added(words: &[&str]) -> Result<ScheduleSpec, String> {
-        match parse(&args(words), zone())? {
+        match parse(&args(words), Some(zone()))? {
             Command::Add { when, .. } => Ok(when),
-            other => Err(format!("{other:?}")),
+            other @ (Command::List | Command::Remove { .. }) => Err(format!("{other:?}")),
         }
     }
 
     #[test]
     fn each_timing_is_the_brokers_spec_in_the_machines_zone() {
-        assert_eq!(added(&["add", "t", "--every", "5m"]), Ok(cron("*/5 * * * *")));
+        assert_eq!(
+            added(&["add", "t", "--every", "5m"]),
+            Ok(cron("*/5 * * * *"))
+        );
         assert_eq!(added(&["add", "t", "--every", "1m"]), Ok(cron("* * * * *")));
-        assert_eq!(added(&["add", "t", "--daily", "07:30"]), Ok(cron("30 7 * * *")));
-        assert_eq!(added(&["add", "t", "--weekdays", "08:00"]), Ok(cron("0 8 * * 1-5")));
+        assert_eq!(
+            added(&["add", "t", "--daily", "07:30"]),
+            Ok(cron("30 7 * * *"))
+        );
+        assert_eq!(
+            added(&["add", "t", "--weekdays", "08:00"]),
+            Ok(cron("0 8 * * 1-5"))
+        );
         assert_eq!(
             added(&["add", "t", "--cron", " 0  8 * * 1-5 "]),
             Ok(cron("0 8 * * 1-5"))
@@ -394,7 +419,7 @@ mod tests {
             })
         );
         assert_eq!(
-            parse(&args(&["add", "Stretch", "--daily", "08:00"]), zone()),
+            parse(&args(&["add", "Stretch", "--daily", "08:00"]), Some(zone())),
             Ok(Command::Add {
                 task: String::from("Stretch"),
                 when: cron("0 8 * * *"),
@@ -434,7 +459,7 @@ mod tests {
             &["remove"],
             &[],
         ] {
-            assert!(parse(&args(words), zone()).is_err(), "{words:?}");
+            assert!(parse(&args(words), Some(zone())).is_err(), "{words:?}");
         }
         // No zone here, and none named: say how to name one.
         let why = parse(&args(&["add", "t", "--daily", "08:00"]), None).unwrap_err();
@@ -492,14 +517,17 @@ mod tests {
         );
         // 1_790_000_000 is 2026-09-21 14:13 UTC: 10:13 in New York.
         assert_eq!(
-            report(&Command::List, listed(vec![summary(Some("Stretch"), false)])),
+            report(
+                &Command::List,
+                listed(vec![summary(Some("Stretch"), false)])
+            ),
             Ok(vec![String::from(
                 "sch-1  cron 0 8 * * 1-5 (America/New_York)  next 2026-09-21 10:13  Stretch"
             )])
         );
         let hidden = report(&Command::List, listed(vec![summary(None, true)])).unwrap();
         assert!(
-            hidden[0].contains("held:") && hidden[0].contains("isn't shown"),
+            hidden.first().is_some_and(|line| line.contains("held:") && line.contains("isn't shown")),
             "{hidden:?}"
         );
         for reason in [
@@ -516,9 +544,20 @@ mod tests {
         ] {
             assert!(report(&add, ScheduleResult::Refused { reason }).is_err());
         }
-        assert!(report(&add, ScheduleResult::Denied).unwrap_err().contains("no scheduler"));
-        assert!(report(&add, ScheduleResult::ScheduleError).unwrap_err().contains("doctor"));
-        assert!(report(&add, ScheduleResult::Cancelled).is_err(), "not the command's answer");
+        assert!(
+            report(&add, ScheduleResult::Denied)
+                .unwrap_err()
+                .contains("no scheduler")
+        );
+        assert!(
+            report(&add, ScheduleResult::ScheduleError)
+                .unwrap_err()
+                .contains("doctor")
+        );
+        assert!(
+            report(&add, ScheduleResult::Cancelled).is_err(),
+            "not the command's answer"
+        );
         assert_eq!(
             describe(&ScheduleSpec::Once {
                 at: String::from("2026-11-04T08:00"),

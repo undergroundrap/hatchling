@@ -478,6 +478,35 @@ pub fn effective_grants(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_instant_is_read_on_a_zones_clock() {
+        // 1_790_000_000 is 2026-09-21 14:13:20 UTC.
+        assert_eq!(
+            super::local_time(1_790_000_000, "UTC").as_deref(),
+            Some("2026-09-21 14:13")
+        );
+        assert_eq!(
+            super::local_time(1_790_000_000, "America/New_York").as_deref(),
+            Some("2026-09-21 10:13")
+        );
+        assert_eq!(super::local_time(1_790_000_000, "Mars/Olympus"), None);
+        assert_eq!(super::local_time(i64::MAX, "UTC"), None);
+    }
+
+    #[test]
+    fn this_machines_zone_is_one_the_broker_knows() {
+        // The machine's own, as the zone database reads it: on a machine
+        // that names none, nothing.
+        let zone = super::system_zone();
+        assert_eq!(
+            zone,
+            super::TimeZone::system().iana_name().map(str::to_owned)
+        );
+        if let Some(name) = zone {
+            assert!(super::timezone(&name).is_ok(), "{name}");
+        }
+    }
+
     use super::*;
 
     #[test]
