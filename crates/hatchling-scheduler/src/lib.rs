@@ -38,7 +38,7 @@ pub mod schedule;
 
 pub use cron::{CronError, CronExpr};
 pub use dispatcher::{
-    Claim, Delivery, Dispatcher, Ending, Launcher, MISSED_GRACE_SECS, Parked, Run, RunRequest,
+    Claim, Delivery, Dispatcher, Ending, FailureNotice, Launcher, MISSED_GRACE_SECS, Parked, Run, RunRequest,
     Services, Store, TickReport,
 };
 pub use hook::{Hook, Sources, validate_hook};

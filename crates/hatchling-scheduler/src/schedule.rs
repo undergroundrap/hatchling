@@ -256,6 +256,10 @@ pub enum Outcome {
     Failed {
         /// Why.
         reason: String,
+        /// How its run ended, when the run could say: what the person is
+        /// told. `None` in a record from before this was kept.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ending: Option<crate::dispatcher::Ending>,
     },
     /// It didn't start.
     NotStarted {
