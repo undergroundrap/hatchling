@@ -391,7 +391,9 @@ fn adversarial_channel_text_stays_the_user_task_below_the_system_prompt() {
         matches!(
             first.as_slice(),
             [hatchling_loop::Message::System(system), hatchling_loop::Message::User(task)]
-                if *system == pack && task == HOSTILE
+                if system.starts_with(&pack)
+                    && system.contains("## What you can do on this install")
+                    && task == HOSTILE
         ),
         "the model must see [System(pack), User(channel text)]: {first:?}"
     );

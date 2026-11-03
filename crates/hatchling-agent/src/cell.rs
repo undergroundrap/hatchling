@@ -543,7 +543,14 @@ impl Cell<Ready> {
             self.connection(),
             &children,
         )));
+        // What this install allows, said to the model from the broker's
+        // word, so it neither offers nor tries what's off.
+        let note = crate::capabilities::note(self.config().run_tools.as_ref());
         let result = hatchling_loop::Loop::new(&registry, kind)
+            .with_system_prompt(format!(
+                "{}\n\n{note}",
+                hatchling_prompt::system_prompt_for(kind)
+            ))
             .with_budget(budget)
             .with_ledger(ledger)
             .with_memory_provider(Box::new(crate::memory_provider::BrokerMemoryProvider::new(

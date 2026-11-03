@@ -271,3 +271,34 @@ fn loop_offers_only_the_tool_groups_the_broker_says_are_on() {
         }
     }
 }
+
+/// With every optional group off, the model is told so in its system
+/// prompt: it neither offers what's off, nor is offered the tool.
+#[test]
+fn loop_tells_the_model_what_is_off() {
+    let broker = FixtureBroker::spawn("loop-told-off", BrokerBehavior::Vault(Vec::new())).unwrap();
+    let cell = ready_cell_offering(&broker, Some(std::collections::BTreeSet::new())).unwrap();
+    let model = FakeModel::new(vec![ModelAction::Text(String::from("noted"))]);
+    cell.run_loop(
+        hatchling_agent::PromptKind::Chat,
+        &model,
+        String::from("look this up online"),
+        LoopBudget { max_steps: 3 },
+    )
+    .unwrap();
+    let seen = model.seen_histories();
+    let system = seen
+        .first()
+        .and_then(|history| history.first())
+        .and_then(|message| {
+            if let Message::System(text) = message {
+                Some(text.clone())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default();
+    assert!(system.contains("Web search is off on this install"), "{system}");
+    assert!(system.contains("Reading web pages is off"), "{system}");
+    assert!(system.contains("can't run programs or commands"), "{system}");
+}
