@@ -41,8 +41,11 @@ export function renderGoals(ctx: AppContext): HTMLElement {
     }
     if (!goals.length && ctx.ui.goalFilter === 'closed')
         page.append(emptyState('goal', 'No closed goals yet.'));
-    if (live && ctx.ui.goalFilter === 'active' && !goals.length)
-        page.append(emptyState('goal', 'No goals yet.', 'Set one below: what you’re working toward, in a line. Your digests can include it.'));
+    if (live && ctx.ui.goalFilter === 'active' && !goals.length) {
+        // Not "yet" when some are closed: they're kept, in Closed goals.
+        const closed = ctx.state.goals.some((goal) => goal.status === 'closed');
+        page.append(emptyState('goal', closed ? 'No open goals.' : 'No goals yet.', closed ? 'The ones you closed are in Closed goals, from the menu. Set a new one below.' : 'Set one below: what you’re working toward, in a line. Your digests can include it.'));
+    }
     if (ctx.ui.goalFilter === 'active') {
         page.append(h('section', { class: 'goal-categories', 'aria-label': 'Create a goal' }, h('h2', {}, 'Create a goal'), ...categories.map((category) => {
             const node = button(category.label, () => createGoal(ctx, category.name), { icon: category.icon, variant: 'ghost', className: 'goal-category' });
