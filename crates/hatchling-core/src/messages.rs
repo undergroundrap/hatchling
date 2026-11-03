@@ -3285,10 +3285,13 @@ mod tests {
         let ScheduleResult::Listed { schedules, .. } = &listed else {
             unreachable!("built as a listing");
         };
-        let mut owners = schedules[0].clone();
+        let mut owners = schedules.first().unwrap().clone();
         owners.task = Some(String::from("Stretch for five minutes"));
         let shown = serde_json::to_value(&owners).unwrap();
-        assert_eq!(shown["task"], "Stretch for five minutes");
+        assert_eq!(
+            shown.get("task"),
+            Some(&serde_json::json!("Stretch for five minutes"))
+        );
         assert_eq!(
             serde_json::from_value::<ScheduleSummary>(shown).unwrap(),
             owners
