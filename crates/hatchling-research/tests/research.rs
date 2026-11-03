@@ -465,8 +465,13 @@ fn synthesis_has_no_tools_so_a_source_cannot_make_the_run_act() {
         // A model that obeys the source at synthesis.
         amend("https://evil.example/steal", "the source said so"),
     ]);
+    // Synthesis offers no tool: the call is told that nothing ran, and
+    // its one step is spent.
     let error = run(&model, &pages, &user, &Ticking::still(), Bounds::standard()).unwrap_err();
-    let matched = matches!(&error, ResearchError::Loop(hatchling_loop::Error::UnknownTool(name)) if name == "amend_plan");
+    let matched = matches!(
+        &error,
+        ResearchError::Loop(hatchling_loop::Error::BudgetExhausted { steps: 1 })
+    );
     assert!(matched, "{error:?}");
     assert!(user.asked().is_empty());
     assert_eq!(pages.calls(), [SPEC, NEWS]);
@@ -779,7 +784,12 @@ fn a_report_resting_only_on_secondary_citations_says_so_up_front() {
 #[test]
 fn a_model_that_breaks_the_tool_contract_or_drafts_no_report_fails_the_run() {
     let pages = three_pages();
-    let model = FakeModel::new(vec![plan_reply(&[SPEC]), tool("browse", json!({}))]);
+    let model = FakeModel::new(vec![
+        plan_reply(&[SPEC]),
+        tool("browse", json!({})),
+        tool("browse", json!({})),
+        tool("browse", json!({})),
+    ]);
     let error = run(
         &model,
         &pages,

@@ -27,6 +27,7 @@ fn config_for(socket_path: &str, broker_uid: u32) -> Result<Config, Error> {
         run_history: Vec::new(),
         run_earlier: Vec::new(),
         run_builders: std::collections::BTreeMap::new(),
+        run_tools: None,
         vault_fd: None,
     })
 }

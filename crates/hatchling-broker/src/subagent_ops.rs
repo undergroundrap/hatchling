@@ -423,6 +423,7 @@ impl<'scope, 'env> Subagents<'scope, 'env> {
             history: Vec::new(),
             earlier: Vec::new(),
             builders: BTreeMap::new(),
+            tools: Some(crate::run_launcher::run_tools(self.config)),
         };
         let config = self.config;
         let started = launcher.launch_cell("subagent", run, |token, socket| {

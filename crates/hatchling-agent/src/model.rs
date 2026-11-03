@@ -174,10 +174,16 @@ impl Cell<Ready> {
             &redactor,
             Some(model_grant),
         )
-        .map_err(|error| {
-            if let hatchling_loop::Error::BudgetExhausted { steps } = error {
+        .map_err(|error| match error {
+            hatchling_loop::Error::BudgetExhausted { steps } => {
                 Error::LoopBudgetExhausted { steps }
-            } else {
+            }
+            hatchling_loop::Error::ModelFailed(_) => Error::ModelFailed(error.to_string()),
+            hatchling_loop::Error::UnknownTool(_)
+            | hatchling_loop::Error::InvalidArguments { .. } => {
+                Error::ToolsMisused(error.to_string())
+            }
+            hatchling_loop::Error::ToolFailed { .. } | hatchling_loop::Error::Io(_) => {
                 Error::LoopFailed(error.to_string())
             }
         })
@@ -391,6 +397,7 @@ mod tests {
             run_history: Vec::new(),
             run_earlier: Vec::new(),
             run_builders: std::collections::BTreeMap::new(),
+            run_tools: None,
             vault_fd: None,
         };
         assert_eq!(prompt_for(&config), hatchling_loop::PromptKind::Worker);

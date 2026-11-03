@@ -23,6 +23,7 @@ use std::time::Duration;
 
 use common::{BrokerBehavior, FixtureBroker};
 use hatchling_agent::{Cell, Config, Error, LogLevel, PeerUid, Ready, VaultAction};
+use hatchling_core::run_failure::RunFailure;
 use hatchling_model::ProviderConfig;
 use hatchling_prompt::probe::PROBE_TOOL;
 use serde_json::{Value, json};
@@ -218,6 +219,7 @@ fn ready_cell_with_reasoning(
         run_history: Vec::new(),
         run_earlier: Vec::new(),
         run_builders: std::collections::BTreeMap::new(),
+        run_tools: None,
         vault_fd: None,
     };
     Cell::new(config)
@@ -383,6 +385,7 @@ fn the_budget_holds_against_a_local_endpoint() {
         error.to_string(),
         "agent loop failed: loop budget exhausted after 2 steps"
     );
+    assert_eq!(error.run_failure(), Some(RunFailure::OutOfSteps));
     assert_eq!(
         server.seen().len(),
         3,
@@ -469,6 +472,46 @@ fn an_unreachable_local_endpoint_fails_loudly_before_the_task() {
         matches!(&error, Error::ModelRefused(reason) if reason.starts_with("transport failed: ")),
         "got {error:?}"
     );
+    assert_eq!(error.run_failure(), Some(RunFailure::ModelUnavailable));
+}
+
+/// A model that keeps calling a tool it wasn't offered is stopped, and
+/// the run says so by its exit status; one that stops answering midway
+/// is a model failure. Neither is a plain loop failure.
+#[test]
+fn a_model_misusing_tools_or_failing_midway_is_named() {
+    let unknown = || tool_call_reply("delete_everything", &json!({}));
+    let mut script = vec![probe_reply()];
+    script.extend((0..=hatchling_loop::CONTRACT_SLIPS).map(|_| unknown()));
+    let server = LocalServer::start(script);
+    let broker = local_broker("local-misused", server.port);
+    let error = ready_cell(&broker)
+        .run_task(
+            hatchling_agent::PromptKind::Chat,
+            String::from("tidy up"),
+            local_provider(server.port),
+            10,
+        )
+        .unwrap_err();
+    assert!(matches!(error, Error::ToolsMisused(_)), "got {error:?}");
+    assert_eq!(error.run_failure(), Some(RunFailure::ToolsMisused));
+    assert_eq!(
+        error.to_string(),
+        "agent loop failed: unknown tool: delete_everything"
+    );
+
+    let server = LocalServer::start(vec![probe_reply(), String::from("not a model's answer")]);
+    let broker = local_broker("local-midway", server.port);
+    let error = ready_cell(&broker)
+        .run_task(
+            hatchling_agent::PromptKind::Chat,
+            String::from("tidy up"),
+            local_provider(server.port),
+            10,
+        )
+        .unwrap_err();
+    assert!(matches!(error, Error::ModelFailed(_)), "got {error:?}");
+    assert_eq!(error.run_failure(), Some(RunFailure::ModelUnavailable));
 }
 
 #[test]
