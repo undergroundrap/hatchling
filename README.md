@@ -20,6 +20,8 @@ An always-on agent that lives on your machine, thinks with the model you choose,
 
 Hatchling is open source (AGPL-3.0-or-later), written in Rust, and pre-1.0.
 
+**Try it:** [install it as a service](docs/install.md) in three commands, on Linux with systemd or WSL2, with a model on your machine (Ollama is the simplest). If anything's off, `sudo hatchling-broker doctor` says what, and how to fix it. Or run each piece by hand with the [quickstart](#quickstart).
+
 ---
 
 ## Why Hatchling
