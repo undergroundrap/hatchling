@@ -2007,7 +2007,10 @@ mod tests {
         };
         assert!(usage.counted);
         let today = usage.days.first().unwrap();
-        assert_eq!((today.calls, today.input_tokens, today.output_tokens), (1, 7, 2));
+        assert_eq!(
+            (today.calls, today.input_tokens, today.output_tokens),
+            (1, 7, 2)
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

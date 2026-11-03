@@ -1710,8 +1710,17 @@ mod tests {
         let proxy = init_egress_proxy(&egress, &vault, &key).unwrap();
         let cell_id: CellId = "cell-pages".parse().unwrap();
         let mut pages = crate::egress_pages::Pages::default();
-        let mut op =
-            |op: EgressOp| handle_egress_op(&proxy, &egress, &op, &cell_id, 1000, &mut pages, std::path::Path::new(""));
+        let mut op = |op: EgressOp| {
+            handle_egress_op(
+                &proxy,
+                &egress,
+                &op,
+                &cell_id,
+                1000,
+                &mut pages,
+                std::path::Path::new(""),
+            )
+        };
         let stage = |part: &[u8]| EgressOp::Stage {
             part_b64: encode_secret(part),
         };
@@ -2302,7 +2311,12 @@ mod gate_scope_tests {
                     .unwrap();
                 let mut body = vec![0; length];
                 stream.read_exact(&mut body).unwrap();
-                write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", reply.len()).unwrap();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
+                    reply.len()
+                )
+                .unwrap();
                 stream.write_all(reply).unwrap();
             }
         });
@@ -2324,18 +2338,29 @@ mod gate_scope_tests {
             surrogate_b64: proxy.mint_surrogate(1000, &destination, 60).unwrap(),
             staged: 0,
         };
-        let usage = std::env::temp_dir().join(format!("hatchling-serve-usage-{}", std::process::id()));
+        let usage =
+            std::env::temp_dir().join(format!("hatchling-serve-usage-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&usage);
         for place in [usage.as_path(), std::path::Path::new("")] {
             let answered =
                 handle_egress_op(&proxy, &egress, &call(), &cell_id, 1000, &mut pages, place)
                     .unwrap();
-            assert!(matches!(answered, EgressResult::Ok { status: 200, .. }), "{answered:?}");
+            assert!(
+                matches!(answered, EgressResult::Ok { status: 200, .. }),
+                "{answered:?}"
+            );
         }
         server.join().unwrap();
-        let report = crate::usage::report(&usage, hatchling_scheduler::Timestamp::now().as_second(), None);
+        let report = crate::usage::report(
+            &usage,
+            hatchling_scheduler::Timestamp::now().as_second(),
+            None,
+        );
         let today = report.days.first().unwrap();
-        assert_eq!((today.calls, today.input_tokens, today.output_tokens), (1, 11, 3));
+        assert_eq!(
+            (today.calls, today.input_tokens, today.output_tokens),
+            (1, 11, 3)
+        );
         let _ = std::fs::remove_dir_all(&usage);
     }
 }

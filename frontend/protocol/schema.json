@@ -627,6 +627,11 @@
           "type": "string"
         },
         {
+          "const": "read_usage",
+          "description": "[`UiAction::ReadUsage`].",
+          "type": "string"
+        },
+        {
           "const": "give_code",
           "description": "[`UiAction::GiveCode`].",
           "type": "string"
@@ -9653,6 +9658,19 @@
           "type": "object"
         },
         {
+          "description": "Read the model usage the broker counted: the owner's alone.",
+          "properties": {
+            "action": {
+              "const": "read_usage",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Give the one-time code a browser session's page asks for (WO-030):\ntyped into the page by the broker, used once and not kept.",
           "properties": {
             "action": {
@@ -10108,6 +10126,24 @@
           "required": [
             "result",
             "outcome"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The model usage the broker counted.",
+          "properties": {
+            "result": {
+              "const": "usage",
+              "type": "string"
+            },
+            "usage": {
+              "$ref": "#/$defs/UsageReport",
+              "description": "The report."
+            }
+          },
+          "required": [
+            "result",
+            "usage"
           ],
           "type": "object"
         },
@@ -10795,6 +10831,110 @@
           "type": "object"
         }
       ]
+    },
+    "UsageDay": {
+      "description": "One day's model usage.",
+      "properties": {
+        "calls": {
+          "description": "Model calls answered.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "date": {
+          "description": "The day, `YYYY-MM-DD` on this machine's clock.",
+          "type": "string"
+        },
+        "input_tokens": {
+          "description": "Tokens the model read: prompts, history and tool results.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "output_tokens": {
+          "description": "Tokens the model wrote, thinking included.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "unreported": {
+          "description": "Calls whose reply reported no usage, so their tokens aren't in the\ncounts.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "date",
+        "calls",
+        "input_tokens",
+        "output_tokens",
+        "unreported"
+      ],
+      "type": "object"
+    },
+    "UsageModel": {
+      "description": "One model's usage over the report's days.",
+      "properties": {
+        "calls": {
+          "description": "Model calls answered.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "input_tokens": {
+          "description": "Tokens the model read.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "model": {
+          "description": "The model, as its server named it in replies.",
+          "type": "string"
+        },
+        "output_tokens": {
+          "description": "Tokens the model wrote.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "model",
+        "calls",
+        "input_tokens",
+        "output_tokens"
+      ],
+      "type": "object"
+    },
+    "UsageReport": {
+      "description": "The model usage the broker counted, as the model server reported it\nwith each reply: never what the agent says it used.",
+      "properties": {
+        "counted": {
+          "description": "Whether the broker counts usage: it does wherever scheduling is on,\nwhich every chat and run needs.",
+          "type": "boolean"
+        },
+        "days": {
+          "description": "Each of the last seven days on this machine's clock, today first,\ndays without a call included.",
+          "items": {
+            "$ref": "#/$defs/UsageDay"
+          },
+          "type": "array"
+        },
+        "models": {
+          "description": "Each model's use over those days, the most tokens first.",
+          "items": {
+            "$ref": "#/$defs/UsageModel"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "counted",
+        "days",
+        "models"
+      ],
+      "type": "object"
     },
     "VaultResult": {
       "description": "The broker's reply to one [`VaultOp`].\n\nReplies are per-operation and carry no more than the op asked for: a\nfetch returns one secret, never the store. Failures that would leak\ninternals (filesystem errors, oversize values) collapse to the opaque\n[`VaultError`](VaultResult::VaultError): the agent learns that the op\nfailed, not why.",

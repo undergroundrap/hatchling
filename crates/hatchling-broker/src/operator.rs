@@ -657,17 +657,16 @@ mod tests {
             surrogate_b64: surrogate.clone(),
             staged: 0,
         };
-        let answered =
-            crate::serve::handle_egress_op(
-                &proxy,
-                &egress,
-                &request,
-                &cell_id,
-                1000,
-                &mut pages,
-                std::path::Path::new(""),
-            )
-                .unwrap();
+        let answered = crate::serve::handle_egress_op(
+            &proxy,
+            &egress,
+            &request,
+            &cell_id,
+            1000,
+            &mut pages,
+            std::path::Path::new(""),
+        )
+        .unwrap();
         assert_ne!(
             answered,
             EgressResult::Denied,

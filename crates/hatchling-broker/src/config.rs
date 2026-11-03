@@ -3471,7 +3471,10 @@ mod tests {
             config.run_root(),
             PathBuf::from("/srv/hatchling/schedules.runs")
         );
-        assert_eq!(config.usage, PathBuf::from("/srv/hatchling/schedules.usage"));
+        assert_eq!(
+            config.usage,
+            PathBuf::from("/srv/hatchling/schedules.usage")
+        );
         assert_eq!((config.model_endpoint, config.model_name), (None, None));
         for (dir, why) in [
             ("/run/hatchling/sock/schedules", "socket directory"),

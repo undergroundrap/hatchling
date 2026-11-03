@@ -223,12 +223,14 @@ pub fn report(dir: &Path, now: i64, tz: Option<&str>) -> UsageReport {
         if call.input.is_none() && call.output.is_none() {
             day.unreported = day.unreported.saturating_add(1);
         }
-        let model = models.entry(call.model.clone()).or_insert_with(|| UsageModel {
-            model: call.model,
-            calls: 0,
-            input_tokens: 0,
-            output_tokens: 0,
-        });
+        let model = models
+            .entry(call.model.clone())
+            .or_insert_with(|| UsageModel {
+                model: call.model,
+                calls: 0,
+                input_tokens: 0,
+                output_tokens: 0,
+            });
         model.calls = model.calls.saturating_add(1);
         model.input_tokens = model.input_tokens.saturating_add(input);
         model.output_tokens = model.output_tokens.saturating_add(output);
@@ -251,7 +253,10 @@ fn calls(dir: &Path, day: &str) -> Vec<Call> {
     let Ok(file) = std::fs::File::open(&path) else {
         return Vec::new();
     };
-    if !file.metadata().is_ok_and(|meta| meta.len() <= MAX_FILE_BYTES) {
+    if !file
+        .metadata()
+        .is_ok_and(|meta| meta.len() <= MAX_FILE_BYTES)
+    {
         tracing::warn!(day, "a day's usage is too large to read");
         return Vec::new();
     }
@@ -271,10 +276,8 @@ mod tests {
     const DAY: i64 = 86_400;
 
     fn scratch(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "hatchling-usage-{name}-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("hatchling-usage-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }
@@ -332,7 +335,10 @@ mod tests {
             ("POST", "/v1/responses"),
             ("POST", "/v1/messages"),
         ] {
-            assert!(read_reply(method, path, OLLAMA.as_bytes(), NOW).is_some(), "{path}");
+            assert!(
+                read_reply(method, path, OLLAMA.as_bytes(), NOW).is_some(),
+                "{path}"
+            );
         }
         for (method, path) in [
             ("GET", "/v1/chat/completions"),
@@ -340,13 +346,18 @@ mod tests {
             ("POST", "/v1/embeddings"),
             ("POST", "/v1/models"),
         ] {
-            assert_eq!(read_reply(method, path, OLLAMA.as_bytes(), NOW), None, "{method} {path}");
+            assert_eq!(
+                read_reply(method, path, OLLAMA.as_bytes(), NOW),
+                None,
+                "{method} {path}"
+            );
         }
     }
 
     #[test]
     fn a_models_name_is_the_servers_bounded() {
-        let read = |body: &str| read_reply("POST", "/chat/completions", body.as_bytes(), NOW).unwrap();
+        let read =
+            |body: &str| read_reply("POST", "/chat/completions", body.as_bytes(), NOW).unwrap();
         assert_eq!(read("not json").model, UNNAMED);
         assert_eq!(read(r#"{"model":42}"#).model, UNNAMED);
         assert_eq!(read(r#"{"model":"  \u0007 "}"#).model, UNNAMED);
@@ -361,11 +372,19 @@ mod tests {
         let path = "/v1/chat/completions";
         count(&dir, &request(path), &reply(200, OLLAMA), NOW);
         count(&dir, &request(path), &reply(200, OLLAMA), NOW + 60);
-        count(&dir, &request(path), &reply(200, r#"{"model":"gemma4:12b"}"#), NOW - DAY);
         count(
             &dir,
             &request(path),
-            &reply(200, r#"{"model":"gemma4:12b","usage":{"prompt_tokens":5000,"completion_tokens":1}}"#),
+            &reply(200, r#"{"model":"gemma4:12b"}"#),
+            NOW - DAY,
+        );
+        count(
+            &dir,
+            &request(path),
+            &reply(
+                200,
+                r#"{"model":"gemma4:12b","usage":{"prompt_tokens":5000,"completion_tokens":1}}"#,
+            ),
             NOW - 2 * DAY,
         );
         // Not counted: a failure, another endpoint, a call too old.
@@ -379,23 +398,53 @@ mod tests {
         let dates: Vec<&str> = usage.days.iter().map(|day| day.date.as_str()).collect();
         assert_eq!(
             dates,
-            ["2026-11-03", "2026-11-02", "2026-11-01", "2026-10-31", "2026-10-30", "2026-10-29", "2026-10-28"]
+            [
+                "2026-11-03",
+                "2026-11-02",
+                "2026-11-01",
+                "2026-10-31",
+                "2026-10-30",
+                "2026-10-29",
+                "2026-10-28"
+            ]
         );
         let today = usage.days.first().unwrap();
         assert_eq!(
-            (today.calls, today.input_tokens, today.output_tokens, today.unreported),
+            (
+                today.calls,
+                today.input_tokens,
+                today.output_tokens,
+                today.unreported
+            ),
             (2, 2400, 600, 0)
         );
         let yesterday = usage.days.get(1).unwrap();
-        assert_eq!((yesterday.calls, yesterday.input_tokens, yesterday.unreported), (1, 0, 1));
+        assert_eq!(
+            (
+                yesterday.calls,
+                yesterday.input_tokens,
+                yesterday.unreported
+            ),
+            (1, 0, 1)
+        );
         assert_eq!(usage.days.get(2).unwrap().input_tokens, 5000);
         assert_eq!(usage.days.get(3).unwrap().calls, 0);
         let models: Vec<(&str, u32, u64, u64)> = usage
             .models
             .iter()
-            .map(|model| (model.model.as_str(), model.calls, model.input_tokens, model.output_tokens))
+            .map(|model| {
+                (
+                    model.model.as_str(),
+                    model.calls,
+                    model.input_tokens,
+                    model.output_tokens,
+                )
+            })
             .collect();
-        assert_eq!(models, [("gemma4:12b", 2, 5000, 1), ("qwen3.5:9b", 2, 2400, 600)]);
+        assert_eq!(
+            models,
+            [("gemma4:12b", 2, 5000, 1), ("qwen3.5:9b", 2, 2400, 600)]
+        );
 
         // On a clock where it's still the 2nd, the day before's calls are
         // the 2nd's too.
@@ -407,7 +456,12 @@ mod tests {
     #[test]
     fn nothing_is_counted_without_a_place() {
         let none = Path::new("");
-        count(none, &request("/chat/completions"), &reply(200, OLLAMA), NOW);
+        count(
+            none,
+            &request("/chat/completions"),
+            &reply(200, OLLAMA),
+            NOW,
+        );
         let usage = report(none, NOW, Some("UTC"));
         assert!(!usage.counted);
         assert_eq!(usage.days.len(), REPORT_DAYS);
@@ -419,8 +473,19 @@ mod tests {
     fn a_count_that_cant_be_written_leaves_nothing() {
         let dir = scratch("unwritable");
         std::fs::write(&dir, "a file, not a directory").unwrap();
-        count(&dir, &request("/chat/completions"), &reply(200, OLLAMA), NOW);
-        assert!(append(&dir.join("usage"), &read_reply("POST", "/chat/completions", OLLAMA.as_bytes(), NOW).unwrap()).is_err());
+        count(
+            &dir,
+            &request("/chat/completions"),
+            &reply(200, OLLAMA),
+            NOW,
+        );
+        assert!(
+            append(
+                &dir.join("usage"),
+                &read_reply("POST", "/chat/completions", OLLAMA.as_bytes(), NOW).unwrap()
+            )
+            .is_err()
+        );
         let out_of_range = Call {
             at: i64::MAX,
             model: String::from("m"),
@@ -436,16 +501,30 @@ mod tests {
     #[test]
     fn files_and_lines_that_dont_read_are_skipped() {
         let dir = scratch("unreadable");
-        count(&dir, &request("/chat/completions"), &reply(200, OLLAMA), NOW);
+        count(
+            &dir,
+            &request("/chat/completions"),
+            &reply(200, OLLAMA),
+            NOW,
+        );
         let file = dir.join("2026-11-03.jsonl");
         let mut text = std::fs::read_to_string(&file).unwrap();
         text.push_str("not a call\n{\"at\":1}\n");
         std::fs::write(&file, text).unwrap();
-        assert_eq!(report(&dir, NOW, Some("UTC")).days.first().unwrap().calls, 1);
+        assert_eq!(
+            report(&dir, NOW, Some("UTC")).days.first().unwrap().calls,
+            1
+        );
         // Too large to read: the day isn't reported.
-        let big = std::fs::OpenOptions::new().append(true).open(&file).unwrap();
+        let big = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .unwrap();
         big.set_len(MAX_FILE_BYTES + 1).unwrap();
-        assert_eq!(report(&dir, NOW, Some("UTC")).days.first().unwrap().calls, 0);
+        assert_eq!(
+            report(&dir, NOW, Some("UTC")).days.first().unwrap().calls,
+            0
+        );
         assert_eq!(calls(&dir, "2026-11-02"), Vec::new());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -466,7 +545,12 @@ mod tests {
         ] {
             std::fs::write(dir.join(name), "").unwrap();
         }
-        count(&dir, &request("/chat/completions"), &reply(200, OLLAMA), NOW);
+        count(
+            &dir,
+            &request("/chat/completions"),
+            &reply(200, OLLAMA),
+            NOW,
+        );
         let mut left: Vec<String> = std::fs::read_dir(&dir)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().into_string().unwrap())
@@ -483,7 +567,12 @@ mod tests {
         assert_eq!(left, expected);
         // A second call that day prunes nothing more.
         std::fs::write(dir.join("2020-01-01.jsonl"), "").unwrap();
-        count(&dir, &request("/chat/completions"), &reply(200, OLLAMA), NOW);
+        count(
+            &dir,
+            &request("/chat/completions"),
+            &reply(200, OLLAMA),
+            NOW,
+        );
         assert!(dir.join("2020-01-01.jsonl").exists());
         // Nothing to prune where the call's time is out of range, or with
         // no directory.
@@ -496,7 +585,14 @@ mod tests {
     #[test]
     fn a_date_is_yyyy_mm_dd() {
         assert!(is_date("2026-11-03"));
-        for not in ["2026-11-3", "2026-11-033", "2026/11/03", "20261-1-03", "2026-1a-03", "abcd-ef-gh"] {
+        for not in [
+            "2026-11-3",
+            "2026-11-033",
+            "2026/11/03",
+            "20261-1-03",
+            "2026-1a-03",
+            "abcd-ef-gh",
+        ] {
             assert!(!is_date(not), "{not}");
         }
     }
@@ -505,7 +601,12 @@ mod tests {
     fn a_counted_file_is_the_owners_alone() {
         use std::os::unix::fs::PermissionsExt as _;
         let dir = scratch("modes");
-        count(&dir, &request("/chat/completions"), &reply(200, OLLAMA), NOW);
+        count(
+            &dir,
+            &request("/chat/completions"),
+            &reply(200, OLLAMA),
+            NOW,
+        );
         let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&dir), 0o700);
         assert_eq!(mode(&dir.join("2026-11-03.jsonl")), 0o600);
