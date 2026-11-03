@@ -18,4 +18,5 @@ hatchling_core::declare_environment! {
     HATCHLING_RUN_HISTORY: ("optional; chat runs only", "Broker-supplied: the conversation's last exchanges, a JSON array of {user, assistant}."),
     HATCHLING_RUN_EARLIER: ("optional; chat runs only", "Broker-supplied: what the owner said earlier in the conversation, before its last exchanges, a JSON array of strings."),
     HATCHLING_RUN_BUILDERS: ("optional; chat runs only", "Broker-supplied: the builder the operator names for each build kind, as kind=name@version, comma-separated; offers the idea tools."),
+    HATCHLING_RUN_TOOLS: ("optional; default every group", "Broker-supplied: the tool groups the operator turned on, as web, search, browser and skills, comma-separated, or none; the agent offers only those."),
 }

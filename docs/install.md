@@ -9,7 +9,7 @@ To try it by hand first, the [README's quickstart](../README.md#quickstart) runs
 ## What you need
 
 - **Linux with systemd**, kernel 5.11 or later (or WSL2 with systemd on), on x86_64 or aarch64, with glibc 2.34 or later: Ubuntu 22.04, Debian 12, Fedora, RHEL 9 and their successors.
-- **A model it can reach:** an OpenAI-compatible server on this machine. [Ollama](https://ollama.com) is the simplest: install it, then `ollama pull llama3.2`. A hosted API comes after; see [Using a hosted model](hosted-models.md).
+- **A model it can reach:** an OpenAI-compatible server on this machine. [Ollama](https://ollama.com) is the simplest: install it, then `ollama pull qwen3.5:9b`. The model must be good at calling tools; see [Choosing a model](#choosing-a-model). A hosted API comes after; see [Using a hosted model](hosted-models.md).
 - **The GitHub CLI**, to download and verify the release (or download its files from the release page).
 
 ## Install
@@ -17,7 +17,7 @@ To try it by hand first, the [README's quickstart](../README.md#quickstart) runs
 From a clone of the version you install, download its release into `release/` and install from it. `scripts/install.sh` checks every file against the release's `SHA256SUMS` before installing anything.
 
 ```bash
-git clone --branch v0.6.0 https://github.com/undergroundrap/hatchling && cd hatchling
+git -c advice.detachedHead=false clone --branch v0.6.0 https://github.com/undergroundrap/hatchling && cd hatchling
 ```
 
 ```bash
@@ -25,12 +25,28 @@ gh release download v0.6.0 --repo undergroundrap/hatchling --dir release
 ```
 
 ```bash
-sudo scripts/install.sh --from release --model-endpoint http://localhost:11434/v1 --model llama3.2
+sudo scripts/install.sh --from release --model-endpoint http://localhost:11434/v1 --model qwen3.5:9b
 ```
 
 Before it starts anything, it runs `hatchling-broker doctor`, which checks the settings, that this machine can make the agent's cells, and that the model's server answers with the model named. If one isn't so, it stops and says what to do. Run it again after: it keeps your configuration.
 
 It ends with the app's address. Open it in a browser on this machine, and say something. **The address is a key to your agent: don't share it.** Before you install, you can also check that the release's files were built by this project's release workflow: [Verifying a release](releasing.md#verifying-a-release).
+
+## Choosing a model
+
+Hatchling's agent works by calling tools, so the model must call them well: only when a task needs one, with arguments that fit. A model that can't is the commonest reason an answer fails. Hatchling stops such a model before anything it asked for runs, and the chat says so.
+
+For a local model on one GPU, tried with Hatchling's own tool set (2026-11, Ollama, an RTX 4070 with 12 GB):
+
+| Model | Download | Fits | Tool calls |
+| --- | --- | --- | --- |
+| `qwen3.5:9b` | 6.6 GB | 8 GB GPU or more | Right every time; the default here. |
+| `gemma4:12b` | 8 GB | 12 GB GPU or more | Right every time. |
+| `llama3.2` (3B) | 2 GB | almost anything | **Not recommended.** It called tools a plain question didn't need, a web search for "ideas for a relaxing Sunday", in a third of the tries. |
+
+Thinking models answer better and a little slower; `HATCHLING_SCHEDULER_MODEL_REASONING=disabled` in `/etc/hatchling/hatchling.env` turns thinking off where the server supports it. A model bigger than the GPU's memory runs partly on the CPU, much more slowly: `ollama ps` shows the split. Ollama uses an NVIDIA or AMD GPU by itself when its driver is installed; under WSL2, install the Windows driver, not one inside Linux.
+
+To switch models, pull the new one, set `HATCHLING_SCHEDULER_MODEL_NAME` in `/etc/hatchling/hatchling.env`, and restart: `sudo systemctl restart hatchling`. `ollama rm <name>` removes one you no longer use.
 
 **From your own build** instead of a release:
 1. Build the programs: `cargo build --release`.
@@ -54,11 +70,7 @@ With systemd 254 or later, the broker gets a cgroup of its own to give each cell
 
 ## Using it
 
-- **The app's address again**, as yourself (each broker start makes a new one):
-
-  ```bash
-  echo "http://127.0.0.1:7340/#hatchling-ui=$(cat /var/lib/hatchling/ui.sock.token)"
-  ```
+- **The app's address again**, as yourself: `hatchling-host url`. Each start of the broker makes a new one, so after a restart an open app goes offline; open the new address.
 
 - **Something not working?** `sudo hatchling-broker doctor` checks what a start trips on, and says how to fix each problem it finds.
 - **Change a setting:** edit `/etc/hatchling/hatchling.env`, then `sudo systemctl restart hatchling`.

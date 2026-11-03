@@ -604,6 +604,10 @@ pub struct ScheduledRun {
     /// run.
     #[serde(default)]
     pub builders: std::collections::BTreeMap<String, String>,
+    /// The tool groups the operator turned on: what its agent offers
+    /// the model of them. `None`, from an older spec, offers every one.
+    #[serde(default)]
+    pub tools: Option<std::collections::BTreeSet<hatchling_core::run_tools::ToolGroup>>,
 }
 
 impl ScheduledRun {
@@ -648,6 +652,12 @@ impl ScheduledRun {
                     hatchling_core::builders::format(&self.builders),
                 ));
             }
+        }
+        if let Some(tools) = &self.tools {
+            env.push((
+                "HATCHLING_RUN_TOOLS",
+                hatchling_core::run_tools::format(tools),
+            ));
         }
         if let Some(endpoint) = &self.model_endpoint {
             env.push(("HATCHLING_MODEL_ENDPOINT", endpoint.clone()));
@@ -2620,6 +2630,7 @@ mod run_cell_tests {
             history: Vec::new(),
             earlier: Vec::new(),
             builders: std::collections::BTreeMap::new(),
+            tools: None,
         }
     }
 
@@ -2795,6 +2806,7 @@ mod run_cell_tests {
             history: history.clone(),
             earlier: earlier.clone(),
             builders: std::collections::BTreeMap::new(),
+            tools: None,
             ..run()
         };
         let raw = given(&turn).unwrap();
@@ -2841,6 +2853,25 @@ mod run_cell_tests {
             builders: builders.clone(),
             ..run()
         };
+        // Any run is told its tool groups, when the broker says.
+        let groups = |run: &ScheduledRun| {
+            run.env()
+                .into_iter()
+                .find(|(name, _)| *name == "HATCHLING_RUN_TOOLS")
+                .map(|(_, value)| value)
+        };
+        assert_eq!(groups(&run()), None, "an older spec says nothing");
+        for on in [
+            std::collections::BTreeSet::new(),
+            std::collections::BTreeSet::from([hatchling_core::run_tools::ToolGroup::Search]),
+        ] {
+            let told = ScheduledRun {
+                tools: Some(on.clone()),
+                ..run()
+            };
+            let raw = groups(&told).unwrap();
+            assert_eq!(hatchling_core::run_tools::parse(&raw).unwrap(), on);
+        }
         let raw = told(&turn).unwrap();
         assert_eq!(hatchling_core::builders::parse(&raw).unwrap(), builders);
         let none = ScheduledRun {

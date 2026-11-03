@@ -37,6 +37,12 @@ export type Reply = {
 };
 const CONNECTING: ConnectionState = { kind: 'reconnecting', detail: 'Connecting to Hatchling…' };
 const READY: ConnectionState = { kind: 'ready', detail: '' };
+/**
+ * A connection that opens and ends before Hatchling's welcome: the broker closes
+ * one whose key it doesn't take without a word, as after a restart, which mints a
+ * new key; the host closes one when the broker isn't running.
+ */
+const NOT_LET_IN = 'Hatchling didn’t let the app in. If it restarted, this address’s key no longer works: run `hatchling-host url` and open the address it prints. If it isn’t running, start it: `sudo systemctl start hatchling`.';
 const UNREADABLE = 'Hatchling sent a message this version of the app cannot read, so the app disconnected rather than miss it. Reload the app, or restart the broker, so both are the same version.';
 const REPEATED = 'Hatchling repeated its handshake in the middle of the session, so the app disconnected.';
 const UNANSWERED = 'The connection closed before Hatchling answered. It may still have been received.';
@@ -81,8 +87,10 @@ export class LiveClient {
         const current = (): boolean => generation === this.#generation;
         this.#phase = 'greeting';
         this.#update(CONNECTING);
+        let opened = false;
         this.#transport.connect({
             opened: () => {
+                opened = true;
                 if (current())
                     this.#transport.send(encodeRequest(hello(this.#name, undefined, this.#token)));
             },
@@ -92,7 +100,7 @@ export class LiveClient {
             },
             closed: detail => {
                 if (current())
-                    this.#lost({ kind: 'offline', detail }, 'idle');
+                    this.#lost({ kind: 'offline', detail: this.#phase === 'greeting' && opened ? NOT_LET_IN : detail }, 'idle');
             },
         });
     }

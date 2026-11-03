@@ -415,9 +415,11 @@ impl Cell<Ready> {
     /// # Errors
     ///
     /// Returns [`hatchling_loop::Error`] variants per the loop's
-    /// contract: budget exhaustion, unknown tools, and invalid
-    /// arguments stop fail-closed; tool execution failures feed
-    /// back to the model.
+    /// contract: budget exhaustion stops fail-closed; an unknown tool
+    /// or invalid arguments run nothing and are told to the model, and
+    /// stop fail-closed once they come more often than
+    /// [`hatchling_loop::CONTRACT_SLIPS`] allows; tool execution
+    /// failures feed back to the model.
     pub fn run_loop(
         &self,
         kind: hatchling_loop::PromptKind,
@@ -477,34 +479,51 @@ impl Cell<Ready> {
         registry.register(Box::new(crate::tools::EgressRequestTool::new(
             self.connection(),
         )));
-        registry.register(Box::new(crate::tools::SkillInvokeTool::new(
-            self.connection(),
-        )));
-        registry.register(Box::new(crate::tools::WebFetchTool::new(self.connection())));
-        registry.register(Box::new(crate::tools::WebSearchTool::new(
-            self.connection(),
-        )));
-        registry.register(Box::new(crate::tools::BrowserOpenTool::new(
-            self.connection(),
-        )));
-        registry.register(Box::new(crate::tools::BrowserReadTool::new(
-            self.connection(),
-        )));
-        registry.register(Box::new(crate::tools::BrowserActTool::new(
-            self.connection(),
-        )));
-        registry.register(Box::new(crate::tools::BrowserAllowTool::new(
-            self.connection(),
-        )));
-        registry.register(Box::new(crate::tools::BrowserSignInTool::new(
-            self.connection(),
-        )));
-        registry.register(Box::new(crate::tools::BrowserAskCodeTool::new(
-            self.connection(),
-        )));
-        registry.register(Box::new(crate::tools::BrowserCloseTool::new(
-            self.connection(),
-        )));
+        // Skills, the web, search and a browser only when the operator
+        // turned them on: a tool the broker can only refuse costs a small
+        // model a turn, and room in its prompt.
+        let on = |group| {
+            self.config()
+                .run_tools
+                .as_ref()
+                .is_none_or(|on| on.contains(&group))
+        };
+        if on(hatchling_core::run_tools::ToolGroup::Skills) {
+            registry.register(Box::new(crate::tools::SkillInvokeTool::new(
+                self.connection(),
+            )));
+        }
+        if on(hatchling_core::run_tools::ToolGroup::Web) {
+            registry.register(Box::new(crate::tools::WebFetchTool::new(self.connection())));
+        }
+        if on(hatchling_core::run_tools::ToolGroup::Search) {
+            registry.register(Box::new(crate::tools::WebSearchTool::new(
+                self.connection(),
+            )));
+        }
+        if on(hatchling_core::run_tools::ToolGroup::Browser) {
+            registry.register(Box::new(crate::tools::BrowserOpenTool::new(
+                self.connection(),
+            )));
+            registry.register(Box::new(crate::tools::BrowserReadTool::new(
+                self.connection(),
+            )));
+            registry.register(Box::new(crate::tools::BrowserActTool::new(
+                self.connection(),
+            )));
+            registry.register(Box::new(crate::tools::BrowserAllowTool::new(
+                self.connection(),
+            )));
+            registry.register(Box::new(crate::tools::BrowserSignInTool::new(
+                self.connection(),
+            )));
+            registry.register(Box::new(crate::tools::BrowserAskCodeTool::new(
+                self.connection(),
+            )));
+            registry.register(Box::new(crate::tools::BrowserCloseTool::new(
+                self.connection(),
+            )));
+        }
         // A chat turn told the operator's builders proposes builds from
         // ideas, for the owner to approve (WO-032).
         for tool in crate::tools::IdeaTool::all(self.connection(), &self.config().run_builders) {
@@ -603,6 +622,7 @@ mod tests {
             run_history: Vec::new(),
             run_earlier: Vec::new(),
             run_builders: std::collections::BTreeMap::new(),
+            run_tools: None,
             vault_fd: None,
         }
     }

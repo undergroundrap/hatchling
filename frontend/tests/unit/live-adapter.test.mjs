@@ -326,6 +326,23 @@ test('a closed connection\'s late callbacks are ignored', () => {
     assert.equal(transport.sent.length, 0);
     assert.equal(adapter.chatSession.getSnapshot().connection.kind, 'reconnecting');
 });
+test('a connection that ends before the welcome says how to get back in', async () => {
+    const transport = new FakeTransport();
+    const adapter = new LiveAdapter(transport, 'test-ui');
+    transport.drop('Nothing listens there.');
+    assert.deepEqual(adapter.chatSession.getSnapshot().connection, { kind: 'offline', detail: 'Nothing listens there.' }, 'never opened: the transport says why');
+    await adapter.chatSession.reconnect();
+    transport.open();
+    transport.drop('The connection to Hatchling ended.');
+    const { kind, detail } = adapter.chatSession.getSnapshot().connection;
+    assert.equal(kind, 'offline');
+    assert.match(detail, /hatchling-host url/, 'opened, then ended before the welcome: a key it took no longer');
+    await adapter.chatSession.reconnect();
+    transport.open();
+    transport.deliver(SAMPLE_WELCOME);
+    transport.drop('Wi-Fi dropped.');
+    assert.deepEqual(adapter.chatSession.getSnapshot().connection, { kind: 'offline', detail: 'Wi-Fi dropped.' }, 'after the welcome: the transport says why');
+});
 test('chat: typed events become messages; replays replace, never duplicate; every chat is tracked', () => {
     const { transport, adapter } = connected();
     replay(transport);

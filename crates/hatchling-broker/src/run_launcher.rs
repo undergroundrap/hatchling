@@ -458,6 +458,8 @@ pub struct CellRun<'scope> {
     held: Option<hatchling_sys::HeldLock>,
     token: String,
     done: bool,
+    /// How it ended, once it failed.
+    ending: Option<hatchling_scheduler::Ending>,
     /// Its listing for the operator, until it ends.
     running: Option<crate::machine::Running>,
 }
@@ -566,6 +568,7 @@ impl<'scope> CellLauncher<'scope, '_> {
             held: Some(held),
             token,
             done: false,
+            ending: None,
             running,
         })
     }
@@ -574,17 +577,28 @@ impl<'scope> CellLauncher<'scope, '_> {
 impl Run for CellRun<'_> {
     fn poll(&mut self) -> Option<Result<String, String>> {
         let timeout = self.timeout.as_secs();
-        self.poll_end().map(|end| match end {
+        let end = self.poll_end()?;
+        Some(match end {
             RunEnd::Exited {
                 code: 0, output, ..
             } => captured(output),
-            RunEnd::Exited { code, errors, .. } => Err(format!(
-                "the run exited {code}: {}",
-                String::from_utf8_lossy(&errors).trim()
-            )),
-            RunEnd::TimedOut => Err(format!("the run timed out after {timeout} s")),
+            RunEnd::Exited { code, errors, .. } => {
+                self.ending = Some(hatchling_scheduler::Ending::Exited(code));
+                Err(format!(
+                    "the run exited {code}: {}",
+                    String::from_utf8_lossy(&errors).trim()
+                ))
+            }
+            RunEnd::TimedOut => {
+                self.ending = Some(hatchling_scheduler::Ending::TimedOut);
+                Err(format!("the run timed out after {timeout} s"))
+            }
             RunEnd::Failed(reason) => Err(reason),
         })
+    }
+
+    fn ending(&self) -> Option<hatchling_scheduler::Ending> {
+        self.ending
     }
 }
 
@@ -736,7 +750,29 @@ fn scheduled_run(config: &Config, request: &RunRequest) -> ScheduledRun {
         history: request.history.clone(),
         earlier: request.earlier.clone(),
         builders: run_artifacts(config, request).builders,
+        tools: Some(run_tools(config)),
     }
+}
+
+/// The tool groups `config` turns on, for a run to offer its model: the
+/// web and search as the operator set them, the browser if one was set
+/// up, and skills if a skills directory was.
+pub(crate) fn run_tools(
+    config: &Config,
+) -> std::collections::BTreeSet<hatchling_core::run_tools::ToolGroup> {
+    use hatchling_core::run_tools::ToolGroup;
+    [
+        (ToolGroup::Web, config.web.enabled),
+        (ToolGroup::Search, config.web.search),
+        (
+            ToolGroup::Browser,
+            crate::browser_ops::configured().is_some(),
+        ),
+        (ToolGroup::Skills, config.skills.is_enabled()),
+    ]
+    .into_iter()
+    .filter_map(|(group, on)| on.then_some(group))
+    .collect()
 }
 
 /// A run's build store (WO-032): for a chat run, when the operator named
@@ -1145,6 +1181,45 @@ mod tests {
         assert!(turn.missed);
     }
 
+    /// A run is told the tool groups the operator turned on, so its
+    /// agent offers its model nothing the broker would only refuse.
+    #[test]
+    fn a_run_is_told_the_tool_groups_that_are_on() {
+        use hatchling_core::run_tools::ToolGroup;
+        let mut config = config();
+        let asked = request(Vec::new());
+        // No browser is set up in a test process.
+        assert!(crate::browser_ops::configured().is_none());
+        for (web, search, skills) in [
+            (false, false, false),
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+            (true, true, true),
+        ] {
+            config.web.enabled = web;
+            config.web.search = search;
+            config.skills = if skills {
+                SkillConfig {
+                    skills_dir: PathBuf::from("/srv/skills"),
+                    ..SkillConfig::disabled()
+                }
+            } else {
+                SkillConfig::disabled()
+            };
+            let on: std::collections::BTreeSet<ToolGroup> = [
+                (ToolGroup::Web, web),
+                (ToolGroup::Search, search),
+                (ToolGroup::Skills, skills),
+            ]
+            .into_iter()
+            .filter_map(|(group, on)| on.then_some(group))
+            .collect();
+            assert_eq!(scheduled_run(&config, &asked).tools, Some(on.clone()));
+            assert_eq!(run_tools(&config), on);
+        }
+    }
+
     #[test]
     fn a_helper_watches_only_the_broker_that_started_it() {
         assert_eq!(broker_pid(), std::process::id().to_string());
@@ -1456,6 +1531,7 @@ mod tests {
             held: None,
             token: String::from("helper-test"),
             done: false,
+            ending: None,
             running: None,
         }
     }
@@ -1491,6 +1567,7 @@ mod tests {
             history: Vec::new(),
             earlier: Vec::new(),
             builders: std::collections::BTreeMap::new(),
+            tools: None,
         };
         std::thread::scope(|scope| {
             let env = RunEnv {
@@ -1659,6 +1736,7 @@ mod tests {
             history: Vec::new(),
             earlier: Vec::new(),
             builders: std::collections::BTreeMap::new(),
+            tools: None,
         });
         let err =
             run_helper(Some(&test_spec(&serde_json::to_string(&skill).unwrap()))).unwrap_err();
@@ -1691,6 +1769,7 @@ mod tests {
             history: Vec::new(),
             earlier: Vec::new(),
             builders: std::collections::BTreeMap::new(),
+            tools: None,
         });
         assert_eq!(agent_log_level(&agent, Some("debug")), LogLevel::Error);
     }

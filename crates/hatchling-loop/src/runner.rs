@@ -12,6 +12,17 @@ use crate::memory::MemoryProvider;
 use crate::model::{Message, Model, ModelAction};
 use crate::tool::{ToolOutput, ToolRegistry};
 
+/// How often a run's model may break the tool contract and be told so.
+///
+/// Breaking it is calling a tool it wasn't offered, or with arguments
+/// that don't fit the schema. Small models slip now and then; a model
+/// that keeps slipping is broken or steered, and the run stops.
+pub const CONTRACT_SLIPS: u32 = 2;
+
+/// What the model is told of a batch that broke the contract.
+const NOT_RUN: &str = "Nothing in this batch ran. Call again with a tool you were offered and \
+                       arguments that fit its schema, or answer without tools.";
+
 /// How long the loop may run. The bound is enforced by the loop,
 //  not requested by the model.
 #[derive(Debug, Clone, Copy)]
@@ -146,15 +157,17 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
     /// execute its tool calls (validated, in order) and feed the
     /// results back. Tool execution errors feed back as
     /// `ToolResult::Err` — the model decides what to do next; the
-    /// loop decides when to stop.
+    /// loop decides when to stop. A batch with a call that breaks the
+    /// tool contract runs none of its calls: the model is told what was
+    /// wrong, and that nothing ran, up to [`CONTRACT_SLIPS`] times.
     ///
     /// # Errors
     ///
     /// Returns [`Error::BudgetExhausted`] when the model never
     /// returns text within the budget, [`Error::UnknownTool`] or
     /// [`Error::InvalidArguments`] when the model violates the
-    /// tool contract, [`Error::ModelFailed`] when the model itself
-    /// errors.
+    /// tool contract once more than [`CONTRACT_SLIPS`] allows,
+    /// [`Error::ModelFailed`] when the model itself errors.
     pub fn run(&self, model: &dyn Model, request: String) -> Result<LoopResult, Error> {
         self.run_with_evidence(model, request, Vec::new())
     }
@@ -216,6 +229,7 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
             .unwrap_or_else(|| Arc::new(StepLedger::new(self.budget.max_steps)));
 
         let mut step = 0;
+        let mut slips = 0;
         while ledger.take_step() {
             let action = model.next_action(&history, &tool_descriptions)?;
             step += 1;
@@ -232,8 +246,28 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
                     // The whole batch is checked before any of it runs:
                     // an unknown or malformed call later in it must not
                     // leave earlier calls done and unrecorded.
-                    for call in &calls {
-                        self.tools.check(call)?;
+                    let checked: Vec<Result<(), Error>> =
+                        calls.iter().map(|call| self.tools.check(call)).collect();
+                    if checked.iter().any(Result::is_err) {
+                        slips += 1;
+                        if slips > CONTRACT_SLIPS {
+                            // `any` found one.
+                            return Err(checked
+                                .into_iter()
+                                .find_map(Result::err)
+                                .unwrap_or_else(|| Error::ModelFailed(String::new())));
+                        }
+                        let results = checked
+                            .into_iter()
+                            .map(|checked| {
+                                ToolOutput::Err(checked.err().map_or_else(
+                                    || String::from(NOT_RUN),
+                                    |error| format!("{error}. {NOT_RUN}"),
+                                ))
+                            })
+                            .collect();
+                        history.push(Message::ToolUse { calls, results });
+                        continue;
                     }
                     let mut results = Vec::with_capacity(calls.len());
                     for call in &calls {
@@ -683,7 +717,7 @@ mod tests {
     }
 
     #[test]
-    fn a_batch_with_a_bad_call_runs_none_of_it() {
+    fn a_batch_with_a_bad_call_runs_none_of_it_and_the_model_is_told() {
         let call = |name: &str, arguments| crate::tool::ToolCall {
             name: name.to_owned(),
             arguments,
@@ -696,26 +730,85 @@ mod tests {
             let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let mut registry = ToolRegistry::new();
             registry.register(Box::new(Counting(Arc::clone(&runs))));
-            let model = FakeModel::new(vec![ModelAction::ToolCalls(vec![
-                call("count", serde_json::json!({"n": 1})),
-                bad.clone(),
-            ])]);
-            let error = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            let model = FakeModel::new(vec![
+                ModelAction::ToolCalls(vec![
+                    call("count", serde_json::json!({"n": 1})),
+                    bad.clone(),
+                ]),
+                ModelAction::Text(String::from("answered without tools")),
+            ]);
+            let result = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
                 .run(&model, String::from("go"))
-                .unwrap_err();
-            assert!(
-                matches!(
-                    error,
-                    Error::InvalidArguments { .. } | Error::UnknownTool(_)
-                ),
-                "{bad:?}: {error:?}"
-            );
+                .unwrap();
+            assert_eq!(result.answer, "answered without tools", "{bad:?}");
             assert_eq!(
                 runs.load(std::sync::atomic::Ordering::SeqCst),
                 0,
                 "{bad:?}: the good call before it never ran"
             );
+            // Each call of the batch is answered: the bad one with why,
+            // both with that nothing ran.
+            let told = result
+                .history
+                .iter()
+                .find_map(|message| {
+                    if let Message::ToolUse { results, .. } = message {
+                        Some(results.clone())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap();
+            let [first, second] = told.as_slice() else {
+                unreachable!("two calls, two results: {told:?}");
+            };
+            assert!(
+                matches!(first, ToolOutput::Err(why) if why == NOT_RUN),
+                "{first:?}"
+            );
+            assert!(
+                matches!(second, ToolOutput::Err(why) if why.ends_with(NOT_RUN) && why.len() > NOT_RUN.len()),
+                "{second:?}"
+            );
         }
+    }
+
+    #[test]
+    fn a_model_that_keeps_breaking_the_contract_is_stopped() {
+        let bad = || {
+            ModelAction::ToolCalls(vec![crate::tool::ToolCall {
+                name: String::from("count"),
+                arguments: serde_json::json!({}),
+            }])
+        };
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(Counting(Arc::clone(&runs))));
+        // Told twice; the third time stops the run.
+        let mut actions: Vec<ModelAction> = (0..=CONTRACT_SLIPS).map(|_| bad()).collect();
+        actions.push(ModelAction::Text(String::from("never reached")));
+        let model = FakeModel::new(actions);
+        let error = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .run(&model, String::from("go"))
+            .unwrap_err();
+        assert!(matches!(error, Error::InvalidArguments { .. }), "{error:?}");
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 0);
+        // Slips below the bound don't stop it.
+        let mut actions: Vec<ModelAction> = (0..CONTRACT_SLIPS).map(|_| bad()).collect();
+        actions.push(ModelAction::Text(String::from("fine")));
+        let model = FakeModel::new(actions);
+        let result = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .run(&model, String::from("go"))
+            .unwrap();
+        assert_eq!(result.answer, "fine");
+    }
+
+    #[test]
+    fn a_good_batch_runs_whole() {
+        let call = |name: &str, arguments| crate::tool::ToolCall {
+            name: name.to_owned(),
+            arguments,
+        };
         // A good batch runs whole.
         let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut registry = ToolRegistry::new();
