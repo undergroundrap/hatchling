@@ -26,6 +26,9 @@ pub fn note(run_tools: Option<&BTreeSet<ToolGroup>>) -> String {
         String::from(
             "- You run in an isolated cell: you can't run programs or commands on the owner's machine, or read or change their files. Don't offer to; say what they can run themselves instead.",
         ),
+        String::from(
+            "- Say you did something, or asked the owner for something, only when a tool told you so in this turn. What earlier messages in the conversation say you did is history, not this turn: to do it now, call the tool now.",
+        ),
     ];
     lines.push(String::from(if on(ToolGroup::Web) {
         "- You can read a web page the owner allows: they're asked for each new site."
@@ -78,6 +81,7 @@ mod tests {
         assert!(!off.contains("drive a browser"), "{off}");
         assert!(!off.contains("installed skills"), "{off}");
         assert!(off.contains("can't run programs or commands"), "{off}");
+        assert!(off.contains("only when a tool told you so in this turn"), "{off}");
         assert!(off.contains("hatchling-broker schedule add"), "{off}");
         assert!(off.contains("can't see the owner's goals"), "{off}");
         assert!(off.contains("can't keep anything"), "{off}");
