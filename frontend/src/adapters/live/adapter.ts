@@ -20,9 +20,11 @@ import { LiveSignIns } from './sign-ins.js';
 import type { CodePort } from '../../session/codes.js';
 import type { AttentionPort } from '../../session/attention.js';
 import type { ConversationPort } from '../../session/conversations.js';
+import type { UsagePort } from '../../session/usage.js';
 import type { GoalsPort } from '../../session/goals.js';
 import { LiveChatSession } from './session.js';
 import { LiveSchedules } from './schedules.js';
+import { LiveUsage } from './usage.js';
 import { LiveGoals } from './goals.js';
 import { LiveSites } from './sites.js';
 import { Surfaces } from './surfaces.js';
@@ -52,6 +54,9 @@ export class LiveAdapter implements ProtocolAdapter {
     readonly codes: CodePort;
     /** Where the chat's header starts a new conversation: straight to the broker, never as a Command. */
     readonly conversations: ConversationPort;
+    /** The model usage the broker counted: read, never a Command. */
+    readonly usage: UsagePort;
+    readonly #usage: LiveUsage;
     /** Where a goal is closed as reached or set aside: straight to the broker, never as a Command. */
     readonly goals: GoalsPort;
     readonly #goals: LiveGoals;
@@ -78,6 +83,8 @@ export class LiveAdapter implements ProtocolAdapter {
         this.signIns = new LiveSignIns(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.codes = { give: (sessionId, code) => this.#surfaces.giveCode(sessionId, code) };
         this.conversations = { start: chatId => this.#newConversation(chatId) };
+        this.#usage = new LiveUsage(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
+        this.usage = this.#usage;
         this.#goals = new LiveGoals(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.goals = this.#goals;
         this.chatSession = new LiveChatSession(this.#client, this.#chats, artifactId => this.#surfaces.shelf.latest(artifactId));
@@ -221,6 +228,7 @@ export class LiveAdapter implements ProtocolAdapter {
             case 'chat_message':
                 this.#chats.apply(body, event.ts);
                 this.#activity.chat(body, event.ts);
+                this.#usage.observe(body);
                 return undefined;
             case 'attachment':
                 this.#chats.attach(body, event.ts);

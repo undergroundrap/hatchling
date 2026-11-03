@@ -166,6 +166,8 @@ pub fn child_config(
     child.scheduler = SchedulerConfig {
         model_reasoning: parent.scheduler.model_reasoning,
         subagent_depth: parent.scheduler.subagent_depth.saturating_add(1),
+        // A child's model calls are the owner's usage too.
+        usage: parent.scheduler.usage.clone(),
         ..SchedulerConfig::disabled()
     };
     child
@@ -701,6 +703,7 @@ mod tests {
         parent.scheduler.model_reasoning = hatchling_core::ModelReasoning::Disabled;
         parent.web.profiles = std::path::PathBuf::from("/srv/h/profiles");
         parent.web.credentials = std::path::PathBuf::from("/srv/h/sign-ins");
+        parent.scheduler.usage = std::path::PathBuf::from("/srv/h/schedules.usage");
         let socket: SocketPath = "/tmp/hatchling-child/broker.sock".parse().unwrap();
         let child = child_config(&parent, &[vault("app-token")], "run-1", socket.clone());
         assert_eq!(held_grants(&child), [vault("app-token")].into());
@@ -712,6 +715,8 @@ mod tests {
         );
         assert!(child.scheduler.followup.is_none());
         assert!(!child.scheduler.enabled());
+        // Its model calls are counted with the owner's.
+        assert_eq!(child.scheduler.usage, parent.scheduler.usage);
         assert!(child.egress.grants.is_empty());
         assert!(child.channels.is_empty());
         // Not the owner's signed-in profiles, or their sign-ins: no

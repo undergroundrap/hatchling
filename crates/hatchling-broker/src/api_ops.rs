@@ -38,8 +38,8 @@ use hatchling_core::messages::{ScheduleGrant, ScheduleOp};
 use hatchling_core::subagent::{ActivityEvent, SubagentEvent};
 use hatchling_core::ui::{
     ActionRefusal, AgentState, ApiOutcome, ApiRequest, ChatAuthor, ChatMessage, ControlRefusal,
-    Decision, GoalOp, Handoff, ProfileOp, ProfileResult, SignInOp, SiteOp, UiAction,
-    UiActionResult, UiEventBody,
+    Decision, GoalOp, Handoff, ProfileOp, ProfileResult, SignInOp, SiteOp, UiAction, UiActionResult,
+    UiEventBody,
 };
 use hatchling_scheduler::{Creator, Timestamp};
 use hatchling_vault::OpensStores;
@@ -61,6 +61,8 @@ enum Owned<'a> {
     Profiles(&'a ProfileOp),
     /// The sign-ins the broker fills for them (WO-030).
     SignIns(&'a SignInOp),
+    /// Their model usage.
+    Usage,
     /// Their goals.
     Goals(&'a GoalOp),
 }
@@ -218,6 +220,7 @@ impl<'a> Ops<'a> {
             UiAction::ManageSites { op } => self.owned(owns, Owned::Sites(op)),
             UiAction::ManageProfiles { op } => self.owned(owns, Owned::Profiles(op)),
             UiAction::ManageSignIns { op } => self.owned(owns, Owned::SignIns(op)),
+            UiAction::ReadUsage {} => self.owned(owns, Owned::Usage),
             UiAction::ManageGoals { op } => self.owned(owns, Owned::Goals(op)),
             UiAction::Decide {
                 confirmation_id,
@@ -278,6 +281,13 @@ impl<'a> Ops<'a> {
             },
             Owned::Goals(op) => UiActionResult::Goals {
                 outcome: crate::goal_ops::handle_goal_op(self.config, op),
+            },
+            Owned::Usage => UiActionResult::Usage {
+                usage: crate::usage::report(
+                    &self.config.scheduler.usage,
+                    Timestamp::now().as_second(),
+                    None,
+                ),
             },
         };
         (result, ApiOutcome::Served)
@@ -1956,6 +1966,61 @@ mod tests {
                 )
             );
         }
+    }
+
+    /// Only the owner reads the model usage the broker counted.
+    #[test]
+    fn only_the_owner_reads_the_usage() {
+        let mut config = owner_config(Some("/srv/hatchling/schedules"));
+        let dir = std::env::temp_dir().join(format!("hatchling-api-usage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        config.scheduler.usage.clone_from(&dir);
+        let request = hatchling_egress::EgressRequest {
+            method: String::from("POST"),
+            destination: String::from("localhost:11434"),
+            path: String::from("/v1/chat/completions"),
+            headers: Vec::new(),
+            body: Vec::new(),
+            surrogate_b64: String::new(),
+        };
+        let reply = hatchling_egress::EgressResponse {
+            status: 200,
+            headers: Vec::new(),
+            body: br#"{"model":"m","usage":{"prompt_tokens":7,"completion_tokens":2}}"#.to_vec(),
+        };
+        crate::usage::count(&dir, &request, &reply, Timestamp::now().as_second());
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let ops = Ops::new(&config, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        let held: Vec<ScheduleGrant> = ops.owner_grants().into_iter().collect();
+        let owner = caller(&held);
+        let partial = caller(held.get(..1).unwrap_or_default());
+        let mut replies = Replies::default();
+        let read = UiAction::ReadUsage {};
+        assert_eq!(
+            ops.handle(&partial, &read, &mut replies),
+            (
+                UiActionResult::Refused {
+                    reason: ActionRefusal::NotGranted
+                },
+                ApiOutcome::Refused
+            )
+        );
+        let (result, outcome) = ops.handle(&owner, &read, &mut replies);
+        assert_eq!(outcome, ApiOutcome::Served);
+        let usage = if let UiActionResult::Usage { usage } = result {
+            Some(usage)
+        } else {
+            None
+        }
+        .unwrap();
+        assert!(usage.counted);
+        let today = usage.days.first().unwrap();
+        assert_eq!(
+            (today.calls, today.input_tokens, today.output_tokens),
+            (1, 7, 2)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Only the owner manages their goals.

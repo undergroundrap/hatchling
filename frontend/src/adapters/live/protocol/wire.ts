@@ -441,7 +441,7 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "string"
             },
             {
-                "const": "manage_goals",
+                "const": "read_usage",
                 "type": "string"
             },
             {
@@ -1307,250 +1307,6 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "object"
             }
         ]
-    },
-    "GoalOp": {
-        "oneOf": [
-            {
-                "properties": {
-                    "op": {
-                        "const": "list",
-                        "type": "string"
-                    }
-                },
-                "required": [
-                    "op"
-                ],
-                "type": "object"
-            },
-            {
-                "properties": {
-                    "detail": {
-                        "type": "string"
-                    },
-                    "op": {
-                        "const": "create",
-                        "type": "string"
-                    },
-                    "title": {
-                        "type": "string"
-                    }
-                },
-                "required": [
-                    "op",
-                    "title",
-                    "detail"
-                ],
-                "type": "object"
-            },
-            {
-                "properties": {
-                    "detail": {
-                        "type": [
-                            "string",
-                            "null"
-                        ]
-                    },
-                    "id": {
-                        "type": "string"
-                    },
-                    "op": {
-                        "const": "update",
-                        "type": "string"
-                    },
-                    "title": {
-                        "type": [
-                            "string",
-                            "null"
-                        ]
-                    }
-                },
-                "required": [
-                    "op",
-                    "id"
-                ],
-                "type": "object"
-            },
-            {
-                "properties": {
-                    "achieved": {
-                        "type": "boolean"
-                    },
-                    "id": {
-                        "type": "string"
-                    },
-                    "op": {
-                        "const": "close",
-                        "type": "string"
-                    }
-                },
-                "required": [
-                    "op",
-                    "id",
-                    "achieved"
-                ],
-                "type": "object"
-            }
-        ]
-    },
-    "GoalResult": {
-        "oneOf": [
-            {
-                "properties": {
-                    "goals": {
-                        "items": {
-                            "$ref": "#/$defs/GoalView"
-                        },
-                        "type": "array"
-                    },
-                    "result": {
-                        "const": "listed",
-                        "type": "string"
-                    }
-                },
-                "required": [
-                    "result",
-                    "goals"
-                ],
-                "type": "object"
-            },
-            {
-                "properties": {
-                    "goal": {
-                        "$ref": "#/$defs/GoalView"
-                    },
-                    "result": {
-                        "const": "saved",
-                        "type": "string"
-                    }
-                },
-                "required": [
-                    "result",
-                    "goal"
-                ],
-                "type": "object"
-            },
-            {
-                "properties": {
-                    "result": {
-                        "const": "not_found",
-                        "type": "string"
-                    }
-                },
-                "required": [
-                    "result"
-                ],
-                "type": "object"
-            },
-            {
-                "properties": {
-                    "result": {
-                        "const": "already_closed",
-                        "type": "string"
-                    }
-                },
-                "required": [
-                    "result"
-                ],
-                "type": "object"
-            },
-            {
-                "properties": {
-                    "result": {
-                        "const": "rejected",
-                        "type": "string"
-                    }
-                },
-                "required": [
-                    "result"
-                ],
-                "type": "object"
-            },
-            {
-                "properties": {
-                    "result": {
-                        "const": "limit_reached",
-                        "type": "string"
-                    }
-                },
-                "required": [
-                    "result"
-                ],
-                "type": "object"
-            },
-            {
-                "properties": {
-                    "result": {
-                        "const": "off",
-                        "type": "string"
-                    }
-                },
-                "required": [
-                    "result"
-                ],
-                "type": "object"
-            },
-            {
-                "properties": {
-                    "result": {
-                        "const": "failed",
-                        "type": "string"
-                    }
-                },
-                "required": [
-                    "result"
-                ],
-                "type": "object"
-            }
-        ]
-    },
-    "GoalState": {
-        "oneOf": [
-            {
-                "const": "open",
-                "type": "string"
-            },
-            {
-                "const": "achieved",
-                "type": "string"
-            },
-            {
-                "const": "abandoned",
-                "type": "string"
-            }
-        ]
-    },
-    "GoalView": {
-        "properties": {
-            "created_at": {
-                "minimum": 0,
-                "type": "integer"
-            },
-            "detail": {
-                "type": "string"
-            },
-            "id": {
-                "type": "string"
-            },
-            "state": {
-                "$ref": "#/$defs/GoalState"
-            },
-            "title": {
-                "type": "string"
-            },
-            "updated_at": {
-                "minimum": 0,
-                "type": "integer"
-            }
-        },
-        "required": [
-            "id",
-            "title",
-            "detail",
-            "state",
-            "created_at",
-            "updated_at"
-        ],
-        "type": "object"
     },
     "Handoff": {
         "oneOf": [
@@ -3418,16 +3174,12 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             {
                 "properties": {
                     "action": {
-                        "const": "manage_goals",
+                        "const": "read_usage",
                         "type": "string"
-                    },
-                    "op": {
-                        "$ref": "#/$defs/GoalOp"
                     }
                 },
                 "required": [
-                    "action",
-                    "op"
+                    "action"
                 ],
                 "type": "object"
             },
@@ -3832,17 +3584,17 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             },
             {
                 "properties": {
-                    "outcome": {
-                        "$ref": "#/$defs/GoalResult"
-                    },
                     "result": {
-                        "const": "goals",
+                        "const": "usage",
                         "type": "string"
+                    },
+                    "usage": {
+                        "$ref": "#/$defs/UsageReport"
                     }
                 },
                 "required": [
                     "result",
-                    "outcome"
+                    "usage"
                 ],
                 "type": "object"
             },
@@ -4437,5 +4189,87 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "object"
             }
         ]
+    },
+    "UsageDay": {
+        "properties": {
+            "calls": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "date": {
+                "type": "string"
+            },
+            "input_tokens": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "output_tokens": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "unreported": {
+                "minimum": 0,
+                "type": "integer"
+            }
+        },
+        "required": [
+            "date",
+            "calls",
+            "input_tokens",
+            "output_tokens",
+            "unreported"
+        ],
+        "type": "object"
+    },
+    "UsageModel": {
+        "properties": {
+            "calls": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "input_tokens": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "model": {
+                "type": "string"
+            },
+            "output_tokens": {
+                "minimum": 0,
+                "type": "integer"
+            }
+        },
+        "required": [
+            "model",
+            "calls",
+            "input_tokens",
+            "output_tokens"
+        ],
+        "type": "object"
+    },
+    "UsageReport": {
+        "properties": {
+            "counted": {
+                "type": "boolean"
+            },
+            "days": {
+                "items": {
+                    "$ref": "#/$defs/UsageDay"
+                },
+                "type": "array"
+            },
+            "models": {
+                "items": {
+                    "$ref": "#/$defs/UsageModel"
+                },
+                "type": "array"
+            }
+        },
+        "required": [
+            "counted",
+            "days",
+            "models"
+        ],
+        "type": "object"
     }
 };

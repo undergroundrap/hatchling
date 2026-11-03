@@ -6,6 +6,7 @@ import type { SignInPort } from '../session/sign-ins.js';
 import type { CodePort } from '../session/codes.js';
 import type { AttentionPort } from '../session/attention.js';
 import type { ConversationPort } from '../session/conversations.js';
+import type { UsagePort } from '../session/usage.js';
 import type { GoalsPort } from '../session/goals.js';
 import { ChatDelivery } from '../features/chat/delivery.js';
 import type { ChatSessionPort } from '../session/chat-session.js';
@@ -61,6 +62,9 @@ export class App implements AppContext {
     get conversations(): ConversationPort | undefined {
         return this.adapter.conversations;
     }
+    get usage(): UsagePort | undefined {
+        return this.adapter.usage;
+    }
     get goals(): GoalsPort | undefined {
         return this.adapter.goals;
     }
@@ -88,6 +92,7 @@ export class App implements AppContext {
         readonly signIns?: SignInPort;
         readonly codes?: CodePort;
         readonly conversations?: ConversationPort;
+        readonly usage?: UsagePort;
         readonly goals?: GoalsPort;
         readonly attention?: AttentionPort;
     }, private readonly root: HTMLElement, dialogRoot: HTMLElement, private readonly toastRoot: HTMLElement) {

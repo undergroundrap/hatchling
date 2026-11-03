@@ -5,6 +5,7 @@ import { icon } from '../../components/icons.js';
 import { button, selectField } from '../../components/ui.js';
 import { accents } from './appearance.js';
 import { editIdentity } from '../context/identity.js';
+import { liveUsage } from './usage.js';
 function usage(label: string, used: number, note: string, suffix = ''): HTMLElement {
     return h('div', { class: 'usage-meter' }, h('div', { class: 'split-row' }, h('span', {}, label), h('span', { class: 'quota-used' }, `${used}% used${suffix}`)), h('p', {}, note), h('meter', { min: 0, max: 100, value: used, 'aria-label': label, title: 'Synthetic sample quota. Not an actual account balance.' }));
 }
@@ -16,10 +17,9 @@ export function generalTab(ctx: AppContext, refresh: () => void): HTMLElement {
         const body = h('div', { class: 'stack' }, h('p', {}, 'These are synthetic sample usage meters. This frontend has no billing service and will not start a purchase or subscription.'), h('p', { class: 'muted' }, 'The connected adapter can supply real plan options later.'));
         ctx.dialogs.open('Plan details · scripted demo', body, 'confirm-dialog');
     }, { variant: 'link', className: 'upgrade-link' })));
-    // Connected to Hatchling there's no plan and nothing counted yet: say so,
-    // rather than show a sample quota as though it were the owner's.
-    const liveUsage = (): HTMLElement => h('section', { class: 'general-section' }, h('h3', {}, 'Usage'), h('div', { class: 'settings-group usage-group' }, h('p', {}, 'Hatchling runs on your machine: there is no plan and no quota. It doesn’t count model usage yet; counting, and spending limits for hosted models, come next.')));
-    root.append(account, ctx.state.mode === 'live' ? liveUsage() : sampleUsage());
+    // Connected to Hatchling, what the model really used, as the broker counted
+    // it: never a sample quota shown as though it were the owner's.
+    root.append(account, ctx.state.mode === 'live' ? liveUsage(ctx.usage?.current()) : sampleUsage());
     const language = h('button', { class: 'settings-group general-language', type: 'button' }, h('span', {}, 'Language'), icon('chevron', 15));
     language.addEventListener('click', () => {
         const choices = selectField('Language', 'language', [{ value: 'English', label: 'English' }], 'English');

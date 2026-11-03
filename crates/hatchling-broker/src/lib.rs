@@ -113,6 +113,7 @@ mod test_port;
 #[cfg(test)]
 mod test_socket;
 pub mod trust_roots;
+pub mod usage;
 pub mod vault_access;
 pub mod vault_keyring;
 pub mod vault_ops;

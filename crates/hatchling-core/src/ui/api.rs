@@ -91,6 +91,8 @@ pub enum ApiRequest {
     ManageSignIns,
     /// [`UiAction::ManageGoals`].
     ManageGoals,
+    /// [`UiAction::ReadUsage`].
+    ReadUsage,
     /// [`UiAction::GiveCode`].
     GiveCode,
     /// [`UiAction::DeclineCode`].
@@ -130,6 +132,7 @@ impl ApiRequest {
             UiAction::ManageProfiles { .. } => Self::ManageProfiles,
             UiAction::ManageSignIns { .. } => Self::ManageSignIns,
             UiAction::ManageGoals { .. } => Self::ManageGoals,
+            UiAction::ReadUsage {} => Self::ReadUsage,
             UiAction::GiveCode { .. } => Self::GiveCode,
             UiAction::DeclineCode { .. } => Self::DeclineCode,
         }
@@ -302,6 +305,7 @@ mod tests {
                 }),
                 ApiRequest::ManageGoals,
             ),
+            (action(UiAction::ReadUsage {}), ApiRequest::ReadUsage),
             (
                 action(UiAction::GiveCode {
                     session_id: id(),

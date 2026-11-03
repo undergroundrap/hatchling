@@ -627,8 +627,8 @@
           "type": "string"
         },
         {
-          "const": "manage_goals",
-          "description": "[`UiAction::ManageGoals`].",
+          "const": "read_usage",
+          "description": "[`UiAction::ReadUsage`].",
           "type": "string"
         },
         {
@@ -3342,286 +3342,6 @@
           "type": "object"
         }
       ]
-    },
-    "GoalOp": {
-      "description": "An operation on the owner's goals, from their app: the same goals the\nagent reads in a chat and a feed.",
-      "oneOf": [
-        {
-          "description": "List them, open and closed.",
-          "properties": {
-            "op": {
-              "const": "list",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Set a new goal.",
-          "properties": {
-            "detail": {
-              "description": "What reaching it looks like; may be empty.",
-              "type": "string"
-            },
-            "op": {
-              "const": "create",
-              "type": "string"
-            },
-            "title": {
-              "description": "One line.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "title",
-            "detail"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Change an open goal's title or detail.",
-          "properties": {
-            "detail": {
-              "description": "A new detail.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "id": {
-              "description": "The goal.",
-              "type": "string"
-            },
-            "op": {
-              "const": "update",
-              "type": "string"
-            },
-            "title": {
-              "description": "A new title.",
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "op",
-            "id"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Close an open goal: it's kept, and can't be reopened.",
-          "properties": {
-            "achieved": {
-              "description": "Whether it was reached.",
-              "type": "boolean"
-            },
-            "id": {
-              "description": "The goal.",
-              "type": "string"
-            },
-            "op": {
-              "const": "close",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "id",
-            "achieved"
-          ],
-          "type": "object"
-        }
-      ]
-    },
-    "GoalResult": {
-      "description": "The result of a [`GoalOp`].",
-      "oneOf": [
-        {
-          "description": "Every goal, open first, the newest first within each.",
-          "properties": {
-            "goals": {
-              "description": "The goals.",
-              "items": {
-                "$ref": "#/$defs/GoalView"
-              },
-              "type": "array"
-            },
-            "result": {
-              "const": "listed",
-              "type": "string"
-            }
-          },
-          "required": [
-            "result",
-            "goals"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "The goal, as it stands now: set, changed or closed.",
-          "properties": {
-            "goal": {
-              "$ref": "#/$defs/GoalView",
-              "description": "The goal."
-            },
-            "result": {
-              "const": "saved",
-              "type": "string"
-            }
-          },
-          "required": [
-            "result",
-            "goal"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "No goal has the id.",
-          "properties": {
-            "result": {
-              "const": "not_found",
-              "type": "string"
-            }
-          },
-          "required": [
-            "result"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "The goal is closed: it can't be changed or closed again.",
-          "properties": {
-            "result": {
-              "const": "already_closed",
-              "type": "string"
-            }
-          },
-          "required": [
-            "result"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "The title or detail wasn't accepted: a title is one line, and each\nhas a length it may not pass.",
-          "properties": {
-            "result": {
-              "const": "rejected",
-              "type": "string"
-            }
-          },
-          "required": [
-            "result"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "The most goals one may keep are kept.",
-          "properties": {
-            "result": {
-              "const": "limit_reached",
-              "type": "string"
-            }
-          },
-          "required": [
-            "result"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "The broker keeps no goals: the operator hasn't given it a place to.",
-          "properties": {
-            "result": {
-              "const": "off",
-              "type": "string"
-            }
-          },
-          "required": [
-            "result"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "The broker couldn't read or change them; its log says why.",
-          "properties": {
-            "result": {
-              "const": "failed",
-              "type": "string"
-            }
-          },
-          "required": [
-            "result"
-          ],
-          "type": "object"
-        }
-      ]
-    },
-    "GoalState": {
-      "description": "Where a goal stands.",
-      "oneOf": [
-        {
-          "const": "open",
-          "description": "Being worked toward.",
-          "type": "string"
-        },
-        {
-          "const": "achieved",
-          "description": "Reached.",
-          "type": "string"
-        },
-        {
-          "const": "abandoned",
-          "description": "Set aside.",
-          "type": "string"
-        }
-      ]
-    },
-    "GoalView": {
-      "description": "One of the owner's goals.",
-      "properties": {
-        "created_at": {
-          "description": "When it was set, Unix seconds.",
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "detail": {
-          "description": "What reaching it looks like; may be empty.",
-          "type": "string"
-        },
-        "id": {
-          "description": "Its id.",
-          "type": "string"
-        },
-        "state": {
-          "$ref": "#/$defs/GoalState",
-          "description": "Where it stands."
-        },
-        "title": {
-          "description": "One line.",
-          "type": "string"
-        },
-        "updated_at": {
-          "description": "When it last changed, Unix seconds: its close, once closed.",
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "id",
-        "title",
-        "detail",
-        "state",
-        "created_at",
-        "updated_at"
-      ],
-      "type": "object"
     },
     "GoalsResult": {
       "description": "The broker's reply to one [`GoalsOp`].",
@@ -9938,20 +9658,15 @@
           "type": "object"
         },
         {
-          "description": "List, set, change or close the owner's goals: the owner's alone.",
+          "description": "Read the model usage the broker counted: the owner's alone.",
           "properties": {
             "action": {
-              "const": "manage_goals",
+              "const": "read_usage",
               "type": "string"
-            },
-            "op": {
-              "$ref": "#/$defs/GoalOp",
-              "description": "The operation."
             }
           },
           "required": [
-            "action",
-            "op"
+            "action"
           ],
           "type": "object"
         },
@@ -10415,20 +10130,20 @@
           "type": "object"
         },
         {
-          "description": "A goal operation's result.",
+          "description": "The model usage the broker counted.",
           "properties": {
-            "outcome": {
-              "$ref": "#/$defs/GoalResult",
-              "description": "The result."
-            },
             "result": {
-              "const": "goals",
+              "const": "usage",
               "type": "string"
+            },
+            "usage": {
+              "$ref": "#/$defs/UsageReport",
+              "description": "The report."
             }
           },
           "required": [
             "result",
-            "outcome"
+            "usage"
           ],
           "type": "object"
         },
@@ -11116,6 +10831,110 @@
           "type": "object"
         }
       ]
+    },
+    "UsageDay": {
+      "description": "One day's model usage.",
+      "properties": {
+        "calls": {
+          "description": "Model calls answered.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "date": {
+          "description": "The day, `YYYY-MM-DD` on this machine's clock.",
+          "type": "string"
+        },
+        "input_tokens": {
+          "description": "Tokens the model read: prompts, history and tool results.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "output_tokens": {
+          "description": "Tokens the model wrote, thinking included.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "unreported": {
+          "description": "Calls whose reply reported no usage, so their tokens aren't in the\ncounts.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "date",
+        "calls",
+        "input_tokens",
+        "output_tokens",
+        "unreported"
+      ],
+      "type": "object"
+    },
+    "UsageModel": {
+      "description": "One model's usage over the report's days.",
+      "properties": {
+        "calls": {
+          "description": "Model calls answered.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "input_tokens": {
+          "description": "Tokens the model read.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "model": {
+          "description": "The model, as its server named it in replies.",
+          "type": "string"
+        },
+        "output_tokens": {
+          "description": "Tokens the model wrote.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "model",
+        "calls",
+        "input_tokens",
+        "output_tokens"
+      ],
+      "type": "object"
+    },
+    "UsageReport": {
+      "description": "The model usage the broker counted, as the model server reported it\nwith each reply: never what the agent says it used.",
+      "properties": {
+        "counted": {
+          "description": "Whether the broker counts usage: it does wherever scheduling is on,\nwhich every chat and run needs.",
+          "type": "boolean"
+        },
+        "days": {
+          "description": "Each of the last seven days on this machine's clock, today first,\ndays without a call included.",
+          "items": {
+            "$ref": "#/$defs/UsageDay"
+          },
+          "type": "array"
+        },
+        "models": {
+          "description": "Each model's use over those days, the most tokens first.",
+          "items": {
+            "$ref": "#/$defs/UsageModel"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "counted",
+        "days",
+        "models"
+      ],
+      "type": "object"
     },
     "VaultResult": {
       "description": "The broker's reply to one [`VaultOp`].\n\nReplies are per-operation and carry no more than the op asked for: a\nfetch returns one secret, never the store. Failures that would leak\ninternals (filesystem errors, oversize values) collapse to the opaque\n[`VaultError`](VaultResult::VaultError): the agent learns that the op\nfailed, not why.",
