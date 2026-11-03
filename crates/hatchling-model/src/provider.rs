@@ -26,11 +26,12 @@ use crate::error::Error;
 use crate::redact::Redactor;
 use crate::transport::Transport;
 
-/// How many times one request is tried when the model's reply is a stray:
-/// empty, or the capability probe answered without its tool. A small local
-/// model's odd reply now and then isn't its last word; one that can't do
-/// the job fails every time. Nothing runs before a reply is used, so
-/// asking again is safe.
+/// How many times one request is tried when the model's reply is a stray.
+///
+/// A stray is an empty reply, or the capability probe answered without
+/// its tool. A small local model's odd reply now and then isn't its last
+/// word; one that can't do the job fails every time. Nothing runs before a
+/// reply is used, so asking again is safe.
 pub const ATTEMPTS: usize = 3;
 
 /// The smallest context window, in tokens, a model may declare.
@@ -179,12 +180,12 @@ impl<T: Transport> ChatCompletionsProvider<T> {
                 Ok(ModelAction::ToolCalls(_)) => {
                     String::from("it answered the capability probe by calling another tool")
                 }
-                Ok(ModelAction::Text(_)) => String::from(
-                    "it answered the capability probe in text: it does not call tools",
-                ),
-                Err(error) => format!(
-                    "it answered the capability probe without a usable tool call ({error})"
-                ),
+                Ok(ModelAction::Text(_)) => {
+                    String::from("it answered the capability probe in text: it does not call tools")
+                }
+                Err(error) => {
+                    format!("it answered the capability probe without a usable tool call ({error})")
+                }
             };
         }
         Err(Error::Incapable { reason: refusal })
@@ -1264,13 +1265,19 @@ mod tests {
             error.to_string(),
             LoopError::ModelFailed(Error::EmptyReply.reason()).to_string()
         );
-        assert!(error.to_string().contains("message has no usable content or tool calls"));
+        assert!(
+            error
+                .to_string()
+                .contains("message has no usable content or tool calls")
+        );
         assert_eq!(transport.sent(), ATTEMPTS, "never more than {ATTEMPTS}");
         // A transport failure isn't asked again.
         let gone = Sequence::of(&[]);
-        assert!(sequenced(&gone)
-            .next_action(&[Message::User(String::from("hi"))], &no_tools())
-            .is_err());
+        assert!(
+            sequenced(&gone)
+                .next_action(&[Message::User(String::from("hi"))], &no_tools())
+                .is_err()
+        );
         assert_eq!(gone.sent(), 1);
     }
 
@@ -1292,7 +1299,10 @@ mod tests {
         assert_eq!(never.sent(), ATTEMPTS);
         // A transport failure ends it at once.
         let gone = Sequence::of(&[]);
-        assert!(matches!(sequenced(&gone).verify_capabilities(), Err(Error::Transport(_))));
+        assert!(matches!(
+            sequenced(&gone).verify_capabilities(),
+            Err(Error::Transport(_))
+        ));
         assert_eq!(gone.sent(), 1);
     }
 }
