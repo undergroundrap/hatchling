@@ -82,6 +82,7 @@ With systemd 254 or later, the broker gets a cgroup of its own to give each cell
 
 - **The app's address again**, as yourself: `hatchling-host url`. Each start of the broker makes a new one, so after a restart an open app goes offline; open the new address.
 
+- **Scheduled work from a shell**, as yourself (not `sudo`): `hatchling-broker schedule add "Check the disk is under 90% full and tell me if not" --every 15m`, then `hatchling-broker schedule list` and `hatchling-broker schedule remove <id>`. The timing is one of `--at "2026-11-04 08:00"`, `--every 5m`, `--daily 07:30`, `--weekdays 08:00` or `--cron "0 8 * * 1-5"`, in this machine's time zone unless `--tz` names another. It's the same as the app's schedule form: the work runs as a chat message's would, and its results arrive in the chat.
 - **Something not working?** `sudo hatchling-broker doctor` checks what a start trips on, and says how to fix each problem it finds.
 - **Change a setting:** edit `/etc/hatchling/hatchling.env`, then `sudo systemctl restart hatchling`.
 - **The broker's other commands** (`hatchling-broker --help` lists them) take the service's settings when you run them with `sudo` from a shell that has none, so `sudo hatchling-broker tools list` just works. They read the file only while it's root's and nobody else can write it, as the installer leaves it: it says what the broker runs.

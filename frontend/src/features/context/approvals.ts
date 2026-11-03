@@ -16,6 +16,9 @@ export function renderApprovals(ctx: AppContext): HTMLElement {
         details.append(h('summary', {}, h('span', { class: 'approval-icon' }, icon('globe', 17), icon('lock', 9)), h('span', { class: 'approval-copy' }, h('strong', {}, record.title), h('span', { class: 'approval-description' }, record.description), h('span', { class: 'approval-meta' }, `${outcomeLabels[record.outcome]} · ${record.time}`)), icon('chevron', 12)), h('div', { class: 'approval-report' }, h('p', {}, record.report), ctx.state.mode === 'scripted' ? h('span', { class: 'tiny muted' }, 'Synthetic sample history · no external action') : null));
         root.append(details);
     }
+    // Nothing asked yet: say what will be here, rather than show a blank.
+    if (root.childElementCount === 1)
+        root.append(h('p', { class: 'muted text-small' }, 'Nothing to decide yet. When the agent needs your yes before it acts, the request appears here, and so does what you decided.'));
     root.append(h('div', { class: 'context-trust-links' }, button('Permissions & active grants', () => ctx.openSettings('permissions'), { icon: 'shield', variant: 'ghost' }), button('Connected services', () => ctx.openSettings('connectors'), { icon: 'link', variant: 'ghost' })));
     return root;
 }

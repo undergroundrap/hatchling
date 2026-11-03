@@ -100,6 +100,23 @@ fn timezone(name: &str) -> Result<TimeZone, ScheduleRefusal> {
         .map_err(|_| ScheduleRefusal::UnknownTimezone)
 }
 
+/// This machine's IANA time zone, if it names one: what a schedule made
+/// from a shell here is in, unless the person says otherwise.
+#[must_use]
+pub fn system_zone() -> Option<String> {
+    TimeZone::system().iana_name().map(str::to_owned)
+}
+
+/// `seconds` (Unix) on the clock of the time zone `tz`, as
+/// `YYYY-MM-DD HH:MM`; `None` for a zone it doesn't know or an instant out
+/// of range.
+#[must_use]
+pub fn local_time(seconds: i64, tz: &str) -> Option<String> {
+    let zone = timezone(tz).ok()?;
+    let at = Timestamp::from_second(seconds).ok()?.to_zoned(zone);
+    Some(at.strftime("%Y-%m-%d %H:%M").to_string())
+}
+
 /// Who created a schedule. The broker records it; a cell lists and
 /// cancels only the agent's.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -465,6 +482,32 @@ pub fn effective_grants(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_instant_is_read_on_a_zones_clock() {
+        // 1_790_000_000 is 2026-09-21 14:13:20 UTC.
+        assert_eq!(
+            local_time(1_790_000_000, "UTC").as_deref(),
+            Some("2026-09-21 14:13")
+        );
+        assert_eq!(
+            local_time(1_790_000_000, "America/New_York").as_deref(),
+            Some("2026-09-21 10:13")
+        );
+        assert_eq!(local_time(1_790_000_000, "Mars/Olympus"), None);
+        assert_eq!(local_time(i64::MAX, "UTC"), None);
+    }
+
+    #[test]
+    fn this_machines_zone_is_one_the_broker_knows() {
+        // The machine's own, as the zone database reads it: on a machine
+        // that names none, nothing.
+        let zone = system_zone();
+        assert_eq!(zone, TimeZone::system().iana_name().map(str::to_owned));
+        if let Some(name) = zone {
+            assert!(timezone(&name).is_ok(), "{name}");
+        }
+    }
+
     use super::*;
 
     #[test]

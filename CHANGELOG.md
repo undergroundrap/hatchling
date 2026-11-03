@@ -8,6 +8,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Added
 
+- **`hatchling-broker schedule`: scheduled work from a shell.** `schedule add "<task>" --every 15m` (or `--at`, `--daily`, `--weekdays`, `--cron`, with `--tz`), `schedule list` and `schedule remove <id>`, run as yourself, not `sudo`. It's a client of the local API, as the app is: the same permissions a chat message's run has, and the results arrive in the chat. `list` shows each schedule's timing in words and its next run on its own clock, and `remove` takes the short id `list` shows, or any start of the id.
 - **Scheduled work from the app.** The schedule form walked you through an approval and then said "Hatchling cannot do this from the app yet", and the panel never listed anything. Now:
   - The form has real fields: what should happen; repeat once, every few minutes, every day, every weekday, every week or on a cron expression; a date and time picker; and your browser's time zone, shown.
   - It creates the schedule in the broker, with the permissions a chat message's run has, delivering to the chat. Recurring work is approved in words ("every Friday at 17:30 (America/New_York), until you remove it").
@@ -18,6 +19,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Changed
 
+- **Reminders read as reminders, and the approvals panel says what it's for.** A one-off schedule sits under "Reminders" with a bell, the way a phone shows one, and an empty approvals panel says what will appear there instead of showing nothing.
 - **A small model's slip is told back to it, not the end of the answer.** A model that called a tool it wasn't offered, or gave arguments that don't fit, stopped the run at once, and the chat said only that the agent couldn't answer. Now none of that batch runs, the model is told what was wrong and that nothing ran, and it gets two more tries before the run stops.
 - **The agent is offered only the tools this install has.** Reading pages, searching, a browser and skills are off until the operator turns them on, but every run offered the model all of them: about 20 tools, which a small model reaches for when it shouldn't. The broker now tells each run which of these are on (`HATCHLING_RUN_TOOLS`), and the agent offers only those. The broker still refuses a call to one that's off. **Breaking for `hatchling-agent` and `hatchling-broker`:** the agent's `Config` has a new field, `run_tools`, and `ScheduledRun` has one, `tools`.
 - **A failed chat answer says why, in plain words.** "The broker's log says why" became one of: the model can't be reached (named, with `doctor` to check it), it kept calling its tools wrongly, the run used all its steps, or it took too long. The message comes from how the run ended, never from text the run wrote. **Breaking for `hatchling-agent`:** `Error` has two new variants, `ModelFailed` and `ToolsMisused`.
