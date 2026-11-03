@@ -128,12 +128,20 @@ done
 ENV=/etc/hatchling/hatchling.env
 # What a newer Hatchling keeps by default, added to a configuration kept
 # from an older one: each setting only when it isn't there at all (one set
-# empty was turned off, and stays off). The file is backed up first.
+# empty was turned off, and stays off). A store added this way comes with
+# the grants its packaged configuration gives it, the chat's among them;
+# one already configured is left as it is. The file is backed up first.
 KEPT_BY_DEFAULT="HATCHLING_CONVERSATION_DIR HATCHLING_GOALS_DIR"
 keep_up() {
-  added=
+  added= grants=
   for key in $KEPT_BY_DEFAULT; do
-    grep -q "^$key=" "$ENV" || added="$added $key"
+    grep -q "^$key=" "$ENV" && continue
+    added="$added $key"
+    case $key in
+      HATCHLING_GOALS_DIR)
+        grep -q '^HATCHLING_GOALS_GRANTS=' "$ENV" || added="$added HATCHLING_GOALS_GRANTS"
+        grants="$grants goals:" ;;
+    esac
   done
   [ -n "$added" ] || return 0
   backup="$ENV.before-$(date +%Y%m%d-%H%M%S)"
@@ -141,6 +149,13 @@ keep_up() {
   [ -z "$(tail -c 1 "$ENV")" ] || echo >> "$ENV"
   for key in $added; do
     grep "^$key=" "$PACKAGING/hatchling.env" >> "$ENV"
+  done
+  for kind in $grants; do
+    extra=$(sed -n 's/^HATCHLING_API_GRANTS=//p' "$PACKAGING/hatchling.env" | tr ',' '\n' | grep "^$kind" | paste -sd, -)
+    if [ -n "$extra" ] && grep -q '^HATCHLING_API_GRANTS=.' "$ENV"; then
+      sed -i "s/^HATCHLING_API_GRANTS=.*/&,$extra/" "$ENV"
+      added="$added ($extra for the app and its chat)"
+    fi
   done
   say "added what this version keeps for you:$added (the old configuration is $backup)"
 }

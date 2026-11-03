@@ -380,6 +380,99 @@ impl Tool for WebSearchTool<'_> {
     }
 }
 
+/// Reads the owner's open goals, through the broker's read-only query
+/// path: what they set in the app, never something the agent wrote.
+pub struct GoalsReadTool<'s> {
+    stream: &'s UnixStream,
+}
+
+/// The most pages of goals one read follows.
+const MAX_GOAL_PAGES: usize = 8;
+
+impl<'s> GoalsReadTool<'s> {
+    /// Build over the broker session.
+    #[must_use]
+    pub const fn new(stream: &'s UnixStream) -> Self {
+        Self { stream }
+    }
+}
+
+impl Tool for GoalsReadTool<'_> {
+    fn name(&self) -> &'static str {
+        "goals_read"
+    }
+
+    fn description(&self) -> &'static str {
+        "Read the owner's open goals: what they're working toward, each a title, what reaching it looks like, and the date they set it. The owner sets and closes goals in the app; you can only read them."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+        })
+    }
+
+    fn execute(&self, _arguments: Value) -> Result<ToolOutput, LoopError> {
+        let mut goals = Vec::new();
+        let mut after = None;
+        for _ in 0..MAX_GOAL_PAGES {
+            let op = hatchling_core::QueryOp::Goals {
+                status: String::from("open"),
+                updated_since_secs: None,
+                after: after.take(),
+            };
+            let page = match crate::goals::query(self.stream, &op) {
+                Ok(page) => page,
+                Err(error) => return Ok(ToolOutput::Err(error.to_string())),
+            };
+            goals.extend(page.items_json.iter().filter_map(|item| goal_of(item)));
+            match page.next {
+                Some(next) => after = Some(next),
+                None => return Ok(ToolOutput::Ok(json!({ "goals": goals, "more": false }))),
+            }
+        }
+        Ok(ToolOutput::Ok(json!({ "goals": goals, "more": true })))
+    }
+}
+
+/// The UTC date, `YYYY-MM-DD`, `secs` (Unix) falls on: days to a civil
+/// date, as in Howard Hinnant's `civil_from_days`.
+fn utc_date(secs: u64) -> String {
+    let days = secs / 86_400 + 719_468;
+    let era = days / 146_097;
+    let day_of_era = days % 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted_month = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
+    let month = if shifted_month < 10 {
+        shifted_month + 3
+    } else {
+        shifted_month - 9
+    };
+    let year = year_of_era + era * 400 + u64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+/// A goal as the model reads it, from a query's item: its title, detail and
+/// the day it was set (UTC); `None` for an item that isn't a goal.
+fn goal_of(item_json: &str) -> Option<Value> {
+    let item: Value = serde_json::from_str(item_json).ok()?;
+    let goal = item.get("item")?.get("goal")?;
+    let set = goal
+        .get("created_at_secs")
+        .and_then(Value::as_u64)
+        .map(utc_date);
+    Some(json!({
+        "title": goal.get("title")?.as_str()?,
+        "detail": goal.get("detail").and_then(Value::as_str).unwrap_or_default(),
+        "set": set,
+    }))
+}
+
 /// Opens a page in a real browser the agent drives, through the broker
 /// (WO-029): a site the session doesn't hold is the owner's to allow
 /// first.
@@ -3146,5 +3239,154 @@ mod tests {
             build_failure_text(BuildFailure::UnknownKind),
             "the broker doesn't build that kind"
         );
+    }
+
+    /// A broker stand-in answering each query with the next of `replies`,
+    /// and handing back what it was asked.
+    fn queried(
+        replies: Vec<hatchling_core::QueryResult>,
+    ) -> (UnixStream, std::thread::JoinHandle<Vec<SessionRequest>>) {
+        use hatchling_core::framing::{read_frame, write_frame};
+        let (agent, broker) = socket_pair();
+        bounded(&agent);
+        bounded(&broker);
+        let handle = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            for reply in replies {
+                let Ok(frame) = read_frame(&broker) else {
+                    break;
+                };
+                if let Ok(request) = serde_json::from_slice(&frame) {
+                    seen.push(request);
+                }
+                let response = hatchling_core::SessionResponse::Query(reply);
+                if let Ok(bytes) = serde_json::to_vec(&response) {
+                    let _ = write_frame(&broker, &bytes);
+                }
+            }
+            seen
+        });
+        (agent, handle)
+    }
+
+    /// What a tool said, when it succeeded.
+    fn listed(output: ToolOutput) -> Value {
+        if let ToolOutput::Ok(value) = output {
+            Some(value)
+        } else {
+            None
+        }
+        .unwrap()
+    }
+
+    /// A goal as a query returns it.
+    fn goal_item(title: &str, created: u64) -> String {
+        json!({
+            "provenance": {"store": "goal", "origin": "user-explicit"},
+            "label": "goal (user-explicit)",
+            "item": {"goal": {"id": "g", "title": title, "detail": "under an hour", "created_at_secs": created}},
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn a_unix_time_is_its_utc_date() {
+        assert_eq!(utc_date(0), "1970-01-01");
+        assert_eq!(utc_date(86_399), "1970-01-01");
+        assert_eq!(utc_date(86_400), "1970-01-02");
+        assert_eq!(utc_date(951_782_400), "2000-02-29");
+        assert_eq!(utc_date(1_709_164_800), "2024-02-29");
+        assert_eq!(utc_date(1_735_603_200), "2024-12-31");
+        assert_eq!(utc_date(1_793_707_200), "2026-11-03");
+        assert_eq!(utc_date(4_107_542_400), "2100-03-01");
+    }
+
+    #[test]
+    fn goals_read_lists_every_open_goal_across_pages() {
+        let (a, _b) = socket_pair();
+        let tool = GoalsReadTool::new(&a);
+        assert_eq!(tool.name(), "goals_read");
+        assert!(
+            tool.description()
+                .starts_with("Read the owner's open goals")
+        );
+        assert_eq!(
+            tool.parameters_schema(),
+            json!({"type": "object", "properties": {}, "additionalProperties": false})
+        );
+        let items = |titles: &[&str]| hatchling_core::QueryResult::Items {
+            items_json: titles
+                .iter()
+                .map(|title| goal_item(title, 1_793_707_200))
+                .collect(),
+            next: None,
+        };
+        let mut first = items(&["Run a 10k"]);
+        if let hatchling_core::QueryResult::Items { items_json, next } = &mut first {
+            items_json.push(String::from("{\"item\": {\"tracking\": {}}}"));
+            items_json.push(String::from("not json"));
+            *next = Some(String::from("cursor-1"));
+        }
+        let (agent, broker) = queried(vec![first, items(&["Read twelve books"])]);
+        let output = GoalsReadTool::new(&agent).execute(json!({})).unwrap();
+        drop(agent);
+        let value = listed(output);
+        assert_eq!(
+            value,
+            json!({"goals": [
+                {"title": "Run a 10k", "detail": "under an hour", "set": "2026-11-03"},
+                {"title": "Read twelve books", "detail": "under an hour", "set": "2026-11-03"},
+            ], "more": false})
+        );
+        let asked = broker.join().unwrap();
+        let ops: Vec<Value> = asked
+            .iter()
+            .map(|request| serde_json::to_value(request).unwrap())
+            .collect();
+        assert_eq!(ops.len(), 2);
+        assert_eq!(
+            ops.first().unwrap().pointer("/status"),
+            Some(&json!("open"))
+        );
+        assert_eq!(
+            ops.get(1).unwrap().pointer("/after"),
+            Some(&json!("cursor-1"))
+        );
+    }
+
+    #[test]
+    fn goals_read_stops_after_its_pages_and_says_there_are_more() {
+        let page = || hatchling_core::QueryResult::Items {
+            items_json: vec![goal_item("One", 0)],
+            next: Some(String::from("more")),
+        };
+        let (agent, broker) = queried((0..MAX_GOAL_PAGES).map(|_| page()).collect());
+        let output = GoalsReadTool::new(&agent).execute(json!({})).unwrap();
+        drop(agent);
+        let value = listed(output);
+        assert_eq!(value.get("more"), Some(&json!(true)));
+        assert_eq!(
+            value.get("goals").and_then(Value::as_array).map(Vec::len),
+            Some(MAX_GOAL_PAGES)
+        );
+        assert_eq!(broker.join().unwrap().len(), MAX_GOAL_PAGES);
+    }
+
+    #[test]
+    fn goals_read_says_why_it_couldnt() {
+        let (agent, broker) = queried(vec![hatchling_core::QueryResult::Denied]);
+        let output = GoalsReadTool::new(&agent).execute(json!({})).unwrap();
+        drop(agent);
+        let reason = if let ToolOutput::Err(reason) = output {
+            Some(reason)
+        } else {
+            None
+        }
+        .unwrap();
+        assert!(
+            reason.contains("denied") || reason.contains("goals"),
+            "{reason}"
+        );
+        broker.join().unwrap();
     }
 }
