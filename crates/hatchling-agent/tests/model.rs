@@ -44,6 +44,7 @@ fn ready_cell(broker: &FixtureBroker) -> Result<Cell<Ready>, Error> {
         run_history: Vec::new(),
         run_earlier: Vec::new(),
         run_builders: std::collections::BTreeMap::new(),
+        run_tools: None,
         vault_fd: None,
     };
     Cell::new(config)
@@ -453,8 +454,13 @@ fn cloud_and_local_providers_redact_and_rail_identically() {
         "the refusal must reach the model: {results:?}"
     );
 
-    // A tool the loop does not have stops the run, the same way for both.
-    let unknown = [tool_call_reply("delete_everything", &json!({}))];
+    // A tool the loop does not have runs nothing, and, asked for once
+    // more than the loop allows, stops the run, the same way for both.
+    let unknown = [
+        tool_call_reply("delete_everything", &json!({})),
+        tool_call_reply("delete_everything", &json!({})),
+        tool_call_reply("delete_everything", &json!({})),
+    ];
     let cloud = run_scenario("parity-cloud-unknown", CLOUD, &unknown);
     let local = run_scenario("parity-local-unknown", LOCAL, &unknown);
     assert_eq!(cloud.outcome, local.outcome);

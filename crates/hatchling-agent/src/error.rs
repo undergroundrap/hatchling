@@ -462,6 +462,35 @@ pub enum Error {
     /// tools. The task never started.
     #[error("the model endpoint failed its capability handshake: {0}")]
     ModelRefused(String),
+
+    /// The model failed mid-run: unreachable, or an answer that isn't
+    /// one. The enclosed string is the loop's own report.
+    #[error("agent loop failed: {0}")]
+    ModelFailed(String),
+
+    /// The model kept calling tools it wasn't offered, or with arguments
+    /// that don't fit them, past what the loop allows. Nothing it asked
+    /// for ran.
+    #[error("agent loop failed: {0}")]
+    ToolsMisused(String),
+}
+
+impl Error {
+    /// The failure the person can do something about, if this is one:
+    /// the agent exits with its status, and the broker tells them.
+    #[must_use]
+    pub const fn run_failure(&self) -> Option<hatchling_core::run_failure::RunFailure> {
+        use hatchling_core::run_failure::RunFailure;
+        if let Self::ModelRefused(_) | Self::ModelFailed(_) = self {
+            Some(RunFailure::ModelUnavailable)
+        } else if let Self::ToolsMisused(_) = self {
+            Some(RunFailure::ToolsMisused)
+        } else if let Self::LoopBudgetExhausted { .. } = self {
+            Some(RunFailure::OutOfSteps)
+        } else {
+            None
+        }
+    }
 }
 
 /// Maps the shared contract's errors onto the agent's vocabulary.
@@ -500,6 +529,36 @@ impl From<hatchling_core::Error> for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A failure the person can fix has its own exit status; anything
+    /// else is a plain failure.
+    #[test]
+    fn only_failures_the_person_can_fix_name_one() {
+        use hatchling_core::run_failure::RunFailure;
+        for (error, failure) in [
+            (
+                Error::ModelRefused(String::new()),
+                Some(RunFailure::ModelUnavailable),
+            ),
+            (
+                Error::ModelFailed(String::new()),
+                Some(RunFailure::ModelUnavailable),
+            ),
+            (
+                Error::ToolsMisused(String::new()),
+                Some(RunFailure::ToolsMisused),
+            ),
+            (
+                Error::LoopBudgetExhausted { steps: 3 },
+                Some(RunFailure::OutOfSteps),
+            ),
+            (Error::LoopFailed(String::new()), None),
+            (Error::Usage(String::new()), None),
+            (Error::VaultFailed, None),
+        ] {
+            assert_eq!(error.run_failure(), failure, "{error:?}");
+        }
+    }
 
     /// each of these says what to do about it, in the audit's words.
     #[test]

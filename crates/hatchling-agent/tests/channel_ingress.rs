@@ -125,6 +125,7 @@ fn agent(path: &str) -> Cell<Ready> {
         run_history: Vec::new(),
         run_earlier: Vec::new(),
         run_builders: std::collections::BTreeMap::new(),
+        run_tools: None,
         vault_fd: None,
     };
     Cell::new(config)

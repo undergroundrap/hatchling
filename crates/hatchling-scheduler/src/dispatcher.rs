@@ -252,6 +252,21 @@ pub trait Store {
 pub trait Run {
     /// `None` while it runs; its output, or why it failed, once done.
     fn poll(&mut self) -> Option<Result<String, String>>;
+
+    /// How it ended, once [`poll`](Self::poll) has said it failed:
+    /// what a person can be told. `None` when nothing more is known.
+    fn ending(&self) -> Option<Ending> {
+        None
+    }
+}
+
+/// How a failed run ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ending {
+    /// Its agent exited with this status.
+    Exited(i32),
+    /// It ran past its time and was stopped.
+    TimedOut,
 }
 
 /// Starts scheduled runs: the bounded agent runs the broker spawns.

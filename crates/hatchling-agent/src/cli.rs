@@ -41,7 +41,9 @@ pub fn main(program: &str, args: &[String]) -> ExitCode {
                 let _ = write!(stderr, "{}", help(program));
                 ExitCode::from(EX_USAGE)
             } else {
-                ExitCode::FAILURE
+                // The broker tells the person why in plain words.
+                err.run_failure()
+                    .map_or(ExitCode::FAILURE, |failure| ExitCode::from(failure.code()))
             }
         }
     }
