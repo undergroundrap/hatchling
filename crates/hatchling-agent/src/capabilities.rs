@@ -81,7 +81,10 @@ mod tests {
         assert!(!off.contains("drive a browser"), "{off}");
         assert!(!off.contains("installed skills"), "{off}");
         assert!(off.contains("can't run programs or commands"), "{off}");
-        assert!(off.contains("only when a tool told you so in this turn"), "{off}");
+        assert!(
+            off.contains("only when a tool told you so in this turn"),
+            "{off}"
+        );
         assert!(off.contains("hatchling-broker schedule add"), "{off}");
         assert!(off.contains("can't see the owner's goals"), "{off}");
         assert!(off.contains("can't keep anything"), "{off}");
