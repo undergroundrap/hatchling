@@ -201,6 +201,7 @@ export class LiveAdapter implements ProtocolAdapter {
                 return undefined;
             case 'chat_message':
                 this.#chats.apply(body, event.ts);
+                this.#activity.chat(body, event.ts);
                 return undefined;
             case 'attachment':
                 this.#chats.attach(body, event.ts);
