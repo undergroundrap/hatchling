@@ -121,16 +121,51 @@ export function describeWhen(spec: ScheduleSpec): string {
 export function grantsInWords(grants: readonly ScheduleGrant[]): string {
     if (grants.length === 0)
         return 'May do nothing beyond answering';
-    const words = grants.map(grant => {
+    // A store's grants read as one phrase, where the first of them stood,
+    // said once all of them are known.
+    const memory = new Map<string, string[]>();
+    let keepsGoals = false;
+    const phrases: (string | (() => string))[] = [];
+    for (const grant of grants) {
         switch (grant.grant) {
-            case 'channel-send': return grant.channel === 'local' ? 'post in this chat' : `post on ${grant.channel}`;
-            case 'egress': return `reach ${grant.destination}`;
-            case 'vault': return `${grant.action} the secret ${grant.name}`;
-            case 'memory': return `${grant.action} ${grant.scope} memory`;
-            case 'goals': return `${grant.action.replace(/-/g, ' ')}`;
+            case 'channel-send':
+                phrases.push(grant.channel === 'local' ? 'post in this chat' : `post on ${grant.channel}`);
+                break;
+            case 'egress':
+                phrases.push(`reach ${grant.destination}`);
+                break;
+            case 'vault':
+                phrases.push(`${grant.action} the secret ${grant.name}`);
+                break;
+            case 'memory': {
+                const verb = MEMORY_VERBS[grant.action] ?? grant.action;
+                const verbs = memory.get(grant.scope);
+                if (verbs !== undefined) {
+                    verbs.push(verb);
+                    break;
+                }
+                const said = [verb];
+                memory.set(grant.scope, said);
+                phrases.push(() => `${inList(said)} ${grant.scope === 'user' ? 'things about you' : `${grant.scope} memory`}`);
+                break;
+            }
+            case 'goals':
+                if (!phrases.includes(goalsPhrase))
+                    phrases.push(goalsPhrase);
+                keepsGoals ||= !grant.action.startsWith('query-');
+                break;
         }
-    });
-    return `May ${words.join(', ')}`;
+    }
+    function goalsPhrase(): string {
+        return keepsGoals ? 'keep your goals and their tracking' : 'read your goals';
+    }
+    return `May ${phrases.map(phrase => (typeof phrase === 'string' ? phrase : phrase())).join(', ')}`;
+}
+/** What each memory action does, as a verb. */
+const MEMORY_VERBS: Readonly<Record<string, string>> = { write: 'remember', recall: 'recall', remove: 'forget', 'context-append': 'note', 'context-read': 'read notes of' };
+/** `items` as an English list: a, b and c. */
+function inList(items: readonly string[]): string {
+    return items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`;
 }
 /** A broker timestamp in Unix seconds, on the person's clock. */
 function localTime(seconds: number): string {
