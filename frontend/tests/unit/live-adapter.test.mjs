@@ -45,8 +45,8 @@ const replay = (transport, frames = SAMPLE_EVENTS) => {
 };
 const answer = (transport, request_id, result) => transport.deliver({ type: 'action_result', request_id, result });
 const flush = () => new Promise(resolve => setImmediate(resolve));
-// The actions the app sent besides what it reads each time it connects: allowed and signed-in sites, schedules, and usage.
-const sentActions = transport => transport.sent.filter(frame => frame.type === 'action' && frame.action.action !== 'read_usage' && !(['manage_sites', 'manage_profiles', 'manage_sign_ins', 'manage_schedule'].includes(frame.action.action) && frame.action.op.op === 'list'));
+// The actions the app sent besides what it reads each time it connects: allowed and signed-in sites, schedules, goals, and usage.
+const sentActions = transport => transport.sent.filter(frame => frame.type === 'action' && frame.action.action !== 'read_usage' && !(['manage_sites', 'manage_profiles', 'manage_sign_ins', 'manage_schedule', 'manage_goals'].includes(frame.action.action) && frame.action.op.op === 'list'));
 const thread = adapter => adapter.getSnapshot().threads[0];
 const lane = (adapter, id) => thread(adapter).lanes.find(item => item.id === id);
 const confirmation = (seq, revision, summary = 'Post the sample summary?') => sampleEvent(seq, seq, { kind: 'confirmation', confirmation_id: 'confirm-1', revision, chat_id: 'main', summary, expires_at: null, digest: `digest-${revision}`, fields: [{ label: 'Operation', value: summary, source: 'broker' }, { label: 'Text', value: 'Sample text.', source: 'agent' }] });
@@ -1032,4 +1032,29 @@ test('wording helpers: inert links, quotations, counts and times', () => {
     }
     assert.equal(clockTime('yesterday'), '');
     assert.deepEqual([between(null, sampleTime(1)), between(sampleTime(2), sampleTime(1)), between(sampleTime(1), sampleTime(3))], [null, null, 2000]);
+});
+test('goals: listed into the snapshot, set and changed by the page\'s commands, closed only with an ending', async () => {
+    const { transport, adapter } = connected();
+    const last = op => transport.sent.filter(frame => frame.type === 'action' && frame.action.action === 'manage_goals' && frame.action.op.op === op).at(-1);
+    const goal = { id: 'g1', title: 'Run a 10k', detail: '', state: 'open', created_at: 1793707200, updated_at: 1793707200 };
+    const list = async (goals) => {
+        answer(transport, last('list').request_id, { result: 'goals', outcome: { result: 'listed', goals } });
+        await flush();
+    };
+    assert.deepEqual(adapter.getSnapshot().goals, [], 'empty until the broker answers');
+    await list([goal]);
+    assert.deepEqual(adapter.getSnapshot().goals.map(item => [item.id, item.title, item.status]), [['g1', 'Run a 10k', 'open']]);
+    const creating = adapter.execute({ type: 'goal.create', title: 'Read more', description: 'Twelve books', category: 'Interests', due: '2027-01-01' });
+    assert.deepEqual(last('create').action, { action: 'manage_goals', op: { op: 'create', title: 'Read more', detail: 'Twelve books' } });
+    answer(transport, last('create').request_id, { result: 'goals', outcome: { result: 'saved', goal: { ...goal, id: 'g2', title: 'Read more' } } });
+    await flush();
+    await list([goal, { ...goal, id: 'g2', title: 'Read more' }]);
+    assert.equal((await creating).ok, true);
+    const updating = adapter.execute({ type: 'goal.update', id: 'g1', title: 'Run a half', description: 'In spring', due: '' });
+    assert.deepEqual(last('update').action, { action: 'manage_goals', op: { op: 'update', id: 'g1', title: 'Run a half', detail: 'In spring' } });
+    answer(transport, last('update').request_id, { result: 'goals', outcome: { result: 'rejected' } });
+    assert.equal((await updating).ok, false);
+    assert.match((await adapter.execute({ type: 'goal.close', id: 'g1' })).message, /reached or set aside/);
+    assert.match((await adapter.execute({ type: 'goal.reopen', id: 'g1' })).message, /stays closed/);
+    assert.equal(typeof adapter.goals.close, 'function');
 });

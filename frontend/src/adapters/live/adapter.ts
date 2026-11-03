@@ -21,9 +21,11 @@ import type { CodePort } from '../../session/codes.js';
 import type { AttentionPort } from '../../session/attention.js';
 import type { ConversationPort } from '../../session/conversations.js';
 import type { UsagePort } from '../../session/usage.js';
+import type { GoalsPort } from '../../session/goals.js';
 import { LiveChatSession } from './session.js';
 import { LiveSchedules } from './schedules.js';
 import { LiveUsage } from './usage.js';
+import { LiveGoals } from './goals.js';
 import { LiveSites } from './sites.js';
 import { Surfaces } from './surfaces.js';
 const SETTINGS: Settings = { interfaceSize: 'comfortable', theme: 'dark', accent: 'white', avatarAccent: '#a78c57', keepChatPanelVisible: true, language: 'English', name: 'hatchling', vibe: '', feedPrompt: '', captchaStanding: false, telemetry: false, quietStart: '22:00', quietEnd: '08:00', digestTime: '08:30', dailyAllowance: 0, allowlist: [] };
@@ -55,6 +57,9 @@ export class LiveAdapter implements ProtocolAdapter {
     /** The model usage the broker counted: read, never a Command. */
     readonly usage: UsagePort;
     readonly #usage: LiveUsage;
+    /** Where a goal is closed as reached or set aside: straight to the broker, never as a Command. */
+    readonly goals: GoalsPort;
+    readonly #goals: LiveGoals;
     /** Scheduled work that needs the owner: straight to the broker, never as a Command. */
     readonly attention: AttentionPort;
     readonly #listeners = new Set<() => void>();
@@ -80,6 +85,8 @@ export class LiveAdapter implements ProtocolAdapter {
         this.conversations = { start: chatId => this.#newConversation(chatId) };
         this.#usage = new LiveUsage(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.usage = this.#usage;
+        this.#goals = new LiveGoals(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
+        this.goals = this.#goals;
         this.chatSession = new LiveChatSession(this.#client, this.#chats, artifactId => this.#surfaces.shelf.latest(artifactId));
         this.#snapshot = this.#build();
         // Registered first, so the snapshot is current before any view hears of a change.
@@ -158,6 +165,14 @@ export class LiveAdapter implements ProtocolAdapter {
                     : { ok: false, message: 'Hatchling can’t watch a connected source from the app yet. Schedule it at a time instead.' };
             case 'job.delete':
                 return this.#schedules.cancel(command.id);
+            case 'goal.create':
+                return this.#goals.create(command.title, command.description);
+            case 'goal.update':
+                return this.#goals.update(command.id, command.title, command.description);
+            case 'goal.close':
+                return { ok: false, message: 'Say whether it was reached or set aside: close it from its checkbox.' };
+            case 'goal.reopen':
+                return { ok: false, message: 'A closed goal stays closed in Hatchling. Set it again as a new goal.' };
             case 'job.update':
                 return { ok: false, message: 'A schedule can’t be changed in place yet. Remove it and add the new one.' };
             case 'job.toggle':
@@ -260,7 +275,7 @@ export class LiveAdapter implements ProtocolAdapter {
             artifacts: this.#surfaces.artifacts(),
             publications: [],
             systemEntries: [],
-            goals: [],
+            goals: [...this.#goals.goals()],
             ideas: [],
             posts: [],
             connectors: [],

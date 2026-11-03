@@ -384,6 +384,7 @@ jobs:
           # The kept configuration gained what this version keeps for you,
           # and the old one was backed up.
           sudo grep -q '^HATCHLING_CONVERSATION_DIR=/' /etc/hatchling/hatchling.env
+          sudo grep -q '^HATCHLING_GOALS_DIR=/' /etc/hatchling/hatchling.env
           sudo sh -c 'ls /etc/hatchling/hatchling.env.before-*'
 
       - name: The installs' and services' logs

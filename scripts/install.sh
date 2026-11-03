@@ -121,7 +121,7 @@ install -D -m 644 "$PACKAGING/sysusers.d/hatchling.conf" /etc/sysusers.d/hatchli
 systemd-sysusers /etc/sysusers.d/hatchling.conf
 install -D -m 644 "$PACKAGING/tmpfiles.d/hatchling.conf" /etc/tmpfiles.d/hatchling.conf
 systemd-tmpfiles --create /etc/tmpfiles.d/hatchling.conf
-for dir in sock vault schedules conversation; do
+for dir in sock vault schedules conversation goals; do
   [ -d "/var/lib/hatchling/$dir" ] || mkdir -m 700 "/var/lib/hatchling/$dir"
 done
 
@@ -129,7 +129,7 @@ ENV=/etc/hatchling/hatchling.env
 # What a newer Hatchling keeps by default, added to a configuration kept
 # from an older one: each setting only when it isn't there at all (one set
 # empty was turned off, and stays off). The file is backed up first.
-KEPT_BY_DEFAULT="HATCHLING_CONVERSATION_DIR"
+KEPT_BY_DEFAULT="HATCHLING_CONVERSATION_DIR HATCHLING_GOALS_DIR"
 keep_up() {
   added=
   for key in $KEPT_BY_DEFAULT; do

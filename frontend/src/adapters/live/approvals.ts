@@ -166,6 +166,7 @@ export class LiveApprovals implements TaskApprovalPort {
             case 'profiles':
             case 'sign_ins':
             case 'usage':
+            case 'goals':
             case 'code_taken':
             case 'code_declined':
             case 'code_refused':

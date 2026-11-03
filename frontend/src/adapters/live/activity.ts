@@ -172,6 +172,7 @@ const REQUESTS: Readonly<Record<ApiRequest, string>> = {
     manage_profiles: 'Managed the sites kept signed in',
     manage_sign_ins: 'Managed the sign-ins Hatchling fills',
     read_usage: 'Read the model usage',
+    manage_goals: 'Managed your goals',
     give_code: 'Gave a one-time code for the browser',
     decline_code: 'Declined to give a one-time code',
 };
