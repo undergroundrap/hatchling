@@ -336,6 +336,11 @@ pub(crate) struct Policy {
     cgroup: Option<PathBuf>,
     /// The host paths a cell may be given.
     paths: Paths,
+    /// The agent's program (`HATCHLING_AGENT_BIN`, resolved): the only one
+    /// a run cell runs. A run cell holds the vault channel for the grants
+    /// it's given, so a program of the broker's own choosing in its place
+    /// would have their secrets (WO-031). None configured, none runs.
+    agent_program: Option<PathBuf>,
     /// Where approved deliveries are written, if anywhere: the owner's
     /// workspace.
     workspace: Option<PathBuf>,
@@ -371,6 +376,7 @@ impl Policy {
             limits: reference.limits,
             cgroup: reference.cgroup.clone(),
             paths,
+            agent_program: None,
             workspace: None,
             owner: crate::owner::recorded(),
         }
@@ -415,9 +421,8 @@ impl Policy {
         let config = Config::parse(get)?;
         let mut exact = std::collections::BTreeSet::new();
         let mut under = Vec::new();
-        if let Some(agent) = get(AGENT_BIN) {
-            exact.insert(PathBuf::from(agent));
-        }
+        let agent_program = get(AGENT_BIN).map(PathBuf::from);
+        exact.extend(agent_program.clone());
         if config.scheduler.enabled() {
             under.push(config.scheduler.run_root());
         }
@@ -437,6 +442,7 @@ impl Policy {
             group,
         };
         Ok(Self {
+            agent_program: agent_program.map(resolve),
             workspace: config.artifacts.workspace,
             owner: crate::owner::owner()?,
             ..Self::of(&reference, agent, paths)
@@ -458,6 +464,10 @@ impl Policy {
         }
         if config.broker_uid_in_cell != runs_as.broker_in_cell {
             return Err(String::from("its broker isn't the configured cell's"));
+        }
+        if helper == HelperKind::AgentRun && self.agent_program.as_ref() != Some(&config.agent_bin)
+        {
+            return Err(String::from("its program isn't the configured agent's"));
         }
         if !config.is_skill_cell() && !config.connected {
             return Err(String::from("a cell with an endpoint"));
@@ -2396,8 +2406,11 @@ sleep 30 </dev/null >/dev/null 2>&1 &
     /// limits and the group; and takes the configured cell as it is.
     #[test]
     fn the_policy_refuses_each_field_it_does_not_configure() {
-        let policy = policy();
         let skill: CellConfig = serde_json::from_str(&skill_spec()).unwrap();
+        let policy = Policy {
+            agent_program: Some(skill.agent_bin.clone()),
+            ..policy()
+        };
         assert_eq!(policy.check(HelperKind::SkillCell, &skill), Ok(()));
         let refused = |change: &dyn Fn(&mut CellConfig), helper: HelperKind| {
             let mut config = skill.clone();
@@ -2462,20 +2475,77 @@ sleep 30 </dev/null >/dev/null 2>&1 &
         assert_eq!(policy.check(HelperKind::AgentRun, &connected_run), Ok(()));
     }
 
+    /// A run cell runs the configured agent's program and nothing else:
+    /// it holds the vault channel, and the broker's own program in its
+    /// place would have the grants' secrets. With none configured, no run
+    /// cell starts.
+    #[test]
+    fn a_run_cell_runs_only_the_configured_agents_program() {
+        let (agent, broker_in_cell) =
+            agent_identity(&|key| crate::cell::env_value(std::env::var(key))).unwrap();
+        let mut run: CellConfig = serde_json::from_str(&skill_spec()).unwrap();
+        run.skill_code = None;
+        run.connected = true;
+        run.uid_base = agent.principal;
+        run.uid_count = agent.count;
+        run.gid_base = Some(agent.group);
+        run.broker_uid_in_cell = broker_in_cell;
+        run.scheduled = Some(crate::cell::ScheduledRun {
+            task: String::from("t"),
+            missed: false,
+            due: 0,
+            model_endpoint: None,
+            model_name: None,
+            model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
+            depth: 0,
+            event: None,
+            max_steps: None,
+            subagent: false,
+            chat: false,
+            history: Vec::new(),
+            earlier: Vec::new(),
+            builders: std::collections::BTreeMap::new(),
+        });
+        let configured = Policy {
+            agent_program: Some(run.agent_bin.clone()),
+            ..policy()
+        };
+        let checked = |policy: &Policy, run: &CellConfig| policy.check(HelperKind::AgentRun, run);
+        assert_eq!(checked(&configured, &run), Ok(()));
+        let unconfigured = Policy {
+            agent_program: None,
+            ..configured.clone()
+        };
+        let other = Policy {
+            agent_program: Some(run.agent_bin.with_file_name("agent")),
+            ..configured
+        };
+        for policy in [&unconfigured, &other] {
+            assert_eq!(
+                checked(policy, &run).unwrap_err(),
+                "its program isn't the configured agent's"
+            );
+        }
+        // A skill cell's program is its own verified code, as before.
+        let skill: CellConfig = serde_json::from_str(&skill_spec()).unwrap();
+        assert_eq!(unconfigured.check(HelperKind::SkillCell, &skill), Ok(()));
+    }
+
     /// A run cell is held to the agent's identity, which the configuration
     /// may set apart (`HATCHLING_CELL_UID_BASE`); a skill cell to a skill
     /// cell's. Neither passes as the other.
     #[test]
     fn a_run_cell_runs_as_the_agent_and_a_skill_cell_as_a_skill_cell() {
         let agent = CellIdentity::direct(300_000, 1);
+        let skill: CellConfig = serde_json::from_str(&skill_spec()).unwrap();
         let policy = Policy {
             agent: RunsAs {
                 identity: agent,
                 broker_in_cell: 7,
             },
+            agent_program: Some(skill.agent_bin.clone()),
             ..policy()
         };
-        let skill: CellConfig = serde_json::from_str(&skill_spec()).unwrap();
         assert_eq!(policy.check(HelperKind::SkillCell, &skill), Ok(()));
         let as_agent = |config: &mut CellConfig| {
             config.uid_base = agent.principal;
