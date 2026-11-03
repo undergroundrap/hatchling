@@ -1075,3 +1075,17 @@ test('memory: listed into the snapshot, forgotten from the page, never added the
     assert.deepEqual(adapter.getSnapshot().memory, []);
     assert.match((await adapter.execute({ type: 'memory.save', id: '', title: 't', body: 'b' })).message, /you approve its words/);
 });
+test('an approval that says what approving does is labelled so; one that doesn\'t is Allow once', () => {
+    const { transport, adapter } = connected();
+    const card = (id, extra) => sampleEvent(1, 1, { kind: 'confirmation', confirmation_id: id, revision: 1, chat_id: 'main', summary: 'Remember this about you?', expires_at: null, digest: `digest-${id}`, fields: [{ label: 'What it would remember', value: 'Their cat is Biscuit.', source: 'agent' }], ...extra });
+    transport.deliver(card('keep-1', { approve: 'Remember it' }));
+    const [kept] = adapter.taskApprovals.getSnapshot();
+    assert.equal(kept.approveLabel, 'Remember it');
+    assert.match(kept.detail, /^Remember it answers this request as described/);
+    assert.deepEqual(kept.scopes, ['once']);
+    const other = connected();
+    other.transport.deliver(card('plain-1', {}));
+    const [plain] = other.adapter.taskApprovals.getSnapshot();
+    assert.equal('approveLabel' in plain, false);
+    assert.match(plain.detail, /^Allow once answers/);
+});

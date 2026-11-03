@@ -1003,6 +1003,12 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             "always": {
                 "type": "boolean"
             },
+            "approve": {
+                "type": [
+                    "string",
+                    "null"
+                ]
+            },
             "chat_id": {
                 "type": [
                     "string",

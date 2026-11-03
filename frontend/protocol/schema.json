@@ -2442,6 +2442,13 @@
           "description": "Whether it can be approved always ([`Decision::ApproveAlways`]): a\nsite, where the broker keeps the sites the owner allows.",
           "type": "boolean"
         },
+        "approve": {
+          "description": "What approving it does, in a few words, when that's more than\nallowing it once: \"Remember it\" for something the agent asks to\nkeep. The broker's, never the agent's.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "chat_id": {
           "description": "The chat it belongs to, if any.",
           "type": [

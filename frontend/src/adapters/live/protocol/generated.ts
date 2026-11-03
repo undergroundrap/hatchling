@@ -1025,6 +1025,12 @@ export type ConfirmationRequest = {
      */
     readonly always?: boolean;
     /**
+     * What approving it does, in a few words, when that's more than
+     * allowing it once: "Remember it" for something the agent asks to
+     * keep. The broker's, never the agent's.
+     */
+    readonly approve?: string | null;
+    /**
      * The chat it belongs to, if any.
      */
     readonly chat_id?: string | null;
