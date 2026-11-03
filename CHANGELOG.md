@@ -43,6 +43,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Fixed
 
+- **Reloading the app keeps it connected.** The key in the app's address is cleared as soon as it's read, so a reload had no key and opened the sample workspace instead, at your install's own address: made-up chats and goals that read as yours. The tab now keeps the key in its own session storage, gone when the tab closes, and a reload connects again. After a broker restart the old key is refused, and the app says to open the address `hatchling-host url` prints, as before.
 - **The installed agent remembers your conversation after a restart.** The install didn't set a conversation store, so every update, reboot or broker restart started the chat over, and the agent forgot what you'd told it. The installed configuration now keeps it, sealed (`HATCHLING_CONVERSATION_DIR=/var/lib/hatchling/conversation`). Updating an install whose configuration doesn't name it adds it: `scripts/install.sh` backs the file up as `hatchling.env.before-<date>` and says what it added. One you set empty stays off. CI's upgrade from the last release checks it was added.
 - **Every screen is real or says plainly what isn't there yet.** Connected to Hatchling, the app no longer shows the demo's samples as yours:
   - Settings showed a "Free plan, 100% used" meter, "709M tokens left" and an Upgrade button. It now says there's no plan or quota, and that usage counting and spending limits come next.

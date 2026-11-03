@@ -2,7 +2,9 @@
 // it printed carries the UI token in its fragment, `#hatchling-ui=<token>`. A
 // browser never sends a fragment to a server. The token is taken from it and
 // the fragment cleared at once, before the app's own hash routing reads it,
-// so it is neither routed nor kept in the history.
+// so it is neither routed nor kept in the history. The tab keeps it in its own
+// session storage, so a reload stays connected rather than falling back to the
+// sample workspace at the install's address.
 import { LiveAdapter } from './adapter.js';
 import { WebSocketTransport } from './websocket.js';
 /** The fragment's prefix that marks the UI token. */
@@ -13,6 +15,45 @@ export function tokenIn(hash: string): string | undefined {
         return undefined;
     const token = hash.slice(TOKEN_FRAGMENT.length);
     return /^[0-9a-f]{16,128}$/.test(token) ? token : undefined;
+}
+/** Where a tab keeps its token across a reload. */
+export interface TokenStore {
+    get(): string | undefined;
+    /** Keep `token`; whether it was kept. */
+    set(token: string): boolean;
+}
+/** The key the token is kept under. */
+export const TOKEN_KEY = 'hatchling-ui-token';
+/**
+ * The tab's session storage (`storage`) as a {@link TokenStore}: one tab's,
+ * gone when it closes. A read or write that fails keeps nothing, and what's
+ * kept is used only if it is still a token.
+ */
+export function sessionTokens(storage: () => Storage): TokenStore {
+    return {
+        get: () => {
+            try {
+                return tokenIn(`${TOKEN_FRAGMENT}${storage().getItem(TOKEN_KEY) ?? ''}`);
+            }
+            catch {
+                return undefined;
+            }
+        },
+        set: (token) => {
+            try {
+                storage().setItem(TOKEN_KEY, token);
+                return true;
+            }
+            catch {
+                // Kept for this load only: a reload opens the sample workspace.
+                return false;
+            }
+        },
+    };
+}
+/** This browser tab's session storage, as a {@link TokenStore}. */
+export function tabTokens(): TokenStore {
+    return sessionTokens(() => globalThis.sessionStorage);
 }
 /** The address of the host's channel, on the page's own origin. */
 export function channelUrl(place: {
@@ -30,13 +71,19 @@ export interface Place {
     readonly hash: string;
 }
 /**
- * The live adapter, when the page holds a UI token; `undefined` otherwise, and
- * the app starts as before. The fragment is cleared through `replace`.
+ * The live adapter, when the page holds a UI token, or the tab kept one in
+ * `tokens` from an earlier load; `undefined` otherwise, and the app starts as
+ * before. A token in the fragment is kept, and the fragment cleared through
+ * `replace`.
  */
-export function liveFromPlace(place: Place, replace: (address: string) => void): LiveAdapter | undefined {
-    const token = tokenIn(place.hash);
+export function liveFromPlace(place: Place, replace: (address: string) => void, tokens?: TokenStore): LiveAdapter | undefined {
+    const given = tokenIn(place.hash);
+    if (given !== undefined) {
+        replace(`${place.pathname}${place.search}`);
+        tokens?.set(given);
+    }
+    const token = given ?? tokens?.get();
     if (token === undefined)
         return undefined;
-    replace(`${place.pathname}${place.search}`);
     return new LiveAdapter(new WebSocketTransport(channelUrl(place)), 'hatchling-frontend', token);
 }
