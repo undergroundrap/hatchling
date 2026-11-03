@@ -191,8 +191,8 @@ mod tests {
         assert_eq!(fields.first().map(|f| f.0), Some("When"));
         assert_eq!(fields.first().map(|f| f.1), Some(when.as_str()));
         assert!(fields.iter().any(|f| f.0 == "What it may do"
-                && f.1.contains("post in your chat")
-                && f.2 == FieldSource::Broker));
+            && f.1.contains("post in your chat")
+            && f.2 == FieldSource::Broker));
         assert_eq!(
             fields.last().map(|f| (f.1, f.2)),
             Some(("Stretch for five minutes.", FieldSource::Agent))
