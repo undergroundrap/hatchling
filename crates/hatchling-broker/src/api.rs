@@ -711,6 +711,39 @@ mod tests {
     }
 
     #[test]
+    fn the_schedule_command_asks_as_the_app_does() {
+        let dir = scratch("schedule-command");
+        let config = config_in(&dir);
+        let log = config.scheduler.activity_log();
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let (api, _socket) = api_with(
+            Box::new(PeerProvider::new(real_uid(), BTreeSet::from([goals()]))),
+            log,
+            "schedule-command",
+        );
+        let ops = Ops::new(&config, &key, &skills, None, Arc::clone(api.bus()));
+        session(&api, &ops, |client| {
+            let mut given = Vec::new();
+            let outcome = crate::schedule_cli::ask(client, |grants| {
+                given = grants.to_vec();
+                ScheduleOp::List { after: None }
+            })
+            .unwrap();
+            // The welcome's grants reach the op, and the broker answers it.
+            assert_eq!(given, [goals()]);
+            assert!(
+                matches!(
+                    outcome,
+                    hatchling_core::ScheduleResult::Listed { .. }
+                        | hatchling_core::ScheduleResult::Denied
+                ),
+                "{outcome:?}"
+            );
+        });
+    }
+
+    #[test]
     fn the_handshake_comes_first_and_a_caller_not_admitted_hears_nothing() {
         let dir = scratch("handshake");
         let config = config_in(&dir);

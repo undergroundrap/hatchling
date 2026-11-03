@@ -84,6 +84,7 @@ pub use redactions::{FileAudit, FileOverrides, run_operator, run_redactions};
 pub mod broker_user;
 pub mod confine;
 pub mod keeper;
+pub mod schedule_cli;
 pub mod schedule_ops;
 pub mod secrets;
 pub use schedule_ops::{
