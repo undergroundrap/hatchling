@@ -261,7 +261,8 @@ pub trait Run {
 }
 
 /// How a failed run ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Ending {
     /// Its agent exited with this status.
     Exited(i32),
@@ -303,6 +304,33 @@ pub trait Delivery {
     fn deliver_verbatim(&self, channel: &str, text: &str) -> Result<bool, String> {
         self.deliver(channel, text).map(|()| false)
     }
+
+    /// Tells the person on `channel` that a scheduled run failed, in the
+    /// delivery path's own words: never the run's. A path that has none
+    /// says so, and the result is kept all the same.
+    ///
+    /// # Errors
+    ///
+    /// Returns why it could not.
+    fn notify_failure(&self, channel: &str, failure: &FailureNotice) -> Result<(), String> {
+        let _ = (channel, failure);
+        Err(String::from("this delivery path tells no one of failures"))
+    }
+}
+
+/// A scheduled run that failed, as the person is told of it: nothing the
+/// run itself wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailureNotice {
+    /// The schedule it came from.
+    pub schedule_id: String,
+    /// Its task, when the owner wrote it; `None` for any other, whose text
+    /// is untrusted.
+    pub task: Option<String>,
+    /// Whether its run started.
+    pub started: bool,
+    /// How the run ended, when it could say.
+    pub ending: Option<Ending>,
 }
 
 /// What one tick did, for the broker's logs and for tests.
@@ -504,12 +532,18 @@ impl<R: Run> Dispatcher<R> {
             if active.ended.is_some() {
                 continue;
             }
-            let Some(outcome) = active.run.as_mut().and_then(Run::poll) else {
+            let Some(run) = active.run.as_mut() else {
+                continue;
+            };
+            let Some(outcome) = run.poll() else {
                 continue;
             };
             active.ended = Some(match outcome {
                 Ok(text) => Outcome::Output { text },
-                Err(reason) => Outcome::Failed { reason },
+                Err(reason) => Outcome::Failed {
+                    reason,
+                    ending: run.ending(),
+                },
             });
             if active.kind == Kind::Schedule {
                 events.push(HookSource::ScheduleRunFinished {
@@ -813,7 +847,8 @@ fn deliver_stored<S: Store, L, D: Delivery>(
             due: *due,
             reason,
         };
-        let undelivered = undelivered(outcome, &schedule.channel, services, &parked);
+        let task = schedule.task_shown.then_some(schedule.task.as_str());
+        let undelivered = undelivered(id, outcome, &schedule.channel, task, services, &parked);
         match services.store.resolve(id, *due, undelivered.as_ref()) {
             Ok(true) => {
                 match undelivered {
@@ -837,22 +872,44 @@ fn deliver_stored<S: Store, L, D: Delivery>(
 }
 
 /// What becomes of `outcome`: `None` once delivered on `channel`, or the
-/// record to park it under.
+/// record to park it under. A failure is kept, and the person on `channel`
+/// is told of it as well, naming `task`, the owner's own text, when there
+/// is one: no scheduled run fails silently.
 fn undelivered<S, L, D: Delivery>(
+    id: &str,
     outcome: &Outcome,
     channel: &str,
+    task: Option<&str>,
     services: &Services<'_, S, L, D>,
     parked: &impl Fn(&str, String) -> Parked,
 ) -> Option<Parked> {
+    let send = ScheduleGrant::ChannelSend {
+        channel: channel.to_owned(),
+    };
+    let tell = |started: bool, ending: Option<Ending>| {
+        if !services.held.contains(&send) {
+            return;
+        }
+        let notice = FailureNotice {
+            schedule_id: id.to_owned(),
+            task: task.map(str::to_owned),
+            started,
+            ending,
+        };
+        if let Err(error) = services.delivery.notify_failure(channel, &notice) {
+            tracing::warn!(schedule = %notice.schedule_id, %error, "a failed run's notice wasn't delivered");
+        }
+    };
     match outcome {
-        Outcome::Failed { reason } => Some(parked(reason, String::from("the run failed"))),
+        Outcome::Failed { reason, ending } => {
+            tell(true, *ending);
+            Some(parked(reason, String::from("the run failed")))
+        }
         Outcome::NotStarted { reason } => {
+            tell(false, None);
             Some(parked(reason, String::from("the run did not start")))
         }
         Outcome::Output { text } => {
-            let send = ScheduleGrant::ChannelSend {
-                channel: channel.to_owned(),
-            };
             if services.held.contains(&send) {
                 deliver_with_retry(services.delivery, channel, text)
                     .err()
@@ -883,7 +940,7 @@ fn deliver_now<R, S: Store, L, D: Delivery>(
         due: active.due.as_second(),
         reason,
     };
-    match undelivered(outcome, &active.channel, services, &parked) {
+    match undelivered(id, outcome, &active.channel, None, services, &parked) {
         None => report.delivered.push(id.to_owned()),
         Some(parked) => {
             tracing::warn!(schedule = %id, reason = %parked.reason, "scheduled result parked");
@@ -1016,6 +1073,23 @@ mod tests {
 
     impl Delivery for Plain {
         fn deliver(&self, _channel: &str, _text: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// Records each failure it's told of.
+    #[derive(Default)]
+    struct Told(RefCell<Vec<(String, FailureNotice)>>);
+
+    impl Delivery for Told {
+        fn deliver(&self, _channel: &str, _text: &str) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn notify_failure(&self, channel: &str, failure: &FailureNotice) -> Result<(), String> {
+            self.0
+                .borrow_mut()
+                .push((channel.to_owned(), failure.clone()));
             Ok(())
         }
     }
@@ -1320,6 +1394,69 @@ mod tests {
     /// where `channel-send` is held and parked where it isn't; a result
     /// with no record to wait in is delivered or parked at once; a result
     /// the store refuses stays in memory, to try again.
+    /// A failure is told on the channel, in the delivery's words, with how
+    /// its run ended and the owner's task; and it's kept as well. No
+    /// scheduled run fails silently.
+    #[test]
+    fn a_failed_run_is_told_and_kept() {
+        let held = BTreeSet::from([ScheduleGrant::ChannelSend {
+            channel: String::from("local"),
+        }]);
+        let authenticated = BTreeSet::new();
+        let store = One::default();
+        let told = Told::default();
+        let telling = Services {
+            store: &store,
+            launcher: &Quick,
+            delivery: &told,
+            held: &held,
+            events: &[],
+            authenticated: &authenticated,
+        };
+        let park = |text: &str, reason: String| Parked {
+            schedule_id: String::from("sch-1"),
+            channel: String::from("local"),
+            text: text.to_owned(),
+            due: 0,
+            reason,
+        };
+        let failed = Outcome::Failed {
+            reason: String::from("it broke"),
+            ending: Some(Ending::Exited(69)),
+        };
+        let unstarted = Outcome::NotStarted {
+            reason: String::from("no cell"),
+        };
+        assert!(undelivered("sch-1", &failed, "local", Some("Stretch"), &telling, &park).is_some());
+        assert!(undelivered("sch-1", &unstarted, "local", None, &telling, &park).is_some());
+        let first = FailureNotice {
+            schedule_id: String::from("sch-1"),
+            task: Some(String::from("Stretch")),
+            started: true,
+            ending: Some(Ending::Exited(69)),
+        };
+        assert_eq!(
+            *told.0.borrow(),
+            [
+                (String::from("local"), first.clone()),
+                (
+                    String::from("local"),
+                    FailureNotice {
+                        schedule_id: String::from("sch-1"),
+                        task: None,
+                        started: false,
+                        ending: None,
+                    }
+                ),
+            ]
+        );
+        // Not on a channel the schedule may no longer send on.
+        assert!(undelivered("sch-1", &failed, "elsewhere", None, &telling, &park).is_some());
+        assert_eq!(told.0.borrow().len(), 2);
+        // A path with no words of its own tells no one, and keeps it.
+        assert!(Plain.notify_failure("local", &first).is_err());
+    }
+
     #[test]
     fn the_parts_park_and_keep_what_cannot_go() {
         let send = ScheduleGrant::ChannelSend {
@@ -1348,6 +1485,7 @@ mod tests {
         };
         let failed = Outcome::Failed {
             reason: String::from("it broke"),
+            ending: Some(Ending::Exited(69)),
         };
         let unstarted = Outcome::NotStarted {
             reason: String::from("no cell"),
@@ -1356,15 +1494,18 @@ mod tests {
             text: String::from("ok"),
         };
         assert_eq!(
-            undelivered(&failed, "local", &services, &park).map(|p| p.reason),
+            undelivered("sch-1", &failed, "local", None, &services, &park).map(|p| p.reason),
             Some(String::from("the run failed"))
         );
         assert_eq!(
-            undelivered(&unstarted, "local", &services, &park).map(|p| p.reason),
+            undelivered("sch-1", &unstarted, "local", None, &services, &park).map(|p| p.reason),
             Some(String::from("the run did not start"))
         );
-        assert_eq!(undelivered(&output, "local", &services, &park), None);
-        assert!(undelivered(&output, "elsewhere", &services, &park).is_some());
+        assert_eq!(
+            undelivered("sch-1", &output, "local", None, &services, &park),
+            None
+        );
+        assert!(undelivered("sch-1", &output, "elsewhere", None, &services, &park).is_some());
         // deliver_now: no record to wait in: delivered at once.
         let active = Active::<Done> {
             run: None,

@@ -268,6 +268,18 @@ impl Cell<Ready> {
     }
 }
 
+/// A scheduled or hook run's task, as its model is given it.
+///
+/// It's due now, with the owner away, so the answer is what they should be
+/// told. Found on a real install: given "Remind me to stretch" bare, a
+/// model answered as if asked to set the reminder, not to give it.
+#[must_use]
+pub fn scheduled_task(task: &str) -> String {
+    format!(
+        "Scheduled work, due now. It was set up earlier and the owner isn't here to answer questions: carry it out now, and write what they should be told as your answer. If it's a reminder, give the reminder itself.\n\nThe task:\n{task}"
+    )
+}
+
 /// Runs the `run` subcommand's full flow as library code.
 ///
 /// The binary stays thin: this joins the task arguments, loads the
@@ -308,6 +320,13 @@ pub fn run_command(task_args: &[String]) -> Result<String, Error> {
     };
     let max_steps = config.model_max_steps;
     let config_subagent = config.run_subagent;
+    // Background work is told it's due now, and that no one is there to
+    // ask: a chat turn and a subagent's task are already framed.
+    let task = if config.run_chat || config.run_subagent {
+        task
+    } else {
+        scheduled_task(&task)
+    };
     let prompt = prompt_for(&config);
     // Best-effort: a test harness calling this twice must not panic
     // on the second init.
@@ -371,6 +390,17 @@ pub fn subagent_report(outcome: Result<LoopResult, Error>) -> Result<String, Err
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_scheduled_task_is_framed_as_due_now() {
+        let framed = scheduled_task("Remind me to stretch.");
+        assert!(framed.starts_with("Scheduled work, due now."), "{framed}");
+        assert!(framed.contains("give the reminder itself"), "{framed}");
+        assert!(
+            framed.ends_with("The task:\nRemind me to stretch."),
+            "{framed}"
+        );
+    }
     use std::os::unix::net::UnixStream;
 
     fn response(status: u16) -> EgressResponse {
