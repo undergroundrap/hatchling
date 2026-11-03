@@ -152,14 +152,40 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
             .as_deref(),
     )?;
     let operator = crate::operator::open_operator(config, operator_socket.as_ref())?;
-    // Spawn the cell BEFORE serving: spawn_cell forks, and forking a
-    // multi-threaded process is unsound. HATCHLING_AGENT_BIN selects
-    // cell mode: the cell's agent gets a connection of its own, and the
-    // broker's socket isn't bound at all, so nothing else can open an
-    // agent session. Without it the broker serves bare (tests,
-    // debugging), admitting agents on its socket by uid alone.
-    let listener;
-    let agents = if std::env::var_os(env::HATCHLING_AGENT_BIN.name).is_some() {
+    // HATCHLING_AGENT_BIN selects cell mode: the cell's agent gets a
+    // connection of its own, and the broker's socket isn't bound at all,
+    // so nothing else can open an agent session. Without it the broker
+    // serves bare (tests, debugging), admitting agents on its socket by
+    // uid alone: bound now, while it may still make the socket.
+    let cell_mode = std::env::var_os(env::HATCHLING_AGENT_BIN.name).is_some();
+    let listener = if cell_mode {
+        None
+    } else {
+        tracing::info!("HATCHLING_AGENT_BIN unset: serving without a cell");
+        let listener = bind_listener(config)?;
+        tracing::info!(
+            socket = %config.socket,
+            agent_uid = %config.agent_uid,
+            "broker listening"
+        );
+        Some(listener)
+    };
+    // Everything that needed root is done, on one thread still: run as
+    // root, the broker becomes its own user now, for good (WO-017), and
+    // sweeps what that user left, which root may not remove.
+    if crate::broker_user::drop_to_broker()? {
+        let _swept = crate::sweep::sweep_at_start(config, redaction.as_ref());
+    }
+    // Then it holds itself to what it keeps and reads, root's broker or
+    // not (WO-017, slice 4): nothing else of its user's, nothing to run.
+    // Still on one thread: the confinement holds the thread that asks
+    // and those it starts after, so every thread is started after it.
+    crate::confine::confine_broker(config, redaction.as_ref())?;
+    // The agent's cell, now: the spawner makes it, and the threads that
+    // watch and reap it are the broker's first.
+    let agents = if let Some(listener) = &listener {
+        Agents::Listener(listener)
+    } else {
         let cell = spawn_agent_cell(
             config,
             CellConfig::from_env(&config.socket, config.agent_uid.as_u32())?,
@@ -170,25 +196,7 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
             "broker serving its cell"
         );
         Agents::Cell(cell)
-    } else {
-        tracing::info!("HATCHLING_AGENT_BIN unset: serving without a cell");
-        listener = bind_listener(config)?;
-        tracing::info!(
-            socket = %config.socket,
-            agent_uid = %config.agent_uid,
-            "broker listening"
-        );
-        Agents::Listener(&listener)
     };
-    // Everything that needed root is done, on one thread still: run as
-    // root, the broker becomes its own user now, for good (WO-017), and
-    // sweeps what that user left, which root may not remove.
-    if crate::broker_user::drop_to_broker()? {
-        let _swept = crate::sweep::sweep_at_start(config, redaction.as_ref());
-    }
-    // Then it holds itself to what it keeps and reads, root's broker or
-    // not (WO-017, slice 4): nothing else of its user's, nothing to run.
-    crate::confine::confine_broker(config, redaction.as_ref())?;
     std::thread::scope(|scope| {
         // The gate's rules borrow the keys on a thread of their own
         // (see `crate::output_gate`): the gate only queues work for them.
