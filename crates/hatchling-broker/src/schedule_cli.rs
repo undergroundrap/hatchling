@@ -238,11 +238,77 @@ const fn refusal(reason: ScheduleRefusal) -> &'static str {
     }
 }
 
-/// `when` in a line.
+/// How much of a schedule's id a listing shows, and enough to name it.
+const SHORT_ID: usize = 12;
+
+/// `id` as a listing shows it.
+fn short(id: &str) -> String {
+    id.chars().take(SHORT_ID).collect()
+}
+
+/// The day names a cron day of the week stands for, Sunday first.
+const DAY_NAMES: [&str; 7] = [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+];
+
+/// `when` in words: the timings this command and the app make read back,
+/// any other cron as itself.
 fn describe(when: &ScheduleSpec) -> String {
-    match when {
-        ScheduleSpec::Cron { expr, tz } => format!("cron {expr} ({tz})"),
-        ScheduleSpec::Once { at, tz } => format!("once at {} ({tz})", at.replace('T', " ")),
+    let (expr, tz) = match when {
+        ScheduleSpec::Once { at, tz } => {
+            return format!("Once, {} ({tz})", at.replace('T', " at "));
+        }
+        ScheduleSpec::Cron { expr, tz } => (expr, tz),
+    };
+    let fields: Vec<&str> = expr.split(' ').collect();
+    let digits = |text: &str| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit());
+    let words = match fields.as_slice() {
+        ["*", "*", "*", "*", "*"] => Some(String::from("Every minute")),
+        [minute, "*", "*", "*", "*"] => minute
+            .strip_prefix("*/")
+            .filter(|step| digits(step))
+            .map(|step| format!("Every {step} minutes")),
+        [minute, hour, "*", "*", day] if digits(minute) && digits(hour) => {
+            let time = format!("{hour:0>2}:{minute:0>2}");
+            match *day {
+                "*" => Some(format!("Every day at {time}")),
+                "1-5" => Some(format!("Weekdays at {time}")),
+                day => day
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|day| DAY_NAMES.get(day))
+                    .map(|name| format!("Every {name} at {time}")),
+            }
+        }
+        _ => None,
+    };
+    format!(
+        "{} ({tz})",
+        words.unwrap_or_else(|| format!("cron {expr}"))
+    )
+}
+
+/// The one schedule in `schedules` whose id starts with `prefix`.
+///
+/// # Errors
+///
+/// None does, or more than one: in words.
+fn resolve(prefix: &str, schedules: &[hatchling_core::ScheduleSummary]) -> Result<String, String> {
+    let mut matches = schedules
+        .iter()
+        .filter(|schedule| schedule.id.starts_with(prefix));
+    match (matches.next(), matches.next()) {
+        (Some(only), None) => Ok(only.id.clone()),
+        (None, _) => Err(format!("there's no schedule {prefix}")),
+        (Some(_), Some(_)) => Err(format!(
+            "{prefix} is the start of more than one schedule's id: give more of it"
+        )),
     }
 }
 
@@ -257,11 +323,12 @@ pub fn report(command: &Command, outcome: ScheduleResult) -> Result<Vec<String>,
         (Command::Add { .. }, ScheduleResult::Created { id }) => Ok(vec![format!(
             "Scheduled: {id}. Its results arrive in the chat."
         )]),
-        (Command::Remove { id }, ScheduleResult::Cancelled) => {
-            Ok(vec![format!("Removed {id}: it won't run again.")])
-        }
+        (Command::Remove { id }, ScheduleResult::Cancelled) => Ok(vec![format!(
+            "Removed {}: it won't run again.",
+            short(id)
+        )]),
         (Command::Remove { id }, ScheduleResult::NotFound) => {
-            Err(format!("there's no schedule {id}"))
+            Err(format!("there's no schedule {}", short(id)))
         }
         (Command::List, ScheduleResult::Listed { schedules, .. }) if schedules.is_empty() => {
             Ok(vec![String::from("No scheduled work.")])
@@ -284,7 +351,7 @@ pub fn report(command: &Command, outcome: ScheduleResult) -> Result<Vec<String>,
                     .unwrap_or("(its task isn't shown: you didn't write it here)");
                 format!(
                     "{}  {}  {next}  {task}",
-                    schedule.id,
+                    short(&schedule.id),
                     describe(&schedule.when)
                 )
             })
@@ -333,8 +400,12 @@ pub fn schedule_main(program: &str, args: &[String]) -> ExitCode {
     }
 }
 
-/// Connects to the API socket at `path` and carries out `command`.
-fn run(command: &Command, path: &Path) -> Result<Vec<String>, String> {
+/// Asks the broker at the API socket `path` for `op`, made from the
+/// connection's grants.
+fn ask_at(
+    path: &Path,
+    op: impl FnOnce(&[ScheduleGrant]) -> ScheduleOp,
+) -> Result<ScheduleResult, String> {
     let stream = UnixStream::connect(path).map_err(|error| {
         format!(
             "can't reach Hatchling's API at {} ({error}): is it running, with HATCHLING_API_SOCKET set?",
@@ -344,17 +415,58 @@ fn run(command: &Command, path: &Path) -> Result<Vec<String>, String> {
     stream
         .set_read_timeout(Some(ANSWER_TIMEOUT))
         .map_err(|error| error.to_string())?;
-    let outcome = ask(&stream, |grants| match command {
-        Command::List => ScheduleOp::List { after: None },
-        Command::Add { task, when } => ScheduleOp::Create {
-            when: when.clone(),
-            task: task.clone(),
-            grants: grants.to_vec(),
-            channel: String::from("local"),
-        },
-        Command::Remove { id } => ScheduleOp::Cancel { id: id.clone() },
-    })?;
-    report(command, outcome)
+    ask(&stream, op)
+}
+
+/// Every schedule the broker at `path` lists, every page of it; or its
+/// answer when that isn't a listing.
+fn list_all(path: &Path) -> Result<ScheduleResult, String> {
+    let mut all = Vec::new();
+    let mut after = None;
+    loop {
+        let page = ask_at(path, |_| ScheduleOp::List {
+            after: after.clone(),
+        })?;
+        let ScheduleResult::Listed { schedules, next } = page else {
+            return Ok(page);
+        };
+        all.extend(schedules);
+        if next.is_none() {
+            return Ok(ScheduleResult::Listed {
+                schedules: all,
+                next: None,
+            });
+        }
+        after = next;
+    }
+}
+
+/// Connects to the API socket at `path` and carries out `command`.
+fn run(command: &Command, path: &Path) -> Result<Vec<String>, String> {
+    match command {
+        Command::List => report(command, list_all(path)?),
+        Command::Add { task, when } => report(
+            command,
+            ask_at(path, |grants| ScheduleOp::Create {
+                when: when.clone(),
+                task: task.clone(),
+                grants: grants.to_vec(),
+                channel: String::from("local"),
+            })?,
+        ),
+        Command::Remove { id } => {
+            // The listing's short id, or any start of one, names it.
+            let listed = list_all(path)?;
+            let ScheduleResult::Listed { schedules, .. } = listed else {
+                return report(command, listed);
+            };
+            let id = resolve(id, &schedules)?;
+            report(
+                &Command::Remove { id: id.clone() },
+                ask_at(path, |_| ScheduleOp::Cancel { id })?,
+            )
+        }
+    }
 }
 
 #[cfg(test)]
@@ -522,7 +634,7 @@ mod tests {
                 listed(vec![summary(Some("Stretch"), false)])
             ),
             Ok(vec![String::from(
-                "sch-1  cron 0 8 * * 1-5 (America/New_York)  next 2026-09-21 10:13  Stretch"
+                "sch-1  Weekdays at 08:00 (America/New_York)  next 2026-09-21 10:13  Stretch"
             )])
         );
         let hidden = report(&Command::List, listed(vec![summary(None, true)])).unwrap();
@@ -565,8 +677,48 @@ mod tests {
                 at: String::from("2026-11-04T08:00"),
                 tz: String::from(ZONE),
             }),
-            "once at 2026-11-04 08:00 (America/New_York)"
+            "Once, 2026-11-04 at 08:00 (America/New_York)"
         );
+        for (expr, words) in [
+            ("* * * * *", "Every minute"),
+            ("*/15 * * * *", "Every 15 minutes"),
+            ("0 8 * * *", "Every day at 08:00"),
+            ("30 7 * * 1-5", "Weekdays at 07:30"),
+            ("5 23 * * 0", "Every Sunday at 23:05"),
+            ("0 0 * * 6", "Every Saturday at 00:00"),
+            ("0 8 * * 7", "cron 0 8 * * 7"),
+            ("0 8 * * 1,3", "cron 0 8 * * 1,3"),
+            ("*/x * * * *", "cron */x * * * *"),
+            ("5 * * * *", "cron 5 * * * *"),
+            ("0 8 1 * *", "cron 0 8 1 * *"),
+            ("a 8 * * *", "cron a 8 * * *"),
+            ("0 8 * *", "cron 0 8 * *"),
+        ] {
+            assert_eq!(describe(&cron(expr)), format!("{words} ({ZONE})"), "{expr}");
+        }
+    }
+
+    #[test]
+    fn a_schedule_is_named_by_any_start_of_its_id() {
+        let listed = |ids: &[&str]| -> Vec<hatchling_core::ScheduleSummary> {
+            ids.iter()
+                .map(|id| hatchling_core::ScheduleSummary {
+                    id: (*id).to_owned(),
+                    ..summary(None, false)
+                })
+                .collect()
+        };
+        let both = listed(&["sch-82d3c6215ca6", "sch-d92259e73524"]);
+        assert_eq!(resolve("sch-82d3", &both), Ok(String::from("sch-82d3c6215ca6")));
+        assert_eq!(
+            resolve("sch-d92259e73524", &both),
+            Ok(String::from("sch-d92259e73524"))
+        );
+        assert!(resolve("sch-", &both).unwrap_err().contains("more than one"));
+        assert!(resolve("sch-0", &both).unwrap_err().contains("no schedule"));
+        assert!(resolve("sch-1", &[]).is_err());
+        assert_eq!(short("sch-82d3c6215ca6e9d23352"), "sch-82d3c621");
+        assert_eq!(short("sch-1"), "sch-1");
     }
 
     #[test]
