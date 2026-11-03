@@ -46,7 +46,7 @@ const replay = (transport, frames = SAMPLE_EVENTS) => {
 const answer = (transport, request_id, result) => transport.deliver({ type: 'action_result', request_id, result });
 const flush = () => new Promise(resolve => setImmediate(resolve));
 // The actions the app sent besides what it reads each time it connects: allowed and signed-in sites, schedules, goals, and usage.
-const sentActions = transport => transport.sent.filter(frame => frame.type === 'action' && frame.action.action !== 'read_usage' && !(['manage_sites', 'manage_profiles', 'manage_sign_ins', 'manage_schedule', 'manage_goals', 'manage_memory'].includes(frame.action.action) && frame.action.op.op === 'list'));
+const sentActions = transport => transport.sent.filter(frame => frame.type === 'action' && frame.action.action !== 'read_usage' && !(['manage_sites', 'manage_profiles', 'manage_sign_ins', 'manage_schedule', 'manage_goals', 'manage_memory'].includes(frame.action.action) && frame.action.op.op === 'list') && frame.action.action !== 'list_decisions');
 const thread = adapter => adapter.getSnapshot().threads[0];
 const lane = (adapter, id) => thread(adapter).lanes.find(item => item.id === id);
 const confirmation = (seq, revision, summary = 'Post the sample summary?') => sampleEvent(seq, seq, { kind: 'confirmation', confirmation_id: 'confirm-1', revision, chat_id: 'main', summary, expires_at: null, digest: `digest-${revision}`, fields: [{ label: 'Operation', value: summary, source: 'broker' }, { label: 'Text', value: 'Sample text.', source: 'agent' }] });
@@ -1097,4 +1097,28 @@ test('Hatchling\'s own word reads the schedules again: a schedule the owner appr
     assert.equal(lists(), before, 'not on the agent\'s words');
     transport.deliver(sampleEvent(2, 2, { kind: 'chat_message', chat_id: 'local', message_id: 'm-system', author: 'system', text: 'Scheduled: “Stretch.”' }));
     assert.equal(lists(), before + 1);
+test('approvals history: what was decided before the connection, as it was decided, after what\'s live', async () => {
+    const { transport, adapter } = connected();
+    const asked = transport.sent.find(frame => frame.type === 'action' && frame.action.action === 'list_decisions');
+    assert.deepEqual(asked.action, { action: 'list_decisions' });
+    assert.deepEqual(adapter.taskApprovals.getSnapshot(), [], 'nothing until the broker answers');
+    let told = 0;
+    const unsubscribe = adapter.taskApprovals.subscribe(() => { told++; });
+    const record = (id, decision) => ({ confirmation_id: id, summary: 'Remember this about you?', fields: [{ label: 'What it would remember', value: 'Their cat is Biscuit.', source: 'agent' }], decision, decided_at: '2026-11-03T12:00:00Z' });
+    answer(transport, asked.request_id, { result: 'decisions', decisions: [record('kept-1', 'approve'), record('kept-2', 'deny'), record('confirm-1', 'approve_always')] });
+    await flush();
+    assert.ok(told > 0, 'the history is told when it arrives');
+    // A request the stream shows live is shown live, once.
+    transport.deliver(sampleEvent(1, 1, { kind: 'confirmation', confirmation_id: 'confirm-1', revision: 1, chat_id: 'main', summary: 'Let the agent read a site', expires_at: null, digest: 'digest-1', fields: [{ label: 'Site', value: 'https://a.example', source: 'broker' }], session: true, always: true }));
+    const cards = adapter.taskApprovals.getSnapshot();
+    assert.deepEqual(cards.map(card => [card.id, card.status]), [['confirm-1', 'pending'], ['kept-1', 'allowed-once'], ['kept-2', 'denied']]);
+    assert.equal(cards[1].description, 'Remember this about you?');
+    assert.match(cards[1].report, /From the agent, What it would remember: Their cat is Biscuit\./);
+    unsubscribe();
+    // An answer that isn't the history changes nothing.
+    const other = connected();
+    const otherAsked = other.transport.sent.find(frame => frame.type === 'action' && frame.action.action === 'list_decisions');
+    answer(other.transport, otherAsked.request_id, { result: 'refused', reason: 'not_granted' });
+    await flush();
+    assert.deepEqual(other.adapter.taskApprovals.getSnapshot(), []);
 });
