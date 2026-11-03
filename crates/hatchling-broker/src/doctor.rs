@@ -32,6 +32,10 @@ use hatchling_isolation::{CellIdentity, Mapping};
 use crate::Config;
 use crate::environment as env;
 
+/// How the cell probe's staging directory is named, before its random
+/// part.
+const STAGE_PREFIX: &str = "hatchling-doctor-cell-";
+
 /// The service's settings, as `scripts/install.sh` writes them.
 pub const SERVICE_SETTINGS: &str = "/etc/hatchling/hatchling.env";
 
@@ -203,6 +207,11 @@ fn check_program(bin: Option<&str>) -> Finding {
 /// Whether this machine lets the broker make a cell, as the settings'
 /// cell user.
 fn check_cells(lookup: &dyn Fn(&str) -> Option<String>) -> Finding {
+    check_cells_in(lookup, &std::env::temp_dir())
+}
+
+/// [`check_cells`], staging the probe in `temp`.
+fn check_cells_in(lookup: &dyn Fn(&str) -> Option<String>, temp: &Path) -> Finding {
     let identity = match crate::cell::agent_identity(&lookup) {
         Ok((identity, _)) => identity,
         Err(err) => {
@@ -212,7 +221,17 @@ fn check_cells(lookup: &dyn Fn(&str) -> Option<String>) -> Finding {
             );
         }
     };
-    let stage = std::env::temp_dir().join(format!("hatchling-doctor-{}", std::process::id()));
+    // A name nobody can guess, in the shared temp directory: the probe
+    // makes it exclusively, so one made there first stops only the probe.
+    let stage = match crate::approval::random_hex(STAGE_PREFIX) {
+        Ok(name) => temp.join(name),
+        Err(err) => {
+            return Finding::problem(
+                format!("the cell probe can't name its directory: {err}"),
+                "Check that /dev/urandom can be read.",
+            );
+        }
+    };
     let probed = probe_cell(&identity, &stage);
     // Made as the cells' user, and empty: what the probe mounted went
     // with its mount namespace.
@@ -799,7 +818,11 @@ mod tests {
         };
         let uid = crate::config::agent_uid_value(&agent).ok();
         let lookup = |key: &str| (key == env::HATCHLING_AGENT_UID.name).then(|| agent.clone());
-        let found = check_cells(&lookup);
+        // Shared, as the temp directory is: the probe makes its directory
+        // as the cells' user.
+        let temp = scratch("probe-temp");
+        std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o1777)).unwrap();
+        let found = check_cells_in(&lookup, &temp);
         let required = std::env::var("HATCHLING_REQUIRE_CELL").is_ok_and(|value| value == "1");
         match &found {
             Finding::Fine(seen) => {
@@ -811,8 +834,14 @@ mod tests {
             }
             Finding::Unchecked(why) => assert_eq!(why, "", "cells are always checked"),
         }
-        let left = std::env::temp_dir().join(format!("hatchling-doctor-{}", std::process::id()));
-        assert!(!left.exists(), "the probe left {}", left.display());
+        // Its staging directory, randomly named, is gone.
+        let left: Vec<_> = std::fs::read_dir(&temp)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name())
+            .collect();
+        assert!(left.is_empty(), "the probe left {left:?}");
+        std::fs::remove_dir_all(&temp).unwrap();
     }
 
     #[test]
