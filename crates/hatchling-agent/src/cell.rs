@@ -549,7 +549,7 @@ impl Cell<Ready> {
         let result = hatchling_loop::Loop::new(&registry, kind)
             .with_system_prompt(format!(
                 "{}\n\n{note}",
-                hatchling_prompt::system_prompt_for(kind)
+                hatchling_loop::system_prompt_for(kind)
             ))
             .with_budget(budget)
             .with_ledger(ledger)

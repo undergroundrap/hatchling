@@ -298,7 +298,13 @@ fn loop_tells_the_model_what_is_off() {
             }
         })
         .unwrap_or_default();
-    assert!(system.contains("Web search is off on this install"), "{system}");
+    assert!(
+        system.contains("Web search is off on this install"),
+        "{system}"
+    );
     assert!(system.contains("Reading web pages is off"), "{system}");
-    assert!(system.contains("can't run programs or commands"), "{system}");
+    assert!(
+        system.contains("can't run programs or commands"),
+        "{system}"
+    );
 }
