@@ -1394,6 +1394,69 @@ mod tests {
     /// where `channel-send` is held and parked where it isn't; a result
     /// with no record to wait in is delivered or parked at once; a result
     /// the store refuses stays in memory, to try again.
+    /// A failure is told on the channel, in the delivery's words, with how
+    /// its run ended and the owner's task; and it's kept as well. No
+    /// scheduled run fails silently.
+    #[test]
+    fn a_failed_run_is_told_and_kept() {
+        let held = BTreeSet::from([ScheduleGrant::ChannelSend {
+            channel: String::from("local"),
+        }]);
+        let authenticated = BTreeSet::new();
+        let store = One::default();
+        let told = Told::default();
+        let telling = Services {
+            store: &store,
+            launcher: &Quick,
+            delivery: &told,
+            held: &held,
+            events: &[],
+            authenticated: &authenticated,
+        };
+        let park = |text: &str, reason: String| Parked {
+            schedule_id: String::from("sch-1"),
+            channel: String::from("local"),
+            text: text.to_owned(),
+            due: 0,
+            reason,
+        };
+        let failed = Outcome::Failed {
+            reason: String::from("it broke"),
+            ending: Some(Ending::Exited(69)),
+        };
+        let unstarted = Outcome::NotStarted {
+            reason: String::from("no cell"),
+        };
+        assert!(undelivered("sch-1", &failed, "local", Some("Stretch"), &telling, &park).is_some());
+        assert!(undelivered("sch-1", &unstarted, "local", None, &telling, &park).is_some());
+        let first = FailureNotice {
+            schedule_id: String::from("sch-1"),
+            task: Some(String::from("Stretch")),
+            started: true,
+            ending: Some(Ending::Exited(69)),
+        };
+        assert_eq!(
+            *told.0.borrow(),
+            [
+                (String::from("local"), first.clone()),
+                (
+                    String::from("local"),
+                    FailureNotice {
+                        schedule_id: String::from("sch-1"),
+                        task: None,
+                        started: false,
+                        ending: None,
+                    }
+                ),
+            ]
+        );
+        // Not on a channel the schedule may no longer send on.
+        assert!(undelivered("sch-1", &failed, "elsewhere", None, &telling, &park).is_some());
+        assert_eq!(told.0.borrow().len(), 2);
+        // A path with no words of its own tells no one, and keeps it.
+        assert!(Plain.notify_failure("local", &first).is_err());
+    }
+
     #[test]
     fn the_parts_park_and_keep_what_cannot_go() {
         let send = ScheduleGrant::ChannelSend {
@@ -1443,51 +1506,6 @@ mod tests {
             None
         );
         assert!(undelivered("sch-1", &output, "elsewhere", None, &services, &park).is_some());
-        // A failure is told on the channel, in the delivery's words, with
-        // how its run ended and the owner's task; and it's kept as well.
-        let told = Told::default();
-        let telling = Services {
-            store: &store,
-            launcher: &Quick,
-            delivery: &told,
-            held: &held,
-            events: &[],
-            authenticated: &authenticated,
-        };
-        assert!(undelivered("sch-1", &failed, "local", Some("Stretch"), &telling, &park).is_some());
-        assert!(undelivered("sch-1", &unstarted, "local", None, &telling, &park).is_some());
-        assert_eq!(
-            *told.0.borrow(),
-            [
-                (
-                    String::from("local"),
-                    FailureNotice {
-                        schedule_id: String::from("sch-1"),
-                        task: Some(String::from("Stretch")),
-                        started: true,
-                        ending: Some(Ending::Exited(69)),
-                    }
-                ),
-                (
-                    String::from("local"),
-                    FailureNotice {
-                        schedule_id: String::from("sch-1"),
-                        task: None,
-                        started: false,
-                        ending: None,
-                    }
-                ),
-            ]
-        );
-        // Not on a channel the schedule may no longer send on.
-        assert!(undelivered("sch-1", &failed, "elsewhere", None, &telling, &park).is_some());
-        assert_eq!(told.0.borrow().len(), 2);
-        // A path with no words of its own tells no one, and keeps it.
-        assert!(
-            Plain
-                .notify_failure("local", &told.0.borrow()[0].1)
-                .is_err()
-        );
         // deliver_now: no record to wait in: delivered at once.
         let active = Active::<Done> {
             run: None,

@@ -1415,12 +1415,10 @@ mod tests {
             .with_model(Some("m"))
             .notify_failure("local", &failed(Some("Stretch"), true, None))
             .unwrap();
-        let seen = seen.lock().unwrap();
+        let told = seen.lock().unwrap().first().cloned().unwrap_or_default();
         assert!(
-            seen.first().is_some_and(
-                |text| text.starts_with("Your scheduled work “Stretch” didn't finish.")
-            ),
-            "{seen:?}"
+            told.starts_with("Your scheduled work “Stretch” didn't finish."),
+            "{told}"
         );
     }
 
