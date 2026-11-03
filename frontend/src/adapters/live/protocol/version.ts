@@ -1,11 +1,13 @@
 // The frontend protocol handshake: version skew is a user-facing
 // event with a sentence a person can act on, never a bare refused connection.
 import { INCOMPATIBLE_BACKEND_NEWER, INCOMPATIBLE_FRONTEND_NEWER, UI_SCHEMA_VERSION } from './generated.js';
-import type { UiRequest, UiResponse } from './generated.js';
+import type { ScheduleGrant, UiRequest, UiResponse } from './generated.js';
 /** Where the handshake leaves the connection. */
 export type Handshake = {
     readonly status: 'open';
     readonly sessionProtocol: number;
+    /** What the connection holds: none from a broker too old to say. */
+    readonly grants: readonly ScheduleGrant[];
 } | {
     readonly status: 'incompatible';
     readonly frontend: number;
@@ -39,7 +41,7 @@ export function readHandshake(response: UiResponse, frontend: number = UI_SCHEMA
     switch (response.type) {
         case 'welcome':
             if (response.schema_version === frontend)
-                return { status: 'open', sessionProtocol: response.session_protocol };
+                return { status: 'open', sessionProtocol: response.session_protocol, grants: response.grants ?? [] };
             return { status: 'incompatible', frontend, backend: response.schema_version, message: incompatibilityMessage(frontend, response.schema_version) };
         case 'incompatible':
             return { status: 'incompatible', frontend: response.frontend, backend: response.backend, message: response.message };

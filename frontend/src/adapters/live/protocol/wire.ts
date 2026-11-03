@@ -2370,6 +2370,12 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             "next_due": {
                 "type": "integer"
             },
+            "task": {
+                "type": [
+                    "string",
+                    "null"
+                ]
+            },
             "when": {
                 "$ref": "#/$defs/ScheduleSpec"
             }
@@ -4061,6 +4067,12 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
         "oneOf": [
             {
                 "properties": {
+                    "grants": {
+                        "items": {
+                            "$ref": "#/$defs/ScheduleGrant"
+                        },
+                        "type": "array"
+                    },
                     "schema_version": {
                         "maximum": 65535,
                         "minimum": 0,

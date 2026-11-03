@@ -3,7 +3,7 @@
 // broker through the frontend protocol.
 //
 // The snapshot holds only what the broker has said. Every collection the
-// protocol does not carry yet (goals, schedules, devices, ...) is empty,
+// protocol does not carry yet (goals, devices, ...) is empty,
 // never seeded with sample data, and the commands that would act on them are
 // refused with a sentence instead of simulated. The agent's status is the one
 // it last reported, never inferred. Display preferences (theme, accent, size,
@@ -20,6 +20,7 @@ import { LiveSignIns } from './sign-ins.js';
 import type { CodePort } from '../../session/codes.js';
 import type { ConversationPort } from '../../session/conversations.js';
 import { LiveChatSession } from './session.js';
+import { LiveSchedules } from './schedules.js';
 import { LiveSites } from './sites.js';
 import { Surfaces } from './surfaces.js';
 const SETTINGS: Settings = { interfaceSize: 'comfortable', theme: 'dark', accent: 'white', avatarAccent: '#a78c57', keepChatPanelVisible: true, language: 'English', name: 'hatchling', vibe: '', feedPrompt: '', captchaStanding: false, telemetry: false, quietStart: '22:00', quietEnd: '08:00', digestTime: '08:30', dailyAllowance: 0, allowlist: [] };
@@ -41,6 +42,7 @@ export class LiveAdapter implements ProtocolAdapter {
     readonly #surfaces: Surfaces;
     readonly #sites: LiveSites;
     readonly #profiles: LiveProfiles;
+    readonly #schedules: LiveSchedules;
     /** Where the Settings form sends a sign-in to keep: straight to the broker, never as a Command. */
     readonly signIns: LiveSignIns;
     /** Where the browser view sends a one-time code: straight to the broker, never as a Command. */
@@ -63,6 +65,7 @@ export class LiveAdapter implements ProtocolAdapter {
         this.taskApprovals = new LiveApprovals(this.#client);
         this.#sites = new LiveSites(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.#profiles = new LiveProfiles(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
+        this.#schedules = new LiveSchedules(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.signIns = new LiveSignIns(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.codes = { give: (sessionId, code) => this.#surfaces.giveCode(sessionId, code) };
         this.conversations = { start: chatId => this.#newConversation(chatId) };
@@ -138,6 +141,17 @@ export class LiveAdapter implements ProtocolAdapter {
                 return command.policy === 'allow'
                     ? { ok: false, message: "Allow a site from the agent's request for it, with Allow always." }
                     : this.#sites.revoke(command.host);
+            case 'job.create':
+                return command.kind === 'time'
+                    ? this.#schedules.create(command.title, command.schedule)
+                    : { ok: false, message: 'Hatchling can’t watch a connected source from the app yet. Schedule it at a time instead.' };
+            case 'job.delete':
+                return this.#schedules.cancel(command.id);
+            case 'job.update':
+                return { ok: false, message: 'A schedule can’t be changed in place yet. Remove it and add the new one.' };
+            case 'job.toggle':
+            case 'job.run':
+                return { ok: false, message: 'A schedule can’t be paused or run early yet. Remove it to stop it.' };
             case 'demo.scenario':
             case 'demo.advance':
             case 'demo.reset':
@@ -245,7 +259,7 @@ export class LiveAdapter implements ProtocolAdapter {
             permissions: [],
             approvalHistory: [],
             memory: [],
-            jobs: [],
+            jobs: [...this.#schedules.jobs()],
             notifications: [],
             settings: { ...this.#settings, allowlist: [] },
             spendingLimit: 0,

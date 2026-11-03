@@ -4,10 +4,14 @@ import { h } from '../../components/dom.js';
 import { icon } from '../../components/icons.js';
 import { button, iconButton, pill } from '../../components/ui.js';
 import { createJob } from '../schedule/schedule.js';
-export function scheduleGroup(job: DeepReadonly<ScheduledJob>): 'Daily' | 'Weekly' | 'Events' {
+/** Which heading a schedule sits under: one that runs once, by its day of the week, or more often; or on an event. */
+export function scheduleGroup(job: DeepReadonly<ScheduledJob>): 'Once' | 'Daily' | 'Weekly' | 'Events' {
     if (job.kind === 'hook')
         return 'Events';
-    return /week|sunday|monday|tuesday|wednesday|thursday|friday|saturday/i.test(job.schedule) ? 'Weekly' : 'Daily';
+    if (!job.recurring)
+        return 'Once';
+    // "Weekdays" runs more than once a week: it isn't weekly.
+    return /\bweek(ly)?\b|sunday|monday|tuesday|wednesday|thursday|friday|saturday/i.test(job.schedule) ? 'Weekly' : 'Daily';
 }
 function scheduleLabel(job: DeepReadonly<ScheduledJob>): string {
     if (job.health === 'disabled')
@@ -27,11 +31,14 @@ function scheduleIcon(job: DeepReadonly<ScheduledJob>): HTMLElement {
 }
 export function renderContextSchedules(ctx: AppContext): HTMLElement {
     const root = h('div', { class: 'context-schedules' });
-    for (const group of ['Daily', 'Weekly', 'Events']) {
+    let first = true;
+    for (const group of ['Once', 'Daily', 'Weekly', 'Events']) {
         const jobs = ctx.state.jobs.filter((job) => job.goalId === null && scheduleGroup(job) === group);
         if (!jobs.length)
             continue;
-        const section = h('section', { class: 'schedule-section' }, h('div', { class: 'context-section-heading' }, h('h3', {}, group), group === 'Daily' ? iconButton('plus', 'Add scheduled work', () => createJob(ctx), 'context-heading-action') : null));
+        // The first heading shown carries the way to add more.
+        const section = h('section', { class: 'schedule-section' }, h('div', { class: 'context-section-heading' }, h('h3', {}, group), first ? iconButton('plus', 'Add scheduled work', () => createJob(ctx), 'context-heading-action') : null));
+        first = false;
         for (const job of jobs) {
             const row = h('button', { type: 'button', class: `context-job ${job.health}`, 'aria-label': `Open schedule: ${job.title}` }, scheduleIcon(job), h('span', { class: 'context-job-copy' }, h('strong', {}, job.title), h('span', {}, scheduleLabel(job))));
             row.addEventListener('click', () => openJobDetail(ctx, job.id));
