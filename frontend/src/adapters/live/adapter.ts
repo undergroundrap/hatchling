@@ -26,6 +26,7 @@ import { LiveChatSession } from './session.js';
 import { LiveSchedules } from './schedules.js';
 import { LiveUsage } from './usage.js';
 import { LiveGoals } from './goals.js';
+import { LiveMemory } from './memory.js';
 import { LiveSites } from './sites.js';
 import { Surfaces } from './surfaces.js';
 const SETTINGS: Settings = { interfaceSize: 'comfortable', theme: 'dark', accent: 'white', avatarAccent: '#a78c57', keepChatPanelVisible: true, language: 'English', name: 'hatchling', vibe: '', feedPrompt: '', captchaStanding: false, telemetry: false, quietStart: '22:00', quietEnd: '08:00', digestTime: '08:30', dailyAllowance: 0, allowlist: [] };
@@ -60,6 +61,7 @@ export class LiveAdapter implements ProtocolAdapter {
     /** Where a goal is closed as reached or set aside: straight to the broker, never as a Command. */
     readonly goals: GoalsPort;
     readonly #goals: LiveGoals;
+    readonly #memory: LiveMemory;
     /** Scheduled work that needs the owner: straight to the broker, never as a Command. */
     readonly attention: AttentionPort;
     readonly #listeners = new Set<() => void>();
@@ -87,6 +89,7 @@ export class LiveAdapter implements ProtocolAdapter {
         this.usage = this.#usage;
         this.#goals = new LiveGoals(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.goals = this.#goals;
+        this.#memory = new LiveMemory(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.chatSession = new LiveChatSession(this.#client, this.#chats, artifactId => this.#surfaces.shelf.latest(artifactId));
         this.#snapshot = this.#build();
         // Registered first, so the snapshot is current before any view hears of a change.
@@ -173,6 +176,10 @@ export class LiveAdapter implements ProtocolAdapter {
                 return { ok: false, message: 'Say whether it was reached or set aside: close it from its checkbox.' };
             case 'goal.reopen':
                 return { ok: false, message: 'A closed goal stays closed in Hatchling. Set it again as a new goal.' };
+            case 'memory.delete':
+                return this.#memory.forget(command.id);
+            case 'memory.save':
+                return { ok: false, message: 'Tell the agent in the chat: it asks to remember it, and you approve its words.' };
             case 'job.update':
                 return { ok: false, message: 'A schedule can’t be changed in place yet. Remove it and add the new one.' };
             case 'job.toggle':
@@ -228,6 +235,7 @@ export class LiveAdapter implements ProtocolAdapter {
             case 'chat_message':
                 this.#chats.apply(body, event.ts);
                 this.#activity.chat(body, event.ts);
+                this.#memory.observe(event);
                 this.#usage.observe(body);
                 return undefined;
             case 'attachment':
@@ -237,6 +245,7 @@ export class LiveAdapter implements ProtocolAdapter {
             case 'confirmation_decided':
                 this.taskApprovals.observe(event);
                 this.#sites.observe(event);
+                this.#memory.observe(event);
                 return undefined;
             case 'artifact':
             case 'schedule':
@@ -286,7 +295,7 @@ export class LiveAdapter implements ProtocolAdapter {
             devices: [],
             permissions: [],
             approvalHistory: [],
-            memory: [],
+            memory: [...this.#memory.entries()],
             jobs: [...this.#schedules.jobs()],
             notifications: [],
             settings: { ...this.#settings, allowlist: [] },

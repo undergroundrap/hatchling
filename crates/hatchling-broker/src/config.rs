@@ -467,6 +467,10 @@ pub enum MemoryAction {
     ContextAppend,
     /// Read the session context log.
     ContextRead,
+    /// Ask the owner to keep something in their memory: nothing is
+    /// written unless they approve, and then the broker writes it. Not
+    /// [`Write`](Self::Write), which writes at once.
+    Propose,
 }
 
 impl MemoryAction {
@@ -479,6 +483,7 @@ impl MemoryAction {
             Self::Remove,
             Self::ContextAppend,
             Self::ContextRead,
+            Self::Propose,
         ]
         .into_iter()
         .find(|action| action.name() == name)
@@ -493,6 +498,7 @@ impl MemoryAction {
             Self::Remove => "remove",
             Self::ContextAppend => "context-append",
             Self::ContextRead => "context-read",
+            Self::Propose => "propose",
         }
     }
 }
@@ -997,6 +1003,7 @@ fn parse_memory(dir: Option<String>, grants_raw: Option<String>) -> Result<Memor
                 "remove" => MemoryAction::Remove,
                 "context-append" => MemoryAction::ContextAppend,
                 "context-read" => MemoryAction::ContextRead,
+                "propose" => MemoryAction::Propose,
                 other => {
                     return Err(Error::InvalidConfig {
                         key: "HATCHLING_MEMORY_GRANTS",

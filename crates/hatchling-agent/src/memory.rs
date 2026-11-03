@@ -79,7 +79,9 @@ pub fn store(
         | MemoryResult::NotFound
         | MemoryResult::Removed { .. }
         | MemoryResult::ContextAppended
-        | MemoryResult::ContextEntries { .. }) => Err(unexpected_reply(&op, &other)),
+        | MemoryResult::ContextEntries { .. }
+        | MemoryResult::Proposed
+        | MemoryResult::Unasked { .. }) => Err(unexpected_reply(&op, &other)),
     }
 }
 
@@ -109,7 +111,9 @@ pub fn recall(stream: &UnixStream, scope: MemoryScope, id: &str) -> Result<Optio
         | MemoryResult::Items { .. }
         | MemoryResult::Removed { .. }
         | MemoryResult::ContextAppended
-        | MemoryResult::ContextEntries { .. }) => Err(unexpected_reply(&op, &other)),
+        | MemoryResult::ContextEntries { .. }
+        | MemoryResult::Proposed
+        | MemoryResult::Unasked { .. }) => Err(unexpected_reply(&op, &other)),
     }
 }
 
@@ -163,7 +167,9 @@ pub fn recall_by_tag(
             | MemoryResult::NotFound
             | MemoryResult::Removed { .. }
             | MemoryResult::ContextAppended
-            | MemoryResult::ContextEntries { .. }) => return Err(unexpected_reply(&op, &other)),
+            | MemoryResult::ContextEntries { .. }
+            | MemoryResult::Proposed
+            | MemoryResult::Unasked { .. }) => return Err(unexpected_reply(&op, &other)),
         }
     }
 }
@@ -191,7 +197,9 @@ pub fn remove(stream: &UnixStream, scope: MemoryScope, id: &str) -> Result<bool,
         | MemoryResult::Items { .. }
         | MemoryResult::NotFound
         | MemoryResult::ContextAppended
-        | MemoryResult::ContextEntries { .. }) => Err(unexpected_reply(&op, &other)),
+        | MemoryResult::ContextEntries { .. }
+        | MemoryResult::Proposed
+        | MemoryResult::Unasked { .. }) => Err(unexpected_reply(&op, &other)),
     }
 }
 
@@ -215,6 +223,45 @@ pub fn context_append(stream: &UnixStream, text: &str) -> Result<(), Error> {
         | MemoryResult::Items { .. }
         | MemoryResult::NotFound
         | MemoryResult::Removed { .. }
+        | MemoryResult::ContextEntries { .. }
+        | MemoryResult::Proposed
+        | MemoryResult::Unasked { .. }) => Err(unexpected_reply(&op, &other)),
+    }
+}
+
+/// What became of a memory proposal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Proposal {
+    /// Put to the owner: kept only if they approve.
+    Asked,
+    /// Not put to them, and why.
+    Unasked(String),
+}
+
+/// Asks the owner to keep `content` about them (v18). Nothing is kept
+/// unless they approve, in the app.
+///
+/// # Errors
+///
+/// Returns [`Error::MemoryDenied`] without the grant to propose,
+/// [`Error::MemoryFailed`] for words the broker won't put to the owner,
+/// [`Error::MemoryIo`] on transport failure, or
+/// [`Error::MemoryProtocol`] on a malformed broker reply.
+pub fn propose(stream: &UnixStream, content: &str) -> Result<Proposal, Error> {
+    let op = MemoryOp::Propose {
+        content: content.to_owned(),
+    };
+    match request(stream, &op)? {
+        MemoryResult::Proposed => Ok(Proposal::Asked),
+        MemoryResult::Unasked { reason } => Ok(Proposal::Unasked(reason)),
+        MemoryResult::Denied => Err(denied(&op)),
+        MemoryResult::MemoryError => Err(Error::MemoryFailed),
+        other @ (MemoryResult::Stored
+        | MemoryResult::Item { .. }
+        | MemoryResult::Items { .. }
+        | MemoryResult::NotFound
+        | MemoryResult::Removed { .. }
+        | MemoryResult::ContextAppended
         | MemoryResult::ContextEntries { .. }) => Err(unexpected_reply(&op, &other)),
     }
 }
@@ -259,7 +306,9 @@ pub fn context_read(stream: &UnixStream) -> Result<Vec<String>, Error> {
             | MemoryResult::Items { .. }
             | MemoryResult::NotFound
             | MemoryResult::Removed { .. }
-            | MemoryResult::ContextAppended) => return Err(unexpected_reply(&op, &other)),
+            | MemoryResult::ContextAppended
+            | MemoryResult::Proposed
+            | MemoryResult::Unasked { .. }) => return Err(unexpected_reply(&op, &other)),
         }
     }
 }
@@ -299,6 +348,7 @@ const fn action_name(op: &MemoryOp) -> &'static str {
         MemoryOp::Remove { .. } => "remove",
         MemoryOp::ContextAppend { .. } => "context-append",
         MemoryOp::ContextRead { .. } => "context-read",
+        MemoryOp::Propose { .. } => "propose",
     }
 }
 
@@ -310,6 +360,7 @@ fn scope_name(op: &MemoryOp) -> &str {
         | MemoryOp::RecallByTag { scope, .. }
         | MemoryOp::Remove { scope, .. } => scope,
         MemoryOp::ContextAppend { .. } | MemoryOp::ContextRead { .. } => "session",
+        MemoryOp::Propose { .. } => "user",
     }
 }
 

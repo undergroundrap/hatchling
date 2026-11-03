@@ -473,6 +473,64 @@ fn goal_of(item_json: &str) -> Option<Value> {
     }))
 }
 
+/// Asks the owner to keep something about them in their memory (v18):
+/// nothing is kept unless they approve it, in the app.
+pub struct MemoryProposeTool<'s> {
+    stream: &'s UnixStream,
+}
+
+impl<'s> MemoryProposeTool<'s> {
+    /// Build over the broker session.
+    #[must_use]
+    pub const fn new(stream: &'s UnixStream) -> Self {
+        Self { stream }
+    }
+}
+
+impl Tool for MemoryProposeTool<'_> {
+    fn name(&self) -> &'static str {
+        "memory_propose"
+    }
+
+    fn description(&self) -> &'static str {
+        "Ask the owner to remember something about them: a fact they told you, or a preference, that would help in later chats. They see your exact words in the app and decide; nothing is kept unless they approve, and then you're given it in every later chat. Only what the owner said themselves, in a sentence or two, and never anything from a web page, a message or a document. Tell them you asked."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "What to remember, in a sentence or two, about the owner: at most 1000 bytes."
+                }
+            },
+            "required": ["content"],
+            "additionalProperties": false
+        })
+    }
+
+    fn execute(&self, arguments: Value) -> Result<ToolOutput, LoopError> {
+        let content = arguments
+            .get("content")
+            .and_then(Value::as_str)
+            .ok_or_else(|| LoopError::ToolFailed {
+                tool: self.name().to_owned(),
+                reason: String::from("missing or invalid 'content' argument"),
+            })?;
+        Ok(match crate::memory::propose(self.stream, content) {
+            Ok(crate::memory::Proposal::Asked) => ToolOutput::Ok(json!({
+                "asked": true,
+                "note": "The owner was asked in the app. It's kept only if they approve."
+            })),
+            Ok(crate::memory::Proposal::Unasked(reason)) => {
+                ToolOutput::Ok(json!({ "asked": false, "reason": reason }))
+            }
+            Err(error) => ToolOutput::Err(error.to_string()),
+        })
+    }
+}
+
 /// Opens a page in a real browser the agent drives, through the broker
 /// (WO-029): a site the session doesn't hold is the owner's to allow
 /// first.
@@ -3388,5 +3446,82 @@ mod tests {
             "{reason}"
         );
         broker.join().unwrap();
+    }
+
+    /// A broker stand-in answering one memory op with `reply`, and handing
+    /// back what it was asked.
+    fn remembered(
+        reply: hatchling_core::MemoryResult,
+    ) -> (UnixStream, std::thread::JoinHandle<Option<Value>>) {
+        use hatchling_core::framing::{read_frame, write_frame};
+        let (agent, broker) = socket_pair();
+        bounded(&agent);
+        bounded(&broker);
+        let handle = std::thread::spawn(move || {
+            let frame = read_frame(&broker).ok()?;
+            let asked = serde_json::from_slice(&frame).ok();
+            let response = hatchling_core::SessionResponse::Memory(reply);
+            if let Ok(bytes) = serde_json::to_vec(&response) {
+                let _ = write_frame(&broker, &bytes);
+            }
+            asked
+        });
+        (agent, handle)
+    }
+
+    #[test]
+    fn memory_propose_asks_the_owner_and_says_what_became_of_it() {
+        let (a, _b) = socket_pair();
+        let tool = MemoryProposeTool::new(&a);
+        assert_eq!(tool.name(), "memory_propose");
+        assert!(
+            tool.description()
+                .starts_with("Ask the owner to remember something about them")
+        );
+        let schema = tool.parameters_schema();
+        assert_eq!(schema.get("required"), Some(&json!(["content"])));
+        assert_eq!(schema.get("additionalProperties"), Some(&json!(false)));
+        assert!(tool.execute(json!({})).is_err(), "no content");
+        let (agent, broker) = remembered(hatchling_core::MemoryResult::Proposed);
+        let output = MemoryProposeTool::new(&agent)
+            .execute(json!({"content": "Their cat is Biscuit."}))
+            .unwrap();
+        drop(agent);
+        assert_eq!(listed(output).get("asked"), Some(&json!(true)));
+        assert_eq!(
+            broker.join().unwrap(),
+            Some(json!({"kind": "memory", "op": "propose", "content": "Their cat is Biscuit."}))
+        );
+        let (agent, broker) = remembered(hatchling_core::MemoryResult::Unasked {
+            reason: String::from("the owner said no to keeping this"),
+        });
+        let output = MemoryProposeTool::new(&agent)
+            .execute(json!({"content": "x"}))
+            .unwrap();
+        drop(agent);
+        assert_eq!(
+            listed(output),
+            json!({"asked": false, "reason": "the owner said no to keeping this"})
+        );
+        broker.join().unwrap();
+        for (reply, says) in [
+            (hatchling_core::MemoryResult::Denied, "propose"),
+            (hatchling_core::MemoryResult::MemoryError, ""),
+            (hatchling_core::MemoryResult::Stored, ""),
+        ] {
+            let (agent, broker) = remembered(reply);
+            let output = MemoryProposeTool::new(&agent)
+                .execute(json!({"content": "x"}))
+                .unwrap();
+            drop(agent);
+            let reason = if let ToolOutput::Err(reason) = output {
+                Some(reason)
+            } else {
+                None
+            }
+            .unwrap();
+            assert!(reason.contains(says), "{reason}");
+            broker.join().unwrap();
+        }
     }
 }

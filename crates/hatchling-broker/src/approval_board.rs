@@ -65,6 +65,16 @@ pub enum Approved {
     /// A use of the owner's signed-in profile, which the session that
     /// asked makes: browsing signed in, or an act there.
     Signed(SignedUse),
+    /// Something to keep in the owner's memory, which the worker writes.
+    Memory(MemoryKeep),
+}
+
+/// What the agent asked to keep about the owner (v18), exactly as they
+/// were shown it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryKeep {
+    /// The words kept, the agent's.
+    pub content: String,
 }
 
 /// The owner's signed-in profile the agent asks to use.
@@ -291,6 +301,67 @@ impl Board {
         Ok(requested)
     }
 
+    /// Puts `content`, which task `task` asks to keep in the owner's memory,
+    /// to the owner at `now` (v18). Approved, the worker keeps exactly those
+    /// words; nothing is kept before. The same words asked again while they
+    /// wait are the same request, and words the owner said no to aren't
+    /// asked again.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal`]: the owner said no to these words, requests are paused
+    /// or full, or the record has no canonical form.
+    pub fn propose_memory(
+        &self,
+        content: &str,
+        task: &str,
+        now: i64,
+    ) -> Result<Requested, Refusal> {
+        let requested = self.approvals.propose(
+            Proposal {
+                run: Approved::Memory(MemoryKeep {
+                    content: content.to_owned(),
+                }),
+                action: json!({ "format": 1, "op": "memory.keep", "scope": "user", "content": content }),
+                fingerprint: json!({ "op": "memory.keep", "content": content }),
+                task: task.to_owned(),
+                session: false,
+                always: false,
+            },
+            now,
+        )?;
+        if requested.new {
+            self.publish(UiEventBody::Confirmation(ConfirmationRequest {
+                confirmation_id: requested.id.clone(),
+                revision: requested.revision,
+                chat_id: Some(String::from(CONFIRMATION_CHAT)),
+                summary: String::from("Remember this about you?"),
+                expires_at: Timestamp::from_second(requested.expires_at)
+                    .ok()
+                    .map(|at| at.to_string()),
+                digest: requested.digest.clone(),
+                fields: vec![
+                    ConfirmationField {
+                        label: String::from("Operation"),
+                        value: String::from(
+                            "Keep this in your memory. The agent is given it in every chat and scheduled run from now on, as something you approved. You can forget it in Memory (Settings, then Data controls).",
+                        ),
+                        source: FieldSource::Broker,
+                    },
+                    ConfirmationField {
+                        label: String::from("What it would remember"),
+                        value: content.to_owned(),
+                        source: FieldSource::Agent,
+                    },
+                ],
+                session: false,
+                always: false,
+                approve: Some(String::from("Remember it")),
+            }));
+        }
+        Ok(requested)
+    }
+
     /// Puts the signed-in use `ask` to the owner for `task`'s session, at
     /// `now`: its card goes out unless the same use already waits. Approved,
     /// it's the session that asked that makes it, once.
@@ -336,6 +407,7 @@ impl Board {
                 fields,
                 session: false,
                 always: false,
+                approve: None,
             }));
         }
         Ok(requested)
@@ -362,11 +434,11 @@ impl Board {
             revision,
             decision,
         });
-        let activation = self
-            .approvals
-            .get(id)
-            .is_some_and(|request| matches!(request.run(), Approved::Activation(_)));
-        if decided == State::Approved && activation {
+        // What the worker runs: an activation, or something to keep.
+        let worked = self.approvals.get(id).is_some_and(|request| {
+            matches!(request.run(), Approved::Activation(_) | Approved::Memory(_))
+        });
+        if decided == State::Approved && worked {
             self.queue
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -497,6 +569,7 @@ fn site_confirmation(
         },
         session: true,
         always,
+        approve: None,
     }
 }
 
@@ -575,6 +648,7 @@ fn confirmation(
         fields,
         session: false,
         always: false,
+        approve: None,
     }
 }
 
@@ -631,6 +705,14 @@ pub fn refused_as(refusal: &Refusal) -> ApprovalRefusal {
     }
 }
 
+/// Whether `config`'s broker has work for the approvals worker: builds to
+/// activate, or memory to keep. Without either, no approval it would run
+/// can be made.
+#[must_use]
+pub fn has_work(config: &Config) -> bool {
+    config.artifacts.enabled() || !config.memory.root.as_os_str().is_empty()
+}
+
 /// Runs approved request `id` on `board` once, at `now`: what the owner is
 /// told. Nothing runs unless the request is approved and unclaimed.
 #[must_use]
@@ -653,8 +735,34 @@ pub fn run_approved(
         // session.
         return format!("Approval {id} was not run: it is not the worker's to run.");
     }
-    let Some((Approved::Activation(run), claim)) = board.approvals().claim(id) else {
+    let Some((approved, claim)) = board.approvals().claim(id) else {
         return format!("Approval {id} was not run: it is no longer approved.");
+    };
+    let run = match approved {
+        Approved::Activation(run) => run,
+        Approved::Memory(keep) => {
+            return match crate::memory_keep::keep(config, &keep.content, now) {
+                Ok(()) => {
+                    claim.succeeded();
+                    format!(
+                        "Remembered: “{}” The agent is given it from now on.",
+                        keep.content
+                    )
+                }
+                Err(error) => {
+                    claim.failed();
+                    tracing::error!(%id, %error, "an approved memory wasn't kept");
+                    String::from(
+                        "Approved, but it wasn't kept: the memory store couldn't be written. The broker's log says why.",
+                    )
+                }
+            };
+        }
+        // Not the worker's: refused above, before the claim.
+        Approved::Site(_) | Approved::Signed(_) => {
+            claim.failed();
+            return format!("Approval {id} was not run: it is not the worker's to run.");
+        }
     };
     let token = match crate::activation::confirm_activation(config, key, &run.activation, now) {
         Ok(token) => token,

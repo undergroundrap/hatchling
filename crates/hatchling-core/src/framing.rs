@@ -15,6 +15,9 @@ use crate::Error;
 /// path; a peer speaking anything else is a protocol violation, not a
 /// negotiation.
 ///
+/// v18 adds the agent's memory proposal (`MemoryOp::Propose`,
+/// `MemoryResult::Proposed` / `Unasked`): what it asks to keep about the
+/// owner is put to them, and kept only if they approve.
 /// v17 adds the browser's one-time code (`BrowserOp::Code`,
 /// `BrowserResult::CodeWaiting` / `CodeDeclined` / `CodeExpired`, WO-030):
 /// the owner types it in the app, and the agent never sees it.
@@ -43,7 +46,7 @@ use crate::Error;
 /// (`EgressOp` / `EgressResult`). v2 adds the post-handshake vault
 /// session (`VaultOp` / `VaultResult`). v1 peers fail closed at the
 /// version check, in both directions.
-pub const PROTOCOL_VERSION: u16 = 17;
+pub const PROTOCOL_VERSION: u16 = 18;
 
 /// Largest single frame accepted, in bytes. Bounds allocation against a
 /// malicious or broken peer before any heap grows.

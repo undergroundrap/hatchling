@@ -43,7 +43,7 @@ vault keeper reads a cell's vault channel the same way.
 | Vault | `VaultOp` | `VaultResult` | v2 |
 | Egress | `EgressOp` | `EgressResult` | v3 |
 | Channel | `ChannelOp` | `ChannelResult` | v4 |
-| Memory | `MemoryOp` | `MemoryResult` | v1 |
+| Memory | `MemoryOp` | `MemoryResult` | v1; `Propose` v18 |
 | Skill | `SkillOp` | `SkillResult` | v5 |
 | Goals | `GoalsOp` | `GoalsResult` | v6 |
 | Query | `QueryOp` | `QueryResult` | v6 |
@@ -241,6 +241,18 @@ session holds.
 - **`BrowserResult`** gains `CodeWaiting { origin }` (asked, not answered
   yet: ask again shortly), `CodeDeclined` and `CodeExpired`. Filled, the
   reply is the page after, the code hidden.
+
+## v18 — The agent's memory proposal
+
+- **`MemoryOp::Propose { content }`**: the agent asks the owner to keep
+  something about them in their memory. It's put to them in the app, the
+  content shown as the agent's words; nothing is written unless they
+  approve. Then the broker keeps it in the user scope, tagged `recall`, so
+  later runs are given it. The agent never writes there itself: proposing
+  needs the grant `user:propose`, which isn't `user:write`.
+- **`MemoryResult`** gains `Proposed` (asked) and `Unasked { reason }`
+  (not asked: the owner said no to the same proposal, or their requests
+  are paused or full).
 
 ## Device handshake
 

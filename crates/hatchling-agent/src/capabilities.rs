@@ -47,6 +47,11 @@ pub fn note(run_tools: Option<&BTreeSet<ToolGroup>>) -> String {
     } else {
         "- You can't see the owner's goals here. If they mention one, take it from what they say."
     }));
+    lines.push(String::from(if on(ToolGroup::Memory) {
+        "- When the owner tells you something about themselves worth keeping, ask to remember it with memory_propose. They approve it in the app; you can't keep anything yourself, and anything already kept is given to you as recalled memory."
+    } else {
+        "- You can't keep anything from this conversation for later chats here."
+    }));
     if on(ToolGroup::Skills) {
         lines.push(String::from(
             "- You can run the installed skills your tools name, within their grants.",
@@ -73,6 +78,12 @@ mod tests {
         assert!(off.contains("can't run programs or commands"), "{off}");
         assert!(off.contains("hatchling-broker schedule add"), "{off}");
         assert!(off.contains("can't see the owner's goals"), "{off}");
+        assert!(off.contains("can't keep anything"), "{off}");
+        let memory = note(Some(&BTreeSet::from([ToolGroup::Memory])));
+        assert!(
+            memory.contains("ask to remember it with memory_propose"),
+            "{memory}"
+        );
         let goals = note(Some(&BTreeSet::from([ToolGroup::Goals])));
         assert!(
             goals.contains("read the owner's open goals with goals_read"),

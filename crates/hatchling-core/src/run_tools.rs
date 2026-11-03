@@ -2,9 +2,10 @@
 //! them on.
 //!
 //! Reading pages (`HATCHLING_WEB`), searching (`HATCHLING_WEB_SEARCH`),
-//! a browser, skills (`HATCHLING_SKILLS_DIR`) and reading the owner's
-//! goals (`HATCHLING_GOALS_DIR`, and a run that holds `query-goals`) are
-//! off unless the operator sets them up. The broker
+//! a browser, skills (`HATCHLING_SKILLS_DIR`), reading the owner's goals
+//! (`HATCHLING_GOALS_DIR`, and a run that holds `query-goals`) and asking
+//! to keep something in their memory (`HATCHLING_MEMORY_DIR`, and a run
+//! that holds `user:propose`) are off unless the operator sets them up. The broker
 //! tells each run which are on (`HATCHLING_RUN_TOOLS`), and the agent
 //! offers its model only those: a tool the broker can only refuse costs
 //! a small model a turn, and room in its prompt. The broker stays the
@@ -29,16 +30,19 @@ pub enum ToolGroup {
     Skills,
     /// Reading the owner's open goals.
     Goals,
+    /// Asking the owner to keep something in their memory.
+    Memory,
 }
 
 impl ToolGroup {
     /// Every group, in order.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Web,
         Self::Search,
         Self::Browser,
         Self::Skills,
         Self::Goals,
+        Self::Memory,
     ];
 
     /// The group's name in [`format`] and [`parse`].
@@ -50,6 +54,7 @@ impl ToolGroup {
             Self::Browser => "browser",
             Self::Skills => "skills",
             Self::Goals => "goals",
+            Self::Memory => "memory",
         }
     }
 }
@@ -85,7 +90,7 @@ pub fn parse(raw: &str) -> Result<BTreeSet<ToolGroup>, String> {
                 .into_iter()
                 .find(|group| group.as_str() == name)
                 .ok_or_else(|| {
-                    format!("{name:?} is not a tool group: web, search, browser, skills or goals")
+                    format!("{name:?} is not a tool group: web, search, browser, skills, goals or memory")
                 })
         })
         .collect()
@@ -97,7 +102,7 @@ mod tests {
 
     #[test]
     fn every_set_of_groups_round_trips() {
-        for bits in 0..32_u8 {
+        for bits in 0..64_u8 {
             let on: BTreeSet<ToolGroup> = ToolGroup::ALL
                 .into_iter()
                 .enumerate()
@@ -109,7 +114,7 @@ mod tests {
         assert_eq!(format(&BTreeSet::new()), "none");
         assert_eq!(
             format(&ToolGroup::ALL.into_iter().collect()),
-            "web,search,browser,skills,goals"
+            "web,search,browser,skills,goals,memory"
         );
     }
 

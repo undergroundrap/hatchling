@@ -232,6 +232,17 @@ pub enum MemoryOp {
         /// page's `next`. Absent for the first page.
         after: Option<String>,
     },
+    /// Ask the owner to keep `content` about them in their memory (v18):
+    /// one line or a few, in the agent's words. Nothing is written until
+    /// the owner approves it, in the app; then the broker keeps it, in the
+    /// user scope, recalled into later runs. The agent never writes there
+    /// itself.
+    #[serde(rename = "propose")]
+    Propose {
+        /// What to keep. Untrusted text: shown to the owner as the
+        /// agent's words.
+        content: String,
+    },
 }
 
 /// The broker's reply to one [`MemoryOp`].
@@ -292,6 +303,18 @@ pub enum MemoryResult {
     /// (e.g. an oversize value). Deliberately opaque.
     #[serde(rename = "memory-error")]
     MemoryError,
+    /// A proposal was put to the owner (v18): nothing is kept unless they
+    /// approve it.
+    #[serde(rename = "proposed")]
+    Proposed,
+    /// A proposal wasn't put to the owner (v18): they said no to the same
+    /// one already, or their requests are paused or full. `reason` says
+    /// which, for the agent to tell them.
+    #[serde(rename = "unasked")]
+    Unasked {
+        /// Why.
+        reason: String,
+    },
 }
 
 /// A goals operation: the agent's post-handshake write vocabulary for

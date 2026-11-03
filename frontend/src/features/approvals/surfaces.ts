@@ -44,7 +44,7 @@ function decisionActions(ctx: AppContext, request: TaskApproval): HTMLElement {
     if (request.scopes.includes('task'))
         actions.append(button('Allow for task', () => decide('task'), { id: `approval-task-${request.id}`, disabled: offline || blocked || busy }));
     if (request.scopes.includes('once'))
-        actions.append(button('Allow once', () => decide('once'), { id: `approval-once-${request.id}`, disabled: offline || blocked || busy, variant: 'primary' }));
+        actions.append(button(request.approveLabel ?? 'Allow once', () => decide('once'), { id: `approval-once-${request.id}`, disabled: offline || blocked || busy, variant: 'primary' }));
     return actions;
 }
 /** Composer and history refer to the same adapter request, never duplicated state. */

@@ -18,8 +18,8 @@ use hatchling_core::framing::{read_frame, read_frame_or_eof, write_frame};
 use hatchling_core::ui::operator::{CellKind, EgressVerdict};
 use hatchling_core::{
     AgentMessage, BrokerMessage, CellId, ChannelResult, EgressOp, EgressResult, GoalsResult,
-    HookResult, MAX_FRAME_BYTES, MemoryResult, PROTOCOL_VERSION, PeerCredentials, PeerPid,
-    QueryResult, ScheduleResult, SecretName, SessionRequest, SessionResponse, SkillResult,
+    HookResult, MAX_FRAME_BYTES, MemoryOp, MemoryResult, PROTOCOL_VERSION, PeerCredentials,
+    PeerPid, QueryResult, ScheduleResult, SecretName, SessionRequest, SessionResponse, SkillResult,
     VaultResult, decode_secret, encode_secret, peer_credentials,
 };
 use hatchling_egress::{EgressRequest, Proxy};
@@ -215,7 +215,7 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
             // The worker that runs what the owner approves in the app
             // (WO-027): approvals come only from the owner's sockets, so
             // it runs beside them.
-            if config.artifacts.enabled() {
+            if crate::approval_board::has_work(config) {
                 scope.spawn(move || crate::approval_board::work_forever(config, key, skills, hub));
             }
         }
@@ -879,6 +879,9 @@ fn serve_session(
                 )?),
                 SessionRequest::Channel(op) => SessionResponse::Channel(
                     crate::channel::handle_channel_op(&mut channels, &op, creds.uid().as_u32())?,
+                ),
+                SessionRequest::Memory(MemoryOp::Propose { content }) => SessionResponse::Memory(
+                    crate::memory_keep::propose(config, web.task(), &content),
                 ),
                 SessionRequest::Memory(op) => {
                     SessionResponse::Memory(crate::memory_ops::handle_memory_op(

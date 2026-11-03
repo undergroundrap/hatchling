@@ -88,6 +88,8 @@ export class LiveApprovals implements TaskApprovalPort {
         const status: ApprovalStatus = decision === 'approve' ? 'allowed-once' : decision === 'approve_session' ? 'allowed-task' : decision === 'approve_always' ? 'allowed-always' : decision === 'deny' ? 'denied' : this.#closed.get(request.confirmation_id) ?? 'pending';
         const forTask = request.session === true;
         const always = request.always === true;
+        // The broker's own words for approving, when it has them: Remember it.
+        const approve = typeof request.approve === 'string' ? request.approve : 'Allow once';
         const expires = typeof request.expires_at === 'string' ? clockTime(request.expires_at) : '';
         return {
             id: request.confirmation_id,
@@ -99,12 +101,13 @@ export class LiveApprovals implements TaskApprovalPort {
             description: request.summary,
             resource: expires === '' ? 'This request does not expire.' : `This request expires at ${expires} UTC.`,
             detail: [
-                'Allow once answers this request as described, and only this version of it.',
+                `${approve} answers this request as described, and only this version of it.`,
                 forTask ? "Allow for task also answers every request like it until the agent's session ends; in a chat, that's this answer." : '',
                 always ? 'Allow always answers every request like it, in every session, until you revoke it in Permissions.' : '',
                 'Your answer is recorded once.',
             ].filter(part => part !== '').join(' '),
             scopes: [...(['once'] as const), ...(forTask ? (['task'] as const) : []), ...(always ? (['always'] as const) : [])],
+            ...(approve === 'Allow once' ? {} : { approveLabel: approve }),
             status,
             time: clockTime(at),
             report: reviewText(request),
@@ -167,6 +170,7 @@ export class LiveApprovals implements TaskApprovalPort {
             case 'sign_ins':
             case 'usage':
             case 'goals':
+            case 'memory':
             case 'code_taken':
             case 'code_declined':
             case 'code_refused':
