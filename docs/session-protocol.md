@@ -47,7 +47,7 @@ vault keeper reads a cell's vault channel the same way.
 | Skill | `SkillOp` | `SkillResult` | v5 |
 | Goals | `GoalsOp` | `GoalsResult` | v6 |
 | Query | `QueryOp` | `QueryResult` | v6 |
-| Schedule | `ScheduleOp` | `ScheduleResult` | v7 |
+| Schedule | `ScheduleOp` | `ScheduleResult` | v7; `Propose` v19 |
 | Hook | `HookOp` | `HookResult` | v8 |
 | Artifact | `ArtifactOp` | `ArtifactResult` | v9 |
 | Space | `SpaceOp` | `SpaceResult` | v10 |
@@ -253,6 +253,20 @@ session holds.
 - **`MemoryResult`** gains `Proposed` (asked) and `Unasked { reason }`
   (not asked: the owner said no to the same proposal, or their requests
   are paused or full).
+
+## v19 — The agent's schedule proposal
+
+- **`ScheduleOp::Propose { timing, value, task }`**: the agent asks the
+  owner to schedule work, in the vocabulary of `hatchling-broker schedule
+  add` (`at`, `every`, `daily`, `weekdays`, `cron`), on the owner's clock.
+  It's put to them in the app: when it runs and what it may do in the
+  broker's words, the task as the agent's. Nothing is scheduled unless they
+  approve. Then the broker creates it as theirs, with the asking session's
+  grants, delivering to the chat. Proposing needs `channel-send:local`.
+- **`ScheduleResult`** gains `Proposed { when }` (asked, the timing in
+  words) and `Unasked { reason }` (not asked: the timing doesn't read, the
+  owner said no to the same proposal, or their requests are paused or
+  full).
 
 ## Device handshake
 

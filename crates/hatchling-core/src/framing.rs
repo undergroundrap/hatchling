@@ -15,6 +15,9 @@ use crate::Error;
 /// path; a peer speaking anything else is a protocol violation, not a
 /// negotiation.
 ///
+/// v19 adds the agent's schedule proposal (`ScheduleOp::Propose`,
+/// `ScheduleResult::Proposed` / `Unasked`): scheduled work it suggests is
+/// put to the owner, and created as theirs only if they approve.
 /// v18 adds the agent's memory proposal (`MemoryOp::Propose`,
 /// `MemoryResult::Proposed` / `Unasked`): what it asks to keep about the
 /// owner is put to them, and kept only if they approve.
@@ -46,7 +49,7 @@ use crate::Error;
 /// (`EgressOp` / `EgressResult`). v2 adds the post-handshake vault
 /// session (`VaultOp` / `VaultResult`). v1 peers fail closed at the
 /// version check, in both directions.
-pub const PROTOCOL_VERSION: u16 = 18;
+pub const PROTOCOL_VERSION: u16 = 19;
 
 /// Largest single frame accepted, in bytes. Bounds allocation against a
 /// malicious or broken peer before any heap grows.

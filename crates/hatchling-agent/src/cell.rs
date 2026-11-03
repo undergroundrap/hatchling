@@ -493,6 +493,11 @@ impl Cell<Ready> {
                 self.connection(),
             )));
         }
+        if on(hatchling_core::run_tools::ToolGroup::Schedule) {
+            registry.register(Box::new(crate::tools::SchedulePropose::new(
+                self.connection(),
+            )));
+        }
         if on(hatchling_core::run_tools::ToolGroup::Memory) {
             registry.register(Box::new(crate::tools::MemoryProposeTool::new(
                 self.connection(),

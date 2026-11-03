@@ -531,6 +531,99 @@ impl Tool for MemoryProposeTool<'_> {
     }
 }
 
+/// Asks the owner to schedule work (v19): nothing is scheduled unless they
+/// approve it, in the app.
+pub struct SchedulePropose<'s> {
+    stream: &'s UnixStream,
+}
+
+impl<'s> SchedulePropose<'s> {
+    /// Build over the broker session.
+    #[must_use]
+    pub const fn new(stream: &'s UnixStream) -> Self {
+        Self { stream }
+    }
+
+    /// Sends `op`, and reads the broker's answer.
+    fn ask(&self, op: hatchling_core::ScheduleOp) -> Result<hatchling_core::ScheduleResult, String> {
+        use hatchling_core::framing::{read_frame, write_frame};
+        let request = hatchling_core::SessionRequest::Schedule(op);
+        let payload = serde_json::to_vec(&request).map_err(|error| error.to_string())?;
+        write_frame(self.stream, &payload).map_err(|error| error.to_string())?;
+        let reply = read_frame(self.stream).map_err(|error| error.to_string())?;
+        match serde_json::from_slice(&reply).map_err(|error| error.to_string())? {
+            hatchling_core::SessionResponse::Schedule(result) => Ok(result),
+            other => Err(format!("the broker answered something else: {other:?}")),
+        }
+    }
+}
+
+impl Tool for SchedulePropose<'_> {
+    fn name(&self) -> &'static str {
+        "schedule_propose"
+    }
+
+    fn description(&self) -> &'static str {
+        "Ask the owner to schedule work: a reminder, or something to do later or again. They see when it runs, what it may do and your words in the app, and decide; nothing is scheduled unless they approve. Then it runs on their schedule and its result comes to this chat. timing is at (once, value \"YYYY-MM-DD HH:MM\"), every (value \"15m\", 1 to 59 minutes), daily or weekdays (value \"HH:MM\"), or cron (five fields), on the owner's clock. Write task as what should happen when it runs. Tell them you asked."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "timing": {
+                    "type": "string",
+                    "enum": ["at", "every", "daily", "weekdays", "cron"],
+                    "description": "How it repeats."
+                },
+                "value": {
+                    "type": "string",
+                    "description": "The timing's value: \"2026-11-04 08:00\", \"15m\", \"07:30\" or a cron expression."
+                },
+                "task": {
+                    "type": "string",
+                    "description": "What should happen when it runs, in a sentence or two."
+                }
+            },
+            "required": ["timing", "value", "task"],
+            "additionalProperties": false
+        })
+    }
+
+    fn execute(&self, arguments: Value) -> Result<ToolOutput, LoopError> {
+        let text = |key: &str| {
+            arguments
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| LoopError::ToolFailed {
+                    tool: String::from("schedule_propose"),
+                    reason: format!("missing or invalid '{key}' argument"),
+                })
+        };
+        let op = hatchling_core::ScheduleOp::Propose {
+            timing: text("timing")?,
+            value: text("value")?,
+            task: text("task")?,
+        };
+        Ok(match self.ask(op) {
+            Ok(hatchling_core::ScheduleResult::Proposed { when }) => ToolOutput::Ok(json!({
+                "asked": true,
+                "when": when,
+                "note": "The owner was asked in the app. Nothing is scheduled unless they approve."
+            })),
+            Ok(hatchling_core::ScheduleResult::Unasked { reason }) => {
+                ToolOutput::Ok(json!({ "asked": false, "reason": reason }))
+            }
+            Ok(hatchling_core::ScheduleResult::Denied) => ToolOutput::Err(String::from(
+                "this session may not ask to schedule work",
+            )),
+            Ok(other) => ToolOutput::Err(format!("the broker answered something else: {other:?}")),
+            Err(error) => ToolOutput::Err(error),
+        })
+    }
+}
+
 /// Opens a page in a real browser the agent drives, through the broker
 /// (WO-029): a site the session doesn't hold is the owner's to allow
 /// first.
@@ -3523,5 +3616,80 @@ mod tests {
             assert!(reason.contains(says), "{reason}");
             broker.join().unwrap();
         }
+    }
+
+    /// A broker stand-in answering one schedule op with `reply`, and
+    /// handing back what it was asked.
+    fn scheduled(
+        reply: hatchling_core::ScheduleResult,
+    ) -> (UnixStream, std::thread::JoinHandle<Option<Value>>) {
+        use hatchling_core::framing::{read_frame, write_frame};
+        let (agent, broker) = socket_pair();
+        bounded(&agent);
+        bounded(&broker);
+        let handle = std::thread::spawn(move || {
+            let frame = read_frame(&broker).ok()?;
+            let asked = serde_json::from_slice(&frame).ok();
+            let response = hatchling_core::SessionResponse::Schedule(reply);
+            if let Ok(bytes) = serde_json::to_vec(&response) {
+                let _ = write_frame(&broker, &bytes);
+            }
+            asked
+        });
+        (agent, handle)
+    }
+
+    #[test]
+    fn schedule_propose_asks_the_owner_and_says_what_became_of_it() {
+        let (a, _b) = socket_pair();
+        let tool = SchedulePropose::new(&a);
+        assert_eq!(tool.name(), "schedule_propose");
+        assert!(tool.description().starts_with("Ask the owner to schedule work"));
+        let schema = tool.parameters_schema();
+        assert_eq!(schema.get("required"), Some(&json!(["timing", "value", "task"])));
+        for missing in [json!({}), json!({"timing": "daily", "value": "07:30"})] {
+            assert!(tool.execute(missing).is_err());
+        }
+        let args = json!({"timing": "daily", "value": "07:30", "task": "Stretch."});
+        let (agent, broker) = scheduled(hatchling_core::ScheduleResult::Proposed {
+            when: String::from("Every day at 07:30 (UTC)"),
+        });
+        let output = SchedulePropose::new(&agent).execute(args.clone()).unwrap();
+        drop(agent);
+        let said = listed(output);
+        assert_eq!(said.get("asked"), Some(&json!(true)));
+        assert_eq!(said.get("when"), Some(&json!("Every day at 07:30 (UTC)")));
+        assert_eq!(
+            broker.join().unwrap(),
+            Some(json!({"kind": "schedule", "op": "propose", "timing": "daily", "value": "07:30", "task": "Stretch."}))
+        );
+        let (agent, broker) = scheduled(hatchling_core::ScheduleResult::Unasked {
+            reason: String::from("daily takes a time, HH:MM"),
+        });
+        let output = SchedulePropose::new(&agent).execute(args.clone()).unwrap();
+        drop(agent);
+        assert_eq!(listed(output), json!({"asked": false, "reason": "daily takes a time, HH:MM"}));
+        broker.join().unwrap();
+        for (reply, says) in [
+            (hatchling_core::ScheduleResult::Denied, "may not ask"),
+            (hatchling_core::ScheduleResult::NotFound, "something else"),
+        ] {
+            let (agent, broker) = scheduled(reply);
+            let output = SchedulePropose::new(&agent).execute(args.clone()).unwrap();
+            drop(agent);
+            let reason = if let ToolOutput::Err(reason) = output {
+                Some(reason)
+            } else {
+                None
+            }
+            .unwrap();
+            assert!(reason.contains(says), "{reason}");
+            broker.join().unwrap();
+        }
+        // A broker that's gone: said, not a crash.
+        let (agent, broker) = socket_pair();
+        drop(broker);
+        let output = SchedulePropose::new(&agent).execute(args).unwrap();
+        assert!(matches!(output, ToolOutput::Err(_)));
     }
 }
