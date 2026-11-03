@@ -357,16 +357,22 @@ test('scheduled work: made with the welcome\'s grants, listed, removed, and what
     const local = { grant: 'channel-send', channel: 'local' };
     transport.open();
     transport.deliver({ ...SAMPLE_WELCOME, grants: [local] });
-    const listing = () => transport.sent.filter(frame => frame.type === 'action' && frame.action.action === 'manage_schedule' && frame.action.op.op === 'list').at(-1);
-    answer(transport, listing().request_id, { result: 'schedule', outcome: { result: 'listed', schedules: [] } });
-    await flush();
+    const last = op => transport.sent.filter(frame => frame.type === 'action' && frame.action.action === 'manage_schedule' && frame.action.op.op === op).at(-1);
+    // Each refresh asks for the schedules, then for what was kept for the owner.
+    const lists = async (schedules) => {
+        answer(transport, last('list').request_id, { result: 'schedule', outcome: { result: 'listed', schedules } });
+        await flush();
+        answer(transport, last('list-parked').request_id, { result: 'schedule', outcome: { result: 'parked', parked: [] } });
+        await flush();
+    };
+    await lists([]);
     assert.deepEqual(adapter.getSnapshot().jobs, []);
     const creating = adapter.execute({ type: 'job.create', title: 'Stretch', kind: 'time', schedule: 'weekdays 08:00', recurring: true, source: '', event: '' });
     const create = transport.last();
     assert.deepEqual(create.action, { action: 'manage_schedule', op: { op: 'create', when: { every: 'cron', expr: '0 8 * * 1-5', tz: 'UTC' }, task: 'Stretch', grants: [local], channel: 'local' } });
     answer(transport, create.request_id, { result: 'schedule', outcome: { result: 'created', id: 'sch-1' } });
     await flush();
-    answer(transport, listing().request_id, { result: 'schedule', outcome: { result: 'listed', schedules: [{ id: 'sch-1', kind: 'task', when: create.action.op.when, channel: 'local', grants: [local], next_due: 1790000000, task: 'Stretch' }] } });
+    await lists([{ id: 'sch-1', kind: 'task', when: create.action.op.when, channel: 'local', grants: [local], next_due: 1790000000, task: 'Stretch' }]);
     assert.deepEqual(await creating, { ok: true, message: 'Scheduled. Its results arrive in this chat.', id: 'sch-1' });
     const [job] = adapter.getSnapshot().jobs;
     assert.deepEqual([job.id, job.title, job.schedule, job.limit], ['sch-1', 'Stretch', 'Weekdays at 08:00 (UTC)', 'May post in this chat']);
@@ -386,9 +392,10 @@ test('scheduled work: made with the welcome\'s grants, listed, removed, and what
     assert.deepEqual(cancel.action, { action: 'manage_schedule', op: { op: 'cancel', id: 'sch-1' } });
     answer(transport, cancel.request_id, { result: 'schedule', outcome: { result: 'cancelled' } });
     await flush();
-    answer(transport, listing().request_id, { result: 'schedule', outcome: { result: 'listed', schedules: [] } });
+    await lists([]);
     assert.deepEqual(await removing, { ok: true, message: 'Removed. It won’t run again.' });
     assert.deepEqual(adapter.getSnapshot().jobs, []);
+    assert.equal(adapter.attention.items().length, 0, 'nothing needs the owner');
 });
 test('a closed connection\'s late callbacks are ignored', () => {
     const transport = new FakeTransport();
