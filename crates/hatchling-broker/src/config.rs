@@ -204,6 +204,10 @@ pub struct SchedulerConfig {
     /// it is kept in the broker's memory alone, so a restart starts a new
     /// one. A run's own session never has it.
     pub conversation: PathBuf,
+    /// Where the broker counts model usage ([`crate::usage`]): the store
+    /// root's sibling `<root>.usage`, in a run's session too; empty, and
+    /// nothing is counted.
+    pub usage: PathBuf,
 }
 
 /// A run session's follow-up scope: the one scheduler surface a run's
@@ -236,6 +240,7 @@ impl SchedulerConfig {
             followup: None,
             subagent_depth: 0,
             conversation: PathBuf::new(),
+            usage: PathBuf::new(),
         }
     }
 
@@ -1338,7 +1343,8 @@ fn parse_scheduler(
         )));
     }
     let runs = root.with_extension("runs");
-    for dir in [&root, &runs] {
+    let usage = root.with_extension("usage");
+    for dir in [&root, &runs, &usage] {
         if dir.starts_with(vault_root) || vault_root.starts_with(dir) {
             return Err(invalid(format!(
                 "scheduler dir {} overlaps the vault root {}: a vault grant could reach it",
@@ -1363,6 +1369,7 @@ fn parse_scheduler(
         followup: None,
         subagent_depth: 0,
         conversation: PathBuf::new(),
+        usage,
     })
 }
 
@@ -3464,6 +3471,7 @@ mod tests {
             config.run_root(),
             PathBuf::from("/srv/hatchling/schedules.runs")
         );
+        assert_eq!(config.usage, PathBuf::from("/srv/hatchling/schedules.usage"));
         assert_eq!((config.model_endpoint, config.model_name), (None, None));
         for (dir, why) in [
             ("/run/hatchling/sock/schedules", "socket directory"),
@@ -3486,6 +3494,15 @@ mod tests {
         )
         .unwrap_err();
         assert!(format!("{err:?}").contains("overlaps"), "{err:?}");
+        // The usage count, a sibling too, may not hold the vault either.
+        let err = parse_scheduler(
+            Some("/srv/v/usage-parent/s"),
+            (None, None),
+            Path::new("/srv/v/usage-parent/s.usage/vault"),
+            None,
+        )
+        .unwrap_err();
+        assert!(format!("{err:?}").contains("s.usage overlaps"), "{err:?}");
         let with_model = parse_scheduler(
             Some("/srv/s"),
             (
