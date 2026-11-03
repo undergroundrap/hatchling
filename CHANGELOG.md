@@ -6,6 +6,10 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-03
+
+Install it and leave it on: a service that starts at boot, `doctor` for what stops it working, and a hosted model's key added in one command. And the post-0.5.0 audit's three High findings, fixed.
+
 ### Added
 
 - **`hatchling-broker secret add`: a hosted model's key, typed where nothing keeps it** (WO-033). Adding a hosted API's key meant running a script from the docs that wrote it as a plaintext file, then sealing the vault with the broker stopped. Now `secret add --for openrouter.ai:443` reads the key at a prompt that doesn't show it, or from a pipe (a password manager's), and seals it at once under the name the broker's egress reads. It's never in a file, an argument, the environment or the shell's history. A running broker uses it from its next request. `secret add <name>` does the same for any other secret, such as `search-brave`. A name already in the vault is refused unless `--replace`, before anything is asked. CI's hosted-model checks now seal their key this way.
@@ -394,7 +398,8 @@ The first public release. [Release notes](https://github.com/undergroundrap/hatc
 
 Published in [the trust boundary](docs/arch/trust-boundary.md#known-limitations), each with a work order and an issue.
 
-[Unreleased]: https://github.com/undergroundrap/hatchling/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/undergroundrap/hatchling/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/undergroundrap/hatchling/releases/tag/v0.6.0
 [0.5.0]: https://github.com/undergroundrap/hatchling/releases/tag/v0.5.0
 [0.4.0]: https://github.com/undergroundrap/hatchling/releases/tag/v0.4.0
 [0.3.0]: https://github.com/undergroundrap/hatchling/releases/tag/v0.3.0

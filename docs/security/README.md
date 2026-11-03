@@ -97,7 +97,23 @@ The release security checklist's [item 7](../release-security-checklist.md#7-egr
   5. prompt injection;
   6. adoption.
 
-  It found no way out of a cell. Its findings are fixed in the open, each pull request naming the attack it stops. A summary will be published when the last high-severity one ships.
+  It found no way out of a cell, and 3 High, 11 Medium and 20 Low findings. 0.6.0 fixes all three Highs, four of the Mediums and four of the Lows, each pull request naming the attack it stops:
+
+  | Finding | Severity | Fixed in |
+  | --- | --- | --- |
+  | Signed-in browsing had no confirmation rail: a page the agent read could make it act on a site you're signed in to | High | [#277](https://github.com/undergroundrap/hatchling/pull/277) |
+  | The spawner checked a cell's paths by name: a link the broker made, before or after the check, could put the owner's home in a cell | High | [#292](https://github.com/undergroundrap/hatchling/pull/292), [#294](https://github.com/undergroundrap/hatchling/pull/294) |
+  | The spawner passed the broker's descriptors to a cell as its stdio unchecked: a directory there opened the host's files to it | High | [#291](https://github.com/undergroundrap/hatchling/pull/291) |
+  | "Allow once" approved the site, not the page shown | Medium | [#276](https://github.com/undergroundrap/hatchling/pull/276) |
+  | The crates.io publish job built dependencies while holding the token | Medium | [#275](https://github.com/undergroundrap/hatchling/pull/275) |
+  | A run cell's program wasn't pinned, so the broker's own program could take its vault channel | Medium | [#295](https://github.com/undergroundrap/hatchling/pull/295) |
+  | Two broker threads started before its confinement, and went on unconfined | Medium | [#297](https://github.com/undergroundrap/hatchling/pull/297) |
+  | One task's denials could keep the owner from being asked by any other | Low | [#284](https://github.com/undergroundrap/hatchling/pull/284) |
+  | A build's card showed its inputs' hashes, not their text | Low | [#285](https://github.com/undergroundrap/hatchling/pull/285) |
+  | The held-secret check missed page addresses and search queries | Low | [#283](https://github.com/undergroundrap/hatchling/pull/283) |
+  | A hard link in a work tree could have had a host file's owner changed | Low | [#296](https://github.com/undergroundrap/hatchling/pull/296) |
+
+  One reported Low, agent links hiding their address, was a false positive: the chat already shows an agent's links inert. The seven Mediums and fifteen Lows still open are tracked privately and fixed in the open like these, each one's details published with its fix.
 - **No independent third-party audit has been done yet.**
 
 ## Upgrading
