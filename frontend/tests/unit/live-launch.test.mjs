@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { LiveAdapter } from '../../dist/app/adapters/live/adapter.js';
 import { BROKER_MAIN_CHAT, MAIN_CHAT, appChat, wireChat } from '../../dist/app/adapters/live/chat.js';
-import { TOKEN_FRAGMENT, channelUrl, liveFromPlace, tokenIn } from '../../dist/app/adapters/live/launch.js';
+import { TOKEN_FRAGMENT, TOKEN_KEY, channelUrl, liveFromPlace, sessionTokens, tabTokens, tokenIn } from '../../dist/app/adapters/live/launch.js';
 import { WebSocketTransport, browserSocket } from '../../dist/app/adapters/live/websocket.js';
 const TOKEN = '0123456789abcdef0123456789abcdef';
 /** A socket the transport drives, recording what it was told. */
@@ -72,6 +72,63 @@ test('a page with a token starts live and clears the fragment at once', () => {
     finally {
         globalThis.WebSocket = original;
     }
+});
+/** A tab's session storage, as much of it as the token needs. */
+class FakeStorage {
+    items = new Map();
+    getItem(key) { return this.items.has(key) ? this.items.get(key) : null; }
+    setItem(key, value) { this.items.set(key, String(value)); }
+}
+test('the tab keeps its token, so a reload stays connected rather than opening the sample workspace', () => {
+    const sockets = [];
+    const original = globalThis.WebSocket;
+    globalThis.WebSocket = class {
+        constructor(url) { this.url = url; sockets.push(this); }
+        addEventListener() { }
+        send() { }
+        close() { }
+    };
+    try {
+        const storage = new FakeStorage();
+        const tokens = sessionTokens(() => storage);
+        const replaced = [];
+        const first = { protocol: 'http:', host: '127.0.0.1:7340', pathname: '/', search: '', hash: `#hatchling-ui=${TOKEN}` };
+        assert.ok(liveFromPlace(first, address => replaced.push(address), tokens) instanceof LiveAdapter);
+        assert.equal(storage.getItem(TOKEN_KEY), TOKEN, 'kept for the tab');
+        // The reload: the address no longer holds it, the tab does.
+        const reload = { ...first, hash: '#goals' };
+        const again = liveFromPlace(reload, address => replaced.push(address), tokens);
+        assert.ok(again instanceof LiveAdapter);
+        assert.equal(again.mode, 'live');
+        assert.deepEqual(replaced, ['/'], 'the address is left alone on a reload');
+        assert.equal(sockets.length, 2);
+        // A newer address's token replaces the kept one.
+        const newer = 'fedcba9876543210fedcba9876543210';
+        liveFromPlace({ ...first, hash: `#hatchling-ui=${newer}` }, () => { }, tokens);
+        assert.equal(storage.getItem(TOKEN_KEY), newer);
+        // Something kept that isn't a token is never used.
+        storage.setItem(TOKEN_KEY, 'not a token');
+        assert.equal(liveFromPlace(reload, () => { }, tokens), undefined);
+        assert.equal(tokens.get(), undefined);
+        // Nothing kept, or no store at all: the sample workspace, as before.
+        assert.equal(liveFromPlace(reload, () => { }, sessionTokens(() => new FakeStorage())), undefined);
+        assert.equal(liveFromPlace(reload, () => { }), undefined);
+    }
+    finally {
+        globalThis.WebSocket = original;
+    }
+});
+test('a tab whose storage refuses keeps nothing, and says nothing', () => {
+    const refusing = sessionTokens(() => { throw new Error('storage is off'); });
+    assert.equal(refusing.set(TOKEN), false);
+    assert.equal(refusing.get(), undefined);
+    const failing = sessionTokens(() => ({ getItem() { throw new Error('denied'); }, setItem() { throw new Error('full'); } }));
+    assert.equal(failing.set(TOKEN), false);
+    assert.equal(failing.get(), undefined);
+    assert.equal(sessionTokens(() => new FakeStorage()).set(TOKEN), true);
+    // The tab's own: Node has no session storage, so nothing is kept.
+    assert.equal(tabTokens().set(TOKEN), false);
+    assert.equal(tabTokens().get(), undefined);
 });
 test('the transport reports the socket\'s life and carries text both ways', () => {
     const { made, sockets } = transport();
