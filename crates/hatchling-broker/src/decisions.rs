@@ -92,6 +92,8 @@ pub fn list(path: &Path) -> Vec<DecisionRecord> {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt as _;
+
     use super::*;
     use hatchling_core::ui::{ConfirmationField, Decision, FieldSource};
 
@@ -129,7 +131,6 @@ mod tests {
             listed,
             [decided(2, Decision::Deny), decided(1, Decision::Approve)]
         );
-        use std::os::unix::fs::PermissionsExt as _;
         assert_eq!(
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
