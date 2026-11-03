@@ -21,10 +21,14 @@ export function quoted(text: string): string {
 export function count(value: number, one: string, many: string): string {
     return `${value} ${value === 1 ? one : many}`;
 }
-/** The wall-clock time of an RFC 3339 timestamp as `HH:MM` UTC, or `''` when it has none. */
+/** The wall-clock time of an RFC 3339 timestamp as `HH:MM` on the person's clock, or `''` when it has none. */
 export function clockTime(timestamp: string): string {
     const at = Date.parse(timestamp);
-    return Number.isFinite(at) ? new Date(at).toISOString().slice(11, 16) : '';
+    if (!Number.isFinite(at))
+        return '';
+    // The person's own clock, not UTC: the broker's times are UTC instants.
+    const local = new Date(at);
+    return `${String(local.getHours()).padStart(2, '0')}:${String(local.getMinutes()).padStart(2, '0')}`;
 }
 /** Milliseconds between two timestamps; `null` unless both are real and in order. Durations are derived, never emitted. */
 export function between(start: string | null, end: string): number | null {
