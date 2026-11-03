@@ -735,9 +735,11 @@ pub(crate) mod tests {
             (Vf::NODIRATIME, Mf::NODIRATIME, "NODIRATIME"),
             (Vf::RELATIME, Mf::RELATIME, "RELATIME"),
         ] {
+            // A read-only bind sets NOSUID and NODEV itself; every other
+            // flag is the source mount's.
             assert_eq!(
                 flags.contains(mf),
-                vfs.f_flag.contains(vf),
+                vfs.f_flag.contains(vf) || (Mf::NOSUID | Mf::NODEV).contains(mf),
                 "{name} must be retained from the source mount"
             );
         }
