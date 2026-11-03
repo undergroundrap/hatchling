@@ -527,7 +527,9 @@ mod tests {
         );
         let hidden = report(&Command::List, listed(vec![summary(None, true)])).unwrap();
         assert!(
-            hidden.first().is_some_and(|line| line.contains("held:") && line.contains("isn't shown")),
+            hidden
+                .first()
+                .is_some_and(|line| line.contains("held:") && line.contains("isn't shown")),
             "{hidden:?}"
         );
         for reason in [
