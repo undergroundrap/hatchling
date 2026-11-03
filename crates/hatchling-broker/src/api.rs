@@ -209,6 +209,12 @@ impl Api {
         hub: Option<&LocalHub>,
     ) -> ! {
         let ops = Ops::new(config, key, skills, hub, Arc::clone(&self.bus));
+        // A reply with no client to take it, a scheduled run's result
+        // above all, is kept on the stream, for the app to show whenever
+        // it connects.
+        if let Some(hub) = hub {
+            hub.set_fallback(crate::api_ops::chat_sink(Arc::clone(&self.bus)));
+        }
         // The conversation the chat resumes is shown first (WO-026).
         let kept = hub.and_then(|_| crate::conversation_store::ConversationStore::of(config, key));
         if let Some(store) = kept {
