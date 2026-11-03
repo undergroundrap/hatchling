@@ -78,6 +78,15 @@ impl<R: Run> Run for FeedRun<R> {
             Self::Other(run) => run.poll(),
         }
     }
+
+    /// The wrapped run's ending: every scheduled run passes through here,
+    /// and how one failed is what its notice tells the person.
+    fn ending(&self) -> Option<hatchling_scheduler::Ending> {
+        match self {
+            Self::Ready(_) => None,
+            Self::Other(run) => run.ending(),
+        }
+    }
 }
 
 /// The real launcher, with feed runs answered by the broker.
@@ -103,5 +112,36 @@ impl<L: Launcher> Launcher for FeedLauncher<'_, L> {
             Some(feed) => Ok(FeedRun::Ready(Some(digest(self.config, &request, feed)))),
             None => self.inner.launch(request).map(FeedRun::Other),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A run that failed as `self.0` says.
+    struct Ended(hatchling_scheduler::Ending);
+
+    impl Run for Ended {
+        fn poll(&mut self) -> Option<Result<String, String>> {
+            Some(Err(String::from("failed")))
+        }
+
+        fn ending(&self) -> Option<hatchling_scheduler::Ending> {
+            Some(self.0)
+        }
+    }
+
+    /// Found on a real install: a failed run's notice said only that
+    /// something went wrong, because the wrapper every scheduled run
+    /// passes through dropped how the run ended.
+    #[test]
+    fn a_wrapped_run_says_how_it_ended() {
+        let ending = hatchling_scheduler::Ending::Exited(69);
+        let mut wrapped = FeedRun::Other(Ended(ending));
+        assert!(matches!(wrapped.poll(), Some(Err(_))));
+        assert_eq!(wrapped.ending(), Some(ending));
+        let feed = FeedRun::<Ended>::Ready(Some(Ok(String::from("digest"))));
+        assert_eq!(feed.ending(), None, "a feed's digest has no run to end");
     }
 }

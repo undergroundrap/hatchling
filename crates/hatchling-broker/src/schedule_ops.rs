@@ -50,9 +50,9 @@ use hatchling_core::{
     ScheduleSummary, SecretName,
 };
 use hatchling_scheduler::{
-    Claim, Creator, Delivery, Dispatcher, FollowupParent, Hook, Launcher, Occurrence,
-    OccurrenceState, Parked, Schedule, Services, Sources, Store, TickReport, Timestamp, validate,
-    validate_followup, validate_hook,
+    Claim, Creator, Delivery, Dispatcher, FailureNotice, FollowupParent, Hook, Launcher,
+    Occurrence, OccurrenceState, Parked, Schedule, Services, Sources, Store, TickReport, Timestamp,
+    validate, validate_followup, validate_hook,
 };
 use hatchling_vault::{OpensStores, SealedVault, Secret};
 
@@ -1131,13 +1131,51 @@ pub fn handle_hook_op(config: &Config, key: &dyn OpensStores, op: &HookOp) -> Ho
 #[derive(Debug, Clone, Copy)]
 pub struct HubDelivery<'a> {
     hub: Option<&'a LocalHub>,
+    /// The scheduled runs' model, named when one fails for it.
+    model: Option<&'a str>,
 }
 
 impl<'a> HubDelivery<'a> {
     /// Delivery through `hub`, the broker's ingress, if it has one.
     #[must_use]
     pub const fn new(hub: Option<&'a LocalHub>) -> Self {
-        Self { hub }
+        Self { hub, model: None }
+    }
+
+    /// The delivery, naming `model` when a run fails for it.
+    #[must_use]
+    pub const fn with_model(self, model: Option<&'a str>) -> Self {
+        Self { model, ..self }
+    }
+}
+
+/// The most of a task a failure notice quotes.
+const NOTICE_TASK_CHARS: usize = 80;
+
+/// What the person is told of a failed scheduled run: the broker's own
+/// words, naming the task only when the owner wrote it, and never what
+/// the run wrote.
+#[must_use]
+pub fn failure_notice(failure: &FailureNotice, model: Option<&str>) -> String {
+    let what = failure.task.as_deref().map_or_else(
+        || String::from("Scheduled work"),
+        |task| {
+            let mut quoted: String = task.chars().take(NOTICE_TASK_CHARS).collect();
+            if quoted.len() < task.len() {
+                quoted.push('…');
+            }
+            format!("Your scheduled work “{quoted}”")
+        },
+    );
+    if failure.started {
+        format!(
+            "{what} didn't finish. {} It's kept for you to review.",
+            crate::chat_run::chat_failed(failure.ending, model)
+        )
+    } else {
+        format!(
+            "{what} didn't run: Hatchling couldn't start it. `sudo hatchling-broker doctor` checks the install. It's kept for you to review."
+        )
     }
 }
 
@@ -1148,6 +1186,10 @@ pub const SCHEDULER_SENDER: &str = "broker:scheduler";
 impl Delivery for HubDelivery<'_> {
     fn deliver(&self, channel: &str, text: &str) -> Result<(), String> {
         self.deliver_verbatim(channel, text).map(|_| ())
+    }
+
+    fn notify_failure(&self, channel: &str, failure: &FailureNotice) -> Result<(), String> {
+        self.deliver(channel, &failure_notice(failure, self.model))
     }
 
     fn deliver_verbatim(&self, channel: &str, text: &str) -> Result<bool, String> {
@@ -1220,7 +1262,7 @@ pub fn dispatch_once<L: Launcher>(
     }
     let store = SealedScheduleStore::new(&config.scheduler.root, key);
     let held = held_grants(config);
-    let delivery = HubDelivery::new(hub);
+    let delivery = HubDelivery::new(hub).with_model(config.scheduler.model_name.as_deref());
     let authenticated = hub.map_or_else(BTreeSet::new, |_| authenticated_channels(config));
     let events = if hub.is_some_and(|hub| hub.take_arrivals() > 0) {
         vec![HookSource::ChannelMessage {
@@ -1318,6 +1360,68 @@ mod tests {
     /// A failed delivery's reason is the owner's to read on a parked
     /// result: a fixed sentence, never the channel's error, which can carry
     /// an OS error's text.
+    /// A failed scheduled run is told in the broker's words: the owner's
+    /// task, why in plain words, and that it's kept; never the run's text.
+    #[test]
+    fn a_failed_run_is_told_in_the_brokers_words() {
+        use hatchling_core::run_failure::RunFailure;
+        use hatchling_scheduler::Ending;
+        let failed = |task: Option<&str>, started: bool, ending| FailureNotice {
+            schedule_id: String::from("sch-1"),
+            task: task.map(str::to_owned),
+            started,
+            ending,
+        };
+        let model = failure_notice(
+            &failed(
+                Some("Check the disks"),
+                true,
+                Some(Ending::Exited(RunFailure::ModelUnavailable.code().into())),
+            ),
+            Some("qwen3.5:9b"),
+        );
+        assert!(
+            model.starts_with("Your scheduled work “Check the disks” didn't finish. Hatchling couldn't get an answer from its model (qwen3.5:9b).")
+                && model.ends_with("It's kept for you to review."),
+            "{model}"
+        );
+        let anonymous = failure_notice(&failed(None, true, Some(Ending::TimedOut)), None);
+        assert!(
+            anonymous.starts_with("Scheduled work didn't finish. The agent took too long"),
+            "{anonymous}"
+        );
+        let unstarted = failure_notice(&failed(Some("t"), false, None), None);
+        assert!(
+            unstarted.contains("didn't run") && unstarted.contains("doctor"),
+            "{unstarted}"
+        );
+        let long = "x".repeat(200);
+        let quoted = failure_notice(&failed(Some(&long), true, None), None);
+        assert!(
+            quoted.contains(&format!("“{}…”", "x".repeat(80))),
+            "{quoted}"
+        );
+        // Through the hub, in the chat's record.
+        let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());
+        let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let sink_seen = std::sync::Arc::clone(&seen);
+        let _ = hub.attach(Box::new(move |cleared: &hatchling_channel::Cleared| {
+            if let Ok(mut seen) = sink_seen.lock() {
+                seen.push(cleared.message().text.clone());
+            }
+            Ok(())
+        }));
+        HubDelivery::new(Some(&hub))
+            .with_model(Some("m"))
+            .notify_failure("local", &failed(Some("Stretch"), true, None))
+            .unwrap();
+        let told = seen.lock().unwrap().first().cloned().unwrap_or_default();
+        assert!(
+            told.starts_with("Your scheduled work “Stretch” didn't finish."),
+            "{told}"
+        );
+    }
+
     #[test]
     fn an_undelivered_outputs_reason_is_a_fixed_sentence() {
         let hub = LocalHub::new(hatchling_channel::OutputGate::new(
