@@ -106,11 +106,19 @@ fn multi_turn_loop_produces_final_answer() {
 
 #[test]
 fn unknown_tool_stops_before_execution() {
+    // Told each time that nothing ran; stopped once it's done so more
+    // than the loop allows.
     let registry = registry_with_echo();
-    let model = FakeModel::new(vec![ModelAction::ToolCalls(vec![ToolCall {
-        name: String::from("nope"),
-        arguments: json!({}),
-    }])]);
+    let model = FakeModel::new(
+        (0..=hatchling_loop::CONTRACT_SLIPS)
+            .map(|_| {
+                ModelAction::ToolCalls(vec![ToolCall {
+                    name: String::from("nope"),
+                    arguments: json!({}),
+                }])
+            })
+            .collect(),
+    );
     let err = Loop::new(&registry, PromptKind::Chat)
         .run(&model, String::from("x"))
         .expect_err("unknown tool must stop the loop");
@@ -121,10 +129,16 @@ fn unknown_tool_stops_before_execution() {
 fn invalid_arguments_stop_before_execution() {
     let registry = registry_with_echo();
     // `input` is required; omitting it fails schema validation.
-    let model = FakeModel::new(vec![ModelAction::ToolCalls(vec![ToolCall {
-        name: String::from("echo"),
-        arguments: json!({}),
-    }])]);
+    let model = FakeModel::new(
+        (0..=hatchling_loop::CONTRACT_SLIPS)
+            .map(|_| {
+                ModelAction::ToolCalls(vec![ToolCall {
+                    name: String::from("echo"),
+                    arguments: json!({}),
+                }])
+            })
+            .collect(),
+    );
     let err = Loop::new(&registry, PromptKind::Chat)
         .run(&model, String::from("x"))
         .expect_err("schema violation must stop before execute");

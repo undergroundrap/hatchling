@@ -175,10 +175,17 @@ fn loop_unknown_tool_from_model_stops_fail_closed() {
     .unwrap();
     let cell = ready_cell(&broker).unwrap();
 
-    let model = FakeModel::new(vec![ModelAction::ToolCalls(vec![ToolCall {
-        name: String::from("vault_fetch_privileged"),
-        arguments: json!({ "name": "api-key" }),
-    }])]);
+    // Told each time that nothing ran, then stopped.
+    let model = FakeModel::new(
+        (0..=hatchling_loop::CONTRACT_SLIPS)
+            .map(|_| {
+                ModelAction::ToolCalls(vec![ToolCall {
+                    name: String::from("vault_fetch_privileged"),
+                    arguments: json!({ "name": "api-key" }),
+                }])
+            })
+            .collect(),
+    );
     let err = cell
         .run_loop(
             hatchling_agent::PromptKind::Chat,

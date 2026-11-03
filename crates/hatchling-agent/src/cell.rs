@@ -415,9 +415,11 @@ impl Cell<Ready> {
     /// # Errors
     ///
     /// Returns [`hatchling_loop::Error`] variants per the loop's
-    /// contract: budget exhaustion, unknown tools, and invalid
-    /// arguments stop fail-closed; tool execution failures feed
-    /// back to the model.
+    /// contract: budget exhaustion stops fail-closed; an unknown tool
+    /// or invalid arguments run nothing and are told to the model, and
+    /// stop fail-closed once they come more often than
+    /// [`hatchling_loop::CONTRACT_SLIPS`] allows; tool execution
+    /// failures feed back to the model.
     pub fn run_loop(
         &self,
         kind: hatchling_loop::PromptKind,

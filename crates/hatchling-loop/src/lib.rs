@@ -32,5 +32,5 @@ pub use hatchling_prompt::PromptKind;
 pub use ledger::StepLedger;
 pub use memory::{MemoryProvider, RecallError};
 pub use model::{Message, Model, ModelAction, ToolResultView};
-pub use runner::{Loop, LoopBudget, LoopResult};
+pub use runner::{CONTRACT_SLIPS, Loop, LoopBudget, LoopResult};
 pub use tool::{Tool, ToolCall, ToolDescription, ToolOutput, ToolRegistry};
