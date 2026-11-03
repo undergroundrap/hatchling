@@ -701,6 +701,14 @@ pub fn refused_as(refusal: &Refusal) -> ApprovalRefusal {
     }
 }
 
+/// Whether `config`'s broker has work for the approvals worker: builds to
+/// activate, or memory to keep. Without either, no approval it would run
+/// can be made.
+#[must_use]
+pub fn has_work(config: &Config) -> bool {
+    config.artifacts.enabled() || !config.memory.root.as_os_str().is_empty()
+}
+
 /// Runs approved request `id` on `board` once, at `now`: what the owner is
 /// told. Nothing runs unless the request is approved and unclaimed.
 #[must_use]

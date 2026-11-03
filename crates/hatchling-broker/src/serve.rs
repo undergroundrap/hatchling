@@ -215,7 +215,7 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
             // The worker that runs what the owner approves in the app
             // (WO-027): approvals come only from the owner's sockets, so
             // it runs beside them.
-            if config.artifacts.enabled() {
+            if crate::approval_board::has_work(config) {
                 scope.spawn(move || crate::approval_board::work_forever(config, key, skills, hub));
             }
         }

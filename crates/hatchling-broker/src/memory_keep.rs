@@ -285,6 +285,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A broker that keeps memory runs the worker that keeps what's
+    /// approved, builds or not; one with neither has nothing for it.
+    #[test]
+    fn a_memory_store_alone_runs_the_approvals_worker() {
+        let (mut config, dir) = config("worker", &[]);
+        assert!(!config.artifacts.enabled());
+        assert!(crate::approval_board::has_work(&config));
+        config.memory.root = std::path::PathBuf::new();
+        assert!(!crate::approval_board::has_work(&config));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn what_the_owner_refuses_is_never_kept_nor_asked_again() {
         let (config, dir) = config("deny", &[MemoryAction::Propose]);
