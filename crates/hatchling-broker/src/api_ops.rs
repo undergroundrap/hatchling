@@ -67,6 +67,8 @@ enum Owned<'a> {
     Goals(&'a GoalOp),
     /// What the agent is given from their memory.
     Memory(&'a KeptOp),
+    /// The decisions they made.
+    Decisions,
 }
 
 /// The one chat the API offers: the local channel's conversation.
@@ -225,6 +227,7 @@ impl<'a> Ops<'a> {
             UiAction::ReadUsage {} => self.owned(owns, Owned::Usage),
             UiAction::ManageGoals { op } => self.owned(owns, Owned::Goals(op)),
             UiAction::ManageMemory { op } => self.owned(owns, Owned::Memory(op)),
+            UiAction::ListDecisions {} => self.owned(owns, Owned::Decisions),
             UiAction::Decide {
                 confirmation_id,
                 revision,
@@ -287,6 +290,13 @@ impl<'a> Ops<'a> {
             },
             Owned::Memory(op) => UiActionResult::Memory {
                 outcome: crate::memory_keep::handle_kept_op(self.config, op),
+            },
+            Owned::Decisions => UiActionResult::Decisions {
+                decisions: if self.config.scheduler.enabled() {
+                    crate::decisions::list(&self.config.scheduler.decisions_log())
+                } else {
+                    Vec::new()
+                },
             },
             Owned::Usage => UiActionResult::Usage {
                 usage: crate::usage::report(
@@ -2041,6 +2051,20 @@ mod tests {
         let owner = caller(&held);
         let partial = caller(held.get(..1).unwrap_or_default());
         let mut replies = Replies::default();
+        let decisions = UiAction::ListDecisions {};
+        assert_eq!(
+            ops.handle(&partial, &decisions, &mut replies).1,
+            ApiOutcome::Refused
+        );
+        assert_eq!(
+            ops.handle(&owner, &decisions, &mut replies),
+            (
+                UiActionResult::Decisions {
+                    decisions: Vec::new()
+                },
+                ApiOutcome::Served
+            )
+        );
         let memory = UiAction::ManageMemory { op: KeptOp::List };
         assert_eq!(
             ops.handle(&partial, &memory, &mut replies).1,

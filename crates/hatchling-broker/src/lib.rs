@@ -51,6 +51,7 @@ pub mod config;
 pub mod connections;
 pub use connections::{ConnectionSlots, Refused, Slot};
 pub mod custody;
+pub mod decisions;
 pub mod device;
 pub mod doctor;
 pub mod egress_authority;

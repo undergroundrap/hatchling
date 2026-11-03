@@ -97,12 +97,14 @@ pub fn state_dirs(config: &Config) -> Vec<PathBuf> {
 /// make it.
 #[must_use]
 pub fn state_files(config: &Config) -> Vec<PathBuf> {
-    config
-        .scheduler
-        .enabled()
-        .then(|| config.scheduler.activity_log())
-        .into_iter()
-        .collect()
+    if config.scheduler.enabled() {
+        vec![
+            config.scheduler.activity_log(),
+            config.scheduler.decisions_log(),
+        ]
+    } else {
+        Vec::new()
+    }
 }
 
 /// Hands the broker's state to its user, `uid` and `gid`: its
@@ -225,7 +227,10 @@ mod tests {
         );
         assert_eq!(
             state_files(&config),
-            [PathBuf::from("/srv/h/schedules.activity")]
+            [
+                PathBuf::from("/srv/h/schedules.activity"),
+                PathBuf::from("/srv/h/schedules.decisions")
+            ]
         );
     }
 
