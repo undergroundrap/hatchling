@@ -937,7 +937,8 @@ mod tests {
         assert!(slow.contains("too long"), "{slow}");
         let room = chat_failed(exited(RunFailure::OutOfRoom), Some("qwen3.5:9b"));
         assert!(
-            room.starts_with("The model (qwen3.5:9b) ran out of room") && room.contains("OLLAMA_CONTEXT_LENGTH"),
+            room.starts_with("The model (qwen3.5:9b) ran out of room")
+                && room.contains("OLLAMA_CONTEXT_LENGTH"),
             "{room}"
         );
         for other in [Some(Ending::Exited(1)), Some(Ending::Exited(64)), None] {
