@@ -6,6 +6,10 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ## [Unreleased]
 
+### Added
+
+- **Testing Hatchling with an AI agent** ([docs/testing-with-an-agent.md](docs/testing-with-an-agent.md)). How to have the Claude desktop app or Codex install Hatchling on a throwaway WSL2 box, open the app without the key ever appearing in the transcript, click through it and take screenshots, with you typing every secret.
+
 ### Changed
 
 - **A small model's slip is told back to it, not the end of the answer.** A model that called a tool it wasn't offered, or gave arguments that don't fit, stopped the run at once, and the chat said only that the agent couldn't answer. Now none of that batch runs, the model is told what was wrong and that nothing ran, and it gets two more tries before the run stops.
