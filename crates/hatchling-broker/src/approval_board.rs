@@ -741,7 +741,7 @@ pub fn run_approved(
                 Ok(()) => {
                     claim.succeeded();
                     format!(
-                        "Remembered: “{}”. The agent is given it from now on.",
+                        "Remembered: “{}” The agent is given it from now on.",
                         keep.content
                     )
                 }

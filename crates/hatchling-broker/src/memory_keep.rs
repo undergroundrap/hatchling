@@ -272,7 +272,7 @@ mod tests {
             1_793_707_200,
         );
         assert!(
-            said.starts_with("Remembered: “The owner's cat is called Biscuit.”"),
+            said == "Remembered: “The owner's cat is called Biscuit.” The agent is given it from now on.",
             "{said}"
         );
         assert_eq!(

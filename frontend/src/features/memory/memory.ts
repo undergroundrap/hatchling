@@ -29,7 +29,7 @@ function liveMemory(ctx: AppContext): HTMLElement {
     if (!ctx.state.memory.length)
         page.append(emptyState('memory', 'Nothing kept yet.', 'Tell the agent something about yourself worth keeping: it asks to remember it, and you approve.'));
     for (const entry of ctx.state.memory)
-        page.append(h('article', { class: 'memory-entry' }, h('header', {}, h('div', {}, h('h2', {}, entry.title), h('time', { class: 'tiny muted' }, entry.date)), button('Forget', () => ctx.dialogs.confirm('Forget this?', 'The agent isn’t given it from the next chat on. This can’t be undone.', () => { void ctx.run({ type: 'memory.delete', id: entry.id }); }, { label: 'Forget', danger: true }), { variant: 'ghost' })), h('p', {}, entry.body)));
+        page.append(h('article', { class: 'memory-entry' }, h('header', {}, h('div', {}, h('p', {}, entry.body), h('time', { class: 'tiny muted' }, entry.date)), button('Forget', () => ctx.dialogs.confirm('Forget this?', 'The agent isn’t given it from the next chat on. This can’t be undone.', () => { void ctx.run({ type: 'memory.delete', id: entry.id }); }, { label: 'Forget', danger: true }), { variant: 'ghost' }))));
     page.append(h('div', { class: 'notice muted' }, icon('lock', 20), 'Passwords, codes, tokens, card and account numbers don’t belong in memory: say no if the agent ever asks to keep one.'));
     return page;
 }
