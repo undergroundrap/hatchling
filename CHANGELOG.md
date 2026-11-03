@@ -6,6 +6,10 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ## [Unreleased]
 
+### Fixed
+
+- **After a restart, the app says how to get back in.** Each start of the broker makes a new key for the app, so an app left open went offline with only "The connection to Hatchling ended", and getting the new address meant a long `echo "...$(cat ...)"` line. Now `hatchling-host url` prints the address to open, and an app the broker doesn't let in says to run it (or to start Hatchling, if it isn't running). The installer and the install guide point to it, and CI checks it gives the new address after a restart.
+
 ## [0.6.0] - 2026-11-03
 
 Install it and leave it on: a service that starts at boot, `doctor` for what stops it working, and a hosted model's key added in one command. And the post-0.5.0 audit's three High findings, fixed.

@@ -185,4 +185,4 @@ echo
 echo "  http://127.0.0.1:7340/#hatchling-ui=$(cat "$TOKEN")"
 echo
 echo "Each start of the broker makes a new one. To see it again, as $OWNER_NAME:"
-echo '  echo "http://127.0.0.1:7340/#hatchling-ui=$(cat /var/lib/hatchling/ui.sock.token)"'
+echo "  hatchling-host url"

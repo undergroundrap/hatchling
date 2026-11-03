@@ -18,9 +18,13 @@ pub fn main(program: &str, args: &[String]) -> ExitCode {
         let _ = write!(std::io::stdout().lock(), "{}", help(program));
         return ExitCode::SUCCESS;
     }
-    if !args.is_empty() {
-        let _ = write!(std::io::stderr().lock(), "{}", help(program));
-        return ExitCode::from(EX_USAGE);
+    match args {
+        [] => {}
+        [url] if url == "url" => return print_url(program),
+        _ => {
+            let _ = write!(std::io::stderr().lock(), "{}", help(program));
+            return ExitCode::from(EX_USAGE);
+        }
     }
     match start() {
         Ok(never) => match never {},
@@ -39,11 +43,50 @@ pub fn main(program: &str, args: &[String]) -> ExitCode {
 pub fn help(program: &str) -> String {
     render_help(
         program,
-        "| --help | -h",
-        "Serves Hatchling's UI on 127.0.0.1 and carries its channel to the broker's\nUI socket, message for message. It prints the address to open: the token in\nits fragment is what the broker asks of every UI connection, and a browser\nnever sends a fragment to a server. With the operator socket, it serves the\nMachine view too, at an address of its own. The host decides nothing; the\nbroker does.",
+        "[url] | --help | -h",
+        "Serves Hatchling's UI on 127.0.0.1 and carries its channel to the broker's\nUI socket, message for message. It prints the address to open: the token in\nits fragment is what the broker asks of every UI connection, and a browser\nnever sends a fragment to a server. With the operator socket, it serves the\nMachine view too, at an address of its own. The host decides nothing; the\nbroker does.\n\nurl prints the address to open now. The broker makes a new token each time\nit starts, so after a restart an open app goes offline: open this address\ninstead. With no settings, it reads the installed broker's socket.",
         crate::environment::ENVIRONMENT,
     )
 }
+
+/// Prints the UI's address with the broker's token now, or why it can't.
+fn print_url(program: &str) -> ExitCode {
+    match url(|key| std::env::var(key).ok()) {
+        Ok(address) => {
+            let _ = writeln!(std::io::stdout().lock(), "{address}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            let _ = writeln!(std::io::stderr().lock(), "{program}: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The UI's address with the broker's token now: the socket and port
+/// `get` names, or the installed broker's socket and the default port.
+fn url(get: impl Fn(&str) -> Option<String>) -> Result<String, Error> {
+    let socket = get(crate::environment::HATCHLING_UI_SOCKET.name).map_or_else(
+        || std::path::PathBuf::from(INSTALLED_UI_SOCKET),
+        std::path::PathBuf::from,
+    );
+    let port = match get(crate::environment::HATCHLING_HOST_PORT.name) {
+        None => crate::DEFAULT_PORT,
+        Some(raw) => raw
+            .trim()
+            .parse()
+            .ok()
+            .filter(|port| *port != 0)
+            .ok_or_else(|| Error::Invalid {
+                key: "HATCHLING_HOST_PORT",
+                reason: format!("must be the port the host serves on, not {raw:?}"),
+            })?,
+    };
+    Ok(address(port, &read_token(&socket, "HATCHLING_UI_SOCKET")?))
+}
+
+/// Where `scripts/install.sh` has the broker put its UI socket.
+const INSTALLED_UI_SOCKET: &str = "/var/lib/hatchling/ui.sock";
 
 /// Reads the settings and the token, binds, says where to go, and serves.
 fn start() -> Result<std::convert::Infallible, Error> {
@@ -74,9 +117,56 @@ mod tests {
     use super::*;
 
     #[test]
+    fn url_reads_the_token_now_from_the_socket_named_or_installed() {
+        let dir = std::env::temp_dir().join(format!("hatchling-host-url-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("ui.sock");
+        let named = socket.to_str().unwrap().to_owned();
+        let get = |port: Option<&'static str>| {
+            let named = named.clone();
+            move |key: &str| match key {
+                "HATCHLING_UI_SOCKET" => Some(named.clone()),
+                "HATCHLING_HOST_PORT" => port.map(String::from),
+                _ => None,
+            }
+        };
+        assert!(url(get(None)).is_err(), "no token yet");
+        std::fs::write(crate::token_path(&socket), "first\n").unwrap();
+        assert_eq!(
+            url(get(None)).unwrap(),
+            "http://127.0.0.1:7340/#hatchling-ui=first"
+        );
+        // A restart's new token, read again.
+        std::fs::write(crate::token_path(&socket), "second\n").unwrap();
+        assert_eq!(
+            url(get(Some("7400"))).unwrap(),
+            "http://127.0.0.1:7400/#hatchling-ui=second"
+        );
+        for port in ["0", "x", "70000"] {
+            assert!(
+                matches!(
+                    url(get(Some(port))),
+                    Err(Error::Invalid {
+                        key: "HATCHLING_HOST_PORT",
+                        ..
+                    })
+                ),
+                "{port}"
+            );
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+        // With no settings, the installed broker's socket.
+        let installed = url(|_| None).unwrap_err().to_string();
+        assert!(
+            installed.contains("/var/lib/hatchling/ui.sock.token"),
+            "{installed}"
+        );
+    }
+
+    #[test]
     fn help_names_every_setting_and_the_usage() {
         let text = help("hatchling-host");
-        assert!(text.starts_with("Usage: hatchling-host | --help | -h\n"));
+        assert!(text.starts_with("Usage: hatchling-host [url] | --help | -h\n"));
         for variable in crate::environment::ENVIRONMENT {
             assert!(text.contains(variable.name), "{}", variable.name);
         }
