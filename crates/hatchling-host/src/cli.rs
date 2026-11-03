@@ -163,6 +163,35 @@ mod tests {
         );
     }
 
+    /// `url` prints the address, anything else is misuse, and no
+    /// arguments serve, which fails at once without the host's settings.
+    /// A test process has none of the host's settings, so `url` reads the
+    /// installed broker's token: there only where Hatchling is installed.
+    #[test]
+    fn main_serves_prints_the_url_or_refuses() {
+        let args = |list: &[&str]| list.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
+        if std::env::var_os("HATCHLING_UI_SOCKET").is_some() {
+            return;
+        }
+        assert_eq!(main("hatchling-host", &args(&[])), ExitCode::FAILURE);
+        let installed = crate::token_path(std::path::Path::new(INSTALLED_UI_SOCKET)).exists();
+        assert_eq!(
+            main("hatchling-host", &args(&["url"])),
+            if installed {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        );
+        for misuse in [&["serve"][..], &["url", "now"], &["URL"]] {
+            assert_eq!(
+                main("hatchling-host", &args(misuse)),
+                ExitCode::from(EX_USAGE),
+                "{misuse:?}"
+            );
+        }
+    }
+
     #[test]
     fn help_names_every_setting_and_the_usage() {
         let text = help("hatchling-host");
