@@ -604,10 +604,13 @@ mod tests {
             .run(&model, String::from("hi"))
             .unwrap();
         let seen = model.seen_histories();
-        let system = seen.first().and_then(|history| history.first());
-        assert_eq!(
-            system,
-            Some(&Message::System(format!("{pack}\n\n## What you can do here")))
+        let expected = format!("{pack}\n\n## What you can do here");
+        assert!(
+            matches!(
+                seen.first().and_then(|history| history.first()),
+                Some(Message::System(system)) if *system == expected
+            ),
+            "{seen:?}"
         );
     }
 

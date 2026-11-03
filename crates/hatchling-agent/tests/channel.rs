@@ -408,7 +408,7 @@ fn adversarial_channel_text_stays_the_user_task_below_the_system_prompt() {
                 hatchling_loop::Message::System(system),
                 hatchling_loop::Message::User(task),
                 ..
-            ] if *system == pack && task == HOSTILE
+            ] if system.starts_with(&pack) && task == HOSTILE
         ),
         "{:?}",
         result.history
