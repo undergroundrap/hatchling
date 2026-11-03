@@ -1280,6 +1280,30 @@ fn own_trees(
     Ok(())
 }
 
+/// Why `stdio`, a helper's stdin, stdout and stderr, can't be its cell's,
+/// if it can't.
+///
+/// They become the cell's stdio: streams only, never a place the cell
+/// could open the host's files under, or a way into another service. Its
+/// output may also go to a log, a terminal or the journal.
+fn check_stdio(stdio: [&OwnedFd; 3]) -> Result<(), String> {
+    for ((name, output), fd) in [("stdin", false), ("stdout", true), ("stderr", true)]
+        .into_iter()
+        .zip(stdio)
+    {
+        match hatchling_sys::stdio_kind(fd.as_fd()) {
+            Ok(kind) if kind.output_only() && !output => {
+                return Err(format!(
+                    "the helper's {name}: {kind:?} is for output, and this is the cell's input"
+                ));
+            }
+            Ok(_) => {}
+            Err(error) => return Err(format!("the helper's {name}: {error}")),
+        }
+    }
+    Ok(())
+}
+
 /// Starts `helper` for `spec` and supervises it on `stream` until it ends
 /// (reporting how) or the broker asks for a kill, or goes.
 ///
@@ -1324,23 +1348,9 @@ fn serve_helper(
         Ok(stdio) => stdio,
         Err(_) => return refuse(String::from("a helper takes three descriptors")),
     };
-    // They become the cell's stdio: streams only, never a place the cell
-    // could open the host's files under, or a way into another service.
-    // Its output may also go to a log, a terminal or the journal.
-    for (name, fd, output) in [
-        ("stdin", &stdin, false),
-        ("stdout", &stdout, true),
-        ("stderr", &stderr, true),
-    ] {
-        let refused = match hatchling_sys::stdio_kind(fd.as_fd()) {
-            Ok(kind) if kind.output_only() && !output => {
-                format!("{kind:?} is for output, and this is the cell's input")
-            }
-            Ok(_) => continue,
-            Err(error) => error.to_string(),
-        };
-        tracing::warn!(?helper, name, %refused, "refused a helper's stdio");
-        return refuse(format!("the helper's {name}: {refused}"));
+    if let Err(refused) = check_stdio([&stdin, &stdout, &stderr]) {
+        tracing::warn!(?helper, %refused, "refused a helper's stdio");
+        return refuse(refused);
     }
     // A cell with a vault channel: the helper hands its channels to the
     // spawner, which passes its connection on to the broker and its vault
