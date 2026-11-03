@@ -1089,3 +1089,12 @@ test('an approval that says what approving does is labelled so; one that doesn\'
     assert.equal('approveLabel' in plain, false);
     assert.match(plain.detail, /^Allow once answers/);
 });
+test('Hatchling\'s own word reads the schedules again: a schedule the owner approved appears', async () => {
+    const { transport } = connected();
+    const lists = () => transport.sent.filter(frame => frame.type === 'action' && frame.action.action === 'manage_schedule' && frame.action.op.op === 'list').length;
+    const before = lists();
+    transport.deliver(sampleEvent(1, 1, { kind: 'chat_message', chat_id: 'local', message_id: 'm-agent', author: 'agent', text: 'I asked you to approve it.' }));
+    assert.equal(lists(), before, 'not on the agent\'s words');
+    transport.deliver(sampleEvent(2, 2, { kind: 'chat_message', chat_id: 'local', message_id: 'm-system', author: 'system', text: 'Scheduled: “Stretch.”' }));
+    assert.equal(lists(), before + 1);
+});

@@ -254,7 +254,9 @@ fn schedule_id(result: &ScheduleResult) -> String {
         | ScheduleResult::Resolved
         | ScheduleResult::Retried
         | ScheduleResult::Parked { .. }
-        | ScheduleResult::Dismissed) => format!("not created: {other:?}"),
+        | ScheduleResult::Dismissed
+        | ScheduleResult::Proposed { .. }
+        | ScheduleResult::Unasked { .. }) => format!("not created: {other:?}"),
     }
 }
 
