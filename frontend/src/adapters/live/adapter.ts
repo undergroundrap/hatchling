@@ -237,6 +237,10 @@ export class LiveAdapter implements ProtocolAdapter {
                 this.#activity.chat(body, event.ts);
                 this.#memory.observe(event);
                 this.#usage.observe(body);
+                // Hatchling's own word follows what it did for the owner, a
+                // schedule they approved among it: read the list again.
+                if (body.author === 'system')
+                    void this.#schedules.refresh();
                 return undefined;
             case 'attachment':
                 this.#chats.attach(body, event.ts);

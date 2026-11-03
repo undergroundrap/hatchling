@@ -105,30 +105,84 @@ pub fn create(
     ))
 }
 
-/// What `grants` let a scheduled run do, in words, for the owner's card.
+/// What `grants` let a scheduled run do, in words, for the owner's card: a
+/// store's grants as one phrase, where the first of them stood.
 #[must_use]
 pub fn grants_in_words(grants: &[ScheduleGrant]) -> String {
-    let words: Vec<String> = grants
-        .iter()
-        .map(|grant| match grant {
+    let mut phrases: Vec<String> = Vec::new();
+    let mut memory: Vec<(String, Vec<&str>, usize)> = Vec::new();
+    let mut goals: Option<(bool, usize)> = None;
+    for grant in grants {
+        match grant {
             ScheduleGrant::ChannelSend { channel } if channel == CHANNEL => {
-                String::from("post in your chat")
+                phrases.push(String::from("post in your chat"));
             }
-            ScheduleGrant::ChannelSend { channel } => format!("post on {channel}"),
-            ScheduleGrant::Egress { destination } => format!("reach {destination}"),
-            ScheduleGrant::Vault { action, name } => format!("{action} the secret {name}"),
-            ScheduleGrant::Memory { scope, action } => format!("{action} {scope} memory"),
-            ScheduleGrant::Goals { action } => action.replace('-', " "),
-        })
-        .collect();
-    if words.is_empty() {
-        String::from("Nothing beyond answering.")
-    } else {
-        let mut said = words.join(", ");
-        if let Some(first) = said.get(..1) {
-            said = first.to_uppercase() + said.get(1..).unwrap_or_default();
+            ScheduleGrant::ChannelSend { channel } => phrases.push(format!("post on {channel}")),
+            ScheduleGrant::Egress { destination } => phrases.push(format!("reach {destination}")),
+            ScheduleGrant::Vault { action, name } => {
+                phrases.push(format!("{action} the secret {name}"));
+            }
+            ScheduleGrant::Memory { scope, action } => {
+                let verb = match action.as_str() {
+                    "write" => "remember",
+                    "recall" => "recall",
+                    "remove" => "forget",
+                    "propose" => "ask to remember",
+                    other => other,
+                };
+                if let Some((_, verbs, _)) = memory.iter_mut().find(|(seen, _, _)| seen == scope) {
+                    verbs.push(verb);
+                } else {
+                    memory.push((scope.clone(), vec![verb], phrases.len()));
+                    phrases.push(String::new());
+                }
+            }
+            ScheduleGrant::Goals { action } => {
+                let keeps = !action.starts_with("query-");
+                if let Some((kept, _)) = goals.as_mut() {
+                    *kept |= keeps;
+                } else {
+                    goals = Some((keeps, phrases.len()));
+                    phrases.push(String::new());
+                }
+            }
         }
-        format!("{said}.")
+    }
+    for (scope, verbs, at) in memory {
+        let about = if scope == "user" {
+            String::from("things about you")
+        } else {
+            format!("{scope} notes")
+        };
+        if let Some(phrase) = phrases.get_mut(at) {
+            *phrase = format!("{} {about}", in_list(&verbs));
+        }
+    }
+    if let Some((keeps, at)) = goals {
+        if let Some(phrase) = phrases.get_mut(at) {
+            *phrase = String::from(if keeps {
+                "keep your goals and their tracking"
+            } else {
+                "read your goals"
+            });
+        }
+    }
+    if phrases.is_empty() {
+        return String::from("Nothing beyond answering.");
+    }
+    let said = phrases.join(", ");
+    let mut chars = said.chars();
+    chars.next().map_or_else(String::new, |first| {
+        format!("{}{}.", first.to_uppercase(), chars.as_str())
+    })
+}
+
+/// `items` as an English list: a, b and c.
+fn in_list(items: &[&str]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => (*one).to_owned(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     }
 }
 
@@ -359,7 +413,34 @@ mod tests {
         ];
         assert_eq!(
             grants_in_words(&grants),
-            "Post in your chat, post on signal, reach localhost:11434, fetch the secret api-key, recall user memory, query goals."
+            "Post in your chat, post on signal, reach localhost:11434, fetch the secret api-key, recall things about you, read your goals."
         );
+        // A store's grants as one phrase, where the first stood: the
+        // install's own, in full.
+        let memory = |scope: &str, action: &str| ScheduleGrant::Memory {
+            scope: scope.to_owned(),
+            action: action.to_owned(),
+        };
+        let goals = |action: &str| ScheduleGrant::Goals {
+            action: action.to_owned(),
+        };
+        let install = [
+            ScheduleGrant::Egress {
+                destination: String::from("localhost:11434"),
+            },
+            memory("project", "recall"),
+            memory("user", "propose"),
+            memory("user", "recall"),
+            goals("query-goals"),
+            goals("goal-create"),
+            memory("user", "write"),
+            memory("user", "remove"),
+            memory("user", "context-read"),
+        ];
+        assert_eq!(
+            grants_in_words(&install),
+            "Reach localhost:11434, recall project notes, ask to remember, recall, remember, forget and context-read things about you, keep your goals and their tracking."
+        );
+        assert_eq!(in_list(&[]), "");
     }
 }
