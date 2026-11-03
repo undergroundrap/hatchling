@@ -44,6 +44,11 @@ pub enum Error {
         /// Why the response was rejected.
         reason: String,
     },
+    /// The model said nothing: no text, and no tool call. A small local
+    /// model does this now and then; the provider asks again
+    /// ([`crate::ATTEMPTS`]) before this is the answer.
+    #[error("uninterpretable provider response: message has no usable content or tool calls")]
+    EmptyReply,
 }
 
 impl Error {
