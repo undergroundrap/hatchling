@@ -314,6 +314,45 @@ test('replays apply once: a duplicate changes nothing, and a reconnect resumes a
     replay(transport);
     assert.equal(adapter.getSnapshot().messages.length, before.messages.length);
 });
+test('scheduled work: made with the welcome\'s grants, listed, removed, and what isn\'t there yet said plainly', async () => {
+    const transport = new FakeTransport();
+    const adapter = new LiveAdapter(transport, 'test-ui');
+    const local = { grant: 'channel-send', channel: 'local' };
+    transport.open();
+    transport.deliver({ ...SAMPLE_WELCOME, grants: [local] });
+    const listing = () => transport.sent.filter(frame => frame.type === 'action' && frame.action.action === 'manage_schedule' && frame.action.op.op === 'list').at(-1);
+    answer(transport, listing().request_id, { result: 'schedule', outcome: { result: 'listed', schedules: [] } });
+    await flush();
+    assert.deepEqual(adapter.getSnapshot().jobs, []);
+    const creating = adapter.execute({ type: 'job.create', title: 'Stretch', kind: 'time', schedule: 'weekdays 08:00', recurring: true, source: '', event: '' });
+    const create = transport.last();
+    assert.deepEqual(create.action, { action: 'manage_schedule', op: { op: 'create', when: { every: 'cron', expr: '0 8 * * 1-5', tz: 'UTC' }, task: 'Stretch', grants: [local], channel: 'local' } });
+    answer(transport, create.request_id, { result: 'schedule', outcome: { result: 'created', id: 'sch-1' } });
+    await flush();
+    answer(transport, listing().request_id, { result: 'schedule', outcome: { result: 'listed', schedules: [{ id: 'sch-1', kind: 'task', when: create.action.op.when, channel: 'local', grants: [local], next_due: 1_790_000_000, task: 'Stretch' }] } });
+    assert.deepEqual(await creating, { ok: true, message: 'Scheduled. Its results arrive in this chat.', id: 'sch-1' });
+    const [job] = adapter.getSnapshot().jobs;
+    assert.deepEqual([job.id, job.title, job.schedule, job.limit], ['sch-1', 'Stretch', 'Weekdays at 08:00 (UTC)', 'May post in this chat']);
+    // Watching a source isn't there yet; nothing is sent for it.
+    const sent = transport.sent.length;
+    const hook = await adapter.execute({ type: 'job.create', title: 'x', kind: 'hook', schedule: 'when it arrives', recurring: false, source: 'GitHub', event: 'New message' });
+    assert.equal(hook.ok, false);
+    assert.match(hook.message, /at a time instead/);
+    for (const command of [{ type: 'job.update', id: 'sch-1', title: 'x', kind: 'time', schedule: 'daily 08:00', recurring: true, source: '', event: '' }, { type: 'job.toggle', id: 'sch-1' }, { type: 'job.run', id: 'sch-1' }]) {
+        const result = await adapter.execute(command);
+        assert.equal(result.ok, false, command.type);
+        assert.match(result.message, /Remove it/, command.type);
+    }
+    assert.equal(transport.sent.length, sent, 'nothing sent for what isn\'t there');
+    const removing = adapter.execute({ type: 'job.delete', id: 'sch-1' });
+    const cancel = transport.last();
+    assert.deepEqual(cancel.action, { action: 'manage_schedule', op: { op: 'cancel', id: 'sch-1' } });
+    answer(transport, cancel.request_id, { result: 'schedule', outcome: { result: 'cancelled' } });
+    await flush();
+    answer(transport, listing().request_id, { result: 'schedule', outcome: { result: 'listed', schedules: [] } });
+    assert.deepEqual(await removing, { ok: true, message: 'Removed. It won’t run again.' });
+    assert.deepEqual(adapter.getSnapshot().jobs, []);
+});
 test('a closed connection\'s late callbacks are ignored', () => {
     const transport = new FakeTransport();
     const adapter = new LiveAdapter(transport);
