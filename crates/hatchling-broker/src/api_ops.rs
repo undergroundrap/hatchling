@@ -594,6 +594,34 @@ fn schedule_needs(op: &ScheduleOp, owner: &BTreeSet<ScheduleGrant>) -> BTreeSet<
     }
 }
 
+/// The agent's replies on the local channel, as chat messages on `bus`: the
+/// broker's record of the chat, which the app reads when it connects.
+#[must_use]
+pub fn chat_sink(bus: Arc<Bus>) -> hatchling_channel::Sink {
+    Box::new(move |cleared: &hatchling_channel::Cleared| {
+        let reply = cleared.message();
+        let message_id = crate::approval::random_hex("msg-")
+            .map_err(|error| hatchling_channel::Error::Backend(error.to_string()))?;
+        bus.push(
+            Timestamp::now().to_string(),
+            UiEventBody::ChatMessage(ChatMessage {
+                chat_id: String::from(LOCAL_CHAT),
+                message_id,
+                author: ChatAuthor::Agent,
+                text: reply.text.clone(),
+            }),
+        );
+        bus.push(
+            Timestamp::now().to_string(),
+            UiEventBody::AgentStatus {
+                state: AgentState::Idle,
+                detail: String::new(),
+            },
+        );
+        Ok(())
+    })
+}
+
 /// One connection's reply route: while attached, the agent's replies on
 /// the local channel go to the stream. Detached when dropped, unless a
 /// newer client has taken the route since.
@@ -616,29 +644,7 @@ impl<'h> Replies<'h> {
         if self.attached.is_some() {
             return;
         }
-        let bus = Arc::clone(bus);
-        let sink = hub.attach(Box::new(move |cleared: &hatchling_channel::Cleared| {
-            let reply = cleared.message();
-            let message_id = crate::approval::random_hex("msg-")
-                .map_err(|error| hatchling_channel::Error::Backend(error.to_string()))?;
-            bus.push(
-                Timestamp::now().to_string(),
-                UiEventBody::ChatMessage(ChatMessage {
-                    chat_id: String::from(LOCAL_CHAT),
-                    message_id,
-                    author: ChatAuthor::Agent,
-                    text: reply.text.clone(),
-                }),
-            );
-            bus.push(
-                Timestamp::now().to_string(),
-                UiEventBody::AgentStatus {
-                    state: AgentState::Idle,
-                    detail: String::new(),
-                },
-            );
-            Ok(())
-        }));
+        let sink = hub.attach(chat_sink(Arc::clone(bus)));
         self.attached = Some((hub, sink));
     }
 }
@@ -2328,6 +2334,35 @@ mod tests {
                 .event_id,
             "api-lost:1"
         );
+    }
+
+    /// A scheduled run's result, with no app connected and no message
+    /// sent since the broker started, is kept for the app: it was parked
+    /// as undeliverable instead.
+    #[test]
+    fn a_scheduled_result_with_nobody_connected_is_kept_for_the_app() {
+        use hatchling_scheduler::Delivery as _;
+        let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());
+        let bus = Arc::new(Bus::starting_at(1));
+        let delivery = crate::schedule_ops::HubDelivery::new(Some(&hub));
+        assert!(
+            delivery.deliver_verbatim("local", "lost").is_err(),
+            "no fallback: nowhere to go"
+        );
+        hub.set_fallback(chat_sink(Arc::clone(&bus)));
+        assert_eq!(delivery.deliver_verbatim("local", "Time to stretch."), Ok(true));
+        assert_eq!(
+            chats(&bus),
+            [(ChatAuthor::Agent, String::from("Time to stretch."))]
+        );
+        // A connection's route takes replies while it's there, to the
+        // same stream, and gives them back to the fallback when it goes.
+        let mut replies = Replies::default();
+        replies.route(&hub, &bus);
+        delivery.deliver_verbatim("local", "while open").unwrap();
+        drop(replies);
+        delivery.deliver_verbatim("local", "after").unwrap();
+        assert_eq!(chats(&bus).len(), 3);
     }
 
     #[test]

@@ -69,6 +69,9 @@ struct HubState {
     inbound: VecDeque<(Message, u64)>,
     conversation: u64,
     sink: Option<(SinkId, Sink)>,
+    /// Where a reply goes while no client is attached: the broker's own
+    /// record of the chat, which a client reads when it connects.
+    fallback: Option<Sink>,
     attached: u64,
     arrivals: usize,
 }
@@ -179,6 +182,12 @@ impl LocalHub {
         self.state().sink.is_some()
     }
 
+    /// Sets where a reply goes while no client is attached, replacing any
+    /// earlier fallback. An attached client still takes every reply.
+    pub fn set_fallback(&self, sink: Sink) {
+        self.state().fallback = Some(sink);
+    }
+
     /// Attaches `sink` as the reply path, replacing any earlier one.
     #[must_use]
     pub fn attach(&self, sink: Sink) -> SinkId {
@@ -207,14 +216,16 @@ impl LocalHub {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Backend`] when no client is attached, the sink's
-    /// own error when delivery fails, or [`Error::Redacted`] when the gate
-    /// delivered its notice in place of the reply.
+    /// Returns [`Error::Backend`] when no client is attached and there's
+    /// no fallback, the sink's own error when delivery fails, or
+    /// [`Error::Redacted`] when the gate delivered its notice in place of
+    /// the reply.
     pub fn deliver(&self, msg: &Message, scope: &str) -> Result<(), Error> {
         // The sink runs under the lock: one delivery at a time, and no
         // detach can land mid-delivery.
         let mut state = self.state();
-        let Some((_, sink)) = state.sink.as_mut() else {
+        let HubState { sink, fallback, .. } = &mut *state;
+        let Some(sink) = sink.as_mut().map(|(_, sink)| sink).or(fallback.as_mut()) else {
             return Err(Error::Backend(String::from(
                 "no local ingress client to deliver to",
             )));
@@ -365,6 +376,32 @@ mod tests {
 
         hub.detach(second);
         assert!(hub.deliver(&msg("gone"), "s").is_err());
+    }
+
+    #[test]
+    fn with_no_client_attached_a_reply_goes_to_the_fallback() {
+        let hub = LocalHub::new(OutputGate::disabled());
+        let (sink, kept) = recorder();
+        hub.set_fallback(sink);
+        hub.deliver(&msg("while nobody was there"), "s").unwrap();
+        assert!(!hub.attached(), "a fallback is not a client");
+        // An attached client takes replies while it's there.
+        let (sink, client) = recorder();
+        let id = hub.attach(sink);
+        hub.deliver(&msg("to the client"), "s").unwrap();
+        hub.detach(id);
+        hub.deliver(&msg("after it left"), "s").unwrap();
+        assert_eq!(*client.lock().unwrap(), ["to the client"]);
+        assert_eq!(
+            *kept.lock().unwrap(),
+            ["while nobody was there", "after it left"]
+        );
+        // A later fallback replaces the first.
+        let (sink, later) = recorder();
+        hub.set_fallback(sink);
+        hub.deliver(&msg("to the later"), "s").unwrap();
+        assert_eq!(*later.lock().unwrap(), ["to the later"]);
+        assert_eq!(kept.lock().unwrap().len(), 2);
     }
 
     /// Flags any text holding `forbidden-words`, counting its calls.
