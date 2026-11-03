@@ -11,6 +11,7 @@ pub(crate) mod common;
 
 use common::{BrokerBehavior, FixtureBroker};
 use hatchling_agent::{Cell, Config, Error, LogLevel, PeerUid, Ready, VaultAction};
+use hatchling_core::run_tools::ToolGroup;
 use hatchling_loop::{FakeModel, LoopBudget, Message, ModelAction, ToolCall, ToolOutput};
 use serde_json::json;
 
@@ -26,6 +27,14 @@ fn grant(
 
 /// A `Ready` cell against the fixture broker's socket.
 fn ready_cell(broker: &FixtureBroker) -> Result<Cell<Ready>, Error> {
+    ready_cell_offering(broker, None)
+}
+
+/// [`ready_cell`], told the tool groups `run_tools` are on.
+fn ready_cell_offering(
+    broker: &FixtureBroker,
+    run_tools: Option<std::collections::BTreeSet<ToolGroup>>,
+) -> Result<Cell<Ready>, Error> {
     let uid = rustix::process::getuid().as_raw();
     let config = Config {
         cell_id: "cell-loop".parse()?,
@@ -42,6 +51,7 @@ fn ready_cell(broker: &FixtureBroker) -> Result<Cell<Ready>, Error> {
         run_history: Vec::new(),
         run_earlier: Vec::new(),
         run_builders: std::collections::BTreeMap::new(),
+        run_tools,
         vault_fd: None,
     };
     Cell::new(config)
@@ -198,4 +208,63 @@ fn loop_unknown_tool_from_model_stops_fail_closed() {
         matches!(err, hatchling_loop::Error::UnknownTool(_)),
         "expected UnknownTool, got {err:?}"
     );
+}
+
+#[test]
+fn loop_offers_only_the_tool_groups_the_broker_says_are_on() {
+    // Each group's tool, called with no arguments: offered, the call is
+    // malformed; not, the tool is unknown. Either way nothing runs.
+    let groups = [
+        (ToolGroup::Skills, "skill_invoke"),
+        (ToolGroup::Web, "web_fetch"),
+        (ToolGroup::Search, "web_search"),
+        (ToolGroup::Browser, "browser_open"),
+    ];
+    let every = || groups.iter().map(|(group, _)| *group).collect();
+    for (case, run_tools) in [
+        (0, None),
+        (1, Some(every())),
+        (2, Some(std::collections::BTreeSet::new())),
+        (3, Some([ToolGroup::Web].into_iter().collect())),
+        (4, Some([ToolGroup::Search, ToolGroup::Skills].into_iter().collect())),
+    ] {
+        for (group, tool) in groups {
+            let offered = run_tools.as_ref().is_none_or(|on| on.contains(&group));
+            let broker = FixtureBroker::spawn(
+                &format!("loop-groups-{case}-{tool}"),
+                BrokerBehavior::Vault(Vec::new()),
+            )
+            .unwrap();
+            let cell = ready_cell_offering(&broker, run_tools.clone()).unwrap();
+            let model = FakeModel::new(
+                (0..=hatchling_loop::CONTRACT_SLIPS)
+                    .map(|_| {
+                        ModelAction::ToolCalls(vec![ToolCall {
+                            name: String::from(tool),
+                            arguments: json!({}),
+                        }])
+                    })
+                    .collect(),
+            );
+            let err = cell
+                .run_loop(
+                    hatchling_agent::PromptKind::Chat,
+                    &model,
+                    String::from("use a tool"),
+                    LoopBudget { max_steps: 10 },
+                )
+                .expect_err("a bad call, made too often, stops the loop");
+            if offered {
+                assert!(
+                    matches!(err, hatchling_loop::Error::InvalidArguments { .. }),
+                    "case {case}: {tool} is offered, got {err:?}"
+                );
+            } else {
+                assert!(
+                    matches!(err, hatchling_loop::Error::UnknownTool(_)),
+                    "case {case}: {tool} is not offered, got {err:?}"
+                );
+            }
+        }
+    }
 }

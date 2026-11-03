@@ -52,8 +52,37 @@ use crate::conversation_store::{self, ConversationStore, Resumed, SealedConversa
 /// answer.
 pub const CHAT_POLL: Duration = Duration::from_millis(200);
 
-/// What the person is told when a chat run fails or can't start.
-pub const CHAT_FAILED: &str = "The agent couldn't answer that message. The broker's log says why.";
+/// What the person is told when a chat run fails or can't start, and
+/// nothing more is known.
+pub const CHAT_FAILED: &str = "Something went wrong and the agent couldn't answer. Try again; if it keeps happening, `sudo hatchling-broker doctor` checks the install.";
+
+/// What the person is told when a chat run failed as `ending` says, with
+/// `model` the operator's model name, if one is set: in plain words, and
+/// what they can do about it. Only the broker's own words: nothing the
+/// run wrote is shown.
+#[must_use]
+pub fn chat_failed(ending: Option<hatchling_scheduler::Ending>, model: Option<&str>) -> String {
+    use hatchling_core::run_failure::RunFailure;
+    let named = model.map_or_else(String::new, |model| format!(" ({model})"));
+    match ending {
+        Some(hatchling_scheduler::Ending::TimedOut) => String::from(
+            "The agent took too long to answer, so Hatchling stopped it. A model that is still loading can do this: try again in a moment.",
+        ),
+        Some(hatchling_scheduler::Ending::Exited(code)) => match RunFailure::from_code(code) {
+            Some(RunFailure::ModelUnavailable) => format!(
+                "Hatchling couldn't get an answer from its model{named}. Check that it is running and reachable; `sudo hatchling-broker doctor` tests it."
+            ),
+            Some(RunFailure::ToolsMisused) => format!(
+                "The model{named} kept calling its tools wrongly, so Hatchling stopped it before anything ran. Try again, or switch to a model that is better at tool calls."
+            ),
+            Some(RunFailure::OutOfSteps) => String::from(
+                "The agent used all its steps before it finished. Try asking for something smaller.",
+            ),
+            None => String::from(CHAT_FAILED),
+        },
+        None => String::from(CHAT_FAILED),
+    }
+}
 
 /// The label every chat run is launched under: its cell id and run
 /// directory get their own random token beside it.
@@ -117,6 +146,8 @@ pub struct Chat<R, K = ()> {
     kept: Conversation,
     /// Where each exchange is kept beyond memory.
     keeps: K,
+    /// The operator's model name, for telling the person why a run failed.
+    model: Option<String>,
 }
 
 impl<R: Run> Chat<R> {
@@ -149,7 +180,15 @@ impl<R: Run, K: Keeps> Chat<R, K> {
             conversation,
             kept,
             keeps,
+            model: None,
         }
+    }
+
+    /// The chat, naming `model` when it tells the person a run failed.
+    #[must_use]
+    pub fn with_model(mut self, model: Option<String>) -> Self {
+        self.model = model;
+        self
     }
 
     /// The exchanges a run started now is given, oldest first.
@@ -200,6 +239,7 @@ impl<R: Run, K: Keeps> Chat<R, K> {
             let Some(outcome) = run.poll() else {
                 return Step::Running;
             };
+            let ending = run.ending();
             let Some((_, user, sent_in)) = self.running.take() else {
                 return Step::Idle;
             };
@@ -207,7 +247,7 @@ impl<R: Run, K: Keeps> Chat<R, K> {
                 Ok(answer) => answer,
                 Err(reason) => {
                     tracing::warn!(reason = ?reason, "a chat run failed");
-                    return answer_with(delivery, CHAT_FAILED);
+                    return answer_with(delivery, &chat_failed(ending, self.model.as_deref()));
                 }
             };
             return match delivery.deliver_verbatim(&ChannelId::local().0, &answer) {
@@ -288,7 +328,8 @@ pub fn chat_forever<'scope, 'env>(
         Some(Resumed::Unreadable) | None => Conversation::default(),
     };
     let keeps = store.map(|store| SealedConversation::new(store, hub));
-    let mut chat = Chat::resuming(grants, hub.conversation(), kept, keeps);
+    let mut chat = Chat::resuming(grants, hub.conversation(), kept, keeps)
+        .with_model(config.scheduler.model_name.clone());
     loop {
         let step = chat.step(
             || hub.take_in_conversation(),
@@ -841,6 +882,72 @@ mod tests {
             ]
         );
         assert_eq!(chat.step(|| None, 0, &launches, &answers, now), Step::Idle);
+    }
+
+    /// A run that fails as `ending` says, at once.
+    #[derive(Debug)]
+    struct Ended(hatchling_scheduler::Ending);
+
+    impl Run for Ended {
+        fn poll(&mut self) -> Option<Result<String, String>> {
+            Some(Err(String::from("the run exited: /tmp/run-4182 said so")))
+        }
+
+        fn ending(&self) -> Option<hatchling_scheduler::Ending> {
+            Some(self.0)
+        }
+    }
+
+    /// Launches one [`Ended`] run.
+    struct OneEnded(RefCell<Option<Ended>>);
+
+    impl Launcher for OneEnded {
+        type Run = Ended;
+
+        fn launch(&self, _: RunRequest) -> Result<Ended, String> {
+            self.0.borrow_mut().take().ok_or_else(String::new)
+        }
+    }
+
+    /// The person is told why a run failed in plain words, and what to do,
+    /// from how it ended alone: nothing the run wrote reaches them.
+    #[test]
+    fn a_failed_run_is_explained_in_plain_words() {
+        use hatchling_core::run_failure::RunFailure;
+        use hatchling_scheduler::Ending;
+        let exited = |failure: RunFailure| Some(Ending::Exited(failure.code().into()));
+        let model = chat_failed(exited(RunFailure::ModelUnavailable), Some("qwen3.5:9b"));
+        assert!(model.contains("its model (qwen3.5:9b)") && model.contains("doctor"), "{model}");
+        let tools = chat_failed(exited(RunFailure::ToolsMisused), Some("qwen3.5:9b"));
+        assert!(tools.starts_with("The model (qwen3.5:9b) kept calling"), "{tools}");
+        assert!(!chat_failed(exited(RunFailure::ToolsMisused), None).contains('('));
+        let steps = chat_failed(exited(RunFailure::OutOfSteps), Some("m"));
+        assert!(steps.contains("all its steps"), "{steps}");
+        let slow = chat_failed(Some(Ending::TimedOut), Some("m"));
+        assert!(slow.contains("too long"), "{slow}");
+        for other in [Some(Ending::Exited(1)), Some(Ending::Exited(64)), None] {
+            assert_eq!(chat_failed(other, Some("m")), CHAT_FAILED, "{other:?}");
+        }
+        let said: BTreeSet<String> = [model, tools, steps, slow, String::from(CHAT_FAILED)]
+            .into_iter()
+            .collect();
+        assert_eq!(said.len(), 5, "each says something of its own");
+
+        // Through the chat: the run's own words never reach the person.
+        let launches = OneEnded(RefCell::new(Some(Ended(Ending::Exited(
+            RunFailure::ToolsMisused.code().into(),
+        )))));
+        let answers = Answers::default();
+        let mut chat = Chat::new(vec![send_local()]).with_model(Some(String::from("m")));
+        let now = Timestamp::now();
+        chat.step(|| Some((message("one"), 0)), 0, &launches, &answers, now);
+        assert_eq!(chat.step(|| None, 0, &launches, &answers, now), Step::Answered);
+        let delivered = answers.delivered.borrow();
+        let [(_, told)] = delivered.as_slice() else {
+            unreachable!("one answer: {delivered:?}");
+        };
+        assert!(told.starts_with("The model (m) kept calling"), "{told}");
+        assert!(!told.contains("/tmp"), "{told}");
     }
 
     #[test]

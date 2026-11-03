@@ -24,6 +24,8 @@ pub mod log_level;
 pub mod messages;
 pub mod model_reasoning;
 pub mod peer;
+pub mod run_failure;
+pub mod run_tools;
 pub mod secret;
 pub mod strict_json;
 pub mod subagent;

@@ -74,6 +74,10 @@ pub struct Config {
     /// for the owner to approve. Empty for every other run, and then the
     /// idea tools aren't offered.
     pub run_builders: std::collections::BTreeMap<String, String>,
+    /// The tool groups the operator turned on (`HATCHLING_RUN_TOOLS`):
+    /// the run offers its model only those of them. `None`, when the
+    /// broker doesn't say, offers every one.
+    pub run_tools: Option<std::collections::BTreeSet<hatchling_core::run_tools::ToolGroup>>,
 }
 
 impl Config {
@@ -159,6 +163,14 @@ impl Config {
             parse_run_earlier(get(env::HATCHLING_RUN_EARLIER.name).as_deref(), run_chat)?;
         let run_builders =
             parse_run_builders(get(env::HATCHLING_RUN_BUILDERS.name).as_deref(), run_chat)?;
+        let run_tools = get(env::HATCHLING_RUN_TOOLS.name)
+            .map(|raw| {
+                hatchling_core::run_tools::parse(&raw).map_err(|reason| Error::InvalidConfig {
+                    key: "HATCHLING_RUN_TOOLS",
+                    reason,
+                })
+            })
+            .transpose()?;
         Ok(Self {
             cell_id,
             broker,
@@ -175,6 +187,7 @@ impl Config {
             run_history,
             run_earlier,
             run_builders,
+            run_tools,
         })
     }
 }
@@ -670,6 +683,34 @@ mod tests {
                 "{raw:?}"
             );
         }
+    }
+
+    /// A run offers the tool groups the broker says are on, every one
+    /// when it doesn't say, and a list naming anything else isn't the
+    /// broker's.
+    #[test]
+    fn run_tools_are_the_brokers_word_or_every_group() {
+        use hatchling_core::run_tools::ToolGroup;
+        let mut vars = valid_vars();
+        assert_eq!(Config::parse(lookup(&vars)).unwrap().run_tools, None);
+        vars.insert("HATCHLING_RUN_TOOLS", "web,skills");
+        assert_eq!(
+            Config::parse(lookup(&vars)).unwrap().run_tools,
+            Some([ToolGroup::Web, ToolGroup::Skills].into_iter().collect())
+        );
+        vars.insert("HATCHLING_RUN_TOOLS", "none");
+        assert_eq!(
+            Config::parse(lookup(&vars)).unwrap().run_tools,
+            Some(std::collections::BTreeSet::new())
+        );
+        vars.insert("HATCHLING_RUN_TOOLS", "web,shell");
+        assert!(matches!(
+            Config::parse(lookup(&vars)),
+            Err(Error::InvalidConfig {
+                key: "HATCHLING_RUN_TOOLS",
+                ..
+            })
+        ));
     }
 
     #[test]
