@@ -6,6 +6,10 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ## [Unreleased]
 
+### Fixed
+
+- **The app shows times on your clock.** A message's time, an activity's and an approval's were shown in UTC: an answer at 11:27 pm in New York said 04:27.
+
 ### Added
 
 - **Testing Hatchling with an AI agent** ([docs/testing-with-an-agent.md](docs/testing-with-an-agent.md)). How to have the Claude desktop app or Codex install Hatchling on a throwaway WSL2 box, open the app without the key ever appearing in the transcript, click through it and take screenshots, with you typing every secret.

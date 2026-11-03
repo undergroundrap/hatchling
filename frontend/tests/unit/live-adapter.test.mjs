@@ -14,6 +14,9 @@ import { stepOutcome } from '../../dist/app/features/activity/timeline.js';
 import { ApprovalReview } from '../../dist/app/features/approvals/review.js';
 import { markdown } from '../../dist/app/components/markdown.js';
 import { validThreadCopy } from '../../dist/app/protocol/rules.js';
+// The app shows times on the person's clock; these tests read the fixtures'
+// UTC times on a UTC clock, wherever they run.
+process.env.TZ = 'UTC';
 /** The transport a host would supply: frames are JSON text both ways. */
 class FakeTransport {
     sent = [];
@@ -910,6 +913,23 @@ test('wording helpers: inert links, quotations, counts and times', () => {
     assert.equal(inertLinks('[a](b) and [c](d)'), '[a] (b) and [c] (d)');
     assert.equal(quoted('one\r\ntwo\n'), '> one\n> two\n> ');
     assert.deepEqual([count(1, 'step', 'steps'), count(0, 'step', 'steps')], ['1 step', '0 steps']);
-    assert.deepEqual([clockTime('2026-10-07T23:59:59Z'), clockTime('yesterday')], ['23:59', '']);
+    // In the person's own time zone, not UTC.
+    const zone = process.env.TZ;
+    try {
+        const at = '2026-10-07T23:59:59Z';
+        process.env.TZ = 'UTC';
+        assert.equal(clockTime(at), '23:59');
+        process.env.TZ = 'America/New_York';
+        assert.equal(clockTime(at), '19:59');
+        process.env.TZ = 'Asia/Kolkata';
+        assert.equal(clockTime(at), '05:29');
+    }
+    finally {
+        if (zone === undefined)
+            delete process.env.TZ;
+        else
+            process.env.TZ = zone;
+    }
+    assert.equal(clockTime('yesterday'), '');
     assert.deepEqual([between(null, sampleTime(1)), between(sampleTime(2), sampleTime(1)), between(sampleTime(1), sampleTime(3))], [null, null, 2000]);
 });
