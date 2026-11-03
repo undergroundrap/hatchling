@@ -17,7 +17,7 @@
 // harness and one row per run: how it ended and how many files it changed.
 // The pinned program and the brief are recorded by hash, never shown.
 import type { ActionIcon, ActivityLane, ActivityRow, ActivityThread, RunningActivityStep, Verdict } from '../../protocol/models.js';
-import type { ActivityEvent, ApiRequest, ChildFailure, ChildVerdict, HarnessOutcome } from './protocol/generated.js';
+import type { ActivityEvent, ApiRequest, ChatMessage, ChildFailure, ChildVerdict, HarnessOutcome } from './protocol/generated.js';
 import { between, clockTime, count, quoted } from './text.js';
 interface Ending {
     readonly status: Verdict;
@@ -88,6 +88,52 @@ interface Harnessed {
     readonly startedAt: string;
     lastAt: string;
     readonly harnesses: Map<string, Harness>;
+}
+/** One thing the owner asked in the chat, and the agent's answer once it came. */
+interface Task {
+    readonly kind: 'task';
+    readonly id: string;
+    readonly startedAt: string;
+    lastAt: string;
+    readonly ask: string;
+    answer: string | null;
+}
+/** The most words a task's name and its summary hold: the activity views' own bounds. */
+const TASK_NAME_WORDS = 8;
+const TASK_SUMMARY_WORDS = 10;
+/** `text`'s first line, to `most` words, with an ellipsis when it was cut. */
+function firstWords(text: string, most: number): string {
+    const words = text.trim().split('\n', 1).join('').split(/\s+/).filter(Boolean);
+    return words.length > most ? `${words.slice(0, most).join(' ')}…` : words.join(' ');
+}
+/** The app's own calls to the local API: the owner's clicks, recorded, but not the agent's work. */
+function ownApp(caller: string): boolean {
+    return caller === 'ui' || caller.startsWith('ui,');
+}
+function projectTask(task: Task): ActivityThread {
+    const done = task.answer !== null;
+    const said = task.answer === null ? '' : firstWords(task.answer, TASK_SUMMARY_WORDS);
+    // A short answer is still said in a few words of Hatchling's own.
+    const summary = task.answer === null ? 'The agent is working on it.' : said.split(' ').length < 4 ? `The agent answered: ${said}` : said;
+    const laneId = `${task.id}:agent`;
+    const rows: ActivityRow[] = task.answer === null ? [] : [{ id: `${task.id}:answer`, workId: task.id, laneId, title: 'Answered', subtitle: summary, icon: 'check', report: `The agent answered:\n\n${quoted(task.answer)}`, startedAt: task.startedAt, endedAt: task.lastAt, durationMs: between(task.startedAt, task.lastAt), outputFailed: false, status: 'success', phase: 'action' }];
+    return {
+        id: task.id,
+        chatId: 'main',
+        name: firstWords(task.ask, TASK_NAME_WORDS),
+        subtitle: summary,
+        statusTitle: done ? 'Answered' : 'Working on it',
+        state: done ? 'completed' : 'running',
+        verdict: null,
+        summary,
+        finishMessage: summary,
+        time: clockTime(task.lastAt),
+        startedAt: task.startedAt,
+        endedAt: done ? task.lastAt : null,
+        evidenceArtifactId: null,
+        lanes: [{ id: laneId, name: 'Main agent', parentId: null, rows }],
+        pendingSteps: [],
+    };
 }
 /** The harnesses Hatchling knows, by their skill names. */
 const HARNESS_NAMES: Readonly<Partial<Record<string, string>>> = { 'claude-code': 'Claude Code', 'codex-cli': 'Codex CLI' };
@@ -275,8 +321,10 @@ function projectHarness(harnessed: Harnessed): ActivityThread {
     };
 }
 /** One thread, whichever kind it is. */
-function projectAny(thread: Run | Calls | Harnessed): ActivityThread {
+function projectAny(thread: Run | Calls | Harnessed | Task): ActivityThread {
     switch (thread.kind) {
+        case 'task':
+            return projectTask(thread);
         case 'run':
             return project(thread);
         case 'calls':
@@ -290,8 +338,11 @@ export class ActivityBook {
     readonly #runs = new Map<string, Run>();
     readonly #calls = new Map<string, Calls>();
     readonly #harnessed = new Map<string, Harnessed>();
+    readonly #tasks = new Map<string, Task>();
+    /** The task the next answer belongs to, while one waits. */
+    #asked: Task | null = null;
     /** Every thread, in the order each first appeared. */
-    readonly #order: (Run | Calls | Harnessed)[] = [];
+    readonly #order: (Run | Calls | Harnessed | Task)[] = [];
     /**
      * Apply one event. A subagent's first ending is its ending: a later,
      * contradictory one is ignored. Events for a subagent whose spawn was not
@@ -307,6 +358,8 @@ export class ActivityBook {
             return;
         }
         if (event.event === 'api_call') {
+            if (ownApp(event.caller))
+                return;
             const calls = this.#calls.get(event.run_id) ?? this.#begin<Calls>(this.#calls, { kind: 'calls', id: event.run_id, startedAt: event.ts, lastAt: event.ts, callers: new Map<string, Caller>() });
             calls.lastAt = event.ts;
             const caller = calls.callers.get(event.caller) ?? { name: event.caller, calls: [] };
@@ -331,8 +384,27 @@ export class ActivityBook {
         }
         child.ending = ending(event, child.ordinal);
     }
+    /**
+     * Apply one chat message on the main chat: the owner's starts a task, and
+     * the agent's next reply answers it. A reply with no task waiting (a
+     * scheduled run's, a notice) isn't a task's answer. A message seen again
+     * in a replay changes nothing.
+     */
+    chat(message: ChatMessage, ts: string): void {
+        if (message.chat_id !== 'local' || this.#tasks.has(message.message_id))
+            return;
+        if (message.author === 'user') {
+            this.#asked = this.#begin<Task>(this.#tasks, { kind: 'task', id: message.message_id, startedAt: ts, lastAt: ts, ask: message.text, answer: null });
+            return;
+        }
+        if (this.#asked === null)
+            return;
+        this.#asked.answer = message.text;
+        this.#asked.lastAt = ts;
+        this.#asked = null;
+    }
     /** Records a new thread under its id, in arrival order. */
-    #begin<Thread extends Run | Calls | Harnessed>(threads: Map<string, Thread>, thread: Thread): Thread {
+    #begin<Thread extends Run | Calls | Harnessed | Task>(threads: Map<string, Thread>, thread: Thread): Thread {
         threads.set(thread.id, thread);
         this.#order.push(thread);
         return thread;
