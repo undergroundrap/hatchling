@@ -291,6 +291,7 @@ jobs:
             sleep 1
           done
           [ "$(cat /var/lib/hatchling/ui.sock.token)" != "$token" ]
+          [ "$(hatchling-host url)" = "http://127.0.0.1:7340/#hatchling-ui=$(cat /var/lib/hatchling/ui.sock.token)" ]
           timeout 180 python3 docs/examples/first-run.py /var/lib/hatchling/api.sock
           curl -fsS http://127.0.0.1:7340/ > /dev/null
 

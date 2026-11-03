@@ -17,6 +17,10 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 - **A failed chat answer says why, in plain words.** "The broker's log says why" became one of: the model can't be reached (named, with `doctor` to check it), it kept calling its tools wrongly, the run used all its steps, or it took too long. The message comes from how the run ended, never from text the run wrote.
 - **The install guide recommends a model that calls tools well.** Tried with Hatchling's own tools on a 12 GB GPU: `qwen3.5:9b` and `gemma4:12b` were right every time, and `llama3.2`, the old suggestion, called tools a plain question didn't need about a third of the time. The guide now pulls `qwen3.5:9b` and explains how to switch models. The clone command no longer prints git's detached-HEAD advice.
 
+### Fixed
+
+- **After a restart, the app says how to get back in.** Each start of the broker makes a new key for the app, so an app left open went offline with only "The connection to Hatchling ended", and getting the new address meant a long `echo "...$(cat ...)"` line. Now `hatchling-host url` prints the address to open, and an app the broker doesn't let in says to run it (or to start Hatchling, if it isn't running). The installer and the install guide point to it, and CI checks it gives the new address after a restart.
+
 ## [0.6.0] - 2026-11-03
 
 Install it and leave it on: a service that starts at boot, `doctor` for what stops it working, and a hosted model's key added in one command. And the post-0.5.0 audit's three High findings, fixed.
