@@ -42,8 +42,8 @@ const replay = (transport, frames = SAMPLE_EVENTS) => {
 };
 const answer = (transport, request_id, result) => transport.deliver({ type: 'action_result', request_id, result });
 const flush = () => new Promise(resolve => setImmediate(resolve));
-// The actions the app sent besides the allowed and signed-in sites' lists, which it asks for each time it connects.
-const sentActions = transport => transport.sent.filter(frame => frame.type === 'action' && !(['manage_sites', 'manage_profiles', 'manage_sign_ins'].includes(frame.action.action) && frame.action.op.op === 'list'));
+// The actions the app sent besides the lists it asks for each time it connects: allowed and signed-in sites, and schedules.
+const sentActions = transport => transport.sent.filter(frame => frame.type === 'action' && !(['manage_sites', 'manage_profiles', 'manage_sign_ins', 'manage_schedule'].includes(frame.action.action) && frame.action.op.op === 'list'));
 const thread = adapter => adapter.getSnapshot().threads[0];
 const lane = (adapter, id) => thread(adapter).lanes.find(item => item.id === id);
 const confirmation = (seq, revision, summary = 'Post the sample summary?') => sampleEvent(seq, seq, { kind: 'confirmation', confirmation_id: 'confirm-1', revision, chat_id: 'main', summary, expires_at: null, digest: `digest-${revision}`, fields: [{ label: 'Operation', value: summary, source: 'broker' }, { label: 'Text', value: 'Sample text.', source: 'agent' }] });

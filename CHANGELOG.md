@@ -8,6 +8,15 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Added
 
+- **Scheduled work from the app.** The schedule form walked you through an approval and then said "Hatchling cannot do this from the app yet", and the panel never listed anything. Now:
+  - The form has real fields: what should happen; repeat once, every few minutes, every day, every weekday, every week or on a cron expression; a date and time picker; and your browser's time zone, shown.
+  - It creates the schedule in the broker, with the permissions a chat message's run has, delivering to the chat. Recurring work is approved in words ("every Friday at 17:30 (America/New_York), until you remove it").
+  - The panel lists your schedules, with their next run on your clock and what each may do, and removes them.
+- **The app learns what its connection may do.** The broker's `welcome` names the connection's grants, so the app gives a schedule exactly those and shows them.
+- **A listing shows a schedule's task when you wrote it.** Your own schedules read "Stretch for five minutes", not an id. An agent's schedule's text is still never shown: it is untrusted, and beside yours it would read as yours. **Breaking for `hatchling-core` and `hatchling-scheduler`:** `UiResponse::Welcome` has a new field, `grants`; `ScheduleSummary` one, `task`; and `Schedule` one, `task_shown`.
+
+### Added
+
 - **Testing Hatchling with an AI agent** ([docs/testing-with-an-agent.md](docs/testing-with-an-agent.md)). How to have the Claude desktop app or Codex install Hatchling on a throwaway WSL2 box, open the app without the key ever appearing in the transcript, click through it and take screenshots, with you typing every secret.
 
 ### Fixed

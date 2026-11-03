@@ -24,8 +24,10 @@ test('hello carries this build\'s protocol version', () => {
     assert.equal(SESSION_PROTOCOL_VERSION, 17);
 });
 test('a matching welcome opens the connection', () => {
-    assert.deepEqual(readHandshake({ type: 'welcome', schema_version: 4, session_protocol: 10 }, 4), { status: 'open', sessionProtocol: 10 });
-    assert.deepEqual(readHandshake({ type: 'welcome', schema_version: UI_SCHEMA_VERSION, session_protocol: 10 }), { status: 'open', sessionProtocol: 10 });
+    // A broker too old to name the connection's grants is read as granting none.
+    assert.deepEqual(readHandshake({ type: 'welcome', schema_version: 4, session_protocol: 10 }, 4), { status: 'open', sessionProtocol: 10, grants: [] });
+    const grants = [{ grant: 'channel-send', channel: 'local' }];
+    assert.deepEqual(readHandshake({ type: 'welcome', schema_version: UI_SCHEMA_VERSION, session_protocol: 10, grants }), { status: 'open', sessionProtocol: 10, grants });
 });
 test('version skew fails loudly with a human sentence, whichever side noticed', () => {
     // An older broker that welcomes anyway: the frontend explains it itself.
