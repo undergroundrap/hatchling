@@ -22,6 +22,10 @@ export function providerMark(id: string, fallback: IconName): HTMLElement {
     return h('span', { class: 'provider-mark', 'aria-hidden': 'true' }, marks[id] ? h('img', { src: marks[id], alt: '', width: 28, height: 28 }) : icon(fallback, 21));
 }
 export function connectorsTab(ctx: AppContext, nav: SettingsNavigation): HTMLElement {
+    // Connected to Hatchling, no connector exists yet: say so, rather than
+    // offer sample services to connect.
+    if (ctx.state.mode === 'live' && !ctx.state.connectors.length)
+        return h('div', { class: 'settings-stack' }, h('p', { class: 'settings-intro' }, `No apps are connected to ${ctx.state.settings.name}. Connectors for mail, calendar and GitHub are coming, each with only the permissions you grant it, and each shown here with what it may do.`));
     if (nav.detail === 'connector') {
         const item = ctx.state.connectors.find(entry => entry.id === nav.id);
         if (!item)
@@ -70,6 +74,9 @@ export function connectorsTab(ctx: AppContext, nav: SettingsNavigation): HTMLEle
     return root;
 }
 export function walletTab(ctx: AppContext, nav: SettingsNavigation): HTMLElement {
+    // Connected to Hatchling, nothing can be bought: say so plainly.
+    if (ctx.state.mode === 'live' && !ctx.state.providers.length)
+        return h('div', { class: 'settings-stack reference-wallet' }, h('p', { class: 'settings-intro' }, `${ctx.state.settings.name} can't make purchases: payments aren't part of this build. When they come, each purchase will need your yes on its exact quote, and nothing will be charged without it.`));
     if (nav.detail === 'wallet-examples')
         return walletExamples(ctx, nav.refresh);
     if (nav.detail === 'wallet-provider') {

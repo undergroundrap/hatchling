@@ -71,7 +71,7 @@ export function renderLibrary(ctx: AppContext): HTMLElement {
                 })();
             }, { label: filter === 'trash' ? 'Restore' : 'Move to Trash', danger: filter !== 'trash' });
         }, { variant: filter === 'trash' ? 'primary' : 'danger', disabled: ctx.ui.selectedArtifacts.size === 0 })));
-    page.append(h('div', { class: 'section-heading library-section-label' }, h('h2', {}, filter === 'trash' ? 'Recoverable for 30 days' : libraryNames[filter]), h('span', { class: 'muted tiny' }, `${items.length} ${items.length === 1 ? 'item' : 'items'} · sample workspace`)));
+    page.append(h('div', { class: 'section-heading library-section-label' }, h('h2', {}, filter === 'trash' ? 'Recoverable for 30 days' : libraryNames[filter]), h('span', { class: 'muted tiny' }, `${items.length} ${items.length === 1 ? 'item' : 'items'}${ctx.state.mode === 'live' ? '' : ' · sample workspace'}`)));
     if (!items.length)
         page.append(emptyState(filter === 'trash' ? 'trash' : 'library', 'Nothing here yet.', 'Create an artifact using the button above.'));
     else

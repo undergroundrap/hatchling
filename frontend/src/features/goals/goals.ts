@@ -17,7 +17,12 @@ const categories: readonly {
     { name: 'Something else', label: 'Something else', icon: 'goal' },
 ];
 export function renderGoals(ctx: AppContext): HTMLElement {
-    const options = menu('Goal options', [
+    // Connected to Hatchling, goals can't be made from the app yet: no
+    // form that ends in a refusal, and no sample goals.
+    const live = ctx.state.mode === 'live';
+    const options = menu('Goal options', live ? [
+        { label: ctx.ui.goalFilter === 'active' ? 'Closed goals' : 'Active goals', icon: 'check', action: () => { ctx.ui.goalFilter = ctx.ui.goalFilter === 'active' ? 'closed' : 'active'; ctx.render(); } },
+    ] : [
         { label: 'New goal', icon: 'plus', action: () => createGoal(ctx) },
         { label: ctx.ui.goalFilter === 'active' ? 'Closed goals' : 'Active goals', icon: 'check', action: () => { ctx.ui.goalFilter = ctx.ui.goalFilter === 'active' ? 'closed' : 'active'; ctx.render(); } },
         { label: ctx.ui.goalExamples ? 'Hide demonstration goals' : 'Show demonstration goals', icon: 'play', action: () => { ctx.ui.goalExamples = !ctx.ui.goalExamples; ctx.render(); } },
@@ -35,7 +40,9 @@ export function renderGoals(ctx: AppContext): HTMLElement {
     }
     if (!goals.length && ctx.ui.goalFilter === 'closed')
         page.append(emptyState('goal', 'No closed goals yet.'));
-    if (ctx.ui.goalFilter === 'active') {
+    if (live && ctx.ui.goalFilter === 'active' && !goals.length)
+        page.append(emptyState('goal', 'No goals yet.', 'Setting goals from the app is coming. Until then, tell the agent in the chat what you’re working toward.'));
+    if (ctx.ui.goalFilter === 'active' && !live) {
         page.append(h('section', { class: 'goal-categories', 'aria-label': 'Create a goal' }, h('h2', {}, 'Create a goal'), ...categories.map((category) => {
             const node = button(category.label, () => createGoal(ctx, category.name), { icon: category.icon, variant: 'ghost', className: 'goal-category' });
             node.append(icon('chevron', 16));
