@@ -800,7 +800,10 @@ pub fn has_work(config: &Config) -> bool {
 }
 
 /// Settles `claim` by `outcome`, the worker's: what the owner is told.
-fn settled(claim: crate::approvals::Claim<'_, Approved>, outcome: Result<String, String>) -> String {
+fn settled(
+    claim: crate::approvals::Claim<'_, Approved>,
+    outcome: Result<String, String>,
+) -> String {
     match outcome {
         Ok(said) => {
             claim.succeeded();

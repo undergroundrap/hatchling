@@ -158,7 +158,9 @@ fn every_minute(
         | ScheduleResult::Resolved
         | ScheduleResult::Retried
         | ScheduleResult::Parked { .. }
-        | ScheduleResult::Dismissed) => format!("not created: {other:?}"),
+        | ScheduleResult::Dismissed
+        | ScheduleResult::Proposed { .. }
+        | ScheduleResult::Unasked { .. }) => format!("not created: {other:?}"),
     }
 }
 

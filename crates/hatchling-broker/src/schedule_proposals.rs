@@ -191,8 +191,8 @@ mod tests {
         assert_eq!(fields.first().map(|f| f.0), Some("When"));
         assert_eq!(fields.first().map(|f| f.1), Some(when.as_str()));
         assert!(fields.iter().any(|f| f.0 == "What it may do"
-            && f.1.contains("reach localhost:11434")
-            && f.2 == FieldSource::Broker));
+                && f.1.contains("post in your chat")
+                && f.2 == FieldSource::Broker));
         assert_eq!(
             fields.last().map(|f| (f.1, f.2)),
             Some(("Stretch for five minutes.", FieldSource::Agent))
@@ -252,7 +252,7 @@ mod tests {
         let tasks: Vec<Option<&str>> = schedules.iter().map(|one| one.task.as_deref()).collect();
         assert_eq!(tasks, [Some("Check the oven.")], "shown as the owner's");
         // A store that refuses: said, and nothing claimed as done.
-        let mut broken = config.clone();
+        let mut broken = config;
         broken.scheduler.root = std::path::PathBuf::new();
         let refused = create(
             &broken,
@@ -298,7 +298,7 @@ mod tests {
                 ScheduleResult::Unasked { .. }
             ));
         }
-        let mut quiet = config.clone();
+        let mut quiet = config;
         quiet.channels = Vec::new();
         assert_eq!(
             propose(&quiet, "t", "daily", "07:30", "x"),
