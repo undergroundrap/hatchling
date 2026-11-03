@@ -6,6 +6,10 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ## [Unreleased]
 
+### Added
+
+- **Testing Hatchling with an AI agent** ([docs/testing-with-an-agent.md](docs/testing-with-an-agent.md)). How to have the Claude desktop app or Codex install Hatchling on a throwaway WSL2 box, open the app without the key ever appearing in the transcript, click through it and take screenshots, with you typing every secret.
+
 ## [0.6.0] - 2026-11-03
 
 Install it and leave it on: a service that starts at boot, `doctor` for what stops it working, and a hosted model's key added in one command. And the post-0.5.0 audit's three High findings, fixed.
