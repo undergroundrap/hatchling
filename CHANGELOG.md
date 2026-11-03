@@ -8,6 +8,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Added
 
+- **Scheduled work that needs you is shown, with what to do.** The schedule panel and page open with "Needs you": a run cut short when Hatchling stopped (run it again, or mark it resolved), and a result kept because it failed or couldn't be delivered (read it, then dismiss it). A failed run's own error is never shown: the chat already said why, in the broker's words. With the failure notice, every scheduled run now ends visibly: delivered, told as a failure, or listed here.
 - **`hatchling-broker schedule`: scheduled work from a shell.** `schedule add "<task>" --every 15m` (or `--at`, `--daily`, `--weekdays`, `--cron`, with `--tz`), `schedule list` and `schedule remove <id>`, run as yourself, not `sudo`. It's a client of the local API, as the app is: the same permissions a chat message's run has, and the results arrive in the chat. `list` shows each schedule's timing in words and its next run on its own clock, and `remove` takes the short id `list` shows, or any start of the id.
 - **Scheduled work from the app.** The schedule form walked you through an approval and then said "Hatchling cannot do this from the app yet", and the panel never listed anything. Now:
   - The form has real fields: what should happen; repeat once, every few minutes, every day, every weekday, every week or on a cron expression; a date and time picker; and your browser's time zone, shown.

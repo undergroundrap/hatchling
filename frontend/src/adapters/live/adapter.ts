@@ -18,6 +18,7 @@ import type { ActionRefusal, UiEvent } from './protocol/generated.js';
 import { LiveProfiles } from './profiles.js';
 import { LiveSignIns } from './sign-ins.js';
 import type { CodePort } from '../../session/codes.js';
+import type { AttentionPort } from '../../session/attention.js';
 import type { ConversationPort } from '../../session/conversations.js';
 import { LiveChatSession } from './session.js';
 import { LiveSchedules } from './schedules.js';
@@ -49,6 +50,8 @@ export class LiveAdapter implements ProtocolAdapter {
     readonly codes: CodePort;
     /** Where the chat's header starts a new conversation: straight to the broker, never as a Command. */
     readonly conversations: ConversationPort;
+    /** Scheduled work that needs the owner: straight to the broker, never as a Command. */
+    readonly attention: AttentionPort;
     readonly #listeners = new Set<() => void>();
     #settings: Settings = SETTINGS;
     #clock = '';
@@ -66,6 +69,7 @@ export class LiveAdapter implements ProtocolAdapter {
         this.#sites = new LiveSites(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.#profiles = new LiveProfiles(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.#schedules = new LiveSchedules(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
+        this.attention = this.#schedules;
         this.signIns = new LiveSignIns(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.codes = { give: (sessionId, code) => this.#surfaces.giveCode(sessionId, code) };
         this.conversations = { start: chatId => this.#newConversation(chatId) };

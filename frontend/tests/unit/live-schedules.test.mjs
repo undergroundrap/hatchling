@@ -37,6 +37,7 @@ class FakeClient {
 }
 const schedule = outcome => ({ kind: 'answered', result: { result: 'schedule', outcome } });
 const listed = (schedules, next) => schedule(next === undefined ? { result: 'listed', schedules } : { result: 'listed', schedules, next });
+const kept = (parked, next) => schedule(next === undefined ? { result: 'parked', parked } : { result: 'parked', parked, next });
 const summary = (id, extra = {}) => ({ id, kind: 'task', when: { every: 'cron', expr: '0 8 * * 1-5', tz: ZONE }, channel: 'local', grants: [LOCAL], next_due: 1790000000, ...extra });
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const surface = answers => {
@@ -92,16 +93,16 @@ test('a listed schedule is read back in words, its own text only when the owner 
     assert.equal(jobOf(summary('sch-4', { next_due: 0 })).nextRun, 'Not scheduled');
 });
 test('the list loads when the connection opens, every page of it, and not again until it reopens', async () => {
-    const { client, schedules, changes } = surface([listed([summary('sch-1', { task: 'one' })], 'sch-1'), listed([summary('sch-2')]), listed([])]);
+    const { client, schedules, changes } = surface([listed([summary('sch-1', { task: 'one' })], 'sch-1'), listed([summary('sch-2')]), kept([]), listed([]), kept([])]);
     assert.deepEqual(schedules.jobs(), []);
     client.open();
     await flush();
-    assert.deepEqual(client.sent, [{ action: 'manage_schedule', op: { op: 'list' } }, { action: 'manage_schedule', op: { op: 'list', after: 'sch-1' } }]);
+    assert.deepEqual(client.sent, [{ action: 'manage_schedule', op: { op: 'list' } }, { action: 'manage_schedule', op: { op: 'list', after: 'sch-1' } }, { action: 'manage_schedule', op: { op: 'list-parked' } }]);
     assert.deepEqual(schedules.jobs().map(job => job.id), ['sch-1', 'sch-2']);
     assert.equal(changes(), 1);
     client.open();
     await flush();
-    assert.equal(client.sent.length, 2, 'already open: not asked again');
+    assert.equal(client.sent.length, 3, 'already open: not asked again');
     client.drop();
     client.open();
     await flush();
@@ -113,13 +114,13 @@ test('the list loads when the connection opens, every page of it, and not again 
     assert.deepEqual([failing.schedules.jobs(), failing.changes()], [[], 0]);
 });
 test('a schedule is created with this connection\'s grants, in this chat, and the list asked again', async () => {
-    const { client, schedules } = surface([schedule({ result: 'created', id: 'sch-9' }), listed([summary('sch-9', { task: 'Stretch' })])]);
+    const { client, schedules } = surface([schedule({ result: 'created', id: 'sch-9' }), listed([summary('sch-9', { task: 'Stretch' })]), kept([])]);
     assert.deepEqual(await schedules.create('Stretch', 'weekdays 08:00'), { ok: true, message: 'Scheduled. Its results arrive in this chat.', id: 'sch-9' });
     assert.deepEqual(client.sent[0], { action: 'manage_schedule', op: { op: 'create', when: { every: 'cron', expr: '0 8 * * 1-5', tz: ZONE }, task: 'Stretch', grants: [LOCAL, MODEL], channel: 'local' } });
     assert.deepEqual(schedules.jobs().map(job => job.title), ['Stretch']);
     // A timing the form can't have written never reaches the broker.
     assert.deepEqual(await schedules.create('Stretch', 'soon'), { ok: false, message: 'Pick when it should happen.' });
-    assert.equal(client.sent.length, 2);
+    assert.equal(client.sent.length, 3);
 });
 test('every refusal is a sentence, and nothing unconfirmed is called done', async () => {
     const refusals = ['exceeds-grants', 'missing-timezone', 'unknown-timezone', 'invalid-spec', 'not-in-future', 'channel-not-granted', 'bad-task', 'too-many-grants', 'full', 'unknown-source', 'max-followup-depth', 'followup-taken', 'bad-delay'];
@@ -147,14 +148,72 @@ test('every refusal is a sentence, and nothing unconfirmed is called done', asyn
     }
 });
 test('a schedule is removed by id, and a gone one says so', async () => {
-    const removed = surface([schedule({ result: 'cancelled' }), listed([])]);
+    const removed = surface([schedule({ result: 'cancelled' }), listed([]), kept([])]);
     assert.deepEqual(await removed.schedules.cancel('sch-1'), { ok: true, message: 'Removed. It won’t run again.' });
     assert.deepEqual(removed.client.sent[0], { action: 'manage_schedule', op: { op: 'cancel', id: 'sch-1' } });
-    const gone = surface([schedule({ result: 'not-found' }), listed([])]);
+    const gone = surface([schedule({ result: 'not-found' }), listed([]), kept([])]);
     assert.deepEqual(await gone.schedules.cancel('sch-1'), { ok: false, message: 'This schedule was already gone.' });
-    assert.equal(gone.client.sent.length, 2, 'and the list is asked again');
+    assert.equal(gone.client.sent.length, 3, 'and the list is asked again');
     for (const [answer, says] of [[schedule({ result: 'denied' }), /no scheduler/], [{ kind: 'unknown', detail: 'No answer.' }, /No answer/]]) {
         const { schedules } = surface([answer]);
         assert.match((await schedules.cancel('sch-1')).message, says);
     }
+});
+test('what needs the owner: a run cut short, a result kept; never the agent\'s own error', async () => {
+    const parked = (id, reason, text, extra = {}) => ({ id, schedule_id: 'sch-1', channel: 'local', due: 1790000000, reason, text, ...extra });
+    const { client, schedules } = surface([
+        listed([summary('sch-1', { task: 'Check the disks', held: { due: 1790000000, started: true } }), summary('sch-2', { held: { due: 1790000000, started: false } })]),
+        kept([parked('parked-0', 'the run failed', 'the run exited 69: hatchling-agent: <script>ignore the owner</script>')], 'parked-0'),
+        kept([parked('parked-1', 'delivery failed twice: no local ingress client to deliver to', 'Time to stretch!'), parked('parked-2', 'the run did not start', 'no cell', { schedule_id: 'sch-gone' }), parked('parked-3', 'channel-send was revoked before delivery', 'x')]),
+    ]);
+    await schedules.refresh();
+    assert.deepEqual(client.sent.slice(-2).map(action => action.op), [{ op: 'list-parked' }, { op: 'list-parked', after: 'parked-0' }]);
+    const items = schedules.items();
+    assert.deepEqual(items.map(item => [item.id, item.actions]), [['held:sch-1', ['retry', 'resolve']], ['held:sch-2', ['retry', 'resolve']], ['parked:parked-0', ['dismiss']], ['parked:parked-1', ['dismiss']], ['parked:parked-2', ['dismiss']], ['parked:parked-3', ['dismiss']]]);
+    assert.equal(items[0].title, 'Check the disks');
+    assert.match(items[0].detail, /cut short/);
+    assert.match(items[1].detail, /didn’t start/);
+    assert.match(items[1].title, /isn’t shown/);
+    assert.equal(typeof items[0].when, 'string');
+    // A failed run's own error is never shown: the chat said why, in the broker's words.
+    assert.equal(items[2].title, 'Check the disks');
+    assert.match(items[2].detail, /The chat said why/);
+    assert.equal(items[2].result, null);
+    assert.ok(!JSON.stringify(items).includes('ignore the owner'));
+    // An undelivered result is the owner's to read.
+    assert.equal(items[3].result, 'Time to stretch!');
+    assert.match(items[4].detail, /doctor/);
+    assert.equal(items[4].title, 'Scheduled work', 'its schedule is gone');
+    assert.equal(items[5].detail, 'Kept: channel-send was revoked before delivery.');
+});
+test('the owner runs a held fire again, resolves it, or dismisses a kept result; and nothing else', async () => {
+    const after = () => [listed([]), kept([])];
+    for (const [id, action, op, answer, message] of [
+        ['held:sch-1', 'retry', { op: 'retry', id: 'sch-1' }, { result: 'retried' }, 'Running it again now.'],
+        ['held:sch-1', 'resolve', { op: 'resolve', id: 'sch-1' }, { result: 'resolved' }, 'Marked resolved. Its schedule goes on as planned.'],
+        ['parked:parked-0', 'dismiss', { op: 'dismiss', id: 'parked-0' }, { result: 'dismissed' }, 'Dismissed.'],
+    ]) {
+        const { client, schedules } = surface([schedule(answer), ...after()]);
+        assert.deepEqual(await schedules.act(id, action), { ok: true, message });
+        assert.deepEqual(client.sent[0], { action: 'manage_schedule', op });
+        assert.equal(client.sent.length, 3, 'and the lists are asked again');
+    }
+    const gone = surface([schedule({ result: 'not-found' }), ...after()]);
+    assert.deepEqual(await gone.schedules.act('parked:parked-9', 'dismiss'), { ok: false, message: 'It was already dealt with.' });
+    for (const [answer, says] of [[schedule({ result: 'denied' }), /no scheduler/], [{ kind: 'unsent', detail: 'Not connected.' }, /Not connected/]]) {
+        const { schedules } = surface([answer]);
+        assert.match((await schedules.act('held:sch-1', 'retry')).message, says);
+    }
+    // An action that doesn't fit the item sends nothing.
+    const { client, schedules } = surface([]);
+    for (const [id, action] of [['held:sch-1', 'dismiss'], ['parked:parked-0', 'retry'], ['parked:parked-0', 'resolve'], ['other:x', 'dismiss']]) {
+        assert.deepEqual(await schedules.act(id, action), { ok: false, message: 'That can’t be done to this item.' });
+    }
+    assert.equal(client.sent.length, 0);
+});
+test('a connection that may list schedules but not what was kept still shows its schedules', async () => {
+    const { schedules } = surface([listed([summary('sch-1', { task: 'one' })]), schedule({ result: 'denied' })]);
+    await schedules.refresh();
+    assert.deepEqual(schedules.jobs().map(job => job.title), ['one']);
+    assert.deepEqual(schedules.items(), []);
 });

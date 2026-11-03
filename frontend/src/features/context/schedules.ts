@@ -32,8 +32,25 @@ function scheduleIcon(job: DeepReadonly<ScheduledJob>): HTMLElement {
         return h('span', { class: 'schedule-symbol event' }, icon('bell', 20));
     return h('span', { class: `schedule-symbol ${calendar ? 'calendar' : 'clock-face'}` }, icon(calendar ? 'calendar' : 'clock', 32), calendar ? h('span', { class: 'schedule-badge' }, icon('clock', 12)) : null);
 }
+const ACTION_LABELS = { retry: 'Run again', resolve: 'Mark resolved', dismiss: 'Dismiss' } as const;
+/** Scheduled work that needs the owner, when there is any: nothing ends silently. */
+export function attentionSection(ctx: AppContext): HTMLElement | null {
+    const port = ctx.attention;
+    const items = port?.items() ?? [];
+    if (port === undefined || !items.length)
+        return null;
+    const section = h('section', { class: 'schedule-section attention-section', 'aria-label': 'Scheduled work that needs you' }, h('div', { class: 'context-section-heading' }, h('h3', {}, 'Needs you')));
+    for (const item of items) {
+        const actions = h('div', { class: 'action-row' }, ...item.actions.map(action => button(ACTION_LABELS[action], () => { void port.act(item.id, action).then(result => { ctx.toast(result.message); }); }, { variant: action === 'dismiss' ? 'ghost' : 'primary' })));
+        section.append(h('article', { class: 'context-job errored attention-item', 'data-attention': item.id }, h('span', { class: 'schedule-symbol event' }, icon('warning', 20)), h('span', { class: 'context-job-copy' }, h('strong', {}, item.title), h('span', {}, item.detail), h('span', { class: 'muted text-small' }, `Due ${item.when}`), item.result === null ? null : h('details', {}, h('summary', {}, 'The result'), h('p', { class: 'text-small' }, item.result)), actions)));
+    }
+    return section;
+}
 export function renderContextSchedules(ctx: AppContext): HTMLElement {
     const root = h('div', { class: 'context-schedules' });
+    const attention = attentionSection(ctx);
+    if (attention)
+        root.append(attention);
     let first = true;
     for (const group of ['Reminders', 'Daily', 'Weekly', 'Events']) {
         const jobs = ctx.state.jobs.filter((job) => job.goalId === null && scheduleGroup(job) === group);
