@@ -12,10 +12,14 @@ export function generalTab(ctx: AppContext, refresh: () => void): HTMLElement {
     const root = h('div', { class: 'settings-stack general-stack' });
     const account = h('button', { class: 'settings-group account-card', type: 'button' }, icon('people', 22), h('span', { class: 'row-copy' }, h('span', {}, 'Hatchling account'), h('span', { class: 'text-small muted-on-card' }, 'Local profile and personal details')), icon('arrow', 15));
     account.addEventListener('click', () => editIdentity(ctx));
-    root.append(account, h('section', { class: 'general-section' }, h('h3', {}, 'Usage'), h('div', { class: 'settings-group usage-group' }, usage('Free plan', 100, 'Weekly limit resets on Sep 28'), usage('Additional tokens', 29, 'Never expires', ' (709M tokens left)'), button('Upgrade', () => {
+    const sampleUsage = (): HTMLElement => h('section', { class: 'general-section' }, h('h3', {}, 'Usage'), h('div', { class: 'settings-group usage-group' }, usage('Free plan', 100, 'Weekly limit resets on Sep 28'), usage('Additional tokens', 29, 'Never expires', ' (709M tokens left)'), button('Upgrade', () => {
         const body = h('div', { class: 'stack' }, h('p', {}, 'These are synthetic sample usage meters. This frontend has no billing service and will not start a purchase or subscription.'), h('p', { class: 'muted' }, 'The connected adapter can supply real plan options later.'));
         ctx.dialogs.open('Plan details · scripted demo', body, 'confirm-dialog');
-    }, { variant: 'link', className: 'upgrade-link' }))));
+    }, { variant: 'link', className: 'upgrade-link' })));
+    // Connected to Hatchling there's no plan and nothing counted yet: say so,
+    // rather than show a sample quota as though it were the owner's.
+    const liveUsage = (): HTMLElement => h('section', { class: 'general-section' }, h('h3', {}, 'Usage'), h('div', { class: 'settings-group usage-group' }, h('p', {}, 'Hatchling runs on your machine: there is no plan and no quota. It doesn’t count model usage yet; counting, and spending limits for hosted models, come next.')));
+    root.append(account, ctx.state.mode === 'live' ? liveUsage() : sampleUsage());
     const language = h('button', { class: 'settings-group general-language', type: 'button' }, h('span', {}, 'Language'), icon('chevron', 15));
     language.addEventListener('click', () => {
         const choices = selectField('Language', 'language', [{ value: 'English', label: 'English' }], 'English');
@@ -82,6 +86,6 @@ export function generalTab(ctx: AppContext, refresh: () => void): HTMLElement {
         sizeGroup.append(control);
     }
     root.append(h('section', { class: 'general-section interface-size-section' }, h('h3', {}, 'Interface size'), sizeGroup, h('p', { class: 'interface-size-description' }, 'Bigger text and controls without changing browser zoom. Compact keeps the earlier layout. Phone layouts remain fitted to the screen.')));
-    root.append(h('p', { class: 'settings-note' }, 'Local scripted account. Usage and reset dates are reference fixtures, not live entitlements. White is the default theme color; Match my avatar uses this agent’s supplied avatar palette.'));
+    root.append(h('p', { class: 'settings-note' }, `${ctx.state.mode === 'live' ? '' : 'Local scripted account. Usage and reset dates are reference fixtures, not live entitlements. '}White is the default theme color; Match my avatar uses this agent’s supplied avatar palette.`));
     return root;
 }
