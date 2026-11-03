@@ -362,9 +362,7 @@ impl<T: Transport> ChatCompletionsProvider<T> {
         // a truncated result would look finished.
         let finish = choice.get("finish_reason").and_then(Value::as_str);
         if finish == Some("length") {
-            return Err(bad(
-                "the model's reply was cut off at its output limit (finish_reason \"length\")",
-            ));
+            return Err(Error::CutOff);
         }
         if finish == Some("content_filter") {
             return Err(bad(
@@ -438,7 +436,14 @@ impl<T: Transport> Model for ChatCompletionsProvider<T> {
         tools: &[ToolDescription],
     ) -> Result<ModelAction, LoopError> {
         self.next_action_inner(messages, tools)
-            .map_err(|error| LoopError::ModelFailed(error.reason()))
+            .map_err(|error| match error {
+                Error::CutOff => LoopError::ModelCutOff(error.reason()),
+                Error::InvalidEndpoint { .. }
+                | Error::EmptyModelName
+                | Error::Transport(_)
+                | Error::Incapable { .. }
+                | Error::BadResponse { .. } => LoopError::ModelFailed(error.reason()),
+            })
     }
 }
 
@@ -577,12 +582,10 @@ mod tests {
             matches!(parse(&text_reply("x")), Ok(ModelAction::Text(_))),
             "no finish_reason"
         );
-        for cut in ["length", "content_filter"] {
-            assert!(
-                matches!(parse(&reply(cut)), Err(Error::BadResponse { reason }) if reason.contains(cut)),
-                "{cut}"
-            );
-        }
+        assert!(matches!(parse(&reply("length")), Err(Error::CutOff)));
+        assert!(
+            matches!(parse(&reply("content_filter")), Err(Error::BadResponse { reason }) if reason.contains("content_filter"))
+        );
     }
 
     #[test]
@@ -888,10 +891,19 @@ mod tests {
             let error = provider
                 .next_action(&[Message::User(String::from("hi"))], &no_tools())
                 .unwrap_err();
-            assert!(
-                matches!(error, LoopError::ModelFailed(_)),
-                "case {name:?} should fail closed"
-            );
+            // A reply cut off at the limit is named as one, for the
+            // person to be told to make room.
+            if name.contains("cut off") {
+                assert!(
+                    matches!(&error, LoopError::ModelCutOff(reason) if reason.contains("\"length\"")),
+                    "case {name:?}: {error:?}"
+                );
+            } else {
+                assert!(
+                    matches!(error, LoopError::ModelFailed(_)),
+                    "case {name:?} should fail closed"
+                );
+            }
         }
     }
 

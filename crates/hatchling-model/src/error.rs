@@ -31,6 +31,12 @@ pub enum Error {
         /// What it cannot do.
         reason: String,
     },
+    /// The provider stopped the reply at its limit (`finish_reason`
+    /// `"length"`): out of output tokens, or out of context window,
+    /// which a thinking model fills fast. A truncated reply isn't an
+    /// answer.
+    #[error("the model's reply was cut off at its output limit (finish_reason \"length\")")]
+    CutOff,
     /// The provider answered, but the response cannot be interpreted
     /// as a chat-completions reply.
     #[error("uninterpretable provider response: {reason}")]

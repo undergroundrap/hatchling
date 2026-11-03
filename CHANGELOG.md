@@ -19,6 +19,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Fixed
 
+- **A model that runs out of room says so.** A thinking model on Ollama's default 4,096-token window was cut off partway through its answer, and the chat called the model unreachable. A reply the server cut off is now its own failure, and the chat says the model ran out of room and how to give it more (`OLLAMA_CONTEXT_LENGTH`). The install guide sets the window to 16,384 tokens, and no longer suggests `HATCHLING_SCHEDULER_MODEL_REASONING=disabled`, which Ollama ignores.
 - **The app shows times on your clock.** A message's time, an activity's and an approval's were shown in UTC: an answer at 11:27 pm in New York said 04:27.
 - **After a restart, the app says how to get back in.** Each start of the broker makes a new key for the app, so an app left open went offline with only "The connection to Hatchling ended", and getting the new address meant a long `echo "...$(cat ...)"` line. Now `hatchling-host url` prints the address to open, and an app the broker doesn't let in says to run it (or to start Hatchling, if it isn't running). The installer and the install guide point to it, and CI checks it gives the new address after a restart.
 

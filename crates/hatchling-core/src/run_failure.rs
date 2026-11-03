@@ -16,11 +16,19 @@ pub enum RunFailure {
     ToolsMisused,
     /// The run used all its steps without an answer.
     OutOfSteps,
+    /// The model's reply was cut off at its limit: its context window is
+    /// too small, or its thinking filled it.
+    OutOfRoom,
 }
 
 impl RunFailure {
     /// Every failure, in order.
-    pub const ALL: [Self; 3] = [Self::ModelUnavailable, Self::ToolsMisused, Self::OutOfSteps];
+    pub const ALL: [Self; 4] = [
+        Self::ModelUnavailable,
+        Self::ToolsMisused,
+        Self::OutOfSteps,
+        Self::OutOfRoom,
+    ];
 
     /// The agent's exit status for it: `sysexits.h` codes that don't
     /// collide with a usage error (64) or a plain failure (1).
@@ -33,6 +41,8 @@ impl RunFailure {
             Self::ToolsMisused => 76,
             // EX_TEMPFAIL
             Self::OutOfSteps => 75,
+            // EX_CONFIG: the model server's window is set too small.
+            Self::OutOfRoom => 78,
         }
     }
 

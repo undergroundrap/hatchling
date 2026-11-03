@@ -44,7 +44,17 @@ For a local model on one GPU, tried with Hatchling's own tool set (2026-11, Olla
 | `gemma4:12b` | 8 GB | 12 GB GPU or more | Right every time. |
 | `llama3.2` (3B) | 2 GB | almost anything | **Not recommended.** It called tools a plain question didn't need, a web search for "ideas for a relaxing Sunday", in a third of the tries. |
 
-Thinking models answer better and a little slower; `HATCHLING_SCHEDULER_MODEL_REASONING=disabled` in `/etc/hatchling/hatchling.env` turns thinking off where the server supports it. A model bigger than the GPU's memory runs partly on the CPU, much more slowly: `ollama ps` shows the split. Ollama uses an NVIDIA or AMD GPU by itself when its driver is installed; under WSL2, install the Windows driver, not one inside Linux.
+A model bigger than the GPU's memory runs partly on the CPU, much more slowly: `ollama ps` shows the split. Ollama uses an NVIDIA or AMD GPU by itself when its driver is installed; under WSL2, install the Windows driver, not one inside Linux.
+
+**Give the model room.** Both models think before they answer, which makes better answers and uses tokens: one chat answer took about 6,000. Ollama's default window on a GPU this size is 4,096 tokens, so a thinking model is cut off partway and the chat says the model ran out of room. Raise it to 16,384; with it, `qwen3.5:9b` takes 6.1 GB of a 12 GB GPU:
+
+```bash
+sudo mkdir -p /etc/systemd/system/ollama.service.d
+printf '[Service]\nEnvironment=OLLAMA_CONTEXT_LENGTH=16384\n' | sudo tee /etc/systemd/system/ollama.service.d/context.conf
+sudo systemctl daemon-reload && sudo systemctl restart ollama
+```
+
+`ollama ps` shows the window in its `CONTEXT` column once the model has loaded. With that room, the answer that was cut off took 7 seconds.
 
 To switch models, pull the new one, set `HATCHLING_SCHEDULER_MODEL_NAME` in `/etc/hatchling/hatchling.env`, and restart: `sudo systemctl restart hatchling`. `ollama rm <name>` removes one you no longer use.
 
