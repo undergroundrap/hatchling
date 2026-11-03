@@ -179,6 +179,7 @@ impl Cell<Ready> {
                 Error::LoopBudgetExhausted { steps }
             }
             hatchling_loop::Error::ModelFailed(_) => Error::ModelFailed(error.to_string()),
+            hatchling_loop::Error::ModelCutOff(_) => Error::ModelCutOff(error.to_string()),
             hatchling_loop::Error::UnknownTool(_)
             | hatchling_loop::Error::InvalidArguments { .. } => {
                 Error::ToolsMisused(error.to_string())
