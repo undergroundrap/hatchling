@@ -517,10 +517,7 @@ mod tests {
             1
         );
         // Too large to read: the day isn't reported.
-        let big = OpenOptions::new()
-            .append(true)
-            .open(&file)
-            .unwrap();
+        let big = OpenOptions::new().append(true).open(&file).unwrap();
         big.set_len(MAX_FILE_BYTES + 1).unwrap();
         assert_eq!(
             report(&dir, NOW, Some("UTC")).days.first().unwrap().calls,

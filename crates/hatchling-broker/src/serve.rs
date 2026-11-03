@@ -1457,7 +1457,15 @@ mod tests {
         cell_id: &CellId,
         pages: &mut crate::egress_pages::Pages,
     ) -> Result<EgressResult, Error> {
-        handle_egress_op(proxy, egress, op, cell_id, 1000, pages, std::path::Path::new(""))
+        handle_egress_op(
+            proxy,
+            egress,
+            op,
+            cell_id,
+            1000,
+            pages,
+            std::path::Path::new(""),
+        )
     }
 
     /// Through a spawner that's gone, the agent cell isn't started, and
