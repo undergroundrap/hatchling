@@ -481,11 +481,14 @@ impl Error {
     #[must_use]
     pub const fn run_failure(&self) -> Option<hatchling_core::run_failure::RunFailure> {
         use hatchling_core::run_failure::RunFailure;
-        match self {
-            Self::ModelRefused(_) | Self::ModelFailed(_) => Some(RunFailure::ModelUnavailable),
-            Self::ToolsMisused(_) => Some(RunFailure::ToolsMisused),
-            Self::LoopBudgetExhausted { .. } => Some(RunFailure::OutOfSteps),
-            _ => None,
+        if let Self::ModelRefused(_) | Self::ModelFailed(_) = self {
+            Some(RunFailure::ModelUnavailable)
+        } else if let Self::ToolsMisused(_) = self {
+            Some(RunFailure::ToolsMisused)
+        } else if let Self::LoopBudgetExhausted { .. } = self {
+            Some(RunFailure::OutOfSteps)
+        } else {
+            None
         }
     }
 }

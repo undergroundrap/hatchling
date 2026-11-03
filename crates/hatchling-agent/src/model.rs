@@ -183,7 +183,9 @@ impl Cell<Ready> {
             | hatchling_loop::Error::InvalidArguments { .. } => {
                 Error::ToolsMisused(error.to_string())
             }
-            _ => Error::LoopFailed(error.to_string()),
+            hatchling_loop::Error::ToolFailed { .. } | hatchling_loop::Error::Io(_) => {
+                Error::LoopFailed(error.to_string())
+            }
         })
     }
 
