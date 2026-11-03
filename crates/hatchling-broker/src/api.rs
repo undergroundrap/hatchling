@@ -346,6 +346,22 @@ impl Api {
             audit.record(None, ApiRequest::Hello, ApiOutcome::Refused);
             return Ok(());
         };
+        // The welcome tells the app what it holds, so a schedule it makes
+        // names grants it may give.
+        let answer = match answer {
+            UiResponse::Welcome {
+                schema_version,
+                session_protocol,
+                ..
+            } => UiResponse::Welcome {
+                schema_version,
+                session_protocol,
+                grants: caller.grants().iter().cloned().collect(),
+            },
+            other @ (UiResponse::Incompatible { .. }
+            | UiResponse::Event(_)
+            | UiResponse::ActionResult { .. }) => other,
+        };
         // Listed before it is welcomed: a caller that has its welcome is
         // already one the operator can see.
         let _open = crate::machine::Open::start(door.0, door.1);
@@ -817,13 +833,19 @@ mod tests {
         let second = api.bus().push(String::from("t2"), chat("two"));
         session(&api, &ops, |client| {
             write(client, &hello(None));
-            assert!(matches!(
-                read(client),
-                UiResponse::Welcome {
-                    schema_version: UI_SCHEMA_VERSION,
-                    ..
-                }
-            ));
+            // The welcome names what this connection holds.
+            let welcome = read(client);
+            assert!(
+                matches!(
+                    &welcome,
+                    UiResponse::Welcome {
+                        schema_version: UI_SCHEMA_VERSION,
+                        grants,
+                        ..
+                    } if grants == &[goals()]
+                ),
+                "{welcome:?}"
+            );
             // Resume after the first event: the second is replayed.
             write(
                 client,

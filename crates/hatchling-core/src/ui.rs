@@ -124,6 +124,11 @@ pub enum UiResponse {
         /// The backend's session protocol version
         /// ([`PROTOCOL_VERSION`]).
         session_protocol: u16,
+        /// The grants this connection holds: what a schedule it creates
+        /// may be given, and what the app shows such a schedule may do.
+        /// Empty from an older broker, and left off the wire when empty.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        grants: Vec<crate::ScheduleGrant>,
     },
     /// The versions differ. The connection is refused, and `message`
     /// says what to do about it.
@@ -1135,6 +1140,7 @@ fn negotiate_between(frontend: u16, backend: u16) -> UiResponse {
         UiResponse::Welcome {
             schema_version: backend,
             session_protocol: PROTOCOL_VERSION,
+            grants: Vec::new(),
         },
         |message| UiResponse::Incompatible {
             frontend,
@@ -1373,6 +1379,23 @@ mod tests {
             &negotiate(UI_SCHEMA_VERSION),
             &json!({"type": "welcome", "schema_version": UI_SCHEMA_VERSION, "session_protocol": PROTOCOL_VERSION}),
         );
+        // A welcome names the connection's grants; one without them, from
+        // an older broker, reads as holding none.
+        pinned(
+            &UiResponse::Welcome {
+                schema_version: UI_SCHEMA_VERSION,
+                session_protocol: PROTOCOL_VERSION,
+                grants: vec![crate::ScheduleGrant::ChannelSend {
+                    channel: String::from("local"),
+                }],
+            },
+            &json!({
+                "type": "welcome",
+                "schema_version": UI_SCHEMA_VERSION,
+                "session_protocol": PROTOCOL_VERSION,
+                "grants": [{"grant": "channel-send", "channel": "local"}],
+            }),
+        );
         let message = incompatibility_message(UI_SCHEMA_VERSION + 1, UI_SCHEMA_VERSION).unwrap();
         pinned(
             &negotiate(UI_SCHEMA_VERSION + 1),
@@ -1409,6 +1432,7 @@ mod tests {
             UiResponse::Welcome {
                 schema_version: 4,
                 session_protocol: PROTOCOL_VERSION,
+                grants: Vec::new(),
             }
         );
         let older_backend = negotiate_between(5, 4);

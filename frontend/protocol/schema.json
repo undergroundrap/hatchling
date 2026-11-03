@@ -5789,7 +5789,7 @@
       ]
     },
     "ScheduleSummary": {
-      "description": "What a schedule list shows of one schedule: enough to inspect\nand cancel it. The task text, untrusted run input, is not shown.",
+      "description": "What a schedule list shows of one schedule: enough to inspect\nand cancel it.\n\nIts task text only when the owner wrote it, through the API, the\napp or the CLI: an agent's schedule's text is untrusted run input,\nand shown beside the owner's it would read as theirs.",
       "properties": {
         "channel": {
           "description": "Where a run's output goes.",
@@ -5825,6 +5825,13 @@
           "description": "The next fire, in Unix seconds, broker clock.",
           "format": "int64",
           "type": "integer"
+        },
+        "task": {
+          "description": "The task text, for a schedule the owner created; `None` for any\nother (an agent's, a space's, a feed's, or one stored before\nthe broker recorded this).",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "when": {
           "$ref": "#/$defs/ScheduleSpec",
@@ -10683,6 +10690,13 @@
         {
           "description": "The versions match: the connection is open.",
           "properties": {
+            "grants": {
+              "description": "The grants this connection holds: what a schedule it creates\nmay be given, and what the app shows such a schedule may do.\nEmpty from an older broker, and left off the wire when empty.",
+              "items": {
+                "$ref": "#/$defs/ScheduleGrant"
+              },
+              "type": "array"
+            },
             "schema_version": {
               "description": "The backend's [`UI_SCHEMA_VERSION`].",
               "format": "uint16",

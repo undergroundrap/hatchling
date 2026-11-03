@@ -6,7 +6,7 @@
 // skipped event would be lost for good.
 import type { ConnectionState } from '../../session/chat-session.js';
 import { decodeResponse, encodeRequest } from './protocol/decode.js';
-import type { Decision, UiAction, UiActionResult, UiEvent } from './protocol/generated.js';
+import type { Decision, ScheduleGrant, UiAction, UiActionResult, UiEvent } from './protocol/generated.js';
 import { EventLedger } from './protocol/reconcile.js';
 import { hello, readHandshake } from './protocol/version.js';
 /** What the transport reports. A connection ends with exactly one `closed`. */
@@ -59,6 +59,8 @@ export class LiveClient {
     #phase: 'idle' | 'greeting' | 'open' | 'ended' = 'idle';
     #generation = 0;
     #connection: ConnectionState = CONNECTING;
+    /** What this connection holds, as the broker's welcome named it. */
+    #grants: readonly ScheduleGrant[] = [];
     /**
      * `sink` receives each event once, in order, before listeners hear of it.
      * It returns a sentence, having changed nothing, when an event breaks the
@@ -74,6 +76,10 @@ export class LiveClient {
     }
     connection(): ConnectionState {
         return this.#connection;
+    }
+    /** The grants this connection holds: none until the broker welcomes it, or from a broker too old to say. */
+    grants(): readonly ScheduleGrant[] {
+        return this.#grants;
     }
     subscribe(listener: () => void): () => void {
         this.#listeners.add(listener);
@@ -151,6 +157,7 @@ export class LiveClient {
                 return;
             }
             this.#phase = 'open';
+            this.#grants = handshake.grants;
             this.#update(READY);
             this.resync();
             return;

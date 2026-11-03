@@ -45,8 +45,8 @@ const replay = (transport, frames = SAMPLE_EVENTS) => {
 };
 const answer = (transport, request_id, result) => transport.deliver({ type: 'action_result', request_id, result });
 const flush = () => new Promise(resolve => setImmediate(resolve));
-// The actions the app sent besides the allowed and signed-in sites' lists, which it asks for each time it connects.
-const sentActions = transport => transport.sent.filter(frame => frame.type === 'action' && !(['manage_sites', 'manage_profiles', 'manage_sign_ins'].includes(frame.action.action) && frame.action.op.op === 'list'));
+// The actions the app sent besides the lists it asks for each time it connects: allowed and signed-in sites, and schedules.
+const sentActions = transport => transport.sent.filter(frame => frame.type === 'action' && !(['manage_sites', 'manage_profiles', 'manage_sign_ins', 'manage_schedule'].includes(frame.action.action) && frame.action.op.op === 'list'));
 const thread = adapter => adapter.getSnapshot().threads[0];
 const lane = (adapter, id) => thread(adapter).lanes.find(item => item.id === id);
 const confirmation = (seq, revision, summary = 'Post the sample summary?') => sampleEvent(seq, seq, { kind: 'confirmation', confirmation_id: 'confirm-1', revision, chat_id: 'main', summary, expires_at: null, digest: `digest-${revision}`, fields: [{ label: 'Operation', value: summary, source: 'broker' }, { label: 'Text', value: 'Sample text.', source: 'agent' }] });
@@ -313,6 +313,45 @@ test('replays apply once: a duplicate changes nothing, and a reconnect resumes a
     assert.deepEqual(transport.last(), { type: 'subscribe', after_seq: SAMPLE_EVENTS.length });
     replay(transport);
     assert.equal(adapter.getSnapshot().messages.length, before.messages.length);
+});
+test('scheduled work: made with the welcome\'s grants, listed, removed, and what isn\'t there yet said plainly', async () => {
+    const transport = new FakeTransport();
+    const adapter = new LiveAdapter(transport, 'test-ui');
+    const local = { grant: 'channel-send', channel: 'local' };
+    transport.open();
+    transport.deliver({ ...SAMPLE_WELCOME, grants: [local] });
+    const listing = () => transport.sent.filter(frame => frame.type === 'action' && frame.action.action === 'manage_schedule' && frame.action.op.op === 'list').at(-1);
+    answer(transport, listing().request_id, { result: 'schedule', outcome: { result: 'listed', schedules: [] } });
+    await flush();
+    assert.deepEqual(adapter.getSnapshot().jobs, []);
+    const creating = adapter.execute({ type: 'job.create', title: 'Stretch', kind: 'time', schedule: 'weekdays 08:00', recurring: true, source: '', event: '' });
+    const create = transport.last();
+    assert.deepEqual(create.action, { action: 'manage_schedule', op: { op: 'create', when: { every: 'cron', expr: '0 8 * * 1-5', tz: 'UTC' }, task: 'Stretch', grants: [local], channel: 'local' } });
+    answer(transport, create.request_id, { result: 'schedule', outcome: { result: 'created', id: 'sch-1' } });
+    await flush();
+    answer(transport, listing().request_id, { result: 'schedule', outcome: { result: 'listed', schedules: [{ id: 'sch-1', kind: 'task', when: create.action.op.when, channel: 'local', grants: [local], next_due: 1790000000, task: 'Stretch' }] } });
+    assert.deepEqual(await creating, { ok: true, message: 'Scheduled. Its results arrive in this chat.', id: 'sch-1' });
+    const [job] = adapter.getSnapshot().jobs;
+    assert.deepEqual([job.id, job.title, job.schedule, job.limit], ['sch-1', 'Stretch', 'Weekdays at 08:00 (UTC)', 'May post in this chat']);
+    // Watching a source isn't there yet; nothing is sent for it.
+    const sent = transport.sent.length;
+    const hook = await adapter.execute({ type: 'job.create', title: 'x', kind: 'hook', schedule: 'when it arrives', recurring: false, source: 'GitHub', event: 'New message' });
+    assert.equal(hook.ok, false);
+    assert.match(hook.message, /at a time instead/);
+    for (const command of [{ type: 'job.update', id: 'sch-1', title: 'x', kind: 'time', schedule: 'daily 08:00', recurring: true, source: '', event: '' }, { type: 'job.toggle', id: 'sch-1' }, { type: 'job.run', id: 'sch-1' }]) {
+        const result = await adapter.execute(command);
+        assert.equal(result.ok, false, command.type);
+        assert.match(result.message, /Remove it/, command.type);
+    }
+    assert.equal(transport.sent.length, sent, 'nothing sent for what isn\'t there');
+    const removing = adapter.execute({ type: 'job.delete', id: 'sch-1' });
+    const cancel = transport.last();
+    assert.deepEqual(cancel.action, { action: 'manage_schedule', op: { op: 'cancel', id: 'sch-1' } });
+    answer(transport, cancel.request_id, { result: 'schedule', outcome: { result: 'cancelled' } });
+    await flush();
+    answer(transport, listing().request_id, { result: 'schedule', outcome: { result: 'listed', schedules: [] } });
+    assert.deepEqual(await removing, { ok: true, message: 'Removed. It won’t run again.' });
+    assert.deepEqual(adapter.getSnapshot().jobs, []);
 });
 test('a closed connection\'s late callbacks are ignored', () => {
     const transport = new FakeTransport();

@@ -72,8 +72,12 @@ test('identity and schedule updates survive validated event replay', async () =>
 });
 test('schedule grouping follows time or event semantics rather than fixture ids', () => {
     const state = createFixtures();
-    assert.equal(state.jobs.filter((job) => job.goalId === null && scheduleGroup(job) === 'Daily').length, 6);
+    assert.equal(state.jobs.filter((job) => job.goalId === null && scheduleGroup(job) === 'Daily').length, 5);
     assert.equal(scheduleGroup(state.jobs.find((job) => job.id === 'ref-job-health')), 'Weekly');
+    // Run once, it's neither daily nor weekly; every weekday is daily work.
+    assert.equal(scheduleGroup({ ...state.jobs[0], recurring: false }), 'Once');
+    assert.equal(scheduleGroup({ ...state.jobs[0], recurring: true, schedule: 'Weekdays at 08:00 (America/New_York)' }), 'Daily');
+    assert.equal(scheduleGroup({ ...state.jobs[0], recurring: true, schedule: 'Every Friday at 17:30 (America/New_York)' }), 'Weekly');
     assert.equal(scheduleGroup({ ...state.jobs[0], kind: 'hook' }), 'Events');
 });
 test('editing a schedule preserves ownership and paused state; invalid recurrence is rejected', async () => {

@@ -2288,7 +2288,11 @@ export type ScheduleSpec = {
 };
 /**
  * What a schedule list shows of one schedule: enough to inspect
- * and cancel it. The task text, untrusted run input, is not shown.
+ * and cancel it.
+ *
+ * Its task text only when the owner wrote it, through the API, the
+ * app or the CLI: an agent's schedule's text is untrusted run input,
+ * and shown beside the owner's it would read as theirs.
  */
 export type ScheduleSummary = {
     /**
@@ -2316,6 +2320,12 @@ export type ScheduleSummary = {
      * The next fire, in Unix seconds, broker clock.
      */
     readonly next_due: number;
+    /**
+     * The task text, for a schedule the owner created; `None` for any
+     * other (an agent's, a space's, a feed's, or one stored before
+     * the broker recorded this).
+     */
+    readonly task?: string | null;
     /**
      * When it fires.
      */
@@ -4224,6 +4234,12 @@ export type UiRequest = {
  * A frame the UI receives.
  */
 export type UiResponse = {
+    /**
+     * The grants this connection holds: what a schedule it creates
+     * may be given, and what the app shows such a schedule may do.
+     * Empty from an older broker, and left off the wire when empty.
+     */
+    readonly grants?: readonly (ScheduleGrant)[];
     /**
      * The backend's [`UI_SCHEMA_VERSION`].
      */

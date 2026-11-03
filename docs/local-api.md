@@ -169,11 +169,12 @@ The API's caller grants (`HATCHLING_API_GRANTS`) are written as labels: `kind:fi
 ## Schedules
 
 - **Creating one:**
-  - **Grants:** the caller must hold every grant the schedule names (a feed's are derived from its spec).
+  - **Grants:** the caller must hold every grant the schedule names (a feed's are derived from its spec). The `welcome` names the grants the connection holds (`grants`, left out when there are none), so a client can give a schedule exactly those.
   - **Delivery:** the delivery channel must be among them, as `channel-send`.
   - **`tz` is required:** an IANA name such as `Europe/Berlin`. There is no server-local default. A create without one, or with `null` or a blank name, is answered `{"result":"refused","reason":"missing-timezone"}`.
 - **Listing:** `{"op":"list"}` returns the schedules the caller holds *every* grant of, a page at a time, in id order.
-  - Each shows its `id`, `kind` (`task` or `feed`), `when`, `channel`, `grants` and `next_due` (Unix seconds); never its task text.
+  - Each shows its `id`, `kind` (`task` or `feed`), `when`, `channel`, `grants` and `next_due` (Unix seconds).
+  - Its `task` text only when the owner wrote it: created through this API (the app and the CLI included). An agent's schedule's text is untrusted run input, and shown beside yours it would read as yours, so it is never shown. Nor is the text of one stored before 0.7.0, which may be an agent's.
   - A page that isn't the last carries `next`. Send it back as `after` for the next page.
   - Nothing says how many other schedules exist.
   - A caller with no grants at all is refused `not_granted`. With the scheduler off, the answer is `denied`.

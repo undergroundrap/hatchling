@@ -155,6 +155,12 @@ pub struct Schedule {
     /// Who created it (see [`Creator`]). Broker-set; never on the wire.
     #[serde(default)]
     pub creator: Creator,
+    /// Whether the owner wrote its task, through the API, the app or the
+    /// CLI, so a listing may show it. Broker-set at the owner's create;
+    /// `false` for every other, and for one stored before this was
+    /// recorded, which may be a cell's.
+    #[serde(default)]
+    pub task_shown: bool,
     /// Its claimed fire, until that fire is resolved (WO-025). Broker-set;
     /// never on the wire.
     #[serde(default)]
@@ -298,6 +304,7 @@ pub fn validate(
         space: None,
         feed: None,
         creator: Creator::Owner,
+        task_shown: false,
         ledger: Ledger::default(),
     })
 }
