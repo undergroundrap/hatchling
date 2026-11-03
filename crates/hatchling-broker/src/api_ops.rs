@@ -2350,7 +2350,10 @@ mod tests {
             "no fallback: nowhere to go"
         );
         hub.set_fallback(chat_sink(Arc::clone(&bus)));
-        assert_eq!(delivery.deliver_verbatim("local", "Time to stretch."), Ok(true));
+        assert_eq!(
+            delivery.deliver_verbatim("local", "Time to stretch."),
+            Ok(true)
+        );
         assert_eq!(
             chats(&bus),
             [(ChatAuthor::Agent, String::from("Time to stretch."))]
