@@ -318,7 +318,8 @@ fn resolve(prefix: &str, schedules: &[hatchling_core::ScheduleSummary]) -> Resul
 pub fn report(command: &Command, outcome: ScheduleResult) -> Result<Vec<String>, String> {
     match (command, outcome) {
         (Command::Add { .. }, ScheduleResult::Created { id }) => Ok(vec![format!(
-            "Scheduled: {id}. Its results arrive in the chat."
+            "Scheduled: {}. Its results arrive in the chat.",
+            short(&id)
         )]),
         (Command::Remove { id }, ScheduleResult::Cancelled) => {
             Ok(vec![format!("Removed {}: it won't run again.", short(id))])
@@ -603,11 +604,12 @@ mod tests {
             report(
                 &add,
                 ScheduleResult::Created {
-                    id: String::from("sch-9")
+                    id: String::from("sch-82d3c6215ca6e9d2")
                 }
             ),
+            // The short id `list` shows, and `remove` takes.
             Ok(vec![String::from(
-                "Scheduled: sch-9. Its results arrive in the chat."
+                "Scheduled: sch-82d3c621. Its results arrive in the chat."
             )])
         );
         assert_eq!(
