@@ -632,6 +632,11 @@
           "type": "string"
         },
         {
+          "const": "manage_memory",
+          "description": "[`UiAction::ManageMemory`].",
+          "type": "string"
+        },
+        {
           "const": "read_usage",
           "description": "[`UiAction::ReadUsage`].",
           "type": "string"
@@ -4286,6 +4291,150 @@
         }
       ]
     },
+    "Kept": {
+      "description": "One thing the agent is given from the owner's memory.",
+      "properties": {
+        "approved": {
+          "description": "Whether the owner approved it: what the agent asked to keep, and\nthey approved, is; anything kept some other way isn't.",
+          "type": "boolean"
+        },
+        "content": {
+          "description": "The words kept.",
+          "type": "string"
+        },
+        "id": {
+          "description": "Its id.",
+          "type": "string"
+        },
+        "kept_at": {
+          "description": "When it was kept, Unix seconds.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "content",
+        "kept_at",
+        "approved"
+      ],
+      "type": "object"
+    },
+    "KeptOp": {
+      "description": "An operation on what the agent is given from the owner's memory, from\ntheir app.",
+      "oneOf": [
+        {
+          "description": "List it.",
+          "properties": {
+            "op": {
+              "const": "list",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Forget one: later runs aren't given it.",
+          "properties": {
+            "id": {
+              "description": "It, as listed.",
+              "type": "string"
+            },
+            "op": {
+              "const": "forget",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "id"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "KeptResult": {
+      "description": "The result of a [`KeptOp`].",
+      "oneOf": [
+        {
+          "description": "Everything the agent is given, the newest first.",
+          "properties": {
+            "kept": {
+              "description": "It.",
+              "items": {
+                "$ref": "#/$defs/Kept"
+              },
+              "type": "array"
+            },
+            "result": {
+              "const": "listed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "kept"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "It was forgotten.",
+          "properties": {
+            "result": {
+              "const": "forgotten",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Nothing kept has the id.",
+          "properties": {
+            "result": {
+              "const": "not_found",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The broker keeps no memory: the operator hasn't given it a place to.",
+          "properties": {
+            "result": {
+              "const": "off",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The broker couldn't read or change it; its log says why.",
+          "properties": {
+            "result": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "Key": {
       "description": "The keys an action may press: the ones a form needs, and nothing that\nreaches the browser's own shortcuts.",
       "oneOf": [
@@ -4506,6 +4655,37 @@
           },
           "required": [
             "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A proposal was put to the owner (v18): nothing is kept unless they\napprove it.",
+          "properties": {
+            "result": {
+              "const": "proposed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A proposal wasn't put to the owner (v18): they said no to the same\none already, or their requests are paused or full. `reason` says\nwhich, for the agent to tell them.",
+          "properties": {
+            "reason": {
+              "description": "Why.",
+              "type": "string"
+            },
+            "result": {
+              "const": "unasked",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "reason"
           ],
           "type": "object"
         }
@@ -6604,6 +6784,24 @@
               },
               "required": [
                 "op"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Ask the owner to keep `content` about them in their memory (v18):\none line or a few, in the agent's words. Nothing is written until\nthe owner approves it, in the app; then the broker keeps it, in the\nuser scope, recalled into later runs. The agent never writes there\nitself.",
+              "properties": {
+                "content": {
+                  "description": "What to keep. Untrusted text: shown to the owner as the\nagent's words.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "propose",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "content"
               ],
               "type": "object"
             }
@@ -9961,6 +10159,24 @@
           "type": "object"
         },
         {
+          "description": "List or forget what the agent is given from the owner's memory: the\nowner's alone.",
+          "properties": {
+            "action": {
+              "const": "manage_memory",
+              "type": "string"
+            },
+            "op": {
+              "$ref": "#/$defs/KeptOp",
+              "description": "The operation."
+            }
+          },
+          "required": [
+            "action",
+            "op"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Read the model usage the broker counted: the owner's alone.",
           "properties": {
             "action": {
@@ -10441,6 +10657,24 @@
             },
             "result": {
               "const": "goals",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "outcome"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A memory operation's result.",
+          "properties": {
+            "outcome": {
+              "$ref": "#/$defs/KeptResult",
+              "description": "The result."
+            },
+            "result": {
+              "const": "memory",
               "type": "string"
             }
           },
@@ -11600,7 +11834,7 @@
       "backend_newer": "broker v{backend} needs frontend ≥ v{backend}; frontend is v{frontend} — reload the frontend to update",
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
-    "session_protocol": 17,
+    "session_protocol": 18,
     "ui_schema_version": 4
   },
   "x-roots": {

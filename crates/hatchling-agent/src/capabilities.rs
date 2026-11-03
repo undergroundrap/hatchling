@@ -80,7 +80,10 @@ mod tests {
         assert!(off.contains("can't see the owner's goals"), "{off}");
         assert!(off.contains("can't keep anything"), "{off}");
         let memory = note(Some(&BTreeSet::from([ToolGroup::Memory])));
-        assert!(memory.contains("ask to remember it with memory_propose"), "{memory}");
+        assert!(
+            memory.contains("ask to remember it with memory_propose"),
+            "{memory}"
+        );
         let goals = note(Some(&BTreeSet::from([ToolGroup::Goals])));
         assert!(
             goals.contains("read the owner's open goals with goals_read"),

@@ -113,6 +113,7 @@ The agent's browser can open a site signed in as you, in a browser of that site'
 - **Sign-ins the broker fills:** `manage_sign_ins` with `store` (a profile, one of its sites' exact origins, a label, a username and a password), `list` (each by its label and origin, never its username or password) or `delete`. They go to the vault keeper, not the broker. The agent can only ask for the form on its page to be filled; it's filled on the sign-in's own origin alone.
 - **Model usage:** `read_usage` answers `usage`: each of the last seven days on the machine's clock, today first, with its model `calls`, `input_tokens`, `output_tokens` and the calls whose reply reported no usage (`unreported`), and each model's totals over those days. The broker counts it from what the model server reported with each reply, never from what the agent says. `counted` is false with scheduling off.
 - **Your goals:** `manage_goals` with `list` (each goal's `id`, `title`, `detail`, `state` (`open`, `achieved` or `abandoned`), `created_at` and `updated_at`, open first), `create` (a one-line `title` and a `detail`), `update` (an open goal's `title` or `detail`) or `close` (with `achieved`: true when reached, false when set aside). A closed goal is kept, and can't be changed or reopened. They're the goals the agent reads, so the app acts as the agent's principal. `off` means the broker keeps no goals (`HATCHLING_GOALS_DIR` unset).
+- **Your memory:** `manage_memory` with `list` (everything the agent is given from your memory, the newest first: each one's `id`, `content`, `kept_at`, and whether you `approved` it) or `forget` (by its `id`; later runs aren't given it). Nothing is added through the API: the agent asks to keep something (`memory_propose`), you approve its words like any other request, and the broker keeps them. `off` means the broker keeps no memory (`HATCHLING_MEMORY_DIR` unset).
 - **One-time codes:** when the page in a signed-in browser asks for one, the stream's `browser_code` event names the `session_id`, the `request_id` and the `origin`. `give_code` with those and the `code` has it typed into that page once, and `decline_code` refuses it. A code isn't kept, and the agent never sees it.
 
 ## How enums appear in JSON
@@ -142,6 +143,7 @@ Variant names are `snake_case` for the `Ui*` types, and kebab-case for the sched
 | `UiAction::ManageSignIns` | `{"action":"manage_sign_ins","op":{"op":"delete","sign_in_id":"sign-in-1"}}` |
 | `UiAction::ReadUsage` | `{"action":"read_usage"}` |
 | `UiAction::ManageGoals` | `{"action":"manage_goals","op":{"op":"close","id":"goal-1","achieved":true}}` |
+| `UiAction::ManageMemory` | `{"action":"manage_memory","op":{"op":"forget","id":"user/kept-1"}}` |
 | `UiAction::GiveCode` | `{"action":"give_code","session_id":"browser-1","request_id":"code-1","code":"481516"}` |
 | `ScheduleOp::Create` | `{"op":"create","when":{"every":"cron","expr":"0 9 * * 1-5","tz":"Europe/Berlin"},"task":"Summarize my open goals.","grants":[{"grant":"goals","action":"query-goals"},{"grant":"channel-send","channel":"local"}],"channel":"local"}` |
 | `ScheduleOp::List` | `{"op":"list","after":"sch-1"}` |

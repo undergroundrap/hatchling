@@ -168,8 +168,8 @@ pub fn recall_by_tag(
             | MemoryResult::Removed { .. }
             | MemoryResult::ContextAppended
             | MemoryResult::ContextEntries { .. }
-        | MemoryResult::Proposed
-        | MemoryResult::Unasked { .. }) => return Err(unexpected_reply(&op, &other)),
+            | MemoryResult::Proposed
+            | MemoryResult::Unasked { .. }) => return Err(unexpected_reply(&op, &other)),
         }
     }
 }
@@ -307,8 +307,8 @@ pub fn context_read(stream: &UnixStream) -> Result<Vec<String>, Error> {
             | MemoryResult::NotFound
             | MemoryResult::Removed { .. }
             | MemoryResult::ContextAppended
-        | MemoryResult::Proposed
-        | MemoryResult::Unasked { .. }) => return Err(unexpected_reply(&op, &other)),
+            | MemoryResult::Proposed
+            | MemoryResult::Unasked { .. }) => return Err(unexpected_reply(&op, &other)),
         }
     }
 }

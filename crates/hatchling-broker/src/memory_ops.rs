@@ -230,7 +230,10 @@ fn is_granted(config: &MemoryConfig, scope: &str, action: MemoryAction) -> bool 
 /// `uid-<peer uid>` (the broker asserts the identity; the agent names
 /// no project), `session` binds to the broker-minted session id.
 /// Anything else is refused.
-fn bind_scope(scope: &str, principal: &MemoryPrincipal) -> Result<MemoryScope, String> {
+pub(crate) fn bind_scope(
+    scope: &str,
+    principal: &MemoryPrincipal,
+) -> Result<MemoryScope, String> {
     match scope {
         "user" => Ok(MemoryScope::User),
         "project" => {
@@ -382,8 +385,8 @@ mod paging_tests {
                 | MemoryResult::ContextAppended
                 | MemoryResult::Denied
                 | MemoryResult::MemoryError
-        | MemoryResult::Proposed
-        | MemoryResult::Unasked { .. }) => {
+                | MemoryResult::Proposed
+                | MemoryResult::Unasked { .. }) => {
                     unreachable!("page {pages}: not a page but {other:?}")
                 }
             };

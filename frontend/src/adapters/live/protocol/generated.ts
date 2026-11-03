@@ -4,7 +4,7 @@
 /** The frontend protocol version this build speaks. */
 export const UI_SCHEMA_VERSION = 4;
 /** The broker session protocol version the schema was generated at. */
-export const SESSION_PROTOCOL_VERSION = 17;
+export const SESSION_PROTOCOL_VERSION = 18;
 /** The mismatch sentence when this frontend is the newer side. */
 export const INCOMPATIBLE_FRONTEND_NEWER = 'frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update';
 /** The mismatch sentence when the backend is the newer side. */
@@ -278,7 +278,7 @@ export type ApiOutcome = 'served' | 'refused';
  * What one API call asked for: the request's kind, never its content
  * (a message's text, a file, a schedule's task).
  */
-export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'manage_goals' | 'read_usage' | 'give_code' | 'decline_code';
+export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'manage_goals' | 'manage_memory' | 'read_usage' | 'give_code' | 'decline_code';
 /**
  * A bearer token, presented in `Hello` for a token provider.
  *
@@ -1717,6 +1717,59 @@ export type InspectionFinding = {
  */
 export type InspectionVerdict = 'pass' | 'fail';
 /**
+ * One thing the agent is given from the owner's memory.
+ */
+export type Kept = {
+    /**
+     * Whether the owner approved it: what the agent asked to keep, and
+     * they approved, is; anything kept some other way isn't.
+     */
+    readonly approved: boolean;
+    /**
+     * The words kept.
+     */
+    readonly content: string;
+    /**
+     * Its id.
+     */
+    readonly id: string;
+    /**
+     * When it was kept, Unix seconds.
+     */
+    readonly kept_at: number;
+};
+/**
+ * An operation on what the agent is given from the owner's memory, from
+ * their app.
+ */
+export type KeptOp = {
+    readonly op: 'list';
+} | {
+    /**
+     * It, as listed.
+     */
+    readonly id: string;
+    readonly op: 'forget';
+};
+/**
+ * The result of a [`KeptOp`].
+ */
+export type KeptResult = {
+    /**
+     * It.
+     */
+    readonly kept: readonly (Kept)[];
+    readonly result: 'listed';
+} | {
+    readonly result: 'forgotten';
+} | {
+    readonly result: 'not_found';
+} | {
+    readonly result: 'off';
+} | {
+    readonly result: 'failed';
+};
+/**
  * The keys an action may press: the ones a form needs, and nothing that
  * reaches the browser's own shortcuts.
  */
@@ -1785,6 +1838,14 @@ export type MemoryResult = {
     readonly result: 'denied';
 } | {
     readonly result: 'memory-error';
+} | {
+    readonly result: 'proposed';
+} | {
+    /**
+     * Why.
+     */
+    readonly reason: string;
+    readonly result: 'unasked';
 };
 /**
  * An answer to an [`OperatorQuery`].
@@ -2649,6 +2710,13 @@ export type SessionRequest = {
      */
     readonly after?: string | null;
     readonly op: 'context-read';
+} | {
+    /**
+     * What to keep. Untrusted text: shown to the owner as the
+     * agent's words.
+     */
+    readonly content: string;
+    readonly op: 'propose';
 }) | {
     readonly kind: 'skill';
 } & ({
@@ -3915,6 +3983,12 @@ export type UiAction = {
      */
     readonly op: GoalOp;
 } | {
+    readonly action: 'manage_memory';
+    /**
+     * The operation.
+     */
+    readonly op: KeptOp;
+} | {
     readonly action: 'read_usage';
 } | {
     readonly action: 'give_code';
@@ -4108,6 +4182,12 @@ export type UiActionResult = {
      */
     readonly outcome: GoalResult;
     readonly result: 'goals';
+} | {
+    /**
+     * The result.
+     */
+    readonly outcome: KeptResult;
+    readonly result: 'memory';
 } | {
     readonly result: 'usage';
     /**

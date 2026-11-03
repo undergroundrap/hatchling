@@ -46,7 +46,7 @@ const replay = (transport, frames = SAMPLE_EVENTS) => {
 const answer = (transport, request_id, result) => transport.deliver({ type: 'action_result', request_id, result });
 const flush = () => new Promise(resolve => setImmediate(resolve));
 // The actions the app sent besides what it reads each time it connects: allowed and signed-in sites, schedules, goals, and usage.
-const sentActions = transport => transport.sent.filter(frame => frame.type === 'action' && frame.action.action !== 'read_usage' && !(['manage_sites', 'manage_profiles', 'manage_sign_ins', 'manage_schedule', 'manage_goals'].includes(frame.action.action) && frame.action.op.op === 'list'));
+const sentActions = transport => transport.sent.filter(frame => frame.type === 'action' && frame.action.action !== 'read_usage' && !(['manage_sites', 'manage_profiles', 'manage_sign_ins', 'manage_schedule', 'manage_goals', 'manage_memory'].includes(frame.action.action) && frame.action.op.op === 'list'));
 const thread = adapter => adapter.getSnapshot().threads[0];
 const lane = (adapter, id) => thread(adapter).lanes.find(item => item.id === id);
 const confirmation = (seq, revision, summary = 'Post the sample summary?') => sampleEvent(seq, seq, { kind: 'confirmation', confirmation_id: 'confirm-1', revision, chat_id: 'main', summary, expires_at: null, digest: `digest-${revision}`, fields: [{ label: 'Operation', value: summary, source: 'broker' }, { label: 'Text', value: 'Sample text.', source: 'agent' }] });
@@ -556,8 +556,10 @@ test('a site that can be kept offers Allow always, sent as approve_always and sh
     assert.deepEqual(await pending, { state: 'accepted', detail: 'Hatchling recorded your answer.' });
     transport.deliver(decidedEvent(2, 'approve_always', 1));
     assert.equal(adapter.taskApprovals.getSnapshot()[0].status, 'allowed-always');
-    // Deciding always asks the broker for its list again.
-    assert.deepEqual(transport.last().action, { action: 'manage_sites', op: { op: 'list' } });
+    // Deciding always asks the broker for its list again; and for what's
+    // kept, since a decision can keep something.
+    const asked = transport.sent.slice(-2).map(frame => frame.action);
+    assert.deepEqual(asked, [{ action: 'manage_sites', op: { op: 'list' } }, { action: 'manage_memory', op: { op: 'list' } }]);
     // Where it isn't offered, it's refused before anything is sent.
     const other = connected();
     other.transport.deliver(sampleEvent(1, 1, { kind: 'confirmation', confirmation_id: 'confirm-1', revision: 1, chat_id: 'main', summary: 'Let the agent read a site', expires_at: null, digest: 'digest-1', fields: [], session: true }));
@@ -1057,4 +1059,19 @@ test('goals: listed into the snapshot, set and changed by the page\'s commands, 
     assert.match((await adapter.execute({ type: 'goal.close', id: 'g1' })).message, /reached or set aside/);
     assert.match((await adapter.execute({ type: 'goal.reopen', id: 'g1' })).message, /stays closed/);
     assert.equal(typeof adapter.goals.close, 'function');
+});
+test('memory: listed into the snapshot, forgotten from the page, never added there', async () => {
+    const { transport, adapter } = connected();
+    const last = op => transport.sent.filter(frame => frame.type === 'action' && frame.action.action === 'manage_memory' && frame.action.op.op === op).at(-1);
+    answer(transport, last('list').request_id, { result: 'memory', outcome: { result: 'listed', kept: [{ id: 'user/kept-1', content: 'Their cat is Biscuit.', kept_at: 1793707200, approved: true }] } });
+    await flush();
+    assert.deepEqual(adapter.getSnapshot().memory.map(entry => [entry.id, entry.body]), [['user/kept-1', 'Their cat is Biscuit.']]);
+    const forgetting = adapter.execute({ type: 'memory.delete', id: 'user/kept-1' });
+    assert.deepEqual(last('forget').action, { action: 'manage_memory', op: { op: 'forget', id: 'user/kept-1' } });
+    answer(transport, last('forget').request_id, { result: 'memory', outcome: { result: 'forgotten' } });
+    await flush();
+    answer(transport, last('list').request_id, { result: 'memory', outcome: { result: 'listed', kept: [] } });
+    assert.equal((await forgetting).ok, true);
+    assert.deepEqual(adapter.getSnapshot().memory, []);
+    assert.match((await adapter.execute({ type: 'memory.save', id: '', title: 't', body: 'b' })).message, /you approve its words/);
 });

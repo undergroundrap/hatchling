@@ -344,7 +344,7 @@ impl Board {
                     ConfirmationField {
                         label: String::from("Operation"),
                         value: String::from(
-                            "Keep this in your memory. The agent is given it in every chat and scheduled run from now on, as something you approved. You can forget it in the app.",
+                            "Keep this in your memory. The agent is given it in every chat and scheduled run from now on, as something you approved. You can forget it in Memory (Settings, then Data controls).",
                         ),
                         source: FieldSource::Broker,
                     },

@@ -22,7 +22,8 @@ use hatchling_memory::{
 };
 
 use crate::Config;
-use crate::approval_board::{Refusal, board};
+use crate::approval_board::board;
+use crate::approvals::Refusal;
 use crate::config::MemoryAction;
 
 /// The tag a run's recall reads: what's kept is given to later runs.
@@ -124,7 +125,7 @@ pub fn handle_kept_op(config: &Config, op: &KeptOp) -> KeptResult {
     match op {
         KeptOp::List => list(&store, &principal, now),
         KeptOp::Forget { id } => {
-            let Some((scope, id)) = parse_kept_id(id) else {
+            let Some((scope, id)) = parse_kept_id(id, &principal) else {
                 return KeptResult::NotFound;
             };
             match store.remove(&principal, &scope, &id) {
@@ -155,7 +156,10 @@ fn list(store: &MemoryStore, principal: &MemoryPrincipal, now: u64) -> KeptResul
         return KeptResult::Failed;
     };
     let mut kept = Vec::new();
-    for (name, scope) in [("user", MemoryScope::User), ("project", MemoryScope::Project)] {
+    for name in ["user", "project"] {
+        let Ok(scope) = crate::memory_ops::bind_scope(name, principal) else {
+            return KeptResult::Failed;
+        };
         match store.recall_by_tag(principal, &scope, &recall, now) {
             Ok(items) => kept.extend(items.into_iter().map(|item| Kept {
                 id: format!("{name}/{}", item.id),
@@ -173,14 +177,14 @@ fn list(store: &MemoryStore, principal: &MemoryPrincipal, now: u64) -> KeptResul
     KeptResult::Listed { kept }
 }
 
-/// A listed id, `<scope>/<id>`: `None` for anything else.
-fn parse_kept_id(raw: &str) -> Option<(MemoryScope, MemoryId)> {
+/// A listed id, `<scope>/<id>`, bound for `principal`: `None` for anything
+/// else.
+fn parse_kept_id(raw: &str, principal: &MemoryPrincipal) -> Option<(MemoryScope, MemoryId)> {
     let (scope, id) = raw.split_once('/')?;
-    let scope = match scope {
-        "user" => MemoryScope::User,
-        "project" => MemoryScope::Project,
-        _ => return None,
-    };
+    if scope != "user" && scope != "project" {
+        return None;
+    }
+    let scope = crate::memory_ops::bind_scope(scope, principal).ok()?;
     Some((scope, id.parse().ok()?))
 }
 
@@ -348,7 +352,7 @@ mod tests {
         store
             .write(
                 &principal,
-                &MemoryScope::Project,
+                &crate::memory_ops::bind_scope("project", &principal).unwrap(),
                 &"note".parse().unwrap(),
                 "Project note.",
                 &[RECALL_TAG.parse().unwrap()],

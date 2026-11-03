@@ -18,8 +18,8 @@ use hatchling_core::framing::{read_frame, read_frame_or_eof, write_frame};
 use hatchling_core::ui::operator::{CellKind, EgressVerdict};
 use hatchling_core::{
     AgentMessage, BrokerMessage, CellId, ChannelResult, EgressOp, EgressResult, GoalsResult,
-    HookResult, MAX_FRAME_BYTES, MemoryOp, MemoryResult, PROTOCOL_VERSION, PeerCredentials, PeerPid,
-    QueryResult, ScheduleResult, SecretName, SessionRequest, SessionResponse, SkillResult,
+    HookResult, MAX_FRAME_BYTES, MemoryOp, MemoryResult, PROTOCOL_VERSION, PeerCredentials,
+    PeerPid, QueryResult, ScheduleResult, SecretName, SessionRequest, SessionResponse, SkillResult,
     VaultResult, decode_secret, encode_secret, peer_credentials,
 };
 use hatchling_egress::{EgressRequest, Proxy};

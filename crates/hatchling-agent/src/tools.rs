@@ -3474,7 +3474,10 @@ mod tests {
         let (a, _b) = socket_pair();
         let tool = MemoryProposeTool::new(&a);
         assert_eq!(tool.name(), "memory_propose");
-        assert!(tool.description().starts_with("Ask the owner to remember something about them"));
+        assert!(
+            tool.description()
+                .starts_with("Ask the owner to remember something about them")
+        );
         let schema = tool.parameters_schema();
         assert_eq!(schema.get("required"), Some(&json!(["content"])));
         assert_eq!(schema.get("additionalProperties"), Some(&json!(false)));

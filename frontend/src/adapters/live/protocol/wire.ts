@@ -445,6 +445,10 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "string"
             },
             {
+                "const": "manage_memory",
+                "type": "string"
+            },
+            {
                 "const": "read_usage",
                 "type": "string"
             },
@@ -1670,6 +1674,133 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             "base64"
         ],
         "type": "object"
+    },
+    "Kept": {
+        "properties": {
+            "approved": {
+                "type": "boolean"
+            },
+            "content": {
+                "type": "string"
+            },
+            "id": {
+                "type": "string"
+            },
+            "kept_at": {
+                "minimum": 0,
+                "type": "integer"
+            }
+        },
+        "required": [
+            "id",
+            "content",
+            "kept_at",
+            "approved"
+        ],
+        "type": "object"
+    },
+    "KeptOp": {
+        "oneOf": [
+            {
+                "properties": {
+                    "op": {
+                        "const": "list",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "op"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "id": {
+                        "type": "string"
+                    },
+                    "op": {
+                        "const": "forget",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "op",
+                    "id"
+                ],
+                "type": "object"
+            }
+        ]
+    },
+    "KeptResult": {
+        "oneOf": [
+            {
+                "properties": {
+                    "kept": {
+                        "items": {
+                            "$ref": "#/$defs/Kept"
+                        },
+                        "type": "array"
+                    },
+                    "result": {
+                        "const": "listed",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "kept"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "forgotten",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "not_found",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "off",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "failed",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            }
+        ]
     },
     "Key": {
         "oneOf": [
@@ -3438,6 +3569,22 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             {
                 "properties": {
                     "action": {
+                        "const": "manage_memory",
+                        "type": "string"
+                    },
+                    "op": {
+                        "$ref": "#/$defs/KeptOp"
+                    }
+                },
+                "required": [
+                    "action",
+                    "op"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
                         "const": "read_usage",
                         "type": "string"
                     }
@@ -3853,6 +4000,22 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     },
                     "result": {
                         "const": "goals",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "outcome"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "outcome": {
+                        "$ref": "#/$defs/KeptResult"
+                    },
+                    "result": {
+                        "const": "memory",
                         "type": "string"
                     }
                 },
