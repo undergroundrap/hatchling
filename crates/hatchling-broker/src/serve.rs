@@ -1448,6 +1448,18 @@ fn reject(stream: &UnixStream, reason: &str) -> Result<(), Error> {
 mod tests {
     use super::*;
 
+    /// [`handle_egress_op`] for peer 1000, in a session that counts no
+    /// usage.
+    fn egress_op(
+        proxy: &dyn EgressPath,
+        egress: &EgressConfig,
+        op: &EgressOp,
+        cell_id: &CellId,
+        pages: &mut crate::egress_pages::Pages,
+    ) -> Result<EgressResult, Error> {
+        handle_egress_op(proxy, egress, op, cell_id, 1000, pages, std::path::Path::new(""))
+    }
+
     /// Through a spawner that's gone, the agent cell isn't started, and
     /// the spawn says so.
     #[test]
@@ -1710,17 +1722,7 @@ mod tests {
         let proxy = init_egress_proxy(&egress, &vault, &key).unwrap();
         let cell_id: CellId = "cell-pages".parse().unwrap();
         let mut pages = crate::egress_pages::Pages::default();
-        let mut op = |op: EgressOp| {
-            handle_egress_op(
-                &proxy,
-                &egress,
-                &op,
-                &cell_id,
-                1000,
-                &mut pages,
-                std::path::Path::new(""),
-            )
-        };
+        let mut op = |op: EgressOp| egress_op(&proxy, &egress, &op, &cell_id, &mut pages);
         let stage = |part: &[u8]| EgressOp::Stage {
             part_b64: encode_secret(part),
         };
@@ -1770,16 +1772,7 @@ mod tests {
             ttl_secs: 60,
         };
         assert_eq!(
-            handle_egress_op(
-                &proxy,
-                &granted_elsewhere,
-                &mint,
-                &cell_id,
-                1000,
-                &mut pages,
-                std::path::Path::new("")
-            )
-            .unwrap(),
+            egress_op(&proxy, &granted_elsewhere, &mint, &cell_id, &mut pages).unwrap(),
             EgressResult::Denied
         );
         // Minting directly: an allowlisted destination gets its surrogate,

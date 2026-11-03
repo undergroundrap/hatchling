@@ -68,10 +68,11 @@ struct Call {
     output: Option<u64>,
 }
 
-/// Counts `request`'s answer `response`, at `at` (Unix seconds), in the
-/// usage directory `dir`, if it's a model call answered with success.
-/// Nothing is counted when `dir` is empty. A count that can't be written
-/// is logged, and the answer goes on to the cell all the same.
+/// Counts `request`'s answer `response` in the usage directory `dir`.
+///
+/// Only a model call answered with success counts, at `at` (Unix seconds),
+/// and nothing does when `dir` is empty. A count that can't be written is
+/// logged, and the answer goes on to the cell all the same.
 pub fn count(dir: &Path, request: &EgressRequest, response: &EgressResponse, at: i64) {
     if dir.as_os_str().is_empty() || !(200..=299).contains(&response.status) {
         return;
@@ -516,7 +517,7 @@ mod tests {
             1
         );
         // Too large to read: the day isn't reported.
-        let big = std::fs::OpenOptions::new()
+        let big = OpenOptions::new()
             .append(true)
             .open(&file)
             .unwrap();

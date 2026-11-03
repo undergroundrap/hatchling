@@ -2000,11 +2000,14 @@ mod tests {
                 ApiOutcome::Refused
             )
         );
-        let (UiActionResult::Usage { usage }, ApiOutcome::Served) =
-            ops.handle(&owner, &read, &mut replies)
-        else {
-            panic!("the owner reads the usage");
-        };
+        let (result, outcome) = ops.handle(&owner, &read, &mut replies);
+        assert_eq!(outcome, ApiOutcome::Served);
+        let usage = if let UiActionResult::Usage { usage } = result {
+            Some(usage)
+        } else {
+            None
+        }
+        .unwrap();
         assert!(usage.counted);
         let today = usage.days.first().unwrap();
         assert_eq!(
