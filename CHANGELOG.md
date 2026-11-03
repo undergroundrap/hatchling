@@ -32,6 +32,13 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Fixed
 
+- **Every screen is real or says plainly what isn't there yet.** Connected to Hatchling, the app no longer shows the demo's samples as yours:
+  - Settings showed a "Free plan, 100% used" meter, "709M tokens left" and an Upgrade button. It now says there's no plan or quota, and that usage counting and spending limits come next.
+  - The Wallet invited you to add payment methods. It now says Hatchling can't make purchases, and that when it can, each will need your yes on the exact quote.
+  - Connectors offered sample services. It now says none are connected yet, and how they'll come.
+  - Goals let you fill in a goal, then said it couldn't be done. It now says goals from the app are coming.
+  - Feed, Ideas and Library carried "synthetic sample" footnotes. They now say what each is, and Feed says when there's no digest yet.
+  - "Log out" left a workspace that doesn't exist. It's gone in live mode.
 - **A scheduled run that fails says so in the chat.** A run that failed or couldn't start was kept for the owner with only a line in the broker's log, so a check you counted on could stop without a word. Now the chat is told, in the broker's words: "Your scheduled work “Check the disks” didn't finish. Hatchling couldn't get an answer from its model (qwen3.5:9b)…", naming the task only when you wrote it, and never quoting what the run wrote. The run's record is kept as before. And a scheduled run's model is told the task is due now, with you away: given "Remind me to stretch" bare, a model answered as if asked to set the reminder.
 - **A scheduled run's result reaches the chat.** It went to the chat only through the reply route a connection makes when it sends a message, so after a restart, or with the app closed, a run did its work and its result was parked as undeliverable ("no local ingress client"). The chat's own record is now where a reply goes whenever no client has attached a route, and the app shows it when it next connects. Found by scheduling a reminder in a real install and watching for it.
 - **A model that runs out of room says so.** A thinking model on Ollama's default 4,096-token window was cut off partway through its answer, and the chat called the model unreachable. A reply the server cut off is now its own failure, and the chat says the model ran out of room and how to give it more (`OLLAMA_CONTEXT_LENGTH`). The install guide sets the window to 16,384 tokens, and no longer suggests `HATCHLING_SCHEDULER_MODEL_REASONING=disabled`, which Ollama ignores.

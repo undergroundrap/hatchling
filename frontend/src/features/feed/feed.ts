@@ -5,13 +5,16 @@ import type { DeepReadonly, FeedPost } from '../../protocol/models.js';
 import { h, valueOf } from '../../components/dom.js';
 import { icon } from '../../components/icons.js';
 import { pictogram } from '../../components/pictograms.js';
-import { button, iconButton, inlineText, markdown, menu, textareaField } from '../../components/ui.js';
+import { button, emptyState, iconButton, inlineText, markdown, menu, textareaField } from '../../components/ui.js';
+/** What the feed is, connected to Hatchling: said plainly, since nothing in it is a sample. */
+const LIVE_ABOUT = 'Your feed is a digest Hatchling writes from your own goals, tracking and memory, on a schedule you choose. Nothing in it comes from outside your install.';
 export function renderFeed(ctx: AppContext): HTMLElement {
+    const live = ctx.state.mode === 'live';
     const prompt = h('section', { class: 'feed-prompt', hidden: !ctx.ui.feedPromptOpen, 'aria-label': 'Your feed prompt' }, h('div', { class: 'eyebrow' }, 'Your feed prompt'), h('p', {}, ctx.state.settings.feedPrompt), h('div', { class: 'feed-prompt-actions' }, button('Edit', () => editPrompt(ctx), { icon: 'edit' }), button(ctx.contentLoading.read('feed').phase === 'loading' ? 'Generating…' : 'Generate', () => { void ctx.run({ type: 'feed.generate' }); }, { icon: 'refresh', variant: 'primary', disabled: ctx.contentLoading.read('feed').phase === 'loading' }), button('Done', () => { ctx.ui.feedPromptOpen = false; ctx.render(); }, { variant: 'ghost' })));
     const options = menu('Feed options', [
         { label: ctx.ui.feedPromptOpen ? 'Hide feed prompt' : 'Your feed prompt', icon: 'edit', action: () => { ctx.ui.feedPromptOpen = !ctx.ui.feedPromptOpen; ctx.render(); } },
-        { label: 'Generate sample edition', icon: 'refresh', action: () => { void ctx.run({ type: 'feed.generate' }); } },
-        { label: 'About this feed', icon: 'help', action: () => { ctx.dialogs.open('Synthetic sample feed', h('p', {}, 'All posts are synthetic examples. Their illustrations are original local diagrams. Highlighted phrases explain the sample; they are not sources or real news links. No personal interests were inferred.')); } },
+        ...(live ? [] : [{ label: 'Generate sample edition', icon: 'refresh' as const, action: () => { void ctx.run({ type: 'feed.generate' }); } }]),
+        { label: 'About this feed', icon: 'help', action: () => { ctx.dialogs.open(live ? 'About your feed' : 'Synthetic sample feed', h('p', {}, live ? LIVE_ABOUT : 'All posts are synthetic examples. Their illustrations are original local diagrams. Highlighted phrases explain the sample; they are not sources or real news links. No personal interests were inferred.')); } },
     ]);
     const page = h('div', { class: 'page feed-page', 'data-scroll': 'feed' }, h('header', { class: 'feed-header' }, h('div', { class: 'feed-header-inner' }, h('h1', {}, 'Feed'), options)));
     const stream = h('div', { class: 'feed-stream' }, prompt);
@@ -27,7 +30,9 @@ export function renderFeed(ctx: AppContext): HTMLElement {
         }
         stream.append(postRow(ctx, post));
     }
-    stream.append(h('p', { class: 'sample-footnote' }, 'Synthetic sample feed · fictional editorial examples, not news.'));
+    if (live && !ctx.state.posts.length)
+        stream.append(emptyState('feed', 'No digest yet.', 'Setting up a scheduled digest from the app comes next.'));
+    stream.append(h('p', { class: 'sample-footnote' }, live ? 'Written from your own records, on your own machine.' : 'Synthetic sample feed · fictional editorial examples, not news.'));
     page.append(stream);
     return page;
 }

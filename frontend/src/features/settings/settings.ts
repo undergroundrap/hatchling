@@ -64,14 +64,17 @@ export function openSettings(ctx: AppContext, initial = 'general'): void {
             }
         });
         nav.append(mobileSections);
-        nav.append(h('div', { class: 'settings-nav-bottom' }, button('Log out', () => {
-            ctx.dialogs.confirm('Leave this local workspace?', 'There is no signed-in account in this frontend. Close the workspace without deleting your local edits? Reset is available in Data controls.', () => {
-                ctx.dialogs.closeAll();
-                const welcome = h('div', { class: 'stack' }, h('p', {}, 'The local workspace is paused. Your saved edits are still on this device.'));
-                const paused = ctx.dialogs.open('Workspace paused', welcome);
-                welcome.append(button('Return to workspace', paused.close, { variant: 'primary' }));
-            }, { label: 'Leave workspace' });
-        }, { icon: 'logout', variant: 'ghost' })));
+        // Connected to Hatchling there's no account to leave: the app's key
+        // lives only in this tab, and closing it is leaving.
+        if (ctx.state.mode !== 'live')
+            nav.append(h('div', { class: 'settings-nav-bottom' }, button('Log out', () => {
+                ctx.dialogs.confirm('Leave this local workspace?', 'There is no signed-in account in this frontend. Close the workspace without deleting your local edits? Reset is available in Data controls.', () => {
+                    ctx.dialogs.closeAll();
+                    const welcome = h('div', { class: 'stack' }, h('p', {}, 'The local workspace is paused. Your saved edits are still on this device.'));
+                    const paused = ctx.dialogs.open('Workspace paused', welcome);
+                    welcome.append(button('Return to workspace', paused.close, { variant: 'primary' }));
+                }, { label: 'Leave workspace' });
+            }, { icon: 'logout', variant: 'ghost' })));
         const title = detail === 'connector' ? ctx.state.connectors.find(item => item.id === detailId)?.name ?? 'Connector' : detail === 'wallet-provider' ? ctx.state.providers.find(item => item.id === detailId)?.name ?? 'Payment methods' : titles[detail] ?? (active === 'secure' ? 'Secure credentials store' : sections.find(section => section.id === active)?.title ?? 'General');
         const pane = h('section', { class: 'settings-pane', 'data-scroll': 'settings-pane', 'data-section': active, 'data-detail': detail }, h('div', { class: `settings-pane-heading ${detail ? 'is-nested' : ''}` }, detail ? iconButton('chevron', 'Back in settings', nested.back, 'settings-back') : null, h('h2', { tabindex: -1 }, title)));
         switch (active) {
