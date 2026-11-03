@@ -268,6 +268,17 @@ impl Cell<Ready> {
     }
 }
 
+/// A scheduled or hook run's task, as its model is given it: due now, with
+/// the owner away, so the answer is what they should be told. Found on a
+/// real install: given "Remind me to stretch" bare, a model answered as if
+/// asked to set the reminder, not to give it.
+#[must_use]
+pub fn scheduled_task(task: &str) -> String {
+    format!(
+        "Scheduled work, due now. It was set up earlier and the owner isn't here to answer questions: carry it out now, and write what they should be told as your answer. If it's a reminder, give the reminder itself.\n\nThe task:\n{task}"
+    )
+}
+
 /// Runs the `run` subcommand's full flow as library code.
 ///
 /// The binary stays thin: this joins the task arguments, loads the
@@ -283,17 +294,6 @@ impl Cell<Ready> {
 /// [`Error::MissingConfig`] for absent model configuration,
 /// [`Error::InvalidConfig`] for an unusable endpoint or model
 /// name, and propagates mint and loop failures.
-/// A scheduled or hook run's task, as its model is given it: due now, with
-/// the owner away, so the answer is what they should be told. Found on a
-/// real install: given "Remind me to stretch" bare, a model answered as if
-/// asked to set the reminder, not to give it.
-#[must_use]
-pub fn scheduled_task(task: &str) -> String {
-    format!(
-        "Scheduled work, due now. It was set up earlier and the owner isn't here to answer questions: carry it out now, and write what they should be told as your answer. If it's a reminder, give the reminder itself.\n\nThe task:\n{task}"
-    )
-}
-
 pub fn run_command(task_args: &[String]) -> Result<String, Error> {
     let task = task_args.join(" ");
     if task.trim().is_empty() {
@@ -395,7 +395,10 @@ mod tests {
         let framed = scheduled_task("Remind me to stretch.");
         assert!(framed.starts_with("Scheduled work, due now."), "{framed}");
         assert!(framed.contains("give the reminder itself"), "{framed}");
-        assert!(framed.ends_with("The task:\nRemind me to stretch."), "{framed}");
+        assert!(
+            framed.ends_with("The task:\nRemind me to stretch."),
+            "{framed}"
+        );
     }
     use std::os::unix::net::UnixStream;
 
