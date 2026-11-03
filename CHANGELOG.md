@@ -22,6 +22,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Changed
 
+- **A schedule's permissions read as phrases.** Memory and goals grants were listed one by one ("write user memory, recall user memory, goal create"); each store's now reads as one phrase where the first stood: "remember, recall and forget things about you", "keep your goals and their tracking", or "read your goals".
 - **The agent knows what it can't do here.** It saw its tools but not their limits, so it guessed: offering to look up restaurants with the web off, to "run something" to audit a disk, or to set a reminder it had no way to set. Each chat and scheduled run's system prompt now ends with a note generated from the install's live settings: it can't run commands or touch your files, which of reading pages, search, a browser and skills are on, and how you set up scheduled work.
 - **Activity shows what you asked the agent to do.** Each thing asked in the chat is a task in Activity, named by what you asked and summed up by the start of the answer, with its time, like a phone's activity list. The app's own clicks, which the broker records as local API calls, aren't listed as activity; other programs using the API still are.
 - **Reminders read as reminders, and the approvals panel says what it's for.** A one-off schedule sits under "Reminders" with a bell, the way a phone shows one, and an empty approvals panel says what will appear there instead of showing nothing.
@@ -32,6 +33,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Fixed
 
+- **The installed agent remembers your conversation after a restart.** The install didn't set a conversation store, so every update, reboot or broker restart started the chat over, and the agent forgot what you'd told it. The installed configuration now keeps it, sealed (`HATCHLING_CONVERSATION_DIR=/var/lib/hatchling/conversation`). Updating an install whose configuration doesn't name it adds it: `scripts/install.sh` backs the file up as `hatchling.env.before-<date>` and says what it added. One you set empty stays off. CI's upgrade from the last release checks it was added.
 - **Every screen is real or says plainly what isn't there yet.** Connected to Hatchling, the app no longer shows the demo's samples as yours:
   - Settings showed a "Free plan, 100% used" meter, "709M tokens left" and an Upgrade button. It now says there's no plan or quota, and that usage counting and spending limits come next.
   - The Wallet invited you to add payment methods. It now says Hatchling can't make purchases, and that when it can, each will need your yes on the exact quote.

@@ -121,37 +121,26 @@ install -D -m 644 "$PACKAGING/sysusers.d/hatchling.conf" /etc/sysusers.d/hatchli
 systemd-sysusers /etc/sysusers.d/hatchling.conf
 install -D -m 644 "$PACKAGING/tmpfiles.d/hatchling.conf" /etc/tmpfiles.d/hatchling.conf
 systemd-tmpfiles --create /etc/tmpfiles.d/hatchling.conf
-for dir in sock vault schedules conversation memory goals; do
+for dir in sock vault schedules conversation; do
   [ -d "/var/lib/hatchling/$dir" ] || mkdir -m 700 "/var/lib/hatchling/$dir"
 done
 
 ENV=/etc/hatchling/hatchling.env
 # What a newer Hatchling keeps by default, added to a configuration kept
-# from an older one: a store only when its setting isn't there at all (one
-# set empty was turned off, and stays off), with the chat's grants for it.
-# The file is backed up first.
+# from an older one: each setting only when it isn't there at all (one set
+# empty was turned off, and stays off). The file is backed up first.
+KEPT_BY_DEFAULT="HATCHLING_CONVERSATION_DIR"
 keep_up() {
-  added= grants=
-  for store in CONVERSATION MEMORY GOALS; do
-    grep -q "^HATCHLING_${store}_DIR=" "$ENV" && continue
-    added="$added HATCHLING_${store}_DIR"
-    case $store in
-      MEMORY) added="$added HATCHLING_MEMORY_GRANTS"; grants="$grants memory" ;;
-      GOALS) added="$added HATCHLING_GOALS_GRANTS"; grants="$grants goals" ;;
-    esac
+  added=
+  for key in $KEPT_BY_DEFAULT; do
+    grep -q "^$key=" "$ENV" || added="$added $key"
   done
   [ -n "$added" ] || return 0
   backup="$ENV.before-$(date +%Y%m%d-%H%M%S)"
   cp -p "$ENV" "$backup"
   [ -z "$(tail -c 1 "$ENV")" ] || echo >> "$ENV"
   for key in $added; do
-    grep -q "^$key=" "$ENV" || grep "^$key=" "$PACKAGING/hatchling.env" >> "$ENV"
-  done
-  for kind in $grants; do
-    extra=$(sed -n 's/^HATCHLING_API_GRANTS=//p' "$PACKAGING/hatchling.env" | tr ',' '\n' | grep "^$kind:" | paste -sd, -)
-    if grep -q '^HATCHLING_API_GRANTS=.' "$ENV"; then
-      sed -i "s/^HATCHLING_API_GRANTS=.*/&,$extra/" "$ENV"
-    fi
+    grep "^$key=" "$PACKAGING/hatchling.env" >> "$ENV"
   done
   say "added what this version keeps for you:$added (the old configuration is $backup)"
 }

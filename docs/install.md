@@ -88,7 +88,7 @@ With systemd 254 or later, the broker gets a cgroup of its own to give each cell
 - **The broker's other commands** (`hatchling-broker --help` lists them) take the service's settings when you run them with `sudo` from a shell that has none, so `sudo hatchling-broker tools list` just works. They read the file only while it's root's and nobody else can write it, as the installer leaves it: it says what the broker runs.
 - **The logs:** `journalctl -u hatchling` for the broker, `journalctl --user -u hatchling-host` for the app's host.
 - **Stop it:** `sudo systemctl stop hatchling`. **Start it again:** `sudo systemctl start hatchling`.
-- **Update:** clone the new version, download its release, and run `scripts/install.sh` again. It keeps your configuration, unless you pass `--force`. Read the version's [changelog](../CHANGELOG.md) first: before 1.0, a minor version may change the configuration.
+- **Update:** clone the new version, download its release, and run `scripts/install.sh` again. It keeps your configuration, unless you pass `--force`. When the new version keeps something by default that your configuration doesn't name at all, such as your conversation, it adds that setting, backs the old file up beside it (`hatchling.env.before-<date>`), and says so. A setting you set empty stays off. Read the version's [changelog](../CHANGELOG.md) first: before 1.0, a minor version may change the configuration.
 
 ## Uninstall
 
