@@ -314,6 +314,11 @@ pub struct CellSpec {
     /// are the cell's memory, which the resource group bounds, and it is
     /// gone with the cell, however the cell ends.
     pub scratch: Option<NonZeroU64>,
+    /// Whether whoever wrote this spec resolved its host paths, links and
+    /// all, when it checked them (the spawner, for a root broker's cells:
+    /// WO-017). Then each must still resolve to itself: one that doesn't
+    /// had a link put in its way since, and the cell isn't made.
+    pub resolved: bool,
 }
 
 /// What a cell's program, and everything it starts, is held to.

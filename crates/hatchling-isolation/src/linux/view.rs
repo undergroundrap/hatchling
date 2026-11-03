@@ -32,13 +32,27 @@ const LDD_TIMEOUT: Duration = Duration::from_secs(30);
 ///
 /// Returns [`Error::Spawn`] if a path does not exist or `ldd` fails.
 pub(super) fn view(spec: &CellSpec) -> Result<CellView, Error> {
-    let program = canonicalize(&spec.program, "agent binary")?;
+    // A spec its writer resolved: each path the same now, or refused.
+    let checked = |path: &Path, what: &str| {
+        let source = canonicalize(path, what)?;
+        if spec.resolved && source != path {
+            return Err(Error::Spawn {
+                reason: format!(
+                    "{what} {} isn't the path that was checked: it leads to {} now",
+                    path.display(),
+                    source.display()
+                ),
+            });
+        }
+        Ok(source)
+    };
+    let program = checked(&spec.program, "agent binary")?;
     let mut libs = shared_libraries(&program)?;
     let mut entries = Vec::new();
     // The broker endpoint's directory: only for a spec that grants one.
     if let Some(endpoint) = &spec.endpoint {
         entries.push(ViewEntry {
-            source: canonicalize(&endpoint.dir, "broker socket dir")?,
+            source: checked(&endpoint.dir, "broker socket dir")?,
             name: in_root(ENDPOINT_DIR),
             dir: true,
             writable: false,
@@ -56,7 +70,7 @@ pub(super) fn view(spec: &CellSpec) -> Result<CellView, Error> {
     // influenced by anything the cell supplies.
     for exposure in &spec.exposures {
         entries.push(ViewEntry {
-            source: canonicalize(&exposure.source, exposure.label)?,
+            source: checked(&exposure.source, exposure.label)?,
             name: exposure.name.clone(),
             dir: true,
             writable: exposure.writable,
@@ -65,7 +79,7 @@ pub(super) fn view(spec: &CellSpec) -> Result<CellView, Error> {
     }
     // The tools, each at its own path, and what they need to start.
     for tool in &spec.tools {
-        let source = canonicalize(&tool.source, "tool")?;
+        let source = checked(&tool.source, "tool")?;
         for lib in shared_libraries(&source)? {
             if !libs.iter().any(|known| known.target == lib.target) {
                 libs.push(lib);
@@ -437,6 +451,7 @@ pub(super) mod tests {
             limits: crate::Limits::default(),
             cgroup: None,
             scratch: None,
+            resolved: false,
         };
         let mut harness = skill.clone();
         for name in ["work", "scratch"] {
@@ -449,6 +464,54 @@ pub(super) mod tests {
         }
         harness.filter = Filter::WorkTree;
         (skill, harness)
+    }
+
+    #[test]
+    fn a_resolved_specs_paths_must_lead_where_they_did() {
+        // A link in the way of a resolved spec's path was put there after
+        // it was checked: refused. An unresolved spec's is followed.
+        let dir = std::env::temp_dir().join(format!("hatchling-view-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("real")).unwrap();
+        std::os::unix::fs::symlink(dir.join("real"), dir.join("linked")).unwrap();
+        let program = canonicalize(Path::new("/bin/true"), "probe").unwrap();
+        let spec = |source: PathBuf, resolved: bool| CellSpec {
+            identity: crate::CellIdentity::direct(1000, 1),
+            program: program.clone(),
+            argv: vec![String::from("true")],
+            env: Vec::new(),
+            workdir: None,
+            endpoint: None,
+            connection: false,
+            vault_channel: false,
+            exposures: vec![Exposure {
+                source,
+                name: String::from("work"),
+                writable: true,
+                label: "work tree",
+            }],
+            tools: Vec::new(),
+            relay: None,
+            filter: Filter::Program,
+            limits: crate::Limits::default(),
+            cgroup: None,
+            scratch: None,
+            resolved,
+        };
+        let real = std::fs::canonicalize(dir.join("real")).unwrap();
+        let viewed = |spec: CellSpec| within_watchdog("view", move || view(&spec));
+        let resolved = viewed(spec(real.clone(), true)).unwrap();
+        assert!(resolved.entries.iter().any(|entry| entry.source == real));
+        let refused = viewed(spec(dir.join("linked"), true)).unwrap_err();
+        assert!(
+            refused
+                .to_string()
+                .contains("isn't the path that was checked"),
+            "{refused}"
+        );
+        let followed = viewed(spec(dir.join("linked"), false)).unwrap();
+        assert!(followed.entries.iter().any(|entry| entry.source == real));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

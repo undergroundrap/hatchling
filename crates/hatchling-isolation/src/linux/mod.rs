@@ -134,6 +134,7 @@ pub(crate) fn cell_available() -> bool {
         limits: crate::Limits::default(),
         cgroup: None,
         scratch: None,
+        resolved: false,
     });
     let works = probe
         .and_then(|spec| Linux.isolate(&spec))
@@ -239,6 +240,7 @@ mod tests {
             limits: crate::Limits::default(),
             cgroup: None,
             scratch: None,
+            resolved: false,
         };
         assert_eq!(Linux.view(&spec).unwrap(), view::view(&spec).unwrap());
     }

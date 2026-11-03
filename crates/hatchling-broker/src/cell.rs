@@ -140,6 +140,11 @@ pub struct CellConfig {
     /// on which the keeper sends it a fill (WO-031). `None` otherwise.
     #[serde(default)]
     pub sign_ins_for: Option<String>,
+    /// Whether its host paths were resolved when they were checked (by
+    /// the spawner, which sets it): the cell is made only if each still
+    /// resolves to itself ([`hatchling_isolation::CellSpec::resolved`]).
+    #[serde(default)]
+    pub resolved: bool,
 }
 
 /// Where cells get their uid and gid: `HATCHLING_CELL_IDS`.
@@ -799,6 +804,7 @@ impl CellConfig {
             connected: false,
             vault_grants: None,
             sign_ins_for: None,
+            resolved: false,
         })
     }
 
@@ -1099,6 +1105,7 @@ impl CellConfig {
             connected: false,
             vault_grants: None,
             sign_ins_for: None,
+            resolved: false,
         })
     }
 }
@@ -1444,6 +1451,7 @@ fn cell_spec(config: &CellConfig, log_level: LogLevel) -> CellSpec {
             .browser
             .as_ref()
             .map(|_| crate::browser_session::BROWSER_SCRATCH),
+        resolved: config.resolved,
     }
 }
 

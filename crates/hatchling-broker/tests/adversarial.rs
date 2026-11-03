@@ -205,6 +205,7 @@ fn cli_spec(attack: Attack) -> Result<CellSpec, String> {
         limits: Limits::default(),
         cgroup: None,
         scratch: None,
+        resolved: false,
     })
 }
 

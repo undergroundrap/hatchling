@@ -273,6 +273,53 @@ fn host_paths(config: &CellConfig) -> Vec<PathBuf> {
     paths
 }
 
+/// Every host path in `config` a helper binds or runs, to be changed in
+/// place: what [`host_paths`] lists.
+fn host_paths_mut(config: &mut CellConfig) -> Vec<&mut PathBuf> {
+    let mut paths = vec![&mut config.agent_bin];
+    paths.extend(config.skill_code.as_mut());
+    if let Some(harness) = &mut config.harness {
+        paths.extend([&mut harness.work, &mut harness.scratch]);
+        if let Some(network) = &mut harness.network {
+            paths.push(&mut network.handoff);
+            paths.extend(network.tools.iter_mut().map(|(source, _)| source));
+        }
+    }
+    if let Some(browser) = &mut config.browser {
+        paths.extend([&mut browser.browser_dir, &mut browser.handoff]);
+        paths.extend(browser.fonts.as_mut());
+        paths.extend(browser.nss.iter_mut());
+    }
+    paths
+}
+
+/// `path` as it resolves now, links and all; one not made yet, by its
+/// directory's resolution and its name.
+fn resolved(path: &Path) -> Result<PathBuf, String> {
+    match std::fs::canonicalize(path) {
+        Ok(found) => Ok(found),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => path
+            .parent()
+            .zip(path.file_name())
+            .and_then(|(dir, name)| std::fs::canonicalize(dir).ok().map(|dir| dir.join(name)))
+            .ok_or_else(|| format!("{} can't be resolved: {err}", path.display())),
+        Err(err) => Err(format!("{} can't be resolved: {err}", path.display())),
+    }
+}
+
+/// Rewrites every host path in `config` as it resolves now, and marks it
+/// resolved: the policy then checks where each path leads, not what it's
+/// called, and the helper makes the cell only if each still leads there
+/// ([`hatchling_isolation::CellSpec::resolved`]). A link the broker made,
+/// to the owner's home say, is checked as the home it leads to.
+fn resolve_paths(config: &mut CellConfig) -> Result<(), String> {
+    for path in host_paths_mut(config) {
+        *path = resolved(path)?;
+    }
+    config.resolved = true;
+    Ok(())
+}
+
 /// What the spawner holds every cell spec to: its own configuration's
 /// cell, never the broker's word.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -379,10 +426,13 @@ impl Policy {
             under.extend(browser.fonts().map(Path::to_path_buf));
             exact.extend(crate::browser_session::host_nss_modules());
         }
+        // As they resolve: the paths checked against them are resolved
+        // too. One that doesn't resolve yet is taken as configured.
+        let resolve = |path: PathBuf| resolved(&path).unwrap_or(path);
         let paths = Paths {
-            exact,
-            under,
-            temp,
+            exact: exact.into_iter().map(resolve).collect(),
+            under: under.into_iter().map(resolve).collect(),
+            temp: resolve(temp),
             owner,
             group,
         };
@@ -1230,6 +1280,30 @@ fn own_trees(
     Ok(())
 }
 
+/// Why `stdio`, a helper's stdin, stdout and stderr, can't be its cell's,
+/// if it can't.
+///
+/// They become the cell's stdio: streams only, never a place the cell
+/// could open the host's files under, or a way into another service. Its
+/// output may also go to a log, a terminal or the journal.
+fn check_stdio(stdio: [&OwnedFd; 3]) -> Result<(), String> {
+    for ((name, output), fd) in [("stdin", false), ("stdout", true), ("stderr", true)]
+        .into_iter()
+        .zip(stdio)
+    {
+        match hatchling_sys::stdio_kind(fd.as_fd()) {
+            Ok(kind) if kind.output_only() && !output => {
+                return Err(format!(
+                    "the helper's {name}: {kind:?} is for output, and this is the cell's input"
+                ));
+            }
+            Ok(_) => {}
+            Err(error) => return Err(format!("the helper's {name}: {error}")),
+        }
+    }
+    Ok(())
+}
+
 /// Starts `helper` for `spec` and supervises it on `stream` until it ends
 /// (reporting how) or the broker asks for a kill, or goes.
 ///
@@ -1248,7 +1322,10 @@ fn serve_helper(
     let refuse = |reason: String| send(stream, &Reply::Refused { reason });
     let checked = serde_json::from_str::<CellConfig>(spec)
         .map_err(|_| String::from("it isn't a cell spec"))
-        .and_then(|config| policy.check(helper, &config).map(|()| config));
+        .and_then(|mut config| {
+            resolve_paths(&mut config)?;
+            policy.check(helper, &config).map(|()| config)
+        });
     let config = match checked {
         Ok(config) => config,
         Err(why) => {
@@ -1271,23 +1348,9 @@ fn serve_helper(
         Ok(stdio) => stdio,
         Err(_) => return refuse(String::from("a helper takes three descriptors")),
     };
-    // They become the cell's stdio: streams only, never a place the cell
-    // could open the host's files under, or a way into another service.
-    // Its output may also go to a log, a terminal or the journal.
-    for (name, fd, output) in [
-        ("stdin", &stdin, false),
-        ("stdout", &stdout, true),
-        ("stderr", &stderr, true),
-    ] {
-        let refused = match hatchling_sys::stdio_kind(fd.as_fd()) {
-            Ok(kind) if kind.output_only() && !output => {
-                format!("{kind:?} is for output, and this is the cell's input")
-            }
-            Ok(_) => continue,
-            Err(error) => error.to_string(),
-        };
-        tracing::warn!(?helper, name, %refused, "refused a helper's stdio");
-        return refuse(format!("the helper's {name}: {refused}"));
+    if let Err(refused) = check_stdio([&stdin, &stdout, &stderr]) {
+        tracing::warn!(?helper, %refused, "refused a helper's stdio");
+        return refuse(refused);
     }
     // A cell with a vault channel: the helper hands its channels to the
     // spawner, which passes its connection on to the broker and its vault
@@ -1711,6 +1774,42 @@ sleep 30 </dev/null >/dev/null 2>&1 &
             owner: hatchling_sys::euid(),
             group: hatchling_sys::egid(),
         }
+    }
+
+    /// Every host path is resolved before it's checked: a link the
+    /// broker made is checked as where it leads, and the spec is marked
+    /// resolved for the helper. A path not made yet resolves by its
+    /// directory.
+    #[test]
+    fn a_specs_host_paths_are_resolved_before_they_are_checked() {
+        let base = std::env::temp_dir().join(format!("hatchling-resolve-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("runs/run-1")).unwrap();
+        std::os::unix::fs::symlink("/etc", base.join("runs/escape")).unwrap();
+        let mut config: CellConfig = serde_json::from_str(&skill_spec()).unwrap();
+        config.skill_code = Some(base.join("runs/escape"));
+        config.agent_bin = base.join("runs/run-1/not-yet");
+        resolve_paths(&mut config).unwrap();
+        assert!(config.resolved);
+        assert_eq!(
+            config.skill_code,
+            Some(std::fs::canonicalize("/etc").unwrap())
+        );
+        assert_eq!(
+            config.agent_bin,
+            std::fs::canonicalize(base.join("runs/run-1"))
+                .unwrap()
+                .join("not-yet")
+        );
+        // Checked where it leads: /etc is no configured path.
+        let paths = Paths {
+            under: vec![std::fs::canonicalize(&base).unwrap()],
+            ..paths()
+        };
+        assert!(paths.allow(config.skill_code.as_ref().unwrap()).is_err());
+        assert_eq!(paths.allow(&config.agent_bin), Ok(()));
+        assert!(resolved(Path::new("/nonexistent/hatchling/x")).is_err());
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     /// Below a configured directory, a link is refused, wherever it is

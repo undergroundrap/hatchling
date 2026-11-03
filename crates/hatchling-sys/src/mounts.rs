@@ -300,10 +300,16 @@ impl MountPlan {
         for bind in &self.binds {
             // Two disjoint flags, joined by `union`: `|` there would leave
             // `^` an equivalent mutant.
-            let source = rustix::fs::open(
+            // With no link on its way: each source is a resolved path, so
+            // a link in it was put there since, and is refused rather
+            // than followed somewhere else.
+            let source = rustix::fs::openat2(
+                rustix::fs::CWD,
                 &bind.source,
                 rustix::fs::OFlags::PATH.union(rustix::fs::OFlags::CLOEXEC),
                 rustix::fs::Mode::empty(),
+                rustix::fs::ResolveFlags::NO_SYMLINKS
+                    .union(rustix::fs::ResolveFlags::NO_MAGICLINKS),
             )
             .map_err(mount_err("open(bind source)"))?;
             // A plain bind inherits the source's writability; the
@@ -999,6 +1005,70 @@ pub(crate) mod tests {
             return;
         }
         assert_eq!(code, 0, "staging failed at step {code}");
+    }
+
+    #[test]
+    fn a_bind_source_reached_through_a_link_is_refused() {
+        // A source is a resolved path: a link on its way was put there
+        // since, and must stop the plan at its open, not be followed.
+        use crate::process::{ForkResult, child_exit_code, exit_child, fork};
+        use std::time::Duration;
+
+        let child = match fork().expect("fork") {
+            ForkResult::Parent { child } => child,
+            ForkResult::Child => {
+                let self_pid = enter_private_mount_namespace();
+                let stage = std::env::temp_dir().join(format!("hatchling-mount-link-{self_pid}"));
+                let sources =
+                    std::env::temp_dir().join(format!("hatchling-mount-link-src-{self_pid}"));
+                let real = sources.join("real");
+                for dir in [&stage, &real] {
+                    if std::fs::create_dir_all(dir).is_err() {
+                        exit_child(99);
+                    }
+                }
+                let linked = sources.join("linked");
+                if std::os::unix::fs::symlink(&real, &linked).is_err() {
+                    exit_child(99);
+                }
+                let allowlist: HashSet<PathBuf> = std::iter::once(linked.clone()).collect();
+                let binds = vec![BindMount {
+                    source: linked,
+                    target: String::from("rw"),
+                    is_dir: true,
+                    writable: true,
+                    device: false,
+                }];
+                let Ok(plan) = MountPlan::new(stage, &allowlist, binds) else {
+                    exit_child(99)
+                };
+                match plan.apply() {
+                    Ok(()) => exit_child(2),
+                    Err(Error::Mount {
+                        operation: "open(bind source)",
+                        ..
+                    }) => exit_child(0),
+                    Err(_) => exit_child(3),
+                }
+            }
+        };
+        let pid = child.pid().get();
+        let _stage = StageDir(std::env::temp_dir().join(format!("hatchling-mount-link-{pid}")));
+        let _sources =
+            StageDir(std::env::temp_dir().join(format!("hatchling-mount-link-src-{pid}")));
+        let status = child
+            .wait_deadline(Duration::from_secs(30))
+            .expect("bounded wait");
+        let code = child_exit_code(status);
+        if code == 99 {
+            let required = std::env::var("HATCHLING_REQUIRE_CELL").is_ok_and(|v| v == "1");
+            assert!(
+                !required,
+                "HATCHLING_REQUIRE_CELL=1 but namespaces are unavailable: refusing to skip"
+            );
+            return;
+        }
+        assert_eq!(code, 0, "2: the link was followed; 3: it failed elsewhere");
     }
 
     #[test]

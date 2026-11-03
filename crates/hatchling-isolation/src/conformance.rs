@@ -306,6 +306,7 @@ mod tests {
             limits: crate::Limits::default(),
             cgroup: None,
             scratch: None,
+            resolved: false,
         }
     }
 
