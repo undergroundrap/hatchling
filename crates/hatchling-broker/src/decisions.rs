@@ -68,7 +68,9 @@ fn append(path: &Path, record: &DecisionRecord) -> std::io::Result<()> {
 fn lines(path: &Path) -> std::io::Result<Vec<String>> {
     let file = std::fs::File::open(path)?;
     if file.metadata()?.len() > MAX_FILE_BYTES {
-        return Err(std::io::Error::other("the decision history is too large to read"));
+        return Err(std::io::Error::other(
+            "the decision history is too large to read",
+        ));
     }
     BufReader::new(file).lines().collect()
 }
@@ -108,7 +110,8 @@ mod tests {
     }
 
     fn scratch(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("hatchling-decisions-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("hatchling-decisions-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -122,9 +125,15 @@ mod tests {
         record(&path, &decided(1, Decision::Approve));
         record(&path, &decided(2, Decision::Deny));
         let listed = list(&path);
-        assert_eq!(listed, [decided(2, Decision::Deny), decided(1, Decision::Approve)]);
+        assert_eq!(
+            listed,
+            [decided(2, Decision::Deny), decided(1, Decision::Approve)]
+        );
         use std::os::unix::fs::PermissionsExt as _;
-        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         // A line that doesn't read is skipped.
         let mut text = std::fs::read_to_string(&path).unwrap();
         text.push_str("not a decision\n");
@@ -142,13 +151,19 @@ mod tests {
         }
         let listed = list(&path);
         assert_eq!(listed.len(), MAX_KEPT);
-        assert_eq!(listed.first().map(|kept| kept.confirmation_id.as_str()), Some(format!("req-{MAX_LINES}").as_str()));
+        assert_eq!(
+            listed.first().map(|kept| kept.confirmation_id.as_str()),
+            Some(format!("req-{MAX_LINES}").as_str())
+        );
         assert_eq!(
             std::fs::read_to_string(&path).unwrap().lines().count(),
             MAX_KEPT,
             "cut back past {MAX_LINES} lines"
         );
-        assert!(!path.with_extension("decisions.next").exists(), "nothing left over");
+        assert!(
+            !path.with_extension("decisions.next").exists(),
+            "nothing left over"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -159,7 +174,10 @@ mod tests {
         record(&path, &decided(1, Decision::Approve));
         assert!(list(&path).is_empty());
         let big = dir.join("big.decisions");
-        std::fs::File::create(&big).unwrap().set_len(MAX_FILE_BYTES + 1).unwrap();
+        std::fs::File::create(&big)
+            .unwrap()
+            .set_len(MAX_FILE_BYTES + 1)
+            .unwrap();
         assert!(list(&big).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }

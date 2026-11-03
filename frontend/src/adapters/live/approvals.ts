@@ -58,7 +58,7 @@ export class LiveApprovals implements TaskApprovalPort {
     /** The decisions the broker kept, the newest first. */
     #history: readonly DecisionRecord[] = [];
     #ready = false;
-    constructor(client: LiveClient, nextId: () => string = () => 'live-decisions') {
+    constructor(client: LiveClient, nextId: () => string) {
         this.#client = client;
         this.#nextId = nextId;
         client.subscribe(() => this.#watch());
@@ -207,6 +207,7 @@ export class LiveApprovals implements TaskApprovalPort {
             case 'usage':
             case 'goals':
             case 'memory':
+            case 'decisions':
             case 'code_taken':
             case 'code_declined':
             case 'code_refused':

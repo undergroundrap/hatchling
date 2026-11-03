@@ -294,7 +294,11 @@ mod tests {
         assert_eq!(kept_decisions.len(), 1);
         let decided = kept_decisions.first().unwrap();
         assert_eq!(
-            (decided.confirmation_id.as_str(), decided.summary.as_str(), decided.decision),
+            (
+                decided.confirmation_id.as_str(),
+                decided.summary.as_str(),
+                decided.decision
+            ),
             (id.as_str(), "Remember this about you?", Decision::Approve)
         );
         assert_eq!(decided.fields, card.fields);

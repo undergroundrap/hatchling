@@ -1097,6 +1097,7 @@ test('Hatchling\'s own word reads the schedules again: a schedule the owner appr
     assert.equal(lists(), before, 'not on the agent\'s words');
     transport.deliver(sampleEvent(2, 2, { kind: 'chat_message', chat_id: 'local', message_id: 'm-system', author: 'system', text: 'Scheduled: “Stretch.”' }));
     assert.equal(lists(), before + 1);
+});
 test('approvals history: what was decided before the connection, as it was decided, after what\'s live', async () => {
     const { transport, adapter } = connected();
     const asked = transport.sent.find(frame => frame.type === 'action' && frame.action.action === 'list_decisions');

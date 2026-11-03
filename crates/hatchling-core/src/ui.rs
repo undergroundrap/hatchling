@@ -2428,7 +2428,10 @@ mod tests {
 
     #[test]
     fn decisions_are_listed_as_kept() {
-        pinned(&UiAction::ListDecisions {}, &json!({"action": "list_decisions"}));
+        pinned(
+            &UiAction::ListDecisions {},
+            &json!({"action": "list_decisions"}),
+        );
         pinned(
             &UiActionResult::Decisions {
                 decisions: vec![DecisionRecord {

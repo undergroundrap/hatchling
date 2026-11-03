@@ -34,8 +34,7 @@ use hatchling_artifact::PinnedRequest;
 use hatchling_channel::LocalHub;
 use hatchling_core::ui::{
     ChatAuthor, ChatMessage, ConfirmationField, ConfirmationRequest, Decision, DecisionRecord,
-    DecisionRejection,
-    FieldSource, UiEventBody,
+    DecisionRejection, FieldSource, UiEventBody,
 };
 use hatchling_core::{ActivationProposal, ApprovalRefusal, ArtifactResult};
 use hatchling_scheduler::Timestamp;
@@ -199,7 +198,10 @@ impl Board {
     /// Keeps each decision the owner makes from now on at `path`
     /// ([`crate::decisions`]).
     pub fn keep_decisions(&self, path: std::path::PathBuf) {
-        *self.decisions.lock().unwrap_or_else(PoisonError::into_inner) = Some(path);
+        *self
+            .decisions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(path);
     }
 
     /// The ledger.
@@ -997,6 +999,8 @@ mod tests {
             bus: Mutex::new(None),
             queue: Mutex::new(VecDeque::new()),
             wake: Condvar::new(),
+            cards: Mutex::new(BTreeMap::new()),
+            decisions: Mutex::new(None),
         }
     }
 

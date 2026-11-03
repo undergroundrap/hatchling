@@ -317,7 +317,10 @@ mod tests {
                 }),
                 ApiRequest::ManageMemory,
             ),
-            (action(UiAction::ListDecisions {}), ApiRequest::ListDecisions),
+            (
+                action(UiAction::ListDecisions {}),
+                ApiRequest::ListDecisions,
+            ),
             (action(UiAction::ReadUsage {}), ApiRequest::ReadUsage),
             (
                 action(UiAction::GiveCode {
