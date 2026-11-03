@@ -24,6 +24,7 @@ pub mod api_auth;
 pub use api_auth::{ApiConfig, Caller, PeerProvider, Provider};
 pub mod api_ops;
 pub mod api_stream;
+pub mod app_stream;
 pub mod approval;
 pub mod approval_board;
 pub mod approvals;

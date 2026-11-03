@@ -138,6 +138,15 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
         self
     }
 
+    /// Append `note` to the system prompt: what the caller knows of this
+    /// run's world that the prompt pack can't, such as what the install
+    /// allows. Below the pack, never in place of it.
+    #[must_use]
+    pub fn with_system_note(mut self, note: &str) -> Self {
+        self.system_prompt = format!("{}\n\n{note}", self.system_prompt);
+        self
+    }
+
     /// Attach a memory provider. At iteration start the loop recalls
     /// through it and injects the items into the prompt below the
     /// system prompt and the user request, above tool output.
@@ -585,6 +594,26 @@ mod tests {
 
     /// WO-026: what the person said earlier comes first, after the system
     /// prompt, in their role, before the prior turns.
+    #[test]
+    fn a_system_note_follows_the_pack_and_never_replaces_it() {
+        let registry = ToolRegistry::new();
+        let pack = hatchling_prompt::system_prompt_for(hatchling_prompt::PromptKind::Chat);
+        let model = FakeModel::new(vec![ModelAction::Text(String::from("ok"))]);
+        Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .with_system_note("## What you can do here")
+            .run(&model, String::from("hi"))
+            .unwrap();
+        let seen = model.seen_histories();
+        let expected = format!("{pack}\n\n## What you can do here");
+        assert!(
+            matches!(
+                seen.first().and_then(|history| history.first()),
+                Some(Message::System(system)) if *system == expected
+            ),
+            "{seen:?}"
+        );
+    }
+
     #[test]
     fn what_was_said_earlier_comes_before_the_prior_turns() {
         let registry = empty_registry();

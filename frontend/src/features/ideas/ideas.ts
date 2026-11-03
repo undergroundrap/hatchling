@@ -28,7 +28,7 @@ export function renderIdeas(ctx: AppContext): HTMLElement {
         previousSection = section;
         page.append(h('article', { class: 'idea-row', 'data-idea-state': idea.state }, h('span', { class: 'idea-pictogram' }, pictogram(idea.icon)), h('div', { class: 'row-copy' }, button(idea.title, () => openIdea(ctx, idea.id), { variant: 'ghost', className: 'row-title-button' }), h('p', { class: 'muted' }, idea.summary), h('div', { class: `metadata ${idea.state === 'suggested' ? 'sr-only' : ''}` }, idea.domain, idea.state !== 'suggested' ? pill(idea.state.replaceAll('_', ' '), idea.state === 'completed' ? 'success' : '') : null), idea.outcome ? h('p', { class: 'outcome-copy' }, idea.outcome) : null, idea.artifactId ? button('Open result', () => ctx.openArtifact(idea.artifactId ?? ''), { variant: 'link', icon: 'file' }) : null), menu(`Manage ${idea.title}`, [{ label: 'See what’s included', icon: 'expand', action: () => openIdea(ctx, idea.id) }, { label: idea.state === 'dismissed' ? 'Restore idea' : 'Dismiss idea', icon: idea.state === 'dismissed' ? 'refresh' : 'close', action: () => { void ctx.run({ type: idea.state === 'dismissed' ? 'idea.restore' : 'idea.dismiss', id: idea.id }); } }])));
     }
-    page.append(h('p', { class: 'sample-footnote' }, 'Suggestions are grounded in labeled sample facts. No personal data was inferred.'));
+    page.append(h('p', { class: 'sample-footnote' }, ctx.state.mode === 'live' ? 'Ideas the agent proposes in your chats appear here, for you to build or set aside.' : 'Suggestions are grounded in labeled sample facts. No personal data was inferred.'));
     return page;
 }
 function openIdea(ctx: AppContext, id: string): void {
