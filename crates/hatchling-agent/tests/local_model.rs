@@ -417,7 +417,11 @@ fn a_model_that_does_not_call_tools_is_refused_before_the_task() {
     );
     assert!(matches!(error, Error::ModelRefused(_)));
     let seen = server.seen();
-    assert_eq!(seen.len(), hatchling_model::ATTEMPTS, "probes only: the task never started");
+    assert_eq!(
+        seen.len(),
+        hatchling_model::ATTEMPTS,
+        "probes only: the task never started"
+    );
     assert!(seen.iter().all(is_probe));
 }
 
