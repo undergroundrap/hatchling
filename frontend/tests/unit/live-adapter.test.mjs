@@ -329,7 +329,7 @@ test('scheduled work: made with the welcome\'s grants, listed, removed, and what
     assert.deepEqual(create.action, { action: 'manage_schedule', op: { op: 'create', when: { every: 'cron', expr: '0 8 * * 1-5', tz: 'UTC' }, task: 'Stretch', grants: [local], channel: 'local' } });
     answer(transport, create.request_id, { result: 'schedule', outcome: { result: 'created', id: 'sch-1' } });
     await flush();
-    answer(transport, listing().request_id, { result: 'schedule', outcome: { result: 'listed', schedules: [{ id: 'sch-1', kind: 'task', when: create.action.op.when, channel: 'local', grants: [local], next_due: 1_790_000_000, task: 'Stretch' }] } });
+    answer(transport, listing().request_id, { result: 'schedule', outcome: { result: 'listed', schedules: [{ id: 'sch-1', kind: 'task', when: create.action.op.when, channel: 'local', grants: [local], next_due: 1790000000, task: 'Stretch' }] } });
     assert.deepEqual(await creating, { ok: true, message: 'Scheduled. Its results arrive in this chat.', id: 'sch-1' });
     const [job] = adapter.getSnapshot().jobs;
     assert.deepEqual([job.id, job.title, job.schedule, job.limit], ['sch-1', 'Stretch', 'Weekdays at 08:00 (UTC)', 'May post in this chat']);
