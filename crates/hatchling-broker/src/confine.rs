@@ -74,6 +74,17 @@ fn readable(config: &Config, get: impl Fn(&str) -> Option<String>) -> Result<Vec
     Ok(paths)
 }
 
+/// How many threads this process has, as the kernel says.
+fn threads() -> Option<usize> {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()?
+        .lines()
+        .find_map(|line| line.strip_prefix("Threads:"))?
+        .trim()
+        .parse()
+        .ok()
+}
+
 /// Holds this process, for good, to the broker's paths.
 ///
 /// They are [`writable`] and [`readable`], the state among them made
@@ -84,7 +95,8 @@ fn readable(config: &Config, get: impl Fn(&str) -> Option<String>) -> Result<Vec
 /// # Errors
 ///
 /// [`Error::BrokerUser`] when a path can't be made or given, or the
-/// kernel refuses the confinement it has.
+/// kernel refuses the confinement it has, or the process has more than
+/// one thread.
 pub fn confine_broker(config: &Config, redaction: Option<&RedactionConfig>) -> Result<bool, Error> {
     let failed = |reason: String| Error::BrokerUser { reason };
     let writable = writable(config, redaction);
@@ -122,6 +134,13 @@ pub fn confine_broker(config: &Config, redaction: Option<&RedactionConfig>) -> R
                 .allow(path, access)
                 .map_err(|e| failed(format!("cannot confine to {}: {e}", path.display())))?;
         }
+    }
+    // Landlock and no-new-privileges hold the thread that asks, and those
+    // it starts after: one started before would go on unconfined.
+    if threads() != Some(1) {
+        return Err(failed(String::from(
+            "it has more than one thread, and the others would go on unconfined",
+        )));
     }
     rules
         .restrict_self()
@@ -238,6 +257,45 @@ mod tests {
         let reached = !out_of_reach(&closed.join("bundle"));
         std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o700)).unwrap();
         assert_eq!(reached, hatchling_sys::euid() == 0);
+    }
+
+    /// A broker with a second thread isn't confined, and says why: the
+    /// other thread would go on unconfined. (In a child of one thread,
+    /// which starts the second.)
+    #[test]
+    fn a_broker_with_another_thread_is_not_confined() {
+        use std::time::Duration;
+        assert!(threads().is_some_and(|threads| threads >= 1));
+        if hatchling_sys::landlock::landlock_abi().is_none() {
+            return;
+        }
+        let dir = crate::api_auth::tests::scratch("confine-threads");
+        let mut config = crate::api_auth::tests::owner_config(None);
+        let home = dir.0.join("home");
+        config.artifacts.root = home.join("state").join("artifacts");
+        config.scheduler.root = home.join("state").join("schedules");
+        std::fs::create_dir_all(home.join("state")).unwrap();
+        match fork().unwrap() {
+            ForkResult::Parent { child } => {
+                let status = child.wait_deadline(Duration::from_secs(10)).unwrap();
+                assert_eq!(
+                    child_exit_code(status),
+                    0,
+                    "1: confined anyway; 2: refused for another reason"
+                );
+            }
+            ForkResult::Child => {
+                let (_hold, held) = std::sync::mpsc::channel::<()>();
+                let _other = std::thread::spawn(move || held.recv());
+                match confine_broker(&config, None) {
+                    Ok(_) => exit_child(1),
+                    Err(error) if error.to_string().contains("more than one thread") => {
+                        exit_child(0)
+                    }
+                    Err(_) => exit_child(2),
+                }
+            }
+        }
     }
 
     /// Confined, the broker writes its stores, makes its state, and can't
