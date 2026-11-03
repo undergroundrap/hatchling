@@ -4,7 +4,7 @@ This sets Hatchling up as a service that starts at boot, from a release, in a fe
 - the broker, run as root;
 - the app's host, run as you.
 
-To try it by hand first, the [README's quickstart](../README.md#quickstart) runs the same pieces in a shell.
+To try it by hand first, the [README's quickstart](../README.md#quickstart) runs the same pieces in a shell. To have an AI agent install it and try the app for you, see [Testing Hatchling with an AI agent](testing-with-an-agent.md).
 
 ## What you need
 
