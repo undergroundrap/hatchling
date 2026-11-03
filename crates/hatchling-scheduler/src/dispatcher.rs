@@ -1079,7 +1079,7 @@ mod tests {
 
     /// Records each failure it's told of.
     #[derive(Default)]
-    struct Told(std::cell::RefCell<Vec<(String, FailureNotice)>>);
+    struct Told(RefCell<Vec<(String, FailureNotice)>>);
 
     impl Delivery for Told {
         fn deliver(&self, _channel: &str, _text: &str) -> Result<(), String> {
@@ -1438,14 +1438,21 @@ mod tests {
             undelivered("sch-1", &unstarted, "local", None, &services, &park).map(|p| p.reason),
             Some(String::from("the run did not start"))
         );
-        assert_eq!(undelivered("sch-1", &output, "local", None, &services, &park), None);
+        assert_eq!(
+            undelivered("sch-1", &output, "local", None, &services, &park),
+            None
+        );
         assert!(undelivered("sch-1", &output, "elsewhere", None, &services, &park).is_some());
         // A failure is told on the channel, in the delivery's words, with
         // how its run ended and the owner's task; and it's kept as well.
         let told = Told::default();
         let telling = Services {
+            store: &store,
+            launcher: &Quick,
             delivery: &told,
-            ..services
+            held: &held,
+            events: &[],
+            authenticated: &authenticated,
         };
         assert!(undelivered("sch-1", &failed, "local", Some("Stretch"), &telling, &park).is_some());
         assert!(undelivered("sch-1", &unstarted, "local", None, &telling, &park).is_some());
@@ -1476,7 +1483,11 @@ mod tests {
         assert!(undelivered("sch-1", &failed, "elsewhere", None, &telling, &park).is_some());
         assert_eq!(told.0.borrow().len(), 2);
         // A path with no words of its own tells no one, and keeps it.
-        assert!(Plain.notify_failure("local", &told.0.borrow()[0].1).is_err());
+        assert!(
+            Plain
+                .notify_failure("local", &told.0.borrow()[0].1)
+                .is_err()
+        );
         // deliver_now: no record to wait in: delivered at once.
         let active = Active::<Done> {
             run: None,

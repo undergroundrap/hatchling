@@ -50,9 +50,10 @@ use hatchling_core::{
     ScheduleSummary, SecretName,
 };
 use hatchling_scheduler::{
-    Claim, Creator, Delivery, Dispatcher, FollowupParent, Hook, Launcher, Occurrence,
-    OccurrenceState, Parked, Schedule, Services, Sources, Store, TickReport, Timestamp, validate,
-    validate_followup, validate_hook, FailureNotice};
+    Claim, Creator, Delivery, Dispatcher, FailureNotice, FollowupParent, Hook, Launcher,
+    Occurrence, OccurrenceState, Parked, Schedule, Services, Sources, Store, TickReport, Timestamp,
+    validate, validate_followup, validate_hook,
+};
 use hatchling_vault::{OpensStores, SealedVault, Secret};
 
 use crate::config::FollowupScope;
@@ -1385,12 +1386,21 @@ mod tests {
             "{model}"
         );
         let anonymous = failure_notice(&failed(None, true, Some(Ending::TimedOut)), None);
-        assert!(anonymous.starts_with("Scheduled work didn't finish. The agent took too long"), "{anonymous}");
+        assert!(
+            anonymous.starts_with("Scheduled work didn't finish. The agent took too long"),
+            "{anonymous}"
+        );
         let unstarted = failure_notice(&failed(Some("t"), false, None), None);
-        assert!(unstarted.contains("didn't run") && unstarted.contains("doctor"), "{unstarted}");
+        assert!(
+            unstarted.contains("didn't run") && unstarted.contains("doctor"),
+            "{unstarted}"
+        );
         let long = "x".repeat(200);
         let quoted = failure_notice(&failed(Some(&long), true, None), None);
-        assert!(quoted.contains(&format!("“{}…”", "x".repeat(80))), "{quoted}");
+        assert!(
+            quoted.contains(&format!("“{}…”", "x".repeat(80))),
+            "{quoted}"
+        );
         // Through the hub, in the chat's record.
         let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());
         let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
@@ -1406,7 +1416,12 @@ mod tests {
             .notify_failure("local", &failed(Some("Stretch"), true, None))
             .unwrap();
         let seen = seen.lock().unwrap();
-        assert!(seen.first().is_some_and(|text| text.starts_with("Your scheduled work “Stretch” didn't finish.")), "{seen:?}");
+        assert!(
+            seen.first().is_some_and(
+                |text| text.starts_with("Your scheduled work “Stretch” didn't finish.")
+            ),
+            "{seen:?}"
+        );
     }
 
     #[test]
