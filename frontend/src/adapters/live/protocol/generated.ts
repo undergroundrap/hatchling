@@ -278,7 +278,7 @@ export type ApiOutcome = 'served' | 'refused';
  * What one API call asked for: the request's kind, never its content
  * (a message's text, a file, a schedule's task).
  */
-export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'give_code' | 'decline_code';
+export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'manage_goals' | 'give_code' | 'decline_code';
 /**
  * A bearer token, presented in `Hello` for a token provider.
  *
@@ -1381,6 +1381,108 @@ export type FileRefusal = {
     readonly refusal: 'unsupported_type';
 } | {
     readonly refusal: 'full';
+};
+/**
+ * An operation on the owner's goals, from their app: the same goals the
+ * agent reads in a chat and a feed.
+ */
+export type GoalOp = {
+    readonly op: 'list';
+} | {
+    /**
+     * What reaching it looks like; may be empty.
+     */
+    readonly detail: string;
+    readonly op: 'create';
+    /**
+     * One line.
+     */
+    readonly title: string;
+} | {
+    /**
+     * A new detail.
+     */
+    readonly detail?: string | null;
+    /**
+     * The goal.
+     */
+    readonly id: string;
+    readonly op: 'update';
+    /**
+     * A new title.
+     */
+    readonly title?: string | null;
+} | {
+    /**
+     * Whether it was reached.
+     */
+    readonly achieved: boolean;
+    /**
+     * The goal.
+     */
+    readonly id: string;
+    readonly op: 'close';
+};
+/**
+ * The result of a [`GoalOp`].
+ */
+export type GoalResult = {
+    /**
+     * The goals.
+     */
+    readonly goals: readonly (GoalView)[];
+    readonly result: 'listed';
+} | {
+    /**
+     * The goal.
+     */
+    readonly goal: GoalView;
+    readonly result: 'saved';
+} | {
+    readonly result: 'not_found';
+} | {
+    readonly result: 'already_closed';
+} | {
+    readonly result: 'rejected';
+} | {
+    readonly result: 'limit_reached';
+} | {
+    readonly result: 'off';
+} | {
+    readonly result: 'failed';
+};
+/**
+ * Where a goal stands.
+ */
+export type GoalState = 'open' | 'achieved' | 'abandoned';
+/**
+ * One of the owner's goals.
+ */
+export type GoalView = {
+    /**
+     * When it was set, Unix seconds.
+     */
+    readonly created_at: number;
+    /**
+     * What reaching it looks like; may be empty.
+     */
+    readonly detail: string;
+    /**
+     * Its id.
+     */
+    readonly id: string;
+    /**
+     * Where it stands.
+     */
+    readonly state: GoalState;
+    /**
+     * One line.
+     */
+    readonly title: string;
+    /**
+     * When it last changed, Unix seconds: its close, once closed.
+     */
+    readonly updated_at: number;
 };
 /**
  * The broker's reply to one [`GoalsOp`].
@@ -3807,6 +3909,12 @@ export type UiAction = {
      */
     readonly op: SignInOp;
 } | {
+    readonly action: 'manage_goals';
+    /**
+     * The operation.
+     */
+    readonly op: GoalOp;
+} | {
     readonly action: 'give_code';
     /**
      * The code.
@@ -3992,6 +4100,12 @@ export type UiActionResult = {
      */
     readonly outcome: SignInResult;
     readonly result: 'sign_ins';
+} | {
+    /**
+     * The result.
+     */
+    readonly outcome: GoalResult;
+    readonly result: 'goals';
 } | {
     readonly result: 'code_taken';
     /**

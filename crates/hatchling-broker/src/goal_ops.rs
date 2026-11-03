@@ -80,8 +80,7 @@ fn list(config: &Config, principal: &MemoryPrincipal) -> GoalResult {
         updated_since_secs: None,
         after: None,
     };
-    let Some(items) =
-        crate::goals_ops::read_feed(&config.goals, &config.memory, principal, &query)
+    let Some(items) = crate::goals_ops::read_feed(&config.goals, &config.memory, principal, &query)
     else {
         return GoalResult::Failed;
     };
@@ -141,7 +140,10 @@ fn failed(error: &hatchling_goals::Error) -> GoalResult {
         | Goals::Io { .. }
         | Goals::InvalidName(_)
         | Goals::TrackingFull { .. }
-        | Goals::InvalidRange { .. } => {
+        | Goals::InvalidRange { .. }
+        | Goals::MemoryUnavailable
+        | Goals::ProvenanceMismatch
+        | Goals::Corrupt => {
             tracing::error!(%error, "the owner's goals couldn't be read or changed");
             GoalResult::Failed
         }
@@ -153,10 +155,8 @@ mod tests {
     use super::*;
 
     fn config(name: &str) -> (Config, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!(
-            "hatchling-goal-ops-{name}-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("hatchling-goal-ops-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut config = crate::api_auth::tests::owner_config(None);
@@ -255,7 +255,10 @@ mod tests {
             handle_goal_op(&config, &touch),
             GoalResult::Saved { .. }
         ));
-        let titles: Vec<String> = listed(&config).into_iter().map(|(title, _)| title).collect();
+        let titles: Vec<String> = listed(&config)
+            .into_iter()
+            .map(|(title, _)| title)
+            .collect();
         assert_eq!(titles, ["First", "Second"]);
         let close = GoalOp::Close {
             id: first.id,
@@ -265,7 +268,10 @@ mod tests {
             handle_goal_op(&config, &close),
             GoalResult::Saved { .. }
         ));
-        let titles: Vec<String> = listed(&config).into_iter().map(|(title, _)| title).collect();
+        let titles: Vec<String> = listed(&config)
+            .into_iter()
+            .map(|(title, _)| title)
+            .collect();
         assert_eq!(titles, ["Second", "First"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -278,7 +284,10 @@ mod tests {
             detail: String::new(),
         };
         assert_eq!(handle_goal_op(&config, &op("")), GoalResult::Rejected);
-        assert_eq!(handle_goal_op(&config, &op("two\nlines")), GoalResult::Rejected);
+        assert_eq!(
+            handle_goal_op(&config, &op("two\nlines")),
+            GoalResult::Rejected
+        );
         let nothing = GoalOp::Update {
             id: create(&config, "Kept").id,
             title: None,

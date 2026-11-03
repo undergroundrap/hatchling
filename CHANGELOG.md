@@ -8,6 +8,13 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Added
 
+- **Goals in the app.** Connected to Hatchling, the Goals page said goals couldn't be set from the app. Now:
+  - You set a goal from "Create a goal" or New goal: what you're working toward, and what reaching it looks like.
+  - You change its title or detail.
+  - You close it from its checkbox, saying whether you reached it or are setting it aside. A closed goal is kept under Closed goals and can't be reopened, as the store has always held, and the dialog says so.
+  - These are the goals the agent reads in a feed's digest: the app acts as the agent's principal, the owner's alone.
+  - The install keeps goals at `/var/lib/hatchling/goals`, and `scripts/install.sh` adds the setting to an older configuration as it adds the conversation's.
+  - **Breaking for `hatchling-core`:** `UiAction` has a new action, `ManageGoals` (list, create, update, close), answered by `UiActionResult::Goals`; `ApiRequest` a new kind, `ManageGoals`.
 - **The app hears when scheduled work runs.** The broker now tells the app each scheduled run's start and end (the protocol's schedule notices, defined but never sent until now): fired, completed, or failed and kept for review. Only the broker's record goes out (the schedule's id and how its run went), never what the run wrote.
 - **Scheduled work that needs you is shown, with what to do.** The schedule panel and page open with "Needs you": a run cut short when Hatchling stopped (run it again, or mark it resolved), and a result kept because it failed or couldn't be delivered (read it, then dismiss it). A failed run's own error is never shown: the chat already said why, in the broker's words. With the failure notice, every scheduled run now ends visibly: delivered, told as a failure, or listed here.
 - **Every change is tested upgrading a real install.** CI installs the last release with `scripts/install.sh`, gives it schedules and a conversation through the API, installs the commit over it, and fails unless every schedule survived with its timing and grants, still due, and the agent still answers (`scripts/upgrade_state.py`). An update must never eat someone's schedules.
