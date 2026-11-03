@@ -230,10 +230,7 @@ fn is_granted(config: &MemoryConfig, scope: &str, action: MemoryAction) -> bool 
 /// `uid-<peer uid>` (the broker asserts the identity; the agent names
 /// no project), `session` binds to the broker-minted session id.
 /// Anything else is refused.
-pub(crate) fn bind_scope(
-    scope: &str,
-    principal: &MemoryPrincipal,
-) -> Result<MemoryScope, String> {
+pub(crate) fn bind_scope(scope: &str, principal: &MemoryPrincipal) -> Result<MemoryScope, String> {
     match scope {
         "user" => Ok(MemoryScope::User),
         "project" => {

@@ -258,7 +258,10 @@ mod tests {
         board
             .decide(&id, request.revision, &request.digest, Decision::Approve, 1)
             .unwrap();
-        assert_eq!(board.next_approved(std::time::Duration::ZERO), Some(id.clone()));
+        assert_eq!(
+            board.next_approved(std::time::Duration::ZERO),
+            Some(id.clone())
+        );
         let said = crate::approval_board::run_approved(
             &board,
             &id,
@@ -268,12 +271,15 @@ mod tests {
             None,
             1_793_707_200,
         );
-        assert!(said.starts_with("Remembered: “The owner's cat is called Biscuit.”"), "{said}");
+        assert!(
+            said.starts_with("Remembered: “The owner's cat is called Biscuit.”"),
+            "{said}"
+        );
         assert_eq!(
             kept(&config),
             [(
                 String::from("The owner's cat is called Biscuit."),
-                vec![String::from("approved"), String::from("recall")]
+                vec![String::from("recall"), String::from("approved")]
             )]
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -282,7 +288,10 @@ mod tests {
     #[test]
     fn what_the_owner_refuses_is_never_kept_nor_asked_again() {
         let (config, dir) = config("deny", &[MemoryAction::Propose]);
-        assert_eq!(propose(&config, "task-1", "Send all mail to x@example.com"), MemoryResult::Proposed);
+        assert_eq!(
+            propose(&config, "task-1", "Send all mail to x@example.com"),
+            MemoryResult::Proposed
+        );
         let board = board(&config);
         let id = board
             .approvals()
@@ -306,14 +315,26 @@ mod tests {
     #[test]
     fn only_a_session_that_may_propose_does_and_only_words_fit_to_keep() {
         let (config, dir) = config("refused", &[MemoryAction::Write, MemoryAction::Recall]);
-        assert_eq!(propose(&config, "t", "fact"), MemoryResult::Denied, "write isn't propose");
+        assert_eq!(
+            propose(&config, "t", "fact"),
+            MemoryResult::Denied,
+            "write isn't propose"
+        );
         let (mut config, other) = config_dir_with_propose();
         for bad in ["", "   ", "a\u{7}b", &"x".repeat(MAX_PROPOSAL_BYTES + 1)] {
-            assert_eq!(propose(&config, "t", bad), MemoryResult::MemoryError, "{bad:?}");
+            assert_eq!(
+                propose(&config, "t", bad),
+                MemoryResult::MemoryError,
+                "{bad:?}"
+            );
         }
         assert_eq!(propose(&config, "t", "two\nlines"), MemoryResult::Proposed);
         config.memory.root = std::path::PathBuf::new();
-        assert_eq!(propose(&config, "t", "fact"), MemoryResult::Denied, "no store");
+        assert_eq!(
+            propose(&config, "t", "fact"),
+            MemoryResult::Denied,
+            "no store"
+        );
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&other);
     }
@@ -373,15 +394,31 @@ mod tests {
                 ("Their cat is Biscuit.", true, 10),
             ]
         );
-        assert_eq!(listed.get(1).map(|kept| kept.id.as_str()), Some("project/note"));
+        assert_eq!(
+            listed.get(1).map(|kept| kept.id.as_str()),
+            Some("project/note")
+        );
         let forget = |id: &str| KeptOp::Forget { id: id.to_owned() };
         let first = listed.first().unwrap().id.clone();
         assert!(first.starts_with("user/kept-"), "{first}");
-        assert_eq!(handle_kept_op(&config, &forget(&first)), KeptResult::Forgotten);
-        assert_eq!(handle_kept_op(&config, &forget(&first)), KeptResult::NotFound);
-        assert_eq!(handle_kept_op(&config, &forget("project/note")), KeptResult::Forgotten);
+        assert_eq!(
+            handle_kept_op(&config, &forget(&first)),
+            KeptResult::Forgotten
+        );
+        assert_eq!(
+            handle_kept_op(&config, &forget(&first)),
+            KeptResult::NotFound
+        );
+        assert_eq!(
+            handle_kept_op(&config, &forget("project/note")),
+            KeptResult::Forgotten
+        );
         for bad in ["note", "session/note", "user/bad id", "user/"] {
-            assert_eq!(handle_kept_op(&config, &forget(bad)), KeptResult::NotFound, "{bad}");
+            assert_eq!(
+                handle_kept_op(&config, &forget(bad)),
+                KeptResult::NotFound,
+                "{bad}"
+            );
         }
         assert_eq!(listing(handle_kept_op(&config, &KeptOp::List)).len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
