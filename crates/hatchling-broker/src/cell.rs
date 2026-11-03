@@ -2863,9 +2863,7 @@ mod run_cell_tests {
         assert_eq!(groups(&run()), None, "an older spec says nothing");
         for on in [
             std::collections::BTreeSet::new(),
-            [hatchling_core::run_tools::ToolGroup::Search]
-                .into_iter()
-                .collect(),
+            std::collections::BTreeSet::from([hatchling_core::run_tools::ToolGroup::Search]),
         ] {
             let told = ScheduledRun {
                 tools: Some(on.clone()),

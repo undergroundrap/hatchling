@@ -1200,12 +1200,12 @@ mod tests {
             config.web.enabled = web;
             config.web.search = search;
             config.skills = if skills {
-                crate::SkillConfig {
+                SkillConfig {
                     skills_dir: PathBuf::from("/srv/skills"),
-                    ..crate::SkillConfig::disabled()
+                    ..SkillConfig::disabled()
                 }
             } else {
-                crate::SkillConfig::disabled()
+                SkillConfig::disabled()
             };
             let on: std::collections::BTreeSet<ToolGroup> = [
                 (ToolGroup::Web, web),

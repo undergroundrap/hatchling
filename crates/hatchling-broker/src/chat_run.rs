@@ -56,10 +56,11 @@ pub const CHAT_POLL: Duration = Duration::from_millis(200);
 /// nothing more is known.
 pub const CHAT_FAILED: &str = "Something went wrong and the agent couldn't answer. Try again; if it keeps happening, `sudo hatchling-broker doctor` checks the install.";
 
-/// What the person is told when a chat run failed as `ending` says, with
-/// `model` the operator's model name, if one is set: in plain words, and
-/// what they can do about it. Only the broker's own words: nothing the
-/// run wrote is shown.
+/// What the person is told when a chat run failed as `ending` says.
+///
+/// In plain words, and what they can do about it, naming `model`, the
+/// operator's model name, if one is set. Only the broker's own words:
+/// nothing the run wrote is shown.
 #[must_use]
 pub fn chat_failed(ending: Option<hatchling_scheduler::Ending>, model: Option<&str>) -> String {
     use hatchling_core::run_failure::RunFailure;
