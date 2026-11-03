@@ -3306,13 +3306,19 @@ mod tests {
         let (a, _b) = socket_pair();
         let tool = GoalsReadTool::new(&a);
         assert_eq!(tool.name(), "goals_read");
-        assert!(tool.description().starts_with("Read the owner's open goals"));
+        assert!(
+            tool.description()
+                .starts_with("Read the owner's open goals")
+        );
         assert_eq!(
             tool.parameters_schema(),
             json!({"type": "object", "properties": {}, "additionalProperties": false})
         );
         let items = |titles: &[&str]| hatchling_core::QueryResult::Items {
-            items_json: titles.iter().map(|title| goal_item(title, 1_793_707_200)).collect(),
+            items_json: titles
+                .iter()
+                .map(|title| goal_item(title, 1_793_707_200))
+                .collect(),
             next: None,
         };
         let mut first = items(&["Run a 10k"]);
@@ -3338,8 +3344,14 @@ mod tests {
             .map(|request| serde_json::to_value(request).unwrap())
             .collect();
         assert_eq!(ops.len(), 2);
-        assert_eq!(ops.first().unwrap().pointer("/op/status"), Some(&json!("open")));
-        assert_eq!(ops.get(1).unwrap().pointer("/op/after"), Some(&json!("cursor-1")));
+        assert_eq!(
+            ops.first().unwrap().pointer("/status"),
+            Some(&json!("open"))
+        );
+        assert_eq!(
+            ops.get(1).unwrap().pointer("/after"),
+            Some(&json!("cursor-1"))
+        );
     }
 
     #[test]
@@ -3371,7 +3383,10 @@ mod tests {
             None
         }
         .unwrap();
-        assert!(reason.contains("denied") || reason.contains("goals"), "{reason}");
+        assert!(
+            reason.contains("denied") || reason.contains("goals"),
+            "{reason}"
+        );
         broker.join().unwrap();
     }
 }

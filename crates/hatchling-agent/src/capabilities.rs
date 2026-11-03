@@ -74,7 +74,10 @@ mod tests {
         assert!(off.contains("hatchling-broker schedule add"), "{off}");
         assert!(off.contains("can't see the owner's goals"), "{off}");
         let goals = note(Some(&BTreeSet::from([ToolGroup::Goals])));
-        assert!(goals.contains("read the owner's open goals with goals_read"), "{goals}");
+        assert!(
+            goals.contains("read the owner's open goals with goals_read"),
+            "{goals}"
+        );
         assert!(!goals.contains("can't see the owner's goals"), "{goals}");
         let web = BTreeSet::from([ToolGroup::Web]);
         let some = note(Some(&web));
