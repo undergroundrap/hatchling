@@ -533,10 +533,22 @@ mod tests {
     fn only_failures_the_person_can_fix_name_one() {
         use hatchling_core::run_failure::RunFailure;
         for (error, failure) in [
-            (Error::ModelRefused(String::new()), Some(RunFailure::ModelUnavailable)),
-            (Error::ModelFailed(String::new()), Some(RunFailure::ModelUnavailable)),
-            (Error::ToolsMisused(String::new()), Some(RunFailure::ToolsMisused)),
-            (Error::LoopBudgetExhausted { steps: 3 }, Some(RunFailure::OutOfSteps)),
+            (
+                Error::ModelRefused(String::new()),
+                Some(RunFailure::ModelUnavailable),
+            ),
+            (
+                Error::ModelFailed(String::new()),
+                Some(RunFailure::ModelUnavailable),
+            ),
+            (
+                Error::ToolsMisused(String::new()),
+                Some(RunFailure::ToolsMisused),
+            ),
+            (
+                Error::LoopBudgetExhausted { steps: 3 },
+                Some(RunFailure::OutOfSteps),
+            ),
             (Error::LoopFailed(String::new()), None),
             (Error::Usage(String::new()), None),
             (Error::VaultFailed, None),

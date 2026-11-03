@@ -226,7 +226,10 @@ fn loop_offers_only_the_tool_groups_the_broker_says_are_on() {
         (1, Some(every())),
         (2, Some(std::collections::BTreeSet::new())),
         (3, Some([ToolGroup::Web].into_iter().collect())),
-        (4, Some([ToolGroup::Search, ToolGroup::Skills].into_iter().collect())),
+        (
+            4,
+            Some([ToolGroup::Search, ToolGroup::Skills].into_iter().collect()),
+        ),
     ] {
         for (group, tool) in groups {
             let offered = run_tools.as_ref().is_none_or(|on| on.contains(&group));

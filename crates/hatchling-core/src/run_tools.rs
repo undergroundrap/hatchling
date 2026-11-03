@@ -74,7 +74,9 @@ pub fn parse(raw: &str) -> Result<BTreeSet<ToolGroup>, String> {
             ToolGroup::ALL
                 .into_iter()
                 .find(|group| group.as_str() == name)
-                .ok_or_else(|| format!("{name:?} is not a tool group: web, search, browser or skills"))
+                .ok_or_else(|| {
+                    format!("{name:?} is not a tool group: web, search, browser or skills")
+                })
         })
         .collect()
 }

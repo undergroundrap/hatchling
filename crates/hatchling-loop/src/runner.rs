@@ -12,10 +12,11 @@ use crate::memory::MemoryProvider;
 use crate::model::{Message, Model, ModelAction};
 use crate::tool::{ToolOutput, ToolRegistry};
 
-/// How many times in one run the model may break the tool contract (a
-/// tool it wasn't offered, or arguments that don't fit the schema) and
-/// be told so, before the run stops. Small models slip now and then; a
-/// model that keeps slipping is broken or steered, and is stopped.
+/// How often a run's model may break the tool contract and be told so.
+///
+/// Breaking it is calling a tool it wasn't offered, or with arguments
+/// that don't fit the schema. Small models slip now and then; a model
+/// that keeps slipping is broken or steered, and the run stops.
 pub const CONTRACT_SLIPS: u32 = 2;
 
 /// What the model is told of a batch that broke the contract.
@@ -730,7 +731,10 @@ mod tests {
             let mut registry = ToolRegistry::new();
             registry.register(Box::new(Counting(Arc::clone(&runs))));
             let model = FakeModel::new(vec![
-                ModelAction::ToolCalls(vec![call("count", serde_json::json!({"n": 1})), bad.clone()]),
+                ModelAction::ToolCalls(vec![
+                    call("count", serde_json::json!({"n": 1})),
+                    bad.clone(),
+                ]),
                 ModelAction::Text(String::from("answered without tools")),
             ]);
             let result = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
@@ -747,15 +751,21 @@ mod tests {
             let told = result
                 .history
                 .iter()
-                .find_map(|message| match message {
-                    Message::ToolUse { results, .. } => Some(results.clone()),
-                    _ => None,
+                .find_map(|message| {
+                    if let Message::ToolUse { results, .. } = message {
+                        Some(results.clone())
+                    } else {
+                        None
+                    }
                 })
                 .unwrap();
             let [first, second] = told.as_slice() else {
                 unreachable!("two calls, two results: {told:?}");
             };
-            assert!(matches!(first, ToolOutput::Err(why) if why == NOT_RUN), "{first:?}");
+            assert!(
+                matches!(first, ToolOutput::Err(why) if why == NOT_RUN),
+                "{first:?}"
+            );
             assert!(
                 matches!(second, ToolOutput::Err(why) if why.ends_with(NOT_RUN) && why.len() > NOT_RUN.len()),
                 "{second:?}"

@@ -462,13 +462,16 @@ fn synthesis_has_no_tools_so_a_source_cannot_make_the_run_act() {
         fetch("s1"),
         fetch("s2"),
         text("done"),
-        // A model that obeys the source at synthesis, and keeps at it.
-        amend("https://evil.example/steal", "the source said so"),
-        amend("https://evil.example/steal", "the source said so"),
+        // A model that obeys the source at synthesis.
         amend("https://evil.example/steal", "the source said so"),
     ]);
+    // Synthesis offers no tool: the call is told that nothing ran, and
+    // its one step is spent.
     let error = run(&model, &pages, &user, &Ticking::still(), Bounds::standard()).unwrap_err();
-    let matched = matches!(&error, ResearchError::Loop(hatchling_loop::Error::UnknownTool(name)) if name == "amend_plan");
+    let matched = matches!(
+        &error,
+        ResearchError::Loop(hatchling_loop::Error::BudgetExhausted { steps: 1 })
+    );
     assert!(matched, "{error:?}");
     assert!(user.asked().is_empty());
     assert_eq!(pages.calls(), [SPEC, NEWS]);

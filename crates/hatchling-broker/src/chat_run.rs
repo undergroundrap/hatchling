@@ -917,9 +917,15 @@ mod tests {
         use hatchling_scheduler::Ending;
         let exited = |failure: RunFailure| Some(Ending::Exited(failure.code().into()));
         let model = chat_failed(exited(RunFailure::ModelUnavailable), Some("qwen3.5:9b"));
-        assert!(model.contains("its model (qwen3.5:9b)") && model.contains("doctor"), "{model}");
+        assert!(
+            model.contains("its model (qwen3.5:9b)") && model.contains("doctor"),
+            "{model}"
+        );
         let tools = chat_failed(exited(RunFailure::ToolsMisused), Some("qwen3.5:9b"));
-        assert!(tools.starts_with("The model (qwen3.5:9b) kept calling"), "{tools}");
+        assert!(
+            tools.starts_with("The model (qwen3.5:9b) kept calling"),
+            "{tools}"
+        );
         assert!(!chat_failed(exited(RunFailure::ToolsMisused), None).contains('('));
         let steps = chat_failed(exited(RunFailure::OutOfSteps), Some("m"));
         assert!(steps.contains("all its steps"), "{steps}");
@@ -941,7 +947,10 @@ mod tests {
         let mut chat = Chat::new(vec![send_local()]).with_model(Some(String::from("m")));
         let now = Timestamp::now();
         chat.step(|| Some((message("one"), 0)), 0, &launches, &answers, now);
-        assert_eq!(chat.step(|| None, 0, &launches, &answers, now), Step::Answered);
+        assert_eq!(
+            chat.step(|| None, 0, &launches, &answers, now),
+            Step::Answered
+        );
         let delivered = answers.delivered.borrow();
         let [(_, told)] = delivered.as_slice() else {
             unreachable!("one answer: {delivered:?}");

@@ -654,7 +654,10 @@ impl ScheduledRun {
             }
         }
         if let Some(tools) = &self.tools {
-            env.push(("HATCHLING_RUN_TOOLS", hatchling_core::run_tools::format(tools)));
+            env.push((
+                "HATCHLING_RUN_TOOLS",
+                hatchling_core::run_tools::format(tools),
+            ));
         }
         if let Some(endpoint) = &self.model_endpoint {
             env.push(("HATCHLING_MODEL_ENDPOINT", endpoint.clone()));
