@@ -36,7 +36,7 @@ use crate::Error;
 const TMPFS_ROOT_FLAGS: rustix::mount::MountFlags =
     rustix::mount::MountFlags::from_bits_retain(0x6); // NOSUID | NODEV
 const REMOUNT_READONLY_FLAGS: rustix::mount::MountFlags =
-    rustix::mount::MountFlags::from_bits_retain(0x1001); // BIND | RDONLY
+    rustix::mount::MountFlags::from_bits_retain(0x1007); // BIND | RDONLY | NOSUID | NODEV
 const REMOUNT_WRITABLE_FLAGS: rustix::mount::MountFlags =
     rustix::mount::MountFlags::from_bits_retain(0x1006); // BIND | NOSUID | NODEV
 const REMOUNT_DEVICE_FLAGS: rustix::mount::MountFlags =
@@ -53,7 +53,7 @@ const PROC_FLAGS: rustix::mount::MountFlags = rustix::mount::MountFlags::from_bi
 /// NOSUID, NODEV, NOEXEC, and the atime flags — so every `statvfs`
 /// flag with a `mount(2)` counterpart is carried over (the same
 /// mapping bubblewrap uses for its remounts), and `base` is what the
-/// remount adds: BIND|RDONLY for a read-only bind, BIND|NOSUID|NODEV for a
+/// remount adds: BIND|RDONLY|NOSUID|NODEV for a read-only bind, BIND|NOSUID|NODEV for a
 /// writable one. A statvfs failure falls back to `base` alone — the
 /// remount then either succeeds (no locked flags) or fails loudly with
 /// EPERM, never silently.
@@ -609,19 +609,19 @@ pub(crate) mod tests {
     #[test]
     fn mount_flag_composites_pin_the_exact_bits() {
         // The composites are literals (see the constants above); this
-        // pins that they equal NOSUID|NODEV and BIND|RDONLY
+        // pins that they equal NOSUID|NODEV and BIND|RDONLY|NOSUID|NODEV
         // respectively. A wrong literal (e.g. a dropped bit) fails
         // here instead of silently weakening the cell's mount table.
         use rustix::mount::MountFlags;
         assert_eq!(TMPFS_ROOT_FLAGS, MountFlags::NOSUID | MountFlags::NODEV);
         assert_eq!(
             REMOUNT_READONLY_FLAGS,
-            MountFlags::BIND | MountFlags::RDONLY
+            MountFlags::BIND | MountFlags::RDONLY | MountFlags::NOSUID | MountFlags::NODEV
         );
         // And the bits themselves, so a platform with different
         // MS_* values fails loudly instead of mounting wrong.
         assert_eq!(TMPFS_ROOT_FLAGS.bits(), 0x6);
-        assert_eq!(REMOUNT_READONLY_FLAGS.bits(), 0x1001);
+        assert_eq!(REMOUNT_READONLY_FLAGS.bits(), 0x1007);
         // A writable bind keeps NOSUID|NODEV and never carries RDONLY.
         assert_eq!(
             REMOUNT_WRITABLE_FLAGS,
@@ -1123,14 +1123,18 @@ pub(crate) mod tests {
                 if std::fs::write("/ro/note", b"must not land").is_ok() {
                     exit_child(4);
                 }
-                let Ok(vfs) = rustix::fs::statvfs("/rw") else {
-                    exit_child(5)
-                };
-                let flags = vfs.f_flag;
-                if !flags.contains(rustix::fs::StatVfsMountFlags::NOSUID)
-                    || !flags.contains(rustix::fs::StatVfsMountFlags::NODEV)
-                {
-                    exit_child(6);
+                // Both are NOSUID and NODEV: a set-id program or a device
+                // node in a host directory is nothing in the cell.
+                for bound in ["/rw", "/ro"] {
+                    let Ok(vfs) = rustix::fs::statvfs(bound) else {
+                        exit_child(5)
+                    };
+                    let flags = vfs.f_flag;
+                    if !flags.contains(rustix::fs::StatVfsMountFlags::NOSUID)
+                        || !flags.contains(rustix::fs::StatVfsMountFlags::NODEV)
+                    {
+                        exit_child(6);
+                    }
                 }
                 exit_child(0);
             }

@@ -106,6 +106,8 @@ struct Look {
     mount: u64,
     /// Its owner.
     uid: u32,
+    /// How many names it has.
+    links: u32,
 }
 
 /// What a walk keeps to: its mount, the directories it leaves whole, and
@@ -117,6 +119,15 @@ struct Walk<'a> {
     owner: u32,
 }
 
+/// What [`look`] asks of an entry. Joined by `union`: `|` on these
+/// disjoint bits would leave `^` an equivalent mutant.
+const LOOKED_AT: StatxFlags = StatxFlags::TYPE
+    .union(StatxFlags::MODE)
+    .union(StatxFlags::INO)
+    .union(StatxFlags::MNT_ID)
+    .union(StatxFlags::UID)
+    .union(StatxFlags::NLINK);
+
 /// Looks at `name` in `dir` (or at `dir` itself, for an empty name),
 /// following no symlink.
 fn look(dir: impl AsFd, name: &CStr) -> Result<Look, rustix::io::Errno> {
@@ -125,16 +136,7 @@ fn look(dir: impl AsFd, name: &CStr) -> Result<Look, rustix::io::Errno> {
     } else {
         AtFlags::SYMLINK_NOFOLLOW
     };
-    let stat = rustix::fs::statx(
-        dir,
-        name,
-        flags,
-        StatxFlags::TYPE
-            | StatxFlags::MODE
-            | StatxFlags::INO
-            | StatxFlags::MNT_ID
-            | StatxFlags::UID,
-    )?;
+    let stat = rustix::fs::statx(dir, name, flags, LOOKED_AT)?;
     let dev = rustix::fs::makedev(stat.stx_dev_major, stat.stx_dev_minor);
     let mount = if StatxFlags::from_bits_retain(stat.stx_mask).contains(StatxFlags::MNT_ID) {
         stat.stx_mnt_id
@@ -152,6 +154,7 @@ fn look(dir: impl AsFd, name: &CStr) -> Result<Look, rustix::io::Errno> {
         },
         mount,
         uid: stat.stx_uid,
+        links: stat.stx_nlink,
     })
 }
 
@@ -262,7 +265,10 @@ fn refused(operation: &'static str, why: &str) -> Error {
 /// read, write and search bits, so its new owner can always go through
 /// it, whatever its last owner left. A regular file loses its set-user-ID
 /// and set-group-ID bits (the kernel clears them on a change of owner;
-/// this checks).
+/// this checks). A file with more than one name (a hard link) is left as
+/// it is: another of its names may be outside the tree, and where a user
+/// may link to others' files (`fs.protected_hardlinks=0`), a cell's link
+/// would have the change made to a host file.
 ///
 /// # Errors
 ///
@@ -410,6 +416,9 @@ fn chown_entries(
     }
     for name in &names {
         let seen = look(dir, name).map_err(changing("look at an entry"))?;
+        if !seen.directory && seen.links > 1 {
+            continue;
+        }
         if !seen.directory {
             budget.take()?;
             let (owner, group) = crate::ownership::ids(uid, gid);
@@ -959,6 +968,30 @@ mod tests {
         assert!(chown_tree(&root, uid, gid).is_ok());
         assert_eq!(mode(&outside), 0o500, "the symlink's target is left alone");
         set_mode(&outside, 0o700);
+    }
+
+    /// A file with another name is left as it is: the other may be
+    /// outside the tree. Here it is, set-group-ID, and keeps the bit the
+    /// walk takes from a file of the tree's own.
+    #[test]
+    fn a_file_with_another_name_is_left_as_it_is() {
+        let scratch = scratch("chown-linked");
+        let root = scratch.0.join("root");
+        let outside = scratch.0.join("outside-file");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&outside, b"the host's").unwrap();
+        set_mode(&outside, 0o2644);
+        std::fs::hard_link(&outside, root.join("linked")).unwrap();
+        std::fs::write(root.join("own"), b"x").unwrap();
+        set_mode(&root.join("own"), 0o2644);
+        let (uid, gid) = (crate::process::euid(), crate::process::egid());
+        assert_eq!(chown_tree(&root, uid, gid).unwrap(), 2, "root and own");
+        assert_eq!(mode(&outside), 0o2644, "the linked file is left as it is");
+        assert_eq!(
+            mode(&root.join("own")) & 0o6000,
+            0,
+            "the tree's own loses it"
+        );
     }
 
     /// The walk's own steps, one by one, on this process's own ids.
