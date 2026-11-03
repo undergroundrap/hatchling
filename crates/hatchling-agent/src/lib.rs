@@ -17,6 +17,7 @@
 //! here so the agent's public API is unchanged by the extraction.
 
 pub mod browser;
+pub mod capabilities;
 pub mod cell;
 pub mod channel;
 pub mod cli;

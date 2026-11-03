@@ -4,6 +4,7 @@ import { ApprovalReview } from '../features/approvals/review.js';
 import type { TaskApprovalPort } from '../session/task-approvals.js';
 import type { SignInPort } from '../session/sign-ins.js';
 import type { CodePort } from '../session/codes.js';
+import type { AttentionPort } from '../session/attention.js';
 import type { ConversationPort } from '../session/conversations.js';
 import type { UsagePort } from '../session/usage.js';
 import { ChatDelivery } from '../features/chat/delivery.js';
@@ -63,6 +64,9 @@ export class App implements AppContext {
     get usage(): UsagePort | undefined {
         return this.adapter.usage;
     }
+    get attention(): AttentionPort | undefined {
+        return this.adapter.attention;
+    }
     readonly dock: ArtifactDock;
     private readonly disposeTooltips: () => void;
     private readonly disposeMenus: () => void;
@@ -85,6 +89,7 @@ export class App implements AppContext {
         readonly codes?: CodePort;
         readonly conversations?: ConversationPort;
         readonly usage?: UsagePort;
+        readonly attention?: AttentionPort;
     }, private readonly root: HTMLElement, dialogRoot: HTMLElement, private readonly toastRoot: HTMLElement) {
         this.dialogs = new DialogManager(dialogRoot, this.acknowledgeVisible);
         this.dock = new ArtifactDock(dialogRoot, this.onDockChange);

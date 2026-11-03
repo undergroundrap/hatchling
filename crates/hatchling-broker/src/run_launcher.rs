@@ -942,7 +942,11 @@ pub fn dispatch_forever<'scope, 'env>(
             &launcher,
             Timestamp::now(),
         ) {
-            Ok(report) => tracing::debug!(?report, "scheduler tick"),
+            Ok(report) => {
+                // The owner's app shows each run start and end.
+                crate::app_stream::stream(config).tell(&report);
+                tracing::debug!(?report, "scheduler tick");
+            }
             Err(error) => tracing::error!(%error, "scheduler tick failed"),
         }
     }

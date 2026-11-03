@@ -6,8 +6,9 @@
 // browser's own time zone, and a schedule is given the grants this connection
 // holds: the ones a chat message's run gets, which the welcome named.
 import type { CommandResult, ScheduledJob } from '../../protocol/models.js';
+import type { AttentionAction, AttentionItem, AttentionPort } from '../../session/attention.js';
 import type { LiveClient } from './client.js';
-import type { ScheduleGrant, ScheduleOp, ScheduleRefusal, ScheduleResult, ScheduleSpec, ScheduleSummary } from './protocol/generated.js';
+import type { ParkedSummary, ScheduleGrant, ScheduleOp, ScheduleRefusal, ScheduleResult, ScheduleSpec, ScheduleSummary } from './protocol/generated.js';
 const CREATED = 'Scheduled. Its results arrive in this chat.';
 const CANCELLED = 'Removed. It won’t run again.';
 const GONE = 'This schedule was already gone.';
@@ -154,12 +155,27 @@ export function jobOf(summary: ScheduleSummary): ScheduledJob {
         nextRun: summary.held ? 'Held' : localTime(summary.next_due),
     };
 }
-export class LiveSchedules {
+/** What a kept result's reason means, in words; the record's own words otherwise. */
+function parkedDetail(parked: ParkedSummary): {
+    detail: string;
+    result: string | null;
+} {
+    if (parked.reason === 'the run failed')
+        return { detail: 'It didn’t finish. The chat said why when it happened.', result: null };
+    if (parked.reason === 'the run did not start')
+        return { detail: 'It didn’t start. `sudo hatchling-broker doctor` checks the install.', result: null };
+    if (parked.reason.startsWith('delivery failed'))
+        return { detail: 'Its result couldn’t be delivered when it finished. Here it is.', result: parked.text };
+    return { detail: `Kept: ${parked.reason}.`, result: null };
+}
+export class LiveSchedules implements AttentionPort {
     readonly #client: LiveClient;
     readonly #changed: () => void;
     readonly #nextId: () => string;
     readonly #zone: () => string;
     #jobs: readonly ScheduledJob[] = [];
+    #summaries: readonly ScheduleSummary[] = [];
+    #parked: readonly ParkedSummary[] = [];
     #ready = false;
     /** `zone` is the time zone the form's times are in: the browser's, unless a test says. */
     constructor(client: LiveClient, changed: () => void, nextId: () => string, zone: () => string = browserTimeZone) {
@@ -173,21 +189,65 @@ export class LiveSchedules {
     jobs(): readonly ScheduledJob[] {
         return this.#jobs;
     }
-    /** Ask the broker for every page of the list. */
+    /** Ask the broker for every page of the list, and of what it kept for the owner. */
     async refresh(): Promise<void> {
-        const jobs: ScheduledJob[] = [];
+        const summaries: ScheduleSummary[] = [];
         let after: string | null = null;
         for (;;) {
             const outcome = await this.#ask(after === null ? { op: 'list' } : { op: 'list', after });
             if (outcome?.result !== 'listed')
                 return;
-            jobs.push(...outcome.schedules.map(jobOf));
+            summaries.push(...outcome.schedules);
             if (typeof outcome.next !== 'string')
                 break;
             after = outcome.next;
         }
-        this.#jobs = jobs;
+        const parked: ParkedSummary[] = [];
+        after = null;
+        for (;;) {
+            const outcome = await this.#ask(after === null ? { op: 'list-parked' } : { op: 'list-parked', after });
+            // A connection that may list schedules but not what was kept
+            // still shows its schedules.
+            if (outcome?.result !== 'parked')
+                break;
+            parked.push(...outcome.parked);
+            if (typeof outcome.next !== 'string')
+                break;
+            after = outcome.next;
+        }
+        this.#summaries = summaries;
+        this.#jobs = summaries.map(jobOf);
+        this.#parked = parked;
         this.#changed();
+    }
+    /** Runs cut short by a stop, then results kept: each with what the owner can do. */
+    items(): readonly AttentionItem[] {
+        const title = (scheduleId: string): string => this.#jobs.find(job => job.id === scheduleId)?.title ?? 'Scheduled work';
+        const held = this.#summaries.flatMap(summary => summary.held
+            ? [{ id: `held:${summary.id}`, title: jobOf(summary).title, detail: summary.held.started ? 'A run was cut short when Hatchling stopped: what it did isn’t known. Look, then mark it resolved, or run it again.' : 'A run was due when Hatchling stopped, and didn’t start. Run it now, or mark it resolved to skip it.', when: localTime(summary.held.due), result: null, actions: ['retry', 'resolve'] } satisfies AttentionItem]
+            : []);
+        const kept = this.#parked.map(parked => ({ id: `parked:${parked.id}`, title: title(parked.schedule_id), ...parkedDetail(parked), when: localTime(parked.due), actions: ['dismiss'] } satisfies AttentionItem));
+        return [...held, ...kept];
+    }
+    /** Do `action` about the item `id`: run a held fire again, resolve it, or dismiss a kept result. */
+    async act(id: string, action: AttentionAction): Promise<CommandResult> {
+        const [kind, target] = [id.slice(0, id.indexOf(':')), id.slice(id.indexOf(':') + 1)];
+        const op: ScheduleOp | undefined = kind === 'held' && action === 'retry' ? { op: 'retry', id: target }
+            : kind === 'held' && action === 'resolve' ? { op: 'resolve', id: target }
+                : kind === 'parked' && action === 'dismiss' ? { op: 'dismiss', id: target }
+                    : undefined;
+        if (op === undefined)
+            return { ok: false, message: 'That can’t be done to this item.' };
+        const outcome = await this.#change(op);
+        if (typeof outcome === 'string')
+            return { ok: false, message: outcome };
+        const done: Partial<Record<ScheduleResult['result'], string>> = { retried: 'Running it again now.', resolved: 'Marked resolved. Its schedule goes on as planned.', dismissed: 'Dismissed.' };
+        const message = done[outcome.result];
+        if (message !== undefined || outcome.result === 'not-found') {
+            await this.refresh();
+            return message === undefined ? { ok: false, message: 'It was already dealt with.' } : { ok: true, message };
+        }
+        return { ok: false, message: this.#refusal(outcome) };
     }
     /** Schedule `task` at the form's `when`, with this connection's grants, delivered to this chat. */
     async create(task: string, when: string): Promise<CommandResult> {

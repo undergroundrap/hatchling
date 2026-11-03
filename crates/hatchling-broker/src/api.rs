@@ -226,6 +226,8 @@ impl Api {
         // So do the agent's browsers, for the owner to watch and stop
         // (WO-029).
         crate::browser_board::board(config).attach(Arc::clone(&self.bus));
+        // So does each scheduled run's start and end.
+        crate::app_stream::stream(config).attach(Arc::clone(&self.bus));
         std::thread::scope(|scope| {
             scope.spawn(|| Follower::new(self.log.clone()).follow(&self.bus, FOLLOW_POLL));
             for door in std::iter::once(&self.local).chain(self.ui.as_ref()) {
