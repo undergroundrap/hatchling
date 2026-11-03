@@ -358,7 +358,9 @@ impl Api {
                 session_protocol,
                 grants: caller.grants().iter().cloned().collect(),
             },
-            other => other,
+            other @ (UiResponse::Incompatible { .. }
+            | UiResponse::Event(_)
+            | UiResponse::ActionResult { .. }) => other,
         };
         // Listed before it is welcomed: a caller that has its welcome is
         // already one the operator can see.
