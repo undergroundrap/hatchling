@@ -268,10 +268,11 @@ impl Cell<Ready> {
     }
 }
 
-/// A scheduled or hook run's task, as its model is given it: due now, with
-/// the owner away, so the answer is what they should be told. Found on a
-/// real install: given "Remind me to stretch" bare, a model answered as if
-/// asked to set the reminder, not to give it.
+/// A scheduled or hook run's task, as its model is given it.
+///
+/// It's due now, with the owner away, so the answer is what they should be
+/// told. Found on a real install: given "Remind me to stretch" bare, a
+/// model answered as if asked to set the reminder, not to give it.
 #[must_use]
 pub fn scheduled_task(task: &str) -> String {
     format!(
