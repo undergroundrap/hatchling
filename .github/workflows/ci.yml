@@ -381,6 +381,12 @@ jobs:
           python3 scripts/upgrade_state.py verify /var/lib/hatchling/api.sock "$RUNNER_TEMP/state.json"
           timeout 180 python3 docs/examples/first-run.py /var/lib/hatchling/api.sock
           sudo hatchling-broker doctor
+          # The kept configuration gained what this version keeps for you,
+          # with the chat's grants for it, and the old one was backed up.
+          for setting in '^HATCHLING_CONVERSATION_DIR=/' '^HATCHLING_MEMORY_DIR=/' '^HATCHLING_GOALS_DIR=/' '^HATCHLING_API_GRANTS=.*channel-send:local.*memory:user:recall.*goals:query-goals'; do
+            sudo grep -q "$setting" /etc/hatchling/hatchling.env || { echo "the upgraded configuration lacks $setting"; exit 1; }
+          done
+          sudo sh -c 'ls /etc/hatchling/hatchling.env.before-*'
 
       - name: The installs' and services' logs
         if: always()
