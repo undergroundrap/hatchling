@@ -225,7 +225,7 @@ fn loop_offers_only_the_tool_groups_the_broker_says_are_on() {
         (0, None),
         (1, Some(every())),
         (2, Some(std::collections::BTreeSet::new())),
-        (3, Some([ToolGroup::Web].into_iter().collect())),
+        (3, Some(std::collections::BTreeSet::from([ToolGroup::Web]))),
         (
             4,
             Some([ToolGroup::Search, ToolGroup::Skills].into_iter().collect()),
