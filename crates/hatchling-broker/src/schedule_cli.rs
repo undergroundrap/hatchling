@@ -288,10 +288,7 @@ fn describe(when: &ScheduleSpec) -> String {
         }
         _ => None,
     };
-    format!(
-        "{} ({tz})",
-        words.unwrap_or_else(|| format!("cron {expr}"))
-    )
+    format!("{} ({tz})", words.unwrap_or_else(|| format!("cron {expr}")))
 }
 
 /// The one schedule in `schedules` whose id starts with `prefix`.
@@ -323,10 +320,9 @@ pub fn report(command: &Command, outcome: ScheduleResult) -> Result<Vec<String>,
         (Command::Add { .. }, ScheduleResult::Created { id }) => Ok(vec![format!(
             "Scheduled: {id}. Its results arrive in the chat."
         )]),
-        (Command::Remove { id }, ScheduleResult::Cancelled) => Ok(vec![format!(
-            "Removed {}: it won't run again.",
-            short(id)
-        )]),
+        (Command::Remove { id }, ScheduleResult::Cancelled) => {
+            Ok(vec![format!("Removed {}: it won't run again.", short(id))])
+        }
         (Command::Remove { id }, ScheduleResult::NotFound) => {
             Err(format!("there's no schedule {}", short(id)))
         }
@@ -709,12 +705,19 @@ mod tests {
                 .collect()
         };
         let both = listed(&["sch-82d3c6215ca6", "sch-d92259e73524"]);
-        assert_eq!(resolve("sch-82d3", &both), Ok(String::from("sch-82d3c6215ca6")));
+        assert_eq!(
+            resolve("sch-82d3", &both),
+            Ok(String::from("sch-82d3c6215ca6"))
+        );
         assert_eq!(
             resolve("sch-d92259e73524", &both),
             Ok(String::from("sch-d92259e73524"))
         );
-        assert!(resolve("sch-", &both).unwrap_err().contains("more than one"));
+        assert!(
+            resolve("sch-", &both)
+                .unwrap_err()
+                .contains("more than one")
+        );
         assert!(resolve("sch-0", &both).unwrap_err().contains("no schedule"));
         assert!(resolve("sch-1", &[]).is_err());
         assert_eq!(short("sch-82d3c6215ca6e9d23352"), "sch-82d3c621");
