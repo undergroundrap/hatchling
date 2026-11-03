@@ -637,6 +637,11 @@
           "type": "string"
         },
         {
+          "const": "list_decisions",
+          "description": "[`UiAction::ListDecisions`].",
+          "type": "string"
+        },
+        {
           "const": "read_usage",
           "description": "[`UiAction::ReadUsage`].",
           "type": "string"
@@ -2639,6 +2644,42 @@
           "type": "string"
         }
       ]
+    },
+    "DecisionRecord": {
+      "description": "A decision the owner made, kept: the card as they were shown it, and what\nthey decided.",
+      "properties": {
+        "confirmation_id": {
+          "description": "The confirmation.",
+          "type": "string"
+        },
+        "decided_at": {
+          "description": "When, RFC 3339.",
+          "type": "string"
+        },
+        "decision": {
+          "$ref": "#/$defs/Decision",
+          "description": "What they decided."
+        },
+        "fields": {
+          "description": "Its fields, in review order, each labelled with who stated it.",
+          "items": {
+            "$ref": "#/$defs/ConfirmationField"
+          },
+          "type": "array"
+        },
+        "summary": {
+          "description": "What was asked, the broker's words.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "confirmation_id",
+        "summary",
+        "fields",
+        "decision",
+        "decided_at"
+      ],
+      "type": "object"
     },
     "DecisionRejection": {
       "description": "Why a decision was not recorded.",
@@ -10277,6 +10318,19 @@
           "type": "object"
         },
         {
+          "description": "List the decisions the owner made, the newest first: the owner's\nalone.",
+          "properties": {
+            "action": {
+              "const": "list_decisions",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Read the model usage the broker counted: the owner's alone.",
           "properties": {
             "action": {
@@ -10781,6 +10835,27 @@
           "required": [
             "result",
             "outcome"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The decisions the owner made, the newest first.",
+          "properties": {
+            "decisions": {
+              "description": "They.",
+              "items": {
+                "$ref": "#/$defs/DecisionRecord"
+              },
+              "type": "array"
+            },
+            "result": {
+              "const": "decisions",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "decisions"
           ],
           "type": "object"
         },

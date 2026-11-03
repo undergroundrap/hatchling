@@ -278,7 +278,7 @@ export type ApiOutcome = 'served' | 'refused';
  * What one API call asked for: the request's kind, never its content
  * (a message's text, a file, a schedule's task).
  */
-export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'manage_goals' | 'manage_memory' | 'read_usage' | 'give_code' | 'decline_code';
+export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'manage_goals' | 'manage_memory' | 'list_decisions' | 'read_usage' | 'give_code' | 'decline_code';
 /**
  * A bearer token, presented in `Hello` for a token provider.
  *
@@ -1118,6 +1118,32 @@ export type ControlRefusal = 'unknown_session' | 'finished' | 'switching' | 'not
  * A user's decision on a confirmation.
  */
 export type Decision = 'approve' | 'approve_session' | 'approve_always' | 'deny';
+/**
+ * A decision the owner made, kept: the card as they were shown it, and what
+ * they decided.
+ */
+export type DecisionRecord = {
+    /**
+     * The confirmation.
+     */
+    readonly confirmation_id: string;
+    /**
+     * When, RFC 3339.
+     */
+    readonly decided_at: string;
+    /**
+     * What they decided.
+     */
+    readonly decision: Decision;
+    /**
+     * Its fields, in review order, each labelled with who stated it.
+     */
+    readonly fields: readonly (ConfirmationField)[];
+    /**
+     * What was asked, the broker's words.
+     */
+    readonly summary: string;
+};
 /**
  * Why a decision was not recorded.
  */
@@ -4041,6 +4067,8 @@ export type UiAction = {
      */
     readonly op: KeptOp;
 } | {
+    readonly action: 'list_decisions';
+} | {
     readonly action: 'read_usage';
 } | {
     readonly action: 'give_code';
@@ -4240,6 +4268,12 @@ export type UiActionResult = {
      */
     readonly outcome: KeptResult;
     readonly result: 'memory';
+} | {
+    /**
+     * They.
+     */
+    readonly decisions: readonly (DecisionRecord)[];
+    readonly result: 'decisions';
 } | {
     readonly result: 'usage';
     /**

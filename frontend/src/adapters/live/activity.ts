@@ -174,6 +174,7 @@ const REQUESTS: Readonly<Record<ApiRequest, string>> = {
     read_usage: 'Read the model usage',
     manage_goals: 'Managed your goals',
     manage_memory: 'Managed your memory',
+    list_decisions: 'Read the approvals history',
     give_code: 'Gave a one-time code for the browser',
     decline_code: 'Declined to give a one-time code',
 };

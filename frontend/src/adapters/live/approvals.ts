@@ -9,9 +9,13 @@
 // longer pending, or has a newer revision, is never sent. The broker checks
 // once more and has the last word. Whether anything is allowed is the
 // broker's decision, never this adapter's: it carries the user's answer.
+//
+// The decisions the owner made before this connection, which the broker
+// keeps, are read when it opens: the history shows them as they were decided,
+// across a restart.
 import type { ApprovalAttempt, ApprovalResult, ApprovalStatus, TaskApproval, TaskApprovalPort } from '../../session/task-approvals.js';
 import type { LiveClient, Reply } from './client.js';
-import type { ActionRefusal, ConfirmationRequest, DecisionRejection, UiEvent } from './protocol/generated.js';
+import type { ActionRefusal, ConfirmationRequest, Decision, DecisionRecord, DecisionRejection, UiEvent } from './protocol/generated.js';
 import { MAIN_CHAT, appChat } from './chat.js';
 import { clockTime } from './text.js';
 const REJECTIONS: Readonly<Record<DecisionRejection, string>> = {
@@ -49,8 +53,30 @@ export class LiveApprovals implements TaskApprovalPort {
     readonly #closed = new Map<string, ApprovalStatus>();
     readonly #attempts = new Map<string, Promise<ApprovalResult>>();
     readonly #sending = new Set<string>();
-    constructor(client: LiveClient) {
+    readonly #nextId: () => string;
+    readonly #listeners = new Set<() => void>();
+    /** The decisions the broker kept, the newest first. */
+    #history: readonly DecisionRecord[] = [];
+    #ready = false;
+    constructor(client: LiveClient, nextId: () => string) {
         this.#client = client;
+        this.#nextId = nextId;
+        client.subscribe(() => this.#watch());
+    }
+    /** Read the decisions the broker kept: each time the connection opens. */
+    #watch(): void {
+        const ready = this.#client.connection().kind === 'ready';
+        if (ready && !this.#ready)
+            void this.#remember();
+        this.#ready = ready;
+    }
+    async #remember(): Promise<void> {
+        const reply: Reply = await this.#client.request(this.#nextId(), { action: 'list_decisions' });
+        if (reply.kind !== 'answered' || reply.result.result !== 'decisions')
+            return;
+        this.#history = reply.result.decisions;
+        for (const listener of [...this.#listeners])
+            listener();
     }
     /** Record a confirmation event, which the client has already applied once. */
     observe(event: UiEvent): void {
@@ -64,10 +90,20 @@ export class LiveApprovals implements TaskApprovalPort {
         this.#closed.delete(body.confirmation_id);
     }
     getSnapshot(): readonly TaskApproval[] {
-        return [...this.#seen.values()].map(({ request, at }) => this.#card(request, at));
+        const live = [...this.#seen.values()].map(({ request, at }) => this.#card(request, at));
+        // What was decided before this connection, as it was decided.
+        const kept = this.#history
+            .filter(record => !this.#seen.has(record.confirmation_id))
+            .map(record => this.#card({ confirmation_id: record.confirmation_id, revision: 0, chat_id: MAIN_CHAT, summary: record.summary, expires_at: null, digest: '', fields: record.fields, session: false, always: false }, record.decided_at, record.decision));
+        return [...live, ...kept];
     }
     subscribe(listener: () => void): () => void {
-        return this.#client.subscribe(listener);
+        this.#listeners.add(listener);
+        const unsubscribe = this.#client.subscribe(listener);
+        return () => {
+            this.#listeners.delete(listener);
+            unsubscribe();
+        };
     }
     /** One answer per attempt id: a repeated attempt gets the first answer, and nothing is sent twice. */
     respond(attempt: ApprovalAttempt): Promise<ApprovalResult> {
@@ -83,8 +119,8 @@ export class LiveApprovals implements TaskApprovalPort {
         this.#client.resync();
         return Promise.resolve();
     }
-    #card(request: ConfirmationRequest, at: string): TaskApproval {
-        const decision = this.#client.decision(request.confirmation_id);
+    #card(request: ConfirmationRequest, at: string, kept?: Decision): TaskApproval {
+        const decision = kept ?? this.#client.decision(request.confirmation_id);
         const status: ApprovalStatus = decision === 'approve' ? 'allowed-once' : decision === 'approve_session' ? 'allowed-task' : decision === 'approve_always' ? 'allowed-always' : decision === 'deny' ? 'denied' : this.#closed.get(request.confirmation_id) ?? 'pending';
         const forTask = request.session === true;
         const always = request.always === true;
@@ -171,6 +207,7 @@ export class LiveApprovals implements TaskApprovalPort {
             case 'usage':
             case 'goals':
             case 'memory':
+            case 'decisions':
             case 'code_taken':
             case 'code_declined':
             case 'code_refused':

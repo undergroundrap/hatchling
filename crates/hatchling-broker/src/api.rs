@@ -223,6 +223,9 @@ impl Api {
         // What the owner is asked to approve, and what they decided, go
         // out on this stream (WO-027).
         crate::approval_board::board(config).attach(Arc::clone(&self.bus));
+        if config.scheduler.enabled() {
+            crate::approval_board::board(config).keep_decisions(config.scheduler.decisions_log());
+        }
         // So do the agent's browsers, for the owner to watch and stop
         // (WO-029).
         crate::browser_board::board(config).attach(Arc::clone(&self.bus));

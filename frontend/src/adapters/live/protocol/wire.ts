@@ -449,6 +449,10 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "string"
             },
             {
+                "const": "list_decisions",
+                "type": "string"
+            },
+            {
                 "const": "read_usage",
                 "type": "string"
             },
@@ -1096,6 +1100,36 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "string"
             }
         ]
+    },
+    "DecisionRecord": {
+        "properties": {
+            "confirmation_id": {
+                "type": "string"
+            },
+            "decided_at": {
+                "type": "string"
+            },
+            "decision": {
+                "$ref": "#/$defs/Decision"
+            },
+            "fields": {
+                "items": {
+                    "$ref": "#/$defs/ConfirmationField"
+                },
+                "type": "array"
+            },
+            "summary": {
+                "type": "string"
+            }
+        },
+        "required": [
+            "confirmation_id",
+            "summary",
+            "fields",
+            "decision",
+            "decided_at"
+        ],
+        "type": "object"
     },
     "DecisionRejection": {
         "oneOf": [
@@ -3648,6 +3682,18 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             {
                 "properties": {
                     "action": {
+                        "const": "list_decisions",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "action"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
                         "const": "read_usage",
                         "type": "string"
                     }
@@ -4085,6 +4131,25 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "required": [
                     "result",
                     "outcome"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "decisions": {
+                        "items": {
+                            "$ref": "#/$defs/DecisionRecord"
+                        },
+                        "type": "array"
+                    },
+                    "result": {
+                        "const": "decisions",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "decisions"
                 ],
                 "type": "object"
             },

@@ -101,6 +101,7 @@ export class LiveChatSession implements ChatSessionPort {
             case 'usage':
             case 'goals':
             case 'memory':
+            case 'decisions':
             case 'code_taken':
             case 'code_declined':
             case 'code_refused':

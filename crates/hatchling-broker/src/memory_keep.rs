@@ -244,6 +244,8 @@ mod tests {
         let (config, dir) = config("approve", &[MemoryAction::Propose]);
         let bus = std::sync::Arc::new(crate::api_stream::Bus::starting_at(1));
         board(&config).attach(std::sync::Arc::clone(&bus));
+        let history = dir.join("schedules.decisions");
+        board(&config).keep_decisions(history.clone());
         assert_eq!(
             propose(&config, "task-1", "  The owner's cat is called Biscuit.  "),
             MemoryResult::Proposed
@@ -287,6 +289,19 @@ mod tests {
             board.next_approved(std::time::Duration::ZERO),
             Some(id.clone())
         );
+        // The decision is kept with the card it answered.
+        let kept_decisions = crate::decisions::list(&history);
+        assert_eq!(kept_decisions.len(), 1);
+        let decided = kept_decisions.first().unwrap();
+        assert_eq!(
+            (
+                decided.confirmation_id.as_str(),
+                decided.summary.as_str(),
+                decided.decision
+            ),
+            (id.as_str(), "Remember this about you?", Decision::Approve)
+        );
+        assert_eq!(decided.fields, card.fields);
         let said = crate::approval_board::run_approved(
             &board,
             &id,

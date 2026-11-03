@@ -77,7 +77,7 @@ export class LiveAdapter implements ProtocolAdapter {
     constructor(transport: UiTransport, name = 'hatchling-frontend', token?: string) {
         this.#client = new LiveClient(transport, name, event => this.#observe(event), token);
         this.#surfaces = new Surfaces(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
-        this.taskApprovals = new LiveApprovals(this.#client);
+        this.taskApprovals = new LiveApprovals(this.#client, () => `live-command-${++this.#serial}`);
         this.#sites = new LiveSites(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.#profiles = new LiveProfiles(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.#schedules = new LiveSchedules(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);

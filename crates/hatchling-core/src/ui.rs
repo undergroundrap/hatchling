@@ -461,6 +461,23 @@ pub struct ConfirmationRequest {
     pub approve: Option<String>,
 }
 
+/// A decision the owner made, kept: the card as they were shown it, and what
+/// they decided.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct DecisionRecord {
+    /// The confirmation.
+    pub confirmation_id: String,
+    /// What was asked, the broker's words.
+    pub summary: String,
+    /// Its fields, in review order, each labelled with who stated it.
+    pub fields: Vec<ConfirmationField>,
+    /// What they decided.
+    pub decision: Decision,
+    /// When, RFC 3339.
+    pub decided_at: String,
+}
+
 /// One field of what a confirmation asks.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -1108,6 +1125,9 @@ pub enum UiAction {
         /// The operation.
         op: KeptOp,
     },
+    /// List the decisions the owner made, the newest first: the owner's
+    /// alone.
+    ListDecisions {},
     /// Read the model usage the broker counted: the owner's alone.
     ReadUsage {},
     /// Give the one-time code a browser session's page asks for (WO-030):
@@ -1260,6 +1280,11 @@ pub enum UiActionResult {
     Memory {
         /// The result.
         outcome: KeptResult,
+    },
+    /// The decisions the owner made, the newest first.
+    Decisions {
+        /// They.
+        decisions: Vec<DecisionRecord>,
     },
     /// The model usage the broker counted.
     Usage {
@@ -2399,5 +2424,35 @@ mod tests {
             let wire = serde_json::to_value(UiActionResult::Memory { outcome }).unwrap();
             assert_eq!(wire.pointer("/outcome/result"), Some(&json!(tag)), "{wire}");
         }
+    }
+
+    #[test]
+    fn decisions_are_listed_as_kept() {
+        pinned(
+            &UiAction::ListDecisions {},
+            &json!({"action": "list_decisions"}),
+        );
+        pinned(
+            &UiActionResult::Decisions {
+                decisions: vec![DecisionRecord {
+                    confirmation_id: s("req-1"),
+                    summary: s("Remember this about you?"),
+                    fields: vec![ConfirmationField {
+                        label: s("What it would remember"),
+                        value: s("Their cat is Biscuit."),
+                        source: FieldSource::Agent,
+                    }],
+                    decision: Decision::Approve,
+                    decided_at: s("2026-11-03T12:00:00Z"),
+                }],
+            },
+            &json!({"result": "decisions", "decisions": [{
+                "confirmation_id": "req-1",
+                "summary": "Remember this about you?",
+                "fields": [{"label": "What it would remember", "value": "Their cat is Biscuit.", "source": "agent"}],
+                "decision": "approve",
+                "decided_at": "2026-11-03T12:00:00Z",
+            }]}),
+        );
     }
 }
