@@ -54,11 +54,7 @@ With systemd 254 or later, the broker gets a cgroup of its own to give each cell
 
 ## Using it
 
-- **The app's address again**, as yourself (each broker start makes a new one):
-
-  ```bash
-  echo "http://127.0.0.1:7340/#hatchling-ui=$(cat /var/lib/hatchling/ui.sock.token)"
-  ```
+- **The app's address again**, as yourself: `hatchling-host url`. Each start of the broker makes a new one, so after a restart an open app goes offline; open the new address.
 
 - **Something not working?** `sudo hatchling-broker doctor` checks what a start trips on, and says how to fix each problem it finds.
 - **Change a setting:** edit `/etc/hatchling/hatchling.env`, then `sudo systemctl restart hatchling`.
