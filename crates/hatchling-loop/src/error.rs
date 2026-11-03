@@ -37,6 +37,12 @@ pub enum Error {
     #[error("model failed: {0}")]
     ModelFailed(String),
 
+    /// The model's reply was cut off at its limit: out of output tokens
+    /// or context window. The loop cannot continue without a whole
+    /// next action.
+    #[error("model failed: {0}")]
+    ModelCutOff(String),
+
     /// A tool's execution failed. This normally feeds back to the
     /// model as `ToolResult::Err`; it surfaces as `Error` only when
     /// the failure happens outside the feedback path.

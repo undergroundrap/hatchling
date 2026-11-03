@@ -6,6 +6,10 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ## [Unreleased]
 
+### Fixed
+
+- **A model that runs out of room says so.** A thinking model on Ollama's default 4,096-token window was cut off partway through its answer, and the chat called the model unreachable. A reply the server cut off is now its own failure, and the chat says the model ran out of room and how to give it more (`OLLAMA_CONTEXT_LENGTH`). The install guide sets the window to 16,384 tokens, and no longer suggests `HATCHLING_SCHEDULER_MODEL_REASONING=disabled`, which Ollama ignores.
+
 ### Added
 
 - **Testing Hatchling with an AI agent** ([docs/testing-with-an-agent.md](docs/testing-with-an-agent.md)). How to have the Claude desktop app or Codex install Hatchling on a throwaway WSL2 box, open the app without the key ever appearing in the transcript, click through it and take screenshots, with you typing every secret.

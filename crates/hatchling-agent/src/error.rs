@@ -468,6 +468,11 @@ pub enum Error {
     #[error("agent loop failed: {0}")]
     ModelFailed(String),
 
+    /// The model's reply was cut off at its limit, mid-run: its context
+    /// window is too small for the task, or its thinking filled it.
+    #[error("agent loop failed: {0}")]
+    ModelCutOff(String),
+
     /// The model kept calling tools it wasn't offered, or with arguments
     /// that don't fit them, past what the loop allows. Nothing it asked
     /// for ran.
@@ -483,6 +488,8 @@ impl Error {
         use hatchling_core::run_failure::RunFailure;
         if let Self::ModelRefused(_) | Self::ModelFailed(_) = self {
             Some(RunFailure::ModelUnavailable)
+        } else if let Self::ModelCutOff(_) = self {
+            Some(RunFailure::OutOfRoom)
         } else if let Self::ToolsMisused(_) = self {
             Some(RunFailure::ToolsMisused)
         } else if let Self::LoopBudgetExhausted { .. } = self {
@@ -543,6 +550,10 @@ mod tests {
             (
                 Error::ModelFailed(String::new()),
                 Some(RunFailure::ModelUnavailable),
+            ),
+            (
+                Error::ModelCutOff(String::new()),
+                Some(RunFailure::OutOfRoom),
             ),
             (
                 Error::ToolsMisused(String::new()),

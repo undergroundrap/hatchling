@@ -79,6 +79,9 @@ pub fn chat_failed(ending: Option<hatchling_scheduler::Ending>, model: Option<&s
             Some(RunFailure::OutOfSteps) => String::from(
                 "The agent used all its steps before it finished. Try asking for something smaller.",
             ),
+            Some(RunFailure::OutOfRoom) => format!(
+                "The model{named} ran out of room before it finished its answer: its context window is too small for Hatchling. With Ollama, set OLLAMA_CONTEXT_LENGTH to 16384 or more; docs/install.md says how."
+            ),
             None => String::from(CHAT_FAILED),
         },
         None => String::from(CHAT_FAILED),
@@ -932,13 +935,18 @@ mod tests {
         assert!(steps.contains("all its steps"), "{steps}");
         let slow = chat_failed(Some(Ending::TimedOut), Some("m"));
         assert!(slow.contains("too long"), "{slow}");
+        let room = chat_failed(exited(RunFailure::OutOfRoom), Some("qwen3.5:9b"));
+        assert!(
+            room.starts_with("The model (qwen3.5:9b) ran out of room") && room.contains("OLLAMA_CONTEXT_LENGTH"),
+            "{room}"
+        );
         for other in [Some(Ending::Exited(1)), Some(Ending::Exited(64)), None] {
             assert_eq!(chat_failed(other, Some("m")), CHAT_FAILED, "{other:?}");
         }
-        let said: BTreeSet<String> = [model, tools, steps, slow, String::from(CHAT_FAILED)]
+        let said: BTreeSet<String> = [model, tools, steps, slow, room, String::from(CHAT_FAILED)]
             .into_iter()
             .collect();
-        assert_eq!(said.len(), 5, "each says something of its own");
+        assert_eq!(said.len(), 6, "each says something of its own");
 
         // Through the chat: the run's own words never reach the person.
         let launches = OneEnded(RefCell::new(Some(Ended(Ending::Exited(

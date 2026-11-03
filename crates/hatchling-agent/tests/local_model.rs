@@ -512,6 +512,22 @@ fn a_model_misusing_tools_or_failing_midway_is_named() {
         .unwrap_err();
     assert!(matches!(error, Error::ModelFailed(_)), "got {error:?}");
     assert_eq!(error.run_failure(), Some(RunFailure::ModelUnavailable));
+
+    // A reply the server stopped at its window: the thinking model's
+    // failure with Ollama's default context.
+    let cut = json!({"choices": [{"finish_reason": "length", "message": {"role": "assistant", "content": "Let me think"}}]});
+    let server = LocalServer::start(vec![probe_reply(), cut.to_string()]);
+    let broker = local_broker("local-cut-off", server.port);
+    let error = ready_cell(&broker)
+        .run_task(
+            hatchling_agent::PromptKind::Chat,
+            String::from("tidy up"),
+            local_provider(server.port),
+            10,
+        )
+        .unwrap_err();
+    assert!(matches!(error, Error::ModelCutOff(_)), "got {error:?}");
+    assert_eq!(error.run_failure(), Some(RunFailure::OutOfRoom));
 }
 
 #[test]
