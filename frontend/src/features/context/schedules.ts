@@ -5,11 +5,11 @@ import { icon } from '../../components/icons.js';
 import { button, iconButton, pill } from '../../components/ui.js';
 import { createJob } from '../schedule/schedule.js';
 /** Which heading a schedule sits under: one that runs once, by its day of the week, or more often; or on an event. */
-export function scheduleGroup(job: DeepReadonly<ScheduledJob>): 'Once' | 'Daily' | 'Weekly' | 'Events' {
+export function scheduleGroup(job: DeepReadonly<ScheduledJob>): 'Reminders' | 'Daily' | 'Weekly' | 'Events' {
     if (job.kind === 'hook')
         return 'Events';
     if (!job.recurring)
-        return 'Once';
+        return 'Reminders';
     // "Weekdays" runs more than once a week: it isn't weekly.
     return /\bweek(ly)?\b|sunday|monday|tuesday|wednesday|thursday|friday|saturday/i.test(job.schedule) ? 'Weekly' : 'Daily';
 }
@@ -27,12 +27,15 @@ function scheduleIcon(job: DeepReadonly<ScheduledJob>): HTMLElement {
         return h('span', { class: 'schedule-symbol heartbeat' }, icon('heart', 17));
     if (job.kind === 'hook')
         return h('span', { class: 'schedule-symbol event' }, icon('link', 23));
+    // A one-off is a reminder: a bell, as the heading it sits under says.
+    if (!job.recurring)
+        return h('span', { class: 'schedule-symbol event' }, icon('bell', 20));
     return h('span', { class: `schedule-symbol ${calendar ? 'calendar' : 'clock-face'}` }, icon(calendar ? 'calendar' : 'clock', 32), calendar ? h('span', { class: 'schedule-badge' }, icon('clock', 12)) : null);
 }
 export function renderContextSchedules(ctx: AppContext): HTMLElement {
     const root = h('div', { class: 'context-schedules' });
     let first = true;
-    for (const group of ['Once', 'Daily', 'Weekly', 'Events']) {
+    for (const group of ['Reminders', 'Daily', 'Weekly', 'Events']) {
         const jobs = ctx.state.jobs.filter((job) => job.goalId === null && scheduleGroup(job) === group);
         if (!jobs.length)
             continue;
