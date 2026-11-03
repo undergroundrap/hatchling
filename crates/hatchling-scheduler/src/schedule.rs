@@ -498,10 +498,7 @@ mod tests {
         // The machine's own, as the zone database reads it: on a machine
         // that names none, nothing.
         let zone = system_zone();
-        assert_eq!(
-            zone,
-            TimeZone::system().iana_name().map(str::to_owned)
-        );
+        assert_eq!(zone, TimeZone::system().iana_name().map(str::to_owned));
         if let Some(name) = zone {
             assert!(timezone(&name).is_ok(), "{name}");
         }
