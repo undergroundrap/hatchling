@@ -612,7 +612,8 @@ fn schedule_needs(op: &ScheduleOp, owner: &BTreeSet<ScheduleGrant>) -> BTreeSet<
         | ScheduleOp::Resolve { .. }
         | ScheduleOp::Retry { .. }
         | ScheduleOp::ListParked { .. }
-        | ScheduleOp::Dismiss { .. } => owner.clone(),
+        | ScheduleOp::Dismiss { .. }
+        | ScheduleOp::Propose { .. } => owner.clone(),
     }
 }
 

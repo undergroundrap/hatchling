@@ -89,6 +89,7 @@ pub mod confine;
 pub mod keeper;
 pub mod schedule_cli;
 pub mod schedule_ops;
+pub mod schedule_proposals;
 pub mod secrets;
 pub use schedule_ops::{
     HubDelivery, SealedScheduleStore, authenticated_channels, dispatch_once, handle_hook_op,

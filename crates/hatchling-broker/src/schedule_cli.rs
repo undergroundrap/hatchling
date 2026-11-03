@@ -104,7 +104,7 @@ fn clock(value: &str) -> Option<(u8, u8)> {
 }
 
 /// The timing `flag value` names, in `tz`.
-fn when(flag: &str, value: &str, tz: String) -> Result<ScheduleSpec, String> {
+pub(crate) fn when(flag: &str, value: &str, tz: String) -> Result<ScheduleSpec, String> {
     let cron = |expr: String| ScheduleSpec::Cron {
         expr,
         tz: tz.clone(),
@@ -259,7 +259,7 @@ const DAY_NAMES: [&str; 7] = [
 
 /// `when` in words: the timings this command and the app make read back,
 /// any other cron as itself.
-fn describe(when: &ScheduleSpec) -> String {
+pub(crate) fn describe(when: &ScheduleSpec) -> String {
     let (expr, tz) = match when {
         ScheduleSpec::Once { at, tz } => {
             return format!("Once, {} ({tz})", at.replace('T', " at "));

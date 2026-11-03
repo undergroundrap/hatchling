@@ -727,6 +727,9 @@ pub fn handle_schedule_op(
             "dismiss",
         ),
         ScheduleOp::ListParked { after } => list_parked(config, key, after.as_deref()),
+        // A proposal is put to the owner, which takes the session's task:
+        // the session itself does that ([`crate::schedule_proposals`]).
+        ScheduleOp::Propose { .. } => ScheduleResult::Denied,
         ScheduleOp::Create { .. } | ScheduleOp::CreateFeed { .. } | ScheduleOp::Cancel { .. }
             if !config.scheduler.enabled() =>
         {

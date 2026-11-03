@@ -2454,6 +2454,31 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "id"
                 ],
                 "type": "object"
+            },
+            {
+                "additionalProperties": false,
+                "properties": {
+                    "op": {
+                        "const": "propose",
+                        "type": "string"
+                    },
+                    "task": {
+                        "type": "string"
+                    },
+                    "timing": {
+                        "type": "string"
+                    },
+                    "value": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "op",
+                    "timing",
+                    "value",
+                    "task"
+                ],
+                "type": "object"
             }
         ]
     },
@@ -2678,6 +2703,38 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 },
                 "required": [
                     "result"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "proposed",
+                        "type": "string"
+                    },
+                    "when": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "when"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "reason": {
+                        "type": "string"
+                    },
+                    "result": {
+                        "const": "unasked",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "reason"
                 ],
                 "type": "object"
             }

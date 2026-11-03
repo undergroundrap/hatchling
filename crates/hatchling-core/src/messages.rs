@@ -590,6 +590,21 @@ pub enum ScheduleOp {
         /// The parked result's id, as `ListParked` gave it.
         id: String,
     },
+    /// Ask the owner to schedule `task` (v19): put to them in the app, and
+    /// created as theirs, with the asking session's grants, only once they
+    /// approve. Nothing is scheduled before.
+    #[serde(rename = "propose")]
+    Propose {
+        /// How it repeats: `at` (once, `YYYY-MM-DD HH:MM`), `every` (`15m`,
+        /// 1 to 59 minutes), `daily` or `weekdays` (`HH:MM`), or `cron`
+        /// (five fields), on the owner's clock.
+        timing: String,
+        /// The timing's value.
+        value: String,
+        /// What should happen. Untrusted text: shown to the owner as the
+        /// agent's words.
+        task: String,
+    },
 }
 
 /// What a feed digest gathers: the user's own tuning, as rules.
@@ -888,6 +903,20 @@ pub enum ScheduleResult {
     /// The parked result is dismissed.
     #[serde(rename = "dismissed")]
     Dismissed,
+    /// A proposal was put to the owner (v19): nothing is scheduled unless
+    /// they approve it.
+    #[serde(rename = "proposed")]
+    Proposed {
+        /// Its timing in words, as the owner was shown it.
+        when: String,
+    },
+    /// A proposal wasn't put to the owner (v19): its timing doesn't read,
+    /// they said no to the same one, or their requests are paused or full.
+    #[serde(rename = "unasked")]
+    Unasked {
+        /// Why, for the agent to tell them.
+        reason: String,
+    },
 }
 
 /// A result that couldn't be delivered, kept for the owner (WO-025).

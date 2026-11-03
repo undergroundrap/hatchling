@@ -774,6 +774,12 @@ pub(crate) fn run_tools(
         scope: String::from("user"),
         action: String::from(MemoryAction::Propose.name()),
     });
+    let posts = grants.contains(&ScheduleGrant::ChannelSend {
+        channel: String::from(crate::schedule_proposals::CHANNEL),
+    }) && config
+        .channels
+        .iter()
+        .any(|channel| channel == crate::schedule_proposals::CHANNEL);
     [
         (ToolGroup::Web, config.web.enabled),
         (ToolGroup::Search, config.web.search),
@@ -790,6 +796,7 @@ pub(crate) fn run_tools(
             ToolGroup::Memory,
             proposes && !config.memory.root.as_os_str().is_empty(),
         ),
+        (ToolGroup::Schedule, posts && config.scheduler.enabled()),
     ]
     .into_iter()
     .filter_map(|(group, on)| on.then_some(group))
@@ -1284,6 +1291,23 @@ mod tests {
         config.memory.root = PathBuf::from("/srv/hatchling/memory");
         assert!(asks(&config, &proposes));
         assert!(!asks(&config, &writes), "writing isn't asking");
+        // Asking to schedule: a run that may post in the chat, where
+        // scheduling is on.
+        let local = [ScheduleGrant::ChannelSend {
+            channel: String::from("local"),
+        }];
+        let schedules = |config: &Config, grants: &[ScheduleGrant]| {
+            run_tools(config, grants).contains(&ToolGroup::Schedule)
+        };
+        config.channels = vec![String::from("local")];
+        assert!(schedules(&config, &local));
+        assert!(!schedules(&config, &[]), "can't post");
+        config.channels = Vec::new();
+        assert!(!schedules(&config, &local), "no chat");
+        config.channels = vec![String::from("local")];
+        let root = std::mem::take(&mut config.scheduler.root);
+        assert!(!schedules(&config, &local), "no scheduling");
+        config.scheduler.root = root;
         let mut asked = request(reads.to_vec());
         asked.chat = true;
         assert!(

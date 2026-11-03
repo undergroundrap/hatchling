@@ -67,6 +67,20 @@ pub enum Approved {
     Signed(SignedUse),
     /// Something to keep in the owner's memory, which the worker writes.
     Memory(MemoryKeep),
+    /// Scheduled work, which the worker creates as the owner's.
+    Schedule(ScheduleCreate),
+}
+
+/// Scheduled work the agent asked for (v19), exactly as the owner was
+/// shown it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScheduleCreate {
+    /// When it runs.
+    pub when: hatchling_core::ScheduleSpec,
+    /// What it does, in the agent's words.
+    pub task: String,
+    /// What it may do: the asking session's grants.
+    pub grants: Vec<hatchling_core::ScheduleGrant>,
 }
 
 /// What the agent asked to keep about the owner (v18), exactly as they
@@ -362,6 +376,73 @@ impl Board {
         Ok(requested)
     }
 
+    /// Puts scheduled work, `task` to run as `when` (said as `words`) with
+    /// `grants`, which session task `asking` proposes, to the owner at `now`
+    /// (v19). Approved, the worker creates exactly that, as theirs.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal`]: the owner said no to this, requests are paused or full,
+    /// or the record has no canonical form.
+    pub fn propose_schedule(
+        &self,
+        when: &hatchling_core::ScheduleSpec,
+        task: &str,
+        grants: &[hatchling_core::ScheduleGrant],
+        words: &str,
+        asking: &str,
+        now: i64,
+    ) -> Result<Requested, Refusal> {
+        let requested = self.approvals.propose(
+            Proposal {
+                run: Approved::Schedule(ScheduleCreate {
+                    when: when.clone(),
+                    task: task.to_owned(),
+                    grants: grants.to_vec(),
+                }),
+                action: json!({ "format": 1, "op": "schedule.create", "when": when, "task": task, "grants": grants }),
+                fingerprint: json!({ "op": "schedule.create", "when": when, "task": task }),
+                task: asking.to_owned(),
+                session: false,
+                always: false,
+            },
+            now,
+        )?;
+        if requested.new {
+            self.publish(UiEventBody::Confirmation(ConfirmationRequest {
+                confirmation_id: requested.id.clone(),
+                revision: requested.revision,
+                chat_id: Some(String::from(CONFIRMATION_CHAT)),
+                summary: String::from("Schedule this?"),
+                expires_at: Timestamp::from_second(requested.expires_at)
+                    .ok()
+                    .map(|at| at.to_string()),
+                digest: requested.digest.clone(),
+                fields: vec![
+                    ConfirmationField {
+                        label: String::from("When"),
+                        value: words.to_owned(),
+                        source: FieldSource::Broker,
+                    },
+                    ConfirmationField {
+                        label: String::from("What it may do"),
+                        value: crate::schedule_proposals::grants_in_words(grants),
+                        source: FieldSource::Broker,
+                    },
+                    ConfirmationField {
+                        label: String::from("What it would do"),
+                        value: task.to_owned(),
+                        source: FieldSource::Agent,
+                    },
+                ],
+                session: false,
+                always: false,
+                approve: Some(String::from("Schedule it")),
+            }));
+        }
+        Ok(requested)
+    }
+
     /// Puts the signed-in use `ask` to the owner for `task`'s session, at
     /// `now`: its card goes out unless the same use already waits. Approved,
     /// it's the session that asked that makes it, once.
@@ -436,7 +517,10 @@ impl Board {
         });
         // What the worker runs: an activation, or something to keep.
         let worked = self.approvals.get(id).is_some_and(|request| {
-            matches!(request.run(), Approved::Activation(_) | Approved::Memory(_))
+            matches!(
+                request.run(),
+                Approved::Activation(_) | Approved::Memory(_) | Approved::Schedule(_)
+            )
         });
         if decided == State::Approved && worked {
             self.queue
@@ -706,11 +790,43 @@ pub fn refused_as(refusal: &Refusal) -> ApprovalRefusal {
 }
 
 /// Whether `config`'s broker has work for the approvals worker: builds to
-/// activate, or memory to keep. Without either, no approval it would run
-/// can be made.
+/// activate, memory to keep, or schedules to create. Without any, no
+/// approval it would run can be made.
 #[must_use]
 pub fn has_work(config: &Config) -> bool {
-    config.artifacts.enabled() || !config.memory.root.as_os_str().is_empty()
+    config.artifacts.enabled()
+        || !config.memory.root.as_os_str().is_empty()
+        || config.scheduler.enabled()
+}
+
+/// Settles `claim` by `outcome`, the worker's: what the owner is told.
+fn settled(
+    claim: crate::approvals::Claim<'_, Approved>,
+    outcome: Result<String, String>,
+) -> String {
+    match outcome {
+        Ok(said) => {
+            claim.succeeded();
+            said
+        }
+        Err(said) => {
+            claim.failed();
+            said
+        }
+    }
+}
+
+/// Keeps `content`, which the owner approved in request `id`, at `now`:
+/// what they're told, either way.
+fn kept(config: &Config, id: &str, content: &str, now: i64) -> Result<String, String> {
+    crate::memory_keep::keep(config, content, now)
+        .map(|()| format!("Remembered: “{content}” The agent is given it from now on."))
+        .map_err(|error| {
+            tracing::error!(%id, %error, "an approved memory wasn't kept");
+            String::from(
+                "Approved, but it wasn't kept: the memory store couldn't be written. The broker's log says why.",
+            )
+        })
 }
 
 /// Runs approved request `id` on `board` once, at `now`: what the owner is
@@ -740,23 +856,18 @@ pub fn run_approved(
     };
     let run = match approved {
         Approved::Activation(run) => run,
-        Approved::Memory(keep) => {
-            return match crate::memory_keep::keep(config, &keep.content, now) {
-                Ok(()) => {
-                    claim.succeeded();
-                    format!(
-                        "Remembered: “{}” The agent is given it from now on.",
-                        keep.content
-                    )
-                }
-                Err(error) => {
-                    claim.failed();
-                    tracing::error!(%id, %error, "an approved memory wasn't kept");
-                    String::from(
-                        "Approved, but it wasn't kept: the memory store couldn't be written. The broker's log says why.",
-                    )
-                }
-            };
+        Approved::Memory(keep) => return settled(claim, kept(config, id, &keep.content, now)),
+        Approved::Schedule(asked) => {
+            let at = Timestamp::from_second(now).unwrap_or_else(|_| Timestamp::now());
+            let created = crate::schedule_proposals::create(
+                config,
+                key,
+                &asked.when,
+                &asked.task,
+                &asked.grants,
+                at,
+            );
+            return settled(claim, created);
         }
         // Not the worker's: refused above, before the claim.
         Approved::Site(_) | Approved::Signed(_) => {
