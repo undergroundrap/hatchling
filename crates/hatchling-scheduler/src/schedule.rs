@@ -100,6 +100,23 @@ fn timezone(name: &str) -> Result<TimeZone, ScheduleRefusal> {
         .map_err(|_| ScheduleRefusal::UnknownTimezone)
 }
 
+/// This machine's IANA time zone, if it names one: what a schedule made
+/// from a shell here is in, unless the person says otherwise.
+#[must_use]
+pub fn system_zone() -> Option<String> {
+    TimeZone::system().iana_name().map(str::to_owned)
+}
+
+/// `seconds` (Unix) on the clock of the time zone `tz`, as
+/// `YYYY-MM-DD HH:MM`; `None` for a zone it doesn't know or an instant out
+/// of range.
+#[must_use]
+pub fn local_time(seconds: i64, tz: &str) -> Option<String> {
+    let zone = timezone(tz).ok()?;
+    let at = Timestamp::from_second(seconds).ok()?.to_zoned(zone);
+    Some(at.strftime("%Y-%m-%d %H:%M").to_string())
+}
+
 /// Who created a schedule. The broker records it; a cell lists and
 /// cancels only the agent's.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
