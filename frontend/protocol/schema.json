@@ -5951,6 +5951,35 @@
             "id"
           ],
           "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Ask the owner to schedule `task` (v19): put to them in the app, and\ncreated as theirs, with the asking session's grants, only once they\napprove. Nothing is scheduled before.",
+          "properties": {
+            "op": {
+              "const": "propose",
+              "type": "string"
+            },
+            "task": {
+              "description": "What should happen. Untrusted text: shown to the owner as the\nagent's words.",
+              "type": "string"
+            },
+            "timing": {
+              "description": "How it repeats: `at` (once, `YYYY-MM-DD HH:MM`), `every` (`15m`,\n1 to 59 minutes), `daily` or `weekdays` (`HH:MM`), or `cron`\n(five fields), on the owner's clock.",
+              "type": "string"
+            },
+            "value": {
+              "description": "The timing's value.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "timing",
+            "value",
+            "task"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -6207,6 +6236,42 @@
           },
           "required": [
             "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A proposal was put to the owner (v19): nothing is scheduled unless\nthey approve it.",
+          "properties": {
+            "result": {
+              "const": "proposed",
+              "type": "string"
+            },
+            "when": {
+              "description": "Its timing in words, as the owner was shown it.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "when"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A proposal wasn't put to the owner (v19): its timing doesn't read,\nthey said no to the same one, or their requests are paused or full.",
+          "properties": {
+            "reason": {
+              "description": "Why, for the agent to tell them.",
+              "type": "string"
+            },
+            "result": {
+              "const": "unasked",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "reason"
           ],
           "type": "object"
         }
@@ -7311,6 +7376,34 @@
               "required": [
                 "op",
                 "id"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Ask the owner to schedule `task` (v19): put to them in the app, and\ncreated as theirs, with the asking session's grants, only once they\napprove. Nothing is scheduled before.",
+              "properties": {
+                "op": {
+                  "const": "propose",
+                  "type": "string"
+                },
+                "task": {
+                  "description": "What should happen. Untrusted text: shown to the owner as the\nagent's words.",
+                  "type": "string"
+                },
+                "timing": {
+                  "description": "How it repeats: `at` (once, `YYYY-MM-DD HH:MM`), `every` (`15m`,\n1 to 59 minutes), `daily` or `weekdays` (`HH:MM`), or `cron`\n(five fields), on the owner's clock.",
+                  "type": "string"
+                },
+                "value": {
+                  "description": "The timing's value.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "timing",
+                "value",
+                "task"
               ],
               "type": "object"
             }
@@ -11841,7 +11934,7 @@
       "backend_newer": "broker v{backend} needs frontend ≥ v{backend}; frontend is v{frontend} — reload the frontend to update",
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
-    "session_protocol": 18,
+    "session_protocol": 19,
     "ui_schema_version": 4
   },
   "x-roots": {

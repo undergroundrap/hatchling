@@ -61,7 +61,7 @@ pub fn note(run_tools: Option<&BTreeSet<ToolGroup>>) -> String {
         "- When the owner wants a reminder, or something done later or again, ask to schedule it with schedule_propose. They approve it in the app; you can't schedule anything yourself."
     } else {
         "- You can't set up scheduled work or reminders yourself. The owner can, in the app (Schedule, then Add scheduled work) or with `hatchling-broker schedule add`; offer to help them word it."
-    })); 
+    }));
     lines.join("\n")
 }
 
@@ -82,8 +82,14 @@ mod tests {
         assert!(off.contains("can't see the owner's goals"), "{off}");
         assert!(off.contains("can't keep anything"), "{off}");
         let schedule = note(Some(&BTreeSet::from([ToolGroup::Schedule])));
-        assert!(schedule.contains("ask to schedule it with schedule_propose"), "{schedule}");
-        assert!(!schedule.contains("hatchling-broker schedule add"), "{schedule}");
+        assert!(
+            schedule.contains("ask to schedule it with schedule_propose"),
+            "{schedule}"
+        );
+        assert!(
+            !schedule.contains("hatchling-broker schedule add"),
+            "{schedule}"
+        );
         let memory = note(Some(&BTreeSet::from([ToolGroup::Memory])));
         assert!(
             memory.contains("ask to remember it with memory_propose"),

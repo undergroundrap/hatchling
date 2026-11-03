@@ -799,6 +799,33 @@ pub fn has_work(config: &Config) -> bool {
         || config.scheduler.enabled()
 }
 
+/// Settles `claim` by `outcome`, the worker's: what the owner is told.
+fn settled(claim: crate::approvals::Claim<'_, Approved>, outcome: Result<String, String>) -> String {
+    match outcome {
+        Ok(said) => {
+            claim.succeeded();
+            said
+        }
+        Err(said) => {
+            claim.failed();
+            said
+        }
+    }
+}
+
+/// Keeps `content`, which the owner approved in request `id`, at `now`:
+/// what they're told, either way.
+fn kept(config: &Config, id: &str, content: &str, now: i64) -> Result<String, String> {
+    crate::memory_keep::keep(config, content, now)
+        .map(|()| format!("Remembered: “{content}” The agent is given it from now on."))
+        .map_err(|error| {
+            tracing::error!(%id, %error, "an approved memory wasn't kept");
+            String::from(
+                "Approved, but it wasn't kept: the memory store couldn't be written. The broker's log says why.",
+            )
+        })
+}
+
 /// Runs approved request `id` on `board` once, at `now`: what the owner is
 /// told. Nothing runs unless the request is approved and unclaimed.
 #[must_use]
@@ -826,43 +853,18 @@ pub fn run_approved(
     };
     let run = match approved {
         Approved::Activation(run) => run,
-        Approved::Memory(keep) => {
-            return match crate::memory_keep::keep(config, &keep.content, now) {
-                Ok(()) => {
-                    claim.succeeded();
-                    format!(
-                        "Remembered: “{}” The agent is given it from now on.",
-                        keep.content
-                    )
-                }
-                Err(error) => {
-                    claim.failed();
-                    tracing::error!(%id, %error, "an approved memory wasn't kept");
-                    String::from(
-                        "Approved, but it wasn't kept: the memory store couldn't be written. The broker's log says why.",
-                    )
-                }
-            };
-        }
+        Approved::Memory(keep) => return settled(claim, kept(config, id, &keep.content, now)),
         Approved::Schedule(asked) => {
+            let at = Timestamp::from_second(now).unwrap_or_else(|_| Timestamp::now());
             let created = crate::schedule_proposals::create(
                 config,
                 key,
                 &asked.when,
                 &asked.task,
                 &asked.grants,
-                Timestamp::from_second(now).unwrap_or_else(|_| Timestamp::now()),
+                at,
             );
-            return match created {
-                Ok(said) => {
-                    claim.succeeded();
-                    said
-                }
-                Err(said) => {
-                    claim.failed();
-                    said
-                }
-            };
+            return settled(claim, created);
         }
         // Not the worker's: refused above, before the claim.
         Approved::Site(_) | Approved::Signed(_) => {

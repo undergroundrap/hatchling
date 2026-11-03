@@ -4,7 +4,7 @@
 /** The frontend protocol version this build speaks. */
 export const UI_SCHEMA_VERSION = 4;
 /** The broker session protocol version the schema was generated at. */
-export const SESSION_PROTOCOL_VERSION = 18;
+export const SESSION_PROTOCOL_VERSION = 19;
 /** The mismatch sentence when this frontend is the newer side. */
 export const INCOMPATIBLE_FRONTEND_NEWER = 'frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update';
 /** The mismatch sentence when the backend is the newer side. */
@@ -2369,6 +2369,23 @@ export type ScheduleOp = {
      */
     readonly id: string;
     readonly op: 'dismiss';
+} | {
+    readonly op: 'propose';
+    /**
+     * What should happen. Untrusted text: shown to the owner as the
+     * agent's words.
+     */
+    readonly task: string;
+    /**
+     * How it repeats: `at` (once, `YYYY-MM-DD HH:MM`), `every` (`15m`,
+     * 1 to 59 minutes), `daily` or `weekdays` (`HH:MM`), or `cron`
+     * (five fields), on the owner's clock.
+     */
+    readonly timing: string;
+    /**
+     * The timing's value.
+     */
+    readonly value: string;
 };
 /**
  * Why a create was refused. Each names a fault in the request itself,
@@ -2424,6 +2441,18 @@ export type ScheduleResult = {
     readonly result: 'parked';
 } | {
     readonly result: 'dismissed';
+} | {
+    readonly result: 'proposed';
+    /**
+     * Its timing in words, as the owner was shown it.
+     */
+    readonly when: string;
+} | {
+    /**
+     * Why, for the agent to tell them.
+     */
+    readonly reason: string;
+    readonly result: 'unasked';
 };
 /**
  * When a schedule fires. Every form names an IANA timezone explicitly:
@@ -2919,6 +2948,23 @@ export type SessionRequest = {
      */
     readonly id: string;
     readonly op: 'dismiss';
+} | {
+    readonly op: 'propose';
+    /**
+     * What should happen. Untrusted text: shown to the owner as the
+     * agent's words.
+     */
+    readonly task: string;
+    /**
+     * How it repeats: `at` (once, `YYYY-MM-DD HH:MM`), `every` (`15m`,
+     * 1 to 59 minutes), `daily` or `weekdays` (`HH:MM`), or `cron`
+     * (five fields), on the owner's clock.
+     */
+    readonly timing: string;
+    /**
+     * The timing's value.
+     */
+    readonly value: string;
 }) | {
     readonly kind: 'hook';
 } & ({

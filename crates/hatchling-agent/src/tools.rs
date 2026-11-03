@@ -545,15 +545,21 @@ impl<'s> SchedulePropose<'s> {
     }
 
     /// Sends `op`, and reads the broker's answer.
-    fn ask(&self, op: hatchling_core::ScheduleOp) -> Result<hatchling_core::ScheduleResult, String> {
+    fn ask(
+        &self,
+        op: hatchling_core::ScheduleOp,
+    ) -> Result<hatchling_core::ScheduleResult, String> {
         use hatchling_core::framing::{read_frame, write_frame};
         let request = hatchling_core::SessionRequest::Schedule(op);
         let payload = serde_json::to_vec(&request).map_err(|error| error.to_string())?;
         write_frame(self.stream, &payload).map_err(|error| error.to_string())?;
         let reply = read_frame(self.stream).map_err(|error| error.to_string())?;
-        match serde_json::from_slice(&reply).map_err(|error| error.to_string())? {
-            hatchling_core::SessionResponse::Schedule(result) => Ok(result),
-            other => Err(format!("the broker answered something else: {other:?}")),
+        let response: hatchling_core::SessionResponse =
+            serde_json::from_slice(&reply).map_err(|error| error.to_string())?;
+        if let hatchling_core::SessionResponse::Schedule(result) = response {
+            Ok(result)
+        } else {
+            Err(format!("the broker answered something else: {response:?}"))
         }
     }
 }
@@ -615,9 +621,9 @@ impl Tool for SchedulePropose<'_> {
             Ok(hatchling_core::ScheduleResult::Unasked { reason }) => {
                 ToolOutput::Ok(json!({ "asked": false, "reason": reason }))
             }
-            Ok(hatchling_core::ScheduleResult::Denied) => ToolOutput::Err(String::from(
-                "this session may not ask to schedule work",
-            )),
+            Ok(hatchling_core::ScheduleResult::Denied) => {
+                ToolOutput::Err(String::from("this session may not ask to schedule work"))
+            }
             Ok(other) => ToolOutput::Err(format!("the broker answered something else: {other:?}")),
             Err(error) => ToolOutput::Err(error),
         })
@@ -3644,9 +3650,15 @@ mod tests {
         let (a, _b) = socket_pair();
         let tool = SchedulePropose::new(&a);
         assert_eq!(tool.name(), "schedule_propose");
-        assert!(tool.description().starts_with("Ask the owner to schedule work"));
+        assert!(
+            tool.description()
+                .starts_with("Ask the owner to schedule work")
+        );
         let schema = tool.parameters_schema();
-        assert_eq!(schema.get("required"), Some(&json!(["timing", "value", "task"])));
+        assert_eq!(
+            schema.get("required"),
+            Some(&json!(["timing", "value", "task"]))
+        );
         for missing in [json!({}), json!({"timing": "daily", "value": "07:30"})] {
             assert!(tool.execute(missing).is_err());
         }
@@ -3661,14 +3673,19 @@ mod tests {
         assert_eq!(said.get("when"), Some(&json!("Every day at 07:30 (UTC)")));
         assert_eq!(
             broker.join().unwrap(),
-            Some(json!({"kind": "schedule", "op": "propose", "timing": "daily", "value": "07:30", "task": "Stretch."}))
+            Some(
+                json!({"kind": "schedule", "op": "propose", "timing": "daily", "value": "07:30", "task": "Stretch."})
+            )
         );
         let (agent, broker) = scheduled(hatchling_core::ScheduleResult::Unasked {
             reason: String::from("daily takes a time, HH:MM"),
         });
         let output = SchedulePropose::new(&agent).execute(args.clone()).unwrap();
         drop(agent);
-        assert_eq!(listed(output), json!({"asked": false, "reason": "daily takes a time, HH:MM"}));
+        assert_eq!(
+            listed(output),
+            json!({"asked": false, "reason": "daily takes a time, HH:MM"})
+        );
         broker.join().unwrap();
         for (reply, says) in [
             (hatchling_core::ScheduleResult::Denied, "may not ask"),

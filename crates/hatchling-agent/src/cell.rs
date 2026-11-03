@@ -455,30 +455,9 @@ impl Cell<Ready> {
         self.run_loop_delegating(kind, model, request, budget, redactor, None)
     }
 
-    /// [`run_loop_redacted`](Self::run_loop_redacted), able to delegate
-    ///: child agents' budgets come out of this run's own step
-    /// ledger, `model_grant` (the run's model endpoint) goes to every
-    /// child so it can think, and when the run ends, however it ends,
-    /// every child it left running is killed.
-    pub(crate) fn run_loop_delegating(
-        &self,
-        kind: hatchling_loop::PromptKind,
-        model: &dyn hatchling_loop::Model,
-        request: String,
-        budget: hatchling_loop::LoopBudget,
-        redactor: &hatchling_model::Redactor,
-        model_grant: Option<hatchling_core::ScheduleGrant>,
-    ) -> Result<hatchling_loop::LoopResult, hatchling_loop::Error> {
-        let ledger = std::sync::Arc::new(hatchling_loop::StepLedger::new(budget.max_steps));
-        let children = crate::subagent::Children::default();
-        let mut registry = hatchling_loop::ToolRegistry::new();
-        registry.register(Box::new(crate::tools::VaultFetchTool::new(
-            self.vault_channel(),
-            redactor,
-        )));
-        registry.register(Box::new(crate::tools::EgressRequestTool::new(
-            self.connection(),
-        )));
+    /// Registers in `registry` the tool groups the broker says are on
+    /// (all of them, from an older broker that says nothing).
+    fn offer_groups<'s>(&'s self, registry: &mut hatchling_loop::ToolRegistry<'s>) {
         // Skills, the web, search and a browser only when the operator
         // turned them on: a tool the broker can only refuse costs a small
         // model a turn, and room in its prompt.
@@ -539,6 +518,33 @@ impl Cell<Ready> {
                 self.connection(),
             )));
         }
+    }
+
+    /// [`run_loop_redacted`](Self::run_loop_redacted), able to delegate
+    ///: child agents' budgets come out of this run's own step
+    /// ledger, `model_grant` (the run's model endpoint) goes to every
+    /// child so it can think, and when the run ends, however it ends,
+    /// every child it left running is killed.
+    pub(crate) fn run_loop_delegating(
+        &self,
+        kind: hatchling_loop::PromptKind,
+        model: &dyn hatchling_loop::Model,
+        request: String,
+        budget: hatchling_loop::LoopBudget,
+        redactor: &hatchling_model::Redactor,
+        model_grant: Option<hatchling_core::ScheduleGrant>,
+    ) -> Result<hatchling_loop::LoopResult, hatchling_loop::Error> {
+        let ledger = std::sync::Arc::new(hatchling_loop::StepLedger::new(budget.max_steps));
+        let children = crate::subagent::Children::default();
+        let mut registry = hatchling_loop::ToolRegistry::new();
+        registry.register(Box::new(crate::tools::VaultFetchTool::new(
+            self.vault_channel(),
+            redactor,
+        )));
+        registry.register(Box::new(crate::tools::EgressRequestTool::new(
+            self.connection(),
+        )));
+        self.offer_groups(&mut registry);
         // A chat turn told the operator's builders proposes builds from
         // ideas, for the owner to approve (WO-032).
         for tool in crate::tools::IdeaTool::all(self.connection(), &self.config().run_builders) {

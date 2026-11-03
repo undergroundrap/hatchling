@@ -24,7 +24,13 @@ pub const CHANNEL: &str = "local";
 /// `asking` proposes, to the owner, from a session configured by
 /// `config`: what the agent is told.
 #[must_use]
-pub fn propose(config: &Config, asking: &str, timing: &str, value: &str, task: &str) -> ScheduleResult {
+pub fn propose(
+    config: &Config,
+    asking: &str,
+    timing: &str,
+    value: &str,
+    task: &str,
+) -> ScheduleResult {
     let grants: Vec<ScheduleGrant> = crate::held_grants(config).into_iter().collect();
     let posts = grants.contains(&ScheduleGrant::ChannelSend {
         channel: String::from(CHANNEL),
@@ -68,6 +74,10 @@ fn unasked(reason: &str) -> ScheduleResult {
 
 /// Creates the schedule the owner approved, as theirs, at `now`: what
 /// they're told.
+///
+/// # Errors
+///
+/// What they're told when the broker refused it.
 pub fn create(
     config: &Config,
     key: &dyn OpensStores,
@@ -82,18 +92,17 @@ pub fn create(
         grants: grants.to_vec(),
         channel: String::from(CHANNEL),
     };
-    match crate::schedule_ops::handle_schedule_op(config, key, &op, now, Creator::Owner) {
-        ScheduleResult::Created { .. } => Ok(format!(
+    let created = crate::schedule_ops::handle_schedule_op(config, key, &op, now, Creator::Owner);
+    if matches!(created, ScheduleResult::Created { .. }) {
+        return Ok(format!(
             "Scheduled: “{task}”, {}. It's in Schedule, where you can remove it.",
             crate::schedule_cli::describe(when)
-        )),
-        other => {
-            tracing::warn!(result = ?other, "an approved schedule wasn't created");
-            Err(String::from(
-                "Approved, but it wasn't scheduled: the broker refused it. Its log says why.",
-            ))
-        }
+        ));
     }
+    tracing::warn!(result = ?created, "an approved schedule wasn't created");
+    Err(String::from(
+        "Approved, but it wasn't scheduled: the broker refused it. Its log says why.",
+    ))
 }
 
 /// What `grants` let a scheduled run do, in words, for the owner's card.
@@ -147,7 +156,13 @@ mod tests {
         let (config, dir) = config("card", &["localhost:11434"]);
         let bus = std::sync::Arc::new(crate::api_stream::Bus::starting_at(1));
         board(&config).attach(std::sync::Arc::clone(&bus));
-        let result = propose(&config, "task-1", "daily", "07:30", "  Stretch for five minutes.  ");
+        let result = propose(
+            &config,
+            "task-1",
+            "daily",
+            "07:30",
+            "  Stretch for five minutes.  ",
+        );
         let when = if let ScheduleResult::Proposed { when } = result {
             Some(when)
         } else {
@@ -175,7 +190,9 @@ mod tests {
             .collect();
         assert_eq!(fields.first().map(|f| f.0), Some("When"));
         assert_eq!(fields.first().map(|f| f.1), Some(when.as_str()));
-        assert!(fields.iter().any(|f| f.0 == "What it may do" && f.1.contains("reach localhost:11434") && f.2 == FieldSource::Broker));
+        assert!(fields.iter().any(|f| f.0 == "What it may do"
+            && f.1.contains("reach localhost:11434")
+            && f.2 == FieldSource::Broker));
         assert_eq!(
             fields.last().map(|f| (f.1, f.2)),
             Some(("Stretch for five minutes.", FieldSource::Agent))
@@ -204,7 +221,10 @@ mod tests {
         board
             .decide(&id, request.revision, &request.digest, Decision::Approve, 1)
             .unwrap();
-        assert_eq!(board.next_approved(std::time::Duration::ZERO), Some(id.clone()));
+        assert_eq!(
+            board.next_approved(std::time::Duration::ZERO),
+            Some(id.clone())
+        );
         let said = crate::approval_board::run_approved(
             &board,
             &id,
@@ -214,7 +234,10 @@ mod tests {
             None,
             Timestamp::now().as_second(),
         );
-        assert!(said.starts_with("Scheduled: “Check the oven.”, Every 15 minutes ("), "{said}");
+        assert!(
+            said.starts_with("Scheduled: “Check the oven.”, Every 15 minutes ("),
+            "{said}"
+        );
         let listed = crate::schedule_ops::handle_schedule_op(
             &config,
             &key,
@@ -247,7 +270,10 @@ mod tests {
     }
 
     fn unreachable_listing(result: &ScheduleResult) {
-        assert!(matches!(result, ScheduleResult::Listed { .. }), "{result:?}");
+        assert!(
+            matches!(result, ScheduleResult::Listed { .. }),
+            "{result:?}"
+        );
     }
 
     #[test]
@@ -274,7 +300,10 @@ mod tests {
         }
         let mut quiet = config.clone();
         quiet.channels = Vec::new();
-        assert_eq!(propose(&quiet, "t", "daily", "07:30", "x"), ScheduleResult::Denied);
+        assert_eq!(
+            propose(&quiet, "t", "daily", "07:30", "x"),
+            ScheduleResult::Denied
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
