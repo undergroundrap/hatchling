@@ -356,6 +356,7 @@ impl Board {
                 ],
                 session: false,
                 always: false,
+                approve: Some(String::from("Remember it")),
             }));
         }
         Ok(requested)
@@ -406,6 +407,7 @@ impl Board {
                 fields,
                 session: false,
                 always: false,
+                approve: None,
             }));
         }
         Ok(requested)
@@ -567,6 +569,7 @@ fn site_confirmation(
         },
         session: true,
         always,
+        approve: None,
     }
 }
 
@@ -645,6 +648,7 @@ fn confirmation(
         fields,
         session: false,
         always: false,
+        approve: None,
     }
 }
 

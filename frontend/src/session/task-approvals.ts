@@ -21,6 +21,8 @@ export interface TaskApproval {
     readonly resource: string;
     readonly detail: string;
     readonly scopes: readonly ('once' | 'task' | 'always')[];
+    /** What approving it does, when its source says: the one approve button's words, for Allow once. */
+    readonly approveLabel?: string;
     readonly status: ApprovalStatus;
     readonly time: string;
     readonly report: string;

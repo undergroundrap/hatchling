@@ -242,9 +242,34 @@ mod tests {
     #[test]
     fn a_proposal_is_kept_only_once_the_owner_approves() {
         let (config, dir) = config("approve", &[MemoryAction::Propose]);
+        let bus = std::sync::Arc::new(crate::api_stream::Bus::starting_at(1));
+        board(&config).attach(std::sync::Arc::clone(&bus));
         assert_eq!(
             propose(&config, "task-1", "  The owner's cat is called Biscuit.  "),
             MemoryResult::Proposed
+        );
+        // The owner is shown the words as the agent's, and what approving
+        // them does.
+        let card = bus
+            .after(None)
+            .into_iter()
+            .find_map(|event| {
+                if let hatchling_core::ui::UiEventBody::Confirmation(card) = event.body {
+                    Some(card)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        assert_eq!(card.summary, "Remember this about you?");
+        assert_eq!(card.approve.as_deref(), Some("Remember it"));
+        let words = card.fields.last().unwrap();
+        assert_eq!(
+            (words.value.as_str(), words.source),
+            (
+                "The owner's cat is called Biscuit.",
+                hatchling_core::ui::FieldSource::Agent
+            )
         );
         assert!(kept(&config).is_empty(), "nothing before the owner decides");
         let board = board(&config);

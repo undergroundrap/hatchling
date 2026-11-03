@@ -454,6 +454,11 @@ pub struct ConfirmationRequest {
     /// site, where the broker keeps the sites the owner allows.
     #[serde(default)]
     pub always: bool,
+    /// What approving it does, in a few words, when that's more than
+    /// allowing it once: "Remember it" for something the agent asks to
+    /// keep. The broker's, never the agent's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approve: Option<String>,
 }
 
 /// One field of what a confirmation asks.
@@ -1745,6 +1750,7 @@ mod tests {
                     ],
                     session: false,
                     always: false,
+                    approve: None,
                 }),
             ),
             &json!({"seq": 5, "ts": "t", "body": {"kind": "confirmation", "confirmation_id": "k1", "revision": 2, "chat_id": "main", "summary": "send the email", "expires_at": null, "digest": "ab12", "fields": [{"label": "To", "value": "pat@example.com", "source": "broker"}, {"label": "Text", "value": "Hello", "source": "agent"}], "session": false, "always": false}}),
