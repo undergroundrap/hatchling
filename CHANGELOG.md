@@ -8,6 +8,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Added
 
+- **The agent reads your goals.** Ask what you're working toward, or for help with it, and the agent can look: a new read-only tool, `goals_read`, lists your open goals (each its title, what reaching it looks like, and the day you set it). It's offered only to a run that may read goals where there's a goals store (a new tool group, `goals`), and its system note says which: "You can read the owner's open goals…" or "You can't see the owner's goals here." The install grants reading them, never changing them (`HATCHLING_GOALS_GRANTS=query-goals`, and `goals:query-goals` among the app's grants, which a chat holds). An update that adds the goals store adds these with it; a goals store you set up yourself is left as it is. **Breaking for `hatchling-core`:** `ToolGroup` has a new group, `Goals`.
 - **Goals in the app.** Connected to Hatchling, the Goals page said goals couldn't be set from the app. Now:
   - You set a goal from "Create a goal" or New goal: what you're working toward, and what reaching it looks like.
   - You change its title or detail.

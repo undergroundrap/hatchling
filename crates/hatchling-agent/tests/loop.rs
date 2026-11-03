@@ -212,15 +212,17 @@ fn loop_unknown_tool_from_model_stops_fail_closed() {
 
 #[test]
 fn loop_offers_only_the_tool_groups_the_broker_says_are_on() {
-    // Each group's tool, called with no arguments: offered, the call is
-    // malformed; not, the tool is unknown. Either way nothing runs.
+    // Each group's tool, called with arguments it doesn't take: offered,
+    // the call is malformed; not, the tool is unknown. Either way nothing
+    // runs.
     let groups = [
-        (ToolGroup::Skills, "skill_invoke"),
-        (ToolGroup::Web, "web_fetch"),
-        (ToolGroup::Search, "web_search"),
-        (ToolGroup::Browser, "browser_open"),
+        (ToolGroup::Skills, "skill_invoke", json!({})),
+        (ToolGroup::Web, "web_fetch", json!({})),
+        (ToolGroup::Search, "web_search", json!({})),
+        (ToolGroup::Browser, "browser_open", json!({})),
+        (ToolGroup::Goals, "goals_read", json!({"status": "closed"})),
     ];
-    let every = || groups.iter().map(|(group, _)| *group).collect();
+    let every = || groups.iter().map(|(group, _, _)| *group).collect();
     for (case, run_tools) in [
         (0, None),
         (1, Some(every())),
@@ -231,7 +233,7 @@ fn loop_offers_only_the_tool_groups_the_broker_says_are_on() {
             Some([ToolGroup::Search, ToolGroup::Skills].into_iter().collect()),
         ),
     ] {
-        for (group, tool) in groups {
+        for (group, tool, arguments) in groups.clone() {
             let offered = run_tools.as_ref().is_none_or(|on| on.contains(&group));
             let broker = FixtureBroker::spawn(
                 &format!("loop-groups-{case}-{tool}"),
@@ -244,7 +246,7 @@ fn loop_offers_only_the_tool_groups_the_broker_says_are_on() {
                     .map(|_| {
                         ModelAction::ToolCalls(vec![ToolCall {
                             name: String::from(tool),
-                            arguments: json!({}),
+                            arguments: arguments.clone(),
                         }])
                     })
                     .collect(),

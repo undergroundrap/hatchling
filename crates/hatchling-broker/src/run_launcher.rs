@@ -752,17 +752,22 @@ fn scheduled_run(config: &Config, request: &RunRequest) -> ScheduledRun {
         history: request.history.clone(),
         earlier: request.earlier.clone(),
         builders: run_artifacts(config, request).builders,
-        tools: Some(run_tools(config)),
+        tools: Some(run_tools(config, &request.grants)),
     }
 }
 
-/// The tool groups `config` turns on, for a run to offer its model: the
-/// web and search as the operator set them, the browser if one was set
-/// up, and skills if a skills directory was.
+/// The tool groups `config` turns on, for a run holding `grants` to offer
+/// its model: the web and search as the operator set them, the browser if
+/// one was set up, skills if a skills directory was, and reading the
+/// owner's goals if there's a goals store and the run may read it.
 pub(crate) fn run_tools(
     config: &Config,
+    grants: &[ScheduleGrant],
 ) -> std::collections::BTreeSet<hatchling_core::run_tools::ToolGroup> {
     use hatchling_core::run_tools::ToolGroup;
+    let reads_goals = grants.contains(&ScheduleGrant::Goals {
+        action: String::from(GoalsAction::QueryGoals.name()),
+    });
     [
         (ToolGroup::Web, config.web.enabled),
         (ToolGroup::Search, config.web.search),
@@ -771,6 +776,10 @@ pub(crate) fn run_tools(
             crate::browser_ops::configured().is_some(),
         ),
         (ToolGroup::Skills, config.skills.is_enabled()),
+        (
+            ToolGroup::Goals,
+            reads_goals && !config.goals.root.as_os_str().is_empty(),
+        ),
     ]
     .into_iter()
     .filter_map(|(group, on)| on.then_some(group))
@@ -1223,8 +1232,38 @@ mod tests {
             .filter_map(|(group, on)| on.then_some(group))
             .collect();
             assert_eq!(scheduled_run(&config, &asked).tools, Some(on.clone()));
-            assert_eq!(run_tools(&config), on);
+            assert_eq!(run_tools(&config, &[]), on);
         }
+    }
+
+    /// Reading the owner's goals is offered to a run that may, where there
+    /// are goals to read.
+    #[test]
+    fn a_run_reads_goals_only_when_it_may_and_there_are_some() {
+        use hatchling_core::run_tools::ToolGroup;
+        let mut config = config();
+        let reads = [ScheduleGrant::Goals {
+            action: String::from("query-goals"),
+        }];
+        let other = [ScheduleGrant::Goals {
+            action: String::from("goal-create"),
+        }];
+        let offered = |config: &Config, grants: &[ScheduleGrant]| {
+            run_tools(config, grants).contains(&ToolGroup::Goals)
+        };
+        config.goals.root = PathBuf::new();
+        assert!(!offered(&config, &reads), "no store");
+        config.goals.root = PathBuf::from("/srv/hatchling/goals");
+        assert!(offered(&config, &reads));
+        assert!(!offered(&config, &other), "no read grant");
+        assert!(!offered(&config, &[]));
+        let mut asked = request(reads.to_vec());
+        asked.chat = true;
+        assert!(
+            scheduled_run(&config, &asked)
+                .tools
+                .is_some_and(|on| on.contains(&ToolGroup::Goals))
+        );
     }
 
     #[test]

@@ -493,6 +493,9 @@ impl Cell<Ready> {
                 self.connection(),
             )));
         }
+        if on(hatchling_core::run_tools::ToolGroup::Goals) {
+            registry.register(Box::new(crate::tools::GoalsReadTool::new(self.connection())));
+        }
         if on(hatchling_core::run_tools::ToolGroup::Web) {
             registry.register(Box::new(crate::tools::WebFetchTool::new(self.connection())));
         }

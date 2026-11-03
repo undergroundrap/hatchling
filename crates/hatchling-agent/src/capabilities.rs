@@ -42,6 +42,11 @@ pub fn note(run_tools: Option<&BTreeSet<ToolGroup>>) -> String {
             "- You can drive a browser the owner can watch and take over.",
         ));
     }
+    lines.push(String::from(if on(ToolGroup::Goals) {
+        "- You can read the owner's open goals with goals_read: when what they ask touches what they're working toward, read them rather than guess. They set and close goals in the app (Goals); you can't change them."
+    } else {
+        "- You can't see the owner's goals here. If they mention one, take it from what they say."
+    }));
     if on(ToolGroup::Skills) {
         lines.push(String::from(
             "- You can run the installed skills your tools name, within their grants.",
@@ -67,6 +72,10 @@ mod tests {
         assert!(!off.contains("installed skills"), "{off}");
         assert!(off.contains("can't run programs or commands"), "{off}");
         assert!(off.contains("hatchling-broker schedule add"), "{off}");
+        assert!(off.contains("can't see the owner's goals"), "{off}");
+        let goals = note(Some(&BTreeSet::from([ToolGroup::Goals])));
+        assert!(goals.contains("read the owner's open goals with goals_read"), "{goals}");
+        assert!(!goals.contains("can't see the owner's goals"), "{goals}");
         let web = BTreeSet::from([ToolGroup::Web]);
         let some = note(Some(&web));
         assert!(some.contains("read a web page the owner allows"), "{some}");
