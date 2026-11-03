@@ -89,6 +89,8 @@ pub enum ApiRequest {
     ManageProfiles,
     /// [`UiAction::ManageSignIns`].
     ManageSignIns,
+    /// [`UiAction::ManageGoals`].
+    ManageGoals,
     /// [`UiAction::GiveCode`].
     GiveCode,
     /// [`UiAction::DeclineCode`].
@@ -127,6 +129,7 @@ impl ApiRequest {
             UiAction::KeepSignedIn { .. } => Self::KeepSignedIn,
             UiAction::ManageProfiles { .. } => Self::ManageProfiles,
             UiAction::ManageSignIns { .. } => Self::ManageSignIns,
+            UiAction::ManageGoals { .. } => Self::ManageGoals,
             UiAction::GiveCode { .. } => Self::GiveCode,
             UiAction::DeclineCode { .. } => Self::DeclineCode,
         }
@@ -292,6 +295,12 @@ mod tests {
                     op: crate::ui::SignInOp::List,
                 }),
                 ApiRequest::ManageSignIns,
+            ),
+            (
+                action(UiAction::ManageGoals {
+                    op: crate::ui::GoalOp::List,
+                }),
+                ApiRequest::ManageGoals,
             ),
             (
                 action(UiAction::GiveCode {

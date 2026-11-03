@@ -38,7 +38,7 @@ use hatchling_core::messages::{ScheduleGrant, ScheduleOp};
 use hatchling_core::subagent::{ActivityEvent, SubagentEvent};
 use hatchling_core::ui::{
     ActionRefusal, AgentState, ApiOutcome, ApiRequest, ChatAuthor, ChatMessage, ControlRefusal,
-    Decision, Handoff, ProfileOp, ProfileResult, SignInOp, SiteOp, UiAction, UiActionResult,
+    Decision, GoalOp, Handoff, ProfileOp, ProfileResult, SignInOp, SiteOp, UiAction, UiActionResult,
     UiEventBody,
 };
 use hatchling_scheduler::{Creator, Timestamp};
@@ -61,6 +61,8 @@ enum Owned<'a> {
     Profiles(&'a ProfileOp),
     /// The sign-ins the broker fills for them (WO-030).
     SignIns(&'a SignInOp),
+    /// Their goals.
+    Goals(&'a GoalOp),
 }
 
 /// The one chat the API offers: the local channel's conversation.
@@ -216,6 +218,7 @@ impl<'a> Ops<'a> {
             UiAction::ManageSites { op } => self.owned(owns, Owned::Sites(op)),
             UiAction::ManageProfiles { op } => self.owned(owns, Owned::Profiles(op)),
             UiAction::ManageSignIns { op } => self.owned(owns, Owned::SignIns(op)),
+            UiAction::ManageGoals { op } => self.owned(owns, Owned::Goals(op)),
             UiAction::Decide {
                 confirmation_id,
                 revision,
@@ -272,6 +275,9 @@ impl<'a> Ops<'a> {
                     self.key,
                     op,
                 ),
+            },
+            Owned::Goals(op) => UiActionResult::Goals {
+                outcome: crate::goal_ops::handle_goal_op(self.config, op),
             },
         };
         (result, ApiOutcome::Served)
@@ -1950,6 +1956,38 @@ mod tests {
                 )
             );
         }
+    }
+
+    /// Only the owner manages their goals.
+    #[test]
+    fn only_the_owner_manages_the_goals() {
+        let config = owner_config(Some("/srv/hatchling/schedules"));
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let ops = Ops::new(&config, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        let held: Vec<ScheduleGrant> = ops.owner_grants().into_iter().collect();
+        let owner = caller(&held);
+        let partial = caller(held.get(..1).unwrap_or_default());
+        let mut replies = Replies::default();
+        let list = UiAction::ManageGoals { op: GoalOp::List };
+        assert_eq!(
+            ops.handle(&partial, &list, &mut replies),
+            (
+                UiActionResult::Refused {
+                    reason: ActionRefusal::NotGranted
+                },
+                ApiOutcome::Refused
+            )
+        );
+        assert_eq!(
+            ops.handle(&owner, &list, &mut replies),
+            (
+                UiActionResult::Goals {
+                    outcome: hatchling_core::ui::GoalResult::Off
+                },
+                ApiOutcome::Served
+            )
+        );
     }
 
     /// WO-027: only the owner decides, and a decision on a confirmation

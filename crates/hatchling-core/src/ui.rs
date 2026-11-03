@@ -540,6 +540,102 @@ pub enum SiteResult {
     Failed,
 }
 
+/// An operation on the owner's goals, from their app: the same goals the
+/// agent reads in a chat and a feed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum GoalOp {
+    /// List them, open and closed.
+    List,
+    /// Set a new goal.
+    Create {
+        /// One line.
+        title: String,
+        /// What reaching it looks like; may be empty.
+        detail: String,
+    },
+    /// Change an open goal's title or detail.
+    Update {
+        /// The goal.
+        id: String,
+        /// A new title.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        /// A new detail.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+    },
+    /// Close an open goal: it's kept, and can't be reopened.
+    Close {
+        /// The goal.
+        id: String,
+        /// Whether it was reached.
+        achieved: bool,
+    },
+}
+
+/// Where a goal stands.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum GoalState {
+    /// Being worked toward.
+    Open,
+    /// Reached.
+    Achieved,
+    /// Set aside.
+    Abandoned,
+}
+
+/// One of the owner's goals.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct GoalView {
+    /// Its id.
+    pub id: String,
+    /// One line.
+    pub title: String,
+    /// What reaching it looks like; may be empty.
+    pub detail: String,
+    /// Where it stands.
+    pub state: GoalState,
+    /// When it was set, Unix seconds.
+    pub created_at: u64,
+    /// When it last changed, Unix seconds: its close, once closed.
+    pub updated_at: u64,
+}
+
+/// The result of a [`GoalOp`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum GoalResult {
+    /// Every goal, open first, the newest first within each.
+    Listed {
+        /// The goals.
+        goals: Vec<GoalView>,
+    },
+    /// The goal, as it stands now: set, changed or closed.
+    Saved {
+        /// The goal.
+        goal: GoalView,
+    },
+    /// No goal has the id.
+    NotFound,
+    /// The goal is closed: it can't be changed or closed again.
+    AlreadyClosed,
+    /// The title or detail wasn't accepted: a title is one line, and each
+    /// has a length it may not pass.
+    Rejected,
+    /// The most goals one may keep are kept.
+    LimitReached,
+    /// The broker keeps no goals: the operator hasn't given it a place to.
+    Off,
+    /// The broker couldn't read or change them; its log says why.
+    Failed,
+}
+
 /// An operation on the owner's signed-in profiles (WO-030).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -900,6 +996,11 @@ pub enum UiAction {
         /// The operation.
         op: SignInOp,
     },
+    /// List, set, change or close the owner's goals: the owner's alone.
+    ManageGoals {
+        /// The operation.
+        op: GoalOp,
+    },
     /// Give the one-time code a browser session's page asks for (WO-030):
     /// typed into the page by the broker, used once and not kept.
     GiveCode {
@@ -1040,6 +1141,11 @@ pub enum UiActionResult {
     SignIns {
         /// The result.
         outcome: SignInResult,
+    },
+    /// A goal operation's result.
+    Goals {
+        /// The result.
+        outcome: GoalResult,
     },
     /// The code was taken: the broker types it into the page next.
     CodeTaken {
@@ -2035,5 +2141,71 @@ mod tests {
             },
             &json!({"action": "manage_sign_ins", "op": {"op": "delete", "sign_in_id": "cred-1"}}),
         );
+    }
+
+    #[test]
+    fn goals_travel_as_their_ops_and_results() {
+        pinned(
+            &UiAction::ManageGoals { op: GoalOp::List },
+            &json!({"action": "manage_goals", "op": {"op": "list"}}),
+        );
+        pinned(
+            &UiAction::ManageGoals {
+                op: GoalOp::Create {
+                    title: s("Run a 10k"),
+                    detail: s("Under an hour"),
+                },
+            },
+            &json!({"action": "manage_goals", "op": {"op": "create", "title": "Run a 10k", "detail": "Under an hour"}}),
+        );
+        pinned(
+            &UiAction::ManageGoals {
+                op: GoalOp::Update {
+                    id: s("g1"),
+                    title: None,
+                    detail: Some(s("Under 55 minutes")),
+                },
+            },
+            &json!({"action": "manage_goals", "op": {"op": "update", "id": "g1", "detail": "Under 55 minutes"}}),
+        );
+        pinned(
+            &UiAction::ManageGoals {
+                op: GoalOp::Close {
+                    id: s("g1"),
+                    achieved: true,
+                },
+            },
+            &json!({"action": "manage_goals", "op": {"op": "close", "id": "g1", "achieved": true}}),
+        );
+        let goal = GoalView {
+            id: s("g1"),
+            title: s("Run a 10k"),
+            detail: String::new(),
+            state: GoalState::Achieved,
+            created_at: 10,
+            updated_at: 20,
+        };
+        pinned(
+            &UiActionResult::Goals {
+                outcome: GoalResult::Listed {
+                    goals: vec![goal.clone()],
+                },
+            },
+            &json!({"result": "goals", "outcome": {"result": "listed", "goals": [
+                {"id": "g1", "title": "Run a 10k", "detail": "", "state": "achieved", "created_at": 10, "updated_at": 20}
+            ]}}),
+        );
+        for (outcome, tag) in [
+            (GoalResult::Saved { goal }, "saved"),
+            (GoalResult::NotFound, "not_found"),
+            (GoalResult::AlreadyClosed, "already_closed"),
+            (GoalResult::Rejected, "rejected"),
+            (GoalResult::LimitReached, "limit_reached"),
+            (GoalResult::Off, "off"),
+            (GoalResult::Failed, "failed"),
+        ] {
+            let wire = serde_json::to_value(UiActionResult::Goals { outcome }).unwrap();
+            assert_eq!(wire.pointer("/outcome/result"), Some(&json!(tag)), "{wire}");
+        }
     }
 }
