@@ -206,6 +206,43 @@ test('the contract\'s edge cases: an unretained spawn, a contradictory second en
     fresh.transport.deliver(sampleEvent(2, 2, { kind: 'activity', state: 'pending', event: { event: 'subagent_progress', child_id: 'x', note: 'n', steps_spent: 1, event_id: 'e', run_id: 'run-sample-2', ts: sampleTime(2) } }));
     assert.deepEqual(fresh.adapter.getSnapshot().threads.map(item => item.id), ['run-sample-2', SAMPLE_RUN]);
 });
+test('activity: each thing asked in the chat is a task, answered by the agent\'s next reply; the app\'s own clicks are not activity', () => {
+    const { transport, adapter } = connected();
+    const chat = (seq, author, id, text, chat_id = 'local') => sampleEvent(seq, seq, { kind: 'chat_message', chat_id, message_id: id, author, text });
+    const ownClick = seq => sampleEvent(seq, seq, { kind: 'activity', state: 'success', event: { event: 'api_call', event_id: `api-${seq}`, run_id: 'api', ts: sampleTime(seq), caller: 'ui, uid 1000', capabilities: ['channel-send:local'], request: 'send_message', outcome: 'served' } });
+    const long = 'Give me three short ideas for a relaxing Sunday, and make each one something I can do at home.';
+    replay(transport, [
+        chat(1, 'agent', 'm0', 'A scheduled reminder, with nothing asked.'),
+        ownClick(2),
+        chat(3, 'user', 'm1', long),
+        chat(4, 'agent', 'm2', 'Sure. Here are three:\n1. Read in the sun.'),
+        chat(5, 'user', 'm3', 'And one more?'),
+        chat(6, 'user', 'm1', 'a replay of the first ask'),
+        chat(7, 'user', 's1', 'in a side chat', 'side-1'),
+        ownClick(8),
+    ]);
+    const threads = adapter.getSnapshot().threads;
+    assert.deepEqual(threads.map(thread => thread.id), ['m3', 'm1'], 'newest first; no thread for the app\'s clicks, a side chat or a replay');
+    const [waiting, answered] = threads;
+    assert.deepEqual([answered.name, answered.subtitle, answered.state, answered.statusTitle, answered.chatId], ['Give me three short ideas for a relaxing…', 'Sure. Here are three:', 'completed', 'Answered', 'main']);
+    assert.equal(answered.lanes[0].rows[0].report, 'The agent answered:\n\n> Sure. Here are three:\n> 1. Read in the sun.', 'the answer is quoted as untrusted text');
+    assert.equal(answered.time, '09:00');
+    assert.deepEqual([waiting.name, waiting.subtitle, waiting.state, waiting.lanes[0].rows.length, waiting.endedAt], ['And one more?', 'The agent is working on it.', 'running', 0, null]);
+    assert.ok(validThreadCopy(answered.name, answered.subtitle, answered.statusTitle));
+    // The next reply answers the waiting task; a reply after it answers nothing.
+    replay(transport, [chat(9, 'agent', 'm4', 'A walk.'), chat(10, 'agent', 'm5', 'Unasked.')]);
+    const [now] = adapter.getSnapshot().threads;
+    assert.deepEqual([now.id, now.subtitle, now.state], ['m3', 'The agent answered: A walk.', 'completed']);
+    assert.ok(validThreadCopy(now.name, now.subtitle, now.statusTitle));
+    assert.ok(validThreadCopy(waiting.name, waiting.subtitle, waiting.statusTitle));
+    assert.equal(adapter.getSnapshot().threads.length, 2);
+    replay(transport, [chat(11, 'user', 'm6', 'Plan my week'), chat(12, 'agent', 'm7', 'Monday: rest, Tuesday: write, Wednesday: call Sam, Thursday: shop, Friday: run.'), chat(13, 'user', 'm8', 'Thanks'), chat(14, 'agent', 'm9', 'You are very welcome.')]);
+    const [thanks, plan] = adapter.getSnapshot().threads;
+    assert.equal(plan.subtitle, 'Monday: rest, Tuesday: write, Wednesday: call Sam, Thursday: shop, Friday:…');
+    assert.equal(thanks.subtitle, 'You are very welcome.', 'four words are enough');
+    for (const thread of [plan, thanks])
+        assert.ok(validThreadCopy(thread.name, thread.subtitle, thread.statusTitle), thread.subtitle);
+});
 test('local API calls are a thread of their own: one lane per caller, one row per call, never its content', () => {
     const { transport, adapter } = connected();
     const call = (seq, caller, request, outcome, capabilities) => sampleEvent(seq, seq, { kind: 'activity', state: outcome === 'served' ? 'success' : 'failed', event: { event: 'api_call', event_id: `api-${seq}`, run_id: 'api', ts: sampleTime(seq), caller, capabilities, request, outcome } });
@@ -320,16 +357,22 @@ test('scheduled work: made with the welcome\'s grants, listed, removed, and what
     const local = { grant: 'channel-send', channel: 'local' };
     transport.open();
     transport.deliver({ ...SAMPLE_WELCOME, grants: [local] });
-    const listing = () => transport.sent.filter(frame => frame.type === 'action' && frame.action.action === 'manage_schedule' && frame.action.op.op === 'list').at(-1);
-    answer(transport, listing().request_id, { result: 'schedule', outcome: { result: 'listed', schedules: [] } });
-    await flush();
+    const last = op => transport.sent.filter(frame => frame.type === 'action' && frame.action.action === 'manage_schedule' && frame.action.op.op === op).at(-1);
+    // Each refresh asks for the schedules, then for what was kept for the owner.
+    const lists = async (schedules) => {
+        answer(transport, last('list').request_id, { result: 'schedule', outcome: { result: 'listed', schedules } });
+        await flush();
+        answer(transport, last('list-parked').request_id, { result: 'schedule', outcome: { result: 'parked', parked: [] } });
+        await flush();
+    };
+    await lists([]);
     assert.deepEqual(adapter.getSnapshot().jobs, []);
     const creating = adapter.execute({ type: 'job.create', title: 'Stretch', kind: 'time', schedule: 'weekdays 08:00', recurring: true, source: '', event: '' });
     const create = transport.last();
     assert.deepEqual(create.action, { action: 'manage_schedule', op: { op: 'create', when: { every: 'cron', expr: '0 8 * * 1-5', tz: 'UTC' }, task: 'Stretch', grants: [local], channel: 'local' } });
     answer(transport, create.request_id, { result: 'schedule', outcome: { result: 'created', id: 'sch-1' } });
     await flush();
-    answer(transport, listing().request_id, { result: 'schedule', outcome: { result: 'listed', schedules: [{ id: 'sch-1', kind: 'task', when: create.action.op.when, channel: 'local', grants: [local], next_due: 1790000000, task: 'Stretch' }] } });
+    await lists([{ id: 'sch-1', kind: 'task', when: create.action.op.when, channel: 'local', grants: [local], next_due: 1790000000, task: 'Stretch' }]);
     assert.deepEqual(await creating, { ok: true, message: 'Scheduled. Its results arrive in this chat.', id: 'sch-1' });
     const [job] = adapter.getSnapshot().jobs;
     assert.deepEqual([job.id, job.title, job.schedule, job.limit], ['sch-1', 'Stretch', 'Weekdays at 08:00 (UTC)', 'May post in this chat']);
@@ -349,9 +392,10 @@ test('scheduled work: made with the welcome\'s grants, listed, removed, and what
     assert.deepEqual(cancel.action, { action: 'manage_schedule', op: { op: 'cancel', id: 'sch-1' } });
     answer(transport, cancel.request_id, { result: 'schedule', outcome: { result: 'cancelled' } });
     await flush();
-    answer(transport, listing().request_id, { result: 'schedule', outcome: { result: 'listed', schedules: [] } });
+    await lists([]);
     assert.deepEqual(await removing, { ok: true, message: 'Removed. It won’t run again.' });
     assert.deepEqual(adapter.getSnapshot().jobs, []);
+    assert.equal(adapter.attention.items().length, 0, 'nothing needs the owner');
 });
 test('a closed connection\'s late callbacks are ignored', () => {
     const transport = new FakeTransport();
