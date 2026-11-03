@@ -38,7 +38,7 @@ use hatchling_core::messages::{ScheduleGrant, ScheduleOp};
 use hatchling_core::subagent::{ActivityEvent, SubagentEvent};
 use hatchling_core::ui::{
     ActionRefusal, AgentState, ApiOutcome, ApiRequest, ChatAuthor, ChatMessage, ControlRefusal,
-    Decision, GoalOp, Handoff, ProfileOp, ProfileResult, SignInOp, SiteOp, UiAction,
+    Decision, GoalOp, Handoff, KeptOp, ProfileOp, ProfileResult, SignInOp, SiteOp, UiAction,
     UiActionResult, UiEventBody,
 };
 use hatchling_scheduler::{Creator, Timestamp};
@@ -65,6 +65,8 @@ enum Owned<'a> {
     Usage,
     /// Their goals.
     Goals(&'a GoalOp),
+    /// What the agent is given from their memory.
+    Memory(&'a KeptOp),
 }
 
 /// The one chat the API offers: the local channel's conversation.
@@ -222,6 +224,7 @@ impl<'a> Ops<'a> {
             UiAction::ManageSignIns { op } => self.owned(owns, Owned::SignIns(op)),
             UiAction::ReadUsage {} => self.owned(owns, Owned::Usage),
             UiAction::ManageGoals { op } => self.owned(owns, Owned::Goals(op)),
+            UiAction::ManageMemory { op } => self.owned(owns, Owned::Memory(op)),
             UiAction::Decide {
                 confirmation_id,
                 revision,
@@ -281,6 +284,9 @@ impl<'a> Ops<'a> {
             },
             Owned::Goals(op) => UiActionResult::Goals {
                 outcome: crate::goal_ops::handle_goal_op(self.config, op),
+            },
+            Owned::Memory(op) => UiActionResult::Memory {
+                outcome: crate::memory_keep::handle_kept_op(self.config, op),
             },
             Owned::Usage => UiActionResult::Usage {
                 usage: crate::usage::report(
@@ -2034,6 +2040,20 @@ mod tests {
         let owner = caller(&held);
         let partial = caller(held.get(..1).unwrap_or_default());
         let mut replies = Replies::default();
+        let memory = UiAction::ManageMemory { op: KeptOp::List };
+        assert_eq!(
+            ops.handle(&partial, &memory, &mut replies).1,
+            ApiOutcome::Refused
+        );
+        assert_eq!(
+            ops.handle(&owner, &memory, &mut replies),
+            (
+                UiActionResult::Memory {
+                    outcome: hatchling_core::ui::KeptResult::Off
+                },
+                ApiOutcome::Served
+            )
+        );
         let list = UiAction::ManageGoals { op: GoalOp::List };
         assert_eq!(
             ops.handle(&partial, &list, &mut replies),

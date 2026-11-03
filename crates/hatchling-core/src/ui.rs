@@ -682,6 +682,56 @@ pub enum GoalResult {
     Failed,
 }
 
+/// An operation on what the agent is given from the owner's memory, from
+/// their app.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum KeptOp {
+    /// List it.
+    List,
+    /// Forget one: later runs aren't given it.
+    Forget {
+        /// It, as listed.
+        id: String,
+    },
+}
+
+/// One thing the agent is given from the owner's memory.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct Kept {
+    /// Its id.
+    pub id: String,
+    /// The words kept.
+    pub content: String,
+    /// When it was kept, Unix seconds.
+    pub kept_at: u64,
+    /// Whether the owner approved it: what the agent asked to keep, and
+    /// they approved, is; anything kept some other way isn't.
+    pub approved: bool,
+}
+
+/// The result of a [`KeptOp`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum KeptResult {
+    /// Everything the agent is given, the newest first.
+    Listed {
+        /// It.
+        kept: Vec<Kept>,
+    },
+    /// It was forgotten.
+    Forgotten,
+    /// Nothing kept has the id.
+    NotFound,
+    /// The broker keeps no memory: the operator hasn't given it a place to.
+    Off,
+    /// The broker couldn't read or change it; its log says why.
+    Failed,
+}
+
 /// An operation on the owner's signed-in profiles (WO-030).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -1047,6 +1097,12 @@ pub enum UiAction {
         /// The operation.
         op: GoalOp,
     },
+    /// List or forget what the agent is given from the owner's memory: the
+    /// owner's alone.
+    ManageMemory {
+        /// The operation.
+        op: KeptOp,
+    },
     /// Read the model usage the broker counted: the owner's alone.
     ReadUsage {},
     /// Give the one-time code a browser session's page asks for (WO-030):
@@ -1194,6 +1250,11 @@ pub enum UiActionResult {
     Goals {
         /// The result.
         outcome: GoalResult,
+    },
+    /// A memory operation's result.
+    Memory {
+        /// The result.
+        outcome: KeptResult,
     },
     /// The model usage the broker counted.
     Usage {
@@ -2292,6 +2353,44 @@ mod tests {
             (GoalResult::Failed, "failed"),
         ] {
             let wire = serde_json::to_value(UiActionResult::Goals { outcome }).unwrap();
+            assert_eq!(wire.pointer("/outcome/result"), Some(&json!(tag)), "{wire}");
+        }
+    }
+
+    #[test]
+    fn what_is_kept_travels_as_its_ops_and_results() {
+        pinned(
+            &UiAction::ManageMemory { op: KeptOp::List },
+            &json!({"action": "manage_memory", "op": {"op": "list"}}),
+        );
+        pinned(
+            &UiAction::ManageMemory {
+                op: KeptOp::Forget { id: s("kept-1") },
+            },
+            &json!({"action": "manage_memory", "op": {"op": "forget", "id": "kept-1"}}),
+        );
+        pinned(
+            &UiActionResult::Memory {
+                outcome: KeptResult::Listed {
+                    kept: vec![Kept {
+                        id: s("kept-1"),
+                        content: s("Their cat is Biscuit."),
+                        kept_at: 10,
+                        approved: true,
+                    }],
+                },
+            },
+            &json!({"result": "memory", "outcome": {"result": "listed", "kept": [
+                {"id": "kept-1", "content": "Their cat is Biscuit.", "kept_at": 10, "approved": true}
+            ]}}),
+        );
+        for (outcome, tag) in [
+            (KeptResult::Forgotten, "forgotten"),
+            (KeptResult::NotFound, "not_found"),
+            (KeptResult::Off, "off"),
+            (KeptResult::Failed, "failed"),
+        ] {
+            let wire = serde_json::to_value(UiActionResult::Memory { outcome }).unwrap();
             assert_eq!(wire.pointer("/outcome/result"), Some(&json!(tag)), "{wire}");
         }
     }

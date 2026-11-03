@@ -758,8 +758,10 @@ fn scheduled_run(config: &Config, request: &RunRequest) -> ScheduledRun {
 
 /// The tool groups `config` turns on, for a run holding `grants` to offer
 /// its model: the web and search as the operator set them, the browser if
-/// one was set up, skills if a skills directory was, and reading the
-/// owner's goals if there's a goals store and the run may read it.
+/// one was set up, skills if a skills directory was, reading the owner's
+/// goals if there's a goals store and the run may read it, and asking to
+/// keep something in their memory if there's a memory store and the run
+/// may ask.
 pub(crate) fn run_tools(
     config: &Config,
     grants: &[ScheduleGrant],
@@ -767,6 +769,10 @@ pub(crate) fn run_tools(
     use hatchling_core::run_tools::ToolGroup;
     let reads_goals = grants.contains(&ScheduleGrant::Goals {
         action: String::from(GoalsAction::QueryGoals.name()),
+    });
+    let proposes = grants.contains(&ScheduleGrant::Memory {
+        scope: String::from("user"),
+        action: String::from(MemoryAction::Propose.name()),
     });
     [
         (ToolGroup::Web, config.web.enabled),
@@ -779,6 +785,10 @@ pub(crate) fn run_tools(
         (
             ToolGroup::Goals,
             reads_goals && !config.goals.root.as_os_str().is_empty(),
+        ),
+        (
+            ToolGroup::Memory,
+            proposes && !config.memory.root.as_os_str().is_empty(),
         ),
     ]
     .into_iter()
@@ -1257,6 +1267,23 @@ mod tests {
         assert!(offered(&config, &reads));
         assert!(!offered(&config, &other), "no read grant");
         assert!(!offered(&config, &[]));
+        // Asking to keep something: the same rule, for memory.
+        let proposes = [ScheduleGrant::Memory {
+            scope: String::from("user"),
+            action: String::from("propose"),
+        }];
+        let writes = [ScheduleGrant::Memory {
+            scope: String::from("user"),
+            action: String::from("write"),
+        }];
+        let asks = |config: &Config, grants: &[ScheduleGrant]| {
+            run_tools(config, grants).contains(&ToolGroup::Memory)
+        };
+        config.memory.root = PathBuf::new();
+        assert!(!asks(&config, &proposes), "no store");
+        config.memory.root = PathBuf::from("/srv/hatchling/memory");
+        assert!(asks(&config, &proposes));
+        assert!(!asks(&config, &writes), "writing isn't asking");
         let mut asked = request(reads.to_vec());
         asked.chat = true;
         assert!(

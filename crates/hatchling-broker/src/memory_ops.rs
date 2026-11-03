@@ -118,6 +118,10 @@ pub fn handle_memory_op(
                 Err(source) => Err(Error::Memory { source }),
             }
         }
+        // A proposal is put to the owner, which takes the session's task:
+        // the session itself does that ([`crate::memory_keep::propose`]).
+        // Here, nothing is written.
+        MemoryOp::Propose { .. } => Ok(MemoryResult::Denied),
     }
 }
 
@@ -196,6 +200,7 @@ const fn memory_action(op: &MemoryOp) -> MemoryAction {
         MemoryOp::Remove { .. } => MemoryAction::Remove,
         MemoryOp::ContextAppend { .. } => MemoryAction::ContextAppend,
         MemoryOp::ContextRead { .. } => MemoryAction::ContextRead,
+        MemoryOp::Propose { .. } => MemoryAction::Propose,
     }
 }
 
@@ -207,6 +212,7 @@ fn op_scope_str(op: &MemoryOp) -> &str {
         | MemoryOp::RecallByTag { scope, .. }
         | MemoryOp::Remove { scope, .. } => scope,
         MemoryOp::ContextAppend { .. } | MemoryOp::ContextRead { .. } => "session",
+        MemoryOp::Propose { .. } => "user",
     }
 }
 
@@ -375,7 +381,9 @@ mod paging_tests {
                 | MemoryResult::Removed { .. }
                 | MemoryResult::ContextAppended
                 | MemoryResult::Denied
-                | MemoryResult::MemoryError) => {
+                | MemoryResult::MemoryError
+        | MemoryResult::Proposed
+        | MemoryResult::Unasked { .. }) => {
                     unreachable!("page {pages}: not a page but {other:?}")
                 }
             };

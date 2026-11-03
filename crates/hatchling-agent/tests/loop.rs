@@ -221,6 +221,7 @@ fn loop_offers_only_the_tool_groups_the_broker_says_are_on() {
         (ToolGroup::Search, "web_search", json!({})),
         (ToolGroup::Browser, "browser_open", json!({})),
         (ToolGroup::Goals, "goals_read", json!({"status": "closed"})),
+        (ToolGroup::Memory, "memory_propose", json!({})),
     ];
     let every = || groups.iter().map(|(group, _, _)| *group).collect();
     for (case, run_tools) in [
