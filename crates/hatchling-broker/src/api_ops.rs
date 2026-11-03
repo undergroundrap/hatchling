@@ -38,8 +38,8 @@ use hatchling_core::messages::{ScheduleGrant, ScheduleOp};
 use hatchling_core::subagent::{ActivityEvent, SubagentEvent};
 use hatchling_core::ui::{
     ActionRefusal, AgentState, ApiOutcome, ApiRequest, ChatAuthor, ChatMessage, ControlRefusal,
-    Decision, GoalOp, Handoff, ProfileOp, ProfileResult, SignInOp, SiteOp, UiAction, UiActionResult,
-    UiEventBody,
+    Decision, GoalOp, Handoff, ProfileOp, ProfileResult, SignInOp, SiteOp, UiAction,
+    UiActionResult, UiEventBody,
 };
 use hatchling_scheduler::{Creator, Timestamp};
 use hatchling_vault::OpensStores;
