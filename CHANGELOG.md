@@ -21,6 +21,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Changed
 
+- **The agent knows what it can't do here.** It saw its tools but not their limits, so it guessed: offering to look up restaurants with the web off, to "run something" to audit a disk, or to set a reminder it had no way to set. Each chat and scheduled run's system prompt now ends with a note generated from the install's live settings: it can't run commands or touch your files, which of reading pages, search, a browser and skills are on, and how you set up scheduled work.
 - **Activity shows what you asked the agent to do.** Each thing asked in the chat is a task in Activity, named by what you asked and summed up by the start of the answer, with its time, like a phone's activity list. The app's own clicks, which the broker records as local API calls, aren't listed as activity; other programs using the API still are.
 - **Reminders read as reminders, and the approvals panel says what it's for.** A one-off schedule sits under "Reminders" with a bell, the way a phone shows one, and an empty approvals panel says what will appear there instead of showing nothing.
 - **A small model's slip is told back to it, not the end of the answer.** A model that called a tool it wasn't offered, or gave arguments that don't fit, stopped the run at once, and the chat said only that the agent couldn't answer. Now none of that batch runs, the model is told what was wrong and that nothing ran, and it gets two more tries before the run stops.
