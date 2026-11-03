@@ -325,6 +325,69 @@ jobs:
           sudo journalctl -u hatchling.service --no-pager | tail -80
           journalctl --user -u hatchling-host.service --no-pager | tail -40 || true
 
+  upgrade:
+    # Upgrade safety: the last release installed as a person installs it,
+    # given state through the API (schedules, a conversation), then this
+    # commit installed over it by scripts/install.sh. Every schedule must
+    # survive with its timing and grants, still due, and the agent must
+    # still answer. An update that eats someone's schedules fails here.
+    name: upgrade from the last release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build the programs and the app
+        run: |
+          cargo build --release --locked -p hatchling-broker -p hatchling-agent -p hatchling-host -p hatchling-browser
+          (cd frontend && npm ci --no-audit --no-fund && npm run build)
+          mkdir -p "$RUNNER_TEMP/files"
+          cp target/release/hatchling-broker target/release/hatchling-agent target/release/hatchling-host target/release/hatchling-browser "$RUNNER_TEMP/files/"
+          cp -R frontend/dist "$RUNNER_TEMP/files/ui"
+
+      - name: The last release, and its own installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+          echo "upgrading from $tag"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/release"
+          git fetch --depth 1 origin "refs/tags/$tag:refs/tags/$tag"
+          git worktree add "$RUNNER_TEMP/previous" "$tag"
+
+      - name: Install the last release, and give it state
+        run: |
+          python3 docs/examples/stand-in-model.py 18089 > "$RUNNER_TEMP/model.log" 2>&1 &
+          (cd "$RUNNER_TEMP/previous" && sudo scripts/install.sh --from "$RUNNER_TEMP/release" --model-endpoint http://localhost:18089/v1 --model stand-in) > "$RUNNER_TEMP/install-previous.log"
+          timeout 180 python3 docs/examples/first-run.py /var/lib/hatchling/api.sock
+          SEED_GRANTS=egress:localhost:18089,channel-send:local python3 scripts/upgrade_state.py seed /var/lib/hatchling/api.sock "$RUNNER_TEMP/state.json"
+
+      - name: Upgrade to this commit, and check nothing was lost
+        run: |
+          sudo scripts/install.sh --from "$RUNNER_TEMP/files" --model-endpoint http://localhost:18089/v1 --model stand-in > "$RUNNER_TEMP/install-upgrade.log"
+          python3 scripts/upgrade_state.py verify /var/lib/hatchling/api.sock "$RUNNER_TEMP/state.json"
+          timeout 180 python3 docs/examples/first-run.py /var/lib/hatchling/api.sock
+          sudo hatchling-broker doctor
+
+      - name: The installs' and services' logs
+        if: always()
+        run: |
+          sed -E 's/(hatchling-(ui|operator)=)[0-9a-zA-Z]+/\1<token>/g' "$RUNNER_TEMP"/install-*.log || true
+          sudo journalctl -u hatchling.service --no-pager | tail -80
+
   quickstart:
     name: README quickstart
     runs-on: ubuntu-latest

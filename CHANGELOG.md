@@ -8,6 +8,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Added
 
+- **Every change is tested upgrading a real install.** CI installs the last release with `scripts/install.sh`, gives it schedules and a conversation through the API, installs the commit over it, and fails unless every schedule survived with its timing and grants, still due, and the agent still answers (`scripts/upgrade_state.py`). An update must never eat someone's schedules.
 - **Scheduled work from the app.** The schedule form walked you through an approval and then said "Hatchling cannot do this from the app yet", and the panel never listed anything. Now:
   - The form has real fields: what should happen; repeat once, every few minutes, every day, every weekday, every week or on a cron expression; a date and time picker; and your browser's time zone, shown.
   - It creates the schedule in the broker, with the permissions a chat message's run has, delivering to the chat. Recurring work is approved in words ("every Friday at 17:30 (America/New_York), until you remove it").
