@@ -1131,6 +1131,31 @@ mod tests {
         }
     }
 
+    /// By default, a run names no cell and no ending; an answer is
+    /// delivered as plain text, and a notice as any delivery, failures and
+    /// all.
+    #[test]
+    fn the_defaults_name_nothing_and_deliver_as_plain_text() {
+        struct Quiet;
+        impl Run for Quiet {
+            fn poll(&mut self) -> Option<Result<String, String>> {
+                None
+            }
+        }
+        assert_eq!(Quiet.cell_id(), None);
+        assert_eq!(Quiet.ending(), None);
+        assert_eq!(Plain.deliver_answer("local", "hi", Some("run-1")), Ok(false));
+        assert_eq!(
+            Closed.deliver_answer("local", "hi", None),
+            Err(String::from("closed"))
+        );
+        assert_eq!(Plain.deliver_notice("local", "hi"), Ok(()));
+        assert_eq!(
+            Closed.deliver_notice("local", "hi"),
+            Err(String::from("closed"))
+        );
+    }
+
     /// WO-026: a delivery path that can't tell what the person was shown
     /// never claims they saw the text itself.
     #[test]
