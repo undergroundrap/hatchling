@@ -1072,6 +1072,11 @@ const fn oversize_reply(response: &SessionResponse) -> SessionResponse {
                 reason: String::new(),
             })
         }
+        SessionResponse::Suggest(_) => {
+            SessionResponse::Suggest(hatchling_core::SuggestResult::Unasked {
+                reason: String::new(),
+            })
+        }
     }
 }
 
