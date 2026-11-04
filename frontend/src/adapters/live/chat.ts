@@ -54,9 +54,9 @@ export class ChatBook {
         if (entry.author === 'agent' && typeof entry.run === 'string')
             this.#runs.set(entry.message_id, entry.run);
     }
-    /** A run's record: the line under the answer it wrote, opening the record. */
+    /** A run's record, a chat's or scheduled work's: the line under the answer it wrote, opening the record. */
     trail(event: ActivityEvent): void {
-        if (event.event === 'run_summary' && event.chat)
+        if (event.event === 'run_summary')
             this.#trails.set(event.cell_id, { threadId: event.event_id, line: trailLine(event.tools) });
     }
     /** A file sent in a chat: an attachment message naming the artifact. Its words are plain text. */

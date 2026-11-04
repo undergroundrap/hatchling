@@ -2414,4 +2414,35 @@ mod tests {
             ScheduleResult::ScheduleError
         );
     }
+
+    /// A run's output is kept naming its run, and one kept before runs
+    /// were named reads as none: the store reads old records still.
+    #[test]
+    fn a_kept_output_names_its_run_and_an_old_one_reads() {
+        use hatchling_scheduler::Outcome;
+        let old: Outcome = serde_json::from_str(r#"{"outcome":"output","text":"hi"}"#).unwrap();
+        assert_eq!(
+            old,
+            Outcome::Output {
+                text: String::from("hi"),
+                run: None
+            }
+        );
+        let named = Outcome::Output {
+            text: String::from("hi"),
+            run: Some(String::from("run-1")),
+        };
+        assert_eq!(
+            serde_json::to_value(&named).unwrap(),
+            serde_json::json!({"outcome": "output", "text": "hi", "run": "run-1"})
+        );
+        assert_eq!(
+            serde_json::to_value(Outcome::Output {
+                text: String::from("hi"),
+                run: None
+            })
+            .unwrap(),
+            serde_json::json!({"outcome": "output", "text": "hi"})
+        );
+    }
 }

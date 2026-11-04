@@ -567,7 +567,10 @@ impl<R: Run> Dispatcher<R> {
                 continue;
             };
             active.ended = Some(match outcome {
-                Ok(text) => Outcome::Output { text },
+                Ok(text) => Outcome::Output {
+                    text,
+                    run: run.cell_id(),
+                },
                 Err(reason) => Outcome::Failed {
                     reason,
                     ending: run.ending(),
@@ -937,9 +940,9 @@ fn undelivered<S, L, D: Delivery>(
             tell(false, None);
             Some(parked(reason, String::from("the run did not start")))
         }
-        Outcome::Output { text } => {
+        Outcome::Output { text, run } => {
             if services.held.contains(&send) {
-                deliver_with_retry(services.delivery, channel, text)
+                deliver_with_retry(services.delivery, channel, text, run.as_deref())
                     .err()
                     .map(|error| parked(text, format!("delivery failed twice: {error}")))
             } else {
@@ -991,13 +994,19 @@ fn authenticated(event: &HookSource, channels: &BTreeSet<String>) -> bool {
     }
 }
 
-/// Delivers, retrying once after a logged failure.
-fn deliver_with_retry<D: Delivery>(delivery: &D, channel: &str, text: &str) -> Result<(), String> {
-    match delivery.deliver(channel, text) {
-        Ok(()) => Ok(()),
+/// Delivers `text`, the output of the run in cell `run` when it ran in
+/// one, retrying once after a logged failure.
+fn deliver_with_retry<D: Delivery>(
+    delivery: &D,
+    channel: &str,
+    text: &str,
+    run: Option<&str>,
+) -> Result<(), String> {
+    match delivery.deliver_answer(channel, text, run) {
+        Ok(_) => Ok(()),
         Err(first) => {
             tracing::warn!(channel, error = %first, "scheduled delivery failed; retrying once");
-            delivery.deliver(channel, text)
+            delivery.deliver_answer(channel, text, run).map(|_| ())
         }
     }
 }
@@ -1548,6 +1557,7 @@ mod tests {
         };
         let output = Outcome::Output {
             text: String::from("ok"),
+            run: None,
         };
         assert_eq!(
             undelivered("sch-1", &failed, "local", None, &services, &park).map(|p| p.reason),
@@ -1655,5 +1665,41 @@ mod tests {
         dispatcher.settle(&[claimed], &services, &mut report);
         assert!(dispatcher.uncertain.is_empty(), "a schedule that's gone");
         assert_eq!(launcher.0.borrow().len(), 1);
+    }
+
+    /// A scheduled run's output is delivered as coming from its run, on the
+    /// retry too.
+    #[test]
+    fn a_scheduled_output_names_its_run() {
+        struct Flaky(RefCell<Vec<Option<String>>>);
+        impl Delivery for Flaky {
+            fn deliver(&self, _channel: &str, _text: &str) -> Result<(), String> {
+                Err(String::from("plain delivery isn't used for output"))
+            }
+
+            fn deliver_answer(
+                &self,
+                _channel: &str,
+                _text: &str,
+                run: Option<&str>,
+            ) -> Result<bool, String> {
+                let mut seen = self.0.borrow_mut();
+                seen.push(run.map(str::to_owned));
+                if seen.len() == 1 {
+                    Err(String::from("once"))
+                } else {
+                    Ok(true)
+                }
+            }
+        }
+        let flaky = Flaky(RefCell::new(Vec::new()));
+        assert_eq!(
+            deliver_with_retry(&flaky, "local", "hi", Some("run-1")),
+            Ok(())
+        );
+        assert_eq!(
+            *flaky.0.borrow(),
+            [Some(String::from("run-1")), Some(String::from("run-1"))]
+        );
     }
 }
