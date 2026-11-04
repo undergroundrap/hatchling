@@ -1341,10 +1341,16 @@ mod tests {
         };
         assert!(suggests(&config, &local));
         assert!(suggests(&config, &[crate::schedule_ops::ideas_send()]));
-        assert!(!suggests(&config, &[crate::schedule_ops::feed_send()]), "the feed only reads");
+        assert!(
+            !suggests(&config, &[crate::schedule_ops::feed_send()]),
+            "the feed only reads"
+        );
         assert!(!suggests(&config, &reads));
         let root = std::mem::take(&mut config.scheduler.root);
-        assert!(!suggests(&config, &[crate::schedule_ops::ideas_send()]), "no page");
+        assert!(
+            !suggests(&config, &[crate::schedule_ops::ideas_send()]),
+            "no page"
+        );
         config.scheduler.root = root;
         let mut asked = request(reads.to_vec());
         asked.chat = true;

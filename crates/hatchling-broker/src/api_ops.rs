@@ -149,6 +149,38 @@ impl<'a> Ops<'a> {
         held_grants(self.config)
     }
 
+    /// A schedule op from `caller`: a list shows what their own grants
+    /// cover (the owner's pages' too, for the owner); any other op needs the
+    /// grants it would use.
+    fn schedule(
+        &self,
+        caller: &Caller,
+        owns: bool,
+        owner: &BTreeSet<ScheduleGrant>,
+        op: &ScheduleOp,
+    ) -> (UiActionResult, ApiOutcome) {
+        let held = with_feed_page(caller.grants(), owns);
+        let outcome = if let ScheduleOp::List { after } = op {
+            list_schedules(
+                self.config,
+                self.key,
+                &held,
+                after.as_deref(),
+                Creator::Owner,
+            )
+        } else if held.is_superset(&schedule_needs(op, owner)) {
+            handle_schedule_op(self.config, self.key, op, Timestamp::now(), Creator::Owner)
+        } else {
+            return (
+                UiActionResult::Refused {
+                    reason: ActionRefusal::NotGranted,
+                },
+                ApiOutcome::Refused,
+            );
+        };
+        (UiActionResult::Schedule { outcome }, ApiOutcome::Served)
+    }
+
     /// Handles `action` for `caller`, and says whether the API served it
     /// (passed it to its backend) or refused it.
     pub fn handle(
@@ -193,38 +225,7 @@ impl<'a> Ops<'a> {
                     ApiOutcome::Served,
                 )
             }
-            // A list shows what the caller's own grants cover (the owner's, their pages').
-            UiAction::ManageSchedule {
-                op: ScheduleOp::List { after },
-            } => (
-                UiActionResult::Schedule {
-                    outcome: list_schedules(
-                        self.config,
-                        self.key,
-                        &with_feed_page(caller.grants(), owns),
-                        after.as_deref(),
-                        Creator::Owner,
-                    ),
-                },
-                ApiOutcome::Served,
-            ),
-            UiAction::ManageSchedule { op } => {
-                if !with_feed_page(caller.grants(), owns).is_superset(&schedule_needs(op, &owner)) {
-                    return refused(ActionRefusal::NotGranted);
-                }
-                (
-                    UiActionResult::Schedule {
-                        outcome: handle_schedule_op(
-                            self.config,
-                            self.key,
-                            op,
-                            Timestamp::now(),
-                            Creator::Owner,
-                        ),
-                    },
-                    ApiOutcome::Served,
-                )
-            }
+            UiAction::ManageSchedule { op } => self.schedule(caller, owns, &owner, op),
             UiAction::ManageSites { op } => self.owned(owns, Owned::Sites(op)),
             UiAction::ManageProfiles { op } => self.owned(owns, Owned::Profiles(op)),
             UiAction::ManageSignIns { op } => self.owned(owns, Owned::SignIns(op)),
@@ -2219,7 +2220,10 @@ mod tests {
         let list = UiAction::ManageSuggestions {
             op: SuggestionOp::List,
         };
-        assert_eq!(ops.handle(&partial, &list, &mut replies).1, ApiOutcome::Refused);
+        assert_eq!(
+            ops.handle(&partial, &list, &mut replies).1,
+            ApiOutcome::Refused
+        );
         assert_eq!(
             ops.handle(&owner, &list, &mut replies),
             (
@@ -2241,7 +2245,10 @@ mod tests {
             channel: String::from(crate::suggestions::IDEAS_PAGE),
         };
         let action = UiAction::ManageSchedule { op: op.clone() };
-        assert_eq!(ops.handle(&partial, &action, &mut replies).1, ApiOutcome::Refused);
+        assert_eq!(
+            ops.handle(&partial, &action, &mut replies).1,
+            ApiOutcome::Refused
+        );
         assert!(matches!(
             ops.handle(&owner, &action, &mut replies),
             (

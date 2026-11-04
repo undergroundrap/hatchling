@@ -108,7 +108,10 @@ mod tests {
             "{memory}"
         );
         let suggest = note(Some(&BTreeSet::from([ToolGroup::Suggest])));
-        assert!(suggest.contains("suggest it with idea_suggest"), "{suggest}");
+        assert!(
+            suggest.contains("suggest it with idea_suggest"),
+            "{suggest}"
+        );
         assert!(!off.contains("idea_suggest"), "{off}");
         let goals = note(Some(&BTreeSet::from([ToolGroup::Goals])));
         assert!(

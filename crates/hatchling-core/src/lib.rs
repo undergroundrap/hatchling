@@ -37,7 +37,20 @@ pub mod ui;
 pub use error::Error;
 pub use framing::{MAX_FRAME_BYTES, PROTOCOL_VERSION, fits_one_frame};
 pub use log_level::LogLevel;
-pub use messages::{EGRESS_PART_BYTES, MAX_SKILL_INPUT_BYTES, MAX_SKILL_OUTPUT_BYTES, ActivationInput, ActivationProposal, AgentMessage, ApprovalRefusal, ArtifactInput, ArtifactInspection, ArtifactOp, ArtifactResult, ArtifactView, BrokerMessage, BrowserOp, BrowserResult, BuildFailure, BuildState, ChannelAccount, ChannelOp, ChannelResult, ConflictEntry, DeliveryRefusal, DeliveryTarget, DeviceChallenge, DeviceHello, DeviceRefusal, DeviceWelcome, EgressOp, EgressResult, FeedSpec, GoalsOp, GoalsResult, HeldFire, HookOp, HookResult, HookSource, IdeaRef, IdeaRefusal, IdeaSource, IdeaState, IdeaSummary, InspectionFinding, InspectionVerdict, MediaHeader, MemoryOp, MemoryResult, ParkedSummary, QueryOp, QueryResult, ScheduleGrant, ScheduleKind, ScheduleOp, ScheduleRefusal, ScheduleResult, ScheduleSpec, ScheduleSummary, SessionRequest, SessionResponse, SkillOp, SkillResult, SpaceOp, SpaceRefusal, SpaceResult, SuggestOp, SuggestResult, SuggestionArea, SyncChange, SyncItem, VaultAction, VaultOp, VaultResult, WebHit, WebOp, WebResult};
+pub use messages::{
+    ActivationInput, ActivationProposal, AgentMessage, ApprovalRefusal, ArtifactInput,
+    ArtifactInspection, ArtifactOp, ArtifactResult, ArtifactView, BrokerMessage, BrowserOp,
+    BrowserResult, BuildFailure, BuildState, ChannelAccount, ChannelOp, ChannelResult,
+    ConflictEntry, DeliveryRefusal, DeliveryTarget, DeviceChallenge, DeviceHello, DeviceRefusal,
+    DeviceWelcome, EGRESS_PART_BYTES, EgressOp, EgressResult, FeedSpec, GoalsOp, GoalsResult,
+    HeldFire, HookOp, HookResult, HookSource, IdeaRef, IdeaRefusal, IdeaSource, IdeaState,
+    IdeaSummary, InspectionFinding, InspectionVerdict, MAX_SKILL_INPUT_BYTES,
+    MAX_SKILL_OUTPUT_BYTES, MediaHeader, MemoryOp, MemoryResult, ParkedSummary, QueryOp,
+    QueryResult, ScheduleGrant, ScheduleKind, ScheduleOp, ScheduleRefusal, ScheduleResult,
+    ScheduleSpec, ScheduleSummary, SessionRequest, SessionResponse, SkillOp, SkillResult, SpaceOp,
+    SpaceRefusal, SpaceResult, SuggestOp, SuggestResult, SuggestionArea, SyncChange, SyncItem,
+    VaultAction, VaultOp, VaultResult, WebHit, WebOp, WebResult,
+};
 pub use model_reasoning::ModelReasoning;
 pub use peer::{PeerCredentials, peer_credentials};
 pub use secret::{MAX_SECRET_BYTES, SecretB64, decode as decode_secret, encode as encode_secret};

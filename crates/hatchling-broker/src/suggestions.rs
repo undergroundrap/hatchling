@@ -90,7 +90,9 @@ pub fn suggest(config: &Config, op: &SuggestOp) -> SuggestResult {
         || summary.len() > MAX_TEXT_BYTES
         || why.len() > MAX_TEXT_BYTES
     {
-        return unasked("Say it in fewer words: a title of 80 characters, and 400 bytes each for what and why.");
+        return unasked(
+            "Say it in fewer words: a title of 80 characters, and 400 bytes each for what and why.",
+        );
     }
     let Ok(suggestion_id) = crate::approval::random_hex(ID_PREFIX) else {
         tracing::error!("suggestion id entropy unavailable");
@@ -231,9 +233,8 @@ mod tests {
     /// A config whose scheduler keeps its store in `dir`, for a run
     /// delivering to `channel`, or for no run.
     fn config(dir: &Path, channel: Option<&str>) -> Config {
-        let mut config = crate::api_auth::tests::owner_config(Some(
-            &dir.join("schedules").to_string_lossy(),
-        ));
+        let mut config =
+            crate::api_auth::tests::owner_config(Some(&dir.join("schedules").to_string_lossy()));
         config.scheduler.followup = channel.map(|channel| FollowupScope {
             root: config.scheduler.root.clone(),
             run: String::from("run-1"),
@@ -274,12 +275,20 @@ mod tests {
         let dir = scratch("kept");
         let chat = config(&dir, Some("local"));
         assert!(listed(&chat).is_empty(), "no page yet: none");
-        assert_eq!(suggest(&chat, &idea("  A run plan  ")), SuggestResult::Suggested);
+        assert_eq!(
+            suggest(&chat, &idea("  A run plan  ")),
+            SuggestResult::Suggested
+        );
         let run = config(&dir, Some(IDEAS_PAGE));
-        assert_eq!(suggest(&run, &idea("A reading list")), SuggestResult::Suggested);
+        assert_eq!(
+            suggest(&run, &idea("A reading list")),
+            SuggestResult::Suggested
+        );
         let page = listed(&chat);
         assert_eq!(
-            page.iter().map(|kept| kept.title.as_str()).collect::<Vec<_>>(),
+            page.iter()
+                .map(|kept| kept.title.as_str())
+                .collect::<Vec<_>>(),
             ["A reading list", "A run plan"],
             "trimmed, the newest first"
         );
@@ -310,7 +319,10 @@ mod tests {
         let dir = scratch("speaks");
         for channel in [None, Some(crate::feed_page::FEED_PAGE), Some("signal")] {
             let result = suggest(&config(&dir, channel), &idea("A run plan"));
-            assert!(reason(&result).starts_with("Only a chat"), "{channel:?}: {result:?}");
+            assert!(
+                reason(&result).starts_with("Only a chat"),
+                "{channel:?}: {result:?}"
+            );
         }
         assert!(listed(&config(&dir, None)).is_empty());
         let mut off = config(&dir, Some("local"));
@@ -343,7 +355,11 @@ mod tests {
         assert_eq!(
             suggest(
                 &chat,
-                &long("é".repeat(MAX_TITLE_CHARS), fits(MAX_TEXT_BYTES), fits(MAX_TEXT_BYTES))
+                &long(
+                    "é".repeat(MAX_TITLE_CHARS),
+                    fits(MAX_TEXT_BYTES),
+                    fits(MAX_TEXT_BYTES)
+                )
             ),
             SuggestResult::Suggested,
             "at the bounds: kept"
@@ -355,7 +371,10 @@ mod tests {
         ] {
             assert!(reason(&suggest(&chat, &op)).contains("fewer words"));
         }
-        assert_eq!(suggest(&chat, &idea("A run plan")), SuggestResult::Suggested);
+        assert_eq!(
+            suggest(&chat, &idea("A run plan")),
+            SuggestResult::Suggested
+        );
         assert!(reason(&suggest(&chat, &idea("a RUN plan"))).contains("already"));
         // Set aside, it may be suggested again.
         let id = listed(&chat).first().unwrap().suggestion_id.clone();
@@ -363,7 +382,10 @@ mod tests {
             handle(&chat, &SuggestionOp::Dismiss { id }),
             SuggestionResult::Changed { .. }
         ));
-        assert_eq!(suggest(&chat, &idea("A run plan")), SuggestResult::Suggested);
+        assert_eq!(
+            suggest(&chat, &idea("A run plan")),
+            SuggestResult::Suggested
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -371,21 +393,41 @@ mod tests {
     fn the_owner_starts_sets_aside_and_brings_back_a_suggestion() {
         let dir = scratch("owner");
         let chat = config(&dir, Some("local"));
-        assert_eq!(suggest(&chat, &idea("A run plan")), SuggestResult::Suggested);
+        assert_eq!(
+            suggest(&chat, &idea("A run plan")),
+            SuggestResult::Suggested
+        );
         let id = listed(&chat).first().unwrap().suggestion_id.clone();
         for (op, state) in [
-            (SuggestionOp::Start { id: id.clone() }, SuggestionState::Started),
-            (SuggestionOp::Dismiss { id: id.clone() }, SuggestionState::Dismissed),
-            (SuggestionOp::Restore { id: id.clone() }, SuggestionState::Suggested),
+            (
+                SuggestionOp::Start { id: id.clone() },
+                SuggestionState::Started,
+            ),
+            (
+                SuggestionOp::Dismiss { id: id.clone() },
+                SuggestionState::Dismissed,
+            ),
+            (
+                SuggestionOp::Restore { id: id.clone() },
+                SuggestionState::Suggested,
+            ),
         ] {
             let SuggestionResult::Changed { suggestion } = handle(&chat, &op) else {
                 return;
             };
-            assert_eq!((suggestion.suggestion_id.as_str(), suggestion.state), (id.as_str(), state));
+            assert_eq!(
+                (suggestion.suggestion_id.as_str(), suggestion.state),
+                (id.as_str(), state)
+            );
             assert_eq!(listed(&chat).first().unwrap().state, state, "kept");
         }
         assert_eq!(
-            handle(&chat, &SuggestionOp::Start { id: String::from("idea-none") }),
+            handle(
+                &chat,
+                &SuggestionOp::Start {
+                    id: String::from("idea-none")
+                }
+            ),
             SuggestionResult::NotFound
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -396,7 +438,10 @@ mod tests {
         let dir = scratch("bounded");
         let chat = config(&dir, Some("local"));
         for n in 0..MAX_WAITING {
-            assert_eq!(suggest(&chat, &idea(&format!("Idea {n}"))), SuggestResult::Suggested);
+            assert_eq!(
+                suggest(&chat, &idea(&format!("Idea {n}"))),
+                SuggestResult::Suggested
+            );
         }
         assert!(reason(&suggest(&chat, &idea("One more"))).contains("full"));
         // Each set aside makes room; past the bound, what was set aside
@@ -423,7 +468,10 @@ mod tests {
             MAX_WAITING,
             "nothing waiting was dropped"
         );
-        assert_eq!(page.first().map(|kept| kept.title.as_str()), Some(format!("More {}", MAX_KEPT - 1).as_str()));
+        assert_eq!(
+            page.first().map(|kept| kept.title.as_str()),
+            Some(format!("More {}", MAX_KEPT - 1).as_str())
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -445,7 +493,15 @@ mod tests {
         let mut gone = config(&dir.join("missing"), Some("local"));
         gone.scheduler.followup = chat.scheduler.followup;
         assert!(reason(&suggest(&gone, &idea("x"))).contains("couldn't keep it"));
-        assert_eq!(handle(&gone, &SuggestionOp::Start { id: String::from("idea-x") }), SuggestionResult::NotFound);
+        assert_eq!(
+            handle(
+                &gone,
+                &SuggestionOp::Start {
+                    id: String::from("idea-x")
+                }
+            ),
+            SuggestionResult::NotFound
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

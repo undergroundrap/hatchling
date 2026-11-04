@@ -652,6 +652,11 @@
           "type": "string"
         },
         {
+          "const": "manage_suggestions",
+          "description": "[`UiAction::ManageSuggestions`].",
+          "type": "string"
+        },
+        {
           "const": "give_code",
           "description": "[`UiAction::GiveCode`].",
           "type": "string"
@@ -8545,6 +8550,54 @@
             "kind"
           ],
           "type": "object"
+        },
+        {
+          "description": "A suggestion for the owner's Ideas page (v20).",
+          "oneOf": [
+            {
+              "description": "Suggest one thing.",
+              "properties": {
+                "area": {
+                  "$ref": "#/$defs/SuggestionArea",
+                  "description": "Where it would help."
+                },
+                "op": {
+                  "const": "suggest",
+                  "type": "string"
+                },
+                "summary": {
+                  "description": "What it would do, in a sentence or two. Untrusted text.",
+                  "type": "string"
+                },
+                "title": {
+                  "description": "A short title. Untrusted text: shown as the agent's words.",
+                  "type": "string"
+                },
+                "why": {
+                  "description": "Why it would help them, from what the agent knows of them.\nUntrusted text.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "title",
+                "summary",
+                "why",
+                "area"
+              ],
+              "type": "object"
+            }
+          ],
+          "properties": {
+            "kind": {
+              "const": "suggest",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -8739,6 +8792,20 @@
           "properties": {
             "kind": {
               "const": "browser",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/SuggestResult",
+          "description": "Reply to a suggestion (v20).",
+          "properties": {
+            "kind": {
+              "const": "suggest",
               "type": "string"
             }
           },
@@ -9863,6 +9930,315 @@
         }
       ]
     },
+    "SuggestResult": {
+      "description": "The broker's reply to one [`SuggestOp`] (v20).",
+      "oneOf": [
+        {
+          "description": "It's on the owner's Ideas page.",
+          "properties": {
+            "result": {
+              "const": "suggested",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "It isn't: why, in the broker's words (this run doesn't speak to the\nowner, it's already there, a field is empty or too long, or the\npage is full).",
+          "properties": {
+            "reason": {
+              "description": "Why.",
+              "type": "string"
+            },
+            "result": {
+              "const": "unasked",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Suggestion": {
+      "description": "A suggestion on the owner's Ideas page: the agent's words, all of it.",
+      "properties": {
+        "area": {
+          "$ref": "#/$defs/SuggestionArea",
+          "description": "Where it would help."
+        },
+        "state": {
+          "$ref": "#/$defs/SuggestionState",
+          "description": "Where it stands."
+        },
+        "suggested_at": {
+          "description": "When it was suggested, RFC 3339.",
+          "type": "string"
+        },
+        "suggestion_id": {
+          "description": "Its id.",
+          "type": "string"
+        },
+        "summary": {
+          "description": "What it would do.",
+          "type": "string"
+        },
+        "title": {
+          "description": "Its title.",
+          "type": "string"
+        },
+        "why": {
+          "description": "Why it would help them, as the agent said.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "suggestion_id",
+        "title",
+        "summary",
+        "why",
+        "area",
+        "suggested_at",
+        "state"
+      ],
+      "type": "object"
+    },
+    "SuggestionArea": {
+      "description": "Where a suggestion would help the owner: the Ideas page's sections\n(v20).",
+      "oneOf": [
+        {
+          "const": "career",
+          "description": "Their work.",
+          "type": "string"
+        },
+        {
+          "const": "devices",
+          "description": "Their computers, phones and other devices.",
+          "type": "string"
+        },
+        {
+          "const": "creation",
+          "description": "What they make: writing, media, art.",
+          "type": "string"
+        },
+        {
+          "const": "family",
+          "description": "Their family.",
+          "type": "string"
+        },
+        {
+          "const": "finance",
+          "description": "Their money.",
+          "type": "string"
+        },
+        {
+          "const": "health",
+          "description": "Their health and fitness.",
+          "type": "string"
+        },
+        {
+          "const": "learning",
+          "description": "What they learn, and their hobbies.",
+          "type": "string"
+        },
+        {
+          "const": "productivity",
+          "description": "How they get things done.",
+          "type": "string"
+        },
+        {
+          "const": "relationships",
+          "description": "The people in their life.",
+          "type": "string"
+        },
+        {
+          "const": "shopping",
+          "description": "What they buy.",
+          "type": "string"
+        }
+      ]
+    },
+    "SuggestionOp": {
+      "description": "An operation on the owner's Ideas page, from their app.",
+      "oneOf": [
+        {
+          "description": "List the suggestions, the newest first.",
+          "properties": {
+            "op": {
+              "const": "list",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Mark one started: the owner took it to their chat.",
+          "properties": {
+            "id": {
+              "description": "It, as listed.",
+              "type": "string"
+            },
+            "op": {
+              "const": "start",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Set one aside.",
+          "properties": {
+            "id": {
+              "description": "It, as listed.",
+              "type": "string"
+            },
+            "op": {
+              "const": "dismiss",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Bring one set aside back.",
+          "properties": {
+            "id": {
+              "description": "It, as listed.",
+              "type": "string"
+            },
+            "op": {
+              "const": "restore",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "id"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SuggestionResult": {
+      "description": "The result of a [`SuggestionOp`].",
+      "oneOf": [
+        {
+          "description": "The suggestions, the newest first.",
+          "properties": {
+            "result": {
+              "const": "listed",
+              "type": "string"
+            },
+            "suggestions": {
+              "description": "They.",
+              "items": {
+                "$ref": "#/$defs/Suggestion"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "result",
+            "suggestions"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "It was changed: as it now stands.",
+          "properties": {
+            "result": {
+              "const": "changed",
+              "type": "string"
+            },
+            "suggestion": {
+              "$ref": "#/$defs/Suggestion",
+              "description": "It."
+            }
+          },
+          "required": [
+            "result",
+            "suggestion"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "No suggestion has the id.",
+          "properties": {
+            "result": {
+              "const": "not_found",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The broker keeps no Ideas page: scheduled work is off.",
+          "properties": {
+            "result": {
+              "const": "off",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The broker couldn't read or change the page; its log says why.",
+          "properties": {
+            "result": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SuggestionState": {
+      "description": "Where a suggestion on the Ideas page stands.",
+      "oneOf": [
+        {
+          "const": "suggested",
+          "description": "Waiting for the owner.",
+          "type": "string"
+        },
+        {
+          "const": "started",
+          "description": "The owner started it: their chat box was filled with it.",
+          "type": "string"
+        },
+        {
+          "const": "dismissed",
+          "description": "The owner set it aside.",
+          "type": "string"
+        }
+      ]
+    },
     "SyncChange": {
       "additionalProperties": false,
       "description": "One change a sync push carries.",
@@ -10381,6 +10757,24 @@
           },
           "required": [
             "action"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "List, start, dismiss or restore the suggestions on the owner's\nIdeas page: the owner's alone.",
+          "properties": {
+            "action": {
+              "const": "manage_suggestions",
+              "type": "string"
+            },
+            "op": {
+              "$ref": "#/$defs/SuggestionOp",
+              "description": "The operation."
+            }
+          },
+          "required": [
+            "action",
+            "op"
           ],
           "type": "object"
         },
@@ -10936,6 +11330,24 @@
           "required": [
             "result",
             "posts"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An Ideas page operation's result.",
+          "properties": {
+            "outcome": {
+              "$ref": "#/$defs/SuggestionResult",
+              "description": "The result."
+            },
+            "result": {
+              "const": "suggestions",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "outcome"
           ],
           "type": "object"
         },
@@ -12071,7 +12483,7 @@
       "backend_newer": "broker v{backend} needs frontend ≥ v{backend}; frontend is v{frontend} — reload the frontend to update",
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
-    "session_protocol": 19,
+    "session_protocol": 20,
     "ui_schema_version": 4
   },
   "x-roots": {
