@@ -165,6 +165,7 @@ pub fn child_config(
     let mut child = scoped_config(parent, &request, token, socket);
     child.scheduler = SchedulerConfig {
         model_reasoning: parent.scheduler.model_reasoning,
+        model_context_window: None,
         subagent_depth: parent.scheduler.subagent_depth.saturating_add(1),
         // A child's model calls are the owner's usage too.
         usage: parent.scheduler.usage.clone(),
@@ -423,6 +424,7 @@ impl<'scope, 'env> Subagents<'scope, 'env> {
             model_endpoint: self.config.scheduler.model_endpoint.clone(),
             model_name: self.config.scheduler.model_name.clone(),
             model_reasoning: self.config.scheduler.model_reasoning,
+            model_context_window: self.config.scheduler.model_context_window,
             depth: 0,
             event: None,
             max_steps: Some(budget),

@@ -185,6 +185,11 @@ pub struct SchedulerConfig {
     pub model_name: Option<String>,
     /// Thinking mode supplied to scheduled and child runs.
     pub model_reasoning: hatchling_core::ModelReasoning,
+    /// The model's context window in tokens, as the operator declares it
+    /// (`HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW`): handed to each run
+    /// cell as `HATCHLING_MODEL_CONTEXT_WINDOW`, and what the owner's app
+    /// measures a run's largest prompt against. `None` when undeclared.
+    pub model_context_window: Option<u32>,
     /// The agent binary run cells execute (`HATCHLING_AGENT_BIN`, the
     /// same binary as the agent cell's). Without it the broker starts no
     /// dispatcher: there is nothing to run.
@@ -244,6 +249,7 @@ impl SchedulerConfig {
             model_endpoint: None,
             model_name: None,
             model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
+            model_context_window: None,
             agent_bin: None,
             followup: None,
             subagent_depth: 0,
@@ -1098,6 +1104,9 @@ fn parse_stores(
             })?
         }
     };
+    scheduler.model_context_window = get(env::HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW.name)
+        .map(|raw| parse_context_window(&raw))
+        .transpose()?;
     let artifacts = parse_artifacts(get, vault_root, socket_dir)?;
     let spaces = parse_spaces(
         (
@@ -1410,6 +1419,7 @@ fn parse_scheduler(
         model_endpoint: model_endpoint.filter(|value| !value.trim().is_empty()),
         model_name: model_name.filter(|value| !value.trim().is_empty()),
         model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
+        model_context_window: None,
         agent_bin: None,
         followup: None,
         subagent_depth: 0,
@@ -2095,8 +2105,61 @@ fn parse_egress_grants(raw: Option<String>) -> Result<Vec<String>, Error> {
         .collect()
 }
 
+/// The least context window a declared one may be, in tokens: what the
+/// agent's loop needs, as the agent refuses less (`hatchling_model`'s
+/// `MIN_CONTEXT_WINDOW`).
+pub const MIN_CONTEXT_WINDOW: u32 = 8192;
+
+/// The model's declared context window: a whole number of tokens, at
+/// least [`MIN_CONTEXT_WINDOW`].
+fn parse_context_window(raw: &str) -> Result<u32, Error> {
+    let key = "HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW";
+    let window = raw.parse::<u32>().map_err(|_| Error::InvalidConfig {
+        key,
+        reason: String::from("expected a whole number of tokens"),
+    })?;
+    if window < MIN_CONTEXT_WINDOW {
+        return Err(Error::InvalidConfig {
+            key,
+            reason: format!("at least {MIN_CONTEXT_WINDOW} tokens, what the agent's loop needs"),
+        });
+    }
+    Ok(window)
+}
+
 #[cfg(test)]
 mod tests {
+
+    /// A declared context window is a whole number of tokens, at least
+    /// what the agent accepts; undeclared, there's none.
+    #[test]
+    fn a_declared_context_window_is_read_and_held_to_the_agents_floor() {
+        assert_eq!(MIN_CONTEXT_WINDOW, hatchling_model::MIN_CONTEXT_WINDOW);
+        assert_eq!(parse_context_window("16384").ok(), Some(16384));
+        assert_eq!(parse_context_window("8192").ok(), Some(8192));
+        for bad in ["8191", "0", "", "16k", "-1", " 16384", "99999999999"] {
+            let error = parse_context_window(bad).unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    Error::InvalidConfig {
+                        key: "HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW",
+                        ..
+                    }
+                ),
+                "{bad:?}: {error:?}"
+            );
+        }
+        let mut vars: HashMap<&str, &str> = HashMap::new();
+        let socket: SocketPath = "/tmp/hatchling-test/broker.sock".parse().unwrap();
+        let (_, _, scheduler, _, _) =
+            parse_stores(&lookup(&vars), Path::new("/srv/vault"), &socket).unwrap();
+        assert_eq!(scheduler.model_context_window, None);
+        vars.insert("HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW", "32768");
+        let (_, _, scheduler, _, _) =
+            parse_stores(&lookup(&vars), Path::new("/srv/vault"), &socket).unwrap();
+        assert_eq!(scheduler.model_context_window, Some(32768));
+    }
 
     #[test]
     fn thinking_mode_refuses_nonunicode_environment_before_startup() {

@@ -4,9 +4,9 @@
 // none. The owner's limits are set here, and answered with the usage as it
 // then stands.
 import type { LiveClient } from './client.js';
-import type { ActionRefusal, ChatMessage, UsageReport } from './protocol/generated.js';
+import type { ActionRefusal, ActivityEvent, ChatMessage, UsageReport } from './protocol/generated.js';
 import type { CommandResult } from '../../protocol/models.js';
-import type { Usage, UsageLimits, UsagePort, UsageState } from '../../session/usage.js';
+import type { ContextUse, Usage, UsageLimits, UsagePort, UsageState } from '../../session/usage.js';
 const REFUSED = 'This connection may not read the usage.';
 const UNEXPECTED = 'Hatchling answered with something else.';
 /** Why limits weren't set, by the broker's refusal. */
@@ -31,6 +31,7 @@ export class LiveUsage implements UsagePort {
     readonly #changed: () => void;
     readonly #nextId: () => string;
     #state: UsageState = { kind: 'unread' };
+    #context: ContextUse | null = null;
     #ready = false;
     constructor(client: LiveClient, changed: () => void, nextId: () => string) {
         this.#client = client;
@@ -40,6 +41,16 @@ export class LiveUsage implements UsagePort {
     }
     current(): UsageState {
         return this.#state;
+    }
+    context(): ContextUse | null {
+        return this.#context;
+    }
+    /** A run's record: a chat answer's model calls say how full the context got. */
+    observeRun(event: ActivityEvent): void {
+        if (event.event !== 'run_summary' || !event.chat || event.model_calls === 0)
+            return;
+        this.#context = { tokens: event.peak_input_tokens, window: event.context_window ?? null };
+        this.#changed();
     }
     /** An answer from the agent, or Hatchling's own word, came after model calls: read again. */
     observe(message: ChatMessage): void {

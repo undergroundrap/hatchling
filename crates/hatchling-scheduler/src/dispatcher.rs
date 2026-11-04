@@ -258,6 +258,12 @@ pub trait Run {
     fn ending(&self) -> Option<Ending> {
         None
     }
+
+    /// The run's cell, by its id, when it runs in one: what its answer is
+    /// delivered as coming from, and the activity record names.
+    fn cell_id(&self) -> Option<String> {
+        None
+    }
 }
 
 /// How a failed run ended.
@@ -303,6 +309,28 @@ pub trait Delivery {
     /// As [`deliver`](Self::deliver).
     fn deliver_verbatim(&self, channel: &str, text: &str) -> Result<bool, String> {
         self.deliver(channel, text).map(|()| false)
+    }
+
+    /// Delivers a run's answer `text` on `channel`, as
+    /// [`deliver_verbatim`](Self::deliver_verbatim) does, saying it came
+    /// from the run in cell `run`, when it ran in one.
+    ///
+    /// # Errors
+    ///
+    /// As [`deliver`](Self::deliver).
+    fn deliver_answer(&self, channel: &str, text: &str, run: Option<&str>) -> Result<bool, String> {
+        let _ = run;
+        self.deliver_verbatim(channel, text)
+    }
+
+    /// Delivers `text` on `channel` as the delivery path's own notice, in
+    /// its own words: never what a run wrote.
+    ///
+    /// # Errors
+    ///
+    /// As [`deliver`](Self::deliver).
+    fn deliver_notice(&self, channel: &str, text: &str) -> Result<(), String> {
+        self.deliver(channel, text)
     }
 
     /// Tells the person on `channel` that a scheduled run failed, in the
@@ -1101,6 +1129,34 @@ mod tests {
         fn deliver(&self, _channel: &str, _text: &str) -> Result<(), String> {
             Err(String::from("closed"))
         }
+    }
+
+    /// By default, a run names no cell and no ending; an answer is
+    /// delivered as plain text, and a notice as any delivery, failures and
+    /// all.
+    #[test]
+    fn the_defaults_name_nothing_and_deliver_as_plain_text() {
+        struct Quiet;
+        impl Run for Quiet {
+            fn poll(&mut self) -> Option<Result<String, String>> {
+                None
+            }
+        }
+        assert_eq!(Quiet.cell_id(), None);
+        assert_eq!(Quiet.ending(), None);
+        assert_eq!(
+            Plain.deliver_answer("local", "hi", Some("run-1")),
+            Ok(false)
+        );
+        assert_eq!(
+            Closed.deliver_answer("local", "hi", None),
+            Err(String::from("closed"))
+        );
+        assert_eq!(Plain.deliver_notice("local", "hi"), Ok(()));
+        assert_eq!(
+            Closed.deliver_notice("local", "hi"),
+            Err(String::from("closed"))
+        );
     }
 
     /// WO-026: a delivery path that can't tell what the person was shown

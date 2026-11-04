@@ -297,6 +297,7 @@ fn logged(config: &Config) -> Vec<ActivityEvent> {
                     "model_calls_refused",
                     "peak_input_tokens",
                     "output_tokens",
+                    "context_window",
                 ],
                 "subagent_spawned" => &[
                     "child_id",

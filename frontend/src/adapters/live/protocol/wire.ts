@@ -264,6 +264,13 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "chat": {
                         "type": "boolean"
                     },
+                    "context_window": {
+                        "minimum": 0,
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
                     "event": {
                         "const": "run_summary",
                         "type": "string"
@@ -962,6 +969,12 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             },
             "message_id": {
                 "type": "string"
+            },
+            "run": {
+                "type": [
+                    "string",
+                    "null"
+                ]
             },
             "text": {
                 "type": "string"

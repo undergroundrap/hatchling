@@ -221,6 +221,22 @@ impl LocalHub {
     /// [`Error::Redacted`] when the gate delivered its notice in place of
     /// the reply.
     pub fn deliver(&self, msg: &Message, scope: &str) -> Result<(), Error> {
+        self.deliver_from(msg, scope, crate::gate::Origin::default())
+    }
+
+    /// Delivers a reply as [`Self::deliver`] does, saying where it came
+    /// from: the run that wrote it, or the deliverer's own notice. The
+    /// sink reads it from the cleared message.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::deliver`].
+    pub fn deliver_from(
+        &self,
+        msg: &Message,
+        scope: &str,
+        origin: crate::gate::Origin,
+    ) -> Result<(), Error> {
         // The sink runs under the lock: one delivery at a time, and no
         // detach can land mid-delivery.
         let mut state = self.state();
@@ -230,7 +246,7 @@ impl LocalHub {
                 "no local ingress client to deliver to",
             )));
         };
-        let cleared = self.0.gate.clear(msg, scope);
+        let cleared = self.0.gate.clear(msg, scope).from_source(origin);
         let delivered = sink(&cleared);
         drop(state);
         delivered?;
@@ -322,6 +338,28 @@ mod tests {
             Ok(())
         });
         (sink, seen)
+    }
+
+    #[test]
+    fn a_delivery_says_where_it_came_from() {
+        let hub = LocalHub::new(OutputGate::disabled());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink_seen = Arc::clone(&seen);
+        let _attached = hub.attach(Box::new(move |m: &Cleared| {
+            sink_seen.lock().unwrap().push(m.origin().clone());
+            Ok(())
+        }));
+        hub.deliver(&msg("plain"), "s").unwrap();
+        let origin = crate::gate::Origin {
+            run: Some(String::from("run-1")),
+            notice: true,
+        };
+        hub.deliver_from(&msg("from a run"), "s", origin.clone())
+            .unwrap();
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![crate::gate::Origin::default(), origin]
+        );
     }
 
     #[test]

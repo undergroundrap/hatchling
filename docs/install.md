@@ -56,6 +56,8 @@ sudo systemctl daemon-reload && sudo systemctl restart ollama
 
 `ollama ps` shows the window in its `CONTEXT` column once the model has loaded. With that room, the answer that was cut off took 7 seconds.
 
+Tell Hatchling the same window, so the chat's context meter can show how full each answer got it (without it, the meter shows tokens alone): add `HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW=16384` to `/etc/hatchling/hatchling.env`, and restart: `sudo systemctl restart hatchling`. It's at least 8,192, and each run is told it too.
+
 To switch models, pull the new one, set `HATCHLING_SCHEDULER_MODEL_NAME` in `/etc/hatchling/hatchling.env`, and restart: `sudo systemctl restart hatchling`. `ollama rm <name>` removes one you no longer use.
 
 **From your own build** instead of a release:

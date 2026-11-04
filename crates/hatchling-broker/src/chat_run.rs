@@ -40,7 +40,7 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use hatchling_core::conversation::{self, ChatExchange, Conversation};
+use hatchling_core::conversation::{self, ChatExchange, Compacted, Conversation};
 
 use hatchling_channel::{ChannelId, LocalHub, Message};
 use hatchling_core::ScheduleGrant;
@@ -111,6 +111,46 @@ pub fn failed_with(
     }
 }
 
+/// What the person is told the first time, in a conversation, that
+/// older answers are no longer given to the agent whole.
+pub const COMPACTED: &str = "This conversation is getting long. From here on, the agent is given only your most recent exchanges word for word; for older ones, it's given what you said, not its own replies. Start a new conversation to clear it.";
+
+/// What the person is told the first time, in a conversation, that their
+/// oldest words are no longer given to the agent at all.
+pub const FORGOTTEN: &str = "Your oldest messages in this conversation are no longer given to the agent at all. If something you said early on still matters, say it again, or start a new conversation.";
+
+/// What the person was told of compaction, in this conversation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Told {
+    compacted: bool,
+    forgotten: bool,
+}
+
+impl Told {
+    /// What was told of `kept`, a conversation resumed: that it was
+    /// compacted, if it holds what the owner said earlier.
+    fn of(kept: &Conversation) -> Self {
+        Self {
+            compacted: !kept.earlier.is_empty(),
+            forgotten: false,
+        }
+    }
+
+    /// The notice `compacted` calls for, the first time each happens.
+    const fn notice(&mut self, compacted: Compacted) -> Option<&'static str> {
+        if compacted.said > 0 && !self.forgotten {
+            self.forgotten = true;
+            self.compacted = true;
+            return Some(FORGOTTEN);
+        }
+        if compacted.answers > 0 && !self.compacted {
+            self.compacted = true;
+            return Some(COMPACTED);
+        }
+        None
+    }
+}
+
 /// The label every chat run is launched under: its cell id and run
 /// directory get their own random token beside it.
 pub const CHAT_LABEL: &str = "chat";
@@ -175,6 +215,10 @@ pub struct Chat<R, K = ()> {
     keeps: K,
     /// The operator's model name, for telling the person why a run failed.
     model: Option<String>,
+    /// Whether the person was told, in this conversation, that older
+    /// answers are no longer given whole, and that their oldest words are
+    /// no longer given at all.
+    told: Told,
     /// Where the broker counts model usage, and keeps the owner's limits.
     usage: Option<std::path::PathBuf>,
 }
@@ -183,7 +227,7 @@ impl<R: Run> Chat<R> {
     /// A chat whose runs hold `grants`, keeping the conversation in memory
     /// alone.
     #[must_use]
-    pub const fn new(grants: Vec<ScheduleGrant>) -> Self {
+    pub fn new(grants: Vec<ScheduleGrant>) -> Self {
         let kept = Conversation {
             earlier: Vec::new(),
             exchanges: Vec::new(),
@@ -197,7 +241,7 @@ impl<R: Run, K: Keeps> Chat<R, K> {
     /// channel's `conversation` so far, and keeping each exchange in
     /// `keeps` too.
     #[must_use]
-    pub const fn resuming(
+    pub fn resuming(
         grants: Vec<ScheduleGrant>,
         conversation: u64,
         kept: Conversation,
@@ -207,6 +251,7 @@ impl<R: Run, K: Keeps> Chat<R, K> {
             running: None,
             grants,
             conversation,
+            told: Told::of(&kept),
             kept,
             keeps,
             model: None,
@@ -250,12 +295,13 @@ impl<R: Run, K: Keeps> Chat<R, K> {
     /// Keeps the exchange of `user` and `answer`, the person having been
     /// shown `answer` as written; past the bounds, the oldest answers go,
     /// and what the owner said in them is kept as earlier.
-    fn keep(&mut self, user: String, answer: String) {
-        self.kept.push(ChatExchange {
+    fn keep(&mut self, user: String, answer: String) -> Compacted {
+        let compacted = self.kept.push(ChatExchange {
             user,
             assistant: answer,
         });
         self.keeps.keep(self.conversation, &self.kept);
+        compacted
     }
 
     /// One step at `now`, in the local channel's `conversation`: a
@@ -277,12 +323,14 @@ impl<R: Run, K: Keeps> Chat<R, K> {
         if conversation != self.conversation {
             self.conversation = conversation;
             self.kept = Conversation::default();
+            self.told = Told::default();
         }
         if let Some((run, _, _)) = &mut self.running {
             let Some(outcome) = run.poll() else {
                 return Step::Running;
             };
             let ending = run.ending();
+            let cell = run.cell_id();
             let Some((_, user, sent_in)) = self.running.take() else {
                 return Step::Idle;
             };
@@ -295,10 +343,17 @@ impl<R: Run, K: Keeps> Chat<R, K> {
                     return answer_with(delivery, &told);
                 }
             };
-            return match delivery.deliver_verbatim(&ChannelId::local().0, &answer) {
+            return match delivery.deliver_answer(&ChannelId::local().0, &answer, cell.as_deref()) {
                 Ok(shown) => {
                     if shown && sent_in == self.conversation {
-                        self.keep(user, answer);
+                        let compacted = self.keep(user, answer);
+                        if let Some(notice) = self.told.notice(compacted) {
+                            if let Err(error) =
+                                delivery.deliver_notice(&ChannelId::local().0, notice)
+                            {
+                                tracing::warn!(error = ?error, "a compaction notice was not delivered");
+                            }
+                        }
                     }
                     Step::Answered
                 }
@@ -348,9 +403,10 @@ impl<R: Run, K: Keeps> Chat<R, K> {
     }
 }
 
-/// Delivers `answer` on the local channel.
+/// Delivers `answer`, Hatchling's own words, on the local channel: a
+/// notice, never the agent's.
 fn answer_with<D: Delivery>(delivery: &D, answer: &str) -> Step {
-    match delivery.deliver(&ChannelId::local().0, answer) {
+    match delivery.deliver_notice(&ChannelId::local().0, answer) {
         Ok(()) => Step::Answered,
         Err(error) => {
             tracing::warn!(error = ?error, "a chat answer was not delivered");
@@ -419,6 +475,10 @@ mod tests {
                 None
             }
         }
+
+        fn cell_id(&self) -> Option<String> {
+            Some(String::from("run-scripted"))
+        }
     }
 
     /// Records each request, and starts a run with the next outcome.
@@ -444,11 +504,30 @@ mod tests {
         delivered: RefCell<Vec<(String, String)>>,
         refuse: bool,
         replace: std::cell::Cell<bool>,
+        /// The run each answer was said to come from, in order.
+        runs: RefCell<Vec<Option<String>>>,
+        /// The texts delivered as Hatchling's own notices.
+        notices: RefCell<Vec<String>>,
     }
 
     impl Delivery for Answers {
         fn deliver(&self, channel: &str, text: &str) -> Result<(), String> {
             self.deliver_verbatim(channel, text).map(|_| ())
+        }
+
+        fn deliver_answer(
+            &self,
+            channel: &str,
+            text: &str,
+            run: Option<&str>,
+        ) -> Result<bool, String> {
+            self.runs.borrow_mut().push(run.map(str::to_owned));
+            self.deliver_verbatim(channel, text)
+        }
+
+        fn deliver_notice(&self, channel: &str, text: &str) -> Result<(), String> {
+            self.notices.borrow_mut().push(text.to_owned());
+            self.deliver(channel, text)
         }
 
         fn deliver_verbatim(&self, channel: &str, text: &str) -> Result<bool, String> {
@@ -1164,5 +1243,86 @@ mod tests {
                 "{other:?}"
             );
         }
+    }
+
+    /// An answer is delivered as coming from the run that wrote it; what
+    /// Hatchling says itself goes as its own notice.
+    #[test]
+    fn an_answer_names_its_run_and_hatchlings_words_are_notices() {
+        let launches = Launches::default();
+        launches
+            .outcomes
+            .borrow_mut()
+            .extend([Ok(answering("Done.")), Err(String::from("no cell"))]);
+        let answers = Answers::default();
+        let mut chat = Chat::new(vec![send_local()]);
+        assert_eq!(
+            exchange(&mut chat, "one", &launches, &answers),
+            Step::Answered
+        );
+        let now = Timestamp::now();
+        assert_eq!(
+            chat.step(|| Some((message("two"), 0)), 0, &launches, &answers, now),
+            Step::Answered
+        );
+        assert_eq!(*answers.runs.borrow(), [Some(String::from("run-scripted"))]);
+        assert_eq!(*answers.notices.borrow(), [String::from(CHAT_FAILED)]);
+    }
+
+    /// The first time older answers stop being given whole, and the first
+    /// time the owner's oldest words stop being given at all, the person
+    /// is told, once each, after the answer that did it; a conversation
+    /// resumed already compacted isn't told again.
+    #[test]
+    fn compaction_is_told_once_each_way() {
+        let long = "x".repeat(4000);
+        let run = |chat: &mut Chat<Scripted>, launches: &Launches, answers: &Answers, n: usize| {
+            for turn in 0..n {
+                launches
+                    .outcomes
+                    .borrow_mut()
+                    .push(Ok(answering(&format!("a{turn}"))));
+                assert_eq!(
+                    exchange(chat, &format!("{turn}{long}"), launches, answers),
+                    Step::Answered
+                );
+            }
+        };
+        let launches = Launches::default();
+        let answers = Answers::default();
+        let mut chat = Chat::new(vec![send_local()]);
+        run(&mut chat, &launches, &answers, 6);
+        assert!(answers.notices.borrow().is_empty(), "all still given whole");
+        run(&mut chat, &launches, &answers, 1);
+        assert_eq!(*answers.notices.borrow(), [String::from(COMPACTED)]);
+        let delivered = answers.delivered.borrow().len();
+        assert_eq!(
+            answers
+                .delivered
+                .borrow()
+                .get(delivered - 2)
+                .map(|(_, text)| text.as_str()),
+            Some("a0"),
+            "told after the answer that did it"
+        );
+        run(&mut chat, &launches, &answers, 5);
+        assert_eq!(
+            *answers.notices.borrow(),
+            [String::from(COMPACTED), String::from(FORGOTTEN)]
+        );
+
+        // Resumed with what the owner said earlier: already compacted.
+        let resumed = Conversation {
+            earlier: vec![String::from("before")],
+            exchanges: Vec::new(),
+        };
+        let quiet = Answers::default();
+        let mut chat = Chat::resuming(vec![send_local()], 0, resumed, ());
+        run(&mut chat, &launches, &quiet, 7);
+        assert!(
+            quiet.notices.borrow().is_empty(),
+            "{:?}",
+            quiet.notices.borrow()
+        );
     }
 }

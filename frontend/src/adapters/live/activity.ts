@@ -137,6 +137,16 @@ export function endings(tally: ToolTally): string {
     const parts = [[tally.done, 'done'], [tally.asked, 'asked you'], [tally.refused, 'refused'], [tally.failed, 'failed']] as const;
     return parts.filter(([value]) => value > 0).map(([value, what]) => `${value} ${what}`).join(' · ');
 }
+/** The line under an answer: the tools its run used, as Hatchling served them. */
+export function trailLine(tools: readonly ToolTally[]): string {
+    if (tools.length === 0)
+        return 'Used no tools: this answer came from the model alone.';
+    const said = tools.map(tally => {
+        const what = TOOLS[tally.tool];
+        return tally.refused + tally.failed === 0 ? what : `${what} (${endings(tally)})`;
+    });
+    return `Used: ${said.join(' · ')}`;
+}
 /** A tool's row: answered, refused or failed, as the broker served it. */
 function toolRow(trail: Trail, laneId: string, tally: ToolTally): ActivityRow {
     const what = TOOLS[tally.tool];

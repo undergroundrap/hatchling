@@ -128,11 +128,22 @@ pub struct Conversation {
     pub exchanges: Vec<ChatExchange>,
 }
 
+/// What keeping one more exchange compacted away.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Compacted {
+    /// Exchanges no longer given whole: their answers went, and what the
+    /// owner said in them is kept as earlier.
+    pub answers: usize,
+    /// What the owner said earlier, no longer given at all: past
+    /// [`earlier`]'s bounds.
+    pub said: usize,
+}
+
 impl Conversation {
     /// Keeps `exchange` as the newest. The exchanges past [`recent`]'s
     /// bounds go, and what the owner said in each (unless nothing) is
-    /// kept as [`earlier`], whose own bounds keep its newest.
-    pub fn push(&mut self, exchange: ChatExchange) {
+    /// kept as [`earlier`], whose own bounds keep its newest. What went.
+    pub fn push(&mut self, exchange: ChatExchange) -> Compacted {
         self.exchanges.push(exchange);
         let gone = self
             .exchanges
@@ -140,7 +151,12 @@ impl Conversation {
             .saturating_sub(recent(&self.exchanges).len());
         let said = self.exchanges.drain(..gone).map(|exchange| exchange.user);
         self.earlier.extend(said.filter(|text| !text.is_empty()));
+        let before = self.earlier.len();
         self.earlier = earlier(&self.earlier);
+        Compacted {
+            answers: gone,
+            said: before.saturating_sub(self.earlier.len()),
+        }
     }
 }
 

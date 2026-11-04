@@ -853,6 +853,17 @@ mod tests {
         );
     }
 
+    /// The agent's chat message `text`.
+    fn chat(text: &str) -> UiEventBody {
+        UiEventBody::ChatMessage(ChatMessage {
+            chat_id: String::from("local"),
+            message_id: String::from("m"),
+            author: ChatAuthor::Agent,
+            run: None,
+            text: text.to_owned(),
+        })
+    }
+
     #[test]
     fn a_session_streams_activity_answers_actions_and_records_every_call() {
         let dir = scratch("session");
@@ -866,14 +877,6 @@ mod tests {
             "session",
         );
         let ops = Ops::new(&config, &key, &skills, None, Arc::clone(api.bus()));
-        let chat = |text: &str| {
-            UiEventBody::ChatMessage(ChatMessage {
-                chat_id: String::from("local"),
-                message_id: String::from("m"),
-                author: ChatAuthor::Agent,
-                text: text.to_owned(),
-            })
-        };
         let first = api.bus().push(String::from("t1"), chat("one"));
         let second = api.bus().push(String::from("t2"), chat("two"));
         session(&api, &ops, |client| {
@@ -1453,6 +1456,7 @@ mod tests {
                 chat_id: String::from("local"),
                 message_id: String::from("m"),
                 author: ChatAuthor::Agent,
+                run: None,
                 text: text.to_owned(),
             })
         };

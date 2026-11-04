@@ -22,6 +22,9 @@ manager. Use the exact model, rather than an automatic router:
 export HATCHLING_SCHEDULER_MODEL_ENDPOINT=https://openrouter.ai/api/v1
 export HATCHLING_SCHEDULER_MODEL_NAME=nvidia/nemotron-3-ultra-550b-a55b:free
 export HATCHLING_SCHEDULER_MODEL_REASONING=disabled
+# The model's context window, as its provider lists it: the chat's context
+# meter measures each answer against it.
+export HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW=131072
 export HATCHLING_EGRESS_ALLOWLIST=openrouter.ai:443
 export HATCHLING_EGRESS_GRANTS=openrouter.ai:443
 export HATCHLING_API_GRANTS=egress:openrouter.ai:443,channel-send:local

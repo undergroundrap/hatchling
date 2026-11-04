@@ -575,6 +575,7 @@ impl Board {
             chat_id: String::from(crate::api_ops::LOCAL_CHAT),
             message_id,
             author: ChatAuthor::System,
+            run: None,
             text: text.to_owned(),
         }));
         if !told {

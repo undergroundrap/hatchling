@@ -142,6 +142,21 @@ test('limits that weren\'t set say why, and leave the usage as it was', async ()
     assert.deepEqual(live.current(), { kind: 'unread' });
     assert.equal(changes(), 0);
 });
+test('the context is a chat answer\'s largest prompt: background work and runs without a model call don\'t move it', () => {
+    const { live, changes } = surface([]);
+    const run = (chat, calls, peak, window) => ({ event: 'run_summary', event_id: 'e', ts: 't', run_id: 'r', cell_id: 'c', chat, tools: [], model_calls: calls, model_calls_refused: 0, peak_input_tokens: peak, output_tokens: 1, context_window: window });
+    assert.equal(live.context(), null);
+    live.observeRun({ event: 'api_call', event_id: 'e', ts: 't', run_id: 'api', caller: 'ui', capabilities: [], request: 'hello', outcome: 'served' });
+    live.observeRun(run(false, 3, 9000, null));
+    live.observeRun(run(true, 0, 0, null));
+    assert.equal(live.context(), null);
+    assert.equal(changes(), 0);
+    live.observeRun(run(true, 2, 5500, 16384));
+    assert.deepEqual(live.context(), { tokens: 5500, window: 16384 });
+    live.observeRun({ ...run(true, 1, 700, null), context_window: undefined });
+    assert.deepEqual(live.context(), { tokens: 700, window: null });
+    assert.equal(changes(), 2);
+});
 test('a limit reads as the owner writes it, and shows short', () => {
     assert.equal(parseTokens(''), null);
     assert.equal(parseTokens('   '), null);

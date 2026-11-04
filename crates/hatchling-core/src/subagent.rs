@@ -400,6 +400,11 @@ pub enum SubagentEvent {
         peak_input_tokens: u64,
         /// Tokens the model wrote, over the session.
         output_tokens: u64,
+        /// The model's context window in tokens, as the operator declared
+        /// it: what the largest call is measured against. `None` when
+        /// undeclared.
+        #[serde(default)]
+        context_window: Option<u32>,
     },
 }
 
@@ -780,12 +785,14 @@ mod tests {
                     model_calls_refused: 1,
                     peak_input_tokens: 5400,
                     output_tokens: 700,
+                    context_window: Some(16384),
                 }),
                 json!({"event": "run_summary", "event_id": "ev-1", "ts": "2026-10-03T12:00:00Z",
                        "run_id": "parent", "cell_id": "run-1", "chat": true,
                        "tools": [{"tool": "goals_read", "done": 1, "asked": 0, "refused": 2, "failed": 0}],
                        "model_calls": 3, "model_calls_refused": 1,
-                       "peak_input_tokens": 5400, "output_tokens": 700}),
+                       "peak_input_tokens": 5400, "output_tokens": 700,
+                       "context_window": 16384}),
             ),
         ];
         for (event, expected) in cases {

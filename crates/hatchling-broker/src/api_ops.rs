@@ -568,6 +568,7 @@ impl<'a> Ops<'a> {
                         chat_id: String::from(LOCAL_CHAT),
                         message_id: message_id.clone(),
                         author: ChatAuthor::User,
+                        run: None,
                         text: text.to_owned(),
                     }),
                 );
@@ -622,6 +623,7 @@ impl Ops<'_> {
                 chat_id: String::from(LOCAL_CHAT),
                 message_id,
                 author: ChatAuthor::System,
+                run: None,
                 text: String::from(NEW_CONVERSATION),
             }),
         );
@@ -684,13 +686,20 @@ pub fn chat_sink(bus: Arc<Bus>) -> hatchling_channel::Sink {
         let reply = cleared.message();
         let message_id = crate::approval::random_hex("msg-")
             .map_err(|error| hatchling_channel::Error::Backend(error.to_string()))?;
+        let origin = cleared.origin();
         bus.push(
             Timestamp::now().to_string(),
             UiEventBody::ChatMessage(ChatMessage {
                 chat_id: String::from(LOCAL_CHAT),
                 message_id,
-                author: ChatAuthor::Agent,
+                // Hatchling's own notice is its word, not the agent's.
+                author: if origin.notice {
+                    ChatAuthor::System
+                } else {
+                    ChatAuthor::Agent
+                },
                 text: reply.text.clone(),
+                run: origin.run.clone(),
             }),
         );
         bus.push(

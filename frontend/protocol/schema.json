@@ -378,6 +378,16 @@
               "description": "Whether it was a chat run, answering the owner: otherwise\nbackground work.",
               "type": "boolean"
             },
+            "context_window": {
+              "default": null,
+              "description": "The model's context window in tokens, as the operator declared\nit: what the largest call is measured against. `None` when\nundeclared.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "event": {
               "const": "run_summary",
               "type": "string"
@@ -2279,6 +2289,13 @@
         "message_id": {
           "description": "Stable across replays.",
           "type": "string"
+        },
+        "run": {
+          "description": "The run that wrote it, by its cell id, when an agent run did: the\nbroker's own word, which the activity record's run summary names\ntoo. Never read from the text.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "text": {
           "description": "Plain text. The UI renders it as text, never as markup.",

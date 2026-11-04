@@ -827,3 +827,5 @@ button { background-color: transparent; color: inherit; }
   .settings-nav-mobile > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
   .settings-nav-mobile select { width: 100%; min-height: 37px; border-radius: 10px; background: var(--surface-control); padding: 8px 12px; border: 1px solid var(--border-strong); }
 }
+.context-meter { display: flex; align-items: center; justify-content: center; gap: 8px; }
+.context-meter meter { width: 64px; height: 4px; }
