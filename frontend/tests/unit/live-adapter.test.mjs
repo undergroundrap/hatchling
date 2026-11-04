@@ -584,14 +584,14 @@ test('an answer from a run is followed by what the run used, opening its record;
         sampleEvent(2, 2, { kind: 'chat_message', chat_id: 'local', message_id: 'm-2', author: 'agent', text: 'Ship 1.0.', run: 'run-a' }),
         sampleEvent(3, 3, { kind: 'chat_message', chat_id: 'local', message_id: 'm-3', author: 'agent', text: 'No run named.' }),
         sampleEvent(4, 4, { kind: 'chat_message', chat_id: 'local', message_id: 'm-4', author: 'agent', text: 'Hello.', run: 'run-b' }),
-        sampleEvent(5, 5, { kind: 'chat_message', chat_id: 'local', message_id: 'm-5', author: 'agent', text: 'Its record is background work.', run: 'run-c' }),
+        sampleEvent(5, 5, { kind: 'chat_message', chat_id: 'local', message_id: 'm-5', author: 'agent', text: 'A scheduled run’s answer.', run: 'run-c' }),
     ]);
     assert.deepEqual(adapter.getSnapshot().messages.map(item => item.id), ['m-1', 'm-2', 'm-3', 'm-4', 'm-5'], 'no record yet: the answers alone');
     transport.deliver(summary(6, 'run-a', true, [goals, web]));
     transport.deliver(summary(7, 'run-b', true, []));
     transport.deliver(summary(8, 'run-c', false, [goals]));
     const messages = adapter.getSnapshot().messages;
-    assert.deepEqual(messages.map(item => item.id), ['m-1', 'm-2', 'm-2:trail', 'm-3', 'm-4', 'm-4:trail', 'm-5']);
+    assert.deepEqual(messages.map(item => item.id), ['m-1', 'm-2', 'm-2:trail', 'm-3', 'm-4', 'm-4:trail', 'm-5', 'm-5:trail'], 'a scheduled run’s answer has its line too');
     assert.deepEqual(messages[2], { id: 'm-2:trail', chatId: 'main', time: '09:00', source: null, reaction: null, kind: 'notice', role: 'agent', text: 'Used: Read your goals · Read a web page (1 refused)', evidenceId: 's-6:summary' });
     assert.equal(messages[5].text, 'Used no tools: this answer came from the model alone.');
     // How full the context got on the last chat answer, against the declared window.

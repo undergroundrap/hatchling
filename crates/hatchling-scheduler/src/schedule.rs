@@ -331,6 +331,11 @@ pub enum Outcome {
     Output {
         /// The output.
         text: String,
+        /// The run that wrote it, by its cell id, when it ran in one: what
+        /// it's delivered as coming from. `None` in a record from before
+        /// this was kept.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run: Option<String>,
     },
     /// It failed.
     Failed {
