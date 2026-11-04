@@ -60,20 +60,35 @@ pub fn task(prompt: &str) -> String {
 
 /// Puts `op` on the owner's Ideas page, if the session `config` serves
 /// speaks to the owner.
+///
+/// A run's own config is scoped: it doesn't name the schedule store. The
+/// run's follow-up scope does, as the broker set it when it started the
+/// run, so the page is found from there.
 #[must_use]
 pub fn suggest(config: &Config, op: &SuggestOp) -> SuggestResult {
+    let result = suggest_from(config, op);
+    match &result {
+        SuggestResult::Suggested => tracing::info!("an idea was suggested for the Ideas page"),
+        SuggestResult::Unasked { reason } => {
+            tracing::info!(%reason, "an idea wasn't kept on the Ideas page");
+        }
+    }
+    result
+}
+
+fn suggest_from(config: &Config, op: &SuggestOp) -> SuggestResult {
     let unasked = |reason: &str| SuggestResult::Unasked {
         reason: reason.to_owned(),
     };
-    let speaks = config
+    let Some(run) = config
         .scheduler
         .followup
         .as_ref()
-        .is_some_and(|run| run.channel == "local" || run.channel == IDEAS_PAGE);
-    if !speaks {
+        .filter(|run| run.channel == "local" || run.channel == IDEAS_PAGE)
+    else {
         return unasked("Only a chat, or a run for the Ideas page, may suggest ideas.");
-    }
-    if !config.scheduler.enabled() {
+    };
+    if run.root.as_os_str().is_empty() {
         return unasked("Hatchling keeps no Ideas page here: scheduled work is off.");
     }
     let SuggestOp::Suggest {
@@ -98,7 +113,8 @@ pub fn suggest(config: &Config, op: &SuggestOp) -> SuggestResult {
         tracing::error!("suggestion id entropy unavailable");
         return unasked("Hatchling couldn't keep it; its log says why.");
     };
-    let path = config.scheduler.ideas_log();
+    // Where `SchedulerConfig::ideas_log` puts it, for the broker's store.
+    let path = run.root.with_extension("ideas");
     let _held = WRITES.lock().unwrap_or_else(PoisonError::into_inner);
     let mut page = match read(&path) {
         Ok(page) => page,
@@ -236,7 +252,9 @@ mod tests {
     }
 
     /// A config whose scheduler keeps its store in `dir`, for a run
-    /// delivering to `channel`, or for no run.
+    /// delivering to `channel`, or for no run. A run's own config doesn't
+    /// name the store, as [`crate::run_launcher::scoped_config`] makes it:
+    /// only its follow-up scope does.
     fn config(dir: &Path, channel: Option<&str>) -> Config {
         let mut config =
             crate::api_auth::tests::owner_config(Some(&dir.join("schedules").to_string_lossy()));
@@ -332,8 +350,11 @@ mod tests {
         assert!(listed(&config(&dir, None)).is_empty());
         let mut off = config(&dir, Some("local"));
         off.scheduler.root = std::path::PathBuf::new();
-        assert!(reason(&suggest(&off, &idea("x"))).contains("scheduled work is off"));
         assert_eq!(handle(&off, &SuggestionOp::List), SuggestionResult::Off);
+        if let Some(run) = off.scheduler.followup.as_mut() {
+            run.root = std::path::PathBuf::new();
+        }
+        assert!(reason(&suggest(&off, &idea("x"))).contains("scheduled work is off"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
