@@ -1209,7 +1209,7 @@ impl<'a> HubDelivery<'a> {
         );
         crate::feed_page::keep(feed, &cleared.message().text)?;
         if let Some((category, event_id)) = cleared.redaction() {
-            tracing::warn!(%category, %event_id, "a feed post was redacted");
+            tracing::warn!(category = category.as_str(), %event_id, "a feed post was redacted");
             return Ok(false);
         }
         Ok(true)

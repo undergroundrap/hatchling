@@ -2135,15 +2135,14 @@ mod tests {
         assert!(shown(&partial).is_empty());
         // What a run delivers there is kept as a post, and only the owner
         // reads it.
-        let hub = hatchling_channel::LocalHub::new(hatchling_channel::OutputGate::disabled());
+        let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());
         let page = config.scheduler.feed_log();
         let delivery = crate::schedule_ops::HubDelivery::new(Some(&hub)).with_feed_page(&page);
         assert_eq!(
             hatchling_scheduler::Delivery::deliver_verbatim(
                 &delivery,
                 crate::feed_page::FEED_PAGE,
-                "Monday
-Two goals moved."
+                "Monday\nTwo goals moved."
             ),
             Ok(true)
         );
@@ -2158,8 +2157,7 @@ Two goals moved."
         };
         assert_eq!(
             posts.iter().map(|post| post.text.as_str()).collect::<Vec<_>>(),
-            ["Monday
-Two goals moved."]
+            ["Monday\nTwo goals moved."]
         );
         // Without a page or a gate to clear it, nothing is kept.
         let nowhere = crate::schedule_ops::HubDelivery::new(Some(&hub));

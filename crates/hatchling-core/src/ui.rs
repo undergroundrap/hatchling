@@ -2322,15 +2322,13 @@ mod tests {
                 posts: vec![FeedPost {
                     post_id: s("post-1"),
                     written_at: s("2026-11-04T08:30:00Z"),
-                    text: s("Your morning
-Two goals moved."),
+                    text: s("Your morning\nTwo goals moved."),
                 }],
             },
             &json!({"result": "feed", "posts": [{
                 "post_id": "post-1",
                 "written_at": "2026-11-04T08:30:00Z",
-                "text": "Your morning
-Two goals moved."
+                "text": "Your morning\nTwo goals moved."
             }]}),
         );
         assert_eq!(FEED_PAGE, "feed");
