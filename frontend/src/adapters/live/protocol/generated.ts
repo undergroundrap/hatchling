@@ -4,7 +4,7 @@
 /** The frontend protocol version this build speaks. */
 export const UI_SCHEMA_VERSION = 4;
 /** The broker session protocol version the schema was generated at. */
-export const SESSION_PROTOCOL_VERSION = 19;
+export const SESSION_PROTOCOL_VERSION = 20;
 /** The mismatch sentence when this frontend is the newer side. */
 export const INCOMPATIBLE_FRONTEND_NEWER = 'frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update';
 /** The mismatch sentence when the backend is the newer side. */
@@ -278,7 +278,7 @@ export type ApiOutcome = 'served' | 'refused';
  * What one API call asked for: the request's kind, never its content
  * (a message's text, a file, a schedule's task).
  */
-export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'manage_goals' | 'manage_memory' | 'list_decisions' | 'read_usage' | 'read_feed' | 'give_code' | 'decline_code';
+export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'manage_goals' | 'manage_memory' | 'list_decisions' | 'read_usage' | 'read_feed' | 'manage_suggestions' | 'give_code' | 'decline_code';
 /**
  * A bearer token, presented in `Hello` for a token provider.
  *
@@ -3457,6 +3457,27 @@ export type SessionRequest = {
      */
     readonly element: number;
     readonly op: 'code';
+}) | {
+    readonly kind: 'suggest';
+} & ({
+    /**
+     * Where it would help.
+     */
+    readonly area: SuggestionArea;
+    readonly op: 'suggest';
+    /**
+     * What it would do, in a sentence or two. Untrusted text.
+     */
+    readonly summary: string;
+    /**
+     * A short title. Untrusted text: shown as the agent's words.
+     */
+    readonly title: string;
+    /**
+     * Why it would help them, from what the agent knows of them.
+     * Untrusted text.
+     */
+    readonly why: string;
 });
 /**
  * The broker's reply to one [`SessionRequest`].
@@ -3492,6 +3513,8 @@ export type SessionResponse = VaultResult & {
     readonly kind: 'web';
 } | BrowserResult & {
     readonly kind: 'browser';
+} | SuggestResult & {
+    readonly kind: 'suggest';
 };
 /**
  * The socket a session came in on.
@@ -3877,6 +3900,106 @@ export type SubagentResult = {
     readonly result: 'subagent-error';
 };
 /**
+ * The broker's reply to one [`SuggestOp`] (v20).
+ */
+export type SuggestResult = {
+    readonly result: 'suggested';
+} | {
+    /**
+     * Why.
+     */
+    readonly reason: string;
+    readonly result: 'unasked';
+};
+/**
+ * A suggestion on the owner's Ideas page: the agent's words, all of it.
+ */
+export type Suggestion = {
+    /**
+     * Where it would help.
+     */
+    readonly area: SuggestionArea;
+    /**
+     * Where it stands.
+     */
+    readonly state: SuggestionState;
+    /**
+     * When it was suggested, RFC 3339.
+     */
+    readonly suggested_at: string;
+    /**
+     * Its id.
+     */
+    readonly suggestion_id: string;
+    /**
+     * What it would do.
+     */
+    readonly summary: string;
+    /**
+     * Its title.
+     */
+    readonly title: string;
+    /**
+     * Why it would help them, as the agent said.
+     */
+    readonly why: string;
+};
+/**
+ * Where a suggestion would help the owner: the Ideas page's sections
+ * (v20).
+ */
+export type SuggestionArea = 'career' | 'devices' | 'creation' | 'family' | 'finance' | 'health' | 'learning' | 'productivity' | 'relationships' | 'shopping';
+/**
+ * An operation on the owner's Ideas page, from their app.
+ */
+export type SuggestionOp = {
+    readonly op: 'list';
+} | {
+    /**
+     * It, as listed.
+     */
+    readonly id: string;
+    readonly op: 'start';
+} | {
+    /**
+     * It, as listed.
+     */
+    readonly id: string;
+    readonly op: 'dismiss';
+} | {
+    /**
+     * It, as listed.
+     */
+    readonly id: string;
+    readonly op: 'restore';
+};
+/**
+ * The result of a [`SuggestionOp`].
+ */
+export type SuggestionResult = {
+    readonly result: 'listed';
+    /**
+     * They.
+     */
+    readonly suggestions: readonly (Suggestion)[];
+} | {
+    readonly result: 'changed';
+    /**
+     * It.
+     */
+    readonly suggestion: Suggestion;
+} | {
+    readonly result: 'not_found';
+} | {
+    readonly result: 'off';
+} | {
+    readonly result: 'failed';
+};
+/**
+ * Where a suggestion on the Ideas page stands.
+ */
+export type SuggestionState = 'suggested' | 'started' | 'dismissed';
+/**
  * One change a sync push carries.
  */
 export type SyncChange = {
@@ -4090,6 +4213,12 @@ export type UiAction = {
     readonly action: 'read_usage';
 } | {
     readonly action: 'read_feed';
+} | {
+    readonly action: 'manage_suggestions';
+    /**
+     * The operation.
+     */
+    readonly op: SuggestionOp;
 } | {
     readonly action: 'give_code';
     /**
@@ -4306,6 +4435,12 @@ export type UiActionResult = {
      */
     readonly posts: readonly (FeedPost)[];
     readonly result: 'feed';
+} | {
+    /**
+     * The result.
+     */
+    readonly outcome: SuggestionResult;
+    readonly result: 'suggestions';
 } | {
     readonly result: 'code_taken';
     /**
