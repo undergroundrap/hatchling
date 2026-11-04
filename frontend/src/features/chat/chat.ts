@@ -246,7 +246,7 @@ export function windowSize(window: number): string {
 export function contextMeter(context: ContextUse): HTMLElement {
     const tokens = SHORT.format(context.tokens);
     if (context.window === null)
-        return h('p', { class: 'composer-caption context-meter', title: 'The largest prompt of the last answer, as the model server counted it. Set HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW to see it against the model’s window.' }, `Context: ${tokens} tokens on the last answer`);
+        return h('p', { class: 'composer-caption context-meter', title: 'The largest prompt of the last answer, as the model server counted it. Ollama says the model’s window itself; for another server, set HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW to see it against the model’s window.' }, `Context: ${tokens} tokens on the last answer`);
     const share = Math.min(100, Math.round((context.tokens / context.window) * 100));
     return h('p', { class: 'composer-caption context-meter', title: 'The largest prompt of the last answer, against the model’s context window, as the model server counted it.' }, `Context: ${tokens} of ${windowSize(context.window)} tokens (${share}%) on the last answer`, h('meter', { min: 0, max: context.window, value: Math.min(context.tokens, context.window), 'aria-label': `Context used on the last answer: ${share}%` }));
 }

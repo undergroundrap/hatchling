@@ -852,7 +852,11 @@ fn serve_session(
     )
     .of_chat(config.web.attended && config.scheduler.followup.is_some())
     .counting_in(&config.scheduler.usage)
-    .with_window(config.scheduler.model_context_window);
+    .with_window(config.scheduler.model_context_window)
+    .asking(
+        config.scheduler.model_endpoint.as_deref(),
+        config.scheduler.model_name.as_deref(),
+    );
 
     // The session's children live in the session's own scope:
     // when the session ends, however it ends, they are killed and the

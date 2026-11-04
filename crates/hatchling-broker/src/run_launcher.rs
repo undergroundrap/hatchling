@@ -393,6 +393,10 @@ pub fn scoped_config(
             device_socket: None,
         });
     run.scheduler = SchedulerConfig {
+        // The model the run calls, named so its trail can ask the
+        // model's server the window it gives it when the run ends.
+        model_endpoint: config.scheduler.model_endpoint.clone(),
+        model_name: config.scheduler.model_name.clone(),
         model_reasoning: config.scheduler.model_reasoning,
         model_context_window: config.scheduler.model_context_window,
         followup: Some(FollowupScope {
@@ -1389,6 +1393,8 @@ mod tests {
     fn a_run_session_holds_exactly_its_grants_and_nothing_else() {
         let mut config = config();
         config.scheduler.model_reasoning = hatchling_core::ModelReasoning::Disabled;
+        config.scheduler.model_endpoint = Some(String::from("http://localhost:11434/v1"));
+        config.scheduler.model_name = Some(String::from("m"));
         let grants = vec![
             ScheduleGrant::Vault {
                 action: String::from("fetch"),
@@ -1430,6 +1436,15 @@ mod tests {
         assert_eq!(
             run.scheduler.model_reasoning,
             hatchling_core::ModelReasoning::Disabled
+        );
+        // It names the model it calls, so its trail can ask the model's
+        // server the window when it ends.
+        assert_eq!(
+            (
+                run.scheduler.model_endpoint.as_deref(),
+                run.scheduler.model_name.as_deref()
+            ),
+            (Some("http://localhost:11434/v1"), Some("m"))
         );
         // Its one scheduler surface: its own follow-up, within its own
         // grants and depth, recorded in the broker's store.
