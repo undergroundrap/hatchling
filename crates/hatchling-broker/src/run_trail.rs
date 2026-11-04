@@ -612,6 +612,7 @@ mod tests {
         trail.model_call(Some(5400), Some(300));
         trail.model_call(Some(900), None);
         trail.model_call(None, Some(20));
+        trail.model_calls_refused = 1;
         let tally = |tool, done, asked, refused, failed| ToolTally {
             tool,
             done,
@@ -634,6 +635,54 @@ mod tests {
                 output_tokens: 320,
             })
         );
+    }
+
+    /// A model call answered is counted in the usage directory and the
+    /// trail; past the owner's limit, the next is refused and noted.
+    #[test]
+    fn a_trail_counts_model_calls_and_refuses_past_a_limit() {
+        let usage = std::env::temp_dir().join(format!("hatchling-trail-usage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&usage);
+        let mut trail = Trail::new(None, "session-1", "run-1").counting_in(&usage);
+        let now = hatchling_scheduler::Timestamp::now().as_second();
+        assert_eq!(trail.over_limit(now), None, "no limit set");
+        let request = hatchling_egress::EgressRequest {
+            method: s("POST"),
+            destination: s("localhost:11434"),
+            path: s("/v1/chat/completions"),
+            headers: Vec::new(),
+            body: Vec::new(),
+            surrogate_b64: String::new(),
+        };
+        let reply = |status| hatchling_egress::EgressResponse {
+            status,
+            headers: Vec::new(),
+            body: br#"{"model":"m","usage":{"prompt_tokens":40,"completion_tokens":2}}"#.to_vec(),
+        };
+        trail.count(&request, &reply(500), now);
+        trail.count(&request, &reply(200), now);
+        crate::usage::set_limits(
+            &usage,
+            &hatchling_core::ui::UsageLimits {
+                daily_tokens: Some(42),
+                monthly_tokens: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(trail.over_limit(now).map(|reached| reached.spent), Some(42));
+        assert_eq!(
+            trail.summary(),
+            Some(SubagentEvent::RunSummary {
+                cell_id: s("run-1"),
+                chat: false,
+                tools: Vec::new(),
+                model_calls: 1,
+                model_calls_refused: 1,
+                peak_input_tokens: 40,
+                output_tokens: 2,
+            })
+        );
+        let _ = std::fs::remove_dir_all(&usage);
     }
 
     /// When the session ends, its summary is written to the activity log

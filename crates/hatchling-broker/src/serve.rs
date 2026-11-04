@@ -2469,6 +2469,13 @@ mod gate_scope_tests {
             std::env::temp_dir().join(format!("hatchling-serve-limit-{}", std::process::id()));
         let mut trail =
             crate::run_trail::Trail::new(None, "session", "cell-limit").counting_in(&usage);
+        let limit = |daily| {
+            let limits = hatchling_core::ui::UsageLimits {
+                daily_tokens: Some(daily),
+                monthly_tokens: None,
+            };
+            crate::usage::set_limits(&usage, &limits).unwrap();
+        };
         let _ = std::fs::remove_dir_all(&usage);
         crate::usage::count(
             &usage,
@@ -2488,14 +2495,7 @@ mod gate_scope_tests {
             },
             hatchling_scheduler::Timestamp::now().as_second(),
         );
-        crate::usage::set_limits(
-            &usage,
-            &hatchling_core::ui::UsageLimits {
-                daily_tokens: Some(14),
-                monthly_tokens: None,
-            },
-        )
-        .unwrap();
+        limit(14);
         let refused = handle_egress_op(
             &proxy,
             &egress,
@@ -2523,14 +2523,7 @@ mod gate_scope_tests {
         .unwrap();
         assert_eq!(forwarded, EgressResult::EgressError);
         // Under it, the model call goes again.
-        crate::usage::set_limits(
-            &usage,
-            &hatchling_core::ui::UsageLimits {
-                daily_tokens: Some(15),
-                monthly_tokens: None,
-            },
-        )
-        .unwrap();
+        limit(15);
         let tried = handle_egress_op(
             &proxy,
             &egress,
