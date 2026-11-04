@@ -238,13 +238,17 @@ function renderComposer(ctx: AppContext, readOnly: boolean): HTMLElement {
     return area;
 }
 const SHORT = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 });
+/** A model's window as it's named: 16K for 16,384, 128K for 131,072. */
+export function windowSize(window: number): string {
+    return window % 1024 === 0 ? `${window / 1024}K` : SHORT.format(window);
+}
 /** How full the model's context was on the last answer: against its window when that's known. */
 export function contextMeter(context: ContextUse): HTMLElement {
     const tokens = SHORT.format(context.tokens);
     if (context.window === null)
         return h('p', { class: 'composer-caption context-meter', title: 'The largest prompt of the last answer, as the model server counted it. Set HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW to see it against the model’s window.' }, `Context: ${tokens} tokens on the last answer`);
     const share = Math.min(100, Math.round((context.tokens / context.window) * 100));
-    return h('p', { class: 'composer-caption context-meter', title: 'The largest prompt of the last answer, against the model’s context window, as the model server counted it.' }, `Context: ${tokens} of ${SHORT.format(context.window)} tokens (${share}%) on the last answer`, h('meter', { min: 0, max: context.window, value: Math.min(context.tokens, context.window), 'aria-label': `Context used on the last answer: ${share}%` }));
+    return h('p', { class: 'composer-caption context-meter', title: 'The largest prompt of the last answer, against the model’s context window, as the model server counted it.' }, `Context: ${tokens} of ${windowSize(context.window)} tokens (${share}%) on the last answer`, h('meter', { min: 0, max: context.window, value: Math.min(context.tokens, context.window), 'aria-label': `Context used on the last answer: ${share}%` }));
 }
 function dataUrl(file: File): Promise<string> {
     return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('The file could not be read.')); reader.onerror = () => reject(new Error('The file could not be read.')); reader.readAsDataURL(file); });
