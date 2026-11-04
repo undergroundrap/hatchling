@@ -433,6 +433,7 @@ pub fn spent(dir: &Path, now: i64, tz: Option<&str>) -> Option<UsageSpent> {
             }
         }
     }
+    drop(tallies);
     Some(UsageSpent {
         today,
         month: this_month,
@@ -465,7 +466,9 @@ impl Tally {
         let mut line = Vec::new();
         // A line still being written is read when it's whole.
         while lines.read_until(b'\n', &mut line).is_ok() && line.last() == Some(&b'\n') {
-            self.read = self.read.saturating_add(line.len() as u64);
+            self.read = self
+                .read
+                .saturating_add(u64::try_from(line.len()).unwrap_or(u64::MAX));
             if let Ok(call) = serde_json::from_slice::<Call>(&line) {
                 let tokens = call
                     .input
@@ -565,7 +568,7 @@ mod tests {
     const NOW: i64 = 1_793_715_200;
     const DAY: i64 = 86_400;
 
-    fn scratch(name: &str) -> std::path::PathBuf {
+    fn scratch(name: &str) -> PathBuf {
         let dir =
             std::env::temp_dir().join(format!("hatchling-usage-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -911,12 +914,7 @@ mod tests {
     }
 
     fn call_at(dir: &Path, at: i64) {
-        count(
-            dir,
-            &request("/chat/completions"),
-            &reply(200, OLLAMA),
-            at,
-        );
+        count(dir, &request("/chat/completions"), &reply(200, OLLAMA), at);
     }
 
     #[test]
@@ -1035,7 +1033,11 @@ mod tests {
         assert_eq!(today(&dir), 3007);
         // Another file in its place is read from its start.
         let other = dir.join("other");
-        std::fs::write(&other, format!("{{\"at\":{NOW},\"model\":\"m\",\"out\":4}}\n")).unwrap();
+        std::fs::write(
+            &other,
+            format!("{{\"at\":{NOW},\"model\":\"m\",\"out\":4}}\n"),
+        )
+        .unwrap();
         std::fs::rename(&other, &file).unwrap();
         assert_eq!(today(&dir), 4);
         // So is one cut shorter, and one removed counts nothing.
@@ -1067,7 +1069,10 @@ mod tests {
         assert_eq!(reached_on(&dir, NOW + DAY, Some("UTC")), None);
         set_limits(&dir, &limited(Some(3000), Some(2999))).unwrap();
         let month = reached_on(&dir, NOW + 2, Some("UTC")).unwrap();
-        assert_eq!((month.span, month.spent, month.limit), (Span::Month, 3000, 2999));
+        assert_eq!(
+            (month.span, month.spent, month.limit),
+            (Span::Month, 3000, 2999)
+        );
         assert_eq!(
             reached_on(&dir, NOW + DAY, Some("UTC")).map(|r| r.span),
             Some(Span::Month)
@@ -1076,7 +1081,10 @@ mod tests {
             month.told(),
             "You've reached the monthly limit you set: 3,000 of 2,999 tokens this month. Hatchling won't call the model again until the 1st, unless you raise the limit in Settings, under Usage."
         );
-        assert!(day.told().contains("daily limit you set: 3,000 of 3,000 tokens today"));
+        assert!(
+            day.told()
+                .contains("daily limit you set: 3,000 of 3,000 tokens today")
+        );
         assert!(day.told().contains("until midnight"));
         // On this machine's clock, both calls are November's too.
         assert_eq!(reached(&dir, NOW + 2).map(|r| r.span), Some(Span::Month));

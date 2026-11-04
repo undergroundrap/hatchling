@@ -2426,9 +2426,10 @@ mod gate_scope_tests {
             surrogate_b64: proxy.mint_surrogate(1000, &destination, 60).unwrap(),
             staged: 0,
         };
-        let forwarded =
-            handle_egress_op(&proxy, &egress, &listing, &cell_id, 1000, &mut pages, &usage)
-                .unwrap();
+        let forwarded = handle_egress_op(
+            &proxy, &egress, &listing, &cell_id, 1000, &mut pages, &usage,
+        )
+        .unwrap();
         assert_eq!(forwarded, EgressResult::EgressError);
         // Under it, the model call goes again.
         crate::usage::set_limits(

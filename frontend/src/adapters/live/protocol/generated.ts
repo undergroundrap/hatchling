@@ -278,7 +278,7 @@ export type ApiOutcome = 'served' | 'refused';
  * What one API call asked for: the request's kind, never its content
  * (a message's text, a file, a schedule's task).
  */
-export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'manage_goals' | 'manage_memory' | 'list_decisions' | 'read_usage' | 'read_feed' | 'manage_suggestions' | 'give_code' | 'decline_code';
+export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'manage_goals' | 'manage_memory' | 'list_decisions' | 'read_usage' | 'set_usage_limits' | 'read_feed' | 'manage_suggestions' | 'give_code' | 'decline_code';
 /**
  * A bearer token, presented in `Hello` for a token provider.
  *
@@ -1347,7 +1347,7 @@ export type EgressResult = {
 /**
  * What the broker decided about one egress request, and why.
  */
-export type EgressVerdict = 'allowed' | 'no_grant' | 'not_allowed' | 'bad_surrogate' | 'policy' | 'failed';
+export type EgressVerdict = 'allowed' | 'no_grant' | 'not_allowed' | 'bad_surrogate' | 'policy' | 'failed' | 'over_limit';
 /**
  * A post on the owner's Feed page: what one scheduled run wrote for it.
  */
@@ -4212,6 +4212,13 @@ export type UiAction = {
 } | {
     readonly action: 'read_usage';
 } | {
+    readonly action: 'set_usage_limits';
+    /**
+     * The limits, each replacing what was set; an unset one is no
+     * limit.
+     */
+    readonly limits: UsageLimits;
+} | {
     readonly action: 'read_feed';
 } | {
     readonly action: 'manage_suggestions';
@@ -4753,6 +4760,21 @@ export type UsageDay = {
     readonly unreported: number;
 };
 /**
+ * The most model tokens the owner allows, read and written together.
+ * Past one, the broker refuses every model call until it resets: a day
+ * at midnight, a month on the 1st, on this machine's clock.
+ */
+export type UsageLimits = {
+    /**
+     * The most tokens in a day; none when unset.
+     */
+    readonly daily_tokens?: number | null;
+    /**
+     * The most tokens in a calendar month; none when unset.
+     */
+    readonly monthly_tokens?: number | null;
+};
+/**
  * One model's usage over the report's days.
  */
 export type UsageModel = {
@@ -4789,9 +4811,35 @@ export type UsageReport = {
      */
     readonly days: readonly (UsageDay)[];
     /**
+     * The limits the owner set.
+     */
+    readonly limits: UsageLimits;
+    /**
      * Each model's use over those days, the most tokens first.
      */
     readonly models: readonly (UsageModel)[];
+    /**
+     * The tokens counted against those limits.
+     */
+    readonly spent: UsageSpent;
+};
+/**
+ * The tokens counted toward the owner's limits, read and written
+ * together.
+ */
+export type UsageSpent = {
+    /**
+     * This calendar month, today included.
+     */
+    readonly month: number;
+    /**
+     * The month, `YYYY-MM`.
+     */
+    readonly month_of: string;
+    /**
+     * Today, on this machine's clock.
+     */
+    readonly today: number;
 };
 /**
  * The broker's reply to one [`VaultOp`].

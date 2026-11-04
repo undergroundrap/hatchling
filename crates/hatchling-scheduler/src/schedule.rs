@@ -612,7 +612,10 @@ mod tests {
         let first = day_and_month_start(1_788_220_800 + 60, Some("UTC")).unwrap();
         assert_eq!((first.day, first.month), (1_788_220_800, 1_788_220_800));
         assert!(day_and_month_start(1_790_000_000, None).is_some());
-        assert_eq!(day_and_month_start(1_790_000_000, Some("Mars/Olympus")), None);
+        assert_eq!(
+            day_and_month_start(1_790_000_000, Some("Mars/Olympus")),
+            None
+        );
         assert_eq!(day_and_month_start(i64::MAX, Some("UTC")), None);
     }
 

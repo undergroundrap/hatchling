@@ -176,7 +176,7 @@ pub struct Chat<R, K = ()> {
     /// The operator's model name, for telling the person why a run failed.
     model: Option<String>,
     /// Where the broker counts model usage, and keeps the owner's limits.
-    usage: std::path::PathBuf,
+    usage: Option<std::path::PathBuf>,
 }
 
 impl<R: Run> Chat<R> {
@@ -210,7 +210,7 @@ impl<R: Run, K: Keeps> Chat<R, K> {
             kept,
             keeps,
             model: None,
-            usage: std::path::PathBuf::new(),
+            usage: None,
         }
     }
 
@@ -225,8 +225,13 @@ impl<R: Run, K: Keeps> Chat<R, K> {
     /// run, and naming one reached when a run fails for it.
     #[must_use]
     pub fn with_usage(mut self, usage: std::path::PathBuf) -> Self {
-        self.usage = usage;
+        self.usage = Some(usage);
         self
+    }
+
+    /// The usage limit the owner set that's reached at `now`, if one is.
+    fn reached(&self, now: Timestamp) -> Option<crate::usage::Reached> {
+        crate::usage::reached(self.usage.as_deref()?, now.as_second())
     }
 
     /// The exchanges a run started now is given, oldest first.
@@ -285,7 +290,7 @@ impl<R: Run, K: Keeps> Chat<R, K> {
                 Ok(answer) => answer,
                 Err(reason) => {
                     tracing::warn!(reason = ?reason, "a chat run failed");
-                    let reached = crate::usage::reached(&self.usage, now.as_second());
+                    let reached = self.reached(now);
                     let told = failed_with(ending, self.model.as_deref(), reached.as_ref());
                     return answer_with(delivery, &told);
                 }
@@ -306,7 +311,7 @@ impl<R: Run, K: Keeps> Chat<R, K> {
         let Some((message, sent_in)) = next() else {
             return Step::Idle;
         };
-        if let Some(reached) = crate::usage::reached(&self.usage, now.as_second()) {
+        if let Some(reached) = self.reached(now) {
             tracing::info!(span = ?reached.span, "a message wasn't answered: a usage limit is reached");
             return answer_with(delivery, &reached.told());
         }
@@ -1064,10 +1069,8 @@ mod tests {
         use hatchling_core::run_failure::RunFailure;
         use hatchling_core::ui::UsageLimits;
         use hatchling_scheduler::Ending;
-        let usage = std::env::temp_dir().join(format!(
-            "hatchling-chat-limit-{}",
-            std::process::id()
-        ));
+        let usage =
+            std::env::temp_dir().join(format!("hatchling-chat-limit-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&usage);
         let now = Timestamp::now();
         crate::usage::count(
@@ -1123,7 +1126,11 @@ mod tests {
         let limit = "You've reached the daily limit you set: 1,500 of 1,000 tokens today.";
         assert_eq!(told.len(), 2, "{told:?}");
         assert!(told.iter().all(|text| text.starts_with(limit)), "{told:?}");
-        assert!(chat.history().is_empty(), "nothing is kept: {:?}", chat.history());
+        assert!(
+            chat.history().is_empty(),
+            "nothing is kept: {:?}",
+            chat.history()
+        );
         let _ = std::fs::remove_dir_all(&usage);
     }
 
@@ -1137,7 +1144,10 @@ mod tests {
             limit: 10,
         };
         let unreachable = Some(Ending::Exited(RunFailure::ModelUnavailable.code().into()));
-        assert_eq!(failed_with(unreachable, Some("m"), Some(&reached)), reached.told());
+        assert_eq!(
+            failed_with(unreachable, Some("m"), Some(&reached)),
+            reached.told()
+        );
         assert_eq!(
             failed_with(unreachable, Some("m"), None),
             chat_failed(unreachable, Some("m"))

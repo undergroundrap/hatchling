@@ -2128,13 +2128,18 @@ mod tests {
                 ApiOutcome::Refused
             )
         );
-        assert_eq!(crate::usage::limits(&dir), limits, "a refused limit changes nothing");
+        assert_eq!(
+            crate::usage::limits(&dir),
+            limits,
+            "a refused limit changes nothing"
+        );
         let _ = std::fs::remove_dir_all(&dir);
 
         // With no place to count, there's nowhere to keep limits.
         let mut off = owner_config(Some("/srv/hatchling/schedules"));
-        off.scheduler.usage = std::path::PathBuf::new();
+        off.scheduler.usage = PathBuf::new();
         let ops = Ops::new(&off, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        let mut replies = Replies::default();
         assert_eq!(
             ops.handle(&owner, &set, &mut replies),
             (
@@ -2145,11 +2150,19 @@ mod tests {
             )
         );
         // Nor a place that can't be written.
-        let blocked = std::env::temp_dir().join(format!("hatchling-api-limits-{}", std::process::id()));
+        let blocked =
+            std::env::temp_dir().join(format!("hatchling-api-limits-{}", std::process::id()));
         std::fs::write(&blocked, "a file, not a directory").unwrap();
         let mut unwritable = owner_config(Some("/srv/hatchling/schedules"));
         unwritable.scheduler.usage.clone_from(&blocked);
-        let ops = Ops::new(&unwritable, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        let ops = Ops::new(
+            &unwritable,
+            &key,
+            &skills,
+            None,
+            Arc::new(Bus::starting_at(1)),
+        );
+        let mut replies = Replies::default();
         assert_eq!(
             ops.handle(&owner, &set, &mut replies).1,
             ApiOutcome::Refused
