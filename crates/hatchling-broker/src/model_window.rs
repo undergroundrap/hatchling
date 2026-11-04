@@ -160,7 +160,10 @@ mod tests {
             assert_eq!(window_in(answer.as_bytes(), "m"), None, "{answer}");
         }
         assert_eq!(
-            window_in(br#"{"models":[{"name":"m","context_length":4294967295}]}"#, "m"),
+            window_in(
+                br#"{"models":[{"name":"m","context_length":4294967295}]}"#,
+                "m"
+            ),
             Some(u32::MAX)
         );
     }

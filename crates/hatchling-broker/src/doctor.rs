@@ -1120,14 +1120,14 @@ mod tests {
             if seen {
                 assert_eq!(
                     found,
-                    Finding::Fine(format!(
-                        "llama3.2 at {endpoint}, with a 16384-token window"
-                    ))
+                    Finding::Fine(format!("llama3.2 at {endpoint}, with a 16384-token window"))
                 );
             } else {
                 let (what, fix) = problem(found);
                 assert!(
-                    what.ends_with("gives llama3.2 a 4096-token window, and one answer can take 6,000 tokens"),
+                    what.ends_with(
+                        "gives llama3.2 a 4096-token window, and one answer can take 6,000 tokens"
+                    ),
                     "{what}"
                 );
                 assert!(fix.contains("OLLAMA_CONTEXT_LENGTH=16384"), "{fix}");
@@ -1143,10 +1143,15 @@ mod tests {
         assert!(matches!(missing, Finding::Problem { .. }));
         // The window's answer is still there for the next asker: doctor
         // didn't ask for it.
-        assert_eq!(ask(&address, "/mine").unwrap(), Some(b"{\"models\":[]}".to_vec()));
+        assert_eq!(
+            ask(&address, "/mine").unwrap(),
+            Some(b"{\"models\":[]}".to_vec())
+        );
         let heads = served.join().unwrap();
         assert!(
-            heads.get(1).is_some_and(|head| head.starts_with("GET /mine ")),
+            heads
+                .get(1)
+                .is_some_and(|head| head.starts_with("GET /mine ")),
             "a missing model isn't asked about: {heads:?}"
         );
         let hosted = Finding::Unchecked(String::from("hosted"));
@@ -1168,11 +1173,7 @@ mod tests {
         );
         let missing = Finding::problem("missing", "fetch it");
         assert_eq!(windowed(missing.clone(), "m", Some(16384)), missing);
-        let (what, _) = problem(windowed(
-            Finding::Fine(String::new()),
-            "m",
-            Some(8191),
-        ));
+        let (what, _) = problem(windowed(Finding::Fine(String::new()), "m", Some(8191)));
         assert!(what.contains("a 8191-token window"), "{what}");
     }
 

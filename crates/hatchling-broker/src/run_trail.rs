@@ -785,10 +785,8 @@ mod tests {
     /// declared window stands.
     #[test]
     fn an_ended_session_learns_the_window_from_the_models_server() {
-        let log = std::env::temp_dir().join(format!(
-            "hatchling-trail-window-{}.log",
-            std::process::id()
-        ));
+        let log =
+            std::env::temp_dir().join(format!("hatchling-trail-window-{}.log", std::process::id()));
         let _ = std::fs::remove_file(&log);
         let (address, served) = crate::model_window::answering(vec![crate::model_window::loaded(
             r#"{"name":"m","context_length":16384}"#,
@@ -809,16 +807,23 @@ mod tests {
         called.model_call(Some(40), Some(2));
         drop(called);
         let heads = served.join().unwrap();
-        assert_eq!(heads.len(), 1, "only the session that called the model asked");
+        assert_eq!(
+            heads.len(),
+            1,
+            "only the session that called the model asked"
+        );
         assert!(
-            heads.first().is_some_and(|head| head.starts_with("GET /api/ps ")),
+            heads
+                .first()
+                .is_some_and(|head| head.starts_with("GET /api/ps ")),
             "{heads:?}"
         );
         let refusing = crate::test_port::RefusingPort::new();
         let mut unsaid = trail("unsaid", &format!("http://{}/v1", refusing.addr()));
         unsaid.model_call(Some(40), Some(2));
         drop(unsaid);
-        let mut unasked = Trail::new(Some(log.clone()), "unasked", "run-1").with_window(Some(32768));
+        let mut unasked =
+            Trail::new(Some(log.clone()), "unasked", "run-1").with_window(Some(32768));
         unasked.model_call(Some(40), Some(2));
         drop(unasked);
         assert_eq!(

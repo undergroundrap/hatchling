@@ -234,9 +234,10 @@ export type ActivityEvent = {
      */
     readonly chat: boolean;
     /**
-     * The model's context window in tokens, as the operator declared
-     * it: what the largest call is measured against. `None` when
-     * undeclared.
+     * The model's context window in tokens: the one the model's
+     * server says it gives the model (Ollama does), else the one the
+     * operator declared. What the largest call is measured against;
+     * `None` when neither is known.
      */
     readonly context_window?: number | null;
     readonly event: 'run_summary';
