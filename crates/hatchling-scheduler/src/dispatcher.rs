@@ -1144,7 +1144,10 @@ mod tests {
         }
         assert_eq!(Quiet.cell_id(), None);
         assert_eq!(Quiet.ending(), None);
-        assert_eq!(Plain.deliver_answer("local", "hi", Some("run-1")), Ok(false));
+        assert_eq!(
+            Plain.deliver_answer("local", "hi", Some("run-1")),
+            Ok(false)
+        );
         assert_eq!(
             Closed.deliver_answer("local", "hi", None),
             Err(String::from("closed"))
