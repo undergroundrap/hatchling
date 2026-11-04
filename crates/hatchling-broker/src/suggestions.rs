@@ -54,7 +54,7 @@ static WRITES: Mutex<()> = Mutex::new(());
 #[must_use]
 pub fn task(prompt: &str) -> String {
     format!(
-        "Suggest ideas for the owner's Ideas page. They asked for this:\n\n{prompt}\n\nUse your tools to read what you can about them first: their goals, and what they've asked you to remember. Then suggest up to three ideas with idea_suggest, one call each: things Hatchling could do for them with the tools and settings it has here, that they haven't asked for. Ground each in what you read, and say why in their terms. Don't suggest what Hatchling can't do here, and don't invent facts about them. When you're done, answer in one sentence."
+        "Suggest ideas for the owner's Ideas page by calling idea_suggest, once per idea. Only ideas given to idea_suggest reach the page: anything you write in your answer is thrown away, unseen. They asked for this:\n\n{prompt}\n\nFirst use your tools to read what you can about them: their goals, and what they've asked you to remember. Then call idea_suggest up to three times, one idea each: things Hatchling could do for them with the tools and settings it has here, that they haven't asked for. Ground each in what you read, and say why in their terms. Don't suggest what Hatchling can't do here, and don't invent facts about them. After the calls, answer in one short sentence."
     )
 }
 
@@ -551,6 +551,7 @@ mod tests {
         assert!(task.contains("\n\nThings for my running.\n\n"));
         assert!(task.contains("idea_suggest"));
         assert!(task.contains("up to three"));
+        assert!(task.contains("thrown away, unseen"));
         assert!(task.contains("don't invent facts"));
     }
 }
