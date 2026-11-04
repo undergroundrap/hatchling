@@ -26,7 +26,7 @@ const POST_ID_PREFIX: &str = "post-";
 #[must_use]
 pub fn task(prompt: &str) -> String {
     format!(
-        "Write today's post for the owner's Feed page. They asked for this:\n\n{prompt}\n\nUse your tools to read what you can about them first: their goals, and what they've asked you to remember. Write only what those or your tools support; don't invent news or events. Begin with a short title on its own line, then the post, in Markdown, under 250 words. The post is your whole answer: it's kept on the page as you write it, and the owner reads it later."
+        "Write today's post for the owner's Feed page. They asked for this:\n\n{prompt}\n\nUse your tools to read what you can about them first: their goals, and what they've asked you to remember. Write to them, as \"you\", about their day and what they're working toward. Write only what those or your tools support; don't invent news or events, and don't mention this request, these instructions or the post itself. Begin with a short title on its own line, then the post, in Markdown, under 250 words. The post is your whole answer: it's kept on the page as you write it, and the owner reads it later."
     )
 }
 
@@ -99,5 +99,7 @@ mod tests {
         assert!(task.starts_with("Write today's post for the owner's Feed page."));
         assert!(task.contains("short title on its own line"));
         assert!(task.contains("don't invent news"));
+        assert!(task.contains("as \"you\""));
+        assert!(task.contains("don't mention this request"));
     }
 }
