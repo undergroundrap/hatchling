@@ -146,3 +146,37 @@ Frontend mapping: `ActivityRow` with `phase: 'harness_run'`,
 three mapped to `Verdict.failed`. Harness runs render as their
 own thread in the activity feed, one lane per harness, one row
 per run.
+
+## Run events
+
+### `run_summary`
+
+Emitted once per agent session, when it ends however it ends, by the
+broker that served it. The run id is the session's, the one its
+subagent events carry. It records what the broker answered, never what
+the agent says it did, and never what a request carried.
+
+| Field | Type | Notes |
+|---|---|---|
+| `cell_id` | string | The session's cell. |
+| `chat` | bool | Whether it was a chat run, answering the owner; otherwise background work. |
+| `tools` | array | Each tool used, in the order first used: `tool` (below), and `done`, `asked`, `refused`, `failed`, the uses that ended each way. |
+| `model_calls` | u32 | Model calls answered. |
+| `model_calls_refused` | u32 | Model calls the broker refused past a usage limit the owner set. |
+| `peak_input_tokens` | u64 | Tokens the largest model call read, as its server reported: how full the model's context got. |
+| `output_tokens` | u64 | Tokens the model wrote over the session. |
+
+`tool` is one of `goals_read`, `goals_write`, `memory_recall`,
+`memory_propose`, `memory_write`, `schedule_read`, `schedule_write`,
+`schedule_propose`, `hook`, `idea_suggest`, `web_search`, `web_page`,
+`browser`, `message_read`, `message_send`, `subagent`, `skill`,
+`vault`, `artifact`, `space` or `network` (an egress request that
+isn't a model call). A use is `asked` when it was put to the owner
+to approve or answer, `refused` for no grant, a limit or the owner's
+no, and `failed` when it failed. A session that used no tool and made
+no model call writes nothing.
+
+Frontend mapping: its own thread, "What the chat run did" or "What
+background work did", with a row per tool (`success` when every use
+was answered, `failed` when none was, `partial` otherwise) and a row
+for the model's calls. The record is `success`: a session that ended.
