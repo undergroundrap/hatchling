@@ -377,6 +377,96 @@ pub enum SubagentEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         network: Option<HarnessNetworkUse>,
     },
+    /// What one agent session did, as the broker served it: each tool it
+    /// used and how each use ended, and its model calls. Written when the
+    /// session ends, by the broker, never from what the agent says it
+    /// did; never what a call carried.
+    #[serde(rename = "run_summary")]
+    RunSummary {
+        /// The session's cell.
+        cell_id: String,
+        /// Whether it was a chat run, answering the owner: otherwise
+        /// background work.
+        chat: bool,
+        /// Each tool it used, in the order first used.
+        tools: Vec<ToolTally>,
+        /// Model calls answered.
+        model_calls: u32,
+        /// Model calls the broker refused: past a usage limit the owner
+        /// set.
+        model_calls_refused: u32,
+        /// Tokens the largest model call read: how full the model's
+        /// context got.
+        peak_input_tokens: u64,
+        /// Tokens the model wrote, over the session.
+        output_tokens: u64,
+    },
+}
+
+/// A tool an agent session used, named by what it does: never by what it
+/// carried.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ToolUse {
+    /// Read the owner's goals or their tracking.
+    GoalsRead,
+    /// Set, changed or closed a goal, or added to its tracking.
+    GoalsWrite,
+    /// Recalled what's kept in memory.
+    MemoryRecall,
+    /// Asked the owner to keep something in memory.
+    MemoryPropose,
+    /// Wrote to or removed from memory.
+    MemoryWrite,
+    /// Listed scheduled work.
+    ScheduleRead,
+    /// Created, changed or cancelled scheduled work.
+    ScheduleWrite,
+    /// Asked the owner to schedule something.
+    SchedulePropose,
+    /// Created or cancelled a hook.
+    Hook,
+    /// Suggested an idea for the owner's Ideas page.
+    IdeaSuggest,
+    /// Searched the web.
+    WebSearch,
+    /// Read a web page.
+    WebPage,
+    /// Used the browser.
+    Browser,
+    /// Read messages, or the accounts they come from.
+    MessageRead,
+    /// Sent a message.
+    MessageSend,
+    /// Started or managed a subagent.
+    Subagent,
+    /// Ran a skill.
+    Skill,
+    /// Used the vault.
+    Vault,
+    /// Built, delivered or worked on an artifact or an idea for one.
+    Artifact,
+    /// Used a shared space.
+    Space,
+    /// Sent a request through the egress that isn't a model call.
+    Network,
+}
+
+/// How often a session used one tool, by how each use ended.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ToolTally {
+    /// The tool.
+    pub tool: ToolUse,
+    /// Uses it answered.
+    pub done: u32,
+    /// Uses it put to the owner, to approve or answer.
+    pub asked: u32,
+    /// Uses it refused: no grant, a limit, or the owner said no.
+    pub refused: u32,
+    /// Uses that failed.
+    pub failed: u32,
 }
 
 /// What a real CLI's run sent through its relay. Its requests
@@ -674,6 +764,28 @@ mod tests {
                 json!({"event": "subagent_failed", "event_id": "ev-1", "ts": "2026-10-03T12:00:00Z",
                        "run_id": "parent", "child_id": "run-1", "failure": "timeout",
                        "detail": "d", "steps_spent": 4}),
+            ),
+            (
+                event(SubagentEvent::RunSummary {
+                    cell_id: String::from("run-1"),
+                    chat: true,
+                    tools: vec![ToolTally {
+                        tool: ToolUse::GoalsRead,
+                        done: 1,
+                        asked: 0,
+                        refused: 2,
+                        failed: 0,
+                    }],
+                    model_calls: 3,
+                    model_calls_refused: 1,
+                    peak_input_tokens: 5400,
+                    output_tokens: 700,
+                }),
+                json!({"event": "run_summary", "event_id": "ev-1", "ts": "2026-10-03T12:00:00Z",
+                       "run_id": "parent", "cell_id": "run-1", "chat": true,
+                       "tools": [{"tool": "goals_read", "done": 1, "asked": 0, "refused": 2, "failed": 0}],
+                       "model_calls": 3, "model_calls_refused": 1,
+                       "peak_input_tokens": 5400, "output_tokens": 700}),
             ),
         ];
         for (event, expected) in cases {

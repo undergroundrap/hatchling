@@ -664,7 +664,7 @@ mod tests {
             &cell_id,
             1000,
             &mut pages,
-            std::path::Path::new(""),
+            &mut crate::run_trail::Trail::new(None, "session", cell_id.as_str()),
         )
         .unwrap();
         assert_ne!(

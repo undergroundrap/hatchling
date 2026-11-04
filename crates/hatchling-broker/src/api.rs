@@ -592,7 +592,8 @@ mod tests {
                     | SubagentEvent::Finished { .. }
                     | SubagentEvent::Killed { .. }
                     | SubagentEvent::Failed { .. }
-                    | SubagentEvent::HarnessRun { .. } => None,
+                    | SubagentEvent::HarnessRun { .. }
+                    | SubagentEvent::RunSummary { .. } => None,
                 },
             )
             .collect()

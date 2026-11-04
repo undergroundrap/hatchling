@@ -82,18 +82,26 @@ struct Call {
 /// Counts `request`'s answer `response` in the usage directory `dir`.
 ///
 /// Only a model call answered with success counts, at `at` (Unix seconds),
-/// and nothing does when `dir` is empty. A count that can't be written is
-/// logged, and the answer goes on to the cell all the same.
-pub fn count(dir: &Path, request: &EgressRequest, response: &EgressResponse, at: i64) {
-    if dir.as_os_str().is_empty() || !(200..=299).contains(&response.status) {
-        return;
+/// and nothing is kept when `dir` is empty. A count that can't be written
+/// is logged, and the answer goes on to the cell all the same. The tokens
+/// the call read and wrote, as its server reported them, when it was a
+/// model call answered with success.
+pub fn count(
+    dir: &Path,
+    request: &EgressRequest,
+    response: &EgressResponse,
+    at: i64,
+) -> Option<(Option<u64>, Option<u64>)> {
+    if !(200..=299).contains(&response.status) {
+        return None;
     }
-    let Some(call) = read_reply(&request.method, &request.path, &response.body, at) else {
-        return;
-    };
-    if let Err(error) = append(dir, &call) {
-        tracing::warn!(error = %error, "a model call's usage couldn't be counted");
+    let call = read_reply(&request.method, &request.path, &response.body, at)?;
+    if !dir.as_os_str().is_empty() {
+        if let Err(error) = append(dir, &call) {
+            tracing::warn!(error = %error, "a model call's usage couldn't be counted");
+        }
     }
+    Some((call.input, call.output))
 }
 
 /// Whether a request to `method` `path` is a model call: what's counted,

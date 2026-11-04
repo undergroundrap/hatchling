@@ -255,6 +255,53 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "files_changed"
                 ],
                 "type": "object"
+            },
+            {
+                "properties": {
+                    "cell_id": {
+                        "type": "string"
+                    },
+                    "chat": {
+                        "type": "boolean"
+                    },
+                    "event": {
+                        "const": "run_summary",
+                        "type": "string"
+                    },
+                    "model_calls": {
+                        "minimum": 0,
+                        "type": "integer"
+                    },
+                    "model_calls_refused": {
+                        "minimum": 0,
+                        "type": "integer"
+                    },
+                    "output_tokens": {
+                        "minimum": 0,
+                        "type": "integer"
+                    },
+                    "peak_input_tokens": {
+                        "minimum": 0,
+                        "type": "integer"
+                    },
+                    "tools": {
+                        "items": {
+                            "$ref": "#/$defs/ToolTally"
+                        },
+                        "type": "array"
+                    }
+                },
+                "required": [
+                    "event",
+                    "cell_id",
+                    "chat",
+                    "tools",
+                    "model_calls",
+                    "model_calls_refused",
+                    "peak_input_tokens",
+                    "output_tokens"
+                ],
+                "type": "object"
             }
         ],
         "properties": {
@@ -3575,6 +3622,125 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             },
             {
                 "const": "dismissed",
+                "type": "string"
+            }
+        ]
+    },
+    "ToolTally": {
+        "properties": {
+            "asked": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "done": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "failed": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "refused": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "tool": {
+                "$ref": "#/$defs/ToolUse"
+            }
+        },
+        "required": [
+            "tool",
+            "done",
+            "asked",
+            "refused",
+            "failed"
+        ],
+        "type": "object"
+    },
+    "ToolUse": {
+        "oneOf": [
+            {
+                "const": "goals_read",
+                "type": "string"
+            },
+            {
+                "const": "goals_write",
+                "type": "string"
+            },
+            {
+                "const": "memory_recall",
+                "type": "string"
+            },
+            {
+                "const": "memory_propose",
+                "type": "string"
+            },
+            {
+                "const": "memory_write",
+                "type": "string"
+            },
+            {
+                "const": "schedule_read",
+                "type": "string"
+            },
+            {
+                "const": "schedule_write",
+                "type": "string"
+            },
+            {
+                "const": "schedule_propose",
+                "type": "string"
+            },
+            {
+                "const": "hook",
+                "type": "string"
+            },
+            {
+                "const": "idea_suggest",
+                "type": "string"
+            },
+            {
+                "const": "web_search",
+                "type": "string"
+            },
+            {
+                "const": "web_page",
+                "type": "string"
+            },
+            {
+                "const": "browser",
+                "type": "string"
+            },
+            {
+                "const": "message_read",
+                "type": "string"
+            },
+            {
+                "const": "message_send",
+                "type": "string"
+            },
+            {
+                "const": "subagent",
+                "type": "string"
+            },
+            {
+                "const": "skill",
+                "type": "string"
+            },
+            {
+                "const": "vault",
+                "type": "string"
+            },
+            {
+                "const": "artifact",
+                "type": "string"
+            },
+            {
+                "const": "space",
+                "type": "string"
+            },
+            {
+                "const": "network",
                 "type": "string"
             }
         ]

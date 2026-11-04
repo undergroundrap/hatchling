@@ -288,20 +288,27 @@ impl Activity {
             run_id: self.run_id.clone(),
             kind,
         };
-        let Ok(line) = serde_json::to_string(&event) else {
-            return;
-        };
-        tracing::info!(target: "activity", event = %line, "subagent activity");
-        if let Some(log) = &self.log {
-            let written = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .mode(0o600)
-                .open(log)
-                .and_then(|mut file| writeln!(file, "{line}"));
-            if let Err(error) = written {
-                tracing::warn!(%error, "cannot append to the activity log");
-            }
+        record(self.log.as_deref(), &event, "subagent");
+    }
+}
+
+/// Records `event`, of the kind `what`, in the broker's log, and in the
+/// activity log `log` when there is one: a JSON event per line,
+/// owner-only.
+pub(crate) fn record(log: Option<&std::path::Path>, event: &ActivityEvent, what: &str) {
+    let Ok(line) = serde_json::to_string(event) else {
+        return;
+    };
+    tracing::info!(target: "activity", event = %line, what, "activity");
+    if let Some(log) = log {
+        let written = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(log)
+            .and_then(|mut file| writeln!(file, "{line}"));
+        if let Err(error) = written {
+            tracing::warn!(%error, "cannot append to the activity log");
         }
     }
 }
@@ -357,10 +364,9 @@ impl<'scope, 'env> Subagents<'scope, 'env> {
             ledger: Ledger::default(),
             children: BTreeMap::new(),
             activity: Activity {
-                log: config
-                    .scheduler
-                    .enabled()
-                    .then(|| config.scheduler.activity_log()),
+                // A run's session too: its own scheduling is off, and its
+                // activity goes to the store's log through its follow-up.
+                log: crate::run_trail::activity_log(config),
                 run_id,
                 sequence: 0,
             },

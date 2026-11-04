@@ -56,6 +56,7 @@ pub use peer::{PeerCredentials, peer_credentials};
 pub use secret::{MAX_SECRET_BYTES, SecretB64, decode as decode_secret, encode as encode_secret};
 pub use subagent::{
     ActivityEvent, ChildEnvelope, ChildFailure, ChildOutcome, ChildReport, ChildVerdict,
-    SubagentEvent, SubagentOp, SubagentRefusal, SubagentResult, grant_label, parse_grant_label,
+    SubagentEvent, SubagentOp, SubagentRefusal, SubagentResult, ToolTally, ToolUse, grant_label,
+    parse_grant_label,
 };
 pub use types::{CapabilityName, CellId, PeerPid, PeerUid, SecretName, SocketPath};

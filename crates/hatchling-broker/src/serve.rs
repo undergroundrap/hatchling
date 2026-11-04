@@ -842,6 +842,16 @@ fn serve_session(
     let mut browser = crate::browser_ops::BrowserSession::new(crate::browser_ops::configured())
         .with_board(crate::browser_board::board(config));
     let _admissions = crate::space_ops::EndAdmissions(space_session.pin.session.clone());
+    // What the session does, as the broker serves it: summarized in the
+    // owner's Activity when the session ends, however it ends.
+    // A chat run is a run its person is there for (WO-028).
+    let mut trail = crate::run_trail::Trail::new(
+        crate::run_trail::activity_log(config),
+        session_id.as_str(),
+        cell_id.as_str(),
+    )
+    .of_chat(config.web.attended && config.scheduler.followup.is_some())
+    .counting_in(&config.scheduler.usage);
 
     // The session's children live in the session's own scope:
     // when the session ends, however it ends, they are killed and the
@@ -860,6 +870,7 @@ fn serve_session(
                 return Ok(());
             };
             let request = request_of(&Zeroizing::new(frame))?;
+            let used = crate::run_trail::tool_of(&request);
             let response = match request {
                 SessionRequest::Vault(op) => SessionResponse::Vault(handle_vault_op(
                     &config.vault,
@@ -875,7 +886,7 @@ fn serve_session(
                     cell_id,
                     creds.uid().as_u32(),
                     &mut egress_pages,
-                    &config.scheduler.usage,
+                    &mut trail,
                 )?),
                 SessionRequest::Channel(op) => SessionResponse::Channel(
                     crate::channel::handle_channel_op(&mut channels, &op, creds.uid().as_u32())?,
@@ -962,6 +973,7 @@ fn serve_session(
                     SessionResponse::Suggest(crate::suggestions::suggest(config, &op))
                 }
             };
+            trail.note(used, &response);
             let payload = encode_reply(&response, MAX_FRAME_BYTES)?;
             write_frame(stream, &payload).map_err(session_error)?;
         }
@@ -1251,7 +1263,7 @@ pub(crate) fn handle_egress_op(
     cell_id: &CellId,
     peer_uid: u32,
     pages: &mut crate::egress_pages::Pages,
-    usage: &std::path::Path,
+    trail: &mut crate::run_trail::Trail,
 ) -> Result<EgressResult, Error> {
     let destination = match op {
         EgressOp::MintSurrogate { destination, .. } | EgressOp::Egress { destination, .. } => {
@@ -1310,30 +1322,30 @@ pub(crate) fn handle_egress_op(
                 body,
                 surrogate_b64: surrogate_b64.clone(),
             };
-            if crate::usage::is_model_call(method, path) {
-                let now = hatchling_scheduler::Timestamp::now().as_second();
-                if let Some(reached) = crate::usage::reached(usage, now) {
-                    tracing::warn!(
-                        cell_id = %cell_id,
-                        span = ?reached.span,
-                        spent = reached.spent,
-                        limit = reached.limit,
-                        "model call refused: the owner's usage limit is reached"
-                    );
-                    crate::machine::decided(
-                        cell_id.as_str(),
-                        destination,
-                        EgressVerdict::OverLimit,
-                    );
-                    return Ok(EgressResult::Denied);
-                }
+            let now = hatchling_scheduler::Timestamp::now().as_second();
+            if let Some(reached) = crate::usage::is_model_call(method, path)
+                .then(|| trail.over_limit(now))
+                .flatten()
+            {
+                tracing::warn!(
+                    cell_id = %cell_id,
+                    span = ?reached.span,
+                    spent = reached.spent,
+                    limit = reached.limit,
+                    "model call refused: the owner's usage limit is reached"
+                );
+                crate::machine::decided(cell_id.as_str(), destination, EgressVerdict::OverLimit);
+                return Ok(EgressResult::Denied);
             }
             let forwarded = proxy.forward(peer_uid, &request);
             crate::machine::decided(cell_id.as_str(), destination, egress_verdict(&forwarded));
             match forwarded {
                 Ok(response) => {
-                    let at = hatchling_scheduler::Timestamp::now().as_second();
-                    crate::usage::count(usage, &request, &response, at);
+                    trail.count(
+                        &request,
+                        &response,
+                        hatchling_scheduler::Timestamp::now().as_second(),
+                    );
                     Ok(ok_reply(response, pages))
                 }
                 Err(refusal) if refusal.kind == RefusalKind::Failed => {
@@ -1504,7 +1516,7 @@ mod tests {
             cell_id,
             1000,
             pages,
-            std::path::Path::new(""),
+            &mut crate::run_trail::Trail::new(None, "session", cell_id.as_str()),
         )
     }
 
@@ -2382,9 +2394,12 @@ mod gate_scope_tests {
         let usage =
             std::env::temp_dir().join(format!("hatchling-serve-usage-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&usage);
-        for place in [usage.as_path(), std::path::Path::new("")] {
+        let mut trails = [usage.as_path(), std::path::Path::new("")].map(|place| {
+            crate::run_trail::Trail::new(None, "session", "cell-usage").counting_in(place)
+        });
+        for trail in &mut trails {
             let answered =
-                handle_egress_op(&proxy, &egress, &call(), &cell_id, 1000, &mut pages, place)
+                handle_egress_op(&proxy, &egress, &call(), &cell_id, 1000, &mut pages, trail)
                     .unwrap();
             assert!(
                 matches!(answered, EgressResult::Ok { status: 200, .. }),
@@ -2402,6 +2417,22 @@ mod gate_scope_tests {
             (today.calls, today.input_tokens, today.output_tokens),
             (1, 11, 3)
         );
+        // Each answered call is its session's too, counted where usage is
+        // or not.
+        for trail in &trails {
+            assert_eq!(
+                trail.summary(),
+                Some(hatchling_core::SubagentEvent::RunSummary {
+                    cell_id: String::from("cell-usage"),
+                    chat: false,
+                    tools: Vec::new(),
+                    model_calls: 1,
+                    model_calls_refused: 0,
+                    peak_input_tokens: 11,
+                    output_tokens: 3,
+                })
+            );
+        }
 
         let _ = std::fs::remove_dir_all(&usage);
     }
@@ -2436,6 +2467,15 @@ mod gate_scope_tests {
         };
         let usage =
             std::env::temp_dir().join(format!("hatchling-serve-limit-{}", std::process::id()));
+        let mut trail =
+            crate::run_trail::Trail::new(None, "session", "cell-limit").counting_in(&usage);
+        let limit = |daily| {
+            let limits = hatchling_core::ui::UsageLimits {
+                daily_tokens: Some(daily),
+                monthly_tokens: None,
+            };
+            crate::usage::set_limits(&usage, &limits).unwrap();
+        };
         let _ = std::fs::remove_dir_all(&usage);
         crate::usage::count(
             &usage,
@@ -2455,16 +2495,17 @@ mod gate_scope_tests {
             },
             hatchling_scheduler::Timestamp::now().as_second(),
         );
-        crate::usage::set_limits(
-            &usage,
-            &hatchling_core::ui::UsageLimits {
-                daily_tokens: Some(14),
-                monthly_tokens: None,
-            },
+        limit(14);
+        let refused = handle_egress_op(
+            &proxy,
+            &egress,
+            &call(),
+            &cell_id,
+            1000,
+            &mut pages,
+            &mut trail,
         )
         .unwrap();
-        let refused =
-            handle_egress_op(&proxy, &egress, &call(), &cell_id, 1000, &mut pages, &usage).unwrap();
         assert_eq!(refused, EgressResult::Denied);
         // What isn't a model call still goes.
         let listing = EgressOp::Egress {
@@ -2477,22 +2518,32 @@ mod gate_scope_tests {
             staged: 0,
         };
         let forwarded = handle_egress_op(
-            &proxy, &egress, &listing, &cell_id, 1000, &mut pages, &usage,
+            &proxy, &egress, &listing, &cell_id, 1000, &mut pages, &mut trail,
         )
         .unwrap();
         assert_eq!(forwarded, EgressResult::EgressError);
         // Under it, the model call goes again.
-        crate::usage::set_limits(
-            &usage,
-            &hatchling_core::ui::UsageLimits {
-                daily_tokens: Some(15),
-                monthly_tokens: None,
-            },
+        limit(15);
+        let tried = handle_egress_op(
+            &proxy,
+            &egress,
+            &call(),
+            &cell_id,
+            1000,
+            &mut pages,
+            &mut trail,
         )
         .unwrap();
-        let tried =
-            handle_egress_op(&proxy, &egress, &call(), &cell_id, 1000, &mut pages, &usage).unwrap();
         assert_eq!(tried, EgressResult::EgressError);
+        // The session's trail holds the refusal, and no call answered.
+        assert!(matches!(
+            trail.summary(),
+            Some(hatchling_core::SubagentEvent::RunSummary {
+                model_calls: 0,
+                model_calls_refused: 1,
+                ..
+            })
+        ));
         let _ = std::fs::remove_dir_all(&usage);
     }
 }
