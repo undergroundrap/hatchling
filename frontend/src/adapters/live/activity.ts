@@ -143,7 +143,7 @@ function toolRow(trail: Trail, laneId: string, tally: ToolTally): ActivityRow {
     const served = tally.done + tally.asked;
     const status: Verdict = tally.refused + tally.failed === 0 ? 'success' : served === 0 ? 'failed' : 'partial';
     const said = endings(tally);
-    return { id: `${trail.id}:${tally.tool}`, workId: trail.id, laneId, title: what, subtitle: said, icon: status === 'success' ? 'check' : 'warning', report: `${what}: ${said}. Hatchling counted each use as it answered it, never from what the agent said.`, startedAt: trail.startedAt, endedAt: trail.lastAt, durationMs: null, outputFailed: status === 'failed', status, phase: 'action' };
+    return { id: `${trail.id}:${tally.tool}`, workId: `${trail.id}:${tally.tool}`, laneId, title: what, subtitle: said, icon: status === 'success' ? 'check' : 'warning', report: `${what}: ${said}. Hatchling counted each use as it answered it, never from what the agent said.`, startedAt: trail.startedAt, endedAt: trail.lastAt, durationMs: null, outputFailed: status === 'failed', status, phase: 'action' };
 }
 /** The model's row: its calls, the largest prompt, and any it was refused. */
 function modelRow(trail: Trail, laneId: string): ActivityRow {
@@ -153,7 +153,7 @@ function modelRow(trail: Trail, laneId: string): ActivityRow {
     const room = trail.modelCalls === 0 ? '' : ` Its largest prompt was ${trail.peakInputTokens} tokens, which is how full the model's context got; it wrote ${trail.outputTokens} tokens in all.`;
     const limit = trail.modelCallsRefused === 0 ? '' : ` Hatchling refused ${count(trail.modelCallsRefused, 'call', 'calls')} past a usage limit you set.`;
     const status: Verdict = trail.modelCallsRefused === 0 ? 'success' : 'partial';
-    return { id: `${trail.id}:model`, workId: trail.id, laneId, title: 'Called the model', subtitle, icon: status === 'success' ? 'check' : 'warning', report: `The run made ${calls}, as the model server reported them.${room}${limit}`, startedAt: trail.startedAt, endedAt: trail.lastAt, durationMs: null, outputFailed: false, status, phase: 'action' };
+    return { id: `${trail.id}:model`, workId: `${trail.id}:model`, laneId, title: 'Called the model', subtitle, icon: status === 'success' ? 'check' : 'warning', report: `The run made ${calls}, as the model server reported them.${room}${limit}`, startedAt: trail.startedAt, endedAt: trail.lastAt, durationMs: null, outputFailed: false, status, phase: 'action' };
 }
 function projectTrail(trail: Trail): ActivityThread {
     const laneId = `${trail.id}:agent`;

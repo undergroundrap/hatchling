@@ -10,7 +10,7 @@ import { conforms } from '../../dist/app/adapters/live/protocol/conform.js';
 import { decodeResponse, encodeRequest, isUiRequest, isUiResponse } from '../../dist/app/adapters/live/protocol/decode.js';
 import { UI_SCHEMA_VERSION } from '../../dist/app/adapters/live/protocol/generated.js';
 import { between, clockTime, count, inertLinks, quoted } from '../../dist/app/adapters/live/text.js';
-import { stepOutcome } from '../../dist/app/features/activity/timeline.js';
+import { stepOutcome, timelineGroups } from '../../dist/app/features/activity/timeline.js';
 import { ApprovalReview } from '../../dist/app/features/approvals/review.js';
 import { markdown } from '../../dist/app/components/markdown.js';
 import { validThreadCopy } from '../../dist/app/protocol/rules.js';
@@ -336,6 +336,7 @@ test('a run\'s trail is a thread of its own: a row per tool by how its uses ende
         ['Read a web page', '1 refused · 1 failed', 'failed', true, 'warning'],
         ['Called the model', '3 model calls · largest prompt 5.4K tokens', 'success', false, 'check'],
     ]);
+    assert.deepEqual(timelineGroups(chat).flatMap(group => group.rows.map(row => row.title)), ['Read your goals', 'Asked to remember something', 'Read a web page', 'Called the model'], 'each row is its own step on the timeline');
     assert.equal(chat.lanes[0].rows[0].report, 'Read your goals: 1 done. Hatchling counted each use as it answered it, never from what the agent said.');
     assert.equal(chat.lanes[0].rows[3].report, 'The run made 3 model calls, as the model server reported them. Its largest prompt was 5432 tokens, which is how full the model\'s context got; it wrote 310 tokens in all.');
     assert.deepEqual([background.name, background.subtitle, 'chatId' in background], ['What background work did', '0 tools · 1 model call', false]);
