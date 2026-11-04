@@ -11,9 +11,9 @@
 //! subagent can't, so a page or message that misleads one of those can't
 //! fill the owner's page. At most [`MAX_WAITING`] wait at once.
 //!
-//! The page is one file beside the schedule store (`<scheduler dir>.ideas`),
-//! `0600`, rewritten whole through a sibling `.next` file: the newest
-//! [`MAX_KEPT`].
+//! The page is one file in the broker's directory of the owner's records
+//! (`<scheduler dir>.owner/ideas`), `0600`, rewritten whole through a
+//! sibling `.next` file: the newest [`MAX_KEPT`].
 
 use std::fs::OpenOptions;
 use std::io::Write as _;
@@ -114,7 +114,7 @@ fn suggest_from(config: &Config, op: &SuggestOp) -> SuggestResult {
         return unasked("Hatchling couldn't keep it; its log says why.");
     };
     // Where `SchedulerConfig::ideas_log` puts it, for the broker's store.
-    let path = run.root.with_extension("ideas");
+    let path = crate::config::owner_dir_of(&run.root).join("ideas");
     let _held = WRITES.lock().unwrap_or_else(PoisonError::into_inner);
     let mut page = match read(&path) {
         Ok(page) => page,

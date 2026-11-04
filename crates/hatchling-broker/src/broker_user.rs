@@ -73,8 +73,9 @@ pub fn act_for_broker(config: &Config) -> Result<(), Error> {
 }
 
 /// The broker's state that isn't a sealed store, and is a directory:
-/// memory's and goals' roots, the scheduler's run directories, and the
-/// model usage it counts beside them, each when it is on.
+/// memory's and goals' roots, the scheduler's run directories and the
+/// owner's records, and the model usage it counts beside them, each when it
+/// is on.
 #[must_use]
 pub fn state_dirs(config: &Config) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = [&config.memory.root, &config.goals.root]
@@ -84,6 +85,7 @@ pub fn state_dirs(config: &Config) -> Vec<PathBuf> {
         .collect();
     if config.scheduler.enabled() {
         dirs.push(config.scheduler.run_root());
+        dirs.push(config.scheduler.owner_dir());
     }
     // Beside the store too, where the broker's user may not make it.
     if !config.scheduler.usage.as_os_str().is_empty() {
@@ -92,20 +94,13 @@ pub fn state_dirs(config: &Config) -> Vec<PathBuf> {
     dirs
 }
 
-/// The broker's state that is a file, when the scheduler is on.
-///
-/// The scheduler's activity log, the owner's decisions, and their Feed and
-/// Ideas pages. They sit beside the store, where the broker's user may not
-/// make them.
+/// The broker's state that is a file: the scheduler's activity log, when
+/// it is on. It sits beside the store, where the broker's user may not
+/// make it.
 #[must_use]
 pub fn state_files(config: &Config) -> Vec<PathBuf> {
     if config.scheduler.enabled() {
-        vec![
-            config.scheduler.activity_log(),
-            config.scheduler.decisions_log(),
-            config.scheduler.feed_log(),
-            config.scheduler.ideas_log(),
-        ]
+        vec![config.scheduler.activity_log()]
     } else {
         Vec::new()
     }
@@ -226,6 +221,7 @@ mod tests {
                 PathBuf::from("/srv/h/memory"),
                 PathBuf::from("/srv/h/goals"),
                 PathBuf::from("/srv/h/schedules.runs"),
+                PathBuf::from("/srv/h/schedules.owner"),
                 PathBuf::from("/srv/h/schedules.usage"),
             ]
         );
@@ -233,9 +229,6 @@ mod tests {
             state_files(&config),
             [
                 PathBuf::from("/srv/h/schedules.activity"),
-                PathBuf::from("/srv/h/schedules.decisions"),
-                PathBuf::from("/srv/h/schedules.feed"),
-                PathBuf::from("/srv/h/schedules.ideas")
             ]
         );
     }

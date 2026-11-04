@@ -2,7 +2,7 @@
 //! were shown it, so the app's history survives a restart.
 //!
 //! A line per decision in one file beside the schedule store
-//! (`<scheduler dir>.decisions`): when, the card's summary and fields, and
+//! (`<scheduler dir>.owner/decisions`): when, the card's summary and fields, and
 //! the decision. Only what the owner was shown, which the broker already
 //! held; nothing an approval ran. Bounded as every [`crate::kept_log`] is:
 //! past [`MAX_LINES`] it keeps the newest [`MAX_KEPT`].
