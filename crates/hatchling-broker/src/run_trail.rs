@@ -762,20 +762,21 @@ mod tests {
         let _ = std::fs::remove_file(&log);
     }
 
-    /// The window in each event written to `log`, in order: `None` for
-    /// an event that isn't a summary.
-    fn windows_in(log: &Path) -> Vec<Option<Option<u32>>> {
-        std::fs::read_to_string(log)
-            .unwrap()
+    /// The window in each summary written to `log`, in order, and how
+    /// many events it holds in all.
+    fn windows_in(log: &Path) -> (Vec<Option<u32>>, usize) {
+        let text = std::fs::read_to_string(log).unwrap();
+        let windows = text
             .lines()
-            .map(|line| {
+            .filter_map(|line| {
                 let event: ActivityEvent = serde_json::from_str(line).unwrap();
                 let SubagentEvent::RunSummary { context_window, .. } = event.kind else {
                     return None;
                 };
                 Some(context_window)
             })
-            .collect()
+            .collect();
+        (windows, text.lines().count())
     }
 
     /// A session that called the model asks its server the window when
@@ -822,7 +823,7 @@ mod tests {
         drop(unasked);
         assert_eq!(
             windows_in(&log),
-            [Some(Some(32768)), Some(Some(16384)), Some(Some(32768)), Some(Some(32768))]
+            (vec![Some(32768), Some(16384), Some(32768), Some(32768)], 4)
         );
         let _ = std::fs::remove_file(&log);
     }

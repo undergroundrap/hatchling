@@ -1141,7 +1141,14 @@ mod tests {
             Some("mistral"),
         );
         assert!(matches!(missing, Finding::Problem { .. }));
-        assert_eq!(served.join().unwrap().len(), 1, "a missing model isn't asked about");
+        // The window's answer is still there for the next asker: doctor
+        // didn't ask for it.
+        assert_eq!(ask(&address, "/mine").unwrap(), Some(b"{\"models\":[]}".to_vec()));
+        let heads = served.join().unwrap();
+        assert!(
+            heads.get(1).is_some_and(|head| head.starts_with("GET /mine ")),
+            "a missing model isn't asked about: {heads:?}"
+        );
         let hosted = Finding::Unchecked(String::from("hosted"));
         assert_eq!(
             with_window(hosted.clone(), Some("https://api.example/v1"), Some("m")),
