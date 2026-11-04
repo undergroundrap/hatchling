@@ -443,7 +443,7 @@ mod tests {
         // A page whose directory is gone can't be written.
         std::fs::remove_file(&path).unwrap();
         let mut gone = config(&dir.join("missing"), Some("local"));
-        gone.scheduler.followup = chat.scheduler.followup.clone();
+        gone.scheduler.followup = chat.scheduler.followup;
         assert!(reason(&suggest(&gone, &idea("x"))).contains("couldn't keep it"));
         assert_eq!(handle(&gone, &SuggestionOp::Start { id: String::from("idea-x") }), SuggestionResult::NotFound);
         let _ = std::fs::remove_dir_all(&dir);

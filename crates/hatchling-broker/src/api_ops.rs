@@ -193,8 +193,7 @@ impl<'a> Ops<'a> {
                     ApiOutcome::Served,
                 )
             }
-            // A list shows what the caller's own grants cover: the owner's
-            // own, their Feed page's schedules too.
+            // A list shows what the caller's own grants cover (the owner's, their pages').
             UiAction::ManageSchedule {
                 op: ScheduleOp::List { after },
             } => (

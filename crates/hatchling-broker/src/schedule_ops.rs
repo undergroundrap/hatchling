@@ -191,9 +191,11 @@ pub fn ideas_send() -> ScheduleGrant {
     }
 }
 
-/// What a schedule the owner makes may hold: every grant the broker holds,
-/// and delivering to their Feed and Ideas pages, which are theirs alone. No
-/// session holds those, so no agent's schedule can deliver there.
+/// What a schedule the owner makes may hold.
+///
+/// Every grant the broker holds, and delivering to their Feed and Ideas
+/// pages, which are theirs alone. No session holds those, so no agent's
+/// schedule can deliver there.
 #[must_use]
 pub fn owner_schedule_grants(config: &Config) -> BTreeSet<ScheduleGrant> {
     let mut grants = held_grants(config);
