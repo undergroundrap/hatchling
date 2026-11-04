@@ -381,8 +381,26 @@ jobs:
           python3 scripts/upgrade_state.py verify /var/lib/hatchling/api.sock "$RUNNER_TEMP/state.json"
           timeout 180 python3 docs/examples/first-run.py /var/lib/hatchling/api.sock
           sudo hatchling-broker doctor
-          # The kept configuration gained what this version keeps for you,
-          # and the old one was backed up.
+
+      - name: Upgrade a configuration from before the kept stores
+        run: |
+          # The last release may already keep the conversation, goals and
+          # memory, so the upgrade above can have nothing to add. Take them
+          # out of the kept configuration, as one from 0.5.0 had none of
+          # them, and install again: the installer must add each back with
+          # its grants, back up the old file, and lose no state.
+          sudo sed -i -E \
+            -e '/^HATCHLING_(CONVERSATION_DIR|GOALS_DIR|GOALS_GRANTS|MEMORY_DIR|MEMORY_GRANTS)=/d' \
+            -e '/^HATCHLING_API_GRANTS=/s/,(goals|memory):[^,]*//g' \
+            /etc/hatchling/hatchling.env
+          if sudo grep -qE '^HATCHLING_(GOALS|MEMORY)_|(goals|memory):' /etc/hatchling/hatchling.env; then
+            echo "the kept stores weren't all taken out"; exit 1
+          fi
+          sudo scripts/install.sh --from "$RUNNER_TEMP/files" --model-endpoint http://localhost:18089/v1 --model stand-in > "$RUNNER_TEMP/install-keep-up.log"
+          grep -q 'added what this version keeps for you' "$RUNNER_TEMP/install-keep-up.log"
+          python3 scripts/upgrade_state.py verify /var/lib/hatchling/api.sock "$RUNNER_TEMP/state.json"
+          timeout 180 python3 docs/examples/first-run.py /var/lib/hatchling/api.sock
+          sudo hatchling-broker doctor
           sudo grep -q '^HATCHLING_CONVERSATION_DIR=/' /etc/hatchling/hatchling.env
           sudo grep -q '^HATCHLING_GOALS_DIR=/' /etc/hatchling/hatchling.env
           sudo grep -q '^HATCHLING_GOALS_GRANTS=query-goals' /etc/hatchling/hatchling.env
