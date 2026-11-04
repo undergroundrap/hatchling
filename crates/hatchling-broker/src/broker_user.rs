@@ -228,9 +228,7 @@ mod tests {
         );
         assert_eq!(
             state_files(&config),
-            [
-                PathBuf::from("/srv/h/schedules.activity"),
-            ]
+            [PathBuf::from("/srv/h/schedules.activity"),]
         );
     }
 

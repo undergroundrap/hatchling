@@ -74,10 +74,12 @@ pub fn append<T: Serialize>(path: &Path, record: &T) -> std::io::Result<()> {
 pub fn ensure_parent(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::DirBuilderExt as _;
     match path.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() && !parent.is_dir() => std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(parent),
+        Some(parent) if !parent.as_os_str().is_empty() && !parent.is_dir() => {
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(parent)
+        }
         _ => Ok(()),
     }
 }
@@ -196,7 +198,11 @@ mod tests {
         let made = dir.join("owner").join("feed");
         append(&made, &1_u32).unwrap();
         assert_eq!(
-            std::fs::metadata(dir.join("owner")).unwrap().permissions().mode() & 0o777,
+            std::fs::metadata(dir.join("owner"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
             0o700
         );
         assert!(list::<u32>(&path).is_empty());
