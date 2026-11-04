@@ -33,7 +33,7 @@ export interface FeedSchedules {
 export function postOf(post: KeptPost): FeedPost {
     const text = post.text.trim();
     const newline = text.indexOf('\n');
-    const first = (newline < 0 ? text : text.slice(0, newline)).replace(/^#+\s*/, '').replace(/^\*\*(.+)\*\*$/, '$1').trim();
+    const first = (newline < 0 ? text : text.slice(0, newline)).replace(/^#+\s*/, '').replace(/^\*\*(.+)\*\*$/, '$1').replace(/^title:\s*/i, '').trim();
     const rest = newline < 0 ? '' : text.slice(newline + 1).trim();
     const written = new Date(post.written_at);
     return {

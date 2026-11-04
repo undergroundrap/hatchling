@@ -71,6 +71,9 @@ test('a kept post reads as a title and a post, the first line the title', () => 
     assert.match(post.reason, /feed prompt/);
     assert.match(post.reason, /wasn’t sent anywhere/);
     assert.equal(postOf(kept('p', '**Bold title**\nBody')).title, 'Bold title');
+    // A small model labels its title; the label isn't the title.
+    assert.equal(postOf(kept('p', 'Title: Morning Note\nBody')).title, 'Morning Note');
+    assert.equal(postOf(kept('p', '## title:  Morning Note\nBody')).title, 'Morning Note');
     // One line is the post, under a plain title.
     assert.deepEqual([postOf(kept('p', '  Just this.  ')).title, postOf(kept('p', 'Just this.')).body], ['Your post', 'Just this.']);
     assert.equal(postOf(kept('p', 'x', 'not a time')).date, 'Undated');
