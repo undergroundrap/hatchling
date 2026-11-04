@@ -186,15 +186,20 @@ pub fn handle(config: &Config, op: &SuggestionOp) -> SuggestionResult {
     }
 }
 
-/// The page at `path`: none when there's no file yet.
+/// The page at `path`: none when there's no file yet, or it's empty.
 fn read(path: &Path) -> std::io::Result<Vec<Suggestion>> {
     let file = match std::fs::File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error),
     };
-    if file.metadata()?.len() > MAX_FILE_BYTES {
+    let len = file.metadata()?.len();
+    if len > MAX_FILE_BYTES {
         return Err(std::io::Error::other("the Ideas page is too large to read"));
+    }
+    // The install makes the file empty, for the broker's user to write.
+    if len == 0 {
+        return Ok(Vec::new());
     }
     serde_json::from_reader(std::io::BufReader::new(file)).map_err(std::io::Error::other)
 }
@@ -480,6 +485,11 @@ mod tests {
         let dir = scratch("broken");
         let chat = config(&dir, Some("local"));
         let path = chat.scheduler.ideas_log();
+        // The install makes it empty: an empty page, which takes ideas.
+        std::fs::write(&path, "").unwrap();
+        assert!(listed(&chat).is_empty());
+        assert_eq!(handle(&chat, &SuggestionOp::List), SuggestionResult::Listed { suggestions: Vec::new() });
+        assert_eq!(suggest(&chat, &idea("x")), SuggestResult::Suggested);
         std::fs::write(&path, "not a page").unwrap();
         assert!(reason(&suggest(&chat, &idea("x"))).contains("couldn't keep it"));
         assert_eq!(handle(&chat, &SuggestionOp::List), SuggestionResult::Failed);

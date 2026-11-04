@@ -117,7 +117,7 @@ test('a read that fails says why, and a later one recovers', async () => {
         assert.equal(live.current().kind, 'failed');
         said.push(live.current().detail);
     }
-    assert.deepEqual(said, ['Not connected.', 'This connection may not read the Ideas page.', 'Hatchling answered with something else.', 'Hatchling keeps no Ideas page here: scheduled work is off.', 'Hatchling couldn’t change the Ideas page. `sudo hatchling-broker doctor` checks the install.', 'Hatchling answered with something else.']);
+    assert.deepEqual(said, ['Not connected.', 'This connection may not read the Ideas page.', 'Hatchling answered with something else.', 'Hatchling keeps no Ideas page here: scheduled work is off.', 'Hatchling couldn’t read or change the Ideas page. `sudo hatchling-broker doctor` checks the install.', 'Hatchling answered with something else.']);
     await live.refresh();
     assert.equal(live.current().kind, 'read');
 });
@@ -137,7 +137,7 @@ test('the owner starts, sets aside and brings back an idea, and the page is read
     assert.deepEqual(await live.act('idea-1', 'dismiss'), { ok: true, message: 'Set aside.' });
     assert.deepEqual(await live.act('idea-1', 'restore'), { ok: true, message: 'It’s back in For you.' });
     assert.deepEqual(await live.act('idea-9', 'start'), { ok: false, message: 'This idea is gone.' });
-    assert.match((await live.act('idea-1', 'start')).message, /couldn’t change the Ideas page/);
+    assert.match((await live.act('idea-1', 'start')).message, /couldn’t read or change the Ideas page/);
     assert.deepEqual(await live.act('idea-1', 'start'), { ok: false, message: 'No answer came.' });
 });
 test('asking for ideas now is a one-off run for the page, a few seconds out; it reads and suggests, nothing else', async () => {
