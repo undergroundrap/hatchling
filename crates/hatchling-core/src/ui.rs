@@ -466,6 +466,91 @@ pub struct ConfirmationRequest {
 /// may point a schedule at it.
 pub const FEED_PAGE: &str = "feed";
 
+/// The owner's Ideas page as a schedule's delivery target: a run for it
+/// suggests ideas there, and its answer goes nowhere. Only the owner may
+/// point a schedule at it.
+pub const IDEAS_PAGE: &str = "ideas";
+
+/// Where a suggestion on the Ideas page stands.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum SuggestionState {
+    /// Waiting for the owner.
+    Suggested,
+    /// The owner started it: their chat box was filled with it.
+    Started,
+    /// The owner set it aside.
+    Dismissed,
+}
+
+/// A suggestion on the owner's Ideas page: the agent's words, all of it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct Suggestion {
+    /// Its id.
+    pub suggestion_id: String,
+    /// Its title.
+    pub title: String,
+    /// What it would do.
+    pub summary: String,
+    /// Why it would help them, as the agent said.
+    pub why: String,
+    /// Where it would help.
+    pub area: crate::messages::SuggestionArea,
+    /// When it was suggested, RFC 3339.
+    pub suggested_at: String,
+    /// Where it stands.
+    pub state: SuggestionState,
+}
+
+/// An operation on the owner's Ideas page, from their app.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum SuggestionOp {
+    /// List the suggestions, the newest first.
+    List,
+    /// Mark one started: the owner took it to their chat.
+    Start {
+        /// It, as listed.
+        id: String,
+    },
+    /// Set one aside.
+    Dismiss {
+        /// It, as listed.
+        id: String,
+    },
+    /// Bring one set aside back.
+    Restore {
+        /// It, as listed.
+        id: String,
+    },
+}
+
+/// The result of a [`SuggestionOp`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum SuggestionResult {
+    /// The suggestions, the newest first.
+    Listed {
+        /// They.
+        suggestions: Vec<Suggestion>,
+    },
+    /// It was changed: as it now stands.
+    Changed {
+        /// It.
+        suggestion: Suggestion,
+    },
+    /// No suggestion has the id.
+    NotFound,
+    /// The broker keeps no Ideas page: scheduled work is off.
+    Off,
+    /// The broker couldn't read or change the page; its log says why.
+    Failed,
+}
+
 /// A post on the owner's Feed page: what one scheduled run wrote for it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -1151,6 +1236,12 @@ pub enum UiAction {
     /// Read the posts on the owner's Feed page, the newest first: the
     /// owner's alone.
     ReadFeed {},
+    /// List, start, dismiss or restore the suggestions on the owner's
+    /// Ideas page: the owner's alone.
+    ManageSuggestions {
+        /// The operation.
+        op: SuggestionOp,
+    },
     /// Give the one-time code a browser session's page asks for (WO-030):
     /// typed into the page by the broker, used once and not kept.
     GiveCode {
@@ -1316,6 +1407,11 @@ pub enum UiActionResult {
     Feed {
         /// They.
         posts: Vec<FeedPost>,
+    },
+    /// An Ideas page operation's result.
+    Suggestions {
+        /// The result.
+        outcome: SuggestionResult,
     },
     /// The code was taken: the broker types it into the page next.
     CodeTaken {
@@ -2312,6 +2408,55 @@ mod tests {
             },
             &json!({"action": "manage_sign_ins", "op": {"op": "delete", "sign_in_id": "cred-1"}}),
         );
+    }
+
+    #[test]
+    fn suggestions_are_managed_by_id_and_read_as_the_agents_words() {
+        pinned(
+            &UiAction::ManageSuggestions {
+                op: SuggestionOp::Start { id: s("idea-1") },
+            },
+            &json!({"action": "manage_suggestions", "op": {"op": "start", "id": "idea-1"}}),
+        );
+        pinned(
+            &UiAction::ManageSuggestions {
+                op: SuggestionOp::List,
+            },
+            &json!({"action": "manage_suggestions", "op": {"op": "list"}}),
+        );
+        pinned(
+            &UiActionResult::Suggestions {
+                outcome: SuggestionResult::Listed {
+                    suggestions: vec![Suggestion {
+                        suggestion_id: s("idea-1"),
+                        title: s("A morning run plan"),
+                        summary: s("A week of short runs."),
+                        why: s("You set a goal to run 5k."),
+                        area: crate::messages::SuggestionArea::Health,
+                        suggested_at: s("2026-11-04T08:30:00Z"),
+                        state: SuggestionState::Suggested,
+                    }],
+                },
+            },
+            &json!({"result": "suggestions", "outcome": {"result": "listed", "suggestions": [{
+                "suggestion_id": "idea-1",
+                "title": "A morning run plan",
+                "summary": "A week of short runs.",
+                "why": "You set a goal to run 5k.",
+                "area": "health",
+                "suggested_at": "2026-11-04T08:30:00Z",
+                "state": "suggested"
+            }]}}),
+        );
+        for (outcome, tag) in [
+            (SuggestionResult::NotFound, "not_found"),
+            (SuggestionResult::Off, "off"),
+            (SuggestionResult::Failed, "failed"),
+        ] {
+            let wire = serde_json::to_value(UiActionResult::Suggestions { outcome }).unwrap();
+            assert_eq!(wire.pointer("/outcome/result"), Some(&json!(tag)), "{wire}");
+        }
+        assert_eq!(IDEAS_PAGE, "ideas");
     }
 
     #[test]

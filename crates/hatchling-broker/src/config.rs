@@ -227,6 +227,14 @@ pub struct FollowupScope {
     pub depth: u32,
 }
 
+/// The directory of the owner's records beside the schedule store at
+/// `root`: `<root>.owner`. A run's session finds it from its follow-up
+/// scope's root, since its own config doesn't name the store.
+#[must_use]
+pub fn owner_dir_of(root: &Path) -> PathBuf {
+    root.with_extension("owner")
+}
+
 impl SchedulerConfig {
     /// Scheduling off.
     #[must_use]
@@ -252,18 +260,33 @@ impl SchedulerConfig {
         self.root.with_extension("runs")
     }
 
-    /// Where the owner's decisions are kept: the store root's sibling
-    /// `<root>.decisions`, one per line ([`crate::decisions`]).
+    /// The broker's own directory of the owner's records, beside the store:
+    /// `<root>.owner`, which the broker's user owns, so a record can be
+    /// rewritten whole there ([`owner_dir_of`]).
     #[must_use]
-    pub fn decisions_log(&self) -> PathBuf {
-        self.root.with_extension("decisions")
+    pub fn owner_dir(&self) -> PathBuf {
+        owner_dir_of(&self.root)
     }
 
-    /// Where the owner's Feed page is kept: the store root's sibling
-    /// `<root>.feed`, a post per line ([`crate::feed_page`]).
+    /// Where the owner's decisions are kept: `decisions` in
+    /// [`Self::owner_dir`], one per line ([`crate::decisions`]).
+    #[must_use]
+    pub fn decisions_log(&self) -> PathBuf {
+        self.owner_dir().join("decisions")
+    }
+
+    /// Where the owner's Ideas page is kept: `ideas` in
+    /// [`Self::owner_dir`] ([`crate::suggestions`]).
+    #[must_use]
+    pub fn ideas_log(&self) -> PathBuf {
+        self.owner_dir().join("ideas")
+    }
+
+    /// Where the owner's Feed page is kept: `feed` in
+    /// [`Self::owner_dir`], a post per line ([`crate::feed_page`]).
     #[must_use]
     pub fn feed_log(&self) -> PathBuf {
-        self.root.with_extension("feed")
+        self.owner_dir().join("feed")
     }
 
     /// Where subagent activity is recorded: the store root's
@@ -1365,7 +1388,8 @@ fn parse_scheduler(
     }
     let runs = root.with_extension("runs");
     let usage = root.with_extension("usage");
-    for dir in [&root, &runs, &usage] {
+    let owner = owner_dir_of(&root);
+    for dir in [&root, &runs, &usage, &owner] {
         if dir.starts_with(vault_root) || vault_root.starts_with(dir) {
             return Err(invalid(format!(
                 "scheduler dir {} overlaps the vault root {}: a vault grant could reach it",

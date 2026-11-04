@@ -201,7 +201,8 @@ fn invoke(stream: &UnixStream, skill: &str, capability: &str) -> io::Result<Skil
         | SessionResponse::Space(_)
         | SessionResponse::Subagent(_)
         | SessionResponse::Web(_)
-        | SessionResponse::Browser(_) => Err(io::Error::new(
+        | SessionResponse::Browser(_)
+        | SessionResponse::Suggest(_) => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "broker gave a non-skill reply to a skill op",
         )),

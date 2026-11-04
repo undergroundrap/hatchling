@@ -99,6 +99,8 @@ pub enum ApiRequest {
     ReadUsage,
     /// [`UiAction::ReadFeed`].
     ReadFeed,
+    /// [`UiAction::ManageSuggestions`].
+    ManageSuggestions,
     /// [`UiAction::GiveCode`].
     GiveCode,
     /// [`UiAction::DeclineCode`].
@@ -142,6 +144,7 @@ impl ApiRequest {
             UiAction::ListDecisions {} => Self::ListDecisions,
             UiAction::ReadUsage {} => Self::ReadUsage,
             UiAction::ReadFeed {} => Self::ReadFeed,
+            UiAction::ManageSuggestions { .. } => Self::ManageSuggestions,
             UiAction::GiveCode { .. } => Self::GiveCode,
             UiAction::DeclineCode { .. } => Self::DeclineCode,
         }
@@ -326,6 +329,12 @@ mod tests {
             ),
             (action(UiAction::ReadUsage {}), ApiRequest::ReadUsage),
             (action(UiAction::ReadFeed {}), ApiRequest::ReadFeed),
+            (
+                action(UiAction::ManageSuggestions {
+                    op: crate::ui::SuggestionOp::List,
+                }),
+                ApiRequest::ManageSuggestions,
+            ),
             (
                 action(UiAction::GiveCode {
                     session_id: id(),

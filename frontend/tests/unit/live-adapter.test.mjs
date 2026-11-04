@@ -46,7 +46,7 @@ const replay = (transport, frames = SAMPLE_EVENTS) => {
 const answer = (transport, request_id, result) => transport.deliver({ type: 'action_result', request_id, result });
 const flush = () => new Promise(resolve => setImmediate(resolve));
 // The actions the app sent besides what it reads each time it connects: allowed and signed-in sites, schedules, goals, and usage.
-const sentActions = transport => transport.sent.filter(frame => frame.type === 'action' && !['read_usage', 'read_feed'].includes(frame.action.action) && !(['manage_sites', 'manage_profiles', 'manage_sign_ins', 'manage_schedule', 'manage_goals', 'manage_memory'].includes(frame.action.action) && frame.action.op.op === 'list') && frame.action.action !== 'list_decisions');
+const sentActions = transport => transport.sent.filter(frame => frame.type === 'action' && !['read_usage', 'read_feed'].includes(frame.action.action) && !(['manage_suggestions', 'manage_sites', 'manage_profiles', 'manage_sign_ins', 'manage_schedule', 'manage_goals', 'manage_memory'].includes(frame.action.action) && frame.action.op.op === 'list') && frame.action.action !== 'list_decisions');
 const thread = adapter => adapter.getSnapshot().threads[0];
 const lane = (adapter, id) => thread(adapter).lanes.find(item => item.id === id);
 const confirmation = (seq, revision, summary = 'Post the sample summary?') => sampleEvent(seq, seq, { kind: 'confirmation', confirmation_id: 'confirm-1', revision, chat_id: 'main', summary, expires_at: null, digest: `digest-${revision}`, fields: [{ label: 'Operation', value: summary, source: 'broker' }, { label: 'Text', value: 'Sample text.', source: 'agent' }] });
@@ -461,6 +461,37 @@ test('the Feed page: its prompt is a daily schedule that posts there, a post now
     await flush();
     assert.deepEqual(adapter.getSnapshot().posts.map(post => post.id), ['post-2', 'post-1']);
     assert.deepEqual(adapter.feed.current(), { kind: 'read', setup: { prompt: 'Shorter.', time: '08:30', when: 'Every day at 08:30 (UTC)' }, writing: false });
+});
+test('the Ideas page: the agent\'s suggestions, started, set aside and brought back by id, and read again when a run ends', async () => {
+    const { transport, adapter } = connected();
+    const last = action => transport.sent.filter(frame => frame.type === 'action' && frame.action.action === action).at(-1);
+    const suggestion = (state = 'suggested') => ({ suggestion_id: 'idea-1', title: 'A run plan', summary: 'A week of short runs.', why: 'You set a goal to run 5k.', area: 'health', suggested_at: '2026-11-04T13:30:00Z', state });
+    const page = async (suggestions) => {
+        answer(transport, last('manage_suggestions').request_id, { result: 'suggestions', outcome: { result: 'listed', suggestions } });
+        await flush();
+    };
+    await page([suggestion()]);
+    assert.deepEqual(adapter.getSnapshot().ideas.map(idea => [idea.id, idea.title, idea.domain, idea.state]), [['idea-1', 'A run plan', 'Health & fitness', 'suggested']]);
+    assert.deepEqual(adapter.ideas.current(), { kind: 'read', suggesting: false });
+    for (const [type, op, state] of [['idea.activate', 'start', 'started'], ['idea.dismiss', 'dismiss', 'dismissed'], ['idea.restore', 'restore', 'suggested']]) {
+        const acting = adapter.execute({ type, id: 'idea-1' });
+        assert.deepEqual(transport.last().action, { action: 'manage_suggestions', op: { op, id: 'idea-1' } });
+        answer(transport, transport.last().request_id, { result: 'suggestions', outcome: { result: 'changed', suggestion: suggestion(state) } });
+        await flush();
+        await page([suggestion(state)]);
+        assert.equal((await acting).ok, true, type);
+    }
+    const sent = transport.sent.length;
+    assert.match((await adapter.execute({ type: 'idea.edit', id: 'idea-1', summary: 'x' })).message, /Start it, and change what it says/);
+    assert.equal(transport.sent.length, sent, 'an idea is never rewritten as the owner\'s');
+    transport.deliver(sampleEvent(1, 1, { kind: 'schedule', outcome: 'completed', schedule_id: 'sch-1' }));
+    await flush();
+    answer(transport, transport.sent.filter(frame => frame.type === 'action' && frame.action.action === 'manage_schedule' && frame.action.op.op === 'list').at(-1).request_id, { result: 'schedule', outcome: { result: 'listed', schedules: [] } });
+    await flush();
+    answer(transport, transport.sent.filter(frame => frame.type === 'action' && frame.action.action === 'manage_schedule' && frame.action.op.op === 'list-parked').at(-1).request_id, { result: 'schedule', outcome: { result: 'parked', parked: [] } });
+    await flush();
+    await page([]);
+    assert.deepEqual(adapter.getSnapshot().ideas, []);
 });
 test('a closed connection\'s late callbacks are ignored', () => {
     const transport = new FakeTransport();

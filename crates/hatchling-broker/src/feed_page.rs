@@ -5,7 +5,8 @@
 //! other, with the grants they gave it; its task is their prompt, framed by
 //! [`task`] so the answer reads as one post. Its answer isn't sent anywhere:
 //! the output gate judges it as for the chat, and it's kept here, a line per
-//! post beside the schedule store (`<scheduler dir>.feed`), the newest 200.
+//! post in the broker's directory of the owner's records
+//! (`<scheduler dir>.owner/feed`), the newest 200.
 //! The app reads them with `ReadFeed`.
 //!
 //! Only the owner may point a schedule here: sending to the page is a grant
@@ -87,6 +88,7 @@ mod tests {
                 .is_ok()
         );
         // A page that can't be written says so, in the broker's words.
+        std::fs::write(dir.join("missing"), "").unwrap();
         let refused = keep(&dir.join("missing").join("schedules.feed"), "x").unwrap_err();
         assert!(refused.contains("couldn't keep it"), "{refused}");
         let _ = std::fs::remove_dir_all(&dir);

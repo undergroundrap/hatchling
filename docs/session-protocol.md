@@ -54,6 +54,7 @@ vault keeper reads a cell's vault channel the same way.
 | Subagent | `SubagentOp` | `SubagentResult` | v10 |
 | Web | `WebOp` | `WebResult` | v14 |
 | Browser | `BrowserOp` | `BrowserResult` | v15; `SignIn` v16; `Code` v17 |
+| Suggest | `SuggestOp` | `SuggestResult` | v20 |
 
 ## v9 — Artifact ops
 
@@ -267,6 +268,22 @@ session holds.
   words) and `Unasked { reason }` (not asked: the timing doesn't read, the
   owner said no to the same proposal, or their requests are paused or
   full).
+
+## v20 — The agent's suggestions
+
+- **`SessionRequest::Suggest(SuggestOp::Suggest { title, summary, why, area })`**:
+  the agent suggests something Hatchling could do for the owner, for their
+  Ideas page. `area` is one of `career`, `devices`, `creation`, `family`,
+  `finance`, `health`, `learning`, `productivity`, `relationships`,
+  `shopping`. Nothing runs from a suggestion: it waits on the page, shown as
+  the agent's words, until the owner starts it (the app fills their chat box
+  with it, for them to read and send) or sets it aside. Only a run that
+  speaks to the owner may suggest: a chat turn, or a run for the Ideas page,
+  which only the owner can schedule.
+- **`SuggestResult`** is `Suggested`, or `Unasked { reason }`: this run
+  doesn't speak to the owner, a field is empty or too long (a title of 80
+  characters, 400 bytes each for what and why), it's already waiting, or 20
+  are waiting already.
 
 ## Device handshake
 

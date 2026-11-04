@@ -158,7 +158,8 @@ fn read_result(stream: &UnixStream) -> io::Result<VaultResult> {
         | SessionResponse::Space(_)
         | SessionResponse::Subagent(_)
         | SessionResponse::Web(_)
-        | SessionResponse::Browser(_) => Err(io::Error::new(
+        | SessionResponse::Browser(_)
+        | SessionResponse::Suggest(_) => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "broker gave a goals or query reply to a vault op",
         )),

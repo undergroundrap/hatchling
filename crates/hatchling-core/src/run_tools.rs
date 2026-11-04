@@ -36,11 +36,13 @@ pub enum ToolGroup {
     Memory,
     /// Asking the owner to schedule work.
     Schedule,
+    /// Suggesting ideas for the owner's Ideas page.
+    Suggest,
 }
 
 impl ToolGroup {
     /// Every group, in order.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Web,
         Self::Search,
         Self::Browser,
@@ -48,6 +50,7 @@ impl ToolGroup {
         Self::Goals,
         Self::Memory,
         Self::Schedule,
+        Self::Suggest,
     ];
 
     /// The group's name in [`format`] and [`parse`].
@@ -61,6 +64,7 @@ impl ToolGroup {
             Self::Goals => "goals",
             Self::Memory => "memory",
             Self::Schedule => "schedule",
+            Self::Suggest => "suggest",
         }
     }
 }
@@ -122,7 +126,7 @@ mod tests {
         assert_eq!(format(&BTreeSet::new()), "none");
         assert_eq!(
             format(&ToolGroup::ALL.into_iter().collect()),
-            "web,search,browser,skills,goals,memory,schedule"
+            "web,search,browser,skills,goals,memory,schedule,suggest"
         );
     }
 

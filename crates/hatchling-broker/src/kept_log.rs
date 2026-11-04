@@ -37,6 +37,7 @@ static WRITES: Mutex<()> = Mutex::new(());
 /// read back or cut.
 pub fn append<T: Serialize>(path: &Path, record: &T) -> std::io::Result<()> {
     let _held = WRITES.lock().unwrap_or_else(PoisonError::into_inner);
+    ensure_parent(path)?;
     let mut line = serde_json::to_string(record)?;
     line.push('\n');
     OpenOptions::new()
@@ -61,6 +62,26 @@ pub fn append<T: Serialize>(path: &Path, record: &T) -> std::io::Result<()> {
         std::fs::rename(&next, path)?;
     }
     Ok(())
+}
+
+/// Makes `path`'s directory, the owner's alone (`0700`), if it's missing:
+/// the install makes it for the broker's user; a broker run without root
+/// makes it here.
+///
+/// # Errors
+///
+/// Returns the error if it can't be made.
+pub fn ensure_parent(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt as _;
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() && !parent.is_dir() => {
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(parent)
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Where a cut-back log is written before it's renamed over `path`.
@@ -169,8 +190,21 @@ mod tests {
     #[test]
     fn a_log_that_cant_be_written_or_read_keeps_nothing() {
         let dir = scratch("broken");
+        // Its directory can't be made where a file stands.
+        std::fs::write(dir.join("missing"), "").unwrap();
         let path = dir.join("missing").join("schedules.feed");
         assert!(append(&path, &1_u32).is_err());
+        // A missing directory is made, the owner's alone.
+        let made = dir.join("owner").join("feed");
+        append(&made, &1_u32).unwrap();
+        assert_eq!(
+            std::fs::metadata(dir.join("owner"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
         assert!(list::<u32>(&path).is_empty());
         let big = dir.join("big.feed");
         std::fs::File::create(&big)

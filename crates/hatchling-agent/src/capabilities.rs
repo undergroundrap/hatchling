@@ -60,6 +60,11 @@ pub fn note(run_tools: Option<&BTreeSet<ToolGroup>>) -> String {
             "- You can run the installed skills your tools name, within their grants.",
         ));
     }
+    if on(ToolGroup::Suggest) {
+        lines.push(String::from(
+            "- When the owner asks for ideas, or you see something Hatchling could do for them that they haven't asked for, you can suggest it with idea_suggest. It waits on their Ideas page until they start it; nothing runs from it. Don't suggest what they just asked you to do: do it, or say you can't.",
+        ));
+    }
     lines.push(String::from(if on(ToolGroup::Schedule) {
         "- When the owner wants a reminder, or something done later or again, ask to schedule it with schedule_propose. They approve it in the app; you can't schedule anything yourself."
     } else {
@@ -102,6 +107,12 @@ mod tests {
             memory.contains("ask to remember it with memory_propose"),
             "{memory}"
         );
+        let suggest = note(Some(&BTreeSet::from([ToolGroup::Suggest])));
+        assert!(
+            suggest.contains("suggest it with idea_suggest"),
+            "{suggest}"
+        );
+        assert!(!off.contains("idea_suggest"), "{off}");
         let goals = note(Some(&BTreeSet::from([ToolGroup::Goals])));
         assert!(
             goals.contains("read the owner's open goals with goals_read"),

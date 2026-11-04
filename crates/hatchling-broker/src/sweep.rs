@@ -187,6 +187,7 @@ pub fn state_dirs(config: &Config, redaction: Option<&RedactionConfig>) -> Vec<P
         config.spaces.root.clone(),
         config.scheduler.conversation.clone(),
         config.scheduler.usage.clone(),
+        config.scheduler.owner_dir(),
         config.web.grants.clone(),
         config.web.profiles.clone(),
         config.web.credentials.clone(),

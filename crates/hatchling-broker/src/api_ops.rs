@@ -38,8 +38,8 @@ use hatchling_core::messages::{ScheduleGrant, ScheduleOp};
 use hatchling_core::subagent::{ActivityEvent, SubagentEvent};
 use hatchling_core::ui::{
     ActionRefusal, AgentState, ApiOutcome, ApiRequest, ChatAuthor, ChatMessage, ControlRefusal,
-    Decision, GoalOp, Handoff, KeptOp, ProfileOp, ProfileResult, SignInOp, SiteOp, UiAction,
-    UiActionResult, UiEventBody,
+    Decision, GoalOp, Handoff, KeptOp, ProfileOp, ProfileResult, SignInOp, SiteOp, SuggestionOp,
+    UiAction, UiActionResult, UiEventBody,
 };
 use hatchling_scheduler::{Creator, Timestamp};
 use hatchling_vault::OpensStores;
@@ -71,6 +71,8 @@ enum Owned<'a> {
     Decisions,
     /// The posts on their Feed page.
     Feed,
+    /// Their Ideas page.
+    Suggestions(&'a SuggestionOp),
 }
 
 /// The one chat the API offers: the local channel's conversation.
@@ -147,6 +149,38 @@ impl<'a> Ops<'a> {
         held_grants(self.config)
     }
 
+    /// A schedule op from `caller`: a list shows what their own grants
+    /// cover (the owner's pages' too, for the owner); any other op needs the
+    /// grants it would use.
+    fn schedule(
+        &self,
+        caller: &Caller,
+        owns: bool,
+        owner: &BTreeSet<ScheduleGrant>,
+        op: &ScheduleOp,
+    ) -> (UiActionResult, ApiOutcome) {
+        let held = with_feed_page(caller.grants(), owns);
+        let outcome = if let ScheduleOp::List { after } = op {
+            list_schedules(
+                self.config,
+                self.key,
+                &held,
+                after.as_deref(),
+                Creator::Owner,
+            )
+        } else if held.is_superset(&schedule_needs(op, owner)) {
+            handle_schedule_op(self.config, self.key, op, Timestamp::now(), Creator::Owner)
+        } else {
+            return (
+                UiActionResult::Refused {
+                    reason: ActionRefusal::NotGranted,
+                },
+                ApiOutcome::Refused,
+            );
+        };
+        (UiActionResult::Schedule { outcome }, ApiOutcome::Served)
+    }
+
     /// Handles `action` for `caller`, and says whether the API served it
     /// (passed it to its backend) or refused it.
     pub fn handle(
@@ -191,39 +225,7 @@ impl<'a> Ops<'a> {
                     ApiOutcome::Served,
                 )
             }
-            // A list shows what the caller's own grants cover: the owner's
-            // own, their Feed page's schedules too.
-            UiAction::ManageSchedule {
-                op: ScheduleOp::List { after },
-            } => (
-                UiActionResult::Schedule {
-                    outcome: list_schedules(
-                        self.config,
-                        self.key,
-                        &with_feed_page(caller.grants(), owns),
-                        after.as_deref(),
-                        Creator::Owner,
-                    ),
-                },
-                ApiOutcome::Served,
-            ),
-            UiAction::ManageSchedule { op } => {
-                if !with_feed_page(caller.grants(), owns).is_superset(&schedule_needs(op, &owner)) {
-                    return refused(ActionRefusal::NotGranted);
-                }
-                (
-                    UiActionResult::Schedule {
-                        outcome: handle_schedule_op(
-                            self.config,
-                            self.key,
-                            op,
-                            Timestamp::now(),
-                            Creator::Owner,
-                        ),
-                    },
-                    ApiOutcome::Served,
-                )
-            }
+            UiAction::ManageSchedule { op } => self.schedule(caller, owns, &owner, op),
             UiAction::ManageSites { op } => self.owned(owns, Owned::Sites(op)),
             UiAction::ManageProfiles { op } => self.owned(owns, Owned::Profiles(op)),
             UiAction::ManageSignIns { op } => self.owned(owns, Owned::SignIns(op)),
@@ -232,6 +234,7 @@ impl<'a> Ops<'a> {
             UiAction::ManageMemory { op } => self.owned(owns, Owned::Memory(op)),
             UiAction::ListDecisions {} => self.owned(owns, Owned::Decisions),
             UiAction::ReadFeed {} => self.owned(owns, Owned::Feed),
+            UiAction::ManageSuggestions { op } => self.owned(owns, Owned::Suggestions(op)),
             UiAction::Decide {
                 confirmation_id,
                 revision,
@@ -301,6 +304,9 @@ impl<'a> Ops<'a> {
                 } else {
                     Vec::new()
                 },
+            },
+            Owned::Suggestions(op) => UiActionResult::Suggestions {
+                outcome: crate::suggestions::handle(self.config, op),
             },
             Owned::Feed => UiActionResult::Feed {
                 posts: if self.config.scheduler.enabled() {
@@ -611,12 +617,13 @@ impl Ops<'_> {
 pub const NEW_CONVERSATION: &str =
     "New conversation. The agent isn't given anything said before this.";
 
-/// What `grants` let a caller do with schedules: posting to the Feed page
-/// too, when the caller is the owner, whose page it is.
+/// What `grants` let a caller do with schedules: delivering to the Feed
+/// and Ideas pages too, when the caller is the owner, whose pages they are.
 fn with_feed_page(grants: &BTreeSet<ScheduleGrant>, owns: bool) -> BTreeSet<ScheduleGrant> {
     let mut grants = grants.clone();
     if owns {
         grants.insert(crate::schedule_ops::feed_send());
+        grants.insert(crate::schedule_ops::ideas_send());
     }
     grants
 }
@@ -2195,6 +2202,68 @@ mod tests {
             .is_err()
         );
         assert_eq!(crate::feed_page::list(&page).len(), 1);
+    }
+
+    /// The Ideas page is the owner's too: only they manage it, and only
+    /// their own schedules may deliver there, never an agent's.
+    #[test]
+    fn the_ideas_page_is_the_owners_alone() {
+        let dir = scratch("ideas-page");
+        let config = owner_config(Some(&dir.0.join("schedules").to_string_lossy()));
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let ops = Ops::new(&config, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        let held: Vec<ScheduleGrant> = ops.owner_grants().into_iter().collect();
+        let owner = caller(&held);
+        let partial = caller(held.get(..1).unwrap_or_default());
+        let mut replies = Replies::default();
+        let list = UiAction::ManageSuggestions {
+            op: SuggestionOp::List,
+        };
+        assert_eq!(
+            ops.handle(&partial, &list, &mut replies).1,
+            ApiOutcome::Refused
+        );
+        assert_eq!(
+            ops.handle(&owner, &list, &mut replies),
+            (
+                UiActionResult::Suggestions {
+                    outcome: hatchling_core::ui::SuggestionResult::Listed {
+                        suggestions: Vec::new()
+                    }
+                },
+                ApiOutcome::Served
+            )
+        );
+        let op = ScheduleOp::Create {
+            when: ScheduleSpec::Cron {
+                expr: String::from("0 9 * * 1"),
+                tz: String::from("UTC"),
+            },
+            task: String::from("Ideas for my running."),
+            grants: vec![crate::schedule_ops::ideas_send()],
+            channel: String::from(crate::suggestions::IDEAS_PAGE),
+        };
+        let action = UiAction::ManageSchedule { op: op.clone() };
+        assert_eq!(
+            ops.handle(&partial, &action, &mut replies).1,
+            ApiOutcome::Refused
+        );
+        assert!(matches!(
+            ops.handle(&owner, &action, &mut replies),
+            (
+                UiActionResult::Schedule {
+                    outcome: ScheduleResult::Created { .. }
+                },
+                ApiOutcome::Served
+            )
+        ));
+        assert_eq!(
+            handle_schedule_op(&config, &key, &op, Timestamp::now(), Creator::Agent),
+            ScheduleResult::Refused {
+                reason: ScheduleRefusal::ExceedsGrants
+            }
+        );
     }
 
     /// Only the owner manages their goals.

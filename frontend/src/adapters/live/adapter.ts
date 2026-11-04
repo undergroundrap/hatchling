@@ -23,11 +23,13 @@ import type { ConversationPort } from '../../session/conversations.js';
 import type { UsagePort } from '../../session/usage.js';
 import type { GoalsPort } from '../../session/goals.js';
 import type { FeedPort } from '../../session/feed.js';
+import type { IdeasPort } from '../../session/ideas.js';
 import { LiveChatSession } from './session.js';
 import { LiveSchedules } from './schedules.js';
 import { LiveUsage } from './usage.js';
 import { LiveGoals } from './goals.js';
 import { LiveFeed } from './feed.js';
+import { LiveIdeas } from './ideas.js';
 import { LiveMemory } from './memory.js';
 import { LiveSites } from './sites.js';
 import { Surfaces } from './surfaces.js';
@@ -69,6 +71,9 @@ export class LiveAdapter implements ProtocolAdapter {
     /** The owner's Feed page: its prompt, its time, and what was written. */
     readonly feed: FeedPort;
     readonly #feed: LiveFeed;
+    /** The owner's Ideas page: what the agent suggested, and asking for more. */
+    readonly ideas: IdeasPort;
+    readonly #ideas: LiveIdeas;
     /** Scheduled work that needs the owner: straight to the broker, never as a Command. */
     readonly attention: AttentionPort;
     readonly #listeners = new Set<() => void>();
@@ -98,6 +103,8 @@ export class LiveAdapter implements ProtocolAdapter {
         this.goals = this.#goals;
         this.#feed = new LiveFeed(this.#client, this.#schedules, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.feed = this.#feed;
+        this.#ideas = new LiveIdeas(this.#client, this.#schedules, () => this.#publish(), () => `live-command-${++this.#serial}`);
+        this.ideas = this.#ideas;
         this.#memory = new LiveMemory(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.chatSession = new LiveChatSession(this.#client, this.#chats, artifactId => this.#surfaces.shelf.latest(artifactId));
         this.#snapshot = this.#build();
@@ -191,6 +198,14 @@ export class LiveAdapter implements ProtocolAdapter {
                 const state = this.#feed.current();
                 return this.#feed.save(command.text, state.kind === 'read' && state.setup !== null ? state.setup.time : DIGEST_TIME);
             }
+            case 'idea.activate':
+                return this.#ideas.act(command.id, 'start');
+            case 'idea.dismiss':
+                return this.#ideas.act(command.id, 'dismiss');
+            case 'idea.restore':
+                return this.#ideas.act(command.id, 'restore');
+            case 'idea.edit':
+                return { ok: false, message: 'An idea is Hatchling’s words. Start it, and change what it says in your chat box before you send it.' };
             case 'feed.react':
                 return { ok: false, message: 'Reactions aren’t kept yet. Discuss a post to tell Hatchling what you think.' };
             case 'memory.delete':
@@ -271,7 +286,10 @@ export class LiveAdapter implements ProtocolAdapter {
             case 'schedule':
                 // A run ended: the lists and the Feed page may have changed.
                 if (body.outcome !== 'fired')
-                    void this.#schedules.refresh().then(() => this.#feed.observe(body));
+                    void this.#schedules.refresh().then(() => {
+                        this.#feed.observe(body);
+                        this.#ideas.observe(body);
+                    });
                 return undefined;
             case 'artifact':
             case 'agent_status':
@@ -310,7 +328,7 @@ export class LiveAdapter implements ProtocolAdapter {
             publications: [],
             systemEntries: [],
             goals: [...this.#goals.goals()],
-            ideas: [],
+            ideas: [...this.#ideas.ideas()],
             posts: [...this.#feed.posts()],
             connectors: [],
             channels: [],

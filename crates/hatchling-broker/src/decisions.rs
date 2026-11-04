@@ -2,7 +2,7 @@
 //! were shown it, so the app's history survives a restart.
 //!
 //! A line per decision in one file beside the schedule store
-//! (`<scheduler dir>.decisions`): when, the card's summary and fields, and
+//! (`<scheduler dir>.owner/decisions`): when, the card's summary and fields, and
 //! the decision. Only what the owner was shown, which the broker already
 //! held; nothing an approval ran. Bounded as every [`crate::kept_log`] is:
 //! past [`MAX_LINES`] it keeps the newest [`MAX_KEPT`].
@@ -92,6 +92,7 @@ mod tests {
     #[test]
     fn a_decision_that_cant_be_kept_still_stands() {
         let dir = scratch("broken");
+        std::fs::write(dir.join("missing"), "").unwrap();
         let path = dir.join("missing").join("schedules.decisions");
         record(&path, &decided(1, Decision::Approve));
         assert!(list(&path).is_empty());

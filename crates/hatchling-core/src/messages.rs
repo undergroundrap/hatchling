@@ -1273,6 +1273,9 @@ pub enum SessionRequest {
     /// A browser operation (WO-029).
     #[serde(rename = "browser")]
     Browser(BrowserOp),
+    /// A suggestion for the owner's Ideas page (v20).
+    #[serde(rename = "suggest")]
+    Suggest(SuggestOp),
 }
 
 /// The broker's reply to one [`SessionRequest`].
@@ -1325,6 +1328,82 @@ pub enum SessionResponse {
     /// Reply to a browser op.
     #[serde(rename = "browser")]
     Browser(BrowserResult),
+    /// Reply to a suggestion (v20).
+    #[serde(rename = "suggest")]
+    Suggest(SuggestResult),
+}
+
+/// Where a suggestion would help the owner: the Ideas page's sections
+/// (v20).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum SuggestionArea {
+    /// Their work.
+    Career,
+    /// Their computers, phones and other devices.
+    Devices,
+    /// What they make: writing, media, art.
+    Creation,
+    /// Their family.
+    Family,
+    /// Their money.
+    Finance,
+    /// Their health and fitness.
+    Health,
+    /// What they learn, and their hobbies.
+    Learning,
+    /// How they get things done.
+    Productivity,
+    /// The people in their life.
+    Relationships,
+    /// What they buy.
+    Shopping,
+}
+
+/// A suggestion operation (v20): the agent suggests something it could
+/// do for the owner, for their Ideas page.
+///
+/// Nothing runs from a suggestion. It waits on the page, every word shown
+/// as the agent's, until the owner starts it (their chat box is filled
+/// with it, for them to read and send), or dismisses it. Only a run that
+/// speaks to the owner may suggest: a chat turn, or a run for the Ideas
+/// page.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "op", deny_unknown_fields)]
+pub enum SuggestOp {
+    /// Suggest one thing.
+    #[serde(rename = "suggest")]
+    Suggest {
+        /// A short title. Untrusted text: shown as the agent's words.
+        title: String,
+        /// What it would do, in a sentence or two. Untrusted text.
+        summary: String,
+        /// Why it would help them, from what the agent knows of them.
+        /// Untrusted text.
+        why: String,
+        /// Where it would help.
+        area: SuggestionArea,
+    },
+}
+
+/// The broker's reply to one [`SuggestOp`] (v20).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "result")]
+pub enum SuggestResult {
+    /// It's on the owner's Ideas page.
+    #[serde(rename = "suggested")]
+    Suggested,
+    /// It isn't: why, in the broker's words (this run doesn't speak to the
+    /// owner, it's already there, a field is empty or too long, or the
+    /// page is full).
+    #[serde(rename = "unasked")]
+    Unasked {
+        /// Why.
+        reason: String,
+    },
 }
 
 /// A space operation.

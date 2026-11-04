@@ -135,7 +135,8 @@ fn request(stream: &UnixStream, op: BrowserOp) -> Result<BrowserResult, Error> {
         | SessionResponse::Artifact(_)
         | SessionResponse::Space(_)
         | SessionResponse::Subagent(_)
-        | SessionResponse::Web(_) => Err(Error::BrowserProtocol {
+        | SessionResponse::Web(_)
+        | SessionResponse::Suggest(_) => Err(Error::BrowserProtocol {
             reason: String::from("broker gave another kind of reply to a browser op"),
         }),
     }

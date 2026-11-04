@@ -120,6 +120,9 @@ pub fn grants_in_words(grants: &[ScheduleGrant]) -> String {
             ScheduleGrant::ChannelSend { channel } if channel == crate::feed_page::FEED_PAGE => {
                 phrases.push(String::from("post on your Feed page"));
             }
+            ScheduleGrant::ChannelSend { channel } if channel == crate::suggestions::IDEAS_PAGE => {
+                phrases.push(String::from("suggest ideas on your Ideas page"));
+            }
             ScheduleGrant::ChannelSend { channel } => phrases.push(format!("post on {channel}")),
             ScheduleGrant::Egress { destination } => phrases.push(format!("reach {destination}")),
             ScheduleGrant::Vault { action, name } => {

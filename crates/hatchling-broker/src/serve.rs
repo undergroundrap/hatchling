@@ -958,6 +958,9 @@ fn serve_session(
                 SessionRequest::Browser(op) => SessionResponse::Browser(
                     crate::browser_ops::handle_browser_op(config, key, &mut web, &mut browser, &op),
                 ),
+                SessionRequest::Suggest(op) => {
+                    SessionResponse::Suggest(crate::suggestions::suggest(config, &op))
+                }
             };
             let payload = encode_reply(&response, MAX_FRAME_BYTES)?;
             write_frame(stream, &payload).map_err(session_error)?;
@@ -1066,6 +1069,11 @@ const fn oversize_reply(response: &SessionResponse) -> SessionResponse {
         }),
         SessionResponse::Browser(_) => {
             SessionResponse::Browser(hatchling_core::BrowserResult::Refused {
+                reason: String::new(),
+            })
+        }
+        SessionResponse::Suggest(_) => {
+            SessionResponse::Suggest(hatchling_core::SuggestResult::Unasked {
                 reason: String::new(),
             })
         }

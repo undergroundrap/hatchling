@@ -461,6 +461,10 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "string"
             },
             {
+                "const": "manage_suggestions",
+                "type": "string"
+            },
+            {
                 "const": "give_code",
                 "type": "string"
             },
@@ -3337,6 +3341,240 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             }
         ]
     },
+    "Suggestion": {
+        "properties": {
+            "area": {
+                "$ref": "#/$defs/SuggestionArea"
+            },
+            "state": {
+                "$ref": "#/$defs/SuggestionState"
+            },
+            "suggested_at": {
+                "type": "string"
+            },
+            "suggestion_id": {
+                "type": "string"
+            },
+            "summary": {
+                "type": "string"
+            },
+            "title": {
+                "type": "string"
+            },
+            "why": {
+                "type": "string"
+            }
+        },
+        "required": [
+            "suggestion_id",
+            "title",
+            "summary",
+            "why",
+            "area",
+            "suggested_at",
+            "state"
+        ],
+        "type": "object"
+    },
+    "SuggestionArea": {
+        "oneOf": [
+            {
+                "const": "career",
+                "type": "string"
+            },
+            {
+                "const": "devices",
+                "type": "string"
+            },
+            {
+                "const": "creation",
+                "type": "string"
+            },
+            {
+                "const": "family",
+                "type": "string"
+            },
+            {
+                "const": "finance",
+                "type": "string"
+            },
+            {
+                "const": "health",
+                "type": "string"
+            },
+            {
+                "const": "learning",
+                "type": "string"
+            },
+            {
+                "const": "productivity",
+                "type": "string"
+            },
+            {
+                "const": "relationships",
+                "type": "string"
+            },
+            {
+                "const": "shopping",
+                "type": "string"
+            }
+        ]
+    },
+    "SuggestionOp": {
+        "oneOf": [
+            {
+                "properties": {
+                    "op": {
+                        "const": "list",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "op"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "id": {
+                        "type": "string"
+                    },
+                    "op": {
+                        "const": "start",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "op",
+                    "id"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "id": {
+                        "type": "string"
+                    },
+                    "op": {
+                        "const": "dismiss",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "op",
+                    "id"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "id": {
+                        "type": "string"
+                    },
+                    "op": {
+                        "const": "restore",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "op",
+                    "id"
+                ],
+                "type": "object"
+            }
+        ]
+    },
+    "SuggestionResult": {
+        "oneOf": [
+            {
+                "properties": {
+                    "result": {
+                        "const": "listed",
+                        "type": "string"
+                    },
+                    "suggestions": {
+                        "items": {
+                            "$ref": "#/$defs/Suggestion"
+                        },
+                        "type": "array"
+                    }
+                },
+                "required": [
+                    "result",
+                    "suggestions"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "changed",
+                        "type": "string"
+                    },
+                    "suggestion": {
+                        "$ref": "#/$defs/Suggestion"
+                    }
+                },
+                "required": [
+                    "result",
+                    "suggestion"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "not_found",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "off",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "failed",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            }
+        ]
+    },
+    "SuggestionState": {
+        "oneOf": [
+            {
+                "const": "suggested",
+                "type": "string"
+            },
+            {
+                "const": "started",
+                "type": "string"
+            },
+            {
+                "const": "dismissed",
+                "type": "string"
+            }
+        ]
+    },
     "UiAction": {
         "oneOf": [
             {
@@ -3735,6 +3973,22 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 },
                 "required": [
                     "action"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
+                        "const": "manage_suggestions",
+                        "type": "string"
+                    },
+                    "op": {
+                        "$ref": "#/$defs/SuggestionOp"
+                    }
+                },
+                "required": [
+                    "action",
+                    "op"
                 ],
                 "type": "object"
             },
@@ -4220,6 +4474,22 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "required": [
                     "result",
                     "posts"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "outcome": {
+                        "$ref": "#/$defs/SuggestionResult"
+                    },
+                    "result": {
+                        "const": "suggestions",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "outcome"
                 ],
                 "type": "object"
             },

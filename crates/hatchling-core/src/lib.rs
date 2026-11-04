@@ -48,8 +48,8 @@ pub use messages::{
     MAX_SKILL_OUTPUT_BYTES, MediaHeader, MemoryOp, MemoryResult, ParkedSummary, QueryOp,
     QueryResult, ScheduleGrant, ScheduleKind, ScheduleOp, ScheduleRefusal, ScheduleResult,
     ScheduleSpec, ScheduleSummary, SessionRequest, SessionResponse, SkillOp, SkillResult, SpaceOp,
-    SpaceRefusal, SpaceResult, SyncChange, SyncItem, VaultAction, VaultOp, VaultResult, WebHit,
-    WebOp, WebResult,
+    SpaceRefusal, SpaceResult, SuggestOp, SuggestResult, SuggestionArea, SyncChange, SyncItem,
+    VaultAction, VaultOp, VaultResult, WebHit, WebOp, WebResult,
 };
 pub use model_reasoning::ModelReasoning;
 pub use peer::{PeerCredentials, peer_credentials};
