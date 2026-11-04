@@ -223,6 +223,39 @@ export type ActivityEvent = {
      * How the run ended.
      */
     readonly outcome: HarnessOutcome;
+} | {
+    /**
+     * The session's cell.
+     */
+    readonly cell_id: string;
+    /**
+     * Whether it was a chat run, answering the owner: otherwise
+     * background work.
+     */
+    readonly chat: boolean;
+    readonly event: 'run_summary';
+    /**
+     * Model calls answered.
+     */
+    readonly model_calls: number;
+    /**
+     * Model calls the broker refused: past a usage limit the owner
+     * set.
+     */
+    readonly model_calls_refused: number;
+    /**
+     * Tokens the model wrote, over the session.
+     */
+    readonly output_tokens: number;
+    /**
+     * Tokens the largest model call read: how full the model's
+     * context got.
+     */
+    readonly peak_input_tokens: number;
+    /**
+     * Each tool it used, in the order first used.
+     */
+    readonly tools: readonly (ToolTally)[];
 });
 /**
  * The state the activity feed shows for an event. `Interrupted` is a
@@ -4038,6 +4071,36 @@ export type SyncItem = {
      */
     readonly writer: string;
 };
+/**
+ * How often a session used one tool, by how each use ended.
+ */
+export type ToolTally = {
+    /**
+     * Uses it put to the owner, to approve or answer.
+     */
+    readonly asked: number;
+    /**
+     * Uses it answered.
+     */
+    readonly done: number;
+    /**
+     * Uses that failed.
+     */
+    readonly failed: number;
+    /**
+     * Uses it refused: no grant, a limit, or the owner said no.
+     */
+    readonly refused: number;
+    /**
+     * The tool.
+     */
+    readonly tool: ToolUse;
+};
+/**
+ * A tool an agent session used, named by what it does: never by what it
+ * carried.
+ */
+export type ToolUse = 'goals_read' | 'goals_write' | 'memory_recall' | 'memory_propose' | 'memory_write' | 'schedule_read' | 'schedule_write' | 'schedule_propose' | 'hook' | 'idea_suggest' | 'web_search' | 'web_page' | 'browser' | 'message_read' | 'message_send' | 'subagent' | 'skill' | 'vault' | 'artifact' | 'space' | 'network';
 /**
  * A user action.
  */

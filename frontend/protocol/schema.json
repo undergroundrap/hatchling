@@ -366,6 +366,65 @@
             "files_changed"
           ],
           "type": "object"
+        },
+        {
+          "description": "What one agent session did, as the broker served it: each tool it\nused and how each use ended, and its model calls. Written when the\nsession ends, by the broker, never from what the agent says it\ndid; never what a call carried.",
+          "properties": {
+            "cell_id": {
+              "description": "The session's cell.",
+              "type": "string"
+            },
+            "chat": {
+              "description": "Whether it was a chat run, answering the owner: otherwise\nbackground work.",
+              "type": "boolean"
+            },
+            "event": {
+              "const": "run_summary",
+              "type": "string"
+            },
+            "model_calls": {
+              "description": "Model calls answered.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "model_calls_refused": {
+              "description": "Model calls the broker refused: past a usage limit the owner\nset.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "output_tokens": {
+              "description": "Tokens the model wrote, over the session.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "peak_input_tokens": {
+              "description": "Tokens the largest model call read: how full the model's\ncontext got.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "tools": {
+              "description": "Each tool it used, in the order first used.",
+              "items": {
+                "$ref": "#/$defs/ToolTally"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "event",
+            "cell_id",
+            "chat",
+            "tools",
+            "model_calls",
+            "model_calls_refused",
+            "peak_input_tokens",
+            "output_tokens"
+          ],
+          "type": "object"
         }
       ],
       "properties": {
@@ -10308,6 +10367,157 @@
         "writer"
       ],
       "type": "object"
+    },
+    "ToolTally": {
+      "description": "How often a session used one tool, by how each use ended.",
+      "properties": {
+        "asked": {
+          "description": "Uses it put to the owner, to approve or answer.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "done": {
+          "description": "Uses it answered.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "failed": {
+          "description": "Uses that failed.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "refused": {
+          "description": "Uses it refused: no grant, a limit, or the owner said no.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tool": {
+          "$ref": "#/$defs/ToolUse",
+          "description": "The tool."
+        }
+      },
+      "required": [
+        "tool",
+        "done",
+        "asked",
+        "refused",
+        "failed"
+      ],
+      "type": "object"
+    },
+    "ToolUse": {
+      "description": "A tool an agent session used, named by what it does: never by what it\ncarried.",
+      "oneOf": [
+        {
+          "const": "goals_read",
+          "description": "Read the owner's goals or their tracking.",
+          "type": "string"
+        },
+        {
+          "const": "goals_write",
+          "description": "Set, changed or closed a goal, or added to its tracking.",
+          "type": "string"
+        },
+        {
+          "const": "memory_recall",
+          "description": "Recalled what's kept in memory.",
+          "type": "string"
+        },
+        {
+          "const": "memory_propose",
+          "description": "Asked the owner to keep something in memory.",
+          "type": "string"
+        },
+        {
+          "const": "memory_write",
+          "description": "Wrote to or removed from memory.",
+          "type": "string"
+        },
+        {
+          "const": "schedule_read",
+          "description": "Listed scheduled work.",
+          "type": "string"
+        },
+        {
+          "const": "schedule_write",
+          "description": "Created, changed or cancelled scheduled work.",
+          "type": "string"
+        },
+        {
+          "const": "schedule_propose",
+          "description": "Asked the owner to schedule something.",
+          "type": "string"
+        },
+        {
+          "const": "hook",
+          "description": "Created or cancelled a hook.",
+          "type": "string"
+        },
+        {
+          "const": "idea_suggest",
+          "description": "Suggested an idea for the owner's Ideas page.",
+          "type": "string"
+        },
+        {
+          "const": "web_search",
+          "description": "Searched the web.",
+          "type": "string"
+        },
+        {
+          "const": "web_page",
+          "description": "Read a web page.",
+          "type": "string"
+        },
+        {
+          "const": "browser",
+          "description": "Used the browser.",
+          "type": "string"
+        },
+        {
+          "const": "message_read",
+          "description": "Read messages, or the accounts they come from.",
+          "type": "string"
+        },
+        {
+          "const": "message_send",
+          "description": "Sent a message.",
+          "type": "string"
+        },
+        {
+          "const": "subagent",
+          "description": "Started or managed a subagent.",
+          "type": "string"
+        },
+        {
+          "const": "skill",
+          "description": "Ran a skill.",
+          "type": "string"
+        },
+        {
+          "const": "vault",
+          "description": "Used the vault.",
+          "type": "string"
+        },
+        {
+          "const": "artifact",
+          "description": "Built, delivered or worked on an artifact or an idea for one.",
+          "type": "string"
+        },
+        {
+          "const": "space",
+          "description": "Used a shared space.",
+          "type": "string"
+        },
+        {
+          "const": "network",
+          "description": "Sent a request through the egress that isn't a model call.",
+          "type": "string"
+        }
+      ]
     },
     "UiAction": {
       "description": "A user action.",

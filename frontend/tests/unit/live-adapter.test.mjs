@@ -318,6 +318,38 @@ test('coding-harness runs are a thread of their own: one lane per harness, one r
         for (const words of [row.title, row.subtitle, row.report])
             assert.doesNotMatch(words, /cccc|dddd|harness-\d/, `${row.id} shows no hash or id`);
 });
+test('a run\'s trail is a thread of its own: a row per tool by how its uses ended, and the model\'s calls', () => {
+    const { transport, adapter } = connected();
+    const tally = (tool, done, asked, refused, failed) => ({ tool, done, asked, refused, failed });
+    const summary = (seq, chat, tools, calls, refused = 0) => sampleEvent(seq, seq, { kind: 'activity', state: 'success', event: { event: 'run_summary', event_id: `session-${seq}:summary`, run_id: `session-${seq}`, ts: sampleTime(seq), cell_id: `run-${seq}`, chat, tools, model_calls: calls, model_calls_refused: refused, peak_input_tokens: 5432, output_tokens: 310 } });
+    const tools = [tally('goals_read', 1, 0, 0, 0), tally('memory_propose', 0, 1, 1, 0), tally('web_page', 0, 0, 1, 1)];
+    replay(transport, [summary(1, true, tools, 3), summary(2, false, [], 1, 2), summary(1, true, tools, 3)]);
+    const threads = adapter.getSnapshot().threads;
+    assert.deepEqual(threads.map(item => item.id), ['session-2:summary', 'session-1:summary'], 'a summary seen again changes nothing');
+    const [background, chat] = threads;
+    assert.deepEqual([chat.name, chat.subtitle, chat.statusTitle, chat.state, chat.chatId], ['What the chat run did', '3 tools · 3 model calls', 'Trail recorded', 'completed', 'main']);
+    assert.ok(validThreadCopy(chat.name, chat.subtitle, chat.statusTitle));
+    assert.equal(chat.summary, 'Used 3 tools, as Hatchling served them: read your goals, asked to remember something, read a web page.');
+    assert.deepEqual(chat.lanes[0].rows.map(row => [row.title, row.subtitle, row.status, row.outputFailed, row.icon]), [
+        ['Read your goals', '1 done', 'success', false, 'check'],
+        ['Asked to remember something', '1 asked you · 1 refused', 'partial', false, 'warning'],
+        ['Read a web page', '1 refused · 1 failed', 'failed', true, 'warning'],
+        ['Called the model', '3 model calls · largest prompt 5.4K tokens', 'success', false, 'check'],
+    ]);
+    assert.equal(chat.lanes[0].rows[0].report, 'Read your goals: 1 done. Hatchling counted each use as it answered it, never from what the agent said.');
+    assert.equal(chat.lanes[0].rows[3].report, 'The run made 3 model calls, as the model server reported them. Its largest prompt was 5432 tokens, which is how full the model\'s context got; it wrote 310 tokens in all.');
+    assert.deepEqual([background.name, background.subtitle, 'chatId' in background], ['What background work did', '0 tools · 1 model call', false]);
+    assert.ok(validThreadCopy(background.name, background.subtitle, background.statusTitle));
+    assert.equal(background.summary, 'Used no tools: everything in its answer came from the model alone.');
+    const model = background.lanes[0].rows[0];
+    assert.deepEqual([model.subtitle, model.status, model.icon], ['1 model call · largest prompt 5.4K tokens · 2 refused at your usage limit', 'partial', 'warning']);
+    assert.match(model.report, /Hatchling refused 2 calls past a usage limit you set\.$/);
+    const none = connected();
+    replay(none.transport, [summary(3, false, [], 0, 1)]);
+    const refusedOnly = none.adapter.getSnapshot().threads[0].lanes[0].rows[0];
+    assert.equal(refusedOnly.subtitle, 'No model call answered · 1 refused at your usage limit');
+    assert.equal(refusedOnly.report, 'The run made 0 model calls, as the model server reported them. Hatchling refused 1 call past a usage limit you set.');
+});
 test('interrupted and partial render distinctly from failure and success; the existing two are unchanged', () => {
     // The pre- rendering, which the e2e suites and screenshots pin.
     assert.deepEqual(stepOutcome('success'), { mark: 'success', icon: 'check', reportIcon: 'check', sentence: null });

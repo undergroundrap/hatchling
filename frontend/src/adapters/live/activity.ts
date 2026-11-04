@@ -16,8 +16,13 @@
 // Coding-harness runs are a thread of their own too, one lane per
 // harness and one row per run: how it ended and how many files it changed.
 // The pinned program and the brief are recorded by hash, never shown.
+//
+// Each agent run's trail is a thread of its own: the tools the broker served
+// it, each counted by how its uses ended, and its model calls. The broker
+// recorded them as it answered, so they say what the run really did, whatever
+// its answer says.
 import type { ActionIcon, ActivityLane, ActivityRow, ActivityThread, RunningActivityStep, Verdict } from '../../protocol/models.js';
-import type { ActivityEvent, ApiRequest, ChatMessage, ChildFailure, ChildVerdict, HarnessOutcome } from './protocol/generated.js';
+import type { ActivityEvent, ApiRequest, ChatMessage, ChildFailure, ChildVerdict, HarnessOutcome, ToolTally, ToolUse } from './protocol/generated.js';
 import { between, clockTime, count, quoted } from './text.js';
 interface Ending {
     readonly status: Verdict;
@@ -88,6 +93,89 @@ interface Harnessed {
     readonly startedAt: string;
     lastAt: string;
     readonly harnesses: Map<string, Harness>;
+}
+/** One run's trail, as the broker served it. */
+interface Trail {
+    readonly kind: 'trail';
+    readonly id: string;
+    readonly startedAt: string;
+    readonly lastAt: string;
+    readonly chat: boolean;
+    readonly tools: readonly ToolTally[];
+    readonly modelCalls: number;
+    readonly modelCallsRefused: number;
+    readonly peakInputTokens: number;
+    readonly outputTokens: number;
+}
+/** What each tool does, in the user's words. */
+const TOOLS: Readonly<Record<ToolUse, string>> = {
+    goals_read: 'Read your goals',
+    goals_write: 'Changed your goals',
+    memory_recall: 'Recalled your memory',
+    memory_propose: 'Asked to remember something',
+    memory_write: 'Wrote to memory',
+    schedule_read: 'Listed scheduled work',
+    schedule_write: 'Changed scheduled work',
+    schedule_propose: 'Asked to schedule something',
+    hook: 'Set up a hook',
+    idea_suggest: 'Suggested an idea',
+    web_search: 'Searched the web',
+    web_page: 'Read a web page',
+    browser: 'Used the browser',
+    message_read: 'Read messages',
+    message_send: 'Sent a message',
+    subagent: 'Worked with a subagent',
+    skill: 'Ran a skill',
+    vault: 'Used the vault',
+    artifact: 'Worked on a build',
+    space: 'Used a shared space',
+    network: 'Made a network request',
+};
+const COMPACT = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 });
+/** How a tool's uses ended, in a few words: `2 done · 1 refused`. */
+export function endings(tally: ToolTally): string {
+    const parts = [[tally.done, 'done'], [tally.asked, 'asked you'], [tally.refused, 'refused'], [tally.failed, 'failed']] as const;
+    return parts.filter(([value]) => value > 0).map(([value, what]) => `${value} ${what}`).join(' · ');
+}
+/** A tool's row: answered, refused or failed, as the broker served it. */
+function toolRow(trail: Trail, laneId: string, tally: ToolTally): ActivityRow {
+    const what = TOOLS[tally.tool];
+    const served = tally.done + tally.asked;
+    const status: Verdict = tally.refused + tally.failed === 0 ? 'success' : served === 0 ? 'failed' : 'partial';
+    const said = endings(tally);
+    return { id: `${trail.id}:${tally.tool}`, workId: trail.id, laneId, title: what, subtitle: said, icon: status === 'success' ? 'check' : 'warning', report: `${what}: ${said}. Hatchling counted each use as it answered it, never from what the agent said.`, startedAt: trail.startedAt, endedAt: trail.lastAt, durationMs: null, outputFailed: status === 'failed', status, phase: 'action' };
+}
+/** The model's row: its calls, the largest prompt, and any it was refused. */
+function modelRow(trail: Trail, laneId: string): ActivityRow {
+    const calls = count(trail.modelCalls, 'model call', 'model calls');
+    const refused = trail.modelCallsRefused === 0 ? '' : ` · ${trail.modelCallsRefused} refused at your usage limit`;
+    const subtitle = trail.modelCalls === 0 ? `No model call answered${refused}` : `${calls} · largest prompt ${COMPACT.format(trail.peakInputTokens)} tokens${refused}`;
+    const room = trail.modelCalls === 0 ? '' : ` Its largest prompt was ${trail.peakInputTokens} tokens, which is how full the model's context got; it wrote ${trail.outputTokens} tokens in all.`;
+    const limit = trail.modelCallsRefused === 0 ? '' : ` Hatchling refused ${count(trail.modelCallsRefused, 'call', 'calls')} past a usage limit you set.`;
+    const status: Verdict = trail.modelCallsRefused === 0 ? 'success' : 'partial';
+    return { id: `${trail.id}:model`, workId: trail.id, laneId, title: 'Called the model', subtitle, icon: status === 'success' ? 'check' : 'warning', report: `The run made ${calls}, as the model server reported them.${room}${limit}`, startedAt: trail.startedAt, endedAt: trail.lastAt, durationMs: null, outputFailed: false, status, phase: 'action' };
+}
+function projectTrail(trail: Trail): ActivityThread {
+    const laneId = `${trail.id}:agent`;
+    const used = trail.tools.length;
+    const summary = used === 0 ? 'Used no tools: everything in its answer came from the model alone.' : `Used ${count(used, 'tool', 'tools')}, as Hatchling served them: ${trail.tools.map(tally => TOOLS[tally.tool].toLowerCase()).join(', ')}.`;
+    return {
+        id: trail.id,
+        ...(trail.chat ? { chatId: 'main' } : {}),
+        name: trail.chat ? 'What the chat run did' : 'What background work did',
+        subtitle: `${count(used, 'tool', 'tools')} · ${count(trail.modelCalls, 'model call', 'model calls')}`,
+        statusTitle: 'Trail recorded',
+        state: 'completed',
+        verdict: null,
+        summary,
+        finishMessage: summary,
+        time: clockTime(trail.lastAt),
+        startedAt: trail.startedAt,
+        endedAt: trail.lastAt,
+        evidenceArtifactId: null,
+        lanes: [{ id: laneId, name: 'Main agent', parentId: null, rows: [...trail.tools.map(tally => toolRow(trail, laneId, tally)), modelRow(trail, laneId)] }],
+        pendingSteps: [],
+    };
 }
 /** One thing the owner asked in the chat, and the agent's answer once it came. */
 interface Task {
@@ -328,10 +416,12 @@ function projectHarness(harnessed: Harnessed): ActivityThread {
     };
 }
 /** One thread, whichever kind it is. */
-function projectAny(thread: Run | Calls | Harnessed | Task): ActivityThread {
+function projectAny(thread: Run | Calls | Harnessed | Task | Trail): ActivityThread {
     switch (thread.kind) {
         case 'task':
             return projectTask(thread);
+        case 'trail':
+            return projectTrail(thread);
         case 'run':
             return project(thread);
         case 'calls':
@@ -346,16 +436,24 @@ export class ActivityBook {
     readonly #calls = new Map<string, Calls>();
     readonly #harnessed = new Map<string, Harnessed>();
     readonly #tasks = new Map<string, Task>();
+    readonly #trails = new Map<string, Trail>();
     /** The task the next answer belongs to, while one waits. */
     #asked: Task | null = null;
     /** Every thread, in the order each first appeared. */
-    readonly #order: (Run | Calls | Harnessed | Task)[] = [];
+    readonly #order: (Run | Calls | Harnessed | Task | Trail)[] = [];
     /**
      * Apply one event. A subagent's first ending is its ending: a later,
      * contradictory one is ignored. Events for a subagent whose spawn was not
      * retained still land in its lane, without the facts the spawn carried.
      */
     apply(event: ActivityEvent): void {
+        if (event.event === 'run_summary') {
+            // A run's summary is written once, when its session ends: one seen
+            // again in a replay changes nothing.
+            if (!this.#trails.has(event.event_id))
+                this.#begin<Trail>(this.#trails, { kind: 'trail', id: event.event_id, startedAt: event.ts, lastAt: event.ts, chat: event.chat, tools: event.tools, modelCalls: event.model_calls, modelCallsRefused: event.model_calls_refused, peakInputTokens: event.peak_input_tokens, outputTokens: event.output_tokens });
+            return;
+        }
         if (event.event === 'harness_run') {
             const harnessed = this.#harnessed.get(event.run_id) ?? this.#begin<Harnessed>(this.#harnessed, { kind: 'harness', id: event.run_id, startedAt: event.ts, lastAt: event.ts, harnesses: new Map<string, Harness>() });
             harnessed.lastAt = event.ts;
@@ -411,7 +509,7 @@ export class ActivityBook {
         this.#asked = null;
     }
     /** Records a new thread under its id, in arrival order. */
-    #begin<Thread extends Run | Calls | Harnessed | Task>(threads: Map<string, Thread>, thread: Thread): Thread {
+    #begin<Thread extends Run | Calls | Harnessed | Task | Trail>(threads: Map<string, Thread>, thread: Thread): Thread {
         threads.set(thread.id, thread);
         this.#order.push(thread);
         return thread;

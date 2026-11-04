@@ -20,11 +20,10 @@
 use std::path::{Path, PathBuf};
 
 use hatchling_core::{
-    ActivityEvent, ArtifactResult, BrowserResult, ChannelOp, ChannelResult, EgressOp,
-    EgressResult, GoalsResult, HookResult, MemoryOp, MemoryResult, QueryOp, QueryResult,
-    ScheduleOp, ScheduleResult, SessionRequest, SessionResponse, SkillResult, SpaceResult,
-    SubagentEvent, SubagentResult, SuggestResult, ToolTally, ToolUse, VaultResult, WebOp,
-    WebResult,
+    ActivityEvent, ArtifactResult, BrowserResult, ChannelOp, ChannelResult, EgressOp, EgressResult,
+    GoalsResult, HookResult, MemoryOp, MemoryResult, QueryOp, QueryResult, ScheduleOp,
+    ScheduleResult, SessionRequest, SessionResponse, SkillResult, SpaceResult, SubagentEvent,
+    SubagentResult, SuggestResult, ToolTally, ToolUse, VaultResult, WebOp, WebResult,
 };
 
 /// How one use of a tool ended.
@@ -47,6 +46,8 @@ pub struct Trail {
     run_id: String,
     cell_id: String,
     chat: bool,
+    /// Where the owner's model usage is counted, and their limits kept.
+    usage: PathBuf,
     tools: Vec<ToolTally>,
     model_calls: u32,
     model_calls_refused: u32,
@@ -65,6 +66,7 @@ impl Trail {
             run_id: run_id.to_owned(),
             cell_id: cell_id.to_owned(),
             chat: false,
+            usage: PathBuf::new(),
             tools: Vec::new(),
             model_calls: 0,
             model_calls_refused: 0,
@@ -78,6 +80,35 @@ impl Trail {
     pub const fn of_chat(mut self, chat: bool) -> Self {
         self.chat = chat;
         self
+    }
+
+    /// The trail, counting model calls in the usage directory `usage`,
+    /// and checking the owner's limits kept there ([`crate::usage`]).
+    #[must_use]
+    pub fn counting_in(mut self, usage: &Path) -> Self {
+        usage.clone_into(&mut self.usage);
+        self
+    }
+
+    /// The owner's usage limit reached at `now` (Unix seconds), if one
+    /// is: a model call about to go is refused, and noted so.
+    pub fn over_limit(&mut self, now: i64) -> Option<crate::usage::Reached> {
+        let reached = crate::usage::reached(&self.usage, now)?;
+        self.model_calls_refused = self.model_calls_refused.saturating_add(1);
+        Some(reached)
+    }
+
+    /// Counts `request`'s answer `response`, at `at` (Unix seconds): a
+    /// model call answered is the owner's usage, and the session's.
+    pub fn count(
+        &mut self,
+        request: &hatchling_egress::EgressRequest,
+        response: &hatchling_egress::EgressResponse,
+        at: i64,
+    ) {
+        if let Some((input, output)) = crate::usage::count(&self.usage, request, response, at) {
+            self.model_call(input, output);
+        }
     }
 
     /// Notes a use of `tool`, the tool a request used ([`tool_of`]), if
@@ -118,11 +149,6 @@ impl Trail {
         self.model_calls = self.model_calls.saturating_add(1);
         self.peak_input_tokens = self.peak_input_tokens.max(input.unwrap_or(0));
         self.output_tokens = self.output_tokens.saturating_add(output.unwrap_or(0));
-    }
-
-    /// Notes a model call the broker refused at a usage limit.
-    pub fn model_call_refused(&mut self) {
-        self.model_calls_refused = self.model_calls_refused.saturating_add(1);
     }
 
     /// The summary, if the session did anything to summarize.
@@ -217,152 +243,239 @@ pub fn tool_of(request: &SessionRequest) -> Option<ToolUse> {
 
 /// How the use `response` answers ended.
 const fn ending_of(response: &SessionResponse) -> Ending {
-    use Ending::{Asked, Done, Failed, Refused};
     match response {
-        SessionResponse::Vault(result) => match result {
-            VaultResult::Denied => Refused,
-            VaultResult::VaultError => Failed,
-            VaultResult::Stored
-            | VaultResult::Fetched { .. }
-            | VaultResult::Removed
-            | VaultResult::NotFound => Done,
-        },
-        SessionResponse::Egress(result) => match result {
-            EgressResult::Denied => Refused,
-            EgressResult::EgressError => Failed,
-            EgressResult::Surrogate { .. }
-            | EgressResult::Ok { .. }
-            | EgressResult::Staged { .. }
-            | EgressResult::Part { .. } => Done,
-        },
-        SessionResponse::Channel(result) => match result {
-            ChannelResult::Denied | ChannelResult::Redacted { .. } => Refused,
-            ChannelResult::ChannelError => Failed,
-            ChannelResult::Message { .. }
-            | ChannelResult::NoMessage
-            | ChannelResult::Sent
-            | ChannelResult::Accounts { .. }
-            | ChannelResult::UnknownAccount => Done,
-        },
-        SessionResponse::Memory(result) => match result {
-            MemoryResult::Proposed => Asked,
-            MemoryResult::Denied | MemoryResult::Unasked { .. } => Refused,
-            MemoryResult::MemoryError => Failed,
-            MemoryResult::Stored
-            | MemoryResult::Item { .. }
-            | MemoryResult::Items { .. }
-            | MemoryResult::NotFound
-            | MemoryResult::Removed { .. }
-            | MemoryResult::ContextAppended
-            | MemoryResult::ContextEntries { .. } => Done,
-        },
-        SessionResponse::Skill(result) => match result {
-            SkillResult::UnknownSkill | SkillResult::CapabilityDenied => Refused,
-            SkillResult::SkillError => Failed,
-            SkillResult::Output { .. } => Done,
-        },
-        SessionResponse::Goals(result) => match result {
-            GoalsResult::Rejected | GoalsResult::LimitReached | GoalsResult::Denied => Refused,
-            GoalsResult::GoalsError => Failed,
-            GoalsResult::GoalCreated { .. }
-            | GoalsResult::GoalChanged
-            | GoalsResult::GoalNotFound
-            | GoalsResult::GoalAlreadyClosed
-            | GoalsResult::TrackingAppended { .. } => Done,
-        },
-        SessionResponse::Query(result) => match result {
-            QueryResult::Denied => Refused,
-            QueryResult::QueryError => Failed,
-            QueryResult::Items { .. } => Done,
-        },
-        SessionResponse::Schedule(result) => match result {
-            ScheduleResult::Proposed { .. } => Asked,
-            ScheduleResult::Refused { .. }
-            | ScheduleResult::Denied
-            | ScheduleResult::Unasked { .. } => Refused,
-            ScheduleResult::ScheduleError => Failed,
-            ScheduleResult::Created { .. }
-            | ScheduleResult::Cancelled
-            | ScheduleResult::NotFound
-            | ScheduleResult::Listed { .. }
-            | ScheduleResult::Resolved
-            | ScheduleResult::Retried
-            | ScheduleResult::Parked { .. }
-            | ScheduleResult::Dismissed => Done,
-        },
-        SessionResponse::Hook(result) => match result {
-            HookResult::Refused { .. } | HookResult::Denied => Refused,
-            HookResult::HookError => Failed,
-            HookResult::Created { .. } | HookResult::Cancelled | HookResult::NotFound => Done,
-        },
-        SessionResponse::Artifact(result) => match result {
-            ArtifactResult::ActivationProposed { .. } => Asked,
-            ArtifactResult::Refused { .. }
-            | ArtifactResult::ApprovalRefused { .. }
-            | ArtifactResult::IdeaRefused { .. }
-            | ArtifactResult::Denied => Refused,
-            ArtifactResult::BuildFailed { .. } | ArtifactResult::ArtifactError => Failed,
-            ArtifactResult::Built { .. }
-            | ArtifactResult::Delivered { .. }
-            | ArtifactResult::Described { .. }
-            | ArtifactResult::UnknownBuild
-            | ArtifactResult::IdeaSaved { .. }
-            | ArtifactResult::Ideas { .. } => Done,
-        },
-        SessionResponse::Space(result) => match result {
-            SpaceResult::Refused { .. } | SpaceResult::Denied => Refused,
-            SpaceResult::SpaceError => Failed,
-            SpaceResult::Created { .. }
-            | SpaceResult::Admitted { .. }
-            | SpaceResult::Stored
-            | SpaceResult::Value { .. }
-            | SpaceResult::Removed
-            | SpaceResult::TaskAdded { .. }
-            | SpaceResult::TaskQueued { .. }
-            | SpaceResult::PairingCode { .. }
-            | SpaceResult::Changes { .. }
-            | SpaceResult::Pushed { .. }
-            | SpaceResult::ConflictLog { .. }
-            | SpaceResult::MediaStored { .. }
-            | SpaceResult::Media { .. } => Done,
-        },
-        SessionResponse::Subagent(result) => match result {
-            SubagentResult::Refused { .. } => Refused,
-            SubagentResult::SubagentError => Failed,
-            SubagentResult::Spawned { .. } | SubagentResult::Report(_) => Done,
-        },
-        SessionResponse::Web(result) => match result {
-            WebResult::Waiting { .. } => Asked,
-            WebResult::Denied { .. }
-            | WebResult::Expired { .. }
-            | WebResult::Unasked { .. }
-            | WebResult::Refused { .. }
-            | WebResult::Off => Refused,
-            WebResult::Page { .. } | WebResult::Results { .. } | WebResult::Redirect { .. } => {
-                Done
-            }
-        },
-        SessionResponse::Browser(result) => match result {
-            BrowserResult::Waiting { .. } | BrowserResult::CodeWaiting { .. } => Asked,
-            BrowserResult::Denied { .. }
-            | BrowserResult::Expired { .. }
-            | BrowserResult::Unasked { .. }
-            | BrowserResult::Refused { .. }
-            | BrowserResult::Off
-            | BrowserResult::CodeDeclined
-            | BrowserResult::CodeExpired => Refused,
-            BrowserResult::Failed { .. } => Failed,
-            BrowserResult::Page { .. }
-            | BrowserResult::Allowed { .. }
-            | BrowserResult::Closed
-            | BrowserResult::Stopped
-            | BrowserResult::OwnerDriving
-            | BrowserResult::HandedBack { .. } => Done,
-        },
-        SessionResponse::Suggest(result) => match result {
-            SuggestResult::Unasked { .. } => Refused,
-            SuggestResult::Suggested => Done,
-        },
+        SessionResponse::Vault(result) => vault_ending(result),
+        SessionResponse::Egress(result) => egress_ending(result),
+        SessionResponse::Channel(result) => channel_ending(result),
+        SessionResponse::Memory(result) => memory_ending(result),
+        SessionResponse::Skill(result) => skill_ending(result),
+        SessionResponse::Goals(result) => goals_ending(result),
+        SessionResponse::Query(result) => query_ending(result),
+        SessionResponse::Schedule(result) => schedule_ending(result),
+        SessionResponse::Hook(result) => hook_ending(result),
+        SessionResponse::Artifact(result) => artifact_ending(result),
+        SessionResponse::Space(result) => space_ending(result),
+        SessionResponse::Subagent(result) => subagent_ending(result),
+        SessionResponse::Web(result) => web_ending(result),
+        SessionResponse::Browser(result) => browser_ending(result),
+        SessionResponse::Suggest(result) => suggest_ending(result),
+    }
+}
+
+/// How a use answered with `result` ended.
+const fn vault_ending(result: &VaultResult) -> Ending {
+    use Ending::{Done, Failed, Refused};
+    match result {
+    VaultResult::Denied => Refused,
+    VaultResult::VaultError => Failed,
+    VaultResult::Stored
+    | VaultResult::Fetched { .. }
+    | VaultResult::Removed
+    | VaultResult::NotFound => Done,
+    }
+}
+
+/// How a use answered with `result` ended.
+const fn egress_ending(result: &EgressResult) -> Ending {
+    use Ending::{Done, Failed, Refused};
+    match result {
+    EgressResult::Denied => Refused,
+    EgressResult::EgressError => Failed,
+    EgressResult::Surrogate { .. }
+    | EgressResult::Ok { .. }
+    | EgressResult::Staged { .. }
+    | EgressResult::Part { .. } => Done,
+    }
+}
+
+/// How a use answered with `result` ended.
+const fn channel_ending(result: &ChannelResult) -> Ending {
+    use Ending::{Done, Failed, Refused};
+    match result {
+    ChannelResult::Denied | ChannelResult::Redacted { .. } => Refused,
+    ChannelResult::ChannelError => Failed,
+    ChannelResult::Message { .. }
+    | ChannelResult::NoMessage
+    | ChannelResult::Sent
+    | ChannelResult::Accounts { .. }
+    | ChannelResult::UnknownAccount => Done,
+    }
+}
+
+/// How a use answered with `result` ended.
+const fn memory_ending(result: &MemoryResult) -> Ending {
+    use Ending::{Asked, Done, Failed, Refused};
+    match result {
+    MemoryResult::Proposed => Asked,
+    MemoryResult::Denied | MemoryResult::Unasked { .. } => Refused,
+    MemoryResult::MemoryError => Failed,
+    MemoryResult::Stored
+    | MemoryResult::Item { .. }
+    | MemoryResult::Items { .. }
+    | MemoryResult::NotFound
+    | MemoryResult::Removed { .. }
+    | MemoryResult::ContextAppended
+    | MemoryResult::ContextEntries { .. } => Done,
+    }
+}
+
+/// How a use answered with `result` ended.
+const fn skill_ending(result: &SkillResult) -> Ending {
+    use Ending::{Done, Failed, Refused};
+    match result {
+    SkillResult::UnknownSkill | SkillResult::CapabilityDenied => Refused,
+    SkillResult::SkillError => Failed,
+    SkillResult::Output { .. } => Done,
+    }
+}
+
+/// How a use answered with `result` ended.
+const fn goals_ending(result: &GoalsResult) -> Ending {
+    use Ending::{Done, Failed, Refused};
+    match result {
+    GoalsResult::Rejected | GoalsResult::LimitReached | GoalsResult::Denied => Refused,
+    GoalsResult::GoalsError => Failed,
+    GoalsResult::GoalCreated { .. }
+    | GoalsResult::GoalChanged
+    | GoalsResult::GoalNotFound
+    | GoalsResult::GoalAlreadyClosed
+    | GoalsResult::TrackingAppended { .. } => Done,
+    }
+}
+
+/// How a use answered with `result` ended.
+const fn query_ending(result: &QueryResult) -> Ending {
+    use Ending::{Done, Failed, Refused};
+    match result {
+    QueryResult::Denied => Refused,
+    QueryResult::QueryError => Failed,
+    QueryResult::Items { .. } => Done,
+    }
+}
+
+/// How a use answered with `result` ended.
+const fn schedule_ending(result: &ScheduleResult) -> Ending {
+    use Ending::{Asked, Done, Failed, Refused};
+    match result {
+    ScheduleResult::Proposed { .. } => Asked,
+    ScheduleResult::Refused { .. }
+    | ScheduleResult::Denied
+    | ScheduleResult::Unasked { .. } => Refused,
+    ScheduleResult::ScheduleError => Failed,
+    ScheduleResult::Created { .. }
+    | ScheduleResult::Cancelled
+    | ScheduleResult::NotFound
+    | ScheduleResult::Listed { .. }
+    | ScheduleResult::Resolved
+    | ScheduleResult::Retried
+    | ScheduleResult::Parked { .. }
+    | ScheduleResult::Dismissed => Done,
+    }
+}
+
+/// How a use answered with `result` ended.
+const fn hook_ending(result: &HookResult) -> Ending {
+    use Ending::{Done, Failed, Refused};
+    match result {
+    HookResult::Refused { .. } | HookResult::Denied => Refused,
+    HookResult::HookError => Failed,
+    HookResult::Created { .. } | HookResult::Cancelled | HookResult::NotFound => Done,
+    }
+}
+
+/// How a use answered with `result` ended.
+const fn artifact_ending(result: &ArtifactResult) -> Ending {
+    use Ending::{Asked, Done, Failed, Refused};
+    match result {
+    ArtifactResult::ActivationProposed { .. } => Asked,
+    ArtifactResult::Refused { .. }
+    | ArtifactResult::ApprovalRefused { .. }
+    | ArtifactResult::IdeaRefused { .. }
+    | ArtifactResult::Denied => Refused,
+    ArtifactResult::BuildFailed { .. } | ArtifactResult::ArtifactError => Failed,
+    ArtifactResult::Built { .. }
+    | ArtifactResult::Delivered { .. }
+    | ArtifactResult::Described { .. }
+    | ArtifactResult::UnknownBuild
+    | ArtifactResult::IdeaSaved { .. }
+    | ArtifactResult::Ideas { .. } => Done,
+    }
+}
+
+/// How a use answered with `result` ended.
+const fn space_ending(result: &SpaceResult) -> Ending {
+    use Ending::{Done, Failed, Refused};
+    match result {
+    SpaceResult::Refused { .. } | SpaceResult::Denied => Refused,
+    SpaceResult::SpaceError => Failed,
+    SpaceResult::Created { .. }
+    | SpaceResult::Admitted { .. }
+    | SpaceResult::Stored
+    | SpaceResult::Value { .. }
+    | SpaceResult::Removed
+    | SpaceResult::TaskAdded { .. }
+    | SpaceResult::TaskQueued { .. }
+    | SpaceResult::PairingCode { .. }
+    | SpaceResult::Changes { .. }
+    | SpaceResult::Pushed { .. }
+    | SpaceResult::ConflictLog { .. }
+    | SpaceResult::MediaStored { .. }
+    | SpaceResult::Media { .. } => Done,
+    }
+}
+
+/// How a use answered with `result` ended.
+const fn subagent_ending(result: &SubagentResult) -> Ending {
+    use Ending::{Done, Failed, Refused};
+    match result {
+    SubagentResult::Refused { .. } => Refused,
+    SubagentResult::SubagentError => Failed,
+    SubagentResult::Spawned { .. } | SubagentResult::Report(_) => Done,
+    }
+}
+
+/// How a use answered with `result` ended.
+const fn web_ending(result: &WebResult) -> Ending {
+    use Ending::{Asked, Done, Refused};
+    match result {
+    WebResult::Waiting { .. } => Asked,
+    WebResult::Denied { .. }
+    | WebResult::Expired { .. }
+    | WebResult::Unasked { .. }
+    | WebResult::Refused { .. }
+    | WebResult::Off => Refused,
+    WebResult::Page { .. } | WebResult::Results { .. } | WebResult::Redirect { .. } => Done,
+    }
+}
+
+/// How a use answered with `result` ended.
+const fn browser_ending(result: &BrowserResult) -> Ending {
+    use Ending::{Asked, Done, Failed, Refused};
+    match result {
+    BrowserResult::Waiting { .. } | BrowserResult::CodeWaiting { .. } => Asked,
+    BrowserResult::Denied { .. }
+    | BrowserResult::Expired { .. }
+    | BrowserResult::Unasked { .. }
+    | BrowserResult::Refused { .. }
+    | BrowserResult::Off
+    | BrowserResult::CodeDeclined
+    | BrowserResult::CodeExpired => Refused,
+    BrowserResult::Failed { .. } => Failed,
+    BrowserResult::Page { .. }
+    | BrowserResult::Allowed { .. }
+    | BrowserResult::Closed
+    | BrowserResult::Stopped
+    | BrowserResult::OwnerDriving
+    | BrowserResult::HandedBack { .. } => Done,
+    }
+}
+
+/// How a use answered with `result` ended.
+const fn suggest_ending(result: &SuggestResult) -> Ending {
+    use Ending::{Done, Refused};
+    match result {
+    SuggestResult::Unasked { .. } => Refused,
+    SuggestResult::Suggested => Done,
     }
 }
 
@@ -464,10 +577,7 @@ mod tests {
             ),
             (egress("GET", "/v1/models"), Some(ToolUse::Network)),
             (egress("POST", "/v1/chat/completions"), None),
-            (
-                SessionRequest::Egress(EgressOp::Read {}),
-                None,
-            ),
+            (SessionRequest::Egress(EgressOp::Read {}), None),
         ];
         for (request, tool) in cases {
             assert_eq!(tool_of(&request), tool, "{request:?}");
@@ -482,22 +592,26 @@ mod tests {
         assert_eq!(trail.summary(), None, "nothing done, nothing to say");
         let goals = Some(ToolUse::GoalsRead);
         let memory = Some(ToolUse::MemoryPropose);
-        trail.note(goals, &SessionResponse::Query(QueryResult::Items {
+        trail.note(
+            goals,
+            &SessionResponse::Query(QueryResult::Items {
                 items_json: Vec::new(),
                 next: None,
-            }));
+            }),
+        );
         trail.note(memory, &SessionResponse::Memory(MemoryResult::Proposed));
         trail.note(goals, &SessionResponse::Query(QueryResult::Denied));
         trail.note(goals, &SessionResponse::Query(QueryResult::QueryError));
         trail.note(
             memory,
-            &SessionResponse::Memory(MemoryResult::Unasked { reason: s("paused") }),
+            &SessionResponse::Memory(MemoryResult::Unasked {
+                reason: s("paused"),
+            }),
         );
         trail.note(None, &SessionResponse::Egress(EgressResult::Denied));
         trail.model_call(Some(5400), Some(300));
         trail.model_call(Some(900), None);
         trail.model_call(None, Some(20));
-        trail.model_call_refused();
         let tally = |tool, done, asked, refused, failed| ToolTally {
             tool,
             done,
@@ -561,30 +675,51 @@ mod tests {
             (SessionResponse::Vault(VaultResult::VaultError), Failed),
             (SessionResponse::Egress(EgressResult::EgressError), Failed),
             (SessionResponse::Channel(ChannelResult::Sent), Done),
-            (SessionResponse::Channel(ChannelResult::ChannelError), Failed),
+            (
+                SessionResponse::Channel(ChannelResult::ChannelError),
+                Failed,
+            ),
             (SessionResponse::Memory(MemoryResult::Proposed), Asked),
             (SessionResponse::Memory(MemoryResult::MemoryError), Failed),
-            (SessionResponse::Skill(SkillResult::CapabilityDenied), Refused),
+            (
+                SessionResponse::Skill(SkillResult::CapabilityDenied),
+                Refused,
+            ),
             (SessionResponse::Skill(SkillResult::SkillError), Failed),
             (SessionResponse::Goals(GoalsResult::GoalChanged), Done),
             (SessionResponse::Goals(GoalsResult::LimitReached), Refused),
             (SessionResponse::Goals(GoalsResult::GoalsError), Failed),
             (SessionResponse::Schedule(ScheduleResult::Dismissed), Done),
             (SessionResponse::Schedule(ScheduleResult::Denied), Refused),
-            (SessionResponse::Schedule(ScheduleResult::ScheduleError), Failed),
+            (
+                SessionResponse::Schedule(ScheduleResult::ScheduleError),
+                Failed,
+            ),
             (SessionResponse::Hook(HookResult::Cancelled), Done),
             (SessionResponse::Hook(HookResult::Denied), Refused),
             (SessionResponse::Hook(HookResult::HookError), Failed),
-            (SessionResponse::Artifact(ArtifactResult::UnknownBuild), Done),
+            (
+                SessionResponse::Artifact(ArtifactResult::UnknownBuild),
+                Done,
+            ),
             (SessionResponse::Artifact(ArtifactResult::Denied), Refused),
-            (SessionResponse::Artifact(ArtifactResult::ArtifactError), Failed),
+            (
+                SessionResponse::Artifact(ArtifactResult::ArtifactError),
+                Failed,
+            ),
             (SessionResponse::Space(SpaceResult::Removed), Done),
             (SessionResponse::Space(SpaceResult::Denied), Refused),
             (SessionResponse::Space(SpaceResult::SpaceError), Failed),
-            (SessionResponse::Subagent(SubagentResult::SubagentError), Failed),
+            (
+                SessionResponse::Subagent(SubagentResult::SubagentError),
+                Failed,
+            ),
             (SessionResponse::Web(WebResult::Off), Refused),
             (SessionResponse::Browser(BrowserResult::Closed), Done),
-            (SessionResponse::Browser(BrowserResult::CodeDeclined), Refused),
+            (
+                SessionResponse::Browser(BrowserResult::CodeDeclined),
+                Refused,
+            ),
             (SessionResponse::Suggest(SuggestResult::Suggested), Done),
             (
                 SessionResponse::Suggest(SuggestResult::Unasked { reason: s("full") }),
@@ -603,7 +738,7 @@ mod tests {
         let mut config = crate::api_auth::tests::owner_config(None);
         assert_eq!(activity_log(&config), None);
         config.scheduler.followup = Some(crate::FollowupScope {
-            root: std::path::PathBuf::from("/srv/h/schedules"),
+            root: PathBuf::from("/srv/h/schedules"),
             run: s("t"),
             grants: Vec::new(),
             channel: s("local"),
@@ -611,16 +746,16 @@ mod tests {
         });
         assert_eq!(
             activity_log(&config),
-            Some(std::path::PathBuf::from("/srv/h/schedules.activity"))
+            Some(PathBuf::from("/srv/h/schedules.activity"))
         );
         if let Some(followup) = config.scheduler.followup.as_mut() {
-            followup.root = std::path::PathBuf::new();
+            followup.root = PathBuf::new();
         }
         assert_eq!(activity_log(&config), None);
-        config.scheduler.root = std::path::PathBuf::from("/srv/h/s");
+        config.scheduler.root = PathBuf::from("/srv/h/s");
         assert_eq!(
             activity_log(&config),
-            Some(std::path::PathBuf::from("/srv/h/s.activity"))
+            Some(PathBuf::from("/srv/h/s.activity"))
         );
     }
 }
