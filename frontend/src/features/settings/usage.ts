@@ -74,7 +74,7 @@ function spanMeter(label: string, spent: number, limit: number | null, turns: st
     return meter;
 }
 /** The limits form: both at once, each empty for none. */
-function limitsForm(ctx: AppContext, port: UsagePort, limits: UsageLimits): HTMLElement {
+function limitsForm(ctx: AppContext, port: UsagePort, limits: UsageLimits, refresh: () => void): HTMLElement {
     const form = h('form', { class: 'stack usage-limits', 'aria-label': 'Usage limits' }, h('p', {}, 'Set the most tokens Hatchling may use. Past a limit it refuses every model call, for chats and scheduled work alike, until the limit turns. A call already under way finishes. Write 500K or 2M; leave one empty for no limit.'), field('Most tokens a day', 'daily', tokensText(limits.daily), { placeholder: 'No limit' }), field('Most tokens a month', 'monthly', tokensText(limits.monthly), { placeholder: 'No limit' }), h('div', { class: 'feed-prompt-actions' }, h('button', { class: 'button primary', type: 'submit' }, 'Save limits')));
     form.addEventListener('submit', (event) => {
         event.preventDefault();
@@ -86,7 +86,7 @@ function limitsForm(ctx: AppContext, port: UsagePort, limits: UsageLimits): HTML
         }
         void port.setLimits({ daily, monthly }).then((result) => {
             ctx.toast(result.message, !result.ok);
-            ctx.render();
+            refresh();
         });
     });
     return form;
@@ -119,8 +119,8 @@ function counted(usage: Usage): HTMLElement[] {
     }
     return parts;
 }
-/** The Usage section, from what `ctx`'s usage port last read. */
-export function liveUsage(ctx: AppContext): HTMLElement {
+/** The Usage section, from what `ctx`'s usage port last read; `refresh` draws Settings again. */
+export function liveUsage(ctx: AppContext, refresh: () => void): HTMLElement {
     const port = ctx.usage;
     const state = port?.current();
     const group = h('div', { class: 'settings-group usage-group' });
@@ -134,6 +134,6 @@ export function liveUsage(ctx: AppContext): HTMLElement {
         group.append(...counted(state.usage), h('p', { class: 'usage-note' }, 'Counted by Hatchling from what your model server reports with each reply: chats, scheduled work and subagents. A call whose server reports no usage counts nothing toward a limit.'));
     const section = h('section', { class: 'general-section' }, h('h3', {}, 'Usage'), group);
     if (port && state?.kind === 'read' && state.usage.counted)
-        section.append(h('h3', {}, 'Limits'), h('div', { class: 'settings-group usage-group' }, limitsForm(ctx, port, state.usage.limits)));
+        section.append(h('h3', {}, 'Limits'), h('div', { class: 'settings-group usage-group' }, limitsForm(ctx, port, state.usage.limits, refresh)));
     return section;
 }
