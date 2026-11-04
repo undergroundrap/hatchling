@@ -2403,8 +2403,57 @@ mod gate_scope_tests {
             (1, 11, 3)
         );
 
-        // At the owner's limit, a model call is refused before it goes: the
-        // server is gone, so one forwarded would have failed instead.
+        let _ = std::fs::remove_dir_all(&usage);
+    }
+
+    /// At a usage limit the owner set, a model call is refused before it
+    /// goes; what isn't a model call still goes, and under the limit the
+    /// model call does too. Nothing listens, so a call forwarded fails.
+    #[test]
+    fn a_model_call_at_the_owners_limit_is_refused_before_it_goes() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let destination = format!("localhost:{port}");
+        let allowlist = format!("local-keyless:{destination}");
+        let proxy = Proxy::new(&allowlist, |_: &str| None::<Zeroizing<Vec<u8>>>).unwrap();
+        let egress = EgressConfig {
+            allowlist: crate::EgressAllowlist::new(&allowlist),
+            grants: vec![destination.clone()],
+        };
+        let cell_id: CellId = "cell-limit".parse().unwrap();
+        let mut pages = crate::egress_pages::Pages::default();
+        let call = || EgressOp::Egress {
+            method: String::from("POST"),
+            destination: destination.clone(),
+            path: String::from("/v1/chat/completions"),
+            headers: Vec::new(),
+            body_b64: encode_secret(br#"{"model":"m","messages":[]}"#),
+            surrogate_b64: proxy.mint_surrogate(1000, &destination, 60).unwrap(),
+            staged: 0,
+        };
+        let usage =
+            std::env::temp_dir().join(format!("hatchling-serve-limit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&usage);
+        crate::usage::count(
+            &usage,
+            &EgressRequest {
+                method: String::from("POST"),
+                destination: destination.clone(),
+                path: String::from("/v1/chat/completions"),
+                headers: Vec::new(),
+                body: Vec::new(),
+                surrogate_b64: String::new(),
+            },
+            &hatchling_egress::EgressResponse {
+                status: 200,
+                headers: Vec::new(),
+                body: br#"{"model":"m","usage":{"prompt_tokens":11,"completion_tokens":3}}"#.to_vec(),
+            },
+            hatchling_scheduler::Timestamp::now().as_second(),
+        );
         crate::usage::set_limits(
             &usage,
             &hatchling_core::ui::UsageLimits {

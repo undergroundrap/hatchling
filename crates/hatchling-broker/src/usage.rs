@@ -327,8 +327,9 @@ pub fn limits(dir: &Path) -> UsageLimits {
     if read.is_ok() && text.is_empty() {
         return UsageLimits::default();
     }
+    let whole = u64::try_from(text.len()).is_ok_and(|len| len <= MAX_LIMITS_BYTES);
     match serde_json::from_slice::<UsageLimits>(&text) {
-        Ok(limits) if read.is_ok() && valid(&limits) => limits,
+        Ok(limits) if read.is_ok() && whole && valid(&limits) => limits,
         _ => {
             tracing::error!("the usage limits don't read: none is enforced");
             UsageLimits::default()
@@ -919,6 +920,7 @@ mod tests {
 
     #[test]
     fn limits_are_set_whole_and_read_back() {
+        use std::os::unix::fs::PermissionsExt as _;
         let dir = scratch("limits");
         assert_eq!(limits(&dir), UsageLimits::default());
         set_limits(&dir, &limited(Some(5000), None)).unwrap();
@@ -928,7 +930,6 @@ mod tests {
         set_limits(&dir, &UsageLimits::default()).unwrap();
         assert_eq!(limits(&dir), UsageLimits::default());
         assert!(!dir.join(format!("{LIMITS_FILE}.next")).exists());
-        use std::os::unix::fs::PermissionsExt as _;
         let mode = std::fs::metadata(dir.join(LIMITS_FILE))
             .unwrap()
             .permissions()

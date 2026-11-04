@@ -2090,7 +2090,26 @@ mod tests {
         );
         assert_eq!(usage.spent.today, 9);
 
-        // Only the owner sets the limits, and is answered with the usage.
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Only the owner sets the usage limits, answered with the usage; a
+    /// limit that isn't one changes nothing, and with nowhere to keep them
+    /// they aren't set.
+    #[test]
+    fn only_the_owner_sets_the_limits() {
+        let mut config = owner_config(Some("/srv/hatchling/schedules"));
+        let dir =
+            std::env::temp_dir().join(format!("hatchling-api-limits-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        config.scheduler.usage.clone_from(&dir);
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let ops = Ops::new(&config, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        let held: Vec<ScheduleGrant> = ops.owner_grants().into_iter().collect();
+        let owner = caller(&held);
+        let partial = caller(held.get(..1).unwrap_or_default());
+        let mut replies = Replies::default();
         let limits = hatchling_core::ui::UsageLimits {
             daily_tokens: Some(9),
             monthly_tokens: None,
@@ -2105,7 +2124,10 @@ mod tests {
                 ApiOutcome::Refused
             )
         );
-        assert_eq!(crate::usage::limits(&dir), Default::default());
+        assert_eq!(
+            crate::usage::limits(&dir),
+            hatchling_core::ui::UsageLimits::default()
+        );
         let (result, outcome) = ops.handle(&owner, &set, &mut replies);
         assert_eq!(outcome, ApiOutcome::Served);
         let UiActionResult::Usage { usage } = result else {

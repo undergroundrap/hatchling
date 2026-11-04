@@ -1288,9 +1288,9 @@ impl Delivery for HubDelivery<'_> {
     }
 
     fn notify_failure(&self, channel: &str, failure: &FailureNotice) -> Result<(), String> {
-        let reached = self.usage.and_then(|usage| {
-            crate::usage::reached(usage, Timestamp::now().as_second())
-        });
+        let reached = self
+            .usage
+            .and_then(|usage| crate::usage::reached(usage, Timestamp::now().as_second()));
         self.deliver(
             channel,
             &failure_notice(failure, self.model, reached.as_ref()),
