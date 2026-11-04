@@ -97,6 +97,8 @@ pub enum ApiRequest {
     ListDecisions,
     /// [`UiAction::ReadUsage`].
     ReadUsage,
+    /// [`UiAction::ReadFeed`].
+    ReadFeed,
     /// [`UiAction::GiveCode`].
     GiveCode,
     /// [`UiAction::DeclineCode`].
@@ -139,6 +141,7 @@ impl ApiRequest {
             UiAction::ManageMemory { .. } => Self::ManageMemory,
             UiAction::ListDecisions {} => Self::ListDecisions,
             UiAction::ReadUsage {} => Self::ReadUsage,
+            UiAction::ReadFeed {} => Self::ReadFeed,
             UiAction::GiveCode { .. } => Self::GiveCode,
             UiAction::DeclineCode { .. } => Self::DeclineCode,
         }
@@ -322,6 +325,7 @@ mod tests {
                 ApiRequest::ListDecisions,
             ),
             (action(UiAction::ReadUsage {}), ApiRequest::ReadUsage),
+            (action(UiAction::ReadFeed {}), ApiRequest::ReadFeed),
             (
                 action(UiAction::GiveCode {
                     session_id: id(),

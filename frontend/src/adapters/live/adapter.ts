@@ -22,13 +22,17 @@ import type { AttentionPort } from '../../session/attention.js';
 import type { ConversationPort } from '../../session/conversations.js';
 import type { UsagePort } from '../../session/usage.js';
 import type { GoalsPort } from '../../session/goals.js';
+import type { FeedPort } from '../../session/feed.js';
 import { LiveChatSession } from './session.js';
 import { LiveSchedules } from './schedules.js';
 import { LiveUsage } from './usage.js';
 import { LiveGoals } from './goals.js';
+import { LiveFeed } from './feed.js';
 import { LiveMemory } from './memory.js';
 import { LiveSites } from './sites.js';
 import { Surfaces } from './surfaces.js';
+/** When the daily post is written, until the owner picks a time. */
+const DIGEST_TIME = '08:30';
 const SETTINGS: Settings = { interfaceSize: 'comfortable', theme: 'dark', accent: 'white', avatarAccent: '#a78c57', keepChatPanelVisible: true, language: 'English', name: 'hatchling', vibe: '', feedPrompt: '', captchaStanding: false, telemetry: false, quietStart: '22:00', quietEnd: '08:00', digestTime: '08:30', dailyAllowance: 0, allowlist: [] };
 const NOT_YET = 'Hatchling cannot do this from the app yet.';
 /** Why the broker didn't start a new conversation: the agent still has the last one. */
@@ -62,6 +66,9 @@ export class LiveAdapter implements ProtocolAdapter {
     readonly goals: GoalsPort;
     readonly #goals: LiveGoals;
     readonly #memory: LiveMemory;
+    /** The owner's Feed page: its prompt, its time, and what was written. */
+    readonly feed: FeedPort;
+    readonly #feed: LiveFeed;
     /** Scheduled work that needs the owner: straight to the broker, never as a Command. */
     readonly attention: AttentionPort;
     readonly #listeners = new Set<() => void>();
@@ -89,6 +96,8 @@ export class LiveAdapter implements ProtocolAdapter {
         this.usage = this.#usage;
         this.#goals = new LiveGoals(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.goals = this.#goals;
+        this.#feed = new LiveFeed(this.#client, this.#schedules, () => this.#publish(), () => `live-command-${++this.#serial}`);
+        this.feed = this.#feed;
         this.#memory = new LiveMemory(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.chatSession = new LiveChatSession(this.#client, this.#chats, artifactId => this.#surfaces.shelf.latest(artifactId));
         this.#snapshot = this.#build();
@@ -176,6 +185,14 @@ export class LiveAdapter implements ProtocolAdapter {
                 return { ok: false, message: 'Say whether it was reached or set aside: close it from its checkbox.' };
             case 'goal.reopen':
                 return { ok: false, message: 'A closed goal stays closed in Hatchling. Set it again as a new goal.' };
+            case 'feed.generate':
+                return this.#feed.writeNow();
+            case 'feed.prompt': {
+                const state = this.#feed.current();
+                return this.#feed.save(command.text, state.kind === 'read' && state.setup !== null ? state.setup.time : DIGEST_TIME);
+            }
+            case 'feed.react':
+                return { ok: false, message: 'Reactions aren’t kept yet. Discuss a post to tell Hatchling what you think.' };
             case 'memory.delete':
                 return this.#memory.forget(command.id);
             case 'memory.save':
@@ -251,8 +268,12 @@ export class LiveAdapter implements ProtocolAdapter {
                 this.#sites.observe(event);
                 this.#memory.observe(event);
                 return undefined;
-            case 'artifact':
             case 'schedule':
+                // A run ended: the lists and the Feed page may have changed.
+                if (body.outcome !== 'fired')
+                    void this.#schedules.refresh().then(() => this.#feed.observe(body));
+                return undefined;
+            case 'artifact':
             case 'agent_status':
             case 'artifact_listed':
             case 'browser_session':
@@ -260,7 +281,7 @@ export class LiveAdapter implements ProtocolAdapter {
             case 'browser_action':
             case 'browser_control':
             case 'browser_code':
-                // Build and schedule notices have no view yet; the surfaces took the rest.
+                // Build notices have no view yet; the surfaces took the rest.
                 return undefined;
         }
     }
@@ -290,7 +311,7 @@ export class LiveAdapter implements ProtocolAdapter {
             systemEntries: [],
             goals: [...this.#goals.goals()],
             ideas: [],
-            posts: [],
+            posts: [...this.#feed.posts()],
             connectors: [],
             channels: [],
             providers: [],

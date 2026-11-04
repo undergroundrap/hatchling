@@ -69,6 +69,8 @@ enum Owned<'a> {
     Memory(&'a KeptOp),
     /// The decisions they made.
     Decisions,
+    /// The posts on their Feed page.
+    Feed,
 }
 
 /// The one chat the API offers: the local channel's conversation.
@@ -189,7 +191,8 @@ impl<'a> Ops<'a> {
                     ApiOutcome::Served,
                 )
             }
-            // A list shows what the caller's own grants cover.
+            // A list shows what the caller's own grants cover: the owner's
+            // own, their Feed page's schedules too.
             UiAction::ManageSchedule {
                 op: ScheduleOp::List { after },
             } => (
@@ -197,7 +200,7 @@ impl<'a> Ops<'a> {
                     outcome: list_schedules(
                         self.config,
                         self.key,
-                        caller.grants(),
+                        &with_feed_page(caller.grants(), owns),
                         after.as_deref(),
                         Creator::Owner,
                     ),
@@ -205,7 +208,7 @@ impl<'a> Ops<'a> {
                 ApiOutcome::Served,
             ),
             UiAction::ManageSchedule { op } => {
-                if !caller.holds(&schedule_needs(op, &owner)) {
+                if !with_feed_page(caller.grants(), owns).is_superset(&schedule_needs(op, &owner)) {
                     return refused(ActionRefusal::NotGranted);
                 }
                 (
@@ -228,6 +231,7 @@ impl<'a> Ops<'a> {
             UiAction::ManageGoals { op } => self.owned(owns, Owned::Goals(op)),
             UiAction::ManageMemory { op } => self.owned(owns, Owned::Memory(op)),
             UiAction::ListDecisions {} => self.owned(owns, Owned::Decisions),
+            UiAction::ReadFeed {} => self.owned(owns, Owned::Feed),
             UiAction::Decide {
                 confirmation_id,
                 revision,
@@ -294,6 +298,13 @@ impl<'a> Ops<'a> {
             Owned::Decisions => UiActionResult::Decisions {
                 decisions: if self.config.scheduler.enabled() {
                     crate::decisions::list(&self.config.scheduler.decisions_log())
+                } else {
+                    Vec::new()
+                },
+            },
+            Owned::Feed => UiActionResult::Feed {
+                posts: if self.config.scheduler.enabled() {
+                    crate::feed_page::list(&self.config.scheduler.feed_log())
                 } else {
                     Vec::new()
                 },
@@ -600,6 +611,16 @@ impl Ops<'_> {
 pub const NEW_CONVERSATION: &str =
     "New conversation. The agent isn't given anything said before this.";
 
+/// What `grants` let a caller do with schedules: posting to the Feed page
+/// too, when the caller is the owner, whose page it is.
+fn with_feed_page(grants: &BTreeSet<ScheduleGrant>, owns: bool) -> BTreeSet<ScheduleGrant> {
+    let mut grants = grants.clone();
+    if owns {
+        grants.insert(crate::schedule_ops::feed_send());
+    }
+    grants
+}
+
 /// The grants a schedule op needs the caller to hold: a create's own, a
 /// feed's derived ones, and for a cancel or a follow-up the owner's
 /// whole set (a cancel can undo any schedule; a follow-up is a run's). A
@@ -831,7 +852,9 @@ fn control_answer(
 mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
-    use hatchling_core::messages::{FeedSpec, ScheduleResult, ScheduleSpec, SkillOp, SkillResult};
+    use hatchling_core::messages::{
+        FeedSpec, ScheduleRefusal, ScheduleResult, ScheduleSpec, SkillOp, SkillResult,
+    };
     use hatchling_core::ui::{ControlRefusal, DecisionRejection, FileContent, FileFormat, UiEvent};
 
     use super::*;
@@ -2038,6 +2061,140 @@ mod tests {
             (1, 7, 2)
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The owner's Feed page is theirs: the app makes a schedule that posts
+    /// there without its connection naming that grant, a caller who isn't
+    /// the owner can't, nor can an agent, and only the owner reads what's
+    /// kept.
+    #[test]
+    fn the_feed_page_is_the_owners_alone() {
+        let dir = scratch("feed-page");
+        let mut config = owner_config(Some(&dir.0.join("schedules").to_string_lossy()));
+        config.goals.grants = vec![GoalsAction::QueryGoals];
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let ops = Ops::new(&config, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        let held: Vec<ScheduleGrant> = ops.owner_grants().into_iter().collect();
+        assert!(
+            !held.contains(&crate::schedule_ops::feed_send()),
+            "no connection holds it: the owner's does, as theirs"
+        );
+        let owner = caller(&held);
+        let reads = ScheduleGrant::Goals {
+            action: String::from("query-goals"),
+        };
+        let partial = caller(std::slice::from_ref(&reads));
+        let op = ScheduleOp::Create {
+            when: ScheduleSpec::Cron {
+                expr: String::from("30 8 * * *"),
+                tz: String::from("UTC"),
+            },
+            task: String::from("What moved on my goals."),
+            grants: vec![reads, crate::schedule_ops::feed_send()],
+            channel: String::from(crate::feed_page::FEED_PAGE),
+        };
+        let action = UiAction::ManageSchedule { op: op.clone() };
+        let mut replies = Replies::default();
+        assert_eq!(
+            ops.handle(&partial, &action, &mut replies),
+            (
+                UiActionResult::Refused {
+                    reason: ActionRefusal::NotGranted
+                },
+                ApiOutcome::Refused
+            )
+        );
+        let id = match ops.handle(&owner, &action, &mut replies) {
+            (
+                UiActionResult::Schedule {
+                    outcome: ScheduleResult::Created { id },
+                },
+                ApiOutcome::Served,
+            ) => id,
+            other => format!("not created: {other:?}"),
+        };
+        assert!(id.starts_with("sch-"), "{id}");
+        // An agent may not post there, whatever it asks.
+        assert_eq!(
+            handle_schedule_op(&config, &key, &op, Timestamp::now(), Creator::Agent),
+            ScheduleResult::Refused {
+                reason: ScheduleRefusal::ExceedsGrants
+            }
+        );
+        // The owner's list shows it; a caller who isn't the owner sees
+        // only what their own grants cover.
+        let list = UiAction::ManageSchedule {
+            op: ScheduleOp::List { after: None },
+        };
+        let shown = |caller: &Caller| match ops.handle(caller, &list, &mut Replies::default()) {
+            (UiActionResult::Schedule { outcome }, ApiOutcome::Served) => listed(&outcome),
+            other => vec![format!("not served: {other:?}")],
+        };
+        assert_eq!(shown(&owner), std::slice::from_ref(&id));
+        assert!(shown(&partial).is_empty());
+    }
+
+    /// What a run delivers to the Feed page is kept as a post, cleared by
+    /// the output gate, and only the owner reads it.
+    #[test]
+    fn what_a_run_delivers_to_the_feed_page_only_the_owner_reads() {
+        let dir = scratch("feed-posts");
+        let config = owner_config(Some(&dir.0.join("schedules").to_string_lossy()));
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let ops = Ops::new(&config, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        let held: Vec<ScheduleGrant> = ops.owner_grants().into_iter().collect();
+        let owner = caller(&held);
+        let partial = caller(held.get(..1).unwrap_or_default());
+        let mut replies = Replies::default();
+        let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());
+        let page = config.scheduler.feed_log();
+        let delivery = crate::schedule_ops::HubDelivery::new(Some(&hub)).with_feed_page(&page);
+        assert_eq!(
+            hatchling_scheduler::Delivery::deliver_verbatim(
+                &delivery,
+                crate::feed_page::FEED_PAGE,
+                "Monday\nTwo goals moved."
+            ),
+            Ok(true)
+        );
+        let read = UiAction::ReadFeed {};
+        assert_eq!(
+            ops.handle(&partial, &read, &mut replies).1,
+            ApiOutcome::Refused
+        );
+        let posts = match ops.handle(&owner, &read, &mut replies) {
+            (UiActionResult::Feed { posts }, ApiOutcome::Served) => posts,
+            _ => Vec::new(),
+        };
+        assert_eq!(
+            posts
+                .iter()
+                .map(|post| post.text.as_str())
+                .collect::<Vec<_>>(),
+            ["Monday\nTwo goals moved."]
+        );
+        // Without a page or a gate to clear it, nothing is kept.
+        let nowhere = crate::schedule_ops::HubDelivery::new(Some(&hub));
+        assert!(
+            hatchling_scheduler::Delivery::deliver_verbatim(
+                &nowhere,
+                crate::feed_page::FEED_PAGE,
+                "x"
+            )
+            .is_err()
+        );
+        let ungated = crate::schedule_ops::HubDelivery::new(None).with_feed_page(&page);
+        assert!(
+            hatchling_scheduler::Delivery::deliver_verbatim(
+                &ungated,
+                crate::feed_page::FEED_PAGE,
+                "x"
+            )
+            .is_err()
+        );
+        assert_eq!(crate::feed_page::list(&page).len(), 1);
     }
 
     /// Only the owner manages their goals.

@@ -242,6 +242,14 @@ impl LocalHub {
         })
     }
 
+    /// Judges `msg`, in `scope`, with the output gate, as [`Self::deliver`]
+    /// does, for a delivery that doesn't go to the client: the original, or
+    /// the notice that replaced it.
+    #[must_use]
+    pub fn clear(&self, msg: &Message, scope: &str) -> Cleared {
+        self.0.gate.clear(msg, scope)
+    }
+
     /// Forgets `scope`'s gate state: its session ended.
     pub fn end_scope(&self, scope: &str) {
         self.0.gate.end_scope(scope);

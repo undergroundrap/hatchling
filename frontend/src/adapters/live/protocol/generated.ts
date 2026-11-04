@@ -278,7 +278,7 @@ export type ApiOutcome = 'served' | 'refused';
  * What one API call asked for: the request's kind, never its content
  * (a message's text, a file, a schedule's task).
  */
-export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'manage_goals' | 'manage_memory' | 'list_decisions' | 'read_usage' | 'give_code' | 'decline_code';
+export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'manage_goals' | 'manage_memory' | 'list_decisions' | 'read_usage' | 'read_feed' | 'give_code' | 'decline_code';
 /**
  * A bearer token, presented in `Hello` for a token provider.
  *
@@ -1348,6 +1348,24 @@ export type EgressResult = {
  * What the broker decided about one egress request, and why.
  */
 export type EgressVerdict = 'allowed' | 'no_grant' | 'not_allowed' | 'bad_surrogate' | 'policy' | 'failed';
+/**
+ * A post on the owner's Feed page: what one scheduled run wrote for it.
+ */
+export type FeedPost = {
+    /**
+     * Its id.
+     */
+    readonly post_id: string;
+    /**
+     * What the run wrote, as the output gate cleared it: the agent's words,
+     * its first line the title.
+     */
+    readonly text: string;
+    /**
+     * When it was kept, RFC 3339.
+     */
+    readonly written_at: string;
+};
 /**
  * What a feed digest gathers: the user's own tuning, as rules.
  *
@@ -4071,6 +4089,8 @@ export type UiAction = {
 } | {
     readonly action: 'read_usage';
 } | {
+    readonly action: 'read_feed';
+} | {
     readonly action: 'give_code';
     /**
      * The code.
@@ -4280,6 +4300,12 @@ export type UiActionResult = {
      * The report.
      */
     readonly usage: UsageReport;
+} | {
+    /**
+     * They.
+     */
+    readonly posts: readonly (FeedPost)[];
+    readonly result: 'feed';
 } | {
     readonly result: 'code_taken';
     /**

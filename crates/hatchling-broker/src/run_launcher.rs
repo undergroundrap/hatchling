@@ -738,7 +738,12 @@ fn run_token() -> Result<String, String> {
 /// turn included.
 fn scheduled_run(config: &Config, request: &RunRequest) -> ScheduledRun {
     ScheduledRun {
-        task: request.task.clone(),
+        // A run for the owner's Feed page writes a post from their prompt.
+        task: if request.channel == crate::feed_page::FEED_PAGE {
+            crate::feed_page::task(&request.task)
+        } else {
+            request.task.clone()
+        },
         missed: request.missed,
         due: request.due.as_second(),
         model_endpoint: config.scheduler.model_endpoint.clone(),
@@ -1212,6 +1217,14 @@ mod tests {
         let turn = scheduled_run(&config, &asked);
         assert!(turn.chat, "a chat turn speaks with the chat prompt");
         assert!(turn.missed);
+        // A run for the owner's Feed page is asked for one post, from
+        // their prompt; one for the chat is given its task as it is.
+        let mut feed = request(Vec::new());
+        feed.channel = String::from(crate::feed_page::FEED_PAGE);
+        assert_eq!(
+            scheduled_run(&config, &feed).task,
+            crate::feed_page::task("t")
+        );
     }
 
     /// A run is told the tool groups the operator turned on, so its

@@ -99,6 +99,7 @@ export class LiveChatSession implements ChatSessionPort {
             case 'profiles':
             case 'sign_ins':
             case 'usage':
+            case 'feed':
             case 'goals':
             case 'memory':
             case 'decisions':

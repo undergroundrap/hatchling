@@ -175,6 +175,33 @@ pub fn held_grants(config: &Config) -> BTreeSet<ScheduleGrant> {
         .collect()
 }
 
+/// Posting to the owner's Feed page ([`crate::feed_page`]).
+#[must_use]
+pub fn feed_send() -> ScheduleGrant {
+    ScheduleGrant::ChannelSend {
+        channel: String::from(crate::feed_page::FEED_PAGE),
+    }
+}
+
+/// What a schedule the owner makes may hold: every grant the broker holds,
+/// and posting to their Feed page, which is theirs alone. No session holds
+/// that, so no agent's schedule can post there.
+#[must_use]
+pub fn owner_schedule_grants(config: &Config) -> BTreeSet<ScheduleGrant> {
+    let mut grants = held_grants(config);
+    grants.insert(feed_send());
+    grants
+}
+
+/// What a schedule `creator` makes may hold.
+fn creatable(config: &Config, creator: Creator) -> BTreeSet<ScheduleGrant> {
+    if creator == Creator::Owner {
+        owner_schedule_grants(config)
+    } else {
+        held_grants(config)
+    }
+}
+
 /// The sealed schedule store at `root`.
 #[derive(Debug)]
 pub struct SealedScheduleStore<'k> {
@@ -700,9 +727,13 @@ pub fn handle_schedule_op(
             .map_or(ScheduleResult::Denied, |scope| {
                 request_followup(scope, key, task, *delay_secs, grants, now)
             }),
-        ScheduleOp::List { after } => {
-            list_schedules(config, key, &held_grants(config), after.as_deref(), caller)
-        }
+        ScheduleOp::List { after } => list_schedules(
+            config,
+            key,
+            &creatable(config, caller),
+            after.as_deref(),
+            caller,
+        ),
         ScheduleOp::Resolve { .. }
         | ScheduleOp::Retry { .. }
         | ScheduleOp::ListParked { .. }
@@ -930,7 +961,7 @@ fn create_schedule(
         task.to_owned(),
         grants.to_vec(),
         channel.to_owned(),
-        &held_grants(config),
+        &creatable(config, creator),
         now,
     ) {
         Ok(schedule) => schedule,
@@ -983,7 +1014,7 @@ fn create_feed(
         String::from(crate::feed_run::FEED_TASK),
         grants,
         channel.to_owned(),
-        &held_grants(config),
+        &creatable(config, creator),
         now,
     ) {
         Ok(schedule) => schedule,
@@ -1136,19 +1167,56 @@ pub struct HubDelivery<'a> {
     hub: Option<&'a LocalHub>,
     /// The scheduled runs' model, named when one fails for it.
     model: Option<&'a str>,
+    /// Where the owner's Feed page is kept, when there is one.
+    feed: Option<&'a Path>,
 }
 
 impl<'a> HubDelivery<'a> {
     /// Delivery through `hub`, the broker's ingress, if it has one.
     #[must_use]
     pub const fn new(hub: Option<&'a LocalHub>) -> Self {
-        Self { hub, model: None }
+        Self {
+            hub,
+            model: None,
+            feed: None,
+        }
     }
 
     /// The delivery, naming `model` when a run fails for it.
     #[must_use]
     pub const fn with_model(self, model: Option<&'a str>) -> Self {
         Self { model, ..self }
+    }
+
+    /// The delivery, keeping what's for the owner's Feed page at `feed`.
+    #[must_use]
+    pub const fn with_feed_page(self, feed: &'a Path) -> Self {
+        Self {
+            feed: Some(feed),
+            ..self
+        }
+    }
+
+    /// Keeps `text` on the owner's Feed page, as the output gate clears it
+    /// for the chat: whether it went as written, not a notice in its place.
+    fn keep_on_feed(&self, text: &str) -> Result<bool, String> {
+        let (Some(hub), Some(feed)) = (self.hub, self.feed) else {
+            return Err(String::from("the Feed page isn't kept here"));
+        };
+        let cleared = hub.clear(
+            &Message {
+                sender: SenderId(String::from(SCHEDULER_SENDER)),
+                channel: ChannelId(String::from(crate::feed_page::FEED_PAGE)),
+                text: text.to_owned(),
+            },
+            crate::output_gate::SCHEDULER_SCOPE,
+        );
+        crate::feed_page::keep(feed, &cleared.message().text)?;
+        if let Some((category, event_id)) = cleared.redaction() {
+            tracing::warn!(category = category.as_str(), %event_id, "a feed post was redacted");
+            return Ok(false);
+        }
+        Ok(true)
     }
 }
 
@@ -1196,6 +1264,9 @@ impl Delivery for HubDelivery<'_> {
     }
 
     fn deliver_verbatim(&self, channel: &str, text: &str) -> Result<bool, String> {
+        if channel == crate::feed_page::FEED_PAGE {
+            return self.keep_on_feed(text);
+        }
         if channel != "local" {
             return Err(format!("no delivery path for channel {channel:?}"));
         }
@@ -1264,8 +1335,12 @@ pub fn dispatch_once<L: Launcher>(
         return Ok(TickReport::default());
     }
     let store = SealedScheduleStore::new(&config.scheduler.root, key);
-    let held = held_grants(config);
-    let delivery = HubDelivery::new(hub).with_model(config.scheduler.model_name.as_deref());
+    // Only the owner's schedules can hold posting to their Feed page.
+    let held = owner_schedule_grants(config);
+    let feed = config.scheduler.feed_log();
+    let delivery = HubDelivery::new(hub)
+        .with_model(config.scheduler.model_name.as_deref())
+        .with_feed_page(&feed);
     let authenticated = hub.map_or_else(BTreeSet::new, |_| authenticated_channels(config));
     let events = if hub.is_some_and(|hub| hub.take_arrivals() > 0) {
         vec![HookSource::ChannelMessage {

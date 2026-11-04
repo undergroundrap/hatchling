@@ -259,6 +259,13 @@ impl SchedulerConfig {
         self.root.with_extension("decisions")
     }
 
+    /// Where the owner's Feed page is kept: the store root's sibling
+    /// `<root>.feed`, a post per line ([`crate::feed_page`]).
+    #[must_use]
+    pub fn feed_log(&self) -> PathBuf {
+        self.root.with_extension("feed")
+    }
+
     /// Where subagent activity is recorded: the store root's
     /// sibling `<root>.activity`, one JSON event per line.
     #[must_use]

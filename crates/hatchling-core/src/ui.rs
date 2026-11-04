@@ -461,6 +461,24 @@ pub struct ConfirmationRequest {
     pub approve: Option<String>,
 }
 
+/// The owner's Feed page as a schedule's delivery target: a run delivering
+/// here is kept as a post on the page, and goes nowhere else. Only the owner
+/// may point a schedule at it.
+pub const FEED_PAGE: &str = "feed";
+
+/// A post on the owner's Feed page: what one scheduled run wrote for it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct FeedPost {
+    /// Its id.
+    pub post_id: String,
+    /// When it was kept, RFC 3339.
+    pub written_at: String,
+    /// What the run wrote, as the output gate cleared it: the agent's words,
+    /// its first line the title.
+    pub text: String,
+}
+
 /// A decision the owner made, kept: the card as they were shown it, and what
 /// they decided.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1130,6 +1148,9 @@ pub enum UiAction {
     ListDecisions {},
     /// Read the model usage the broker counted: the owner's alone.
     ReadUsage {},
+    /// Read the posts on the owner's Feed page, the newest first: the
+    /// owner's alone.
+    ReadFeed {},
     /// Give the one-time code a browser session's page asks for (WO-030):
     /// typed into the page by the broker, used once and not kept.
     GiveCode {
@@ -1290,6 +1311,11 @@ pub enum UiActionResult {
     Usage {
         /// The report.
         usage: UsageReport,
+    },
+    /// The posts on the owner's Feed page, the newest first.
+    Feed {
+        /// They.
+        posts: Vec<FeedPost>,
     },
     /// The code was taken: the broker types it into the page next.
     CodeTaken {
@@ -2286,6 +2312,26 @@ mod tests {
             },
             &json!({"action": "manage_sign_ins", "op": {"op": "delete", "sign_in_id": "cred-1"}}),
         );
+    }
+
+    #[test]
+    fn the_feed_is_read_as_kept_posts() {
+        pinned(&UiAction::ReadFeed {}, &json!({"action": "read_feed"}));
+        pinned(
+            &UiActionResult::Feed {
+                posts: vec![FeedPost {
+                    post_id: s("post-1"),
+                    written_at: s("2026-11-04T08:30:00Z"),
+                    text: s("Your morning\nTwo goals moved."),
+                }],
+            },
+            &json!({"result": "feed", "posts": [{
+                "post_id": "post-1",
+                "written_at": "2026-11-04T08:30:00Z",
+                "text": "Your morning\nTwo goals moved."
+            }]}),
+        );
+        assert_eq!(FEED_PAGE, "feed");
     }
 
     #[test]
