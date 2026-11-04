@@ -2204,6 +2204,62 @@ mod tests {
         assert_eq!(crate::feed_page::list(&page).len(), 1);
     }
 
+    /// The Ideas page is the owner's too: only they manage it, and only
+    /// their own schedules may deliver there, never an agent's.
+    #[test]
+    fn the_ideas_page_is_the_owners_alone() {
+        let dir = scratch("ideas-page");
+        let config = owner_config(Some(&dir.0.join("schedules").to_string_lossy()));
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let ops = Ops::new(&config, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        let held: Vec<ScheduleGrant> = ops.owner_grants().into_iter().collect();
+        let owner = caller(&held);
+        let partial = caller(held.get(..1).unwrap_or_default());
+        let mut replies = Replies::default();
+        let list = UiAction::ManageSuggestions {
+            op: SuggestionOp::List,
+        };
+        assert_eq!(ops.handle(&partial, &list, &mut replies).1, ApiOutcome::Refused);
+        assert_eq!(
+            ops.handle(&owner, &list, &mut replies),
+            (
+                UiActionResult::Suggestions {
+                    outcome: hatchling_core::ui::SuggestionResult::Listed {
+                        suggestions: Vec::new()
+                    }
+                },
+                ApiOutcome::Served
+            )
+        );
+        let op = ScheduleOp::Create {
+            when: ScheduleSpec::Cron {
+                expr: String::from("0 9 * * 1"),
+                tz: String::from("UTC"),
+            },
+            task: String::from("Ideas for my running."),
+            grants: vec![crate::schedule_ops::ideas_send()],
+            channel: String::from(crate::suggestions::IDEAS_PAGE),
+        };
+        let action = UiAction::ManageSchedule { op: op.clone() };
+        assert_eq!(ops.handle(&partial, &action, &mut replies).1, ApiOutcome::Refused);
+        assert!(matches!(
+            ops.handle(&owner, &action, &mut replies),
+            (
+                UiActionResult::Schedule {
+                    outcome: ScheduleResult::Created { .. }
+                },
+                ApiOutcome::Served
+            )
+        ));
+        assert_eq!(
+            handle_schedule_op(&config, &key, &op, Timestamp::now(), Creator::Agent),
+            ScheduleResult::Refused {
+                reason: ScheduleRefusal::ExceedsGrants
+            }
+        );
+    }
+
     /// Only the owner manages their goals.
     #[test]
     fn only_the_owner_manages_the_goals() {
