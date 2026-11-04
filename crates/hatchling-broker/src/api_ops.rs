@@ -38,8 +38,8 @@ use hatchling_core::messages::{ScheduleGrant, ScheduleOp};
 use hatchling_core::subagent::{ActivityEvent, SubagentEvent};
 use hatchling_core::ui::{
     ActionRefusal, AgentState, ApiOutcome, ApiRequest, ChatAuthor, ChatMessage, ControlRefusal,
-    Decision, GoalOp, Handoff, KeptOp, ProfileOp, ProfileResult, SignInOp, SiteOp, UiAction,
-    UiActionResult, UiEventBody,
+    Decision, GoalOp, Handoff, KeptOp, ProfileOp, ProfileResult, SignInOp, SiteOp, SuggestionOp,
+    UiAction, UiActionResult, UiEventBody,
 };
 use hatchling_scheduler::{Creator, Timestamp};
 use hatchling_vault::OpensStores;
@@ -71,6 +71,8 @@ enum Owned<'a> {
     Decisions,
     /// The posts on their Feed page.
     Feed,
+    /// Their Ideas page.
+    Suggestions(&'a SuggestionOp),
 }
 
 /// The one chat the API offers: the local channel's conversation.
@@ -232,6 +234,7 @@ impl<'a> Ops<'a> {
             UiAction::ManageMemory { op } => self.owned(owns, Owned::Memory(op)),
             UiAction::ListDecisions {} => self.owned(owns, Owned::Decisions),
             UiAction::ReadFeed {} => self.owned(owns, Owned::Feed),
+            UiAction::ManageSuggestions { op } => self.owned(owns, Owned::Suggestions(op)),
             UiAction::Decide {
                 confirmation_id,
                 revision,
@@ -301,6 +304,9 @@ impl<'a> Ops<'a> {
                 } else {
                     Vec::new()
                 },
+            },
+            Owned::Suggestions(op) => UiActionResult::Suggestions {
+                outcome: crate::suggestions::handle(self.config, op),
             },
             Owned::Feed => UiActionResult::Feed {
                 posts: if self.config.scheduler.enabled() {
@@ -611,12 +617,13 @@ impl Ops<'_> {
 pub const NEW_CONVERSATION: &str =
     "New conversation. The agent isn't given anything said before this.";
 
-/// What `grants` let a caller do with schedules: posting to the Feed page
-/// too, when the caller is the owner, whose page it is.
+/// What `grants` let a caller do with schedules: delivering to the Feed
+/// and Ideas pages too, when the caller is the owner, whose pages they are.
 fn with_feed_page(grants: &BTreeSet<ScheduleGrant>, owns: bool) -> BTreeSet<ScheduleGrant> {
     let mut grants = grants.clone();
     if owns {
         grants.insert(crate::schedule_ops::feed_send());
+        grants.insert(crate::schedule_ops::ideas_send());
     }
     grants
 }

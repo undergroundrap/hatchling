@@ -482,6 +482,11 @@ impl Cell<Ready> {
                 self.connection(),
             )));
         }
+        if on(hatchling_core::run_tools::ToolGroup::Suggest) {
+            registry.register(Box::new(crate::tools::IdeaSuggestTool::new(
+                self.connection(),
+            )));
+        }
         if on(hatchling_core::run_tools::ToolGroup::Goals) {
             registry.register(Box::new(crate::tools::GoalsReadTool::new(
                 self.connection(),

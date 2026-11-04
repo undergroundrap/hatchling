@@ -183,13 +183,22 @@ pub fn feed_send() -> ScheduleGrant {
     }
 }
 
+/// Suggesting on the owner's Ideas page ([`crate::suggestions`]).
+#[must_use]
+pub fn ideas_send() -> ScheduleGrant {
+    ScheduleGrant::ChannelSend {
+        channel: String::from(crate::suggestions::IDEAS_PAGE),
+    }
+}
+
 /// What a schedule the owner makes may hold: every grant the broker holds,
-/// and posting to their Feed page, which is theirs alone. No session holds
-/// that, so no agent's schedule can post there.
+/// and delivering to their Feed and Ideas pages, which are theirs alone. No
+/// session holds those, so no agent's schedule can deliver there.
 #[must_use]
 pub fn owner_schedule_grants(config: &Config) -> BTreeSet<ScheduleGrant> {
     let mut grants = held_grants(config);
     grants.insert(feed_send());
+    grants.insert(ideas_send());
     grants
 }
 
@@ -1266,6 +1275,12 @@ impl Delivery for HubDelivery<'_> {
     fn deliver_verbatim(&self, channel: &str, text: &str) -> Result<bool, String> {
         if channel == crate::feed_page::FEED_PAGE {
             return self.keep_on_feed(text);
+        }
+        // An Ideas page run's ideas are on the page already, each through
+        // its own suggestion; its answer is a line for the log.
+        if channel == crate::suggestions::IDEAS_PAGE {
+            tracing::info!(chars = text.chars().count(), "an Ideas page run finished");
+            return Ok(true);
         }
         if channel != "local" {
             return Err(format!("no delivery path for channel {channel:?}"));

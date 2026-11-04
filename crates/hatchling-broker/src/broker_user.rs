@@ -93,7 +93,7 @@ pub fn state_dirs(config: &Config) -> Vec<PathBuf> {
 }
 
 /// The broker's state that is a file: the scheduler's activity log, the
-/// owner's decisions and their Feed page, when it is on. They sit beside
+/// owner's decisions, and their Feed and Ideas pages, when it is on. They sit beside
 /// the store, where the broker's user may not make them.
 #[must_use]
 pub fn state_files(config: &Config) -> Vec<PathBuf> {
@@ -102,6 +102,7 @@ pub fn state_files(config: &Config) -> Vec<PathBuf> {
             config.scheduler.activity_log(),
             config.scheduler.decisions_log(),
             config.scheduler.feed_log(),
+            config.scheduler.ideas_log(),
         ]
     } else {
         Vec::new()
@@ -231,7 +232,8 @@ mod tests {
             [
                 PathBuf::from("/srv/h/schedules.activity"),
                 PathBuf::from("/srv/h/schedules.decisions"),
-                PathBuf::from("/srv/h/schedules.feed")
+                PathBuf::from("/srv/h/schedules.feed"),
+                PathBuf::from("/srv/h/schedules.ideas")
             ]
         );
     }

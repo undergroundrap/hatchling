@@ -531,6 +531,106 @@ impl Tool for MemoryProposeTool<'_> {
     }
 }
 
+/// Suggests an idea for the owner's Ideas page (v20): nothing runs from
+/// it; it waits there, as the agent's words, until the owner starts it.
+pub struct IdeaSuggestTool<'s> {
+    stream: &'s UnixStream,
+}
+
+impl<'s> IdeaSuggestTool<'s> {
+    /// Build over the broker session.
+    #[must_use]
+    pub const fn new(stream: &'s UnixStream) -> Self {
+        Self { stream }
+    }
+}
+
+/// The areas a suggestion may be in, as the tool names them.
+const SUGGESTION_AREAS: [&str; 10] = [
+    "career",
+    "devices",
+    "creation",
+    "family",
+    "finance",
+    "health",
+    "learning",
+    "productivity",
+    "relationships",
+    "shopping",
+];
+
+impl Tool for IdeaSuggestTool<'_> {
+    fn name(&self) -> &'static str {
+        "idea_suggest"
+    }
+
+    fn description(&self) -> &'static str {
+        "Suggest one idea for the owner's Ideas page: something Hatchling could do for them, with the tools and settings it has, that they haven't asked for. It waits there, as your words, until they start it or set it aside; nothing runs from it. Ground it in what you know of them (their goals, what they asked you to remember), and say why in their terms. One idea per call; never one they just asked for."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "A short title, at most 80 characters."
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "What Hatchling would do, in a sentence or two: at most 400 bytes."
+                },
+                "why": {
+                    "type": "string",
+                    "description": "Why it would help them, from what you know of them: at most 400 bytes."
+                },
+                "area": {
+                    "type": "string",
+                    "enum": SUGGESTION_AREAS,
+                    "description": "Where in their life it would help."
+                }
+            },
+            "required": ["title", "summary", "why", "area"],
+            "additionalProperties": false
+        })
+    }
+
+    fn execute(&self, arguments: Value) -> Result<ToolOutput, LoopError> {
+        let text = |field: &str| {
+            arguments
+                .get(field)
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| LoopError::ToolFailed {
+                    tool: self.name().to_owned(),
+                    reason: format!("missing or invalid '{field}' argument"),
+                })
+        };
+        let area = serde_json::from_value(Value::String(text("area")?)).map_err(|_| {
+            LoopError::ToolFailed {
+                tool: self.name().to_owned(),
+                reason: format!("'area' must be one of: {}", SUGGESTION_AREAS.join(", ")),
+            }
+        })?;
+        let op = hatchling_core::SuggestOp::Suggest {
+            title: text("title")?,
+            summary: text("summary")?,
+            why: text("why")?,
+            area,
+        };
+        Ok(match crate::ideas::suggest(self.stream, op) {
+            Ok(hatchling_core::SuggestResult::Suggested) => ToolOutput::Ok(json!({
+                "suggested": true,
+                "note": "It's on the owner's Ideas page. Nothing runs unless they start it."
+            })),
+            Ok(hatchling_core::SuggestResult::Unasked { reason }) => {
+                ToolOutput::Ok(json!({ "suggested": false, "reason": reason }))
+            }
+            Err(error) => ToolOutput::Err(error.to_string()),
+        })
+    }
+}
+
 /// Asks the owner to schedule work (v19): nothing is scheduled unless they
 /// approve it, in the app.
 pub struct SchedulePropose<'s> {

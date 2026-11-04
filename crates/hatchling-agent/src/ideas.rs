@@ -8,7 +8,9 @@
 use std::os::unix::net::UnixStream;
 
 use hatchling_core::framing::{read_frame, write_frame};
-use hatchling_core::{ArtifactOp, ArtifactResult, SessionRequest, SessionResponse};
+use hatchling_core::{
+    ArtifactOp, ArtifactResult, SessionRequest, SessionResponse, SuggestOp, SuggestResult,
+};
 
 use crate::Error;
 
@@ -43,9 +45,37 @@ pub fn request(stream: &UnixStream, op: ArtifactOp) -> Result<ArtifactResult, Er
         | SessionResponse::Web(_)
         | SessionResponse::Space(_)
         | SessionResponse::Subagent(_)
-        | SessionResponse::Browser(_) => Err(Error::IdeaProtocol {
+        | SessionResponse::Browser(_)
+        | SessionResponse::Suggest(_) => Err(Error::IdeaProtocol {
             reason: String::from("broker gave another kind of reply to an idea op"),
         }),
+    }
+}
+
+/// Suggests an idea for the owner's Ideas page (v20), and reads the
+/// broker's reply.
+///
+/// # Errors
+///
+/// [`Error::IdeaIo`] when the session fails; [`Error::IdeaProtocol`] when
+/// the broker's reply isn't a suggestion reply.
+pub fn suggest(stream: &UnixStream, op: SuggestOp) -> Result<SuggestResult, Error> {
+    let request = SessionRequest::Suggest(op);
+    let payload = serde_json::to_vec(&request).map_err(|error| Error::IdeaProtocol {
+        reason: format!("failed to encode the suggestion: {error}"),
+    })?;
+    write_frame(stream, &payload).map_err(frame_error)?;
+    let reply = read_frame(stream).map_err(frame_error)?;
+    let response: SessionResponse =
+        serde_json::from_slice(&reply).map_err(|error| Error::IdeaProtocol {
+            reason: format!("broker reply is not a valid session response: {error}"),
+        })?;
+    if let SessionResponse::Suggest(result) = response {
+        Ok(result)
+    } else {
+        Err(Error::IdeaProtocol {
+            reason: String::from("broker gave another kind of reply to a suggestion"),
+        })
     }
 }
 
@@ -72,6 +102,54 @@ mod tests {
             end.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         }
         (agent, broker)
+    }
+
+    fn suggestion() -> SuggestOp {
+        SuggestOp::Suggest {
+            title: String::from("A morning run plan"),
+            summary: String::from("A week of short runs."),
+            why: String::from("You set a goal to run 5k."),
+            area: hatchling_core::SuggestionArea::Health,
+        }
+    }
+
+    /// A suggestion goes as the broker reads it, and its reply comes back;
+    /// another kind of reply is an error.
+    #[test]
+    fn a_suggestion_asks_the_broker_and_returns_its_reply() {
+        let (agent, broker) = pair();
+        let serve = std::thread::spawn(move || {
+            let asked: SessionRequest =
+                serde_json::from_slice(&read_frame(&broker).unwrap()).unwrap();
+            let reply = SessionResponse::Suggest(SuggestResult::Suggested);
+            write_frame(&broker, &serde_json::to_vec(&reply).unwrap()).unwrap();
+            let _: SessionRequest = serde_json::from_slice(&read_frame(&broker).unwrap()).unwrap();
+            let wrong = SessionResponse::Artifact(ArtifactResult::Denied);
+            write_frame(&broker, &serde_json::to_vec(&wrong).unwrap()).unwrap();
+            let _: SessionRequest = serde_json::from_slice(&read_frame(&broker).unwrap()).unwrap();
+            write_frame(&broker, b"not json").unwrap();
+            asked
+        });
+        assert_eq!(
+            suggest(&agent, suggestion()).unwrap(),
+            SuggestResult::Suggested
+        );
+        assert!(matches!(
+            suggest(&agent, suggestion()),
+            Err(Error::IdeaProtocol { reason }) if reason.contains("another kind of reply")
+        ));
+        assert!(matches!(
+            suggest(&agent, suggestion()),
+            Err(Error::IdeaProtocol { reason }) if reason.contains("not a valid session response")
+        ));
+        assert_eq!(serve.join().unwrap(), SessionRequest::Suggest(suggestion()));
+        // A closed session is an I/O error.
+        let (agent, broker) = pair();
+        drop(broker);
+        assert!(matches!(
+            suggest(&agent, suggestion()),
+            Err(Error::IdeaIo { .. } | Error::IdeaProtocol { .. })
+        ));
     }
 
     /// The op goes as the broker reads it, and its reply comes back.

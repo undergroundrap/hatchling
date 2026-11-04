@@ -741,6 +741,8 @@ fn scheduled_run(config: &Config, request: &RunRequest) -> ScheduledRun {
         // A run for the owner's Feed page writes a post from their prompt.
         task: if request.channel == crate::feed_page::FEED_PAGE {
             crate::feed_page::task(&request.task)
+        } else if request.channel == crate::suggestions::IDEAS_PAGE {
+            crate::suggestions::task(&request.task)
         } else {
             request.task.clone()
         },
@@ -802,6 +804,11 @@ pub(crate) fn run_tools(
             proposes && !config.memory.root.as_os_str().is_empty(),
         ),
         (ToolGroup::Schedule, posts && config.scheduler.enabled()),
+        (
+            ToolGroup::Suggest,
+            (posts || grants.contains(&crate::schedule_ops::ideas_send()))
+                && config.scheduler.enabled(),
+        ),
     ]
     .into_iter()
     .filter_map(|(group, on)| on.then_some(group))
@@ -1225,6 +1232,12 @@ mod tests {
             scheduled_run(&config, &feed).task,
             crate::feed_page::task("t")
         );
+        let mut ideas = request(Vec::new());
+        ideas.channel = String::from(crate::suggestions::IDEAS_PAGE);
+        assert_eq!(
+            scheduled_run(&config, &ideas).task,
+            crate::suggestions::task("t")
+        );
     }
 
     /// A run is told the tool groups the operator turned on, so its
@@ -1320,6 +1333,18 @@ mod tests {
         config.channels = vec![String::from("local")];
         let root = std::mem::take(&mut config.scheduler.root);
         assert!(!schedules(&config, &local), "no scheduling");
+        config.scheduler.root = root;
+        // Suggesting ideas: a run that speaks to the owner, in the chat or
+        // on their Ideas page, where there's a page to keep them.
+        let suggests = |config: &Config, grants: &[ScheduleGrant]| {
+            run_tools(config, grants).contains(&ToolGroup::Suggest)
+        };
+        assert!(suggests(&config, &local));
+        assert!(suggests(&config, &[crate::schedule_ops::ideas_send()]));
+        assert!(!suggests(&config, &[crate::schedule_ops::feed_send()]), "the feed only reads");
+        assert!(!suggests(&config, &reads));
+        let root = std::mem::take(&mut config.scheduler.root);
+        assert!(!suggests(&config, &[crate::schedule_ops::ideas_send()]), "no page");
         config.scheduler.root = root;
         let mut asked = request(reads.to_vec());
         asked.chat = true;

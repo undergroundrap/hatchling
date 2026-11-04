@@ -259,6 +259,13 @@ impl SchedulerConfig {
         self.root.with_extension("decisions")
     }
 
+    /// Where the owner's Ideas page is kept: the store root's sibling
+    /// `<root>.ideas` ([`crate::suggestions`]).
+    #[must_use]
+    pub fn ideas_log(&self) -> PathBuf {
+        self.root.with_extension("ideas")
+    }
+
     /// Where the owner's Feed page is kept: the store root's sibling
     /// `<root>.feed`, a post per line ([`crate::feed_page`]).
     #[must_use]

@@ -256,7 +256,8 @@ fn invoke(stream: &UnixStream, skill: &str) -> R<SkillResult> {
         | SessionResponse::Space(_)
         | SessionResponse::Subagent(_)
         | SessionResponse::Web(_)
-        | SessionResponse::Browser(_) => Err(String::from("not a skill reply")),
+        | SessionResponse::Browser(_)
+        | SessionResponse::Suggest(_) => Err(String::from("not a skill reply")),
     }
 }
 

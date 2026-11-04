@@ -59,6 +59,7 @@ pub mod egress_pages;
 pub mod egress_path;
 pub mod goal_ops;
 pub mod kept_log;
+pub mod suggestions;
 pub use custody::{AccountBook, HandleRejection};
 pub use device::{DeviceEndpoint, open_device_endpoint, pairing_refusals, serve_device};
 pub mod environment;
