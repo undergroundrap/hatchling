@@ -1180,6 +1180,8 @@ pub struct HubDelivery<'a> {
     model: Option<&'a str>,
     /// Where the owner's Feed page is kept, when there is one.
     feed: Option<&'a Path>,
+    /// Where the broker counts model usage, and keeps the owner's limits.
+    usage: Option<&'a Path>,
 }
 
 impl<'a> HubDelivery<'a> {
@@ -1190,6 +1192,7 @@ impl<'a> HubDelivery<'a> {
             hub,
             model: None,
             feed: None,
+            usage: None,
         }
     }
 
@@ -1197,6 +1200,16 @@ impl<'a> HubDelivery<'a> {
     #[must_use]
     pub const fn with_model(self, model: Option<&'a str>) -> Self {
         Self { model, ..self }
+    }
+
+    /// The delivery, naming a usage limit in `usage` that's reached when
+    /// a run fails for it.
+    #[must_use]
+    pub const fn with_usage(self, usage: &'a Path) -> Self {
+        Self {
+            usage: Some(usage),
+            ..self
+        }
     }
 
     /// The delivery, keeping what's for the owner's Feed page at `feed`.
@@ -1238,7 +1251,11 @@ const NOTICE_TASK_CHARS: usize = 80;
 /// words, naming the task only when the owner wrote it, and never what
 /// the run wrote.
 #[must_use]
-pub fn failure_notice(failure: &FailureNotice, model: Option<&str>) -> String {
+pub fn failure_notice(
+    failure: &FailureNotice,
+    model: Option<&str>,
+    reached: Option<&crate::usage::Reached>,
+) -> String {
     let what = failure.task.as_deref().map_or_else(
         || String::from("Scheduled work"),
         |task| {
@@ -1252,7 +1269,7 @@ pub fn failure_notice(failure: &FailureNotice, model: Option<&str>) -> String {
     if failure.started {
         format!(
             "{what} didn't finish. {} It's kept for you to review.",
-            crate::chat_run::chat_failed(failure.ending, model)
+            crate::chat_run::failed_with(failure.ending, model, reached)
         )
     } else {
         format!(
@@ -1271,7 +1288,13 @@ impl Delivery for HubDelivery<'_> {
     }
 
     fn notify_failure(&self, channel: &str, failure: &FailureNotice) -> Result<(), String> {
-        self.deliver(channel, &failure_notice(failure, self.model))
+        let reached = self.usage.and_then(|usage| {
+            crate::usage::reached(usage, hatchling_scheduler::Timestamp::now().as_second())
+        });
+        self.deliver(
+            channel,
+            &failure_notice(failure, self.model, reached.as_ref()),
+        )
     }
 
     fn deliver_verbatim(&self, channel: &str, text: &str) -> Result<bool, String> {
@@ -1357,7 +1380,8 @@ pub fn dispatch_once<L: Launcher>(
     let feed = config.scheduler.feed_log();
     let delivery = HubDelivery::new(hub)
         .with_model(config.scheduler.model_name.as_deref())
-        .with_feed_page(&feed);
+        .with_feed_page(&feed)
+        .with_usage(&config.scheduler.usage);
     let authenticated = hub.map_or_else(BTreeSet::new, |_| authenticated_channels(config));
     let events = if hub.is_some_and(|hub| hub.take_arrivals() > 0) {
         vec![HookSource::ChannelMessage {
@@ -1474,27 +1498,50 @@ mod tests {
                 Some(Ending::Exited(RunFailure::ModelUnavailable.code().into())),
             ),
             Some("qwen3.5:9b"),
+            None,
         );
         assert!(
             model.starts_with("Your scheduled work “Check the disks” didn't finish. Hatchling couldn't get an answer from its model (qwen3.5:9b).")
                 && model.ends_with("It's kept for you to review."),
             "{model}"
         );
-        let anonymous = failure_notice(&failed(None, true, Some(Ending::TimedOut)), None);
+        let anonymous = failure_notice(&failed(None, true, Some(Ending::TimedOut)), None, None);
         assert!(
             anonymous.starts_with("Scheduled work didn't finish. The agent took too long"),
             "{anonymous}"
         );
-        let unstarted = failure_notice(&failed(Some("t"), false, None), None);
+        let unstarted = failure_notice(&failed(Some("t"), false, None), None, None);
         assert!(
             unstarted.contains("didn't run") && unstarted.contains("doctor"),
             "{unstarted}"
         );
         let long = "x".repeat(200);
-        let quoted = failure_notice(&failed(Some(&long), true, None), None);
+        let quoted = failure_notice(&failed(Some(&long), true, None), None, None);
         assert!(
             quoted.contains(&format!("“{}…”", "x".repeat(80))),
             "{quoted}"
+        );
+        // A run the broker stopped at a usage limit is told as that limit.
+        let reached = crate::usage::Reached {
+            span: crate::usage::Span::Day,
+            spent: 5,
+            limit: 5,
+        };
+        let limited = failure_notice(
+            &failed(
+                Some("t"),
+                true,
+                Some(Ending::Exited(RunFailure::ModelUnavailable.code().into())),
+            ),
+            Some("m"),
+            Some(&reached),
+        );
+        assert_eq!(
+            limited,
+            format!(
+                "Your scheduled work “t” didn't finish. {} It's kept for you to review.",
+                reached.told()
+            )
         );
         // Through the hub, in the chat's record.
         let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());

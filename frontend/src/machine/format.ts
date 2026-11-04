@@ -73,6 +73,7 @@ const VERDICTS: Readonly<Record<EgressVerdict, Verdict>> = {
     bad_surrogate: { label: 'Refused: bad surrogate', tone: 'danger' },
     policy: { label: 'Refused by policy', tone: 'danger' },
     failed: { label: 'Failed', tone: 'attention' },
+    over_limit: { label: 'Refused: usage limit', tone: 'attention' },
 };
 /** A decision's verdict, worded. */
 export function verdict(of: EgressVerdict): Verdict {

@@ -678,6 +678,38 @@ pub struct UsageReport {
     pub days: Vec<UsageDay>,
     /// Each model's use over those days, the most tokens first.
     pub models: Vec<UsageModel>,
+    /// The limits the owner set.
+    pub limits: UsageLimits,
+    /// The tokens counted against those limits.
+    pub spent: UsageSpent,
+}
+
+/// The most model tokens the owner allows, read and written together.
+/// Past one, the broker refuses every model call until it resets: a day
+/// at midnight, a month on the 1st, on this machine's clock.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UsageLimits {
+    /// The most tokens in a day; none when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daily_tokens: Option<u64>,
+    /// The most tokens in a calendar month; none when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monthly_tokens: Option<u64>,
+}
+
+/// The tokens counted toward the owner's limits, read and written
+/// together.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct UsageSpent {
+    /// Today, on this machine's clock.
+    pub today: u64,
+    /// This calendar month, today included.
+    pub month: u64,
+    /// The month, `YYYY-MM`.
+    pub month_of: String,
 }
 
 /// One day's model usage.
@@ -1233,6 +1265,13 @@ pub enum UiAction {
     ListDecisions {},
     /// Read the model usage the broker counted: the owner's alone.
     ReadUsage {},
+    /// Set the limits on model usage, answered with the usage as it now
+    /// stands: the owner's alone.
+    SetUsageLimits {
+        /// The limits, each replacing what was set; an unset one is no
+        /// limit.
+        limits: UsageLimits,
+    },
     /// Read the posts on the owner's Feed page, the newest first: the
     /// owner's alone.
     ReadFeed {},
@@ -2500,6 +2539,15 @@ mod tests {
                         input_tokens: 2400,
                         output_tokens: 600,
                     }],
+                    limits: UsageLimits {
+                        daily_tokens: Some(500_000),
+                        monthly_tokens: None,
+                    },
+                    spent: UsageSpent {
+                        today: 1500,
+                        month: 9000,
+                        month_of: s("2026-11"),
+                    },
                 },
             },
             &json!({"result": "usage", "usage": {
@@ -2509,8 +2557,29 @@ mod tests {
                     {"date": "2026-11-02", "calls": 0, "input_tokens": 1200, "output_tokens": 300, "unreported": 1},
                 ],
                 "models": [{"model": "qwen3.5:9b", "calls": 4, "input_tokens": 2400, "output_tokens": 600}],
+                "limits": {"daily_tokens": 500_000},
+                "spent": {"today": 1500, "month": 9000, "month_of": "2026-11"},
             }}),
         );
+        pinned(
+            &UiAction::SetUsageLimits {
+                limits: UsageLimits {
+                    daily_tokens: None,
+                    monthly_tokens: Some(20_000_000),
+                },
+            },
+            &json!({"action": "set_usage_limits", "limits": {"monthly_tokens": 20_000_000}}),
+        );
+        pinned(
+            &UiAction::SetUsageLimits {
+                limits: UsageLimits::default(),
+            },
+            &json!({"action": "set_usage_limits", "limits": {}}),
+        );
+        let unknown = serde_json::from_value::<UiAction>(
+            json!({"action": "set_usage_limits", "limits": {"hourly_tokens": 5}}),
+        );
+        assert!(unknown.is_err(), "{unknown:?}");
     }
 
     #[test]

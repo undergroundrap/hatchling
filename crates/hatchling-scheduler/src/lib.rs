@@ -45,6 +45,7 @@ pub use hook::{Hook, Sources, validate_hook};
 pub use jiff::Timestamp;
 pub use schedule::{
     Creator, FollowupParent, Ledger, MAX_FOLLOWUP_DELAY_SECS, MAX_FOLLOWUP_DEPTH, MAX_GRANTS,
-    MAX_TASK_BYTES, Occurrence, OccurrenceState, Outcome, Schedule, Timing, effective_grants,
-    local_time, recent_dates, system_zone, validate, validate_followup, validate_space_task,
+    MAX_TASK_BYTES, Occurrence, OccurrenceState, Outcome, PeriodStart, Schedule, Timing,
+    day_and_month_start, effective_grants, local_time, recent_dates, system_zone, validate,
+    validate_followup, validate_space_task,
 };

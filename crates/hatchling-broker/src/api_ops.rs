@@ -230,6 +230,12 @@ impl<'a> Ops<'a> {
             UiAction::ManageProfiles { op } => self.owned(owns, Owned::Profiles(op)),
             UiAction::ManageSignIns { op } => self.owned(owns, Owned::SignIns(op)),
             UiAction::ReadUsage {} => self.owned(owns, Owned::Usage),
+            UiAction::SetUsageLimits { limits } => {
+                if !owns {
+                    return refused(ActionRefusal::NotGranted);
+                }
+                self.set_limits(limits)
+            }
             UiAction::ManageGoals { op } => self.owned(owns, Owned::Goals(op)),
             UiAction::ManageMemory { op } => self.owned(owns, Owned::Memory(op)),
             UiAction::ListDecisions {} => self.owned(owns, Owned::Decisions),
@@ -324,6 +330,21 @@ impl<'a> Ops<'a> {
             },
         };
         (result, ApiOutcome::Served)
+    }
+
+    /// Sets the owner's usage limits, answered with the usage as it now
+    /// stands.
+    fn set_limits(&self, limits: &hatchling_core::ui::UsageLimits) -> (UiActionResult, ApiOutcome) {
+        let refused = |reason| (UiActionResult::Refused { reason }, ApiOutcome::Refused);
+        match crate::usage::set_limits(&self.config.scheduler.usage, limits) {
+            Ok(()) => self.owned(true, Owned::Usage),
+            Err(crate::usage::NotSet::Invalid) => refused(ActionRefusal::BadRequest),
+            Err(crate::usage::NotSet::Off) => refused(ActionRefusal::Unavailable),
+            Err(crate::usage::NotSet::Io(error)) => {
+                tracing::warn!(error = %error, "the usage limits couldn't be set");
+                refused(ActionRefusal::Unavailable)
+            }
+        }
     }
 
     /// The owner's answer to a browser's code request (WO-030): a code
@@ -2067,7 +2088,73 @@ mod tests {
             (today.calls, today.input_tokens, today.output_tokens),
             (1, 7, 2)
         );
+        assert_eq!(usage.spent.today, 9);
+
+        // Only the owner sets the limits, and is answered with the usage.
+        let limits = hatchling_core::ui::UsageLimits {
+            daily_tokens: Some(9),
+            monthly_tokens: None,
+        };
+        let set = UiAction::SetUsageLimits { limits };
+        assert_eq!(
+            ops.handle(&partial, &set, &mut replies),
+            (
+                UiActionResult::Refused {
+                    reason: ActionRefusal::NotGranted
+                },
+                ApiOutcome::Refused
+            )
+        );
+        assert_eq!(crate::usage::limits(&dir), Default::default());
+        let (result, outcome) = ops.handle(&owner, &set, &mut replies);
+        assert_eq!(outcome, ApiOutcome::Served);
+        let UiActionResult::Usage { usage } = result else {
+            unreachable!("{result:?}");
+        };
+        assert_eq!(usage.limits, limits);
+        assert_eq!(crate::usage::limits(&dir), limits);
+        let zero = UiAction::SetUsageLimits {
+            limits: hatchling_core::ui::UsageLimits {
+                daily_tokens: Some(0),
+                monthly_tokens: None,
+            },
+        };
+        assert_eq!(
+            ops.handle(&owner, &zero, &mut replies),
+            (
+                UiActionResult::Refused {
+                    reason: ActionRefusal::BadRequest
+                },
+                ApiOutcome::Refused
+            )
+        );
+        assert_eq!(crate::usage::limits(&dir), limits, "a refused limit changes nothing");
         let _ = std::fs::remove_dir_all(&dir);
+
+        // With no place to count, there's nowhere to keep limits.
+        let mut off = owner_config(Some("/srv/hatchling/schedules"));
+        off.scheduler.usage = std::path::PathBuf::new();
+        let ops = Ops::new(&off, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        assert_eq!(
+            ops.handle(&owner, &set, &mut replies),
+            (
+                UiActionResult::Refused {
+                    reason: ActionRefusal::Unavailable
+                },
+                ApiOutcome::Refused
+            )
+        );
+        // Nor a place that can't be written.
+        let blocked = std::env::temp_dir().join(format!("hatchling-api-limits-{}", std::process::id()));
+        std::fs::write(&blocked, "a file, not a directory").unwrap();
+        let mut unwritable = owner_config(Some("/srv/hatchling/schedules"));
+        unwritable.scheduler.usage.clone_from(&blocked);
+        let ops = Ops::new(&unwritable, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        assert_eq!(
+            ops.handle(&owner, &set, &mut replies).1,
+            ApiOutcome::Refused
+        );
+        let _ = std::fs::remove_file(&blocked);
     }
 
     /// The owner's Feed page is theirs: the app makes a schedule that posts

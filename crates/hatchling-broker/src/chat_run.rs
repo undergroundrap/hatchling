@@ -88,6 +88,29 @@ pub fn chat_failed(ending: Option<hatchling_scheduler::Ending>, model: Option<&s
     }
 }
 
+/// What the person is told when a run failed as `ending` says, `reached`
+/// being a usage limit the owner set, if one is reached now.
+///
+/// A run whose model couldn't be reached while a limit is reached was the
+/// broker refusing its model calls: the person is told which limit, and
+/// when it turns. Otherwise as [`chat_failed`] says.
+#[must_use]
+pub fn failed_with(
+    ending: Option<hatchling_scheduler::Ending>,
+    model: Option<&str>,
+    reached: Option<&crate::usage::Reached>,
+) -> String {
+    use hatchling_core::run_failure::RunFailure;
+    match (ending, reached) {
+        (Some(hatchling_scheduler::Ending::Exited(code)), Some(reached))
+            if RunFailure::from_code(code) == Some(RunFailure::ModelUnavailable) =>
+        {
+            reached.told()
+        }
+        _ => chat_failed(ending, model),
+    }
+}
+
 /// The label every chat run is launched under: its cell id and run
 /// directory get their own random token beside it.
 pub const CHAT_LABEL: &str = "chat";
@@ -152,6 +175,8 @@ pub struct Chat<R, K = ()> {
     keeps: K,
     /// The operator's model name, for telling the person why a run failed.
     model: Option<String>,
+    /// Where the broker counts model usage, and keeps the owner's limits.
+    usage: std::path::PathBuf,
 }
 
 impl<R: Run> Chat<R> {
@@ -185,6 +210,7 @@ impl<R: Run, K: Keeps> Chat<R, K> {
             kept,
             keeps,
             model: None,
+            usage: std::path::PathBuf::new(),
         }
     }
 
@@ -192,6 +218,14 @@ impl<R: Run, K: Keeps> Chat<R, K> {
     #[must_use]
     pub fn with_model(mut self, model: Option<String>) -> Self {
         self.model = model;
+        self
+    }
+
+    /// The chat, checking the owner's usage limits in `usage` before each
+    /// run, and naming one reached when a run fails for it.
+    #[must_use]
+    pub fn with_usage(mut self, usage: std::path::PathBuf) -> Self {
+        self.usage = usage;
         self
     }
 
@@ -251,7 +285,9 @@ impl<R: Run, K: Keeps> Chat<R, K> {
                 Ok(answer) => answer,
                 Err(reason) => {
                     tracing::warn!(reason = ?reason, "a chat run failed");
-                    return answer_with(delivery, &chat_failed(ending, self.model.as_deref()));
+                    let reached = crate::usage::reached(&self.usage, now.as_second());
+                    let told = failed_with(ending, self.model.as_deref(), reached.as_ref());
+                    return answer_with(delivery, &told);
                 }
             };
             return match delivery.deliver_verbatim(&ChannelId::local().0, &answer) {
@@ -270,6 +306,10 @@ impl<R: Run, K: Keeps> Chat<R, K> {
         let Some((message, sent_in)) = next() else {
             return Step::Idle;
         };
+        if let Some(reached) = crate::usage::reached(&self.usage, now.as_second()) {
+            tracing::info!(span = ?reached.span, "a message wasn't answered: a usage limit is reached");
+            return answer_with(delivery, &reached.told());
+        }
         let (history, earlier) = if sent_in == self.conversation {
             (self.history(), self.earlier())
         } else {
@@ -333,7 +373,8 @@ pub fn chat_forever<'scope, 'env>(
     };
     let keeps = store.map(|store| SealedConversation::new(store, hub));
     let mut chat = Chat::resuming(grants, hub.conversation(), kept, keeps)
-        .with_model(config.scheduler.model_name.clone());
+        .with_model(config.scheduler.model_name.clone())
+        .with_usage(config.scheduler.usage.clone());
     loop {
         let step = chat.step(
             || hub.take_in_conversation(),
@@ -1013,5 +1054,105 @@ mod tests {
             *answers.delivered.borrow(),
             [(String::from("local"), String::from("hi"))]
         );
+    }
+
+    /// Past a usage limit the owner set, a message isn't run, and a run
+    /// the broker stopped for it is told as that limit: never as a model
+    /// that couldn't be reached.
+    #[test]
+    fn a_reached_limit_is_told_and_no_run_starts() {
+        use hatchling_core::run_failure::RunFailure;
+        use hatchling_core::ui::UsageLimits;
+        use hatchling_scheduler::Ending;
+        let usage = std::env::temp_dir().join(format!(
+            "hatchling-chat-limit-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&usage);
+        let now = Timestamp::now();
+        crate::usage::count(
+            &usage,
+            &hatchling_egress::EgressRequest {
+                method: String::from("POST"),
+                destination: String::from("localhost:11434"),
+                path: String::from("/v1/chat/completions"),
+                headers: Vec::new(),
+                body: Vec::new(),
+                surrogate_b64: String::new(),
+            },
+            &hatchling_egress::EgressResponse {
+                status: 200,
+                headers: Vec::new(),
+                body: br#"{"model":"m","usage":{"prompt_tokens":1200,"completion_tokens":300}}"#
+                    .to_vec(),
+            },
+            now.as_second(),
+        );
+        let launches = OneEnded(RefCell::new(Some(Ended(Ending::Exited(
+            RunFailure::ModelUnavailable.code().into(),
+        )))));
+        let answers = Answers::default();
+        let mut chat = Chat::new(vec![send_local()])
+            .with_model(Some(String::from("m")))
+            .with_usage(usage.clone());
+        // No limit yet: the message runs.
+        assert_eq!(
+            chat.step(|| Some((message("one"), 0)), 0, &launches, &answers, now),
+            Step::Started
+        );
+        crate::usage::set_limits(
+            &usage,
+            &UsageLimits {
+                daily_tokens: Some(1000),
+                monthly_tokens: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            chat.step(|| None, 0, &launches, &answers, now),
+            Step::Answered
+        );
+        // The next message isn't run: the one launch is spent, so a launch
+        // would have been told as a run that couldn't start.
+        assert_eq!(
+            chat.step(|| Some((message("two"), 0)), 0, &launches, &answers, now),
+            Step::Answered
+        );
+        let delivered = answers.delivered.borrow();
+        let told: Vec<&str> = delivered.iter().map(|(_, text)| text.as_str()).collect();
+        let limit = "You've reached the daily limit you set: 1,500 of 1,000 tokens today.";
+        assert_eq!(told.len(), 2, "{told:?}");
+        assert!(told.iter().all(|text| text.starts_with(limit)), "{told:?}");
+        assert!(chat.history().is_empty(), "nothing is kept: {:?}", chat.history());
+        let _ = std::fs::remove_dir_all(&usage);
+    }
+
+    #[test]
+    fn only_a_model_that_couldnt_be_reached_is_told_as_a_limit() {
+        use hatchling_core::run_failure::RunFailure;
+        use hatchling_scheduler::Ending;
+        let reached = crate::usage::Reached {
+            span: crate::usage::Span::Month,
+            spent: 20,
+            limit: 10,
+        };
+        let unreachable = Some(Ending::Exited(RunFailure::ModelUnavailable.code().into()));
+        assert_eq!(failed_with(unreachable, Some("m"), Some(&reached)), reached.told());
+        assert_eq!(
+            failed_with(unreachable, Some("m"), None),
+            chat_failed(unreachable, Some("m"))
+        );
+        for other in [
+            Some(Ending::Exited(RunFailure::OutOfSteps.code().into())),
+            Some(Ending::Exited(1)),
+            Some(Ending::TimedOut),
+            None,
+        ] {
+            assert_eq!(
+                failed_with(other, Some("m"), Some(&reached)),
+                chat_failed(other, Some("m")),
+                "{other:?}"
+            );
+        }
     }
 }

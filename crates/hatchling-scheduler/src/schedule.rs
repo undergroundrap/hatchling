@@ -145,6 +145,41 @@ pub fn recent_dates(seconds: i64, tz: Option<&str>, days: usize) -> Vec<String> 
     dates
 }
 
+/// When the day and the month that `seconds` (Unix) falls in began, on the
+/// clock of `tz` (this machine's when `None`), as Unix seconds.
+///
+/// `None` for a zone it doesn't know or an instant out of range.
+#[must_use]
+pub fn day_and_month_start(seconds: i64, tz: Option<&str>) -> Option<PeriodStart> {
+    let zone = match tz {
+        Some(tz) => timezone(tz).ok()?,
+        None => TimeZone::system(),
+    };
+    let at = Timestamp::from_second(seconds).ok()?.to_zoned(zone);
+    Some(PeriodStart {
+        day: at.start_of_day().ok()?.timestamp().as_second(),
+        month: at
+            .first_of_month()
+            .ok()?
+            .start_of_day()
+            .ok()?
+            .timestamp()
+            .as_second(),
+        month_of: at.strftime("%Y-%m").to_string(),
+    })
+}
+
+/// When a day and a month began, from [`day_and_month_start`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeriodStart {
+    /// The day's first second, Unix.
+    pub day: i64,
+    /// The month's first second, Unix.
+    pub month: i64,
+    /// The month, `YYYY-MM`.
+    pub month_of: String,
+}
+
 /// Who created a schedule. The broker records it; a cell lists and
 /// cancels only the agent's.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -550,6 +585,35 @@ mod tests {
         // Near the first day there is, it stops there.
         let first = recent_dates(Timestamp::MIN.as_second(), Some("UTC"), 5);
         assert!(!first.is_empty() && first.len() < 5, "{first:?}");
+    }
+
+    #[test]
+    fn a_day_and_a_month_start_at_midnight_on_a_zones_clock() {
+        // 2026-09-21 14:13:20 UTC.
+        assert_eq!(
+            day_and_month_start(1_790_000_000, Some("UTC")),
+            Some(PeriodStart {
+                day: 1_789_948_800,
+                month: 1_788_220_800,
+                month_of: String::from("2026-09"),
+            })
+        );
+        // 2026-09-21 03:06:40 UTC is the 20th in New York, four hours
+        // behind.
+        assert_eq!(
+            day_and_month_start(1_789_960_000, Some("America/New_York")),
+            Some(PeriodStart {
+                day: 1_789_876_800,
+                month: 1_788_235_200,
+                month_of: String::from("2026-09"),
+            })
+        );
+        // On the 1st, the day and the month begin together.
+        let first = day_and_month_start(1_788_220_800 + 60, Some("UTC")).unwrap();
+        assert_eq!((first.day, first.month), (1_788_220_800, 1_788_220_800));
+        assert!(day_and_month_start(1_790_000_000, None).is_some());
+        assert_eq!(day_and_month_start(1_790_000_000, Some("Mars/Olympus")), None);
+        assert_eq!(day_and_month_start(i64::MAX, Some("UTC")), None);
     }
 
     #[test]

@@ -1310,6 +1310,24 @@ pub(crate) fn handle_egress_op(
                 body,
                 surrogate_b64: surrogate_b64.clone(),
             };
+            if crate::usage::is_model_call(method, path) {
+                let now = hatchling_scheduler::Timestamp::now().as_second();
+                if let Some(reached) = crate::usage::reached(usage, now) {
+                    tracing::warn!(
+                        cell_id = %cell_id,
+                        span = ?reached.span,
+                        spent = reached.spent,
+                        limit = reached.limit,
+                        "model call refused: the owner's usage limit is reached"
+                    );
+                    crate::machine::decided(
+                        cell_id.as_str(),
+                        destination,
+                        EgressVerdict::OverLimit,
+                    );
+                    return Ok(EgressResult::Denied);
+                }
+            }
             let forwarded = proxy.forward(peer_uid, &request);
             crate::machine::decided(cell_id.as_str(), destination, egress_verdict(&forwarded));
             match forwarded {
@@ -2384,6 +2402,46 @@ mod gate_scope_tests {
             (today.calls, today.input_tokens, today.output_tokens),
             (1, 11, 3)
         );
+
+        // At the owner's limit, a model call is refused before it goes: the
+        // server is gone, so one forwarded would have failed instead.
+        crate::usage::set_limits(
+            &usage,
+            &hatchling_core::ui::UsageLimits {
+                daily_tokens: Some(14),
+                monthly_tokens: None,
+            },
+        )
+        .unwrap();
+        let refused =
+            handle_egress_op(&proxy, &egress, &call(), &cell_id, 1000, &mut pages, &usage).unwrap();
+        assert_eq!(refused, EgressResult::Denied);
+        // What isn't a model call still goes.
+        let listing = EgressOp::Egress {
+            method: String::from("GET"),
+            destination: destination.clone(),
+            path: String::from("/v1/models"),
+            headers: Vec::new(),
+            body_b64: String::new(),
+            surrogate_b64: proxy.mint_surrogate(1000, &destination, 60).unwrap(),
+            staged: 0,
+        };
+        let forwarded =
+            handle_egress_op(&proxy, &egress, &listing, &cell_id, 1000, &mut pages, &usage)
+                .unwrap();
+        assert_eq!(forwarded, EgressResult::EgressError);
+        // Under it, the model call goes again.
+        crate::usage::set_limits(
+            &usage,
+            &hatchling_core::ui::UsageLimits {
+                daily_tokens: Some(15),
+                monthly_tokens: None,
+            },
+        )
+        .unwrap();
+        let tried =
+            handle_egress_op(&proxy, &egress, &call(), &cell_id, 1000, &mut pages, &usage).unwrap();
+        assert_eq!(tried, EgressResult::EgressError);
         let _ = std::fs::remove_dir_all(&usage);
     }
 }

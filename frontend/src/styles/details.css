@@ -117,6 +117,12 @@
 .quota-used { color: var(--muted-on-card); font-size: calc(14px * var(--ui-scale, 1)); }
 .general-stack .usage-meter meter { height: 6px; margin: 8px 0 0; background: #656567; }
 .general-stack .usage-meter meter::-webkit-meter-bar { height: 6px; background: #656567; }
+.general-stack .usage-meter meter::-webkit-meter-optimum-value { background: var(--primary); }
+.general-stack .usage-meter meter::-moz-meter-bar { background: var(--primary); }
+.general-stack .usage-meter.reached meter::-webkit-meter-optimum-value { background: var(--attention); }
+.general-stack .usage-meter.reached meter::-moz-meter-bar { background: var(--attention); }
+.general-stack .usage-meter.reached p[role="status"] { color: var(--attention); }
+.general-stack .usage-limits > p { margin: 0; font-size: calc(12px * var(--ui-scale, 1)); color: var(--muted-on-card); line-height: calc(18px * var(--ui-scale, 1)); }
 .general-stack .usage-days { display: flex; align-items: stretch; gap: 8px; height: calc(96px * var(--ui-scale, 1)); margin: 18px 0 20px; }
 .general-stack .usage-day { flex: 1; display: grid; grid-template-rows: minmax(0, 1fr) auto; justify-items: center; gap: 6px; min-width: 0; }
 .general-stack .usage-track { display: flex; align-items: flex-end; justify-content: center; width: 100%; height: 100%; }

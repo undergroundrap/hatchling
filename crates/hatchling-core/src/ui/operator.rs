@@ -154,6 +154,8 @@ pub enum EgressVerdict {
     Policy,
     /// Allowed, but the request failed upstream or on the way.
     Failed,
+    /// Refused: a model call past a usage limit the owner set.
+    OverLimit,
 }
 
 /// One open API or UI connection, as an operator sees it: when and where,
@@ -399,6 +401,7 @@ mod tests {
             (EgressVerdict::BadSurrogate, "bad_surrogate"),
             (EgressVerdict::Policy, "policy"),
             (EgressVerdict::Failed, "failed"),
+            (EgressVerdict::OverLimit, "over_limit"),
         ] {
             assert_eq!(serde_json::to_value(verdict).unwrap(), json!(name));
         }
