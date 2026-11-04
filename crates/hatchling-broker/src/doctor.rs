@@ -1114,8 +1114,7 @@ mod tests {
             assert!(
                 heads
                     .get(1)
-                    .is_some_and(|head| head.starts_with("GET /api/ps HTTP/1.0
-")),
+                    .is_some_and(|head| head.starts_with("GET /api/ps HTTP/1.0")),
                 "{heads:?}"
             );
             if seen {

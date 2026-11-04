@@ -762,14 +762,18 @@ mod tests {
         let _ = std::fs::remove_file(&log);
     }
 
-    /// The window in each summary written to `log`, in order.
-    fn windows_in(log: &Path) -> Vec<Option<u32>> {
+    /// The window in each event written to `log`, in order: `None` for
+    /// an event that isn't a summary.
+    fn windows_in(log: &Path) -> Vec<Option<Option<u32>>> {
         std::fs::read_to_string(log)
             .unwrap()
             .lines()
-            .map(|line| match serde_json::from_str::<ActivityEvent>(line).unwrap().kind {
-                SubagentEvent::RunSummary { context_window, .. } => context_window,
-                other => panic!("not a summary: {other:?}"),
+            .map(|line| {
+                let event: ActivityEvent = serde_json::from_str(line).unwrap();
+                let SubagentEvent::RunSummary { context_window, .. } = event.kind else {
+                    return None;
+                };
+                Some(context_window)
             })
             .collect()
     }
@@ -818,7 +822,7 @@ mod tests {
         drop(unasked);
         assert_eq!(
             windows_in(&log),
-            [Some(32768), Some(16384), Some(32768), Some(32768)]
+            [Some(Some(32768)), Some(Some(16384)), Some(Some(32768)), Some(Some(32768))]
         );
         let _ = std::fs::remove_file(&log);
     }

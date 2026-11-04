@@ -79,7 +79,7 @@ pub fn window_in(answer: &[u8], name: &str) -> Option<u32> {
 /// It waits at most 10 seconds for each request: one that never comes
 /// ends it, rather than hanging the test.
 #[cfg(test)]
-pub fn answering(answers: Vec<String>) -> (String, std::thread::JoinHandle<Vec<String>>) {
+pub(crate) fn answering(answers: Vec<String>) -> (String, std::thread::JoinHandle<Vec<String>>) {
     use std::io::{Read as _, Write as _};
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -117,7 +117,7 @@ pub fn answering(answers: Vec<String>) -> (String, std::thread::JoinHandle<Vec<S
 
 /// Ollama's answer to `GET /api/ps` with `models` loaded.
 #[cfg(test)]
-pub fn loaded(models: &str) -> String {
+pub(crate) fn loaded(models: &str) -> String {
     format!("HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n{{\"models\":[{models}]}}")
 }
 
