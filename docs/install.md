@@ -17,11 +17,11 @@ To try it by hand first, the [README's quickstart](../README.md#quickstart) runs
 From a clone of the version you install, download its release into `release/` and install from it. `scripts/install.sh` checks every file against the release's `SHA256SUMS` before installing anything.
 
 ```bash
-git -c advice.detachedHead=false clone --branch v0.6.0 https://github.com/undergroundrap/hatchling && cd hatchling
+git -c advice.detachedHead=false clone --branch v0.7.0 https://github.com/undergroundrap/hatchling && cd hatchling
 ```
 
 ```bash
-gh release download v0.6.0 --repo undergroundrap/hatchling --dir release
+gh release download v0.7.0 --repo undergroundrap/hatchling --dir release
 ```
 
 ```bash
