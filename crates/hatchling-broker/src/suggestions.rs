@@ -302,7 +302,10 @@ mod tests {
             suggest(&chat, &idea("  A run plan  ")),
             SuggestResult::Suggested
         );
-        let run = config(&dir, Some(IDEAS_PAGE));
+        // A run's config names no store but in its follow-up scope, as the
+        // run launcher scopes it: the page is found from there.
+        let mut run = config(&dir, Some(IDEAS_PAGE));
+        run.scheduler.root = std::path::PathBuf::new();
         assert_eq!(
             suggest(&run, &idea("A reading list")),
             SuggestResult::Suggested
@@ -521,8 +524,7 @@ mod tests {
         assert_eq!(handle(&chat, &SuggestionOp::List), SuggestionResult::Failed);
         // A page whose directory is gone can't be written.
         std::fs::remove_file(&path).unwrap();
-        let mut gone = config(&dir.join("missing"), Some("local"));
-        gone.scheduler.followup = chat.scheduler.followup;
+        let gone = config(&dir.join("missing"), Some("local"));
         assert!(reason(&suggest(&gone, &idea("x"))).contains("couldn't keep it"));
         assert_eq!(
             handle(
