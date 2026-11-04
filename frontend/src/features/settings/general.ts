@@ -19,7 +19,7 @@ export function generalTab(ctx: AppContext, refresh: () => void): HTMLElement {
     }, { variant: 'link', className: 'upgrade-link' })));
     // Connected to Hatchling, what the model really used, as the broker counted
     // it: never a sample quota shown as though it were the owner's.
-    root.append(account, ctx.state.mode === 'live' ? liveUsage(ctx.usage?.current()) : sampleUsage());
+    root.append(account, ctx.state.mode === 'live' ? liveUsage(ctx, refresh) : sampleUsage());
     const language = h('button', { class: 'settings-group general-language', type: 'button' }, h('span', {}, 'Language'), icon('chevron', 15));
     language.addEventListener('click', () => {
         const choices = selectField('Language', 'language', [{ value: 'English', label: 'English' }], 'English');

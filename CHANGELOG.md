@@ -8,6 +8,12 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Added
 
+- **Usage limits you set, enforced by the broker.** Settings → Usage showed what your model used; now you can cap it. Set the most tokens a day, a month, or both (write 500K or 2M), and Today and the month become meters against them, saying when each turns.
+  - Before the broker forwards any model call, from a chat, scheduled work, a subagent or a skill, it checks your limits against what it counted. Past one, it refuses the call: the agent never reaches the model, and the operator's egress log marks it "Refused: usage limit".
+  - You're told plainly, in the chat or in scheduled work's failure notice: "You've reached the daily limit you set: 1,512,004 of 1,500,000 tokens today. Hatchling won't call the model again until midnight, unless you raise the limit…". A message sent while a limit is reached isn't run at all.
+  - A day's limit turns at midnight and a month's on the 1st, on the machine's clock. A call is checked before it goes and counted from its answer, so the call that crosses a limit finishes. A call whose model server reports no usage counts nothing toward a limit.
+  - Only you set them: `set_usage_limits` is the owner's alone, and the agent has no way to reach it. The broker keeps them in `<scheduler dir>.usage/limits.json`.
+  - **Breaking for `hatchling-core`, `hatchling-scheduler` and `hatchling-broker`:** `UiAction` has a new action, `SetUsageLimits`, answered by `UiActionResult::Usage`; `ApiRequest` a new kind, `SetUsageLimits`; `UsageReport` has new fields, `limits` (`UsageLimits`) and `spent` (`UsageSpent`); `EgressVerdict` a new verdict, `OverLimit`; `hatchling-scheduler` adds `day_and_month_start` and `PeriodStart`; and `schedule_ops::failure_notice` takes the limit reached.
 - **Ideas Hatchling suggests for you.** Connected to Hatchling, the Ideas page was empty. Now it holds what the agent suggests it could do for you, grounded in your goals and what you approved it to remember. Each idea sits in its area's section (Productivity, Health & fitness, Learning & hobbies and so on), with why it would help, all in the agent's words and marked as such.
   - Suggest ideas asks for some now: a one-off run that reads your goals and memory, then suggests up to three with a new tool, `idea_suggest`.
   - In a chat, the agent can suggest an idea too, when you ask for ideas or it sees something it could do for you.

@@ -40,7 +40,7 @@ const isLimit = (value: unknown): boolean => value === null || value === undefin
 const LIMITS = ['processes', 'address_space', 'file_size', 'open_files', 'memory', 'cpu_millis'] as const;
 const KINDS = ['agent', 'run', 'subagent', 'skill', 'harness', 'browser'];
 const SOCKETS = ['api', 'ui'];
-const VERDICTS = ['allowed', 'no_grant', 'not_allowed', 'bad_surrogate', 'policy', 'failed'];
+const VERDICTS = ['allowed', 'no_grant', 'not_allowed', 'bad_surrogate', 'policy', 'failed', 'over_limit'];
 function isLimits(value: unknown): value is CellLimits {
     return isRecord(value) && LIMITS.every(name => isLimit(value[name]));
 }

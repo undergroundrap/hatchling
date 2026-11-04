@@ -16,17 +16,28 @@
 //!   [`KEEP_DAYS`] are removed.
 //! - **Reported by this machine's days:** the last [`REPORT_DAYS`], today
 //!   first, as the owner's app shows them.
+//!
+//! ## Limits
+//!
+//! The owner may set the most tokens in a day and in a month, on this
+//! machine's clock ([`LIMITS_FILE`], beside the days). Before the broker
+//! forwards a model call, it checks them ([`reached`]): once a limit is
+//! reached, every model call is refused until the day or the month turns,
+//! or the owner raises it. A call is checked before it goes, and its
+//! tokens are known only from its answer, so the call that crosses a limit
+//! finishes; the next one is refused. Calls whose server reports no usage
+//! count nothing toward a limit.
 
 use std::collections::BTreeMap;
 use std::fs::{DirBuilder, OpenOptions};
-use std::io::{BufRead as _, BufReader, Write as _};
-use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
-use std::path::Path;
+use std::io::{BufRead as _, BufReader, Read as _, Seek as _, SeekFrom, Write as _};
+use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, OpenOptionsExt as _};
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
-use hatchling_core::ui::{UsageDay, UsageModel, UsageReport};
+use hatchling_core::ui::{UsageDay, UsageLimits, UsageModel, UsageReport, UsageSpent};
 use hatchling_egress::{EgressRequest, EgressResponse};
-use hatchling_scheduler::recent_dates;
+use hatchling_scheduler::{day_and_month_start, recent_dates};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -85,11 +96,18 @@ pub fn count(dir: &Path, request: &EgressRequest, response: &EgressResponse, at:
     }
 }
 
+/// Whether a request to `method` `path` is a model call: what's counted,
+/// and what a limit refuses.
+#[must_use]
+pub fn is_model_call(method: &str, path: &str) -> bool {
+    let path = path.split_once('?').map_or(path, |(path, _)| path);
+    method == "POST" && COUNTED_ENDPOINTS.iter().any(|end| path.ends_with(end))
+}
+
 /// The call a reply to `method` `path` reports, at `at`; `None` when it
 /// isn't a model call.
 fn read_reply(method: &str, path: &str, body: &[u8], at: i64) -> Option<Call> {
-    let path = path.split_once('?').map_or(path, |(path, _)| path);
-    if method != "POST" || !COUNTED_ENDPOINTS.iter().any(|end| path.ends_with(end)) {
+    if !is_model_call(method, path) {
         return None;
     }
     let reply: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
@@ -244,6 +262,8 @@ pub fn report(dir: &Path, now: i64, tz: Option<&str>) -> UsageReport {
         counted,
         days,
         models,
+        limits: limits(dir),
+        spent: spent(dir, now, tz).unwrap_or_default(),
     }
 }
 
@@ -268,6 +288,279 @@ fn calls(dir: &Path, day: &str) -> Vec<Call> {
         .collect()
 }
 
+/// The file in the usage directory that holds the owner's limits.
+pub const LIMITS_FILE: &str = "limits.json";
+
+/// The most a limit may be: far past any month's use, and exact in the
+/// app's numbers.
+pub const MAX_LIMIT_TOKENS: u64 = 1_000_000_000_000_000;
+
+/// The largest limits file read.
+const MAX_LIMITS_BYTES: u64 = 4096;
+
+/// A day, in seconds.
+const DAY_SECS: i64 = 86_400;
+
+/// A quarter of an hour, in seconds: every zone's offset from UTC is a
+/// whole number of them, so every day starts on one.
+const QUARTER_HOUR: i64 = 900;
+
+/// The limits the owner set in `dir`: none when there's no place, no
+/// file, or it doesn't read (logged).
+#[must_use]
+pub fn limits(dir: &Path) -> UsageLimits {
+    if dir.as_os_str().is_empty() {
+        return UsageLimits::default();
+    }
+    let file = match std::fs::File::open(dir.join(LIMITS_FILE)) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return UsageLimits::default();
+        }
+        Err(error) => {
+            tracing::error!(error = %error, "the usage limits can't be read: none is enforced");
+            return UsageLimits::default();
+        }
+    };
+    let mut text = Vec::new();
+    let read = file.take(MAX_LIMITS_BYTES + 1).read_to_end(&mut text);
+    if read.is_ok() && text.is_empty() {
+        return UsageLimits::default();
+    }
+    let whole = u64::try_from(text.len()).is_ok_and(|len| len <= MAX_LIMITS_BYTES);
+    match serde_json::from_slice::<UsageLimits>(&text) {
+        Ok(limits) if read.is_ok() && whole && valid(&limits) => limits,
+        _ => {
+            tracing::error!("the usage limits don't read: none is enforced");
+            UsageLimits::default()
+        }
+    }
+}
+
+/// Whether each of `limits` is one the broker keeps: at least a token, at
+/// most [`MAX_LIMIT_TOKENS`].
+#[must_use]
+pub fn valid(limits: &UsageLimits) -> bool {
+    [limits.daily_tokens, limits.monthly_tokens]
+        .into_iter()
+        .flatten()
+        .all(|limit| (1..=MAX_LIMIT_TOKENS).contains(&limit))
+}
+
+/// Why the owner's limits weren't set.
+#[derive(Debug)]
+pub enum NotSet {
+    /// The broker counts no usage: it has no place to.
+    Off,
+    /// A limit is none the broker keeps ([`valid`]).
+    Invalid,
+    /// They couldn't be written.
+    Io(std::io::Error),
+}
+
+/// Sets the owner's limits in `dir` to `limits`, replacing what was set:
+/// written whole beside, then put in place, so a reader sees the old or
+/// the new.
+///
+/// # Errors
+///
+/// [`NotSet`] says why not.
+pub fn set_limits(dir: &Path, limits: &UsageLimits) -> Result<(), NotSet> {
+    if dir.as_os_str().is_empty() {
+        return Err(NotSet::Off);
+    }
+    if !valid(limits) {
+        return Err(NotSet::Invalid);
+    }
+    let _held = WRITES.lock().unwrap_or_else(PoisonError::into_inner);
+    let write = || -> std::io::Result<()> {
+        DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+        let next = dir.join(format!("{LIMITS_FILE}.next"));
+        OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&next)?
+            .write_all(&serde_json::to_vec(limits)?)?;
+        std::fs::rename(&next, dir.join(LIMITS_FILE))
+    };
+    write().map_err(NotSet::Io)
+}
+
+/// What's been read of one day's file: which file, how far, and the
+/// tokens of its calls by the quarter hour they were answered in.
+#[derive(Debug, Default)]
+struct Tally {
+    inode: u64,
+    read: u64,
+    quarters: BTreeMap<i64, u64>,
+}
+
+/// Each day's file read so far: a day's file only grows, so each check
+/// reads only the calls added since the last.
+static TALLIES: Mutex<BTreeMap<PathBuf, Tally>> = Mutex::new(BTreeMap::new());
+
+/// The tokens counted in `dir` today and this month, up to `now` (Unix
+/// seconds), by the days of `tz` (this machine's when `None`): `None`
+/// when there's no place, or `now` is out of range.
+#[must_use]
+pub fn spent(dir: &Path, now: i64, tz: Option<&str>) -> Option<UsageSpent> {
+    if dir.as_os_str().is_empty() {
+        return None;
+    }
+    let start = day_and_month_start(now, tz)?;
+    // The month's days by UTC, and a day either side for the zone.
+    let days = usize::try_from(now.saturating_sub(start.month).div_euclid(DAY_SECS))
+        .ok()?
+        .saturating_add(3);
+    let files: Vec<PathBuf> = recent_dates(now, Some("UTC"), days)
+        .into_iter()
+        .map(|day| dir.join(format!("{day}.jsonl")))
+        .collect();
+    let mut tallies = TALLIES.lock().unwrap_or_else(PoisonError::into_inner);
+    tallies.retain(|path, _| path.parent() != Some(dir) || files.contains(path));
+    let (day, month) = (
+        start.day.div_euclid(QUARTER_HOUR),
+        start.month.div_euclid(QUARTER_HOUR),
+    );
+    let (mut today, mut this_month) = (0_u64, 0_u64);
+    for path in files {
+        let tally = tallies.entry(path.clone()).or_default();
+        for (quarter, tokens) in tally.catch_up(&path).range(month..) {
+            this_month = this_month.saturating_add(*tokens);
+            if *quarter >= day {
+                today = today.saturating_add(*tokens);
+            }
+        }
+    }
+    drop(tallies);
+    Some(UsageSpent {
+        today,
+        month: this_month,
+        month_of: start.month_of,
+    })
+}
+
+impl Tally {
+    /// Reads the whole lines added to `path` since the last read, starting
+    /// over if it's another file or shorter than what was read; the tokens
+    /// by quarter hour, as now read.
+    fn catch_up(&mut self, path: &Path) -> &BTreeMap<i64, u64> {
+        let Ok(mut file) = std::fs::File::open(path) else {
+            *self = Self::default();
+            return &self.quarters;
+        };
+        let Ok(meta) = file.metadata() else {
+            return &self.quarters;
+        };
+        if meta.ino() != self.inode || meta.len() < self.read {
+            *self = Self {
+                inode: meta.ino(),
+                ..Self::default()
+            };
+        }
+        if meta.len() == self.read || file.seek(SeekFrom::Start(self.read)).is_err() {
+            return &self.quarters;
+        }
+        let mut lines = BufReader::new(file.take(meta.len() - self.read));
+        let mut line = Vec::new();
+        // A line still being written is read when it's whole.
+        while lines.read_until(b'\n', &mut line).is_ok() && line.last() == Some(&b'\n') {
+            self.read = self
+                .read
+                .saturating_add(u64::try_from(line.len()).unwrap_or(u64::MAX));
+            if let Ok(call) = serde_json::from_slice::<Call>(&line) {
+                let tokens = call
+                    .input
+                    .unwrap_or(0)
+                    .saturating_add(call.output.unwrap_or(0));
+                let quarter = self
+                    .quarters
+                    .entry(call.at.div_euclid(QUARTER_HOUR))
+                    .or_insert(0);
+                *quarter = quarter.saturating_add(tokens);
+            }
+            line.clear();
+        }
+        &self.quarters
+    }
+}
+
+/// Which limit was reached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Span {
+    /// The day's.
+    Day,
+    /// The month's.
+    Month,
+}
+
+/// A limit the owner set, reached.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reached {
+    /// Which.
+    pub span: Span,
+    /// The tokens counted toward it.
+    pub spent: u64,
+    /// The limit.
+    pub limit: u64,
+}
+
+impl Reached {
+    /// What the owner is told: which limit, how far, when it turns, and
+    /// what they can do.
+    #[must_use]
+    pub fn told(&self) -> String {
+        let (which, when, until) = match self.span {
+            Span::Day => ("daily", "today", "midnight"),
+            Span::Month => ("monthly", "this month", "the 1st"),
+        };
+        format!(
+            "You've reached the {which} limit you set: {} of {} tokens {when}. Hatchling won't call the model again until {until}, unless you raise the limit in Settings, under Usage.",
+            grouped(self.spent),
+            grouped(self.limit)
+        )
+    }
+}
+
+/// The limit the owner set in `dir` that's reached at `now` (Unix
+/// seconds) on this machine's clock, if one is: the month's first, which
+/// raising the day's wouldn't help.
+#[must_use]
+pub fn reached(dir: &Path, now: i64) -> Option<Reached> {
+    reached_on(dir, now, None)
+}
+
+/// [`reached`] by the days of `tz`.
+fn reached_on(dir: &Path, now: i64, tz: Option<&str>) -> Option<Reached> {
+    let limits = limits(dir);
+    if limits.daily_tokens.is_none() && limits.monthly_tokens.is_none() {
+        return None;
+    }
+    let spent = spent(dir, now, tz)?;
+    let over = |span, spent, limit: Option<u64>| {
+        limit
+            .filter(|limit| spent >= *limit)
+            .map(|limit| Reached { span, spent, limit })
+    };
+    over(Span::Month, spent.month, limits.monthly_tokens)
+        .or_else(|| over(Span::Day, spent.today, limits.daily_tokens))
+}
+
+/// `n` with its thousands set apart: `1,234,567`.
+fn grouped(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (at, digit) in digits.chars().enumerate() {
+        if at > 0 && (digits.len() - at) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -276,7 +569,7 @@ mod tests {
     const NOW: i64 = 1_793_715_200;
     const DAY: i64 = 86_400;
 
-    fn scratch(name: &str) -> std::path::PathBuf {
+    fn scratch(name: &str) -> PathBuf {
         let dir =
             std::env::temp_dir().join(format!("hatchling-usage-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -608,6 +901,223 @@ mod tests {
         let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&dir), 0o700);
         assert_eq!(mode(&dir.join("2026-11-03.jsonl")), 0o600);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 2026-11-01 00:00:00 UTC.
+    const NOVEMBER: i64 = 1_793_491_200;
+
+    const fn limited(daily: Option<u64>, monthly: Option<u64>) -> UsageLimits {
+        UsageLimits {
+            daily_tokens: daily,
+            monthly_tokens: monthly,
+        }
+    }
+
+    fn call_at(dir: &Path, at: i64) {
+        count(dir, &request("/chat/completions"), &reply(200, OLLAMA), at);
+    }
+
+    #[test]
+    fn limits_are_set_whole_and_read_back() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = scratch("limits");
+        assert_eq!(limits(&dir), UsageLimits::default());
+        set_limits(&dir, &limited(Some(5000), None)).unwrap();
+        assert_eq!(limits(&dir), limited(Some(5000), None));
+        set_limits(&dir, &limited(None, Some(MAX_LIMIT_TOKENS))).unwrap();
+        assert_eq!(limits(&dir), limited(None, Some(MAX_LIMIT_TOKENS)));
+        set_limits(&dir, &UsageLimits::default()).unwrap();
+        assert_eq!(limits(&dir), UsageLimits::default());
+        assert!(!dir.join(format!("{LIMITS_FILE}.next")).exists());
+        let mode = std::fs::metadata(dir.join(LIMITS_FILE))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_limit_is_a_token_at_least_and_bounded() {
+        let dir = scratch("invalid");
+        for bad in [
+            limited(Some(0), None),
+            limited(None, Some(0)),
+            limited(Some(MAX_LIMIT_TOKENS + 1), None),
+            limited(Some(10), Some(MAX_LIMIT_TOKENS + 1)),
+        ] {
+            assert!(!valid(&bad), "{bad:?}");
+            assert!(matches!(set_limits(&dir, &bad), Err(NotSet::Invalid)));
+        }
+        assert!(valid(&limited(Some(1), Some(1))));
+        assert!(!dir.exists(), "nothing is written for a refused limit");
+        assert!(matches!(
+            set_limits(Path::new(""), &UsageLimits::default()),
+            Err(NotSet::Off)
+        ));
+        assert_eq!(limits(Path::new("")), UsageLimits::default());
+        std::fs::write(&dir, "a file, not a directory").unwrap();
+        assert!(matches!(
+            set_limits(&dir, &limited(Some(5), None)),
+            Err(NotSet::Io(_))
+        ));
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn limits_that_dont_read_are_none() {
+        let dir = scratch("unread-limits");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join(LIMITS_FILE);
+        for text in [
+            String::new(),
+            String::from("not json"),
+            String::from(r#"{"daily_tokens":0}"#),
+            String::from(r#"{"hourly_tokens":5}"#),
+            format!(r#"{{"daily_tokens":5}}{}"#, " ".repeat(5000)),
+        ] {
+            std::fs::write(&file, &text).unwrap();
+            assert_eq!(limits(&dir), UsageLimits::default(), "{text:?}");
+        }
+        std::fs::write(&file, r#"{"daily_tokens":5}"#).unwrap();
+        assert_eq!(limits(&dir), limited(Some(5), None));
+        std::fs::remove_file(&file).unwrap();
+        std::fs::create_dir(&file).unwrap();
+        assert_eq!(limits(&dir), UsageLimits::default());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn spent_is_today_and_this_month_on_a_zones_clock() {
+        let dir = scratch("spent");
+        call_at(&dir, NOW);
+        call_at(&dir, NOW - DAY);
+        // 2026-10-31 22:00 in New York: November by UTC only.
+        call_at(&dir, NOVEMBER + 2 * 3600);
+        // October everywhere.
+        call_at(&dir, NOVEMBER - 6 * 3600);
+        assert_eq!(
+            spent(&dir, NOW, Some("UTC")),
+            Some(UsageSpent {
+                today: 1500,
+                month: 4500,
+                month_of: String::from("2026-11"),
+            })
+        );
+        let east = spent(&dir, NOW, Some("America/New_York")).unwrap();
+        assert_eq!((east.today, east.month), (1500, 3000));
+        // On the 1st, the day is the month.
+        let first = spent(&dir, NOVEMBER + 3 * 3600, Some("UTC")).unwrap();
+        assert_eq!((first.today, first.month), (1500, 1500));
+        assert_eq!(spent(Path::new(""), NOW, Some("UTC")), None);
+        assert_eq!(spent(&dir, i64::MAX, Some("UTC")), None);
+        assert_eq!(spent(&dir, NOW, Some("Mars/Olympus")), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn spent_reads_only_whole_lines_and_starts_over_on_a_new_file() {
+        let dir = scratch("tally");
+        let today = |dir: &Path| spent(dir, NOW, Some("UTC")).unwrap().today;
+        assert_eq!(today(&dir), 0);
+        call_at(&dir, NOW);
+        assert_eq!(today(&dir), 1500);
+        call_at(&dir, NOW + 60);
+        assert_eq!(today(&dir), 3000);
+        let file = dir.join("2026-11-03.jsonl");
+        let mut half = OpenOptions::new().append(true).open(&file).unwrap();
+        half.write_all(format!(r#"{{"at":{NOW},"model":"m","in":7"#).as_bytes())
+            .unwrap();
+        assert_eq!(today(&dir), 3000, "a line still being written waits");
+        half.write_all(b"}\nnot a call\n").unwrap();
+        assert_eq!(today(&dir), 3007);
+        // Another file in its place is read from its start.
+        let other = dir.join("other");
+        std::fs::write(
+            &other,
+            format!("{{\"at\":{NOW},\"model\":\"m\",\"out\":4}}\n"),
+        )
+        .unwrap();
+        std::fs::rename(&other, &file).unwrap();
+        assert_eq!(today(&dir), 4);
+        // So is one cut shorter, and one removed counts nothing.
+        std::fs::write(&file, "").unwrap();
+        assert_eq!(today(&dir), 0);
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(today(&dir), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_limit_is_reached_at_it_and_the_months_is_told_first() {
+        let dir = scratch("reached");
+        call_at(&dir, NOW);
+        assert_eq!(reached_on(&dir, NOW, Some("UTC")), None, "no limits");
+        set_limits(&dir, &limited(Some(3000), None)).unwrap();
+        assert_eq!(reached_on(&dir, NOW, Some("UTC")), None);
+        call_at(&dir, NOW + 1);
+        let day = reached_on(&dir, NOW + 2, Some("UTC")).unwrap();
+        assert_eq!(
+            day,
+            Reached {
+                span: Span::Day,
+                spent: 3000,
+                limit: 3000
+            }
+        );
+        // The next day, the day's limit has turned.
+        assert_eq!(reached_on(&dir, NOW + DAY, Some("UTC")), None);
+        set_limits(&dir, &limited(Some(3000), Some(2999))).unwrap();
+        let month = reached_on(&dir, NOW + 2, Some("UTC")).unwrap();
+        assert_eq!(
+            (month.span, month.spent, month.limit),
+            (Span::Month, 3000, 2999)
+        );
+        assert_eq!(
+            reached_on(&dir, NOW + DAY, Some("UTC")).map(|r| r.span),
+            Some(Span::Month)
+        );
+        assert_eq!(
+            month.told(),
+            "You've reached the monthly limit you set: 3,000 of 2,999 tokens this month. Hatchling won't call the model again until the 1st, unless you raise the limit in Settings, under Usage."
+        );
+        assert!(
+            day.told()
+                .contains("daily limit you set: 3,000 of 3,000 tokens today")
+        );
+        assert!(day.told().contains("until midnight"));
+        // On this machine's clock, both calls are November's too.
+        assert_eq!(reached(&dir, NOW + 2).map(|r| r.span), Some(Span::Month));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_number_is_grouped_by_thousands() {
+        for (n, text) in [
+            (0, "0"),
+            (999, "999"),
+            (1000, "1,000"),
+            (12_345, "12,345"),
+            (1_234_567, "1,234,567"),
+            (u64::MAX, "18,446,744,073,709,551,615"),
+        ] {
+            assert_eq!(grouped(n), text);
+        }
+    }
+
+    #[test]
+    fn the_report_carries_the_limits_and_whats_spent() {
+        let dir = scratch("report-limits");
+        call_at(&dir, NOW);
+        set_limits(&dir, &limited(None, Some(10_000))).unwrap();
+        let usage = report(&dir, NOW, Some("UTC"));
+        assert_eq!(usage.limits, limited(None, Some(10_000)));
+        assert_eq!((usage.spent.today, usage.spent.month), (1500, 1500));
+        assert_eq!(usage.spent.month_of, "2026-11");
+        let none = report(Path::new(""), NOW, Some("UTC"));
+        assert_eq!(none.limits, UsageLimits::default());
+        assert_eq!(none.spent, UsageSpent::default());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

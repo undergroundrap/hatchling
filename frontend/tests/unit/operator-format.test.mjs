@@ -34,6 +34,7 @@ test('kinds, sockets and verdicts have their words', () => {
     assert.deepEqual(['api', 'ui'].map(socket), ['Local API', 'App']);
     assert.deepEqual(verdict('allowed'), { label: 'Allowed', tone: 'success' });
     assert.deepEqual(verdict('failed'), { label: 'Failed', tone: 'attention' });
+    assert.deepEqual(verdict('over_limit'), { label: 'Refused: usage limit', tone: 'attention' });
     for (const refused of ['no_grant', 'not_allowed', 'bad_surrogate', 'policy'])
         assert.equal(verdict(refused).tone, 'danger', refused);
 });

@@ -457,6 +457,10 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "string"
             },
             {
+                "const": "set_usage_limits",
+                "type": "string"
+            },
+            {
                 "const": "read_feed",
                 "type": "string"
             },
@@ -3967,6 +3971,22 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             {
                 "properties": {
                     "action": {
+                        "const": "set_usage_limits",
+                        "type": "string"
+                    },
+                    "limits": {
+                        "$ref": "#/$defs/UsageLimits"
+                    }
+                },
+                "required": [
+                    "action",
+                    "limits"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
                         "const": "read_feed",
                         "type": "string"
                     }
@@ -5116,6 +5136,26 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
         ],
         "type": "object"
     },
+    "UsageLimits": {
+        "additionalProperties": false,
+        "properties": {
+            "daily_tokens": {
+                "minimum": 0,
+                "type": [
+                    "integer",
+                    "null"
+                ]
+            },
+            "monthly_tokens": {
+                "minimum": 0,
+                "type": [
+                    "integer",
+                    "null"
+                ]
+            }
+        },
+        "type": "object"
+    },
     "UsageModel": {
         "properties": {
             "calls": {
@@ -5153,17 +5193,46 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 },
                 "type": "array"
             },
+            "limits": {
+                "$ref": "#/$defs/UsageLimits"
+            },
             "models": {
                 "items": {
                     "$ref": "#/$defs/UsageModel"
                 },
                 "type": "array"
+            },
+            "spent": {
+                "$ref": "#/$defs/UsageSpent"
             }
         },
         "required": [
             "counted",
             "days",
-            "models"
+            "models",
+            "limits",
+            "spent"
+        ],
+        "type": "object"
+    },
+    "UsageSpent": {
+        "properties": {
+            "month": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "month_of": {
+                "type": "string"
+            },
+            "today": {
+                "minimum": 0,
+                "type": "integer"
+            }
+        },
+        "required": [
+            "today",
+            "month",
+            "month_of"
         ],
         "type": "object"
     }
