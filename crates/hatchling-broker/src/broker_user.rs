@@ -72,8 +72,9 @@ pub fn act_for_broker(config: &Config) -> Result<(), Error> {
     hand_state(config, uid, gid)
 }
 
-/// The broker's state that isn't a sealed store, and is a directory:
-/// memory's and goals' roots, the scheduler's run directories and the
+/// The broker's state that isn't a sealed store, and is a directory.
+///
+/// Memory's and goals' roots, the scheduler's run directories and the
 /// owner's records, and the model usage it counts beside them, each when it
 /// is on.
 #[must_use]

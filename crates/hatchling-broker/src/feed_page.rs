@@ -88,6 +88,7 @@ mod tests {
                 .is_ok()
         );
         // A page that can't be written says so, in the broker's words.
+        std::fs::write(dir.join("missing"), "").unwrap();
         let refused = keep(&dir.join("missing").join("schedules.feed"), "x").unwrap_err();
         assert!(refused.contains("couldn't keep it"), "{refused}");
         let _ = std::fs::remove_dir_all(&dir);

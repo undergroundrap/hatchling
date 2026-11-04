@@ -92,6 +92,7 @@ mod tests {
     #[test]
     fn a_decision_that_cant_be_kept_still_stands() {
         let dir = scratch("broken");
+        std::fs::write(dir.join("missing"), "").unwrap();
         let path = dir.join("missing").join("schedules.decisions");
         record(&path, &decided(1, Decision::Approve));
         assert!(list(&path).is_empty());

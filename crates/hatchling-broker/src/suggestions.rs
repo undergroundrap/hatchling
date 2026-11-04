@@ -222,6 +222,7 @@ fn read(path: &Path) -> std::io::Result<Vec<Suggestion>> {
 
 /// Writes `page` at `path`, whole, through a sibling `.next` file.
 fn write(path: &Path, page: &[Suggestion]) -> std::io::Result<()> {
+    crate::kept_log::ensure_parent(path)?;
     let next = crate::kept_log::next_path(path);
     let text = serde_json::to_vec(page)?;
     let mut file = OpenOptions::new()
