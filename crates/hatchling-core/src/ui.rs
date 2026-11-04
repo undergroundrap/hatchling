@@ -284,7 +284,8 @@ pub enum ActivityState {
 /// Per the activity-monitor contract: spawned and progress are pending,
 /// a finish is its verdict, a kill is interrupted, and a failure is
 /// failed. An API call the API served is a success, and one it refused
-/// is failed.
+/// is failed. A run's summary is a record of a session that ended: a
+/// success, whatever its tools' endings.
 #[must_use]
 pub const fn activity_state(event: &SubagentEvent) -> ActivityState {
     match event {
@@ -300,7 +301,8 @@ pub const fn activity_state(event: &SubagentEvent) -> ActivityState {
         | SubagentEvent::HarnessRun {
             outcome: HarnessOutcome::Done,
             ..
-        } => ActivityState::Success,
+        }
+        | SubagentEvent::RunSummary { .. } => ActivityState::Success,
         SubagentEvent::Finished {
             verdict: ChildVerdict::Partial,
             ..
@@ -1701,6 +1703,18 @@ mod tests {
             (harness_run(HarnessOutcome::Failed), ActivityState::Failed),
             (harness_run(HarnessOutcome::TimedOut), ActivityState::Failed),
             (harness_run(HarnessOutcome::Refused), ActivityState::Failed),
+            (
+                SubagentEvent::RunSummary {
+                    cell_id: String::from("run-1"),
+                    chat: true,
+                    tools: Vec::new(),
+                    model_calls: 1,
+                    model_calls_refused: 1,
+                    peak_input_tokens: 10,
+                    output_tokens: 2,
+                },
+                ActivityState::Success,
+            ),
         ] {
             assert_eq!(activity_state(&kind), state, "{kind:?}");
         }

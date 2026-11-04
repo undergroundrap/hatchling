@@ -46,6 +46,7 @@ pub struct Trail {
     log: Option<PathBuf>,
     run_id: String,
     cell_id: String,
+    chat: bool,
     tools: Vec<ToolTally>,
     model_calls: u32,
     model_calls_refused: u32,
@@ -63,12 +64,20 @@ impl Trail {
             log,
             run_id: run_id.to_owned(),
             cell_id: cell_id.to_owned(),
+            chat: false,
             tools: Vec::new(),
             model_calls: 0,
             model_calls_refused: 0,
             peak_input_tokens: 0,
             output_tokens: 0,
         }
+    }
+
+    /// The trail, of a chat run when `chat` is set: answering the owner.
+    #[must_use]
+    pub const fn of_chat(mut self, chat: bool) -> Self {
+        self.chat = chat;
+        self
     }
 
     /// Notes a use of `tool`, the tool a request used ([`tool_of`]), if
@@ -122,6 +131,7 @@ impl Trail {
         (!self.tools.is_empty() || self.model_calls > 0 || self.model_calls_refused > 0).then(
             || SubagentEvent::RunSummary {
                 cell_id: self.cell_id.clone(),
+                chat: self.chat,
                 tools: self.tools.clone(),
                 model_calls: self.model_calls,
                 model_calls_refused: self.model_calls_refused,
@@ -499,6 +509,7 @@ mod tests {
             trail.summary(),
             Some(SubagentEvent::RunSummary {
                 cell_id: s("run-1"),
+                chat: false,
                 tools: vec![
                     tally(ToolUse::GoalsRead, 1, 0, 1, 1),
                     tally(ToolUse::MemoryPropose, 0, 1, 1, 0),

@@ -844,11 +844,13 @@ fn serve_session(
     let _admissions = crate::space_ops::EndAdmissions(space_session.pin.session.clone());
     // What the session does, as the broker serves it: summarized in the
     // owner's Activity when the session ends, however it ends.
+    // A chat run is a run its person is there for (WO-028).
     let mut trail = crate::run_trail::Trail::new(
         crate::run_trail::activity_log(config),
         session_id.as_str(),
         cell_id.as_str(),
-    );
+    )
+    .of_chat(config.web.attended && config.scheduler.followup.is_some());
 
     // The session's children live in the session's own scope:
     // when the session ends, however it ends, they are killed and the
@@ -2426,6 +2428,7 @@ mod gate_scope_tests {
             trail.summary(),
             Some(hatchling_core::SubagentEvent::RunSummary {
                 cell_id: String::from("cell-usage"),
+                chat: false,
                 tools: Vec::new(),
                 model_calls: 2,
                 model_calls_refused: 0,
@@ -2530,6 +2533,7 @@ mod gate_scope_tests {
             trail.summary(),
             Some(hatchling_core::SubagentEvent::RunSummary {
                 cell_id: String::from("cell-limit"),
+                chat: false,
                 tools: Vec::new(),
                 model_calls: 0,
                 model_calls_refused: 1,

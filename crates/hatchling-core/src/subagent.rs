@@ -385,6 +385,9 @@ pub enum SubagentEvent {
     RunSummary {
         /// The session's cell.
         cell_id: String,
+        /// Whether it was a chat run, answering the owner: otherwise
+        /// background work.
+        chat: bool,
         /// Each tool it used, in the order first used.
         tools: Vec<ToolTally>,
         /// Model calls answered.
@@ -765,6 +768,7 @@ mod tests {
             (
                 event(SubagentEvent::RunSummary {
                     cell_id: String::from("run-1"),
+                    chat: true,
                     tools: vec![ToolTally {
                         tool: ToolUse::GoalsRead,
                         done: 1,
@@ -778,7 +782,7 @@ mod tests {
                     output_tokens: 700,
                 }),
                 json!({"event": "run_summary", "event_id": "ev-1", "ts": "2026-10-03T12:00:00Z",
-                       "run_id": "parent", "cell_id": "run-1",
+                       "run_id": "parent", "cell_id": "run-1", "chat": true,
                        "tools": [{"tool": "goals_read", "done": 1, "asked": 0, "refused": 2, "failed": 0}],
                        "model_calls": 3, "model_calls_refused": 1,
                        "peak_input_tokens": 5400, "output_tokens": 700}),
