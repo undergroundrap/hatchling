@@ -511,6 +511,7 @@ mod tests {
         let chat = config(&dir, Some("local"));
         let path = chat.scheduler.ideas_log();
         // The install makes it empty: an empty page, which takes ideas.
+        crate::kept_log::ensure_parent(&path).unwrap();
         std::fs::write(&path, "").unwrap();
         assert!(listed(&chat).is_empty());
         assert_eq!(
@@ -528,8 +529,8 @@ mod tests {
             .set_len(MAX_FILE_BYTES + 1)
             .unwrap();
         assert_eq!(handle(&chat, &SuggestionOp::List), SuggestionResult::Failed);
-        // A page whose directory is gone can't be written.
-        std::fs::remove_file(&path).unwrap();
+        // A page whose directory can't be made can't be kept, or read.
+        std::fs::write(dir.join("missing"), "").unwrap();
         let gone = config(&dir.join("missing"), Some("local"));
         assert!(reason(&suggest(&gone, &idea("x"))).contains("couldn't keep it"));
         assert_eq!(
@@ -539,7 +540,7 @@ mod tests {
                     id: String::from("idea-x")
                 }
             ),
-            SuggestionResult::NotFound
+            SuggestionResult::Failed
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
