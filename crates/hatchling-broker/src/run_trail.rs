@@ -641,7 +641,8 @@ mod tests {
     /// trail; past the owner's limit, the next is refused and noted.
     #[test]
     fn a_trail_counts_model_calls_and_refuses_past_a_limit() {
-        let usage = std::env::temp_dir().join(format!("hatchling-trail-usage-{}", std::process::id()));
+        let usage =
+            std::env::temp_dir().join(format!("hatchling-trail-usage-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&usage);
         let mut trail = Trail::new(None, "session-1", "run-1").counting_in(&usage);
         let now = hatchling_scheduler::Timestamp::now().as_second();

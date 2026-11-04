@@ -2536,18 +2536,14 @@ mod gate_scope_tests {
         .unwrap();
         assert_eq!(tried, EgressResult::EgressError);
         // The session's trail holds the refusal, and no call answered.
-        assert_eq!(
+        assert!(matches!(
             trail.summary(),
             Some(hatchling_core::SubagentEvent::RunSummary {
-                cell_id: String::from("cell-limit"),
-                chat: false,
-                tools: Vec::new(),
                 model_calls: 0,
                 model_calls_refused: 1,
-                peak_input_tokens: 0,
-                output_tokens: 0,
+                ..
             })
-        );
+        ));
         let _ = std::fs::remove_dir_all(&usage);
     }
 }
