@@ -262,26 +262,54 @@ fn answer(report: &ChildReport) -> &str {
     answer
 }
 
-/// The activity log's events, each checked against the contract: its
-/// exact field set, and a typed parse.
+/// The activity log's subagent lifecycle events, each checked against the
+/// contract: its exact field set, and a typed parse. The runs' summaries
+/// are checked too, and left out ([`summaries`]).
 fn events(config: &Config) -> Vec<ActivityEvent> {
+    logged(config)
+        .into_iter()
+        .filter(|event| !matches!(event.kind, SubagentEvent::RunSummary { .. }))
+        .collect()
+}
+
+/// The runs' summaries in the activity log, each checked as [`events`]
+/// checks the others.
+fn summaries(config: &Config) -> Vec<ActivityEvent> {
+    logged(config)
+        .into_iter()
+        .filter(|event| matches!(event.kind, SubagentEvent::RunSummary { .. }))
+        .collect()
+}
+
+/// Every event in the activity log, checked against the contract.
+fn logged(config: &Config) -> Vec<ActivityEvent> {
     let text = std::fs::read_to_string(config.scheduler.activity_log()).unwrap();
-    let common = ["event", "event_id", "ts", "run_id", "child_id"];
+    let common = ["event", "event_id", "ts", "run_id"];
     text.lines()
         .map(|line| {
             let value: Value = serde_json::from_str(line).unwrap();
             let fields: &[&str] = match value.get("event").and_then(Value::as_str).unwrap() {
+                "run_summary" => &[
+                    "cell_id",
+                    "chat",
+                    "tools",
+                    "model_calls",
+                    "model_calls_refused",
+                    "peak_input_tokens",
+                    "output_tokens",
+                ],
                 "subagent_spawned" => &[
+                    "child_id",
                     "parent_run_id",
                     "task_brief_hash",
                     "budget_steps",
                     "capabilities",
                     "depth",
                 ],
-                "subagent_progress" => &["note", "steps_spent"],
-                "subagent_finished" => &["result_hash", "steps_spent", "verdict"],
-                "subagent_killed" => &["reason", "partial_result_hash", "steps_spent"],
-                "subagent_failed" => &["failure", "detail", "steps_spent"],
+                "subagent_progress" => &["child_id", "note", "steps_spent"],
+                "subagent_finished" => &["child_id", "result_hash", "steps_spent", "verdict"],
+                "subagent_killed" => &["child_id", "reason", "partial_result_hash", "steps_spent"],
+                "subagent_failed" => &["child_id", "failure", "detail", "steps_spent"],
                 other => unreachable!("not a contract event: {other}"),
             };
             let expected: BTreeSet<&str> = common.iter().chain(fields).copied().collect();
@@ -602,6 +630,31 @@ fn every_lifecycle_event_matches_the_contract() {
             },
         ]
     );
+    // When the parent's session ends, its trail says it used the subagent
+    // tool, as the broker served it: never failed or refused here.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let parents = loop {
+        let parents: Vec<ActivityEvent> = summaries(&config)
+            .into_iter()
+            .filter(|event| event.run_id == recorded.first().unwrap().run_id)
+            .collect();
+        if !parents.is_empty() || Instant::now() > deadline {
+            break parents;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let [parent_summary] = parents.as_slice() else {
+        unreachable!("one summary for the parent: {parents:?}");
+    };
+    let SubagentEvent::RunSummary { tools, .. } = &parent_summary.kind else {
+        unreachable!("{parent_summary:?}");
+    };
+    let [subagent] = tools.as_slice() else {
+        unreachable!("only the subagent tool: {tools:?}");
+    };
+    assert_eq!(subagent.tool, hatchling_core::ToolUse::Subagent);
+    assert!(subagent.done >= 1, "{subagent:?}");
+    assert_eq!((subagent.refused, subagent.failed), (0, 0), "{subagent:?}");
     // The log is the owner's alone.
     let mode = std::os::unix::fs::PermissionsExt::mode(
         &std::fs::metadata(config.scheduler.activity_log())
