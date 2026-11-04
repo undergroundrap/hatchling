@@ -46,7 +46,7 @@ const replay = (transport, frames = SAMPLE_EVENTS) => {
 const answer = (transport, request_id, result) => transport.deliver({ type: 'action_result', request_id, result });
 const flush = () => new Promise(resolve => setImmediate(resolve));
 // The actions the app sent besides what it reads each time it connects: allowed and signed-in sites, schedules, goals, and usage.
-const sentActions = transport => transport.sent.filter(frame => frame.type === 'action' && frame.action.action !== 'read_usage' && !(['manage_sites', 'manage_profiles', 'manage_sign_ins', 'manage_schedule', 'manage_goals', 'manage_memory'].includes(frame.action.action) && frame.action.op.op === 'list') && frame.action.action !== 'list_decisions');
+const sentActions = transport => transport.sent.filter(frame => frame.type === 'action' && !['read_usage', 'read_feed'].includes(frame.action.action) && !(['manage_sites', 'manage_profiles', 'manage_sign_ins', 'manage_schedule', 'manage_goals', 'manage_memory'].includes(frame.action.action) && frame.action.op.op === 'list') && frame.action.action !== 'list_decisions');
 const thread = adapter => adapter.getSnapshot().threads[0];
 const lane = (adapter, id) => thread(adapter).lanes.find(item => item.id === id);
 const confirmation = (seq, revision, summary = 'Post the sample summary?') => sampleEvent(seq, seq, { kind: 'confirmation', confirmation_id: 'confirm-1', revision, chat_id: 'main', summary, expires_at: null, digest: `digest-${revision}`, fields: [{ label: 'Operation', value: summary, source: 'broker' }, { label: 'Text', value: 'Sample text.', source: 'agent' }] });
@@ -396,6 +396,71 @@ test('scheduled work: made with the welcome\'s grants, listed, removed, and what
     assert.deepEqual(await removing, { ok: true, message: 'Removed. It won’t run again.' });
     assert.deepEqual(adapter.getSnapshot().jobs, []);
     assert.equal(adapter.attention.items().length, 0, 'nothing needs the owner');
+});
+test('the Feed page: its prompt is a daily schedule that posts there, a post now is a one-off of it, and a run that ends reads it again', async () => {
+    const transport = new FakeTransport();
+    const adapter = new LiveAdapter(transport, 'test-ui');
+    const model = { grant: 'egress', destination: 'localhost:11434' };
+    const page = { grant: 'channel-send', channel: 'feed' };
+    transport.open();
+    transport.deliver({ ...SAMPLE_WELCOME, grants: [model, { grant: 'channel-send', channel: 'local' }] });
+    const last = (action, op) => transport.sent.filter(frame => frame.type === 'action' && frame.action.action === action && (op === undefined || frame.action.op.op === op)).at(-1);
+    const lists = async (schedules) => {
+        answer(transport, last('manage_schedule', 'list').request_id, { result: 'schedule', outcome: { result: 'listed', schedules } });
+        await flush();
+        answer(transport, last('manage_schedule', 'list-parked').request_id, { result: 'schedule', outcome: { result: 'parked', parked: [] } });
+        await flush();
+    };
+    const made = async (id) => {
+        answer(transport, transport.last().request_id, { result: 'schedule', outcome: { result: 'created', id } });
+        await flush();
+    };
+    await lists([]);
+    answer(transport, last('read_feed').request_id, { result: 'feed', posts: [{ post_id: 'post-1', written_at: '2026-11-04T13:30:00Z', text: 'Your Tuesday\nTwo goals moved.' }] });
+    await flush();
+    assert.deepEqual(adapter.getSnapshot().posts.map(post => [post.id, post.title, post.body]), [['post-1', 'Your Tuesday', 'Two goals moved.']]);
+    assert.deepEqual(adapter.feed.current(), { kind: 'read', setup: null, writing: false });
+    // Until a time is picked, the prompt's post is written at 08:30.
+    const saving = adapter.execute({ type: 'feed.prompt', text: 'What moved.' });
+    const create = transport.last();
+    assert.deepEqual(create.action.op, { op: 'create', when: { every: 'cron', expr: '30 8 * * *', tz: 'UTC' }, task: 'What moved.', grants: [model, page], channel: 'feed' });
+    await made('sch-1');
+    const daily = { id: 'sch-1', kind: 'task', when: create.action.op.when, channel: 'feed', grants: [model, page], next_due: 1790000000, task: 'What moved.' };
+    await lists([daily]);
+    assert.deepEqual(await saving, { ok: true, message: 'Saved. Hatchling writes your post every day at 08:30.' });
+    assert.equal(adapter.getSnapshot().jobs[0].limit, 'May reach localhost:11434, post on your Feed page');
+    // Saved again, it keeps its time, and the new one replaces the old.
+    const again = adapter.execute({ type: 'feed.prompt', text: 'Shorter.' });
+    assert.equal(transport.last().action.op.when.expr, '30 8 * * *');
+    await made('sch-2');
+    const shorter = { ...daily, id: 'sch-2', task: 'Shorter.' };
+    await lists([daily, shorter]);
+    assert.deepEqual(transport.last().action.op, { op: 'cancel', id: 'sch-1' });
+    answer(transport, transport.last().request_id, { result: 'schedule', outcome: { result: 'cancelled' } });
+    await flush();
+    await lists([shorter]);
+    assert.equal((await again).ok, true);
+    // A post now is a one-off of the daily schedule.
+    const writing = adapter.execute({ type: 'feed.generate' });
+    const once = transport.last().action.op;
+    assert.deepEqual([once.when.every, once.task, once.channel, once.grants], ['once', 'Shorter.', 'feed', [model, page]]);
+    await made('sch-3');
+    await lists([shorter, { ...shorter, id: 'sch-3', when: once.when }]);
+    assert.match((await writing).message, /Writing your post now/);
+    assert.equal(adapter.feed.current().writing, true);
+    assert.match((await adapter.execute({ type: 'feed.react', id: 'post-1' })).message, /Reactions aren’t kept yet/);
+    // A run that only started reads nothing; one that ended reads the lists, then the page.
+    const sent = transport.sent.length;
+    transport.deliver(sampleEvent(1, 1, { kind: 'schedule', outcome: 'fired', schedule_id: 'sch-3' }));
+    await flush();
+    assert.equal(transport.sent.length, sent);
+    transport.deliver(sampleEvent(2, 2, { kind: 'schedule', outcome: 'completed', schedule_id: 'sch-3' }));
+    await flush();
+    await lists([shorter]);
+    answer(transport, last('read_feed').request_id, { result: 'feed', posts: [{ post_id: 'post-2', written_at: '2026-11-04T13:31:00Z', text: 'Wednesday\nOne goal closed.' }, { post_id: 'post-1', written_at: '2026-11-04T13:30:00Z', text: 'Your Tuesday\nTwo goals moved.' }] });
+    await flush();
+    assert.deepEqual(adapter.getSnapshot().posts.map(post => post.id), ['post-2', 'post-1']);
+    assert.deepEqual(adapter.feed.current(), { kind: 'read', setup: { prompt: 'Shorter.', time: '08:30', when: 'Every day at 08:30 (UTC)' }, writing: false });
 });
 test('a closed connection\'s late callbacks are ignored', () => {
     const transport = new FakeTransport();

@@ -647,6 +647,11 @@
           "type": "string"
         },
         {
+          "const": "read_feed",
+          "description": "[`UiAction::ReadFeed`].",
+          "type": "string"
+        },
+        {
           "const": "give_code",
           "description": "[`UiAction::GiveCode`].",
           "type": "string"
@@ -3197,6 +3202,29 @@
           "type": "string"
         }
       ]
+    },
+    "FeedPost": {
+      "description": "A post on the owner's Feed page: what one scheduled run wrote for it.",
+      "properties": {
+        "post_id": {
+          "description": "Its id.",
+          "type": "string"
+        },
+        "text": {
+          "description": "What the run wrote, as the output gate cleared it: the agent's words,\nits first line the title.",
+          "type": "string"
+        },
+        "written_at": {
+          "description": "When it was kept, RFC 3339.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "post_id",
+        "written_at",
+        "text"
+      ],
+      "type": "object"
     },
     "FeedSpec": {
       "additionalProperties": false,
@@ -10344,6 +10372,19 @@
           "type": "object"
         },
         {
+          "description": "Read the posts on the owner's Feed page, the newest first: the\nowner's alone.",
+          "properties": {
+            "action": {
+              "const": "read_feed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Give the one-time code a browser session's page asks for (WO-030):\ntyped into the page by the broker, used once and not kept.",
           "properties": {
             "action": {
@@ -10874,6 +10915,27 @@
           "required": [
             "result",
             "usage"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The posts on the owner's Feed page, the newest first.",
+          "properties": {
+            "posts": {
+              "description": "They.",
+              "items": {
+                "$ref": "#/$defs/FeedPost"
+              },
+              "type": "array"
+            },
+            "result": {
+              "const": "feed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "posts"
           ],
           "type": "object"
         },

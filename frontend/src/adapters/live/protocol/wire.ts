@@ -457,6 +457,10 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "string"
             },
             {
+                "const": "read_feed",
+                "type": "string"
+            },
+            {
                 "const": "give_code",
                 "type": "string"
             },
@@ -1186,6 +1190,25 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "string"
             }
         ]
+    },
+    "FeedPost": {
+        "properties": {
+            "post_id": {
+                "type": "string"
+            },
+            "text": {
+                "type": "string"
+            },
+            "written_at": {
+                "type": "string"
+            }
+        },
+        "required": [
+            "post_id",
+            "written_at",
+            "text"
+        ],
+        "type": "object"
     },
     "FeedSpec": {
         "additionalProperties": false,
@@ -3706,6 +3729,18 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             {
                 "properties": {
                     "action": {
+                        "const": "read_feed",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "action"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
                         "const": "give_code",
                         "type": "string"
                     },
@@ -4166,6 +4201,25 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "required": [
                     "result",
                     "usage"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "posts": {
+                        "items": {
+                            "$ref": "#/$defs/FeedPost"
+                        },
+                        "type": "array"
+                    },
+                    "result": {
+                        "const": "feed",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "posts"
                 ],
                 "type": "object"
             },

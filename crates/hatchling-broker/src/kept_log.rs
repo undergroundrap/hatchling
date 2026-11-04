@@ -66,11 +66,9 @@ pub fn append<T: Serialize>(path: &Path, record: &T) -> std::io::Result<()> {
 /// Where a cut-back log is written before it's renamed over `path`.
 #[must_use]
 pub fn next_path(path: &Path) -> PathBuf {
-    let extension = path
-        .extension()
-        .map_or_else(String::new, |extension| {
-            format!("{}.", extension.to_string_lossy())
-        });
+    let extension = path.extension().map_or_else(String::new, |extension| {
+        format!("{}.", extension.to_string_lossy())
+    });
     path.with_extension(format!("{extension}next"))
 }
 

@@ -16,8 +16,8 @@
 
 use std::path::Path;
 
-use hatchling_core::ui::FeedPost;
 pub use hatchling_core::ui::FEED_PAGE;
+use hatchling_core::ui::FeedPost;
 
 /// The prefix of a post's id.
 const POST_ID_PREFIX: &str = "post-";
@@ -71,13 +71,21 @@ mod tests {
         keep(&path, "Tuesday\nOne goal closed.").unwrap();
         let posts = list(&path);
         assert_eq!(
-            posts.iter().map(|post| post.text.as_str()).collect::<Vec<_>>(),
+            posts
+                .iter()
+                .map(|post| post.text.as_str())
+                .collect::<Vec<_>>(),
             ["Tuesday\nOne goal closed.", "Monday\nTwo goals moved."]
         );
         let (newest, oldest) = (posts.first().unwrap(), posts.get(1).unwrap());
         assert!(newest.post_id.starts_with(POST_ID_PREFIX));
         assert_ne!(newest.post_id, oldest.post_id);
-        assert!(newest.written_at.parse::<hatchling_scheduler::Timestamp>().is_ok());
+        assert!(
+            newest
+                .written_at
+                .parse::<hatchling_scheduler::Timestamp>()
+                .is_ok()
+        );
         // A page that can't be written says so, in the broker's words.
         let refused = keep(&dir.join("missing").join("schedules.feed"), "x").unwrap_err();
         assert!(refused.contains("couldn't keep it"), "{refused}");

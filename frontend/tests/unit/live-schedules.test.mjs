@@ -81,6 +81,7 @@ test('a listed schedule is read back in words, its own text only when the owner 
     assert.equal(cron('0 8 * *'), `cron 0 8 * * (${ZONE})`, 'not five fields: as written');
     assert.equal(cron('x'), `cron x (${ZONE})`);
     assert.equal(grantsInWords([]), 'May do nothing beyond answering');
+    assert.equal(grantsInWords([{ grant: 'channel-send', channel: 'feed' }]), 'May post on your Feed page');
     assert.equal(grantsInWords([LOCAL, MODEL, { grant: 'channel-send', channel: 'signal' }, { grant: 'vault', action: 'fetch', name: 'api-key' }, { grant: 'memory', scope: 'user', action: 'recall' }, { grant: 'goals', action: 'query-goals' }]), 'May post in this chat, reach localhost:11434, post on signal, fetch the secret api-key, recall things about you, read your goals');
     // A store's grants read as one phrase: the install's own, in full.
     const memory = action => ({ grant: 'memory', scope: 'user', action });
@@ -123,6 +124,7 @@ test('a schedule is created with this connection\'s grants, in this chat, and th
     assert.deepEqual(await schedules.create('Stretch', 'weekdays 08:00'), { ok: true, message: 'Scheduled. Its results arrive in this chat.', id: 'sch-9' });
     assert.deepEqual(client.sent[0], { action: 'manage_schedule', op: { op: 'create', when: { every: 'cron', expr: '0 8 * * 1-5', tz: ZONE }, task: 'Stretch', grants: [LOCAL, MODEL], channel: 'local' } });
     assert.deepEqual(schedules.jobs().map(job => job.title), ['Stretch']);
+    assert.deepEqual(schedules.summaries().map(one => one.id), ['sch-9'], 'as the broker listed them');
     // A timing the form can't have written never reaches the broker.
     assert.deepEqual(await schedules.create('Stretch', 'soon'), { ok: false, message: 'Pick when it should happen.' });
     assert.equal(client.sent.length, 3);

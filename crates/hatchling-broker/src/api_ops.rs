@@ -2169,7 +2169,10 @@ mod tests {
             _ => Vec::new(),
         };
         assert_eq!(
-            posts.iter().map(|post| post.text.as_str()).collect::<Vec<_>>(),
+            posts
+                .iter()
+                .map(|post| post.text.as_str())
+                .collect::<Vec<_>>(),
             ["Monday\nTwo goals moved."]
         );
         // Without a page or a gate to clear it, nothing is kept.

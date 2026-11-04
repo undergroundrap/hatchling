@@ -727,9 +727,13 @@ pub fn handle_schedule_op(
             .map_or(ScheduleResult::Denied, |scope| {
                 request_followup(scope, key, task, *delay_secs, grants, now)
             }),
-        ScheduleOp::List { after } => {
-            list_schedules(config, key, &creatable(config, caller), after.as_deref(), caller)
-        }
+        ScheduleOp::List { after } => list_schedules(
+            config,
+            key,
+            &creatable(config, caller),
+            after.as_deref(),
+            caller,
+        ),
         ScheduleOp::Resolve { .. }
         | ScheduleOp::Retry { .. }
         | ScheduleOp::ListParked { .. }
