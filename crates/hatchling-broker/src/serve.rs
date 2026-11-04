@@ -2394,8 +2394,9 @@ mod gate_scope_tests {
         let usage =
             std::env::temp_dir().join(format!("hatchling-serve-usage-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&usage);
-        let mut trails = [usage.as_path(), std::path::Path::new("")]
-            .map(|place| crate::run_trail::Trail::new(None, "session", "cell-usage").counting_in(place));
+        let mut trails = [usage.as_path(), std::path::Path::new("")].map(|place| {
+            crate::run_trail::Trail::new(None, "session", "cell-usage").counting_in(place)
+        });
         for trail in &mut trails {
             let answered =
                 handle_egress_op(&proxy, &egress, &call(), &cell_id, 1000, &mut pages, trail)
@@ -2502,7 +2503,6 @@ mod gate_scope_tests {
             &cell_id,
             1000,
             &mut pages,
-            &usage,
             &mut trail,
         )
         .unwrap();
@@ -2538,7 +2538,6 @@ mod gate_scope_tests {
             &cell_id,
             1000,
             &mut pages,
-            &usage,
             &mut trail,
         )
         .unwrap();

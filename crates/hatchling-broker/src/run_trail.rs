@@ -266,12 +266,12 @@ const fn ending_of(response: &SessionResponse) -> Ending {
 const fn vault_ending(result: &VaultResult) -> Ending {
     use Ending::{Done, Failed, Refused};
     match result {
-    VaultResult::Denied => Refused,
-    VaultResult::VaultError => Failed,
-    VaultResult::Stored
-    | VaultResult::Fetched { .. }
-    | VaultResult::Removed
-    | VaultResult::NotFound => Done,
+        VaultResult::Denied => Refused,
+        VaultResult::VaultError => Failed,
+        VaultResult::Stored
+        | VaultResult::Fetched { .. }
+        | VaultResult::Removed
+        | VaultResult::NotFound => Done,
     }
 }
 
@@ -279,12 +279,12 @@ const fn vault_ending(result: &VaultResult) -> Ending {
 const fn egress_ending(result: &EgressResult) -> Ending {
     use Ending::{Done, Failed, Refused};
     match result {
-    EgressResult::Denied => Refused,
-    EgressResult::EgressError => Failed,
-    EgressResult::Surrogate { .. }
-    | EgressResult::Ok { .. }
-    | EgressResult::Staged { .. }
-    | EgressResult::Part { .. } => Done,
+        EgressResult::Denied => Refused,
+        EgressResult::EgressError => Failed,
+        EgressResult::Surrogate { .. }
+        | EgressResult::Ok { .. }
+        | EgressResult::Staged { .. }
+        | EgressResult::Part { .. } => Done,
     }
 }
 
@@ -292,13 +292,13 @@ const fn egress_ending(result: &EgressResult) -> Ending {
 const fn channel_ending(result: &ChannelResult) -> Ending {
     use Ending::{Done, Failed, Refused};
     match result {
-    ChannelResult::Denied | ChannelResult::Redacted { .. } => Refused,
-    ChannelResult::ChannelError => Failed,
-    ChannelResult::Message { .. }
-    | ChannelResult::NoMessage
-    | ChannelResult::Sent
-    | ChannelResult::Accounts { .. }
-    | ChannelResult::UnknownAccount => Done,
+        ChannelResult::Denied | ChannelResult::Redacted { .. } => Refused,
+        ChannelResult::ChannelError => Failed,
+        ChannelResult::Message { .. }
+        | ChannelResult::NoMessage
+        | ChannelResult::Sent
+        | ChannelResult::Accounts { .. }
+        | ChannelResult::UnknownAccount => Done,
     }
 }
 
@@ -306,16 +306,16 @@ const fn channel_ending(result: &ChannelResult) -> Ending {
 const fn memory_ending(result: &MemoryResult) -> Ending {
     use Ending::{Asked, Done, Failed, Refused};
     match result {
-    MemoryResult::Proposed => Asked,
-    MemoryResult::Denied | MemoryResult::Unasked { .. } => Refused,
-    MemoryResult::MemoryError => Failed,
-    MemoryResult::Stored
-    | MemoryResult::Item { .. }
-    | MemoryResult::Items { .. }
-    | MemoryResult::NotFound
-    | MemoryResult::Removed { .. }
-    | MemoryResult::ContextAppended
-    | MemoryResult::ContextEntries { .. } => Done,
+        MemoryResult::Proposed => Asked,
+        MemoryResult::Denied | MemoryResult::Unasked { .. } => Refused,
+        MemoryResult::MemoryError => Failed,
+        MemoryResult::Stored
+        | MemoryResult::Item { .. }
+        | MemoryResult::Items { .. }
+        | MemoryResult::NotFound
+        | MemoryResult::Removed { .. }
+        | MemoryResult::ContextAppended
+        | MemoryResult::ContextEntries { .. } => Done,
     }
 }
 
@@ -323,9 +323,9 @@ const fn memory_ending(result: &MemoryResult) -> Ending {
 const fn skill_ending(result: &SkillResult) -> Ending {
     use Ending::{Done, Failed, Refused};
     match result {
-    SkillResult::UnknownSkill | SkillResult::CapabilityDenied => Refused,
-    SkillResult::SkillError => Failed,
-    SkillResult::Output { .. } => Done,
+        SkillResult::UnknownSkill | SkillResult::CapabilityDenied => Refused,
+        SkillResult::SkillError => Failed,
+        SkillResult::Output { .. } => Done,
     }
 }
 
@@ -333,13 +333,13 @@ const fn skill_ending(result: &SkillResult) -> Ending {
 const fn goals_ending(result: &GoalsResult) -> Ending {
     use Ending::{Done, Failed, Refused};
     match result {
-    GoalsResult::Rejected | GoalsResult::LimitReached | GoalsResult::Denied => Refused,
-    GoalsResult::GoalsError => Failed,
-    GoalsResult::GoalCreated { .. }
-    | GoalsResult::GoalChanged
-    | GoalsResult::GoalNotFound
-    | GoalsResult::GoalAlreadyClosed
-    | GoalsResult::TrackingAppended { .. } => Done,
+        GoalsResult::Rejected | GoalsResult::LimitReached | GoalsResult::Denied => Refused,
+        GoalsResult::GoalsError => Failed,
+        GoalsResult::GoalCreated { .. }
+        | GoalsResult::GoalChanged
+        | GoalsResult::GoalNotFound
+        | GoalsResult::GoalAlreadyClosed
+        | GoalsResult::TrackingAppended { .. } => Done,
     }
 }
 
@@ -347,9 +347,9 @@ const fn goals_ending(result: &GoalsResult) -> Ending {
 const fn query_ending(result: &QueryResult) -> Ending {
     use Ending::{Done, Failed, Refused};
     match result {
-    QueryResult::Denied => Refused,
-    QueryResult::QueryError => Failed,
-    QueryResult::Items { .. } => Done,
+        QueryResult::Denied => Refused,
+        QueryResult::QueryError => Failed,
+        QueryResult::Items { .. } => Done,
     }
 }
 
@@ -357,19 +357,19 @@ const fn query_ending(result: &QueryResult) -> Ending {
 const fn schedule_ending(result: &ScheduleResult) -> Ending {
     use Ending::{Asked, Done, Failed, Refused};
     match result {
-    ScheduleResult::Proposed { .. } => Asked,
-    ScheduleResult::Refused { .. }
-    | ScheduleResult::Denied
-    | ScheduleResult::Unasked { .. } => Refused,
-    ScheduleResult::ScheduleError => Failed,
-    ScheduleResult::Created { .. }
-    | ScheduleResult::Cancelled
-    | ScheduleResult::NotFound
-    | ScheduleResult::Listed { .. }
-    | ScheduleResult::Resolved
-    | ScheduleResult::Retried
-    | ScheduleResult::Parked { .. }
-    | ScheduleResult::Dismissed => Done,
+        ScheduleResult::Proposed { .. } => Asked,
+        ScheduleResult::Refused { .. }
+        | ScheduleResult::Denied
+        | ScheduleResult::Unasked { .. } => Refused,
+        ScheduleResult::ScheduleError => Failed,
+        ScheduleResult::Created { .. }
+        | ScheduleResult::Cancelled
+        | ScheduleResult::NotFound
+        | ScheduleResult::Listed { .. }
+        | ScheduleResult::Resolved
+        | ScheduleResult::Retried
+        | ScheduleResult::Parked { .. }
+        | ScheduleResult::Dismissed => Done,
     }
 }
 
@@ -377,9 +377,9 @@ const fn schedule_ending(result: &ScheduleResult) -> Ending {
 const fn hook_ending(result: &HookResult) -> Ending {
     use Ending::{Done, Failed, Refused};
     match result {
-    HookResult::Refused { .. } | HookResult::Denied => Refused,
-    HookResult::HookError => Failed,
-    HookResult::Created { .. } | HookResult::Cancelled | HookResult::NotFound => Done,
+        HookResult::Refused { .. } | HookResult::Denied => Refused,
+        HookResult::HookError => Failed,
+        HookResult::Created { .. } | HookResult::Cancelled | HookResult::NotFound => Done,
     }
 }
 
@@ -387,18 +387,18 @@ const fn hook_ending(result: &HookResult) -> Ending {
 const fn artifact_ending(result: &ArtifactResult) -> Ending {
     use Ending::{Asked, Done, Failed, Refused};
     match result {
-    ArtifactResult::ActivationProposed { .. } => Asked,
-    ArtifactResult::Refused { .. }
-    | ArtifactResult::ApprovalRefused { .. }
-    | ArtifactResult::IdeaRefused { .. }
-    | ArtifactResult::Denied => Refused,
-    ArtifactResult::BuildFailed { .. } | ArtifactResult::ArtifactError => Failed,
-    ArtifactResult::Built { .. }
-    | ArtifactResult::Delivered { .. }
-    | ArtifactResult::Described { .. }
-    | ArtifactResult::UnknownBuild
-    | ArtifactResult::IdeaSaved { .. }
-    | ArtifactResult::Ideas { .. } => Done,
+        ArtifactResult::ActivationProposed { .. } => Asked,
+        ArtifactResult::Refused { .. }
+        | ArtifactResult::ApprovalRefused { .. }
+        | ArtifactResult::IdeaRefused { .. }
+        | ArtifactResult::Denied => Refused,
+        ArtifactResult::BuildFailed { .. } | ArtifactResult::ArtifactError => Failed,
+        ArtifactResult::Built { .. }
+        | ArtifactResult::Delivered { .. }
+        | ArtifactResult::Described { .. }
+        | ArtifactResult::UnknownBuild
+        | ArtifactResult::IdeaSaved { .. }
+        | ArtifactResult::Ideas { .. } => Done,
     }
 }
 
@@ -406,21 +406,21 @@ const fn artifact_ending(result: &ArtifactResult) -> Ending {
 const fn space_ending(result: &SpaceResult) -> Ending {
     use Ending::{Done, Failed, Refused};
     match result {
-    SpaceResult::Refused { .. } | SpaceResult::Denied => Refused,
-    SpaceResult::SpaceError => Failed,
-    SpaceResult::Created { .. }
-    | SpaceResult::Admitted { .. }
-    | SpaceResult::Stored
-    | SpaceResult::Value { .. }
-    | SpaceResult::Removed
-    | SpaceResult::TaskAdded { .. }
-    | SpaceResult::TaskQueued { .. }
-    | SpaceResult::PairingCode { .. }
-    | SpaceResult::Changes { .. }
-    | SpaceResult::Pushed { .. }
-    | SpaceResult::ConflictLog { .. }
-    | SpaceResult::MediaStored { .. }
-    | SpaceResult::Media { .. } => Done,
+        SpaceResult::Refused { .. } | SpaceResult::Denied => Refused,
+        SpaceResult::SpaceError => Failed,
+        SpaceResult::Created { .. }
+        | SpaceResult::Admitted { .. }
+        | SpaceResult::Stored
+        | SpaceResult::Value { .. }
+        | SpaceResult::Removed
+        | SpaceResult::TaskAdded { .. }
+        | SpaceResult::TaskQueued { .. }
+        | SpaceResult::PairingCode { .. }
+        | SpaceResult::Changes { .. }
+        | SpaceResult::Pushed { .. }
+        | SpaceResult::ConflictLog { .. }
+        | SpaceResult::MediaStored { .. }
+        | SpaceResult::Media { .. } => Done,
     }
 }
 
@@ -428,9 +428,9 @@ const fn space_ending(result: &SpaceResult) -> Ending {
 const fn subagent_ending(result: &SubagentResult) -> Ending {
     use Ending::{Done, Failed, Refused};
     match result {
-    SubagentResult::Refused { .. } => Refused,
-    SubagentResult::SubagentError => Failed,
-    SubagentResult::Spawned { .. } | SubagentResult::Report(_) => Done,
+        SubagentResult::Refused { .. } => Refused,
+        SubagentResult::SubagentError => Failed,
+        SubagentResult::Spawned { .. } | SubagentResult::Report(_) => Done,
     }
 }
 
@@ -438,13 +438,13 @@ const fn subagent_ending(result: &SubagentResult) -> Ending {
 const fn web_ending(result: &WebResult) -> Ending {
     use Ending::{Asked, Done, Refused};
     match result {
-    WebResult::Waiting { .. } => Asked,
-    WebResult::Denied { .. }
-    | WebResult::Expired { .. }
-    | WebResult::Unasked { .. }
-    | WebResult::Refused { .. }
-    | WebResult::Off => Refused,
-    WebResult::Page { .. } | WebResult::Results { .. } | WebResult::Redirect { .. } => Done,
+        WebResult::Waiting { .. } => Asked,
+        WebResult::Denied { .. }
+        | WebResult::Expired { .. }
+        | WebResult::Unasked { .. }
+        | WebResult::Refused { .. }
+        | WebResult::Off => Refused,
+        WebResult::Page { .. } | WebResult::Results { .. } | WebResult::Redirect { .. } => Done,
     }
 }
 
@@ -452,21 +452,21 @@ const fn web_ending(result: &WebResult) -> Ending {
 const fn browser_ending(result: &BrowserResult) -> Ending {
     use Ending::{Asked, Done, Failed, Refused};
     match result {
-    BrowserResult::Waiting { .. } | BrowserResult::CodeWaiting { .. } => Asked,
-    BrowserResult::Denied { .. }
-    | BrowserResult::Expired { .. }
-    | BrowserResult::Unasked { .. }
-    | BrowserResult::Refused { .. }
-    | BrowserResult::Off
-    | BrowserResult::CodeDeclined
-    | BrowserResult::CodeExpired => Refused,
-    BrowserResult::Failed { .. } => Failed,
-    BrowserResult::Page { .. }
-    | BrowserResult::Allowed { .. }
-    | BrowserResult::Closed
-    | BrowserResult::Stopped
-    | BrowserResult::OwnerDriving
-    | BrowserResult::HandedBack { .. } => Done,
+        BrowserResult::Waiting { .. } | BrowserResult::CodeWaiting { .. } => Asked,
+        BrowserResult::Denied { .. }
+        | BrowserResult::Expired { .. }
+        | BrowserResult::Unasked { .. }
+        | BrowserResult::Refused { .. }
+        | BrowserResult::Off
+        | BrowserResult::CodeDeclined
+        | BrowserResult::CodeExpired => Refused,
+        BrowserResult::Failed { .. } => Failed,
+        BrowserResult::Page { .. }
+        | BrowserResult::Allowed { .. }
+        | BrowserResult::Closed
+        | BrowserResult::Stopped
+        | BrowserResult::OwnerDriving
+        | BrowserResult::HandedBack { .. } => Done,
     }
 }
 
@@ -474,8 +474,8 @@ const fn browser_ending(result: &BrowserResult) -> Ending {
 const fn suggest_ending(result: &SuggestResult) -> Ending {
     use Ending::{Done, Refused};
     match result {
-    SuggestResult::Unasked { .. } => Refused,
-    SuggestResult::Suggested => Done,
+        SuggestResult::Unasked { .. } => Refused,
+        SuggestResult::Suggested => Done,
     }
 }
 
