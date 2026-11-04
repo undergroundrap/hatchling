@@ -1693,7 +1693,10 @@ mod tests {
             }
         }
         let flaky = Flaky(RefCell::new(Vec::new()));
-        assert_eq!(deliver_with_retry(&flaky, "local", "hi", Some("run-1")), Ok(()));
+        assert_eq!(
+            deliver_with_retry(&flaky, "local", "hi", Some("run-1")),
+            Ok(())
+        );
         assert_eq!(
             *flaky.0.borrow(),
             [Some(String::from("run-1")), Some(String::from("run-1"))]
