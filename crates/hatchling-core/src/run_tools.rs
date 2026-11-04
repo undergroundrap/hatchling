@@ -126,7 +126,7 @@ mod tests {
         assert_eq!(format(&BTreeSet::new()), "none");
         assert_eq!(
             format(&ToolGroup::ALL.into_iter().collect()),
-            "web,search,browser,skills,goals,memory,schedule"
+            "web,search,browser,skills,goals,memory,schedule,suggest"
         );
     }
 
