@@ -2133,8 +2133,21 @@ mod tests {
         };
         assert_eq!(shown(&owner), std::slice::from_ref(&id));
         assert!(shown(&partial).is_empty());
-        // What a run delivers there is kept as a post, and only the owner
-        // reads it.
+    }
+
+    /// What a run delivers to the Feed page is kept as a post, cleared by
+    /// the output gate, and only the owner reads it.
+    #[test]
+    fn what_a_run_delivers_to_the_feed_page_only_the_owner_reads() {
+        let dir = scratch("feed-posts");
+        let config = owner_config(Some(&dir.0.join("schedules").to_string_lossy()));
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let ops = Ops::new(&config, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        let held: Vec<ScheduleGrant> = ops.owner_grants().into_iter().collect();
+        let owner = caller(&held);
+        let partial = caller(held.get(..1).unwrap_or_default());
+        let mut replies = Replies::default();
         let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());
         let page = config.scheduler.feed_log();
         let delivery = crate::schedule_ops::HubDelivery::new(Some(&hub)).with_feed_page(&page);

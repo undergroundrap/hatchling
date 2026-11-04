@@ -230,7 +230,8 @@ mod tests {
             state_files(&config),
             [
                 PathBuf::from("/srv/h/schedules.activity"),
-                PathBuf::from("/srv/h/schedules.decisions")
+                PathBuf::from("/srv/h/schedules.decisions"),
+                PathBuf::from("/srv/h/schedules.feed")
             ]
         );
     }

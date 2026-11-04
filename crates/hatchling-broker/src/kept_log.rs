@@ -1,8 +1,10 @@
-//! A bounded log the broker keeps for the owner: one JSON record per line
-//! in one file, `0600`, newest last. Past [`MAX_LINES`] lines it's cut back
-//! to the newest [`MAX_KEPT`], through a sibling `.next` file renamed over
-//! it. The owner's decisions ([`crate::decisions`]) and their Feed page's
-//! posts ([`crate::feed_page`]) are kept this way.
+//! A bounded log the broker keeps for the owner.
+//!
+//! One JSON record per line in one file, `0600`, newest last. Past
+//! [`MAX_LINES`] lines it's cut back to the newest [`MAX_KEPT`], through a
+//! sibling `.next` file renamed over it. The owner's decisions
+//! ([`crate::decisions`]) and their Feed page's posts
+//! ([`crate::feed_page`]) are kept this way.
 
 use std::fs::OpenOptions;
 use std::io::{BufRead as _, BufReader, Write as _};

@@ -129,7 +129,7 @@ export function grantsInWords(grants: readonly ScheduleGrant[]): string {
     for (const grant of grants) {
         switch (grant.grant) {
             case 'channel-send':
-                phrases.push(grant.channel === 'local' ? 'post in this chat' : `post on ${grant.channel}`);
+                phrases.push(grant.channel === 'local' ? 'post in this chat' : grant.channel === 'feed' ? 'post on your Feed page' : `post on ${grant.channel}`);
                 break;
             case 'egress':
                 phrases.push(`reach ${grant.destination}`);
@@ -224,6 +224,10 @@ export class LiveSchedules implements AttentionPort {
     jobs(): readonly ScheduledJob[] {
         return this.#jobs;
     }
+    /** The same, as the broker listed them. */
+    summaries(): readonly ScheduleSummary[] {
+        return this.#summaries;
+    }
     /** Ask the broker for every page of the list, and of what it kept for the owner. */
     async refresh(): Promise<void> {
         const summaries: ScheduleSummary[] = [];
@@ -289,14 +293,18 @@ export class LiveSchedules implements AttentionPort {
         const spec = whenSpec(when, this.#zone());
         if (typeof spec === 'string')
             return { ok: false, message: spec };
-        const op: ScheduleOp = { op: 'create', when: spec, task, grants: [...this.#client.grants()], channel: 'local' };
+        const made = await this.make({ op: 'create', when: spec, task, grants: [...this.#client.grants()], channel: 'local' });
+        return made.ok ? { ...made, message: CREATED } : made;
+    }
+    /** Make the schedule `op` asks for, and read the list again; the message is the caller's to give. */
+    async make(op: ScheduleOp): Promise<CommandResult> {
         const outcome = await this.#change(op);
         if (typeof outcome === 'string')
             return { ok: false, message: outcome };
         if (outcome.result !== 'created')
             return { ok: false, message: this.#refusal(outcome) };
         await this.refresh();
-        return { ok: true, message: CREATED, id: outcome.id };
+        return { ok: true, message: '', id: outcome.id };
     }
     /** Cancel the schedule `id`: it won't run again. */
     async cancel(id: string): Promise<CommandResult> {
