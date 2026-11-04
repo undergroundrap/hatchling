@@ -2130,7 +2130,6 @@ fn parse_context_window(raw: &str) -> Result<u32, Error> {
 #[cfg(test)]
 mod tests {
 
-
     /// A declared context window is a whole number of tokens, at least
     /// what the agent accepts; undeclared, there's none.
     #[test]
@@ -2141,7 +2140,13 @@ mod tests {
         for bad in ["8191", "0", "", "16k", "-1", " 16384", "99999999999"] {
             let error = parse_context_window(bad).unwrap_err();
             assert!(
-                matches!(error, Error::InvalidConfig { key: "HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW", .. }),
+                matches!(
+                    error,
+                    Error::InvalidConfig {
+                        key: "HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW",
+                        ..
+                    }
+                ),
                 "{bad:?}: {error:?}"
             );
         }

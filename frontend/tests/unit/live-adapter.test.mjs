@@ -574,6 +574,29 @@ test('chat: typed events become messages; replays replace, never duplicate; ever
     assert.equal(first.messages[1].text, 'On it. I will ask four helpers.', 'an earlier snapshot keeps what it said');
     assert.deepEqual(new LiveAdapter(new FakeTransport()).getSnapshot().chats.map(item => [item.id, 'updatedAt' in item]), [['main', false]]);
 });
+test('an answer from a run is followed by what the run used, opening its record; until the record comes, the answer stands alone', () => {
+    const { transport, adapter } = connected();
+    const summary = (seq, cell, chat, tools) => sampleEvent(seq, seq, { kind: 'activity', state: 'success', event: { event: 'run_summary', event_id: `s-${seq}:summary`, run_id: `s-${seq}`, ts: sampleTime(seq), cell_id: cell, chat, tools, model_calls: 2, model_calls_refused: 0, peak_input_tokens: 5000, output_tokens: 40, context_window: 16384 } });
+    const goals = { tool: 'goals_read', done: 1, asked: 0, refused: 0, failed: 0 };
+    const web = { tool: 'web_page', done: 0, asked: 0, refused: 1, failed: 0 };
+    replay(transport, [
+        sampleEvent(1, 1, { kind: 'chat_message', chat_id: 'local', message_id: 'm-1', author: 'user', text: 'My goals?' }),
+        sampleEvent(2, 2, { kind: 'chat_message', chat_id: 'local', message_id: 'm-2', author: 'agent', text: 'Ship 1.0.', run: 'run-a' }),
+        sampleEvent(3, 3, { kind: 'chat_message', chat_id: 'local', message_id: 'm-3', author: 'agent', text: 'No run named.' }),
+        sampleEvent(4, 4, { kind: 'chat_message', chat_id: 'local', message_id: 'm-4', author: 'agent', text: 'Hello.', run: 'run-b' }),
+        sampleEvent(5, 5, { kind: 'chat_message', chat_id: 'local', message_id: 'm-5', author: 'agent', text: 'Its record is background work.', run: 'run-c' }),
+    ]);
+    assert.deepEqual(adapter.getSnapshot().messages.map(item => item.id), ['m-1', 'm-2', 'm-3', 'm-4', 'm-5'], 'no record yet: the answers alone');
+    transport.deliver(summary(6, 'run-a', true, [goals, web]));
+    transport.deliver(summary(7, 'run-b', true, []));
+    transport.deliver(summary(8, 'run-c', false, [goals]));
+    const messages = adapter.getSnapshot().messages;
+    assert.deepEqual(messages.map(item => item.id), ['m-1', 'm-2', 'm-2:trail', 'm-3', 'm-4', 'm-4:trail', 'm-5']);
+    assert.deepEqual(messages[2], { id: 'm-2:trail', chatId: 'main', time: '09:00', source: null, reaction: null, kind: 'notice', role: 'agent', text: 'Used: Read your goals · Read a web page (1 refused)', evidenceId: 's-6:summary' });
+    assert.equal(messages[5].text, 'Used no tools: this answer came from the model alone.');
+    // How full the context got on the last chat answer, against the declared window.
+    assert.deepEqual(adapter.usage.context(), { tokens: 5000, window: 16384 });
+});
 test('markup and script in tool output and agent text render as inert text (negative test)', () => {
     // Control: without the adapter, the renderer makes these links real.
     const raw = walk(markdown(HOSTILE_TEXT, false));

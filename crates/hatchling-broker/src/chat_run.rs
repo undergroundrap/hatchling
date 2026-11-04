@@ -137,7 +137,7 @@ impl Told {
     }
 
     /// The notice `compacted` calls for, the first time each happens.
-    fn notice(&mut self, compacted: Compacted) -> Option<&'static str> {
+    const fn notice(&mut self, compacted: Compacted) -> Option<&'static str> {
         if compacted.said > 0 && !self.forgotten {
             self.forgotten = true;
             self.compacted = true;

@@ -233,6 +233,12 @@ export type ActivityEvent = {
      * background work.
      */
     readonly chat: boolean;
+    /**
+     * The model's context window in tokens, as the operator declared
+     * it: what the largest call is measured against. `None` when
+     * undeclared.
+     */
+    readonly context_window?: number | null;
     readonly event: 'run_summary';
     /**
      * Model calls answered.
@@ -941,6 +947,12 @@ export type ChatMessage = {
      * Stable across replays.
      */
     readonly message_id: string;
+    /**
+     * The run that wrote it, by its cell id, when an agent run did: the
+     * broker's own word, which the activity record's run summary names
+     * too. Never read from the text.
+     */
+    readonly run?: string | null;
     /**
      * Plain text. The UI renders it as text, never as markup.
      */
