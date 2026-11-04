@@ -33,7 +33,7 @@ We'll keep you updated as we fix it, and credit you in the advisory unless you'd
 
 | Version | Security fixes |
 | --- | --- |
-| The latest release (0.6.x today) | Yes: a critical or high severity fix comes as a patch release |
+| The latest release (0.7.x today) | Yes: a critical or high severity fix comes as a patch release |
 | Earlier 0.x releases | No: upgrade to the latest |
 | `main` | Yes: fixes land here first |
 

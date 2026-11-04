@@ -6,6 +6,10 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-04
+
+An agent that knows you, with you in charge of what it keeps and spends, and what it does shown as it did it. It reads your goals, asks before it remembers anything or schedules anything, and suggests ideas and writes your Feed in its own marked words. You set its usage limits and the broker enforces them. Every answer shows the tools its run really used, how full the context got, and when the conversation is compacted.
+
 ### Added
 
 - **The chat shows what each answer used, how full the context got, and when it's compacted.** For local and hosted models alike, from what the broker served and the model server reported, never from what the agent says:
@@ -481,7 +485,8 @@ The first public release. [Release notes](https://github.com/undergroundrap/hatc
 
 Published in [the trust boundary](docs/arch/trust-boundary.md#known-limitations), each with a work order and an issue.
 
-[Unreleased]: https://github.com/undergroundrap/hatchling/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/undergroundrap/hatchling/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/undergroundrap/hatchling/releases/tag/v0.7.0
 [0.6.0]: https://github.com/undergroundrap/hatchling/releases/tag/v0.6.0
 [0.5.0]: https://github.com/undergroundrap/hatchling/releases/tag/v0.5.0
 [0.4.0]: https://github.com/undergroundrap/hatchling/releases/tag/v0.4.0
