@@ -336,6 +336,11 @@ pub struct ChatMessage {
     pub author: ChatAuthor,
     /// Plain text. The UI renders it as text, never as markup.
     pub text: String,
+    /// The run that wrote it, by its cell id, when an agent run did: the
+    /// broker's own word, which the activity record's run summary names
+    /// too. Never read from the text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<String>,
 }
 
 /// Who wrote a chat message.
@@ -1712,6 +1717,7 @@ mod tests {
                     model_calls_refused: 1,
                     peak_input_tokens: 10,
                     output_tokens: 2,
+                    context_window: None,
                 },
                 ActivityState::Success,
             ),
@@ -1890,6 +1896,7 @@ mod tests {
                     chat_id: String::from("main"),
                     message_id: String::from("m1"),
                     author: ChatAuthor::Agent,
+                    run: None,
                     text: String::from("<b>hi</b>"),
                 }),
             ),

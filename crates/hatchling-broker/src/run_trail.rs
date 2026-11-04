@@ -48,6 +48,8 @@ pub struct Trail {
     chat: bool,
     /// Where the owner's model usage is counted, and their limits kept.
     usage: PathBuf,
+    /// The model's declared context window, in tokens.
+    context_window: Option<u32>,
     tools: Vec<ToolTally>,
     model_calls: u32,
     model_calls_refused: u32,
@@ -67,6 +69,7 @@ impl Trail {
             cell_id: cell_id.to_owned(),
             chat: false,
             usage: PathBuf::new(),
+            context_window: None,
             tools: Vec::new(),
             model_calls: 0,
             model_calls_refused: 0,
@@ -79,6 +82,14 @@ impl Trail {
     #[must_use]
     pub const fn of_chat(mut self, chat: bool) -> Self {
         self.chat = chat;
+        self
+    }
+
+    /// The trail, measuring prompts against the model's declared context
+    /// window, `window`, when there is one.
+    #[must_use]
+    pub const fn with_window(mut self, window: Option<u32>) -> Self {
+        self.context_window = window;
         self
     }
 
@@ -163,6 +174,7 @@ impl Trail {
                 model_calls_refused: self.model_calls_refused,
                 peak_input_tokens: self.peak_input_tokens,
                 output_tokens: self.output_tokens,
+                context_window: self.context_window,
             },
         )
     }
@@ -633,6 +645,7 @@ mod tests {
                 model_calls_refused: 1,
                 peak_input_tokens: 5400,
                 output_tokens: 320,
+                context_window: None,
             })
         );
     }
@@ -681,6 +694,7 @@ mod tests {
                 model_calls_refused: 1,
                 peak_input_tokens: 40,
                 output_tokens: 2,
+                context_window: None,
             })
         );
         let _ = std::fs::remove_dir_all(&usage);

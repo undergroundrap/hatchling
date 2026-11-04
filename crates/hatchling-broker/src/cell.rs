@@ -571,6 +571,10 @@ pub struct ScheduledRun {
     /// Thinking mode for the ordinary model client; older specs retain the default.
     #[serde(default)]
     pub model_reasoning: hatchling_core::ModelReasoning,
+    /// The model's declared context window, in tokens, if the operator
+    /// declared one.
+    #[serde(default)]
+    pub model_context_window: Option<u32>,
     /// The run's depth in its follow-up chain: 0 unless it is a
     /// follow-up.
     #[serde(default)]
@@ -670,6 +674,9 @@ impl ScheduledRun {
                 "HATCHLING_MODEL_REASONING",
                 self.model_reasoning.as_setting().to_owned(),
             ));
+        }
+        if let Some(window) = self.model_context_window {
+            env.push(("HATCHLING_MODEL_CONTEXT_WINDOW", window.to_string()));
         }
         env
     }
@@ -2620,6 +2627,7 @@ mod run_cell_tests {
             model_endpoint: Some(String::from("https://models.example.com/v1")),
             model_name: Some(String::from("m-1")),
             model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
+            model_context_window: None,
             depth: 2,
             event: Some(hatchling_core::HookSource::ChannelMessage {
                 channel: String::from("local"),
@@ -2740,6 +2748,7 @@ mod run_cell_tests {
             model_endpoint: None,
             model_name: None,
             model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
+            model_context_window: None,
             depth: 0,
             event: None,
             ..run()
@@ -2766,6 +2775,7 @@ mod run_cell_tests {
             model_endpoint: None,
             model_name: None,
             model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
+            model_context_window: None,
             depth: 0,
             event: None,
             max_steps: Some(4),

@@ -871,6 +871,7 @@ mod tests {
                 chat_id: String::from("local"),
                 message_id: String::from("m"),
                 author: ChatAuthor::Agent,
+                run: None,
                 text: text.to_owned(),
             })
         };
@@ -1453,6 +1454,7 @@ mod tests {
                 chat_id: String::from("local"),
                 message_id: String::from("m"),
                 author: ChatAuthor::Agent,
+                run: None,
                 text: text.to_owned(),
             })
         };

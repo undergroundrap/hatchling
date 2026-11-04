@@ -185,6 +185,11 @@ pub struct SchedulerConfig {
     pub model_name: Option<String>,
     /// Thinking mode supplied to scheduled and child runs.
     pub model_reasoning: hatchling_core::ModelReasoning,
+    /// The model's context window in tokens, as the operator declares it
+    /// (`HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW`): handed to each run
+    /// cell as `HATCHLING_MODEL_CONTEXT_WINDOW`, and what the owner's app
+    /// measures a run's largest prompt against. `None` when undeclared.
+    pub model_context_window: Option<u32>,
     /// The agent binary run cells execute (`HATCHLING_AGENT_BIN`, the
     /// same binary as the agent cell's). Without it the broker starts no
     /// dispatcher: there is nothing to run.
@@ -244,6 +249,7 @@ impl SchedulerConfig {
             model_endpoint: None,
             model_name: None,
             model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
+            model_context_window: None,
             agent_bin: None,
             followup: None,
             subagent_depth: 0,
@@ -1098,6 +1104,9 @@ fn parse_stores(
             })?
         }
     };
+    scheduler.model_context_window = get(env::HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW.name)
+        .map(|raw| parse_context_window(&raw))
+        .transpose()?;
     let artifacts = parse_artifacts(get, vault_root, socket_dir)?;
     let spaces = parse_spaces(
         (
@@ -1410,6 +1419,7 @@ fn parse_scheduler(
         model_endpoint: model_endpoint.filter(|value| !value.trim().is_empty()),
         model_name: model_name.filter(|value| !value.trim().is_empty()),
         model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
+        model_context_window: None,
         agent_bin: None,
         followup: None,
         subagent_depth: 0,
@@ -2093,6 +2103,21 @@ fn parse_egress_grants(raw: Option<String>) -> Result<Vec<String>, Error> {
             Ok(entry)
         })
         .collect()
+}
+
+/// The model's declared context window: a whole number of tokens, at
+/// least what the agent's loop needs ([`hatchling_model::MIN_CONTEXT_WINDOW`]).
+fn parse_context_window(raw: &str) -> Result<u32, Error> {
+    let key = "HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW";
+    let window = raw.parse::<u32>().map_err(|_| Error::InvalidConfig {
+        key,
+        reason: String::from("expected a whole number of tokens"),
+    })?;
+    hatchling_model::check_context_window(Some(window)).map_err(|error| Error::InvalidConfig {
+        key,
+        reason: error.to_string(),
+    })?;
+    Ok(window)
 }
 
 #[cfg(test)]

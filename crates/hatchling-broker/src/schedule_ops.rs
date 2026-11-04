@@ -1288,16 +1288,45 @@ impl Delivery for HubDelivery<'_> {
     }
 
     fn notify_failure(&self, channel: &str, failure: &FailureNotice) -> Result<(), String> {
-        let reached = self
-            .usage
-            .and_then(|usage| crate::usage::reached(usage, Timestamp::now().as_second()));
-        self.deliver(
+        let reached = self.usage.and_then(|usage| {
+            crate::usage::reached(usage, Timestamp::now().as_second())
+        });
+        self.deliver_notice(
             channel,
             &failure_notice(failure, self.model, reached.as_ref()),
         )
     }
 
     fn deliver_verbatim(&self, channel: &str, text: &str) -> Result<bool, String> {
+        self.deliver_as(channel, text, hatchling_channel::Origin::default())
+    }
+
+    fn deliver_answer(&self, channel: &str, text: &str, run: Option<&str>) -> Result<bool, String> {
+        let origin = hatchling_channel::Origin {
+            run: run.map(str::to_owned),
+            notice: false,
+        };
+        self.deliver_as(channel, text, origin)
+    }
+
+    fn deliver_notice(&self, channel: &str, text: &str) -> Result<(), String> {
+        let origin = hatchling_channel::Origin {
+            run: None,
+            notice: true,
+        };
+        self.deliver_as(channel, text, origin).map(|_| ())
+    }
+}
+
+impl HubDelivery<'_> {
+    /// Delivers `text` on `channel`, said to come from `origin`: whether
+    /// the person was shown `text` itself ([`Delivery::deliver_verbatim`]).
+    fn deliver_as(
+        &self,
+        channel: &str,
+        text: &str,
+        origin: hatchling_channel::Origin,
+    ) -> Result<bool, String> {
         if channel == crate::feed_page::FEED_PAGE {
             return self.keep_on_feed(text);
         }
@@ -1313,13 +1342,14 @@ impl Delivery for HubDelivery<'_> {
         let hub = self
             .hub
             .ok_or_else(|| String::from("the local channel has no ingress"))?;
-        let delivered = hub.deliver(
+        let delivered = hub.deliver_from(
             &Message {
                 sender: SenderId(String::from(SCHEDULER_SENDER)),
                 channel: ChannelId::local(),
                 text: text.to_owned(),
             },
             crate::output_gate::SCHEDULER_SCOPE,
+            origin,
         );
         match delivered {
             // The gate's notice reached the person in its place:

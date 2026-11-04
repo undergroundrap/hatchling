@@ -851,7 +851,8 @@ fn serve_session(
         cell_id.as_str(),
     )
     .of_chat(config.web.attended && config.scheduler.followup.is_some())
-    .counting_in(&config.scheduler.usage);
+    .counting_in(&config.scheduler.usage)
+    .with_window(config.scheduler.model_context_window);
 
     // The session's children live in the session's own scope:
     // when the session ends, however it ends, they are killed and the
@@ -2430,6 +2431,7 @@ mod gate_scope_tests {
                     model_calls_refused: 0,
                     peak_input_tokens: 11,
                     output_tokens: 3,
+                    context_window: None,
                 })
             );
         }

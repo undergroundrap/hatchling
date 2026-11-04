@@ -42,6 +42,7 @@ hatchling_core::declare_environment! {
     HATCHLING_SCHEDULER_MODEL_ENDPOINT: ("optional", "Model API base URL supplied to scheduled run cells."),
     HATCHLING_SCHEDULER_MODEL_NAME: ("optional", "Provider model identifier supplied to scheduled runs."),
     HATCHLING_SCHEDULER_MODEL_REASONING: ("optional; default provider-default", "Thinking mode supplied to scheduled and child runs: provider-default or disabled."),
+    HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW: ("optional", "The model's context window in tokens, at least 8192: given to runs, and what the app measures context against."),
     HATCHLING_CONVERSATION_DIR: ("optional; default off", "Absolute sealed store of the chat's conversation; unset, a restart starts a new conversation."),
     HATCHLING_ARTIFACT_DIR: ("optional; default disabled", "Absolute sealed artifact build-store root."),
     HATCHLING_ARTIFACT_WORKSPACE: ("required with a configured harness", "Absolute workspace destination for approved deliveries."),

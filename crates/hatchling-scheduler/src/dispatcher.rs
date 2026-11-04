@@ -258,6 +258,12 @@ pub trait Run {
     fn ending(&self) -> Option<Ending> {
         None
     }
+
+    /// The run's cell, by its id, when it runs in one: what its answer is
+    /// delivered as coming from, and the activity record names.
+    fn cell_id(&self) -> Option<String> {
+        None
+    }
 }
 
 /// How a failed run ended.
@@ -303,6 +309,28 @@ pub trait Delivery {
     /// As [`deliver`](Self::deliver).
     fn deliver_verbatim(&self, channel: &str, text: &str) -> Result<bool, String> {
         self.deliver(channel, text).map(|()| false)
+    }
+
+    /// Delivers a run's answer `text` on `channel`, as
+    /// [`deliver_verbatim`](Self::deliver_verbatim) does, saying it came
+    /// from the run in cell `run`, when it ran in one.
+    ///
+    /// # Errors
+    ///
+    /// As [`deliver`](Self::deliver).
+    fn deliver_answer(&self, channel: &str, text: &str, run: Option<&str>) -> Result<bool, String> {
+        let _ = run;
+        self.deliver_verbatim(channel, text)
+    }
+
+    /// Delivers `text` on `channel` as the delivery path's own notice, in
+    /// its own words: never what a run wrote.
+    ///
+    /// # Errors
+    ///
+    /// As [`deliver`](Self::deliver).
+    fn deliver_notice(&self, channel: &str, text: &str) -> Result<(), String> {
+        self.deliver(channel, text)
     }
 
     /// Tells the person on `channel` that a scheduled run failed, in the

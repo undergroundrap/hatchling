@@ -337,6 +337,7 @@ pub fn show(bus: &Bus, resumed: &Resumed) {
                     chat_id: String::from(crate::api_ops::LOCAL_CHAT),
                     message_id,
                     author,
+                    run: None,
                     text: text.to_owned(),
                 }),
             );

@@ -394,6 +394,7 @@ pub fn scoped_config(
         });
     run.scheduler = SchedulerConfig {
         model_reasoning: config.scheduler.model_reasoning,
+        model_context_window: config.scheduler.model_context_window,
         followup: Some(FollowupScope {
             root: config.scheduler.root.clone(),
             run: token.to_owned(),
@@ -602,6 +603,10 @@ impl Run for CellRun<'_> {
     fn ending(&self) -> Option<hatchling_scheduler::Ending> {
         self.ending
     }
+
+    fn cell_id(&self) -> Option<String> {
+        Some(self.token.clone())
+    }
 }
 
 /// How a run cell ended, as it ended: for callers that need more than
@@ -751,6 +756,7 @@ fn scheduled_run(config: &Config, request: &RunRequest) -> ScheduledRun {
         model_endpoint: config.scheduler.model_endpoint.clone(),
         model_name: config.scheduler.model_name.clone(),
         model_reasoning: config.scheduler.model_reasoning,
+        model_context_window: config.scheduler.model_context_window,
         depth: request.depth,
         event: request.event.clone(),
         max_steps: None,
@@ -1703,6 +1709,7 @@ mod tests {
             model_endpoint: None,
             model_name: None,
             model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
+            model_context_window: None,
             depth: 0,
             event: None,
             max_steps: None,
@@ -1872,6 +1879,7 @@ mod tests {
             model_endpoint: None,
             model_name: None,
             model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
+            model_context_window: None,
             depth: 0,
             event: None,
             max_steps: None,
@@ -1905,6 +1913,7 @@ mod tests {
             model_endpoint: None,
             model_name: None,
             model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
+            model_context_window: None,
             depth: 0,
             event: None,
             max_steps: None,

@@ -236,6 +236,18 @@ pub fn notice(category: &Category, event_id: &str) -> String {
 pub struct Cleared {
     message: Message,
     redaction: Option<(Category, String)>,
+    origin: Origin,
+}
+
+/// Where a delivered message came from, as its deliverer says: never read
+/// from the message.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Origin {
+    /// The run that wrote it, by its cell id, when an agent run did.
+    pub run: Option<String>,
+    /// Whether it's the deliverer's own notice, in its own words, rather
+    /// than what a run wrote.
+    pub notice: bool,
 }
 
 impl Cleared {
@@ -249,6 +261,19 @@ impl Cleared {
     #[must_use]
     pub const fn redaction(&self) -> Option<&(Category, String)> {
         self.redaction.as_ref()
+    }
+
+    /// Where the message came from, as its deliverer said.
+    #[must_use]
+    pub const fn origin(&self) -> &Origin {
+        &self.origin
+    }
+
+    /// The cleared message, said to come from `origin`.
+    #[must_use]
+    pub fn from_source(mut self, origin: Origin) -> Self {
+        self.origin = origin;
+        self
     }
 }
 
@@ -367,6 +392,7 @@ impl OutputGate {
             return Cleared {
                 message: message.clone(),
                 redaction: None,
+                origin: Origin::default(),
             };
         };
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -385,6 +411,7 @@ impl OutputGate {
             return Cleared {
                 message: message.clone(),
                 redaction: None,
+                origin: Origin::default(),
             };
         };
         let form = flagged.unwrap_or_else(|| normalize(&message.text));
@@ -419,6 +446,7 @@ impl OutputGate {
             return Cleared {
                 message: message.clone(),
                 redaction: None,
+                origin: Origin::default(),
             };
         }
         self.audit.redacted(&event);
@@ -429,6 +457,7 @@ impl OutputGate {
                 text: notice(&category, &id),
             },
             redaction: Some((category, id)),
+            origin: Origin::default(),
         }
     }
 
