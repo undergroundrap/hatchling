@@ -29,7 +29,7 @@ permissions:
 jobs:
   check:
     name: gate (${{ matrix.toolchain }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -197,7 +197,7 @@ jobs:
   # required to run.
   root:
     name: cells as root
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       RUSTUP_TOOLCHAIN: 1.98.1
     steps:
@@ -399,7 +399,7 @@ jobs:
 
   quickstart:
     name: README quickstart
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
       - name: Checkout
@@ -717,7 +717,7 @@ jobs:
 
   hosted-model:
     name: hosted model (${{ matrix.mode }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     strategy:
       fail-fast: false
@@ -781,7 +781,7 @@ jobs:
     # crates.io. Each must stay publishable: metadata, versioned dependencies,
     # and a build of each packaged crate on its own, in dependency order.
     name: crates.io dry run
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -800,7 +800,7 @@ jobs:
     # minor version (the first breaking pull request after a release bumps
     # the workspace version).
     name: semver checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -833,7 +833,7 @@ jobs:
     # wire types. Both generated sides must match it: the schema (Rust) and
     # the TypeScript types (frontend). A stale or hand-edited side fails here.
     name: protocol drift
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
