@@ -2105,23 +2105,56 @@ fn parse_egress_grants(raw: Option<String>) -> Result<Vec<String>, Error> {
         .collect()
 }
 
+/// The least context window a declared one may be, in tokens: what the
+/// agent's loop needs, as the agent refuses less (`hatchling_model`'s
+/// `MIN_CONTEXT_WINDOW`).
+pub const MIN_CONTEXT_WINDOW: u32 = 8192;
+
 /// The model's declared context window: a whole number of tokens, at
-/// least what the agent's loop needs ([`hatchling_model::MIN_CONTEXT_WINDOW`]).
+/// least [`MIN_CONTEXT_WINDOW`].
 fn parse_context_window(raw: &str) -> Result<u32, Error> {
     let key = "HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW";
     let window = raw.parse::<u32>().map_err(|_| Error::InvalidConfig {
         key,
         reason: String::from("expected a whole number of tokens"),
     })?;
-    hatchling_model::check_context_window(Some(window)).map_err(|error| Error::InvalidConfig {
-        key,
-        reason: error.to_string(),
-    })?;
+    if window < MIN_CONTEXT_WINDOW {
+        return Err(Error::InvalidConfig {
+            key,
+            reason: format!("at least {MIN_CONTEXT_WINDOW} tokens, what the agent's loop needs"),
+        });
+    }
     Ok(window)
 }
 
 #[cfg(test)]
 mod tests {
+
+
+    /// A declared context window is a whole number of tokens, at least
+    /// what the agent accepts; undeclared, there's none.
+    #[test]
+    fn a_declared_context_window_is_read_and_held_to_the_agents_floor() {
+        assert_eq!(MIN_CONTEXT_WINDOW, hatchling_model::MIN_CONTEXT_WINDOW);
+        assert_eq!(parse_context_window("16384").ok(), Some(16384));
+        assert_eq!(parse_context_window("8192").ok(), Some(8192));
+        for bad in ["8191", "0", "", "16k", "-1", " 16384", "99999999999"] {
+            let error = parse_context_window(bad).unwrap_err();
+            assert!(
+                matches!(error, Error::InvalidConfig { key: "HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW", .. }),
+                "{bad:?}: {error:?}"
+            );
+        }
+        let mut vars: HashMap<&str, &str> = HashMap::new();
+        let socket: SocketPath = "/tmp/hatchling-test/broker.sock".parse().unwrap();
+        let (_, _, scheduler, _, _) =
+            parse_stores(&lookup(&vars), Path::new("/srv/vault"), &socket).unwrap();
+        assert_eq!(scheduler.model_context_window, None);
+        vars.insert("HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW", "32768");
+        let (_, _, scheduler, _, _) =
+            parse_stores(&lookup(&vars), Path::new("/srv/vault"), &socket).unwrap();
+        assert_eq!(scheduler.model_context_window, Some(32768));
+    }
 
     #[test]
     fn thinking_mode_refuses_nonunicode_environment_before_startup() {

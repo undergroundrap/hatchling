@@ -424,7 +424,7 @@ impl<'scope, 'env> Subagents<'scope, 'env> {
             model_endpoint: self.config.scheduler.model_endpoint.clone(),
             model_name: self.config.scheduler.model_name.clone(),
             model_reasoning: self.config.scheduler.model_reasoning,
-            model_context_window: config.scheduler.model_context_window,
+            model_context_window: self.config.scheduler.model_context_window,
             depth: 0,
             event: None,
             max_steps: Some(budget),

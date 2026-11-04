@@ -45,6 +45,13 @@ export interface Usage {
     readonly limits: UsageLimits;
     readonly spent: UsageSpent;
 }
+/** How full the model's context was on the chat's last answer, as the broker counted it. */
+export interface ContextUse {
+    /** Tokens the largest model call of that answer read. */
+    readonly tokens: number;
+    /** The model's context window, when the operator declared it. */
+    readonly window: number | null;
+}
 /** Usage as last read: not yet, couldn't be, or what the broker said. */
 export type UsageState = {
     readonly kind: 'unread';
@@ -61,4 +68,6 @@ export interface UsagePort {
     refresh(): Promise<void>;
     /** Set the limits, each replacing what was set. */
     setLimits(limits: UsageLimits): Promise<CommandResult>;
+    /** How full the context was on the chat's last answer: none until one is recorded. */
+    context(): ContextUse | null;
 }

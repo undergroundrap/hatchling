@@ -685,6 +685,7 @@ mod tests {
             model_endpoint: None,
             model_name: None,
             model_reasoning: hatchling_core::ModelReasoning::ProviderDefault,
+            model_context_window: None,
             depth: 0,
             event: None,
             max_steps: None,

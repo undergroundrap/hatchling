@@ -30,8 +30,8 @@ mod types;
 pub use credential::Credential;
 pub use error::Error;
 pub use gate::{
-    Audit, Category, Classifier, Cleared, Event, Failure, NoAudit, NoOverrides,
-    OutputGate, Origin, Overrides, Reason, Request, Verdict, normalize, notice,
+    Audit, Category, Classifier, Cleared, Event, Failure, NoAudit, NoOverrides, Origin, OutputGate,
+    Overrides, Reason, Request, Verdict, normalize, notice,
 };
 pub use hub::{IngressEvent, LocalHub, MAX_INGRESS_TEXT_BYTES, MAX_QUEUED_MESSAGES, Sink, SinkId};
 pub use local::LocalChannel;

@@ -1,3 +1,4 @@
+import type { ContextUse } from '../../session/usage.js';
 import { loadingImage } from '../../components/loading-image.js';
 import { domainApprovalNotice } from '../approvals/domain.js';
 import { renderTaskApprovalQueue } from '../approvals/surfaces.js';
@@ -231,7 +232,19 @@ function renderComposer(ctx: AppContext, readOnly: boolean): HTMLElement {
     if (approval)
         area.append(approval);
     area.append(form);
+    const context = ctx.ui.chatId === 'main' ? ctx.usage?.context() : null;
+    if (context)
+        area.append(contextMeter(context));
     return area;
+}
+const SHORT = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 });
+/** How full the model's context was on the last answer: against its window when that's known. */
+export function contextMeter(context: ContextUse): HTMLElement {
+    const tokens = SHORT.format(context.tokens);
+    if (context.window === null)
+        return h('p', { class: 'composer-caption context-meter', title: 'The largest prompt of the last answer, as the model server counted it. Set HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW to see it against the model’s window.' }, `Context: ${tokens} tokens on the last answer`);
+    const share = Math.min(100, Math.round((context.tokens / context.window) * 100));
+    return h('p', { class: 'composer-caption context-meter', title: 'The largest prompt of the last answer, against the model’s context window, as the model server counted it.' }, `Context: ${tokens} of ${SHORT.format(context.window)} tokens (${share}%) on the last answer`, h('meter', { min: 0, max: context.window, value: Math.min(context.tokens, context.window), 'aria-label': `Context used on the last answer: ${share}%` }));
 }
 function dataUrl(file: File): Promise<string> {
     return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('The file could not be read.')); reader.onerror = () => reject(new Error('The file could not be read.')); reader.readAsDataURL(file); });

@@ -1250,10 +1250,10 @@ mod tests {
     #[test]
     fn an_answer_names_its_run_and_hatchlings_words_are_notices() {
         let launches = Launches::default();
-        launches.outcomes.borrow_mut().extend([
-            Ok(answering("Done.")),
-            Err(String::from("no cell")),
-        ]);
+        launches
+            .outcomes
+            .borrow_mut()
+            .extend([Ok(answering("Done.")), Err(String::from("no cell"))]);
         let answers = Answers::default();
         let mut chat = Chat::new(vec![send_local()]);
         assert_eq!(
@@ -1265,10 +1265,7 @@ mod tests {
             chat.step(|| Some((message("two"), 0)), 0, &launches, &answers, now),
             Step::Answered
         );
-        assert_eq!(
-            *answers.runs.borrow(),
-            [Some(String::from("run-scripted"))]
-        );
+        assert_eq!(*answers.runs.borrow(), [Some(String::from("run-scripted"))]);
         assert_eq!(*answers.notices.borrow(), [String::from(CHAT_FAILED)]);
     }
 
@@ -1300,7 +1297,11 @@ mod tests {
         assert_eq!(*answers.notices.borrow(), [String::from(COMPACTED)]);
         let delivered = answers.delivered.borrow().len();
         assert_eq!(
-            answers.delivered.borrow().get(delivered - 2).map(|(_, text)| text.as_str()),
+            answers
+                .delivered
+                .borrow()
+                .get(delivered - 2)
+                .map(|(_, text)| text.as_str()),
             Some("a0"),
             "told after the answer that did it"
         );
@@ -1318,6 +1319,10 @@ mod tests {
         let quiet = Answers::default();
         let mut chat = Chat::resuming(vec![send_local()], 0, resumed, ());
         run(&mut chat, &launches, &quiet, 7);
-        assert!(quiet.notices.borrow().is_empty(), "{:?}", quiet.notices.borrow());
+        assert!(
+            quiet.notices.borrow().is_empty(),
+            "{:?}",
+            quiet.notices.borrow()
+        );
     }
 }
