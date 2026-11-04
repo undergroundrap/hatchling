@@ -2450,7 +2450,8 @@ mod gate_scope_tests {
             &hatchling_egress::EgressResponse {
                 status: 200,
                 headers: Vec::new(),
-                body: br#"{"model":"m","usage":{"prompt_tokens":11,"completion_tokens":3}}"#.to_vec(),
+                body: br#"{"model":"m","usage":{"prompt_tokens":11,"completion_tokens":3}}"#
+                    .to_vec(),
             },
             hatchling_scheduler::Timestamp::now().as_second(),
         );
