@@ -907,7 +907,7 @@ mod tests {
     /// 2026-11-01 00:00:00 UTC.
     const NOVEMBER: i64 = 1_793_491_200;
 
-    fn limited(daily: Option<u64>, monthly: Option<u64>) -> UsageLimits {
+    const fn limited(daily: Option<u64>, monthly: Option<u64>) -> UsageLimits {
         UsageLimits {
             daily_tokens: daily,
             monthly_tokens: monthly,
