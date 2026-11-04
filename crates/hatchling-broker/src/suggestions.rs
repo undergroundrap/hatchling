@@ -512,7 +512,12 @@ mod tests {
         // The install makes it empty: an empty page, which takes ideas.
         std::fs::write(&path, "").unwrap();
         assert!(listed(&chat).is_empty());
-        assert_eq!(handle(&chat, &SuggestionOp::List), SuggestionResult::Listed { suggestions: Vec::new() });
+        assert_eq!(
+            handle(&chat, &SuggestionOp::List),
+            SuggestionResult::Listed {
+                suggestions: Vec::new()
+            }
+        );
         assert_eq!(suggest(&chat, &idea("x")), SuggestResult::Suggested);
         std::fs::write(&path, "not a page").unwrap();
         assert!(reason(&suggest(&chat, &idea("x"))).contains("couldn't keep it"));
