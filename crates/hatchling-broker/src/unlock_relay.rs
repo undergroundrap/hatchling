@@ -341,10 +341,18 @@ fn tell(stream: &UnixStream, message: &ToOperator) -> Result<(), Error> {
 /// Why a try failed, as the operator is told: the reason itself, without
 /// the error's kind in front.
 fn plainly(error: &Error) -> String {
-    if let Error::Usage { reason } | Error::Keeper { reason } = error {
-        reason.clone()
-    } else {
-        error.to_string()
+    match error {
+        Error::Usage { reason }
+        | Error::Keeper { reason }
+        | Error::Vault {
+            source: hatchling_vault::Error::Authenticator { reason },
+        } => reason.clone(),
+        Error::Vault {
+            source: hatchling_vault::Error::RotationUnfinished,
+        } => String::from(
+            "a change to the vault's key was interrupted: run `sudo hatchling-broker vault-keyring setup` to finish it",
+        ),
+        _ => error.to_string(),
     }
 }
 

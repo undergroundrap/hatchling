@@ -159,6 +159,29 @@ impl Authenticator for VirtualAuthenticator {
         }
         self.answer(rp_id, credential_id, salt, true)
     }
+
+    fn holds(&mut self, rp_id: &str, credential_id: &[u8]) -> Option<bool> {
+        Some(
+            self.held
+                .iter()
+                .any(|held| held.rp_id == rp_id && held.id == credential_id),
+        )
+    }
+
+    fn pin_set(&self) -> Option<bool> {
+        Some(self.pin.is_some())
+    }
+
+    fn set_pin(&mut self, pin: &str) -> Result<(), AuthenticatorError> {
+        if self.pin.is_some() {
+            return Err(AuthenticatorError::Device(String::from(
+                "this security key has a PIN already",
+            )));
+        }
+        self.pin = Some(pin.to_owned());
+        self.typed = Some(pin.to_owned());
+        Ok(())
+    }
 }
 
 impl VirtualAuthenticator {

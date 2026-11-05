@@ -369,7 +369,7 @@ pub fn unlock_asking(
     match (loaded, config.keyring.as_deref()) {
         (Some(mut keyring), Some(path)) if keyring.tier() == Tier::HardwareKey => {
             pin_policy(&keyring, config)?;
-            let unlocked = authorize(&mut keyring, ask, devices)?;
+            let unlocked = opening(&mut keyring, ask, devices)?;
             mark_keyring(vault, path)?;
             settled(&keyring)?;
             Ok(unlocked.into_key())
@@ -910,6 +910,45 @@ fn authorize(
     match authorization(ask, devices)? {
         Some(code) => keyring.recover(&code).map_err(vault_error),
         None => by_key(keyring, devices),
+    }
+}
+
+/// What a start says with no key to open the vault.
+const OPEN_NO_KEY: &str =
+    "No security key is plugged in. Type a backup code (it is used up), or nothing to stop:";
+
+/// What it says when the keys plugged in aren't registered here.
+const OPEN_NOT_REGISTERED: &str = "That security key isn't registered with this vault. Plug in one that is and run this again, or type a backup code (it is used up), or nothing to stop:";
+
+/// Opens a hardware-key vault at a start: with the first key plugged in
+/// that's registered here, with nothing asked but what the key itself asks
+/// (several may be plugged in: one that says it isn't registered is passed
+/// over untouched). With none, a backup code. A key that refuses, a wrong
+/// PIN or no touch, says why, and no code is asked for: the operator may
+/// just want to try the key again.
+fn opening(
+    keyring: &mut Keyring,
+    ask: Ask<'_>,
+    devices: &mut dyn Devices,
+) -> Result<Unlocked, Error> {
+    let mut keys = devices.every_key();
+    let plugged_in = !keys.is_empty();
+    for key in &mut keys {
+        if keyring.enrolled_on(&mut **key) != Some(false) {
+            return keyring.unlock_hardware_key(&mut **key).map_err(vault_error);
+        }
+    }
+    drop(keys);
+    let code = ask(if plugged_in {
+        OPEN_NOT_REGISTERED
+    } else {
+        OPEN_NO_KEY
+    })?;
+    match code.trim() {
+        "" => Err(Error::Usage {
+            reason: String::from(NO_KEY),
+        }),
+        code => keyring.recover(code).map_err(vault_error),
     }
 }
 

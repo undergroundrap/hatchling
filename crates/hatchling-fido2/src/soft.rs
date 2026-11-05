@@ -84,6 +84,8 @@ pub(crate) struct State {
     /// Whether it refuses every PIN token it's shown, as a key that has
     /// just forgotten them does.
     pub(crate) refuse_tokens: bool,
+    /// How many pre-flights it has answered.
+    pub(crate) silent: u32,
     pub(crate) present: bool,
     pub(crate) hmac_secret: bool,
     pub(crate) protocols: Vec<i64>,
@@ -116,6 +118,7 @@ impl SoftKey {
                 wrong_in_a_row: 0,
                 min_pin_length: 4,
                 refuse_tokens: false,
+                silent: 0,
                 present: true,
                 hmac_secret: true,
                 protocols: vec![2, 1],
@@ -429,6 +432,16 @@ impl SoftKey {
             }
             (None, _) => return Err(NO_CREDENTIALS),
         };
+        // Pre-flight: it holds the credential, and that's all it says.
+        if parameters
+            .at(5)
+            .and_then(|options| options.field("up"))
+            .and_then(Value::as_bool)
+            == Some(false)
+        {
+            state.silent = state.silent.saturating_add(1);
+            return Ok(Value::map(Vec::new()));
+        }
         if !state.present {
             return Err(USER_ACTION_TIMEOUT);
         }

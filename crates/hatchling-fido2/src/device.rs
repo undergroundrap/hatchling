@@ -31,8 +31,8 @@ use zeroize::Zeroizing;
 
 use crate::cbor::{Value, decode, encode};
 use crate::ctap2::{
-    AuthData, CLIENT_PIN, Ctap2Error, GET_ASSERTION, GET_INFO, Info, MAKE_CREDENTIAL, OK,
-    PIN_AUTH_INVALID, PIN_INVALID, to_authenticator_error,
+    AuthData, CLIENT_PIN, Ctap2Error, GET_ASSERTION, GET_INFO, INVALID_CREDENTIAL, Info,
+    MAKE_CREDENTIAL, NO_CREDENTIALS, OK, PIN_AUTH_INVALID, PIN_INVALID, to_authenticator_error,
 };
 use crate::ctaphid::{Channel, Hid};
 use crate::pin::{Protocol, cose_point, encapsulate, random};
@@ -177,6 +177,44 @@ impl<H: Hid> Device<H> {
         })?;
         self.info.client_pin = Some(true);
         Ok(())
+    }
+
+    /// Whether the key holds `credential_id`: CTAP2's pre-flight, an
+    /// assertion asked for without a touch, or the PIN.
+    ///
+    /// # Errors
+    ///
+    /// What the key answered, other than that it doesn't.
+    pub fn has_credential(
+        &mut self,
+        rp_id: &str,
+        credential_id: &[u8],
+    ) -> Result<bool, Ctap2Error> {
+        let parameters = Value::map(vec![
+            (Value::int(1), Value::text(rp_id)),
+            (Value::int(2), Value::Bytes(random::<32>()?.to_vec())),
+            (
+                Value::int(3),
+                Value::Array(vec![Value::map(vec![
+                    (Value::text("id"), Value::Bytes(credential_id.to_vec())),
+                    (Value::text("type"), Value::text("public-key")),
+                ])]),
+            ),
+            (
+                Value::int(5),
+                Value::map(vec![(Value::text("up"), Value::Bool(false))]),
+            ),
+        ]);
+        match command(
+            &mut self.channel,
+            GET_ASSERTION,
+            Some(&parameters),
+            STEP_TIMEOUT,
+        ) {
+            Ok(_) => Ok(true),
+            Err(Ctap2Error::Status(NO_CREDENTIALS | INVALID_CREDENTIAL)) => Ok(false),
+            Err(other) => Err(other),
+        }
     }
 
     /// How many PIN tries the key has left before it locks itself.
@@ -545,6 +583,22 @@ impl<H: Hid> Authenticator for Device<H> {
     ) -> Result<[u8; 32], AuthenticatorError> {
         self.derive(rp_id, credential_id, salt, true)
             .map_err(|error| to_authenticator_error(&error))
+    }
+
+    fn holds(&mut self, rp_id: &str, credential_id: &[u8]) -> Option<bool> {
+        self.has_credential(rp_id, credential_id).ok()
+    }
+
+    fn pin_set(&self) -> Option<bool> {
+        self.info.client_pin
+    }
+
+    fn min_pin_length(&self) -> usize {
+        self.info.min_pin_length.unwrap_or(4)
+    }
+
+    fn set_pin(&mut self, pin: &str) -> Result<(), AuthenticatorError> {
+        Self::set_pin(self, pin).map_err(|error| to_authenticator_error(&error))
     }
 }
 
@@ -972,6 +1026,43 @@ mod tests {
             .unwrap();
         assert_eq!(first, again);
         assert_eq!(asked.get(), 2);
+    }
+
+    /// Whether a key holds a credential is asked with no touch and no PIN,
+    /// and the vault's interface reads what the key says of its PIN.
+    #[test]
+    fn a_key_says_what_it_holds_without_a_touch_or_its_pin() {
+        let key = SoftKey::new();
+        let state = key.handle();
+        state.borrow_mut().pin = Some(String::from("2468"));
+        let (mut device, asked) = counted(key, "2468");
+        let credential = device.make_credential(RP, b"u").unwrap();
+        let before = asked.get();
+        state.borrow_mut().present = false;
+        assert_eq!(device.holds(RP, &credential.id), Some(true));
+        assert_eq!(state.borrow().silent, 1);
+        assert_eq!(device.holds(RP, b"another"), Some(false));
+        assert_eq!(device.holds("another.rp", &credential.id), Some(false));
+        assert_eq!(asked.get(), before, "no PIN asked");
+        // A key that answers nonsense can't say.
+        state.borrow_mut().tamper = Tamper::Garbage;
+        assert_eq!(device.holds(RP, &credential.id), None);
+    }
+
+    #[test]
+    fn the_vaults_interface_reads_and_sets_a_keys_pin() {
+        let key = SoftKey::new();
+        let state = key.handle();
+        state.borrow_mut().min_pin_length = 6;
+        let mut device = open(key, None);
+        let vaults: &mut dyn Authenticator = &mut device;
+        assert_eq!(vaults.pin_set(), Some(false));
+        assert_eq!(vaults.min_pin_length(), 6);
+        let short = vaults.set_pin("1234").unwrap_err();
+        assert!(short.said().contains("at least 6 characters"), "{short:?}");
+        vaults.set_pin("246810").unwrap();
+        assert_eq!(vaults.pin_set(), Some(true));
+        assert_eq!(state.borrow().pin.as_deref(), Some("246810"));
     }
 
     /// A PIN of 63 bytes is the longest a key takes.
