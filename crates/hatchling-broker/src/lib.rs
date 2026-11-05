@@ -123,9 +123,9 @@ mod test_port;
 #[cfg(test)]
 mod test_socket;
 pub mod trust_roots;
+pub mod unlock_relay;
 pub mod usage;
 pub mod vault_access;
-pub mod unlock_relay;
 pub mod vault_keyring;
 pub mod vault_ops;
 pub mod web_ops;

@@ -1,6 +1,4 @@
-use std::io::{Read as _, Seek as _, Write as _};
-use std::os::fd::AsFd as _;
-use std::os::unix::fs::PermissionsExt as _;
+use std::io::{Read as _, Seek as _};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 
@@ -30,7 +28,9 @@ fn operator(
         let mut answers = answers.into_iter();
         let result = operate(&stream, &[], &mut |prompt, secret| {
             heard.push((prompt.to_owned(), secret));
-            Ok(Zeroizing::new(answers.next().unwrap_or_default().to_owned()))
+            Ok(Zeroizing::new(
+                answers.next().unwrap_or_default().to_owned(),
+            ))
         });
         (result, heard)
     })
@@ -81,7 +81,11 @@ fn a_socket_left_by_an_earlier_start_is_replaced_and_its_directory_made_private(
     drop(first);
     assert!(path.exists(), "a socket outlives its listener");
     let again = listen(&path).unwrap();
-    let mode = std::fs::metadata(dir.join("fresh")).unwrap().permissions().mode() & 0o777;
+    let mode = std::fs::metadata(dir.join("fresh"))
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
     assert_eq!(mode, 0o700);
     drop(again);
     let _ = std::fs::remove_dir_all(&dir);
@@ -108,7 +112,9 @@ fn the_pin_is_asked_as_a_secret_and_answers_go_back_in_turn() {
     let asking = operator(operator_end, vec!["1234", "yes"]);
     assert!(take_keys(&keeper).unwrap().is_empty());
     assert_eq!(
-        relay(&keeper, crate::vault_keyring::PIN_PROMPT, true).unwrap().as_str(),
+        relay(&keeper, crate::vault_keyring::PIN_PROMPT, true)
+            .unwrap()
+            .as_str(),
         "1234"
     );
     assert_eq!(relay(&keeper, "Go on?", false).unwrap().as_str(), "yes");
@@ -128,7 +134,7 @@ fn the_pin_is_asked_as_a_secret_and_answers_go_back_in_turn() {
 fn a_key_passed_arrives_open_under_its_node() {
     let (keeper, operator_end) = UnixStream::pair().unwrap();
     let dir = scratch("keys");
-    let mut file = std::fs::File::options()
+    let mut file = File::options()
         .create(true)
         .truncate(true)
         .read(true)
@@ -170,7 +176,10 @@ fn keys_that_arent_ones_are_refused_before_any_is_taken() {
         too_many,
     ] {
         let (keeper, operator_end) = UnixStream::pair().unwrap();
-        let frame = serde_json::to_vec(&ToKeeper::Keys { nodes: nodes.clone() }).unwrap();
+        let frame = serde_json::to_vec(&ToKeeper::Keys {
+            nodes: nodes.clone(),
+        })
+        .unwrap();
         write_frame(&operator_end, &frame).unwrap();
         assert!(
             matches!(take_keys(&keeper), Err(Error::Keeper { .. })),
@@ -192,7 +201,15 @@ fn a_node_is_hidraw_and_a_number() {
     for node in ["hidraw0", "hidraw12", "hidraw9999"] {
         assert!(valid_node(node), "{node}");
     }
-    for node in ["hidraw", "hidraw10000", "hidraw1a", "Hidraw1", "/dev/hidraw0", "hidraw-1", ""] {
+    for node in [
+        "hidraw",
+        "hidraw10000",
+        "hidraw1a",
+        "Hidraw1",
+        "/dev/hidraw0",
+        "hidraw-1",
+        "",
+    ] {
         assert!(!valid_node(node), "{node}");
     }
 }
@@ -241,17 +258,23 @@ fn the_operators_side_stops_on_what_it_doesnt_read_or_a_keeper_gone() {
         let _ = read_frame(&keeper).unwrap();
         write_frame(&keeper, b"{\"kind\":\"shout\"}").unwrap();
     });
-    let result = operate(&operator_end, &[], &mut |_, _| Ok(Zeroizing::new(String::new())));
+    let result = operate(&operator_end, &[], &mut |_, _| {
+        Ok(Zeroizing::new(String::new()))
+    });
     assert_eq!(
         result,
-        Err(String::from("Hatchling said something this command doesn't read"))
+        Err(String::from(
+            "Hatchling said something this command doesn't read"
+        ))
     );
     speaking.join().unwrap();
     let (keeper, operator_end) = UnixStream::pair().unwrap();
     drop(keeper);
     assert!(
-        operate(&operator_end, &[], &mut |_, _| Ok(Zeroizing::new(String::new())))
-            .is_err_and(|why| why.starts_with("Hatchling stopped answering"))
+        operate(&operator_end, &[], &mut |_, _| Ok(Zeroizing::new(
+            String::new()
+        )))
+        .is_err_and(|why| why.starts_with("Hatchling stopped answering"))
     );
 }
 
@@ -272,7 +295,10 @@ fn the_socket_is_beside_the_vault_in_a_directory_of_its_own() {
         key_file: PathBuf::from("/var/lib/hatchling/vault.key/key"),
         grants: Vec::new(),
     };
-    assert_eq!(unlock_dir(&vault), PathBuf::from("/var/lib/hatchling/vault.unlock"));
+    assert_eq!(
+        unlock_dir(&vault),
+        PathBuf::from("/var/lib/hatchling/vault.unlock")
+    );
     assert_eq!(
         socket_path(&vault),
         PathBuf::from("/var/lib/hatchling/vault.unlock/unlock.sock")
@@ -299,7 +325,9 @@ fn a_refused_peer_never_reaches_the_unlock() {
         .unwrap();
     assert_eq!(
         result,
-        Err(String::from("only root may unlock the vault: run it with sudo"))
+        Err(String::from(
+            "only root may unlock the vault: run it with sudo"
+        ))
     );
     assert!(heard.is_empty());
     let _ = std::fs::remove_dir_all(&dir);

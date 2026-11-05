@@ -849,7 +849,10 @@ pub(crate) const PIN_PROMPT: &str =
 /// # Errors
 ///
 /// Returns [`Error::Vault`] if the terminal can't be read.
-pub(crate) fn terminal_answer(prompt: &str, secret: bool) -> Result<zeroize::Zeroizing<String>, Error> {
+pub(crate) fn terminal_answer(
+    prompt: &str,
+    secret: bool,
+) -> Result<zeroize::Zeroizing<String>, Error> {
     let console = Console::terminal();
     let mut console = console.borrow_mut();
     if secret {
@@ -1993,7 +1996,11 @@ mod tests {
         let (result, heard) = wrong.join().unwrap();
         assert!(result.is_err_and(|why| !why.is_empty()));
         assert_eq!(heard.len(), 1);
-        assert!(heard.first().is_some_and(|(prompt, secret)| prompt.contains("Current code") && !secret));
+        assert!(
+            heard
+                .first()
+                .is_some_and(|(prompt, secret)| prompt.contains("Current code") && !secret)
+        );
 
         let (keeper, operator_end) = UnixStream::pair().unwrap();
         let right = operator(operator_end, app.code(30));

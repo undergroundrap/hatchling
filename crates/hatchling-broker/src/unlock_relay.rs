@@ -50,9 +50,9 @@ use hatchling_vault::{Keyring, MasterKey, Tier};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
+use crate::Error;
 use crate::config::VaultConfig;
 use crate::vault_keyring::{Devices, KeyringConfig, SecurityKeys};
-use crate::Error;
 
 /// The subcommand that unlocks a waiting vault.
 pub const UNLOCK_SUBCOMMAND: &str = "unlock";
@@ -333,7 +333,7 @@ fn tell(stream: &UnixStream, message: &ToOperator) -> Result<(), Error> {
     write_frame(stream, &bytes).map_err(framing)
 }
 
-fn framing(error: hatchling_core::framing::Error) -> Error {
+fn framing(error: hatchling_core::Error) -> Error {
     protocol(&error.to_string())
 }
 
@@ -353,7 +353,10 @@ fn protocol(why: &str) -> Error {
 pub fn unlock_main(program: &str, vault: &VaultConfig) -> ExitCode {
     let mut stderr = std::io::stderr().lock();
     if hatchling_sys::euid() != 0 {
-        let _ = writeln!(stderr, "{program} unlock: run it with sudo: only root may unlock the vault");
+        let _ = writeln!(
+            stderr,
+            "{program} unlock: run it with sudo: only root may unlock the vault"
+        );
         return ExitCode::FAILURE;
     }
     let path = socket_path(vault);
@@ -369,7 +372,8 @@ pub fn unlock_main(program: &str, vault: &VaultConfig) -> ExitCode {
         stderr,
         "Unlocking Hatchling's vault. {}",
         match keys.len() {
-            0 => "No security key is plugged in: a backup code works, or plug one in and run this again (in WSL, attach it with usbipd first).",
+            0 =>
+                "No security key is plugged in: a backup code works, or plug one in and run this again (in WSL, attach it with usbipd first).",
             _ => "When your security key flashes, touch it.",
         }
     );
@@ -404,7 +408,7 @@ pub(crate) fn operate(
     keys: &[(String, File)],
     answer: &mut dyn FnMut(&str, bool) -> Result<Zeroizing<String>, String>,
 ) -> Result<(), String> {
-    let gone = |e: hatchling_core::framing::Error| format!("Hatchling stopped answering: {e}");
+    let gone = |e: hatchling_core::Error| format!("Hatchling stopped answering: {e}");
     let nodes: Vec<String> = keys.iter().map(|(node, _)| node.clone()).collect();
     let keys_frame = serde_json::to_vec(&ToKeeper::Keys { nodes }).map_err(|e| e.to_string())?;
     write_frame(stream, &keys_frame).map_err(gone)?;
@@ -426,7 +430,11 @@ pub(crate) fn operate(
             }
             Ok(ToOperator::Unlocked) => return Ok(()),
             Ok(ToOperator::Failed { reason }) => return Err(reason),
-            Err(_) => return Err(String::from("Hatchling said something this command doesn't read")),
+            Err(_) => {
+                return Err(String::from(
+                    "Hatchling said something this command doesn't read",
+                ));
+            }
         }
     }
 }

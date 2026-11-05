@@ -153,8 +153,14 @@ fn valid_args(args: &[String]) -> bool {
     let values: Vec<&str> = args.iter().map(String::as_str).collect();
     match values.as_slice() {
         []
-        | ["migrate-vault" | "vault-audit" | "rekey-vault" | "clean" | "doctor"]
-        | [crate::unlock_relay::UNLOCK_SUBCOMMAND]
+        | [
+            "migrate-vault"
+            | "vault-audit"
+            | "rekey-vault"
+            | "clean"
+            | "doctor"
+            | crate::unlock_relay::UNLOCK_SUBCOMMAND,
+        ]
         | ["clean", "--dry-run"]
         | ["doctor", "--env", _]
         | ["rekey-vault" | BROWSER_DIGEST_SUBCOMMAND, _]
