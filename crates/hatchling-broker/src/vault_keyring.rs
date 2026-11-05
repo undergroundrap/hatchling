@@ -945,9 +945,7 @@ fn opening(
         OPEN_NO_KEY
     })?;
     match code.trim() {
-        "" => Err(Error::Usage {
-            reason: String::from(NO_KEY),
-        }),
+        "" => Err(stopped()),
         code => keyring.recover(code).map_err(vault_error),
     }
 }
@@ -3552,6 +3550,73 @@ mod tests {
         );
     }
 
+    /// Keys all plugged in at once, in any order.
+    struct AllIn(Vec<hatchling_vault::virtual_key::VirtualAuthenticator>);
+
+    impl Devices for AllIn {
+        fn plugged_in(&mut self) -> Option<&mut dyn Authenticator> {
+            None
+        }
+
+        fn every_key(&mut self) -> Vec<&mut dyn Authenticator> {
+            self.0
+                .iter_mut()
+                .map(|key| -> &mut dyn Authenticator { key })
+                .collect()
+        }
+    }
+
+    /// With several keys plugged in, a start finds a registered one and
+    /// asks nothing: nobody is told to unplug anything.
+    #[test]
+    fn a_start_opens_with_whichever_registered_key_is_plugged_in() {
+        let (_scratch, vault, config, _, desk) = desk_vault("start-all-in", 2);
+        let mut keys = desk.keys;
+        keys.reverse();
+        let mut all_in = AllIn(keys);
+        let mut asked = Vec::new();
+        let master =
+            super::unlock_asking(&vault, &config, &mut answers(&[], &mut asked), &mut all_in)
+                .unwrap();
+        assert!(reads_the_secret(&vault, &master));
+        assert!(asked.is_empty(), "{asked:?}");
+        assert_eq!(codes_left(&config), 10);
+    }
+
+    /// With no registered key in, a start says which it is, and a backup
+    /// code opens it; a key that refuses says why, and spends no code.
+    #[test]
+    fn a_start_says_why_no_key_opened_it() {
+        let (_scratch, vault, config, codes, mut desk) = desk_vault("start-why", 2);
+        let stranger = 2;
+        desk.plugged.set(Some(stranger));
+        let mut asked = Vec::new();
+        assert!(matches!(
+            super::unlock_asking(&vault, &config, &mut answers(&[""], &mut asked), &mut desk),
+            Err(Error::Usage { reason }) if reason.contains("stopped")
+        ));
+        assert_eq!(asked, [OPEN_NOT_REGISTERED]);
+        desk.plugged.set(None);
+        let mut asked = Vec::new();
+        let code = codes.first().unwrap().as_str();
+        let master =
+            super::unlock_asking(&vault, &config, &mut answers(&[code], &mut asked), &mut desk)
+                .unwrap();
+        assert!(reads_the_secret(&vault, &master));
+        assert_eq!(asked, [OPEN_NO_KEY]);
+        assert_eq!(codes_left(&config), 9);
+        // Not touched in time: said, and no code asked for or spent.
+        desk.plugged.set(Some(0));
+        desk.keys.first_mut().unwrap().set_present(false);
+        let mut asked = Vec::new();
+        let refused =
+            super::unlock_asking(&vault, &config, &mut answers(&[], &mut asked), &mut desk)
+                .unwrap_err();
+        assert!(asked.is_empty(), "{asked:?}");
+        assert!(refused.to_string().contains("touched"), "{refused}");
+        assert_eq!(codes_left(&config), 9);
+    }
+
     #[test]
     fn a_hardware_key_vault_starts_with_a_touch_and_spends_no_code() {
         let (_scratch, vault, config, _, mut desk) = desk_vault("start-touch", 2);
@@ -3560,7 +3625,7 @@ mod tests {
             super::unlock_asking(&vault, &config, &mut answers(&[""], &mut asked), &mut desk)
                 .unwrap();
         assert!(reads_the_secret(&vault, &master));
-        assert_eq!(asked, [AUTHORIZE_PROMPT]);
+        assert!(asked.is_empty(), "with a key in, nothing to ask: {asked:?}");
         assert_eq!(codes_left(&config), 10, "a touch, not a code");
         let mut keyring = Keyring::load(config.keyring.as_deref().unwrap()).unwrap();
         let mut asked = Vec::new();

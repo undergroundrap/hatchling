@@ -185,7 +185,7 @@ pub struct KeyEnrollment {
 impl KeyEnrollment {
     /// How many keys are registered so far.
     #[must_use]
-    pub const fn keys(&self) -> usize {
+    pub fn keys(&self) -> usize {
         self.wraps.len()
     }
 }
@@ -353,7 +353,8 @@ impl Keyring {
                 reason: "this key is already registered",
             });
         }
-        let mut wrap = self.hardware_wrap(enrollment.rotation.new_key(), device, enrollment.check)?;
+        let mut wrap =
+            self.hardware_wrap(enrollment.rotation.new_key(), device, enrollment.check)?;
         wrap.set_label(label.as_str());
         enrollment.wraps.push(wrap);
         Ok(())
@@ -491,9 +492,9 @@ impl Keyring {
             else {
                 continue;
             };
-            let Some((credential, salt)) = unhex(credential).zip(
-                unhex(salt).and_then(|salt| <[u8; 32]>::try_from(salt).ok()),
-            ) else {
+            let Some((credential, salt)) =
+                unhex(credential).zip(unhex(salt).and_then(|salt| <[u8; 32]>::try_from(salt).ok()))
+            else {
                 continue;
             };
             if device.holds(RP_ID, &credential) == Some(false) {
@@ -767,7 +768,11 @@ mod tests {
             VirtualAuthenticator::new(),
         );
         let unlocked = keyring.unlock_file(&kek).unwrap();
-        assert_eq!(keyring.enrolled_on(&mut stranger), None, "no keys to ask of");
+        assert_eq!(
+            keyring.enrolled_on(&mut stranger),
+            None,
+            "no keys to ask of"
+        );
         let rotated = keyring
             .enroll_hardware_keys(&unlocked, &mut [&mut one, &mut two])
             .unwrap();
@@ -800,14 +805,24 @@ mod tests {
             Err(Error::KeyChange { .. })
         ));
         assert_eq!(keyring.hardware_keys().len(), 2);
-        keyring.add_hardware_key(&opened, &mut third, &name).unwrap();
+        keyring
+            .add_hardware_key(&opened, &mut third, &name)
+            .unwrap();
         assert_eq!(keyring.hardware_keys().len(), 3);
     }
 
     #[test]
     fn a_refusal_is_said_in_words() {
-        assert!(AuthenticatorError::NoUserPresence.said().contains("touched"));
-        assert!(AuthenticatorError::UnknownCredential.said().contains("registered"));
+        assert!(
+            AuthenticatorError::NoUserPresence
+                .said()
+                .contains("touched")
+        );
+        assert!(
+            AuthenticatorError::UnknownCredential
+                .said()
+                .contains("registered")
+        );
         assert!(AuthenticatorError::NoVerification.said().contains("PIN"));
         assert_eq!(
             AuthenticatorError::Device(String::from("as it is")).said(),
@@ -862,7 +877,7 @@ mod tests {
         assert!(
             matches!(
                 keyring.unlock_hardware_key(&mut primary),
-                Err(Error::UnlockFailed)
+                Err(Error::Authenticator { .. })
             ),
             "no touch, no unlock"
         );
@@ -1180,7 +1195,7 @@ mod tests {
             primary.set_typed(typed);
             assert!(matches!(
                 keyring.unlock_hardware_key(&mut primary),
-                Err(Error::UnlockFailed)
+                Err(Error::Authenticator { .. })
             ));
         }
         primary.set_typed(Some("2468"));

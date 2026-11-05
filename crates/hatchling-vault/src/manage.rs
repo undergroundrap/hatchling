@@ -200,7 +200,11 @@ impl Keyring {
         self.authorize(unlocked, Tier::HardwareKey)?;
         // A credential is new each time, so only the key can say it's
         // one already here.
-        if self.wraps().iter().any(|wrap| crate::fido2::key_holds(device, wrap)) {
+        if self
+            .wraps()
+            .iter()
+            .any(|wrap| crate::fido2::key_holds(device, wrap))
+        {
             return Err(Error::KeyChange {
                 reason: "this key is already registered",
             });
