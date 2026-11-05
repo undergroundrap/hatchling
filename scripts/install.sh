@@ -270,7 +270,12 @@ ollama_room() {
       say "gave Ollama a $window-token window: $MODEL fits on the GPU with it ($DROP_IN, which removing undoes)"
       return 0
     fi
-    [ "$window" = 65536 ] && say "at 65536 tokens $MODEL doesn't fit on the GPU (${fit}): trying 32768"
+    if [ "$window" = 65536 ]; then
+      case "$fit" in
+        cpu) say "at 65536 tokens $MODEL doesn't fit on the GPU: trying 32768" ;;
+        *) say "Ollama doesn't say how $MODEL fits at 65536 tokens: trying 32768, to be safe" ;;
+      esac
+    fi
   done
   say "gave Ollama a 32768-token window ($DROP_IN, which removing undoes): $MODEL runs partly on the CPU even so, or Ollama doesn't say how it fits"
 }
