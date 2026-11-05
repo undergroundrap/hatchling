@@ -34,7 +34,7 @@ Back to the model on your own machine:
 sudo hatchling-broker use-local --model qwen3.5:9b
 ```
 
-It checks the local server has the model first. The old server stays allowed either way, so switching back is the command again. A model you chose in the app's Settings was one on the old server, so it's forgotten.
+It checks the local server has the model first. The old server stays allowed and set up either way, so after the first switch you needn't run a command again: switch in the app, under **Settings → General → Model**, which asks before your words go to a hosted server. A model you chose in the app's Settings was one on the old server, so it's forgotten.
 
 ## OpenRouter example, by hand
 

@@ -726,6 +726,8 @@ mod tests {
                 window: Some(16384),
                 size: None,
                 on_cpu: None,
+                other: None,
+                switched: false,
             }
         );
         let _ = std::fs::remove_dir_all(&dir);

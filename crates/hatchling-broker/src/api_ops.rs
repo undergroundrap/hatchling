@@ -447,7 +447,7 @@ fn reaches(egress: &[String], chat: Option<&[ScheduleGrant]>, destination: &str)
         && chat.is_none_or(|chat| chat.contains(&grant))
 }
 
-impl Ops<'_> {
+impl<'a> Ops<'a> {
     /// The owner's answer to a browser's code request (WO-030): a code
     /// given, or the request declined; the owner's alone.
     fn code(&self, owner: bool, action: &UiAction) -> (UiActionResult, ApiOutcome) {
