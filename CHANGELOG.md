@@ -8,6 +8,9 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Added
 
+- **Choose the model in the app.** Settings → General → Model shows the model Hatchling uses, its server, its window and how it fits this machine, and the models the server has (a local one lists them; **Refresh** after `ollama pull`). The one you choose is used from your next message, by chats, scheduled work and subagents alike, with no file to edit and no restart, and **Back to …** returns to the one you installed with. Only the model's name is chosen: its server, where your words go, stays the operator's setting. A name must be one the server lists, when it lists them. The broker keeps the choice in its owner directory, and a chat's failure names the model in use.
+  - **Breaking for `hatchling-core`:** `UiAction::ReadModel` and `SetModel`, `UiActionResult::Model` and `ModelState` are new.
+
 - **Hatchling says how the model fits this machine.** Ollama says how much of a loaded model is in the GPU's memory; what doesn't fit runs on the CPU, more slowly, whether the window is too big for the GPU or other work holds its memory.
   - **At install**, the installer loads the model once, and `hatchling-broker doctor` says how it fits: "all on the GPU (6.6 GB)", or "0.9 GB of its 10.7 GB on the CPU, more slowly: free the GPU's memory, or give it a smaller window". It says how much of the computer's memory is free, and names it low under a tenth.
   - **While you work**, each run's record keeps how much of the model was on the CPU and whether memory was low, and the chat says so under the context meter, after the answer it slowed. Under 0.1 GB on the CPU isn't mentioned.

@@ -2663,7 +2663,10 @@ mod tests {
             },
             &json!({"action": "set_model", "name": "gemma4:12b"}),
         );
-        pinned(&UiAction::SetModel { name: None }, &json!({"action": "set_model"}));
+        pinned(
+            &UiAction::SetModel { name: None },
+            &json!({"action": "set_model"}),
+        );
         pinned(
             &UiActionResult::Model {
                 model: ModelState {

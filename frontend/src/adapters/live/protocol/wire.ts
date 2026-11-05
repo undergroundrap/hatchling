@@ -525,6 +525,14 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "string"
             },
             {
+                "const": "read_model",
+                "type": "string"
+            },
+            {
+                "const": "set_model",
+                "type": "string"
+            },
+            {
                 "const": "read_feed",
                 "type": "string"
             },
@@ -1978,6 +1986,59 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "string"
             }
         ]
+    },
+    "ModelState": {
+        "properties": {
+            "available": {
+                "items": {
+                    "type": "string"
+                },
+                "type": [
+                    "array",
+                    "null"
+                ]
+            },
+            "chosen": {
+                "type": [
+                    "string",
+                    "null"
+                ]
+            },
+            "configured": {
+                "type": [
+                    "string",
+                    "null"
+                ]
+            },
+            "endpoint": {
+                "type": [
+                    "string",
+                    "null"
+                ]
+            },
+            "on_cpu": {
+                "minimum": 0,
+                "type": [
+                    "integer",
+                    "null"
+                ]
+            },
+            "size": {
+                "minimum": 0,
+                "type": [
+                    "integer",
+                    "null"
+                ]
+            },
+            "window": {
+                "minimum": 0,
+                "type": [
+                    "integer",
+                    "null"
+                ]
+            }
+        },
+        "type": "object"
     },
     "OwnerInput": {
         "oneOf": [
@@ -4176,6 +4237,36 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             {
                 "properties": {
                     "action": {
+                        "const": "read_model",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "action"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
+                        "const": "set_model",
+                        "type": "string"
+                    },
+                    "name": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    }
+                },
+                "required": [
+                    "action"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
                         "const": "read_feed",
                         "type": "string"
                     }
@@ -4664,6 +4755,22 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "required": [
                     "result",
                     "usage"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "model": {
+                        "$ref": "#/$defs/ModelState"
+                    },
+                    "result": {
+                        "const": "model",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "model"
                 ],
                 "type": "object"
             },

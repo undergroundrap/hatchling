@@ -1150,7 +1150,10 @@ mod tests {
     /// as it stands when the run fails.
     #[test]
     fn a_failure_names_the_model_the_owner_chose() {
-        let dir = std::env::temp_dir().join(format!("hatchling-chat-choice-{}", std::process::id()));
+        use hatchling_core::run_failure::RunFailure;
+        use hatchling_scheduler::Ending;
+        let dir =
+            std::env::temp_dir().join(format!("hatchling-chat-choice-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let owner = dir.join("owner");
         std::fs::create_dir_all(&owner).unwrap();
@@ -1175,10 +1178,16 @@ mod tests {
             failed(&mut chat).starts_with("The model (qwen3.5:9b) kept calling"),
             "the operator's, with no choice"
         );
-        std::fs::write(owner.join(crate::model_choice::MODEL_FILE), r#"{"name":"gemma4:12b"}"#)
-            .unwrap();
+        std::fs::write(
+            owner.join(crate::model_choice::MODEL_FILE),
+            r#"{"name":"gemma4:12b"}"#,
+        )
+        .unwrap();
         let told = failed(&mut chat);
-        assert!(told.starts_with("The model (gemma4:12b) kept calling"), "{told}");
+        assert!(
+            told.starts_with("The model (gemma4:12b) kept calling"),
+            "{told}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

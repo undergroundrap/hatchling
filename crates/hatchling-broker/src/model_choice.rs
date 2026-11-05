@@ -50,10 +50,11 @@ struct Kept {
     name: String,
 }
 
-/// Whether `name` is one a model's id can be: letters, digits and
-/// `. _ : / - @ +`, at most [`MAX_NAME`] long. What a server lists, and
-/// nothing that could be read as anything but a name, in a log or a
-/// request.
+/// Whether `name` is one a model's id can be.
+///
+/// Letters, digits and `. _ : / - @ +`, at most [`MAX_NAME`] long: what a
+/// server lists, and nothing that could be read as anything but a name,
+/// in a log or a request.
 #[must_use]
 pub fn valid_name(name: &str) -> bool {
     !name.is_empty()
@@ -111,10 +112,11 @@ pub enum NotSet {
     Io(std::io::Error),
 }
 
-/// Keeps `name` as the owner's choice, or forgets it with `None`, so the
-/// operator's model is used again: written whole beside, then put in
-/// place. `available` is what the server lists, when it does: a name must
-/// be one of them, or one with `:latest` added.
+/// Keeps `name` as the owner's choice, or forgets it with `None`.
+///
+/// With none, the operator's model is used again. A choice is written
+/// whole beside, then put in place. `available` is what the server lists,
+/// when it does: a name must be one of them, or one with `:latest` added.
 ///
 /// # Errors
 ///
@@ -161,8 +163,9 @@ pub fn set(
     write().map_err(NotSet::Io)
 }
 
-/// The models the server at the plain-HTTP `endpoint` lists, by id: the
-/// same bounded `GET <endpoint>/models` with no credential that doctor
+/// The models the server at the plain-HTTP `endpoint` lists, by id.
+///
+/// The same bounded `GET <endpoint>/models` with no credential that doctor
 /// makes. None for a hosted endpoint, or a server that doesn't list them.
 #[must_use]
 pub fn available(endpoint: &str) -> Option<Vec<String>> {
@@ -219,7 +222,8 @@ mod tests {
     }
 
     fn scratch(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("hatchling-model-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("hatchling-model-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }
@@ -276,7 +280,10 @@ mod tests {
             model_name: Some(String::from("qwen3.5:9b")),
             ..SchedulerConfig::disabled()
         };
-        assert!(matches!(set(&off, Some("gemma4:12b"), None), Err(NotSet::Off)));
+        assert!(matches!(
+            set(&off, Some("gemma4:12b"), None),
+            Err(NotSet::Off)
+        ));
         assert_eq!(in_use(&off).as_deref(), Some("qwen3.5:9b"));
         let _ = std::fs::remove_dir_all(&dir);
     }

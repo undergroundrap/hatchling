@@ -734,6 +734,16 @@
           "type": "string"
         },
         {
+          "const": "read_model",
+          "description": "[`UiAction::ReadModel`].",
+          "type": "string"
+        },
+        {
+          "const": "set_model",
+          "description": "[`UiAction::SetModel`].",
+          "type": "string"
+        },
+        {
           "const": "read_feed",
           "description": "[`UiAction::ReadFeed`].",
           "type": "string"
@@ -4870,6 +4880,70 @@
           "type": "object"
         }
       ]
+    },
+    "ModelState": {
+      "description": "The model Hatchling uses, and the models its server has: what the\nowner chooses from in the app.",
+      "properties": {
+        "available": {
+          "description": "The models the server has, by their ids, when it lists them: a\nlocal server answering in plain HTTP does. None when it doesn't.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "chosen": {
+          "description": "The model the owner chose in the app, used over the configured\none; none when they haven't.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "configured": {
+          "description": "The model the operator set (`HATCHLING_SCHEDULER_MODEL_NAME`):\nthe one used unless the owner chose another.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "endpoint": {
+          "description": "The model's server, as the operator set it; none when unset.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "on_cpu": {
+          "description": "How much of that runs on the CPU, more slowly.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "size": {
+          "description": "All the model in use takes, in bytes, when it's loaded and its\nserver says.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "window": {
+          "description": "The window of the model in use, in tokens: as its server says,\nwhen it's loaded, else as the operator declared it.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
     },
     "OperatorAnswer": {
       "description": "An answer to an [`OperatorQuery`].",
@@ -11016,6 +11090,39 @@
           "type": "object"
         },
         {
+          "description": "Read the model Hatchling uses, and the models its server has: the\nowner's alone.",
+          "properties": {
+            "action": {
+              "const": "read_model",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Choose the model Hatchling uses from the next run on, answered with\nthe model as it then stands: the owner's alone.",
+          "properties": {
+            "action": {
+              "const": "set_model",
+              "type": "string"
+            },
+            "name": {
+              "description": "The model, by its id on the server; none goes back to the one\nthe operator set.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Read the posts on the owner's Feed page, the newest first: the\nowner's alone.",
           "properties": {
             "action": {
@@ -11577,6 +11684,24 @@
           "required": [
             "result",
             "usage"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The model Hatchling uses, and the models its server has.",
+          "properties": {
+            "model": {
+              "$ref": "#/$defs/ModelState",
+              "description": "It."
+            },
+            "result": {
+              "const": "model",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "model"
           ],
           "type": "object"
         },
