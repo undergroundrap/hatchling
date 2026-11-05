@@ -706,6 +706,39 @@ pub struct UsageLimits {
     pub monthly_tokens: Option<u64>,
 }
 
+/// The model Hatchling uses, and the models its server has: what the
+/// owner chooses from in the app.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ModelState {
+    /// The model's server, as the operator set it; none when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    /// The model the operator set (`HATCHLING_SCHEDULER_MODEL_NAME`):
+    /// the one used unless the owner chose another.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configured: Option<String>,
+    /// The model the owner chose in the app, used over the configured
+    /// one; none when they haven't.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chosen: Option<String>,
+    /// The models the server has, by their ids, when it lists them: a
+    /// local server answering in plain HTTP does. None when it doesn't.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available: Option<Vec<String>>,
+    /// The window of the model in use, in tokens: as its server says,
+    /// when it's loaded, else as the operator declared it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<u32>,
+    /// All the model in use takes, in bytes, when it's loaded and its
+    /// server says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    /// How much of that runs on the CPU, more slowly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_cpu: Option<u64>,
+}
+
 /// The tokens counted toward the owner's limits, read and written
 /// together.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -1279,6 +1312,17 @@ pub enum UiAction {
         /// limit.
         limits: UsageLimits,
     },
+    /// Read the model Hatchling uses, and the models its server has: the
+    /// owner's alone.
+    ReadModel {},
+    /// Choose the model Hatchling uses from the next run on, answered with
+    /// the model as it then stands: the owner's alone.
+    SetModel {
+        /// The model, by its id on the server; none goes back to the one
+        /// the operator set.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
     /// Read the posts on the owner's Feed page, the newest first: the
     /// owner's alone.
     ReadFeed {},
@@ -1448,6 +1492,11 @@ pub enum UiActionResult {
     Usage {
         /// The report.
         usage: UsageReport,
+    },
+    /// The model Hatchling uses, and the models its server has.
+    Model {
+        /// It.
+        model: ModelState,
     },
     /// The posts on the owner's Feed page, the newest first.
     Feed {
@@ -2603,6 +2652,46 @@ mod tests {
             json!({"action": "set_usage_limits", "limits": {"hourly_tokens": 5}}),
         );
         assert!(unknown.is_err(), "{unknown:?}");
+    }
+
+    #[test]
+    fn the_model_is_read_and_chosen() {
+        pinned(&UiAction::ReadModel {}, &json!({"action": "read_model"}));
+        pinned(
+            &UiAction::SetModel {
+                name: Some(s("gemma4:12b")),
+            },
+            &json!({"action": "set_model", "name": "gemma4:12b"}),
+        );
+        pinned(&UiAction::SetModel { name: None }, &json!({"action": "set_model"}));
+        pinned(
+            &UiActionResult::Model {
+                model: ModelState {
+                    endpoint: Some(s("http://localhost:11434/v1")),
+                    configured: Some(s("qwen3.5:9b")),
+                    chosen: Some(s("gemma4:12b")),
+                    available: Some(vec![s("gemma4:12b"), s("qwen3.5:9b")]),
+                    window: Some(32768),
+                    size: Some(6_600_000_000),
+                    on_cpu: Some(0),
+                },
+            },
+            &json!({"result": "model", "model": {
+                "endpoint": "http://localhost:11434/v1",
+                "configured": "qwen3.5:9b",
+                "chosen": "gemma4:12b",
+                "available": ["gemma4:12b", "qwen3.5:9b"],
+                "window": 32768,
+                "size": 6_600_000_000_u64,
+                "on_cpu": 0,
+            }}),
+        );
+        pinned(
+            &UiActionResult::Model {
+                model: ModelState::default(),
+            },
+            &json!({"result": "model", "model": {}}),
+        );
     }
 
     #[test]

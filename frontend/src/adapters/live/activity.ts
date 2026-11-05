@@ -271,6 +271,8 @@ const REQUESTS: Readonly<Record<ApiRequest, string>> = {
     manage_sign_ins: 'Managed the sign-ins Hatchling fills',
     read_usage: 'Read the model usage',
     set_usage_limits: 'Set the usage limits',
+    read_model: 'Read the model',
+    set_model: 'Chose the model',
     read_feed: 'Read the Feed page',
     manage_suggestions: 'Managed the Ideas page',
     manage_goals: 'Managed your goals',

@@ -779,7 +779,8 @@ fn body_if_ok(answer: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// The ids of an OpenAI-compatible list of models, `{"data": [{"id"}]}`.
-fn model_ids(answer: Option<&[u8]>) -> Option<Vec<String>> {
+#[must_use]
+pub fn model_ids(answer: Option<&[u8]>) -> Option<Vec<String>> {
     let list: serde_json::Value = serde_json::from_slice(answer?).ok()?;
     Some(
         list.get("data")?

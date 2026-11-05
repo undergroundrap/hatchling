@@ -422,7 +422,7 @@ impl<'scope, 'env> Subagents<'scope, 'env> {
             missed: false,
             due: Timestamp::now().as_second(),
             model_endpoint: self.config.scheduler.model_endpoint.clone(),
-            model_name: self.config.scheduler.model_name.clone(),
+            model_name: crate::model_choice::in_use(&self.config.scheduler),
             model_reasoning: self.config.scheduler.model_reasoning,
             model_context_window: self.config.scheduler.model_context_window,
             depth: 0,
