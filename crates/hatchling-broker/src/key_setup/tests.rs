@@ -406,6 +406,44 @@ fn a_crash_before_the_codes_are_shown_is_picked_up() {
     assert!(!codes_unconfirmed(&path));
 }
 
+/// A power cut mid-way: the keys committed, the stores not yet moved. The
+/// vault won't serve like that; the next run finishes it, and makes the
+/// codes nobody saw.
+#[test]
+fn a_change_interrupted_mid_way_is_finished() {
+    let (_scratch, vault, config) = vault("setup-interrupted");
+    let path = config.keyring.clone().unwrap();
+    let mut bench = Bench::new_keys(2, &[0]);
+    let mut keyring = keyring_of(&config);
+    let kek = hatchling_vault::Kek::from_file_key(
+        &hatchling_vault::FileKey::new(config.kek_file(&vault))
+            .load()
+            .unwrap(),
+    );
+    let unlocked = keyring.unlock_file(&kek).unwrap();
+    keyring.generate_backup_codes(&unlocked).unwrap();
+    let mut enrollment = keyring
+        .begin_key_enrollment(&unlocked, hatchling_vault::KeyCheck::Touch)
+        .unwrap();
+    for key in &mut bench.keys {
+        keyring.enroll_key(&mut enrollment, key).unwrap();
+    }
+    std::fs::write(codes_marker(&path), b"").unwrap();
+    keyring.commit_key_enrollment(enrollment, None).unwrap();
+    assert!(keyring_of(&config).rotation_pending());
+
+    let run = run_with(&vault, &config, &mut bench, &["", "<code>"], &[]);
+    assert_eq!(run.done.unwrap(), Done::Protected);
+    assert!(run.said.text().contains("interrupted"));
+    let keyring = keyring_of(&config);
+    assert!(!keyring.rotation_pending());
+    assert!(!codes_unconfirmed(&path));
+    let opened = keyring
+        .unlock_hardware_key(bench.keys.first_mut().unwrap())
+        .unwrap();
+    assert!(reads_the_secret(&vault, opened.key()));
+}
+
 /// A vault with one key is offered a second, on the next run.
 #[test]
 fn a_vault_with_one_key_is_offered_a_second() {
