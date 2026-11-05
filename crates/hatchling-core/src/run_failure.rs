@@ -8,9 +8,15 @@
 /// A failure the person can do something about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunFailure {
-    /// The model couldn't be reached, or didn't answer as a model that
-    /// calls tools should.
+    /// The model couldn't be reached, or answered with something that
+    /// isn't a model's reply.
     ModelUnavailable,
+    /// The model doesn't call tools: it answered the capability probe
+    /// without its tool call, every time. Nothing the task asked for ran.
+    ModelIncapable,
+    /// The model answered, but with nothing, no text and no tool call,
+    /// every time it was asked.
+    ModelSilent,
     /// The model kept calling tools it wasn't offered, or with arguments
     /// that don't fit them.
     ToolsMisused,
@@ -23,8 +29,10 @@ pub enum RunFailure {
 
 impl RunFailure {
     /// Every failure, in order.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 6] = [
         Self::ModelUnavailable,
+        Self::ModelIncapable,
+        Self::ModelSilent,
         Self::ToolsMisused,
         Self::OutOfSteps,
         Self::OutOfRoom,
@@ -37,6 +45,10 @@ impl RunFailure {
         match self {
             // EX_UNAVAILABLE
             Self::ModelUnavailable => 69,
+            // EX_NOINPUT: the probe got no tool call from it.
+            Self::ModelIncapable => 66,
+            // EX_DATAERR: its reply held nothing to use.
+            Self::ModelSilent => 65,
             // EX_PROTOCOL
             Self::ToolsMisused => 76,
             // EX_TEMPFAIL

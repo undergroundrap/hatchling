@@ -43,6 +43,12 @@ pub enum Error {
     #[error("model failed: {0}")]
     ModelCutOff(String),
 
+    /// The model answered, but with nothing: no text and no tool call,
+    /// every time it was asked. The server is there; the model's reply
+    /// isn't an answer.
+    #[error("model failed: {0}")]
+    ModelSilent(String),
+
     /// A tool's execution failed. This normally feeds back to the
     /// model as `ToolResult::Err`; it surfaces as `Error` only when
     /// the failure happens outside the feedback path.
