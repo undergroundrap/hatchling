@@ -528,13 +528,29 @@ fn outlive_the_supervisor(spin: Duration) -> Result<Outcome, String> {
 }
 
 /// What the cell sees of processes: the probe's own pid, its pid
-/// namespace, and each process `/proc` lists, with its name.
+/// namespace, and each process `/proc` lists, with its name. A cell
+/// without a `/proc` sees none.
 fn processes() -> Result<Outcome, String> {
-    let pid_namespace = std::os::unix::fs::MetadataExt::ino(
-        &std::fs::metadata("/proc/self/ns/pid").map_err(|e| format!("/proc/self/ns/pid: {e}"))?,
-    );
+    let own_pid = std::process::id();
+    let absent = |e: &std::io::Error| e.kind() == std::io::ErrorKind::NotFound;
+    let pid_namespace = match std::fs::metadata("/proc/self/ns/pid") {
+        Ok(found) => Some(std::os::unix::fs::MetadataExt::ino(&found)),
+        Err(e) if absent(&e) => None,
+        Err(e) => return Err(format!("/proc/self/ns/pid: {e}")),
+    };
     let mut visible = Vec::new();
-    for entry in std::fs::read_dir("/proc").map_err(|e| format!("/proc: {e}"))? {
+    let entries = match std::fs::read_dir("/proc") {
+        Ok(entries) => entries,
+        Err(e) if absent(&e) => {
+            return Ok(Outcome::Processes {
+                own_pid,
+                pid_namespace,
+                visible,
+            });
+        }
+        Err(e) => return Err(format!("/proc: {e}")),
+    };
+    for entry in entries {
         let entry = entry.map_err(|e| format!("/proc: {e}"))?;
         let Some(pid) = entry
             .file_name()
@@ -549,7 +565,7 @@ fn processes() -> Result<Outcome, String> {
     }
     visible.sort_by_key(|seen| seen.pid);
     Ok(Outcome::Processes {
-        own_pid: std::process::id(),
+        own_pid,
         pid_namespace,
         visible,
     })
@@ -722,7 +738,7 @@ mod tests {
             return;
         };
         assert_eq!(own_pid, own);
-        assert_eq!(pid_namespace, namespace);
+        assert_eq!(pid_namespace, Some(namespace));
         let this = visible.iter().find(|seen| seen.pid == own).unwrap();
         let comm = std::fs::read_to_string("/proc/self/comm").unwrap();
         assert_eq!(this.name, comm.trim());

@@ -1453,33 +1453,52 @@ fn tcp_socket_dies() -> Result<(), String> {
     assert_sigsys(&result)
 }
 
-/// A cell sees none of the host's processes: it runs in a pid namespace
-/// of its own, and its `/proc` lists only the cell's own init and the
-/// probe, never the driver, the broker or anything else on the host.
+/// A cell sees none of the host's processes. The agent's cell has no
+/// `/proc`, so it sees none at all; a coding CLI's cell has a `/proc` of
+/// its own, in a pid namespace of its own, which lists only the cell's
+/// init and the probe, never the driver, the broker or anything else on
+/// the host.
 fn a_cell_sees_none_of_the_hosts_processes() -> Result<(), String> {
-    let Some(outcome) = run_report_attack(Attack::Processes)? else {
+    if !guard_cell_available()? {
         return Ok(());
-    };
+    }
+    let host = std::os::unix::fs::MetadataExt::ino(
+        &std::fs::metadata("/proc/self/ns/pid")
+            .map_err(|e| format!("the driver's /proc/self/ns/pid: {e}"))?,
+    );
+    if let Some(outcome) = run_report_attack(Attack::Processes)? {
+        sees_only_itself("the agent's cell", outcome, host, false)?;
+    }
+    let outcome = report_of(&spawn_cli_attack(Attack::Processes)?)?.outcome;
+    sees_only_itself("a coding CLI's cell", outcome, host, true)
+}
+
+/// Whether `outcome`, what `cell` saw of processes, is only its own: no
+/// `/proc` at all (unless `has_proc`), or one in a pid namespace other
+/// than the host's, `host`, listing the probe and at most the cell's init.
+fn sees_only_itself(cell: &str, outcome: Outcome, host: u64, has_proc: bool) -> Result<(), String> {
     let Outcome::Processes {
         own_pid,
         pid_namespace,
         visible,
     } = outcome
     else {
-        return Err(format!("expected Processes outcome, got {outcome:?}"));
+        return Err(format!("{cell}: expected Processes outcome, got {outcome:?}"));
     };
-    let host = std::os::unix::fs::MetadataExt::ino(
-        &std::fs::metadata("/proc/self/ns/pid")
-            .map_err(|e| format!("the driver's /proc/self/ns/pid: {e}"))?,
-    );
+    let Some(pid_namespace) = pid_namespace else {
+        if has_proc || !visible.is_empty() {
+            return Err(format!(
+                "{cell}: no pid namespace said, yet a /proc was expected or listed: {visible:?}"
+            ));
+        }
+        return Ok(());
+    };
     if pid_namespace == host {
-        return Err(format!(
-            "the cell shares the host's pid namespace ({host})"
-        ));
+        return Err(format!("{cell} shares the host's pid namespace ({host})"));
     }
     if !visible.iter().any(|seen| seen.pid == own_pid) {
         return Err(format!(
-            "the cell's /proc doesn't list the probe itself ({own_pid}), so it proves nothing: {visible:?}"
+            "{cell}'s /proc doesn't list the probe itself ({own_pid}), so it proves nothing: {visible:?}"
         ));
     }
     let strangers: Vec<_> = visible
@@ -1488,7 +1507,7 @@ fn a_cell_sees_none_of_the_hosts_processes() -> Result<(), String> {
         .collect();
     if !strangers.is_empty() {
         return Err(format!(
-            "the cell sees processes that aren't its own: {strangers:?}"
+            "{cell} sees processes that aren't its own: {strangers:?}"
         ));
     }
     Ok(())
