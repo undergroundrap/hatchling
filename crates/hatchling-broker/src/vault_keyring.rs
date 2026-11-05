@@ -3295,7 +3295,7 @@ pub(crate) mod tests {
     fn a_key_out_of_reach_isnt_called_missing() {
         let mut said = Vec::new();
         let (_scratch, _vault, config) = adopted("open-reach");
-        let mut keyring = Keyring::load(&config.path).unwrap();
+        let mut keyring = Keyring::load(config.keyring.as_ref().unwrap()).unwrap();
         let mut ask = |prompt: &str| {
             said.push(prompt.to_owned());
             Ok(String::new())

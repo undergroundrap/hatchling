@@ -1259,7 +1259,7 @@ mod tests {
             .enroll_hardware_keys_checked(&unlocked, &mut [&mut a, &mut b], KeyCheck::Pin)
             .unwrap_err();
         let shown = format!("{err:?}");
-        assert!(shown.contains("NoVerification"), "{shown}");
+        assert!(shown.contains("couldn't check its PIN"), "{shown}");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&fresh_dir);
     }

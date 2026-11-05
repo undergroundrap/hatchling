@@ -522,10 +522,11 @@ fn add_second(
                 .position(|key| keyring.enrolled_on(&mut **key) != Some(true))
         };
         if let Some(index) = new {
-            let needs_pin = {
+            let (needs_pin, model) = {
                 let mut keys = setup.devices.every_key();
-                keys.get_mut(index)
-                    .map(|key| (key.pin_set(), key.min_pin_length()))
+                let key = keys.get_mut(index);
+                let model = key.as_ref().and_then(|key| key.model());
+                (key.map(|key| (key.pin_set(), key.min_pin_length())), model)
             };
             if let Some((Some(false), min)) = needs_pin {
                 set_pin(setup, index, min).map_err(|refused| match refused {
@@ -533,7 +534,13 @@ fn add_second(
                     Refused::Stop(error) => error,
                 })?;
             }
-            let label = name_of(setup)?;
+            let taken: Vec<String> = keyring
+                .wraps()
+                .iter()
+                .map(|wrap| wrap.label().to_owned())
+                .collect();
+            let suggested = unused_name(model.unwrap_or("Security key"), &taken);
+            let label = name_of(setup, &suggested)?;
             let check = setup.config.key_check();
             let mut keys = setup.devices.every_key();
             let key = keys.get_mut(index).ok_or_else(ring::stopped)?;
