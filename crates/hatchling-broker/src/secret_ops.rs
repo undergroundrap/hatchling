@@ -316,7 +316,11 @@ mod tests {
             assert_eq!(said, "", "nothing is said of a secret refused");
         }
         assert_eq!(read("k").1, "Read 1 character.\n");
-        assert_eq!(read("\u{e9}t\u{e9}").1, "Read 3 characters.\n", "characters, not bytes");
+        assert_eq!(
+            read("\u{e9}t\u{e9}").1,
+            "Read 3 characters.\n",
+            "characters, not bytes"
+        );
         // Built before the asserts: a format! in one trips 1.85's clippy.
         let longest = "k".repeat(MAX_SECRET_BYTES) + "\n";
         let too_long = "k".repeat(MAX_SECRET_BYTES + 1) + "\n";
@@ -352,7 +356,10 @@ mod tests {
         assert_eq!(shown, b"***\x08 \x08*");
         let (typed, shown) = type_in(b"ab\x08\x08\x08c\r");
         assert_eq!(typed.unwrap(), b"c");
-        assert_eq!(shown, b"**\x08 \x08\x08 \x08*", "nothing to take back, nothing shown");
+        assert_eq!(
+            shown, b"**\x08 \x08\x08 \x08*",
+            "nothing to take back, nothing shown"
+        );
         let (typed, shown) = type_in(b"xyz\x15abc\r");
         assert_eq!(typed.unwrap(), b"abc");
         assert_eq!(shown, b"***\x08 \x08\x08 \x08\x08 \x08***");
@@ -370,7 +377,10 @@ mod tests {
         let (typed, shown) = type_in(b"\x1b[Aa\x1bOBb\x1b[1;5Cc\x1bxd\t\x01e\r");
         assert_eq!(typed.unwrap(), b"abcde");
         assert_eq!(shown, b"*****");
-        assert!(type_in(b"\x1b[").0.unwrap().is_empty(), "an escape cut short");
+        assert!(
+            type_in(b"\x1b[").0.unwrap().is_empty(),
+            "an escape cut short"
+        );
     }
 
     #[test]

@@ -172,7 +172,11 @@ mod tests {
             .open(name.to_str().unwrap())
             .unwrap();
         let before = tcgetattr(&terminal).unwrap();
-        assert!(before.local_modes.contains(LocalModes::ICANON | LocalModes::ISIG));
+        assert!(
+            before
+                .local_modes
+                .contains(LocalModes::ICANON | LocalModes::ISIG)
+        );
         {
             let keys = KeyByKey::on(terminal.as_fd());
             assert!(keys.held());
