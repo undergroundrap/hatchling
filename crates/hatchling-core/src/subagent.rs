@@ -400,9 +400,10 @@ pub enum SubagentEvent {
         peak_input_tokens: u64,
         /// Tokens the model wrote, over the session.
         output_tokens: u64,
-        /// The model's context window in tokens, as the operator declared
-        /// it: what the largest call is measured against. `None` when
-        /// undeclared.
+        /// The model's context window in tokens: the one the model's
+        /// server says it gives the model (Ollama does), else the one the
+        /// operator declared. What the largest call is measured against;
+        /// `None` when neither is known.
         #[serde(default)]
         context_window: Option<u32>,
     },

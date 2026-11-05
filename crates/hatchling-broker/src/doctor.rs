@@ -13,9 +13,11 @@
 //! ([`SERVICE_SETTINGS`]), which is root's: run it with `sudo` there. It
 //! changes nothing. It takes no lock (a broker starting meanwhile must
 //! not find one held), reads no secret, and writes only its cell probe's
-//! staging directory, which it removes. Its only connection is to the
+//! staging directory, which it removes. Its only connections are to the
 //! model's address, and only to one in plain HTTP: a hosted model's key
-//! is the vault's, and `doctor` doesn't ask for it.
+//! is the vault's, and `doctor` doesn't ask for it. It asks the server
+//! for its list of models, and Ollama for the window it gives the model
+//! once that's loaded ([`crate::model_window`]).
 
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write as _;
@@ -129,13 +131,12 @@ pub fn doctor_main(args: &[String]) -> ExitCode {
             check_program(lookup(env::HATCHLING_AGENT_BIN.name).as_deref()),
         ),
         ("cells", check_cells(&lookup)),
-        (
-            "model",
-            check_model(
-                lookup(env::HATCHLING_SCHEDULER_MODEL_ENDPOINT.name).as_deref(),
-                lookup(env::HATCHLING_SCHEDULER_MODEL_NAME.name).as_deref(),
-            ),
-        ),
+        ("model", {
+            let endpoint = lookup(env::HATCHLING_SCHEDULER_MODEL_ENDPOINT.name);
+            let name = lookup(env::HATCHLING_SCHEDULER_MODEL_NAME.name);
+            let found = check_model(endpoint.as_deref(), name.as_deref());
+            with_window(found, endpoint.as_deref(), name.as_deref())
+        }),
     ];
     report(&label, &checks)
 }
@@ -543,6 +544,46 @@ fn cell_advice(step: Step, errno: Option<i32>, facts: Facts) -> (String, String)
     }
 }
 
+/// `found`, the model check's finding, with the window the server at
+/// `endpoint` gives the model `name` once it found it, when the server
+/// says ([`crate::model_window`]).
+fn with_window(found: Finding, endpoint: Option<&str>, name: Option<&str>) -> Finding {
+    let (Finding::Fine(_), Some((authority, _)), Some(name)) =
+        (&found, endpoint.and_then(plain_http), name)
+    else {
+        return found;
+    };
+    let window = crate::model_window::window_at(authority, name, CONNECT_TIMEOUT, ANSWER_TIMEOUT);
+    windowed(found, name, window)
+}
+
+/// `found`, the model `name` found, with `window`, the window its server
+/// gives it: one too small for an answer is a problem.
+fn windowed(found: Finding, name: &str, window: Option<u32>) -> Finding {
+    match (found, window) {
+        (_, Some(window)) if window < crate::config::MIN_CONTEXT_WINDOW => Finding::problem(
+            format!(
+                "the model's server gives {name} a {window}-token window, and one answer can take 6,000 tokens"
+            ),
+            "Give the model room: for Ollama, set OLLAMA_CONTEXT_LENGTH=16384 (docs/install.md, \"Give the model room\").",
+        ),
+        (Finding::Fine(seen), Some(window)) => {
+            Finding::Fine(format!("{seen}, with a {window}-token window"))
+        }
+        (found, _) => found,
+    }
+}
+
+/// The authority and path of the plain-HTTP model endpoint `endpoint`:
+/// `None` for any other, a hosted one (`https`) among them.
+#[must_use]
+pub fn plain_http(endpoint: &str) -> Option<(&str, &str)> {
+    endpoint
+        .strip_prefix("http://")
+        .map(|rest| rest.split_once('/').unwrap_or((rest, "")))
+        .filter(|(authority, _)| !authority.is_empty() && !authority.contains('@'))
+}
+
 /// Whether the model's server at `endpoint` answers, and has the model
 /// `name`.
 fn check_model(endpoint: Option<&str>, name: Option<&str>) -> Finding {
@@ -557,11 +598,7 @@ fn check_model(endpoint: Option<&str>, name: Option<&str>) -> Finding {
             "{endpoint} is a hosted model, whose key only the broker reads"
         ));
     }
-    let Some((authority, path)) = endpoint
-        .strip_prefix("http://")
-        .map(|rest| rest.split_once('/').unwrap_or((rest, "")))
-        .filter(|(authority, _)| !authority.is_empty() && !authority.contains('@'))
-    else {
+    let Some((authority, path)) = plain_http(endpoint) else {
         return Finding::problem(
             format!("can't read {endpoint} as a model's address"),
             "Set HATCHLING_SCHEDULER_MODEL_ENDPOINT to the API's base, such as http://localhost:11434/v1.",
@@ -611,6 +648,22 @@ fn check_model(endpoint: Option<&str>, name: Option<&str>) -> Finding {
 /// The answer to a plain-HTTP `GET path` at `authority`: its body when
 /// its status is 200, `None` for any other.
 fn ask(authority: &str, path: &str) -> Result<Option<Vec<u8>>, String> {
+    ask_within(authority, path, CONNECT_TIMEOUT, ANSWER_TIMEOUT)
+}
+
+/// [`ask`], waiting `connect` to connect and `answer` for each read and
+/// write: one bounded `GET` with no credential, its answer at most
+/// [`MAX_ANSWER`] bytes.
+///
+/// # Errors
+///
+/// When nothing at `authority` connects, or the exchange fails.
+pub fn ask_within(
+    authority: &str,
+    path: &str,
+    connect: Duration,
+    answer_within: Duration,
+) -> Result<Option<Vec<u8>>, String> {
     let address = if authority.contains(':') && !authority.ends_with(']') {
         authority.to_owned()
     } else {
@@ -620,7 +673,7 @@ fn ask(authority: &str, path: &str) -> Result<Option<Vec<u8>>, String> {
     let mut last = String::from("no address");
     let mut stream = None;
     for address in addresses {
-        match TcpStream::connect_timeout(&address, CONNECT_TIMEOUT) {
+        match TcpStream::connect_timeout(&address, connect) {
             Ok(connected) => {
                 stream = Some(connected);
                 break;
@@ -630,8 +683,8 @@ fn ask(authority: &str, path: &str) -> Result<Option<Vec<u8>>, String> {
     }
     let mut stream = stream.ok_or(last)?;
     stream
-        .set_read_timeout(Some(ANSWER_TIMEOUT))
-        .and_then(|()| stream.set_write_timeout(Some(ANSWER_TIMEOUT)))
+        .set_read_timeout(Some(answer_within))
+        .and_then(|()| stream.set_write_timeout(Some(answer_within)))
         .and_then(|()| {
             // HTTP/1.0: the answer ends with the connection, never chunked.
             write!(
@@ -1038,6 +1091,90 @@ mod tests {
                 "{what}"
             );
         }
+    }
+
+    /// Once the model is found, Ollama is asked the window it gives it:
+    /// one big enough is shown, and one too small is a problem with its
+    /// fix. A model not found, or a hosted one, isn't asked about.
+    #[test]
+    fn a_found_models_window_is_shown_and_too_small_is_a_problem() {
+        use crate::model_window::{answering, loaded};
+        for (window, seen) in [(16384, true), (4096, false)] {
+            let ps = loaded(&format!(
+                r#"{{"name":"llama3.2:latest","context_length":{window}}}"#
+            ));
+            let (address, served) = answering(vec![String::from(MODELS), ps]);
+            let endpoint = format!("http://{address}/v1");
+            let found = with_window(
+                check_model(Some(&endpoint), Some("llama3.2")),
+                Some(&endpoint),
+                Some("llama3.2"),
+            );
+            let heads = served.join().unwrap();
+            assert!(
+                heads
+                    .get(1)
+                    .is_some_and(|head| head.starts_with("GET /api/ps HTTP/1.0")),
+                "{heads:?}"
+            );
+            if seen {
+                assert_eq!(
+                    found,
+                    Finding::Fine(format!("llama3.2 at {endpoint}, with a 16384-token window"))
+                );
+            } else {
+                let (what, fix) = problem(found);
+                assert!(
+                    what.ends_with(
+                        "gives llama3.2 a 4096-token window, and one answer can take 6,000 tokens"
+                    ),
+                    "{what}"
+                );
+                assert!(fix.contains("OLLAMA_CONTEXT_LENGTH=16384"), "{fix}");
+            }
+        }
+        let (address, served) = answering(vec![String::from(MODELS), loaded("")]);
+        let endpoint = format!("http://{address}/v1");
+        let missing = with_window(
+            check_model(Some(&endpoint), Some("mistral")),
+            Some(&endpoint),
+            Some("mistral"),
+        );
+        assert!(matches!(missing, Finding::Problem { .. }));
+        // The window's answer is still there for the next asker: doctor
+        // didn't ask for it.
+        assert_eq!(
+            ask(&address, "/mine").unwrap(),
+            Some(b"{\"models\":[]}".to_vec())
+        );
+        let heads = served.join().unwrap();
+        assert!(
+            heads
+                .get(1)
+                .is_some_and(|head| head.starts_with("GET /mine ")),
+            "a missing model isn't asked about: {heads:?}"
+        );
+        let hosted = Finding::Unchecked(String::from("hosted"));
+        assert_eq!(
+            with_window(hosted.clone(), Some("https://api.example/v1"), Some("m")),
+            hosted
+        );
+    }
+
+    /// The window joins a model found, and nothing else; when the server
+    /// doesn't say, the finding stands.
+    #[test]
+    fn a_window_joins_only_a_found_model() {
+        let fine = Finding::Fine(String::from("m at http://h/v1"));
+        assert_eq!(windowed(fine.clone(), "m", None), fine);
+        assert_eq!(
+            windowed(fine, "m", Some(8192)),
+            Finding::Fine(String::from("m at http://h/v1, with a 8192-token window"))
+        );
+        let missing = Finding::problem("missing", "fetch it");
+        assert_eq!(windowed(missing.clone(), "m", Some(16384)), missing);
+        let (what, _) = problem(windowed(Finding::Fine(String::new()), "m", Some(8191)));
+        assert!(what.contains("a 8191-token window"), "{what}");
     }
 
     #[test]

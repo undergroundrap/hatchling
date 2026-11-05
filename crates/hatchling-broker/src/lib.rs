@@ -79,6 +79,7 @@ pub mod listener;
 pub mod machine;
 pub mod memory_keep;
 pub mod memory_ops;
+pub mod model_window;
 pub mod operator;
 pub mod output_gate;
 pub mod owner;

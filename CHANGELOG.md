@@ -6,6 +6,10 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ## [Unreleased]
 
+### Changed
+
+- **The context meter reads Ollama's window itself.** When a run that called the model ends, the broker asks the model's server the window it gives the model (Ollama's `GET /api/ps`, while the model is loaded), and the meter measures against that, with no setting: "Context: 5.6K of 16K tokens (34%)". It's the window the server cuts a prompt to, so it's used over `HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW`, which still declares it for a server that doesn't say, a hosted one among them. `hatchling-broker doctor` shows the window once the model has loaded, and calls one under 8,192 tokens a problem, with the fix: Ollama's default on many GPUs, 4,096, cuts a thinking model off partway. The question goes from the broker, never a cell, to the plain-HTTP endpoint the operator set, as doctor's does.
+
 ## [0.7.0] - 2026-11-04
 
 An agent that knows you, with you in charge of what it keeps and spends, and what it does shown as it did it. It reads your goals, asks before it remembers anything or schedules anything, and suggests ideas and writes your Feed in its own marked words. You set its usage limits and the broker enforces them. Every answer shows the tools its run really used, how full the context got, and when the conversation is compacted.

@@ -48,8 +48,12 @@ pub struct Trail {
     chat: bool,
     /// Where the owner's model usage is counted, and their limits kept.
     usage: PathBuf,
-    /// The model's declared context window, in tokens.
+    /// The model's context window, in tokens: the declared one, until
+    /// its server says its own.
     context_window: Option<u32>,
+    /// The model's endpoint and name, to ask its server the window when
+    /// the session ends.
+    model: Option<(String, String)>,
     tools: Vec<ToolTally>,
     model_calls: u32,
     model_calls_refused: u32,
@@ -70,6 +74,7 @@ impl Trail {
             chat: false,
             usage: PathBuf::new(),
             context_window: None,
+            model: None,
             tools: Vec::new(),
             model_calls: 0,
             model_calls_refused: 0,
@@ -91,6 +96,33 @@ impl Trail {
     pub const fn with_window(mut self, window: Option<u32>) -> Self {
         self.context_window = window;
         self
+    }
+
+    /// The trail, asking the server at `endpoint` the window it gives
+    /// the model `name` when the session ends, after its model calls
+    /// ([`crate::model_window`]): the window the server says is the one
+    /// it keeps to, so it's used over the declared one.
+    #[must_use]
+    pub fn asking(mut self, endpoint: Option<&str>, name: Option<&str>) -> Self {
+        self.model = endpoint
+            .zip(name)
+            .map(|(endpoint, name)| (endpoint.to_owned(), name.to_owned()));
+        self
+    }
+
+    /// Asks the model's server the window it gives the model, after the
+    /// session's model calls: with none, the model may not be loaded,
+    /// and the question isn't worth a connection.
+    fn learn_window(&mut self) {
+        if self.model_calls == 0 {
+            return;
+        }
+        let Some((endpoint, name)) = &self.model else {
+            return;
+        };
+        if let Some(window) = crate::model_window::learned(endpoint, name) {
+            self.context_window = Some(window);
+        }
     }
 
     /// The trail, counting model calls in the usage directory `usage`,
@@ -183,6 +215,7 @@ impl Trail {
 impl Drop for Trail {
     /// The session ended, however it ended: its summary is written.
     fn drop(&mut self) {
+        self.learn_window();
         let Some(kind) = self.summary() else {
             return;
         };
@@ -726,6 +759,77 @@ mod tests {
             event.kind,
             SubagentEvent::RunSummary { ref tools, .. } if tools.len() == 1
         ));
+        let _ = std::fs::remove_file(&log);
+    }
+
+    /// The window in each summary written to `log`, in order, and how
+    /// many events it holds in all.
+    fn windows_in(log: &Path) -> (Vec<Option<u32>>, usize) {
+        let text = std::fs::read_to_string(log).unwrap();
+        let windows = text
+            .lines()
+            .filter_map(|line| {
+                let event: ActivityEvent = serde_json::from_str(line).unwrap();
+                let SubagentEvent::RunSummary { context_window, .. } = event.kind else {
+                    return None;
+                };
+                Some(context_window)
+            })
+            .collect();
+        (windows, text.lines().count())
+    }
+
+    /// A session that called the model asks its server the window when
+    /// it ends, and the server's is used over the declared one; one that
+    /// didn't call it doesn't ask, and when the server doesn't say, the
+    /// declared window stands.
+    #[test]
+    fn an_ended_session_learns_the_window_from_the_models_server() {
+        let log =
+            std::env::temp_dir().join(format!("hatchling-trail-window-{}.log", std::process::id()));
+        let _ = std::fs::remove_file(&log);
+        let (address, served) = crate::model_window::answering(vec![crate::model_window::loaded(
+            r#"{"name":"m","context_length":16384}"#,
+        )]);
+        let endpoint = format!("http://{address}/v1");
+        let trail = |id: &str, endpoint: &str| {
+            Trail::new(Some(log.clone()), id, "run-1")
+                .with_window(Some(32768))
+                .asking(Some(endpoint), Some("m"))
+        };
+        let mut quiet = trail("no-calls", &endpoint);
+        quiet.note(
+            Some(ToolUse::IdeaSuggest),
+            &SessionResponse::Suggest(SuggestResult::Suggested),
+        );
+        drop(quiet);
+        let mut called = trail("called", &endpoint);
+        called.model_call(Some(40), Some(2));
+        drop(called);
+        let heads = served.join().unwrap();
+        assert_eq!(
+            heads.len(),
+            1,
+            "only the session that called the model asked"
+        );
+        assert!(
+            heads
+                .first()
+                .is_some_and(|head| head.starts_with("GET /api/ps ")),
+            "{heads:?}"
+        );
+        let refusing = crate::test_port::RefusingPort::new();
+        let mut unsaid = trail("unsaid", &format!("http://{}/v1", refusing.addr()));
+        unsaid.model_call(Some(40), Some(2));
+        drop(unsaid);
+        let mut unasked =
+            Trail::new(Some(log.clone()), "unasked", "run-1").with_window(Some(32768));
+        unasked.model_call(Some(40), Some(2));
+        drop(unasked);
+        assert_eq!(
+            windows_in(&log),
+            (vec![Some(32768), Some(16384), Some(32768), Some(32768)], 4)
+        );
         let _ = std::fs::remove_file(&log);
     }
 

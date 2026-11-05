@@ -380,7 +380,7 @@
             },
             "context_window": {
               "default": null,
-              "description": "The model's context window in tokens, as the operator declared\nit: what the largest call is measured against. `None` when\nundeclared.",
+              "description": "The model's context window in tokens: the one the model's\nserver says it gives the model (Ollama does), else the one the\noperator declared. What the largest call is measured against;\n`None` when neither is known.",
               "format": "uint32",
               "minimum": 0,
               "type": [

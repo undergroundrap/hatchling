@@ -165,7 +165,7 @@ the agent says it did, and never what a request carried.
 | `model_calls_refused` | u32 | Model calls the broker refused past a usage limit the owner set. |
 | `peak_input_tokens` | u64 | Tokens the largest model call read, as its server reported: how full the model's context got. |
 | `output_tokens` | u64 | Tokens the model wrote over the session. |
-| `context_window` | u32 \| null | The model's context window in tokens, as the operator declared it (`HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW`); `null` when undeclared. |
+| `context_window` | u32 \| null | The model's context window in tokens: the one the model's server says it gives the model when the session ends (Ollama's `GET /api/ps`), else the one the operator declared (`HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW`); `null` when neither is known. |
 
 `tool` is one of `goals_read`, `goals_write`, `memory_recall`,
 `memory_propose`, `memory_write`, `schedule_read`, `schedule_write`,
