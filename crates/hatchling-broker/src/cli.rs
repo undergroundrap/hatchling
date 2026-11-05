@@ -151,7 +151,10 @@ fn valid_args(args: &[String]) -> bool {
         | ["redactions", "override", _, "--any-scope"]
         | ["vault-audit", "log"]
         | ["tools", "list"]
-        | ["schedule" | crate::model_switch::USE_HOSTED | crate::model_switch::USE_LOCAL, ..]
+        | [
+            "schedule" | crate::model_switch::USE_HOSTED | crate::model_switch::USE_LOCAL,
+            ..,
+        ]
         | ["tools", "add" | "remove", _]
         | ["secret", "add", _]
         | ["secret", "add", _, _]
@@ -243,7 +246,9 @@ mod tests {
         assert!(text.contains("vault-keyring <action>"));
         assert!(text.contains("browser-digest <browser>"));
         assert!(text.contains("doctor [--env <file>]"));
-        assert!(text.contains("secret add <name> | --for <host:port> [--replace]"));
+        assert!(text.contains("secret add <name> | --for <host:port> [--replace | --if-missing]"));
+        assert!(text.contains("use-hosted openrouter | --endpoint <url>"));
+        assert!(text.contains("use-local --model <name>"));
         // The digest is the operator's to ask for before any setting.
         assert_eq!(
             main(

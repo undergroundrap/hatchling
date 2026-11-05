@@ -369,10 +369,14 @@ fn switch(target: &Target, path: &Path) -> Result<(), String> {
         "Hatchling uses {} at {}{}{}. The old settings are in {}.",
         target.model,
         target.endpoint,
-        target
-            .window
-            .map_or_else(String::new, |window| format!(", with a {window}-token window")),
-        if target.thinking_off { ", thinking off" } else { "" },
+        target.window.map_or_else(String::new, |window| format!(
+            ", with a {window}-token window"
+        )),
+        if target.thinking_off {
+            ", thinking off"
+        } else {
+            ""
+        },
         backup.display()
     );
     if let Some(root) = settings.get(env::HATCHLING_SCHEDULER_DIR.name) {
@@ -403,7 +407,10 @@ fn switch(target: &Target, path: &Path) -> Result<(), String> {
             "the broker didn't restart: see `journalctl -u hatchling`, and `sudo hatchling-broker doctor`",
         ));
     }
-    let _ = writeln!(out, "Restarted the broker. Send a message in the app to check it.");
+    let _ = writeln!(
+        out,
+        "Restarted the broker. Send a message in the app to check it."
+    );
     Ok(())
 }
 
@@ -427,17 +434,29 @@ fn ready(target: &Target) -> Result<(), String> {
             target.endpoint, target.model, target.model
         ));
     }
-    let _ = writeln!(std::io::stdout().lock(), "The key for {}:", target.destination);
+    let _ = writeln!(
+        std::io::stdout().lock(),
+        "The key for {}:",
+        target.destination
+    );
     let program = std::env::current_exe()
         .map_err(|err| format!("can't find this program to ask for the key: {err}"))?;
     let given = std::process::Command::new(program)
-        .args(["secret", "add", "--for", &target.destination, "--if-missing"])
+        .args([
+            "secret",
+            "add",
+            "--for",
+            &target.destination,
+            "--if-missing",
+        ])
         .status()
         .map_err(|err| format!("can't ask for the key: {err}"))?;
     if given.success() {
         Ok(())
     } else {
-        Err(String::from("the key wasn't stored, so nothing was changed"))
+        Err(String::from(
+            "the key wasn't stored, so nothing was changed",
+        ))
     }
 }
 
