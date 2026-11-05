@@ -22,7 +22,8 @@ use sha2::{Digest as _, Sha256};
 use crate::cbor::{Value, decode, encode};
 use crate::ctap2::{
     CLIENT_PIN, FLAG_AT, FLAG_ED, FLAG_UP, FLAG_UV, GET_ASSERTION, GET_INFO, MAKE_CREDENTIAL,
-    NO_CREDENTIALS, PIN_AUTH_INVALID, PIN_INVALID, PIN_REQUIRED, USER_ACTION_TIMEOUT,
+    NO_CREDENTIALS, NOT_ALLOWED, PIN_AUTH_BLOCKED, PIN_AUTH_INVALID, PIN_BLOCKED, PIN_INVALID,
+    PIN_POLICY_VIOLATION, PIN_REQUIRED, USER_ACTION_TIMEOUT,
 };
 use crate::ctaphid::{BROADCAST, CBOR, Hid, INIT, KEEPALIVE, REPORT, TransportError, packets};
 use crate::pin::{Protocol, agree, agreement_key, cose_key, random};
@@ -74,6 +75,12 @@ pub(crate) struct Held {
 pub(crate) struct State {
     pub(crate) held: Vec<Held>,
     pub(crate) pin: Option<String>,
+    /// PIN tries left before the key locks itself.
+    pub(crate) retries: u8,
+    /// Wrong PINs since it was plugged in: three, and it wants replugging.
+    pub(crate) wrong_in_a_row: u8,
+    /// The shortest PIN it takes, as its info says.
+    pub(crate) min_pin_length: i64,
     pub(crate) present: bool,
     pub(crate) hmac_secret: bool,
     pub(crate) protocols: Vec<i64>,
@@ -82,7 +89,8 @@ pub(crate) struct State {
     pub(crate) remembers: bool,
     pub(crate) commands: Vec<u8>,
     agreement: Option<EphemeralPrivateKey>,
-    token: Option<Vec<u8>>,
+    /// The PIN token it gave last: cleared, it has forgotten it.
+    pub(crate) token: Option<Vec<u8>>,
     last_assertion: Option<Vec<u8>>,
 }
 
@@ -101,6 +109,9 @@ impl SoftKey {
             state: Rc::new(RefCell::new(State {
                 held: Vec::new(),
                 pin: None,
+                retries: 8,
+                wrong_in_a_row: 0,
+                min_pin_length: 4,
                 present: true,
                 hmac_secret: true,
                 protocols: vec![2, 1],
@@ -212,6 +223,7 @@ impl SoftKey {
                 Value::int(6),
                 Value::Array(state.protocols.iter().map(|n| Value::int(*n)).collect()),
             ),
+            (Value::int(0x0d), Value::int(state.min_pin_length)),
         ])
     }
 
@@ -222,6 +234,11 @@ impl SoftKey {
             .and_then(Protocol::from_number)
             .ok_or(0x02u8)?;
         match parameters.at(2).and_then(Value::as_int) {
+            Some(1) => Ok(Value::map(vec![(
+                Value::int(3),
+                Value::int(i64::from(self.state.borrow().retries)),
+            )])),
+            Some(3) => self.set_pin(protocol, parameters),
             Some(2) => {
                 let (private, public) = agreement_key().map_err(|_| 0x7fu8)?;
                 self.state.borrow_mut().agreement = Some(private);
@@ -233,12 +250,26 @@ impl SoftKey {
                 let shared = agree(protocol, private, parameters.at(3).ok_or(0x02u8)?)
                     .map_err(|_| 0x02u8)?;
                 let sent = parameters.at(6).and_then(Value::as_bytes).ok_or(0x02u8)?;
+                if state.retries == 0 {
+                    return Err(PIN_BLOCKED);
+                }
+                if state.wrong_in_a_row >= 3 {
+                    return Err(PIN_AUTH_BLOCKED);
+                }
                 let hash = shared.decrypt(sent).map_err(|_| PIN_INVALID)?;
                 let pin = state.pin.clone().ok_or(0x35u8)?;
                 let expected = Sha256::digest(pin.as_bytes());
                 if hash.as_slice() != expected.get(..16).unwrap_or(&[]) {
-                    return Err(PIN_INVALID);
+                    state.retries = state.retries.saturating_sub(1);
+                    state.wrong_in_a_row = state.wrong_in_a_row.saturating_add(1);
+                    return Err(if state.retries == 0 {
+                        PIN_BLOCKED
+                    } else {
+                        PIN_INVALID
+                    });
                 }
+                state.retries = 8;
+                state.wrong_in_a_row = 0;
                 let token = random::<32>().map_err(|_| 0x7fu8)?.to_vec();
                 state.token = Some(token.clone());
                 let sealed = shared.encrypt(&token).map_err(|_| 0x7fu8)?;
@@ -246,6 +277,36 @@ impl SoftKey {
             }
             _ => Err(0x02),
         }
+    }
+
+    /// `setPIN`: a new PIN on a key with none, checked as CTAP2 checks
+    /// it, its padding included.
+    fn set_pin(&self, protocol: Protocol, parameters: &Value) -> Result<Value, u8> {
+        let mut state = self.state.borrow_mut();
+        if state.pin.is_some() {
+            return Err(NOT_ALLOWED);
+        }
+        let private = state.agreement.take().ok_or(0x02u8)?;
+        let shared = agree(protocol, private, parameters.at(3).ok_or(0x02u8)?)
+            .map_err(|_| 0x02u8)?;
+        let sealed = parameters.at(5).and_then(Value::as_bytes).ok_or(0x02u8)?;
+        let auth = parameters.at(4).and_then(Value::as_bytes).ok_or(0x02u8)?;
+        if shared.authenticate(sealed) != auth {
+            return Err(PIN_AUTH_INVALID);
+        }
+        let padded = shared.decrypt(sealed).map_err(|_| PIN_AUTH_INVALID)?;
+        if padded.len() != 64 {
+            return Err(PIN_POLICY_VIOLATION);
+        }
+        let end = padded.iter().position(|byte| *byte == 0).unwrap_or(64);
+        let pin = std::str::from_utf8(padded.get(..end).unwrap_or(&[]))
+            .map_err(|_| PIN_POLICY_VIOLATION)?;
+        let long_enough = i64::try_from(pin.chars().count()).is_ok_and(|n| n >= state.min_pin_length);
+        if !long_enough || pin.len() > 63 {
+            return Err(PIN_POLICY_VIOLATION);
+        }
+        state.pin = Some(pin.to_owned());
+        Ok(Value::map(Vec::new()))
     }
 
     /// The PIN check a credential needs when a PIN is set.

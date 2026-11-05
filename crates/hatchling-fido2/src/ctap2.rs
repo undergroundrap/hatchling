@@ -42,6 +42,10 @@ pub const PIN_AUTH_BLOCKED: u8 = 0x34;
 pub const PIN_NOT_SET: u8 = 0x35;
 /// `CTAP2_ERR_PIN_REQUIRED`.
 pub const PIN_REQUIRED: u8 = 0x36;
+/// `CTAP2_ERR_PIN_POLICY_VIOLATION`: a new PIN the key refuses.
+pub const PIN_POLICY_VIOLATION: u8 = 0x37;
+/// `CTAP2_ERR_NOT_ALLOWED`: not now (setting a PIN that's already set).
+pub const NOT_ALLOWED: u8 = 0x30;
 
 /// The `up` (user present) flag in authenticator data.
 pub const FLAG_UP: u8 = 0x01;
@@ -79,6 +83,30 @@ pub enum Ctap2Error {
     /// The key can't verify its user: it has no PIN set.
     #[error("this security key has no PIN set, so it can't ask for one")]
     NoPinSet,
+    /// The PIN given isn't the key's: said with how many tries it has
+    /// before it locks itself, when it says ([`wrong_pin`]).
+    #[error("{0}")]
+    WrongPin(String),
+    /// A PIN is set already: a new one isn't set over it.
+    #[error("this security key has a PIN already")]
+    PinAlreadySet,
+    /// A new PIN the key wouldn't take: at least `min` characters, and at
+    /// most 63 bytes.
+    #[error("the key needs a PIN of at least {min} characters, and at most 63 bytes")]
+    PinPolicy {
+        /// The key's shortest PIN.
+        min: usize,
+    },
+}
+
+/// A wrong PIN, in words, with the tries left when known.
+#[must_use]
+pub fn wrong_pin(left: Option<u8>) -> String {
+    match left {
+        Some(1) => String::from("the PIN is wrong: 1 try left before the key locks itself for good"),
+        Some(left) => format!("the PIN is wrong: {left} tries left before the key locks itself"),
+        None => String::from("the PIN is wrong"),
+    }
 }
 
 /// What `authenticatorGetInfo` says, as far as this host needs it.
@@ -94,6 +122,9 @@ pub struct Info {
     /// Whether it issues tokens with permissions (CTAP 2.1's
     /// `getPinUvAuthTokenUsingPinWithPermissions`).
     pub pin_uv_auth_token: bool,
+    /// The shortest PIN it takes, in characters, when it says (CTAP 2.1's
+    /// `minPINLength`); 4 otherwise.
+    pub min_pin_length: Option<usize>,
     /// The PIN/UV auth protocols it speaks, in its order of preference.
     pub protocols: Vec<Protocol>,
 }
@@ -152,6 +183,11 @@ impl Info {
             extensions: texts(2)?,
             client_pin: option("clientPin"),
             pin_uv_auth_token: option("pinUvAuthToken") == Some(true),
+            min_pin_length: reply
+                .at(0x0d)
+                .and_then(Value::as_int)
+                .and_then(|min| usize::try_from(min).ok())
+                .filter(|min| (4..=63).contains(min)),
             protocols,
         })
     }
@@ -269,9 +305,13 @@ pub fn to_authenticator_error(error: &Ctap2Error) -> hatchling_vault::Authentica
         Ctap2Error::Status(PIN_INVALID) => {
             AuthenticatorError::Device(String::from("the PIN is wrong"))
         }
-        Ctap2Error::Status(PIN_BLOCKED | PIN_AUTH_BLOCKED) => AuthenticatorError::Device(
-            String::from("the key's PIN is blocked: unplug it and plug it in again, or reset it"),
-        ),
+        Ctap2Error::WrongPin(said) => AuthenticatorError::Device(said.clone()),
+        Ctap2Error::Status(PIN_AUTH_BLOCKED) => AuthenticatorError::Device(String::from(
+            "three wrong PINs in a row: unplug the key, plug it back in, and try again",
+        )),
+        Ctap2Error::Status(PIN_BLOCKED) => AuthenticatorError::Device(String::from(
+            "the key's PIN is blocked after too many wrong tries: only resetting it frees it, and that wipes what's registered on it (use your other key or a backup code)",
+        )),
         Ctap2Error::NoPinSet => AuthenticatorError::NoVerification,
         Ctap2Error::Status(PIN_REQUIRED | PIN_NOT_SET | PIN_AUTH_INVALID) | Ctap2Error::NoPin => {
             AuthenticatorError::Device(String::from(
@@ -283,7 +323,9 @@ pub fn to_authenticator_error(error: &Ctap2Error) -> hatchling_vault::Authentica
         | Ctap2Error::Malformed(_)
         | Ctap2Error::Mismatch(_)
         | Ctap2Error::Crypto(_)
-        | Ctap2Error::Cbor(_)) => AuthenticatorError::Device(other.to_string()),
+        | Ctap2Error::Cbor(_)
+        | Ctap2Error::PinAlreadySet
+        | Ctap2Error::PinPolicy { .. }) => AuthenticatorError::Device(other.to_string()),
     }
 }
 
