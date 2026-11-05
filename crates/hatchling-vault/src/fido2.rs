@@ -595,6 +595,55 @@ mod tests {
             .is_ok_and(|secret| secret.as_bytes() == b"kept")
     }
 
+    /// A key that answers only what every [`Authenticator`] must.
+    struct Bare;
+
+    impl Authenticator for Bare {
+        fn make_credential(
+            &mut self,
+            _: &str,
+            _: &[u8],
+        ) -> Result<Credential, AuthenticatorError> {
+            Err(AuthenticatorError::NoVerification)
+        }
+
+        fn hmac_secret(
+            &mut self,
+            _: &str,
+            _: &[u8],
+            _: &[u8; 32],
+        ) -> Result<[u8; 32], AuthenticatorError> {
+            Err(AuthenticatorError::NoVerification)
+        }
+    }
+
+    /// A key that can't say claims nothing: not holding, not a PIN, and
+    /// no way to set one.
+    #[test]
+    fn a_key_that_cant_say_claims_nothing() {
+        let mut key = Bare;
+        assert_eq!(key.holds("rp", b"id"), None);
+        assert_eq!(key.pin_set(), None);
+        assert_eq!(key.min_pin_length(), 4);
+        assert!(key.set_pin("2468").is_err());
+    }
+
+    /// An enrollment counts the keys in it.
+    #[test]
+    fn an_enrollment_counts_its_keys() {
+        let dir = test_dir("fido2-count");
+        let (mut keyring, kek, _) = vault(&dir);
+        let unlocked = keyring.unlock_file(&kek).unwrap();
+        let mut enrollment = keyring
+            .begin_key_enrollment(&unlocked, KeyCheck::Touch)
+            .unwrap();
+        assert_eq!(enrollment.keys(), 0);
+        let (mut one, mut two) = (VirtualAuthenticator::new(), VirtualAuthenticator::new());
+        keyring.enroll_key(&mut enrollment, &mut one).unwrap();
+        keyring.enroll_key(&mut enrollment, &mut two).unwrap();
+        assert_eq!(enrollment.keys(), 2);
+    }
+
     /// A key that counts what it's asked, for the PIN tries a wrong PIN
     /// spends.
     struct Counting {

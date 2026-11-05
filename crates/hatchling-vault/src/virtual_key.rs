@@ -220,6 +220,26 @@ impl VirtualAuthenticator {
 mod tests {
     use super::*;
 
+    /// It says what it holds by relying party and credential, both.
+    #[test]
+    fn it_holds_a_credential_for_its_relying_party_only() {
+        let mut key = VirtualAuthenticator::default();
+        let made = key.make_credential("rp", b"user").unwrap();
+        assert_eq!(key.holds("rp", &made.id), Some(true));
+        assert_eq!(key.holds("other", &made.id), Some(false));
+        assert_eq!(key.holds("rp", b"another"), Some(false));
+    }
+
+    /// A PIN is set once.
+    #[test]
+    fn it_takes_a_pin_when_it_has_none() {
+        let mut key = VirtualAuthenticator::default();
+        assert_eq!(key.pin_set(), Some(false));
+        key.set_pin("2468").unwrap();
+        assert_eq!(key.pin_set(), Some(true));
+        assert!(key.set_pin("1357").is_err());
+    }
+
     #[test]
     fn it_computes_hmac_secret_per_credential_and_relying_party() {
         let mut key = VirtualAuthenticator::default();
