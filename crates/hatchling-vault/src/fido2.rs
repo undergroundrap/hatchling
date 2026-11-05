@@ -599,11 +599,7 @@ mod tests {
     struct Bare;
 
     impl Authenticator for Bare {
-        fn make_credential(
-            &mut self,
-            _: &str,
-            _: &[u8],
-        ) -> Result<Credential, AuthenticatorError> {
+        fn make_credential(&mut self, _: &str, _: &[u8]) -> Result<Credential, AuthenticatorError> {
             Err(AuthenticatorError::NoVerification)
         }
 
@@ -632,7 +628,7 @@ mod tests {
     #[test]
     fn an_enrollment_counts_its_keys() {
         let dir = test_dir("fido2-count");
-        let (mut keyring, kek, _) = vault(&dir);
+        let (keyring, kek, _) = vault(&dir);
         let unlocked = keyring.unlock_file(&kek).unwrap();
         let mut enrollment = keyring
             .begin_key_enrollment(&unlocked, KeyCheck::Touch)
