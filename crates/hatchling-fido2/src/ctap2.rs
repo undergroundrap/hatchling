@@ -103,7 +103,9 @@ pub enum Ctap2Error {
 #[must_use]
 pub fn wrong_pin(left: Option<u8>) -> String {
     match left {
-        Some(1) => String::from("the PIN is wrong: 1 try left before the key locks itself for good"),
+        Some(1) => {
+            String::from("the PIN is wrong: 1 try left before the key locks itself for good")
+        }
         Some(left) => format!("the PIN is wrong: {left} tries left before the key locks itself"),
         None => String::from("the PIN is wrong"),
     }
@@ -529,9 +531,14 @@ pub(crate) mod tests {
             to_authenticator_error(&Ctap2Error::NoPinSet),
             AuthenticatorError::NoVerification
         );
-        for status in [PIN_BLOCKED, PIN_AUTH_BLOCKED] {
-            assert!(said(Ctap2Error::Status(status)).contains("blocked"));
-        }
+        assert!(said(Ctap2Error::Status(PIN_BLOCKED)).contains("blocked"));
+        assert!(said(Ctap2Error::Status(PIN_AUTH_BLOCKED)).contains("plug it back in"));
+        assert_eq!(
+            said(Ctap2Error::WrongPin(wrong_pin(Some(3)))),
+            "the PIN is wrong: 3 tries left before the key locks itself"
+        );
+        assert!(said(Ctap2Error::PinPolicy { min: 6 }).contains("at least 6 characters"));
+        assert!(said(Ctap2Error::PinAlreadySet).contains("has a PIN already"));
         for error in [
             Ctap2Error::Status(PIN_REQUIRED),
             Ctap2Error::Status(PIN_NOT_SET),

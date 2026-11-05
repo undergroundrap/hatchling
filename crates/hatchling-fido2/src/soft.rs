@@ -287,8 +287,8 @@ impl SoftKey {
             return Err(NOT_ALLOWED);
         }
         let private = state.agreement.take().ok_or(0x02u8)?;
-        let shared = agree(protocol, private, parameters.at(3).ok_or(0x02u8)?)
-            .map_err(|_| 0x02u8)?;
+        let shared =
+            agree(protocol, private, parameters.at(3).ok_or(0x02u8)?).map_err(|_| 0x02u8)?;
         let sealed = parameters.at(5).and_then(Value::as_bytes).ok_or(0x02u8)?;
         let auth = parameters.at(4).and_then(Value::as_bytes).ok_or(0x02u8)?;
         if shared.authenticate(sealed) != auth {
@@ -301,7 +301,8 @@ impl SoftKey {
         let end = padded.iter().position(|byte| *byte == 0).unwrap_or(64);
         let pin = std::str::from_utf8(padded.get(..end).unwrap_or(&[]))
             .map_err(|_| PIN_POLICY_VIOLATION)?;
-        let long_enough = i64::try_from(pin.chars().count()).is_ok_and(|n| n >= state.min_pin_length);
+        let long_enough =
+            i64::try_from(pin.chars().count()).is_ok_and(|n| n >= state.min_pin_length);
         if !long_enough || pin.len() > 63 {
             return Err(PIN_POLICY_VIOLATION);
         }
