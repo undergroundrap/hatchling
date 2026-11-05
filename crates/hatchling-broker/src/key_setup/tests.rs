@@ -273,6 +273,23 @@ fn one_key_takes_accepting_what_that_means() {
     assert_eq!(keyring_of(&config).tier(), Tier::HardwareKey);
 }
 
+/// A key that isn't seen, after a while, gets a word on what to check, and
+/// only the once.
+#[test]
+fn a_key_not_seen_gets_a_hint_on_what_to_check() {
+    let (_scratch, vault, config) = vault("setup-hint");
+    let mut bench = Bench::new_keys(1, &[]);
+    let looks = usize::try_from(HINT_AFTER).unwrap();
+    let nothing: Vec<&[usize]> = vec![&[]; looks * 2];
+    let run = run_with(&vault, &config, &mut bench, &[], &nothing);
+    assert_eq!(run.said.text().matches(not_seen(false)).count(), 1);
+    let early: Vec<&[usize]> = vec![&[]; looks - 2];
+    let run = run_with(&vault, &config, &mut bench, &[], &early);
+    assert!(!run.said.text().contains(not_seen(false)));
+    assert!(not_seen(false).contains("another port"));
+    assert!(not_seen(true).contains("usbipd list"));
+}
+
 /// With no key in, it says what to do, sees one arrive, and with none it
 /// stops having changed nothing.
 #[test]

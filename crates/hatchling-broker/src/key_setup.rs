@@ -45,6 +45,8 @@ const LOOK_EVERY: Duration = Duration::from_millis(500);
 
 /// How long it looks before it asks again: five minutes.
 const LOOKS: u32 = 600;
+/// How many looks with nothing there before saying what to check.
+const HINT_AFTER: u32 = 30;
 
 /// How many wrong tries before a step stops.
 const TRIES: u32 = 3;
@@ -272,6 +274,9 @@ fn register_next(
             said = Some(plain);
         }
         looks += 1;
+        if looks == HINT_AFTER && !any {
+            setup.say(not_seen(setup.wsl));
+        }
         if looks >= LOOKS || !(setup.wait)() {
             return Err(Error::Usage {
                 reason: format!(
@@ -280,6 +285,15 @@ fn register_next(
                 ),
             });
         }
+    }
+}
+
+/// What to check when a key that's plugged in isn't seen.
+const fn not_seen(wsl: bool) -> &'static str {
+    if wsl {
+        "Still nothing. In WSL a key shows up only once it's attached: in PowerShell, `usbipd list` should say Attached beside it. A new port has a new BUSID. If it isn't listed at all, try another port."
+    } else {
+        "Still nothing. Most keys flash when they get power. If yours didn't, push it in fully, or try another port, without a hub or adapter. It's rarely the key."
     }
 }
 

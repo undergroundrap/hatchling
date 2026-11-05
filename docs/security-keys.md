@@ -59,6 +59,16 @@ usbipd attach --wsl --busid <busid> --auto-attach
 
 After a restart of Windows or WSL, attach it again to unlock (`usbipd attach --wsl --busid <busid>`). While it's attached, Windows can't use the key, for Windows Hello or passkeys in your browser: `usbipd detach --busid <busid>` gives it back. The BUSID belongs to the port: in another port, `usbipd list` shows its new one.
 
+## If your key isn't seen
+
+It's rarely the key. Most keys flash when they get power, so:
+
+- **No flash:** push it in fully, or try another port. A hub or adapter can be the problem: try without one.
+- **It flashes, and isn't seen, on WSL:** it isn't attached. `usbipd list` should say `Attached` beside it. A new port has a new BUSID, so bind and attach that one.
+- **It flashes, and isn't seen, on Linux:** setup or `unlock` says if it's a permissions problem, and which rule to add. On a virtual machine, pass the key through to it first.
+
+**A key doesn't need a backup code just because it wasn't found.** A code is used up when you type it, so check the key first.
+
 ## After a restart
 
 The service waits, locked: the app can't connect, and `sudo hatchling-broker doctor` says so. Plug in a key (in WSL, attach it), and run:

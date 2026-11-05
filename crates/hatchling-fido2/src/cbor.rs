@@ -626,15 +626,13 @@ mod tests {
             map = Value::Map(vec![(Value::int(1), map)]);
         }
         assert_eq!(decode(&encode(&map)), Err(CborError::TooDeep));
-        // Through keys as well: a map whose key is a map, and so on.
+        // Through keys as well: a map whose key is a map, and so on. Within
+        // the limit that's a key of the wrong type; past it, too deep.
         let mut keyed = Value::Null;
         for _ in 0..MAX_DEPTH {
             keyed = Value::Map(vec![(keyed, Value::Null)]);
         }
-        assert!(
-            decode(&encode(&keyed)).is_ok(),
-            "{MAX_DEPTH} levels of keys are fine"
-        );
+        assert_eq!(decode(&encode(&keyed)), Err(CborError::KeyType));
         let deeper = Value::Map(vec![(keyed, Value::Null)]);
         assert_eq!(decode(&encode(&deeper)), Err(CborError::TooDeep));
     }

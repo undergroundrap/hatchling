@@ -48,7 +48,10 @@ impl Noise {
         let mut bytes = sample.to_vec();
         for _ in 0..=self.below(4) {
             let at = self.below(bytes.len());
-            bytes[at] = self.byte();
+            let byte = self.byte();
+            if let Some(slot) = bytes.get_mut(at) {
+                *slot = byte;
+            }
         }
         if self.below(4) == 0 {
             bytes.truncate(self.below(sample.len()));
@@ -108,14 +111,14 @@ fn auth_data() -> Vec<u8> {
 #[test]
 fn the_decoder_takes_anything_and_means_only_what_it_was_sent() {
     let mut noise = Noise(0x9e37_79b9_7f4a_7c15);
-    let samples = [info(), auth_data()];
+    let samples = (info(), auth_data());
     let mut taken = 0;
     for round in 0..40_000 {
         let bytes = if round % 2 == 0 {
             let len = noise.below(48);
             noise.bytes(len)
         } else {
-            let sample = &samples[round % 4 / 2];
+            let sample = if round % 4 == 1 { &samples.0 } else { &samples.1 };
             noise.spoiled(sample)
         };
         if let Ok(value) = decode(&bytes) {
@@ -241,7 +244,9 @@ impl Hid for Faulty {
         let mut report = self.key.receive(timeout)?;
         if now {
             if let Some(report) = &mut report {
-                report[20 + self.at % 40] ^= 0x55;
+                if let Some(byte) = report.get_mut(20 + self.at % 40) {
+                    *byte ^= 0x55;
+                }
             }
         }
         Ok(report)

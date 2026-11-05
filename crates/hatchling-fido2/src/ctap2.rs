@@ -304,11 +304,9 @@ pub fn to_authenticator_error(error: &Ctap2Error) -> hatchling_vault::Authentica
         }
         Ctap2Error::Status(OPERATION_DENIED | USER_ACTION_TIMEOUT | KEEPALIVE_CANCEL)
         | Ctap2Error::Transport(TransportError::Timeout) => AuthenticatorError::NoUserPresence,
-        Ctap2Error::Transport(TransportError::Device(CHANNEL_BUSY)) => {
-            AuthenticatorError::Device(String::from(
-                "another program is using the security key: close it, and try again",
-            ))
-        }
+        Ctap2Error::Transport(TransportError::Device(CHANNEL_BUSY)) => AuthenticatorError::Device(
+            String::from("another program is using the security key: close it, and try again"),
+        ),
         Ctap2Error::Status(PIN_INVALID) => {
             AuthenticatorError::Device(String::from("the PIN is wrong"))
         }

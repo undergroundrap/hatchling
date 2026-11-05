@@ -913,8 +913,7 @@ fn authorize(
 }
 
 /// What a start says with no key to open the vault.
-const OPEN_NO_KEY: &str =
-    "No security key is plugged in. Type a backup code (it is used up), or nothing to stop:";
+const OPEN_NO_KEY: &str = "No security key found. If yours is plugged in, seat it again or try another port (in WSL, attach it), and run this again. Or type a backup code (it is used up), or nothing to stop:";
 
 /// What it says when the keys plugged in aren't registered here.
 const OPEN_NOT_REGISTERED: &str = "That security key isn't registered with this vault. Plug in one that is and run this again, or type a backup code (it is used up), or nothing to stop:";

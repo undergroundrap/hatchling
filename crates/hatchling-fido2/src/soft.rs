@@ -523,11 +523,7 @@ impl SoftKey {
                 *last ^= 1;
             }
         }
-        let id = if tamper == Tamper::OtherCredential {
-            vec![0xee; 16]
-        } else {
-            held.id.clone()
-        };
+        let id = claimed(tamper, &held.id);
         let reply = Value::map(vec![
             (
                 Value::int(1),
@@ -548,6 +544,15 @@ impl SoftKey {
 /// The encrypted `hmac-secret` output for credential `held`, from the
 /// extension input in `parameters`: the salt checked and decrypted under
 /// the key agreement, `HMAC-SHA-256(CredRandom, salt)` encrypted back.
+/// The credential an assertion names: `id`, unless tampered with.
+fn claimed(tamper: Tamper, id: &[u8]) -> Vec<u8> {
+    if tamper == Tamper::OtherCredential {
+        vec![0xee; 16]
+    } else {
+        id.to_vec()
+    }
+}
+
 /// Whether an assertion's options ask for no touch: a pre-flight.
 fn asks_no_touch(parameters: &Value) -> bool {
     parameters
