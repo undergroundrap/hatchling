@@ -257,12 +257,31 @@ class GetTest(unittest.TestCase):
         done = self.run_get(env={"OLLAMA_HOST": host})
         self.assertIn("This GPU has 4096 MiB", done.stdout)
 
+    def test_a_hosted_model_needs_no_ollama_and_its_key_is_asked_by_the_installer(self) -> None:
+        done = self.run_get("--hosted", "openrouter")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("using a hosted model, from openrouter", done.stdout)
+        self.assertIn("sudo hatchling-broker use-local --model qwen3.5:9b", done.stdout)
+        sudo = self.recorded()
+        self.assertRegex(sudo, r"(?m)sudo sh \S+/install\.sh --from \S+ --hosted openrouter$")
+        self.assertNotIn("--model", sudo)
+        self.log.unlink()
+        done = self.run_get("--hosted", "openrouter", "--model", "qwen/qwen3-coder:free")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertRegex(self.recorded(), r"(?m)--hosted openrouter --model qwen/qwen3-coder:free$")
+
+    def test_without_ollama_a_hosted_model_is_offered(self) -> None:
+        done = self.run_get()
+        self.assertIn("sh get-hatchling.sh --hosted openrouter", done.stderr)
+
     def test_what_isnt_asked_for_properly_is_refused(self) -> None:
         for args, said in [
             (["--model", "a model"], "--model has a character"),
             (["--version", "main"], "--version is a release's tag"),
             (["--version", "v1;rm"], "--version is a release's tag"),
             (["--bogus"], "usage:"),
+            (["--hosted", "elsewhere"], "--hosted names a provider Hatchling knows"),
+            (["--hosted", "openrouter", "--model-endpoint", "http://localhost:1/v1"], "two models"),
         ]:
             with self.subTest(args=args):
                 done = self.run_get(*args)
