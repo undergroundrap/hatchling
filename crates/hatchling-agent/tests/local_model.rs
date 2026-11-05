@@ -432,9 +432,8 @@ fn the_handshake_is_rerun_every_session() {
     // is swapped in behind the same endpoint, and answers each of the
     // probe's tries in text. The next session catches it.
     let mut script = vec![probe_reply(), text_reply("first task done")];
-    script.extend(
-        (0..hatchling_model::ATTEMPTS).map(|_| text_reply("swapped-in model, chat only")),
-    );
+    script
+        .extend((0..hatchling_model::ATTEMPTS).map(|_| text_reply("swapped-in model, chat only")));
     let server = LocalServer::start(script);
     let broker = local_broker("local-swap", server.port);
     let cell = ready_cell(&broker);

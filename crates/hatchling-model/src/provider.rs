@@ -913,10 +913,13 @@ mod tests {
                     matches!(&error, LoopError::ModelCutOff(reason) if reason.contains("\"length\"")),
                     "case {name:?}: {error:?}"
                 );
-            } else if name == "message without content or calls" {
-                // The model said nothing, each time it was asked: named
-                // as such, for the person to be told the model failed,
-                // not the server.
+            } else if matches!(
+                name,
+                "message without content or calls" | "null content" | "empty content" | "non-string content"
+            ) {
+                // No content to use and no tool call, each time it was
+                // asked: the model said nothing, named as such, for the
+                // person to be told the model failed, not the server.
                 assert!(
                     matches!(error, LoopError::ModelSilent(_)),
                     "case {name:?}: {error:?}"
