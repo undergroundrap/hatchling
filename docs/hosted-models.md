@@ -14,6 +14,8 @@ Hosted destinations use HTTPS. `local:localhost:PORT` is credentialed local HTTP
 
 ## The quick way, on a service install
 
+**Installing with a hosted model, and none on this machine** (no GPU needed): `sh get-hatchling.sh --hosted openrouter`, or from a clone, `sudo scripts/install.sh --from release --hosted openrouter` ([install](install.md#quick-install)). It asks for the key at the same prompt as below, in your own terminal. What follows switches an install you already have.
+
 Installed as a service ([install](install.md)), you don't have to pick between a local model and a hosted one: set both up, and switch whenever the work calls for it. Your conversation, memory and schedules stay with Hatchling either way. One command switches to a hosted model: the model, its server, its window, thinking, and the egress that reaches it, all together. It asks for the server's key at its prompt when the vault doesn't hold one yet (a key typed, piped or pasted, never an argument), backs up the settings, and restarts the broker:
 
 ```bash

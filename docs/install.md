@@ -9,7 +9,7 @@ To try it by hand first, the [README's quickstart](../README.md#quickstart) runs
 ## What you need
 
 - **Linux with systemd**, kernel 5.11 or later (or WSL2 with systemd on), on x86_64 or aarch64, with glibc 2.34 or later: Ubuntu 22.04, Debian 12, Fedora, RHEL 9 and their successors.
-- **A model it can reach:** an OpenAI-compatible server on this machine. [Ollama](https://ollama.com) is the simplest: install it, then `ollama pull qwen3.5:9b`. The model must be good at calling tools; see [Choosing a model](#choosing-a-model). A hosted API comes after; see [Using a hosted model](hosted-models.md).
+- **A model it can reach:** an OpenAI-compatible server on this machine, or a hosted one. [Ollama](https://ollama.com) is the simplest local one: install it, then `ollama pull qwen3.5:9b`. With no GPU, or no wish to run a model here, install with a hosted model instead (`--hosted openrouter`, an OpenRouter key; a free one works). The model must be good at calling tools; see [Choosing a model](#choosing-a-model) and [Using a hosted model](hosted-models.md).
 - **The GitHub CLI**, to download and verify the release (or download its files from the release page).
 
 ## Quick install
@@ -28,7 +28,9 @@ It checks this machine can run Hatchling, downloads the programs, the app and th
 
 It doesn't pipe anything into a shell, and it's in the release's `SHA256SUMS` and attested like every other file: `gh attestation verify get-hatchling.sh --repo undergroundrap/hatchling` checks it was built by this project's release workflow. `sh get-hatchling.sh --help` lists its options: another model, a model server other than Ollama, `--yes` to download the model without asking.
 
-A hosted model, with a far larger window, is one command after, which asks for its key in your own terminal: [Using a hosted model](hosted-models.md). Then switch between the two in the app.
+**No GPU, or no Ollama?** Install with a hosted model instead, and nothing runs a model on this machine: `sh get-hatchling.sh --hosted openrouter`. The installer asks for your OpenRouter key at its own prompt, in the terminal you ran it in (paste it and press Enter; it shows a `*` for each character), seals it in the vault, and uses OpenRouter's free 1,000,000-token model unless `--model` names another of its models. A key not given stops it before anything starts; run it again to give one.
+
+Either way, the other kind is one command after (`use-hosted` or `use-local`, [below](#switching-models)), and then a switch in the app.
 
 ## Install
 
@@ -45,6 +47,8 @@ gh release download v0.7.0 --repo undergroundrap/hatchling --dir release
 ```bash
 sudo scripts/install.sh --from release --model-endpoint http://localhost:11434/v1 --model qwen3.5:9b
 ```
+
+Or, with a hosted model and none on this machine, `sudo scripts/install.sh --from release --hosted openrouter`: it asks for the key at its own prompt.
 
 Before it starts anything, it runs `hatchling-broker doctor`, which checks the settings, that this machine can make the agent's cells, and that the model's server answers with the model named. If one isn't so, it stops and says what to do. Run it again after: it keeps your configuration.
 

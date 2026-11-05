@@ -3,6 +3,7 @@
 #
 #   sudo scripts/install.sh --from <dir> --model-endpoint <url> --model <name>
 #                           [--ollama-context <tokens>] [--force]
+#   sudo scripts/install.sh --from <dir> --hosted openrouter [--model <id>] [--force]
 #
 # Run it as root, with sudo, from a clone of the version you install: the
 # user who ran sudo is the owner, the one the app answers.
@@ -14,8 +15,11 @@
 # installed, and one that differs stops the install.
 #
 # The model is an OpenAI-compatible endpoint on this machine, such as
-# Ollama's (http://localhost:11434/v1). For a hosted API, install with a
-# local one, then follow docs/hosted-models.md.
+# Ollama's (http://localhost:11434/v1), or, with --hosted, a hosted one with
+# no model on this machine at all: `hatchling-broker use-hosted` sets it up
+# once the vault is sealed, and asks for its key at its own prompt, here (a
+# key typed or piped, never an argument). A key not given stops the
+# install before anything starts. docs/hosted-models.md has the rest.
 #
 # When that's Ollama, running as its systemd service, it sizes the model's
 # window to this machine: 65,536 tokens when the model fits on the GPU with
@@ -42,15 +46,17 @@ set -eu
 
 usage() {
   echo "usage: sudo scripts/install.sh --from <dir> --model-endpoint <url> --model <name> [--ollama-context <tokens>] [--force]" >&2
+  echo "       sudo scripts/install.sh --from <dir> --hosted openrouter [--model <id>] [--force]" >&2
   exit 64
 }
 fail() { echo "install.sh: $*" >&2; exit 1; }
 say() { echo "== $*"; }
 
-FROM= ENDPOINT= MODEL= FORCE= OLLAMA_CONTEXT=
+FROM= ENDPOINT= MODEL= FORCE= OLLAMA_CONTEXT= HOSTED=
 while [ $# -gt 0 ]; do
   case "$1" in
     --from) FROM=${2:-}; shift 2 || usage ;;
+    --hosted) HOSTED=${2:-}; shift 2 || usage ;;
     --model-endpoint) ENDPOINT=${2:-}; shift 2 || usage ;;
     --model) MODEL=${2:-}; shift 2 || usage ;;
     --ollama-context) OLLAMA_CONTEXT=${2:-}; shift 2 || usage ;;
@@ -58,7 +64,19 @@ while [ $# -gt 0 ]; do
     *) usage ;;
   esac
 done
-[ -n "$FROM" ] && [ -n "$ENDPOINT" ] && [ -n "$MODEL" ] || usage
+[ -n "$FROM" ] || usage
+if [ -n "$HOSTED" ]; then
+  # A provider use-hosted knows by name: it has the endpoint, model and
+  # window.
+  case "$HOSTED" in
+    openrouter) ;;
+    *) fail "--hosted names a provider Hatchling knows: openrouter (for another, install with a local model, then docs/hosted-models.md)" ;;
+  esac
+  [ -z "$ENDPOINT" ] || fail "--hosted and --model-endpoint are two models: install with one, then switch (docs/hosted-models.md)"
+  [ -z "$OLLAMA_CONTEXT" ] || fail "--ollama-context is for a local model, not --hosted"
+else
+  [ -n "$ENDPOINT" ] && [ -n "$MODEL" ] || usage
+fi
 
 [ "$(id -u)" = 0 ] || fail "run it as root, with sudo"
 OWNER=${SUDO_UID:-}
@@ -71,16 +89,20 @@ HERE=$(cd "$(dirname "$0")/.." && pwd -P)
 PACKAGING=$HERE/packaging
 [ -d "$PACKAGING" ] || fail "no packaging/ beside this script: run it from a clone"
 
-# The model: an http endpoint on this machine, as host:port.
-case "$ENDPOINT" in
-  http://localhost:*|http://127.0.0.1:*) ;;
-  *) fail "--model-endpoint must be http://localhost:<port>/...: a hosted API is set up after, by docs/hosted-models.md" ;;
-esac
-HOSTPORT=${ENDPOINT#http://}
-HOSTPORT=${HOSTPORT%%/*}
-case "$HOSTPORT" in
-  *:*[!0-9]*|*:) fail "--model-endpoint has no port: $ENDPOINT" ;;
-esac
+# The model: an http endpoint on this machine, as host:port, unless it's
+# hosted.
+HOSTPORT=
+if [ -z "$HOSTED" ]; then
+  case "$ENDPOINT" in
+    http://localhost:*|http://127.0.0.1:*) ;;
+    *) fail "--model-endpoint must be http://localhost:<port>/...: for a hosted model, --hosted openrouter (docs/hosted-models.md)" ;;
+  esac
+  HOSTPORT=${ENDPOINT#http://}
+  HOSTPORT=${HOSTPORT%%/*}
+  case "$HOSTPORT" in
+    *:*[!0-9]*|*:) fail "--model-endpoint has no port: $ENDPOINT" ;;
+  esac
+fi
 case "$MODEL" in
   *[!A-Za-z0-9._:/-]*) fail "--model has a character a model's name doesn't: $MODEL" ;;
 esac
@@ -185,9 +207,18 @@ if [ -f "$ENV" ] && [ -z "$FORCE" ]; then
 else
   say "writing the configuration: $ENV"
   mkdir -p -m 755 /etc/hatchling
-  sed -e "s|@OWNER_UID@|$OWNER|" -e "s|@MODEL_ENDPOINT@|$ENDPOINT|" \
-      -e "s|@MODEL_NAME@|$MODEL|" -e "s|@MODEL_HOSTPORT@|$HOSTPORT|g" \
-      "$PACKAGING/hatchling.env" > "$ENV.new"
+  # Hosted, the model's lines are left empty, and egress reaches no model
+  # server yet: use-hosted sets them, after the vault is sealed.
+  if [ -n "$HOSTED" ]; then
+    sed -e "s|@OWNER_UID@|$OWNER|" -e "s|@MODEL_ENDPOINT@||" -e "s|@MODEL_NAME@||" \
+        -e "s|local-keyless:@MODEL_HOSTPORT@||" -e "s|egress:@MODEL_HOSTPORT@,||" \
+        -e "s|@MODEL_HOSTPORT@||g" "$PACKAGING/hatchling.env" > "$ENV.new"
+  else
+    sed -e "s|@OWNER_UID@|$OWNER|" -e "s|@MODEL_ENDPOINT@|$ENDPOINT|" \
+        -e "s|@MODEL_NAME@|$MODEL|" -e "s|@MODEL_HOSTPORT@|$HOSTPORT|g" \
+        "$PACKAGING/hatchling.env" > "$ENV.new"
+  fi
+  grep -q '^[^#]*@[A-Z_][A-Z_]*@' "$ENV.new" && fail "the packaged configuration has a placeholder this installer doesn't fill"
   chmod 600 "$ENV.new"
   mv "$ENV.new" "$ENV"
 fi
@@ -207,6 +238,20 @@ install -D -m 644 "$PACKAGING/systemd/hatchling-host.service" /etc/systemd/user/
 if [ -z "$(ls -A /var/lib/hatchling/vault)" ]; then
   say "sealing the vault"
   (set -a; . "$ENV"; set +a; /usr/local/bin/hatchling-broker migrate-vault)
+fi
+
+# A hosted model: its settings, all agreeing, and its key in the vault,
+# asked for here, by use-hosted. A configuration kept from a local install
+# keeps its local model, to switch back to in the app.
+if [ -n "$HOSTED" ]; then
+  say "setting up $HOSTED: it asks for the key at its own prompt (paste it, and press Enter)"
+  if [ -n "$MODEL" ]; then
+    /usr/local/bin/hatchling-broker use-hosted "$HOSTED" --model "$MODEL" --no-restart \
+      || fail "the hosted model wasn't set up, and nothing was started: run this again"
+  else
+    /usr/local/bin/hatchling-broker use-hosted "$HOSTED" --no-restart \
+      || fail "the hosted model wasn't set up, and nothing was started: run this again"
+  fi
 fi
 
 # The model's room: an agent's prompt, its tools and a working history
@@ -279,12 +324,12 @@ ollama_room() {
   done
   say "gave Ollama a 32768-token window ($DROP_IN, which removing undoes): $MODEL runs partly on the CPU even so, or Ollama doesn't say how it fits"
 }
-ollama_room
+[ -n "$HOSTED" ] || ollama_room
 
 # The model, loaded once now: doctor sees how it fits on this machine, and
 # the first answer doesn't wait for it. Only Ollama loads a model this
 # way; another server's refusal is said, and doctor checks it anyway.
-if command -v curl > /dev/null; then
+if [ -z "$HOSTED" ] && command -v curl > /dev/null; then
   say "loading $MODEL, so doctor can see how it fits"
   load_model || say "the model's server didn't load $MODEL (not Ollama, or not ready yet): doctor checks it"
 fi
@@ -301,7 +346,14 @@ systemctl restart hatchling.service
 
 say "starting the app's host as $OWNER_NAME"
 loginctl enable-linger "$OWNER_NAME"
-systemctl --user -M "$OWNER_NAME@" daemon-reload
+# The owner's own systemd, which linger starts: just after a boot (a WSL
+# distro starts on first use) it can be a few seconds from answering.
+tries=0
+until systemctl --user -M "$OWNER_NAME@" daemon-reload 2> /dev/null; do
+  tries=$((tries + 1))
+  [ "$tries" -le 30 ] || fail "$OWNER_NAME's own systemd doesn't answer: see systemctl status user@$OWNER.service, then run this again (it keeps your configuration; the broker is installed and running)"
+  sleep 1
+done
 systemctl --user -M "$OWNER_NAME@" enable hatchling-host.service > /dev/null
 systemctl --user -M "$OWNER_NAME@" restart hatchling-host.service
 

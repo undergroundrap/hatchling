@@ -16,12 +16,17 @@
 #      installed;
 #   3. makes sure a model is there to answer: Ollama, on this machine, with
 #      the model (qwen3.5:9b unless --model names another), which it offers
-#      to pull. Without Ollama it says how to install it, and stops: it
-#      doesn't install other people's software for you;
+#      to pull. Without Ollama it says how to install it, or to use a hosted
+#      model, and stops: it doesn't install other people's software for you.
+#      With --hosted openrouter there's no model on this machine at all:
+#      the installer asks for the provider's key at its own prompt;
 #   4. runs the release's scripts/install.sh with sudo, which checks the
 #      files again, installs the service, and prints the app's address.
 #
 # Options:
+#   --hosted openrouter     a hosted model, with no GPU or Ollama needed:
+#                           OpenRouter's free 1,000,000-token one, unless
+#                           --model names another of its models
 #   --model <name>          the model, on Ollama (default qwen3.5:9b)
 #   --model-endpoint <url>  a model server on this machine other than
 #                           Ollama's: it must already have the model
@@ -31,9 +36,9 @@
 #                           (https://, or file:// for a local copy)
 #
 # This file, as the release publishes it, names its own version below, so
-# the files it downloads are the ones released with it. A hosted model (a
-# far larger window) is one command after, which asks for its key itself:
-# docs/hosted-models.md.
+# the files it downloads are the ones released with it. Installed with one
+# model, the other is one command after (use-hosted or use-local), and then
+# a switch in the app: docs/hosted-models.md.
 set -eu
 
 REPO=undergroundrap/hatchling
@@ -56,25 +61,30 @@ DEFAULT_MODEL=qwen3.5:9b
 say() { echo "== $*"; }
 fail() { echo "get-hatchling: $*" >&2; exit 1; }
 usage() {
-  echo "usage: sh get-hatchling.sh [--model <name>] [--model-endpoint <url>] [--yes] [--version <tag>] [--from-url <url>]" >&2
+  echo "usage: sh get-hatchling.sh [--hosted openrouter] [--model <name>] [--model-endpoint <url>] [--yes] [--version <tag>] [--from-url <url>]" >&2
   exit 64
 }
 
-MODEL= ENDPOINT= YES= FROM_URL=
+MODEL= ENDPOINT= YES= FROM_URL= HOSTED=
 while [ $# -gt 0 ]; do
   case "$1" in
+    --hosted) HOSTED=${2:-}; shift 2 || usage ;;
     --model) MODEL=${2:-}; shift 2 || usage ;;
     --model-endpoint) ENDPOINT=${2:-}; shift 2 || usage ;;
     --yes) YES=1; shift ;;
     --version) VERSION=${2:-}; shift 2 || usage ;;
     --from-url) FROM_URL=${2:-}; shift 2 || usage ;;
-    -h|--help) sed -n '2,36p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,/^set -eu$/{/^#/p}' "$0"; exit 0 ;;
     *) usage ;;
   esac
 done
-[ -n "$MODEL" ] || MODEL=$DEFAULT_MODEL
+case "$HOSTED" in
+  '') [ -n "$MODEL" ] || MODEL=$DEFAULT_MODEL ;;
+  openrouter) [ -z "$ENDPOINT" ] || fail "--hosted and --model-endpoint are two models: install with one, then switch" ;;
+  *) fail "--hosted names a provider Hatchling knows: openrouter" ;;
+esac
 case "$MODEL" in
-  ''|*[!A-Za-z0-9._:/-]*) fail "--model has a character a model's name doesn't: $MODEL" ;;
+  *[!A-Za-z0-9._:/-]*) fail "--model has a character a model's name doesn't: $MODEL" ;;
 esac
 case "$VERSION" in
   latest|v[0-9]*) ;;
@@ -162,7 +172,9 @@ tar -xzf "$DIR/hatchling-installer.tar.gz" -C "$DIR/installer" --no-same-owner -
   || fail "the installer has no scripts/install.sh and packaging/"
 
 # 3. A model to answer.
-if [ -n "$ENDPOINT" ]; then
+if [ -n "$HOSTED" ]; then
+  say "using a hosted model, from $HOSTED: the installer asks for its key"
+elif [ -n "$ENDPOINT" ]; then
   say "using the model server at $ENDPOINT: the installer checks it has $MODEL"
 else
   ENDPOINT=$OLLAMA
@@ -175,7 +187,7 @@ else
     echo "   No NVIDIA GPU found: a local model may run on the CPU, slowly. A hosted model is one command after: docs/hosted-models.md"
   fi
   if ! command -v ollama > /dev/null; then
-    fail "Hatchling needs a model to answer, and Ollama isn't installed. Install it from https://ollama.com/download (on Linux, its own script: curl -fsSL https://ollama.com/install.sh | sh), then run this again."
+    fail "Hatchling needs a model to answer, and Ollama isn't installed. Install it from https://ollama.com/download (on Linux, its own script: curl -fsSL https://ollama.com/install.sh | sh), then run this again. Or use a hosted model, with no GPU needed: sh get-hatchling.sh --hosted openrouter (an OpenRouter key; a free one works)."
   fi
   TAGS=$(curl -fsS --max-time 5 "${ENDPOINT%/v1}/api/tags" 2> /dev/null) \
     || fail "Ollama is installed but doesn't answer at ${ENDPOINT%/v1}: start it (sudo systemctl start ollama), then run this again."
@@ -193,8 +205,19 @@ fi
 
 # 4. Install, with the release's own installer.
 say "installing: sudo asks for your password"
-sudo sh "$DIR/installer/scripts/install.sh" --from "$DIR" --model-endpoint "$ENDPOINT" --model "$MODEL"
-echo
-echo "A hosted model too, with a far larger window? Switch to one in your own terminal,"
-echo "which asks for its key there:  sudo hatchling-broker use-hosted openrouter"
+if [ -n "$HOSTED" ]; then
+  if [ -n "$MODEL" ]; then
+    sudo sh "$DIR/installer/scripts/install.sh" --from "$DIR" --hosted "$HOSTED" --model "$MODEL"
+  else
+    sudo sh "$DIR/installer/scripts/install.sh" --from "$DIR" --hosted "$HOSTED"
+  fi
+  echo
+  echo "A model on this machine too, for private work or offline? With Ollama and a model,"
+  echo "in your own terminal:  sudo hatchling-broker use-local --model qwen3.5:9b"
+else
+  sudo sh "$DIR/installer/scripts/install.sh" --from "$DIR" --model-endpoint "$ENDPOINT" --model "$MODEL"
+  echo
+  echo "A hosted model too, with a far larger window? Switch to one in your own terminal,"
+  echo "which asks for its key there:  sudo hatchling-broker use-hosted openrouter"
+fi
 echo "After that, switch between the two in the app, under Settings, General, Model."

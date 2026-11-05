@@ -279,6 +279,8 @@ jobs:
           (cd "$RUNNER_TEMP/files" && tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - ui | gzip -n -9 > "$release/hatchling-ui.tar.gz")
           scripts/release-installer.sh "$release" v0.0.0-ci
           (cd "$release" && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
+          mkdir "$RUNNER_TEMP/release-installer"
+          tar -xzf "$release/hatchling-installer.tar.gz" -C "$RUNNER_TEMP/release-installer"
 
       - name: Install, and ask the agent, before and after a restart
         run: |
@@ -325,6 +327,32 @@ jobs:
           grep -q "^  PROBLEM  settings       /etc/hatchling/hatchling.env can be changed by someone else" "$RUNNER_TEMP/doctor.log"
           sudo chmod 600 /etc/hatchling/hatchling.env
           sudo hatchling-broker tools list > /dev/null
+
+      - name: A hosted model, with no model on this machine, its key piped to use-hosted's prompt
+        run: |
+          # A configuration written again (--force), for a hosted model: no
+          # local server, nothing in egress but the provider. With no key
+          # given, it stops before starting anything.
+          if sudo sh "$RUNNER_TEMP/release-installer/scripts/install.sh" --from "$RUNNER_TEMP/release" --hosted openrouter --force < /dev/null > "$RUNNER_TEMP/install-hosted-nokey.log" 2>&1; then exit 1; fi
+          cat "$RUNNER_TEMP/install-hosted-nokey.log"
+          grep -q "the hosted model wasn't set up, and nothing was started: run this again" "$RUNNER_TEMP/install-hosted-nokey.log"
+          # Run again, as it says, with the key (a stand-in; nothing calls the
+          # provider here): it keeps that configuration, and finishes it.
+          echo 'sk-or-v1-stand-in-key-for-ci' | sudo sh "$RUNNER_TEMP/release-installer/scripts/install.sh" --from "$RUNNER_TEMP/release" --hosted openrouter | tee "$RUNNER_TEMP/install-hosted.log"
+          grep -q "setting up openrouter" "$RUNNER_TEMP/install-hosted.log"
+          grep -q "^Nothing found wrong.$" "$RUNNER_TEMP/install-hosted.log"
+          grep -q "http://127.0.0.1:7340/#hatchling-ui=" "$RUNNER_TEMP/install-hosted.log"
+          sudo grep -qx 'HATCHLING_SCHEDULER_MODEL_ENDPOINT=https://openrouter.ai/api/v1' /etc/hatchling/hatchling.env
+          sudo grep -qx 'HATCHLING_EGRESS_ALLOWLIST=openrouter.ai:443' /etc/hatchling/hatchling.env
+          sudo grep -qx 'HATCHLING_EGRESS_GRANTS=openrouter.ai:443' /etc/hatchling/hatchling.env
+          sudo grep -q '^HATCHLING_API_GRANTS=channel-send:local,.*,egress:openrouter.ai:443$' /etc/hatchling/hatchling.env
+          if sudo grep -v '^#' /etc/hatchling/hatchling.env | grep -q 'localhost\|MODEL_OTHER'; then exit 1; fi
+          # The key is in the vault: asked again, it isn't asked for.
+          sudo hatchling-broker secret add --for openrouter.ai:443 --if-missing < /dev/null 2>&1 | tee "$RUNNER_TEMP/secrets.log"
+          grep -q "egress-openrouter-ai-443 is in the vault already" "$RUNNER_TEMP/secrets.log"
+          if sudo grep -rq "stand-in-key-for-ci" /etc/hatchling /var/lib/hatchling; then exit 1; fi
+          # A provider it doesn't know is refused.
+          if sudo sh "$RUNNER_TEMP/release-installer/scripts/install.sh" --from "$RUNNER_TEMP/release" --hosted elsewhere < /dev/null; then exit 1; fi
 
       - name: The services' logs
         if: always()
