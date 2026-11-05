@@ -101,12 +101,37 @@ def guard_page(pagemap, address):
     return len(entry) == 8 and bool(int.from_bytes(entry, 'little') & GUARD_REGION)
 
 
-def read_range(mem, pagemap, offset, size, mapping):
+def readable_now(pid, address):
+    """Whether `address` is in a readable mapping of process `pid` now.
+
+    The scan reads a running process: a thread that ends frees its stack,
+    and a page listed when the scan began can be gone when it's read.
+    """
+    with open(f'/proc/{pid}/maps', encoding='utf-8') as maps:
+        for line in maps:
+            fields = line.split()
+            start, end = (int(bound, 16) for bound in fields[0].split('-'))
+            if start <= address < end:
+                return fields[1].startswith('r')
+    return False
+
+
+def page_flags(pagemap, address):
+    """The flag bits (55 to 63) of the page at `address`'s pagemap entry:
+    never its frame or swap number."""
+    pagemap.seek(address // PAGE * 8)
+    entry = pagemap.read(8)
+    return int.from_bytes(entry, 'little') >> 55 << 55 if len(entry) == 8 else 0
+
+
+def read_range(mem, pagemap, offset, size, mapping, still_readable):
     """The bytes at [offset, offset + size) of a process, with the number
-    read: a guard region's page reads as zeros, and isn't counted.
+    read: a guard region's page, or one no longer mapped readable
+    (`still_readable(address)` says), reads as zeros, and isn't counted.
 
     Any other page that won't read fails the scan, naming the mapping by
-    its permissions and name, never what it holds.
+    its permissions and name and the page's pagemap flags, never what it
+    holds.
     """
     mem.seek(offset)
     try:
@@ -121,8 +146,10 @@ def read_range(mem, pagemap, offset, size, mapping):
         try:
             chunk = mem.read(length)
         except OSError as error:
-            if not guard_page(pagemap, page):
-                raise OSError(error.errno, f'{error.strerror} reading the mapping {mapping}') from error
+            if not guard_page(pagemap, page) and still_readable(page):
+                flags = page_flags(pagemap, page)
+                raise OSError(error.errno, f'{error.strerror} reading the mapping {mapping}'
+                              f' (pagemap flags {flags:#x}, kernel {os.uname().release})') from error
             chunk = bytes(length)
         else:
             read += len(chunk)
@@ -152,7 +179,8 @@ def memory_holds(pid, key, chunk_size=1024 * 1024):
             previous = b''
             mapping = f"{fields[1]} {' '.join(fields[5:]) or '(anonymous)'}"
             for offset in range(start, end, chunk_size):
-                data, read = read_range(mem, pagemap, offset, min(chunk_size, end - offset), mapping)
+                data, read = read_range(mem, pagemap, offset, min(chunk_size, end - offset), mapping,
+                                        lambda address: readable_now(pid, address))
                 held = held or key in previous + data
                 scanned += read
                 previous = data[-(len(key) - 1):] if len(key) > 1 else b''

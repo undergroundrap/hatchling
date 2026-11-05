@@ -1,14 +1,15 @@
 from pathlib import Path
 import hashlib
 import io
+import os
 import secrets
 import subprocess
 import sys
 import tempfile
 import unittest
 
-from hosted_model_support import (GUARD_REGION, PAGE, checked_file, guard_page, memory_holds, readonly_mount,
-                                  sanitize_logs, snapshot)
+from hosted_model_support import (GUARD_REGION, PAGE, checked_file, guard_page, memory_holds, read_range,
+                                  readable_now, readonly_mount, sanitize_logs, snapshot)
 
 
 class SnapshotTests(unittest.TestCase):
@@ -126,6 +127,41 @@ class MemoryTests(unittest.TestCase):
             child.wait()
             child.stdin.close()
             child.stdout.close()
+
+    def test_a_page_gone_since_the_maps_were_read_is_left_out_and_one_still_there_fails(self):
+        class Memory:
+            """Three pages of a process, the middle one unreadable."""
+            def __init__(self):
+                self.at = 0
+
+            def seek(self, at):
+                self.at = at
+
+            def read(self, size):
+                if self.at < 2 * PAGE and self.at + size > PAGE:
+                    raise OSError(5, 'Input/output error')
+                return b'k' * size
+
+        def pagemap(*entries):
+            return io.BytesIO(b''.join(entry.to_bytes(8, 'little') for entry in entries))
+        present = 1 << 63
+        data, read = read_range(Memory(), pagemap(present, present | 12345, present), 0, 3 * PAGE,
+                                'rw-p (anonymous)', lambda address: False)
+        self.assertEqual(data, b'k' * PAGE + bytes(PAGE) + b'k' * PAGE)
+        self.assertEqual(read, 2 * PAGE, 'a page gone is not counted as read')
+        with self.assertRaises(OSError) as raised:
+            read_range(Memory(), pagemap(present, present | 12345, present), 0, 3 * PAGE,
+                       'rw-p (anonymous)', lambda address: True)
+        said = str(raised.exception)
+        self.assertIn('reading the mapping rw-p (anonymous)', said)
+        self.assertIn(f'pagemap flags {present:#x}', said, 'the flags, never the frame')
+        self.assertNotIn(hex(present | 12345), said)
+
+    def test_this_process_stack_is_readable_now_and_an_unmapped_address_is_not(self):
+        import ctypes
+        buffer = ctypes.create_string_buffer(64)
+        self.assertTrue(readable_now(os.getpid(), ctypes.addressof(buffer)))
+        self.assertFalse(readable_now(os.getpid(), 0))
 
     def test_only_a_guard_regions_entry_excuses_a_page(self):
         def pagemap(*entries):
