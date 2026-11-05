@@ -239,7 +239,9 @@ fn register_next(
         let (new, any) = {
             let mut keys = setup.devices.every_key();
             let any = !keys.is_empty();
-            let new = keys.iter_mut().position(|key| !enrollment.holds(&mut **key));
+            let new = keys
+                .iter_mut()
+                .position(|key| !enrollment.holds(&mut **key));
             (new, any)
         };
         if let Some(new) = new {
@@ -517,9 +519,11 @@ fn add_second(
 }
 
 /// What `vault-keyring setup` does before the service's settings are taken
-/// on, which it may add to: the keyring's place, and a PIN required of
-/// every key; and stops the service, as moving the vault gives it a new
-/// key a running broker wouldn't have.
+/// on.
+///
+/// It adds to them, when they have no keyring: its place, and a PIN
+/// required of every key. And it stops the service, as moving the vault
+/// gives it a new key a running broker wouldn't have.
 ///
 /// # Errors
 ///
@@ -566,7 +570,9 @@ pub fn prepare() -> Result<(), String> {
     if stopped.success() {
         Ok(())
     } else {
-        Err(String::from("can't stop the service: sudo systemctl stop hatchling"))
+        Err(String::from(
+            "can't stop the service: sudo systemctl stop hatchling",
+        ))
     }
 }
 
@@ -581,9 +587,8 @@ pub fn run_setup(
     config: &KeyringConfig,
     stores: &[(Store, PathBuf)],
 ) -> Result<(), Error> {
-    let mut asking = |prompt: &str| {
-        ring::terminal_answer(prompt, false).map(|answer| answer.to_string())
-    };
+    let mut asking =
+        |prompt: &str| ring::terminal_answer(prompt, false).map(|answer| answer.to_string());
     let mut secret = |prompt: &str| ring::terminal_answer(prompt, true);
     let mut devices = ring::platform_keys(Box::new(|| {
         ring::terminal_answer(ring::PIN_PROMPT, true)
@@ -632,7 +637,7 @@ pub fn run_setup(
         std::io::stderr(),
         "\nAll set. Hatchling is locked, as it is after every restart. Unlock it now:"
     );
-    crate::unlock_relay::unlock_main("hatchling-broker", &broker.vault);
+    let _ = crate::unlock_relay::unlock_main("hatchling-broker", &broker.vault);
     let _ = writeln!(
         std::io::stderr(),
         "After each restart, the same: sudo hatchling-broker unlock"

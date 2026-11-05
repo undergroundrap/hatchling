@@ -62,7 +62,7 @@ impl Said {
     }
 }
 
-impl std::io::Write for Said {
+impl Write for Said {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         self.0.borrow_mut().extend_from_slice(bytes);
         Ok(bytes.len())
@@ -78,11 +78,17 @@ fn last_code_end(said: &Said) -> String {
     let text = said.text();
     let last = text
         .lines()
-        .filter(|line| line.trim_start().chars().next().is_some_and(|c| c.is_ascii_digit()))
-        .next_back()
+        .rfind(|line| {
+            line.trim_start()
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_digit())
+        })
         .unwrap_or_default()
         .replace('-', "");
-    last.chars().skip(last.chars().count().saturating_sub(4)).collect()
+    last.chars()
+        .skip(last.chars().count().saturating_sub(4))
+        .collect()
 }
 
 /// One run: what's asked, what's said, and how it ended.
@@ -189,7 +195,11 @@ fn two_keys_plugged_in_are_registered_together() {
     let run = run_with(&vault, &config, &mut bench, &["1", "2", "<code>"], &[]);
     assert_eq!(run.done.unwrap(), Done::Protected);
     assert_eq!(names(&config), ["Nano, in this computer", "Keychain key"]);
-    assert!(!run.said.text().contains("unplug this one"), "{}", run.said.text());
+    assert!(
+        !run.said.text().contains("unplug this one"),
+        "{}",
+        run.said.text()
+    );
     assert!(!run.asked.iter().any(|prompt| prompt.contains("second key")));
     assert!(!codes_unconfirmed(config.keyring.as_deref().unwrap()));
     let keyring = keyring_of(&config);
@@ -213,7 +223,11 @@ fn with_one_port_the_second_key_is_noticed_arriving() {
     );
     assert_eq!(run.done.unwrap(), Done::Protected);
     assert_eq!(names(&config).len(), 2);
-    assert!(run.said.text().contains("unplug this one and plug in the other"));
+    assert!(
+        run.said
+            .text()
+            .contains("unplug this one and plug in the other")
+    );
 }
 
 /// The same key back in is said to be, untouched, and the wait goes on.
@@ -247,7 +261,13 @@ fn one_key_takes_accepting_what_that_means() {
         before,
         "only the codes that say there's a way back"
     );
-    let run = run_with(&vault, &config, &mut bench, &["1", "no", "one key", "<code>"], &[]);
+    let run = run_with(
+        &vault,
+        &config,
+        &mut bench,
+        &["1", "no", "one key", "<code>"],
+        &[],
+    );
     assert_eq!(run.done.unwrap(), Done::Protected);
     assert_eq!(names(&config).len(), 1);
     assert_eq!(keyring_of(&config).tier(), Tier::HardwareKey);
@@ -279,7 +299,13 @@ fn a_new_key_is_given_a_pin() {
     let (_scratch, vault, mut config) = vault("setup-pin");
     config.require_key_pin = true;
     let mut bench = Bench::new_keys(1, &[0]);
-    let run = run_with(&vault, &config, &mut bench, &["2", "no", "one key", "<code>"], &[]);
+    let run = run_with(
+        &vault,
+        &config,
+        &mut bench,
+        &["2", "no", "one key", "<code>"],
+        &[],
+    );
     assert_eq!(run.done.unwrap(), Done::Protected);
     assert!(run.said.text().contains("This key has no PIN yet."));
     let key = bench.keys.first_mut().unwrap();
@@ -349,7 +375,10 @@ fn codes_never_confirmed_are_replaced_on_the_next_run() {
     assert_eq!(run.done.unwrap(), Done::Protected);
     assert!(codes_unconfirmed(&path));
     assert!(run.said.text().contains("Not confirmed"));
-    assert_eq!(run.asked.iter().filter(|p| p.contains("last four")).count(), 3);
+    assert_eq!(
+        run.asked.iter().filter(|p| p.contains("last four")).count(),
+        3
+    );
 
     // Run again: a fresh set, and only that's asked.
     let run = run_with(&vault, &config, &mut bench, &["<code>"], &[]);
@@ -382,19 +411,37 @@ fn a_crash_before_the_codes_are_shown_is_picked_up() {
 fn a_vault_with_one_key_is_offered_a_second() {
     let (_scratch, vault, config) = vault("setup-second");
     let mut bench = Bench::new_keys(2, &[0]);
-    run_with(&vault, &config, &mut bench, &["1", "no", "one key", "<code>"], &[])
-        .done
-        .unwrap();
-    let run = run_with(&vault, &config, &mut bench, &["yes", "keychain"], &[&[], &[1]]);
+    run_with(
+        &vault,
+        &config,
+        &mut bench,
+        &["1", "no", "one key", "<code>"],
+        &[],
+    )
+    .done
+    .unwrap();
+    let run = run_with(
+        &vault,
+        &config,
+        &mut bench,
+        &["yes", "keychain"],
+        &[&[], &[1]],
+    );
     assert_eq!(run.done.unwrap(), Done::Protected);
     assert_eq!(names(&config), ["Nano, in this computer", "keychain"]);
     assert!(run.said.text().contains("Registered: keychain."));
     // Said no to: left as it is, and asked again next time.
     let (_other, vault, config) = self::vault("setup-second-no");
     let mut bench = Bench::new_keys(1, &[0]);
-    run_with(&vault, &config, &mut bench, &["1", "no", "one key", "<code>"], &[])
-        .done
-        .unwrap();
+    run_with(
+        &vault,
+        &config,
+        &mut bench,
+        &["1", "no", "one key", "<code>"],
+        &[],
+    )
+    .done
+    .unwrap();
     let run = run_with(&vault, &config, &mut bench, &["no"], &[]);
     assert_eq!(run.done.unwrap(), Done::Protected);
     assert_eq!(names(&config).len(), 1);

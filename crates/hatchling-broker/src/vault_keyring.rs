@@ -1561,6 +1561,10 @@ fn warning_text(warning: Warning) -> String {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "the guided setup's tests reuse these fixtures"
+)]
 pub(crate) mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 

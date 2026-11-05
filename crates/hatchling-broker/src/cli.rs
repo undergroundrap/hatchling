@@ -105,7 +105,10 @@ pub fn main(program: &str, args: &[String]) -> ExitCode {
         && args.get(1).map(String::as_str) == Some(crate::key_setup::SETUP_ACTION)
     {
         if let Err(why) = crate::key_setup::prepare() {
-            let _ = writeln!(std::io::stderr().lock(), "{program} vault-keyring setup: {why}");
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "{program} vault-keyring setup: {why}"
+            );
             return ExitCode::FAILURE;
         }
     }
@@ -177,16 +180,8 @@ fn valid_args(args: &[String]) -> bool {
         | [crate::model_window::MODEL_FIT_SUBCOMMAND, _, _]
         | [
             "vault-keyring",
-            "setup"
-            | "init"
-            | "enroll-totp"
-            | "enroll-keys"
-            | "use-file-tier"
-            | "backup-codes"
-            | "status"
-            | "add-key"
-            | "remove-key"
-            | "label-key",
+            "setup" | "init" | "enroll-totp" | "enroll-keys" | "use-file-tier" | "backup-codes"
+            | "status" | "add-key" | "remove-key" | "label-key",
         ]
         | ["redactions", "list" | "stats" | "categories"]
         | ["redactions", "show" | "raw" | "override", _]
