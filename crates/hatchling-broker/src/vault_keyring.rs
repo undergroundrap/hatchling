@@ -840,8 +840,30 @@ impl<R: BufRead, W: Write> Console<R, W> {
 }
 
 /// How a key's PIN is asked for.
-const PIN_PROMPT: &str =
+pub(crate) const PIN_PROMPT: &str =
     "This security key has a PIN. Enter it (it goes only to the key), or nothing to stop:";
+
+/// An answer to `prompt` at this terminal (stdin, the prompt on stderr);
+/// a `secret` one isn't shown as it's typed.
+///
+/// # Errors
+///
+/// Returns [`Error::Vault`] if the terminal can't be read.
+pub(crate) fn terminal_answer(
+    prompt: &str,
+    secret: bool,
+) -> Result<zeroize::Zeroizing<String>, Error> {
+    let mut console = Console {
+        input: std::io::stdin().lock(),
+        output: std::io::stderr(),
+        stdin: true,
+    };
+    if secret {
+        console.ask_secret(prompt)
+    } else {
+        console.ask(prompt).map(zeroize::Zeroizing::new)
+    }
+}
 
 /// A PIN prompt on `console`: an empty answer is no PIN.
 fn pin_prompt<R: BufRead + 'static, W: Write + 'static>(
@@ -1948,6 +1970,49 @@ mod tests {
             })),
             Err(Error::Usage { .. })
         ));
+    }
+
+    /// A vault at the TOTP tier, started with nobody at its terminal,
+    /// opens over the unlock relay (`crate::unlock_relay`) with a current
+    /// code, asked in the operator's terminal; a wrong one is told why,
+    /// and opens nothing.
+    #[test]
+    fn a_locked_vault_opens_over_the_unlock_relay_with_a_current_code() {
+        use std::os::unix::net::UnixStream;
+        let (_scratch, vault, config) = adopted("relay");
+        let mut app = App::new(1);
+        enroll_totp(&vault, &config, &mut |prompt| Ok(app.answer(prompt))).unwrap();
+        assert!(crate::unlock_relay::needs_a_person(&config));
+        let operator = |stream: UnixStream, code: String| {
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .unwrap();
+            std::thread::spawn(move || {
+                let mut heard = Vec::new();
+                let result = crate::unlock_relay::operate(&stream, &[], &mut |prompt, secret| {
+                    heard.push((prompt.to_owned(), secret));
+                    Ok(zeroize::Zeroizing::new(code.clone()))
+                });
+                (result, heard)
+            })
+        };
+        let (keeper, operator_end) = UnixStream::pair().unwrap();
+        let wrong = operator(operator_end, String::from("000000"));
+        assert!(crate::unlock_relay::one_try(&keeper, &vault, &config, &mut NoKeys).is_err());
+        let (result, heard) = wrong.join().unwrap();
+        assert!(result.is_err_and(|why| !why.is_empty()));
+        assert_eq!(heard.len(), 1);
+        assert!(
+            heard
+                .first()
+                .is_some_and(|(prompt, secret)| prompt.contains("Current code") && !secret)
+        );
+
+        let (keeper, operator_end) = UnixStream::pair().unwrap();
+        let right = operator(operator_end, app.code(30));
+        let dek = crate::unlock_relay::one_try(&keeper, &vault, &config, &mut NoKeys).unwrap();
+        assert_eq!(right.join().unwrap().0, Ok(()));
+        assert!(reads_the_secret(&vault, &dek));
     }
 
     #[test]

@@ -111,6 +111,17 @@ pub fn main(program: &str, args: &[String]) -> ExitCode {
         );
         return ExitCode::FAILURE;
     }
+    // Root's, as itself: it opens the security keys the keeper may not,
+    // so it acts for no other user.
+    if args.first().map(String::as_str) == Some(crate::unlock_relay::UNLOCK_SUBCOMMAND) {
+        return match Config::from_env() {
+            Ok(config) => crate::unlock_relay::unlock_main(program, &config.vault),
+            Err(err) => {
+                let _ = writeln!(std::io::stderr().lock(), "{program}: {err}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     match run(args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
@@ -132,7 +143,7 @@ pub fn help(program: &str) -> String {
     render_help(
         program,
         "[subcommand] | --help | -h",
-        "Serve agents with no subcommand. Operator subcommands:\n  doctor [--env <file>]   (what stops it working here, and the fix)\n  migrate-vault\n  rekey-vault [<new-key-file>]   (no file with a keyring)\n  vault-keyring <action>\n    init, enroll-totp, enroll-keys, use-file-tier, backup-codes,\n    status, add-key, remove-key, label-key\n  redactions list | stats | categories\n  redactions show <id> | raw <id> | override <id> [--any-scope]\n  vault-audit [log [count]]\n  tools list | add <path> | remove <path>   (what a CLI cell may run)\n  secret add <name> | --for <host:port> [--replace | --if-missing]   (a key, shown as *)\n  use-hosted openrouter | --endpoint <url> [--model <id>] [--window <tokens>] [--thinking off|on]\n  use-local --model <name> [--endpoint <url>] [--window <tokens>] [--thinking off|on]\n    (switch the model, its server and its egress together, and restart)\n  clean [--dry-run]   (a dead broker's leftovers; never your data)\n  schedule list | add <task> <when> | remove <id>   (as yourself, not sudo)\n  browser-digest <browser>   (the digest HATCHLING_BROWSER_SHA256 pins)\n\nThe broker builds and supervises the agent's cell. Internal spawner\ncommands skill-cell <spec-file>, agent-run <spec-file>, browser-cell <spec-file>,\nharness-tree, vault-keeper, egress-authority and spawner are broker-owned.",
+        "Serve agents with no subcommand. Operator subcommands:\n  doctor [--env <file>]   (what stops it working here, and the fix)\n  migrate-vault\n  rekey-vault [<new-key-file>]   (no file with a keyring)\n  vault-keyring <action>\n    init, enroll-totp, enroll-keys, use-file-tier, backup-codes,\n    status, add-key, remove-key, label-key\n  unlock   (a vault with a security key or codes waits, locked, after a\n    start as a service: open it here, with the key or a code)\n  redactions list | stats | categories\n  redactions show <id> | raw <id> | override <id> [--any-scope]\n  vault-audit [log [count]]\n  tools list | add <path> | remove <path>   (what a CLI cell may run)\n  secret add <name> | --for <host:port> [--replace | --if-missing]   (a key, shown as *)\n  use-hosted openrouter | --endpoint <url> [--model <id>] [--window <tokens>] [--thinking off|on]\n  use-local --model <name> [--endpoint <url>] [--window <tokens>] [--thinking off|on]\n    (switch the model, its server and its egress together, and restart)\n  clean [--dry-run]   (a dead broker's leftovers; never your data)\n  schedule list | add <task> <when> | remove <id>   (as yourself, not sudo)\n  browser-digest <browser>   (the digest HATCHLING_BROWSER_SHA256 pins)\n\nThe broker builds and supervises the agent's cell. Internal spawner\ncommands skill-cell <spec-file>, agent-run <spec-file>, browser-cell <spec-file>,\nharness-tree, vault-keeper, egress-authority and spawner are broker-owned.",
         crate::environment::ENVIRONMENT,
     )
 }
@@ -142,7 +153,14 @@ fn valid_args(args: &[String]) -> bool {
     let values: Vec<&str> = args.iter().map(String::as_str).collect();
     match values.as_slice() {
         []
-        | ["migrate-vault" | "vault-audit" | "rekey-vault" | "clean" | "doctor"]
+        | [
+            "migrate-vault"
+            | "vault-audit"
+            | "rekey-vault"
+            | "clean"
+            | "doctor"
+            | crate::unlock_relay::UNLOCK_SUBCOMMAND,
+        ]
         | ["clean", "--dry-run"]
         | ["doctor", "--env", _]
         | ["rekey-vault" | BROWSER_DIGEST_SUBCOMMAND, _]
