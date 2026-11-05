@@ -2,7 +2,7 @@
 
 Hatchling keeps your keys and sign-ins in a vault, sealed at rest. By default its key is in a file beside it, so the service comes back by itself after a restart. A FIDO2 security key, such as a YubiKey, protects it more: the vault's key is then derived on the security key itself, from a secret that never leaves it (the `hmac-secret` extension). Without the key, the vault can't be opened, whatever else someone has: a copy of the disk, a backup, or the machine itself, powered off.
 
-**The trade-off: after each restart, you unlock it.** The service starts at boot, finds the vault locked, and waits: the agent and its schedules wait with it. You unlock it with one command and a touch of the key. Work that came due while it was locked runs then, and says it ran late. If the machine restarts while you're away (a power cut, an update), Hatchling waits for you.
+**The trade-off: after each restart, you unlock it.** The service starts at boot, finds the vault locked, and waits: the agent and its schedules wait with it. You unlock it with one command and a touch of the key. A schedule that came due while it was locked runs once it's unlocked, marked late: once, however many times it was due. If the machine restarts while you're away (a power cut, an update), Hatchling waits for you.
 
 ## What you need
 
