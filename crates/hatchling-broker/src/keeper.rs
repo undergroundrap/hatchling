@@ -265,6 +265,10 @@ pub fn keeper_dirs(config: &Config, keyring: &KeyringConfig) -> Vec<PathBuf> {
             dirs.push(dir.to_path_buf());
         }
     }
+    // Where it waits to be unlocked, when its vault needs a person.
+    if crate::unlock_relay::needs_a_person(keyring) {
+        dirs.push(crate::unlock_relay::unlock_dir(vault));
+    }
     dirs
 }
 
@@ -352,7 +356,7 @@ fn searchable(dir: &Path, uid: u32, gid: u32) -> bool {
 /// The security keys plugged in now, each opened by its node's name: what
 /// the keeper's user may not open itself. One that can't be opened is
 /// left out, said in the log.
-fn open_security_keys() -> Vec<(String, std::fs::File)> {
+pub(crate) fn open_security_keys() -> Vec<(String, std::fs::File)> {
     let bus = hatchling_fido2::linux::Hidraw::new(Box::new(|| None));
     let nodes = bus.nodes().unwrap_or_else(|error| {
         tracing::warn!(%error, "cannot list the security keys for the vault keeper");
@@ -973,7 +977,9 @@ fn begin(stream: &UnixStream, config: Config) -> Result<Kept, Error> {
         .into_iter()
         .partition(|(store, _)| crate::vault_ops::KEEPERS_STORES.contains(store));
     crate::check_sealed_stores(&vault)?;
-    let master = crate::load_master_key(&config.vault)?;
+    // Started with nobody at its terminal, a vault that needs a person
+    // waits, locked, to be unlocked (crate::unlock_relay).
+    let master = crate::unlock_relay::master_key_for_start(&config.vault)?;
     crate::validate_sealed_vault(&config.vault, &master)?;
     let handed = broker_keys(stream, &master, &brokers)?
         .to_bytes()
