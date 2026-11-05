@@ -231,11 +231,14 @@ jobs:
         run: HATCHLING_ROOT_PASS=1 bash scripts/check.sh
 
   service:
-    # WO-033: scripts/install.sh on a fresh runner with systemd, from this
+    # WO-033: Hatchling installed on a fresh runner with systemd, from this
     # commit's own build, as a stock Ubuntu has it (Ubuntu's AppArmor
     # restriction on user namespaces left on): the broker and the app's
     # host start as services, the agent answers through the API, and again
-    # after the broker restarts.
+    # after the broker restarts. It installs as a person does, with
+    # get-hatchling.sh from files laid out as a release has them, so the
+    # one-command install, and the scripts/install.sh it runs, are proven
+    # on every change.
     name: install as a service
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -263,10 +266,25 @@ jobs:
           cp target/release/hatchling-broker target/release/hatchling-agent target/release/hatchling-host target/release/hatchling-browser "$RUNNER_TEMP/files/"
           cp -R frontend/dist "$RUNNER_TEMP/files/ui"
 
+      - name: Lay the build out as a release
+        run: |
+          release="$RUNNER_TEMP/release"
+          mkdir -p "$release"
+          for program in hatchling-broker hatchling-agent hatchling-host hatchling-browser; do
+            cp "target/release/$program" "$release/$program-x86_64-unknown-linux-gnu"
+          done
+          (cd "$RUNNER_TEMP/files" && tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - ui | gzip -n -9 > "$release/hatchling-ui.tar.gz")
+          scripts/release-installer.sh "$release" v0.0.0-ci
+          (cd "$release" && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
+
       - name: Install, and ask the agent, before and after a restart
         run: |
           python3 docs/examples/stand-in-model.py 18089 > "$RUNNER_TEMP/model.log" 2>&1 &
-          sudo scripts/install.sh --from "$RUNNER_TEMP/files" --model-endpoint http://localhost:18089/v1 --model stand-in | tee "$RUNNER_TEMP/install.log"
+          # Run from elsewhere, as a person who downloaded it would.
+          cp "$RUNNER_TEMP/release/get-hatchling.sh" "$HOME/get-hatchling.sh"
+          grep -q "^VERSION=v0.0.0-ci$" "$HOME/get-hatchling.sh"
+          (cd "$HOME" && sh get-hatchling.sh --from-url "file://$RUNNER_TEMP/release" --model-endpoint http://localhost:18089/v1 --model stand-in) | tee "$RUNNER_TEMP/install.log"
+          grep -q "checking every file against the release's SHA256SUMS" "$RUNNER_TEMP/install.log"
           grep -q "http://127.0.0.1:7340/#hatchling-ui=" "$RUNNER_TEMP/install.log"
           timeout 180 python3 docs/examples/first-run.py /var/lib/hatchling/api.sock
           curl -fsS --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:7340/ > /dev/null

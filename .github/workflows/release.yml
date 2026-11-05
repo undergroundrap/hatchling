@@ -9,6 +9,10 @@ name: release
 #   - the app, built twice from different paths, released only if the two
 #     builds are byte-identical: what hatchling-host serves;
 #   - a CycloneDX SBOM per program and target, and SHA256SUMS;
+#   - the installer (scripts/install.sh and packaging/) and
+#     get-hatchling.sh, pinned to the tag, so a person installs with curl
+#     alone (scripts/release-installer.sh; CI's service job installs with
+#     them on every change);
 #   - a build-provenance attestation for every file, so
 #     `gh attestation verify <file> --repo undergroundrap/hatchling` checks it
 #     was built here, by this workflow, from the tag;
@@ -304,6 +308,11 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
       - name: Download the first build of each target
         # actions/download-artifact v8.0.2
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
@@ -333,11 +342,16 @@ jobs:
           path: downloads/notes
 
       - name: Gather the release's files, and their SHA256SUMS
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
           mkdir dist
           cp downloads/build-*-a/* downloads/sbom/* downloads/ui/* dist/
+          # The installer and get-hatchling.sh, pinned to this tag: what a
+          # person installs with, with no clone.
+          scripts/release-installer.sh dist "$TAG"
           (cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
-          [ "$(wc -l < dist/SHA256SUMS)" = 23 ] || { echo "expected 23 files: 10 programs, 10 SBOMs, 2 build infos, the app"; exit 1; }
+          [ "$(wc -l < dist/SHA256SUMS)" = 25 ] || { echo "expected 25 files: 10 programs, 10 SBOMs, 2 build infos, the app, the installer, get-hatchling.sh"; exit 1; }
 
       - name: Attest every file's provenance
         # actions/attest-build-provenance v4.2.2
