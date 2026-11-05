@@ -68,7 +68,12 @@ pub fn learned(endpoint: &str, name: &str) -> Option<Loaded> {
 /// What the server at `authority` says of the model `name`, loaded,
 /// waiting `connect` to connect and `answer` for its answer.
 #[must_use]
-pub fn loaded_at(authority: &str, name: &str, connect: Duration, answer: Duration) -> Option<Loaded> {
+pub fn loaded_at(
+    authority: &str,
+    name: &str,
+    connect: Duration,
+    answer: Duration,
+) -> Option<Loaded> {
     match crate::doctor::ask_within(authority, LOADED_MODELS, connect, answer) {
         Ok(Some(body)) => loaded_in(&body, name),
         Ok(None) => None,

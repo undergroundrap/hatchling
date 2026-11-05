@@ -555,7 +555,10 @@ fn with_window(found: Finding, endpoint: Option<&str>, name: Option<&str>) -> Fi
         return found;
     };
     let loaded = crate::model_window::loaded_at(authority, name, CONNECT_TIMEOUT, ANSWER_TIMEOUT);
-    fitted(windowed(found, name, loaded.and_then(|loaded| loaded.window)), loaded)
+    fitted(
+        windowed(found, name, loaded.and_then(|loaded| loaded.window)),
+        loaded,
+    )
 }
 
 /// `found`, with how the loaded model fits, as its server says: all on
@@ -570,7 +573,10 @@ fn fitted(found: Finding, loaded: Option<crate::model_window::Loaded>) -> Findin
         return found;
     }
     if loaded.on_cpu() == 0 {
-        return Finding::Fine(format!("{seen}, all on the GPU ({})", gigabytes(loaded.size)));
+        return Finding::Fine(format!(
+            "{seen}, all on the GPU ({})",
+            gigabytes(loaded.size)
+        ));
     }
     Finding::Fine(format!(
         "{seen}, {} of its {} on the CPU, more slowly: free the GPU's memory, or give it a smaller window (OLLAMA_CONTEXT_LENGTH=16384)",

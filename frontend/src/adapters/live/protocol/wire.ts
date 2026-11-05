@@ -275,6 +275,9 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                         "const": "run_summary",
                         "type": "string"
                     },
+                    "memory_low": {
+                        "type": "boolean"
+                    },
                     "model_calls": {
                         "minimum": 0,
                         "type": "integer"
@@ -282,6 +285,13 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "model_calls_refused": {
                         "minimum": 0,
                         "type": "integer"
+                    },
+                    "model_on_cpu": {
+                        "minimum": 0,
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
                     },
                     "output_tokens": {
                         "minimum": 0,

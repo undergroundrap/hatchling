@@ -722,6 +722,35 @@ mod tests {
         }
     }
 
+    /// A run's record says how the model fit when it says anything: the
+    /// model's part on the CPU and low memory, each on the wire only
+    /// when set.
+    #[test]
+    fn a_run_summary_says_how_the_model_fit() {
+        let summary = event(SubagentEvent::RunSummary {
+            cell_id: String::from("run-2"),
+            chat: true,
+            tools: Vec::new(),
+            model_calls: 1,
+            model_calls_refused: 0,
+            peak_input_tokens: 5400,
+            output_tokens: 70,
+            context_window: Some(32768),
+            model_on_cpu: Some(1_200_000_000),
+            memory_low: true,
+        });
+        assert_eq!(
+            wire(&summary),
+            json!({"event": "run_summary", "event_id": "ev-1", "ts": "2026-10-03T12:00:00Z",
+                   "run_id": "parent", "cell_id": "run-2", "chat": true, "tools": [],
+                   "model_calls": 1, "model_calls_refused": 0,
+                   "peak_input_tokens": 5400, "output_tokens": 70,
+                   "context_window": 32768, "model_on_cpu": 1_200_000_000_u64,
+                   "memory_low": true})
+        );
+        assert_eq!(round_trip(&summary), summary);
+    }
+
     #[test]
     fn each_lifecycle_event_has_exactly_the_contracts_fields() {
         let cases = [
@@ -806,26 +835,6 @@ mod tests {
                        "model_calls": 3, "model_calls_refused": 1,
                        "peak_input_tokens": 5400, "output_tokens": 700,
                        "context_window": 16384}),
-            ),
-            (
-                event(SubagentEvent::RunSummary {
-                    cell_id: String::from("run-2"),
-                    chat: true,
-                    tools: Vec::new(),
-                    model_calls: 1,
-                    model_calls_refused: 0,
-                    peak_input_tokens: 5400,
-                    output_tokens: 70,
-                    context_window: Some(32768),
-                    model_on_cpu: Some(1_200_000_000),
-                    memory_low: true,
-                }),
-                json!({"event": "run_summary", "event_id": "ev-1", "ts": "2026-10-03T12:00:00Z",
-                       "run_id": "parent", "cell_id": "run-2", "chat": true, "tools": [],
-                       "model_calls": 1, "model_calls_refused": 0,
-                       "peak_input_tokens": 5400, "output_tokens": 70,
-                       "context_window": 32768, "model_on_cpu": 1_200_000_000_u64,
-                       "memory_low": true}),
             ),
         ];
         for (event, expected) in cases {

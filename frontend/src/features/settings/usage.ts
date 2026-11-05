@@ -10,7 +10,7 @@ import type { ContextUse, Usage, UsageDay, UsageLimits, UsagePort } from '../../
 const COMPACT = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 });
 /** `n` tokens or calls, short: 48.2K, 1.3M. */
 /** The least of a model on the CPU worth telling the owner of: under it, the slowdown can’t be felt. */
-const FELT_ON_CPU = 100_000_000;
+const FELT_ON_CPU = 100000000;
 /** What the last answer's fit says the owner should know: the model partly on the CPU, or the computer low on memory. */
 export function fitNote(context: ContextUse): string | null {
     const notes: string[] = [];

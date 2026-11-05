@@ -2436,6 +2436,8 @@ mod gate_scope_tests {
                     peak_input_tokens: 11,
                     output_tokens: 3,
                     context_window: None,
+                    model_on_cpu: None,
+                    memory_low: false,
                 })
             );
         }
