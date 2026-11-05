@@ -463,6 +463,18 @@ pub enum Error {
     #[error("the model endpoint failed its capability handshake: {0}")]
     ModelRefused(String),
 
+    /// The model answered the capability handshake, every time, without
+    /// the tool call it asks for: it doesn't call tools, and the agent
+    /// works by calling them. The task never started.
+    #[error("the model endpoint failed its capability handshake: {0}")]
+    ModelIncapable(String),
+
+    /// The model answered mid-run, every time it was asked, with nothing:
+    /// no text and no tool call. The enclosed string is the loop's own
+    /// report.
+    #[error("agent loop failed: {0}")]
+    ModelSilent(String),
+
     /// The model failed mid-run: unreachable, or an answer that isn't
     /// one. The enclosed string is the loop's own report.
     #[error("agent loop failed: {0}")]
@@ -488,6 +500,10 @@ impl Error {
         use hatchling_core::run_failure::RunFailure;
         if let Self::ModelRefused(_) | Self::ModelFailed(_) = self {
             Some(RunFailure::ModelUnavailable)
+        } else if let Self::ModelIncapable(_) = self {
+            Some(RunFailure::ModelIncapable)
+        } else if let Self::ModelSilent(_) = self {
+            Some(RunFailure::ModelSilent)
         } else if let Self::ModelCutOff(_) = self {
             Some(RunFailure::OutOfRoom)
         } else if let Self::ToolsMisused(_) = self {
@@ -550,6 +566,14 @@ mod tests {
             (
                 Error::ModelFailed(String::new()),
                 Some(RunFailure::ModelUnavailable),
+            ),
+            (
+                Error::ModelIncapable(String::new()),
+                Some(RunFailure::ModelIncapable),
+            ),
+            (
+                Error::ModelSilent(String::new()),
+                Some(RunFailure::ModelSilent),
             ),
             (
                 Error::ModelCutOff(String::new()),

@@ -73,6 +73,12 @@ pub fn chat_failed(ending: Option<hatchling_scheduler::Ending>, model: Option<&s
             Some(RunFailure::ModelUnavailable) => format!(
                 "Hatchling couldn't get an answer from its model{named}. Check that it is running and reachable; `sudo hatchling-broker doctor` tests it."
             ),
+            Some(RunFailure::ModelIncapable) => format!(
+                "The model{named} doesn't call tools, and Hatchling's agent works by calling them, so it stopped before anything ran. Switch to a model that calls tools; docs/install.md (\"Choosing a model\") lists some."
+            ),
+            Some(RunFailure::ModelSilent) => format!(
+                "The model{named} answered with nothing, no text and no tool call, each time it was asked. Small models do this now and then: try again. If it keeps happening, a model that's better at tool calls will help; docs/install.md (\"Choosing a model\") lists some."
+            ),
             Some(RunFailure::ToolsMisused) => format!(
                 "The model{named} kept calling its tools wrongly, so Hatchling stopped it before anything ran. Try again, or switch to a model that is better at tool calls."
             ),
@@ -1056,6 +1062,20 @@ mod tests {
             "{tools}"
         );
         assert!(!chat_failed(exited(RunFailure::ToolsMisused), None).contains('('));
+        let incapable = chat_failed(exited(RunFailure::ModelIncapable), Some("llama3.2"));
+        assert!(
+            incapable.starts_with("The model (llama3.2) doesn't call tools")
+                && incapable.contains("Choosing a model")
+                && !incapable.contains("running and reachable"),
+            "{incapable}"
+        );
+        let silent = chat_failed(exited(RunFailure::ModelSilent), Some("qwen3.5:9b"));
+        assert!(
+            silent.starts_with("The model (qwen3.5:9b) answered with nothing")
+                && silent.contains("try again")
+                && !silent.contains("running and reachable"),
+            "{silent}"
+        );
         let steps = chat_failed(exited(RunFailure::OutOfSteps), Some("m"));
         assert!(steps.contains("all its steps"), "{steps}");
         let slow = chat_failed(Some(Ending::TimedOut), Some("m"));
@@ -1069,10 +1089,19 @@ mod tests {
         for other in [Some(Ending::Exited(1)), Some(Ending::Exited(64)), None] {
             assert_eq!(chat_failed(other, Some("m")), CHAT_FAILED, "{other:?}");
         }
-        let said: BTreeSet<String> = [model, tools, steps, slow, room, String::from(CHAT_FAILED)]
-            .into_iter()
-            .collect();
-        assert_eq!(said.len(), 6, "each says something of its own");
+        let said: BTreeSet<String> = [
+            model,
+            incapable,
+            silent,
+            tools,
+            steps,
+            slow,
+            room,
+            String::from(CHAT_FAILED),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(said.len(), 8, "each says something of its own");
 
         // Through the chat: the run's own words never reach the person.
         let launches = OneEnded(RefCell::new(Some(Ended(Ending::Exited(

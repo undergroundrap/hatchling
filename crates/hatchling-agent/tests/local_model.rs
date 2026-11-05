@@ -415,7 +415,8 @@ fn a_model_that_does_not_call_tools_is_refused_before_the_task() {
         error.to_string(),
         "the model endpoint failed its capability handshake: the model cannot do what the loop needs: it answered the capability probe in text: it does not call tools"
     );
-    assert!(matches!(error, Error::ModelRefused(_)));
+    assert!(matches!(error, Error::ModelIncapable(_)), "{error:?}");
+    assert_eq!(error.run_failure(), Some(RunFailure::ModelIncapable));
     let seen = server.seen();
     assert_eq!(
         seen.len(),
@@ -453,7 +454,7 @@ fn the_handshake_is_rerun_every_session() {
             5,
         )
         .unwrap_err();
-    assert!(matches!(second, Error::ModelRefused(_)), "{second:?}");
+    assert!(matches!(second, Error::ModelIncapable(_)), "{second:?}");
     let seen = server.seen();
     assert_eq!(seen.len(), 3);
     assert!(is_probe(seen.first().unwrap()));
@@ -521,6 +522,27 @@ fn a_model_misusing_tools_or_failing_midway_is_named() {
         .unwrap_err();
     assert!(matches!(error, Error::ModelFailed(_)), "got {error:?}");
     assert_eq!(error.run_failure(), Some(RunFailure::ModelUnavailable));
+
+    // A model that says nothing, every time it's asked: the server is
+    // there, and the person is told the model, not the server, failed.
+    let mut script = vec![probe_reply()];
+    script.extend(
+        (0..hatchling_model::ATTEMPTS).map(|_| {
+            json!({"choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": ""}}]}).to_string()
+        }),
+    );
+    let server = LocalServer::start(script);
+    let broker = local_broker("local-silent", server.port);
+    let error = ready_cell(&broker)
+        .run_task(
+            hatchling_agent::PromptKind::Chat,
+            String::from("tidy up"),
+            local_provider(server.port),
+            10,
+        )
+        .unwrap_err();
+    assert!(matches!(error, Error::ModelSilent(_)), "got {error:?}");
+    assert_eq!(error.run_failure(), Some(RunFailure::ModelSilent));
 
     // A reply the server stopped at its window: the thinking model's
     // failure with Ollama's default context.

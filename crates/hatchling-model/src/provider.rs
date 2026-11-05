@@ -452,12 +452,12 @@ impl<T: Transport> Model for ChatCompletionsProvider<T> {
         self.next_action_inner(messages, tools)
             .map_err(|error| match error {
                 Error::CutOff => LoopError::ModelCutOff(error.reason()),
+                Error::EmptyReply => LoopError::ModelSilent(error.reason()),
                 Error::InvalidEndpoint { .. }
                 | Error::EmptyModelName
                 | Error::Transport(_)
                 | Error::Incapable { .. }
-                | Error::BadResponse { .. }
-                | Error::EmptyReply => LoopError::ModelFailed(error.reason()),
+                | Error::BadResponse { .. } => LoopError::ModelFailed(error.reason()),
             })
     }
 }
@@ -1261,9 +1261,9 @@ mod tests {
         let error = sequenced(&transport)
             .next_action(&[Message::User(String::from("hi"))], &no_tools())
             .unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            LoopError::ModelFailed(Error::EmptyReply.reason()).to_string()
+        assert!(
+            matches!(&error, LoopError::ModelSilent(reason) if *reason == Error::EmptyReply.reason()),
+            "{error:?}"
         );
         assert!(
             error

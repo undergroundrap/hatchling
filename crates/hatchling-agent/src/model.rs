@@ -122,8 +122,10 @@ impl Cell<Ready> {
     ///
     /// Returns [`Error::InvalidConfig`] for an unusable endpoint, model
     /// name, or declared context window, propagates surrogate-mint
-    /// failures, returns [`Error::ModelRefused`] when the capability
-    /// handshake fails, and wraps loop failures in [`Error::LoopFailed`].
+    /// failures, returns [`Error::ModelIncapable`] when the capability
+    /// handshake finds a model that doesn't call tools and
+    /// [`Error::ModelRefused`] when it fails otherwise, and wraps loop
+    /// failures in [`Error::LoopFailed`].
     pub fn run_task(
         &self,
         kind: hatchling_loop::PromptKind,
@@ -160,9 +162,15 @@ impl Cell<Ready> {
             })?
             .with_reasoning(self.config().model_reasoning)
             .with_redactor(redactor.clone());
-        provider
-            .verify_capabilities()
-            .map_err(|error| Error::ModelRefused(error.to_string()))?;
+        provider.verify_capabilities().map_err(|error| match error {
+            hatchling_model::Error::Incapable { .. } => Error::ModelIncapable(error.to_string()),
+            hatchling_model::Error::InvalidEndpoint { .. }
+            | hatchling_model::Error::EmptyModelName
+            | hatchling_model::Error::Transport(_)
+            | hatchling_model::Error::CutOff
+            | hatchling_model::Error::BadResponse { .. }
+            | hatchling_model::Error::EmptyReply => Error::ModelRefused(error.to_string()),
+        })?;
         let model_grant = hatchling_core::ScheduleGrant::Egress {
             destination: endpoint.destination().to_owned(),
         };
@@ -180,6 +188,7 @@ impl Cell<Ready> {
             }
             hatchling_loop::Error::ModelFailed(_) => Error::ModelFailed(error.to_string()),
             hatchling_loop::Error::ModelCutOff(_) => Error::ModelCutOff(error.to_string()),
+            hatchling_loop::Error::ModelSilent(_) => Error::ModelSilent(error.to_string()),
             hatchling_loop::Error::UnknownTool(_)
             | hatchling_loop::Error::InvalidArguments { .. } => {
                 Error::ToolsMisused(error.to_string())
