@@ -118,7 +118,11 @@ fn the_decoder_takes_anything_and_means_only_what_it_was_sent() {
             let len = noise.below(48);
             noise.bytes(len)
         } else {
-            let sample = if round % 4 == 1 { &samples.0 } else { &samples.1 };
+            let sample = if round % 4 == 1 {
+                &samples.0
+            } else {
+                &samples.1
+            };
             noise.spoiled(sample)
         };
         if let Ok(value) = decode(&bytes) {
