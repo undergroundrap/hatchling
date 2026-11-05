@@ -82,6 +82,11 @@ pub fn main(program: &str, args: &[String]) -> ExitCode {
         // It reads the settings itself, and reports one that doesn't
         // parse rather than stopping at it.
         Some("doctor") => return crate::doctor::doctor_main(args.get(1..).unwrap_or_default()),
+        // Root's, before the service's settings are taken on: it writes the
+        // file they're read from, and restarts the service.
+        Some(crate::model_switch::USE_HOSTED | crate::model_switch::USE_LOCAL) => {
+            return crate::model_switch::switch_main(program, args);
+        }
         // The owner's, as a client of the local API: it reads no
         // settings, and runs without sudo.
         Some("schedule") => {
@@ -122,7 +127,7 @@ pub fn help(program: &str) -> String {
     render_help(
         program,
         "[subcommand] | --help | -h",
-        "Serve agents with no subcommand. Operator subcommands:\n  doctor [--env <file>]   (what stops it working here, and the fix)\n  migrate-vault\n  rekey-vault [<new-key-file>]   (no file with a keyring)\n  vault-keyring <action>\n    init, enroll-totp, enroll-keys, use-file-tier, backup-codes,\n    status, add-key, remove-key, label-key\n  redactions list | stats | categories\n  redactions show <id> | raw <id> | override <id> [--any-scope]\n  vault-audit [log [count]]\n  tools list | add <path> | remove <path>   (what a CLI cell may run)\n  secret add <name> | --for <host:port> [--replace]   (a key, typed unseen)\n  clean [--dry-run]   (a dead broker's leftovers; never your data)\n  schedule list | add <task> <when> | remove <id>   (as yourself, not sudo)\n  browser-digest <browser>   (the digest HATCHLING_BROWSER_SHA256 pins)\n\nThe broker builds and supervises the agent's cell. Internal spawner\ncommands skill-cell <spec-file>, agent-run <spec-file>, browser-cell <spec-file>,\nharness-tree, vault-keeper, egress-authority and spawner are broker-owned.",
+        "Serve agents with no subcommand. Operator subcommands:\n  doctor [--env <file>]   (what stops it working here, and the fix)\n  migrate-vault\n  rekey-vault [<new-key-file>]   (no file with a keyring)\n  vault-keyring <action>\n    init, enroll-totp, enroll-keys, use-file-tier, backup-codes,\n    status, add-key, remove-key, label-key\n  redactions list | stats | categories\n  redactions show <id> | raw <id> | override <id> [--any-scope]\n  vault-audit [log [count]]\n  tools list | add <path> | remove <path>   (what a CLI cell may run)\n  secret add <name> | --for <host:port> [--replace | --if-missing]   (a key, shown as *)\n  use-hosted openrouter | --endpoint <url> [--model <id>] [--window <tokens>] [--thinking off|on]\n  use-local --model <name> [--endpoint <url>] [--window <tokens>] [--thinking off|on]\n    (switch the model, its server and its egress together, and restart)\n  clean [--dry-run]   (a dead broker's leftovers; never your data)\n  schedule list | add <task> <when> | remove <id>   (as yourself, not sudo)\n  browser-digest <browser>   (the digest HATCHLING_BROWSER_SHA256 pins)\n\nThe broker builds and supervises the agent's cell. Internal spawner\ncommands skill-cell <spec-file>, agent-run <spec-file>, browser-cell <spec-file>,\nharness-tree, vault-keeper, egress-authority and spawner are broker-owned.",
         crate::environment::ENVIRONMENT,
     )
 }
@@ -146,11 +151,14 @@ fn valid_args(args: &[String]) -> bool {
         | ["redactions", "override", _, "--any-scope"]
         | ["vault-audit", "log"]
         | ["tools", "list"]
-        | ["schedule", ..]
+        | [
+            "schedule" | crate::model_switch::USE_HOSTED | crate::model_switch::USE_LOCAL,
+            ..,
+        ]
         | ["tools", "add" | "remove", _]
         | ["secret", "add", _]
         | ["secret", "add", _, _]
-        | ["secret", "add", "--for", _, "--replace"]
+        | ["secret", "add", "--for", _, "--replace" | "--if-missing"]
         | [HARNESS_TREE_SUBCOMMAND, "give" | "reclaim", _, ..] => true,
         [VAULT_KEEPER_SUBCOMMAND | EGRESS_AUTHORITY_SUBCOMMAND | SPAWNER_SUBCOMMAND] => {
             args.len() == 1
@@ -238,7 +246,9 @@ mod tests {
         assert!(text.contains("vault-keyring <action>"));
         assert!(text.contains("browser-digest <browser>"));
         assert!(text.contains("doctor [--env <file>]"));
-        assert!(text.contains("secret add <name> | --for <host:port> [--replace]"));
+        assert!(text.contains("secret add <name> | --for <host:port> [--replace | --if-missing]"));
+        assert!(text.contains("use-hosted openrouter | --endpoint <url>"));
+        assert!(text.contains("use-local --model <name>"));
         // The digest is the operator's to ask for before any setting.
         assert_eq!(
             main(

@@ -34,6 +34,12 @@ pub(crate) struct Unread {
 /// file's, so it can't be swapped for another between the check and the
 /// read.
 pub(crate) fn read_trusted(path: &Path, owner: u32) -> Result<BTreeMap<String, String>, Unread> {
+    read_trusted_text(path, owner).map(|text| parse_settings(&text))
+}
+
+/// The text of the settings file at `path`, read only when `owner` owns
+/// it and nobody else may write it, as [`read_trusted`] reads it.
+pub(crate) fn read_trusted_text(path: &Path, owner: u32) -> Result<String, Unread> {
     let shown = path.display();
     let mut file = std::fs::File::open(path).map_err(|err| Unread {
         what: format!("can't read {shown}: {err}"),
@@ -60,7 +66,7 @@ pub(crate) fn read_trusted(path: &Path, owner: u32) -> Result<BTreeMap<String, S
     }
     let mut text = String::new();
     file.read_to_string(&mut text).map_err(unread)?;
-    Ok(parse_settings(&text))
+    Ok(text)
 }
 
 /// Whether the command `args` runs with the service's settings: an
