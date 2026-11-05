@@ -86,6 +86,50 @@ def snapshot(proc, key, program, agent_hash, forbidden):
             'initial_environment_argv_and_view_key_absent': True, 'files': entries}
 
 
+PAGE = os.sysconf('SC_PAGE_SIZE')
+
+# A pagemap entry's bit for a guard region's page (Linux 6.14+): one
+# MADV_GUARD_INSTALL made, as newer glibc does for thread stacks' guards.
+GUARD_REGION = 1 << 58
+
+
+def guard_page(pagemap, address):
+    """Whether the page at `address` is a guard region, by its entry in
+    the open pagemap `pagemap`: it holds nothing, and faults when read."""
+    pagemap.seek(address // PAGE * 8)
+    entry = pagemap.read(8)
+    return len(entry) == 8 and bool(int.from_bytes(entry, 'little') & GUARD_REGION)
+
+
+def read_range(mem, pagemap, offset, size, mapping):
+    """The bytes at [offset, offset + size) of a process, with the number
+    read: a guard region's page reads as zeros, and isn't counted.
+
+    Any other page that won't read fails the scan, naming the mapping by
+    its permissions and name, never what it holds.
+    """
+    mem.seek(offset)
+    try:
+        data = mem.read(size)
+        return data, len(data)
+    except OSError:
+        pass
+    data, read = bytearray(), 0
+    for page in range(offset, offset + size, PAGE):
+        length = min(PAGE - page % PAGE, offset + size - page)
+        mem.seek(page)
+        try:
+            chunk = mem.read(length)
+        except OSError as error:
+            if not guard_page(pagemap, page):
+                raise OSError(error.errno, f'{error.strerror} reading the mapping {mapping}') from error
+            chunk = bytes(length)
+        else:
+            read += len(chunk)
+        data += chunk
+    return bytes(data), read
+
+
 def memory_holds(pid, key, chunk_size=1024 * 1024):
     """Whether any readable mapping of a running process holds the key.
 
@@ -95,7 +139,9 @@ def memory_holds(pid, key, chunk_size=1024 * 1024):
     if not key or chunk_size < len(key):
         raise ValueError('Expected a nonempty test credential shorter than a chunk')
     held, scanned = False, 0
-    with open(f'/proc/{pid}/maps', encoding='utf-8') as maps, open(f'/proc/{pid}/mem', 'rb', 0) as mem:
+    with (open(f'/proc/{pid}/maps', encoding='utf-8') as maps,
+          open(f'/proc/{pid}/mem', 'rb', 0) as mem,
+          open(f'/proc/{pid}/pagemap', 'rb', 0) as pagemap):
         for line in maps:
             fields = line.split()
             start, end = (int(bound, 16) for bound in fields[0].split('-'))
@@ -104,17 +150,11 @@ def memory_holds(pid, key, chunk_size=1024 * 1024):
             if not fields[1].startswith('r') or fields[-1] in ('[vvar]', '[vvar_vclock]', '[vsyscall]'):
                 continue
             previous = b''
+            mapping = f"{fields[1]} {' '.join(fields[5:]) or '(anonymous)'}"
             for offset in range(start, end, chunk_size):
-                mem.seek(offset)
-                try:
-                    data = mem.read(min(chunk_size, end - offset))
-                except OSError as error:
-                    # Which mapping, by its permissions and name: never
-                    # what it holds.
-                    name = ' '.join(fields[5:]) or '(anonymous)'
-                    raise OSError(error.errno, f'{error.strerror} reading the mapping {fields[1]} {name}') from error
+                data, read = read_range(mem, pagemap, offset, min(chunk_size, end - offset), mapping)
                 held = held or key in previous + data
-                scanned += len(data)
+                scanned += read
                 previous = data[-(len(key) - 1):] if len(key) > 1 else b''
     return held, scanned
 
