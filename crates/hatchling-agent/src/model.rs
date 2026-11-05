@@ -162,15 +162,19 @@ impl Cell<Ready> {
             })?
             .with_reasoning(self.config().model_reasoning)
             .with_redactor(redactor.clone());
-        provider.verify_capabilities().map_err(|error| match error {
-            hatchling_model::Error::Incapable { .. } => Error::ModelIncapable(error.to_string()),
-            hatchling_model::Error::InvalidEndpoint { .. }
-            | hatchling_model::Error::EmptyModelName
-            | hatchling_model::Error::Transport(_)
-            | hatchling_model::Error::CutOff
-            | hatchling_model::Error::BadResponse { .. }
-            | hatchling_model::Error::EmptyReply => Error::ModelRefused(error.to_string()),
-        })?;
+        provider
+            .verify_capabilities()
+            .map_err(|error| match error {
+                hatchling_model::Error::Incapable { .. } => {
+                    Error::ModelIncapable(error.to_string())
+                }
+                hatchling_model::Error::InvalidEndpoint { .. }
+                | hatchling_model::Error::EmptyModelName
+                | hatchling_model::Error::Transport(_)
+                | hatchling_model::Error::CutOff
+                | hatchling_model::Error::BadResponse { .. }
+                | hatchling_model::Error::EmptyReply => Error::ModelRefused(error.to_string()),
+            })?;
         let model_grant = hatchling_core::ScheduleGrant::Egress {
             destination: endpoint.destination().to_owned(),
         };

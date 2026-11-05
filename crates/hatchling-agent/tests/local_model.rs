@@ -429,12 +429,13 @@ fn a_model_that_does_not_call_tools_is_refused_before_the_task() {
 #[test]
 fn the_handshake_is_rerun_every_session() {
     // The first session's model calls tools; then a model that does not
-    // is swapped in behind the same endpoint. The next session catches it.
-    let server = LocalServer::start(vec![
-        probe_reply(),
-        text_reply("first task done"),
-        text_reply("swapped-in model, chat only"),
-    ]);
+    // is swapped in behind the same endpoint, and answers each of the
+    // probe's tries in text. The next session catches it.
+    let mut script = vec![probe_reply(), text_reply("first task done")];
+    script.extend(
+        (0..hatchling_model::ATTEMPTS).map(|_| text_reply("swapped-in model, chat only")),
+    );
+    let server = LocalServer::start(script);
     let broker = local_broker("local-swap", server.port);
     let cell = ready_cell(&broker);
     let first = cell
@@ -455,11 +456,12 @@ fn the_handshake_is_rerun_every_session() {
         )
         .unwrap_err();
     assert!(matches!(second, Error::ModelIncapable(_)), "{second:?}");
+    assert_eq!(second.run_failure(), Some(RunFailure::ModelIncapable));
     let seen = server.seen();
-    assert_eq!(seen.len(), 3);
+    assert_eq!(seen.len(), 2 + hatchling_model::ATTEMPTS);
     assert!(is_probe(seen.first().unwrap()));
     assert!(!is_probe(seen.get(1).unwrap()));
-    assert!(is_probe(seen.get(2).unwrap()));
+    assert!(seen.iter().skip(2).all(is_probe), "the task never started");
 }
 
 #[test]
