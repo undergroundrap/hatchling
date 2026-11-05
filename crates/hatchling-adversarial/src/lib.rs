@@ -345,9 +345,10 @@ pub enum Outcome {
     Processes {
         /// The probe's own pid, as the cell sees it.
         own_pid: u32,
-        /// The probe's pid namespace, as `/proc/self/ns/pid` names it
-        /// (`pid:[<inode>]`).
-        pid_namespace: String,
+        /// The probe's pid namespace: the inode `/proc/self/ns/pid`
+        /// leads to, which names it (`stat`, not `readlink`, which a
+        /// cell's filter doesn't allow).
+        pid_namespace: u64,
         /// Every process the cell's `/proc` lists, by pid.
         visible: Vec<SeenProcess>,
     },

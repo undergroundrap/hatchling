@@ -1468,13 +1468,13 @@ fn a_cell_sees_none_of_the_hosts_processes() -> Result<(), String> {
     else {
         return Err(format!("expected Processes outcome, got {outcome:?}"));
     };
-    let host = std::fs::read_link("/proc/self/ns/pid")
-        .map_err(|e| format!("the driver's /proc/self/ns/pid: {e}"))?
-        .to_string_lossy()
-        .into_owned();
-    if !pid_namespace.starts_with("pid:[") || pid_namespace == host {
+    let host = std::os::unix::fs::MetadataExt::ino(
+        &std::fs::metadata("/proc/self/ns/pid")
+            .map_err(|e| format!("the driver's /proc/self/ns/pid: {e}"))?,
+    );
+    if pid_namespace == host {
         return Err(format!(
-            "the cell's pid namespace {pid_namespace:?} isn't one of its own (the host's is {host:?})"
+            "the cell shares the host's pid namespace ({host})"
         ));
     }
     if !visible.iter().any(|seen| seen.pid == own_pid) {

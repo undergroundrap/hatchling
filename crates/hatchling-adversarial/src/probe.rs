@@ -530,10 +530,9 @@ fn outlive_the_supervisor(spin: Duration) -> Result<Outcome, String> {
 /// What the cell sees of processes: the probe's own pid, its pid
 /// namespace, and each process `/proc` lists, with its name.
 fn processes() -> Result<Outcome, String> {
-    let pid_namespace = std::fs::read_link("/proc/self/ns/pid")
-        .map_err(|e| format!("/proc/self/ns/pid: {e}"))?
-        .to_string_lossy()
-        .into_owned();
+    let pid_namespace = std::os::unix::fs::MetadataExt::ino(
+        &std::fs::metadata("/proc/self/ns/pid").map_err(|e| format!("/proc/self/ns/pid: {e}"))?,
+    );
     let mut visible = Vec::new();
     for entry in std::fs::read_dir("/proc").map_err(|e| format!("/proc: {e}"))? {
         let entry = entry.map_err(|e| format!("/proc: {e}"))?;
@@ -706,10 +705,9 @@ mod tests {
     #[test]
     fn the_processes_report_is_this_processs_own_view() {
         let own = std::process::id();
-        let namespace = std::fs::read_link("/proc/self/ns/pid")
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
+        let namespace = std::os::unix::fs::MetadataExt::ino(
+            &std::fs::metadata("/proc/self/ns/pid").unwrap(),
+        );
         let report = super::run_report_attack(crate::Attack::Processes);
         assert!(
             matches!(report, Ok(crate::Outcome::Processes { .. })),
@@ -725,12 +723,11 @@ mod tests {
         };
         assert_eq!(own_pid, own);
         assert_eq!(pid_namespace, namespace);
-        assert!(pid_namespace.starts_with("pid:["), "{pid_namespace}");
         let this = visible.iter().find(|seen| seen.pid == own).unwrap();
         let comm = std::fs::read_to_string("/proc/self/comm").unwrap();
         assert_eq!(this.name, comm.trim());
         assert!(
-            visible.windows(2).all(|pair| pair[0].pid < pair[1].pid),
+            visible.is_sorted_by_key(|seen| seen.pid),
             "in pid order"
         );
     }
