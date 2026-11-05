@@ -258,9 +258,10 @@ impl Machine {
 /// (`sudo hatchling-broker unlock`). A vault waiting for that now is the
 /// problem to fix.
 fn check_vault(lookup: &dyn Fn(&str) -> Option<String>, machine: &Machine) -> Finding {
-    use hatchling_vault::Tier;
     let Ok(keyring) = crate::vault_keyring::KeyringConfig::parse(lookup) else {
-        return Finding::Unchecked(String::from("the keyring's settings don't parse (see settings)"));
+        return Finding::Unchecked(String::from(
+            "the keyring's settings don't parse (see settings)",
+        ));
     };
     let Some(path) = keyring.keyring.as_deref() else {
         return Finding::Fine(String::from(
@@ -276,23 +277,35 @@ fn check_vault(lookup: &dyn Fn(&str) -> Option<String>, machine: &Machine) -> Fi
             );
         }
     };
-    let waiting = Config::parse(lookup)
-        .ok()
-        .is_some_and(|config| crate::unlock_relay::socket_path(&config.vault).exists());
+    let waiting = Config::parse(lookup).is_ok_and(|config| crate::unlock_relay::socket_path(&config.vault).exists());
     vault_said(ring.tier(), ring.hardware_keys().len(), machine, waiting)
 }
 
 /// What doctor says of a vault at `tier` with `enrolled` security keys,
 /// on `machine`, `waiting` to be unlocked or not.
-fn vault_said(tier: hatchling_vault::Tier, enrolled: usize, machine: &Machine, waiting: bool) -> Finding {
+fn vault_said(
+    tier: hatchling_vault::Tier,
+    enrolled: usize,
+    machine: &Machine,
+    waiting: bool,
+) -> Finding {
     use hatchling_vault::Tier;
     if waiting {
         let fix = match (tier, machine.keys.is_empty(), machine.wsl) {
-            (Tier::HardwareKey, true, true) => "Attach your security key to WSL (in PowerShell: usbipd attach --wsl --busid <id>), then run `sudo hatchling-broker unlock` and touch it. A backup code works too.",
-            (Tier::HardwareKey, _, _) => "Run `sudo hatchling-broker unlock`, and touch your security key when it flashes. A backup code works too.",
-            _ => "Run `sudo hatchling-broker unlock`, with a current code from your authenticator app.",
+            (Tier::HardwareKey, true, true) => {
+                "Attach your security key to WSL (in PowerShell: usbipd attach --wsl --busid <id>), then run `sudo hatchling-broker unlock` and touch it. A backup code works too."
+            }
+            (Tier::HardwareKey, _, _) => {
+                "Run `sudo hatchling-broker unlock`, and touch your security key when it flashes. A backup code works too."
+            }
+            _ => {
+                "Run `sudo hatchling-broker unlock`, with a current code from your authenticator app."
+            }
         };
-        return Finding::problem("locked: it started with nobody to unlock it, and waits for you", fix);
+        return Finding::problem(
+            "locked: it started with nobody to unlock it, and waits for you",
+            fix,
+        );
     }
     match tier {
         Tier::File => Finding::Fine(String::from(
@@ -994,32 +1007,74 @@ mod tests {
             other => format!("not a problem: {other:?}"),
         };
         assert!(fine(vault_said(Tier::File, 0, &here(&[], false), false)).contains("by itself"));
-        assert!(fine(vault_said(Tier::Totp, 0, &here(&[], false), false)).contains("authenticator app"));
-        let two = fine(vault_said(Tier::HardwareKey, 2, &here(&["hidraw0"], false), false));
-        assert!(two.starts_with("opens with 2 security keys: after each restart"), "{two}");
-        assert!(!two.contains("Only one key") && !two.contains("None is"), "{two}");
+        assert!(
+            fine(vault_said(Tier::Totp, 0, &here(&[], false), false)).contains("authenticator app")
+        );
+        let two = fine(vault_said(
+            Tier::HardwareKey,
+            2,
+            &here(&["hidraw0"], false),
+            false,
+        ));
+        assert!(
+            two.starts_with("opens with 2 security keys: after each restart"),
+            "{two}"
+        );
+        assert!(
+            !two.contains("Only one key") && !two.contains("None is"),
+            "{two}"
+        );
         let one = fine(vault_said(Tier::HardwareKey, 1, &here(&[], true), false));
         assert!(one.starts_with("opens with 1 security key:"), "{one}");
         assert!(one.contains("Only one key: add a second"), "{one}");
         assert!(one.contains("in WSL, attach it with usbipd"), "{one}");
-        assert!(fine(vault_said(Tier::HardwareKey, 2, &here(&[], false), false)).contains("None is plugged in now"));
+        assert!(
+            fine(vault_said(Tier::HardwareKey, 2, &here(&[], false), false))
+                .contains("None is plugged in now")
+        );
         // Waiting to be unlocked is the problem, with the way out.
         let waiting = fix(vault_said(Tier::HardwareKey, 2, &here(&[], true), true));
         assert!(waiting.starts_with("locked:"), "{waiting}");
-        assert!(waiting.contains("usbipd attach --wsl") && waiting.contains("sudo hatchling-broker unlock"), "{waiting}");
-        let plugged = fix(vault_said(Tier::HardwareKey, 2, &here(&["hidraw0"], true), true));
-        assert!(!plugged.contains("usbipd") && plugged.contains("touch your security key"), "{plugged}");
-        assert!(fix(vault_said(Tier::Totp, 0, &here(&[], false), true)).contains("authenticator app"));
+        assert!(
+            waiting.contains("usbipd attach --wsl")
+                && waiting.contains("sudo hatchling-broker unlock"),
+            "{waiting}"
+        );
+        let plugged = fix(vault_said(
+            Tier::HardwareKey,
+            2,
+            &here(&["hidraw0"], true),
+            true,
+        ));
+        assert!(
+            !plugged.contains("usbipd") && plugged.contains("touch your security key"),
+            "{plugged}"
+        );
+        assert!(
+            fix(vault_said(Tier::Totp, 0, &here(&[], false), true)).contains("authenticator app")
+        );
         // No keyring: its key file; one that doesn't load: the problem.
-        let none = BTreeMap::new();
-        assert!(fine(check_vault(&|key: &str| none.get(key).cloned(), &here(&[], false))).contains("key file"));
+        let none: BTreeMap<String, String> = BTreeMap::new();
+        assert!(
+            fine(check_vault(
+                &|key: &str| none.get(key).cloned(),
+                &here(&[], false)
+            ))
+            .contains("key file")
+        );
         let broken: BTreeMap<String, String> = [(
             String::from("HATCHLING_VAULT_KEYRING"),
             String::from("/nonexistent/hatchling/keyring"),
         )]
         .into_iter()
         .collect();
-        assert!(fix(check_vault(&|key: &str| broken.get(key).cloned(), &here(&[], false))).contains("doesn't load"));
+        assert!(
+            fix(check_vault(
+                &|key: &str| broken.get(key).cloned(),
+                &here(&[], false)
+            ))
+            .contains("doesn't load")
+        );
     }
 
     /// The other model's server is one the app can switch to when egress

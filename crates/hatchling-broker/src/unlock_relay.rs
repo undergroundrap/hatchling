@@ -337,9 +337,10 @@ fn tell(stream: &UnixStream, message: &ToOperator) -> Result<(), Error> {
 /// Why a try failed, as the operator is told: the reason itself, without
 /// the error's kind in front.
 fn plainly(error: &Error) -> String {
-    match error {
-        Error::Usage { reason } | Error::Keeper { reason } => reason.clone(),
-        other => other.to_string(),
+    if let Error::Usage { reason } | Error::Keeper { reason } = error {
+        reason.clone()
+    } else {
+        error.to_string()
     }
 }
 
