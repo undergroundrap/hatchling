@@ -5,6 +5,7 @@ import type { LiveClient } from './client.js';
 import type { ActionRefusal, ModelState as WireModel } from './protocol/generated.js';
 import type { CommandResult } from '../../protocol/models.js';
 import type { ModelPort, ModelState, ModelView } from '../../session/model.js';
+import { whereShort } from '../../session/model.js';
 const REFUSED = 'This connection may not read the model.';
 const UNEXPECTED = 'Hatchling answered with something else.';
 /** Why a choice wasn't kept, by the broker's refusal. */
@@ -12,6 +13,13 @@ const NOT_SET: Readonly<Record<ActionRefusal, string>> = {
     bad_request: 'Hatchling didn’t take that model: its server has none by that name.',
     unavailable: 'Hatchling couldn’t keep your choice. It keeps one only when scheduling is on; its log says if a write failed.',
     not_granted: 'This connection may not choose the model.',
+    not_connected: 'Not connected.',
+};
+/** Why a switch didn't happen, by the broker's refusal. */
+const NOT_SWITCHED: Readonly<Record<ActionRefusal, string>> = {
+    bad_request: 'There’s no other model set up to switch to: sudo hatchling-broker use-hosted, or use-local, sets one up.',
+    unavailable: 'Hatchling couldn’t switch: its settings don’t let it reach that server, or scheduling is off. sudo hatchling-broker doctor says which.',
+    not_granted: 'This connection may not switch the model.',
     not_connected: 'Not connected.',
 };
 /** The broker's word, in the app's. */
@@ -24,6 +32,8 @@ export function modelOf(model: WireModel): ModelView {
         window: model.window ?? null,
         size: model.size ?? null,
         onCpu: model.on_cpu ?? null,
+        other: model.other ? { endpoint: model.other.endpoint ?? null, name: model.other.name ?? null } : null,
+        switched: model.switched ?? false,
     };
 }
 export class LiveModel implements ModelPort {
@@ -63,6 +73,19 @@ export class LiveModel implements ModelPort {
         this.#state = { kind: 'read', model };
         this.#changed();
         return { ok: true, message: name === null ? `Back to ${model.configured ?? 'the installed model'}, from your next message.` : `Hatchling uses ${name} from your next message.` };
+    }
+    async switchServer(other: boolean): Promise<CommandResult> {
+        const reply = await this.#client.request(this.#nextId(), { action: 'switch_model_server', other });
+        if (reply.kind !== 'answered')
+            return { ok: false, message: reply.detail };
+        if (reply.result.result === 'refused')
+            return { ok: false, message: NOT_SWITCHED[reply.result.reason] };
+        if (reply.result.result !== 'model')
+            return { ok: false, message: UNEXPECTED };
+        const model = modelOf(reply.result.model);
+        this.#state = { kind: 'read', model };
+        this.#changed();
+        return { ok: true, message: `Hatchling uses ${model.configured ?? 'the other model'}, ${whereShort(model.endpoint)}, from your next message.` };
     }
     /** Read it each time the connection opens. */
     #watch(): void {

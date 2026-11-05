@@ -224,6 +224,9 @@ pub struct Chat<R, K = ()> {
     /// Where the owner's choice of model is kept, when it is: named over
     /// the operator's ([`crate::model_choice`]).
     choice: Option<std::path::PathBuf>,
+    /// The operator's other model's server, the owner may switch to: its
+    /// model is named when they did.
+    other: Option<crate::config::OtherModel>,
     /// Whether the person was told, in this conversation, that older
     /// answers are no longer given whole, and that their oldest words are
     /// no longer given at all.
@@ -265,6 +268,7 @@ impl<R: Run, K: Keeps> Chat<R, K> {
             keeps,
             model: None,
             choice: None,
+            other: None,
             usage: None,
         }
     }
@@ -281,6 +285,14 @@ impl<R: Run, K: Keeps> Chat<R, K> {
     #[must_use]
     pub fn with_choice(mut self, owner_dir: Option<std::path::PathBuf>) -> Self {
         self.choice = owner_dir;
+        self
+    }
+
+    /// The chat, naming `other`'s model when the owner switched to the
+    /// operator's other server.
+    #[must_use]
+    pub fn with_other(mut self, other: Option<crate::config::OtherModel>) -> Self {
+        self.other = other;
         self
     }
 
@@ -357,11 +369,11 @@ impl<R: Run, K: Keeps> Chat<R, K> {
                 Err(reason) => {
                     tracing::warn!(reason = ?reason, "a chat run failed");
                     let reached = self.reached(now);
-                    let model = self
-                        .choice
-                        .as_deref()
-                        .and_then(crate::model_choice::chosen)
-                        .or_else(|| self.model.clone());
+                    let model = crate::model_choice::named(
+                        self.choice.as_deref(),
+                        self.model.as_deref(),
+                        self.other.as_ref(),
+                    );
                     let told = failed_with(ending, model.as_deref(), reached.as_ref());
                     return answer_with(delivery, &told);
                 }
@@ -458,6 +470,7 @@ pub fn chat_forever<'scope, 'env>(
     let keeps = store.map(|store| SealedConversation::new(store, hub));
     let mut chat = Chat::resuming(grants, hub.conversation(), kept, keeps)
         .with_model(config.scheduler.model_name.clone())
+        .with_other(config.scheduler.other_model.clone())
         .with_choice(
             config
                 .scheduler

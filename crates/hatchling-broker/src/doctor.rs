@@ -137,6 +137,7 @@ pub fn doctor_main(args: &[String]) -> ExitCode {
             let found = check_model(endpoint.as_deref(), name.as_deref());
             with_window(found, endpoint.as_deref(), name.as_deref())
         }),
+        ("other model", check_other(&lookup)),
         ("memory", check_memory(crate::model_window::memory())),
     ];
     report(&label, &checks)
@@ -181,6 +182,54 @@ fn check_settings(lookup: &dyn Fn(&str) -> Option<String>) -> Finding {
             "Correct it: `hatchling-broker --help` describes every setting.",
         ),
     }
+}
+
+/// Whether the other model's server, when the operator set one up, is one
+/// the app can switch to: egress grants it to runs, and to the chat.
+fn check_other(lookup: &dyn Fn(&str) -> Option<String>) -> Finding {
+    let set = |key: &str| lookup(key).filter(|value| !value.trim().is_empty());
+    let (Some(endpoint), Some(name)) = (
+        set(env::HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT.name),
+        set(env::HATCHLING_SCHEDULER_MODEL_OTHER_NAME.name),
+    ) else {
+        return Finding::Fine(String::from(
+            "none set up: `use-hosted` or `use-local` keeps the server it switches from, to switch back to in the app",
+        ));
+    };
+    let Some(destination) = crate::model_choice::destination(&endpoint) else {
+        return Finding::problem(
+            format!("can't read {endpoint} as a model's address"),
+            "Set HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT to an https:// API's base, or http://localhost:<port>/<path>.",
+        );
+    };
+    let listed = |key: &str, item: &str| {
+        set(key).is_some_and(|list| list.split(',').map(str::trim).any(|entry| entry == item))
+    };
+    let chat = set(env::HATCHLING_API_GRANTS.name).is_some_and(|grants| {
+        grants
+            .split(',')
+            .map(str::trim)
+            .any(|grant| grant == "channel-send:local")
+    });
+    let granted = listed(env::HATCHLING_EGRESS_GRANTS.name, &destination)
+        && (!chat
+            || listed(
+                env::HATCHLING_API_GRANTS.name,
+                &format!("egress:{destination}"),
+            ));
+    if !granted {
+        return Finding::problem(
+            format!(
+                "{name} at {endpoint} is set up, but egress doesn't grant {destination}: the app can't switch to it"
+            ),
+            format!(
+                "Add {destination} to HATCHLING_EGRESS_ALLOWLIST and HATCHLING_EGRESS_GRANTS, and egress:{destination} to HATCHLING_API_GRANTS; or switch to it once with `use-hosted`/`use-local`, which does."
+            ),
+        );
+    }
+    Finding::Fine(format!(
+        "{name} at {endpoint}: switch to it in the app, under Settings, General, Model"
+    ))
 }
 
 /// Whether `bin`, the agent's program, is a program.
@@ -837,6 +886,71 @@ mod tests {
     use std::thread;
 
     use super::*;
+
+    /// The other model's server is one the app can switch to when egress
+    /// grants it, to runs and to the chat; none set up is fine.
+    #[test]
+    fn the_other_server_is_checked_for_its_grants() {
+        let other = |pairs: &[(&str, &str)]| {
+            let map: BTreeMap<String, String> = pairs
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+                .collect();
+            check_other(&|key: &str| map.get(key).cloned())
+        };
+        assert!(matches!(other(&[]), Finding::Fine(seen) if seen.starts_with("none set up")));
+        let set_up = [
+            (
+                "HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT",
+                "https://openrouter.ai/api/v1",
+            ),
+            ("HATCHLING_SCHEDULER_MODEL_OTHER_NAME", "nemotron"),
+        ];
+        let with = |more: &[(&'static str, &'static str)]| {
+            let mut pairs = set_up.to_vec();
+            pairs.extend_from_slice(more);
+            other(&pairs)
+        };
+        assert!(matches!(
+            with(&[]),
+            Finding::Problem { what, .. } if what.contains("egress doesn't grant openrouter.ai:443")
+        ));
+        let egress = (
+            "HATCHLING_EGRESS_GRANTS",
+            "localhost:11434, openrouter.ai:443",
+        );
+        assert!(
+            matches!(with(&[egress]), Finding::Fine(seen) if seen.contains("switch to it in the app"))
+        );
+        // With a chat, its grants must reach it too.
+        assert!(matches!(
+            with(&[
+                egress,
+                (
+                    "HATCHLING_API_GRANTS",
+                    "channel-send:local,egress:localhost:11434"
+                )
+            ]),
+            Finding::Problem { .. }
+        ));
+        assert!(matches!(
+            with(&[
+                egress,
+                (
+                    "HATCHLING_API_GRANTS",
+                    "channel-send:local,egress:openrouter.ai:443"
+                )
+            ]),
+            Finding::Fine(_)
+        ));
+        assert!(matches!(
+            other(&[
+                ("HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT", "ftp://models.example/v1"),
+                ("HATCHLING_SCHEDULER_MODEL_OTHER_NAME", "m"),
+            ]),
+            Finding::Problem { what, .. } if what.contains("can't read")
+        ));
+    }
     use crate::test_port::RefusingPort;
 
     /// What `found` says is wrong, and the fix: it must be a problem.

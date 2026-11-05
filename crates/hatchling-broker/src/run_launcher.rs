@@ -392,13 +392,14 @@ pub fn scoped_config(
             bound: Some(space.clone()),
             device_socket: None,
         });
+    let model = crate::model_choice::server(&config.scheduler);
     run.scheduler = SchedulerConfig {
         // The model the run calls, named so its trail can ask the
         // model's server the window it gives it when the run ends.
-        model_endpoint: config.scheduler.model_endpoint.clone(),
-        model_name: crate::model_choice::in_use(&config.scheduler),
-        model_reasoning: config.scheduler.model_reasoning,
-        model_context_window: config.scheduler.model_context_window,
+        model_endpoint: model.endpoint,
+        model_name: model.name,
+        model_reasoning: model.reasoning,
+        model_context_window: model.context_window,
         followup: Some(FollowupScope {
             root: config.scheduler.root.clone(),
             run: token.to_owned(),
@@ -746,6 +747,7 @@ fn run_token() -> Result<String, String> {
 /// settings in `config`: what its agent is told about the run, a chat
 /// turn included.
 fn scheduled_run(config: &Config, request: &RunRequest) -> ScheduledRun {
+    let model = crate::model_choice::server(&config.scheduler);
     ScheduledRun {
         // A run for the owner's Feed page writes a post from their prompt.
         task: if request.channel == crate::feed_page::FEED_PAGE {
@@ -757,10 +759,10 @@ fn scheduled_run(config: &Config, request: &RunRequest) -> ScheduledRun {
         },
         missed: request.missed,
         due: request.due.as_second(),
-        model_endpoint: config.scheduler.model_endpoint.clone(),
-        model_name: crate::model_choice::in_use(&config.scheduler),
-        model_reasoning: config.scheduler.model_reasoning,
-        model_context_window: config.scheduler.model_context_window,
+        model_endpoint: model.endpoint,
+        model_name: model.name,
+        model_reasoning: model.reasoning,
+        model_context_window: model.context_window,
         depth: request.depth,
         event: request.event.clone(),
         max_steps: None,

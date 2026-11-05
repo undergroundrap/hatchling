@@ -330,7 +330,7 @@ export type ApiOutcome = 'served' | 'refused';
  * What one API call asked for: the request's kind, never its content
  * (a message's text, a file, a schedule's task).
  */
-export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'manage_goals' | 'manage_memory' | 'list_decisions' | 'read_usage' | 'set_usage_limits' | 'read_model' | 'set_model' | 'read_feed' | 'manage_suggestions' | 'give_code' | 'decline_code';
+export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'manage_goals' | 'manage_memory' | 'list_decisions' | 'read_usage' | 'set_usage_limits' | 'read_model' | 'set_model' | 'switch_model_server' | 'read_feed' | 'manage_suggestions' | 'give_code' | 'decline_code';
 /**
  * A bearer token, presented in `Hello` for a token provider.
  *
@@ -1956,6 +1956,19 @@ export type MemoryResult = {
     readonly result: 'unasked';
 };
 /**
+ * A model's server the operator set up, and the model they set on it.
+ */
+export type ModelServer = {
+    /**
+     * The API's base URL.
+     */
+    readonly endpoint?: string | null;
+    /**
+     * The model's id on it.
+     */
+    readonly name?: string | null;
+};
+/**
  * The model Hatchling uses, and the models its server has: what the
  * owner chooses from in the app.
  */
@@ -1984,10 +1997,21 @@ export type ModelState = {
      */
     readonly on_cpu?: number | null;
     /**
+     * The other server the operator set up, that the owner may switch
+     * to: none when there's one. With [`ModelState::switched`], the
+     * operator's first.
+     */
+    readonly other?: ModelServer | null;
+    /**
      * All the model in use takes, in bytes, when it's loaded and its
      * server says.
      */
     readonly size?: number | null;
+    /**
+     * Whether the owner switched to the operator's other server: the
+     * endpoint and the configured model above are its.
+     */
+    readonly switched?: boolean;
     /**
      * The window of the model in use, in tokens: as its server says,
      * when it's loaded, else as the operator declared it.
@@ -4354,6 +4378,12 @@ export type UiAction = {
      * the operator set.
      */
     readonly name?: string | null;
+} | {
+    readonly action: 'switch_model_server';
+    /**
+     * To the other server; false goes back to the first.
+     */
+    readonly other: boolean;
 } | {
     readonly action: 'read_feed';
 } | {
