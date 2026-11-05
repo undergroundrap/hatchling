@@ -1001,11 +1001,15 @@ mod tests {
         };
         let fine = |finding: Finding| match finding {
             Finding::Fine(said) => said,
-            other @ (Finding::Problem { .. } | Finding::Unchecked(_)) => format!("not fine: {other:?}"),
+            other @ (Finding::Problem { .. } | Finding::Unchecked(_)) => {
+                format!("not fine: {other:?}")
+            }
         };
         let fix = |finding: Finding| match finding {
             Finding::Problem { what, fix } => format!("{what} | {fix}"),
-            other @ (Finding::Fine(_) | Finding::Unchecked(_)) => format!("not a problem: {other:?}"),
+            other @ (Finding::Fine(_) | Finding::Unchecked(_)) => {
+                format!("not a problem: {other:?}")
+            }
         };
         assert!(fine(vault_said(Tier::File, 0, &here(&[], false), false)).contains("by itself"));
         assert!(
