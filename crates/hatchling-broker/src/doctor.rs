@@ -268,6 +268,11 @@ fn check_vault(lookup: &dyn Fn(&str) -> Option<String>, machine: &Machine) -> Fi
             "opens with its key file, by itself after a restart; a security key protects it more (docs/security-keys.md)",
         ));
     };
+    // Run as root, the keyring is the keeper's user's: read as theirs,
+    // and nothing is made or given to anyone.
+    if let (Ok(Some((uid, _))), Some(dir)) = (crate::keeper::keeper_user(), path.parent()) {
+        let _ = hatchling_vault::act_for(uid, &[dir]);
+    }
     let ring = match hatchling_vault::Keyring::load(path) {
         Ok(ring) => ring,
         Err(error) => {

@@ -265,8 +265,10 @@ pub fn keeper_dirs(config: &Config, keyring: &KeyringConfig) -> Vec<PathBuf> {
             dirs.push(dir.to_path_buf());
         }
     }
-    // Where it waits to be unlocked, when its vault needs a person.
-    if crate::unlock_relay::needs_a_person(keyring) {
+    // Where it waits to be unlocked, when its vault needs a person: with
+    // any keyring, since root can't read the keeper's keyring here to know
+    // its tier (it opens only its own), and the directory costs nothing.
+    if keyring.keyring.is_some() {
         dirs.push(crate::unlock_relay::unlock_dir(vault));
     }
     dirs
@@ -1623,6 +1625,7 @@ mod tests {
                 PathBuf::from("/srv/h/vault.key"),
                 PathBuf::from("/srv/h/ring"),
                 PathBuf::from("/srv/h/kek"),
+                PathBuf::from("/srv/h/vault.unlock"),
             ]
         );
     }
