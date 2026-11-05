@@ -277,7 +277,8 @@ fn check_vault(lookup: &dyn Fn(&str) -> Option<String>, machine: &Machine) -> Fi
             );
         }
     };
-    let waiting = Config::parse(lookup).is_ok_and(|config| crate::unlock_relay::socket_path(&config.vault).exists());
+    let waiting = Config::parse(lookup)
+        .is_ok_and(|config| crate::unlock_relay::socket_path(&config.vault).exists());
     vault_said(ring.tier(), ring.hardware_keys().len(), machine, waiting)
 }
 
@@ -1000,11 +1001,11 @@ mod tests {
         };
         let fine = |finding: Finding| match finding {
             Finding::Fine(said) => said,
-            other => format!("not fine: {other:?}"),
+            other @ (Finding::Problem { .. } | Finding::Unchecked(_)) => format!("not fine: {other:?}"),
         };
         let fix = |finding: Finding| match finding {
             Finding::Problem { what, fix } => format!("{what} | {fix}"),
-            other => format!("not a problem: {other:?}"),
+            other @ (Finding::Fine(_) | Finding::Unchecked(_)) => format!("not a problem: {other:?}"),
         };
         assert!(fine(vault_said(Tier::File, 0, &here(&[], false), false)).contains("by itself"));
         assert!(
@@ -1062,12 +1063,10 @@ mod tests {
             ))
             .contains("key file")
         );
-        let broken: BTreeMap<String, String> = [(
+        let broken = BTreeMap::from([(
             String::from("HATCHLING_VAULT_KEYRING"),
             String::from("/nonexistent/hatchling/keyring"),
-        )]
-        .into_iter()
-        .collect();
+        )]);
         assert!(
             fix(check_vault(
                 &|key: &str| broken.get(key).cloned(),
