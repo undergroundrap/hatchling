@@ -72,6 +72,11 @@ pub fn main(program: &str, args: &[String]) -> ExitCode {
         Some(BROWSER_DIGEST_SUBCOMMAND) => {
             return browser_digest_main(args.get(1).map(String::as_str));
         }
+        // The installer's: how a loaded model fits, from its server; it
+        // reads no settings.
+        Some(crate::model_window::MODEL_FIT_SUBCOMMAND) => {
+            return crate::model_window::model_fit_main(args.get(1..).unwrap_or_default());
+        }
         Some(AGENT_RUN_SUBCOMMAND) => return agent_run_main(args.get(1).map(String::as_str)),
         Some(HARNESS_TREE_SUBCOMMAND) => {
             return harness_tree_main(args.get(1..).unwrap_or_default());
@@ -141,6 +146,7 @@ fn valid_args(args: &[String]) -> bool {
         | ["clean", "--dry-run"]
         | ["doctor", "--env", _]
         | ["rekey-vault" | BROWSER_DIGEST_SUBCOMMAND, _]
+        | [crate::model_window::MODEL_FIT_SUBCOMMAND, _, _]
         | [
             "vault-keyring",
             "init" | "enroll-totp" | "enroll-keys" | "use-file-tier" | "backup-codes" | "status"

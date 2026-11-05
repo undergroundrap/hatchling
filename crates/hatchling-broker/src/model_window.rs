@@ -132,6 +132,42 @@ pub fn loaded_in(answer: &[u8], name: &str) -> Option<Loaded> {
     })
 }
 
+/// The command that says how a model fits, for the installer.
+pub const MODEL_FIT_SUBCOMMAND: &str = "model-fit";
+
+/// How `loaded` fits, in one word for a script: `gpu` when it's all in
+/// the GPU's memory, `cpu` when some runs on the CPU, `unknown` when the
+/// server doesn't say (it isn't Ollama, or the model isn't loaded).
+#[must_use]
+pub const fn fit_word(loaded: Option<Loaded>) -> &'static str {
+    match loaded {
+        Some(loaded) if loaded.size > 0 && loaded.on_cpu() == 0 => "gpu",
+        Some(loaded) if loaded.size > 0 => "cpu",
+        Some(_) | None => "unknown",
+    }
+}
+
+/// `model-fit <endpoint> <model>`: prints how the model fits, one word
+/// ([`fit_word`]). It reads no settings and changes nothing: the
+/// installer asks it, after loading the model, which window to keep.
+#[must_use]
+pub fn model_fit_main(args: &[String]) -> std::process::ExitCode {
+    use std::io::Write as _;
+    let (Some(endpoint), Some(name)) = (args.first(), args.get(1)) else {
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "usage: hatchling-broker {MODEL_FIT_SUBCOMMAND} <endpoint> <model>"
+        );
+        return std::process::ExitCode::from(hatchling_core::cli::EX_USAGE);
+    };
+    let _ = writeln!(
+        std::io::stdout().lock(),
+        "{}",
+        fit_word(learned(endpoint, name))
+    );
+    std::process::ExitCode::SUCCESS
+}
+
 /// The computer's memory, from `/proc/meminfo`: what's available, and
 /// all of it, in bytes.
 #[must_use]
@@ -259,6 +295,30 @@ mod tests {
         let over = loaded_in(br#"{"models":[{"name":"m","size":5,"size_vram":9}]}"#, "m").unwrap();
         assert_eq!(over.on_cpu(), 0, "never more on the GPU than all of it");
         assert_eq!(loaded_in(br#"{"models":[]}"#, "m"), None);
+    }
+
+    /// A model all on the GPU is `gpu`, one partly on the CPU `cpu`, and
+    /// one the server says nothing of `unknown`.
+    #[test]
+    fn the_fit_is_one_word() {
+        let loaded_list = super::loaded;
+        let loaded = |size, on_gpu| {
+            Some(Loaded {
+                window: Some(65_536),
+                size,
+                on_gpu,
+            })
+        };
+        assert_eq!(fit_word(loaded(7_700_000_000, 7_700_000_000)), "gpu");
+        assert_eq!(fit_word(loaded(10_700_000_000, 9_800_000_000)), "cpu");
+        assert_eq!(fit_word(loaded(10_700_000_000, 0)), "cpu", "all on the CPU");
+        assert_eq!(fit_word(loaded(0, 0)), "unknown", "no size said");
+        assert_eq!(fit_word(None), "unknown");
+        let (address, served) = answering(vec![loaded_list(
+            r#"{"name":"m","size":100,"size_vram":100,"context_length":65536}"#,
+        )]);
+        assert_eq!(fit_word(learned(&format!("http://{address}/v1"), "m")), "gpu");
+        served.join().unwrap();
     }
 
     /// The computer's memory is read from meminfo's own words, in kB.

@@ -50,7 +50,7 @@ A model bigger than the GPU's memory runs partly on the CPU, much more slowly: `
 
 **Give the model room.** The agent's instructions and tools take about 5,500 tokens before you say anything, and both models think before they answer, which makes better answers and uses more: one chat answer took about 6,000. Ollama's default window on many GPUs is 4,096 tokens, so a thinking model is cut off partway, and the chat says the model ran out of room.
 
-So the installer gives a local Ollama service a window of **32,768 tokens**, unless it has that many already. It does it in a file of its own, `/etc/systemd/system/ollama.service.d/zz-hatchling-context.conf`, and says so; removing that file and restarting Ollama undoes it. `--ollama-context <tokens>` asks for another size, and `--ollama-context 0` leaves Ollama as it is. What the window costs, measured on an RTX 4070 with 12 GB (2026-11):
+So the installer sizes a local Ollama service's window to your machine: **65,536 tokens** when the model fits on the GPU with it, else **32,768**. It loads the model at 65,536 and asks Ollama how it fits (`hatchling-broker model-fit`), and steps down if any of it would run on the CPU. A window of 65,536 or more is kept, and so is one of 32,768 or more that you set yourself. It does it in a file of its own, `/etc/systemd/system/ollama.service.d/zz-hatchling-context.conf`, and says so; removing that file and restarting Ollama undoes it. `--ollama-context <tokens>` asks for a size instead, and `--ollama-context 0` leaves Ollama as it is. What the window costs, measured on an RTX 4070 with 12 GB (2026-11):
 
 | Window | `qwen3.5:9b` takes | On the GPU |
 | --- | --- | --- |
