@@ -301,6 +301,11 @@ jobs:
           done
           [ "$(cat /var/lib/hatchling/ui.sock.token)" != "$token" ]
           [ "$(hatchling-host url)" = "http://127.0.0.1:7340/#hatchling-ui=$(cat /var/lib/hatchling/ui.sock.token)" ]
+          # The app's host runs as the owner, as a system service, confined.
+          systemctl is-active --quiet "hatchling-host@$USER.service"
+          [ "$(systemctl show "hatchling-host@$USER.service" -p User --value)" = "$USER" ]
+          [ "$(ps -o user= -C hatchling-host | sort -u)" = "$USER" ]
+          [ "$(systemctl show "hatchling-host@$USER.service" -p NoNewPrivileges --value)" = yes ]
           timeout 180 python3 docs/examples/first-run.py /var/lib/hatchling/api.sock
           curl -fsS http://127.0.0.1:7340/ > /dev/null
 
@@ -357,7 +362,7 @@ jobs:
         if: always()
         run: |
           sudo journalctl -u hatchling.service --no-pager | tail -80
-          journalctl --user -u hatchling-host.service --no-pager | tail -40 || true
+          sudo journalctl -u 'hatchling-host@*' --no-pager | tail -40 || true
 
   upgrade:
     # Upgrade safety: the last release installed as a person installs it,
@@ -415,6 +420,15 @@ jobs:
           python3 scripts/upgrade_state.py verify /var/lib/hatchling/api.sock "$RUNNER_TEMP/state.json"
           timeout 180 python3 docs/examples/first-run.py /var/lib/hatchling/api.sock
           sudo hatchling-broker doctor
+          # The app's host moved from the owner's user service to a system
+          # one: the old one is gone, and the new one serves the app.
+          if [ -f /etc/systemd/user/hatchling-host.service ]; then
+            grep -q "its old user service is removed" "$RUNNER_TEMP/install-upgrade.log"
+          fi
+          [ ! -e /etc/systemd/user/hatchling-host.service ]
+          if systemctl --user is-active --quiet hatchling-host.service; then exit 1; fi
+          systemctl is-active --quiet "hatchling-host@$USER.service"
+          curl -fsS --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:7340/ > /dev/null
 
       - name: Upgrade a configuration from before the kept stores
         run: |

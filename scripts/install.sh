@@ -38,7 +38,8 @@
 #                                                      if it's there; --force
 #                                                      writes it again)
 #   /etc/systemd/system/hatchling.service              the broker, as root
-#   /etc/systemd/user/hatchling-host.service           the app's host, as the owner
+#   /etc/systemd/system/hatchling-host@.service        the app's host, run as the
+#                                                      owner (hatchling-host@<owner>)
 #   /etc/sysusers.d/hatchling.conf, /etc/tmpfiles.d/hatchling.conf
 # then makes the users and directories, seals the vault, starts both
 # services, and prints the app's address.
@@ -233,7 +234,7 @@ else
   rm -f /etc/systemd/system/hatchling.service.d/cgroup.conf
   say "systemd $SYSTEMD has no DelegateSubgroup: cells run without a cgroup of their own (README, Cell limits)"
 fi
-install -D -m 644 "$PACKAGING/systemd/hatchling-host.service" /etc/systemd/user/hatchling-host.service
+install -D -m 644 "$PACKAGING/systemd/hatchling-host@.service" /etc/systemd/system/hatchling-host@.service
 
 if [ -z "$(ls -A /var/lib/hatchling/vault)" ]; then
   say "sealing the vault"
@@ -345,17 +346,22 @@ systemctl enable hatchling.service > /dev/null
 systemctl restart hatchling.service
 
 say "starting the app's host as $OWNER_NAME"
-loginctl enable-linger "$OWNER_NAME"
-# The owner's own systemd, which linger starts: just after a boot (a WSL
-# distro starts on first use) it can be a few seconds from answering.
-tries=0
-until systemctl --user -M "$OWNER_NAME@" daemon-reload 2> /dev/null; do
-  tries=$((tries + 1))
-  [ "$tries" -le 30 ] || fail "$OWNER_NAME's own systemd doesn't answer: see systemctl status user@$OWNER.service, then run this again (it keeps your configuration; the broker is installed and running)"
-  sleep 1
-done
-systemctl --user -M "$OWNER_NAME@" enable hatchling-host.service > /dev/null
-systemctl --user -M "$OWNER_NAME@" restart hatchling-host.service
+# Before 0.8.0 the host was the owner's own user service. It goes, so the
+# system one has its port: through the owner's systemd when that answers,
+# and, as it may not (in WSL, WSLg can hide it), by removing its file and
+# its enabling link, and stopping a host it left running.
+OLD_HOST=/etc/systemd/user/hatchling-host.service
+if [ -f "$OLD_HOST" ]; then
+  timeout 10 systemctl --user -M "$OWNER_NAME@" disable --now hatchling-host.service > /dev/null 2>&1 || true
+  rm -f "$OLD_HOST"
+  HOME_DIR=$(getent passwd "$OWNER_NAME" | cut -d: -f6)
+  LINK=$HOME_DIR/.config/systemd/user/default.target.wants/hatchling-host.service
+  if [ -L "$LINK" ] && [ "$(readlink "$LINK")" = "$OLD_HOST" ]; then rm -f "$LINK"; fi
+  pkill -TERM -u "$OWNER" -x hatchling-host 2> /dev/null || true
+  say "the app's host is a system service now, hatchling-host@$OWNER_NAME: its old user service is removed"
+fi
+systemctl enable "hatchling-host@$OWNER_NAME.service" > /dev/null 2>&1
+systemctl restart "hatchling-host@$OWNER_NAME.service"
 
 TOKEN=/var/lib/hatchling/ui.sock.token
 tries=0
