@@ -486,7 +486,10 @@ mod tests {
         ]);
         assert_eq!(keys, Ok(vec![7]));
         let alone = usable::<u8>(vec![(String::from("hidraw1"), old())]).unwrap_err();
-        assert!(alone.contains("U2F") && alone.starts_with("hidraw1: "), "{alone}");
+        assert!(
+            alone.contains("U2F") && alone.starts_with("hidraw1: "),
+            "{alone}"
+        );
         assert_eq!(usable::<u8>(Vec::new()), Ok(Vec::new()));
         // Anything else is said, whatever else works.
         let broken = usable(vec![
@@ -642,7 +645,7 @@ mod tests {
     }
 
     impl AsFd for Failing {
-        fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        fn as_fd(&self) -> BorrowedFd<'_> {
             self.socket.as_fd()
         }
     }

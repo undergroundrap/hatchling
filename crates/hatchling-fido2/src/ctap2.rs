@@ -6,7 +6,7 @@
 //! [`crate::device`] before it is believed.
 
 use crate::cbor::{CborError, Value};
-use crate::ctaphid::TransportError;
+use crate::ctaphid::{CHANNEL_BUSY, TransportError};
 use crate::pin::{CryptoError, Protocol};
 
 /// `authenticatorMakeCredential`.
@@ -304,6 +304,11 @@ pub fn to_authenticator_error(error: &Ctap2Error) -> hatchling_vault::Authentica
         }
         Ctap2Error::Status(OPERATION_DENIED | USER_ACTION_TIMEOUT | KEEPALIVE_CANCEL)
         | Ctap2Error::Transport(TransportError::Timeout) => AuthenticatorError::NoUserPresence,
+        Ctap2Error::Transport(TransportError::Device(CHANNEL_BUSY)) => {
+            AuthenticatorError::Device(String::from(
+                "another program is using the security key: close it, and try again",
+            ))
+        }
         Ctap2Error::Status(PIN_INVALID) => {
             AuthenticatorError::Device(String::from("the PIN is wrong"))
         }

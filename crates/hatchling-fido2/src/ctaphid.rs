@@ -26,7 +26,7 @@ pub const INIT: u8 = 0x86;
 /// `CBOR`: one CTAP2 command.
 pub const CBOR: u8 = 0x90;
 /// CTAPHID's `ERR_CHANNEL_BUSY`: another channel has the device.
-const CHANNEL_BUSY: u8 = 0x06;
+pub const CHANNEL_BUSY: u8 = 0x06;
 
 /// How long before asking a busy device again.
 const BUSY_WAIT: Duration = Duration::from_millis(100);

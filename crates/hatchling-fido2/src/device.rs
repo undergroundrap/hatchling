@@ -245,11 +245,7 @@ impl<H: Hid> Device<H> {
     /// A new PIN token for `rp_id`: from the PIN this session holds, or
     /// the operator's, held once it's right. A wrong one says the tries
     /// left, and isn't held.
-    fn token(
-        &mut self,
-        protocol: Protocol,
-        rp_id: &str,
-    ) -> Result<Zeroizing<Vec<u8>>, Ctap2Error> {
+    fn token(&mut self, protocol: Protocol, rp_id: &str) -> Result<Zeroizing<Vec<u8>>, Ctap2Error> {
         let pin = match self.held.take() {
             Some(pin) => pin,
             None => self
@@ -597,6 +593,7 @@ mod tests {
     use hmac::{Hmac, Mac as _};
 
     use super::*;
+    use crate::ctaphid::TransportError;
     use crate::soft::{SoftKey, State, Tamper};
 
     const RP: &str = "hatchling.vault";
@@ -871,7 +868,7 @@ mod tests {
             assert_eq!(device.info().protocol(), protocol);
             let peer = device.key_agreement(protocol).unwrap();
             assert!(cose_point(&peer).is_ok());
-            let token = device.pin_token(protocol, RP).unwrap();
+            let token = device.pin_token(protocol, RP, "2468").unwrap();
             assert_eq!(token.len(), 32);
             let credential = device.create(RP, b"u").unwrap();
             let salt = random::<32>().unwrap();
@@ -1066,7 +1063,10 @@ mod tests {
         assert_eq!(state.borrow().busy, 0);
         state.borrow_mut().busy = u32::MAX;
         let refused = device.make_credential(RP, b"v").unwrap_err();
-        assert!(format!("{refused:?}").contains("0x06") || format!("{refused}").contains("0x06"));
+        assert!(
+            matches!(refused, AuthenticatorError::Device(ref said) if said.contains("another program")),
+            "{refused:?}"
+        );
         assert!(state.borrow().busy > 0);
     }
 
@@ -1137,7 +1137,7 @@ mod tests {
         let state = key.handle();
         let mut device = open(key, None);
         assert!(matches!(
-            device.set_pin("12\0345"),
+            device.set_pin("12\x0034"),
             Err(Ctap2Error::PinPolicy { .. })
         ));
         let longest = "7".repeat(63);

@@ -64,7 +64,10 @@ fn info() -> Vec<u8> {
             Value::int(1),
             Value::Array(vec![Value::text("FIDO_2_0"), Value::text("FIDO_2_1")]),
         ),
-        (Value::int(2), Value::Array(vec![Value::text("hmac-secret")])),
+        (
+            Value::int(2),
+            Value::Array(vec![Value::text("hmac-secret")]),
+        ),
         (Value::int(3), Value::Bytes(vec![7; 16])),
         (
             Value::int(4),
@@ -74,7 +77,10 @@ fn info() -> Vec<u8> {
             ]),
         ),
         (Value::int(5), Value::int(1200)),
-        (Value::int(6), Value::Array(vec![Value::int(2), Value::int(1)])),
+        (
+            Value::int(6),
+            Value::Array(vec![Value::int(2), Value::int(1)]),
+        ),
         (Value::int(13), Value::int(4)),
     ]))
 }
@@ -118,7 +124,10 @@ fn the_decoder_takes_anything_and_means_only_what_it_was_sent() {
             taken += 1;
         }
     }
-    assert!(taken > 100, "the soup reached the decoder's far side: {taken}");
+    assert!(
+        taken > 100,
+        "the soup reached the decoder's far side: {taken}"
+    );
 }
 
 #[test]
@@ -266,8 +275,7 @@ fn a_failure_at_any_step_is_a_refusal() {
                 fault,
                 happened: Rc::clone(&reached),
             };
-            let Ok(mut device) = Device::open_with(hid, Some(pin()), Duration::from_secs(1))
-            else {
+            let Ok(mut device) = Device::open_with(hid, Some(pin()), Duration::from_secs(1)) else {
                 happened += 1;
                 continue;
             };
@@ -283,6 +291,9 @@ fn a_failure_at_any_step_is_a_refusal() {
             }
             happened += 1;
         }
-        assert!(happened > 10, "the failures reached the exchange: {happened}");
+        assert!(
+            happened > 10,
+            "the failures reached the exchange: {happened}"
+        );
     }
 }
