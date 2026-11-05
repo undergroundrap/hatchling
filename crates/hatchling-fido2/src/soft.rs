@@ -329,15 +329,7 @@ impl SoftKey {
             .and_then(Value::as_int)
             .and_then(Protocol::from_number)
             .ok_or(PIN_AUTH_INVALID)?;
-        if state.refuse_tokens {
-            return Err(PIN_AUTH_INVALID);
-        }
-        let token = state.token.as_deref().ok_or(PIN_AUTH_INVALID)?;
-        if protocol.authenticate(token, client_data_hash) == given {
-            Ok(())
-        } else {
-            Err(PIN_AUTH_INVALID)
-        }
+        token_proves(&state, protocol, client_data_hash, given)
     }
 
     fn make(&self, parameters: &Value) -> Result<Value, u8> {
@@ -449,13 +441,7 @@ impl SoftKey {
                     .and_then(Value::as_int)
                     .and_then(Protocol::from_number)
                     .ok_or(PIN_AUTH_INVALID)?;
-                if state.refuse_tokens {
-                    return Err(PIN_AUTH_INVALID);
-                }
-                let token = state.token.as_deref().ok_or(PIN_AUTH_INVALID)?;
-                if protocol.authenticate(token, client_data_hash) != given {
-                    return Err(PIN_AUTH_INVALID);
-                }
+                token_proves(&state, protocol, client_data_hash, given)?;
                 true
             }
         };
@@ -514,6 +500,25 @@ impl SoftKey {
 /// The encrypted `hmac-secret` output for credential `held`, from the
 /// extension input in `parameters`: the salt checked and decrypted under
 /// the key agreement, `HMAC-SHA-256(CredRandom, salt)` encrypted back.
+/// Whether `given` is the proof, over `client_data_hash`, of the PIN
+/// token the key gave last (and hasn't forgotten).
+fn token_proves(
+    state: &State,
+    protocol: Protocol,
+    client_data_hash: &[u8],
+    given: &[u8],
+) -> Result<(), u8> {
+    if state.refuse_tokens {
+        return Err(PIN_AUTH_INVALID);
+    }
+    let token = state.token.as_deref().ok_or(PIN_AUTH_INVALID)?;
+    if protocol.authenticate(token, client_data_hash) == given {
+        Ok(())
+    } else {
+        Err(PIN_AUTH_INVALID)
+    }
+}
+
 fn sealed_output(
     state: &mut State,
     parameters: &Value,
