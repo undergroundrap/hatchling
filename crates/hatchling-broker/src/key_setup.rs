@@ -404,7 +404,7 @@ fn keyboard_only(pin: &str) -> bool {
 /// apart later, and says which to remove if one is lost.
 fn unused_name(model: &str, taken: &[String]) -> String {
     std::iter::once(model.to_owned())
-        .chain((2..).map(|number| format!("{model} {number}")))
+        .chain((2..=taken.len() + 1).map(|number| format!("{model} {number}")))
         .find(|name| !taken.contains(name))
         .unwrap_or_else(|| model.to_owned())
 }
