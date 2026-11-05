@@ -39,7 +39,7 @@ pub const USE_HOSTED: &str = "use-hosted";
 /// The command to use a local model.
 pub const USE_LOCAL: &str = "use-local";
 
-/// OpenRouter: its API, and the free model with a million-token window
+/// `OpenRouter`: its API, and the free model with a million-token window
 /// that calls tools well with thinking off (docs/hosted-models.md).
 const OPENROUTER: &str = "https://openrouter.ai/api/v1";
 const OPENROUTER_MODEL: &str = "nvidia/nemotron-3-ultra-550b-a55b:free";
@@ -282,10 +282,11 @@ pub fn changes(
     changes
 }
 
-/// `text`, a settings file, with `changes` made: a changed key's first
-/// line holds its new value (later ones go), a key set to `None` loses
-/// its lines, and a new key goes at the end. Every other line, comments
-/// included, is as it was.
+/// `text`, a settings file, with `changes` made.
+///
+/// A changed key's first line holds its new value (later ones go), a key
+/// set to `None` loses its lines, and a new key goes at the end. Every
+/// other line, comments included, is as it was.
 #[must_use]
 pub fn edited(text: &str, changes: &[(&str, Option<String>)]) -> String {
     let key_of = |line: &str| -> Option<String> {
@@ -360,47 +361,94 @@ fn switch(target: &Target, path: &Path) -> Result<(), String> {
     let text = crate::service_settings::read_trusted_text(path, 0)
         .map_err(|unread| format!("{}\n{}", unread.what, unread.fix))?;
     let settings = crate::doctor::parse_settings(&text);
+    ready(target)?;
+    let backup = rewrite(path, &text, &changes(&settings, target))?;
     let mut out = std::io::stdout().lock();
-    if target.local {
-        match crate::model_choice::available(&target.endpoint) {
-            Some(models) => {
-                let latest = format!("{}:latest", target.model);
-                if !models.iter().any(|id| *id == target.model || *id == latest) {
-                    return Err(format!(
-                        "the server at {} has no model {}: fetch it first (for Ollama, `ollama pull {}`); nothing was changed",
-                        target.endpoint, target.model, target.model
-                    ));
-                }
-            }
-            None => {
-                return Err(format!(
-                    "nothing at {} lists its models: start the model's server (for Ollama, `sudo systemctl start ollama`); nothing was changed",
-                    target.endpoint
-                ));
-            }
+    let _ = writeln!(
+        out,
+        "Hatchling uses {} at {}{}{}. The old settings are in {}.",
+        target.model,
+        target.endpoint,
+        target
+            .window
+            .map_or_else(String::new, |window| format!(", with a {window}-token window")),
+        if target.thinking_off { ", thinking off" } else { "" },
+        backup.display()
+    );
+    if let Some(root) = settings.get(env::HATCHLING_SCHEDULER_DIR.name) {
+        let choice =
+            crate::config::owner_dir_of(Path::new(root)).join(crate::model_choice::MODEL_FILE);
+        if std::fs::remove_file(&choice).is_ok() {
+            let _ = writeln!(
+                out,
+                "The model chosen in the app was one on the old server: it's forgotten."
+            );
         }
-    } else {
-        let _ = writeln!(out, "The key for {}:", target.destination);
-        drop(out);
-        let key = std::env::current_exe()
-            .map_err(|err| format!("can't find this program to ask for the key: {err}"))?;
-        let given = std::process::Command::new(key)
-            .args([
-                "secret",
-                "add",
-                "--for",
-                &target.destination,
-                "--if-missing",
-            ])
-            .status()
-            .map_err(|err| format!("can't ask for the key: {err}"))?;
-        if !given.success() {
-            return Err(String::from(
-                "the key wasn't stored, so nothing was changed",
-            ));
-        }
-        out = std::io::stdout().lock();
     }
+    if !target.restart {
+        let _ = writeln!(
+            out,
+            "Restart the broker to use it: `sudo systemctl restart hatchling`."
+        );
+        return Ok(());
+    }
+    let restarted = std::process::Command::new("systemctl")
+        .args(["restart", "hatchling.service"])
+        .status()
+        .map_err(|err| {
+            format!("can't restart the broker: {err}; `sudo systemctl restart hatchling` does")
+        })?;
+    if !restarted.success() {
+        return Err(String::from(
+            "the broker didn't restart: see `journalctl -u hatchling`, and `sudo hatchling-broker doctor`",
+        ));
+    }
+    let _ = writeln!(out, "Restarted the broker. Send a message in the app to check it.");
+    Ok(())
+}
+
+/// Whether `target` can be used before anything changes: a local
+/// server has the model; a hosted one's key is in the vault, asked for at
+/// `secret add`'s prompt when it isn't.
+fn ready(target: &Target) -> Result<(), String> {
+    if target.local {
+        let models = crate::model_choice::available(&target.endpoint).ok_or_else(|| {
+            format!(
+                "nothing at {} lists its models: start the model's server (for Ollama, `sudo systemctl start ollama`); nothing was changed",
+                target.endpoint
+            )
+        })?;
+        let latest = format!("{}:latest", target.model);
+        if models.iter().any(|id| *id == target.model || *id == latest) {
+            return Ok(());
+        }
+        return Err(format!(
+            "the server at {} has no model {}: fetch it first (for Ollama, `ollama pull {}`); nothing was changed",
+            target.endpoint, target.model, target.model
+        ));
+    }
+    let _ = writeln!(std::io::stdout().lock(), "The key for {}:", target.destination);
+    let program = std::env::current_exe()
+        .map_err(|err| format!("can't find this program to ask for the key: {err}"))?;
+    let given = std::process::Command::new(program)
+        .args(["secret", "add", "--for", &target.destination, "--if-missing"])
+        .status()
+        .map_err(|err| format!("can't ask for the key: {err}"))?;
+    if given.success() {
+        Ok(())
+    } else {
+        Err(String::from("the key wasn't stored, so nothing was changed"))
+    }
+}
+
+/// Writes `text`, the settings at `path`, with `changes` made: the old
+/// file backed up beside it first, the new one written whole beside and
+/// put in place. Answers where the backup is.
+fn rewrite(
+    path: &Path,
+    text: &str,
+    changes: &[(&str, Option<String>)],
+) -> Result<std::path::PathBuf, String> {
     let backup = path.with_extension(format!(
         "env.before-{}",
         hatchling_scheduler::Timestamp::now().as_second()
@@ -415,58 +463,11 @@ fn switch(target: &Target, path: &Path) -> Result<(), String> {
             .truncate(true)
             .mode(0o600)
             .open(&next)?
-            .write_all(edited(&text, &changes(&settings, target)).as_bytes())?;
+            .write_all(edited(text, changes).as_bytes())?;
         std::fs::rename(&next, path)
     };
     write().map_err(|err| format!("can't write {}: {err}; it's as it was", path.display()))?;
-    let _ = writeln!(
-        out,
-        "Hatchling uses {} at {}{}{}. The old settings are in {}.",
-        target.model,
-        target.endpoint,
-        target.window.map_or_else(String::new, |window| format!(
-            ", with a {window}-token window"
-        )),
-        if target.thinking_off {
-            ", thinking off"
-        } else {
-            ""
-        },
-        backup.display()
-    );
-    if let Some(root) = settings.get(env::HATCHLING_SCHEDULER_DIR.name) {
-        let choice =
-            crate::config::owner_dir_of(Path::new(root)).join(crate::model_choice::MODEL_FILE);
-        if std::fs::remove_file(&choice).is_ok() {
-            let _ = writeln!(
-                out,
-                "The model chosen in the app was one on the old server: it's forgotten."
-            );
-        }
-    }
-    if target.restart {
-        let restarted = std::process::Command::new("systemctl")
-            .args(["restart", "hatchling.service"])
-            .status()
-            .map_err(|err| {
-                format!("can't restart the broker: {err}; `sudo systemctl restart hatchling` does")
-            })?;
-        if !restarted.success() {
-            return Err(String::from(
-                "the broker didn't restart: see `journalctl -u hatchling`, and `sudo hatchling-broker doctor`",
-            ));
-        }
-        let _ = writeln!(
-            out,
-            "Restarted the broker. Send a message in the app to check it."
-        );
-    } else {
-        let _ = writeln!(
-            out,
-            "Restart the broker to use it: `sudo systemctl restart hatchling`."
-        );
-    }
-    Ok(())
+    Ok(backup)
 }
 
 #[cfg(test)]
