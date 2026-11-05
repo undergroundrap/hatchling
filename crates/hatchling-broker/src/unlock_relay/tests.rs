@@ -228,9 +228,7 @@ fn keys_that_arent_ones_are_refused_before_any_is_taken() {
 
 #[test]
 fn what_stopped_a_try_is_said_plainly() {
-    let said = |source| {
-        plainly(&Error::Vault { source })
-    };
+    let said = |source| plainly(&Error::Vault { source });
     assert_eq!(
         said(hatchling_vault::Error::Authenticator {
             reason: String::from("the PIN is wrong: 7 tries left before the key locks itself")

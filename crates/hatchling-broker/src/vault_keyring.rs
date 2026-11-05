@@ -3599,9 +3599,13 @@ mod tests {
         desk.plugged.set(None);
         let mut asked = Vec::new();
         let code = codes.first().unwrap().as_str();
-        let master =
-            super::unlock_asking(&vault, &config, &mut answers(&[code], &mut asked), &mut desk)
-                .unwrap();
+        let master = super::unlock_asking(
+            &vault,
+            &config,
+            &mut answers(&[code], &mut asked),
+            &mut desk,
+        )
+        .unwrap();
         assert!(reads_the_secret(&vault, &master));
         assert_eq!(asked, [OPEN_NO_KEY]);
         assert_eq!(codes_left(&config), 9);
