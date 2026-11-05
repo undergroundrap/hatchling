@@ -1718,6 +1718,8 @@ mod tests {
                     peak_input_tokens: 10,
                     output_tokens: 2,
                     context_window: None,
+                    model_on_cpu: None,
+                    memory_low: false,
                 },
                 ActivityState::Success,
             ),

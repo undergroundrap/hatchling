@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { LiveUsage, usageOf } from '../../dist/app/adapters/live/usage.js';
-import { compact, monthName, parseTokens, summary, tokensText, weekday } from '../../dist/app/features/settings/usage.js';
+import { compact, fitNote, monthName, parseTokens, summary, tokensText, weekday } from '../../dist/app/features/settings/usage.js';
 /** A client that answers each request from a script, and records it. */
 class FakeClient {
     sent = [];
@@ -152,10 +152,21 @@ test('the context is a chat answer\'s largest prompt: background work and runs w
     assert.equal(live.context(), null);
     assert.equal(changes(), 0);
     live.observeRun(run(true, 2, 5500, 16384));
-    assert.deepEqual(live.context(), { tokens: 5500, window: 16384 });
+    assert.deepEqual(live.context(), { tokens: 5500, window: 16384, onCpu: null, memoryLow: false });
     live.observeRun({ ...run(true, 1, 700, null), context_window: undefined });
-    assert.deepEqual(live.context(), { tokens: 700, window: null });
-    assert.equal(changes(), 2);
+    assert.deepEqual(live.context(), { tokens: 700, window: null, onCpu: null, memoryLow: false });
+    live.observeRun({ ...run(true, 1, 700, 131072), model_on_cpu: 900000000, memory_low: true });
+    assert.deepEqual(live.context(), { tokens: 700, window: 131072, onCpu: 900000000, memoryLow: true });
+    assert.equal(changes(), 3);
+});
+test('the owner is told when the model ran partly on the CPU, or the computer was low on memory', () => {
+    const context = (onCpu, memoryLow) => ({ tokens: 5000, window: 32768, onCpu, memoryLow });
+    assert.equal(fitNote(context(null, false)), null);
+    assert.equal(fitNote(context(0, false)), null);
+    assert.equal(fitNote(context(99999999, false)), null, 'too little to feel');
+    assert.equal(fitNote(context(100000000, false)), 'Part of the model (0.1 GB) ran on the CPU, so answers are slower. Something else may be using the GPU’s memory, or the model’s window is large for it.');
+    assert.equal(fitNote(context(null, true)), 'This computer was low on memory: closing other programs keeps Hatchling quick.');
+    assert.equal(fitNote(context(900000000, true)), 'Part of the model (0.9 GB) ran on the CPU, so answers are slower. Something else may be using the GPU’s memory, or the model’s window is large for it. This computer was low on memory: closing other programs keeps Hatchling quick.');
 });
 test('a limit reads as the owner writes it, and shows short', () => {
     assert.equal(parseTokens(''), null);

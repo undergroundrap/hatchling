@@ -54,6 +54,13 @@ pub struct Trail {
     /// The model's endpoint and name, to ask its server the window when
     /// the session ends.
     model: Option<(String, String)>,
+    /// Bytes of the model on the CPU when the session ended, as its
+    /// server says.
+    model_on_cpu: Option<u64>,
+    /// Whether the computer was low on memory when the session ended.
+    memory_low: bool,
+    /// Where the computer's memory is read: [`crate::model_window::memory`].
+    memory: fn() -> Option<(u64, u64)>,
     tools: Vec<ToolTally>,
     model_calls: u32,
     model_calls_refused: u32,
@@ -75,6 +82,9 @@ impl Trail {
             usage: PathBuf::new(),
             context_window: None,
             model: None,
+            model_on_cpu: None,
+            memory_low: false,
+            memory: crate::model_window::memory,
             tools: Vec::new(),
             model_calls: 0,
             model_calls_refused: 0,
@@ -110,18 +120,31 @@ impl Trail {
         self
     }
 
-    /// Asks the model's server the window it gives the model, after the
-    /// session's model calls: with none, the model may not be loaded,
-    /// and the question isn't worth a connection.
+    /// The trail, reading the computer's memory with `memory`.
+    #[cfg(test)]
+    pub(crate) const fn reading_memory(mut self, memory: fn() -> Option<(u64, u64)>) -> Self {
+        self.memory = memory;
+        self
+    }
+
+    /// Asks the model's server the window it gives the model, and how
+    /// much of it is on the GPU, and reads the computer's memory, after
+    /// the session's model calls: with none, the model may not be
+    /// loaded, and the question isn't worth a connection.
     fn learn_window(&mut self) {
         if self.model_calls == 0 {
             return;
         }
+        self.memory_low = (self.memory)()
+            .is_some_and(|(available, total)| crate::model_window::memory_low(available, total));
         let Some((endpoint, name)) = &self.model else {
             return;
         };
-        if let Some(window) = crate::model_window::learned(endpoint, name) {
-            self.context_window = Some(window);
+        if let Some(loaded) = crate::model_window::learned(endpoint, name) {
+            if let Some(window) = loaded.window {
+                self.context_window = Some(window);
+            }
+            self.model_on_cpu = Some(loaded.on_cpu());
         }
     }
 
@@ -207,6 +230,8 @@ impl Trail {
                 peak_input_tokens: self.peak_input_tokens,
                 output_tokens: self.output_tokens,
                 context_window: self.context_window,
+                model_on_cpu: self.model_on_cpu,
+                memory_low: self.memory_low,
             },
         )
     }
@@ -679,6 +704,8 @@ mod tests {
                 peak_input_tokens: 5400,
                 output_tokens: 320,
                 context_window: None,
+                model_on_cpu: None,
+                memory_low: false,
             })
         );
     }
@@ -728,6 +755,8 @@ mod tests {
                 peak_input_tokens: 40,
                 output_tokens: 2,
                 context_window: None,
+                model_on_cpu: None,
+                memory_low: false,
             })
         );
         let _ = std::fs::remove_dir_all(&usage);
@@ -831,6 +860,56 @@ mod tests {
             (vec![Some(32768), Some(16384), Some(32768), Some(32768)], 4)
         );
         let _ = std::fs::remove_file(&log);
+    }
+
+    /// A session that called the model records how it fit, as the
+    /// model's server says, and whether the computer was low on memory;
+    /// one that didn't call it reads neither.
+    #[test]
+    fn an_ended_session_records_how_the_model_fit() {
+        let (address, served) = crate::model_window::answering(vec![crate::model_window::loaded(
+            r#"{"name":"m","context_length":131072,"size":10700000000,"size_vram":9800000000}"#,
+        )]);
+        let endpoint = format!("http://{address}/v1");
+        let mut called = Trail::new(None, "called", "run-1")
+            .asking(Some(&endpoint), Some("m"))
+            .reading_memory(|| Some((1, 100)));
+        called.model_call(Some(40), Some(2));
+        called.learn_window();
+        served.join().unwrap();
+        assert!(matches!(
+            called.summary(),
+            Some(SubagentEvent::RunSummary {
+                context_window: Some(131_072),
+                model_on_cpu: Some(900_000_000),
+                memory_low: true,
+                ..
+            })
+        ));
+        let mut roomy = Trail::new(None, "roomy", "run-1").reading_memory(|| Some((50, 100)));
+        roomy.model_call(Some(40), Some(2));
+        roomy.learn_window();
+        assert!(matches!(
+            roomy.summary(),
+            Some(SubagentEvent::RunSummary {
+                model_on_cpu: None,
+                memory_low: false,
+                ..
+            })
+        ));
+        let mut quiet = Trail::new(None, "quiet", "run-1").reading_memory(|| Some((1, 100)));
+        quiet.note(
+            Some(ToolUse::IdeaSuggest),
+            &SessionResponse::Suggest(SuggestResult::Suggested),
+        );
+        quiet.learn_window();
+        assert!(matches!(
+            quiet.summary(),
+            Some(SubagentEvent::RunSummary {
+                memory_low: false,
+                ..
+            })
+        ));
     }
 
     /// Every answer is done, put to the owner, refused, or failed.

@@ -49,8 +49,12 @@ export interface Usage {
 export interface ContextUse {
     /** Tokens the largest model call of that answer read. */
     readonly tokens: number;
-    /** The model's context window, when the operator declared it. */
+    /** The model's context window: as its server says, or as the operator declared it. */
     readonly window: number | null;
+    /** Bytes of the model that ran on the CPU on that answer, as its server says: answers are slower. */
+    readonly onCpu: number | null;
+    /** Whether the computer was low on memory on that answer. */
+    readonly memoryLow: boolean;
 }
 /** Usage as last read: not yet, couldn't be, or what the broker said. */
 export type UsageState = {

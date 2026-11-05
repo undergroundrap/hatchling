@@ -137,6 +137,7 @@ pub fn doctor_main(args: &[String]) -> ExitCode {
             let found = check_model(endpoint.as_deref(), name.as_deref());
             with_window(found, endpoint.as_deref(), name.as_deref())
         }),
+        ("memory", check_memory(crate::model_window::memory())),
     ];
     report(&label, &checks)
 }
@@ -553,8 +554,63 @@ fn with_window(found: Finding, endpoint: Option<&str>, name: Option<&str>) -> Fi
     else {
         return found;
     };
-    let window = crate::model_window::window_at(authority, name, CONNECT_TIMEOUT, ANSWER_TIMEOUT);
-    windowed(found, name, window)
+    let loaded = crate::model_window::loaded_at(authority, name, CONNECT_TIMEOUT, ANSWER_TIMEOUT);
+    fitted(
+        windowed(found, name, loaded.and_then(|loaded| loaded.window)),
+        loaded,
+    )
+}
+
+/// `found`, with how the loaded model fits, as its server says: all on
+/// the GPU, or how much runs on the CPU, and what helps. A model on the
+/// CPU still works, more slowly: never a problem.
+fn fitted(found: Finding, loaded: Option<crate::model_window::Loaded>) -> Finding {
+    use crate::model_window::gigabytes;
+    let (Finding::Fine(seen), Some(loaded)) = (&found, loaded) else {
+        return found;
+    };
+    if loaded.size == 0 {
+        return found;
+    }
+    if loaded.on_cpu() == 0 {
+        return Finding::Fine(format!(
+            "{seen}, all on the GPU ({})",
+            gigabytes(loaded.size)
+        ));
+    }
+    Finding::Fine(format!(
+        "{seen}, {} of its {} on the CPU, more slowly: free the GPU's memory, or give it a smaller window (OLLAMA_CONTEXT_LENGTH={})",
+        gigabytes(loaded.on_cpu()),
+        gigabytes(loaded.size),
+        smaller_window(loaded.window)
+    ))
+}
+
+/// A smaller window to try for a model that doesn't fit with `window`:
+/// the recommended one, when it has more, else half of it, never under
+/// the agent's floor.
+fn smaller_window(window: Option<u32>) -> u32 {
+    match window {
+        Some(window) if window > RECOMMENDED_WINDOW => RECOMMENDED_WINDOW,
+        Some(window) => (window / 2).max(crate::config::MIN_CONTEXT_WINDOW),
+        None => RECOMMENDED_WINDOW / 2,
+    }
+}
+
+/// The computer's memory: how much is free, and whether that's low.
+fn check_memory(memory: Option<(u64, u64)>) -> Finding {
+    use crate::model_window::{gigabytes, memory_low};
+    let Some((available, total)) = memory else {
+        return Finding::Unchecked(String::from("couldn't read /proc/meminfo"));
+    };
+    let free = format!("{} of {} free", gigabytes(available), gigabytes(total));
+    if memory_low(available, total) {
+        Finding::Fine(format!(
+            "{free}: low. Other programs hold most of it, and Hatchling's answers slow down when it runs out"
+        ))
+    } else {
+        Finding::Fine(free)
+    }
 }
 
 /// The window Hatchling asks a model's server for.
@@ -1172,6 +1228,65 @@ mod tests {
             with_window(hosted.clone(), Some("https://api.example/v1"), Some("m")),
             hosted
         );
+    }
+
+    /// A loaded model's fit joins a model found: all on the GPU, or how
+    /// much is on the CPU and what helps; a server that doesn't say adds
+    /// nothing.
+    #[test]
+    fn a_found_models_fit_is_said() {
+        use crate::model_window::Loaded;
+        let fine = Finding::Fine(String::from("m at http://h/v1, with a 32768-token window"));
+        let loaded = |size, on_gpu| {
+            Some(Loaded {
+                window: Some(32768),
+                size,
+                on_gpu,
+            })
+        };
+        assert_eq!(
+            fitted(fine.clone(), loaded(6_600_000_000, 6_600_000_000)),
+            Finding::Fine(String::from(
+                "m at http://h/v1, with a 32768-token window, all on the GPU (6.6 GB)"
+            ))
+        );
+        assert_eq!(
+            fitted(fine.clone(), loaded(10_700_000_000, 9_800_000_000)),
+            Finding::Fine(String::from(
+                "m at http://h/v1, with a 32768-token window, 0.9 GB of its 10.7 GB on the CPU, more slowly: free the GPU's memory, or give it a smaller window (OLLAMA_CONTEXT_LENGTH=16384)"
+            ))
+        );
+        assert_eq!(fitted(fine.clone(), None), fine);
+        assert_eq!(fitted(fine.clone(), loaded(0, 0)), fine, "no size, no fit");
+        let missing = Finding::problem("missing", "fetch it");
+        assert_eq!(fitted(missing.clone(), loaded(1, 0)), missing);
+    }
+
+    /// The smaller window to try is the recommended one when the model
+    /// has more, else half, never under the agent's floor.
+    #[test]
+    fn a_smaller_window_is_one_that_helps() {
+        assert_eq!(smaller_window(Some(131_072)), 32_768);
+        assert_eq!(smaller_window(Some(32_769)), 32_768);
+        assert_eq!(smaller_window(Some(32_768)), 16_384);
+        assert_eq!(smaller_window(Some(16_384)), 8_192);
+        assert_eq!(smaller_window(Some(12_000)), 8_192, "never under the floor");
+        assert_eq!(smaller_window(None), 16_384);
+    }
+
+    /// The computer's memory is said, and low memory named.
+    #[test]
+    fn memory_is_said_and_low_named() {
+        assert_eq!(
+            check_memory(Some((12_300_000_000, 32_000_000_000))),
+            Finding::Fine(String::from("12.3 GB of 32.0 GB free"))
+        );
+        let low = check_memory(Some((2_000_000_000, 32_000_000_000)));
+        assert!(
+            matches!(&low, Finding::Fine(seen) if seen.starts_with("2.0 GB of 32.0 GB free: low.")),
+            "low memory is said, and is no problem: {low:?}"
+        );
+        assert!(matches!(check_memory(None), Finding::Unchecked(_)));
     }
 
     /// The window joins a model found, and nothing else; when the server

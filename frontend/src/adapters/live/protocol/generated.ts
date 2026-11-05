@@ -242,6 +242,11 @@ export type ActivityEvent = {
     readonly context_window?: number | null;
     readonly event: 'run_summary';
     /**
+     * Whether the computer was low on memory when the session ended:
+     * less than a tenth of it free.
+     */
+    readonly memory_low?: boolean;
+    /**
      * Model calls answered.
      */
     readonly model_calls: number;
@@ -250,6 +255,13 @@ export type ActivityEvent = {
      * set.
      */
     readonly model_calls_refused: number;
+    /**
+     * Bytes of the model that ran from the computer's own memory, on
+     * its CPU, when the session ended, as the model's server says
+     * (Ollama does): answers are slower for it. `None` when the
+     * server doesn't say.
+     */
+    readonly model_on_cpu?: number | null;
     /**
      * Tokens the model wrote, over the session.
      */

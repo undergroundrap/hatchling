@@ -1,4 +1,5 @@
 import type { ContextUse } from '../../session/usage.js';
+import { fitNote } from '../settings/usage.js';
 import { loadingImage } from '../../components/loading-image.js';
 import { domainApprovalNotice } from '../approvals/domain.js';
 import { renderTaskApprovalQueue } from '../approvals/surfaces.js';
@@ -233,8 +234,12 @@ function renderComposer(ctx: AppContext, readOnly: boolean): HTMLElement {
         area.append(approval);
     area.append(form);
     const context = ctx.ui.chatId === 'main' ? ctx.usage?.context() : null;
-    if (context)
+    if (context) {
         area.append(contextMeter(context));
+        const note = fitNote(context);
+        if (note)
+            area.append(h('p', { class: 'composer-caption context-fit', role: 'status' }, note));
+    }
     return area;
 }
 const SHORT = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 });

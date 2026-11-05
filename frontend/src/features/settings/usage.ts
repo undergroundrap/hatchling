@@ -6,9 +6,20 @@
 import type { AppContext } from '../../app/context.js';
 import { h, valueOf } from '../../components/dom.js';
 import { field } from '../../components/ui.js';
-import type { Usage, UsageDay, UsageLimits, UsagePort } from '../../session/usage.js';
+import type { ContextUse, Usage, UsageDay, UsageLimits, UsagePort } from '../../session/usage.js';
 const COMPACT = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 });
 /** `n` tokens or calls, short: 48.2K, 1.3M. */
+/** The least of a model on the CPU worth telling the owner of: under it, the slowdown can’t be felt. */
+const FELT_ON_CPU = 100000000;
+/** What the last answer's fit says the owner should know: the model partly on the CPU, or the computer low on memory. */
+export function fitNote(context: ContextUse): string | null {
+    const notes: string[] = [];
+    if (context.onCpu !== null && context.onCpu >= FELT_ON_CPU)
+        notes.push(`Part of the model (${(context.onCpu / 1e9).toFixed(1)} GB) ran on the CPU, so answers are slower. Something else may be using the GPU’s memory, or the model’s window is large for it.`);
+    if (context.memoryLow)
+        notes.push('This computer was low on memory: closing other programs keeps Hatchling quick.');
+    return notes.length > 0 ? notes.join(' ') : null;
+}
 export function compact(n: number): string {
     return COMPACT.format(n);
 }

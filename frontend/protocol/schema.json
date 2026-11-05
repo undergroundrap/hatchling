@@ -392,6 +392,10 @@
               "const": "run_summary",
               "type": "string"
             },
+            "memory_low": {
+              "description": "Whether the computer was low on memory when the session ended:\nless than a tenth of it free.",
+              "type": "boolean"
+            },
             "model_calls": {
               "description": "Model calls answered.",
               "format": "uint32",
@@ -403,6 +407,15 @@
               "format": "uint32",
               "minimum": 0,
               "type": "integer"
+            },
+            "model_on_cpu": {
+              "description": "Bytes of the model that ran from the computer's own memory, on\nits CPU, when the session ended, as the model's server says\n(Ollama does): answers are slower for it. `None` when the\nserver doesn't say.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
             },
             "output_tokens": {
               "description": "Tokens the model wrote, over the session.",

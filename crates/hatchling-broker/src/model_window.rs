@@ -1,5 +1,6 @@
-//! The model's context window, as its server says it: what the app's
-//! context meter measures each answer against.
+//! The model's context window, and how it fits, as its server says:
+//! what the app's context meter measures each answer against, and
+//! whether the model ran all on the GPU.
 //!
 //! Ollama says it. `GET /api/ps` lists the models it has loaded, each
 //! with the window it gave it (`context_length`): the server's setting
@@ -14,8 +15,14 @@
 //! The question goes from the broker, never a cell, to the endpoint the
 //! operator set, and only to one in plain HTTP: the same bounded `GET`
 //! with no credential that `hatchling-broker doctor` makes
-//! ([`crate::doctor::ask_within`]). Only a number is read from the
+//! ([`crate::doctor::ask_within`]). Only numbers are read from the
 //! answer.
+//!
+//! The same list says how much of the model is in the GPU's memory
+//! (`size_vram`) of all it takes (`size`). What doesn't fit runs from the
+//! computer's own memory, on its CPU, more slowly: a window too large for
+//! the GPU, or other work holding the GPU's memory, does that. The owner
+//! is told, and so is a computer low on memory ([`memory`]).
 
 use std::time::Duration;
 
@@ -30,20 +37,45 @@ const ANSWER: Duration = Duration::from_secs(2);
 /// path its OpenAI-compatible API has.
 pub const LOADED_MODELS: &str = "/api/ps";
 
-/// The window the model's server, at the plain-HTTP `endpoint`, gives
-/// the model `name`, when it says.
-#[must_use]
-pub fn learned(endpoint: &str, name: &str) -> Option<u32> {
-    let (authority, _) = crate::doctor::plain_http(endpoint)?;
-    window_at(authority, name, CONNECT, ANSWER)
+/// What the model's server says of a model it has loaded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Loaded {
+    /// The window it gave the model, when it says one.
+    pub window: Option<u32>,
+    /// All the model takes, in bytes: its weights and its window's cache.
+    pub size: u64,
+    /// How much of that is in the GPU's memory.
+    pub on_gpu: u64,
 }
 
-/// The window the server at `authority` gives the model `name`, when it
-/// says, waiting `connect` to connect and `answer` for its answer.
+impl Loaded {
+    /// How much of the model runs from the computer's own memory, on its
+    /// CPU: slower than the GPU.
+    #[must_use]
+    pub const fn on_cpu(&self) -> u64 {
+        self.size.saturating_sub(self.on_gpu)
+    }
+}
+
+/// What the model's server, at the plain-HTTP `endpoint`, says of the
+/// model `name`, when it's loaded and the server says.
 #[must_use]
-pub fn window_at(authority: &str, name: &str, connect: Duration, answer: Duration) -> Option<u32> {
+pub fn learned(endpoint: &str, name: &str) -> Option<Loaded> {
+    let (authority, _) = crate::doctor::plain_http(endpoint)?;
+    loaded_at(authority, name, CONNECT, ANSWER)
+}
+
+/// What the server at `authority` says of the model `name`, loaded,
+/// waiting `connect` to connect and `answer` for its answer.
+#[must_use]
+pub fn loaded_at(
+    authority: &str,
+    name: &str,
+    connect: Duration,
+    answer: Duration,
+) -> Option<Loaded> {
     match crate::doctor::ask_within(authority, LOADED_MODELS, connect, answer) {
-        Ok(Some(body)) => window_in(&body, name),
+        Ok(Some(body)) => loaded_in(&body, name),
         Ok(None) => None,
         Err(error) => {
             tracing::debug!(%error, "the model's server wasn't asked its window");
@@ -56,6 +88,17 @@ pub fn window_at(authority: &str, name: &str, connect: Duration, answer: Duratio
 /// `name` (or `name:latest`): `{"models": [{"name", "context_length"}]}`.
 #[must_use]
 pub fn window_in(answer: &[u8], name: &str) -> Option<u32> {
+    loaded_in(answer, name)?.window
+}
+
+/// What Ollama's list of loaded models, `answer`, says of the model `name`.
+///
+/// The model is found by its name or `name:latest`: its window, and how
+/// much of it is on the GPU. A server that doesn't say how much is on the
+/// GPU is taken to have it all there: the owner is never told it's slow
+/// on a guess.
+#[must_use]
+pub fn loaded_in(answer: &[u8], name: &str) -> Option<Loaded> {
     let list: serde_json::Value = serde_json::from_slice(answer).ok()?;
     let latest = format!("{name}:latest");
     let named = |model: &serde_json::Value, key: &str| {
@@ -69,8 +112,61 @@ pub fn window_in(answer: &[u8], name: &str) -> Option<u32> {
         .as_array()?
         .iter()
         .find(|model| named(model, "name") || named(model, "model"))?;
-    let window = model.get("context_length")?.as_u64()?;
-    u32::try_from(window).ok().filter(|window| *window > 0)
+    let window = model
+        .get("context_length")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|window| u32::try_from(window).ok())
+        .filter(|window| *window > 0);
+    let size = model
+        .get("size")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let on_gpu = model
+        .get("size_vram")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(size, |on_gpu| on_gpu.min(size));
+    Some(Loaded {
+        window,
+        size,
+        on_gpu,
+    })
+}
+
+/// The computer's memory, from `/proc/meminfo`: what's available, and
+/// all of it, in bytes.
+#[must_use]
+pub fn memory() -> Option<(u64, u64)> {
+    memory_in(&std::fs::read_to_string("/proc/meminfo").ok()?)
+}
+
+/// What `meminfo`, as `/proc/meminfo` has it, says is available, and the
+/// whole, in bytes.
+#[must_use]
+pub fn memory_in(meminfo: &str) -> Option<(u64, u64)> {
+    let field = |name: &str| {
+        meminfo.lines().find_map(|line| {
+            let kib = line.strip_prefix(name)?.strip_prefix(':')?;
+            let kib = kib.trim().strip_suffix("kB")?.trim();
+            kib.parse::<u64>().ok()?.checked_mul(1024)
+        })
+    };
+    Some((field("MemAvailable")?, field("MemTotal")?))
+}
+
+/// Whether `available` bytes of `total` is low: under a tenth.
+///
+/// Past that, another program's next need sends the computer to its swap,
+/// and every answer slows.
+#[must_use]
+pub const fn memory_low(available: u64, total: u64) -> bool {
+    available.saturating_mul(10) < total
+}
+
+/// `bytes` as gigabytes, to a tenth: "6.6 GB".
+#[must_use]
+pub fn gigabytes(bytes: u64) -> String {
+    let tenths = bytes / 100_000_000;
+    format!("{}.{} GB", tenths / 10, tenths % 10)
 }
 
 /// A server at a free local port that answers each of `answers`, one
@@ -143,6 +239,45 @@ mod tests {
         assert_eq!(window_in(list, "mistral"), None, "not loaded");
     }
 
+    /// How much of the model is on the GPU is read with its window, and
+    /// a server that doesn't say is taken to have it all there.
+    #[test]
+    fn the_split_is_read_with_the_window() {
+        let list = br#"{"models":[{"name":"m","context_length":131072,"size":10700000000,"size_vram":9800000000}]}"#;
+        let loaded = loaded_in(list, "m").unwrap();
+        assert_eq!(
+            loaded,
+            Loaded {
+                window: Some(131_072),
+                size: 10_700_000_000,
+                on_gpu: 9_800_000_000
+            }
+        );
+        assert_eq!(loaded.on_cpu(), 900_000_000);
+        let unsaid = loaded_in(br#"{"models":[{"name":"m","size":6600000000}]}"#, "m").unwrap();
+        assert_eq!((unsaid.window, unsaid.on_cpu()), (None, 0));
+        let over = loaded_in(br#"{"models":[{"name":"m","size":5,"size_vram":9}]}"#, "m").unwrap();
+        assert_eq!(over.on_cpu(), 0, "never more on the GPU than all of it");
+        assert_eq!(loaded_in(br#"{"models":[]}"#, "m"), None);
+    }
+
+    /// The computer's memory is read from meminfo's own words, in kB.
+    #[test]
+    fn memory_is_read_from_meminfo() {
+        let meminfo = "MemTotal:       32000000 kB\nMemFree:         1000000 kB\nMemAvailable:    3000000 kB\n";
+        assert_eq!(memory_in(meminfo), Some((3_072_000_000, 32_768_000_000)));
+        assert_eq!(memory_in("MemTotal: 1 kB\n"), None, "no MemAvailable");
+        assert_eq!(memory_in("MemTotal: x kB\nMemAvailable: 1 kB\n"), None);
+        assert_eq!(memory_in("MemTotalX: 1 kB\nMemAvailable: 1 kB\n"), None);
+        assert!(memory_low(99, 1000));
+        assert!(!memory_low(100, 1000), "a tenth is not low");
+        assert!(!memory_low(u64::MAX, 1000));
+        assert!(memory().is_some_and(|(available, total)| available <= total && total > 0));
+        assert_eq!(gigabytes(6_600_000_000), "6.6 GB");
+        assert_eq!(gigabytes(950_000_000), "0.9 GB");
+        assert_eq!(gigabytes(0), "0.0 GB");
+    }
+
     /// Anything but a window the server plainly gives says nothing.
     #[test]
     fn an_answer_without_a_window_says_nothing() {
@@ -177,7 +312,11 @@ mod tests {
         let (address, served) = answering(vec![loaded(QWEN)]);
         assert_eq!(
             learned(&format!("http://{address}/v1"), "qwen3.5:9b"),
-            Some(16384)
+            Some(Loaded {
+                window: Some(16384),
+                size: 6_147_423_600,
+                on_gpu: 6_147_423_600
+            })
         );
         let heads = served.join().unwrap();
         assert_eq!(

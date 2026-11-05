@@ -406,6 +406,16 @@ pub enum SubagentEvent {
         /// `None` when neither is known.
         #[serde(default)]
         context_window: Option<u32>,
+        /// Bytes of the model that ran from the computer's own memory, on
+        /// its CPU, when the session ended, as the model's server says
+        /// (Ollama does): answers are slower for it. `None` when the
+        /// server doesn't say.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model_on_cpu: Option<u64>,
+        /// Whether the computer was low on memory when the session ended:
+        /// less than a tenth of it free.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        memory_low: bool,
     },
 }
 
@@ -712,6 +722,35 @@ mod tests {
         }
     }
 
+    /// A run's record says how the model fit when it says anything: the
+    /// model's part on the CPU and low memory, each on the wire only
+    /// when set.
+    #[test]
+    fn a_run_summary_says_how_the_model_fit() {
+        let summary = event(SubagentEvent::RunSummary {
+            cell_id: String::from("run-2"),
+            chat: true,
+            tools: Vec::new(),
+            model_calls: 1,
+            model_calls_refused: 0,
+            peak_input_tokens: 5400,
+            output_tokens: 70,
+            context_window: Some(32768),
+            model_on_cpu: Some(1_200_000_000),
+            memory_low: true,
+        });
+        assert_eq!(
+            wire(&summary),
+            json!({"event": "run_summary", "event_id": "ev-1", "ts": "2026-10-03T12:00:00Z",
+                   "run_id": "parent", "cell_id": "run-2", "chat": true, "tools": [],
+                   "model_calls": 1, "model_calls_refused": 0,
+                   "peak_input_tokens": 5400, "output_tokens": 70,
+                   "context_window": 32768, "model_on_cpu": 1_200_000_000_u64,
+                   "memory_low": true})
+        );
+        assert_eq!(round_trip(&summary), summary);
+    }
+
     #[test]
     fn each_lifecycle_event_has_exactly_the_contracts_fields() {
         let cases = [
@@ -787,6 +826,8 @@ mod tests {
                     peak_input_tokens: 5400,
                     output_tokens: 700,
                     context_window: Some(16384),
+                    model_on_cpu: None,
+                    memory_low: false,
                 }),
                 json!({"event": "run_summary", "event_id": "ev-1", "ts": "2026-10-03T12:00:00Z",
                        "run_id": "parent", "cell_id": "run-1", "chat": true,

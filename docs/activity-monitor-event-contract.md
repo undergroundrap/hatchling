@@ -166,6 +166,8 @@ the agent says it did, and never what a request carried.
 | `peak_input_tokens` | u64 | Tokens the largest model call read, as its server reported: how full the model's context got. |
 | `output_tokens` | u64 | Tokens the model wrote over the session. |
 | `context_window` | u32 \| null | The model's context window in tokens: the one the model's server says it gives the model when the session ends (Ollama's `GET /api/ps`), else the one the operator declared (`HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW`); `null` when neither is known. |
+| `model_on_cpu` | u64, optional | Bytes of the model that ran from the computer's own memory, on its CPU, when the session ended, as the model's server says (Ollama's `GET /api/ps`: `size` less `size_vram`). Answers are slower for it. Absent when the server doesn't say. |
+| `memory_low` | bool, optional | Whether the computer was low on memory when the session ended: less than a tenth of `/proc/meminfo`'s `MemTotal` available. Absent when false. |
 
 `tool` is one of `goals_read`, `goals_write`, `memory_recall`,
 `memory_propose`, `memory_write`, `schedule_read`, `schedule_write`,

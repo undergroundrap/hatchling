@@ -829,3 +829,4 @@ button { background-color: transparent; color: inherit; }
 }
 .context-meter { display: flex; align-items: center; justify-content: center; gap: 8px; }
 .context-meter meter { width: 64px; height: 4px; }
+.context-fit { text-align: center; }
