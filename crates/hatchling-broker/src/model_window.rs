@@ -135,9 +135,11 @@ pub fn loaded_in(answer: &[u8], name: &str) -> Option<Loaded> {
 /// The command that says how a model fits, for the installer.
 pub const MODEL_FIT_SUBCOMMAND: &str = "model-fit";
 
-/// How `loaded` fits, in one word for a script: `gpu` when it's all in
-/// the GPU's memory, `cpu` when some runs on the CPU, `unknown` when the
-/// server doesn't say (it isn't Ollama, or the model isn't loaded).
+/// How `loaded` fits, in one word for a script.
+///
+/// `gpu` when it's all in the GPU's memory, `cpu` when some runs on the
+/// CPU, `unknown` when the server doesn't say (it isn't Ollama, or the
+/// model isn't loaded).
 #[must_use]
 pub const fn fit_word(loaded: Option<Loaded>) -> &'static str {
     match loaded {
@@ -301,7 +303,7 @@ mod tests {
     /// one the server says nothing of `unknown`.
     #[test]
     fn the_fit_is_one_word() {
-        let loaded_list = super::loaded;
+        let loaded_list = loaded;
         let loaded = |size, on_gpu| {
             Some(Loaded {
                 window: Some(65_536),
@@ -317,7 +319,10 @@ mod tests {
         let (address, served) = answering(vec![loaded_list(
             r#"{"name":"m","size":100,"size_vram":100,"context_length":65536}"#,
         )]);
-        assert_eq!(fit_word(learned(&format!("http://{address}/v1"), "m")), "gpu");
+        assert_eq!(
+            fit_word(learned(&format!("http://{address}/v1"), "m")),
+            "gpu"
+        );
         served.join().unwrap();
     }
 
