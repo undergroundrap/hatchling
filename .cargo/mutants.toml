@@ -8,6 +8,14 @@
 # the kill floor fails loudly — the proof must be re-examined then.
 
 exclude_re = [
+    # `Channel::cbor`: time left `> BUSY_WAIT` -> `>=`. They differ only when
+    # the clock reads exactly `BUSY_WAIT` from the deadline, a nanosecond
+    # no test can arrange, and then only in whether one more short wait is
+    # taken before the same refusal.
+    "hatchling-fido2/src/ctaphid\\.rs:.*replace > with >= in Channel<H>::cbor",
+    # `Locked`'s `flush`: `File::flush` does nothing and returns `Ok(())`, so
+    # replacing it with `Ok(())` changes nothing.
+    "hatchling-fido2/src/linux\\.rs:.*Write for Locked>::flush -> std::io::Result<\\(\\)> with Ok\\(\\(\\)\\)",
     # `Authenticator::holds`, the trait's default: replacing its body with
     # `None` is what the body already returns, so the two are the same
     # function. The other defaults' replacements are killed by
