@@ -149,8 +149,7 @@ For the full threat model, see [the trust boundary](../arch/trust-boundary.md). 
 | `a_dropped_cell_holds_no_capability_even_as_namespace_root` in [`hatchling-sys/src/process.rs`](../../crates/hatchling-sys/src/process.rs) | A cell holds no capability in any set, its securebits are locked, and it can't make a mount namespace. |
 | `mount_escape_all_writes_denied` in [`hatchling-broker/tests/adversarial.rs`](../../crates/hatchling-broker/tests/adversarial.rs) | A write to each mount a cell can see fails. |
 | `the_harness_sees_no_vault_no_broker_and_no_host_variable` in [`hatchling-broker/tests/harness.rs`](../../crates/hatchling-broker/tests/harness.rs) | A coding CLI's cell can't see the vault, the host's path to the project or the broker's socket, and its environment is exactly four variables. |
-
-A cell runs in a pid namespace of its own, but no cell-level test yet asserts that the host's processes are invisible from inside one; the namespace itself is tested at the library level. That test is on the way.
+| `a_cell_sees_none_of_the_hosts_processes` in [`hatchling-broker/tests/adversarial.rs`](../../crates/hatchling-broker/tests/adversarial.rs) | The agent's cell has no `/proc` and sees no process. A coding CLI's cell has a pid namespace of its own, and its `/proc` lists the cell's own processes and nothing of the host's. |
 
 ## Tools the model makes up
 
