@@ -91,10 +91,12 @@ pub fn window_in(answer: &[u8], name: &str) -> Option<u32> {
     loaded_in(answer, name)?.window
 }
 
-/// What Ollama's list of loaded models, `answer`, says of the model
-/// `name` (or `name:latest`): its window, and how much of it is on the
-/// GPU. A server that doesn't say how much is on the GPU is taken to
-/// have it all there: the owner is never told it's slow on a guess.
+/// What Ollama's list of loaded models, `answer`, says of the model `name`.
+///
+/// The model is found by its name or `name:latest`: its window, and how
+/// much of it is on the GPU. A server that doesn't say how much is on the
+/// GPU is taken to have it all there: the owner is never told it's slow
+/// on a guess.
 #[must_use]
 pub fn loaded_in(answer: &[u8], name: &str) -> Option<Loaded> {
     let list: serde_json::Value = serde_json::from_slice(answer).ok()?;
@@ -151,9 +153,10 @@ pub fn memory_in(meminfo: &str) -> Option<(u64, u64)> {
     Some((field("MemAvailable")?, field("MemTotal")?))
 }
 
-/// Whether `available` bytes of `total` is low: under a tenth, past which
-/// another program's next need sends the computer to its swap, and every
-/// answer slows.
+/// Whether `available` bytes of `total` is low: under a tenth.
+///
+/// Past that, another program's next need sends the computer to its swap,
+/// and every answer slows.
 #[must_use]
 pub const fn memory_low(available: u64, total: u64) -> bool {
     available.saturating_mul(10) < total
