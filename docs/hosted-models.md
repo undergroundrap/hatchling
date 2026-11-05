@@ -12,7 +12,31 @@ Follow the README's build/install and root configuration steps, or
 Hosted destinations use HTTPS. `local:localhost:PORT` is credentialed local HTTP;
 `local-keyless:` is the explicit choice for a local server needing no key.
 
-## OpenRouter example
+## The quick way, on a service install
+
+Installed as a service ([install](install.md)), one command switches to a hosted model: the model, its server, its window, thinking, and the egress that reaches it, all together. It asks for the server's key at its prompt when the vault doesn't hold one yet (a key typed, piped or pasted, never an argument), backs up the settings, and restarts the broker:
+
+```bash
+sudo hatchling-broker use-hosted openrouter
+```
+
+That's OpenRouter's free `nvidia/nemotron-3-ultra-550b-a55b:free`, with its 1,000,000-token window and thinking off. Another of its models is `--model <id>` (add `--window <tokens>` to see the context meter against it); another provider is `--endpoint https://<host>/<path> --model <id>`. A key not given stops it before anything changes.
+
+**From Windows, with Hatchling in WSL2**, give it the key from the clipboard: open PowerShell yourself, paste this command and don't press Enter yet, copy the key from your provider's page, then press Enter.
+
+```powershell
+(Get-Clipboard -Raw).Trim() | wsl -d <distro> -- sudo hatchling-broker use-hosted openrouter; Set-Clipboard -Value ' '
+```
+
+Back to the model on your own machine:
+
+```bash
+sudo hatchling-broker use-local --model qwen3.5:9b
+```
+
+It checks the local server has the model first. The old server stays allowed either way, so switching back is the command again. A model you chose in the app's Settings was one on the old server, so it's forgotten.
+
+## OpenRouter example, by hand
 
 A hosted model gives the agent far more room than a local one: this one's window is 1,000,000 tokens, against the 32,768 a local install gets. Use an OpenRouter key with a $0 credit limit for the free-model check. You
 enter it at a prompt that doesn't show it, or pipe it in from a password

@@ -19,7 +19,18 @@ use zeroize::Zeroizing;
 use crate::{Config, Error};
 
 /// How `secret` is used.
-const USAGE: &str = "usage: hatchling-broker secret add <name> [--replace] | secret add --for <host:port> [--replace]";
+const USAGE: &str = "usage: hatchling-broker secret add <name> [--replace] | secret add --for <host:port> [--replace | --if-missing]";
+
+/// What to do when the name is in the vault already.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Taken {
+    /// Refuse, before anything is read.
+    Refuse,
+    /// Ask, and replace it.
+    Replace,
+    /// Keep it, and ask nothing: the command succeeds with it.
+    Keep,
+}
 
 /// Runs `secret` with `args`, for the vault `config` names.
 ///
@@ -31,9 +42,9 @@ const USAGE: &str = "usage: hatchling-broker secret add <name> [--replace] | sec
 pub fn run_secret(config: &Config, args: impl IntoIterator<Item = String>) -> Result<(), Error> {
     let args: Vec<String> = args.into_iter().collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    let (name, replace) = target(&args)?;
+    let (name, taken) = target(&args)?;
     let key = crate::vault_ops::load_master_key(&config.vault)?;
-    let said = add(&config.vault.root, &key, &name, replace, read_secret)?;
+    let said = add(&config.vault.root, &key, &name, taken, read_secret)?;
     writeln!(std::io::stdout().lock(), "{said}")
         .map_err(|err| refused(format!("cannot write the report: {err}")))
 }
@@ -44,8 +55,8 @@ fn refused(reason: impl Into<String>) -> Error {
     }
 }
 
-/// The secret's name, and whether one already there may be replaced.
-fn target(args: &[&str]) -> Result<(SecretName, bool), Error> {
+/// The secret's name, and what to do when it's in the vault already.
+fn target(args: &[&str]) -> Result<(SecretName, Taken), Error> {
     let usage = || Error::Usage {
         reason: String::from(USAGE),
     };
@@ -56,15 +67,16 @@ fn target(args: &[&str]) -> Result<(SecretName, bool), Error> {
         ["add", name, rest @ ..] if !name.starts_with('-') => ((*name).to_owned(), rest),
         _ => return Err(usage()),
     };
-    let replace = match rest {
-        [] => false,
-        ["--replace"] => true,
+    let taken = match rest {
+        [] => Taken::Refuse,
+        ["--replace"] => Taken::Replace,
+        ["--if-missing"] => Taken::Keep,
         _ => return Err(usage()),
     };
     let parsed = name
         .parse::<SecretName>()
         .map_err(|err| refused(format!("{name:?} can't name a secret: {err}")))?;
-    Ok((parsed, replace))
+    Ok((parsed, taken))
 }
 
 /// The name a hosted API's key at `destination` (`host:port`) is kept
@@ -81,16 +93,25 @@ fn add(
     root: &Path,
     key: &MasterKey,
     name: &SecretName,
-    replace: bool,
+    taken: Taken,
     read: impl FnOnce(&str) -> Result<Secret, Error>,
 ) -> Result<String, Error> {
     let vault = SealedVault::open(root, key).map_err(|source| Error::Vault { source })?;
     let had = vault.exists(name);
-    if had && !replace {
-        return Err(refused(format!(
-            "{} is in the vault already: --replace replaces it",
-            name.as_str()
-        )));
+    match (had, taken) {
+        (true, Taken::Refuse) => {
+            return Err(refused(format!(
+                "{} is in the vault already: --replace replaces it",
+                name.as_str()
+            )));
+        }
+        (true, Taken::Keep) => {
+            return Ok(format!(
+                "{} is in the vault already: it's used as it is (`secret add --for ... --replace` changes it).",
+                name.as_str()
+            ));
+        }
+        (true, Taken::Replace) | (false, _) => {}
     }
     let secret = read(&format!(
         "The secret for {} (each character shows as *, never itself; Enter when done):",
@@ -250,23 +271,27 @@ mod tests {
     #[test]
     fn a_secret_is_named_or_found_by_its_destination() {
         let named =
-            |list: &[&str]| target(list).map(|(name, replace)| (name.as_str().to_owned(), replace));
+            |list: &[&str]| target(list).map(|(name, taken)| (name.as_str().to_owned(), taken));
         assert_eq!(
             named(&["add", "search-brave"]).unwrap(),
-            ("search-brave".into(), false)
+            ("search-brave".into(), Taken::Refuse)
         );
         assert_eq!(
             named(&["add", "search-brave", "--replace"]).unwrap(),
-            ("search-brave".into(), true)
+            ("search-brave".into(), Taken::Replace)
         );
         // A hosted model's key, under the name its egress reads.
         assert_eq!(
             named(&["add", "--for", "openrouter.ai:443"]).unwrap(),
-            ("egress-openrouter-ai-443".into(), false)
+            ("egress-openrouter-ai-443".into(), Taken::Refuse)
         );
         assert_eq!(
             named(&["add", "--for", "api.example:8443", "--replace"]).unwrap(),
-            ("egress-api-example-8443".into(), true)
+            ("egress-api-example-8443".into(), Taken::Replace)
+        );
+        assert_eq!(
+            named(&["add", "--for", "openrouter.ai:443", "--if-missing"]).unwrap(),
+            ("egress-openrouter-ai-443".into(), Taken::Keep)
         );
         for wrong in [
             &["add"][..],
@@ -278,6 +303,7 @@ mod tests {
             &["add", "--replace"],
             &["add", "name", "--force"],
             &["add", "name", "--replace", "extra"],
+            &["add", "--for", "openrouter.ai:443", "--replace", "--if-missing"],
             &["list"],
         ] {
             assert!(
@@ -426,7 +452,7 @@ mod tests {
                 .as_bytes()
                 .to_vec()
         };
-        let said = add(&root, &key, &name, false, |prompt| {
+        let said = add(&root, &key, &name, Taken::Refuse, |prompt| {
             assert!(prompt.contains("egress-openrouter-ai-443"), "{prompt}");
             Ok(secret(b"first-key"))
         })
@@ -435,21 +461,34 @@ mod tests {
         assert_eq!(fetched(), b"first-key");
         // Taken: refused before anything is read, and left as it was.
         let asked = Cell::new(false);
-        let taken = add(&root, &key, &name, false, |_| {
+        let taken = add(&root, &key, &name, Taken::Refuse, |_| {
             asked.set(true);
             Ok(secret(b"second-key"))
         });
         assert!(matches!(taken, Err(Error::Secret { .. })));
         assert!(!asked.get());
         assert_eq!(fetched(), b"first-key");
-        let said = add(&root, &key, &name, true, |_| Ok(secret(b"second-key"))).unwrap();
+        let said = add(&root, &key, &name, Taken::Replace, |_| Ok(secret(b"second-key"))).unwrap();
         assert_eq!(said, "Replaced egress-openrouter-ai-443 in the vault.");
+        assert_eq!(fetched(), b"second-key");
+        // Kept: nothing is asked, and it succeeds with the one there.
+        let asked = Cell::new(false);
+        let kept = add(&root, &key, &name, Taken::Keep, |_| {
+            asked.set(true);
+            Ok(secret(b"third-key"))
+        })
+        .unwrap();
+        assert!(kept.starts_with("egress-openrouter-ai-443 is in the vault already"), "{kept}");
+        assert!(!asked.get());
         assert_eq!(fetched(), b"second-key");
         // Nothing read, nothing stored.
         let other: SecretName = "search-brave".parse().unwrap();
-        let unread = add(&root, &key, &other, false, |_| Err(refused("no secret")));
+        let unread = add(&root, &key, &other, Taken::Refuse, |_| Err(refused("no secret")));
         assert!(matches!(unread, Err(Error::Secret { .. })));
         assert!(!SealedVault::open(&root, &key).unwrap().exists(&other));
+        // Missing, kept asks for it.
+        let said = add(&root, &key, &other, Taken::Keep, |_| Ok(secret(b"search-key"))).unwrap();
+        assert_eq!(said, "Sealed search-brave in the vault.");
         let _ = std::fs::remove_dir_all(root.parent().unwrap());
     }
 }
