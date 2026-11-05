@@ -25,6 +25,21 @@ pub const MAX_MESSAGE: usize = 57 + 128 * 59;
 pub const INIT: u8 = 0x86;
 /// `CBOR`: one CTAP2 command.
 pub const CBOR: u8 = 0x90;
+/// What a keepalive says while the key waits for a touch.
+const UP_NEEDED: u8 = 2;
+
+/// Where a touch stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Touch {
+    /// The key is waiting for one: it's flashing now.
+    Waiting,
+    /// It was touched, and has answered.
+    Noticed,
+}
+
+/// Told of each [`Touch`], as it happens.
+pub type TouchNotice = Box<dyn FnMut(Touch)>;
+
 /// CTAPHID's `ERR_CHANNEL_BUSY`: another channel has the device.
 pub const CHANNEL_BUSY: u8 = 0x06;
 
@@ -196,8 +211,38 @@ fn init<H: Hid + ?Sized>(
     }
 }
 
+/// `hid`, watching `channel` for a key that starts waiting for a touch.
+struct Watching<'a, H: ?Sized> {
+    hid: &'a mut H,
+    channel: [u8; 4],
+    notice: Option<&'a mut TouchNotice>,
+    waited: bool,
+}
+
+impl<H: Hid + ?Sized> Hid for Watching<'_, H> {
+    fn send(&mut self, report: &[u8; REPORT]) -> Result<(), TransportError> {
+        self.hid.send(report)
+    }
+
+    fn receive(&mut self, timeout: Duration) -> Result<Option<[u8; REPORT]>, TransportError> {
+        let report = self.hid.receive(timeout)?;
+        if let Some(report) = &report {
+            // Channel, command, two bytes of length, then the status.
+            let wants_touch = report.get(..4) == Some(&self.channel[..])
+                && report.get(4) == Some(&KEEPALIVE)
+                && report.get(7) == Some(&UP_NEEDED);
+            if wants_touch && !self.waited {
+                self.waited = true;
+                if let Some(notice) = self.notice.as_mut() {
+                    notice(Touch::Waiting);
+                }
+            }
+        }
+        Ok(report)
+    }
+}
+
 /// Reads the device's answer to `command` on `channel`.
-fn receive<H: Hid + ?Sized>(
     hid: &mut H,
     channel: [u8; 4],
     command: u8,
@@ -270,6 +315,8 @@ pub struct Channel<H: Hid> {
     /// the next request takes a channel of its own, and that late answer
     /// goes unread on this one, never mistaken for its reply.
     stale: bool,
+    /// Told when the key waits for a touch, and gets one.
+    notice: Option<TouchNotice>,
 }
 
 impl<H: Hid> Channel<H> {
@@ -286,7 +333,13 @@ impl<H: Hid> Channel<H> {
             hid,
             id,
             stale: false,
+            notice: None,
         })
+    }
+
+    /// Tells `notice` of each touch from now on.
+    pub fn on_touch(&mut self, notice: TouchNotice) {
+        self.notice = Some(notice);
     }
 
     /// This channel's id.
@@ -316,8 +369,14 @@ impl<H: Hid> Channel<H> {
         }
         let payload = [&[command][..], parameters].concat();
         let deadline = Instant::now() + timeout;
+        let mut watching = Watching {
+            hid: &mut self.hid,
+            channel: self.id,
+            notice: self.notice.as_mut(),
+            waited: false,
+        };
         let answer = loop {
-            match exchange(&mut self.hid, self.id, CBOR, &payload, deadline) {
+            match exchange(&mut watching, self.id, CBOR, &payload, deadline) {
                 // Another program is talking to the key: it's its turn,
                 // not a failure.
                 Err(TransportError::Device(CHANNEL_BUSY))
@@ -328,6 +387,7 @@ impl<H: Hid> Channel<H> {
                 answer => break answer,
             }
         };
+        let waited = watching.waited;
         self.stale = matches!(
             answer,
             Err(TransportError::Timeout | TransportError::Protocol(_))
@@ -336,6 +396,11 @@ impl<H: Hid> Channel<H> {
         let (&status, rest) = answer
             .split_first()
             .ok_or(TransportError::Protocol("an empty CBOR answer"))?;
+        if waited && status == 0 {
+            if let Some(notice) = self.notice.as_mut() {
+                notice(Touch::Noticed);
+            }
+        }
         Ok((status, rest.to_vec()))
     }
 }

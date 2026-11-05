@@ -212,7 +212,8 @@ impl SoftKey {
         } else {
             self.channel
         };
-        if matches!(code, MAKE_CREDENTIAL | GET_ASSERTION) {
+        let no_touch = decode(rest).is_ok_and(|asked| asks_no_touch(&asked));
+        if matches!(code, MAKE_CREDENTIAL | GET_ASSERTION) && !no_touch {
             // It waits for a touch: the host sees a keepalive first.
             self.answer(to, KEEPALIVE, &[2]);
         }

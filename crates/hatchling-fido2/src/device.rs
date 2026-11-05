@@ -34,7 +34,7 @@ use crate::ctap2::{
     AuthData, CLIENT_PIN, Ctap2Error, GET_ASSERTION, GET_INFO, INVALID_CREDENTIAL, Info,
     MAKE_CREDENTIAL, NO_CREDENTIALS, OK, PIN_INVALID, to_authenticator_error,
 };
-use crate::ctaphid::{Channel, Hid};
+use crate::ctaphid::{Channel, Hid, TouchNotice};
 use crate::pin::{Protocol, cose_point, encapsulate, random};
 
 /// How long an operation waits for a touch.
@@ -69,6 +69,11 @@ pub struct Device<H: Hid> {
 }
 
 impl<H: Hid> Device<H> {
+    /// Tells `notice` of each touch from now on.
+    pub fn on_touch(&mut self, notice: TouchNotice) {
+        self.channel.on_touch(notice);
+    }
+
     /// Opens a channel to the key on `hid` and reads what it supports.
     ///
     /// # Errors
@@ -579,6 +584,10 @@ impl<H: Hid> Authenticator for Device<H> {
         self.info.min_pin_length.unwrap_or(4)
     }
 
+    fn model(&self) -> Option<&'static str> {
+        Some(self.info.model())
+    }
+
     fn set_pin(&mut self, pin: &str) -> Result<(), AuthenticatorError> {
         Self::set_pin(self, pin).map_err(|error| to_authenticator_error(&error))
     }
@@ -593,7 +602,7 @@ mod tests {
     use hmac::{Hmac, Mac as _};
 
     use super::*;
-    use crate::ctaphid::TransportError;
+    use crate::ctaphid::{Touch, TransportError};
     use crate::soft::{SoftKey, State, Tamper};
 
     const RP: &str = "hatchling.vault";
@@ -1049,6 +1058,27 @@ mod tests {
         assert_eq!(state.borrow().inits, 2, "a second channel");
         device.make_credential(RP, b"v").unwrap();
         assert_eq!(state.borrow().inits, 2, "kept, while all's well");
+    }
+
+    /// Each touch is told as the key asks for it, and when it's had; a
+    /// step that needs none tells nothing, and a key not touched says it
+    /// waited and no more.
+    #[test]
+    fn a_touch_is_told_as_it_happens() {
+        let key = SoftKey::new();
+        let state = key.handle();
+        let told = Rc::new(RefCell::new(Vec::new()));
+        let mut device = open(key, None);
+        let hearing = Rc::clone(&told);
+        device.on_touch(Box::new(move |touch| hearing.borrow_mut().push(touch)));
+        let made = device.make_credential(RP, b"u").unwrap();
+        assert_eq!(*told.borrow(), [Touch::Waiting, Touch::Noticed]);
+        told.borrow_mut().clear();
+        assert_eq!(device.holds(RP, &made.id), Some(true));
+        assert!(told.borrow().is_empty(), "a pre-flight needs no touch");
+        state.borrow_mut().present = false;
+        assert!(device.make_credential(RP, b"v").is_err());
+        assert_eq!(*told.borrow(), [Touch::Waiting]);
     }
 
     /// Another program on the key is a wait, not a failure, for as long

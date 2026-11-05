@@ -188,7 +188,7 @@ impl Hid for Soup {
 #[test]
 fn a_channel_survives_any_reports() {
     let mut noise = Noise(0x1234_5678_9abc_def1);
-    let nonce = [5u8; 8];
+    let nonce = crate::pin::random::<8>().unwrap();
     for _ in 0..20_000 {
         let left = noise.below(8);
         let seed = noise.next() | 1;
@@ -270,7 +270,7 @@ fn a_failure_at_any_step_is_a_refusal() {
     state.borrow_mut().pin = Some(String::from("2468"));
     let mut device = Device::open_with(honest, Some(pin()), Duration::from_secs(1)).unwrap();
     let made = device.make_credential(RP, b"user").unwrap();
-    let salt = [7u8; 32];
+    let salt = crate::pin::random::<32>().unwrap();
     let right = device.hmac_secret_verified(RP, &made.id, &salt).unwrap();
     drop(device);
     for fault in [Fault::Unplugged, Fault::Flipped] {

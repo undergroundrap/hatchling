@@ -23,7 +23,7 @@ sudo hatchling-broker vault-keyring setup
 
 It looks at what's plugged in, and does the rest:
 
-1. **Registers your keys.** Two plugged in are both taken. With one, it asks if you have a second, and says when to swap. A new key has no PIN: it asks you to choose one. You touch each key when it flashes, and name it.
+1. **Registers your keys.** Two plugged in are both taken. With one, it asks if you have a second, and says when to swap. A new key has no PIN: it asks you to choose one. Each key takes two touches, and it says when. Press Enter to keep the name it suggests, or type your own.
 2. **Gives you your backup codes.** Save them now, on paper or in a password manager, away from this computer. To finish, it asks you to type part of one back.
 3. **Restarts the service and unlocks it,** so you see how it's done.
 
@@ -31,7 +31,9 @@ Nothing in the vault changes until your keys are ready. **If anything interrupts
 
 **Choosing a PIN.** 6 to 8 digits you'll remember, not one you use anywhere else. The key locks itself after 8 wrong tries, which is why a short PIN is safe, and why you shouldn't guess. Use the same one on both keys.
 
-**Which key goes where.** A key made to stay in a port, like a YubiKey 5C Nano, can live in the computer: the PIN protects it if the machine is stolen. Keep the other, such as a 5C NFC, on your keychain or in a drawer.
+**Which key goes where.** A key made to stay in a port, like a YubiKey 5C Nano, can live in the computer: the PIN protects it if the machine is stolen. Keep the other, such as a 5C NFC, on your keychain or in a drawer. Register the one that stays plugged in last: a Nano is hard to pull out.
+
+**How to touch it.** Touch the gold part, with the pad of your finger, while the key flashes. A touch before it flashes doesn't count. On a Nano the gold is on its sides, so in a port it can be hard to see: feel for it, and press for a second.
 
 ## In WSL
 

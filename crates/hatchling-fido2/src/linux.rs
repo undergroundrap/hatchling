@@ -30,7 +30,7 @@ use rustix::fs::{FlockOperation, flock};
 
 use crate::Bus;
 use crate::ctap2::Ctap2Error;
-use crate::ctaphid::{Hid, REPORT, TransportError};
+use crate::ctaphid::{Hid, REPORT, TouchNotice, TransportError};
 use crate::device::{Device, PinPrompt};
 
 /// The CTAPHID usage page.
@@ -216,6 +216,8 @@ pub struct Hidraw {
     pin: std::rc::Rc<std::cell::RefCell<PinPrompt>>,
     /// The keys opened already, by node: used in place of opening any.
     opened: Option<Vec<(String, File)>>,
+    /// Told of each touch, on any key.
+    touch: std::rc::Rc<std::cell::RefCell<Option<TouchNotice>>>,
 }
 
 impl Hidraw {
@@ -234,7 +236,15 @@ impl Hidraw {
             dev: dev.to_path_buf(),
             pin: std::rc::Rc::new(std::cell::RefCell::new(pin)),
             opened: None,
+            touch: std::rc::Rc::new(std::cell::RefCell::new(None)),
         }
+    }
+
+    /// Tells `notice` of each touch, on any of the keys.
+    #[must_use]
+    pub fn noticing(self, notice: TouchNotice) -> Self {
+        *self.touch.borrow_mut() = Some(notice);
+        self
     }
 
     /// The keys `opened` already, each by its node's name: what a launcher
@@ -347,6 +357,15 @@ impl Bus for Hidraw {
         for (node, file) in self.files()? {
             let locked = Locked::take(file, &node)?;
             let answer = Device::open(HidFile::new(locked, &node), Some(self.prompt()));
+            let shared = std::rc::Rc::clone(&self.touch);
+            let answer = answer.map(|mut key| {
+                key.on_touch(Box::new(move |touch| {
+                    if let Some(notice) = shared.borrow_mut().as_mut() {
+                        notice(touch);
+                    }
+                }));
+                key
+            });
             answers.push((node, answer));
         }
         usable(answers)

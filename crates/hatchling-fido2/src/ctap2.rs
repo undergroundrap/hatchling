@@ -111,6 +111,15 @@ pub fn wrong_pin(left: Option<u8>) -> String {
     }
 }
 
+/// The AAGUID of a YubiKey 5 NFC or 5C NFC, firmware 5.7.
+const YUBIKEY_5_NFC: [u8; 16] = [
+    0xa2, 0x53, 0x42, 0xc0, 0x3c, 0xdc, 0x44, 0x14, 0x8e, 0x46, 0xf4, 0x80, 0x7f, 0xca, 0x51, 0x1c,
+];
+/// The AAGUID of a YubiKey 5, 5C or their Nanos, firmware 5.7.
+const YUBIKEY_5: [u8; 16] = [
+    0xff, 0x4d, 0xac, 0x45, 0xed, 0xe8, 0x4e, 0xc2, 0xac, 0xed, 0xcf, 0x66, 0x10, 0x3f, 0x43, 0x35,
+];
+
 /// What `authenticatorGetInfo` says, as far as this host needs it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Info {
@@ -129,6 +138,10 @@ pub struct Info {
     pub min_pin_length: Option<usize>,
     /// The PIN/UV auth protocols it speaks, in its order of preference.
     pub protocols: Vec<Protocol>,
+    /// The model's identifier, if it gives one of the right length.
+    pub aaguid: Option<[u8; 16]>,
+    /// How it can be reached (`usb`, `nfc`, ...).
+    pub transports: Vec<String>,
 }
 
 impl Info {
@@ -191,7 +204,27 @@ impl Info {
                 .and_then(|min| usize::try_from(min).ok())
                 .filter(|min| (4..=63).contains(min)),
             protocols,
+            aaguid: reply
+                .at(3)
+                .and_then(Value::as_bytes)
+                .and_then(|aaguid| aaguid.try_into().ok()),
+            transports: texts(9)?,
         })
+    }
+
+    /// What to call this key: its model where it's one we know, or what
+    /// it can do. Only a suggestion, which its owner can change: an
+    /// identifier a key states proves nothing about it.
+    #[must_use]
+    pub fn model(&self) -> &'static str {
+        match self.aaguid {
+            Some(YUBIKEY_5_NFC) => "YubiKey 5 NFC",
+            Some(YUBIKEY_5) => "YubiKey 5",
+            _ if self.transports.iter().any(|transport| transport == "nfc") => {
+                "Security key with NFC"
+            }
+            _ => "Security key",
+        }
     }
 
     /// The PIN/UV auth protocol to use: 2 where offered, else 1 (the
@@ -358,6 +391,34 @@ pub(crate) mod tests {
             (Value::int(4), Value::map(options)),
             (Value::int(6), Value::Array(protocols)),
         ])
+    }
+
+    /// A key is called what it is, as far as it says, and only a key that
+    /// says nothing is just a key.
+    #[test]
+    fn a_key_is_called_what_it_says_it_is() {
+        let info = |aaguid: Value, transports: &[&str]| {
+            let list = transports.iter().map(|text| Value::text(text)).collect();
+            Info::parse(&Value::map(vec![
+                (Value::int(1), Value::Array(vec![Value::text("FIDO_2_1")])),
+                (Value::int(3), aaguid),
+                (Value::int(9), Value::Array(list)),
+            ]))
+            .unwrap()
+        };
+        let nfc = Value::Bytes(YUBIKEY_5_NFC.to_vec());
+        let usb = Value::Bytes(YUBIKEY_5.to_vec());
+        let other = Value::Bytes(vec![7; 16]);
+        assert_eq!(info(nfc, &["usb", "nfc"]).model(), "YubiKey 5 NFC");
+        assert_eq!(info(usb, &["usb"]).model(), "YubiKey 5");
+        assert_eq!(
+            info(other.clone(), &["usb", "nfc"]).model(),
+            "Security key with NFC"
+        );
+        assert_eq!(info(other, &["usb"]).model(), "Security key");
+        let short = info(Value::Bytes(vec![7; 15]), &[]);
+        assert_eq!(short.aaguid, None);
+        assert_eq!(short.model(), "Security key");
     }
 
     #[test]

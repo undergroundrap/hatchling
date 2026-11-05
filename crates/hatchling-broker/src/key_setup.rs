@@ -149,7 +149,8 @@ fn protect(setup: &mut Setup<'_>, mut keyring: Keyring, path: &Path) -> Result<D
     setup.say(
         "This protects Hatchling's vault with security keys: nothing opens it without one.\n\
          After each restart, you unlock it with a key and its PIN.\n\
-         Two keys are best: either one opens the vault. Nothing changes until they're ready.",
+         Two keys are best: either one opens the vault. Nothing changes until they're ready.\n\
+         Have two? Start with the one you'll carry, like a 5C NFC. One that stays plugged in, like a Nano, goes last.",
     );
     if setup.wsl {
         setup.say(
@@ -326,13 +327,13 @@ fn register(
         (None, _) => return Err(Refused::Again(String::from(TOO_OLD))),
         (Some(false), min) => set_pin(setup, index, min)?,
     }
-    setup.say("When a key flashes, touch it. It asks for its PIN first.");
-    let done = {
+    setup.say("Registering a key takes its PIN, then two touches. Touch it as it flashes.");
+    let (done, model) = {
         let mut keys = setup.devices.every_key();
         let key = keys
             .get_mut(index)
             .ok_or_else(|| Refused::Again(String::from("That key went away.")))?;
-        keyring.enroll_key(enrollment, &mut **key)
+        (keyring.enroll_key(enrollment, &mut **key), key.model())
     };
     match done {
         Ok(()) => {}
@@ -347,7 +348,14 @@ fn register(
         }
         Err(other) => return Err(Refused::Stop(ring::vault_error(other))),
     }
-    let label = name_of(setup).map_err(Refused::Stop)?;
+    let taken: Vec<String> = keyring
+        .wraps()
+        .iter()
+        .map(|wrap| wrap.label().to_owned())
+        .chain(enrollment.names())
+        .collect();
+    let suggested = unused_name(model.unwrap_or("Security key"), &taken);
+    let label = name_of(setup, &suggested).map_err(Refused::Stop)?;
     enrollment.name_last(&label);
     setup.say(&format!("Registered: {}.", label.as_str()));
     Ok(())
@@ -392,17 +400,25 @@ fn keyboard_only(pin: &str) -> bool {
     pin.chars().all(|c| c.is_ascii_graphic())
 }
 
-/// The name of a key just registered, from what it is: a name is what
-/// tells two alike apart later, and says which to remove if one is lost.
-fn name_of(setup: &mut Setup<'_>) -> Result<Label, Error> {
-    let answer = (setup.ask)(
-        "Which key was that? 1: YubiKey 5C Nano (stays in this computer). 2: YubiKey 5C NFC, or another keychain key. 3: something else. Type 1, 2 or 3, or a name of your own:",
-    )?;
-    let name = match answer.trim() {
-        "1" => String::from("Nano, in this computer"),
-        "2" => String::from("Keychain key"),
-        "3" | "" => return ring::asked_label(setup.ask),
-        own => own.to_owned(),
+/// `model`, or with a number if a key has that name: what tells two alike
+/// apart later, and says which to remove if one is lost.
+fn unused_name(model: &str, taken: &[String]) -> String {
+    std::iter::once(model.to_owned())
+        .chain((2..).map(|number| format!("{model} {number}")))
+        .find(|name| !taken.contains(name))
+        .unwrap_or_else(|| model.to_owned())
+}
+
+/// The name of a key just registered: `suggested`, unless its owner has
+/// one of their own.
+fn name_of(setup: &mut Setup<'_>, suggested: &str) -> Result<Label, Error> {
+    let answer = (setup.ask)(&format!(
+        "Name this key, or press Enter to call it \"{suggested}\":"
+    ))?;
+    let name = if answer.trim().is_empty() {
+        suggested
+    } else {
+        answer.as_str()
     };
     match name.parse::<Label>() {
         Ok(label) => Ok(label),
@@ -639,6 +655,9 @@ pub fn run_setup(
         wait: &mut wait,
         wsl,
     });
+    // Let go of the keys: each stays locked while it's held, and the unlock
+    // below needs them.
+    drop(devices);
     // Whatever happened, the service goes back: an interrupted setup left
     // the vault as it was, or it says so.
     let started = Command::new("systemctl")

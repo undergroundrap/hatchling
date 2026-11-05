@@ -781,7 +781,17 @@ pub fn platform_keys(pin: PinPrompt) -> SecurityKeys<hatchling_fido2::linux::Hid
         }
         Err(_) => hatchling_fido2::linux::Hidraw::new(pin),
     };
-    SecurityKeys::new(bus)
+    SecurityKeys::new(bus.noticing(Box::new(|touch| {
+        let _ = writeln!(std::io::stderr(), "{}", touch_said(touch));
+    })))
+}
+
+/// What to say of a touch, as it happens.
+pub(crate) const fn touch_said(touch: hatchling_fido2::ctaphid::Touch) -> &'static str {
+    match touch {
+        hatchling_fido2::ctaphid::Touch::Waiting => "Touch your key now, while it flashes...",
+        hatchling_fido2::ctaphid::Touch::Noticed => "Got it.",
+    }
 }
 
 /// Where the operator answers: the terminal (answers from stdin, prompts
@@ -839,8 +849,7 @@ impl<R: BufRead, W: Write> Console<R, W> {
 }
 
 /// How a key's PIN is asked for.
-pub(crate) const PIN_PROMPT: &str =
-    "This security key has a PIN. Enter it (it goes only to the key), or nothing to stop:";
+pub(crate) const PIN_PROMPT: &str = "Type your key's PIN, then press Enter. Nothing shows as you type, and it goes only to the key. (Enter alone stops.)";
 
 /// An answer to `prompt` at this terminal (stdin, the prompt on stderr);
 /// a `secret` one isn't shown as it's typed.
@@ -937,11 +946,17 @@ pub(crate) fn opening(
         }
     }
     drop(keys);
-    let code = ask(if plugged_in {
-        OPEN_NOT_REGISTERED
+    let why = devices.unreachable();
+    let code = if plugged_in {
+        ask(OPEN_NOT_REGISTERED)?
+    } else if why == NONE_PLUGGED || why.is_empty() {
+        ask(OPEN_NO_KEY)?
     } else {
-        OPEN_NO_KEY
-    })?;
+        // A key that's there and can't be reached is said as it is.
+        ask(&format!(
+            "{why}. Run this again when that's fixed, or type a backup code (it is used up), or nothing to stop:"
+        ))?
+    };
     match code.trim() {
         "" => Err(stopped()),
         code => keyring.recover(code).map_err(vault_error),
@@ -3221,6 +3236,86 @@ pub(crate) mod tests {
                 .borrow_mut()
                 .hmac_secret_verified(rp_id, credential_id, salt)
         }
+    }
+
+    /// A key that can be held by one at a time, as a locked one is.
+    struct Held(Rc<std::cell::Cell<bool>>);
+
+    impl Drop for Held {
+        fn drop(&mut self) {
+            self.0.set(false);
+        }
+    }
+
+    impl Authenticator for Held {
+        fn make_credential(
+            &mut self,
+            _: &str,
+            _: &[u8],
+        ) -> Result<hatchling_vault::Credential, hatchling_vault::AuthenticatorError> {
+            Err(hatchling_vault::AuthenticatorError::NoVerification)
+        }
+
+        fn hmac_secret(
+            &mut self,
+            _: &str,
+            _: &[u8],
+            _: &[u8; 32],
+        ) -> Result<[u8; 32], hatchling_vault::AuthenticatorError> {
+            Err(hatchling_vault::AuthenticatorError::NoVerification)
+        }
+    }
+
+    /// A [`Bus`] whose one key can't be had while it's held.
+    struct OneAtATime(Rc<std::cell::Cell<bool>>);
+
+    impl Bus for OneAtATime {
+        type Key = Held;
+
+        fn keys(&mut self) -> Result<Vec<Held>, String> {
+            if self.0.replace(true) {
+                return Err(String::from("it's in use"));
+            }
+            Ok(vec![Held(Rc::clone(&self.0))])
+        }
+    }
+
+    /// Looking again lets go of what it had: a key locked by the last look
+    /// isn't in the way of the next.
+    #[test]
+    fn looking_again_lets_go_first() {
+        let mut keys = SecurityKeys::new(OneAtATime(Rc::default()));
+        assert_eq!(keys.every_key().len(), 1);
+        assert_eq!(keys.every_key().len(), 1);
+    }
+
+    /// A key that's there but can't be reached is said as it is, not as
+    /// no key at all: someone might spend a code on it otherwise.
+    #[test]
+    fn a_key_out_of_reach_isnt_called_missing() {
+        let mut said = Vec::new();
+        let (_scratch, _vault, config) = adopted("open-reach");
+        let mut keyring = Keyring::load(&config.path).unwrap();
+        let mut ask = |prompt: &str| {
+            said.push(prompt.to_owned());
+            Ok(String::new())
+        };
+        let mut devices = SecurityKeys::new(Tray {
+            keys: Vec::new(),
+            plugged: Rc::default(),
+            fail: Some(String::from("another program is using the security key")),
+        });
+        assert!(opening(&mut keyring, &mut ask, &mut devices).is_err());
+        let said = said.join(" ");
+        assert!(said.starts_with("another program is using the security key."), "{said}");
+        assert!(!said.contains("No security key found"), "{said}");
+    }
+
+    #[test]
+    fn a_touch_is_said_in_words() {
+        use hatchling_fido2::ctaphid::Touch;
+        assert!(touch_said(Touch::Waiting).contains("Touch your key now"));
+        assert_eq!(touch_said(Touch::Noticed), "Got it.");
     }
 
     /// Software keys and which of them are plugged in, as a [`Bus`].

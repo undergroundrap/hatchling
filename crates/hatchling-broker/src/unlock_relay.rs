@@ -81,6 +81,8 @@ enum ToOperator {
     /// A question, to answer in the operator's terminal; a secret one
     /// (a PIN) isn't shown as it's typed.
     Ask { prompt: String, secret: bool },
+    /// A line to show the operator, with no answer wanted.
+    Say { message: String },
     /// The vault is open: the keeper carries on starting.
     Unlocked,
     /// This try didn't open it, and why; the keeper waits for the next.
@@ -241,6 +243,7 @@ fn unlock_over(
 ) -> Result<MasterKey, Error> {
     let keys = take_keys(stream)?;
     let pin = Rc::new(stream.try_clone().map_err(|e| io(&e))?);
+    let saying = stream.try_clone().map_err(|e| io(&e))?;
     let bus = hatchling_fido2::linux::Hidraw::opened(
         keys,
         Box::new(move || {
@@ -248,7 +251,11 @@ fn unlock_over(
                 .ok()
                 .filter(|pin| !pin.is_empty())
         }),
-    );
+    )
+    .noticing(Box::new(move |touch| {
+        let message = crate::vault_keyring::touch_said(touch).to_owned();
+        let _ = tell(&saying, &ToOperator::Say { message });
+    }));
     unlock_relayed(stream, vault, keyring, &mut SecurityKeys::new(bus))
 }
 
@@ -407,7 +414,7 @@ pub fn unlock_main(program: &str, vault: &VaultConfig) -> ExitCode {
         match keys.len() {
             0 =>
                 "No security key is plugged in: a backup code works, or plug one in and run this again (in WSL, attach it with usbipd first).",
-            _ => "When your security key flashes, touch it.",
+            _ => "It'll say when to touch your key.",
         }
     );
     drop(stderr);
@@ -485,6 +492,9 @@ pub(crate) fn operate(
                     .map_err(|e| e.to_string())?,
                 );
                 write_frame(stream, &reply).map_err(gone)?;
+            }
+            Ok(ToOperator::Say { message }) => {
+                let _ = writeln!(std::io::stderr(), "{message}");
             }
             Ok(ToOperator::Unlocked) => return Ok(()),
             Ok(ToOperator::Failed { reason }) => return Err(reason),
