@@ -14,6 +14,17 @@ fn scratch(name: &str) -> PathBuf {
     dir
 }
 
+/// A connected pair whose reads give up after ten seconds: a side that
+/// goes quiet fails the test, rather than hanging it.
+fn pair() -> (UnixStream, UnixStream) {
+    let (one, other) = UnixStream::pair().unwrap();
+    for end in [&one, &other] {
+        end.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .unwrap();
+    }
+    (one, other)
+}
+
 /// What the operator's side heard: each question, and whether it was a
 /// secret one.
 type Heard = Vec<(String, bool)>;
@@ -97,10 +108,7 @@ fn a_socket_left_by_an_earlier_start_is_replaced_and_its_directory_made_private(
 
 #[test]
 fn only_the_allowed_user_is_admitted_and_another_is_told() {
-    let (keeper, operator) = UnixStream::pair().unwrap();
-    operator
-        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
-        .unwrap();
+    let (keeper, operator) = pair();
     let me = hatchling_sys::euid();
     assert!(admitted(&keeper, me));
     assert!(!admitted(&keeper, me.wrapping_add(1)));
@@ -115,7 +123,7 @@ fn only_the_allowed_user_is_admitted_and_another_is_told() {
 
 #[test]
 fn the_pin_is_asked_as_a_secret_and_answers_go_back_in_turn() {
-    let (keeper, operator_end) = UnixStream::pair().unwrap();
+    let (keeper, operator_end) = pair();
     let asking = operator(operator_end, vec!["1234", "yes"]);
     assert!(take_keys(&keeper).unwrap().is_empty());
     assert_eq!(
@@ -139,7 +147,7 @@ fn the_pin_is_asked_as_a_secret_and_answers_go_back_in_turn() {
 
 #[test]
 fn a_key_passed_arrives_open_under_its_node() {
-    let (keeper, operator_end) = UnixStream::pair().unwrap();
+    let (keeper, operator_end) = pair();
     let dir = scratch("keys");
     let mut file = File::options()
         .create(true)
@@ -182,7 +190,7 @@ fn keys_that_arent_ones_are_refused_before_any_is_taken() {
         vec![String::from("sda")],
         too_many,
     ] {
-        let (keeper, operator_end) = UnixStream::pair().unwrap();
+        let (keeper, operator_end) = pair();
         let frame = serde_json::to_vec(&ToKeeper::Keys {
             nodes: nodes.clone(),
         })
@@ -200,7 +208,7 @@ fn keys_that_arent_ones_are_refused_before_any_is_taken() {
         );
     }
     // The same, named as keys are, are taken.
-    let (keeper, operator_end) = UnixStream::pair().unwrap();
+    let (keeper, operator_end) = pair();
     let nodes: Vec<String> = (0..MAX_KEYS).map(|n| format!("hidraw{n}")).collect();
     let frame = serde_json::to_vec(&ToKeeper::Keys { nodes }).unwrap();
     write_frame(&operator_end, &frame).unwrap();
@@ -210,7 +218,7 @@ fn keys_that_arent_ones_are_refused_before_any_is_taken() {
     }
     assert_eq!(take_keys(&keeper).unwrap().len(), MAX_KEYS);
     // Something else first is no try.
-    let (keeper, operator_end) = UnixStream::pair().unwrap();
+    let (keeper, operator_end) = pair();
     let answer = serde_json::to_vec(&ToKeeper::Answer {
         text: String::from("x"),
     })
@@ -247,7 +255,7 @@ fn an_answer_too_long_or_not_an_answer_ends_the_try() {
         serde_json::to_vec(&ToKeeper::Keys { nodes: Vec::new() }).unwrap(),
         b"{\"kind\":\"answer\",\"text\":\"1\",\"more\":1}".to_vec(),
     ] {
-        let (keeper, operator_end) = UnixStream::pair().unwrap();
+        let (keeper, operator_end) = pair();
         let answering = std::thread::spawn(move || {
             let _ = read_frame(&operator_end).unwrap();
             write_frame(&operator_end, &reply).unwrap();
@@ -258,7 +266,7 @@ fn an_answer_too_long_or_not_an_answer_ends_the_try() {
         ));
         answering.join().unwrap();
     }
-    let (keeper, operator_end) = UnixStream::pair().unwrap();
+    let (keeper, operator_end) = pair();
     let answering = std::thread::spawn(move || {
         let _ = read_frame(&operator_end).unwrap();
         write_frame(
@@ -276,7 +284,7 @@ fn an_answer_too_long_or_not_an_answer_ends_the_try() {
 
 #[test]
 fn the_operators_side_stops_on_what_it_doesnt_read_or_a_keeper_gone() {
-    let (keeper, operator_end) = UnixStream::pair().unwrap();
+    let (keeper, operator_end) = pair();
     let speaking = std::thread::spawn(move || {
         let _ = read_frame(&keeper).unwrap();
         write_frame(&keeper, b"{\"kind\":\"shout\"}").unwrap();
@@ -291,7 +299,7 @@ fn the_operators_side_stops_on_what_it_doesnt_read_or_a_keeper_gone() {
         ))
     );
     speaking.join().unwrap();
-    let (keeper, operator_end) = UnixStream::pair().unwrap();
+    let (keeper, operator_end) = pair();
     drop(keeper);
     assert!(
         operate(&operator_end, &[], &mut |_, _| Ok(Zeroizing::new(
