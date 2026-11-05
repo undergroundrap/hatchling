@@ -86,7 +86,7 @@ pub fn chat_failed(ending: Option<hatchling_scheduler::Ending>, model: Option<&s
                 "The agent used all its steps before it finished. Try asking for something smaller.",
             ),
             Some(RunFailure::OutOfRoom) => format!(
-                "The model{named} ran out of room before it finished its answer: its context window is too small for Hatchling. With Ollama, set OLLAMA_CONTEXT_LENGTH to 16384 or more; docs/install.md says how."
+                "The model{named} ran out of room before it finished its answer: its context window is too small for Hatchling. With Ollama, set OLLAMA_CONTEXT_LENGTH to 32768; docs/install.md says how."
             ),
             None => String::from(CHAT_FAILED),
         },
