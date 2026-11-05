@@ -22,6 +22,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.request
 
@@ -515,6 +516,15 @@ def run(repo, artifacts, work, mode, fixtures):
     print('Hosted-model ' + mode + ': passed; sealed key, inspected real cell, agent answer', flush=True)
 
 
+def raised_at(error):
+    """Where `error` was raised, as file, line and function: never a value."""
+    frames = traceback.extract_tb(error.__traceback__)
+    if not frames:
+        return ''
+    frame = frames[-1]
+    return f' (at {Path(frame.filename).name}:{frame.lineno}, in {frame.name})'
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('repo', 'artifacts', 'work'):
@@ -525,7 +535,7 @@ def main():
     try:
         run(args.repo.resolve(), args.artifacts.resolve(), args.work.resolve(), args.mode, args.fixtures)
     except (ValueError, OSError, subprocess.SubprocessError) as error:
-        parser.exit(1, 'Hosted-model proof: ' + str(error) + '\n')
+        parser.exit(1, 'Hosted-model proof: ' + str(error) + raised_at(error) + '\n')
 
 
 if __name__ == '__main__':

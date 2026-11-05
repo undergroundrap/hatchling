@@ -413,8 +413,10 @@ fn assert_sigsys(result: &AttackResult) -> Result<(), String> {
 ///
 /// `uprobe`, on newer kernels still, is the same for the kernel's uprobe trampolines,
 /// passed through seccomp likewise, but called from anywhere else it returns
-/// `-ENXIO` and does nothing. So on such a kernel the probe survives, and
-/// passes only if its report says exactly that: the call, and `-ENXIO`.
+/// an error and does nothing: `-ENXIO`, or `-EPROTO` from the kernels whose
+/// uprobes no longer clobber the red zone, changed so that userspace can tell
+/// them apart. So on such a kernel the probe survives, and passes only if its
+/// report says exactly that: the call, and one of those two refusals.
 fn assert_denied_kills(name: &str, result: &AttackResult) -> Result<(), String> {
     if name == "uprobe" && result.exit_code == 0 {
         return assert_uprobe_refused(result);
@@ -434,8 +436,8 @@ fn assert_denied_kills(name: &str, result: &AttackResult) -> Result<(), String> 
 }
 
 /// A surviving `uprobe` probe's report: the marker, then one report of
-/// the call itself returning `-ENXIO`, the kernel's refusal of a caller
-/// outside its trampolines. Anything else is a hole.
+/// the call itself returning `-ENXIO` or `-EPROTO`, the kernel's refusal
+/// of a caller outside its trampolines. Anything else is a hole.
 fn assert_uprobe_refused(result: &AttackResult) -> Result<(), String> {
     let stdout = String::from_utf8_lossy(&result.stdout);
     let marker = format!("READY {}\n", result.slug);
@@ -443,26 +445,31 @@ fn assert_uprobe_refused(result: &AttackResult) -> Result<(), String> {
         .strip_prefix(&marker)
         .and_then(|report| serde_json::from_str::<serde_json::Value>(report.trim_end()).ok())
         .is_some_and(|report| {
-            let refusal = serde_json::json!({
-                "kind": "syscall_survived",
-                "nr": 336,
-                "ret": -i64::from(rustix::io::Errno::NXIO.raw_os_error()),
-            });
-            report.get("outcome") == Some(&refusal)
+            let refusal = |errno: rustix::io::Errno| {
+                serde_json::json!({
+                    "kind": "syscall_survived",
+                    "nr": 336,
+                    "ret": -i64::from(errno.raw_os_error()),
+                })
+            };
+            [rustix::io::Errno::NXIO, rustix::io::Errno::PROTO]
+                .into_iter()
+                .any(|errno| report.get("outcome") == Some(&refusal(errno)))
                 && report.get("error").is_some_and(serde_json::Value::is_null)
         });
     if refused {
         Ok(())
     } else {
         Err(format!(
-            "{}: uprobe survived with stdout {stdout:?}; only its -ENXIO refusal may pass",
+            "{}: uprobe survived with stdout {stdout:?}; only its -ENXIO or -EPROTO refusal may pass",
             result.slug
         ))
     }
 }
 
 /// The `uprobe` exception is exact: a survivor passes for `uprobe` alone,
-/// and only when the kernel refused it with `-ENXIO`. Needs no cell.
+/// and only when the kernel refused it with `-ENXIO` or `-EPROTO`. Needs
+/// no cell.
 fn only_uprobe_may_survive_refused() -> Result<(), String> {
     let result = |slug: &str, exit_code: i32, stdout: &str| AttackResult {
         slug: slug.to_owned(),
@@ -475,7 +482,10 @@ fn only_uprobe_may_survive_refused() -> Result<(), String> {
         )
     };
     let enxio = -i64::from(rustix::io::Errno::NXIO.raw_os_error());
-    assert_denied_kills("uprobe", &result("seccomp-336", 0, &report(336, enxio)))?;
+    let eproto = -i64::from(rustix::io::Errno::PROTO.raw_os_error());
+    for refusal in [enxio, eproto] {
+        assert_denied_kills("uprobe", &result("seccomp-336", 0, &report(336, refusal)))?;
+    }
     for (name, slug, stdout, why) in [
         (
             "uprobe",
@@ -487,7 +497,13 @@ fn only_uprobe_may_survive_refused() -> Result<(), String> {
             "uprobe",
             "seccomp-336",
             report(336, -1),
-            "only -ENXIO is the kernel's refusal",
+            "only -ENXIO or -EPROTO is the kernel's refusal",
+        ),
+        (
+            "uprobe",
+            "seccomp-336",
+            report(336, -i64::from(rustix::io::Errno::NOSYS.raw_os_error())),
+            "-ENOSYS is no refusal of the trampoline's",
         ),
         (
             "uprobe",
@@ -506,6 +522,12 @@ fn only_uprobe_may_survive_refused() -> Result<(), String> {
             "seccomp-425",
             report(425, enxio),
             "no other syscall may survive",
+        ),
+        (
+            "io_uring_setup",
+            "seccomp-425",
+            report(425, eproto),
+            "no other syscall may survive -EPROTO either",
         ),
     ] {
         if assert_denied_kills(name, &result(slug, 0, &stdout)).is_ok() {

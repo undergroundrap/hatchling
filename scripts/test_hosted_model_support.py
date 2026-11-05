@@ -1,12 +1,14 @@
 from pathlib import Path
 import hashlib
+import io
 import secrets
 import subprocess
 import sys
 import tempfile
 import unittest
 
-from hosted_model_support import checked_file, memory_holds, readonly_mount, sanitize_logs, snapshot
+from hosted_model_support import (GUARD_REGION, PAGE, checked_file, guard_page, memory_holds, readonly_mount,
+                                  sanitize_logs, snapshot)
 
 
 class SnapshotTests(unittest.TestCase):
@@ -88,7 +90,53 @@ sys.stdin.read()
 """
 
 
+GUARDED = """
+import mmap, sys
+key = sys.stdin.readline().strip().encode()
+page = mmap.PAGESIZE
+region = mmap.mmap(-1, 3 * page)
+region[0:len(key)] = key
+region[2 * page:2 * page + len(key)] = key
+try:
+    region.madvise(102, page, page)  # MADV_GUARD_INSTALL: Linux 6.13+
+except OSError:
+    print('unsupported', flush=True)
+else:
+    print('ready', flush=True)
+sys.stdin.read()
+"""
+
+
 class MemoryTests(unittest.TestCase):
+    def test_a_guard_regions_page_is_left_out_and_the_rest_still_scanned(self):
+        key = ('fixture-guarded-' + secrets.token_hex(8)).encode('ascii')
+        child = subprocess.Popen([sys.executable, '-c', GUARDED], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        try:
+            child.stdin.write(key + b'\n')
+            child.stdin.flush()
+            state = child.stdout.readline()
+            if state == b'unsupported\n':
+                self.skipTest('this kernel has no guard regions (MADV_GUARD_INSTALL)')
+            self.assertEqual(state, b'ready\n')
+            found, scanned = memory_holds(child.pid, key)
+            self.assertTrue(found)
+            self.assertGreater(scanned, 1024 * 1024)
+        finally:
+            child.kill()
+            child.wait()
+            child.stdin.close()
+            child.stdout.close()
+
+    def test_only_a_guard_regions_entry_excuses_a_page(self):
+        def pagemap(*entries):
+            return io.BytesIO(b''.join(entry.to_bytes(8, 'little') for entry in entries))
+        swapped = 1 << 62
+        self.assertTrue(guard_page(pagemap(0, GUARD_REGION | swapped), PAGE))
+        self.assertTrue(guard_page(pagemap(GUARD_REGION), PAGE - 1))
+        self.assertFalse(guard_page(pagemap(GUARD_REGION, swapped), PAGE), 'swapped out is not a guard')
+        self.assertFalse(guard_page(pagemap(GUARD_REGION, 0), PAGE))
+        self.assertFalse(guard_page(pagemap(GUARD_REGION), PAGE), 'no entry is no guard')
+
     def test_a_credential_across_two_chunks_is_found_and_one_never_held_is_not(self):
         first, second = 'fixture-held-' + secrets.token_hex(8), secrets.token_hex(8)
         absent = ('fixture-absent-' + secrets.token_hex(16)).encode('ascii')
@@ -110,6 +158,7 @@ class MemoryTests(unittest.TestCase):
             child.kill()
             child.wait()
             child.stdin.close()
+            child.stdout.close()
             child.stdout.close()
 
 
