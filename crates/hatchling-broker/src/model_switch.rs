@@ -835,7 +835,7 @@ mod tests {
     fn a_switch_asks_for_the_key_writes_the_settings_and_restarts() {
         let (dir, path) = service("hosted");
         let asked = std::cell::RefCell::new(Vec::new());
-        let restarted = std::cell::Cell::new(0);
+        let restarted = std::cell::Cell::new(0_u32);
         let steps = Steps {
             owner: hatchling_sys::euid(),
             ask_key: &|destination| {
