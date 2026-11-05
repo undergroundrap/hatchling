@@ -34,6 +34,8 @@ pub mod device;
 pub mod linux;
 pub mod pin;
 #[cfg(test)]
+mod soup;
+#[cfg(test)]
 #[allow(
     clippy::redundant_pub_crate,
     reason = "the software key serves this crate's tests only"

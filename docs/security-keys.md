@@ -11,6 +11,7 @@ You don't need a key: without one, nothing here applies, and Hatchling works as 
 - **A FIDO2 security key with `hmac-secret`:** any YubiKey 5, and most FIDO2 keys of the last several years. An older U2F-only key can't do this, and setup says so.
 - **Two keys, ideally.** Either one opens the vault, so losing one doesn't lock you out. One works too: backup codes are then your only way back if you lose it.
 - **One port is fine.** Setup registers one key, you swap, and it notices the next.
+- **USB, not Bluetooth.** Your PIN's hash goes to whatever answers as a key, so Hatchling only talks to keys on USB: nothing in radio range can pose as one.
 
 ## Set it up
 
@@ -66,7 +67,7 @@ The service waits, locked: the app can't connect, and `sudo hatchling-broker doc
 sudo hatchling-broker unlock
 ```
 
-Type the key's PIN, and touch it when it flashes. Any registered key will do, and it doesn't matter if both are plugged in. A wrong PIN says how many tries are left, and Hatchling keeps waiting: run it again. With no key at hand, it asks for a backup code.
+Type the key's PIN, and touch it when it flashes. Any registered key will do, and it doesn't matter if both are plugged in. A wrong PIN says how many tries are left, and Hatchling keeps waiting: run it again. With no key at hand, it asks for a backup code. If another program has the key, it waits a moment, then says so.
 
 ## Add a second key, or a replacement
 

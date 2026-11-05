@@ -25,7 +25,9 @@ use crate::ctap2::{
     NO_CREDENTIALS, NOT_ALLOWED, PIN_AUTH_BLOCKED, PIN_AUTH_INVALID, PIN_BLOCKED, PIN_INVALID,
     PIN_POLICY_VIOLATION, PIN_REQUIRED, USER_ACTION_TIMEOUT,
 };
-use crate::ctaphid::{BROADCAST, CBOR, Hid, INIT, KEEPALIVE, REPORT, TransportError, packets};
+use crate::ctaphid::{
+    BROADCAST, CANCEL, CBOR, ERROR, Hid, INIT, KEEPALIVE, REPORT, TransportError, packets,
+};
 use crate::pin::{Protocol, agree, agreement_key, cose_key, random};
 
 /// The ways a hostile key lies.
@@ -81,11 +83,18 @@ pub(crate) struct State {
     pub(crate) wrong_in_a_row: u8,
     /// The shortest PIN it takes, as its info says.
     pub(crate) min_pin_length: i64,
-    /// Whether it refuses every PIN token it's shown, as a key that has
-    /// just forgotten them does.
-    pub(crate) refuse_tokens: bool,
+    /// The `alg` of the keys it makes.
+    pub(crate) credential_alg: i64,
+    /// The answer it owes a cancelled request: sent when it's cancelled.
+    pub(crate) owes: Option<([u8; 4], Vec<u8>)>,
+    /// How many times it says it's busy before it answers.
+    pub(crate) busy: u32,
     /// How many pre-flights it has answered.
     pub(crate) silent: u32,
+    /// How many `INIT`s it has answered.
+    pub(crate) inits: u8,
+    /// The `INIT` capabilities it states: CTAP2 unless changed.
+    pub(crate) capabilities: u8,
     pub(crate) present: bool,
     pub(crate) hmac_secret: bool,
     pub(crate) protocols: Vec<i64>,
@@ -117,8 +126,12 @@ impl SoftKey {
                 retries: 8,
                 wrong_in_a_row: 0,
                 min_pin_length: 4,
-                refuse_tokens: false,
+                credential_alg: -7,
+                owes: None,
+                busy: 0,
                 silent: 0,
+                inits: 0,
+                capabilities: 0x05,
                 present: true,
                 hmac_secret: true,
                 protocols: vec![2, 1],
@@ -155,15 +168,38 @@ impl SoftKey {
 
     fn message(&mut self, channel: [u8; 4], command: u8, payload: &[u8]) {
         if command == INIT && channel == BROADCAST {
-            let reply = [payload, &self.channel, &[2, 5, 4, 0, 0x05]].concat();
+            // A channel of its own each time, as a real key gives.
+            let number = self.state.borrow().inits.wrapping_add(1);
+            self.state.borrow_mut().inits = number;
+            self.channel = [0x0a, 0x0b, 0x0c, number];
+            let capabilities = self.state.borrow().capabilities;
+            let reply = [payload, &self.channel, &[2, 5, 4, 0, capabilities]].concat();
             self.answer(BROADCAST, INIT, &reply);
+            return;
+        }
+        if command == CANCEL {
+            // A cancelled request is still answered: KEEPALIVE_CANCEL.
+            let owed = self.state.borrow_mut().owes.take();
+            if let Some((to, reply)) = owed {
+                self.answer(to, CBOR, &reply);
+            }
             return;
         }
         if command != CBOR || channel != self.channel {
             return;
         }
+        {
+            let mut state = self.state.borrow_mut();
+            if state.busy > 0 {
+                state.busy -= 1;
+                drop(state);
+                self.answer(channel, ERROR, &[0x06]);
+                return;
+            }
+        }
         let tamper = self.state.borrow().tamper;
         if tamper == Tamper::Silent {
+            self.state.borrow_mut().owes = Some((channel, vec![0x2d]));
             return;
         }
         let Some((&code, rest)) = payload.split_first() else {
@@ -360,10 +396,11 @@ impl SoftKey {
             .map_err(|_| 0x7fu8)?;
         let point = <[u8; 65]>::try_from(key.public_key().as_ref()).map_err(|_| 0x7fu8)?;
         let mut public = cose_key(&point);
+        let alg = self.state.borrow().credential_alg;
         if let Value::Map(entries) = &mut public {
             for (label, value) in entries.iter_mut() {
                 if label.as_int() == Some(3) {
-                    *value = Value::int(-7);
+                    *value = Value::int(alg);
                 }
             }
         }
@@ -383,6 +420,8 @@ impl SoftKey {
             Value::Bool(hmac),
         )])));
         let mut state = self.state.borrow_mut();
+        // A touch used up the token's permissions, as on CTAP 2.1.
+        state.token = None;
         if state.remembers {
             state.held.push(Held {
                 rp_id,
@@ -501,6 +540,7 @@ impl SoftKey {
             (Value::int(3), Value::Bytes(signature)),
         ]);
         state.last_assertion = Some(encode(&reply));
+        state.token = None;
         Ok(reply)
     }
 }
@@ -525,9 +565,6 @@ fn token_proves(
     client_data_hash: &[u8],
     given: &[u8],
 ) -> Result<(), u8> {
-    if state.refuse_tokens {
-        return Err(PIN_AUTH_INVALID);
-    }
     let token = state.token.as_deref().ok_or(PIN_AUTH_INVALID)?;
     if protocol.authenticate(token, client_data_hash) == given {
         Ok(())

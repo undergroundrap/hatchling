@@ -726,8 +726,10 @@ impl<B: Bus> SecurityKeys<B> {
         }
     }
 
-    /// Looks at what is plugged in now.
+    /// Looks at what is plugged in now, letting go of what it had first:
+    /// a key stays locked for as long as it's held.
     fn scan(&mut self) {
+        self.keys.clear();
         match self.bus.keys() {
             Ok(keys) => {
                 self.why = match keys.len() {
@@ -739,10 +741,7 @@ impl<B: Bus> SecurityKeys<B> {
                 };
                 self.keys = keys;
             }
-            Err(why) => {
-                self.keys.clear();
-                self.why = why;
-            }
+            Err(why) => self.why = why,
         }
     }
 }

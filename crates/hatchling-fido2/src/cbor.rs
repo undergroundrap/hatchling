@@ -6,13 +6,19 @@
 //!   strings, arrays, maps, `false`, `true` and `null`. No tags, no floats,
 //!   no other simple values, no indefinite lengths.
 //! - **Canonical form only:** every length and integer in its shortest
-//!   encoding, as CTAP2 requires; a map holds no key twice.
+//!   encoding, as CTAP2 requires; a map holds no key twice, and its keys
+//!   are integers or text.
 //! - **Bounded:** nesting stops at [`MAX_DEPTH`]; every length is checked
 //!   against the bytes left before anything is allocated, so a short reply
 //!   cannot claim a huge array.
 //!
 //! The encoder writes canonical CBOR: shortest forms, and map keys in
-//! CTAP2's canonical order (shorter encoded keys first, then bytewise).
+//! CTAP2's canonical order (lower major type first, then shorter, then
+//! bytewise).
+//!
+//! The decoder doesn't insist on that order. A reply means the same in any
+//! order, as no key can appear twice, and some keys write theirs otherwise:
+//! refusing them would stop no attack, and only stop those keys working.
 
 /// How deep arrays and maps may nest. CTAP2's replies need four.
 pub const MAX_DEPTH: usize = 8;
@@ -59,6 +65,9 @@ pub enum CborError {
     /// A map holds a key twice.
     #[error("CBOR map repeats a key")]
     DuplicateKey,
+    /// A map key that isn't an integer or text.
+    #[error("CBOR map key of a type CTAP2 doesn't use")]
+    KeyType,
     /// A text string that is not UTF-8.
     #[error("CBOR text is not UTF-8")]
     NotUtf8,
@@ -85,7 +94,7 @@ impl Value {
     pub fn map(mut entries: Vec<(Self, Self)>) -> Self {
         entries.sort_by_cached_key(|(key, _)| {
             let bytes = encode(key);
-            (bytes.len(), bytes)
+            (bytes.first().map(|head| head >> 5), bytes.len(), bytes)
         });
         Self::Map(entries)
     }
@@ -368,6 +377,12 @@ fn read_container(
     let mut entries: Vec<(Value, Value)> = Vec::with_capacity(count);
     for _ in 0..count {
         let (key, after) = read(rest, depth + 1)?;
+        if !matches!(
+            key,
+            Value::Unsigned(_) | Value::Negative(_) | Value::Text(_)
+        ) {
+            return Err(CborError::KeyType);
+        }
         let (item, after) = read(after, depth + 1)?;
         if entries.iter().any(|(seen, _)| *seen == key) {
             return Err(CborError::DuplicateKey);
@@ -381,6 +396,27 @@ fn read_container(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Keys are integers or text; byte strings, arrays, maps, booleans and
+    /// null aren't.
+    #[test]
+    fn a_map_key_is_an_integer_or_text() {
+        for key in ["41ff", "80", "a0", "f5", "f6"] {
+            let wire = format!("a1{key}00");
+            assert_eq!(decode(&hex(&wire)), Err(CborError::KeyType), "{wire}");
+        }
+        for key in ["01", "20", "6161"] {
+            assert!(decode(&hex(&format!("a1{key}00"))).is_ok(), "{key}");
+        }
+    }
+
+    /// Order means nothing to a reader: any order is taken, as written.
+    #[test]
+    fn a_map_in_another_order_means_the_same() {
+        let reversed = decode(&hex("a202000100")).unwrap();
+        assert_eq!(reversed.at(1), Some(&Value::int(0)));
+        assert_eq!(reversed.at(2), Some(&Value::int(0)));
+    }
 
     fn hex(text: &str) -> Vec<u8> {
         (0..text.len())
@@ -456,8 +492,8 @@ mod tests {
 
     #[test]
     fn maps_are_written_in_canonical_key_order() {
-        // Shorter encoded keys first, then bytewise: 1, 2, -1 (0x20), then
-        // the two-byte keys 24 (0x1818) and "a" (0x6161).
+        // Lower major types first, then shorter, then bytewise: 1, 2, the
+        // longer 24 (0x1818), then -1 (0x20), then "a" (0x6161).
         let map = Value::map(vec![
             (Value::text("a"), Value::Null),
             (Value::int(-1), Value::Null),
@@ -474,8 +510,8 @@ mod tests {
             [
                 Value::int(1),
                 Value::int(2),
-                Value::int(-1),
                 Value::int(24),
+                Value::int(-1),
                 Value::text("a")
             ]
         );

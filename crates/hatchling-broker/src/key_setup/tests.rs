@@ -346,6 +346,32 @@ fn a_key_too_old_is_refused_and_another_taken() {
     assert_eq!(keyring_of(&config).tier(), Tier::File);
 }
 
+/// A PIN only some keyboards can type isn't set.
+#[test]
+fn a_new_pin_is_what_any_keyboard_types() {
+    let (_scratch, vault, mut config) = vault("setup-pin-keyboard");
+    config.require_key_pin = true;
+    let mut bench = Bench::new_keys(1, &[0]);
+    let run = run_pins(
+        &vault,
+        &config,
+        &mut bench,
+        &["2", "no", "one key", "<code>"],
+        &[],
+        &[
+            "gr\u{fc}n1234",
+            "gr\u{fc}n1234",
+            "two words",
+            "two words",
+            "Good-1234",
+            "Good-1234",
+        ],
+    );
+    assert_eq!(run.done.unwrap(), Done::Protected);
+    assert_eq!(run.said.text().matches("from a US keyboard").count(), 2);
+    assert_eq!(bench.keys.first().unwrap().pin_set(), Some(true));
+}
+
 /// A PIN typed two ways isn't set.
 #[test]
 fn a_new_pin_is_typed_twice_alike() {

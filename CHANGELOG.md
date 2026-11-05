@@ -52,6 +52,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Fixed
 
+- **Security keys, as they really behave.** Audited against libfido2. A request that times out no longer lets its late answer be read as the next one's reply; a key in use by another program is waited for, and said, rather than failing; the PIN is asked once a session on CTAP 2.1 keys too, which take a token back after each touch; a U2F-only key no longer blocks a key that works beside it; a signal no longer cuts a wait short. Only keys on USB are used. New PINs are what any keyboard types. CTAP2's map order is written correctly, and keys wipe more of what they use.
 - **A failed answer names what failed.** When the model's server answered but the model didn't, the chat said "Hatchling couldn't get an answer from its model. Check that it is running and reachable": the wrong thing to go and check. Now:
   - **A model that doesn't call tools** (it answers the capability check in text) is named as such, with the fix: switch to one that does (docs/install.md, "Choosing a model"). Nothing it asked for ran. The install guide already said the chat says so; now it does.
   - **A model that answered with nothing**, no text and no tool call, each of the times it was asked: small models do this now and then, so try again, and a model better at tool calls if it keeps happening.

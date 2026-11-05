@@ -351,6 +351,12 @@ fn set_pin(setup: &mut Setup<'_>, index: usize, min: usize) -> Result<(), Refuse
             setup.say("Those didn't match. Try again.");
             continue;
         }
+        if !keyboard_only(&pin) {
+            setup.say(
+                "Use letters, numbers and symbols from a US keyboard: other characters can be typed differently on another computer, and the key wouldn't recognize them.",
+            );
+            continue;
+        }
         let set = {
             let mut keys = setup.devices.every_key();
             let key = keys
@@ -364,6 +370,12 @@ fn set_pin(setup: &mut Setup<'_>, index: usize, min: usize) -> Result<(), Refuse
         }
     }
     Err(Refused::Stop(ring::stopped()))
+}
+
+/// Whether a PIN can be typed the same on any machine: a key compares
+/// bytes, and an accented letter isn't always the same ones.
+fn keyboard_only(pin: &str) -> bool {
+    pin.chars().all(|c| c.is_ascii_graphic())
 }
 
 /// The name of a key just registered, from what it is: a name is what
