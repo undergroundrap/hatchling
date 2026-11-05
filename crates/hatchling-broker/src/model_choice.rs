@@ -439,9 +439,8 @@ mod tests {
         let dir = scratch("switch");
         let mut config = scheduler(&dir);
         config.model_reasoning = hatchling_core::ModelReasoning::Disabled;
-        let granted = |destination: &str| {
-            matches!(destination, "localhost:11434" | "models.example:443")
-        };
+        let granted =
+            |destination: &str| matches!(destination, "localhost:11434" | "models.example:443");
         assert!(matches!(
             switch(&config, true, &granted),
             Err(NotSet::NoOther)
@@ -480,7 +479,10 @@ mod tests {
         let state_now = state(&config, None);
         assert!(state_now.switched);
         assert_eq!(
-            (state_now.endpoint.as_deref(), state_now.configured.as_deref()),
+            (
+                state_now.endpoint.as_deref(),
+                state_now.configured.as_deref()
+            ),
             (Some("http://localhost:11434/v1"), Some("gemma4:12b"))
         );
         assert_eq!(state_now.window, Some(65536));
@@ -492,7 +494,12 @@ mod tests {
             })
         );
         assert_eq!(
-            named(Some(&config.owner_dir()), Some("qwen3.5:9b"), Some(&local())).as_deref(),
+            named(
+                Some(&config.owner_dir()),
+                Some("qwen3.5:9b"),
+                Some(&local())
+            )
+            .as_deref(),
             Some("gemma4:12b"),
             "the chat names the model in use"
         );
@@ -507,6 +514,20 @@ mod tests {
         switch(&config, false, &granted).unwrap();
         assert_eq!(server(&config), first);
         assert!(!config.owner_dir().join(SERVER_FILE).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A switch reaches only a server egress grants, and one the operator
+    /// sets up, and only where scheduling keeps it.
+    #[test]
+    fn a_switch_is_to_a_granted_server_the_operator_set_up() {
+        let dir = scratch("switch-granted");
+        let mut config = scheduler(&dir);
+        config.other_model = Some(local());
+        let first = server(&config);
+        assert!(!first.other);
+        let granted =
+            |destination: &str| matches!(destination, "localhost:11434" | "models.example:443");
 
         // A server egress doesn't grant, for runs or the chat, is refused,
         // and nothing changes; so is going back to one it doesn't.
@@ -531,8 +552,12 @@ mod tests {
         });
         assert_eq!(server(&config), first);
         assert_eq!(
-            named(Some(&config.owner_dir()), Some("qwen3.5:9b"), config.other_model.as_ref())
-                .as_deref(),
+            named(
+                Some(&config.owner_dir()),
+                Some("qwen3.5:9b"),
+                config.other_model.as_ref()
+            )
+            .as_deref(),
             Some("qwen3.5:9b")
         );
         config.other_model = None;

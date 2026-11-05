@@ -2171,13 +2171,17 @@ fn parse_other_model(get: &impl Fn(&str) -> Option<String>) -> Result<Option<Oth
         (None, Some(_)) => {
             return Err(Error::InvalidConfig {
                 key: "HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT",
-                reason: String::from("the other model's name is set: set its server too, or neither"),
+                reason: String::from(
+                    "the other model's name is set: set its server too, or neither",
+                ),
             });
         }
         (Some(_), None) => {
             return Err(Error::InvalidConfig {
                 key: "HATCHLING_SCHEDULER_MODEL_OTHER_NAME",
-                reason: String::from("the other model's server is set: set its name too, or neither"),
+                reason: String::from(
+                    "the other model's server is set: set its name too, or neither",
+                ),
             });
         }
     };
@@ -2190,7 +2194,9 @@ fn parse_other_model(get: &impl Fn(&str) -> Option<String>) -> Result<Option<Oth
     if crate::model_choice::destination(&endpoint).is_none() {
         return Err(Error::InvalidConfig {
             key: "HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT",
-            reason: String::from("expected https://<host>/<path>, or http://localhost:<port>/<path>"),
+            reason: String::from(
+                "expected https://<host>/<path>, or http://localhost:<port>/<path>",
+            ),
         });
     }
     let reasoning = match set(env::HATCHLING_SCHEDULER_MODEL_OTHER_REASONING.name) {
@@ -2258,7 +2264,10 @@ mod tests {
         assert_eq!(other(&[]).unwrap(), None);
         assert_eq!(
             other(&[
-                ("HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT", "http://localhost:11434/v1"),
+                (
+                    "HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT",
+                    "http://localhost:11434/v1"
+                ),
                 ("HATCHLING_SCHEDULER_MODEL_OTHER_NAME", "qwen3.5:9b"),
                 ("HATCHLING_SCHEDULER_MODEL_OTHER_CONTEXT_WINDOW", "65536"),
             ])
@@ -2272,8 +2281,14 @@ mod tests {
         );
         assert_eq!(
             other(&[
-                ("HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT", "https://openrouter.ai/api/v1"),
-                ("HATCHLING_SCHEDULER_MODEL_OTHER_NAME", "nvidia/nemotron-3-ultra-550b-a55b:free"),
+                (
+                    "HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT",
+                    "https://openrouter.ai/api/v1"
+                ),
+                (
+                    "HATCHLING_SCHEDULER_MODEL_OTHER_NAME",
+                    "nvidia/nemotron-3-ultra-550b-a55b:free"
+                ),
                 ("HATCHLING_SCHEDULER_MODEL_OTHER_REASONING", "disabled"),
             ])
             .unwrap()
@@ -2287,7 +2302,10 @@ mod tests {
                 "{pairs:?}: {error:?}"
             );
         };
-        let endpoint = ("HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT", "http://localhost:11434/v1");
+        let endpoint = (
+            "HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT",
+            "http://localhost:11434/v1",
+        );
         let name = ("HATCHLING_SCHEDULER_MODEL_OTHER_NAME", "qwen3.5:9b");
         refused(&[name], "HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT");
         refused(&[endpoint], "HATCHLING_SCHEDULER_MODEL_OTHER_NAME");
@@ -2307,11 +2325,19 @@ mod tests {
             );
         }
         refused(
-            &[endpoint, name, ("HATCHLING_SCHEDULER_MODEL_OTHER_REASONING", "maybe")],
+            &[
+                endpoint,
+                name,
+                ("HATCHLING_SCHEDULER_MODEL_OTHER_REASONING", "maybe"),
+            ],
             "HATCHLING_SCHEDULER_MODEL_OTHER_REASONING",
         );
         refused(
-            &[endpoint, name, ("HATCHLING_SCHEDULER_MODEL_OTHER_CONTEXT_WINDOW", "4096")],
+            &[
+                endpoint,
+                name,
+                ("HATCHLING_SCHEDULER_MODEL_OTHER_CONTEXT_WINDOW", "4096"),
+            ],
             "HATCHLING_SCHEDULER_MODEL_OTHER_CONTEXT_WINDOW",
         );
         // The broker's settings carry it.

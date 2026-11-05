@@ -118,7 +118,7 @@ test('a switch refused says why, and changes nothing', async () => {
     assert.deepEqual(live.current(), { kind: 'unread' });
     assert.equal(changes(), 0);
 });
-test('the section says where the owner's words go, and asks before a switch sends them elsewhere', () => {
+test("the section says where the owner's words go, and asks before a switch sends them elsewhere", () => {
     const view = { endpoint: 'http://localhost:11434/v1', configured: 'qwen3.5:9b', chosen: null, available: null, window: null, size: null, onCpu: null, other: null, switched: false };
     assert.equal(whereLine(view), 'It answers on this machine: your words stay here.');
     assert.equal(whereLine({ ...view, endpoint: 'https://openrouter.ai/api/v1' }), 'It answers at openrouter.ai: your words go to its provider.');
@@ -134,7 +134,7 @@ test('the section says where the owner's words go, and asks before a switch send
     assert.match(home.description, /your words stay here/);
     assert.equal(switchAsk({ endpoint: null, name: 'm' }).title, 'Send your words to its server?');
 });
-test('a server on this machine is localhost's, in plain HTTP', () => {
+test("a server on this machine is localhost's, in plain HTTP", () => {
     for (const endpoint of ['http://localhost:11434/v1', 'http://127.0.0.1:8080', 'http://localhost/'])
         assert.ok(onThisMachine(endpoint), endpoint);
     for (const endpoint of [null, 'https://localhost:11434/v1', 'http://localhost.evil.example/v1', 'http://127.0.0.1.nip.io/v1', 'http://models.lan:11434/v1'])

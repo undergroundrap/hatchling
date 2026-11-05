@@ -41,7 +41,10 @@ export function whereLine(model: ModelView): string {
     return onThisMachine(model.endpoint) ? 'It answers on this machine: your words stay here.' : `It answers at ${hostOf(model.endpoint)}: your words go to its provider.`;
 }
 /** What switching to `other` asks the owner first: a title, and what changes. */
-export function switchAsk(other: ModelServerView): { title: string; description: string } {
+export function switchAsk(other: ModelServerView): {
+    title: string;
+    description: string;
+} {
     const name = other.name ?? 'the other model';
     const kept = 'Your conversation, memory, goals and schedules stay in Hatchling, and you can switch back here any time.';
     if (onThisMachine(other.endpoint))

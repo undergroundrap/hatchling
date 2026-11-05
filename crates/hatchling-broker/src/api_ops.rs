@@ -425,7 +425,10 @@ impl<'a> Ops<'a> {
             }
             Err(NotSet::Off) => refused(ActionRefusal::Unavailable),
             Err(NotSet::NotGranted) => {
-                tracing::warn!(other, "a switch to a model server egress doesn't grant was refused");
+                tracing::warn!(
+                    other,
+                    "a switch to a model server egress doesn't grant was refused"
+                );
                 refused(ActionRefusal::Unavailable)
             }
             Err(NotSet::Io(error)) => {
@@ -2287,13 +2290,16 @@ mod tests {
     /// and the chat's grants do too, when there's a chat.
     #[test]
     fn a_server_is_reached_when_runs_and_the_chat_are_granted_it() {
-        let egress = vec![String::from("localhost:11434"), String::from("openrouter.ai:443")];
+        let egress = vec![
+            String::from("localhost:11434"),
+            String::from("openrouter.ai:443"),
+        ];
         let local = ScheduleGrant::Egress {
             destination: String::from("localhost:11434"),
         };
         assert!(reaches(&egress, None, "openrouter.ai:443"));
         assert!(!reaches(&egress, None, "other.example:443"));
-        assert!(reaches(&egress, Some(&[local.clone()]), "localhost:11434"));
+        assert!(reaches(&egress, Some(std::slice::from_ref(&local)), "localhost:11434"));
         assert!(!reaches(&egress, Some(&[local]), "openrouter.ai:443"));
         assert!(!reaches(&[], Some(&[]), "localhost:11434"));
     }
@@ -2314,10 +2320,18 @@ mod tests {
             let held: Vec<ScheduleGrant> = ops.owner_grants().into_iter().collect();
             let held = who.map_or(held.as_slice(), |n| held.get(..n).unwrap_or_default());
             let mut replies = Replies::default();
-            ops.handle(&caller(held), &UiAction::SwitchModelServer { other }, &mut replies)
+            ops.handle(
+                &caller(held),
+                &UiAction::SwitchModelServer { other },
+                &mut replies,
+            )
         };
         let refused = |reason| (UiActionResult::Refused { reason }, ApiOutcome::Refused);
-        assert_eq!(switch(&config, None, true), refused(ActionRefusal::BadRequest), "no other");
+        assert_eq!(
+            switch(&config, None, true),
+            refused(ActionRefusal::BadRequest),
+            "no other"
+        );
         config.scheduler.other_model = Some(crate::config::OtherModel {
             endpoint: String::from("http://localhost:11434/v1"),
             name: String::from("gemma4:12b"),

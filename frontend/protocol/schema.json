@@ -744,6 +744,11 @@
           "type": "string"
         },
         {
+          "const": "switch_model_server",
+          "description": "[`UiAction::SwitchModelServer`].",
+          "type": "string"
+        },
+        {
           "const": "read_feed",
           "description": "[`UiAction::ReadFeed`].",
           "type": "string"
@@ -4881,6 +4886,26 @@
         }
       ]
     },
+    "ModelServer": {
+      "description": "A model's server the operator set up, and the model they set on it.",
+      "properties": {
+        "endpoint": {
+          "description": "The API's base URL.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "The model's id on it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "ModelState": {
       "description": "The model Hatchling uses, and the models its server has: what the\nowner chooses from in the app.",
       "properties": {
@@ -4924,6 +4949,17 @@
             "null"
           ]
         },
+        "other": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelServer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The other server the operator set up, that the owner may switch\nto: none when there's one. With [`ModelState::switched`], the\noperator's first."
+        },
         "size": {
           "description": "All the model in use takes, in bytes, when it's loaded and its\nserver says.",
           "format": "uint64",
@@ -4932,6 +4968,10 @@
             "integer",
             "null"
           ]
+        },
+        "switched": {
+          "description": "Whether the owner switched to the operator's other server: the\nendpoint and the configured model above are its.",
+          "type": "boolean"
         },
         "window": {
           "description": "The window of the model in use, in tokens: as its server says,\nwhen it's loaded, else as the operator declared it.",
@@ -11119,6 +11159,24 @@
           },
           "required": [
             "action"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Switch to the other model's server the operator set up, or back to\ntheir first, from the next run on, answered with the model as it\nthen stands: the owner's alone. Where the owner's words go changes,\nso the app asks them first.",
+          "properties": {
+            "action": {
+              "const": "switch_model_server",
+              "type": "string"
+            },
+            "other": {
+              "description": "To the other server; false goes back to the first.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "action",
+            "other"
           ],
           "type": "object"
         },

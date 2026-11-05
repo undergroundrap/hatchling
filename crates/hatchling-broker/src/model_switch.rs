@@ -289,7 +289,10 @@ pub fn changes(
                 .cloned()
         };
         changes.extend([
-            (env::HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT.name, Some(endpoint)),
+            (
+                env::HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT.name,
+                Some(endpoint),
+            ),
             (env::HATCHLING_SCHEDULER_MODEL_OTHER_NAME.name, Some(name)),
             (
                 env::HATCHLING_SCHEDULER_MODEL_OTHER_REASONING.name,
@@ -910,8 +913,14 @@ mod tests {
         assert_eq!(
             other_of(&changes(&local, &hosted)),
             vec![
-                (s("HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT"), Some(s(OLLAMA))),
-                (s("HATCHLING_SCHEDULER_MODEL_OTHER_NAME"), Some(s("qwen3.5:9b"))),
+                (
+                    s("HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT"),
+                    Some(s(OLLAMA))
+                ),
+                (
+                    s("HATCHLING_SCHEDULER_MODEL_OTHER_NAME"),
+                    Some(s("qwen3.5:9b"))
+                ),
                 (s("HATCHLING_SCHEDULER_MODEL_OTHER_REASONING"), None),
                 (
                     s("HATCHLING_SCHEDULER_MODEL_OTHER_CONTEXT_WINDOW"),
@@ -932,9 +941,18 @@ mod tests {
         assert_eq!(
             other_of(&changes(&on_hosted, &back)),
             vec![
-                (s("HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT"), Some(s(OPENROUTER))),
-                (s("HATCHLING_SCHEDULER_MODEL_OTHER_NAME"), Some(s(OPENROUTER_MODEL))),
-                (s("HATCHLING_SCHEDULER_MODEL_OTHER_REASONING"), Some(s("disabled"))),
+                (
+                    s("HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT"),
+                    Some(s(OPENROUTER))
+                ),
+                (
+                    s("HATCHLING_SCHEDULER_MODEL_OTHER_NAME"),
+                    Some(s(OPENROUTER_MODEL))
+                ),
+                (
+                    s("HATCHLING_SCHEDULER_MODEL_OTHER_REASONING"),
+                    Some(s("disabled"))
+                ),
                 (
                     s("HATCHLING_SCHEDULER_MODEL_OTHER_CONTEXT_WINDOW"),
                     Some(s("1000000"))
@@ -1093,8 +1111,16 @@ mod tests {
         );
         assert!(said.starts_with("The key for openrouter.ai:443:\nHatchling uses nvidia/nemotron-3-ultra-550b-a55b:free at https://openrouter.ai/api/v1, with a 1000000-token window, thinking off."), "{said}");
         assert!(said.contains("it's forgotten"), "{said}");
-        assert!(said.contains("qwen3.5:9b at http://localhost:11434/v1 stays set up: switch back to it in the app"), "{said}");
-        assert!(said.contains("The server switched to in the app was one of the old pair"), "{said}");
+        assert!(
+            said.contains(
+                "qwen3.5:9b at http://localhost:11434/v1 stays set up: switch back to it in the app"
+            ),
+            "{said}"
+        );
+        assert!(
+            said.contains("The server switched to in the app was one of the old pair"),
+            "{said}"
+        );
         assert!(
             said.ends_with("Restarted the broker. Send a message in the app to check it.\n"),
             "{said}"

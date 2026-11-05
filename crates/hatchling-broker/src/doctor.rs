@@ -212,10 +212,16 @@ fn check_other(lookup: &dyn Fn(&str) -> Option<String>) -> Finding {
             .any(|grant| grant == "channel-send:local")
     });
     let granted = listed(env::HATCHLING_EGRESS_GRANTS.name, &destination)
-        && (!chat || listed(env::HATCHLING_API_GRANTS.name, &format!("egress:{destination}")));
+        && (!chat
+            || listed(
+                env::HATCHLING_API_GRANTS.name,
+                &format!("egress:{destination}"),
+            ));
     if !granted {
         return Finding::problem(
-            format!("{name} at {endpoint} is set up, but egress doesn't grant {destination}: the app can't switch to it"),
+            format!(
+                "{name} at {endpoint} is set up, but egress doesn't grant {destination}: the app can't switch to it"
+            ),
             format!(
                 "Add {destination} to HATCHLING_EGRESS_ALLOWLIST and HATCHLING_EGRESS_GRANTS, and egress:{destination} to HATCHLING_API_GRANTS; or switch to it once with `use-hosted`/`use-local`, which does."
             ),
@@ -894,7 +900,10 @@ mod tests {
         };
         assert!(matches!(other(&[]), Finding::Fine(seen) if seen.starts_with("none set up")));
         let set_up = [
-            ("HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT", "https://openrouter.ai/api/v1"),
+            (
+                "HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT",
+                "https://openrouter.ai/api/v1",
+            ),
             ("HATCHLING_SCHEDULER_MODEL_OTHER_NAME", "nemotron"),
         ];
         let with = |more: &[(&'static str, &'static str)]| {
@@ -906,15 +915,32 @@ mod tests {
             with(&[]),
             Finding::Problem { what, .. } if what.contains("egress doesn't grant openrouter.ai:443")
         ));
-        let egress = ("HATCHLING_EGRESS_GRANTS", "localhost:11434, openrouter.ai:443");
-        assert!(matches!(with(&[egress]), Finding::Fine(seen) if seen.contains("switch to it in the app")));
+        let egress = (
+            "HATCHLING_EGRESS_GRANTS",
+            "localhost:11434, openrouter.ai:443",
+        );
+        assert!(
+            matches!(with(&[egress]), Finding::Fine(seen) if seen.contains("switch to it in the app"))
+        );
         // With a chat, its grants must reach it too.
         assert!(matches!(
-            with(&[egress, ("HATCHLING_API_GRANTS", "channel-send:local,egress:localhost:11434")]),
+            with(&[
+                egress,
+                (
+                    "HATCHLING_API_GRANTS",
+                    "channel-send:local,egress:localhost:11434"
+                )
+            ]),
             Finding::Problem { .. }
         ));
         assert!(matches!(
-            with(&[egress, ("HATCHLING_API_GRANTS", "channel-send:local,egress:openrouter.ai:443")]),
+            with(&[
+                egress,
+                (
+                    "HATCHLING_API_GRANTS",
+                    "channel-send:local,egress:openrouter.ai:443"
+                )
+            ]),
             Finding::Fine(_)
         ));
         assert!(matches!(

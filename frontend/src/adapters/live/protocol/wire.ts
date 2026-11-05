@@ -533,6 +533,10 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "string"
             },
             {
+                "const": "switch_model_server",
+                "type": "string"
+            },
+            {
                 "const": "read_feed",
                 "type": "string"
             },
@@ -1987,6 +1991,23 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             }
         ]
     },
+    "ModelServer": {
+        "properties": {
+            "endpoint": {
+                "type": [
+                    "string",
+                    "null"
+                ]
+            },
+            "name": {
+                "type": [
+                    "string",
+                    "null"
+                ]
+            }
+        },
+        "type": "object"
+    },
     "ModelState": {
         "properties": {
             "available": {
@@ -2023,12 +2044,25 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "null"
                 ]
             },
+            "other": {
+                "anyOf": [
+                    {
+                        "$ref": "#/$defs/ModelServer"
+                    },
+                    {
+                        "type": "null"
+                    }
+                ]
+            },
             "size": {
                 "minimum": 0,
                 "type": [
                     "integer",
                     "null"
                 ]
+            },
+            "switched": {
+                "type": "boolean"
             },
             "window": {
                 "minimum": 0,
@@ -4261,6 +4295,22 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 },
                 "required": [
                     "action"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
+                        "const": "switch_model_server",
+                        "type": "string"
+                    },
+                    "other": {
+                        "type": "boolean"
+                    }
+                },
+                "required": [
+                    "action",
+                    "other"
                 ],
                 "type": "object"
             },
