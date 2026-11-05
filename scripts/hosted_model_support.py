@@ -106,7 +106,13 @@ def memory_holds(pid, key, chunk_size=1024 * 1024):
             previous = b''
             for offset in range(start, end, chunk_size):
                 mem.seek(offset)
-                data = mem.read(min(chunk_size, end - offset))
+                try:
+                    data = mem.read(min(chunk_size, end - offset))
+                except OSError as error:
+                    # Which mapping, by its permissions and name: never
+                    # what it holds.
+                    name = ' '.join(fields[5:]) or '(anonymous)'
+                    raise OSError(error.errno, f'{error.strerror} reading the mapping {fields[1]} {name}') from error
                 held = held or key in previous + data
                 scanned += len(data)
                 previous = data[-(len(key) - 1):] if len(key) > 1 else b''
