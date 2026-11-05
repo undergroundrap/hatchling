@@ -164,7 +164,10 @@ impl<H: Hid> Device<H> {
             STEP_TIMEOUT,
         )
         .map_err(|error| {
-            if matches!(error, Ctap2Error::Status(crate::ctap2::PIN_POLICY_VIOLATION)) {
+            if matches!(
+                error,
+                Ctap2Error::Status(crate::ctap2::PIN_POLICY_VIOLATION)
+            ) {
                 Ctap2Error::PinPolicy { min }
             } else if matches!(error, Ctap2Error::Status(crate::ctap2::NOT_ALLOWED)) {
                 Ctap2Error::PinAlreadySet
