@@ -151,12 +151,11 @@ fn valid_args(args: &[String]) -> bool {
         | ["redactions", "override", _, "--any-scope"]
         | ["vault-audit", "log"]
         | ["tools", "list"]
-        | ["schedule", ..]
+        | ["schedule" | crate::model_switch::USE_HOSTED | crate::model_switch::USE_LOCAL, ..]
         | ["tools", "add" | "remove", _]
         | ["secret", "add", _]
         | ["secret", "add", _, _]
         | ["secret", "add", "--for", _, "--replace" | "--if-missing"]
-        | [crate::model_switch::USE_HOSTED | crate::model_switch::USE_LOCAL, ..]
         | [HARNESS_TREE_SUBCOMMAND, "give" | "reclaim", _, ..] => true,
         [VAULT_KEEPER_SUBCOMMAND | EGRESS_AUTHORITY_SUBCOMMAND | SPAWNER_SUBCOMMAND] => {
             args.len() == 1

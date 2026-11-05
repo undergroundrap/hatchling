@@ -303,7 +303,13 @@ mod tests {
             &["add", "--replace"],
             &["add", "name", "--force"],
             &["add", "name", "--replace", "extra"],
-            &["add", "--for", "openrouter.ai:443", "--replace", "--if-missing"],
+            &[
+                "add",
+                "--for",
+                "openrouter.ai:443",
+                "--replace",
+                "--if-missing",
+            ],
             &["list"],
         ] {
             assert!(
@@ -468,7 +474,10 @@ mod tests {
         assert!(matches!(taken, Err(Error::Secret { .. })));
         assert!(!asked.get());
         assert_eq!(fetched(), b"first-key");
-        let said = add(&root, &key, &name, Taken::Replace, |_| Ok(secret(b"second-key"))).unwrap();
+        let said = add(&root, &key, &name, Taken::Replace, |_| {
+            Ok(secret(b"second-key"))
+        })
+        .unwrap();
         assert_eq!(said, "Replaced egress-openrouter-ai-443 in the vault.");
         assert_eq!(fetched(), b"second-key");
         // Kept: nothing is asked, and it succeeds with the one there.
@@ -478,16 +487,24 @@ mod tests {
             Ok(secret(b"third-key"))
         })
         .unwrap();
-        assert!(kept.starts_with("egress-openrouter-ai-443 is in the vault already"), "{kept}");
+        assert!(
+            kept.starts_with("egress-openrouter-ai-443 is in the vault already"),
+            "{kept}"
+        );
         assert!(!asked.get());
         assert_eq!(fetched(), b"second-key");
         // Nothing read, nothing stored.
         let other: SecretName = "search-brave".parse().unwrap();
-        let unread = add(&root, &key, &other, Taken::Refuse, |_| Err(refused("no secret")));
+        let unread = add(&root, &key, &other, Taken::Refuse, |_| {
+            Err(refused("no secret"))
+        });
         assert!(matches!(unread, Err(Error::Secret { .. })));
         assert!(!SealedVault::open(&root, &key).unwrap().exists(&other));
         // Missing, kept asks for it.
-        let said = add(&root, &key, &other, Taken::Keep, |_| Ok(secret(b"search-key"))).unwrap();
+        let said = add(&root, &key, &other, Taken::Keep, |_| {
+            Ok(secret(b"search-key"))
+        })
+        .unwrap();
         assert_eq!(said, "Sealed search-brave in the vault.");
         let _ = std::fs::remove_dir_all(root.parent().unwrap());
     }

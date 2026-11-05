@@ -163,24 +163,28 @@ fn destination_of(endpoint: &str, local: bool) -> Result<String, String> {
     if !plain {
         return Err(format!("{endpoint:?} has a character an endpoint doesn't"));
     }
-    let (rest, default_port) = if local {
-        (endpoint.strip_prefix("http://"), None)
+    let (scheme, default_port) = if local {
+        ("http://", None)
     } else {
-        (endpoint.strip_prefix("https://"), Some("443"))
-    }
-    .ok_or_else(|| {
+        ("https://", Some("443"))
+    };
+    let rest = endpoint.strip_prefix(scheme).ok_or_else(|| {
         if local {
             format!("{endpoint} isn't http://localhost:<port>/...: a local model's server is on this machine")
         } else {
             format!("{endpoint} isn't https://...: a hosted model is reached over TLS")
         }
     })?;
-    let authority = rest.split_once('/').map_or(rest, |(authority, _)| authority);
+    let authority = rest
+        .split_once('/')
+        .map_or(rest, |(authority, _)| authority);
     let (host, port) = match authority.rsplit_once(':') {
         Some((host, port)) => (host, Some(port)),
         None => (authority, default_port),
     };
-    let port = port.and_then(|port| port.parse::<u16>().ok()).filter(|port| *port != 0);
+    let port = port
+        .and_then(|port| port.parse::<u16>().ok())
+        .filter(|port| *port != 0);
     let Some(port) = port.filter(|_| !host.is_empty()) else {
         return Err(format!("{endpoint} has no host and port"));
     };
@@ -220,7 +224,10 @@ fn allowed(entry: &str) -> &str {
 /// The settings to change, from `settings`, to switch to `target`: each
 /// key's new value, or `None` to take its line out.
 #[must_use]
-pub fn changes(settings: &BTreeMap<String, String>, target: &Target) -> Vec<(&'static str, Option<String>)> {
+pub fn changes(
+    settings: &BTreeMap<String, String>,
+    target: &Target,
+) -> Vec<(&'static str, Option<String>)> {
     let destination = target.destination.as_str();
     let entry = if target.local {
         format!("local-keyless:{destination}")
@@ -267,7 +274,9 @@ pub fn changes(settings: &BTreeMap<String, String>, target: &Target) -> Vec<(&'s
         let grant = format!("egress:{destination}");
         changes.push((
             env::HATCHLING_API_GRANTS.name,
-            Some(with_item(Some(grants), &grant, |existing| existing == grant)),
+            Some(with_item(Some(grants), &grant, |existing| {
+                existing == grant
+            })),
         ));
     }
     changes
@@ -320,7 +329,9 @@ pub fn edited(text: &str, changes: &[(&str, Option<String>)]) -> String {
 #[must_use]
 pub fn switch_main(program: &str, args: &[String]) -> ExitCode {
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
-    let (command, rest) = words.split_first().map_or(("", &[][..]), |(command, rest)| (*command, rest));
+    let (command, rest) = words
+        .split_first()
+        .map_or(("", &[][..]), |(command, rest)| (*command, rest));
     let mut err = std::io::stderr().lock();
     let target = match target(command, rest) {
         Ok(target) => target,
@@ -374,11 +385,19 @@ fn switch(target: &Target, path: &Path) -> Result<(), String> {
         let key = std::env::current_exe()
             .map_err(|err| format!("can't find this program to ask for the key: {err}"))?;
         let given = std::process::Command::new(key)
-            .args(["secret", "add", "--for", &target.destination, "--if-missing"])
+            .args([
+                "secret",
+                "add",
+                "--for",
+                &target.destination,
+                "--if-missing",
+            ])
             .status()
             .map_err(|err| format!("can't ask for the key: {err}"))?;
         if !given.success() {
-            return Err(String::from("the key wasn't stored, so nothing was changed"));
+            return Err(String::from(
+                "the key wasn't stored, so nothing was changed",
+            ));
         }
         out = std::io::stdout().lock();
     }
@@ -386,7 +405,8 @@ fn switch(target: &Target, path: &Path) -> Result<(), String> {
         "env.before-{}",
         hatchling_scheduler::Timestamp::now().as_second()
     ));
-    std::fs::copy(path, &backup).map_err(|err| format!("can't back up {}: {err}", path.display()))?;
+    std::fs::copy(path, &backup)
+        .map_err(|err| format!("can't back up {}: {err}", path.display()))?;
     let next = path.with_extension("env.next");
     let write = || -> std::io::Result<()> {
         std::fs::OpenOptions::new()
@@ -404,14 +424,19 @@ fn switch(target: &Target, path: &Path) -> Result<(), String> {
         "Hatchling uses {} at {}{}{}. The old settings are in {}.",
         target.model,
         target.endpoint,
-        target
-            .window
-            .map_or_else(String::new, |window| format!(", with a {window}-token window")),
-        if target.thinking_off { ", thinking off" } else { "" },
+        target.window.map_or_else(String::new, |window| format!(
+            ", with a {window}-token window"
+        )),
+        if target.thinking_off {
+            ", thinking off"
+        } else {
+            ""
+        },
         backup.display()
     );
     if let Some(root) = settings.get(env::HATCHLING_SCHEDULER_DIR.name) {
-        let choice = crate::config::owner_dir_of(Path::new(root)).join(crate::model_choice::MODEL_FILE);
+        let choice =
+            crate::config::owner_dir_of(Path::new(root)).join(crate::model_choice::MODEL_FILE);
         if std::fs::remove_file(&choice).is_ok() {
             let _ = writeln!(
                 out,
@@ -423,15 +448,23 @@ fn switch(target: &Target, path: &Path) -> Result<(), String> {
         let restarted = std::process::Command::new("systemctl")
             .args(["restart", "hatchling.service"])
             .status()
-            .map_err(|err| format!("can't restart the broker: {err}; `sudo systemctl restart hatchling` does"))?;
+            .map_err(|err| {
+                format!("can't restart the broker: {err}; `sudo systemctl restart hatchling` does")
+            })?;
         if !restarted.success() {
             return Err(String::from(
                 "the broker didn't restart: see `journalctl -u hatchling`, and `sudo hatchling-broker doctor`",
             ));
         }
-        let _ = writeln!(out, "Restarted the broker. Send a message in the app to check it.");
+        let _ = writeln!(
+            out,
+            "Restarted the broker. Send a message in the app to check it."
+        );
     } else {
-        let _ = writeln!(out, "Restart the broker to use it: `sudo systemctl restart hatchling`.");
+        let _ = writeln!(
+            out,
+            "Restart the broker to use it: `sudo systemctl restart hatchling`."
+        );
     }
     Ok(())
 }
@@ -446,9 +479,9 @@ mod tests {
 
     #[test]
     fn openrouter_is_its_free_million_token_model_with_thinking_off() {
-        let target = target(USE_HOSTED, &["openrouter"]).unwrap();
+        let openrouter = target(USE_HOSTED, &["openrouter"]).unwrap();
         assert_eq!(
-            target,
+            openrouter,
             Target {
                 endpoint: s(OPENROUTER),
                 destination: s("openrouter.ai:443"),
@@ -460,36 +493,105 @@ mod tests {
             }
         );
         // Another of its models: its window and thinking are as said.
-        let other = target(USE_HOSTED, &["openrouter", "--model", "google/gemma-4-31b-it:free"]).unwrap();
+        let other = target(
+            USE_HOSTED,
+            &["openrouter", "--model", "google/gemma-4-31b-it:free"],
+        )
+        .unwrap();
         assert_eq!((other.window, other.thinking_off), (None, false));
         let said = target(
             USE_HOSTED,
-            &["openrouter", "--model", "m", "--window", "262144", "--thinking", "off", "--no-restart"],
+            &[
+                "openrouter",
+                "--model",
+                "m",
+                "--window",
+                "262144",
+                "--thinking",
+                "off",
+                "--no-restart",
+            ],
         )
         .unwrap();
-        assert_eq!((said.window, said.thinking_off, said.restart), (Some(262_144), true, false));
+        assert_eq!(
+            (said.window, said.thinking_off, said.restart),
+            (Some(262_144), true, false)
+        );
     }
 
     #[test]
     fn a_hosted_endpoint_is_https_and_a_local_one_on_this_machine() {
-        let hosted = target(USE_HOSTED, &["--endpoint", "https://api.example.com/v1", "--model", "m"]).unwrap();
+        let hosted = target(
+            USE_HOSTED,
+            &["--endpoint", "https://api.example.com/v1", "--model", "m"],
+        )
+        .unwrap();
         assert_eq!(hosted.destination, "api.example.com:443");
-        let port = target(USE_HOSTED, &["--endpoint", "https://api.example.com:8443/v1", "--model", "m"]).unwrap();
+        let port = target(
+            USE_HOSTED,
+            &[
+                "--endpoint",
+                "https://api.example.com:8443/v1",
+                "--model",
+                "m",
+            ],
+        )
+        .unwrap();
         assert_eq!(port.destination, "api.example.com:8443");
         let local = target(USE_LOCAL, &["--model", "qwen3.5:9b"]).unwrap();
         assert_eq!(
-            (local.endpoint.as_str(), local.destination.as_str(), local.local, local.window, local.thinking_off),
+            (
+                local.endpoint.as_str(),
+                local.destination.as_str(),
+                local.local,
+                local.window,
+                local.thinking_off
+            ),
             (OLLAMA, "localhost:11434", true, None, false)
         );
         for (command, args) in [
-            (USE_HOSTED, &["--endpoint", "http://api.example.com/v1", "--model", "m"][..]),
-            (USE_HOSTED, &["--endpoint", "https://user@api.example.com/v1", "--model", "m"]),
-            (USE_HOSTED, &["--endpoint", "https://api.example.com:0/v1", "--model", "m"]),
-            (USE_HOSTED, &["--endpoint", "https://:443/v1", "--model", "m"]),
-            (USE_HOSTED, &["--endpoint", "https://api.example.com/v1?x=1", "--model", "m"]),
-            (USE_LOCAL, &["--endpoint", "http://192.168.1.5:11434/v1", "--model", "m"]),
-            (USE_LOCAL, &["--endpoint", "https://localhost:11434/v1", "--model", "m"]),
-            (USE_LOCAL, &["--endpoint", "http://localhost/v1", "--model", "m"]),
+            (
+                USE_HOSTED,
+                &["--endpoint", "http://api.example.com/v1", "--model", "m"][..],
+            ),
+            (
+                USE_HOSTED,
+                &[
+                    "--endpoint",
+                    "https://user@api.example.com/v1",
+                    "--model",
+                    "m",
+                ],
+            ),
+            (
+                USE_HOSTED,
+                &["--endpoint", "https://api.example.com:0/v1", "--model", "m"],
+            ),
+            (
+                USE_HOSTED,
+                &["--endpoint", "https://:443/v1", "--model", "m"],
+            ),
+            (
+                USE_HOSTED,
+                &[
+                    "--endpoint",
+                    "https://api.example.com/v1?x=1",
+                    "--model",
+                    "m",
+                ],
+            ),
+            (
+                USE_LOCAL,
+                &["--endpoint", "http://192.168.1.5:11434/v1", "--model", "m"],
+            ),
+            (
+                USE_LOCAL,
+                &["--endpoint", "https://localhost:11434/v1", "--model", "m"],
+            ),
+            (
+                USE_LOCAL,
+                &["--endpoint", "http://localhost/v1", "--model", "m"],
+            ),
         ] {
             assert!(target(command, args).is_err(), "{command} {args:?}");
         }
@@ -500,7 +602,10 @@ mod tests {
         for (command, args) in [
             (USE_HOSTED, &[][..]),
             (USE_HOSTED, &["--model", "m"]),
-            (USE_HOSTED, &["openrouter", "--endpoint", "https://x.example/v1"]),
+            (
+                USE_HOSTED,
+                &["openrouter", "--endpoint", "https://x.example/v1"],
+            ),
             (USE_HOSTED, &["openrouter", "--model"]),
             (USE_HOSTED, &["openrouter", "--model", "two words"]),
             (USE_HOSTED, &["openrouter", "--window", "4096"]),
@@ -516,15 +621,24 @@ mod tests {
     }
 
     fn settings(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
-        pairs.iter().map(|(key, value)| (s(key), s(value))).collect()
+        pairs
+            .iter()
+            .map(|(key, value)| (s(key), s(value)))
+            .collect()
     }
 
     #[test]
     fn the_changes_make_the_seven_settings_agree_and_keep_the_old_server() {
         let local = settings(&[
-            ("HATCHLING_EGRESS_ALLOWLIST", "local-keyless:localhost:11434"),
+            (
+                "HATCHLING_EGRESS_ALLOWLIST",
+                "local-keyless:localhost:11434",
+            ),
             ("HATCHLING_EGRESS_GRANTS", "localhost:11434"),
-            ("HATCHLING_API_GRANTS", "egress:localhost:11434,channel-send:local"),
+            (
+                "HATCHLING_API_GRANTS",
+                "egress:localhost:11434,channel-send:local",
+            ),
         ]);
         let hosted = changes(&local, &target(USE_HOSTED, &["openrouter"]).unwrap());
         assert_eq!(
@@ -533,19 +647,42 @@ mod tests {
                 ("HATCHLING_SCHEDULER_MODEL_ENDPOINT", Some(s(OPENROUTER))),
                 ("HATCHLING_SCHEDULER_MODEL_NAME", Some(s(OPENROUTER_MODEL))),
                 ("HATCHLING_SCHEDULER_MODEL_REASONING", Some(s("disabled"))),
-                ("HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW", Some(s("1000000"))),
-                ("HATCHLING_EGRESS_ALLOWLIST", Some(s("local-keyless:localhost:11434,openrouter.ai:443"))),
-                ("HATCHLING_EGRESS_GRANTS", Some(s("localhost:11434,openrouter.ai:443"))),
-                ("HATCHLING_API_GRANTS", Some(s("egress:localhost:11434,channel-send:local,egress:openrouter.ai:443"))),
+                (
+                    "HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW",
+                    Some(s("1000000"))
+                ),
+                (
+                    "HATCHLING_EGRESS_ALLOWLIST",
+                    Some(s("local-keyless:localhost:11434,openrouter.ai:443"))
+                ),
+                (
+                    "HATCHLING_EGRESS_GRANTS",
+                    Some(s("localhost:11434,openrouter.ai:443"))
+                ),
+                (
+                    "HATCHLING_API_GRANTS",
+                    Some(s(
+                        "egress:localhost:11434,channel-send:local,egress:openrouter.ai:443"
+                    ))
+                ),
             ]
         );
         // Back: the local server's entries are there, so nothing is added;
         // thinking and the window go back to the server's.
         let switched = settings(&[
-            ("HATCHLING_EGRESS_ALLOWLIST", "local-keyless:localhost:11434,openrouter.ai:443"),
-            ("HATCHLING_EGRESS_GRANTS", "localhost:11434,openrouter.ai:443"),
+            (
+                "HATCHLING_EGRESS_ALLOWLIST",
+                "local-keyless:localhost:11434,openrouter.ai:443",
+            ),
+            (
+                "HATCHLING_EGRESS_GRANTS",
+                "localhost:11434,openrouter.ai:443",
+            ),
         ]);
-        let back = changes(&switched, &target(USE_LOCAL, &["--model", "qwen3.5:9b"]).unwrap());
+        let back = changes(
+            &switched,
+            &target(USE_LOCAL, &["--model", "qwen3.5:9b"]).unwrap(),
+        );
         assert_eq!(
             back,
             vec![
@@ -553,8 +690,14 @@ mod tests {
                 ("HATCHLING_SCHEDULER_MODEL_NAME", Some(s("qwen3.5:9b"))),
                 ("HATCHLING_SCHEDULER_MODEL_REASONING", None),
                 ("HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW", None),
-                ("HATCHLING_EGRESS_ALLOWLIST", Some(s("local-keyless:localhost:11434,openrouter.ai:443"))),
-                ("HATCHLING_EGRESS_GRANTS", Some(s("localhost:11434,openrouter.ai:443"))),
+                (
+                    "HATCHLING_EGRESS_ALLOWLIST",
+                    Some(s("local-keyless:localhost:11434,openrouter.ai:443"))
+                ),
+                (
+                    "HATCHLING_EGRESS_GRANTS",
+                    Some(s("localhost:11434,openrouter.ai:443"))
+                ),
             ],
             "no app grants set, none added"
         );
@@ -563,7 +706,10 @@ mod tests {
             &settings(&[("HATCHLING_EGRESS_ALLOWLIST", "public:openrouter.ai:443")]),
             &target(USE_HOSTED, &["openrouter"]).unwrap(),
         );
-        assert!(public.contains(&("HATCHLING_EGRESS_ALLOWLIST", Some(s("public:openrouter.ai:443")))));
+        assert!(public.contains(&(
+            "HATCHLING_EGRESS_ALLOWLIST",
+            Some(s("public:openrouter.ai:443"))
+        )));
         assert!(public.contains(&("HATCHLING_EGRESS_GRANTS", Some(s("openrouter.ai:443")))));
     }
 
@@ -598,6 +744,9 @@ mod tests {
             assert_eq!(allowed(entry), bare);
         }
         assert_eq!(with_item(None, "a:1", |item| item == "a:1"), "a:1");
-        assert_eq!(with_item(Some(&s(" a:1 , ,b:2")), "a:1", |item| item == "a:1"), "a:1,b:2");
+        assert_eq!(
+            with_item(Some(&s(" a:1 , ,b:2")), "a:1", |item| item == "a:1"),
+            "a:1,b:2"
+        );
     }
 }
