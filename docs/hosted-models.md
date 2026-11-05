@@ -45,8 +45,10 @@ in before you press Enter; Backspace and Ctrl-U take characters back, and
 Ctrl-C cancels. It says how many characters it read (`Read 73 characters.`):
 an OpenRouter key is over 70, so a count far off is a paste that went wrong,
 seen without the key being shown. Line breaks at the end of a paste are dropped;
-one in the middle is refused. The key is never in a file, an argument, the
-environment or your shell's history:
+one in the middle is refused. Wait for the prompt before you paste: what's
+typed before it appears is shown, as at any prompt (`sudo`'s too), since the
+terminal echoes it before Hatchling can hold it back. The key is never in a
+file, an argument, the environment or your shell's history:
 
 ```bash
 hatchling-broker migrate-vault
