@@ -1453,6 +1453,47 @@ fn tcp_socket_dies() -> Result<(), String> {
     assert_sigsys(&result)
 }
 
+/// A cell sees none of the host's processes: it runs in a pid namespace
+/// of its own, and its `/proc` lists only the cell's own init and the
+/// probe, never the driver, the broker or anything else on the host.
+fn a_cell_sees_none_of_the_hosts_processes() -> Result<(), String> {
+    let Some(outcome) = run_report_attack(Attack::Processes)? else {
+        return Ok(());
+    };
+    let Outcome::Processes {
+        own_pid,
+        pid_namespace,
+        visible,
+    } = outcome
+    else {
+        return Err(format!("expected Processes outcome, got {outcome:?}"));
+    };
+    let host = std::fs::read_link("/proc/self/ns/pid")
+        .map_err(|e| format!("the driver's /proc/self/ns/pid: {e}"))?
+        .to_string_lossy()
+        .into_owned();
+    if !pid_namespace.starts_with("pid:[") || pid_namespace == host {
+        return Err(format!(
+            "the cell's pid namespace {pid_namespace:?} isn't one of its own (the host's is {host:?})"
+        ));
+    }
+    if !visible.iter().any(|seen| seen.pid == own_pid) {
+        return Err(format!(
+            "the cell's /proc doesn't list the probe itself ({own_pid}), so it proves nothing: {visible:?}"
+        ));
+    }
+    let strangers: Vec<_> = visible
+        .iter()
+        .filter(|seen| seen.pid != 1 && seen.pid != own_pid)
+        .collect();
+    if !strangers.is_empty() {
+        return Err(format!(
+            "the cell sees processes that aren't its own: {strangers:?}"
+        ));
+    }
+    Ok(())
+}
+
 /// No setuid/setgid binaries exist anywhere the cell can see: there
 /// is no privilege to gain even in theory. (The `setuid`/`setgid`
 /// syscalls themselves are in the denied catalog, proven `SIGSYS`
@@ -1723,6 +1764,10 @@ const CHECKS: &[Check] = &[
     (
         "setuid_scan_finds_no_privileged_files",
         setuid_scan_finds_no_privileged_files,
+    ),
+    (
+        "a_cell_sees_none_of_the_hosts_processes",
+        a_cell_sees_none_of_the_hosts_processes,
     ),
     ("peer_decoy_closes_silently", peer_decoy_closes_silently),
     ("peer_garbage_gets_reject", peer_garbage_gets_reject),

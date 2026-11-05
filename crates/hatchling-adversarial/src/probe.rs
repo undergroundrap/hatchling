@@ -159,6 +159,7 @@ pub fn run() -> Result<(), String> {
         | Attack::SessionUniform
         | Attack::NegativeSweep
         | Attack::Groups
+        | Attack::Processes
         | Attack::RaiseLimits => {
             let outcome = run_report_attack(attack)?;
             emit(attack, outcome, None)
@@ -205,6 +206,7 @@ fn run_report_attack(attack: Attack) -> Result<Outcome, String> {
         Attack::SessionUniform => session_uniform(),
         Attack::NegativeSweep => Ok(negative_sweep()),
         Attack::Groups => groups(),
+        Attack::Processes => processes(),
         Attack::RaiseLimits => Ok(raise_limits()),
         Attack::ForkBomb => Err(String::from(
             "fork bomb requires the CLI cell and its live driver",
@@ -525,6 +527,35 @@ fn outlive_the_supervisor(spin: Duration) -> Result<Outcome, String> {
     })
 }
 
+/// What the cell sees of processes: the probe's own pid, its pid
+/// namespace, and each process `/proc` lists, with its name.
+fn processes() -> Result<Outcome, String> {
+    let pid_namespace = std::fs::read_link("/proc/self/ns/pid")
+        .map_err(|e| format!("/proc/self/ns/pid: {e}"))?
+        .to_string_lossy()
+        .into_owned();
+    let mut visible = Vec::new();
+    for entry in std::fs::read_dir("/proc").map_err(|e| format!("/proc: {e}"))? {
+        let entry = entry.map_err(|e| format!("/proc: {e}"))?;
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let name = std::fs::read_to_string(entry.path().join("comm"))
+            .map_or_else(|_| String::new(), |comm| comm.trim().to_owned());
+        visible.push(crate::SeenProcess { pid, name });
+    }
+    visible.sort_by_key(|seen| seen.pid);
+    Ok(Outcome::Processes {
+        own_pid: std::process::id(),
+        pid_namespace,
+        visible,
+    })
+}
+
 /// The cell's supplementary groups, from its own `/proc/self/status`.
 fn groups() -> Result<Outcome, String> {
     let status = std::fs::read_to_string("/proc/self/status")
@@ -668,6 +699,40 @@ mod tests {
             None
         );
         assert_eq!(super::OUTLIVE_FOR.as_secs(), 60);
+    }
+
+    /// Outside a cell the report is this process's own view: its pid, its
+    /// namespace, and its own entry among those listed, in pid order.
+    #[test]
+    fn the_processes_report_is_this_processs_own_view() {
+        let own = std::process::id();
+        let namespace = std::fs::read_link("/proc/self/ns/pid")
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let report = super::run_report_attack(crate::Attack::Processes);
+        assert!(
+            matches!(report, Ok(crate::Outcome::Processes { .. })),
+            "{report:?}"
+        );
+        let Ok(crate::Outcome::Processes {
+            own_pid,
+            pid_namespace,
+            visible,
+        }) = report
+        else {
+            return;
+        };
+        assert_eq!(own_pid, own);
+        assert_eq!(pid_namespace, namespace);
+        assert!(pid_namespace.starts_with("pid:["), "{pid_namespace}");
+        let this = visible.iter().find(|seen| seen.pid == own).unwrap();
+        let comm = std::fs::read_to_string("/proc/self/comm").unwrap();
+        assert_eq!(this.name, comm.trim());
+        assert!(
+            visible.windows(2).all(|pair| pair[0].pid < pair[1].pid),
+            "in pid order"
+        );
     }
 
     #[test]

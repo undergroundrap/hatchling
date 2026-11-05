@@ -26,6 +26,7 @@ fn attack_parse_round_trips_every_variant() -> Result<(), String> {
         Attack::NetBind,
         Attack::TcpSocket,
         Attack::Groups,
+        Attack::Processes,
         Attack::ClearDeathSignal,
         Attack::RaiseLimits,
         Attack::ForkBomb,
@@ -99,6 +100,7 @@ fn attack_slugs_are_cell_id_safe() -> Result<(), String> {
         Attack::NetBind,
         Attack::TcpSocket,
         Attack::Groups,
+        Attack::Processes,
         Attack::ClearDeathSignal,
         Attack::RaiseLimits,
     ] {

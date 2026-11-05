@@ -90,6 +90,9 @@ pub enum Attack {
     RaiseLimits,
     /// Fork sleeping children until the kernel refuses, bounded at 128 attempts.
     ForkBomb,
+    /// Report the cell's pid namespace and every process its `/proc`
+    /// lists: it must see none of the host's.
+    Processes,
 }
 
 /// Why a cell id did not name an attack.
@@ -147,6 +150,7 @@ impl Attack {
             "clear-death-signal" => Ok(Self::ClearDeathSignal),
             "raise-limits" => Ok(Self::RaiseLimits),
             "fork-bomb" => Ok(Self::ForkBomb),
+            "processes" => Ok(Self::Processes),
             _ => Err(ParseAttackError::UnknownAttack(slug.to_owned())),
         }
     }
@@ -170,6 +174,7 @@ impl Attack {
             Self::ClearDeathSignal => String::from("clear-death-signal"),
             Self::RaiseLimits => String::from("raise-limits"),
             Self::ForkBomb => String::from("fork-bomb"),
+            Self::Processes => String::from("processes"),
         }
     }
 
@@ -222,6 +227,15 @@ pub struct ScannedFile {
     pub setuid: bool,
     /// Whether the setgid bit was set.
     pub setgid: bool,
+}
+
+/// One process a cell's `/proc` lists.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeenProcess {
+    /// Its pid, as the cell sees it.
+    pub pid: u32,
+    /// Its name, from its `comm`; empty when that couldn't be read.
+    pub name: String,
 }
 
 /// One of the cell's resource limits, after the probe tried to lift it.
@@ -326,6 +340,16 @@ pub enum Outcome {
     Limits {
         /// One entry per limit, in [`HeldLimit::name`]'s order.
         limits: Vec<HeldLimit>,
+    },
+    /// What the cell sees of processes.
+    Processes {
+        /// The probe's own pid, as the cell sees it.
+        own_pid: u32,
+        /// The probe's pid namespace, as `/proc/self/ns/pid` names it
+        /// (`pid:[<inode>]`).
+        pid_namespace: String,
+        /// Every process the cell's `/proc` lists, by pid.
+        visible: Vec<SeenProcess>,
     },
 }
 
