@@ -51,6 +51,7 @@ Each release from 0.5.0 on has, for each target (`x86_64-unknown-linux-gnu`, `aa
 - an SBOM of each, `<program>-<target>.cdx.json`;
 - `build-info-<target>.txt`, the toolchain and runner image that built them, and the oldest glibc each runs on (2.34: Debian 12, Ubuntu 22.04, RHEL 9 and later);
 - `hatchling-ui.tar.gz`, the app `hatchling-host` serves, built twice like the programs: extract it and point `HATCHLING_HOST_UI` at its `ui` directory;
+- from 0.8.0, `hatchling-installer.tar.gz` (`scripts/install.sh` and `packaging/`, the same bytes from the same commit) and `get-hatchling.sh` (`scripts/get.sh`, naming its own tag), which install it with no clone: [Quick install](install.md#quick-install). `scripts/release-installer.sh` makes both;
 - and `SHA256SUMS`, of all of them.
 
 **That it's the file the release published:**
