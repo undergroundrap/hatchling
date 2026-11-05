@@ -8,6 +8,8 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Added
 
+- **A key prompt you can see working.** `hatchling-broker secret add` shows a `*` for each character as it arrives, never the character, so a paste is seen to land before you press Enter, and says how many characters it read (`Read 73 characters.`), from a pipe too, which shows a paste that went wrong without showing the key. Backspace and Ctrl-U take characters back, and Ctrl-C cancels with nothing stored and the terminal put back as it was: the prompt reads the terminal a key at a time (`hatchling_sys::KeyByKey`), so Ctrl-C reaches it as a key, not a signal that would leave echo off. Arrow keys and other control keys are passed over. Line breaks at the end of a key, a copy's stray ones, are dropped instead of refused; one in the middle is still refused.
+
 - **Choose the model in the app.** Settings → General → Model shows the model Hatchling uses, its server, its window and how it fits this machine, and the models the server has (a local one lists them; **Refresh** after `ollama pull`). The one you choose is used from your next message, by chats, scheduled work and subagents alike, with no file to edit and no restart, and **Back to …** returns to the one you installed with. Only the model's name is chosen: its server, where your words go, stays the operator's setting. A name must be one the server lists, when it lists them. The broker keeps the choice in its owner directory, and a chat's failure names the model in use.
   - **Breaking for `hatchling-core`:** `UiAction::ReadModel` and `SetModel`, `UiActionResult::Model` and `ModelState` are new.
 

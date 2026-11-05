@@ -1,9 +1,12 @@
 //! Typing that isn't shown: a terminal's echo held off while a secret,
-//! such as a security key's PIN, is read from it.
+//! such as a security key's PIN, is read from it; or the terminal read a
+//! key at a time, for a reader that shows a mark for each.
 
 use std::os::fd::BorrowedFd;
 
-use rustix::termios::{LocalModes, OptionalActions, Termios, tcgetattr, tcsetattr};
+use rustix::termios::{
+    LocalModes, OptionalActions, SpecialCodeIndex, Termios, tcgetattr, tcsetattr,
+};
 
 /// Echo held off on a terminal, and put back as it was when this drops.
 ///
@@ -44,6 +47,63 @@ impl<'fd> EchoOff<'fd> {
 }
 
 impl Drop for EchoOff<'_> {
+    fn drop(&mut self) {
+        if let Some(saved) = &self.saved {
+            let _ = tcsetattr(self.fd, OptionalActions::Now, saved);
+        }
+    }
+}
+
+/// A terminal read a key at a time, nothing echoed, and put back as it
+/// was when this drops.
+///
+/// Each key reaches the reader as it's pressed, a pasted key all at once:
+/// no line editing, and Ctrl-C and Ctrl-Z as keys, not signals. So the
+/// reader shows what it chooses for each (a mark for a character of a
+/// secret), handles Backspace, Ctrl-U and Ctrl-C itself, and the terminal
+/// is always put back, since nothing ends the process meanwhile. On
+/// anything that isn't a terminal nothing changes.
+#[must_use = "the terminal comes back as soon as this is dropped"]
+pub struct KeyByKey<'fd> {
+    fd: BorrowedFd<'fd>,
+    saved: Option<Termios>,
+}
+
+impl<'fd> KeyByKey<'fd> {
+    /// Reads `fd` a key at a time, when it's a terminal.
+    pub fn on(fd: BorrowedFd<'fd>) -> Self {
+        let saved = tcgetattr(fd).ok().and_then(|saved| {
+            let mut keys = saved.clone();
+            keys.local_modes.remove(
+                LocalModes::ECHO
+                    | LocalModes::ECHONL
+                    | LocalModes::ICANON
+                    | LocalModes::ISIG
+                    | LocalModes::IEXTEN,
+            );
+            keys.special_codes[SpecialCodeIndex::VMIN] = 1;
+            keys.special_codes[SpecialCodeIndex::VTIME] = 0;
+            tcsetattr(fd, OptionalActions::Now, &keys)
+                .ok()
+                .map(|()| saved)
+        });
+        Self { fd, saved }
+    }
+
+    /// This process's standard input, a key at a time, when it's a
+    /// terminal.
+    pub fn on_stdin() -> KeyByKey<'static> {
+        KeyByKey::on(rustix::stdio::stdin())
+    }
+
+    /// Whether the terminal is read a key at a time: `fd` is a terminal.
+    #[must_use]
+    pub const fn held(&self) -> bool {
+        self.saved.is_some()
+    }
+}
+
+impl Drop for KeyByKey<'_> {
     fn drop(&mut self) {
         if let Some(saved) = &self.saved {
             let _ = tcsetattr(self.fd, OptionalActions::Now, saved);
@@ -97,5 +157,44 @@ mod tests {
         // Not a terminal: nothing is held, and nothing fails.
         let null = std::fs::File::open("/dev/null").unwrap();
         assert!(!EchoOff::on(null.as_fd()).held());
+    }
+
+    #[test]
+    fn keys_are_read_one_at_a_time_while_held_and_as_it_was_after() {
+        let main = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY).unwrap();
+        grantpt(&main).unwrap();
+        unlockpt(&main).unwrap();
+        let name = ptsname(&main, Vec::new()).unwrap();
+        let terminal = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NOCTTY)
+            .open(name.to_str().unwrap())
+            .unwrap();
+        let before = tcgetattr(&terminal).unwrap();
+        assert!(before.local_modes.contains(LocalModes::ICANON | LocalModes::ISIG));
+        {
+            let keys = KeyByKey::on(terminal.as_fd());
+            assert!(keys.held());
+            let held = tcgetattr(&terminal).unwrap();
+            for mode in [
+                LocalModes::ECHO,
+                LocalModes::ECHONL,
+                LocalModes::ICANON,
+                LocalModes::ISIG,
+                LocalModes::IEXTEN,
+            ] {
+                assert!(!held.local_modes.contains(mode), "{mode:?} is off");
+            }
+            assert_eq!(held.special_codes[SpecialCodeIndex::VMIN], 1);
+            assert_eq!(held.special_codes[SpecialCodeIndex::VTIME], 0);
+        }
+        assert_eq!(modes(&terminal), before.local_modes, "put back as it was");
+        assert_eq!(
+            tcgetattr(&terminal).unwrap().special_codes[SpecialCodeIndex::VMIN],
+            before.special_codes[SpecialCodeIndex::VMIN]
+        );
+        let null = std::fs::File::open("/dev/null").unwrap();
+        assert!(!KeyByKey::on(null.as_fd()).held());
     }
 }

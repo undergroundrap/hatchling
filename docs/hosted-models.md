@@ -38,9 +38,15 @@ check the broker's log and run it again.
 
 The broker reads a hosted API's key from its vault, under a name it makes from
 the destination. `hatchling-broker secret add --for` makes the same name
-(`egress-openrouter-ai-443` here). It reads the key at a prompt that doesn't
-show it, or from a pipe, and seals it at once. The key is never in a file,
-an argument, the environment or your shell's history:
+(`egress-openrouter-ai-443` here). It reads the key at a prompt that shows
+a `*` for each character, never the character itself, or from a pipe, and
+seals it at once. A paste shows its stars as it lands, so you can see it went
+in before you press Enter; Backspace and Ctrl-U take characters back, and
+Ctrl-C cancels. It says how many characters it read (`Read 73 characters.`):
+an OpenRouter key is over 70, so a count far off is a paste that went wrong,
+seen without the key being shown. Line breaks at the end of a paste are dropped;
+one in the middle is refused. The key is never in a file, an argument, the
+environment or your shell's history:
 
 ```bash
 hatchling-broker migrate-vault
@@ -61,7 +67,7 @@ No vault-fetch grant is needed for model access.
 (Get-Clipboard -Raw).Trim() | wsl -d <distro> -- sudo hatchling-broker secret add --for openrouter.ai:443; Set-Clipboard -Value ' '
 ```
 
-It reads the clipboard only when it runs, trims the stray line break a copy can carry (one the prompt would refuse as a second line), hands the key to Hatchling through a pipe, and then clears the clipboard, whether or not the key went in. It should say `Sealed egress-openrouter-ai-443 in the vault.` If you use Windows' clipboard history (Win+V), delete the key's entry there too: it keeps its own copy, which a command can't clear on its own.
+It reads the clipboard only when it runs, trims the stray spaces and line breaks a copy can carry, hands the key to Hatchling through a pipe, and then clears the clipboard, whether or not the key went in. It should say how many characters it read, then `Sealed egress-openrouter-ai-443 in the vault.` If you use Windows' clipboard history (Win+V), delete the key's entry there too: it keeps its own copy, which a command can't clear on its own.
 
 A broker that's running uses the key from its next request: there's no need
 to stop it. To change the key, add `--replace`; without it, `secret add`

@@ -10,7 +10,7 @@
 //! sealed at once, in memory wiped after. The keeper reads the vault at
 //! each request, so a running broker uses it from its next request.
 
-use std::io::{BufRead, IsTerminal as _, Read as _, Write as _};
+use std::io::{BufRead, IsTerminal as _, Read, Write};
 use std::path::Path;
 
 use hatchling_vault::{MAX_SECRET_BYTES, MasterKey, SealedVault, Secret, SecretName};
@@ -93,7 +93,7 @@ fn add(
         )));
     }
     let secret = read(&format!(
-        "The secret for {} (it isn't shown as you type):",
+        "The secret for {} (each character shows as *, never itself; Enter when done):",
         name.as_str()
     ))?;
     vault
@@ -109,41 +109,113 @@ fn read_secret(prompt: &str) -> Result<Secret, Error> {
     let stdin = std::io::stdin();
     let terminal = stdin.is_terminal();
     let mut input = stdin.lock();
+    let mut said = std::io::stderr();
     if !terminal {
-        return secret_from(&mut input, true);
+        return secret_from(&mut input, &mut said);
     }
-    let mut stderr = std::io::stderr();
-    let _ = write!(stderr, "{prompt} ");
-    let _ = stderr.flush();
+    let _ = write!(said, "{prompt} ");
+    let _ = said.flush();
     let read = {
-        let _echo = hatchling_sys::EchoOff::on_stdin();
-        secret_from(&mut input, false)
+        let _keys = hatchling_sys::KeyByKey::on_stdin();
+        typed(&mut input, &mut said)
     };
-    // The newline typed wasn't shown.
-    let _ = writeln!(stderr);
-    read
+    let _ = writeln!(said);
+    finish(read?, &mut said)
 }
 
-/// A secret from `input`: one line, or all of it when `whole` (from a
-/// pipe), its line ending not part of it. Read into a buffer sized up
-/// front and wiped after, so no copy is left by one that grew.
-fn secret_from(input: &mut impl BufRead, whole: bool) -> Result<Secret, Error> {
-    // Room for the longest secret and its line ending: anything past
-    // that is too long, and isn't read.
+/// The control keys the prompt answers.
+const CTRL_C: u8 = 0x03;
+const CTRL_D: u8 = 0x04;
+const BACKSPACE: u8 = 0x08;
+const CTRL_U: u8 = 0x15;
+const ESCAPE: u8 = 0x1b;
+const DELETE: u8 = 0x7f;
+
+/// What's typed at the prompt, a key at a time, a mark `*` shown on
+/// `shown` for each character as it arrives, so a paste is seen to land.
+///
+/// Enter (or a pasted line break) ends it; Backspace takes back the last
+/// character and Ctrl-U all of them; Ctrl-C, or Ctrl-D with nothing typed,
+/// cancels. An escape sequence (an arrow key) and any other control key
+/// are passed over. Read into a buffer sized up front and wiped after:
+/// past the longest secret, characters are counted, not kept.
+fn typed(input: &mut impl Read, shown: &mut impl Write) -> Result<Zeroizing<Vec<u8>>, Error> {
+    let room = MAX_SECRET_BYTES.saturating_add(1);
+    let mut bytes = Zeroizing::new(Vec::with_capacity(room));
+    let mut key = [0u8; 1];
+    let mut next = |input: &mut dyn Read| -> Result<Option<u8>, Error> {
+        match input.read(&mut key) {
+            Ok(0) => Ok(None),
+            Ok(_) => Ok(key.first().copied()),
+            Err(err) => Err(refused(format!("cannot read the secret: {err}"))),
+        }
+    };
+    let cancelled = || refused("cancelled: nothing was stored");
+    loop {
+        let Some(byte) = next(input)? else {
+            break;
+        };
+        match byte {
+            b'\r' | b'\n' => break,
+            CTRL_C => return Err(cancelled()),
+            CTRL_D if bytes.is_empty() => return Err(cancelled()),
+            CTRL_D => break,
+            BACKSPACE | DELETE => {
+                if bytes.pop().is_some() {
+                    let _ = shown.write_all(b"\x08 \x08");
+                }
+            }
+            CTRL_U => {
+                for _ in 0..bytes.len() {
+                    let _ = shown.write_all(b"\x08 \x08");
+                }
+                bytes.clear();
+            }
+            ESCAPE => {
+                // CSI (`ESC [`) or SS3 (`ESC O`), up to its final byte.
+                if matches!(next(input)?, Some(b'[' | b'O')) {
+                    while let Some(part) = next(input)? {
+                        if (0x40..=0x7e).contains(&part) {
+                            break;
+                        }
+                    }
+                }
+            }
+            control if control < 0x20 => {}
+            character => {
+                if bytes.len() < room {
+                    bytes.push(character);
+                }
+                let _ = shown.write_all(b"*");
+            }
+        }
+        let _ = shown.flush();
+    }
+    Ok(bytes)
+}
+
+/// A secret from a pipe, `input`: all of it, its trailing line breaks
+/// not part of it. Read into a buffer sized up front and wiped after, so
+/// no copy is left by one that grew; what's read is said on `said`.
+fn secret_from(input: &mut impl BufRead, said: &mut impl Write) -> Result<Secret, Error> {
+    // Room for the longest secret and a line ending: anything past that
+    // is too long, and isn't read.
     let room = MAX_SECRET_BYTES.saturating_add(2);
     let mut bytes = Zeroizing::new(Vec::with_capacity(room));
     let mut bounded = input.take(u64::try_from(room).unwrap_or(u64::MAX));
-    let read = if whole {
-        bounded.read_to_end(&mut bytes)
-    } else {
-        bounded.read_until(b'\n', &mut bytes)
-    };
-    read.map_err(|err| refused(format!("cannot read the secret: {err}")))?;
-    if bytes.last() == Some(&b'\n') {
+    bounded
+        .read_to_end(&mut bytes)
+        .map_err(|err| refused(format!("cannot read the secret: {err}")))?;
+    finish(bytes, said)
+}
+
+/// The secret `bytes` read, once checked: its trailing line breaks taken
+/// off, a copy's stray ones, and then one line, from 1 byte to the
+/// longest a secret may be. How many characters were read is said on
+/// `said`, which shows a paste that went wrong without showing it.
+fn finish(mut bytes: Zeroizing<Vec<u8>>, said: &mut impl Write) -> Result<Secret, Error> {
+    while matches!(bytes.last(), Some(b'\n' | b'\r')) {
         bytes.pop();
-        if bytes.last() == Some(&b'\r') {
-            bytes.pop();
-        }
     }
     if bytes.is_empty() {
         return Err(refused("no secret was given: nothing was stored"));
@@ -158,6 +230,13 @@ fn secret_from(input: &mut impl BufRead, whole: bool) -> Result<Secret, Error> {
             "the secret is longer than {MAX_SECRET_BYTES} bytes: nothing was stored"
         )));
     }
+    // A character is each byte that doesn't continue one before it.
+    let characters = bytes.iter().filter(|byte| **byte & 0xc0 != 0x80).count();
+    let _ = writeln!(
+        said,
+        "Read {characters} character{}.",
+        if characters == 1 { "" } else { "s" }
+    );
     Secret::new(std::mem::take(&mut *bytes)).map_err(|source| Error::Vault { source })
 }
 
@@ -210,31 +289,104 @@ mod tests {
     }
 
     #[test]
-    fn a_secret_is_one_line_without_its_ending() {
-        let read = |text: &str, whole: bool| {
-            secret_from(&mut text.as_bytes(), whole).map(|secret| secret.as_bytes().to_vec())
+    fn a_piped_secret_is_one_line_without_its_endings() {
+        let read = |text: &str| {
+            let mut said = Vec::new();
+            let secret = secret_from(&mut text.as_bytes(), &mut said)
+                .map(|secret| secret.as_bytes().to_vec());
+            (secret, String::from_utf8(said).unwrap())
         };
-        for whole in [false, true] {
-            for given in ["sk-or-v1-key", "sk-or-v1-key\n", "sk-or-v1-key\r\n"] {
-                assert_eq!(read(given, whole).unwrap(), b"sk-or-v1-key");
-            }
-            for nothing in ["", "\n", "\r\n"] {
-                assert!(matches!(read(nothing, whole), Err(Error::Secret { .. })));
-            }
-            assert!(matches!(read("a\rb", whole), Err(Error::Secret { .. })));
+        for given in [
+            "sk-or-v1-key",
+            "sk-or-v1-key\n",
+            "sk-or-v1-key\r\n",
+            "sk-or-v1-key\r\n\r\n",
+            "sk-or-v1-key\n\n\n",
+        ] {
+            let (secret, said) = read(given);
+            assert_eq!(secret.unwrap(), b"sk-or-v1-key", "{given:?}");
+            assert_eq!(said, "Read 12 characters.\n");
         }
-        // From a pipe, the whole of it: a second line is refused.
-        assert!(matches!(
-            read("first\nsecond\n", true),
-            Err(Error::Secret { .. })
-        ));
-        // At a terminal, the line typed.
-        assert_eq!(read("first\nsecond\n", false).unwrap(), b"first");
+        for nothing in ["", "\n", "\r\n"] {
+            assert!(matches!(read(nothing).0, Err(Error::Secret { .. })));
+        }
+        for broken in ["a\rb", "first\nsecond\n", "\nkey"] {
+            let (secret, said) = read(broken);
+            assert!(matches!(secret, Err(Error::Secret { .. })), "{broken:?}");
+            assert_eq!(said, "", "nothing is said of a secret refused");
+        }
+        assert_eq!(read("k").1, "Read 1 character.\n");
+        assert_eq!(read("\u{e9}t\u{e9}").1, "Read 3 characters.\n", "characters, not bytes");
         // Built before the asserts: a format! in one trips 1.85's clippy.
         let longest = "k".repeat(MAX_SECRET_BYTES) + "\n";
         let too_long = "k".repeat(MAX_SECRET_BYTES + 1) + "\n";
-        assert_eq!(read(&longest, true).unwrap().len(), MAX_SECRET_BYTES);
-        assert!(matches!(read(&too_long, true), Err(Error::Secret { .. })));
+        assert_eq!(read(&longest).0.unwrap().len(), MAX_SECRET_BYTES);
+        assert!(matches!(read(&too_long).0, Err(Error::Secret { .. })));
+    }
+
+    /// What's typed, a key at a time, and what's shown for it.
+    fn type_in(keys: &[u8]) -> (Result<Vec<u8>, Error>, Vec<u8>) {
+        let mut shown = Vec::new();
+        let typed = typed(&mut &keys[..], &mut shown).map(|bytes| bytes.to_vec());
+        (typed, shown)
+    }
+
+    #[test]
+    fn each_key_typed_shows_a_mark_and_enter_ends_it() {
+        let (typed, shown) = type_in(b"abc\r");
+        assert_eq!(typed.unwrap(), b"abc");
+        assert_eq!(shown, b"***");
+        // A paste arrives at once, its line break ending it.
+        let (typed, shown) = type_in(b"sk-or-v1-key\r\nleft over");
+        assert_eq!(typed.unwrap(), b"sk-or-v1-key");
+        assert_eq!(shown, b"************");
+        assert_eq!(type_in(b"abc\n").0.unwrap(), b"abc");
+        assert_eq!(type_in(b"abc").0.unwrap(), b"abc", "the input ended");
+        assert_eq!(type_in(b"abc\x04").0.unwrap(), b"abc", "Ctrl-D ends it");
+    }
+
+    #[test]
+    fn backspace_and_ctrl_u_take_back_what_was_typed() {
+        let (typed, shown) = type_in(b"abx\x7fc\r");
+        assert_eq!(typed.unwrap(), b"abc");
+        assert_eq!(shown, b"***\x08 \x08*");
+        let (typed, shown) = type_in(b"ab\x08\x08\x08c\r");
+        assert_eq!(typed.unwrap(), b"c");
+        assert_eq!(shown, b"**\x08 \x08\x08 \x08*", "nothing to take back, nothing shown");
+        let (typed, shown) = type_in(b"xyz\x15abc\r");
+        assert_eq!(typed.unwrap(), b"abc");
+        assert_eq!(shown, b"***\x08 \x08\x08 \x08\x08 \x08***");
+    }
+
+    #[test]
+    fn ctrl_c_cancels_and_arrows_and_controls_are_passed_over() {
+        for keys in [&b"ab\x03"[..], b"\x03", b"\x04"] {
+            let (typed, _) = type_in(keys);
+            assert!(
+                matches!(&typed, Err(Error::Secret { reason }) if reason.starts_with("cancelled")),
+                "{keys:?}: {typed:?}"
+            );
+        }
+        let (typed, shown) = type_in(b"\x1b[Aa\x1bOBb\x1b[1;5Cc\x1bxd\t\x01e\r");
+        assert_eq!(typed.unwrap(), b"abcde");
+        assert_eq!(shown, b"*****");
+        assert!(type_in(b"\x1b[").0.unwrap().is_empty(), "an escape cut short");
+    }
+
+    #[test]
+    fn past_the_longest_secret_a_typed_one_is_counted_not_kept() {
+        let mut keys = vec![b'k'; MAX_SECRET_BYTES + 50];
+        keys.push(b'\r');
+        let (typed, shown) = type_in(&keys);
+        let typed = typed.unwrap();
+        assert_eq!(typed.len(), MAX_SECRET_BYTES + 1);
+        assert_eq!(shown.len(), MAX_SECRET_BYTES + 50, "a mark for each");
+        let mut said = Vec::new();
+        assert!(matches!(
+            finish(Zeroizing::new(typed), &mut said),
+            Err(Error::Secret { .. })
+        ));
+        assert!(said.is_empty());
     }
 
     /// A vault root under a fresh owner-only directory, and its key.
