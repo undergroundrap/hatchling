@@ -248,6 +248,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: get-hatchling.sh refuses what it should (tampered files, a bad installer, root, no model)
+        run: python3 -m unittest discover -s scripts -p 'test_get.py' -v
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:

@@ -112,6 +112,7 @@ class GetTest(unittest.TestCase):
         handler = type("Models", (Ollama,), {"models": models})
         server = http.server.HTTPServer(("127.0.0.1", 0), handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         return f"127.0.0.1:{server.server_port}"
 

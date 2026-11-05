@@ -12,6 +12,24 @@ To try it by hand first, the [README's quickstart](../README.md#quickstart) runs
 - **A model it can reach:** an OpenAI-compatible server on this machine. [Ollama](https://ollama.com) is the simplest: install it, then `ollama pull qwen3.5:9b`. The model must be good at calling tools; see [Choosing a model](#choosing-a-model). A hosted API comes after; see [Using a hosted model](hosted-models.md).
 - **The GitHub CLI**, to download and verify the release (or download its files from the release page).
 
+## Quick install
+
+From 0.8.0, a release installs with one script and `curl`, with no clone and no GitHub CLI. Download it, read it (it's short), and run it as yourself, not with `sudo`:
+
+```bash
+curl -fsSLO https://github.com/undergroundrap/hatchling/releases/latest/download/get-hatchling.sh
+```
+
+```bash
+sh get-hatchling.sh
+```
+
+It checks this machine can run Hatchling, downloads the programs, the app and the installer of the release it came with, and checks every file against that release's `SHA256SUMS`: a file that differs, or isn't listed, stops it before anything is installed. Then it makes sure Ollama is here with the model (`qwen3.5:9b`, unless `--model` names another), and offers to download the model if it isn't. Without Ollama it says how to install it and stops: it doesn't install other people's software for you. Last, it runs the release's own installer, below, with `sudo`, which asks for your password once.
+
+It doesn't pipe anything into a shell, and it's in the release's `SHA256SUMS` and attested like every other file: `gh attestation verify get-hatchling.sh --repo undergroundrap/hatchling` checks it was built by this project's release workflow. `sh get-hatchling.sh --help` lists its options: another model, a model server other than Ollama, `--yes` to download the model without asking.
+
+A hosted model, with a far larger window, is one command after, which asks for its key in your own terminal: [Using a hosted model](hosted-models.md). Then switch between the two in the app.
+
 ## Install
 
 From a clone of the version you install, download its release into `release/` and install from it. `scripts/install.sh` checks every file against the release's `SHA256SUMS` before installing anything.
