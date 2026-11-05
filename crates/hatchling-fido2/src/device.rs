@@ -1026,7 +1026,11 @@ mod tests {
                 fresh.make_credential(RP, b"w").is_err()
             };
             assert!(refused, "{verified}");
-            assert_eq!(asked.get(), 1, "{verified}: a fresh token isn't tried again");
+            assert_eq!(
+                asked.get(),
+                1,
+                "{verified}: a fresh token isn't tried again"
+            );
         }
     }
 
