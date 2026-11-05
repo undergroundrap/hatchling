@@ -272,7 +272,7 @@ ollama_room() {
     fi
     [ "$window" = 65536 ] && say "at 65536 tokens $MODEL doesn't fit on the GPU (${fit}): trying 32768"
   done
-  say "gave Ollama a 32768-token window ($DROP_IN, which removing undoes): $MODEL runs partly on the CPU even so, or its fit isn't known; doctor says which"
+  say "gave Ollama a 32768-token window ($DROP_IN, which removing undoes): $MODEL runs partly on the CPU even so, or Ollama doesn't say how it fits"
 }
 ollama_room
 

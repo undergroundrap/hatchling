@@ -554,7 +554,13 @@ fn with_window(found: Finding, endpoint: Option<&str>, name: Option<&str>) -> Fi
     else {
         return found;
     };
-    let loaded = crate::model_window::loaded_at(authority, name, CONNECT_TIMEOUT, ANSWER_TIMEOUT);
+    let loaded = crate::model_window::vouched(
+        authority,
+        name,
+        crate::model_window::loaded_at(authority, name, CONNECT_TIMEOUT, ANSWER_TIMEOUT),
+        CONNECT_TIMEOUT,
+        ANSWER_TIMEOUT,
+    );
     fitted(
         windowed(found, name, loaded.and_then(|loaded| loaded.window)),
         loaded,

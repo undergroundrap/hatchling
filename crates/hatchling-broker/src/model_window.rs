@@ -100,18 +100,7 @@ pub fn window_in(answer: &[u8], name: &str) -> Option<u32> {
 #[must_use]
 pub fn loaded_in(answer: &[u8], name: &str) -> Option<Loaded> {
     let list: serde_json::Value = serde_json::from_slice(answer).ok()?;
-    let latest = format!("{name}:latest");
-    let named = |model: &serde_json::Value, key: &str| {
-        model
-            .get(key)
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|id| id == name || id == latest)
-    };
-    let model = list
-        .get("models")?
-        .as_array()?
-        .iter()
-        .find(|model| named(model, "name") || named(model, "model"))?;
+    let model = named_in(&list, name)?;
     let window = model
         .get("context_length")
         .and_then(serde_json::Value::as_u64)
@@ -132,6 +121,73 @@ pub fn loaded_in(answer: &[u8], name: &str) -> Option<Loaded> {
     })
 }
 
+/// The model `name` (or `name:latest`), by either key, in one of
+/// Ollama's lists of models: `{"models": [{"name", "model"}]}`.
+fn named_in<'list>(list: &'list serde_json::Value, name: &str) -> Option<&'list serde_json::Value> {
+    let latest = format!("{name}:latest");
+    let named = |model: &serde_json::Value, key: &str| {
+        model
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|id| id == name || id == latest)
+    };
+    list.get("models")?
+        .as_array()?
+        .iter()
+        .find(|model| named(model, "name") || named(model, "model"))
+}
+
+/// Where Ollama lists the models it has, each with its file's size.
+pub const MODEL_FILES: &str = "/api/tags";
+
+/// The size of the model `name`'s file, in bytes, from Ollama's list of
+/// the models it has, `answer`: `{"models": [{"name", "size"}]}`.
+#[must_use]
+pub fn file_size_in(answer: &[u8], name: &str) -> Option<u64> {
+    let list: serde_json::Value = serde_json::from_slice(answer).ok()?;
+    named_in(&list, name)?
+        .get("size")
+        .and_then(serde_json::Value::as_u64)
+        .filter(|size| *size > 0)
+}
+
+/// `loaded`, unless what its server says of its size can't be so.
+///
+/// A loaded model takes at least its file's size, so a server that says
+/// it takes less (Ollama does, of some models: it said 1.1 GB of an
+/// 8 GB `gemma4:12b`, which filled a 12 GB GPU) is asked its file's
+/// size, at `authority`, and when that's more, the split is taken as
+/// unsaid: the fit isn't known, and nothing claims it fits.
+#[must_use]
+pub fn vouched(
+    authority: &str,
+    name: &str,
+    loaded: Option<Loaded>,
+    connect: Duration,
+    answer: Duration,
+) -> Option<Loaded> {
+    let loaded = loaded?;
+    if loaded.size == 0 {
+        return Some(loaded);
+    }
+    let file = match crate::doctor::ask_within(authority, MODEL_FILES, connect, answer) {
+        Ok(Some(body)) => file_size_in(&body, name),
+        Ok(None) => None,
+        Err(error) => {
+            tracing::debug!(%error, "the model's server wasn't asked its file's size");
+            None
+        }
+    };
+    if file.is_some_and(|file| file > loaded.size) {
+        return Some(Loaded {
+            size: 0,
+            on_gpu: 0,
+            ..loaded
+        });
+    }
+    Some(loaded)
+}
+
 /// The command that says how a model fits, for the installer.
 pub const MODEL_FIT_SUBCOMMAND: &str = "model-fit";
 
@@ -139,7 +195,7 @@ pub const MODEL_FIT_SUBCOMMAND: &str = "model-fit";
 ///
 /// `gpu` when it's all in the GPU's memory, `cpu` when some runs on the
 /// CPU, `unknown` when the server doesn't say (it isn't Ollama, or the
-/// model isn't loaded).
+/// model isn't loaded) or says what can't be so ([`vouched`]).
 #[must_use]
 pub const fn fit_word(loaded: Option<Loaded>) -> &'static str {
     match loaded {
@@ -162,11 +218,16 @@ pub fn model_fit_main(args: &[String]) -> std::process::ExitCode {
         );
         return std::process::ExitCode::from(hatchling_core::cli::EX_USAGE);
     };
-    let _ = writeln!(
-        std::io::stdout().lock(),
-        "{}",
-        fit_word(learned(endpoint, name))
-    );
+    let loaded = crate::doctor::plain_http(endpoint).and_then(|(authority, _)| {
+        vouched(
+            authority,
+            name,
+            loaded_at(authority, name, CONNECT, ANSWER),
+            CONNECT,
+            ANSWER,
+        )
+    });
+    let _ = writeln!(std::io::stdout().lock(), "{}", fit_word(loaded));
     std::process::ExitCode::SUCCESS
 }
 
@@ -303,7 +364,6 @@ mod tests {
     /// one the server says nothing of `unknown`.
     #[test]
     fn the_fit_is_one_word() {
-        let loaded_list = loaded;
         let loaded = |size, on_gpu| {
             Some(Loaded {
                 window: Some(65_536),
@@ -316,14 +376,73 @@ mod tests {
         assert_eq!(fit_word(loaded(10_700_000_000, 0)), "cpu", "all on the CPU");
         assert_eq!(fit_word(loaded(0, 0)), "unknown", "no size said");
         assert_eq!(fit_word(None), "unknown");
-        let (address, served) = answering(vec![loaded_list(
-            r#"{"name":"m","size":100,"size_vram":100,"context_length":65536}"#,
-        )]);
+    }
+
+    /// `model-fit` prints the fit its server vouches for: a model said
+    /// to take less than its file is `unknown`, the gemma4:12b Ollama
+    /// said took 1.1 GB among them.
+    #[test]
+    fn model_fit_asks_the_split_then_the_files_size() {
+        let fit_of = |file: u64| {
+            let (address, served) = answering(vec![
+                loaded(r#"{"name":"m","size":1148840836,"size_vram":1148840836,"context_length":65536}"#),
+                loaded(&format!(r#"{{"name":"other","size":1}},{{"name":"m","size":{file}}}"#)),
+            ]);
+            let args = [format!("http://{address}/v1"), String::from("m")];
+            assert_eq!(model_fit_main(&args), std::process::ExitCode::SUCCESS);
+            let heads = served.join().unwrap();
+            assert!(heads.first().is_some_and(|head| head.starts_with("GET /api/ps ")), "{heads:?}");
+            assert!(heads.get(1).is_some_and(|head| head.starts_with("GET /api/tags ")), "{heads:?}");
+        };
+        fit_of(8_021_618_941);
+        fit_of(1_000_000_000);
         assert_eq!(
-            fit_word(learned(&format!("http://{address}/v1"), "m")),
-            "gpu"
+            model_fit_main(&[String::from("http://x/v1")]),
+            std::process::ExitCode::from(hatchling_core::cli::EX_USAGE)
         );
-        served.join().unwrap();
+    }
+
+    /// A split is vouched for when the model's file is no bigger than
+    /// it, or the server doesn't say its file's size; one smaller than
+    /// its file is taken as unsaid, and one never said isn't checked.
+    #[test]
+    fn a_split_smaller_than_the_models_file_is_unsaid() {
+        let loaded_list = loaded;
+        let gemma = Loaded {
+            window: Some(65_536),
+            size: 1_148_840_836,
+            on_gpu: 1_148_840_836,
+        };
+        let vouch = |files: &str, loaded: Option<Loaded>| {
+            let answers = if files.is_empty() { vec![] } else { vec![loaded_list(files)] };
+            let (address, served) = answering(answers);
+            let vouched = vouched(&address, "gemma4:12b", loaded, CONNECT, ANSWER);
+            (vouched, served.join().unwrap().len())
+        };
+        let unsaid = Loaded { size: 0, on_gpu: 0, ..gemma };
+        assert_eq!(
+            vouch(r#"{"name":"gemma4:12b","size":8021618941}"#, Some(gemma)),
+            (Some(unsaid), 1)
+        );
+        assert_eq!(fit_word(Some(unsaid)), "unknown");
+        assert_eq!(
+            vouch(r#"{"name":"gemma4:12b","size":1148840836}"#, Some(gemma)),
+            (Some(gemma), 1),
+            "a file of the same size"
+        );
+        assert_eq!(
+            vouch(r#"{"name":"other","size":8021618941}"#, Some(gemma)),
+            (Some(gemma), 1),
+            "the file's size not said"
+        );
+        assert_eq!(vouch("", Some(unsaid)), (Some(unsaid), 0), "nothing to check");
+        assert_eq!(vouch("", None), (None, 0));
+        assert_eq!(
+            file_size_in(br#"{"models":[{"model":"gemma4:12b","size":5},{"name":"z","size":0}]}"#, "gemma4:12b"),
+            Some(5)
+        );
+        assert_eq!(file_size_in(br#"{"models":[{"name":"z","size":0}]}"#, "z"), None);
+        assert_eq!(file_size_in(b"not json", "z"), None);
     }
 
     /// The computer's memory is read from meminfo's own words, in kB.
