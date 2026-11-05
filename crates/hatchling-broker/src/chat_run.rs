@@ -221,6 +221,9 @@ pub struct Chat<R, K = ()> {
     keeps: K,
     /// The operator's model name, for telling the person why a run failed.
     model: Option<String>,
+    /// Where the owner's choice of model is kept, when it is: named over
+    /// the operator's ([`crate::model_choice`]).
+    choice: Option<std::path::PathBuf>,
     /// Whether the person was told, in this conversation, that older
     /// answers are no longer given whole, and that their oldest words are
     /// no longer given at all.
@@ -261,6 +264,7 @@ impl<R: Run, K: Keeps> Chat<R, K> {
             kept,
             keeps,
             model: None,
+            choice: None,
             usage: None,
         }
     }
@@ -269,6 +273,14 @@ impl<R: Run, K: Keeps> Chat<R, K> {
     #[must_use]
     pub fn with_model(mut self, model: Option<String>) -> Self {
         self.model = model;
+        self
+    }
+
+    /// The chat, naming the model the owner chose, kept in `owner_dir`,
+    /// over the operator's when a run fails.
+    #[must_use]
+    pub fn with_choice(mut self, owner_dir: Option<std::path::PathBuf>) -> Self {
+        self.choice = owner_dir;
         self
     }
 
@@ -345,7 +357,12 @@ impl<R: Run, K: Keeps> Chat<R, K> {
                 Err(reason) => {
                     tracing::warn!(reason = ?reason, "a chat run failed");
                     let reached = self.reached(now);
-                    let told = failed_with(ending, self.model.as_deref(), reached.as_ref());
+                    let model = self
+                        .choice
+                        .as_deref()
+                        .and_then(crate::model_choice::chosen)
+                        .or_else(|| self.model.clone());
+                    let told = failed_with(ending, model.as_deref(), reached.as_ref());
                     return answer_with(delivery, &told);
                 }
             };
@@ -441,6 +458,12 @@ pub fn chat_forever<'scope, 'env>(
     let keeps = store.map(|store| SealedConversation::new(store, hub));
     let mut chat = Chat::resuming(grants, hub.conversation(), kept, keeps)
         .with_model(config.scheduler.model_name.clone())
+        .with_choice(
+            config
+                .scheduler
+                .enabled()
+                .then(|| config.scheduler.owner_dir()),
+        )
         .with_usage(config.scheduler.usage.clone());
     loop {
         let step = chat.step(
@@ -1121,6 +1144,51 @@ mod tests {
         };
         assert!(told.starts_with("The model (m) kept calling"), "{told}");
         assert!(!told.contains("/tmp"), "{told}");
+    }
+
+    /// A failed run names the model the owner chose, over the operator's,
+    /// as it stands when the run fails.
+    #[test]
+    fn a_failure_names_the_model_the_owner_chose() {
+        use hatchling_core::run_failure::RunFailure;
+        use hatchling_scheduler::Ending;
+        let dir =
+            std::env::temp_dir().join(format!("hatchling-chat-choice-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let owner = dir.join("owner");
+        std::fs::create_dir_all(&owner).unwrap();
+        let failed = |chat: &mut Chat<Ended>| {
+            let launches = OneEnded(RefCell::new(Some(Ended(Ending::Exited(
+                RunFailure::ToolsMisused.code().into(),
+            )))));
+            let answers = Answers::default();
+            let now = Timestamp::now();
+            chat.step(|| Some((message("one"), 0)), 0, &launches, &answers, now);
+            chat.step(|| None, 0, &launches, &answers, now);
+            let delivered = answers.delivered.borrow();
+            delivered
+                .first()
+                .map(|(_, told)| told.clone())
+                .unwrap_or_default()
+        };
+        let mut chat = Chat::new(vec![send_local()])
+            .with_model(Some(String::from("qwen3.5:9b")))
+            .with_choice(Some(owner.clone()));
+        assert!(
+            failed(&mut chat).starts_with("The model (qwen3.5:9b) kept calling"),
+            "the operator's, with no choice"
+        );
+        std::fs::write(
+            owner.join(crate::model_choice::MODEL_FILE),
+            r#"{"name":"gemma4:12b"}"#,
+        )
+        .unwrap();
+        let told = failed(&mut chat);
+        assert!(
+            told.starts_with("The model (gemma4:12b) kept calling"),
+            "{told}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

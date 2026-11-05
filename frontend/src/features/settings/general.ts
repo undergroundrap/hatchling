@@ -6,6 +6,7 @@ import { button, selectField } from '../../components/ui.js';
 import { accents } from './appearance.js';
 import { editIdentity } from '../context/identity.js';
 import { liveUsage } from './usage.js';
+import { liveModel } from './model.js';
 function usage(label: string, used: number, note: string, suffix = ''): HTMLElement {
     return h('div', { class: 'usage-meter' }, h('div', { class: 'split-row' }, h('span', {}, label), h('span', { class: 'quota-used' }, `${used}% used${suffix}`)), h('p', {}, note), h('meter', { min: 0, max: 100, value: used, 'aria-label': label, title: 'Synthetic sample quota. Not an actual account balance.' }));
 }
@@ -19,7 +20,7 @@ export function generalTab(ctx: AppContext, refresh: () => void): HTMLElement {
     }, { variant: 'link', className: 'upgrade-link' })));
     // Connected to Hatchling, what the model really used, as the broker counted
     // it: never a sample quota shown as though it were the owner's.
-    root.append(account, ctx.state.mode === 'live' ? liveUsage(ctx, refresh) : sampleUsage());
+    root.append(account, ...(ctx.state.mode === 'live' ? [liveModel(ctx, refresh), liveUsage(ctx, refresh)] : [sampleUsage()]));
     const language = h('button', { class: 'settings-group general-language', type: 'button' }, h('span', {}, 'Language'), icon('chevron', 15));
     language.addEventListener('click', () => {
         const choices = selectField('Language', 'language', [{ value: 'English', label: 'English' }], 'English');

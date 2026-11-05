@@ -396,7 +396,7 @@ pub fn scoped_config(
         // The model the run calls, named so its trail can ask the
         // model's server the window it gives it when the run ends.
         model_endpoint: config.scheduler.model_endpoint.clone(),
-        model_name: config.scheduler.model_name.clone(),
+        model_name: crate::model_choice::in_use(&config.scheduler),
         model_reasoning: config.scheduler.model_reasoning,
         model_context_window: config.scheduler.model_context_window,
         followup: Some(FollowupScope {
@@ -758,7 +758,7 @@ fn scheduled_run(config: &Config, request: &RunRequest) -> ScheduledRun {
         missed: request.missed,
         due: request.due.as_second(),
         model_endpoint: config.scheduler.model_endpoint.clone(),
-        model_name: config.scheduler.model_name.clone(),
+        model_name: crate::model_choice::in_use(&config.scheduler),
         model_reasoning: config.scheduler.model_reasoning,
         model_context_window: config.scheduler.model_context_window,
         depth: request.depth,

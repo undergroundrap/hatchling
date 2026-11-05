@@ -99,6 +99,10 @@ pub enum ApiRequest {
     ReadUsage,
     /// [`UiAction::SetUsageLimits`].
     SetUsageLimits,
+    /// [`UiAction::ReadModel`].
+    ReadModel,
+    /// [`UiAction::SetModel`].
+    SetModel,
     /// [`UiAction::ReadFeed`].
     ReadFeed,
     /// [`UiAction::ManageSuggestions`].
@@ -146,6 +150,8 @@ impl ApiRequest {
             UiAction::ListDecisions {} => Self::ListDecisions,
             UiAction::ReadUsage {} => Self::ReadUsage,
             UiAction::SetUsageLimits { .. } => Self::SetUsageLimits,
+            UiAction::ReadModel {} => Self::ReadModel,
+            UiAction::SetModel { .. } => Self::SetModel,
             UiAction::ReadFeed {} => Self::ReadFeed,
             UiAction::ManageSuggestions { .. } => Self::ManageSuggestions,
             UiAction::GiveCode { .. } => Self::GiveCode,
@@ -336,6 +342,11 @@ mod tests {
                     limits: crate::ui::UsageLimits::default(),
                 }),
                 ApiRequest::SetUsageLimits,
+            ),
+            (action(UiAction::ReadModel {}), ApiRequest::ReadModel),
+            (
+                action(UiAction::SetModel { name: None }),
+                ApiRequest::SetModel,
             ),
             (action(UiAction::ReadFeed {}), ApiRequest::ReadFeed),
             (

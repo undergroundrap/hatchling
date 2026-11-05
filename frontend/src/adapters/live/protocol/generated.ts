@@ -330,7 +330,7 @@ export type ApiOutcome = 'served' | 'refused';
  * What one API call asked for: the request's kind, never its content
  * (a message's text, a file, a schedule's task).
  */
-export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'manage_goals' | 'manage_memory' | 'list_decisions' | 'read_usage' | 'set_usage_limits' | 'read_feed' | 'manage_suggestions' | 'give_code' | 'decline_code';
+export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'manage_goals' | 'manage_memory' | 'list_decisions' | 'read_usage' | 'set_usage_limits' | 'read_model' | 'set_model' | 'read_feed' | 'manage_suggestions' | 'give_code' | 'decline_code';
 /**
  * A bearer token, presented in `Hello` for a token provider.
  *
@@ -1954,6 +1954,45 @@ export type MemoryResult = {
      */
     readonly reason: string;
     readonly result: 'unasked';
+};
+/**
+ * The model Hatchling uses, and the models its server has: what the
+ * owner chooses from in the app.
+ */
+export type ModelState = {
+    /**
+     * The models the server has, by their ids, when it lists them: a
+     * local server answering in plain HTTP does. None when it doesn't.
+     */
+    readonly available?: readonly (string)[];
+    /**
+     * The model the owner chose in the app, used over the configured
+     * one; none when they haven't.
+     */
+    readonly chosen?: string | null;
+    /**
+     * The model the operator set (`HATCHLING_SCHEDULER_MODEL_NAME`):
+     * the one used unless the owner chose another.
+     */
+    readonly configured?: string | null;
+    /**
+     * The model's server, as the operator set it; none when unset.
+     */
+    readonly endpoint?: string | null;
+    /**
+     * How much of that runs on the CPU, more slowly.
+     */
+    readonly on_cpu?: number | null;
+    /**
+     * All the model in use takes, in bytes, when it's loaded and its
+     * server says.
+     */
+    readonly size?: number | null;
+    /**
+     * The window of the model in use, in tokens: as its server says,
+     * when it's loaded, else as the operator declared it.
+     */
+    readonly window?: number | null;
 };
 /**
  * An answer to an [`OperatorQuery`].
@@ -4307,6 +4346,15 @@ export type UiAction = {
      */
     readonly limits: UsageLimits;
 } | {
+    readonly action: 'read_model';
+} | {
+    readonly action: 'set_model';
+    /**
+     * The model, by its id on the server; none goes back to the one
+     * the operator set.
+     */
+    readonly name?: string | null;
+} | {
     readonly action: 'read_feed';
 } | {
     readonly action: 'manage_suggestions';
@@ -4524,6 +4572,12 @@ export type UiActionResult = {
      * The report.
      */
     readonly usage: UsageReport;
+} | {
+    /**
+     * It.
+     */
+    readonly model: ModelState;
+    readonly result: 'model';
 } | {
     /**
      * They.

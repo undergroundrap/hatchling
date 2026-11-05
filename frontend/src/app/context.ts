@@ -4,6 +4,7 @@ import type { CodePort } from '../session/codes.js';
 import type { AttentionPort } from '../session/attention.js';
 import type { ConversationPort } from '../session/conversations.js';
 import type { UsagePort } from '../session/usage.js';
+import type { ModelPort } from '../session/model.js';
 import type { FeedPort } from '../session/feed.js';
 import type { IdeasPort } from '../session/ideas.js';
 import type { GoalsPort } from '../session/goals.js';
@@ -69,6 +70,8 @@ export interface AppContext {
     readonly conversations: ConversationPort | undefined;
     /** The model usage the broker counted, when the app is connected to Hatchling. */
     readonly usage: UsagePort | undefined;
+    /** The model Hatchling uses, chosen by the owner, when the app is connected to Hatchling. */
+    readonly model: ModelPort | undefined;
     /** Where a goal is closed as reached or set aside, when the app is connected to Hatchling. */
     readonly goals: GoalsPort | undefined;
     /** The owner's Feed page: its prompt and time, when the app is connected to Hatchling. */

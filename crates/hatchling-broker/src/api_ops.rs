@@ -236,6 +236,18 @@ impl<'a> Ops<'a> {
                 }
                 self.set_limits(limits)
             }
+            UiAction::ReadModel {} => {
+                if !owns {
+                    return refused(ActionRefusal::NotGranted);
+                }
+                self.read_model()
+            }
+            UiAction::SetModel { name } => {
+                if !owns {
+                    return refused(ActionRefusal::NotGranted);
+                }
+                self.set_model(name.as_deref())
+            }
             UiAction::ManageGoals { op } => self.owned(owns, Owned::Goals(op)),
             UiAction::ManageMemory { op } => self.owned(owns, Owned::Memory(op)),
             UiAction::ListDecisions {} => self.owned(owns, Owned::Decisions),
@@ -347,6 +359,40 @@ impl<'a> Ops<'a> {
         }
     }
 
+    /// The models the server lists, when it does.
+    fn models_listed(&self) -> Option<Vec<String>> {
+        self.config
+            .scheduler
+            .model_endpoint
+            .as_deref()
+            .and_then(crate::model_choice::available)
+    }
+
+    /// The model Hatchling uses, and the models its server has.
+    fn read_model(&self) -> (UiActionResult, ApiOutcome) {
+        let model = crate::model_choice::state(&self.config.scheduler, self.models_listed());
+        (UiActionResult::Model { model }, ApiOutcome::Served)
+    }
+
+    /// Chooses `name` as the model runs call, or the operator's again with
+    /// none, answered with the model as it then stands.
+    fn set_model(&self, name: Option<&str>) -> (UiActionResult, ApiOutcome) {
+        use crate::model_choice::NotSet;
+        let refused = |reason| (UiActionResult::Refused { reason }, ApiOutcome::Refused);
+        let available = self.models_listed();
+        match crate::model_choice::set(&self.config.scheduler, name, available.as_deref()) {
+            Ok(()) => {
+                let model = crate::model_choice::state(&self.config.scheduler, available);
+                (UiActionResult::Model { model }, ApiOutcome::Served)
+            }
+            Err(NotSet::Invalid | NotSet::NotOnServer) => refused(ActionRefusal::BadRequest),
+            Err(NotSet::Off) => refused(ActionRefusal::Unavailable),
+            Err(NotSet::Io(error)) => {
+                tracing::warn!(error = %error, "the chosen model couldn't be kept");
+                refused(ActionRefusal::Unavailable)
+            }
+        }
+    }
     /// The owner's answer to a browser's code request (WO-030): a code
     /// given, or the request declined; the owner's alone.
     fn code(&self, owner: bool, action: &UiAction) -> (UiActionResult, ApiOutcome) {
@@ -2099,6 +2145,86 @@ mod tests {
         );
         assert_eq!(usage.spent.today, 9);
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Only the owner reads and chooses the model; a choice is answered
+    /// with the model as it then stands, a name that isn't one changes
+    /// nothing, and none goes back to the operator's.
+    #[test]
+    fn only_the_owner_reads_and_chooses_the_model() {
+        let dir = std::env::temp_dir().join(format!("hatchling-api-model-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let root = dir.join("schedules");
+        let mut config = owner_config(root.to_str());
+        config.scheduler.model_endpoint = Some(String::from("https://models.example/v1"));
+        config.scheduler.model_name = Some(String::from("qwen3.5:9b"));
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let ops = Ops::new(&config, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        let held: Vec<ScheduleGrant> = ops.owner_grants().into_iter().collect();
+        let owner = caller(&held);
+        let partial = caller(held.get(..1).unwrap_or_default());
+        let mut replies = Replies::default();
+        let choose = |name: Option<&str>| UiAction::SetModel {
+            name: name.map(str::to_owned),
+        };
+        for action in [UiAction::ReadModel {}, choose(Some("gemma4:12b"))] {
+            assert_eq!(
+                ops.handle(&partial, &action, &mut replies),
+                (
+                    UiActionResult::Refused {
+                        reason: ActionRefusal::NotGranted
+                    },
+                    ApiOutcome::Refused
+                )
+            );
+        }
+        let chosen = |action: &UiAction| {
+            let mut replies = Replies::default();
+            let (result, outcome) = ops.handle(&owner, action, &mut replies);
+            assert_eq!(outcome, ApiOutcome::Served, "{result:?}");
+            if let UiActionResult::Model { model } = result {
+                assert_eq!(model.configured.as_deref(), Some("qwen3.5:9b"));
+                assert_eq!(model.endpoint.as_deref(), Some("https://models.example/v1"));
+                assert_eq!(model.available, None, "a hosted server isn't listed");
+                model.chosen
+            } else {
+                Some(String::from("not a model"))
+            }
+        };
+        assert_eq!(chosen(&UiAction::ReadModel {}), None);
+        assert_eq!(
+            chosen(&choose(Some("gemma4:12b"))).as_deref(),
+            Some("gemma4:12b")
+        );
+        assert_eq!(
+            ops.handle(&owner, &choose(Some("two words")), &mut replies),
+            (
+                UiActionResult::Refused {
+                    reason: ActionRefusal::BadRequest
+                },
+                ApiOutcome::Refused
+            )
+        );
+        assert_eq!(
+            chosen(&UiAction::ReadModel {}).as_deref(),
+            Some("gemma4:12b")
+        );
+        assert_eq!(chosen(&choose(None)), None);
+        let off = owner_config(None);
+        let ops = Ops::new(&off, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        let held: Vec<ScheduleGrant> = ops.owner_grants().into_iter().collect();
+        let mut replies = Replies::default();
+        assert_eq!(
+            ops.handle(&caller(&held), &choose(Some("gemma4:12b")), &mut replies),
+            (
+                UiActionResult::Refused {
+                    reason: ActionRefusal::Unavailable
+                },
+                ApiOutcome::Refused
+            )
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

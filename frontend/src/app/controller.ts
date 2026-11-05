@@ -7,6 +7,7 @@ import type { CodePort } from '../session/codes.js';
 import type { AttentionPort } from '../session/attention.js';
 import type { ConversationPort } from '../session/conversations.js';
 import type { UsagePort } from '../session/usage.js';
+import type { ModelPort } from '../session/model.js';
 import type { GoalsPort } from '../session/goals.js';
 import type { FeedPort } from '../session/feed.js';
 import type { IdeasPort } from '../session/ideas.js';
@@ -67,6 +68,9 @@ export class App implements AppContext {
     get usage(): UsagePort | undefined {
         return this.adapter.usage;
     }
+    get model(): ModelPort | undefined {
+        return this.adapter.model;
+    }
     get goals(): GoalsPort | undefined {
         return this.adapter.goals;
     }
@@ -101,6 +105,7 @@ export class App implements AppContext {
         readonly codes?: CodePort;
         readonly conversations?: ConversationPort;
         readonly usage?: UsagePort;
+        readonly model?: ModelPort;
         readonly goals?: GoalsPort;
         readonly feed?: FeedPort;
         readonly ideas?: IdeasPort;

@@ -1408,8 +1408,10 @@ pub fn dispatch_once<L: Launcher>(
     // Only the owner's schedules can hold posting to their Feed page.
     let held = owner_schedule_grants(config);
     let feed = config.scheduler.feed_log();
+    // The model in use now: the owner may have chosen another since.
+    let model = crate::model_choice::in_use(&config.scheduler);
     let delivery = HubDelivery::new(hub)
-        .with_model(config.scheduler.model_name.as_deref())
+        .with_model(model.as_deref())
         .with_feed_page(&feed)
         .with_usage(&config.scheduler.usage);
     let authenticated = hub.map_or_else(BTreeSet::new, |_| authenticated_channels(config));
