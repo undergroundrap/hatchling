@@ -8,6 +8,11 @@
 # the kill floor fails loudly — the proof must be re-examined then.
 
 exclude_re = [
+    # `Authenticator::holds`, the trait's default: replacing its body with
+    # `None` is what the body already returns, so the two are the same
+    # function. The other defaults' replacements are killed by
+    # `a_key_that_cant_say_claims_nothing`.
+    "hatchling-vault/src/fido2\\.rs:.*replace Authenticator::holds -> Option<bool> with None",
     # `validate_surrogate`: `< MIN_PAYLOAD_LEN` -> `<= MIN_PAYLOAD_LEN`.
     # A payload of exactly MIN_PAYLOAD_LEN (47 bytes) has a 15-byte
     # body, so dest_len must be 0; the empty destination then fails
