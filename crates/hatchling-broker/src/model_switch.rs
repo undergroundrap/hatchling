@@ -501,12 +501,7 @@ fn rewrite(
     text: &str,
     changes: &[(&str, Option<String>)],
 ) -> Result<std::path::PathBuf, String> {
-    let backup = path.with_extension(format!(
-        "env.before-{}",
-        hatchling_scheduler::Timestamp::now().as_second()
-    ));
-    std::fs::copy(path, &backup)
-        .map_err(|err| format!("can't back up {}: {err}", path.display()))?;
+    let backup = back_up(path, text)?;
     let next = path.with_extension("env.next");
     let write = || -> std::io::Result<()> {
         std::fs::OpenOptions::new()
@@ -522,9 +517,87 @@ fn rewrite(
     Ok(backup)
 }
 
+/// The most backups made in one second: past that, something's wrong.
+const MAX_BACKUPS_A_SECOND: u32 = 100;
+
+/// Keeps `text`, the settings at `path` as they were, in a new file
+/// beside it, named for the time (UTC) as the installer names its own,
+/// and never one already there: a second switch in the same second gets
+/// `-2`, and so on. Answers its path.
+fn back_up(path: &Path, text: &str) -> Result<std::path::PathBuf, String> {
+    let stamp: String = hatchling_scheduler::Timestamp::now()
+        .to_string()
+        .chars()
+        .take(19)
+        .filter_map(|character| match character {
+            '-' | ':' => None,
+            'T' => Some('-'),
+            other => Some(other),
+        })
+        .collect();
+    let failed = |err: std::io::Error| format!("can't back up {}: {err}", path.display());
+    for attempt in 1..=MAX_BACKUPS_A_SECOND {
+        let name = if attempt == 1 {
+            format!("env.before-{stamp}")
+        } else {
+            format!("env.before-{stamp}-{attempt}")
+        };
+        let backup = path.with_extension(name);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&backup)
+        {
+            Ok(mut file) => {
+                file.write_all(text.as_bytes()).map_err(failed)?;
+                return Ok(backup);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(err) => return Err(failed(err)),
+        }
+    }
+    Err(format!(
+        "can't back up {}: {MAX_BACKUPS_A_SECOND} backups this second already",
+        path.display()
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each backup is a new file, named for the time, holding the
+    /// settings as they were: one made in the same second never takes
+    /// another's place.
+    #[test]
+    fn a_backup_never_takes_anothers_place() {
+        let dir = std::env::temp_dir().join(format!("hatchling-backup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("hatchling.env");
+        let first = back_up(&path, "A=1\n").unwrap();
+        let second = back_up(&path, "A=2\n").unwrap();
+        assert_ne!(first, second);
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "A=1\n");
+        assert_eq!(std::fs::read_to_string(&second).unwrap(), "A=2\n");
+        let name = first.file_name().unwrap().to_str().unwrap();
+        let stamp = name.strip_prefix("hatchling.env.before-").unwrap();
+        assert_eq!(stamp.len(), 15, "{name}");
+        assert!(
+            stamp.chars().enumerate().all(|(at, character)| if at == 8 {
+                character == '-'
+            } else {
+                character.is_ascii_digit()
+            }),
+            "YYYYmmdd-HHMMSS: {name}"
+        );
+        let mode = std::os::unix::fs::PermissionsExt::mode(
+            &std::fs::metadata(&first).unwrap().permissions(),
+        );
+        assert_eq!(mode & 0o777, 0o600);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn s(text: &str) -> String {
         String::from(text)
@@ -906,6 +979,7 @@ mod tests {
                 .unwrap()
                 .ends_with("`sudo systemctl restart hatchling`.\n")
         );
+        assert_eq!(backups(&path), 2, "each switch keeps its own backup");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
