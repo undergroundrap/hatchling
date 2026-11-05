@@ -959,15 +959,16 @@ mod tests {
         state.borrow_mut().pin = Some(String::from("2468"));
         let (mut device, asked) = counted(key, "2468");
         let credential = device.make_credential(RP, b"u").unwrap();
+        let salt = random::<32>().unwrap();
         let first = device
-            .hmac_secret_verified(RP, &credential.id, &[3; 32])
+            .hmac_secret_verified(RP, &credential.id, &salt)
             .unwrap();
         assert_eq!(asked.get(), 1, "made and checked with one PIN");
         // The key forgets the token (it was unplugged, say): asked again,
         // once, and the answer is the same.
         state.borrow_mut().token = None;
         let again = device
-            .hmac_secret_verified(RP, &credential.id, &[3; 32])
+            .hmac_secret_verified(RP, &credential.id, &salt)
             .unwrap();
         assert_eq!(first, again);
         assert_eq!(asked.get(), 2);
@@ -1020,7 +1021,7 @@ mod tests {
             let (mut fresh, asked) = counted(SoftKey::sharing(Rc::clone(&state)), "2468");
             let refused = if verified {
                 fresh
-                    .hmac_secret_verified(RP, &credential.id, &[1; 32])
+                    .hmac_secret_verified(RP, &credential.id, &random::<32>().unwrap())
                     .is_err()
             } else {
                 fresh.make_credential(RP, b"w").is_err()
