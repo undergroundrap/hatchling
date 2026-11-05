@@ -17,6 +17,8 @@ Hatchling is a personal AI agent that runs on the owner's own Linux machine, or 
 
 [The trust boundary](../arch/trust-boundary.md) is the full threat model: each threat, the mechanism that stops it, the test that proves it, and the known limitations.
 
+[The bugs an always-on agent invites](bug-classes.md) takes the bug classes agents like this one commonly have, such as a local UI any website can reach, memory poisoning and keys in the agent's environment, and names the test that closes each in Hatchling.
+
 ## What leaves the machine
 
 Hatchling sends nothing anywhere on its own: no telemetry, crash reports, update checks, analytics or license checks. When it runs a vendor's coding CLI, it turns that CLI's own telemetry off. Every connection out is one of these, and each needs the operator to configure it or the owner to allow it:
