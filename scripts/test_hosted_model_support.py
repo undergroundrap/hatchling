@@ -125,6 +125,7 @@ class MemoryTests(unittest.TestCase):
             child.kill()
             child.wait()
             child.stdin.close()
+            child.stdout.close()
 
     def test_only_a_guard_regions_entry_excuses_a_page(self):
         def pagemap(*entries):
@@ -157,6 +158,7 @@ class MemoryTests(unittest.TestCase):
             child.kill()
             child.wait()
             child.stdin.close()
+            child.stdout.close()
             child.stdout.close()
 
 
