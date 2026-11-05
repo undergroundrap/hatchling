@@ -17,11 +17,14 @@
 # Ollama's (http://localhost:11434/v1). For a hosted API, install with a
 # local one, then follow docs/hosted-models.md.
 #
-# When that's Ollama, running as its systemd service, with a window under
-# 32,768 tokens or none set (its default can be 4,096, too small for an
-# agent), it gives Ollama that window, in a drop-in of its own:
+# When that's Ollama, running as its systemd service, it sizes the model's
+# window to this machine: 65,536 tokens when the model fits on the GPU with
+# it, else 32,768 (Ollama's default can be 4,096, too small for an agent).
+# It loads the model at each size and asks how it fits. A window of 65,536
+# or more is kept, and so is one of 32,768 or more set by anyone but this
+# installer. It writes a drop-in of its own,
 # /etc/systemd/system/ollama.service.d/zz-hatchling-context.conf, which it
-# names, and which removing undoes. --ollama-context sets another size; 0
+# names, and which removing undoes. --ollama-context sets a size instead; 0
 # leaves Ollama as it is.
 #
 # It installs:
@@ -44,7 +47,7 @@ usage() {
 fail() { echo "install.sh: $*" >&2; exit 1; }
 say() { echo "== $*"; }
 
-FROM= ENDPOINT= MODEL= FORCE= OLLAMA_CONTEXT=32768
+FROM= ENDPOINT= MODEL= FORCE= OLLAMA_CONTEXT=
 while [ $# -gt 0 ]; do
   case "$1" in
     --from) FROM=${2:-}; shift 2 || usage ;;
@@ -82,8 +85,8 @@ case "$MODEL" in
   *[!A-Za-z0-9._:/-]*) fail "--model has a character a model's name doesn't: $MODEL" ;;
 esac
 case "$OLLAMA_CONTEXT" in
-  0) ;;
-  ''|*[!0-9]*) fail "--ollama-context is a number of tokens, or 0: $OLLAMA_CONTEXT" ;;
+  ''|0) ;;
+  *[!0-9]*) fail "--ollama-context is a number of tokens, or 0: $OLLAMA_CONTEXT" ;;
   *) [ "$OLLAMA_CONTEXT" -ge 8192 ] || fail "--ollama-context is at least 8192, what the agent needs, or 0" ;;
 esac
 
@@ -208,35 +211,73 @@ fi
 
 # The model's room: an agent's prompt, its tools and a working history
 # fill a small window fast, and a thinking model's answer takes more. A
-# local Ollama service gets OLLAMA_CONTEXT tokens, unless it has as many
-# already; anything else is left as it is, and doctor says what it finds.
+# local Ollama service gets the largest window the model fits the GPU
+# with, of 65,536 and 32,768 (or OLLAMA_CONTEXT, when it's given), unless
+# it has as much already; anything else is left as it is, and doctor says
+# what it finds.
 DROP_IN=/etc/systemd/system/ollama.service.d/zz-hatchling-context.conf
-ollama_room() {
-  [ "$OLLAMA_CONTEXT" != 0 ] || return 0
-  if ! systemctl cat ollama.service > /dev/null 2>&1; then
-    say "no Ollama service here: give the model's server a window of $OLLAMA_CONTEXT tokens or more yourself (docs/install.md, \"Give the model room\")"
-    return 0
-  fi
-  now=$(systemctl show ollama.service -p Environment --value | tr ' ' '\n' | sed -n 's/^OLLAMA_CONTEXT_LENGTH=//p' | tail -n 1)
-  case "$now" in
-    ''|*[!0-9]*) ;;
-    *) if [ "$now" -ge "$OLLAMA_CONTEXT" ]; then
-         say "Ollama gives models a $now-token window: kept"
-         return 0
-       fi ;;
-  esac
+# Loads the model once (only Ollama loads one this way), so its fit can be
+# asked and the first answer doesn't wait for it.
+load_model() {
+  command -v curl > /dev/null || return 1
+  curl -fsS -m 300 -o /dev/null "http://$HOSTPORT/api/generate" -H 'Content-Type: application/json' \
+    -d "{\"model\":\"$MODEL\",\"keep_alive\":\"10m\"}" 2> /dev/null
+}
+# Gives Ollama a window of $1 tokens, through the drop-in, and waits for it
+# to listen again.
+set_window() {
   mkdir -p "$(dirname "$DROP_IN")"
-  printf '[Service]\nEnvironment=OLLAMA_CONTEXT_LENGTH=%s\n' "$OLLAMA_CONTEXT" > "$DROP_IN"
+  printf '[Service]\nEnvironment=OLLAMA_CONTEXT_LENGTH=%s\n' "$1" > "$DROP_IN"
   systemctl daemon-reload
   systemctl restart ollama.service
-  # Ollama listens a moment after it starts; doctor asks it next.
   tries=0
   until ss -Htln "sport = :${HOSTPORT##*:}" | grep -q .; do
     tries=$((tries + 1))
     [ "$tries" -le 30 ] || fail "Ollama didn't come back after its window was set: see journalctl -u ollama, or remove $DROP_IN"
     sleep 1
   done
-  say "gave Ollama a $OLLAMA_CONTEXT-token window (it had ${now:-its default}): $DROP_IN, which removing undoes"
+}
+ollama_room() {
+  [ "$OLLAMA_CONTEXT" != 0 ] || return 0
+  if ! systemctl cat ollama.service > /dev/null 2>&1; then
+    say "no Ollama service here: give the model's server a window of 65536 tokens if the model fits the GPU with it, else 32768 (docs/install.md, \"Give the model room\")"
+    return 0
+  fi
+  now=$(systemctl show ollama.service -p Environment --value | tr ' ' '\n' | sed -n 's/^OLLAMA_CONTEXT_LENGTH=//p' | tail -n 1)
+  case "$now" in ''|*[!0-9]*) now= ;; esac
+  if [ -n "$OLLAMA_CONTEXT" ]; then
+    if [ -n "$now" ] && [ "$now" -ge "$OLLAMA_CONTEXT" ]; then
+      say "Ollama gives models a $now-token window: kept"
+      return 0
+    fi
+    set_window "$OLLAMA_CONTEXT"
+    say "gave Ollama a $OLLAMA_CONTEXT-token window (it had ${now:-its default}): $DROP_IN, which removing undoes"
+    return 0
+  fi
+  # Ours is ours to resize; anyone else's of 32,768 or more is theirs.
+  ours=
+  grep -qs "^Environment=OLLAMA_CONTEXT_LENGTH=$now\$" "$DROP_IN" && ours=1
+  if [ -n "$now" ] && { [ "$now" -ge 65536 ] || { [ -z "$ours" ] && [ "$now" -ge 32768 ]; }; }; then
+    say "Ollama gives models a $now-token window: kept"
+    return 0
+  fi
+  say "sizing $MODEL's window to this machine: loading it at 65536 tokens"
+  for window in 65536 32768; do
+    set_window "$window"
+    fit=unknown
+    load_model && fit=$(/usr/local/bin/hatchling-broker model-fit "$ENDPOINT" "$MODEL" 2> /dev/null || echo unknown)
+    if [ "$fit" = gpu ]; then
+      say "gave Ollama a $window-token window: $MODEL fits on the GPU with it ($DROP_IN, which removing undoes)"
+      return 0
+    fi
+    if [ "$window" = 65536 ]; then
+      case "$fit" in
+        cpu) say "at 65536 tokens $MODEL doesn't fit on the GPU: trying 32768" ;;
+        *) say "Ollama doesn't say how $MODEL fits at 65536 tokens: trying 32768, to be safe" ;;
+      esac
+    fi
+  done
+  say "gave Ollama a 32768-token window ($DROP_IN, which removing undoes): $MODEL runs partly on the CPU even so, or Ollama doesn't say how it fits"
 }
 ollama_room
 
@@ -245,9 +286,7 @@ ollama_room
 # way; another server's refusal is said, and doctor checks it anyway.
 if command -v curl > /dev/null; then
   say "loading $MODEL, so doctor can see how it fits"
-  curl -fsS -m 300 -o /dev/null "http://$HOSTPORT/api/generate" -H 'Content-Type: application/json' \
-    -d "{\"model\":\"$MODEL\",\"keep_alive\":\"10m\"}" 2> /dev/null \
-    || say "the model's server didn't load $MODEL (not Ollama, or not ready yet): doctor checks it"
+  load_model || say "the model's server didn't load $MODEL (not Ollama, or not ready yet): doctor checks it"
 fi
 
 say "checking it can work here"
