@@ -404,10 +404,14 @@ fn switch_with(
         "Hatchling uses {} at {}{}{}. The old settings are in {}.",
         target.model,
         target.endpoint,
-        target
-            .window
-            .map_or_else(String::new, |window| format!(", with a {window}-token window")),
-        if target.thinking_off { ", thinking off" } else { "" },
+        target.window.map_or_else(String::new, |window| format!(
+            ", with a {window}-token window"
+        )),
+        if target.thinking_off {
+            ", thinking off"
+        } else {
+            ""
+        },
         backup.display()
     );
     if let Some(root) = settings.get(env::HATCHLING_SCHEDULER_DIR.name) {
@@ -428,7 +432,10 @@ fn switch_with(
         return Ok(());
     }
     (steps.restart)()?;
-    let _ = writeln!(out, "Restarted the broker. Send a message in the app to check it.");
+    let _ = writeln!(
+        out,
+        "Restarted the broker. Send a message in the app to check it."
+    );
     Ok(())
 }
 
@@ -462,7 +469,9 @@ fn ask_key(program: &Path, destination: &str) -> Result<(), String> {
     if given.success() {
         Ok(())
     } else {
-        Err(String::from("the key wasn't stored, so nothing was changed"))
+        Err(String::from(
+            "the key wasn't stored, so nothing was changed",
+        ))
     }
 }
 
@@ -799,13 +808,16 @@ mod tests {
     /// a model chosen in the app.
     fn service(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
         use std::os::unix::fs::PermissionsExt as _;
-        let dir = std::env::temp_dir().join(format!(
-            "hatchling-switch-{name}-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("hatchling-switch-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("schedules.owner")).unwrap();
-        std::fs::write(dir.join("schedules.owner").join(crate::model_choice::MODEL_FILE), "{\"name\":\"gemma4:12b\"}").unwrap();
+        std::fs::write(
+            dir.join("schedules.owner")
+                .join(crate::model_choice::MODEL_FILE),
+            "{\"name\":\"gemma4:12b\"}",
+        )
+        .unwrap();
         let path = dir.join("hatchling.env");
         std::fs::write(
             &path,
@@ -824,9 +836,12 @@ mod tests {
         std::fs::read_dir(path.parent().unwrap())
             .unwrap()
             .filter(|entry| {
-                entry
-                    .as_ref()
-                    .is_ok_and(|entry| entry.file_name().to_string_lossy().starts_with("hatchling.env.before-"))
+                entry.as_ref().is_ok_and(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("hatchling.env.before-")
+                })
             })
             .count()
     }
@@ -855,25 +870,42 @@ mod tests {
         assert_eq!(restarted.get(), 1);
         let settings = crate::doctor::parse_settings(&std::fs::read_to_string(&path).unwrap());
         assert_eq!(
-            settings.get("HATCHLING_SCHEDULER_MODEL_NAME").map(String::as_str),
+            settings
+                .get("HATCHLING_SCHEDULER_MODEL_NAME")
+                .map(String::as_str),
             Some(OPENROUTER_MODEL)
         );
         assert_eq!(
             settings.get("HATCHLING_EGRESS_GRANTS").map(String::as_str),
             Some("localhost:11434,openrouter.ai:443")
         );
-        assert!(std::fs::read_to_string(&path).unwrap().starts_with("# Hatchling\n"));
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .starts_with("# Hatchling\n")
+        );
         assert_eq!(backups(&path), 1);
-        assert!(!dir.join("schedules.owner").join(crate::model_choice::MODEL_FILE).exists());
+        assert!(
+            !dir.join("schedules.owner")
+                .join(crate::model_choice::MODEL_FILE)
+                .exists()
+        );
         assert!(said.starts_with("The key for openrouter.ai:443:\nHatchling uses nvidia/nemotron-3-ultra-550b-a55b:free at https://openrouter.ai/api/v1, with a 1000000-token window, thinking off."), "{said}");
         assert!(said.contains("it's forgotten"), "{said}");
-        assert!(said.ends_with("Restarted the broker. Send a message in the app to check it.\n"), "{said}");
+        assert!(
+            said.ends_with("Restarted the broker. Send a message in the app to check it.\n"),
+            "{said}"
+        );
         // Not restarted when asked not to, and said so.
         let mut said = Vec::new();
         let unrestarted = target(USE_HOSTED, &["openrouter", "--no-restart"]).unwrap();
         switch_with(&unrestarted, &path, &steps, &mut said).unwrap();
         assert_eq!(restarted.get(), 1);
-        assert!(String::from_utf8(said).unwrap().ends_with("`sudo systemctl restart hatchling`.\n"));
+        assert!(
+            String::from_utf8(said)
+                .unwrap()
+                .ends_with("`sudo systemctl restart hatchling`.\n")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -883,7 +915,11 @@ mod tests {
         let before = std::fs::read_to_string(&path).unwrap();
         let steps = Steps {
             owner: hatchling_sys::euid(),
-            ask_key: &|_| Err(String::from("the key wasn't stored, so nothing was changed")),
+            ask_key: &|_| {
+                Err(String::from(
+                    "the key wasn't stored, so nothing was changed",
+                ))
+            },
             restart: &|| Err(String::from("restarted")),
         };
         let openrouter = target(USE_HOSTED, &["openrouter"]).unwrap();
@@ -904,7 +940,11 @@ mod tests {
         assert!(refused.starts_with("nothing at "), "{refused}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
         assert_eq!(backups(&path), 0);
-        assert!(dir.join("schedules.owner").join(crate::model_choice::MODEL_FILE).exists());
+        assert!(
+            dir.join("schedules.owner")
+                .join(crate::model_choice::MODEL_FILE)
+                .exists()
+        );
         // A file someone else owns isn't read; a restart that fails says so.
         let other = Steps {
             owner: hatchling_sys::euid().wrapping_add(1),
@@ -938,7 +978,12 @@ mod tests {
         switch_with(&local, &path, &steps, &mut Vec::new()).unwrap();
         served.join().unwrap();
         let settings = crate::doctor::parse_settings(&std::fs::read_to_string(&path).unwrap());
-        assert_eq!(settings.get("HATCHLING_SCHEDULER_MODEL_NAME").map(String::as_str), Some("llama3.2"));
+        assert_eq!(
+            settings
+                .get("HATCHLING_SCHEDULER_MODEL_NAME")
+                .map(String::as_str),
+            Some("llama3.2")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -947,11 +992,27 @@ mod tests {
         let yes = Path::new("/bin/true");
         let no = Path::new("/bin/false");
         assert_eq!(ask_key(yes, "openrouter.ai:443"), Ok(()));
-        assert!(ask_key(no, "openrouter.ai:443").unwrap_err().contains("nothing was changed"));
-        assert!(ask_key(Path::new("/nonexistent/hatchling"), "x:1").unwrap_err().starts_with("can't ask"));
+        assert!(
+            ask_key(no, "openrouter.ai:443")
+                .unwrap_err()
+                .contains("nothing was changed")
+        );
+        assert!(
+            ask_key(Path::new("/nonexistent/hatchling"), "x:1")
+                .unwrap_err()
+                .starts_with("can't ask")
+        );
         assert_eq!(restart(yes), Ok(()));
-        assert!(restart(no).unwrap_err().starts_with("the broker didn't restart"));
-        assert!(restart(Path::new("/nonexistent/systemctl")).unwrap_err().starts_with("can't restart"));
+        assert!(
+            restart(no)
+                .unwrap_err()
+                .starts_with("the broker didn't restart")
+        );
+        assert!(
+            restart(Path::new("/nonexistent/systemctl"))
+                .unwrap_err()
+                .starts_with("can't restart")
+        );
     }
 
     #[test]
