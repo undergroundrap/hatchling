@@ -34,7 +34,9 @@ It ends with the app's address. Open it in a browser on this machine, and say so
 
 ## Choosing a model
 
-**Local or hosted.** How much your agent can do depends most on its model. A model on your own machine keeps everything there; a hosted model is bigger, and remembers far more of a conversation. A local model with a 32,768-token window still does real work: reads your goals, keeps your Feed, answers from what it's told. For the most out of the agent, use a strong local setup (a GPU with 12 GB or more, and the window below), or a [hosted model](hosted-models.md) with a large window: OpenRouter's free `nvidia/nemotron-3-ultra-550b-a55b:free` has 1,000,000 tokens. Local models keep getting smaller and better, and you can switch at any time.
+**Local, hosted, or both: you don't have to choose.** How much your agent can do depends most on its model. A model on your own machine keeps everything there; a hosted model is bigger, and remembers far more of a conversation. A local model with a 32,768-token window still does real work: reads your goals, keeps your Feed, answers from what it's told. For the most out of the agent, use a strong local setup (a GPU with 12 GB or more, and the window below), or a [hosted model](hosted-models.md) with a large window: OpenRouter's free `nvidia/nemotron-3-ultra-550b-a55b:free` has 1,000,000 tokens.
+
+Many people set up both and switch as the work needs: the hosted model for a long research task, the local one for anything private, or when the provider is down or you're offline. Hatchling uses one model at a time, and switching is one command either way (`use-hosted` and `use-local`, [below](#switching-models)). Set both up once and both stay ready: the key stays in the vault, and Ollama keeps its models and the window the installer gave it. Your conversation, memory, goals and schedules are Hatchling's, not the model's, so they come with you. Local models keep getting smaller and better, so a choice you make today isn't for good.
 
 Hatchling's agent works by calling tools, so the model must call them well: only when a task needs one, with arguments that fit. A model that can't is the commonest reason an answer fails. Hatchling stops such a model before anything it asked for runs, and the chat says so.
 
@@ -68,6 +70,8 @@ sudo systemctl daemon-reload && sudo systemctl restart ollama
 ```
 
 Hatchling reads the window from Ollama itself, as `ollama ps` does, and the chat's context meter shows how full each answer got it: "Context: 5.6K of 32K tokens (17%)". Once the model has loaded, `sudo hatchling-broker doctor` shows the window too: it says when it's too small to answer in, and when it's under 32,768. With a model server that doesn't say its window, tell Hatchling: add `HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW=32768` to `/etc/hatchling/hatchling.env`, and restart: `sudo systemctl restart hatchling` (without it, the meter shows tokens alone). It's at least 8,192, and each run is told it too.
+
+### Switching models
 
 To use a hosted model instead, with a far larger window, run `sudo hatchling-broker use-hosted openrouter` ([hosted models](hosted-models.md)), and `sudo hatchling-broker use-local --model qwen3.5:9b` to come back. To switch local models, pull the new one (`ollama pull <name>`), then choose it in the app: **Settings → General → Model** lists the models on your server (**Refresh** after a pull), and Hatchling uses the one you choose from your next message, with no restart. It shows how the model in use fits, too. **Back to …** returns to the model you installed with, which `HATCHLING_SCHEDULER_MODEL_NAME` in `/etc/hatchling/hatchling.env` still sets. `ollama rm <name>` removes one you no longer use.
 
