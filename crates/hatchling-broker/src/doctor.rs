@@ -579,10 +579,22 @@ fn fitted(found: Finding, loaded: Option<crate::model_window::Loaded>) -> Findin
         ));
     }
     Finding::Fine(format!(
-        "{seen}, {} of its {} on the CPU, more slowly: free the GPU's memory, or give it a smaller window (OLLAMA_CONTEXT_LENGTH=16384)",
+        "{seen}, {} of its {} on the CPU, more slowly: free the GPU's memory, or give it a smaller window (OLLAMA_CONTEXT_LENGTH={})",
         gigabytes(loaded.on_cpu()),
-        gigabytes(loaded.size)
+        gigabytes(loaded.size),
+        smaller_window(loaded.window)
     ))
+}
+
+/// A smaller window to try for a model that doesn't fit with `window`:
+/// the recommended one, when it has more, else half of it, never under
+/// the agent's floor.
+fn smaller_window(window: Option<u32>) -> u32 {
+    match window {
+        Some(window) if window > RECOMMENDED_WINDOW => RECOMMENDED_WINDOW,
+        Some(window) => (window / 2).max(crate::config::MIN_CONTEXT_WINDOW),
+        None => RECOMMENDED_WINDOW / 2,
+    }
 }
 
 /// The computer's memory: how much is free, and whether that's low.
@@ -1248,6 +1260,18 @@ mod tests {
         assert_eq!(fitted(fine.clone(), loaded(0, 0)), fine, "no size, no fit");
         let missing = Finding::problem("missing", "fetch it");
         assert_eq!(fitted(missing.clone(), loaded(1, 0)), missing);
+    }
+
+    /// The smaller window to try is the recommended one when the model
+    /// has more, else half, never under the agent's floor.
+    #[test]
+    fn a_smaller_window_is_one_that_helps() {
+        assert_eq!(smaller_window(Some(131_072)), 32_768);
+        assert_eq!(smaller_window(Some(32_769)), 32_768);
+        assert_eq!(smaller_window(Some(32_768)), 16_384);
+        assert_eq!(smaller_window(Some(16_384)), 8_192);
+        assert_eq!(smaller_window(Some(12_000)), 8_192, "never under the floor");
+        assert_eq!(smaller_window(None), 16_384);
     }
 
     /// The computer's memory is said, and low memory named.
