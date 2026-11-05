@@ -721,9 +721,8 @@ mod tests {
     #[test]
     fn the_processes_report_is_this_processs_own_view() {
         let own = std::process::id();
-        let namespace = std::os::unix::fs::MetadataExt::ino(
-            &std::fs::metadata("/proc/self/ns/pid").unwrap(),
-        );
+        let namespace =
+            std::os::unix::fs::MetadataExt::ino(&std::fs::metadata("/proc/self/ns/pid").unwrap());
         let report = super::run_report_attack(crate::Attack::Processes);
         assert!(
             matches!(report, Ok(crate::Outcome::Processes { .. })),
@@ -742,10 +741,7 @@ mod tests {
         let this = visible.iter().find(|seen| seen.pid == own).unwrap();
         let comm = std::fs::read_to_string("/proc/self/comm").unwrap();
         assert_eq!(this.name, comm.trim());
-        assert!(
-            visible.is_sorted_by_key(|seen| seen.pid),
-            "in pid order"
-        );
+        assert!(visible.is_sorted_by_key(|seen| seen.pid), "in pid order");
     }
 
     #[test]

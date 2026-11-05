@@ -1483,7 +1483,9 @@ fn sees_only_itself(cell: &str, outcome: Outcome, host: u64, has_proc: bool) -> 
         visible,
     } = outcome
     else {
-        return Err(format!("{cell}: expected Processes outcome, got {outcome:?}"));
+        return Err(format!(
+            "{cell}: expected Processes outcome, got {outcome:?}"
+        ));
     };
     let Some(pid_namespace) = pid_namespace else {
         if has_proc || !visible.is_empty() {
