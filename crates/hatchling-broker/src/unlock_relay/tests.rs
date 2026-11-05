@@ -19,8 +19,7 @@ fn scratch(name: &str) -> PathBuf {
 fn pair() -> (UnixStream, UnixStream) {
     let (one, other) = UnixStream::pair().unwrap();
     for end in [&one, &other] {
-        end.set_read_timeout(Some(Duration::from_secs(10)))
-            .unwrap();
+        end.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     }
     (one, other)
 }
