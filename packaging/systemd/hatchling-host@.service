@@ -1,0 +1,56 @@
+# The app's host, run as the owner: hatchling-host@<owner>.service, a system
+# service with User= the owner. scripts/install.sh installs it at
+# /etc/systemd/system/hatchling-host@.service and enables it for the owner;
+# see docs/install.md.
+#
+# It was the owner's own user service, which needs the owner's systemd user
+# manager, and lingering for it to run without a login. In WSL, with WSLg
+# on, a second /run/user/<uid> mounted over systemd's can hide that manager
+# from `systemctl --user`, so the install couldn't start the host. As a
+# system service it needs neither, and systemd can confine it more.
+#
+# It serves the app on 127.0.0.1:7340 and carries its channel to the
+# broker's UI socket, which answers the owner alone. The broker mints a new
+# UI token each start: the host carries what the browser sends, so it needs
+# no restart; `hatchling-host url` prints the address with the token now.
+[Unit]
+Description=Hatchling's app for %i, on 127.0.0.1
+Documentation=https://github.com/undergroundrap/hatchling/blob/main/docs/install.md
+After=network.target hatchling.service
+
+[Service]
+Type=exec
+User=%i
+Environment=HATCHLING_UI_SOCKET=/var/lib/hatchling/ui.sock
+Environment=HATCHLING_OPERATOR_SOCKET=/var/lib/hatchling/operator.sock
+Environment=HATCHLING_HOST_UI=/usr/local/share/hatchling/ui
+ExecStart=/usr/local/bin/hatchling-host
+Restart=on-failure
+RestartSec=5s
+
+# What a web server for one person on this machine needs, and no more: no
+# new privileges, no capabilities, the system and homes read-only, only
+# local and IP sockets.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
