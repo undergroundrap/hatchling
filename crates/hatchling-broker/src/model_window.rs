@@ -385,14 +385,28 @@ mod tests {
     fn model_fit_asks_the_split_then_the_files_size() {
         let fit_of = |file: u64| {
             let (address, served) = answering(vec![
-                loaded(r#"{"name":"m","size":1148840836,"size_vram":1148840836,"context_length":65536}"#),
-                loaded(&format!(r#"{{"name":"other","size":1}},{{"name":"m","size":{file}}}"#)),
+                loaded(
+                    r#"{"name":"m","size":1148840836,"size_vram":1148840836,"context_length":65536}"#,
+                ),
+                loaded(&format!(
+                    r#"{{"name":"other","size":1}},{{"name":"m","size":{file}}}"#
+                )),
             ]);
             let args = [format!("http://{address}/v1"), String::from("m")];
             assert_eq!(model_fit_main(&args), std::process::ExitCode::SUCCESS);
             let heads = served.join().unwrap();
-            assert!(heads.first().is_some_and(|head| head.starts_with("GET /api/ps ")), "{heads:?}");
-            assert!(heads.get(1).is_some_and(|head| head.starts_with("GET /api/tags ")), "{heads:?}");
+            assert!(
+                heads
+                    .first()
+                    .is_some_and(|head| head.starts_with("GET /api/ps ")),
+                "{heads:?}"
+            );
+            assert!(
+                heads
+                    .get(1)
+                    .is_some_and(|head| head.starts_with("GET /api/tags ")),
+                "{heads:?}"
+            );
         };
         fit_of(8_021_618_941);
         fit_of(1_000_000_000);
@@ -414,12 +428,20 @@ mod tests {
             on_gpu: 1_148_840_836,
         };
         let vouch = |files: &str, loaded: Option<Loaded>| {
-            let answers = if files.is_empty() { vec![] } else { vec![loaded_list(files)] };
+            let answers = if files.is_empty() {
+                vec![]
+            } else {
+                vec![loaded_list(files)]
+            };
             let (address, served) = answering(answers);
             let vouched = vouched(&address, "gemma4:12b", loaded, CONNECT, ANSWER);
             (vouched, served.join().unwrap().len())
         };
-        let unsaid = Loaded { size: 0, on_gpu: 0, ..gemma };
+        let unsaid = Loaded {
+            size: 0,
+            on_gpu: 0,
+            ..gemma
+        };
         assert_eq!(
             vouch(r#"{"name":"gemma4:12b","size":8021618941}"#, Some(gemma)),
             (Some(unsaid), 1)
@@ -435,13 +457,23 @@ mod tests {
             (Some(gemma), 1),
             "the file's size not said"
         );
-        assert_eq!(vouch("", Some(unsaid)), (Some(unsaid), 0), "nothing to check");
+        assert_eq!(
+            vouch("", Some(unsaid)),
+            (Some(unsaid), 0),
+            "nothing to check"
+        );
         assert_eq!(vouch("", None), (None, 0));
         assert_eq!(
-            file_size_in(br#"{"models":[{"model":"gemma4:12b","size":5},{"name":"z","size":0}]}"#, "gemma4:12b"),
+            file_size_in(
+                br#"{"models":[{"model":"gemma4:12b","size":5},{"name":"z","size":0}]}"#,
+                "gemma4:12b"
+            ),
             Some(5)
         );
-        assert_eq!(file_size_in(br#"{"models":[{"name":"z","size":0}]}"#, "z"), None);
+        assert_eq!(
+            file_size_in(br#"{"models":[{"name":"z","size":0}]}"#, "z"),
+            None
+        );
         assert_eq!(file_size_in(b"not json", "z"), None);
     }
 
