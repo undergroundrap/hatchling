@@ -55,6 +55,14 @@ checks the grant, replaces it with the vault credential, and supplies the
 Authorization header over verified TLS. The agent receives no provider key.
 No vault-fetch grant is needed for model access.
 
+**From Windows, with Hatchling in WSL2**, let the command take the key from the clipboard, so you type nothing and nothing shows. Open PowerShell yourself (not a terminal an AI agent opens for you: see [testing with an agent](testing-with-an-agent.md)), paste this command and **don't press Enter yet**. Copy the key from your provider's page, then press Enter:
+
+```powershell
+(Get-Clipboard -Raw).Trim() | wsl -d <distro> -- sudo hatchling-broker secret add --for openrouter.ai:443; Set-Clipboard -Value ' '
+```
+
+It reads the clipboard only when it runs, trims the stray line break a copy can carry (one the prompt would refuse as a second line), hands the key to Hatchling through a pipe, and then clears the clipboard, whether or not the key went in. It should say `Sealed egress-openrouter-ai-443 in the vault.` If you use Windows' clipboard history (Win+V), delete the key's entry there too: it keeps its own copy, which a command can't clear on its own.
+
 A broker that's running uses the key from its next request: there's no need
 to stop it. To change the key, add `--replace`; without it, `secret add`
 refuses a name that's already in the vault, before it asks for anything.
