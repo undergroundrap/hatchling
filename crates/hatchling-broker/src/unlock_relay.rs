@@ -106,10 +106,11 @@ pub fn socket_path(vault: &VaultConfig) -> PathBuf {
     unlock_dir(vault).join(SOCKET)
 }
 
-/// Whether the vault the keyring settings name needs a person to open it:
-/// a code at the TOTP tier, a key or a backup code at the hardware-key
-/// tier. Without a keyring, or one that doesn't load, it doesn't (the
-/// unlock says why the keyring doesn't load).
+/// Whether the vault the keyring settings name needs a person to open it.
+///
+/// A code does at the TOTP tier, and a key or a backup code at the
+/// hardware-key tier. Without a keyring, or one that doesn't load, it
+/// doesn't (the unlock says why the keyring doesn't load).
 #[must_use]
 pub fn needs_a_person(keyring: &KeyringConfig) -> bool {
     keyring
@@ -202,7 +203,7 @@ fn wait(
                 let _ = tell(
                     &stream,
                     &ToOperator::Failed {
-                        reason: error.to_string(),
+                        reason: plainly(&error),
                     },
                 );
             }
@@ -235,7 +236,7 @@ fn unlock_over(
     keyring: &KeyringConfig,
 ) -> Result<MasterKey, Error> {
     let keys = take_keys(stream)?;
-    let pin = Rc::new(stream.try_clone().map_err(io)?);
+    let pin = Rc::new(stream.try_clone().map_err(|e| io(&e))?);
     let bus = hatchling_fido2::linux::Hidraw::opened(
         keys,
         Box::new(move || {
@@ -289,7 +290,7 @@ pub(crate) fn one_try(
 
 /// The security keys the operator's command passed on `stream`.
 fn take_keys(stream: &UnixStream) -> Result<Vec<(String, File)>, Error> {
-    let frame = Zeroizing::new(read_frame(stream).map_err(framing)?);
+    let frame = Zeroizing::new(read_frame(stream).map_err(|e| framing(&e))?);
     let Ok(ToKeeper::Keys { nodes }) = serde_json::from_slice(&frame) else {
         return Err(protocol("it didn't say which security keys it opened"));
     };
@@ -321,7 +322,7 @@ fn relay(stream: &UnixStream, prompt: &str, secret: bool) -> Result<Zeroizing<St
             secret,
         },
     )?;
-    let frame = Zeroizing::new(read_frame(stream).map_err(framing)?);
+    let frame = Zeroizing::new(read_frame(stream).map_err(|e| framing(&e))?);
     match serde_json::from_slice::<ToKeeper>(&frame) {
         Ok(ToKeeper::Answer { text }) if text.len() <= MAX_ANSWER => Ok(Zeroizing::new(text)),
         _ => Err(protocol("its answer wasn't one")),
@@ -330,14 +331,23 @@ fn relay(stream: &UnixStream, prompt: &str, secret: bool) -> Result<Zeroizing<St
 
 fn tell(stream: &UnixStream, message: &ToOperator) -> Result<(), Error> {
     let bytes = serde_json::to_vec(message).map_err(|e| protocol(&e.to_string()))?;
-    write_frame(stream, &bytes).map_err(framing)
+    write_frame(stream, &bytes).map_err(|e| framing(&e))
 }
 
-fn framing(error: hatchling_core::Error) -> Error {
+/// Why a try failed, as the operator is told: the reason itself, without
+/// the error's kind in front.
+fn plainly(error: &Error) -> String {
+    match error {
+        Error::Usage { reason } | Error::Keeper { reason } => reason.clone(),
+        other => other.to_string(),
+    }
+}
+
+fn framing(error: &hatchling_core::Error) -> Error {
     protocol(&error.to_string())
 }
 
-fn io(error: std::io::Error) -> Error {
+fn io(error: &std::io::Error) -> Error {
     protocol(&error.to_string())
 }
 
@@ -401,17 +411,24 @@ fn terminal_answer(prompt: &str, secret: bool) -> Result<Zeroizing<String>, Stri
     crate::vault_keyring::terminal_answer(prompt, secret).map_err(|e| e.to_string())
 }
 
+/// How the operator answers a question: the prompt, and whether it's a
+/// secret, in; the answer out.
+pub(crate) type Answer<'a> = &'a mut dyn FnMut(&str, bool) -> Result<Zeroizing<String>, String>;
+
 /// The operator's side over `stream`: `keys` passed, then each question
 /// answered by `answer`, until the keeper says how it went.
 pub(crate) fn operate(
     stream: &UnixStream,
     keys: &[(String, File)],
-    answer: &mut dyn FnMut(&str, bool) -> Result<Zeroizing<String>, String>,
+    answer: Answer<'_>,
 ) -> Result<(), String> {
     let gone = |e: hatchling_core::Error| format!("Hatchling stopped answering: {e}");
     let nodes: Vec<String> = keys.iter().map(|(node, _)| node.clone()).collect();
     let keys_frame = serde_json::to_vec(&ToKeeper::Keys { nodes }).map_err(|e| e.to_string())?;
-    write_frame(stream, &keys_frame).map_err(gone)?;
+    if let Err(error) = write_frame(stream, &keys_frame) {
+        // A keeper that refused this command said why before it closed.
+        return Err(last_word(stream).unwrap_or_else(|| gone(error)));
+    }
     for (_, key) in keys {
         hatchling_sys::net::send_fd(stream.as_fd(), key.as_fd()).map_err(|e| e.to_string())?;
     }
@@ -436,6 +453,15 @@ pub(crate) fn operate(
                 ));
             }
         }
+    }
+}
+
+/// What the keeper said last on `stream`, if it said why it stopped.
+fn last_word(stream: &UnixStream) -> Option<String> {
+    let frame = read_frame(stream).ok()?;
+    match serde_json::from_slice::<ToOperator>(&frame) {
+        Ok(ToOperator::Failed { reason }) => Some(reason),
+        _ => None,
     }
 }
 

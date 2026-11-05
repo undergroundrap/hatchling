@@ -853,8 +853,11 @@ pub(crate) fn terminal_answer(
     prompt: &str,
     secret: bool,
 ) -> Result<zeroize::Zeroizing<String>, Error> {
-    let console = Console::terminal();
-    let mut console = console.borrow_mut();
+    let mut console = Console {
+        input: std::io::stdin().lock(),
+        output: std::io::stderr(),
+        stdin: true,
+    };
     if secret {
         console.ask_secret(prompt)
     } else {
@@ -1970,7 +1973,7 @@ mod tests {
     }
 
     /// A vault at the TOTP tier, started with nobody at its terminal,
-    /// opens over the unlock relay (crate::unlock_relay) with a current
+    /// opens over the unlock relay (`crate::unlock_relay`) with a current
     /// code, asked in the operator's terminal; a wrong one is told why,
     /// and opens nothing.
     #[test]
