@@ -248,6 +248,12 @@ impl<'a> Ops<'a> {
                 }
                 self.set_model(name.as_deref())
             }
+            UiAction::SwitchModelServer { other } => {
+                if !owns {
+                    return refused(ActionRefusal::NotGranted);
+                }
+                self.switch_model_server(*other)
+            }
             UiAction::ManageGoals { op } => self.owned(owns, Owned::Goals(op)),
             UiAction::ManageMemory { op } => self.owned(owns, Owned::Memory(op)),
             UiAction::ListDecisions {} => self.owned(owns, Owned::Decisions),
@@ -359,11 +365,10 @@ impl<'a> Ops<'a> {
         }
     }
 
-    /// The models the server lists, when it does.
+    /// The models the server in use lists, when it does.
     fn models_listed(&self) -> Option<Vec<String>> {
-        self.config
-            .scheduler
-            .model_endpoint
+        crate::model_choice::server(&self.config.scheduler)
+            .endpoint
             .as_deref()
             .and_then(crate::model_choice::available)
     }
@@ -385,14 +390,64 @@ impl<'a> Ops<'a> {
                 let model = crate::model_choice::state(&self.config.scheduler, available);
                 (UiActionResult::Model { model }, ApiOutcome::Served)
             }
-            Err(NotSet::Invalid | NotSet::NotOnServer) => refused(ActionRefusal::BadRequest),
-            Err(NotSet::Off) => refused(ActionRefusal::Unavailable),
+            Err(NotSet::Invalid | NotSet::NotOnServer | NotSet::NoOther) => {
+                refused(ActionRefusal::BadRequest)
+            }
+            Err(NotSet::Off | NotSet::NotGranted) => refused(ActionRefusal::Unavailable),
             Err(NotSet::Io(error)) => {
                 tracing::warn!(error = %error, "the chosen model couldn't be kept");
                 refused(ActionRefusal::Unavailable)
             }
         }
     }
+
+    /// Switches to the operator's other model server with `other`, or back
+    /// to their first, answered with the model as it then stands.
+    ///
+    /// Only to a server egress grants: to runs (`HATCHLING_EGRESS_GRANTS`)
+    /// and to the chat (`HATCHLING_API_GRANTS`) both.
+    fn switch_model_server(&self, other: bool) -> (UiActionResult, ApiOutcome) {
+        use crate::model_choice::NotSet;
+        let refused = |reason| (UiActionResult::Refused { reason }, ApiOutcome::Refused);
+        // The chat's grants are the app's, when there's a chat at all.
+        let chat = crate::api_auth::ApiConfig::from_env(self.config)
+            .ok()
+            .and_then(|api| crate::chat_run::chat_grants(&api.grants));
+        let granted =
+            |destination: &str| reaches(&self.config.egress.grants, chat.as_deref(), destination);
+        match crate::model_choice::switch(&self.config.scheduler, other, &granted) {
+            Ok(()) => {
+                tracing::info!(other, "the owner switched the model's server");
+                self.read_model()
+            }
+            Err(NotSet::NoOther | NotSet::Invalid | NotSet::NotOnServer) => {
+                refused(ActionRefusal::BadRequest)
+            }
+            Err(NotSet::Off) => refused(ActionRefusal::Unavailable),
+            Err(NotSet::NotGranted) => {
+                tracing::warn!(other, "a switch to a model server egress doesn't grant was refused");
+                refused(ActionRefusal::Unavailable)
+            }
+            Err(NotSet::Io(error)) => {
+                tracing::warn!(error = %error, "the model's server couldn't be switched");
+                refused(ActionRefusal::Unavailable)
+            }
+        }
+    }
+}
+
+/// Whether runs, with `egress` (the operator's egress grants), and the
+/// chat, with `chat` (its grants, when there's a chat), reach the model's
+/// server at `destination`.
+fn reaches(egress: &[String], chat: Option<&[ScheduleGrant]>, destination: &str) -> bool {
+    let grant = ScheduleGrant::Egress {
+        destination: destination.to_owned(),
+    };
+    egress.iter().any(|granted| granted == destination)
+        && chat.is_none_or(|chat| chat.contains(&grant))
+}
+
+impl Ops<'_> {
     /// The owner's answer to a browser's code request (WO-030): a code
     /// given, or the request declined; the owner's alone.
     fn code(&self, owner: bool, action: &UiAction) -> (UiActionResult, ApiOutcome) {
@@ -2225,6 +2280,78 @@ mod tests {
                 ApiOutcome::Refused
             )
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A model's server is reached when the operator's egress grants it,
+    /// and the chat's grants do too, when there's a chat.
+    #[test]
+    fn a_server_is_reached_when_runs_and_the_chat_are_granted_it() {
+        let egress = vec![String::from("localhost:11434"), String::from("openrouter.ai:443")];
+        let local = ScheduleGrant::Egress {
+            destination: String::from("localhost:11434"),
+        };
+        assert!(reaches(&egress, None, "openrouter.ai:443"));
+        assert!(!reaches(&egress, None, "other.example:443"));
+        assert!(reaches(&egress, Some(&[local.clone()]), "localhost:11434"));
+        assert!(!reaches(&egress, Some(&[local]), "openrouter.ai:443"));
+        assert!(!reaches(&[], Some(&[]), "localhost:11434"));
+    }
+
+    /// Only the owner switches the model's server; one the operator
+    /// didn't set up, or egress doesn't grant, is refused.
+    #[test]
+    fn only_the_owner_switches_the_models_server() {
+        let dir = std::env::temp_dir().join(format!("hatchling-api-server-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut config = owner_config(dir.join("schedules").to_str());
+        config.scheduler.model_endpoint = Some(String::from("https://models.example/v1"));
+        config.scheduler.model_name = Some(String::from("qwen3.5:9b"));
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let switch = |config: &Config, who: Option<usize>, other: bool| {
+            let ops = Ops::new(config, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+            let held: Vec<ScheduleGrant> = ops.owner_grants().into_iter().collect();
+            let held = who.map_or(held.as_slice(), |n| held.get(..n).unwrap_or_default());
+            let mut replies = Replies::default();
+            ops.handle(&caller(held), &UiAction::SwitchModelServer { other }, &mut replies)
+        };
+        let refused = |reason| (UiActionResult::Refused { reason }, ApiOutcome::Refused);
+        assert_eq!(switch(&config, None, true), refused(ActionRefusal::BadRequest), "no other");
+        config.scheduler.other_model = Some(crate::config::OtherModel {
+            endpoint: String::from("http://localhost:11434/v1"),
+            name: String::from("gemma4:12b"),
+            reasoning: hatchling_core::ModelReasoning::ProviderDefault,
+            context_window: None,
+        });
+        assert_eq!(
+            switch(&config, None, true),
+            refused(ActionRefusal::Unavailable),
+            "egress doesn't grant it"
+        );
+        config.egress.grants = vec![
+            String::from("models.example:443"),
+            String::from("localhost:11434"),
+        ];
+        assert_eq!(
+            switch(&config, Some(1), true),
+            refused(ActionRefusal::NotGranted),
+            "not the owner"
+        );
+        let (result, outcome) = switch(&config, None, true);
+        assert_eq!(outcome, ApiOutcome::Served, "{result:?}");
+        assert!(matches!(result, UiActionResult::Model { .. }), "{result:?}");
+        let UiActionResult::Model { model } = result else {
+            return;
+        };
+        assert!(model.switched);
+        assert_eq!(model.configured.as_deref(), Some("gemma4:12b"));
+        assert_eq!(
+            model.other.and_then(|other| other.name).as_deref(),
+            Some("qwen3.5:9b")
+        );
+        let (result, _) = switch(&config, None, false);
+        assert!(matches!(result, UiActionResult::Model { model } if !model.switched));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

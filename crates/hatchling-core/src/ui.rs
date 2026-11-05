@@ -737,6 +737,27 @@ pub struct ModelState {
     /// How much of that runs on the CPU, more slowly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_cpu: Option<u64>,
+    /// The other server the operator set up, that the owner may switch
+    /// to: none when there's one. With [`ModelState::switched`], the
+    /// operator's first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub other: Option<ModelServer>,
+    /// Whether the owner switched to the operator's other server: the
+    /// endpoint and the configured model above are its.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub switched: bool,
+}
+
+/// A model's server the operator set up, and the model they set on it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ModelServer {
+    /// The API's base URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    /// The model's id on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// The tokens counted toward the owner's limits, read and written
@@ -1322,6 +1343,14 @@ pub enum UiAction {
         /// the operator set.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
+    },
+    /// Switch to the other model's server the operator set up, or back to
+    /// their first, from the next run on, answered with the model as it
+    /// then stands: the owner's alone. Where the owner's words go changes,
+    /// so the app asks them first.
+    SwitchModelServer {
+        /// To the other server; false goes back to the first.
+        other: bool,
     },
     /// Read the posts on the owner's Feed page, the newest first: the
     /// owner's alone.
@@ -2677,6 +2706,8 @@ mod tests {
                     window: Some(32768),
                     size: Some(6_600_000_000),
                     on_cpu: Some(0),
+                    other: None,
+                    switched: false,
                 },
             },
             &json!({"result": "model", "model": {
@@ -2687,6 +2718,30 @@ mod tests {
                 "window": 32768,
                 "size": 6_600_000_000_u64,
                 "on_cpu": 0,
+            }}),
+        );
+        pinned(
+            &UiAction::SwitchModelServer { other: true },
+            &json!({"action": "switch_model_server", "other": true}),
+        );
+        pinned(
+            &UiActionResult::Model {
+                model: ModelState {
+                    endpoint: Some(s("https://openrouter.ai/api/v1")),
+                    configured: Some(s("nvidia/nemotron-3-ultra-550b-a55b:free")),
+                    other: Some(ModelServer {
+                        endpoint: Some(s("http://localhost:11434/v1")),
+                        name: Some(s("qwen3.5:9b")),
+                    }),
+                    switched: true,
+                    ..ModelState::default()
+                },
+            },
+            &json!({"result": "model", "model": {
+                "endpoint": "https://openrouter.ai/api/v1",
+                "configured": "nvidia/nemotron-3-ultra-550b-a55b:free",
+                "other": {"endpoint": "http://localhost:11434/v1", "name": "qwen3.5:9b"},
+                "switched": true,
             }}),
         );
         pinned(

@@ -103,6 +103,8 @@ pub enum ApiRequest {
     ReadModel,
     /// [`UiAction::SetModel`].
     SetModel,
+    /// [`UiAction::SwitchModelServer`].
+    SwitchModelServer,
     /// [`UiAction::ReadFeed`].
     ReadFeed,
     /// [`UiAction::ManageSuggestions`].
@@ -152,6 +154,7 @@ impl ApiRequest {
             UiAction::SetUsageLimits { .. } => Self::SetUsageLimits,
             UiAction::ReadModel {} => Self::ReadModel,
             UiAction::SetModel { .. } => Self::SetModel,
+            UiAction::SwitchModelServer { .. } => Self::SwitchModelServer,
             UiAction::ReadFeed {} => Self::ReadFeed,
             UiAction::ManageSuggestions { .. } => Self::ManageSuggestions,
             UiAction::GiveCode { .. } => Self::GiveCode,
@@ -347,6 +350,10 @@ mod tests {
             (
                 action(UiAction::SetModel { name: None }),
                 ApiRequest::SetModel,
+            ),
+            (
+                action(UiAction::SwitchModelServer { other: true }),
+                ApiRequest::SwitchModelServer,
             ),
             (action(UiAction::ReadFeed {}), ApiRequest::ReadFeed),
             (

@@ -156,7 +156,7 @@ pub fn target(command: &str, args: &[&str]) -> Result<Target, String> {
 /// The `host:port` of `endpoint`: `https` for a hosted server (port 443
 /// unless it says), plain `http` on this machine for a local one. Its
 /// characters are a URL's plain ones, so it's written as it is.
-fn destination_of(endpoint: &str, local: bool) -> Result<String, String> {
+pub(crate) fn destination_of(endpoint: &str, local: bool) -> Result<String, String> {
     let plain = endpoint
         .bytes()
         .all(|byte| byte.is_ascii_alphanumeric() || b"-._~:/%".contains(&byte));
@@ -279,7 +279,45 @@ pub fn changes(
             })),
         ));
     }
+    // The server switched from stays set up, as the other one the owner
+    // may switch back to from the app ([`crate::model_choice::switch`]).
+    if let Some((endpoint, name)) = switched_from(settings, target) {
+        let old = |key: &str| {
+            settings
+                .get(key)
+                .filter(|value| !value.trim().is_empty())
+                .cloned()
+        };
+        changes.extend([
+            (env::HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT.name, Some(endpoint)),
+            (env::HATCHLING_SCHEDULER_MODEL_OTHER_NAME.name, Some(name)),
+            (
+                env::HATCHLING_SCHEDULER_MODEL_OTHER_REASONING.name,
+                old(env::HATCHLING_SCHEDULER_MODEL_REASONING.name),
+            ),
+            (
+                env::HATCHLING_SCHEDULER_MODEL_OTHER_CONTEXT_WINDOW.name,
+                old(env::HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW.name),
+            ),
+        ]);
+    }
     changes
+}
+
+/// The server, and model, `settings` use, when a switch to `target` moves
+/// off it: its endpoint and model's name. None when there's none, or it's
+/// the server switched to.
+fn switched_from(settings: &BTreeMap<String, String>, target: &Target) -> Option<(String, String)> {
+    let set = |key: &str| {
+        settings
+            .get(key)
+            .filter(|value| !value.trim().is_empty())
+            .cloned()
+    };
+    let endpoint = set(env::HATCHLING_SCHEDULER_MODEL_ENDPOINT.name)?;
+    let name = set(env::HATCHLING_SCHEDULER_MODEL_NAME.name)?;
+    (endpoint != target.endpoint && crate::model_choice::valid_name(&name))
+        .then_some((endpoint, name))
 }
 
 /// `text`, a settings file, with `changes` made.
@@ -414,13 +452,26 @@ fn switch_with(
         },
         backup.display()
     );
+    if let Some((endpoint, name)) = switched_from(&settings, target) {
+        let _ = writeln!(
+            out,
+            "{name} at {endpoint} stays set up: switch back to it in the app, under Settings, General, Model."
+        );
+    }
     if let Some(root) = settings.get(env::HATCHLING_SCHEDULER_DIR.name) {
-        let choice =
-            crate::config::owner_dir_of(Path::new(root)).join(crate::model_choice::MODEL_FILE);
-        if std::fs::remove_file(&choice).is_ok() {
+        let owner = crate::config::owner_dir_of(Path::new(root));
+        if std::fs::remove_file(owner.join(crate::model_choice::MODEL_FILE)).is_ok() {
             let _ = writeln!(
                 out,
                 "The model chosen in the app was one on the old server: it's forgotten."
+            );
+        }
+        // A switch the owner made in the app was between the old servers:
+        // kept, it could come back to life on a later switch.
+        if std::fs::remove_file(owner.join(crate::model_choice::SERVER_FILE)).is_ok() {
+            let _ = writeln!(
+                out,
+                "The server switched to in the app was one of the old pair: it's forgotten."
             );
         }
     }
@@ -839,6 +890,70 @@ mod tests {
         assert!(public.contains(&("HATCHLING_EGRESS_GRANTS", Some(s("openrouter.ai:443")))));
     }
 
+    /// The other server's four settings among `changes`, by key.
+    fn other_of(changes: &[(&str, Option<String>)]) -> Vec<(String, Option<String>)> {
+        changes
+            .iter()
+            .filter(|(key, _)| key.starts_with("HATCHLING_SCHEDULER_MODEL_OTHER_"))
+            .map(|(key, value)| ((*key).to_owned(), value.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn the_server_switched_from_stays_set_up_as_the_other() {
+        let local = settings(&[
+            ("HATCHLING_SCHEDULER_MODEL_ENDPOINT", OLLAMA),
+            ("HATCHLING_SCHEDULER_MODEL_NAME", "qwen3.5:9b"),
+            ("HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW", "65536"),
+        ]);
+        let hosted = target(USE_HOSTED, &["openrouter"]).unwrap();
+        assert_eq!(
+            other_of(&changes(&local, &hosted)),
+            vec![
+                (s("HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT"), Some(s(OLLAMA))),
+                (s("HATCHLING_SCHEDULER_MODEL_OTHER_NAME"), Some(s("qwen3.5:9b"))),
+                (s("HATCHLING_SCHEDULER_MODEL_OTHER_REASONING"), None),
+                (
+                    s("HATCHLING_SCHEDULER_MODEL_OTHER_CONTEXT_WINDOW"),
+                    Some(s("65536"))
+                ),
+            ]
+        );
+        // And back: the hosted one is the other now, thinking and all.
+        let on_hosted = settings(&[
+            ("HATCHLING_SCHEDULER_MODEL_ENDPOINT", OPENROUTER),
+            ("HATCHLING_SCHEDULER_MODEL_NAME", OPENROUTER_MODEL),
+            ("HATCHLING_SCHEDULER_MODEL_REASONING", "disabled"),
+            ("HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW", "1000000"),
+            ("HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT", OLLAMA),
+            ("HATCHLING_SCHEDULER_MODEL_OTHER_NAME", "qwen3.5:9b"),
+        ]);
+        let back = target(USE_LOCAL, &["--model", "qwen3.5:9b"]).unwrap();
+        assert_eq!(
+            other_of(&changes(&on_hosted, &back)),
+            vec![
+                (s("HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT"), Some(s(OPENROUTER))),
+                (s("HATCHLING_SCHEDULER_MODEL_OTHER_NAME"), Some(s(OPENROUTER_MODEL))),
+                (s("HATCHLING_SCHEDULER_MODEL_OTHER_REASONING"), Some(s("disabled"))),
+                (
+                    s("HATCHLING_SCHEDULER_MODEL_OTHER_CONTEXT_WINDOW"),
+                    Some(s("1000000"))
+                ),
+            ]
+        );
+        // Another model on the same server isn't another server: the
+        // other stays as it was.
+        assert!(other_of(&changes(&on_hosted, &hosted)).is_empty());
+        // Nor is there one to keep with no model set, or a name that
+        // isn't one.
+        assert!(other_of(&changes(&settings(&[]), &hosted)).is_empty());
+        let unnamed = settings(&[
+            ("HATCHLING_SCHEDULER_MODEL_ENDPOINT", OLLAMA),
+            ("HATCHLING_SCHEDULER_MODEL_NAME", "not a name"),
+        ]);
+        assert!(other_of(&changes(&unnamed, &hosted)).is_empty());
+    }
+
     #[test]
     fn the_file_keeps_every_other_line_and_takes_each_change_once() {
         let text = "# Hatchling\nHATCHLING_SCHEDULER_MODEL_NAME=qwen3.5:9b\n\n; old\nHATCHLING_OTHER=kept\nHATCHLING_SCHEDULER_MODEL_NAME=again\nHATCHLING_SCHEDULER_MODEL_REASONING=disabled\n# HATCHLING_SCHEDULER_MODEL_NAME=commented\n";
@@ -889,6 +1004,12 @@ mod tests {
             dir.join("schedules.owner")
                 .join(crate::model_choice::MODEL_FILE),
             "{\"name\":\"gemma4:12b\"}",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("schedules.owner")
+                .join(crate::model_choice::SERVER_FILE),
+            "{\"endpoint\":\"https://openrouter.ai/api/v1\"}",
         )
         .unwrap();
         let path = dir.join("hatchling.env");
@@ -958,13 +1079,22 @@ mod tests {
                 .starts_with("# Hatchling\n")
         );
         assert_eq!(backups(&path), 1);
-        assert!(
-            !dir.join("schedules.owner")
-                .join(crate::model_choice::MODEL_FILE)
-                .exists()
+        for file in [
+            crate::model_choice::MODEL_FILE,
+            crate::model_choice::SERVER_FILE,
+        ] {
+            assert!(!dir.join("schedules.owner").join(file).exists(), "{file}");
+        }
+        assert_eq!(
+            settings
+                .get("HATCHLING_SCHEDULER_MODEL_OTHER_NAME")
+                .map(String::as_str),
+            Some("qwen3.5:9b")
         );
         assert!(said.starts_with("The key for openrouter.ai:443:\nHatchling uses nvidia/nemotron-3-ultra-550b-a55b:free at https://openrouter.ai/api/v1, with a 1000000-token window, thinking off."), "{said}");
         assert!(said.contains("it's forgotten"), "{said}");
+        assert!(said.contains("qwen3.5:9b at http://localhost:11434/v1 stays set up: switch back to it in the app"), "{said}");
+        assert!(said.contains("The server switched to in the app was one of the old pair"), "{said}");
         assert!(
             said.ends_with("Restarted the broker. Send a message in the app to check it.\n"),
             "{said}"

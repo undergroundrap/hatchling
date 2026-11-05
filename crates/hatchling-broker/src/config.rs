@@ -213,6 +213,31 @@ pub struct SchedulerConfig {
     /// root's sibling `<root>.usage`, in a run's session too; empty, and
     /// nothing is counted.
     pub usage: PathBuf,
+    /// A second model's server the operator set up
+    /// (`HATCHLING_SCHEDULER_MODEL_OTHER_*`), that the owner may switch to
+    /// from the app ([`crate::model_choice`]); none when there's one.
+    /// A run's own session never has it: its model is already chosen.
+    pub other_model: Option<OtherModel>,
+}
+
+/// A second model's server, as the operator set it up: one the owner may
+/// switch to from the app, and back, with no file to edit and no restart.
+///
+/// `use-hosted` and `use-local` write it: the server they switch from
+/// stays set up as this one. Where the owner's words go is the operator's
+/// to allow: the owner chooses between the two the operator set up, and
+/// no other.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OtherModel {
+    /// The API's base URL (`HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT`).
+    pub endpoint: String,
+    /// The model's id on it (`HATCHLING_SCHEDULER_MODEL_OTHER_NAME`).
+    pub name: String,
+    /// Its thinking mode (`HATCHLING_SCHEDULER_MODEL_OTHER_REASONING`).
+    pub reasoning: hatchling_core::ModelReasoning,
+    /// Its window in tokens, when declared
+    /// (`HATCHLING_SCHEDULER_MODEL_OTHER_CONTEXT_WINDOW`).
+    pub context_window: Option<u32>,
 }
 
 /// A run session's follow-up scope: the one scheduler surface a run's
@@ -255,6 +280,7 @@ impl SchedulerConfig {
             subagent_depth: 0,
             conversation: PathBuf::new(),
             usage: PathBuf::new(),
+            other_model: None,
         }
     }
 
@@ -1107,6 +1133,7 @@ fn parse_stores(
     scheduler.model_context_window = get(env::HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW.name)
         .map(|raw| parse_context_window(&raw))
         .transpose()?;
+    scheduler.other_model = parse_other_model(get)?;
     let artifacts = parse_artifacts(get, vault_root, socket_dir)?;
     let spaces = parse_spaces(
         (
@@ -1425,6 +1452,7 @@ fn parse_scheduler(
         subagent_depth: 0,
         conversation: PathBuf::new(),
         usage,
+        other_model: None,
     })
 }
 
@@ -2113,7 +2141,11 @@ pub const MIN_CONTEXT_WINDOW: u32 = 8192;
 /// The model's declared context window: a whole number of tokens, at
 /// least [`MIN_CONTEXT_WINDOW`].
 fn parse_context_window(raw: &str) -> Result<u32, Error> {
-    let key = "HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW";
+    window_of(raw, "HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW")
+}
+
+/// `raw` as a window of tokens, for the setting `key`.
+fn window_of(raw: &str, key: &'static str) -> Result<u32, Error> {
     let window = raw.parse::<u32>().map_err(|_| Error::InvalidConfig {
         key,
         reason: String::from("expected a whole number of tokens"),
@@ -2125,6 +2157,60 @@ fn parse_context_window(raw: &str) -> Result<u32, Error> {
         });
     }
     Ok(window)
+}
+
+/// The second model's server, from `get`: none when neither its endpoint
+/// nor its name is set; both, or neither.
+fn parse_other_model(get: &impl Fn(&str) -> Option<String>) -> Result<Option<OtherModel>, Error> {
+    let set = |key: &str| get(key).filter(|value| !value.trim().is_empty());
+    let endpoint = set(env::HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT.name);
+    let name = set(env::HATCHLING_SCHEDULER_MODEL_OTHER_NAME.name);
+    let (endpoint, name) = match (endpoint, name) {
+        (None, None) => return Ok(None),
+        (Some(endpoint), Some(name)) => (endpoint, name),
+        (None, Some(_)) => {
+            return Err(Error::InvalidConfig {
+                key: "HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT",
+                reason: String::from("the other model's name is set: set its server too, or neither"),
+            });
+        }
+        (Some(_), None) => {
+            return Err(Error::InvalidConfig {
+                key: "HATCHLING_SCHEDULER_MODEL_OTHER_NAME",
+                reason: String::from("the other model's server is set: set its name too, or neither"),
+            });
+        }
+    };
+    if !crate::model_choice::valid_name(&name) {
+        return Err(Error::InvalidConfig {
+            key: "HATCHLING_SCHEDULER_MODEL_OTHER_NAME",
+            reason: String::from("not a model's id"),
+        });
+    }
+    if crate::model_choice::destination(&endpoint).is_none() {
+        return Err(Error::InvalidConfig {
+            key: "HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT",
+            reason: String::from("expected https://<host>/<path>, or http://localhost:<port>/<path>"),
+        });
+    }
+    let reasoning = match set(env::HATCHLING_SCHEDULER_MODEL_OTHER_REASONING.name) {
+        None => hatchling_core::ModelReasoning::ProviderDefault,
+        Some(raw) => {
+            hatchling_core::ModelReasoning::parse(&raw).ok_or_else(|| Error::InvalidConfig {
+                key: "HATCHLING_SCHEDULER_MODEL_OTHER_REASONING",
+                reason: String::from("expected provider-default or disabled"),
+            })?
+        }
+    };
+    let context_window = set(env::HATCHLING_SCHEDULER_MODEL_OTHER_CONTEXT_WINDOW.name)
+        .map(|raw| window_of(&raw, "HATCHLING_SCHEDULER_MODEL_OTHER_CONTEXT_WINDOW"))
+        .transpose()?;
+    Ok(Some(OtherModel {
+        endpoint,
+        name,
+        reasoning,
+        context_window,
+    }))
 }
 
 #[cfg(test)]
@@ -2159,6 +2245,84 @@ mod tests {
         let (_, _, scheduler, _, _) =
             parse_stores(&lookup(&vars), Path::new("/srv/vault"), &socket).unwrap();
         assert_eq!(scheduler.model_context_window, Some(32768));
+    }
+
+    /// The other model's server is both its endpoint and its name, or
+    /// neither; each part read as the first server's is.
+    #[test]
+    fn the_other_model_is_its_server_and_name_or_none() {
+        let other = |pairs: &[(&'static str, &'static str)]| {
+            let vars: HashMap<&str, &str> = pairs.iter().copied().collect();
+            parse_other_model(&lookup(&vars))
+        };
+        assert_eq!(other(&[]).unwrap(), None);
+        assert_eq!(
+            other(&[
+                ("HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT", "http://localhost:11434/v1"),
+                ("HATCHLING_SCHEDULER_MODEL_OTHER_NAME", "qwen3.5:9b"),
+                ("HATCHLING_SCHEDULER_MODEL_OTHER_CONTEXT_WINDOW", "65536"),
+            ])
+            .unwrap(),
+            Some(OtherModel {
+                endpoint: String::from("http://localhost:11434/v1"),
+                name: String::from("qwen3.5:9b"),
+                reasoning: hatchling_core::ModelReasoning::ProviderDefault,
+                context_window: Some(65536),
+            })
+        );
+        assert_eq!(
+            other(&[
+                ("HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT", "https://openrouter.ai/api/v1"),
+                ("HATCHLING_SCHEDULER_MODEL_OTHER_NAME", "nvidia/nemotron-3-ultra-550b-a55b:free"),
+                ("HATCHLING_SCHEDULER_MODEL_OTHER_REASONING", "disabled"),
+            ])
+            .unwrap()
+            .map(|other| other.reasoning),
+            Some(hatchling_core::ModelReasoning::Disabled)
+        );
+        let refused = |pairs: &[(&'static str, &'static str)], key: &str| {
+            let error = other(pairs).unwrap_err();
+            assert!(
+                matches!(&error, Error::InvalidConfig { key: refused, .. } if *refused == key),
+                "{pairs:?}: {error:?}"
+            );
+        };
+        let endpoint = ("HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT", "http://localhost:11434/v1");
+        let name = ("HATCHLING_SCHEDULER_MODEL_OTHER_NAME", "qwen3.5:9b");
+        refused(&[name], "HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT");
+        refused(&[endpoint], "HATCHLING_SCHEDULER_MODEL_OTHER_NAME");
+        refused(
+            &[endpoint, ("HATCHLING_SCHEDULER_MODEL_OTHER_NAME", "a name")],
+            "HATCHLING_SCHEDULER_MODEL_OTHER_NAME",
+        );
+        for bad in [
+            "http://models.lan:11434/v1",
+            "ftp://openrouter.ai/v1",
+            "https://",
+            "https://user@openrouter.ai/v1",
+        ] {
+            refused(
+                &[("HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT", bad), name],
+                "HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT",
+            );
+        }
+        refused(
+            &[endpoint, name, ("HATCHLING_SCHEDULER_MODEL_OTHER_REASONING", "maybe")],
+            "HATCHLING_SCHEDULER_MODEL_OTHER_REASONING",
+        );
+        refused(
+            &[endpoint, name, ("HATCHLING_SCHEDULER_MODEL_OTHER_CONTEXT_WINDOW", "4096")],
+            "HATCHLING_SCHEDULER_MODEL_OTHER_CONTEXT_WINDOW",
+        );
+        // The broker's settings carry it.
+        let vars: HashMap<&str, &str> = [endpoint, name].into_iter().collect();
+        let socket: SocketPath = "/tmp/hatchling-test/broker.sock".parse().unwrap();
+        let (_, _, scheduler, _, _) =
+            parse_stores(&lookup(&vars), Path::new("/srv/vault"), &socket).unwrap();
+        assert_eq!(
+            scheduler.other_model.map(|other| other.name),
+            Some(String::from("qwen3.5:9b"))
+        );
     }
 
     #[test]
