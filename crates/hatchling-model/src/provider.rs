@@ -915,7 +915,10 @@ mod tests {
                 );
             } else if matches!(
                 name,
-                "message without content or calls" | "null content" | "empty content" | "non-string content"
+                "message without content or calls"
+                    | "null content"
+                    | "empty content"
+                    | "non-string content"
             ) {
                 // No content to use and no tool call, each time it was
                 // asked: the model said nothing, named as such, for the
