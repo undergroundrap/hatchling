@@ -557,9 +557,11 @@ fn with_window(found: Finding, endpoint: Option<&str>, name: Option<&str>) -> Fi
     windowed(found, name, window)
 }
 
-/// The window Hatchling asks a model's server for: room for the agent's
-/// prompt, its tools, a working history and a thinking model's answer.
-/// Less works, to the agent's floor, with less of the conversation kept.
+/// The window Hatchling asks a model's server for.
+///
+/// Room for the agent's prompt, its tools, a working history and a
+/// thinking model's answer. Less works, to the agent's floor, with less
+/// of the conversation kept.
 pub const RECOMMENDED_WINDOW: u32 = 32_768;
 
 /// `found`, the model `name` found, with `window`, the window its server
@@ -573,9 +575,11 @@ fn windowed(found: Finding, name: &str, window: Option<u32>) -> Finding {
             ),
             "Give the model room: for Ollama, set OLLAMA_CONTEXT_LENGTH=32768 (docs/install.md, \"Give the model room\").",
         ),
-        (Finding::Fine(seen), Some(window)) if window < RECOMMENDED_WINDOW => Finding::Fine(
-            format!("{seen}, with a {window}-token window ({RECOMMENDED_WINDOW} or more works better)"),
-        ),
+        (Finding::Fine(seen), Some(window)) if window < RECOMMENDED_WINDOW => {
+            Finding::Fine(format!(
+                "{seen}, with a {window}-token window ({RECOMMENDED_WINDOW} or more works better)"
+            ))
+        }
         (Finding::Fine(seen), Some(window)) => {
             Finding::Fine(format!("{seen}, with a {window}-token window"))
         }
