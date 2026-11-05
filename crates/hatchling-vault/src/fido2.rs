@@ -188,6 +188,20 @@ impl KeyEnrollment {
     pub fn keys(&self) -> usize {
         self.wraps.len()
     }
+
+    /// Whether `device` is a key already in this enrollment, as far as it
+    /// can say, without a touch.
+    pub fn holds(&self, device: &mut dyn Authenticator) -> bool {
+        self.wraps.iter().any(|wrap| key_holds(device, wrap))
+    }
+
+    /// Names the key registered last: after its touch, as that's what
+    /// shows which of two plugged in it is.
+    pub fn name_last(&mut self, label: &crate::manage::Label) {
+        if let Some(wrap) = self.wraps.last_mut() {
+            wrap.set_label(label.as_str());
+        }
+    }
 }
 
 /// The key's answer for `credential_id` and `salt`, asked as `check` says.
@@ -333,9 +347,9 @@ impl Keyring {
         })
     }
 
-    /// Registers `device` in `enrollment` as `label`. A key already in it
-    /// is refused, before it's asked for anything: a credential is new
-    /// each time, so only the key can say it's the same one.
+    /// Registers `device` in `enrollment`. A key already in it is refused,
+    /// before it's asked for anything: a credential is new each time, so
+    /// only the key can say it's the same one.
     ///
     /// # Errors
     ///
@@ -346,16 +360,13 @@ impl Keyring {
         &self,
         enrollment: &mut KeyEnrollment,
         device: &mut dyn Authenticator,
-        label: &crate::manage::Label,
     ) -> Result<(), Error> {
-        if enrollment.wraps.iter().any(|wrap| key_holds(device, wrap)) {
+        if enrollment.holds(device) {
             return Err(Error::KeyChange {
                 reason: "this key is already registered",
             });
         }
-        let mut wrap =
-            self.hardware_wrap(enrollment.rotation.new_key(), device, enrollment.check)?;
-        wrap.set_label(label.as_str());
+        let wrap = self.hardware_wrap(enrollment.rotation.new_key(), device, enrollment.check)?;
         enrollment.wraps.push(wrap);
         Ok(())
     }
@@ -640,9 +651,7 @@ mod tests {
         let mut abandoned = keyring
             .begin_key_enrollment(&unlocked, KeyCheck::Touch)
             .unwrap();
-        keyring
-            .enroll_key(&mut abandoned, &mut nano, &label("nano"))
-            .unwrap();
+        keyring.enroll_key(&mut abandoned, &mut nano).unwrap();
         assert_eq!(abandoned.keys(), 1);
         drop(abandoned);
         assert_eq!(std::fs::read(&path).unwrap(), before);
@@ -651,19 +660,19 @@ mod tests {
         let mut enrollment = keyring
             .begin_key_enrollment(&unlocked, KeyCheck::Touch)
             .unwrap();
-        keyring
-            .enroll_key(&mut enrollment, &mut nano, &label("nano"))
-            .unwrap();
+        keyring.enroll_key(&mut enrollment, &mut nano).unwrap();
+        enrollment.name_last(&label("nano"));
         assert_eq!(std::fs::read(&path).unwrap(), before, "still nothing");
         // The same key again, as a swap that didn't happen.
         assert!(matches!(
-            keyring.enroll_key(&mut enrollment, &mut nano, &label("again")),
+            keyring.enroll_key(&mut enrollment, &mut nano),
             Err(Error::KeyChange { .. })
         ));
         assert_eq!(enrollment.keys(), 1);
-        keyring
-            .enroll_key(&mut enrollment, &mut nfc, &label("nfc"))
-            .unwrap();
+        assert!(enrollment.holds(&mut nano));
+        assert!(!enrollment.holds(&mut nfc));
+        keyring.enroll_key(&mut enrollment, &mut nfc).unwrap();
+        enrollment.name_last(&label("nfc"));
         assert_eq!(std::fs::read(&path).unwrap(), before, "still nothing");
         let rotated = keyring.commit_key_enrollment(enrollment, None).unwrap();
         settle(&mut keyring, rotated, &dir.join("vault"));
@@ -686,8 +695,7 @@ mod tests {
     fn a_commit_needs_two_keys_or_one_with_its_way_back() {
         let dir = test_dir("fido2-staged-one");
         let (mut keyring, kek, _) = vault(&dir);
-        let mut key = VirtualAuthenticator::new();
-        let name = "only".parse::<crate::Label>().unwrap();
+        let mut single = VirtualAuthenticator::new();
         let unlocked = keyring.unlock_file(&kek).unwrap();
         let begin = |keyring: &Keyring| {
             keyring
@@ -700,20 +708,20 @@ mod tests {
             Err(Error::NeedTwoKeys)
         ));
         let mut one = begin(&keyring);
-        keyring.enroll_key(&mut one, &mut key, &name).unwrap();
+        keyring.enroll_key(&mut one, &mut single).unwrap();
         assert!(matches!(
             keyring.commit_key_enrollment(one, None),
             Err(Error::NeedTwoKeys)
         ));
         let mut one = begin(&keyring);
-        keyring.enroll_key(&mut one, &mut key, &name).unwrap();
+        keyring.enroll_key(&mut one, &mut single).unwrap();
         assert!(matches!(
             keyring.commit_key_enrollment(one, Some(SingleKeyRisk::accepted())),
             Err(Error::NeedBackupCodes)
         ));
         keyring.generate_backup_codes(&unlocked).unwrap();
         let mut one = begin(&keyring);
-        keyring.enroll_key(&mut one, &mut key, &name).unwrap();
+        keyring.enroll_key(&mut one, &mut single).unwrap();
         let rotated = keyring
             .commit_key_enrollment(one, Some(SingleKeyRisk::accepted()))
             .unwrap();
@@ -738,13 +746,15 @@ mod tests {
             .unwrap();
         settle(&mut keyring, rotated, &dir.join("vault"));
         // Either key, wrong: one question, whichever wrap is its own.
-        for mut key in [first, second] {
+        let wrong = |mut key: VirtualAuthenticator| {
             key.set_typed(Some("0000"));
             let mut counting = Counting { key, asked: 0 };
             let refused = keyring.unlock_hardware_key(&mut counting);
             assert!(matches!(refused, Err(Error::Authenticator { .. })));
             assert_eq!(counting.asked, 1);
-        }
+        };
+        wrong(first);
+        wrong(second);
         // A key that can't say what it holds is still tried, once it's asked.
         let mut stranger = Counting {
             key: VirtualAuthenticator::with_pin("2468"),

@@ -138,18 +138,18 @@ impl KeyringConfig {
             .unwrap_or_else(|| vault.root.with_extension("key").join("kek"))
     }
 
-    fn keyring_path(&self) -> Result<&Path, Error> {
+    pub(crate) fn keyring_path(&self) -> Result<&Path, Error> {
         self.keyring.as_deref().ok_or_else(|| Error::Usage {
             reason: String::from("set HATCHLING_VAULT_KEYRING to the keyring's absolute path"),
         })
     }
 }
 
-const fn vault_error(source: hatchling_vault::Error) -> Error {
+pub(crate) const fn vault_error(source: hatchling_vault::Error) -> Error {
     Error::Vault { source }
 }
 
-const fn io_error(source: std::io::Error) -> Error {
+pub(crate) const fn io_error(source: std::io::Error) -> Error {
     vault_error(hatchling_vault::Error::Io { source })
 }
 
@@ -246,7 +246,7 @@ fn asked_factors(tier: Tier, ask: Ask<'_>) -> Result<Factors<'static>, Error> {
 /// Unlocks `keyring` through its current tier: the KEK file at the file
 /// tier, a current code at the TOTP tier, and an enrolled key or a backup
 /// code at the hardware-key tier ([`authorize`]).
-fn unlock_current(
+pub(crate) fn unlock_current(
     keyring: &mut Keyring,
     vault: &VaultConfig,
     config: &KeyringConfig,
@@ -476,7 +476,7 @@ fn kek_file_may_go(keyring: &Keyring) -> bool {
 /// has left the file tier its KEK file goes, every store moves from the
 /// old key to the new, and the retiring key is dropped. Each step is safe
 /// to repeat, so `rekey-vault` resumes here after a crash.
-fn finish(
+pub(crate) fn finish(
     keyring: &mut Keyring,
     rotation: &Rotation,
     stores: &[(Store, PathBuf)],
@@ -893,7 +893,7 @@ const AUTHORIZE_PROMPT: &str = "To authorize, plug in a security key that is alr
 const AUTHORIZE_CODE_PROMPT: &str = "No security key can be reached. To authorize, type a backup code (it is used up), or nothing to stop:";
 
 /// What stops a guided flow without a change.
-fn stopped() -> Error {
+pub(crate) fn stopped() -> Error {
     Error::Usage {
         reason: String::from("stopped; nothing was changed"),
     }
@@ -926,7 +926,7 @@ const OPEN_NOT_REGISTERED: &str = "That security key isn't registered with this 
 /// over untouched). With none, a backup code. A key that refuses, a wrong
 /// PIN or no touch, says why, and no code is asked for: the operator may
 /// just want to try the key again.
-fn opening(
+pub(crate) fn opening(
     keyring: &mut Keyring,
     ask: Ask<'_>,
     devices: &mut dyn Devices,
@@ -1004,7 +1004,7 @@ fn key_list(keys: &[KeyInfo]) -> String {
 }
 
 /// A label, asked for until one is valid, up to three times.
-fn asked_label(ask: Ask<'_>) -> Result<Label, Error> {
+pub(crate) fn asked_label(ask: Ask<'_>) -> Result<Label, Error> {
     let mut prompt = String::from(
         "Name the new key, for example \"YubiKey 5C, desk\" (only you see this name):",
     );
@@ -1450,7 +1450,7 @@ pub fn new_codes(out: &mut dyn Write, codes: Option<&BackupCodes>) {
 }
 
 /// The actions `vault-keyring` takes.
-pub const USAGE: &str = "usage: hatchling-broker vault-keyring <init | enroll-totp | enroll-keys | use-file-tier | backup-codes | status | add-key | remove-key | label-key>";
+pub const USAGE: &str = "usage: hatchling-broker vault-keyring <setup | init | enroll-totp | enroll-keys | use-file-tier | backup-codes | status | add-key | remove-key | label-key>";
 
 /// Runs `hatchling-broker vault-keyring <action>`: the keyring settings
 /// from the environment, answers from stdin with the prompts on stderr,
@@ -1462,6 +1462,9 @@ pub const USAGE: &str = "usage: hatchling-broker vault-keyring <init | enroll-to
 pub fn run_keyring(broker: &crate::Config, action: Option<&str>) -> Result<(), Error> {
     let config = KeyringConfig::from_env()?;
     let stores = crate::sealed_stores(broker, crate::vault_ops::redaction_config(broker)?.as_ref());
+    if action == Some(crate::key_setup::SETUP_ACTION) {
+        return crate::key_setup::run_setup(broker, &config, &stores);
+    }
     let (mut asking, mut devices) = terminal_operator();
     command(
         &broker.vault,
@@ -1558,7 +1561,7 @@ fn warning_text(warning: Warning) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
     use hatchling_vault::{SealedVault, Secret, SecretName};
@@ -1612,11 +1615,11 @@ mod tests {
     }
 
     /// The secrets store alone: the stores a keyring command re-seals here.
-    fn secrets(vault: &VaultConfig) -> Vec<(Store, PathBuf)> {
+    pub(crate) fn secrets(vault: &VaultConfig) -> Vec<(Store, PathBuf)> {
         vec![(Store::SECRETS, vault.root.clone())]
     }
 
-    struct Scratch(PathBuf);
+    pub(crate) struct Scratch(PathBuf);
 
     impl Drop for Scratch {
         fn drop(&mut self) {
@@ -1905,7 +1908,7 @@ mod tests {
         }
     }
 
-    fn adopted(name: &str) -> (Scratch, VaultConfig, KeyringConfig) {
+    pub(crate) fn adopted(name: &str) -> (Scratch, VaultConfig, KeyringConfig) {
         let (scratch, vault) = scratch(name);
         let config = keyring_config(&scratch);
         let plain = unlock(&vault, &KeyringConfig::default()).unwrap();
@@ -1918,7 +1921,7 @@ mod tests {
         (scratch, vault, config)
     }
 
-    fn reads_the_secret(vault: &VaultConfig, key: &MasterKey) -> bool {
+    pub(crate) fn reads_the_secret(vault: &VaultConfig, key: &MasterKey) -> bool {
         let secret: SecretName = "token".parse().unwrap();
         SealedVault::open(&vault.root, key)
             .unwrap()

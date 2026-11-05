@@ -284,7 +284,13 @@ fn check_vault(lookup: &dyn Fn(&str) -> Option<String>, machine: &Machine) -> Fi
     };
     let waiting = Config::parse(lookup)
         .is_ok_and(|config| crate::unlock_relay::socket_path(&config.vault).exists());
-    vault_said(ring.tier(), ring.hardware_keys().len(), machine, waiting)
+    let found = vault_said(ring.tier(), ring.hardware_keys().len(), machine, waiting);
+    match found {
+        Finding::Fine(said) if crate::key_setup::codes_unconfirmed(path) => Finding::Fine(format!(
+            "{said}. Your backup codes were never confirmed saved: vault-keyring setup makes a fresh set"
+        )),
+        other @ (Finding::Fine(_) | Finding::Problem { .. } | Finding::Unchecked(_)) => other,
+    }
 }
 
 /// What doctor says of a vault at `tier` with `enrolled` security keys,

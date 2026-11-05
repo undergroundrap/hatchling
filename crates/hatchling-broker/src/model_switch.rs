@@ -550,7 +550,7 @@ fn restart(systemctl: &Path) -> Result<(), String> {
 /// Writes `text`, the settings at `path`, with `changes` made: the old
 /// file backed up beside it first, the new one written whole beside and
 /// put in place. Answers where the backup is.
-fn rewrite(
+pub(crate) fn rewrite(
     path: &Path,
     text: &str,
     changes: &[(&str, Option<String>)],
