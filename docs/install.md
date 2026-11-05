@@ -111,7 +111,7 @@ To use a hosted model instead, with a far larger window, run `sudo hatchling-bro
 | The app | `/usr/local/share/hatchling/ui` |
 | The configuration, the whole of it | `/etc/hatchling/hatchling.env`: every setting is in `hatchling-broker --help` |
 | The broker's service, run as root, dropping to `hatchling-broker` once started | `hatchling.service` |
-| The app's host, as your own user service, running without a login (lingering) | `hatchling-host.service` |
+| The app's host, a system service run as you, confined by systemd (no privileges, the system read-only) | `hatchling-host@<you>.service` |
 | Four system users: the cells', the broker's, the vault keeper's, the egress authority's | `/etc/sysusers.d/hatchling.conf` |
 | Its state: the vault, schedules, sockets | `/var/lib/hatchling` ([what's kept](storage.md)) |
 
@@ -126,7 +126,7 @@ With systemd 254 or later, the broker gets a cgroup of its own to give each cell
 - **Protect the vault with a security key**, such as a YubiKey, so nothing opens it without the key: [Protecting the vault with a security key](security-keys.md). After each restart, you unlock it: `sudo hatchling-broker unlock`.
 - **Change a setting:** edit `/etc/hatchling/hatchling.env`, then `sudo systemctl restart hatchling`.
 - **The broker's other commands** (`hatchling-broker --help` lists them) take the service's settings when you run them with `sudo` from a shell that has none, so `sudo hatchling-broker tools list` just works. They read the file only while it's root's and nobody else can write it, as the installer leaves it: it says what the broker runs.
-- **The logs:** `journalctl -u hatchling` for the broker, `journalctl --user -u hatchling-host` for the app's host.
+- **The logs:** `journalctl -u hatchling` for the broker, `journalctl -u "hatchling-host@$USER"` for the app's host.
 - **Stop it:** `sudo systemctl stop hatchling`. **Start it again:** `sudo systemctl start hatchling`.
 - **Update:** clone the new version, download its release, and run `scripts/install.sh` again. It keeps your configuration, unless you pass `--force`. When the new version keeps something by default that your configuration doesn't name at all, such as your conversation, it adds that setting, backs the old file up beside it (`hatchling.env.before-<date>`), and says so. A setting you set empty stays off. Read the version's [changelog](../CHANGELOG.md) first: before 1.0, a minor version may change the configuration.
 
@@ -139,13 +139,13 @@ With systemd 254 or later, the broker gets a cgroup of its own to give each cell
    ```
 
    ```bash
-   systemctl --user disable --now hatchling-host
+   sudo systemctl disable --now "hatchling-host@$USER"
    ```
 
 2. Remove what was installed:
 
    ```bash
-   sudo rm -rf /usr/local/bin/hatchling-broker /usr/local/bin/hatchling-agent /usr/local/bin/hatchling-host /usr/local/bin/hatchling-browser /usr/local/share/hatchling /etc/systemd/system/hatchling.service /etc/systemd/system/hatchling.service.d /etc/systemd/user/hatchling-host.service
+   sudo rm -rf /usr/local/bin/hatchling-broker /usr/local/bin/hatchling-agent /usr/local/bin/hatchling-host /usr/local/bin/hatchling-browser /usr/local/share/hatchling /etc/systemd/system/hatchling.service /etc/systemd/system/hatchling.service.d /etc/systemd/system/hatchling-host@.service
    ```
 
 3. **Your data is still there**, in `/var/lib/hatchling` and `/etc/hatchling`. [What Hatchling keeps on disk](storage.md#uninstall) says what each part is, how to back it up, and how to remove it with the users.
