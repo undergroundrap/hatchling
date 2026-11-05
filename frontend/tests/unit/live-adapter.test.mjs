@@ -595,7 +595,7 @@ test('an answer from a run is followed by what the run used, opening its record;
     assert.deepEqual(messages[2], { id: 'm-2:trail', chatId: 'main', time: '09:00', source: null, reaction: null, kind: 'notice', role: 'agent', text: 'Used: Read your goals · Read a web page (1 refused)', evidenceId: 's-6:summary' });
     assert.equal(messages[5].text, 'Used no tools: this answer came from the model alone.');
     // How full the context got on the last chat answer, against the declared window.
-    assert.deepEqual(adapter.usage.context(), { tokens: 5000, window: 16384 });
+    assert.deepEqual(adapter.usage.context(), { tokens: 5000, window: 16384, onCpu: null, memoryLow: false });
 });
 test('markup and script in tool output and agent text render as inert text (negative test)', () => {
     // Control: without the adapter, the renderer makes these links real.

@@ -59,7 +59,7 @@ So the installer gives a local Ollama service a window of **32,768 tokens**, unl
 | 65,536 | 7.7 GB | all of it |
 | 131,072 | 10.7 GB | 9.8 GB; the rest runs on the CPU, more slowly |
 
-Its first answer took 11 to 14 seconds at each size that fit. A model bigger than the GPU's memory still runs, with the part that doesn't fit on the CPU; `ollama ps` shows the split, and the window in its `CONTEXT` column, once the model has loaded. To set the window by hand, or with Ollama not run by the installer:
+Its first answer took 11 to 14 seconds at each size that fit. The installer loads the model once, so doctor can see how it fits on your machine, and says so: "all on the GPU (6.6 GB)", or how much runs on the CPU and what helps. It says how much of the computer's memory is free, too. Later, when something else takes the GPU's memory or the computer runs low, the chat says so under the context meter, after the answer it slowed. A model bigger than the GPU's memory still runs, with the part that doesn't fit on the CPU; `ollama ps` shows the split, and the window in its `CONTEXT` column, once the model has loaded. To set the window by hand, or with Ollama not run by the installer:
 
 ```bash
 sudo mkdir -p /etc/systemd/system/ollama.service.d

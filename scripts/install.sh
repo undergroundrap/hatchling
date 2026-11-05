@@ -240,6 +240,16 @@ ollama_room() {
 }
 ollama_room
 
+# The model, loaded once now: doctor sees how it fits on this machine, and
+# the first answer doesn't wait for it. Only Ollama loads a model this
+# way; another server's refusal is said, and doctor checks it anyway.
+if command -v curl > /dev/null; then
+  say "loading $MODEL, so doctor can see how it fits"
+  curl -fsS -m 300 -o /dev/null "http://$HOSTPORT/api/generate" -H 'Content-Type: application/json' \
+    -d "{\"model\":\"$MODEL\",\"keep_alive\":\"10m\"}" 2> /dev/null \
+    || say "the model's server didn't load $MODEL (not Ollama, or not ready yet): doctor checks it"
+fi
+
 say "checking it can work here"
 if ! /usr/local/bin/hatchling-broker doctor --env "$ENV"; then
   fail "fix what doctor found, then run this again: it keeps your configuration"

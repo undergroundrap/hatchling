@@ -6,6 +6,13 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ## [Unreleased]
 
+### Added
+
+- **Hatchling says how the model fits this machine.** Ollama says how much of a loaded model is in the GPU's memory; what doesn't fit runs on the CPU, more slowly, whether the window is too big for the GPU or other work holds its memory.
+  - **At install**, the installer loads the model once, and `hatchling-broker doctor` says how it fits: "all on the GPU (6.6 GB)", or "0.9 GB of its 10.7 GB on the CPU, more slowly: free the GPU's memory, or give it a smaller window". It says how much of the computer's memory is free, and names it low under a tenth.
+  - **While you work**, each run's record keeps how much of the model was on the CPU and whether memory was low, and the chat says so under the context meter, after the answer it slowed. Under 0.1 GB on the CPU isn't mentioned.
+  - **Breaking for `hatchling-core`:** `SubagentEvent::RunSummary` has `model_on_cpu` and `memory_low`, both optional on the wire.
+
 ### Changed
 
 - **The model gets room to work: 32,768 tokens.** The installer gives a local Ollama service a 32,768-token window when it has less, or none set (Ollama's default on many GPUs is 4,096, which cuts a thinking model off partway). It writes a drop-in of its own, `zz-hatchling-context.conf`, says so, and removing it undoes it; `--ollama-context <tokens>` asks for another size, and `0` leaves Ollama alone. Measured on a 12 GB GPU, `qwen3.5:9b` takes 6.6 GB at 32,768 tokens, against 6.1 GB at 16,384. `hatchling-broker doctor` says when a loaded model's window is under 32,768, and its fix, like the chat's when a model runs out of room, now asks for 32,768. The install guide says what to expect of a local model against a hosted one, and the hosted example's window is OpenRouter's current 1,000,000 tokens.

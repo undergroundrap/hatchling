@@ -49,7 +49,7 @@ export class LiveUsage implements UsagePort {
     observeRun(event: ActivityEvent): void {
         if (event.event !== 'run_summary' || !event.chat || event.model_calls === 0)
             return;
-        this.#context = { tokens: event.peak_input_tokens, window: event.context_window ?? null };
+        this.#context = { tokens: event.peak_input_tokens, window: event.context_window ?? null, onCpu: event.model_on_cpu ?? null, memoryLow: event.memory_low ?? false };
         this.#changed();
     }
     /** An answer from the agent, or Hatchling's own word, came after model calls: read again. */
