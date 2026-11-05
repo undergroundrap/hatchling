@@ -973,6 +973,63 @@ mod tests {
         assert_eq!(asked.get(), 2);
     }
 
+    /// A PIN of 63 bytes is the longest a key takes.
+    #[test]
+    fn a_pin_of_63_bytes_is_the_longest() {
+        let key = SoftKey::new();
+        let state = key.handle();
+        let mut device = open(key, None);
+        let longest = "7".repeat(63);
+        device.set_pin(&longest).unwrap();
+        assert_eq!(state.borrow().pin.as_deref(), Some(longest.as_str()));
+    }
+
+    /// The kept token is its relying party's: another's asks the PIN again.
+    #[test]
+    fn a_token_is_kept_for_its_relying_party_alone() {
+        let key = SoftKey::new();
+        key.handle().borrow_mut().pin = Some(String::from("2468"));
+        let (mut device, asked) = counted(key, "2468");
+        device.make_credential(RP, b"u").unwrap();
+        device.make_credential("another.rp", b"u").unwrap();
+        assert_eq!(asked.get(), 2);
+        device.make_credential("another.rp", b"u").unwrap();
+        assert_eq!(asked.get(), 2, "kept for that one now");
+    }
+
+    /// A kept token the key has forgotten is asked again, once, to make a
+    /// credential too; a fresh one it refuses isn't tried again.
+    #[test]
+    fn only_a_kept_token_is_tried_again() {
+        let key = SoftKey::new();
+        let state = key.handle();
+        state.borrow_mut().pin = Some(String::from("2468"));
+        let (mut device, asked) = counted(key, "2468");
+        device.make_credential(RP, b"u").unwrap();
+        state.borrow_mut().token = None;
+        device.make_credential(RP, b"v").unwrap();
+        assert_eq!(asked.get(), 2, "forgotten: asked again, and made");
+        // A key that refuses even a fresh token: asked once, and refused.
+        for verified in [false, true] {
+            let key = SoftKey::new();
+            let state = key.handle();
+            state.borrow_mut().pin = Some(String::from("2468"));
+            let (mut maker, _) = counted(SoftKey::sharing(Rc::clone(&state)), "2468");
+            let credential = maker.make_credential(RP, b"u").unwrap();
+            state.borrow_mut().refuse_tokens = true;
+            let (mut fresh, asked) = counted(SoftKey::sharing(Rc::clone(&state)), "2468");
+            let refused = if verified {
+                fresh
+                    .hmac_secret_verified(RP, &credential.id, &[1; 32])
+                    .is_err()
+            } else {
+                fresh.make_credential(RP, b"w").is_err()
+            };
+            assert!(refused, "{verified}");
+            assert_eq!(asked.get(), 1, "{verified}: a fresh token isn't tried again");
+        }
+    }
+
     /// A wrong PIN says how many tries are left; three in a row want the
     /// key plugged in again; the last locks it, and says what that costs.
     #[test]

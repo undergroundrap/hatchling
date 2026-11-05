@@ -81,6 +81,9 @@ pub(crate) struct State {
     pub(crate) wrong_in_a_row: u8,
     /// The shortest PIN it takes, as its info says.
     pub(crate) min_pin_length: i64,
+    /// Whether it refuses every PIN token it's shown, as a key that has
+    /// just forgotten them does.
+    pub(crate) refuse_tokens: bool,
     pub(crate) present: bool,
     pub(crate) hmac_secret: bool,
     pub(crate) protocols: Vec<i64>,
@@ -112,6 +115,7 @@ impl SoftKey {
                 retries: 8,
                 wrong_in_a_row: 0,
                 min_pin_length: 4,
+                refuse_tokens: false,
                 present: true,
                 hmac_secret: true,
                 protocols: vec![2, 1],
@@ -325,6 +329,9 @@ impl SoftKey {
             .and_then(Value::as_int)
             .and_then(Protocol::from_number)
             .ok_or(PIN_AUTH_INVALID)?;
+        if state.refuse_tokens {
+            return Err(PIN_AUTH_INVALID);
+        }
         let token = state.token.as_deref().ok_or(PIN_AUTH_INVALID)?;
         if protocol.authenticate(token, client_data_hash) == given {
             Ok(())
@@ -442,6 +449,9 @@ impl SoftKey {
                     .and_then(Value::as_int)
                     .and_then(Protocol::from_number)
                     .ok_or(PIN_AUTH_INVALID)?;
+                if state.refuse_tokens {
+                    return Err(PIN_AUTH_INVALID);
+                }
                 let token = state.token.as_deref().ok_or(PIN_AUTH_INVALID)?;
                 if protocol.authenticate(token, client_data_hash) != given {
                     return Err(PIN_AUTH_INVALID);
