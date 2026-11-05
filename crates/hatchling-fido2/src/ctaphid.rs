@@ -602,6 +602,27 @@ pub(crate) mod tests {
         ));
     }
 
+    /// Only this channel's keepalive that asks for a touch counts: not
+    /// another channel's, nor another status, nor a reply that looks like
+    /// one.
+    #[test]
+    fn only_a_key_asking_on_this_channel_means_a_touch() {
+        let nonce = [3u8; 8];
+        let mut answers = init_answer(nonce, CID);
+        answers.extend(packets([9; 4], KEEPALIVE, &[UP_NEEDED]));
+        answers.extend(packets(CID, KEEPALIVE, &[1]));
+        answers.extend(packets(CID, CBOR, &[UP_NEEDED]));
+        let mut channel = Channel::open(scripted(answers), nonce, Duration::from_secs(5)).unwrap();
+        let told = std::rc::Rc::new(std::cell::Cell::new(0));
+        let hearing = std::rc::Rc::clone(&told);
+        channel.on_touch(Box::new(move |_| hearing.set(hearing.get() + 1)));
+        assert_eq!(
+            channel.cbor(4, &[], Duration::from_secs(5)).unwrap().0,
+            UP_NEEDED
+        );
+        assert_eq!(told.get(), 0);
+    }
+
     /// The device's answer to INIT with `nonce`, giving `channel`.
     pub(crate) fn init_answer(nonce: [u8; 8], channel: [u8; 4]) -> Vec<[u8; REPORT]> {
         let payload = [&nonce[..], &channel, &[2, 5, 4, 0, 0x05]].concat();

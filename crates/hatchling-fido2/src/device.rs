@@ -1100,6 +1100,13 @@ mod tests {
         assert!(state.borrow().busy > 0);
     }
 
+    /// A key says what to call it.
+    #[test]
+    fn a_key_says_what_it_is() {
+        let device = open(SoftKey::new(), None);
+        assert_eq!(Authenticator::model(&device), Some("Security key"));
+    }
+
     /// An older U2F-only key says so as it's opened.
     #[test]
     fn a_key_without_ctap2_is_said_to_be() {
