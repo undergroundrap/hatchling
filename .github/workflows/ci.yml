@@ -352,8 +352,9 @@ jobs:
           sudo grep -qx 'HATCHLING_EGRESS_GRANTS=openrouter.ai:443' /etc/hatchling/hatchling.env
           sudo grep -q '^HATCHLING_API_GRANTS=channel-send:local,.*,egress:openrouter.ai:443$' /etc/hatchling/hatchling.env
           if sudo grep -v '^#' /etc/hatchling/hatchling.env | grep -q 'localhost\|MODEL_OTHER'; then exit 1; fi
-          sudo hatchling-broker secret list | tee "$RUNNER_TEMP/secrets.log"
-          grep -q "egress-openrouter-ai-443" "$RUNNER_TEMP/secrets.log"
+          # The key is in the vault: asked again, it isn't asked for.
+          sudo hatchling-broker secret add --for openrouter.ai:443 --if-missing < /dev/null 2>&1 | tee "$RUNNER_TEMP/secrets.log"
+          grep -q "egress-openrouter-ai-443 is in the vault already" "$RUNNER_TEMP/secrets.log"
           if sudo grep -rq "stand-in-key-for-ci" /etc/hatchling /var/lib/hatchling; then exit 1; fi
           # A provider it doesn't know is refused.
           if sudo sh "$RUNNER_TEMP/release-installer/scripts/install.sh" --from "$RUNNER_TEMP/release" --hosted elsewhere < /dev/null; then exit 1; fi
