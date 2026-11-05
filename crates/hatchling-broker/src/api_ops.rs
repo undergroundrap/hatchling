@@ -2299,7 +2299,11 @@ mod tests {
         };
         assert!(reaches(&egress, None, "openrouter.ai:443"));
         assert!(!reaches(&egress, None, "other.example:443"));
-        assert!(reaches(&egress, Some(std::slice::from_ref(&local)), "localhost:11434"));
+        assert!(reaches(
+            &egress,
+            Some(std::slice::from_ref(&local)),
+            "localhost:11434"
+        ));
         assert!(!reaches(&egress, Some(&[local]), "openrouter.ai:443"));
         assert!(!reaches(&[], Some(&[]), "localhost:11434"));
     }

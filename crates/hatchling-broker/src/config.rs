@@ -2162,9 +2162,9 @@ fn window_of(raw: &str, key: &'static str) -> Result<u32, Error> {
 /// The second model's server, from `get`: none when neither its endpoint
 /// nor its name is set; both, or neither.
 fn parse_other_model(get: &impl Fn(&str) -> Option<String>) -> Result<Option<OtherModel>, Error> {
-    let set = |key: &str| get(key).filter(|value| !value.trim().is_empty());
-    let endpoint = set(env::HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT.name);
-    let name = set(env::HATCHLING_SCHEDULER_MODEL_OTHER_NAME.name);
+    let set = |value: Option<String>| value.filter(|value| !value.trim().is_empty());
+    let endpoint = set(get(env::HATCHLING_SCHEDULER_MODEL_OTHER_ENDPOINT.name));
+    let name = set(get(env::HATCHLING_SCHEDULER_MODEL_OTHER_NAME.name));
     let (endpoint, name) = match (endpoint, name) {
         (None, None) => return Ok(None),
         (Some(endpoint), Some(name)) => (endpoint, name),
@@ -2199,7 +2199,7 @@ fn parse_other_model(get: &impl Fn(&str) -> Option<String>) -> Result<Option<Oth
             ),
         });
     }
-    let reasoning = match set(env::HATCHLING_SCHEDULER_MODEL_OTHER_REASONING.name) {
+    let reasoning = match set(get(env::HATCHLING_SCHEDULER_MODEL_OTHER_REASONING.name)) {
         None => hatchling_core::ModelReasoning::ProviderDefault,
         Some(raw) => {
             hatchling_core::ModelReasoning::parse(&raw).ok_or_else(|| Error::InvalidConfig {
@@ -2208,7 +2208,7 @@ fn parse_other_model(get: &impl Fn(&str) -> Option<String>) -> Result<Option<Oth
             })?
         }
     };
-    let context_window = set(env::HATCHLING_SCHEDULER_MODEL_OTHER_CONTEXT_WINDOW.name)
+    let context_window = set(get(env::HATCHLING_SCHEDULER_MODEL_OTHER_CONTEXT_WINDOW.name))
         .map(|raw| window_of(&raw, "HATCHLING_SCHEDULER_MODEL_OTHER_CONTEXT_WINDOW"))
         .transpose()?;
     Ok(Some(OtherModel {
