@@ -346,7 +346,14 @@ systemctl restart hatchling.service
 
 say "starting the app's host as $OWNER_NAME"
 loginctl enable-linger "$OWNER_NAME"
-systemctl --user -M "$OWNER_NAME@" daemon-reload
+# The owner's own systemd, which linger starts: just after a boot (a WSL
+# distro starts on first use) it can be a few seconds from answering.
+tries=0
+until systemctl --user -M "$OWNER_NAME@" daemon-reload 2> /dev/null; do
+  tries=$((tries + 1))
+  [ "$tries" -le 30 ] || fail "$OWNER_NAME's own systemd doesn't answer: see systemctl status user@$OWNER.service, then run this again (it keeps your configuration; the broker is installed and running)"
+  sleep 1
+done
 systemctl --user -M "$OWNER_NAME@" enable hatchling-host.service > /dev/null
 systemctl --user -M "$OWNER_NAME@" restart hatchling-host.service
 
