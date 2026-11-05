@@ -557,16 +557,29 @@ fn with_window(found: Finding, endpoint: Option<&str>, name: Option<&str>) -> Fi
     windowed(found, name, window)
 }
 
+/// The window Hatchling asks a model's server for.
+///
+/// Room for the agent's prompt, its tools, a working history and a
+/// thinking model's answer. Less works, to the agent's floor, with less
+/// of the conversation kept.
+pub const RECOMMENDED_WINDOW: u32 = 32_768;
+
 /// `found`, the model `name` found, with `window`, the window its server
-/// gives it: one too small for an answer is a problem.
+/// gives it: one too small for an answer is a problem, and one under
+/// [`RECOMMENDED_WINDOW`] says so.
 fn windowed(found: Finding, name: &str, window: Option<u32>) -> Finding {
     match (found, window) {
         (_, Some(window)) if window < crate::config::MIN_CONTEXT_WINDOW => Finding::problem(
             format!(
                 "the model's server gives {name} a {window}-token window, and one answer can take 6,000 tokens"
             ),
-            "Give the model room: for Ollama, set OLLAMA_CONTEXT_LENGTH=16384 (docs/install.md, \"Give the model room\").",
+            "Give the model room: for Ollama, set OLLAMA_CONTEXT_LENGTH=32768 (docs/install.md, \"Give the model room\").",
         ),
+        (Finding::Fine(seen), Some(window)) if window < RECOMMENDED_WINDOW => {
+            Finding::Fine(format!(
+                "{seen}, with a {window}-token window ({RECOMMENDED_WINDOW} or more works better)"
+            ))
+        }
         (Finding::Fine(seen), Some(window)) => {
             Finding::Fine(format!("{seen}, with a {window}-token window"))
         }
@@ -1099,7 +1112,7 @@ mod tests {
     #[test]
     fn a_found_models_window_is_shown_and_too_small_is_a_problem() {
         use crate::model_window::{answering, loaded};
-        for (window, seen) in [(16384, true), (4096, false)] {
+        for (window, seen) in [(32768, true), (4096, false)] {
             let ps = loaded(&format!(
                 r#"{{"name":"llama3.2:latest","context_length":{window}}}"#
             ));
@@ -1120,7 +1133,7 @@ mod tests {
             if seen {
                 assert_eq!(
                     found,
-                    Finding::Fine(format!("llama3.2 at {endpoint}, with a 16384-token window"))
+                    Finding::Fine(format!("llama3.2 at {endpoint}, with a 32768-token window"))
                 );
             } else {
                 let (what, fix) = problem(found);
@@ -1130,7 +1143,7 @@ mod tests {
                     ),
                     "{what}"
                 );
-                assert!(fix.contains("OLLAMA_CONTEXT_LENGTH=16384"), "{fix}");
+                assert!(fix.contains("OLLAMA_CONTEXT_LENGTH=32768"), "{fix}");
             }
         }
         let (address, served) = answering(vec![String::from(MODELS), loaded("")]);
@@ -1168,8 +1181,20 @@ mod tests {
         let fine = Finding::Fine(String::from("m at http://h/v1"));
         assert_eq!(windowed(fine.clone(), "m", None), fine);
         assert_eq!(
-            windowed(fine, "m", Some(8192)),
-            Finding::Fine(String::from("m at http://h/v1, with a 8192-token window"))
+            windowed(fine.clone(), "m", Some(8192)),
+            Finding::Fine(String::from(
+                "m at http://h/v1, with a 8192-token window (32768 or more works better)"
+            ))
+        );
+        assert_eq!(
+            windowed(fine.clone(), "m", Some(32767)),
+            Finding::Fine(String::from(
+                "m at http://h/v1, with a 32767-token window (32768 or more works better)"
+            ))
+        );
+        assert_eq!(
+            windowed(fine, "m", Some(32768)),
+            Finding::Fine(String::from("m at http://h/v1, with a 32768-token window"))
         );
         let missing = Finding::problem("missing", "fetch it");
         assert_eq!(windowed(missing.clone(), "m", Some(16384)), missing);

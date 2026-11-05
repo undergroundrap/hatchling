@@ -34,6 +34,8 @@ It ends with the app's address. Open it in a browser on this machine, and say so
 
 ## Choosing a model
 
+**Local or hosted.** How much your agent can do depends most on its model. A model on your own machine keeps everything there; a hosted model is bigger, and remembers far more of a conversation. A local model with a 32,768-token window still does real work: reads your goals, keeps your Feed, answers from what it's told. For the most out of the agent, use a strong local setup (a GPU with 12 GB or more, and the window below), or a [hosted model](hosted-models.md) with a large window: OpenRouter's free `nvidia/nemotron-3-ultra-550b-a55b:free` has 1,000,000 tokens. Local models keep getting smaller and better, and you can switch at any time.
+
 Hatchling's agent works by calling tools, so the model must call them well: only when a task needs one, with arguments that fit. A model that can't is the commonest reason an answer fails. Hatchling stops such a model before anything it asked for runs, and the chat says so.
 
 For a local model on one GPU, tried with Hatchling's own tool set (2026-11, Ollama, an RTX 4070 with 12 GB):
@@ -46,17 +48,26 @@ For a local model on one GPU, tried with Hatchling's own tool set (2026-11, Olla
 
 A model bigger than the GPU's memory runs partly on the CPU, much more slowly: `ollama ps` shows the split. Ollama uses an NVIDIA or AMD GPU by itself when its driver is installed; under WSL2, install the Windows driver, not one inside Linux.
 
-**Give the model room.** Both models think before they answer, which makes better answers and uses tokens: one chat answer took about 6,000. Ollama's default window on a GPU this size is 4,096 tokens, so a thinking model is cut off partway and the chat says the model ran out of room. Raise it to 16,384; with it, `qwen3.5:9b` takes 6.1 GB of a 12 GB GPU:
+**Give the model room.** The agent's instructions and tools take about 5,500 tokens before you say anything, and both models think before they answer, which makes better answers and uses more: one chat answer took about 6,000. Ollama's default window on many GPUs is 4,096 tokens, so a thinking model is cut off partway, and the chat says the model ran out of room.
+
+So the installer gives a local Ollama service a window of **32,768 tokens**, unless it has that many already. It does it in a file of its own, `/etc/systemd/system/ollama.service.d/zz-hatchling-context.conf`, and says so; removing that file and restarting Ollama undoes it. `--ollama-context <tokens>` asks for another size, and `--ollama-context 0` leaves Ollama as it is. What the window costs, measured on an RTX 4070 with 12 GB (2026-11):
+
+| Window | `qwen3.5:9b` takes | On the GPU |
+| --- | --- | --- |
+| 16,384 | 6.1 GB | all of it |
+| 32,768 | 6.6 GB | all of it |
+| 65,536 | 7.7 GB | all of it |
+| 131,072 | 10.7 GB | 9.8 GB; the rest runs on the CPU, more slowly |
+
+Its first answer took 11 to 14 seconds at each size that fit. A model bigger than the GPU's memory still runs, with the part that doesn't fit on the CPU; `ollama ps` shows the split, and the window in its `CONTEXT` column, once the model has loaded. To set the window by hand, or with Ollama not run by the installer:
 
 ```bash
 sudo mkdir -p /etc/systemd/system/ollama.service.d
-printf '[Service]\nEnvironment=OLLAMA_CONTEXT_LENGTH=16384\n' | sudo tee /etc/systemd/system/ollama.service.d/context.conf
+printf '[Service]\nEnvironment=OLLAMA_CONTEXT_LENGTH=32768\n' | sudo tee /etc/systemd/system/ollama.service.d/zz-hatchling-context.conf
 sudo systemctl daemon-reload && sudo systemctl restart ollama
 ```
 
-`ollama ps` shows the window in its `CONTEXT` column once the model has loaded. With that room, the answer that was cut off took 7 seconds.
-
-Hatchling reads the window from Ollama itself, as `ollama ps` does, and the chat's context meter shows how full each answer got it: "Context: 5.6K of 16K tokens (34%)". Once the model has loaded, `sudo hatchling-broker doctor` shows the window too, and says when it's too small. With a model server that doesn't say its window, tell Hatchling: add `HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW=16384` to `/etc/hatchling/hatchling.env`, and restart: `sudo systemctl restart hatchling` (without it, the meter shows tokens alone). It's at least 8,192, and each run is told it too.
+Hatchling reads the window from Ollama itself, as `ollama ps` does, and the chat's context meter shows how full each answer got it: "Context: 5.6K of 32K tokens (17%)". Once the model has loaded, `sudo hatchling-broker doctor` shows the window too: it says when it's too small to answer in, and when it's under 32,768. With a model server that doesn't say its window, tell Hatchling: add `HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW=32768` to `/etc/hatchling/hatchling.env`, and restart: `sudo systemctl restart hatchling` (without it, the meter shows tokens alone). It's at least 8,192, and each run is told it too.
 
 To switch models, pull the new one, set `HATCHLING_SCHEDULER_MODEL_NAME` in `/etc/hatchling/hatchling.env`, and restart: `sudo systemctl restart hatchling`. `ollama rm <name>` removes one you no longer use.
 

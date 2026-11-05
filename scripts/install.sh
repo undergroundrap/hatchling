@@ -2,6 +2,7 @@
 # Installs Hatchling as a service that starts at boot. See docs/install.md.
 #
 #   sudo scripts/install.sh --from <dir> --model-endpoint <url> --model <name>
+#                           [--ollama-context <tokens>] [--force]
 #
 # Run it as root, with sudo, from a clone of the version you install: the
 # user who ran sudo is the owner, the one the app answers.
@@ -15,6 +16,13 @@
 # The model is an OpenAI-compatible endpoint on this machine, such as
 # Ollama's (http://localhost:11434/v1). For a hosted API, install with a
 # local one, then follow docs/hosted-models.md.
+#
+# When that's Ollama, running as its systemd service, with a window under
+# 32,768 tokens or none set (its default can be 4,096, too small for an
+# agent), it gives Ollama that window, in a drop-in of its own:
+# /etc/systemd/system/ollama.service.d/zz-hatchling-context.conf, which it
+# names, and which removing undoes. --ollama-context sets another size; 0
+# leaves Ollama as it is.
 #
 # It installs:
 #   /usr/local/bin/hatchling-{broker,agent,host,browser}
@@ -30,18 +38,19 @@
 set -eu
 
 usage() {
-  echo "usage: sudo scripts/install.sh --from <dir> --model-endpoint <url> --model <name> [--force]" >&2
+  echo "usage: sudo scripts/install.sh --from <dir> --model-endpoint <url> --model <name> [--ollama-context <tokens>] [--force]" >&2
   exit 64
 }
 fail() { echo "install.sh: $*" >&2; exit 1; }
 say() { echo "== $*"; }
 
-FROM= ENDPOINT= MODEL= FORCE=
+FROM= ENDPOINT= MODEL= FORCE= OLLAMA_CONTEXT=32768
 while [ $# -gt 0 ]; do
   case "$1" in
     --from) FROM=${2:-}; shift 2 || usage ;;
     --model-endpoint) ENDPOINT=${2:-}; shift 2 || usage ;;
     --model) MODEL=${2:-}; shift 2 || usage ;;
+    --ollama-context) OLLAMA_CONTEXT=${2:-}; shift 2 || usage ;;
     --force) FORCE=1; shift ;;
     *) usage ;;
   esac
@@ -71,6 +80,11 @@ case "$HOSTPORT" in
 esac
 case "$MODEL" in
   *[!A-Za-z0-9._:/-]*) fail "--model has a character a model's name doesn't: $MODEL" ;;
+esac
+case "$OLLAMA_CONTEXT" in
+  0) ;;
+  ''|*[!0-9]*) fail "--ollama-context is a number of tokens, or 0: $OLLAMA_CONTEXT" ;;
+  *) [ "$OLLAMA_CONTEXT" -ge 8192 ] || fail "--ollama-context is at least 8192, what the agent needs, or 0" ;;
 esac
 
 # The files: each program, plain or as a release names it, and the app.
@@ -191,6 +205,40 @@ if [ -z "$(ls -A /var/lib/hatchling/vault)" ]; then
   say "sealing the vault"
   (set -a; . "$ENV"; set +a; /usr/local/bin/hatchling-broker migrate-vault)
 fi
+
+# The model's room: an agent's prompt, its tools and a working history
+# fill a small window fast, and a thinking model's answer takes more. A
+# local Ollama service gets OLLAMA_CONTEXT tokens, unless it has as many
+# already; anything else is left as it is, and doctor says what it finds.
+DROP_IN=/etc/systemd/system/ollama.service.d/zz-hatchling-context.conf
+ollama_room() {
+  [ "$OLLAMA_CONTEXT" != 0 ] || return 0
+  if ! systemctl cat ollama.service > /dev/null 2>&1; then
+    say "no Ollama service here: give the model's server a window of $OLLAMA_CONTEXT tokens or more yourself (docs/install.md, \"Give the model room\")"
+    return 0
+  fi
+  now=$(systemctl show ollama.service -p Environment --value | tr ' ' '\n' | sed -n 's/^OLLAMA_CONTEXT_LENGTH=//p' | tail -n 1)
+  case "$now" in
+    ''|*[!0-9]*) ;;
+    *) if [ "$now" -ge "$OLLAMA_CONTEXT" ]; then
+         say "Ollama gives models a $now-token window: kept"
+         return 0
+       fi ;;
+  esac
+  mkdir -p "$(dirname "$DROP_IN")"
+  printf '[Service]\nEnvironment=OLLAMA_CONTEXT_LENGTH=%s\n' "$OLLAMA_CONTEXT" > "$DROP_IN"
+  systemctl daemon-reload
+  systemctl restart ollama.service
+  # Ollama listens a moment after it starts; doctor asks it next.
+  tries=0
+  until ss -Htln "sport = :${HOSTPORT##*:}" | grep -q .; do
+    tries=$((tries + 1))
+    [ "$tries" -le 30 ] || fail "Ollama didn't come back after its window was set: see journalctl -u ollama, or remove $DROP_IN"
+    sleep 1
+  done
+  say "gave Ollama a $OLLAMA_CONTEXT-token window (it had ${now:-its default}): $DROP_IN, which removing undoes"
+}
+ollama_room
 
 say "checking it can work here"
 if ! /usr/local/bin/hatchling-broker doctor --env "$ENV"; then

@@ -8,6 +8,8 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Changed
 
+- **The model gets room to work: 32,768 tokens.** The installer gives a local Ollama service a 32,768-token window when it has less, or none set (Ollama's default on many GPUs is 4,096, which cuts a thinking model off partway). It writes a drop-in of its own, `zz-hatchling-context.conf`, says so, and removing it undoes it; `--ollama-context <tokens>` asks for another size, and `0` leaves Ollama alone. Measured on a 12 GB GPU, `qwen3.5:9b` takes 6.6 GB at 32,768 tokens, against 6.1 GB at 16,384. `hatchling-broker doctor` says when a loaded model's window is under 32,768, and its fix, like the chat's when a model runs out of room, now asks for 32,768. The install guide says what to expect of a local model against a hosted one, and the hosted example's window is OpenRouter's current 1,000,000 tokens.
+
 - **The context meter reads Ollama's window itself.** When a run that called the model ends, the broker asks the model's server the window it gives the model (Ollama's `GET /api/ps`, while the model is loaded), and the meter measures against that, with no setting: "Context: 5.6K of 16K tokens (34%)". It's the window the server cuts a prompt to, so it's used over `HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW`, which still declares it for a server that doesn't say, a hosted one among them. `hatchling-broker doctor` shows the window once the model has loaded, and calls one under 8,192 tokens a problem, with the fix: Ollama's default on many GPUs, 4,096, cuts a thinking model off partway. The question goes from the broker, never a cell, to the plain-HTTP endpoint the operator set, as doctor's does.
 
 ### Fixed
