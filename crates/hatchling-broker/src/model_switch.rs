@@ -351,32 +351,63 @@ pub fn switch_main(program: &str, args: &[String]) -> ExitCode {
     }
 }
 
-/// Switches the service whose settings are at `path` to `target`.
+/// Switches the service whose settings are at `path` to `target`, as
+/// root: the file must be root's, the key is asked for by this program's
+/// `secret add`, and the broker is restarted by `systemctl`.
 fn switch(target: &Target, path: &Path) -> Result<(), String> {
     if hatchling_sys::euid() != 0 {
         return Err(String::from(
             "it changes the service's settings and restarts it: run it with sudo",
         ));
     }
-    let text = crate::service_settings::read_trusted_text(path, 0)
+    let program = std::env::current_exe()
+        .map_err(|err| format!("can't find this program to ask for the key: {err}"))?;
+    let steps = Steps {
+        owner: 0,
+        ask_key: &|destination| ask_key(&program, destination),
+        restart: &|| restart(Path::new("systemctl")),
+    };
+    switch_with(target, path, &steps, &mut std::io::stdout().lock())
+}
+
+/// What a switch does outside the settings file, so each can be told
+/// apart: the file's owner, asking for a key, restarting the broker.
+struct Steps<'a> {
+    /// Whose the settings file must be.
+    owner: u32,
+    /// Makes sure the vault holds the key for a `host:port`.
+    ask_key: &'a dyn Fn(&str) -> Result<(), String>,
+    /// Restarts the broker.
+    restart: &'a dyn Fn() -> Result<(), String>,
+}
+
+/// Switches the settings at `path` to `target`, with `steps`, saying what
+/// it did on `out`.
+fn switch_with(
+    target: &Target,
+    path: &Path,
+    steps: &Steps<'_>,
+    out: &mut dyn std::io::Write,
+) -> Result<(), String> {
+    let text = crate::service_settings::read_trusted_text(path, steps.owner)
         .map_err(|unread| format!("{}\n{}", unread.what, unread.fix))?;
     let settings = crate::doctor::parse_settings(&text);
-    ready(target)?;
+    if target.local {
+        has_model(target)?;
+    } else {
+        let _ = writeln!(out, "The key for {}:", target.destination);
+        (steps.ask_key)(&target.destination)?;
+    }
     let backup = rewrite(path, &text, &changes(&settings, target))?;
-    let mut out = std::io::stdout().lock();
     let _ = writeln!(
         out,
         "Hatchling uses {} at {}{}{}. The old settings are in {}.",
         target.model,
         target.endpoint,
-        target.window.map_or_else(String::new, |window| format!(
-            ", with a {window}-token window"
-        )),
-        if target.thinking_off {
-            ", thinking off"
-        } else {
-            ""
-        },
+        target
+            .window
+            .map_or_else(String::new, |window| format!(", with a {window}-token window")),
+        if target.thinking_off { ", thinking off" } else { "" },
         backup.display()
     );
     if let Some(root) = settings.get(env::HATCHLING_SCHEDULER_DIR.name) {
@@ -396,66 +427,59 @@ fn switch(target: &Target, path: &Path) -> Result<(), String> {
         );
         return Ok(());
     }
-    let restarted = std::process::Command::new("systemctl")
-        .args(["restart", "hatchling.service"])
-        .status()
-        .map_err(|err| {
-            format!("can't restart the broker: {err}; `sudo systemctl restart hatchling` does")
-        })?;
-    if !restarted.success() {
-        return Err(String::from(
-            "the broker didn't restart: see `journalctl -u hatchling`, and `sudo hatchling-broker doctor`",
-        ));
-    }
-    let _ = writeln!(
-        out,
-        "Restarted the broker. Send a message in the app to check it."
-    );
+    (steps.restart)()?;
+    let _ = writeln!(out, "Restarted the broker. Send a message in the app to check it.");
     Ok(())
 }
 
-/// Whether `target` can be used before anything changes: a local
-/// server has the model; a hosted one's key is in the vault, asked for at
-/// `secret add`'s prompt when it isn't.
-fn ready(target: &Target) -> Result<(), String> {
-    if target.local {
-        let models = crate::model_choice::available(&target.endpoint).ok_or_else(|| {
-            format!(
-                "nothing at {} lists its models: start the model's server (for Ollama, `sudo systemctl start ollama`); nothing was changed",
-                target.endpoint
-            )
-        })?;
-        let latest = format!("{}:latest", target.model);
-        if models.iter().any(|id| *id == target.model || *id == latest) {
-            return Ok(());
-        }
-        return Err(format!(
-            "the server at {} has no model {}: fetch it first (for Ollama, `ollama pull {}`); nothing was changed",
-            target.endpoint, target.model, target.model
-        ));
+/// Whether the local server `target` names has its model: before
+/// anything changes, a model it hasn't is refused.
+fn has_model(target: &Target) -> Result<(), String> {
+    let models = crate::model_choice::available(&target.endpoint).ok_or_else(|| {
+        format!(
+            "nothing at {} lists its models: start the model's server (for Ollama, `sudo systemctl start ollama`); nothing was changed",
+            target.endpoint
+        )
+    })?;
+    let latest = format!("{}:latest", target.model);
+    if models.iter().any(|id| *id == target.model || *id == latest) {
+        return Ok(());
     }
-    let _ = writeln!(
-        std::io::stdout().lock(),
-        "The key for {}:",
-        target.destination
-    );
-    let program = std::env::current_exe()
-        .map_err(|err| format!("can't find this program to ask for the key: {err}"))?;
+    Err(format!(
+        "the server at {} has no model {}: fetch it first (for Ollama, `ollama pull {}`); nothing was changed",
+        target.endpoint, target.model, target.model
+    ))
+}
+
+/// Makes sure the vault holds the key for `destination`, by `program`'s
+/// `secret add --for <destination> --if-missing`: asked for at its prompt,
+/// or from a pipe, when it doesn't.
+fn ask_key(program: &Path, destination: &str) -> Result<(), String> {
     let given = std::process::Command::new(program)
-        .args([
-            "secret",
-            "add",
-            "--for",
-            &target.destination,
-            "--if-missing",
-        ])
+        .args(["secret", "add", "--for", destination, "--if-missing"])
         .status()
         .map_err(|err| format!("can't ask for the key: {err}"))?;
     if given.success() {
         Ok(())
     } else {
+        Err(String::from("the key wasn't stored, so nothing was changed"))
+    }
+}
+
+/// Restarts the broker's service with `systemctl`, the program at that
+/// name or path.
+fn restart(systemctl: &Path) -> Result<(), String> {
+    let restarted = std::process::Command::new(systemctl)
+        .args(["restart", "hatchling.service"])
+        .status()
+        .map_err(|err| {
+            format!("can't restart the broker: {err}; `sudo systemctl restart hatchling` does")
+        })?;
+    if restarted.success() {
+        Ok(())
+    } else {
         Err(String::from(
-            "the key wasn't stored, so nothing was changed",
+            "the broker didn't restart: see `journalctl -u hatchling`, and `sudo hatchling-broker doctor`",
         ))
     }
 }
@@ -768,5 +792,175 @@ mod tests {
             with_item(Some(&s(" a:1 , ,b:2")), "a:1", |item| item == "a:1"),
             "a:1,b:2"
         );
+    }
+
+    /// A settings file in a fresh directory, as the service's would be,
+    /// but this user's, with a scheduler root whose owner directory holds
+    /// a model chosen in the app.
+    fn service(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::env::temp_dir().join(format!(
+            "hatchling-switch-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("schedules.owner")).unwrap();
+        std::fs::write(dir.join("schedules.owner").join(crate::model_choice::MODEL_FILE), "{\"name\":\"gemma4:12b\"}").unwrap();
+        let path = dir.join("hatchling.env");
+        std::fs::write(
+            &path,
+            format!(
+                "# Hatchling\nHATCHLING_SCHEDULER_DIR={}\nHATCHLING_SCHEDULER_MODEL_ENDPOINT=http://localhost:11434/v1\nHATCHLING_SCHEDULER_MODEL_NAME=qwen3.5:9b\nHATCHLING_EGRESS_ALLOWLIST=local-keyless:localhost:11434\nHATCHLING_EGRESS_GRANTS=localhost:11434\n",
+                dir.join("schedules").display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        (dir, path)
+    }
+
+    /// The backups beside `path`.
+    fn backups(path: &Path) -> usize {
+        std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .is_ok_and(|entry| entry.file_name().to_string_lossy().starts_with("hatchling.env.before-"))
+            })
+            .count()
+    }
+
+    #[test]
+    fn a_switch_asks_for_the_key_writes_the_settings_and_restarts() {
+        let (dir, path) = service("hosted");
+        let asked = std::cell::RefCell::new(Vec::new());
+        let restarted = std::cell::Cell::new(0);
+        let steps = Steps {
+            owner: hatchling_sys::euid(),
+            ask_key: &|destination| {
+                asked.borrow_mut().push(destination.to_owned());
+                Ok(())
+            },
+            restart: &|| {
+                restarted.set(restarted.get().saturating_add(1));
+                Ok(())
+            },
+        };
+        let mut said = Vec::new();
+        let openrouter = target(USE_HOSTED, &["openrouter"]).unwrap();
+        switch_with(&openrouter, &path, &steps, &mut said).unwrap();
+        let said = String::from_utf8(said).unwrap();
+        assert_eq!(*asked.borrow(), ["openrouter.ai:443"]);
+        assert_eq!(restarted.get(), 1);
+        let settings = crate::doctor::parse_settings(&std::fs::read_to_string(&path).unwrap());
+        assert_eq!(
+            settings.get("HATCHLING_SCHEDULER_MODEL_NAME").map(String::as_str),
+            Some(OPENROUTER_MODEL)
+        );
+        assert_eq!(
+            settings.get("HATCHLING_EGRESS_GRANTS").map(String::as_str),
+            Some("localhost:11434,openrouter.ai:443")
+        );
+        assert!(std::fs::read_to_string(&path).unwrap().starts_with("# Hatchling\n"));
+        assert_eq!(backups(&path), 1);
+        assert!(!dir.join("schedules.owner").join(crate::model_choice::MODEL_FILE).exists());
+        assert!(said.starts_with("The key for openrouter.ai:443:\nHatchling uses nvidia/nemotron-3-ultra-550b-a55b:free at https://openrouter.ai/api/v1, with a 1000000-token window, thinking off."), "{said}");
+        assert!(said.contains("it's forgotten"), "{said}");
+        assert!(said.ends_with("Restarted the broker. Send a message in the app to check it.\n"), "{said}");
+        // Not restarted when asked not to, and said so.
+        let mut said = Vec::new();
+        let unrestarted = target(USE_HOSTED, &["openrouter", "--no-restart"]).unwrap();
+        switch_with(&unrestarted, &path, &steps, &mut said).unwrap();
+        assert_eq!(restarted.get(), 1);
+        assert!(String::from_utf8(said).unwrap().ends_with("`sudo systemctl restart hatchling`.\n"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_key_not_given_or_a_model_not_there_changes_nothing() {
+        let (dir, path) = service("refused");
+        let before = std::fs::read_to_string(&path).unwrap();
+        let steps = Steps {
+            owner: hatchling_sys::euid(),
+            ask_key: &|_| Err(String::from("the key wasn't stored, so nothing was changed")),
+            restart: &|| Err(String::from("restarted")),
+        };
+        let openrouter = target(USE_HOSTED, &["openrouter"]).unwrap();
+        let refused = switch_with(&openrouter, &path, &steps, &mut Vec::new()).unwrap_err();
+        assert!(refused.contains("nothing was changed"), "{refused}");
+        // A local server without the model, or with none answering.
+        let (address, served) = crate::model_window::answering(vec![String::from(
+            "HTTP/1.0 200 OK\r\n\r\n{\"data\":[{\"id\":\"qwen3.5:9b\"}]}",
+        )]);
+        let mut missing = target(USE_LOCAL, &["--model", "gemma4:12b"]).unwrap();
+        missing.endpoint = format!("http://{address}/v1");
+        let refused = switch_with(&missing, &path, &steps, &mut Vec::new()).unwrap_err();
+        served.join().unwrap();
+        assert!(refused.contains("ollama pull gemma4:12b"), "{refused}");
+        let refusing = crate::test_port::RefusingPort::new();
+        missing.endpoint = format!("http://{}/v1", refusing.addr());
+        let refused = switch_with(&missing, &path, &steps, &mut Vec::new()).unwrap_err();
+        assert!(refused.starts_with("nothing at "), "{refused}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        assert_eq!(backups(&path), 0);
+        assert!(dir.join("schedules.owner").join(crate::model_choice::MODEL_FILE).exists());
+        // A file someone else owns isn't read; a restart that fails says so.
+        let other = Steps {
+            owner: hatchling_sys::euid().wrapping_add(1),
+            ..steps
+        };
+        assert!(switch_with(&openrouter, &path, &other, &mut Vec::new()).is_err());
+        let ok_key = Steps {
+            ask_key: &|_| Ok(()),
+            ..steps
+        };
+        assert_eq!(
+            switch_with(&openrouter, &path, &ok_key, &mut Vec::new()).unwrap_err(),
+            "restarted"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_local_model_on_its_server_is_switched_to() {
+        let (dir, path) = service("local");
+        let (address, served) = crate::model_window::answering(vec![String::from(
+            "HTTP/1.0 200 OK\r\n\r\n{\"data\":[{\"id\":\"qwen3.5:9b\"},{\"id\":\"llama3.2:latest\"}]}",
+        )]);
+        let steps = Steps {
+            owner: hatchling_sys::euid(),
+            ask_key: &|_| Err(String::from("a local model needs no key")),
+            restart: &|| Ok(()),
+        };
+        let mut local = target(USE_LOCAL, &["--model", "llama3.2"]).unwrap();
+        local.endpoint = format!("http://{address}/v1");
+        switch_with(&local, &path, &steps, &mut Vec::new()).unwrap();
+        served.join().unwrap();
+        let settings = crate::doctor::parse_settings(&std::fs::read_to_string(&path).unwrap());
+        assert_eq!(settings.get("HATCHLING_SCHEDULER_MODEL_NAME").map(String::as_str), Some("llama3.2"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_key_and_the_restart_are_the_programs_answers() {
+        let yes = Path::new("/bin/true");
+        let no = Path::new("/bin/false");
+        assert_eq!(ask_key(yes, "openrouter.ai:443"), Ok(()));
+        assert!(ask_key(no, "openrouter.ai:443").unwrap_err().contains("nothing was changed"));
+        assert!(ask_key(Path::new("/nonexistent/hatchling"), "x:1").unwrap_err().starts_with("can't ask"));
+        assert_eq!(restart(yes), Ok(()));
+        assert!(restart(no).unwrap_err().starts_with("the broker didn't restart"));
+        assert!(restart(Path::new("/nonexistent/systemctl")).unwrap_err().starts_with("can't restart"));
+    }
+
+    #[test]
+    fn without_root_nothing_is_read() {
+        if hatchling_sys::euid() == 0 {
+            return;
+        }
+        let openrouter = target(USE_HOSTED, &["openrouter"]).unwrap();
+        let refused = switch(&openrouter, Path::new("/nonexistent/hatchling.env")).unwrap_err();
+        assert!(refused.ends_with("run it with sudo"), "{refused}");
     }
 }
