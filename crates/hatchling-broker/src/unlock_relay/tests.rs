@@ -19,7 +19,7 @@ fn scratch(name: &str) -> PathBuf {
 fn pair() -> (UnixStream, UnixStream) {
     let (one, other) = UnixStream::pair().unwrap();
     for end in [&one, &other] {
-        end.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        end.set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
     }
     (one, other)
@@ -36,7 +36,7 @@ fn operator(
 ) -> std::thread::JoinHandle<(Result<(), String>, Heard)> {
     // A keeper that goes quiet fails the test, rather than hanging it.
     stream
-        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
     std::thread::spawn(move || {
         let mut heard = Vec::new();
