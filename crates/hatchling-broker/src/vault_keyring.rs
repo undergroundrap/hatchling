@@ -1984,6 +1984,9 @@ mod tests {
         enroll_totp(&vault, &config, &mut |prompt| Ok(app.answer(prompt))).unwrap();
         assert!(crate::unlock_relay::needs_a_person(&config));
         let operator = |stream: UnixStream, code: String| {
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .unwrap();
             std::thread::spawn(move || {
                 let mut heard = Vec::new();
                 let result = crate::unlock_relay::operate(&stream, &[], &mut |prompt, secret| {

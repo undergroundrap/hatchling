@@ -64,6 +64,10 @@ const SOCKET: &str = "unlock.sock";
 /// find a key and remember a PIN.
 const ANSWER_WAIT: Duration = Duration::from_secs(300);
 
+/// How long the operator's command waits for the keeper's next word: past
+/// the keeper's own wait for an answer.
+const OPERATOR_WAIT: Duration = Duration::from_secs(600);
+
 /// The most security keys passed in one try.
 const MAX_KEYS: usize = 8;
 
@@ -378,6 +382,9 @@ pub fn unlock_main(program: &str, vault: &VaultConfig) -> ExitCode {
         );
         return ExitCode::FAILURE;
     };
+    // The keeper asks for each step within its own wait; past this, it's
+    // gone quiet, and the command says so rather than hang.
+    let _ = stream.set_read_timeout(Some(OPERATOR_WAIT));
     let keys = crate::keeper::open_security_keys();
     let _ = writeln!(
         stderr,

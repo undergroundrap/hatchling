@@ -23,6 +23,10 @@ fn operator(
     stream: UnixStream,
     answers: Vec<&'static str>,
 ) -> std::thread::JoinHandle<(Result<(), String>, Heard)> {
+    // A keeper that goes quiet fails the test, rather than hanging it.
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .unwrap();
     std::thread::spawn(move || {
         let mut heard = Vec::new();
         let mut answers = answers.into_iter();
@@ -94,6 +98,9 @@ fn a_socket_left_by_an_earlier_start_is_replaced_and_its_directory_made_private(
 #[test]
 fn only_the_allowed_user_is_admitted_and_another_is_told() {
     let (keeper, operator) = UnixStream::pair().unwrap();
+    operator
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .unwrap();
     let me = hatchling_sys::euid();
     assert!(admitted(&keeper, me));
     assert!(!admitted(&keeper, me.wrapping_add(1)));
@@ -181,11 +188,27 @@ fn keys_that_arent_ones_are_refused_before_any_is_taken() {
         })
         .unwrap();
         write_frame(&operator_end, &frame).unwrap();
+        // A descriptor for each, as a command would pass them: refused for
+        // the names, not for keys that never came.
+        let stand_in = File::open("/dev/null").unwrap();
+        for _ in &nodes {
+            hatchling_sys::net::send_fd(operator_end.as_fd(), stand_in.as_fd()).unwrap();
+        }
         assert!(
             matches!(take_keys(&keeper), Err(Error::Keeper { .. })),
             "{nodes:?}"
         );
     }
+    // The same, named as keys are, are taken.
+    let (keeper, operator_end) = UnixStream::pair().unwrap();
+    let nodes: Vec<String> = (0..MAX_KEYS).map(|n| format!("hidraw{n}")).collect();
+    let frame = serde_json::to_vec(&ToKeeper::Keys { nodes }).unwrap();
+    write_frame(&operator_end, &frame).unwrap();
+    let stand_in = File::open("/dev/null").unwrap();
+    for _ in 0..MAX_KEYS {
+        hatchling_sys::net::send_fd(operator_end.as_fd(), stand_in.as_fd()).unwrap();
+    }
+    assert_eq!(take_keys(&keeper).unwrap().len(), MAX_KEYS);
     // Something else first is no try.
     let (keeper, operator_end) = UnixStream::pair().unwrap();
     let answer = serde_json::to_vec(&ToKeeper::Answer {
