@@ -138,18 +138,18 @@ impl KeyringConfig {
             .unwrap_or_else(|| vault.root.with_extension("key").join("kek"))
     }
 
-    fn keyring_path(&self) -> Result<&Path, Error> {
+    pub(crate) fn keyring_path(&self) -> Result<&Path, Error> {
         self.keyring.as_deref().ok_or_else(|| Error::Usage {
             reason: String::from("set HATCHLING_VAULT_KEYRING to the keyring's absolute path"),
         })
     }
 }
 
-const fn vault_error(source: hatchling_vault::Error) -> Error {
+pub(crate) const fn vault_error(source: hatchling_vault::Error) -> Error {
     Error::Vault { source }
 }
 
-const fn io_error(source: std::io::Error) -> Error {
+pub(crate) const fn io_error(source: std::io::Error) -> Error {
     vault_error(hatchling_vault::Error::Io { source })
 }
 
@@ -246,7 +246,7 @@ fn asked_factors(tier: Tier, ask: Ask<'_>) -> Result<Factors<'static>, Error> {
 /// Unlocks `keyring` through its current tier: the KEK file at the file
 /// tier, a current code at the TOTP tier, and an enrolled key or a backup
 /// code at the hardware-key tier ([`authorize`]).
-fn unlock_current(
+pub(crate) fn unlock_current(
     keyring: &mut Keyring,
     vault: &VaultConfig,
     config: &KeyringConfig,
@@ -369,7 +369,7 @@ pub fn unlock_asking(
     match (loaded, config.keyring.as_deref()) {
         (Some(mut keyring), Some(path)) if keyring.tier() == Tier::HardwareKey => {
             pin_policy(&keyring, config)?;
-            let unlocked = authorize(&mut keyring, ask, devices)?;
+            let unlocked = opening(&mut keyring, ask, devices)?;
             mark_keyring(vault, path)?;
             settled(&keyring)?;
             Ok(unlocked.into_key())
@@ -476,7 +476,7 @@ fn kek_file_may_go(keyring: &Keyring) -> bool {
 /// has left the file tier its KEK file goes, every store moves from the
 /// old key to the new, and the retiring key is dropped. Each step is safe
 /// to repeat, so `rekey-vault` resumes here after a crash.
-fn finish(
+pub(crate) fn finish(
     keyring: &mut Keyring,
     rotation: &Rotation,
     stores: &[(Store, PathBuf)],
@@ -893,7 +893,7 @@ const AUTHORIZE_PROMPT: &str = "To authorize, plug in a security key that is alr
 const AUTHORIZE_CODE_PROMPT: &str = "No security key can be reached. To authorize, type a backup code (it is used up), or nothing to stop:";
 
 /// What stops a guided flow without a change.
-fn stopped() -> Error {
+pub(crate) fn stopped() -> Error {
     Error::Usage {
         reason: String::from("stopped; nothing was changed"),
     }
@@ -910,6 +910,43 @@ fn authorize(
     match authorization(ask, devices)? {
         Some(code) => keyring.recover(&code).map_err(vault_error),
         None => by_key(keyring, devices),
+    }
+}
+
+/// What a start says with no key to open the vault.
+const OPEN_NO_KEY: &str =
+    "No security key is plugged in. Type a backup code (it is used up), or nothing to stop:";
+
+/// What it says when the keys plugged in aren't registered here.
+const OPEN_NOT_REGISTERED: &str = "That security key isn't registered with this vault. Plug in one that is and run this again, or type a backup code (it is used up), or nothing to stop:";
+
+/// Opens a hardware-key vault at a start: with the first key plugged in
+/// that's registered here, with nothing asked but what the key itself asks
+/// (several may be plugged in: one that says it isn't registered is passed
+/// over untouched). With none, a backup code. A key that refuses, a wrong
+/// PIN or no touch, says why, and no code is asked for: the operator may
+/// just want to try the key again.
+pub(crate) fn opening(
+    keyring: &mut Keyring,
+    ask: Ask<'_>,
+    devices: &mut dyn Devices,
+) -> Result<Unlocked, Error> {
+    let mut keys = devices.every_key();
+    let plugged_in = !keys.is_empty();
+    for key in &mut keys {
+        if keyring.enrolled_on(&mut **key) != Some(false) {
+            return keyring.unlock_hardware_key(&mut **key).map_err(vault_error);
+        }
+    }
+    drop(keys);
+    let code = ask(if plugged_in {
+        OPEN_NOT_REGISTERED
+    } else {
+        OPEN_NO_KEY
+    })?;
+    match code.trim() {
+        "" => Err(stopped()),
+        code => keyring.recover(code).map_err(vault_error),
     }
 }
 
@@ -967,7 +1004,7 @@ fn key_list(keys: &[KeyInfo]) -> String {
 }
 
 /// A label, asked for until one is valid, up to three times.
-fn asked_label(ask: Ask<'_>) -> Result<Label, Error> {
+pub(crate) fn asked_label(ask: Ask<'_>) -> Result<Label, Error> {
     let mut prompt = String::from(
         "Name the new key, for example \"YubiKey 5C, desk\" (only you see this name):",
     );
@@ -1413,7 +1450,7 @@ pub fn new_codes(out: &mut dyn Write, codes: Option<&BackupCodes>) {
 }
 
 /// The actions `vault-keyring` takes.
-pub const USAGE: &str = "usage: hatchling-broker vault-keyring <init | enroll-totp | enroll-keys | use-file-tier | backup-codes | status | add-key | remove-key | label-key>";
+pub const USAGE: &str = "usage: hatchling-broker vault-keyring <setup | init | enroll-totp | enroll-keys | use-file-tier | backup-codes | status | add-key | remove-key | label-key>";
 
 /// Runs `hatchling-broker vault-keyring <action>`: the keyring settings
 /// from the environment, answers from stdin with the prompts on stderr,
@@ -1425,6 +1462,9 @@ pub const USAGE: &str = "usage: hatchling-broker vault-keyring <init | enroll-to
 pub fn run_keyring(broker: &crate::Config, action: Option<&str>) -> Result<(), Error> {
     let config = KeyringConfig::from_env()?;
     let stores = crate::sealed_stores(broker, crate::vault_ops::redaction_config(broker)?.as_ref());
+    if action == Some(crate::key_setup::SETUP_ACTION) {
+        return crate::key_setup::run_setup(broker, &config, &stores);
+    }
     let (mut asking, mut devices) = terminal_operator();
     command(
         &broker.vault,
@@ -1521,7 +1561,11 @@ fn warning_text(warning: Warning) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "the guided setup's tests reuse these fixtures"
+)]
+pub(crate) mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
     use hatchling_vault::{SealedVault, Secret, SecretName};
@@ -1575,11 +1619,11 @@ mod tests {
     }
 
     /// The secrets store alone: the stores a keyring command re-seals here.
-    fn secrets(vault: &VaultConfig) -> Vec<(Store, PathBuf)> {
+    pub(crate) fn secrets(vault: &VaultConfig) -> Vec<(Store, PathBuf)> {
         vec![(Store::SECRETS, vault.root.clone())]
     }
 
-    struct Scratch(PathBuf);
+    pub(crate) struct Scratch(PathBuf);
 
     impl Drop for Scratch {
         fn drop(&mut self) {
@@ -1868,7 +1912,7 @@ mod tests {
         }
     }
 
-    fn adopted(name: &str) -> (Scratch, VaultConfig, KeyringConfig) {
+    pub(crate) fn adopted(name: &str) -> (Scratch, VaultConfig, KeyringConfig) {
         let (scratch, vault) = scratch(name);
         let config = keyring_config(&scratch);
         let plain = unlock(&vault, &KeyringConfig::default()).unwrap();
@@ -1881,7 +1925,7 @@ mod tests {
         (scratch, vault, config)
     }
 
-    fn reads_the_secret(vault: &VaultConfig, key: &MasterKey) -> bool {
+    pub(crate) fn reads_the_secret(vault: &VaultConfig, key: &MasterKey) -> bool {
         let secret: SecretName = "token".parse().unwrap();
         SealedVault::open(&vault.root, key)
             .unwrap()
@@ -3513,6 +3557,77 @@ mod tests {
         );
     }
 
+    /// Keys all plugged in at once, in any order.
+    struct AllIn(Vec<hatchling_vault::virtual_key::VirtualAuthenticator>);
+
+    impl Devices for AllIn {
+        fn plugged_in(&mut self) -> Option<&mut dyn Authenticator> {
+            None
+        }
+
+        fn every_key(&mut self) -> Vec<&mut dyn Authenticator> {
+            self.0
+                .iter_mut()
+                .map(|key| -> &mut dyn Authenticator { key })
+                .collect()
+        }
+    }
+
+    /// With several keys plugged in, a start finds a registered one and
+    /// asks nothing: nobody is told to unplug anything.
+    #[test]
+    fn a_start_opens_with_whichever_registered_key_is_plugged_in() {
+        let (_scratch, vault, config, _, desk) = desk_vault("start-all-in", 2);
+        let mut keys = desk.keys;
+        keys.reverse();
+        let mut all_in = AllIn(keys);
+        let mut asked = Vec::new();
+        let master =
+            super::unlock_asking(&vault, &config, &mut answers(&[], &mut asked), &mut all_in)
+                .unwrap();
+        assert!(reads_the_secret(&vault, &master));
+        assert!(asked.is_empty(), "{asked:?}");
+        assert_eq!(codes_left(&config), 10);
+    }
+
+    /// With no registered key in, a start says which it is, and a backup
+    /// code opens it; a key that refuses says why, and spends no code.
+    #[test]
+    fn a_start_says_why_no_key_opened_it() {
+        let (_scratch, vault, config, codes, mut desk) = desk_vault("start-why", 2);
+        let stranger = 2;
+        desk.plugged.set(Some(stranger));
+        let mut asked = Vec::new();
+        assert!(matches!(
+            super::unlock_asking(&vault, &config, &mut answers(&[""], &mut asked), &mut desk),
+            Err(Error::Usage { reason }) if reason.contains("stopped")
+        ));
+        assert_eq!(asked, [OPEN_NOT_REGISTERED]);
+        desk.plugged.set(None);
+        let mut asked = Vec::new();
+        let code = codes.first().unwrap().as_str();
+        let master = super::unlock_asking(
+            &vault,
+            &config,
+            &mut answers(&[code], &mut asked),
+            &mut desk,
+        )
+        .unwrap();
+        assert!(reads_the_secret(&vault, &master));
+        assert_eq!(asked, [OPEN_NO_KEY]);
+        assert_eq!(codes_left(&config), 9);
+        // Not touched in time: said, and no code asked for or spent.
+        desk.plugged.set(Some(0));
+        desk.keys.first_mut().unwrap().set_present(false);
+        let mut asked = Vec::new();
+        let refused =
+            super::unlock_asking(&vault, &config, &mut answers(&[], &mut asked), &mut desk)
+                .unwrap_err();
+        assert!(asked.is_empty(), "{asked:?}");
+        assert!(refused.to_string().contains("touched"), "{refused}");
+        assert_eq!(codes_left(&config), 9);
+    }
+
     #[test]
     fn a_hardware_key_vault_starts_with_a_touch_and_spends_no_code() {
         let (_scratch, vault, config, _, mut desk) = desk_vault("start-touch", 2);
@@ -3521,7 +3636,7 @@ mod tests {
             super::unlock_asking(&vault, &config, &mut answers(&[""], &mut asked), &mut desk)
                 .unwrap();
         assert!(reads_the_secret(&vault, &master));
-        assert_eq!(asked, [AUTHORIZE_PROMPT]);
+        assert!(asked.is_empty(), "with a key in, nothing to ask: {asked:?}");
         assert_eq!(codes_left(&config), 10, "a touch, not a code");
         let mut keyring = Keyring::load(config.keyring.as_deref().unwrap()).unwrap();
         let mut asked = Vec::new();

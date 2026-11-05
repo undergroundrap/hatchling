@@ -341,7 +341,22 @@ fn tell(stream: &UnixStream, message: &ToOperator) -> Result<(), Error> {
 /// Why a try failed, as the operator is told: the reason itself, without
 /// the error's kind in front.
 fn plainly(error: &Error) -> String {
-    if let Error::Usage { reason } | Error::Keeper { reason } = error {
+    if matches!(
+        error,
+        Error::Vault {
+            source: hatchling_vault::Error::RotationUnfinished
+        }
+    ) {
+        return String::from(
+            "a change to the vault's key was interrupted: run `sudo hatchling-broker vault-keyring setup` to finish it",
+        );
+    }
+    if let Error::Usage { reason }
+    | Error::Keeper { reason }
+    | Error::Vault {
+        source: hatchling_vault::Error::Authenticator { reason },
+    } = error
+    {
         reason.clone()
     } else {
         error.to_string()
@@ -402,6 +417,7 @@ pub fn unlock_main(program: &str, vault: &VaultConfig) -> ExitCode {
                 std::io::stderr().lock(),
                 "Unlocked: Hatchling is starting. The app's address, as yourself: hatchling-host url"
             );
+            remind();
             ExitCode::SUCCESS
         }
         Err(reason) => {
@@ -411,6 +427,23 @@ pub fn unlock_main(program: &str, vault: &VaultConfig) -> ExitCode {
             );
             ExitCode::FAILURE
         }
+    }
+}
+
+/// What's still unfinished about the keys, said after an unlock.
+fn remind() {
+    let Ok(config) = KeyringConfig::from_env() else {
+        return;
+    };
+    let Some(path) = config.keyring.as_deref() else {
+        return;
+    };
+    let mut stderr = std::io::stderr().lock();
+    if crate::key_setup::codes_unconfirmed(path) {
+        let _ = writeln!(
+            stderr,
+            "Your backup codes were never confirmed saved: sudo hatchling-broker vault-keyring setup makes a fresh set."
+        );
     }
 }
 

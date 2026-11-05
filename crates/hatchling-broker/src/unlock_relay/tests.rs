@@ -227,6 +227,25 @@ fn keys_that_arent_ones_are_refused_before_any_is_taken() {
 }
 
 #[test]
+fn what_stopped_a_try_is_said_plainly() {
+    let said = |source| plainly(&Error::Vault { source });
+    assert_eq!(
+        said(hatchling_vault::Error::Authenticator {
+            reason: String::from("the PIN is wrong: 7 tries left before the key locks itself")
+        }),
+        "the PIN is wrong: 7 tries left before the key locks itself"
+    );
+    assert!(said(hatchling_vault::Error::RotationUnfinished).contains("vault-keyring setup"));
+    assert_eq!(
+        plainly(&Error::Usage {
+            reason: String::from("stopped")
+        }),
+        "stopped"
+    );
+    assert!(said(hatchling_vault::Error::UnlockFailed).contains("vault"));
+}
+
+#[test]
 fn a_node_is_hidraw_and_a_number() {
     for node in ["hidraw0", "hidraw12", "hidraw9999"] {
         assert!(valid_node(node), "{node}");

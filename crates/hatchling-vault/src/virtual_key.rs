@@ -159,6 +159,29 @@ impl Authenticator for VirtualAuthenticator {
         }
         self.answer(rp_id, credential_id, salt, true)
     }
+
+    fn holds(&mut self, rp_id: &str, credential_id: &[u8]) -> Option<bool> {
+        Some(
+            self.held
+                .iter()
+                .any(|held| held.rp_id == rp_id && held.id == credential_id),
+        )
+    }
+
+    fn pin_set(&self) -> Option<bool> {
+        Some(self.pin.is_some())
+    }
+
+    fn set_pin(&mut self, pin: &str) -> Result<(), AuthenticatorError> {
+        if self.pin.is_some() {
+            return Err(AuthenticatorError::Device(String::from(
+                "this security key has a PIN already",
+            )));
+        }
+        self.pin = Some(pin.to_owned());
+        self.typed = Some(pin.to_owned());
+        Ok(())
+    }
 }
 
 impl VirtualAuthenticator {
@@ -196,6 +219,26 @@ impl VirtualAuthenticator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// It says what it holds by relying party and credential, both.
+    #[test]
+    fn it_holds_a_credential_for_its_relying_party_only() {
+        let mut key = VirtualAuthenticator::default();
+        let made = key.make_credential("rp", b"user").unwrap();
+        assert_eq!(key.holds("rp", &made.id), Some(true));
+        assert_eq!(key.holds("other", &made.id), Some(false));
+        assert_eq!(key.holds("rp", b"another"), Some(false));
+    }
+
+    /// A PIN is set once.
+    #[test]
+    fn it_takes_a_pin_when_it_has_none() {
+        let mut key = VirtualAuthenticator::default();
+        assert_eq!(key.pin_set(), Some(false));
+        key.set_pin("2468").unwrap();
+        assert_eq!(key.pin_set(), Some(true));
+        assert!(key.set_pin("1357").is_err());
+    }
 
     #[test]
     fn it_computes_hmac_secret_per_credential_and_relying_party() {

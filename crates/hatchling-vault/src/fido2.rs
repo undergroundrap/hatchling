@@ -54,6 +54,19 @@ pub enum AuthenticatorError {
     Device(String),
 }
 
+impl AuthenticatorError {
+    /// What went wrong, in words for the person holding the key.
+    #[must_use]
+    pub fn said(&self) -> String {
+        match self {
+            Self::NoUserPresence => String::from("the key wasn't touched in time"),
+            Self::UnknownCredential => String::from("this key isn't one registered here"),
+            Self::NoVerification => String::from("the key couldn't check its PIN"),
+            Self::Device(said) => said.clone(),
+        }
+    }
+}
+
 /// What an enrolled security key asks of its user each time it opens the
 /// vault.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,6 +140,67 @@ pub trait Authenticator {
     ) -> Result<[u8; 32], AuthenticatorError> {
         let _ = (rp_id, credential_id, salt);
         Err(AuthenticatorError::NoVerification)
+    }
+
+    /// Whether the key holds `credential_id`, asked without a touch or its
+    /// PIN: `None` when it can't say (the default).
+    fn holds(&mut self, rp_id: &str, credential_id: &[u8]) -> Option<bool> {
+        let _ = (rp_id, credential_id);
+        None
+    }
+
+    /// Whether a PIN is set on the key: `Some(false)` for a key that takes
+    /// one and has none (a new key), `None` for one that takes none.
+    fn pin_set(&self) -> Option<bool> {
+        None
+    }
+
+    /// The shortest PIN the key takes, in characters.
+    fn min_pin_length(&self) -> usize {
+        4
+    }
+
+    /// Sets `pin` on a key with none.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthenticatorError`] if the key doesn't take it.
+    fn set_pin(&mut self, pin: &str) -> Result<(), AuthenticatorError> {
+        let _ = pin;
+        Err(AuthenticatorError::NoVerification)
+    }
+}
+
+/// A move to the hardware-key tier, key by key.
+///
+/// Nothing is written until [`Keyring::commit_key_enrollment`], so a key
+/// can be registered, swapped for the next on a machine with one port, and
+/// the whole thing abandoned (or the power lost) with the vault as it was.
+pub struct KeyEnrollment {
+    rotation: crate::rotate::Rotation,
+    wraps: Vec<crate::Wrap>,
+    check: KeyCheck,
+}
+
+impl KeyEnrollment {
+    /// How many keys are registered so far.
+    #[must_use]
+    pub fn keys(&self) -> usize {
+        self.wraps.len()
+    }
+
+    /// Whether `device` is a key already in this enrollment, as far as it
+    /// can say, without a touch.
+    pub fn holds(&self, device: &mut dyn Authenticator) -> bool {
+        self.wraps.iter().any(|wrap| key_holds(device, wrap))
+    }
+
+    /// Names the key registered last: after its touch, as that's what
+    /// shows which of two plugged in it is.
+    pub fn name_last(&mut self, label: &crate::manage::Label) {
+        if let Some(wrap) = self.wraps.last_mut() {
+            wrap.set_label(label.as_str());
+        }
     }
 }
 
@@ -253,6 +327,87 @@ impl Keyring {
         self.commit_rotation(rotation, Tier::HardwareKey, vec![wrap])
     }
 
+    /// Starts a move to the hardware-key tier, each key asking its user as
+    /// `check` says. Nothing is written.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::TierChange`] or [`Error::RotationUnfinished`], or
+    /// a randomness error.
+    pub fn begin_key_enrollment(
+        &self,
+        unlocked: &Unlocked,
+        check: KeyCheck,
+    ) -> Result<KeyEnrollment, Error> {
+        self.authorize(unlocked, Tier::HardwareKey)?;
+        Ok(KeyEnrollment {
+            rotation: self.begin_rotation(unlocked, Tier::HardwareKey)?,
+            wraps: Vec::new(),
+            check,
+        })
+    }
+
+    /// Registers `device` in `enrollment`. A key already in it is refused,
+    /// before it's asked for anything: a credential is new each time, so
+    /// only the key can say it's the same one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::KeyChange`] for a key already in it,
+    /// [`Error::MissingHmacSecret`], [`Error::Authenticator`], or an I/O
+    /// or randomness error; `enrollment` is then as it was.
+    pub fn enroll_key(
+        &self,
+        enrollment: &mut KeyEnrollment,
+        device: &mut dyn Authenticator,
+    ) -> Result<(), Error> {
+        if enrollment.holds(device) {
+            return Err(Error::KeyChange {
+                reason: "this key is already registered",
+            });
+        }
+        let wrap = self.hardware_wrap(enrollment.rotation.new_key(), device, enrollment.check)?;
+        enrollment.wraps.push(wrap);
+        Ok(())
+    }
+
+    /// Moves the vault to the hardware-key tier with the keys in
+    /// `enrollment`, as [`Keyring::enroll_hardware_keys`] does. One key
+    /// needs `risk` accepted and backup codes already made, as
+    /// [`Keyring::enroll_single_hardware_key`] does.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NeedTwoKeys`] with no key, or one without `risk`,
+    /// [`Error::NeedBackupCodes`], or an I/O or randomness error; the
+    /// keyring is then unchanged.
+    pub fn commit_key_enrollment(
+        &mut self,
+        enrollment: KeyEnrollment,
+        risk: Option<SingleKeyRisk>,
+    ) -> Result<Rotated, Error> {
+        match (enrollment.wraps.len(), risk) {
+            (0, _) | (1, None) => return Err(Error::NeedTwoKeys),
+            (1, Some(_)) if self.backup_codes_left() == 0 => return Err(Error::NeedBackupCodes),
+            _ => {}
+        }
+        self.commit_rotation(enrollment.rotation, Tier::HardwareKey, enrollment.wraps)
+    }
+
+    /// Whether `device` holds one of this vault's enrolled keys, asked
+    /// without a touch: `None` when it can't say.
+    pub fn enrolled_on(&self, device: &mut dyn Authenticator) -> Option<bool> {
+        let mut said = None;
+        for wrap in self.wraps() {
+            match credential_bytes(wrap).map(|id| device.holds(RP_ID, &id)) {
+                Some(Some(true)) => return Some(true),
+                Some(Some(false)) => said = Some(false),
+                Some(None) | None => {}
+            }
+        }
+        said
+    }
+
     /// The KEK of the enrolled key whose wrap is `wrap`, from the first of
     /// `keys` that answers for its credential with a KEK that opens it.
     pub(crate) fn key_kek(
@@ -329,35 +484,66 @@ impl Keyring {
     /// # Errors
     ///
     /// Returns [`Error::UnlockFailed`] if the vault is not at this tier,
-    /// or the key holds none of its credentials, or does not answer.
+    /// or the key holds none of its credentials, and
+    /// [`Error::Authenticator`], saying why, if the key refuses (a wrong
+    /// PIN, no touch). A refusal stops it at once: trying the vault's other
+    /// credentials would ask again, and spend another of the key's PIN
+    /// tries. A credential the key says it doesn't hold is passed over
+    /// without asking anything.
     pub fn unlock_hardware_key(&self, device: &mut dyn Authenticator) -> Result<Unlocked, Error> {
         if self.tier() != Tier::HardwareKey {
             return Err(Error::UnlockFailed);
         }
-        self.wraps()
-            .iter()
-            .find_map(|wrap| {
-                let Factor::Fido2 {
-                    credential,
-                    salt,
-                    verified,
-                } = &wrap.factor
-                else {
-                    return None;
-                };
-                let credential = unhex(credential)?;
-                let salt = <[u8; 32]>::try_from(unhex(salt)?).ok()?;
-                let mut output =
-                    answer(device, &credential, &salt, KeyCheck::of(*verified)).ok()?;
-                let kek = kek(self.vault_id(), &credential, &output);
-                output.zeroize();
-                Some((wrap.id.as_str(), self.unwrap(wrap, &kek).ok()?))
-            })
-            .map(|(id, dek)| {
-                Unlocked::new(dek, Tier::HardwareKey, self.vault_id().to_owned()).through(id)
-            })
-            .ok_or(Error::UnlockFailed)
+        for wrap in self.wraps() {
+            let Factor::Fido2 {
+                credential,
+                salt,
+                verified,
+            } = &wrap.factor
+            else {
+                continue;
+            };
+            let Some((credential, salt)) =
+                unhex(credential).zip(unhex(salt).and_then(|salt| <[u8; 32]>::try_from(salt).ok()))
+            else {
+                continue;
+            };
+            if device.holds(RP_ID, &credential) == Some(false) {
+                continue;
+            }
+            let mut output = match answer(device, &credential, &salt, KeyCheck::of(*verified)) {
+                Ok(output) => output,
+                Err(AuthenticatorError::UnknownCredential) => continue,
+                Err(refused) => {
+                    return Err(Error::Authenticator {
+                        reason: refused.said(),
+                    });
+                }
+            };
+            let kek = kek(self.vault_id(), &credential, &output);
+            output.zeroize();
+            if let Ok(dek) = self.unwrap(wrap, &kek) {
+                return Ok(
+                    Unlocked::new(dek, Tier::HardwareKey, self.vault_id().to_owned())
+                        .through(wrap.id.as_str()),
+                );
+            }
+        }
+        Err(Error::UnlockFailed)
     }
+}
+
+/// The credential of a hardware key's `wrap`, as bytes.
+pub(crate) fn credential_bytes(wrap: &crate::Wrap) -> Option<Vec<u8>> {
+    match &wrap.factor {
+        Factor::Fido2 { credential, .. } => unhex(credential),
+        Factor::File | Factor::Totp { .. } | Factor::BackupCode { .. } => None,
+    }
+}
+
+/// Whether `device` says it holds `wrap`'s credential.
+pub(crate) fn key_holds(device: &mut dyn Authenticator, wrap: &crate::Wrap) -> bool {
+    credential_bytes(wrap).is_some_and(|id| device.holds(RP_ID, &id) == Some(true))
 }
 
 #[cfg(test)]
@@ -409,6 +595,296 @@ mod tests {
             .is_ok_and(|secret| secret.as_bytes() == b"kept")
     }
 
+    /// A key that answers only what every [`Authenticator`] must.
+    struct Bare;
+
+    impl Authenticator for Bare {
+        fn make_credential(&mut self, _: &str, _: &[u8]) -> Result<Credential, AuthenticatorError> {
+            Err(AuthenticatorError::NoVerification)
+        }
+
+        fn hmac_secret(
+            &mut self,
+            _: &str,
+            _: &[u8],
+            _: &[u8; 32],
+        ) -> Result<[u8; 32], AuthenticatorError> {
+            Err(AuthenticatorError::NoVerification)
+        }
+    }
+
+    /// A key that can't say claims nothing: not holding, not a PIN, and
+    /// no way to set one.
+    #[test]
+    fn a_key_that_cant_say_claims_nothing() {
+        let mut key = Bare;
+        assert_eq!(key.holds("rp", b"id"), None);
+        assert_eq!(key.pin_set(), None);
+        assert_eq!(key.min_pin_length(), 4);
+        assert!(key.set_pin("2468").is_err());
+    }
+
+    /// An enrollment counts the keys in it.
+    #[test]
+    fn an_enrollment_counts_its_keys() {
+        let dir = test_dir("fido2-count");
+        let (keyring, kek, _) = vault(&dir);
+        let unlocked = keyring.unlock_file(&kek).unwrap();
+        let mut enrollment = keyring
+            .begin_key_enrollment(&unlocked, KeyCheck::Touch)
+            .unwrap();
+        assert_eq!(enrollment.keys(), 0);
+        let (mut one, mut two) = (VirtualAuthenticator::new(), VirtualAuthenticator::new());
+        keyring.enroll_key(&mut enrollment, &mut one).unwrap();
+        keyring.enroll_key(&mut enrollment, &mut two).unwrap();
+        assert_eq!(enrollment.keys(), 2);
+    }
+
+    /// A key that counts what it's asked, for the PIN tries a wrong PIN
+    /// spends.
+    struct Counting {
+        key: VirtualAuthenticator,
+        asked: u32,
+    }
+
+    impl Authenticator for Counting {
+        fn make_credential(
+            &mut self,
+            rp_id: &str,
+            user_id: &[u8],
+        ) -> Result<Credential, AuthenticatorError> {
+            self.key.make_credential(rp_id, user_id)
+        }
+
+        fn hmac_secret(
+            &mut self,
+            rp_id: &str,
+            credential_id: &[u8],
+            salt: &[u8; 32],
+        ) -> Result<[u8; 32], AuthenticatorError> {
+            self.key.hmac_secret(rp_id, credential_id, salt)
+        }
+
+        fn hmac_secret_verified(
+            &mut self,
+            rp_id: &str,
+            credential_id: &[u8],
+            salt: &[u8; 32],
+        ) -> Result<[u8; 32], AuthenticatorError> {
+            self.asked += 1;
+            self.key.hmac_secret_verified(rp_id, credential_id, salt)
+        }
+
+        fn holds(&mut self, rp_id: &str, credential_id: &[u8]) -> Option<bool> {
+            self.key.holds(rp_id, credential_id)
+        }
+    }
+
+    /// Keys registered one at a time, as on a machine with one port:
+    /// nothing changes until the commit, and an abandoned move leaves the
+    /// vault as it was.
+    #[test]
+    fn keys_are_registered_one_at_a_time_and_nothing_changes_until_the_commit() {
+        let dir = test_dir("fido2-staged");
+        let (mut keyring, kek, _) = vault(&dir);
+        let path = dir.join("keys").join("keyring");
+        let before = std::fs::read(&path).unwrap();
+        let (mut nano, mut nfc) = (VirtualAuthenticator::new(), VirtualAuthenticator::new());
+        let label = |name: &str| name.parse::<crate::Label>().unwrap();
+        let unlocked = keyring.unlock_file(&kek).unwrap();
+        // Abandoned: the keys registered, and the power lost.
+        let mut abandoned = keyring
+            .begin_key_enrollment(&unlocked, KeyCheck::Touch)
+            .unwrap();
+        keyring.enroll_key(&mut abandoned, &mut nano).unwrap();
+        assert_eq!(abandoned.keys(), 1);
+        drop(abandoned);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(Keyring::load(&path).unwrap().unlock_file(&kek).is_ok());
+
+        let mut enrollment = keyring
+            .begin_key_enrollment(&unlocked, KeyCheck::Touch)
+            .unwrap();
+        keyring.enroll_key(&mut enrollment, &mut nano).unwrap();
+        enrollment.name_last(&label("nano"));
+        assert_eq!(std::fs::read(&path).unwrap(), before, "still nothing");
+        // The same key again, as a swap that didn't happen.
+        assert!(matches!(
+            keyring.enroll_key(&mut enrollment, &mut nano),
+            Err(Error::KeyChange { .. })
+        ));
+        assert_eq!(enrollment.keys(), 1);
+        assert!(enrollment.holds(&mut nano));
+        assert!(!enrollment.holds(&mut nfc));
+        keyring.enroll_key(&mut enrollment, &mut nfc).unwrap();
+        enrollment.name_last(&label("nfc"));
+        assert_eq!(std::fs::read(&path).unwrap(), before, "still nothing");
+        let rotated = keyring.commit_key_enrollment(enrollment, None).unwrap();
+        settle(&mut keyring, rotated, &dir.join("vault"));
+        let keyring = Keyring::load(&path).unwrap();
+        assert_eq!(keyring.tier(), Tier::HardwareKey);
+        let names: Vec<String> = keyring
+            .hardware_keys()
+            .into_iter()
+            .map(|key| key.label)
+            .collect();
+        assert_eq!(names, ["nano", "nfc"]);
+        for key in [&mut nano, &mut nfc] {
+            let opened = keyring.unlock_hardware_key(key).unwrap();
+            assert!(reads_the_secret(&dir, opened.key()));
+        }
+    }
+
+    /// One key needs its risk accepted, and backup codes; two need neither.
+    #[test]
+    fn a_commit_needs_two_keys_or_one_with_its_way_back() {
+        let dir = test_dir("fido2-staged-one");
+        let (mut keyring, kek, _) = vault(&dir);
+        let mut single = VirtualAuthenticator::new();
+        let unlocked = keyring.unlock_file(&kek).unwrap();
+        let begin = |keyring: &Keyring| {
+            keyring
+                .begin_key_enrollment(&unlocked, KeyCheck::Touch)
+                .unwrap()
+        };
+        let empty = begin(&keyring);
+        assert!(matches!(
+            keyring.commit_key_enrollment(empty, Some(SingleKeyRisk::accepted())),
+            Err(Error::NeedTwoKeys)
+        ));
+        let mut one = begin(&keyring);
+        keyring.enroll_key(&mut one, &mut single).unwrap();
+        assert!(matches!(
+            keyring.commit_key_enrollment(one, None),
+            Err(Error::NeedTwoKeys)
+        ));
+        let mut one = begin(&keyring);
+        keyring.enroll_key(&mut one, &mut single).unwrap();
+        assert!(matches!(
+            keyring.commit_key_enrollment(one, Some(SingleKeyRisk::accepted())),
+            Err(Error::NeedBackupCodes)
+        ));
+        keyring.generate_backup_codes(&unlocked).unwrap();
+        let mut one = begin(&keyring);
+        keyring.enroll_key(&mut one, &mut single).unwrap();
+        let rotated = keyring
+            .commit_key_enrollment(one, Some(SingleKeyRisk::accepted()))
+            .unwrap();
+        assert!(rotated.codes.is_some(), "a new set, to show");
+        settle(&mut keyring, rotated, &dir.join("vault"));
+        assert_eq!(keyring.tier(), Tier::HardwareKey);
+    }
+
+    /// A wrong PIN is asked once and said: the vault's other credentials
+    /// aren't tried with it, each a PIN try spent.
+    #[test]
+    fn a_wrong_pin_spends_one_try_and_says_why() {
+        let dir = test_dir("fido2-one-try");
+        let (mut keyring, kek, _) = vault(&dir);
+        let (mut first, mut second) = (
+            VirtualAuthenticator::with_pin("2468"),
+            VirtualAuthenticator::with_pin("1357"),
+        );
+        let unlocked = keyring.unlock_file(&kek).unwrap();
+        let rotated = keyring
+            .enroll_hardware_keys_checked(&unlocked, &mut [&mut first, &mut second], KeyCheck::Pin)
+            .unwrap();
+        settle(&mut keyring, rotated, &dir.join("vault"));
+        // Either key, wrong: one question, whichever wrap is its own.
+        let wrong = |mut key: VirtualAuthenticator| {
+            key.set_typed(Some("0000"));
+            let mut counting = Counting { key, asked: 0 };
+            let refused = keyring.unlock_hardware_key(&mut counting);
+            assert!(matches!(refused, Err(Error::Authenticator { .. })));
+            assert_eq!(counting.asked, 1);
+        };
+        wrong(first);
+        wrong(second);
+        // A key that can't say what it holds is still tried, once it's asked.
+        let mut stranger = Counting {
+            key: VirtualAuthenticator::with_pin("2468"),
+            asked: 0,
+        };
+        assert!(matches!(
+            keyring.unlock_hardware_key(&mut stranger),
+            Err(Error::UnlockFailed)
+        ));
+        assert_eq!(stranger.asked, 0, "not its credential: no PIN asked");
+    }
+
+    /// What a key says of the vault's credentials, without a touch.
+    #[test]
+    fn a_key_says_whether_its_enrolled_without_a_touch() {
+        let dir = test_dir("fido2-enrolled-on");
+        let (mut keyring, kek, _) = vault(&dir);
+        let (mut one, mut two, mut stranger) = (
+            VirtualAuthenticator::new(),
+            VirtualAuthenticator::new(),
+            VirtualAuthenticator::new(),
+        );
+        let unlocked = keyring.unlock_file(&kek).unwrap();
+        assert_eq!(
+            keyring.enrolled_on(&mut stranger),
+            None,
+            "no keys to ask of"
+        );
+        let rotated = keyring
+            .enroll_hardware_keys(&unlocked, &mut [&mut one, &mut two])
+            .unwrap();
+        settle(&mut keyring, rotated, &dir.join("vault"));
+        two.set_present(false);
+        assert_eq!(keyring.enrolled_on(&mut one), Some(true));
+        assert_eq!(keyring.enrolled_on(&mut two), Some(true), "no touch needed");
+        assert_eq!(keyring.enrolled_on(&mut stranger), Some(false));
+    }
+
+    /// The same key isn't added twice: only it can say it's the same.
+    #[test]
+    fn a_key_already_enrolled_isnt_added_again() {
+        let dir = test_dir("fido2-add-same");
+        let (mut keyring, kek, _) = vault(&dir);
+        let (mut one, mut two, mut third) = (
+            VirtualAuthenticator::new(),
+            VirtualAuthenticator::new(),
+            VirtualAuthenticator::new(),
+        );
+        let unlocked = keyring.unlock_file(&kek).unwrap();
+        let rotated = keyring
+            .enroll_hardware_keys(&unlocked, &mut [&mut one, &mut two])
+            .unwrap();
+        settle(&mut keyring, rotated, &dir.join("vault"));
+        let opened = keyring.unlock_hardware_key(&mut one).unwrap();
+        let name = "again".parse::<crate::Label>().unwrap();
+        assert!(matches!(
+            keyring.add_hardware_key(&opened, &mut two, &name),
+            Err(Error::KeyChange { .. })
+        ));
+        assert_eq!(keyring.hardware_keys().len(), 2);
+        keyring
+            .add_hardware_key(&opened, &mut third, &name)
+            .unwrap();
+        assert_eq!(keyring.hardware_keys().len(), 3);
+    }
+
+    #[test]
+    fn a_refusal_is_said_in_words() {
+        assert!(
+            AuthenticatorError::NoUserPresence
+                .said()
+                .contains("touched")
+        );
+        assert!(
+            AuthenticatorError::UnknownCredential
+                .said()
+                .contains("registered")
+        );
+        assert!(AuthenticatorError::NoVerification.said().contains("PIN"));
+        assert_eq!(
+            AuthenticatorError::Device(String::from("as it is")).said(),
+            "as it is"
+        );
+    }
+
     #[test]
     fn two_registered_keys_each_unlock_the_vault_and_nothing_else_does() {
         let dir = test_dir("fido2-two");
@@ -456,7 +932,7 @@ mod tests {
         assert!(
             matches!(
                 keyring.unlock_hardware_key(&mut primary),
-                Err(Error::UnlockFailed)
+                Err(Error::Authenticator { .. })
             ),
             "no touch, no unlock"
         );
@@ -774,7 +1250,7 @@ mod tests {
             primary.set_typed(typed);
             assert!(matches!(
                 keyring.unlock_hardware_key(&mut primary),
-                Err(Error::UnlockFailed)
+                Err(Error::Authenticator { .. })
             ));
         }
         primary.set_typed(Some("2468"));

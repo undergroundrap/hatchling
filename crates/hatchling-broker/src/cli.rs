@@ -99,6 +99,19 @@ pub fn main(program: &str, args: &[String]) -> ExitCode {
         }
         Some(_) | None => {}
     }
+    // The guided setup adds to the service's settings before they're taken
+    // on, and stops the service: a broker running would keep the old key.
+    if args.first().map(String::as_str) == Some("vault-keyring")
+        && args.get(1).map(String::as_str) == Some(crate::key_setup::SETUP_ACTION)
+    {
+        if let Err(why) = crate::key_setup::prepare() {
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "{program} vault-keyring setup: {why}"
+            );
+            return ExitCode::FAILURE;
+        }
+    }
     // An operator command from a shell with no settings, on a service
     // install: it runs again with the service's (the call returns only
     // when it can't).
@@ -143,7 +156,7 @@ pub fn help(program: &str) -> String {
     render_help(
         program,
         "[subcommand] | --help | -h",
-        "Serve agents with no subcommand. Operator subcommands:\n  doctor [--env <file>]   (what stops it working here, and the fix)\n  migrate-vault\n  rekey-vault [<new-key-file>]   (no file with a keyring)\n  vault-keyring <action>\n    init, enroll-totp, enroll-keys, use-file-tier, backup-codes,\n    status, add-key, remove-key, label-key\n  unlock   (a vault with a security key or codes waits, locked, after a\n    start as a service: open it here, with the key or a code)\n  redactions list | stats | categories\n  redactions show <id> | raw <id> | override <id> [--any-scope]\n  vault-audit [log [count]]\n  tools list | add <path> | remove <path>   (what a CLI cell may run)\n  secret add <name> | --for <host:port> [--replace | --if-missing]   (a key, shown as *)\n  use-hosted openrouter | --endpoint <url> [--model <id>] [--window <tokens>] [--thinking off|on]\n  use-local --model <name> [--endpoint <url>] [--window <tokens>] [--thinking off|on]\n    (switch the model, its server and its egress together, and restart)\n  clean [--dry-run]   (a dead broker's leftovers; never your data)\n  schedule list | add <task> <when> | remove <id>   (as yourself, not sudo)\n  browser-digest <browser>   (the digest HATCHLING_BROWSER_SHA256 pins)\n\nThe broker builds and supervises the agent's cell. Internal spawner\ncommands skill-cell <spec-file>, agent-run <spec-file>, browser-cell <spec-file>,\nharness-tree, vault-keeper, egress-authority and spawner are broker-owned.",
+        "Serve agents with no subcommand. Operator subcommands:\n  doctor [--env <file>]   (what stops it working here, and the fix)\n  migrate-vault\n  rekey-vault [<new-key-file>]   (no file with a keyring)\n  vault-keyring <action>\n    setup   (security keys, guided; run again, it carries on)\n    init, enroll-totp, enroll-keys, use-file-tier, backup-codes,\n    status, add-key, remove-key, label-key\n  unlock   (a vault with a security key or codes waits, locked, after a\n    start as a service: open it here, with the key or a code)\n  redactions list | stats | categories\n  redactions show <id> | raw <id> | override <id> [--any-scope]\n  vault-audit [log [count]]\n  tools list | add <path> | remove <path>   (what a CLI cell may run)\n  secret add <name> | --for <host:port> [--replace | --if-missing]   (a key, shown as *)\n  use-hosted openrouter | --endpoint <url> [--model <id>] [--window <tokens>] [--thinking off|on]\n  use-local --model <name> [--endpoint <url>] [--window <tokens>] [--thinking off|on]\n    (switch the model, its server and its egress together, and restart)\n  clean [--dry-run]   (a dead broker's leftovers; never your data)\n  schedule list | add <task> <when> | remove <id>   (as yourself, not sudo)\n  browser-digest <browser>   (the digest HATCHLING_BROWSER_SHA256 pins)\n\nThe broker builds and supervises the agent's cell. Internal spawner\ncommands skill-cell <spec-file>, agent-run <spec-file>, browser-cell <spec-file>,\nharness-tree, vault-keeper, egress-authority and spawner are broker-owned.",
         crate::environment::ENVIRONMENT,
     )
 }
@@ -167,8 +180,8 @@ fn valid_args(args: &[String]) -> bool {
         | [crate::model_window::MODEL_FIT_SUBCOMMAND, _, _]
         | [
             "vault-keyring",
-            "init" | "enroll-totp" | "enroll-keys" | "use-file-tier" | "backup-codes" | "status"
-            | "add-key" | "remove-key" | "label-key",
+            "setup" | "init" | "enroll-totp" | "enroll-keys" | "use-file-tier" | "backup-codes"
+            | "status" | "add-key" | "remove-key" | "label-key",
         ]
         | ["redactions", "list" | "stats" | "categories"]
         | ["redactions", "show" | "raw" | "override", _]

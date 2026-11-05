@@ -54,7 +54,9 @@ pub mod vault;
 pub use acting::act_for;
 pub use backup::BackupCodes;
 pub use error::Error;
-pub use fido2::{Authenticator, AuthenticatorError, Credential, KeyCheck, SingleKeyRisk};
+pub use fido2::{
+    Authenticator, AuthenticatorError, Credential, KeyCheck, KeyEnrollment, SingleKeyRisk,
+};
 pub use hatchling_core::{MAX_SECRET_BYTES, SecretName};
 pub use keyring::{Factor, Kek, Keyring, Tier, Unlocked, Wrap};
 pub use lease::KeyLease;
