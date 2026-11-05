@@ -531,9 +531,17 @@ fn a_vault_with_one_key_is_offered_a_second() {
 /// Two of a model are told apart, and names already taken are passed over.
 #[test]
 fn a_name_already_taken_gets_a_number() {
-    let taken = |names: &[&str]| names.iter().map(|name| (*name).to_owned()).collect::<Vec<_>>();
+    let taken = |names: &[&str]| {
+        names
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect::<Vec<_>>()
+    };
     assert_eq!(unused_name("YubiKey 5", &taken(&[])), "YubiKey 5");
-    assert_eq!(unused_name("YubiKey 5", &taken(&["YubiKey 5"])), "YubiKey 5 2");
+    assert_eq!(
+        unused_name("YubiKey 5", &taken(&["YubiKey 5"])),
+        "YubiKey 5 2"
+    );
     assert_eq!(
         unused_name("YubiKey 5", &taken(&["YubiKey 5", "YubiKey 5 2"])),
         "YubiKey 5 3"

@@ -203,7 +203,10 @@ impl KeyEnrollment {
     /// The names given so far.
     #[must_use]
     pub fn names(&self) -> Vec<String> {
-        self.wraps.iter().map(|wrap| wrap.label().to_owned()).collect()
+        self.wraps
+            .iter()
+            .map(|wrap| wrap.label().to_owned())
+            .collect()
     }
 
     /// Names the key registered last: after its touch, as that's what
@@ -464,9 +467,7 @@ impl Keyring {
         device: &mut dyn Authenticator,
         check: KeyCheck,
     ) -> Result<crate::Wrap, Error> {
-        let failed = |err: AuthenticatorError| Error::Authenticator {
-            reason: err.said(),
-        };
+        let failed = |err: AuthenticatorError| Error::Authenticator { reason: err.said() };
         let credential = device
             .make_credential(RP_ID, self.vault_id().as_bytes())
             .map_err(failed)?;
@@ -1355,7 +1356,7 @@ mod tests {
             .enroll_hardware_keys_checked(&unlocked, &mut [&mut plain, &mut other], KeyCheck::Pin)
             .unwrap_err();
         assert!(
-            matches!(&err, Error::Authenticator { reason } if reason.contains("NoVerification")),
+            matches!(&err, Error::Authenticator { reason } if reason.contains("couldn't check its PIN")),
             "{err:?}"
         );
         assert_eq!(keyring.tier(), Tier::File);

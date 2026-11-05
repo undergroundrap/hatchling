@@ -243,6 +243,7 @@ impl<H: Hid + ?Sized> Hid for Watching<'_, H> {
 }
 
 /// Reads the device's answer to `command` on `channel`.
+fn receive<H: Hid + ?Sized>(
     hid: &mut H,
     channel: [u8; 4],
     command: u8,

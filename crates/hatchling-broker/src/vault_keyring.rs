@@ -3307,7 +3307,10 @@ pub(crate) mod tests {
         });
         assert!(opening(&mut keyring, &mut ask, &mut devices).is_err());
         let said = said.join(" ");
-        assert!(said.starts_with("another program is using the security key."), "{said}");
+        assert!(
+            said.starts_with("another program is using the security key."),
+            "{said}"
+        );
         assert!(!said.contains("No security key found"), "{said}");
     }
 
