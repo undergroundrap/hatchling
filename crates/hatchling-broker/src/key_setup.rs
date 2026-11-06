@@ -912,7 +912,8 @@ pub fn run_setup(
     let _ = crate::unlock_relay::unlock_main("hatchling-broker", &broker.vault);
     let _ = writeln!(
         std::io::stderr(),
-        "After each restart, the same: sudo hatchling-broker unlock"
+        "{}",
+        crate::windows_setup::here("After each restart, the same: sudo hatchling-broker unlock")
     );
     Ok(())
 }

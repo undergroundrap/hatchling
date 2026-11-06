@@ -32,6 +32,10 @@ It doesn't pipe anything into a shell, and it's in the release's `SHA256SUMS` an
 
 Either way, the other kind is one command after (`use-hosted` or `use-local`, [below](#switching-models)), and then a switch in the app.
 
+## Windows
+
+The Windows setup installs all of this with no commands to type: [Hatchling on Windows](windows.md) explains what it adds, and how to use a terminal with it if you'd rather.
+
 ## Keep it running on Windows
 
 WSL stops a distro about 30 seconds after the last terminal into it closes, and Hatchling stops with it: the app goes offline, and nothing scheduled runs. Turning on systemd or `loginctl enable-linger` doesn't change this.

@@ -515,7 +515,7 @@ pub fn run_backup(config: &Config, to: Option<&Path>) -> Result<(), Error> {
         std::io::stdout().lock(),
         "Backed up to {}.\nIt opens with what opens your vault today. To bring it back: sudo hatchling-broker restore <file>\n{}",
         made.display(),
-        after_restart(needs_a_person(&keyring))
+        crate::windows_setup::here(after_restart(needs_a_person(&keyring)))
     );
     Ok(())
 }
@@ -559,7 +559,7 @@ pub fn run_restore(config: &Config, from: &Path) -> Result<(), Error> {
         std::io::stdout().lock(),
         "Restored {count} files from {}.\n{}",
         from.display(),
-        after_restart(needs_a_person(&keyring_config))
+        crate::windows_setup::here(after_restart(needs_a_person(&keyring_config)))
     );
     Ok(())
 }
@@ -654,10 +654,10 @@ pub fn run_reset(config: &Config, args: &[String]) -> Result<(), Error> {
     let _ = writeln!(
         std::io::stdout().lock(),
         "Done. {}",
-        match level {
+        crate::windows_setup::here(match level {
             Level::Everything => "Your next step is the same as a new install: docs/install.md",
             Level::Conversation | Level::Agent => after_restart(needs_a_person(&keyring)),
-        }
+        })
     );
     Ok(())
 }
@@ -715,7 +715,10 @@ pub fn run_lock() -> Result<(), Error> {
     service("restart")?;
     let _ = writeln!(
         std::io::stdout().lock(),
-        "Locked. The agent and its schedules are stopped until you unlock it: sudo hatchling-broker unlock"
+        "{}",
+        crate::windows_setup::here(
+            "Locked. The agent and its schedules are stopped until you unlock it: sudo hatchling-broker unlock"
+        )
     );
     Ok(())
 }

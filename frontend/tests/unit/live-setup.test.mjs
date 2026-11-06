@@ -73,6 +73,22 @@ test('a backup is done once there is one, and says when', () => {
     assert.equal(ago(NOW - 2 * DAY + 1, NOW), 'yesterday');
     assert.equal(ago(NOW - 2 * DAY, NOW), '2 days ago');
 });
+test('a Windows install points to the Start menu, and types what it must in PowerShell', () => {
+    const steps = setupSteps(model, { ...bare, windowsSetup: true }, false, NOW);
+    const vault = steps.find(found => found.id === 'vault');
+    const backup = steps.find(found => found.id === 'backup');
+    assert.deepEqual(vault.commands, [], 'no sudo: its account has none');
+    assert.match(vault.said, /Open the Start menu, then Hatchling Tools, then Protect your vault\.$/);
+    assert.deepEqual(backup.commands, []);
+    assert.match(backup.said, /then Make a backup\.$/);
+    const unset = { ...model, endpoint: null };
+    const first = setupSteps(unset, { ...bare, windowsSetup: true }, false, NOW)[0];
+    assert.ok(first.commands.length > 0);
+    assert.ok(first.commands.every(found => found.command.startsWith('wsl -d hatchling-wsl -u root -- hatchling-broker')), 'a model has no Start menu item');
+    assert.ok(setupSteps(unset, bare, false, NOW)[0].commands.every(found => found.command.startsWith('sudo ')));
+    const done = setupSteps(model, { ...bare, lastBackup: NOW, windowsSetup: true }, true, NOW);
+    assert.equal(done.find(found => found.id === 'backup').said, 'Your last backup was made today.', 'done needs no directions');
+});
 test('skipping counts as dealt with, and finishes it', () => {
     const steps = setupSteps(model, { ...bare, lastBackup: NOW }, true, NOW);
     assert.equal(setupFinished(steps), true);

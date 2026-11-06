@@ -448,7 +448,8 @@ pub fn unlock_main(program: &str, vault: &VaultConfig) -> ExitCode {
         Ok(()) => {
             std::thread::sleep(SETTLE);
             let stayed = !service || service_running();
-            let _ = writeln!(std::io::stderr().lock(), "{}", unlocked_said(stayed));
+            let said = crate::windows_setup::here(unlocked_said(stayed));
+            let _ = writeln!(std::io::stderr().lock(), "{said}");
             remind();
             if stayed {
                 ExitCode::SUCCESS
@@ -524,6 +525,13 @@ pub(crate) fn operate(
     answer: Answer<'_>,
 ) -> Result<(), String> {
     let gone = |e: hatchling_core::Error| format!("Hatchling stopped answering: {e}");
+    // Past a question, the likely reason is the plain one: it waited, and gave up.
+    let late = |e: hatchling_core::Error| {
+        tracing::debug!(error = %e, "the keeper went after a question");
+        String::from(
+            "Hatchling stopped waiting: it gives each question 5 minutes. Nothing has changed",
+        )
+    };
     let nodes: Vec<String> = keys.iter().map(|(node, _)| node.clone()).collect();
     let keys_frame = serde_json::to_vec(&ToKeeper::Keys { nodes }).map_err(|e| e.to_string())?;
     if let Err(error) = write_frame(stream, &keys_frame) {
@@ -533,8 +541,13 @@ pub(crate) fn operate(
     for (_, key) in keys {
         hatchling_sys::net::send_fd(stream.as_fd(), key.as_fd()).map_err(|e| e.to_string())?;
     }
+    let mut asked = false;
     loop {
-        let frame = read_frame(stream).map_err(gone)?;
+        let frame = match read_frame(stream) {
+            Ok(frame) => frame,
+            Err(error) if asked => return Err(late(error)),
+            Err(error) => return Err(gone(error)),
+        };
         match serde_json::from_slice::<ToOperator>(&frame) {
             Ok(ToOperator::Ask { prompt, secret }) => {
                 let text = answer(&prompt, secret)?;
@@ -544,7 +557,8 @@ pub(crate) fn operate(
                     })
                     .map_err(|e| e.to_string())?,
                 );
-                write_frame(stream, &reply).map_err(gone)?;
+                write_frame(stream, &reply).map_err(late)?;
+                asked = true;
             }
             Ok(ToOperator::Say { message }) => {
                 let _ = writeln!(std::io::stderr(), "{message}");

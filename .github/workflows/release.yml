@@ -330,10 +330,16 @@ jobs:
           name: ui-a
           path: downloads/ui
 
+      - name: Name the setup's version
+        shell: bash
+        # The tag's, or on a dry run, the version a release would be.
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          [ -n "$version" ] || { echo "no version in Cargo.toml"; exit 1; }
+          echo "TAG=v$version" >> "$GITHUB_ENV"
+
       - name: Gather what the setup holds
         shell: bash
-        env:
-          TAG: ${{ github.ref_type == 'tag' && github.ref_name || 'v0.0.0' }}
         run: |
           target=x86_64-unknown-linux-gnu
           mkdir setup-files
@@ -350,8 +356,6 @@ jobs:
 
       - name: Build the setup
         shell: pwsh
-        env:
-          TAG: ${{ github.ref_type == 'tag' && github.ref_name || 'v0.0.0' }}
         run: |
           $version = $env:TAG.TrimStart('v')
           New-Item -ItemType Directory -Force out | Out-Null

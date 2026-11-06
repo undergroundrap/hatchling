@@ -6,4 +6,6 @@ What this setup does:
 - Adds Hatchling to your Start menu.
 - If you choose, keeps it running while you're logged in.
 
+Updating? Your settings, model and data stay as they are. Hatchling restarts, so anything it's working on stops.
+
 It needs no administrator rights. Your PINs, keys and codes are only ever typed at Hatchling's own prompt, and this setup never sees them.

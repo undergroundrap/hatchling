@@ -42,12 +42,12 @@ const READY: ConnectionState = { kind: 'ready', detail: '' };
  * one whose key it doesn't take without a word, as after a restart, which mints a
  * new key; the host closes one when the broker isn't running.
  */
-const NOT_LET_IN = 'Hatchling didn’t let the app in. If it restarted, this address’s key no longer works: run `hatchling-host url` and open the address it prints. If it isn’t running, start it: `sudo systemctl start hatchling`.';
+const NOT_LET_IN = 'Hatchling didn’t let the app in. If it restarted, this address’s key no longer works: run `hatchling-host url` and open the address it prints, or on Windows, open Hatchling from the Start menu. If it isn’t running, start it: `sudo systemctl start hatchling`.';
 const UNREADABLE = 'Hatchling sent a message this version of the app cannot read, so the app disconnected rather than miss it. Reload the app, or restart the broker, so both are the same version.';
 const REPEATED = 'Hatchling repeated its handshake in the middle of the session, so the app disconnected.';
 const UNANSWERED = 'The connection closed before Hatchling answered. It may still have been received.';
 const NOT_CONNECTED = 'The app is not connected to Hatchling, so nothing was sent.';
-const LOCKED = 'In a terminal on this machine, run: sudo hatchling-broker unlock. Then, as yourself, run: hatchling-host url, and open the address it gives.';
+const LOCKED = 'In a terminal on this machine, run: sudo hatchling-broker unlock. Then, as yourself, run: hatchling-host url, and open the address it gives. On Windows, open Hatchling from the Start menu.';
 /** What Hatchling's host says of the vault: nothing, on a page it didn't serve. */
 export type HostState = 'locked' | 'unlocked' | 'no-host';
 /** The answer to `ask`. Anything but the host's own answer means no host. */

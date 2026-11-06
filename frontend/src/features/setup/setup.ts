@@ -13,6 +13,8 @@ import { setupFinished, setupProgress, setupReminder, setupSteps, STEP_STATUS } 
 import type { SetupStep } from '../../session/setup.js';
 const INTRO = 'Run each command in a terminal you opened yourself. Anything secret you type goes there, and never through this app.';
 const RESTARTS = 'Each one restarts Hatchling, so this page goes offline for a moment. The command says what to run next, and the address it gives brings you back, with that step ticked.';
+const INTRO_WINDOWS = 'Each step is in the Start menu, and ticks itself here when it’s done. Anything secret is typed in the window it opens, and never through this app.';
+const RESTARTS_WINDOWS = 'Each one restarts Hatchling, so this page goes offline for a moment. Open Hatchling from the Start menu to come back.';
 function nowSeconds(): number {
     return Math.floor(Date.now() / 1000);
 }
@@ -77,7 +79,8 @@ export function renderSetup(ctx: AppContext): HTMLElement {
     }
     const steps = setupSteps(model.model, setup.setup, port.remembers('no-key'), nowSeconds());
     const finished = setupFinished(steps);
-    const notes = finished ? ['You’re all set. This page stays in Settings, under General.'] : [`${setupProgress(steps)}. ${INTRO}`, RESTARTS];
+    const windows = setup.setup.windowsSetup;
+    const notes = finished ? ['You’re all set. This page stays in Settings, under General.'] : [`${setupProgress(steps)}. ${windows ? INTRO_WINDOWS : INTRO}`, windows ? RESTARTS_WINDOWS : RESTARTS];
     page.append(heading(...notes), h('div', { class: 'setup-steps' }, ...steps.map((step, at) => stepCard(ctx, step, at + 1))), closing(ctx, finished));
     return page;
 }
