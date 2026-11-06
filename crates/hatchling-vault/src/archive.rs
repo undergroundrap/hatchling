@@ -577,6 +577,53 @@ mod tests {
         );
     }
 
+    /// A file that ends early says so; anything else says what happened.
+    #[test]
+    fn a_read_that_failed_says_how() {
+        let eof = std::io::Error::from(std::io::ErrorKind::UnexpectedEof);
+        assert!(matches!(io(&eof), Error::Backup { reason } if reason == "it ends early"));
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        assert!(matches!(io(&denied), Error::BackupIo { .. }));
+    }
+
+    #[test]
+    fn every_nonce_is_new() {
+        assert_ne!(nonce().unwrap(), nonce().unwrap());
+    }
+
+    /// The limits are where they say: the longest keyring, chunk and path
+    /// get as far as being read, and one past is refused for its size.
+    #[test]
+    fn the_limits_are_exact() {
+        let at_most = |length: usize| {
+            let mut bytes = MAGIC.to_vec();
+            bytes.extend_from_slice(&u32::try_from(length).unwrap().to_be_bytes());
+            bytes
+        };
+        assert_eq!(refused(read(&key(), &at_most(MAX_KEYRING))), "it ends early");
+        assert_eq!(
+            refused(read(&key(), &at_most(MAX_KEYRING + 1))),
+            "its keyring is too big"
+        );
+
+        let key = key();
+        let header = written(&key, b"", &[]);
+        let header = header.get(..8 + 4 + NONCE + SEALED_KEY).unwrap();
+        let chunk = |length: usize| {
+            [header, &u32::try_from(length).unwrap().to_be_bytes()].concat()
+        };
+        assert_eq!(refused(read(&key, &chunk(CHUNK + 16))), "it ends early");
+        assert_eq!(refused(read(&key, &chunk(CHUNK + 17))), "a chunk is too big");
+
+        let longest = "a".repeat(MAX_PATH);
+        let bytes = written(&key, b"", &[entry(&longest, b"x")]);
+        assert_eq!(read(&key, &bytes).unwrap().1.first().unwrap().path, longest);
+        for path in [String::new(), "a".repeat(MAX_PATH + 1)] {
+            let bytes = written(&key, b"", &[entry(&path, b"x")]);
+            assert_eq!(refused(read(&key, &bytes)), "a path is the wrong length");
+        }
+    }
+
     #[test]
     fn a_keyring_too_big_is_refused() {
         let mut bytes = MAGIC.to_vec();
