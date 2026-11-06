@@ -20,7 +20,10 @@
   #define Distro "Hatchling"
 #endif
 #define Script "powershell.exe"
-#define Run "-NoProfile -ExecutionPolicy Bypass -File"
+; RemoteSigned, not Bypass: enough for scripts installed here, and with Bypass and the
+; Startup entry together, Microsoft Defender calls this setup a trojan (Bearfoos.A!ml,
+; a machine-learning guess). Scan each build before publishing it.
+#define Run "-NoProfile -ExecutionPolicy RemoteSigned -File"
 
 [Setup]
 AppId={{7E0C6A52-4F0B-4B6E-9C3E-5A1D8E2B9F41}
