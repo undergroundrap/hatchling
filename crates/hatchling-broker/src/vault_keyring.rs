@@ -344,9 +344,22 @@ pub(crate) fn terminal_operator() -> (impl FnMut(&str) -> Result<String, Error>,
     let console = Console::terminal();
     let devices = platform_keys(pin_prompt(&console));
     (
-        move |prompt: &str| console.borrow_mut().ask(prompt),
+        move |prompt: &str| {
+            if asks_for_a_code(prompt) {
+                let answer = console.borrow_mut().ask_secret(prompt)?;
+                Ok(answer.to_string())
+            } else {
+                console.borrow_mut().ask(prompt)
+            }
+        },
         devices,
     )
+}
+
+/// Whether `prompt` asks for a backup code, or anything else secret that
+/// someone might type at it: none of those show as they're typed.
+pub(crate) fn asks_for_a_code(prompt: &str) -> bool {
+    prompt.contains("type a backup code")
 }
 
 /// [`unlock`], asking with `ask` for what the vault's tier needs: a
@@ -906,10 +919,9 @@ fn no_key_to_add(why: &str) -> String {
 }
 
 /// How a change to the keys is authorized when a key can be reached.
-const AUTHORIZE_PROMPT: &str = "To authorize, plug in a security key that is already enrolled and press Enter, or type a backup code (it is used up):";
 
 /// How it is authorized when none can: a backup code.
-const AUTHORIZE_CODE_PROMPT: &str = "No security key can be reached. To authorize, type a backup code (it is used up), or nothing to stop:";
+const AUTHORIZE_CODE_PROMPT: &str = "No security key can be reached. To authorize, plug one in and run this again, or type a backup code (it is used up, and nothing shows as you type), or nothing to stop:";
 
 /// What stops a guided flow without a change.
 pub(crate) fn stopped() -> Error {
@@ -936,7 +948,7 @@ fn authorize(
 const OPEN_NO_KEY: &str = "No security key found. If yours is plugged in, seat it again or try another port (in WSL, attach it), and run this again. Or type a backup code (it is used up), or nothing to stop:";
 
 /// What it says when the keys plugged in aren't registered here.
-const OPEN_NOT_REGISTERED: &str = "That security key isn't registered with this vault. Plug in one that is and run this again, or type a backup code (it is used up), or nothing to stop:";
+const OPEN_NOT_REGISTERED: &str = "That security key isn't registered with this vault. Plug in one that is and run this again, or type a backup code (it is used up, and nothing shows as you type), or nothing to stop:";
 
 /// Opens a hardware-key vault at a start: with the first key plugged in
 /// that's registered here, with nothing asked but what the key itself asks
@@ -965,7 +977,7 @@ pub(crate) fn opening(
     } else {
         // A key that's there and can't be reached is said as it is.
         ask(&format!(
-            "{why}. Run this again when that's fixed, or type a backup code (it is used up), or nothing to stop:"
+            "{why}. Run this again when that's fixed, or type a backup code (it is used up, and nothing shows as you type), or nothing to stop:"
         ))?
     };
     match code.trim() {
@@ -978,12 +990,12 @@ pub(crate) fn opening(
 /// backup code (`Some`, not yet checked or spent), or `None` for the
 /// security key plugged in.
 fn authorization(ask: Ask<'_>, devices: &mut dyn Devices) -> Result<Option<String>, Error> {
-    let reachable = devices.plugged_in().is_some();
-    let answer = ask(if reachable {
-        AUTHORIZE_PROMPT
-    } else {
-        AUTHORIZE_CODE_PROMPT
-    })?;
+    // A key that's there is the answer: nothing to ask, so a PIN typed
+    // early has no prompt to land on.
+    if devices.plugged_in().is_some() {
+        return Ok(None);
+    }
+    let answer = ask(AUTHORIZE_CODE_PROMPT)?;
     let code = answer.trim();
     Ok((!code.is_empty()).then(|| code.to_owned()))
 }
