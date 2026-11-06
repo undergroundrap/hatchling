@@ -340,7 +340,7 @@ pub fn unlock(vault: &VaultConfig, config: &KeyringConfig) -> Result<MasterKey, 
     clippy::significant_drop_tightening,
     reason = "the console moves into the returned prompt and lives exactly as long as it does"
 )]
-fn terminal_operator() -> (impl FnMut(&str) -> Result<String, Error>, impl Devices) {
+pub(crate) fn terminal_operator() -> (impl FnMut(&str) -> Result<String, Error>, impl Devices) {
     let console = Console::terminal();
     let devices = platform_keys(pin_prompt(&console));
     (

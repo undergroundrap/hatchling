@@ -197,6 +197,18 @@ pub enum Error {
         len: usize,
     },
 
+    /// A backup isn't one this can read: a plain reason, for its owner.
+    #[error("that backup can't be read: {reason}")]
+    Backup {
+        /// Why not.
+        reason: &'static str,
+    },
+    /// A backup couldn't be read or written.
+    #[error("a backup failed: {reason}")]
+    BackupIo {
+        /// What the system said.
+        reason: String,
+    },
     /// The operating system would not provide randomness. Without it
     /// there is no key and no nonce, so the sealed vault cannot start.
     #[error("OS randomness unavailable: {source}")]

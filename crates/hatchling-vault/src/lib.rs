@@ -34,6 +34,7 @@
 //! filesystem permissions are the second barrier).
 
 pub mod acting;
+pub mod archive;
 pub mod backup;
 pub mod error;
 pub mod fault;

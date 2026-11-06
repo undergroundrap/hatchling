@@ -232,7 +232,7 @@ impl MasterKey {
     }
 
     /// The AEAD cipher keyed by this master key.
-    fn cipher(&self) -> XChaCha20Poly1305 {
+    pub(crate) fn cipher(&self) -> XChaCha20Poly1305 {
         let key: chacha20poly1305::Key = self.0.into();
         XChaCha20Poly1305::new(&key)
     }

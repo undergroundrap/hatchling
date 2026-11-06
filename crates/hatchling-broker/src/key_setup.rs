@@ -107,7 +107,7 @@ pub enum Done {
 
 /// The marker beside `keyring`: backup codes were made, and not yet
 /// confirmed saved.
-fn codes_marker(keyring: &Path) -> PathBuf {
+pub(crate) fn codes_marker(keyring: &Path) -> PathBuf {
     let mut name = keyring.as_os_str().to_owned();
     name.push(".codes-unconfirmed");
     PathBuf::from(name)

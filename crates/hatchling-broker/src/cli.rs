@@ -172,6 +172,9 @@ fn valid_args(args: &[String]) -> bool {
             | crate::unlock_relay::UNLOCK_SUBCOMMAND,
         ]
         | ["clean", "--dry-run"]
+        | ["backup"]
+        | ["backup" | "restore", _]
+        | ["reset", ..]
         | ["doctor", "--env", _]
         | ["rekey-vault" | BROWSER_DIGEST_SUBCOMMAND, _]
         | [crate::model_window::MODEL_FIT_SUBCOMMAND, _, _]
@@ -228,6 +231,14 @@ fn run(args: &[String]) -> Result<(), Error> {
         Some("rekey-vault") => run_rekey_vault(&config, args.get(1).map(Path::new)),
         Some("vault-keyring") => run_keyring(&config, args.get(1).map(String::as_str)),
         Some("clean") => crate::sweep::run_clean(&config, args.get(1..).unwrap_or_default()),
+        Some("backup") => crate::backup::run_backup(&config, args.get(1).map(Path::new)),
+        Some("restore") => match args.get(1) {
+            Some(from) => crate::backup::run_restore(&config, Path::new(from)),
+            None => Err(Error::Usage {
+                reason: String::from("usage: hatchling-broker restore <file>"),
+            }),
+        },
+        Some("reset") => crate::backup::run_reset(&config, args.get(1..).unwrap_or_default()),
         Some(other) => run_operator(other, &config, args.iter().skip(1).cloned()),
         None => run_serve(&config),
     }

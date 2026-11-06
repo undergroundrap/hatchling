@@ -29,6 +29,7 @@ pub mod approval;
 pub mod approval_board;
 pub mod approvals;
 pub mod approved_tools;
+pub mod backup;
 pub mod artifact_ops;
 pub mod browser_board;
 pub mod browser_bundle;
