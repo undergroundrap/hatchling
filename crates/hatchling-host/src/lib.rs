@@ -390,7 +390,7 @@ mod tests {
         });
         let mut client = TcpStream::connect(("127.0.0.1", port)).unwrap();
         client
-            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
         write!(
             client,
