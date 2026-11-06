@@ -262,7 +262,7 @@ pub(crate) fn unlock_current(
 }
 
 /// Unix seconds now, for one-time codes.
-fn now() -> u64 {
+pub(crate) fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| since.as_secs())
@@ -386,6 +386,7 @@ pub fn unlock_asking(
             let unlocked = opening(&mut keyring, ask, devices)?;
             mark_keyring(vault, path)?;
             settled(&keyring)?;
+            note_opened(path, &unlocked);
             Ok(unlocked.into_key())
         }
         (loaded, _) => {
@@ -424,7 +425,18 @@ pub fn unlock_with(
     let unlocked = open(&mut keyring, vault, config, factors)?;
     mark_keyring(vault, path)?;
     settled(&keyring)?;
+    note_opened(path, &unlocked);
     Ok(unlocked.into_key())
+}
+
+/// Records which security key opened the vault, if one did. Only a reminder
+/// reads it, so an unlock doesn't depend on it.
+fn note_opened(path: &Path, unlocked: &Unlocked) {
+    if let Some(id) = unlocked.opened_by() {
+        if let Err(error) = crate::key_seen::note(path, id, now()) {
+            tracing::warn!(error = %error, "when this key was used couldn't be kept");
+        }
+    }
 }
 
 /// What a rotation did: each store's re-seal, and the backup codes the new
@@ -1026,7 +1038,7 @@ fn key_line(key: &KeyInfo) -> String {
 }
 
 /// `seconds` since the epoch as a UTC date, `YYYY-MM-DD`.
-fn utc_date(seconds: u64) -> Option<String> {
+pub(crate) fn utc_date(seconds: u64) -> Option<String> {
     let at = hatchling_scheduler::Timestamp::from_second(i64::try_from(seconds).ok()?).ok()?;
     at.to_string().get(..10).map(str::to_owned)
 }
@@ -1613,6 +1625,11 @@ pub fn report(config: &KeyringConfig) -> Result<String, Error> {
             .warnings
             .iter()
             .map(|warning| format!("  warning: {}", warning_text(*warning))),
+    );
+    lines.extend(
+        crate::key_seen::reminders(config, now())
+            .iter()
+            .map(|reminder| format!("  reminder: {reminder}")),
     );
     Ok(lines.join("\n"))
 }
@@ -2317,6 +2334,77 @@ pub(crate) mod tests {
             ),
             Err(Error::Usage { .. })
         ));
+    }
+
+    #[test]
+    fn opening_the_vault_notes_which_key_did_and_a_backup_code_notes_none() {
+        let (_scratch, vault, config, codes, mut desk) = desk_vault("key-seen", 2);
+        let seen = crate::key_seen::record(config.keyring.as_deref().unwrap());
+        let keys = keys_of(&config);
+        let mut no_answer = |_: &str| Ok(String::new());
+        drop(super::unlock_asking(&vault, &config, &mut no_answer, &mut desk).unwrap());
+        let noted = std::fs::read_to_string(&seen).unwrap();
+        assert_eq!(
+            keys.iter().filter(|key| noted.contains(&key.id)).count(),
+            1,
+            "{noted}"
+        );
+        std::fs::remove_file(&seen).unwrap();
+        let code = codes.first().unwrap().clone();
+        drop(unlock_asking(&vault, &config, &mut |_| Ok(code.clone())).unwrap());
+        assert!(!seen.exists(), "a code says nothing of any key");
+    }
+
+    #[test]
+    fn status_says_which_key_has_gone_quiet() {
+        let (_scratch, _vault, config, _codes, _desk) = desk_vault("key-quiet", 2);
+        assert!(!report(&config).unwrap().contains("reminder:"), "both are new");
+        let path = config.keyring.as_deref().unwrap();
+        let long_ago = now() - 91 * 24 * 60 * 60;
+        crate::key_seen::note(path, &keys_of(&config)[0].id, long_ago).unwrap();
+        let shown = report(&config).unwrap();
+        let line = format!("last opened the vault on {}", utc_date(long_ago).unwrap());
+        assert_eq!(shown.matches("  reminder: Your key ").count(), 1, "{shown}");
+        assert!(shown.contains(&line), "{shown}");
+    }
+
+    #[test]
+    fn a_lone_key_has_no_spare_to_forget() {
+        let (_scratch, _vault, config, _codes, _desk) = desk_vault("key-lone", 1);
+        let far_off = now() + 400 * 24 * 60 * 60;
+        assert!(crate::key_seen::reminders(&config, far_off).is_empty());
+    }
+
+    #[test]
+    fn the_seen_record_keeps_each_key_and_only_its_owner_reads_it() {
+        let (_scratch, _vault, config, _codes, _desk) = desk_vault("key-record", 2);
+        let path = config.keyring.as_deref().unwrap();
+        let seen = crate::key_seen::record(path);
+        let mut wanted = std::ffi::OsString::from(path);
+        wanted.push(".seen");
+        assert_eq!(seen.as_os_str(), wanted);
+        let keys = keys_of(&config);
+        let (one, two) = (&keys[0].id, &keys[1].id);
+        crate::key_seen::note(path, one, 5).unwrap();
+        crate::key_seen::note(path, two, 6).unwrap();
+        crate::key_seen::note(path, one, 1).unwrap();
+        let mut lines: Vec<String> = std::fs::read_to_string(&seen)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        lines.sort();
+        let mut expected = vec![format!("{one} 1"), format!("{two} 6")];
+        expected.sort();
+        assert_eq!(lines, expected);
+        let mode = std::fs::metadata(&seen).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        // A damaged record is keys not seen, and nothing worse.
+        std::fs::write(&seen, format!("nonsense\n{one} notanumber\n{two} 9")).unwrap();
+        let later = now() + 400 * 24 * 60 * 60;
+        assert_eq!(crate::key_seen::reminders(&config, later).len(), 2);
+        std::fs::write(&seen, format!("{one} {later}\n{two} {later}")).unwrap();
+        assert!(crate::key_seen::reminders(&config, later).is_empty());
     }
 
     #[test]

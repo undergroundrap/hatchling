@@ -667,6 +667,7 @@ fn erase_keys(config: &Config, keyring: &KeyringConfig) -> Result<(), Error> {
     if let Some(path) = keyring.keyring.as_deref() {
         let _ = fs::remove_file(path);
         let _ = fs::remove_file(crate::key_setup::codes_marker(path));
+        let _ = fs::remove_file(crate::key_seen::record(path));
     }
     let _ = fs::remove_file(keyring.kek_file(&config.vault));
     let _ = fs::remove_file(&config.vault.key_file);

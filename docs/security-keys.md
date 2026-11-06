@@ -108,6 +108,8 @@ sudo hatchling-broker unlock
 
 Type the key's PIN, and touch it when it flashes. Any registered key will do, and it doesn't matter if both are plugged in. A wrong PIN says how many tries are left, and Hatchling keeps waiting: run it again. With no key at hand, it asks for a backup code. If another program has the key, it waits a moment, then says so.
 
+**A key that's gone quiet is mentioned.** If you have two keys and one hasn't opened the vault in 90 days, `unlock` and `vault-keyring status` say so. Use that key for your next unlock: a spare you never try might turn out lost or broken on the day you need it.
+
 ## Add a second key, or a replacement
 
 ```bash
