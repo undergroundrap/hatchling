@@ -8,7 +8,7 @@ To try it by hand first, the [README's quickstart](../README.md#quickstart) runs
 
 ## What you need
 
-- **Linux with systemd**, kernel 5.11 or later (or WSL2 with systemd on), on x86_64 or aarch64, with glibc 2.34 or later: Ubuntu 22.04, Debian 12, Fedora, RHEL 9 and their successors.
+- **Linux with systemd**, kernel 5.11 or later (or WSL2 with systemd on), on x86_64 or aarch64, with glibc 2.34 or later. **Tested on Ubuntu** 24.04 and 26.04, and 26.04 under WSL2. Debian 12, Fedora and RHEL 9 and their successors meet these requirements, and should work, but haven't been tested.
 - **A model it can reach:** an OpenAI-compatible server on this machine, or a hosted one. [Ollama](https://ollama.com) is the simplest local one: install it, then `ollama pull qwen3.5:9b`. With no GPU, or no wish to run a model here, install with a hosted model instead (`--hosted openrouter`, an OpenRouter key; a free one works). The model must be good at calling tools; see [Choosing a model](#choosing-a-model) and [Using a hosted model](hosted-models.md).
 - **The GitHub CLI**, to download and verify the release (or download its files from the release page).
 
@@ -149,7 +149,7 @@ With systemd 254 or later, the broker gets a cgroup of its own to give each cell
 - **The broker's other commands** (`hatchling-broker --help` lists them) take the service's settings when you run them with `sudo` from a shell that has none, so `sudo hatchling-broker tools list` just works. They read the file only while it's root's and nobody else can write it, as the installer leaves it: it says what the broker runs.
 - **The logs:** `journalctl -u hatchling` for the broker, `journalctl -u "hatchling-host@$USER"` for the app's host.
 - **Stop it:** `sudo systemctl stop hatchling`. **Start it again:** `sudo systemctl start hatchling`.
-- **Update:** clone the new version, download its release, and run `scripts/install.sh` again. It keeps your configuration, unless you pass `--force`. When the new version keeps something by default that your configuration doesn't name at all, such as your conversation, it adds that setting, backs the old file up beside it (`hatchling.env.before-<date>`), and says so. A setting you set empty stays off. Read the version's [changelog](../CHANGELOG.md) first: before 1.0, a minor version may change the configuration.
+- **Update:** clone the new version, download its release, and run `scripts/install.sh --from <dir> --keep-model`. It keeps your configuration and your model. On Windows, run the new setup: it finds your install and offers a backup first. When the new version keeps something by default that your configuration doesn't name at all, such as your conversation, it adds that setting, backs the old file up beside it (`hatchling.env.before-<date>`), and says so. A setting you set empty stays off. Read the version's [changelog](../CHANGELOG.md) first: before 1.0, a minor version may change the configuration.
 
 ## Uninstall
 
