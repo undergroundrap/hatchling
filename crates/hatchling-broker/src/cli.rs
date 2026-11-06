@@ -102,13 +102,10 @@ pub fn main(program: &str, args: &[String]) -> ExitCode {
     // The guided setup adds to the service's settings before they're taken
     // on, and stops the service: a broker running would keep the old key.
     if args.first().map(String::as_str) == Some("vault-keyring")
-        && args.get(1).map(String::as_str) == Some(crate::key_setup::SETUP_ACTION)
+        && crate::key_setup::guided(args.get(1).map(String::as_str))
     {
         if let Err(why) = crate::key_setup::prepare() {
-            let _ = writeln!(
-                std::io::stderr().lock(),
-                "{program} vault-keyring setup: {why}"
-            );
+            let _ = writeln!(std::io::stderr().lock(), "{program} vault-keyring: {why}");
             return ExitCode::FAILURE;
         }
     }
@@ -180,8 +177,8 @@ fn valid_args(args: &[String]) -> bool {
         | [crate::model_window::MODEL_FIT_SUBCOMMAND, _, _]
         | [
             "vault-keyring",
-            "setup" | "init" | "enroll-totp" | "enroll-keys" | "use-file-tier" | "backup-codes"
-            | "status" | "add-key" | "remove-key" | "label-key",
+            "setup" | "lost-key" | "init" | "enroll-totp" | "enroll-keys" | "use-file-tier"
+            | "backup-codes" | "status" | "add-key" | "remove-key" | "label-key",
         ]
         | ["redactions", "list" | "stats" | "categories"]
         | ["redactions", "show" | "raw" | "override", _]

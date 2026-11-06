@@ -1088,19 +1088,27 @@ pub fn add_key(
 }
 
 /// The enrolled key the operator names, by id: never by label.
-fn chosen_key(keys: &[KeyInfo], what: &str, ask: Ask<'_>) -> Result<KeyInfo, Error> {
+pub(crate) fn chosen_key(keys: &[KeyInfo], what: &str, ask: Ask<'_>) -> Result<KeyInfo, Error> {
     if keys.is_empty() {
         return Err(Error::Usage {
             reason: String::from("this vault has no security keys"),
         });
     }
-    let prompt = format!(
-        "Enrolled security keys:\n{}\nType the id of the key to {what}:",
-        key_list(keys)
-    );
-    let id = ask(&prompt)?;
-    keys.iter()
-        .find(|key| key.id == id.trim())
+    let list = keys
+        .iter()
+        .enumerate()
+        .map(|(index, key)| format!("  {}. {}", index + 1, key_line(key)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let prompt = format!("Enrolled security keys:\n{list}\nType the number of the key to {what}:");
+    let answer = ask(&prompt)?;
+    let answer = answer.trim();
+    answer
+        .parse::<usize>()
+        .ok()
+        .and_then(|number| number.checked_sub(1))
+        .and_then(|index| keys.get(index))
+        .or_else(|| keys.iter().find(|key| key.id == answer))
         .cloned()
         .ok_or_else(|| vault_error(hatchling_vault::Error::NoSuchKey))
 }
@@ -1167,12 +1175,23 @@ pub fn remove_key(
     if ask(&confirm)?.trim() != "yes" {
         return Err(stopped());
     }
+    remove_authorized(&mut keyring, &key, risk, ask, devices)
+}
+
+/// Removes `key`, authorized by another enrolled key or a backup code.
+pub(crate) fn remove_authorized(
+    keyring: &mut Keyring,
+    key: &KeyInfo,
+    risk: Option<SingleKeyRisk>,
+    ask: Ask<'_>,
+    devices: &mut dyn Devices,
+) -> Result<KeyInfo, Error> {
     // A backup code is spent only if the key goes ( flag 5): the
     // vault decides every refusal before it writes either.
     let removed = if let Some(code) = authorization(ask, devices)? {
         keyring.remove_hardware_key_with_code(&code, &key.id, risk)
     } else {
-        let unlocked = by_key(&keyring, devices)?;
+        let unlocked = by_key(keyring, devices)?;
         keyring.remove_hardware_key(&unlocked, &key.id, risk)
     };
     removed.map_err(vault_error)
@@ -1474,7 +1493,7 @@ pub fn new_codes(out: &mut dyn Write, codes: Option<&BackupCodes>) {
 }
 
 /// The actions `vault-keyring` takes.
-pub const USAGE: &str = "usage: hatchling-broker vault-keyring <setup | init | enroll-totp | enroll-keys | use-file-tier | backup-codes | status | add-key | remove-key | label-key>";
+pub const USAGE: &str = "usage: hatchling-broker vault-keyring <setup | lost-key | init | enroll-totp | enroll-keys | use-file-tier | backup-codes | status | add-key | remove-key | label-key>";
 
 /// Runs `hatchling-broker vault-keyring <action>`: the keyring settings
 /// from the environment, answers from stdin with the prompts on stderr,
@@ -1486,8 +1505,8 @@ pub const USAGE: &str = "usage: hatchling-broker vault-keyring <setup | init | e
 pub fn run_keyring(broker: &crate::Config, action: Option<&str>) -> Result<(), Error> {
     let config = KeyringConfig::from_env()?;
     let stores = crate::sealed_stores(broker, crate::vault_ops::redaction_config(broker)?.as_ref());
-    if action == Some(crate::key_setup::SETUP_ACTION) {
-        return crate::key_setup::run_setup(broker, &config, &stores);
+    if crate::key_setup::guided(action) {
+        return crate::key_setup::run_setup(broker, &config, &stores, action);
     }
     let (mut asking, mut devices) = terminal_operator();
     command(
