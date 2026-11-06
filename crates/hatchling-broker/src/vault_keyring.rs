@@ -2715,7 +2715,7 @@ pub(crate) mod tests {
             10,
             "an enrolled key authorized it: no code spent"
         );
-        assert_eq!(operator.asked.len(), 4);
+        assert_eq!(operator.asked.len(), 3);
         assert!(
             operator
                 .asked
@@ -2729,10 +2729,6 @@ pub(crate) mod tests {
                 .get(1)
                 .unwrap()
                 .contains("named \"YubiKey 5C, desk\"")
-        );
-        assert_eq!(
-            operator.asked.get(2).map(String::as_str),
-            Some(AUTHORIZE_PROMPT)
         );
         assert!(
             operator
@@ -3022,22 +3018,20 @@ pub(crate) mod tests {
             matches!(&typed, Err(Error::Vault { source: hatchling_vault::Error::KeyChange { reason } }) if reason.starts_with("your last backup code cannot authorize this")),
             "{typed:?}"
         );
-        assert_eq!(
-            operator.asked.last().map(String::as_str),
-            Some(AUTHORIZE_PROMPT)
-        );
         assert_eq!((keys_of(&config).len(), codes_left(&config)), (2, 1));
         // The asking and the key's unlock, on their own.
-        let mut operator = Operator::new(&desk, &[("  a-code ", Some(0)), ("", None)]);
+        let mut operator = Operator::new(&desk, &[("  a-code ", None), ("", None)]);
         let mut answer = |prompt: &str| -> Result<String, Error> { Ok(operator.answer(prompt)) };
+        // A key that's there is the answer: nothing's asked.
+        assert_eq!(authorization(&mut answer, &mut desk).unwrap(), None);
         assert_eq!(
-            authorization(&mut answer, &mut desk).unwrap().as_deref(),
+            authorization(&mut answer, &mut NoKeys).unwrap().as_deref(),
             Some("a-code")
         );
         assert_eq!(authorization(&mut answer, &mut NoKeys).unwrap(), None);
         assert_eq!(
             operator.asked,
-            [AUTHORIZE_PROMPT, AUTHORIZE_CODE_PROMPT].map(String::from)
+            [AUTHORIZE_CODE_PROMPT, AUTHORIZE_CODE_PROMPT].map(String::from)
         );
         let keyring = Keyring::load(config.keyring.as_deref().unwrap()).unwrap();
         assert!(refused_unlock(&by_key(&keyring, &mut NoKeys)));
@@ -3352,6 +3346,15 @@ pub(crate) mod tests {
             "{said}"
         );
         assert!(!said.contains("No security key found"), "{said}");
+    }
+
+    /// Every prompt a backup code is typed at is hidden, and only those.
+    #[test]
+    fn a_backup_code_never_shows() {
+        for prompt in [AUTHORIZE_CODE_PROMPT, OPEN_NO_KEY, OPEN_NOT_REGISTERED] {
+            assert!(asks_for_a_code(prompt), "{prompt}");
+        }
+        assert!(!asks_for_a_code("Add a second now? Type yes or no:"));
     }
 
     #[test]
