@@ -19,13 +19,15 @@ export const MODEL_COMMANDS: readonly DataCommand[] = [
         command: 'sudo hatchling-broker use-local --model <name>',
     },
 ];
+/** Protecting the vault: guided, whatever's plugged in. */
+export const PROTECT_COMMAND: DataCommand = {
+    title: 'Protect it with a security key',
+    note: 'Guided, and safe to run again. Without a key, the vault\u2019s key sits in a file here, and it opens by itself after a restart.',
+    command: 'sudo hatchling-broker vault-keyring setup',
+};
 /** Who can open the vault. */
 export const KEY_COMMANDS: readonly DataCommand[] = [
-    {
-        title: 'Protect it with a security key',
-        note: 'Guided, and safe to run again. Without a key, the vault\u2019s key sits in a file here, and it opens by itself after a restart.',
-        command: 'sudo hatchling-broker vault-keyring setup',
-    },
+    PROTECT_COMMAND,
     {
         title: 'Lost a key, or had one stolen',
         note: 'Removes it, and offers a replacement.',
@@ -42,13 +44,15 @@ export const KEY_COMMANDS: readonly DataCommand[] = [
         command: 'sudo hatchling-broker doctor',
     },
 ];
+/** Copying your data out. */
+export const BACKUP_COMMAND: DataCommand = {
+    title: 'Back up',
+    note: 'One sealed file, which opens with what opens your vault.',
+    command: 'sudo hatchling-broker backup',
+};
 /** Copying your data out, and bringing it back. */
 export const KEEP_COMMANDS: readonly DataCommand[] = [
-    {
-        title: 'Back up',
-        note: 'One sealed file, which opens with what opens your vault.',
-        command: 'sudo hatchling-broker backup',
-    },
+    BACKUP_COMMAND,
     {
         title: 'Restore',
         note: 'Puts a backup back, in place of what’s here now.',

@@ -211,6 +211,69 @@ body.has-artifact-dock .page { width: 100%; margin-inline: auto; }
     overflow-wrap: anywhere;
 }
 
+.setup-page {
+    max-width: 760px;
+}
+
+.setup-intro {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.setup-steps {
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+}
+
+.setup-step {
+    display: flex;
+    gap: 14px;
+}
+
+.setup-mark {
+    display: flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--settings-card);
+    color: var(--muted);
+}
+
+.setup-step.is-done .setup-mark {
+    background: var(--primary);
+    color: var(--primary-text);
+}
+
+.setup-step-body {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+    min-width: 0;
+}
+
+.setup-step-body h2 {
+    margin: 3px 0 0;
+    font-size: calc(16px * var(--ui-scale, 1));
+    font-weight: 500;
+}
+
+.setup-step-body .settings-group {
+    align-self: stretch;
+}
+
+.setup-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 30px;
+}
+
 .address-notice {
     display: flex;
     flex-direction: column;

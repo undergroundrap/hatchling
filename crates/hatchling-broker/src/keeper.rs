@@ -45,6 +45,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use hatchling_core::framing::{read_frame, read_frame_or_eof, write_frame};
+use hatchling_core::ui::VaultProtection;
 use hatchling_core::{
     CellId, MAX_FRAME_BYTES, SecretName, SessionRequest, SessionResponse, VaultOp, VaultResult,
 };
@@ -137,6 +138,8 @@ enum Request {
         cell: String,
         origin: String,
     },
+    /// Who can open the vault: how, and how many, for the app's checklist.
+    Protection,
 }
 
 /// What the keeper answers.
@@ -157,6 +160,8 @@ enum Reply {
     /// The fill was sent to the cell, as `nonce`: the broker names it to
     /// the cell's controller.
     Filling { nonce: String },
+    /// Who can open the vault. It holds nothing that opens it.
+    Protection { protection: VaultProtection },
 }
 
 /// The broker's end of the keeper: one request at a time.
@@ -587,7 +592,10 @@ impl Keeper {
         let found = match reply {
             Reply::Read { found } => found,
             Reply::Refused { reason } => return Err(Error::Keeper { reason }),
-            other @ (Reply::Scan { .. } | Reply::SignIn { .. } | Reply::Filling { .. }) => {
+            other @ (Reply::Scan { .. }
+            | Reply::SignIn { .. }
+            | Reply::Filling { .. }
+            | Reply::Protection { .. }) => {
                 return Err(unexpected(&other));
             }
         };
@@ -636,9 +644,10 @@ impl Keeper {
                 .map(|bytes| Secret::new(bytes.to_vec()).map_err(|source| Error::Vault { source }))
                 .collect(),
             Reply::Refused { reason } => Err(Error::Keeper { reason }),
-            other @ (Reply::Read { .. } | Reply::SignIn { .. } | Reply::Filling { .. }) => {
-                Err(unexpected(&other))
-            }
+            other @ (Reply::Read { .. }
+            | Reply::SignIn { .. }
+            | Reply::Filling { .. }
+            | Reply::Protection { .. }) => Err(unexpected(&other)),
         }
     }
 
@@ -654,9 +663,27 @@ impl Keeper {
         match self.exchange(|stream| ask(stream, &request))? {
             Reply::SignIn { answer } => Ok(answer),
             Reply::Refused { reason } => Err(Error::Keeper { reason }),
-            other @ (Reply::Read { .. } | Reply::Scan { .. } | Reply::Filling { .. }) => {
-                Err(unexpected(&other))
-            }
+            other @ (Reply::Read { .. }
+            | Reply::Scan { .. }
+            | Reply::Filling { .. }
+            | Reply::Protection { .. }) => Err(unexpected(&other)),
+        }
+    }
+
+    /// Who can open the vault: how, and how many, as the keyring says now.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Keeper`] when the keeper can't say, or can't be
+    /// reached.
+    pub fn protection(&self) -> Result<VaultProtection, Error> {
+        match self.exchange(|stream| ask(stream, &Request::Protection))? {
+            Reply::Protection { protection } => Ok(protection),
+            Reply::Refused { reason } => Err(Error::Keeper { reason }),
+            other @ (Reply::Read { .. }
+            | Reply::Scan { .. }
+            | Reply::SignIn { .. }
+            | Reply::Filling { .. }) => Err(unexpected(&other)),
         }
     }
 
@@ -679,9 +706,10 @@ impl Keeper {
         match self.exchange(|stream| ask(stream, &request))? {
             Reply::Filling { nonce } => Ok(nonce),
             Reply::Refused { reason } => Err(Error::Keeper { reason }),
-            other @ (Reply::Read { .. } | Reply::Scan { .. } | Reply::SignIn { .. }) => {
-                Err(unexpected(&other))
-            }
+            other @ (Reply::Read { .. }
+            | Reply::Scan { .. }
+            | Reply::SignIn { .. }
+            | Reply::Protection { .. }) => Err(unexpected(&other)),
         }
     }
 
@@ -786,6 +814,7 @@ fn unexpected(reply: &Reply) -> Error {
         Reply::Refused { .. } => "refused",
         Reply::SignIn { .. } => "sign-in",
         Reply::Filling { .. } => "filling",
+        Reply::Protection { .. } => "protection",
     };
     Error::Keeper {
         reason: format!("an answer that doesn't answer the request ({kind})"),
@@ -1107,6 +1136,7 @@ fn serve(stream: &UnixStream, kept: &Mutex<Kept>, role: Role) -> Result<(), Erro
             Request::Scan { purpose } => answer_scan(stream, kept, &purpose)?,
             Request::SignIn { op } => answer_sign_in(stream, kept, op)?,
             Request::Fill { id, cell, origin } => answer_fill(stream, kept, &id, &cell, &origin)?,
+            Request::Protection => answer_protection(stream)?,
         }
         drop(guard);
     }
@@ -1373,6 +1403,21 @@ fn answer_sign_in(stream: &UnixStream, kept: &Kept, op: SignInRequest) -> Result
     };
     let answer = crate::browser_credentials::answer(&credentials, op);
     send(stream, &Reply::SignIn { answer })
+}
+
+/// Answers who can open the vault, as the keyring says now: it changes
+/// while the service runs.
+fn answer_protection(stream: &UnixStream) -> Result<(), Error> {
+    match KeyringConfig::from_env().and_then(|keyring| crate::vault_keyring::who_can_open(&keyring))
+    {
+        Ok(protection) => send(stream, &Reply::Protection { protection }),
+        Err(error) => send(
+            stream,
+            &Reply::Refused {
+                reason: error.to_string(),
+            },
+        ),
+    }
 }
 
 /// Answers the broker's fill of the sign-in `id` into the browser cell
@@ -2181,6 +2226,48 @@ mod tests {
             );
             drop(keeper);
             assert!(serving.join().unwrap().is_ok());
+        });
+    }
+
+    /// The broker asks who can open the vault, and the keeper says: with no
+    /// keyring, its key file. The egress authority may not ask.
+    #[test]
+    fn the_keeper_says_who_can_open_the_vault() {
+        use hatchling_core::ui::VaultTier;
+        let mut config = crate::api_auth::tests::owner_config(None);
+        let dir = crate::api_auth::tests::scratch("keeper-protection");
+        config.vault.root = dir.0.join("vault");
+        let master = MasterKey::generate().unwrap();
+        hatchling_vault::SealedVault::open(&config.vault.root, &master).unwrap();
+        let own = [(Store::SECRETS, config.vault.root.as_path())];
+        let kept = Mutex::new(Kept {
+            releases: Releases::of(&config, BTreeSet::new()),
+            keys: StoreKeys::unwrap(&master, &own).unwrap(),
+            config,
+            released: BTreeSet::new(),
+            browsers: BTreeMap::new(),
+        });
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let (authoritys, authority_end) = UnixStream::pair().unwrap();
+        std::thread::scope(|scope| {
+            let serving = scope.spawn(|| serve(&theirs, &kept, Role::Broker));
+            let serving_authority = scope.spawn(|| serve(&authority_end, &kept, Role::Authority));
+            let keeper = Keeper::over(ours).unwrap();
+            assert_eq!(
+                keeper.protection().unwrap(),
+                VaultProtection {
+                    tier: VaultTier::File,
+                    keys: 0,
+                    codes: 0,
+                    codes_unconfirmed: false,
+                }
+            );
+            let authority = Keeper::over(authoritys).unwrap();
+            let refused = format!("{:?}", authority.protection());
+            assert!(refused.contains("only reads"), "{refused}");
+            drop((keeper, authority));
+            assert!(serving.join().unwrap().is_ok());
+            assert!(serving_authority.join().unwrap().is_ok());
         });
     }
 

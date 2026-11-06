@@ -20,6 +20,7 @@ use std::io::{BufRead, Read as _, Write};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use hatchling_core::ui::{VaultProtection, VaultTier};
 use hatchling_fido2::{Bus, PinPrompt};
 use hatchling_vault::{
     Authenticator, BackupCodes, Factor, FileKey, Kek, KeyCheck, KeyInfo, KeySource as _, Keyring,
@@ -1557,6 +1558,38 @@ pub fn status(config: &KeyringConfig) -> Result<String, Error> {
     ))
 }
 
+/// Who can open the vault: how, and how many. With no keyring there, its
+/// key file alone.
+///
+/// # Errors
+///
+/// Why the keyring can't be read.
+pub fn who_can_open(config: &KeyringConfig) -> Result<VaultProtection, Error> {
+    let there = match config.keyring.as_deref() {
+        Some(path) => path.try_exists().map_err(io_error)?.then_some(path),
+        None => None,
+    };
+    let Some(path) = there else {
+        return Ok(VaultProtection {
+            tier: VaultTier::File,
+            keys: 0,
+            codes: 0,
+            codes_unconfirmed: false,
+        });
+    };
+    let keyring = Keyring::load(path).map_err(vault_error)?;
+    Ok(VaultProtection {
+        tier: match keyring.tier() {
+            Tier::File => VaultTier::File,
+            Tier::Totp => VaultTier::Totp,
+            Tier::HardwareKey => VaultTier::HardwareKey,
+        },
+        keys: u32::try_from(keyring.hardware_keys().len()).unwrap_or(u32::MAX),
+        codes: u32::try_from(keyring.backup_codes_left()).unwrap_or(u32::MAX),
+        codes_unconfirmed: crate::key_setup::codes_unconfirmed(path),
+    })
+}
+
 /// What `vault-keyring status` prints: the [`status`] line, then
 /// every way in, each security key by id, label and date, and what to act
 /// on. Never what any factor holds, and never a backup code.
@@ -2612,6 +2645,47 @@ pub(crate) mod tests {
             assert_eq!(utc_date(seconds).as_deref(), Some(date), "{seconds}");
         }
         assert_eq!(utc_date(u64::MAX), None, "beyond any calendar");
+    }
+
+    #[test]
+    fn who_can_open_says_how_and_how_many() {
+        let none = VaultProtection {
+            tier: VaultTier::File,
+            keys: 0,
+            codes: 0,
+            codes_unconfirmed: false,
+        };
+        assert_eq!(who_can_open(&KeyringConfig::default()).unwrap(), none);
+        let (_scratch, _vault, config) = adopted("protection-file");
+        assert_eq!(who_can_open(&config).unwrap(), none, "a keyring, no keys");
+
+        let (_scratch, _vault, config, codes, _desk) = desk_vault("protection-keys", 2);
+        let path = config.keyring.clone().unwrap();
+        let keyed = VaultProtection {
+            tier: VaultTier::HardwareKey,
+            keys: 2,
+            codes: u32::try_from(codes.len()).unwrap(),
+            codes_unconfirmed: false,
+        };
+        assert_eq!(who_can_open(&config).unwrap(), keyed);
+        let marker = crate::key_setup::codes_marker(&path);
+        std::fs::write(&marker, b"").unwrap();
+        assert_eq!(
+            who_can_open(&config).unwrap(),
+            VaultProtection {
+                codes_unconfirmed: true,
+                ..keyed
+            }
+        );
+
+        // Set, and not made yet: its key file still opens it.
+        std::fs::remove_file(&marker).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(who_can_open(&config).unwrap(), none);
+        // One that doesn't read is said, and not called unprotected.
+        std::fs::write(&path, bytes.get(..8).unwrap()).unwrap();
+        assert!(who_can_open(&config).is_err());
     }
 
     #[test]

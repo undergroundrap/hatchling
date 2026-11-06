@@ -26,6 +26,7 @@ use std::io::Write as _;
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 use hatchling_vault::archive::{ArchiveReader, ArchiveWriter, Entry, archive_keyring, safe_path};
 use hatchling_vault::{FileKey, KeySource as _, Keyring, MasterKey};
@@ -42,6 +43,13 @@ const KEEP: usize = 5;
 const PREFIX: &str = "hatchling-";
 /// What a backup's name ends with.
 const SUFFIX: &str = ".backup";
+/// What marks when the last backup was made, by its time: wherever that
+/// backup went. Root's, like the rest of [`BACKUPS`].
+const LAST: &str = "last";
+
+/// When the last backup was made, read while the broker was still root:
+/// [`BACKUPS`] is root's alone, and making a backup restarts the broker.
+static LAST_BACKUP: OnceLock<Option<u64>> = OnceLock::new();
 
 /// How deep a reset goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -425,7 +433,66 @@ fn make_backup(
     if to.is_none() {
         prune(Path::new(BACKUPS))?;
     }
+    if let Err(error) = mark_backup(Path::new(BACKUPS)) {
+        // The backup is made: the app's checklist just won't know of it.
+        tracing::warn!(error = %error, "the last backup's time couldn't be kept");
+    }
     Ok(path)
+}
+
+/// Marks a backup made now, in `dir`.
+fn mark_backup(dir: &Path) -> Result<(), Error> {
+    fs::create_dir_all(dir).map_err(ring::io_error)?;
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).map_err(ring::io_error)?;
+    let marked = dir.join(LAST);
+    let _ = fs::remove_file(&marked);
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(marked)
+        .map_err(ring::io_error)?;
+    Ok(())
+}
+
+/// When a backup was last marked in `dir`, in Unix seconds.
+fn backup_marked(dir: &Path) -> Option<u64> {
+    let made = fs::metadata(dir.join(LAST)).ok()?.modified().ok()?;
+    made.duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|since| since.as_secs())
+}
+
+/// Reads when the last backup was made, from `dir`. For the broker to call
+/// while it's root, at its start.
+pub fn note_last_backup(dir: &Path) {
+    let _ = LAST_BACKUP.set(backup_marked(dir));
+}
+
+/// When the last backup was made, as of this start of the broker.
+#[must_use]
+pub fn last_backup() -> Option<u64> {
+    LAST_BACKUP.get().copied().flatten()
+}
+
+/// What to do once a restart has shut the app out: a vault that needs a
+/// person is locked again, and every start makes the app a new address.
+const fn after_restart(locked: bool) -> &'static str {
+    if locked {
+        "Hatchling restarted, and it's locked. Unlock it, and it says how to open the app: sudo hatchling-broker unlock"
+    } else {
+        "Hatchling restarted, so the app needs its new address. As yourself: hatchling-host url"
+    }
+}
+
+/// Whether the vault with the keyring `keyring` configures needs a person
+/// to open it.
+fn needs_a_person(keyring: &KeyringConfig) -> bool {
+    keyring
+        .keyring
+        .as_deref()
+        .and_then(|path| Keyring::load(path).ok())
+        .is_some_and(|ring| locks_at(ring.tier()))
 }
 
 /// `backup [file]`.
@@ -446,8 +513,9 @@ pub fn run_backup(config: &Config, to: Option<&Path>) -> Result<(), Error> {
     started?;
     let _ = writeln!(
         std::io::stdout().lock(),
-        "Backed up to {}.\nIt opens with what opens your vault today. To bring it back: sudo hatchling-broker restore <file>",
-        made.display()
+        "Backed up to {}.\nIt opens with what opens your vault today. To bring it back: sudo hatchling-broker restore <file>\n{}",
+        made.display(),
+        after_restart(needs_a_person(&keyring))
     );
     Ok(())
 }
@@ -489,8 +557,9 @@ pub fn run_restore(config: &Config, from: &Path) -> Result<(), Error> {
     started?;
     let _ = writeln!(
         std::io::stdout().lock(),
-        "Restored {count} files from {}.",
-        from.display()
+        "Restored {count} files from {}.\n{}",
+        from.display(),
+        after_restart(needs_a_person(&keyring_config))
     );
     Ok(())
 }
@@ -587,7 +656,7 @@ pub fn run_reset(config: &Config, args: &[String]) -> Result<(), Error> {
         "Done. {}",
         match level {
             Level::Everything => "Your next step is the same as a new install: docs/install.md",
-            Level::Conversation | Level::Agent => "Hatchling is starting.",
+            Level::Conversation | Level::Agent => after_restart(needs_a_person(&keyring)),
         }
     );
     Ok(())
@@ -726,6 +795,45 @@ mod tests {
         clear_level(&places, Level::Everything).unwrap();
         assert_eq!(scratch.read("secrets/token"), None);
         assert_eq!(scratch.read("conversation/.key"), None);
+    }
+
+    #[test]
+    fn a_backup_is_marked_with_when_and_only_root_reads_that() {
+        let scratch = Scratch::new("backup-marked");
+        let dir = scratch.0.join("backups");
+        assert_eq!(backup_marked(&dir), None, "none yet");
+        mark_backup(&dir).unwrap();
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&dir.join(LAST)), 0o600);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let marked = backup_marked(&dir).unwrap();
+        assert!(marked.abs_diff(now) < 60, "{marked} against {now}");
+        // Marked again, it's the new one's time, and a prune leaves it be.
+        let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1000);
+        fs::File::options()
+            .write(true)
+            .open(dir.join(LAST))
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        assert_eq!(backup_marked(&dir), Some(1000));
+        prune(&dir).unwrap();
+        assert_eq!(backup_marked(&dir), Some(1000));
+        mark_backup(&dir).unwrap();
+        assert!(backup_marked(&dir).unwrap().abs_diff(now) < 60);
+        note_last_backup(&dir);
+        assert_eq!(last_backup(), backup_marked(&dir));
+    }
+
+    #[test]
+    fn a_restart_says_what_comes_next() {
+        assert!(after_restart(true).contains("sudo hatchling-broker unlock"));
+        assert!(after_restart(false).contains("hatchling-host url"));
+        assert!(!needs_a_person(&KeyringConfig::default()));
     }
 
     #[test]

@@ -5,19 +5,29 @@ import { h } from '../../components/dom.js';
 import { button } from '../../components/ui.js';
 import { KEEP_COMMANDS, KEY_COMMANDS, MODEL_COMMANDS, RESET_COMMANDS } from '../../session/data-commands.js';
 import type { DataCommand } from '../../session/data-commands.js';
-function commandRow(ctx: AppContext, item: DataCommand): HTMLElement {
+function copyButton(ctx: AppContext, command: string): HTMLElement {
     const copy = (): void => {
-        void navigator.clipboard.writeText(item.command).then(() => ctx.toast('Copied. Paste it in a terminal on this machine.'), () => ctx.toast('That couldn’t be copied. Select the command instead.', true));
+        void navigator.clipboard.writeText(command).then(() => ctx.toast('Copied. Paste it in a terminal on this machine.'), () => ctx.toast('That couldn’t be copied. Select the command instead.', true));
     };
-    return h('div', { class: 'data-command' }, h('div', {}, h('strong', {}, item.title), h('p', { class: 'data-description' }, item.note), h('code', {}, item.command)), button('Copy', copy, { variant: 'ghost' }));
+    return button('Copy', copy, { variant: 'ghost' });
+}
+/** One command to copy, and what it does. */
+export function commandRow(ctx: AppContext, item: DataCommand): HTMLElement {
+    return h('div', { class: 'data-command' }, h('div', {}, h('strong', {}, item.title), h('p', { class: 'data-description' }, item.note), h('code', {}, item.command)), copyButton(ctx, item.command));
+}
+/** One command to copy, where what's around it says what it does. */
+export function commandLine(ctx: AppContext, item: DataCommand): HTMLElement {
+    return h('div', { class: 'data-command' }, h('code', {}, item.command), copyButton(ctx, item.command));
 }
 function commandGroup(ctx: AppContext, title: string, items: readonly DataCommand[]): HTMLElement {
     return h('section', {}, h('h3', { class: 'settings-section-title' }, title), h('div', { class: 'settings-group' }, ...items.map((item) => commandRow(ctx, item))));
 }
 /** Setting Hatchling up: where the model runs, and who can open the vault. */
 export function liveSetup(ctx: AppContext): HTMLElement[] {
+    const checklist = (): void => { ctx.dialogs.closeAll(); ctx.navigate('setup'); };
     return [
         h('p', { class: 'settings-note' }, 'Run these in a terminal you opened yourself. Anything secret you type there goes to Hatchling, and to nothing else. Set up one model, or both: with both, you switch between them above.'),
+        h('div', { class: 'settings-group' }, h('div', { class: 'data-command' }, h('div', {}, h('strong', {}, 'Setup checklist'), h('p', { class: 'data-description' }, 'What’s done, and what’s left.')), button('Open', checklist, { variant: 'ghost' }))),
         commandGroup(ctx, 'Where your model runs', MODEL_COMMANDS),
         commandGroup(ctx, 'Who can open your vault', KEY_COMMANDS),
     ];

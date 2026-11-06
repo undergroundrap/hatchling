@@ -7,6 +7,8 @@ import type { CodePort } from '../session/codes.js';
 import type { AttentionPort } from '../session/attention.js';
 import type { ConversationPort } from '../session/conversations.js';
 import type { UsagePort } from '../session/usage.js';
+import type { SetupPort } from '../session/setup.js';
+import { renderSetup } from '../features/setup/setup.js';
 import type { ModelPort } from '../session/model.js';
 import type { GoalsPort } from '../session/goals.js';
 import type { FeedPort } from '../session/feed.js';
@@ -46,8 +48,8 @@ import { renderSchedule, renderNotifications } from '../features/schedule/schedu
 import { renderBrowser } from '../features/browser/browser.js';
 import { openSearch } from '../features/search/search.js';
 import { openSettings } from '../features/settings/settings.js';
-function isRoute(value: string): value is Route { return ['chat', 'search', 'feed', 'ideas', 'goals', 'library', 'browser', 'memory', 'schedule', 'notifications', 'published'].includes(value); }
-const routeTitles: Readonly<Record<Route, string>> = { chat: 'Chat', search: 'Search', feed: 'Feed', ideas: 'Ideas', goals: 'Goals', library: 'Library', browser: 'Browser', memory: 'Memory', schedule: 'Schedule', notifications: 'Notifications', published: 'Published' };
+function isRoute(value: string): value is Route { return ['chat', 'search', 'feed', 'ideas', 'goals', 'library', 'browser', 'memory', 'schedule', 'notifications', 'published', 'setup'].includes(value); }
+const routeTitles: Readonly<Record<Route, string>> = { chat: 'Chat', search: 'Search', feed: 'Feed', ideas: 'Ideas', goals: 'Goals', library: 'Library', browser: 'Browser', memory: 'Memory', schedule: 'Schedule', notifications: 'Notifications', published: 'Published', setup: 'Set up' };
 function isLibraryFilter(value: string): value is LibraryFilter { return ['all', 'documents', 'web', 'images', 'videos', 'audio', 'system', 'trash'].includes(value); }
 /** Composition/controller: UI view state is local; product mutations cross the adapter only. */
 export class App implements AppContext {
@@ -70,6 +72,9 @@ export class App implements AppContext {
     }
     get model(): ModelPort | undefined {
         return this.adapter.model;
+    }
+    get setup(): SetupPort | undefined {
+        return this.adapter.setup;
     }
     get goals(): GoalsPort | undefined {
         return this.adapter.goals;
@@ -95,6 +100,7 @@ export class App implements AppContext {
     }>();
     private readonly drafts = new ComposerDrafts();
     private readQueued = false;
+    private setupOffered = false;
     private readonly colorScheme = window.matchMedia('(prefers-color-scheme: light)');
     private lastViewportWidth = window.innerWidth;
     private lastViewportHeight = window.innerHeight;
@@ -106,6 +112,7 @@ export class App implements AppContext {
         readonly conversations?: ConversationPort;
         readonly usage?: UsagePort;
         readonly model?: ModelPort;
+        readonly setup?: SetupPort;
         readonly goals?: GoalsPort;
         readonly feed?: FeedPort;
         readonly ideas?: IdeasPort;
@@ -131,6 +138,7 @@ export class App implements AppContext {
         window.addEventListener('popstate', this.readLocation);
         window.addEventListener('resize', this.onResize);
         window.addEventListener('keydown', this.onKeyboard);
+        window.addEventListener('focus', this.onFocus);
         document.addEventListener('click', this.closeMenus);
         this.ui.navOpen = window.innerWidth > 800 && this.state.settings.keepChatPanelVisible;
         this.colorScheme.addEventListener('change', this.render);
@@ -142,7 +150,26 @@ export class App implements AppContext {
             this.networkChanged();
     }
     get state(): ReturnType<ProtocolAdapter['getSnapshot']> { return this.adapter.getSnapshot(); }
+    /** Back from a terminal, the checklist reads what's changed. */
+    private readonly onFocus = (): void => {
+        if (this.ui.route === 'setup')
+            void this.adapter.setup?.refresh();
+    };
+    /**
+     * A new install opens on its checklist until the owner closes it, finished
+     * or not: a last step run in a terminal comes back to it, ticked. Once a
+     * load, so going to the chat from here stays there.
+     */
+    private offerSetup(): void {
+        const port = this.adapter.setup;
+        if (this.setupOffered || port?.current().kind !== 'read')
+            return;
+        this.setupOffered = true;
+        if (this.ui.route === 'chat' && !port.remembers('closed'))
+            queueMicrotask(() => { this.navigate('setup'); });
+    }
     render = (): void => {
+        this.offerSetup();
         this.saveComposer();
         this.delivery.sync();
         if (this.ui.route === 'chat' && !this.state.chats.some(chat => chat.id === this.ui.chatId)) {
@@ -179,6 +206,9 @@ export class App implements AppContext {
                 break;
             case 'search':
                 main.append(renderChat(this));
+                break;
+            case 'setup':
+                main.append(renderSetup(this));
                 break;
             case 'library':
                 main.append(renderLibrary(this));

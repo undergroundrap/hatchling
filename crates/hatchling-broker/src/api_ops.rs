@@ -38,8 +38,8 @@ use hatchling_core::messages::{ScheduleGrant, ScheduleOp};
 use hatchling_core::subagent::{ActivityEvent, SubagentEvent};
 use hatchling_core::ui::{
     ActionRefusal, AgentState, ApiOutcome, ApiRequest, ChatAuthor, ChatMessage, ControlRefusal,
-    Decision, GoalOp, Handoff, KeptOp, ProfileOp, ProfileResult, SignInOp, SiteOp, SuggestionOp,
-    UiAction, UiActionResult, UiEventBody,
+    Decision, GoalOp, Handoff, KeptOp, ProfileOp, ProfileResult, SetupState, SignInOp, SiteOp,
+    SuggestionOp, UiAction, UiActionResult, UiEventBody, VaultProtection,
 };
 use hatchling_scheduler::{Creator, Timestamp};
 use hatchling_vault::OpensStores;
@@ -50,7 +50,7 @@ use crate::browser_board::{InputRefusal, OwnerAct};
 use crate::conversation_store::ConversationStore;
 use crate::schedule_ops::{held_grants, list_schedules};
 use crate::skills::Skills;
-use crate::{Config, handle_schedule_op, handle_skill_op};
+use crate::{Config, Error, handle_schedule_op, handle_skill_op};
 
 /// What of the owner's an API call manages.
 #[derive(Clone, Copy)]
@@ -95,6 +95,52 @@ fn status_detail(text: &str) -> String {
 
 /// The activity thread every API call is recorded on.
 pub const API_RUN_ID: &str = "api";
+
+/// What's set up on this machine, for the owner alone.
+fn read_setup(owns: bool) -> (UiActionResult, ApiOutcome) {
+    if !owns {
+        return (
+            UiActionResult::Refused {
+                reason: ActionRefusal::NotGranted,
+            },
+            ApiOutcome::Refused,
+        );
+    }
+    setup_answer(
+        crate::keeper::keeper().map(crate::keeper::Keeper::protection),
+        crate::backup::last_backup(),
+    )
+}
+
+/// What's set up on this machine, from what the keeper said of the vault
+/// (`asked`, none when there's no keeper) and the last backup: a keeper that
+/// couldn't say is said as such, and nothing is guessed.
+fn setup_answer(
+    asked: Option<Result<VaultProtection, Error>>,
+    last_backup: Option<u64>,
+) -> (UiActionResult, ApiOutcome) {
+    let unavailable = || {
+        (
+            UiActionResult::Refused {
+                reason: ActionRefusal::Unavailable,
+            },
+            ApiOutcome::Refused,
+        )
+    };
+    match asked {
+        Some(Ok(vault)) => (
+            UiActionResult::Setup {
+                setup: SetupState { vault, last_backup },
+            },
+            ApiOutcome::Served,
+        ),
+        Some(Err(error)) => {
+            tracing::warn!(error = %error, "the keeper couldn't say who can open the vault");
+            unavailable()
+        }
+        None => unavailable(),
+    }
+}
 
 /// The cell id an API-invoked skill's log lines name.
 const API_CELL: &str = "api";
@@ -242,6 +288,7 @@ impl<'a> Ops<'a> {
                 }
                 self.read_model()
             }
+            UiAction::ReadSetup {} => read_setup(owns),
             UiAction::SetModel { name } => {
                 if !owns {
                     return refused(ActionRefusal::NotGranted);
@@ -2204,6 +2251,67 @@ mod tests {
         assert_eq!(usage.spent.today, 9);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Only the owner reads what's set up; with no keeper to say who can
+    /// open the vault, nothing is guessed.
+    #[test]
+    fn only_the_owner_reads_whats_set_up() {
+        let vault = VaultProtection {
+            tier: hatchling_core::ui::VaultTier::HardwareKey,
+            keys: 2,
+            codes: 10,
+            codes_unconfirmed: false,
+        };
+        let unavailable = (
+            UiActionResult::Refused {
+                reason: ActionRefusal::Unavailable,
+            },
+            ApiOutcome::Refused,
+        );
+        assert_eq!(
+            setup_answer(Some(Ok(vault)), Some(7)),
+            (
+                UiActionResult::Setup {
+                    setup: SetupState {
+                        vault,
+                        last_backup: Some(7)
+                    }
+                },
+                ApiOutcome::Served
+            )
+        );
+        let failed = Error::Keeper {
+            reason: String::from("no"),
+        };
+        assert_eq!(setup_answer(Some(Err(failed)), Some(7)), unavailable);
+        assert_eq!(setup_answer(None, Some(7)), unavailable);
+
+        let config = owner_config(None);
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let ops = Ops::new(&config, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        let held: Vec<ScheduleGrant> = ops.owner_grants().into_iter().collect();
+        let mut replies = Replies::default();
+        let read = UiAction::ReadSetup {};
+        assert_eq!(
+            ops.handle(&caller(&held), &read, &mut replies),
+            unavailable,
+            "the owner, with no keeper here"
+        );
+        assert_eq!(
+            ops.handle(
+                &caller(held.get(..1).unwrap_or_default()),
+                &read,
+                &mut replies
+            ),
+            (
+                UiActionResult::Refused {
+                    reason: ActionRefusal::NotGranted
+                },
+                ApiOutcome::Refused
+            )
+        );
     }
 
     /// Only the owner reads and chooses the model; a choice is answered
