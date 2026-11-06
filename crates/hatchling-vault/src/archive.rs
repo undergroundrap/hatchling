@@ -50,7 +50,7 @@ pub struct Entry {
     pub bytes: Vec<u8>,
 }
 
-fn broken(reason: &'static str) -> Error {
+const fn broken(reason: &'static str) -> Error {
     Error::Backup { reason }
 }
 
@@ -146,7 +146,11 @@ impl<W: Write> ArchiveWriter<W> {
         self.take(&path.to_be_bytes())?;
         self.take(entry.path.as_bytes())?;
         self.take(&entry.mode.to_be_bytes())?;
-        self.take(&u64::try_from(entry.bytes.len()).unwrap_or(u64::MAX).to_be_bytes())?;
+        self.take(
+            &u64::try_from(entry.bytes.len())
+                .unwrap_or(u64::MAX)
+                .to_be_bytes(),
+        )?;
         self.take(&entry.bytes)
     }
 
@@ -372,8 +376,8 @@ impl<R: Read> ArchiveReader<R> {
         self.must_fill(&mut mode)?;
         let mut size = [0u8; 8];
         self.must_fill(&mut size)?;
-        let size = usize::try_from(u64::from_be_bytes(size))
-            .map_err(|_| broken("a file is too big"))?;
+        let size =
+            usize::try_from(u64::from_be_bytes(size)).map_err(|_| broken("a file is too big"))?;
         let mut bytes = Vec::new();
         let mut left = size;
         // A piece at a time: a size that lies runs out of chunks, rather
@@ -507,7 +511,10 @@ mod tests {
         }
         let mut changed = bytes;
         *changed.first_mut().unwrap() ^= 0x20;
-        assert_eq!(refused(read(&key, &changed)), "this isn't a Hatchling backup");
+        assert_eq!(
+            refused(read(&key, &changed)),
+            "this isn't a Hatchling backup"
+        );
     }
 
     /// Cut short anywhere, at a chunk's edge too, or added to, it's found.
@@ -522,7 +529,10 @@ mod tests {
         let bytes = written(&key, b"", &entries);
         let edge = 8 + 4 + NONCE + SEALED_KEY + 4 + 1 + NONCE + CHUNK + 16;
         for length in [0, 7, 12, edge - 1, edge, edge + 1, bytes.len() - 1] {
-            assert!(read(&key, bytes.get(..length).unwrap()).is_err(), "{length}");
+            assert!(
+                read(&key, bytes.get(..length).unwrap()).is_err(),
+                "{length}"
+            );
         }
         let longer = [&bytes[..], b"x"].concat();
         assert_eq!(refused(read(&key, &longer)), "there's more after its end");
@@ -542,7 +552,7 @@ mod tests {
         let bytes = written(&key, b"", &entries);
         let start = 8 + 4 + NONCE + SEALED_KEY;
         let size = 4 + 1 + NONCE + CHUNK + 16;
-        let mut swapped = bytes.clone();
+        let mut swapped = bytes;
         let (first, rest) = swapped.get_mut(start..).unwrap().split_at_mut(size);
         first.swap_with_slice(rest.get_mut(..size).unwrap());
         assert_eq!(
@@ -561,7 +571,10 @@ mod tests {
         }
         let key = key();
         let bytes = written(&key, b"", &[entry("../outside", b"x")]);
-        assert_eq!(refused(read(&key, &bytes)), "a path points outside the backup");
+        assert_eq!(
+            refused(read(&key, &bytes)),
+            "a path points outside the backup"
+        );
     }
 
     #[test]

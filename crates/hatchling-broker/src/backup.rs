@@ -28,11 +28,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use hatchling_vault::archive::{ArchiveReader, ArchiveWriter, Entry, archive_keyring, safe_path};
-use hatchling_vault::{FileKey, Keyring, MasterKey};
+use hatchling_vault::{FileKey, KeySource as _, Keyring, MasterKey};
 
+use crate::Error;
 use crate::config::Config;
 use crate::vault_keyring::{self as ring, Ask, Devices, KeyringConfig};
-use crate::Error;
 
 /// Where backups go unless told otherwise.
 pub const BACKUPS: &str = "/var/lib/hatchling-backups";
@@ -458,8 +458,10 @@ pub fn run_restore(config: &Config, from: &Path) -> Result<(), Error> {
     let mut file = fs::File::open(from).map_err(ring::io_error)?;
     let ring_bytes = archive_keyring(&mut file).map_err(ring::vault_error)?;
     let places = places(config)?;
-    let by_name: BTreeMap<&str, &Place> =
-        places.iter().map(|place| (place.name.as_str(), place)).collect();
+    let by_name: BTreeMap<&str, &Place> = places
+        .iter()
+        .map(|place| (place.name.as_str(), place))
+        .collect();
     service("stop")?;
     let (mut ask, mut devices) = ring::terminal_operator();
     let restored = (|| {
@@ -468,8 +470,7 @@ pub fn run_restore(config: &Config, from: &Path) -> Result<(), Error> {
         let staging = config.vault.root.with_extension("restoring");
         let _ = fs::remove_dir_all(&staging);
         fs::create_dir_all(&staging).map_err(ring::io_error)?;
-        let mut reader =
-            ArchiveReader::new(file, &key, &ring_bytes).map_err(ring::vault_error)?;
+        let mut reader = ArchiveReader::new(file, &key, &ring_bytes).map_err(ring::vault_error)?;
         let count = stage(&mut reader, &by_name, &staging)?;
         swap_in(&places, &staging)?;
         if let (Some(path), false) = (keyring_config.keyring.as_deref(), ring_bytes.is_empty()) {
@@ -600,7 +601,8 @@ fn erase_keys(config: &Config, keyring: &KeyringConfig) -> Result<(), Error> {
 }
 
 /// How `reset` is used.
-pub const USAGE: &str = "usage: hatchling-broker reset <conversation | agent | everything> [--yes] [--no-backup]";
+pub const USAGE: &str =
+    "usage: hatchling-broker reset <conversation | agent | everything> [--yes] [--no-backup]";
 
 #[cfg(test)]
 mod tests {
@@ -610,10 +612,8 @@ mod tests {
 
     impl Scratch {
         fn new(name: &str) -> Self {
-            let root = std::env::temp_dir().join(format!(
-                "hatchling-backup-{name}-{}",
-                std::process::id()
-            ));
+            let root = std::env::temp_dir()
+                .join(format!("hatchling-backup-{name}-{}", std::process::id()));
             let _ = fs::remove_dir_all(&root);
             fs::create_dir_all(&root).unwrap();
             Self(root)
@@ -718,8 +718,10 @@ mod tests {
         let mut opened = fs::File::open(&file).unwrap();
         assert_eq!(archive_keyring(&mut opened).unwrap(), b"ring");
         let mut reader = ArchiveReader::new(opened, &key, b"ring").unwrap();
-        let by_name: BTreeMap<&str, &Place> =
-            places.iter().map(|place| (place.name.as_str(), place)).collect();
+        let by_name: BTreeMap<&str, &Place> = places
+            .iter()
+            .map(|place| (place.name.as_str(), place))
+            .collect();
         let staging = scratch.0.join("staging");
         fs::create_dir_all(&staging).unwrap();
         assert_eq!(stage(&mut reader, &by_name, &staging).unwrap(), 4);
