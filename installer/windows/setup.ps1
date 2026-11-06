@@ -3,8 +3,8 @@
 #
 #   setup.ps1 [-Distro Hatchling] [-Release <dir>] [-Hosted | -ModelEndpoint <url> -ModelName <name>]
 #
-# With neither, the model runs on this machine, with Ollama, which it asks
-# before installing. -Hosted uses OpenRouter, and the broker asks for its key
+# With neither, the model runs on this machine, with Ollama: one already running
+# that has the model is used, and otherwise it asks before installing it. -Hosted uses OpenRouter, and the broker asks for its key
 # at its own prompt in this console. -ModelEndpoint is a model server already
 # running, at an address WSL can reach as localhost.
 #
@@ -63,6 +63,10 @@ if ($Hosted) {
 elseif ($ModelEndpoint) {
     Say "Using the model server at $ModelEndpoint"
     $model = @('--model-endpoint', $ModelEndpoint, '--model', $ModelName)
+}
+elseif ((Get-FromWsl $Distro @('curl', '-s', '-m', '3', 'http://localhost:11434/api/tags')) -match ('"name":"' + [regex]::Escape($ModelName) + '"')) {
+    Say "Using the Ollama already running on this PC, which has $ModelName"
+    $model = @('--model-endpoint', 'http://localhost:11434/v1', '--model', $ModelName)
 }
 else {
     if (-not (Get-FromWsl $Distro @('sh', '-c', 'command -v ollama'))) {
