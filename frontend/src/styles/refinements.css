@@ -215,6 +215,11 @@ body.has-artifact-dock .page { width: 100%; margin-inline: auto; }
     max-width: 760px;
 }
 
+.setup-notice-copy {
+    flex: 1 1 240px;
+    min-width: 0;
+}
+
 .setup-intro {
     display: flex;
     flex-direction: column;

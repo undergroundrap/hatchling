@@ -1,16 +1,18 @@
 // The first-run checklist: each step, and the command for it, to run in a
 // terminal the owner opened. It ticks itself: the steps are read from the broker,
-// again each time they come back to this page.
+// again each time they come back to this page. The chat offers it and never gives
+// way to it: what's set up is read after the chat is on screen, and someone may
+// already be typing.
 import type { AppContext } from '../../app/context.js';
 import { h } from '../../components/dom.js';
 import { icon } from '../../components/icons.js';
 import { button, emptyState } from '../../components/ui.js';
 import { connectionBanner } from '../chat/reliability-ui.js';
 import { commandLine, commandRow } from '../settings/live-data.js';
-import { setupFinished, setupProgress, setupSteps, STEP_STATUS } from '../../session/setup.js';
+import { setupFinished, setupProgress, setupReminder, setupSteps, STEP_STATUS } from '../../session/setup.js';
 import type { SetupStep } from '../../session/setup.js';
 const INTRO = 'Run each command in a terminal you opened yourself. Anything secret you type goes there, and never through this app.';
-const RESTARTS = 'Each one restarts Hatchling, so this page goes offline for a moment. The command says what to run next, and the address it gives brings you back here, with that step ticked.';
+const RESTARTS = 'Each one restarts Hatchling, so this page goes offline for a moment. The command says what to run next, and the address it gives brings you back, with that step ticked.';
 function nowSeconds(): number {
     return Math.floor(Date.now() / 1000);
 }
@@ -35,6 +37,21 @@ function checkAgain(ctx: AppContext): void {
 function closing(ctx: AppContext, finished: boolean): HTMLElement {
     const close = (): void => { ctx.setup?.remember('closed'); ctx.navigate('chat'); };
     return h('footer', { class: 'setup-actions' }, button(finished ? 'Start chatting' : 'Not now', close, { variant: finished ? 'primary' : 'ghost' }), button('Check again', () => { checkAgain(ctx); }, { icon: 'refresh', variant: 'ghost' }));
+}
+/** Above the chat from a first visit until the owner closes it, finished or not. */
+export function setupNotice(ctx: AppContext): HTMLElement | null {
+    const port = ctx.setup;
+    const setup = port?.current();
+    const model = ctx.model?.current();
+    if (port === undefined || setup?.kind !== 'read' || model?.kind !== 'read' || port.remembers('closed'))
+        return null;
+    const steps = setupSteps(model.model, setup.setup, port.remembers('no-key'), nowSeconds());
+    const finished = setupFinished(steps);
+    const { title, note } = setupReminder(steps);
+    const close = (): void => { port.remember('closed'); ctx.render(); };
+    const copy = h('div', { class: 'setup-notice-copy' }, h('strong', {}, title), h('p', {}, note));
+    const actions = finished ? [button('Close', close, { variant: 'ghost' })] : [button('Not now', close, { variant: 'ghost' }), button('Continue', () => { ctx.navigate('setup'); }, { variant: 'primary' })];
+    return h('section', { class: 'connector-conversation-banner setup-notice', 'aria-label': 'Setup' }, copy, ...actions);
 }
 export function renderSetup(ctx: AppContext): HTMLElement {
     const page = h('div', { class: 'page setup-page reading-wide', 'data-scroll': 'setup' });

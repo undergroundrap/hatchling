@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { LiveSetup, setupOf } from '../../dist/app/adapters/live/setup.js';
-import { ago, setupFinished, setupProgress, setupSteps, STEP_STATUS } from '../../dist/app/session/setup.js';
+import { ago, setupFinished, setupProgress, setupReminder, setupSteps, STEP_STATUS } from '../../dist/app/session/setup.js';
 const NOW = 2000000000;
 const DAY = 86400;
 const model = { endpoint: 'http://127.0.0.1:11434/v1', configured: 'qwen3.5:9b', chosen: null, available: null, window: null, size: null, onCpu: null, other: null, switched: false };
@@ -80,6 +80,9 @@ test('skipping counts as dealt with, and finishes it', () => {
     const left = setupSteps(model, { ...bare, lastBackup: NOW }, false, NOW);
     assert.equal(setupFinished(left), false);
     assert.equal(setupProgress(left), '2 of 3 done');
+    assert.equal(setupReminder(left).title, 'Finish setting up');
+    assert.equal(setupReminder(left).note, `2 of 3 done. Next: ${left.find(found => found.status === 'next').title.toLowerCase()}.`);
+    assert.equal(setupReminder(steps).title, 'You’re all set');
     assert.deepEqual(Object.keys(STEP_STATUS).sort(), ['done', 'next', 'skipped']);
 });
 class Client {

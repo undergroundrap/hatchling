@@ -4,6 +4,7 @@ import { loadingImage } from '../../components/loading-image.js';
 import { domainApprovalNotice } from '../approvals/domain.js';
 import { renderTaskApprovalQueue } from '../approvals/surfaces.js';
 import { connectionBanner, historyNotice, historyPlaceholder, outboxNotice, outboxRow } from './reliability-ui.js';
+import { setupNotice } from '../setup/setup.js';
 import { connectorBanner } from './connector-chats.js';
 import { renderChatHeader } from './chat-header.js';
 import { avatarAccentFromImage } from '../context/avatar-color.js';
@@ -29,7 +30,8 @@ export function renderChat(ctx: AppContext): HTMLElement {
     const connection = connectionBanner(ctx);
     const stale = historyNotice(ctx);
     const channel = chat.channelId ? connectorBanner(ctx, chat) : null;
-    const view = h('section', { class: `chat-view${connection || stale || channel ? ' has-chat-notice' : ''}` }, renderChatHeader(ctx, chat), h('div', { class: 'chat-notices' }, connection, stale, channel), stream, renderComposer(ctx, chat.channelId !== null));
+    const setup = setupNotice(ctx);
+    const view = h('section', { class: `chat-view${connection || stale || channel || setup ? ' has-chat-notice' : ''}` }, renderChatHeader(ctx, chat), h('div', { class: 'chat-notices' }, connection, stale, channel, setup), stream, renderComposer(ctx, chat.channelId !== null));
     if ((!ctx.ui.contextOpen && !ctx.dock.isOpen) || document.body.classList.contains('has-browser-session'))
         view.append(floatingAgent(ctx));
     const jump = iconButton('arrow', 'Jump to latest', () => { stream.scrollTo({ top: stream.scrollHeight, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' }); }, 'jump-to-latest');

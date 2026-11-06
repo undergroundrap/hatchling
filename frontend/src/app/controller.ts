@@ -100,7 +100,6 @@ export class App implements AppContext {
     }>();
     private readonly drafts = new ComposerDrafts();
     private readQueued = false;
-    private setupOffered = false;
     private readonly colorScheme = window.matchMedia('(prefers-color-scheme: light)');
     private lastViewportWidth = window.innerWidth;
     private lastViewportHeight = window.innerHeight;
@@ -155,21 +154,7 @@ export class App implements AppContext {
         if (this.ui.route === 'setup')
             void this.adapter.setup?.refresh();
     };
-    /**
-     * A new install opens on its checklist until the owner closes it, finished
-     * or not: a last step run in a terminal comes back to it, ticked. Once a
-     * load, so going to the chat from here stays there.
-     */
-    private offerSetup(): void {
-        const port = this.adapter.setup;
-        if (this.setupOffered || port?.current().kind !== 'read')
-            return;
-        this.setupOffered = true;
-        if (this.ui.route === 'chat' && !port.remembers('closed'))
-            queueMicrotask(() => { this.navigate('setup'); });
-    }
     render = (): void => {
-        this.offerSetup();
         this.saveComposer();
         this.delivery.sync();
         if (this.ui.route === 'chat' && !this.state.chats.some(chat => chat.id === this.ui.chatId)) {

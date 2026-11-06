@@ -107,5 +107,15 @@ export function setupFinished(steps: readonly SetupStep[]): boolean {
 export function setupProgress(steps: readonly SetupStep[]): string {
     return `${steps.filter(step => step.status !== 'next').length} of ${steps.length} done`;
 }
+/** What the chat says about `steps`, until the owner closes the checklist. */
+export function setupReminder(steps: readonly SetupStep[]): {
+    readonly title: string;
+    readonly note: string;
+} {
+    const next = steps.find(step => step.status === 'next');
+    if (next === undefined)
+        return { title: 'You’re all set', note: 'Nothing’s left to set up. The checklist stays in Settings, under General.' };
+    return { title: 'Finish setting up', note: `${setupProgress(steps)}. Next: ${next.title.toLowerCase()}.` };
+}
 /** What a step's status is called, for what can't see its mark. */
 export const STEP_STATUS: Readonly<Record<StepStatus, string>> = { done: 'Done', next: 'To do', skipped: 'Skipped' };
