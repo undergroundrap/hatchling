@@ -481,6 +481,9 @@ fn remind() {
             "Your backup codes were never confirmed saved: sudo hatchling-broker vault-keyring setup makes a fresh set."
         );
     }
+    for reminder in crate::key_seen::reminders(&config, crate::vault_keyring::now()) {
+        let _ = writeln!(stderr, "{reminder}");
+    }
 }
 
 /// An answer to `prompt` in this terminal; a secret one isn't shown.
