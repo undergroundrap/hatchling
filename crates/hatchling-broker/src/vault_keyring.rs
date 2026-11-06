@@ -2752,8 +2752,8 @@ pub(crate) mod tests {
             &desk,
             &[
                 ("spare", Some(0)),
-                ("yes", Some(0)),
-                (code, Some(0)),
+                ("yes", None),
+                (code, None),
                 ("", Some(3)),
             ],
         );
@@ -2967,7 +2967,6 @@ pub(crate) mod tests {
         for code in codes.iter().take(9) {
             keyring.recover(code).unwrap();
         }
-        let last = codes.last().unwrap().as_str();
         let ids: Vec<String> = keys_of(&config).into_iter().map(|key| key.id).collect();
         let [first, second] = ids.as_slice() else {
             unreachable!("two keys");
@@ -3001,6 +3000,7 @@ pub(crate) mod tests {
         let mut operator = Operator::new(&desk, &[("  a-code ", None), ("", None)]);
         let mut answer = |prompt: &str| -> Result<String, Error> { Ok(operator.answer(prompt)) };
         // A key that's there is the answer: nothing's asked.
+        desk.plugged.set(Some(0));
         assert_eq!(authorization(&mut answer, &mut desk).unwrap(), None);
         assert_eq!(
             authorization(&mut answer, &mut NoKeys).unwrap().as_deref(),
