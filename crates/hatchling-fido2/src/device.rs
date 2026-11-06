@@ -1127,9 +1127,7 @@ mod tests {
                     let (mut device, asked) = counted(key, "24681012");
                     let made = device.make_credential(RP, b"u").unwrap();
                     let salt = random::<32>().unwrap();
-                    let first = device
-                        .hmac_secret_verified(RP, &made.id, &salt)
-                        .unwrap();
+                    let first = device.hmac_secret_verified(RP, &made.id, &salt).unwrap();
                     let (mut next, _) = counted(SoftKey::sharing(state), "24681012");
                     let again = next.hmac_secret_verified(RP, &made.id, &salt).unwrap();
                     assert_eq!(first, again, "{protocols:?} {permissions}");
