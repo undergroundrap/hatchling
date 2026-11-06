@@ -330,7 +330,7 @@ export type ApiOutcome = 'served' | 'refused';
  * What one API call asked for: the request's kind, never its content
  * (a message's text, a file, a schedule's task).
  */
-export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'manage_goals' | 'manage_memory' | 'list_decisions' | 'read_usage' | 'set_usage_limits' | 'read_model' | 'set_model' | 'switch_model_server' | 'read_feed' | 'manage_suggestions' | 'give_code' | 'decline_code';
+export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'manage_goals' | 'manage_memory' | 'list_decisions' | 'read_usage' | 'set_usage_limits' | 'read_model' | 'read_setup' | 'set_model' | 'switch_model_server' | 'read_feed' | 'manage_suggestions' | 'give_code' | 'decline_code';
 /**
  * A bearer token, presented in `Hello` for a token provider.
  *
@@ -3642,6 +3642,20 @@ export type SessionResponse = VaultResult & {
  */
 export type SessionSocket = 'api' | 'ui';
 /**
+ * What's set up on this machine, for the app's checklist.
+ */
+export type SetupState = {
+    /**
+     * When the last backup was made, in Unix seconds, as of this start of
+     * the broker: making one restarts it. None when there's been none.
+     */
+    readonly last_backup?: number | null;
+    /**
+     * Who can open the vault.
+     */
+    readonly vault: VaultProtection;
+};
+/**
  * An operation on the sign-ins the broker fills for a signed-in profile
  * (WO-030): the owner's alone.
  */
@@ -4372,6 +4386,8 @@ export type UiAction = {
 } | {
     readonly action: 'read_model';
 } | {
+    readonly action: 'read_setup';
+} | {
     readonly action: 'set_model';
     /**
      * The model, by its id on the server; none goes back to the one
@@ -4608,6 +4624,12 @@ export type UiActionResult = {
      */
     readonly model: ModelState;
     readonly result: 'model';
+} | {
+    readonly result: 'setup';
+    /**
+     * It.
+     */
+    readonly setup: SetupState;
 } | {
     /**
      * They.
@@ -5014,6 +5036,28 @@ export type UsageSpent = {
     readonly today: number;
 };
 /**
+ * Who can open the vault: how, and how many. Never a key's name or id,
+ * and never anything that opens it.
+ */
+export type VaultProtection = {
+    /**
+     * The backup codes left.
+     */
+    readonly codes: number;
+    /**
+     * Whether the owner never confirmed saving those codes.
+     */
+    readonly codes_unconfirmed?: boolean;
+    /**
+     * The security keys that open it.
+     */
+    readonly keys: number;
+    /**
+     * How it opens.
+     */
+    readonly tier: VaultTier;
+};
+/**
  * The broker's reply to one [`VaultOp`].
  *
  * Replies are per-operation and carry no more than the op asked for: a
@@ -5039,6 +5083,10 @@ export type VaultResult = {
 } | {
     readonly r: 'vault-error';
 };
+/**
+ * How the vault opens.
+ */
+export type VaultTier = 'file' | 'totp' | 'hardware_key';
 /**
  * One search result: the provider's words about a page, untrusted.
  */

@@ -101,6 +101,8 @@ pub enum ApiRequest {
     SetUsageLimits,
     /// [`UiAction::ReadModel`].
     ReadModel,
+    /// [`UiAction::ReadSetup`].
+    ReadSetup,
     /// [`UiAction::SetModel`].
     SetModel,
     /// [`UiAction::SwitchModelServer`].
@@ -153,6 +155,7 @@ impl ApiRequest {
             UiAction::ReadUsage {} => Self::ReadUsage,
             UiAction::SetUsageLimits { .. } => Self::SetUsageLimits,
             UiAction::ReadModel {} => Self::ReadModel,
+            UiAction::ReadSetup {} => Self::ReadSetup,
             UiAction::SetModel { .. } => Self::SetModel,
             UiAction::SwitchModelServer { .. } => Self::SwitchModelServer,
             UiAction::ReadFeed {} => Self::ReadFeed,
@@ -347,6 +350,7 @@ mod tests {
                 ApiRequest::SetUsageLimits,
             ),
             (action(UiAction::ReadModel {}), ApiRequest::ReadModel),
+            (action(UiAction::ReadSetup {}), ApiRequest::ReadSetup),
             (
                 action(UiAction::SetModel { name: None }),
                 ApiRequest::SetModel,

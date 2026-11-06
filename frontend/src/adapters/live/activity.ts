@@ -272,6 +272,7 @@ const REQUESTS: Readonly<Record<ApiRequest, string>> = {
     read_usage: 'Read the model usage',
     set_usage_limits: 'Set the usage limits',
     read_model: 'Read the model',
+    read_setup: 'Read what’s set up',
     set_model: 'Chose the model',
     switch_model_server: 'Switched the model server',
     read_feed: 'Read the Feed page',

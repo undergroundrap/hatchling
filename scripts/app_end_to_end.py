@@ -156,6 +156,7 @@ def check(address, answer, machine=None):
             # show first-run.py's answer, the same sentence.
             page.wait_for_function(ANSWERED, arg=[TASK, answer], timeout=ANSWER_TIMEOUT_MS)
             check_token(page, address)
+            check_setup_offered(page)
             screenshot(page, "app.png")
             if watching is not None:
                 check_machine(*watching)
@@ -164,6 +165,21 @@ def check(address, answer, machine=None):
             browser.close()
     if errors:
         raise ValueError("The page raised: " + "; ".join(errors))
+
+
+def check_setup_offered(page):
+    """The first-run checklist is offered above the chat, and closing it keeps
+    the chat. The chat never gives way to it: the message sent above was typed
+    into a page that had just loaded."""
+    from playwright.sync_api import expect
+
+    notice = page.locator(".setup-notice")
+    expect(notice).to_be_visible()
+    notice.get_by_role("button", name="Continue", exact=True).click()
+    expect(page.get_by_role("heading", name="Set up Hatchling", exact=True)).to_be_visible()
+    page.get_by_role("button", name="Not now", exact=True).click()
+    expect(page.locator("#message-input")).to_be_visible()
+    expect(notice).to_have_count(0)
 
 
 def main():

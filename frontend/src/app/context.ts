@@ -5,6 +5,7 @@ import type { AttentionPort } from '../session/attention.js';
 import type { ConversationPort } from '../session/conversations.js';
 import type { UsagePort } from '../session/usage.js';
 import type { ModelPort } from '../session/model.js';
+import type { SetupPort } from '../session/setup.js';
 import type { FeedPort } from '../session/feed.js';
 import type { IdeasPort } from '../session/ideas.js';
 import type { GoalsPort } from '../session/goals.js';
@@ -13,7 +14,7 @@ import type { ChatDelivery } from '../features/chat/delivery.js';
 import type { AppState, ArtifactFormat, Command, CommandResult, DeepReadonly, ProtocolAdapter } from '../protocol/models.js';
 import type { ArtifactDock } from '../components/dock.js';
 import type { DialogManager } from '../components/dialog.js';
-export type Route = 'chat' | 'search' | 'feed' | 'ideas' | 'goals' | 'library' | 'browser' | 'memory' | 'schedule' | 'notifications' | 'published';
+export type Route = 'chat' | 'search' | 'feed' | 'ideas' | 'goals' | 'library' | 'browser' | 'memory' | 'schedule' | 'notifications' | 'published' | 'setup';
 export type LibraryFilter = 'all' | 'documents' | 'web' | 'images' | 'videos' | 'audio' | 'system' | 'trash';
 export type ContextTab = 'activity' | 'approvals' | 'schedule' | 'identity';
 export interface UiState {
@@ -72,6 +73,7 @@ export interface AppContext {
     readonly usage: UsagePort | undefined;
     /** The model Hatchling uses, chosen by the owner, when the app is connected to Hatchling. */
     readonly model: ModelPort | undefined;
+    readonly setup: SetupPort | undefined;
     /** Where a goal is closed as reached or set aside, when the app is connected to Hatchling. */
     readonly goals: GoalsPort | undefined;
     /** The owner's Feed page: its prompt and time, when the app is connected to Hatchling. */

@@ -188,6 +188,7 @@ export class LiveApprovals implements TaskApprovalPort {
             case 'message_accepted':
             case 'conversation_started':
             case 'schedule':
+            case 'setup':
             case 'sites':
             case 'skill':
             case 'artifact_opened':

@@ -760,6 +760,47 @@ pub struct ModelServer {
     pub name: Option<String>,
 }
 
+/// How the vault opens.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum VaultTier {
+    /// With a key file on this machine, by itself after a restart.
+    File,
+    /// With a code from an authenticator app.
+    Totp,
+    /// With a security key.
+    HardwareKey,
+}
+
+/// Who can open the vault: how, and how many. Never a key's name or id,
+/// and never anything that opens it.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct VaultProtection {
+    /// How it opens.
+    pub tier: VaultTier,
+    /// The security keys that open it.
+    pub keys: u32,
+    /// The backup codes left.
+    pub codes: u32,
+    /// Whether the owner never confirmed saving those codes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub codes_unconfirmed: bool,
+}
+
+/// What's set up on this machine, for the app's checklist.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct SetupState {
+    /// Who can open the vault.
+    pub vault: VaultProtection,
+    /// When the last backup was made, in Unix seconds, as of this start of
+    /// the broker: making one restarts it. None when there's been none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_backup: Option<u64>,
+}
+
 /// The tokens counted toward the owner's limits, read and written
 /// together.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -1336,6 +1377,8 @@ pub enum UiAction {
     /// Read the model Hatchling uses, and the models its server has: the
     /// owner's alone.
     ReadModel {},
+    /// Read what's set up on this machine: the owner's alone.
+    ReadSetup {},
     /// Choose the model Hatchling uses from the next run on, answered with
     /// the model as it then stands: the owner's alone.
     SetModel {
@@ -1526,6 +1569,11 @@ pub enum UiActionResult {
     Model {
         /// It.
         model: ModelState,
+    },
+    /// What's set up on this machine.
+    Setup {
+        /// It.
+        setup: SetupState,
     },
     /// The posts on the owner's Feed page, the newest first.
     Feed {
@@ -2686,6 +2734,7 @@ mod tests {
     #[test]
     fn the_model_is_read_and_chosen() {
         pinned(&UiAction::ReadModel {}, &json!({"action": "read_model"}));
+        pinned(&UiAction::ReadSetup {}, &json!({"action": "read_setup"}));
         pinned(
             &UiAction::SetModel {
                 name: Some(s("gemma4:12b")),

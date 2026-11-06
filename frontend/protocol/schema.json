@@ -739,6 +739,11 @@
           "type": "string"
         },
         {
+          "const": "read_setup",
+          "description": "[`UiAction::ReadSetup`].",
+          "type": "string"
+        },
+        {
           "const": "set_model",
           "description": "[`UiAction::SetModel`].",
           "type": "string"
@@ -9044,6 +9049,28 @@
         }
       ]
     },
+    "SetupState": {
+      "description": "What's set up on this machine, for the app's checklist.",
+      "properties": {
+        "last_backup": {
+          "description": "When the last backup was made, in Unix seconds, as of this start of\nthe broker: making one restarts it. None when there's been none.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "vault": {
+          "$ref": "#/$defs/VaultProtection",
+          "description": "Who can open the vault."
+        }
+      },
+      "required": [
+        "vault"
+      ],
+      "type": "object"
+    },
     "SignInOp": {
       "description": "An operation on the sign-ins the broker fills for a signed-in profile\n(WO-030): the owner's alone.",
       "oneOf": [
@@ -11143,6 +11170,19 @@
           "type": "object"
         },
         {
+          "description": "Read what's set up on this machine: the owner's alone.",
+          "properties": {
+            "action": {
+              "const": "read_setup",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Choose the model Hatchling uses from the next run on, answered with\nthe model as it then stands: the owner's alone.",
           "properties": {
             "action": {
@@ -11760,6 +11800,24 @@
           "required": [
             "result",
             "model"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "What's set up on this machine.",
+          "properties": {
+            "result": {
+              "const": "setup",
+              "type": "string"
+            },
+            "setup": {
+              "$ref": "#/$defs/SetupState",
+              "description": "It."
+            }
+          },
+          "required": [
+            "result",
+            "setup"
           ],
           "type": "object"
         },
@@ -12653,6 +12711,37 @@
       ],
       "type": "object"
     },
+    "VaultProtection": {
+      "description": "Who can open the vault: how, and how many. Never a key's name or id,\nand never anything that opens it.",
+      "properties": {
+        "codes": {
+          "description": "The backup codes left.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "codes_unconfirmed": {
+          "description": "Whether the owner never confirmed saving those codes.",
+          "type": "boolean"
+        },
+        "keys": {
+          "description": "The security keys that open it.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tier": {
+          "$ref": "#/$defs/VaultTier",
+          "description": "How it opens."
+        }
+      },
+      "required": [
+        "tier",
+        "keys",
+        "codes"
+      ],
+      "type": "object"
+    },
     "VaultResult": {
       "description": "The broker's reply to one [`VaultOp`].\n\nReplies are per-operation and carry no more than the op asked for: a\nfetch returns one secret, never the store. Failures that would leak\ninternals (filesystem errors, oversize values) collapse to the opaque\n[`VaultError`](VaultResult::VaultError): the agent learns that the op\nfailed, not why.",
       "oneOf": [
@@ -12738,6 +12827,26 @@
             "r"
           ],
           "type": "object"
+        }
+      ]
+    },
+    "VaultTier": {
+      "description": "How the vault opens.",
+      "oneOf": [
+        {
+          "const": "file",
+          "description": "With a key file on this machine, by itself after a restart.",
+          "type": "string"
+        },
+        {
+          "const": "totp",
+          "description": "With a code from an authenticator app.",
+          "type": "string"
+        },
+        {
+          "const": "hardware_key",
+          "description": "With a security key.",
+          "type": "string"
         }
       ]
     },

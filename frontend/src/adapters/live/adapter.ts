@@ -21,6 +21,7 @@ import type { CodePort } from '../../session/codes.js';
 import type { AttentionPort } from '../../session/attention.js';
 import type { ConversationPort } from '../../session/conversations.js';
 import type { UsagePort } from '../../session/usage.js';
+import type { SetupPort } from '../../session/setup.js';
 import type { ModelPort } from '../../session/model.js';
 import type { GoalsPort } from '../../session/goals.js';
 import type { FeedPort } from '../../session/feed.js';
@@ -28,6 +29,7 @@ import type { IdeasPort } from '../../session/ideas.js';
 import { LiveChatSession } from './session.js';
 import { LiveSchedules } from './schedules.js';
 import { LiveUsage } from './usage.js';
+import { LiveSetup } from './setup.js';
 import { LiveModel } from './model.js';
 import { LiveGoals } from './goals.js';
 import { LiveFeed } from './feed.js';
@@ -68,6 +70,8 @@ export class LiveAdapter implements ProtocolAdapter {
     readonly #usage: LiveUsage;
     /** The model Hatchling uses, and the ones its server has: chosen straight with the broker, never as a Command. */
     readonly model: ModelPort;
+    /** What's set up on this machine: read, never a Command. */
+    readonly setup: SetupPort;
     /** Where a goal is closed as reached or set aside: straight to the broker, never as a Command. */
     readonly goals: GoalsPort;
     readonly #goals: LiveGoals;
@@ -104,6 +108,7 @@ export class LiveAdapter implements ProtocolAdapter {
         this.#usage = new LiveUsage(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.usage = this.#usage;
         this.model = new LiveModel(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
+        this.setup = new LiveSetup(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.#goals = new LiveGoals(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.goals = this.#goals;
         this.#feed = new LiveFeed(this.#client, this.#schedules, () => this.#publish(), () => `live-command-${++this.#serial}`);

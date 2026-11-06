@@ -170,6 +170,7 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
         );
         Some(listener)
     };
+    crate::backup::note_last_backup(std::path::Path::new(crate::backup::BACKUPS));
     // Everything that needed root is done, on one thread still: run as
     // root, the broker becomes its own user now, for good (WO-017), and
     // sweeps what that user left, which root may not remove.

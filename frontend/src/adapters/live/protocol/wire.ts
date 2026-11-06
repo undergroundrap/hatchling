@@ -529,6 +529,10 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "string"
             },
             {
+                "const": "read_setup",
+                "type": "string"
+            },
+            {
                 "const": "set_model",
                 "type": "string"
             },
@@ -3066,6 +3070,24 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
         ],
         "type": "object"
     },
+    "SetupState": {
+        "properties": {
+            "last_backup": {
+                "minimum": 0,
+                "type": [
+                    "integer",
+                    "null"
+                ]
+            },
+            "vault": {
+                "$ref": "#/$defs/VaultProtection"
+            }
+        },
+        "required": [
+            "vault"
+        ],
+        "type": "object"
+    },
     "SignInOp": {
         "oneOf": [
             {
@@ -4283,6 +4305,18 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             {
                 "properties": {
                     "action": {
+                        "const": "read_setup",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "action"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
                         "const": "set_model",
                         "type": "string"
                     },
@@ -4821,6 +4855,22 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "required": [
                     "result",
                     "model"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "setup",
+                        "type": "string"
+                    },
+                    "setup": {
+                        "$ref": "#/$defs/SetupState"
+                    }
+                },
+                "required": [
+                    "result",
+                    "setup"
                 ],
                 "type": "object"
             },
@@ -5581,5 +5631,45 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             "month_of"
         ],
         "type": "object"
+    },
+    "VaultProtection": {
+        "properties": {
+            "codes": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "codes_unconfirmed": {
+                "type": "boolean"
+            },
+            "keys": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "tier": {
+                "$ref": "#/$defs/VaultTier"
+            }
+        },
+        "required": [
+            "tier",
+            "keys",
+            "codes"
+        ],
+        "type": "object"
+    },
+    "VaultTier": {
+        "oneOf": [
+            {
+                "const": "file",
+                "type": "string"
+            },
+            {
+                "const": "totp",
+                "type": "string"
+            },
+            {
+                "const": "hardware_key",
+                "type": "string"
+            }
+        ]
     }
 };

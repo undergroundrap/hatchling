@@ -119,6 +119,7 @@ With systemd 254 or later, the broker gets a cgroup of its own to give each cell
 
 ## Using it
 
+- **Your first visit.** The chat offers a checklist until you close it: choose your model, protect your vault, make a backup. You can chat straight away. Each step gives the command to copy into a terminal you opened yourself, and ticks itself when you come back. The app reads what's set up from the broker, as counts and a date: a PIN, a key or a backup code never passes through it. Find it again in Settings, under General.
 - **The app's address again**, as yourself: `hatchling-host url`. Each start of the broker makes a new one, so after a restart an open app goes offline; open the new address.
 
 - **Scheduled work from a shell**, as yourself (not `sudo`): `hatchling-broker schedule add "Check the disk is under 90% full and tell me if not" --every 15m`, then `hatchling-broker schedule list` and `hatchling-broker schedule remove <id>`. The timing is one of `--at "2026-11-04 08:00"`, `--every 5m`, `--daily 07:30`, `--weekdays 08:00` or `--cron "0 8 * * 1-5"`, in this machine's time zone unless `--tz` names another. It's the same as the app's schedule form: the work runs as a chat message's would, and its results arrive in the chat.
