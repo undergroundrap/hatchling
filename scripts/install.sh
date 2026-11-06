@@ -335,6 +335,16 @@ if [ -z "$HOSTED" ] && command -v curl > /dev/null; then
   load_model || say "the model's server didn't load $MODEL (not Ollama, or not ready yet): doctor checks it"
 fi
 
+# A vault a security key protects locks at any restart, and waits for its
+# owner: an upgrade isn't to call that a problem, nor wait for what can't
+# come until they've unlocked it.
+KEYED=
+if /usr/local/bin/hatchling-broker vault-keyring status 2> /dev/null | grep -q "tier hardware key"; then
+  KEYED=1
+  systemctl stop hatchling.service
+  rm -f /var/lib/hatchling/vault.unlock/unlock.sock
+fi
+
 say "checking it can work here"
 if ! /usr/local/bin/hatchling-broker doctor --env "$ENV"; then
   fail "fix what doctor found, then run this again: it keeps your configuration"
@@ -362,6 +372,13 @@ if [ -f "$OLD_HOST" ]; then
 fi
 systemctl enable "hatchling-host@$OWNER_NAME.service" > /dev/null 2>&1
 systemctl restart "hatchling-host@$OWNER_NAME.service"
+
+if [ -n "$KEYED" ]; then
+  echo
+  echo "Hatchling is up to date, and locked: a security key protects its vault. To unlock it:"
+  echo "  sudo hatchling-broker unlock"
+  exit 0
+fi
 
 TOKEN=/var/lib/hatchling/ui.sock.token
 tries=0

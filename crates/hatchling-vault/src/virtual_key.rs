@@ -172,6 +172,10 @@ impl Authenticator for VirtualAuthenticator {
         Some(self.pin.is_some())
     }
 
+    fn model(&self) -> Option<&'static str> {
+        Some("Test key")
+    }
+
     fn set_pin(&mut self, pin: &str) -> Result<(), AuthenticatorError> {
         if self.pin.is_some() {
             return Err(AuthenticatorError::Device(String::from(
@@ -234,6 +238,7 @@ mod tests {
     #[test]
     fn it_takes_a_pin_when_it_has_none() {
         let mut key = VirtualAuthenticator::default();
+        assert_eq!(key.model(), Some("Test key"));
         assert_eq!(key.pin_set(), Some(false));
         key.set_pin("2468").unwrap();
         assert_eq!(key.pin_set(), Some(true));

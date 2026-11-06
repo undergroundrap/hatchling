@@ -23,11 +23,14 @@
 //! The PIN of a key is typed here, in the operator's own terminal, and
 //! goes only to the key.
 
+use std::cell::Cell;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::rc::Rc;
 use std::time::Duration;
 
+use hatchling_fido2::ctaphid::Touch;
 use hatchling_vault::{
     Authenticator, BackupCodes, Keyring, Label, SingleKeyRisk, Store, Tier, Unlocked,
 };
@@ -45,6 +48,8 @@ const LOOK_EVERY: Duration = Duration::from_millis(500);
 
 /// How long it looks before it asks again: five minutes.
 const LOOKS: u32 = 600;
+/// How many looks with nothing there before saying what to check.
+const HINT_AFTER: u32 = 30;
 
 /// How many wrong tries before a step stops.
 const TRIES: u32 = 3;
@@ -72,6 +77,8 @@ pub struct Setup<'a> {
     pub wait: &'a mut dyn FnMut() -> bool,
     /// Whether this is WSL, where a key has to be attached to be seen.
     pub wsl: bool,
+    /// How many touches a key has left to give in this registering.
+    pub touches: &'a Cell<u32>,
 }
 
 impl Setup<'_> {
@@ -147,7 +154,8 @@ fn protect(setup: &mut Setup<'_>, mut keyring: Keyring, path: &Path) -> Result<D
     setup.say(
         "This protects Hatchling's vault with security keys: nothing opens it without one.\n\
          After each restart, you unlock it with a key and its PIN.\n\
-         Two keys are best: either one opens the vault. Nothing changes until they're ready.",
+         Two keys are best: either one opens the vault. Nothing changes until they're ready.\n\
+         Have two? Start with the one you'll carry, like a 5C NFC. One that stays plugged in, like a Nano, goes last.",
     );
     if setup.wsl {
         setup.say(
@@ -272,6 +280,9 @@ fn register_next(
             said = Some(plain);
         }
         looks += 1;
+        if looks == HINT_AFTER && !any {
+            setup.say(not_seen(setup.wsl));
+        }
         if looks >= LOOKS || !(setup.wait)() {
             return Err(Error::Usage {
                 reason: format!(
@@ -280,6 +291,32 @@ fn register_next(
                 ),
             });
         }
+    }
+}
+
+/// What registering a key asks of its owner.
+const TWO_TOUCHES: &str = "Registering a key takes its PIN, then two touches.";
+
+/// What to say of `touch`, with `left` of a registering's touches to come.
+fn touch_line(touch: Touch, left: &Cell<u32>) -> String {
+    match (touch, left.get()) {
+        (Touch::Waiting, 0) | (Touch::Noticed, _) => ring::touch_said(touch).to_owned(),
+        (Touch::Waiting, count) => {
+            left.set(count - 1);
+            format!(
+                "Touch {} of 2: touch your key now, while it flashes...",
+                3u32.saturating_sub(count)
+            )
+        }
+    }
+}
+
+/// What to check when a key that's plugged in isn't seen.
+const fn not_seen(wsl: bool) -> &'static str {
+    if wsl {
+        "Still nothing. In WSL a key shows up only once it's attached: in PowerShell, `usbipd list` should say Attached beside it. A new port has a new BUSID. If it isn't listed at all, try another port."
+    } else {
+        "Still nothing. Most keys flash when they get power. If yours didn't, push it in fully, or try another port, without a hub or adapter. It's rarely the key."
     }
 }
 
@@ -312,14 +349,16 @@ fn register(
         (None, _) => return Err(Refused::Again(String::from(TOO_OLD))),
         (Some(false), min) => set_pin(setup, index, min)?,
     }
-    setup.say("When a key flashes, touch it. It asks for its PIN first.");
-    let done = {
+    setup.say(TWO_TOUCHES);
+    setup.touches.set(2);
+    let (done, model) = {
         let mut keys = setup.devices.every_key();
         let key = keys
             .get_mut(index)
             .ok_or_else(|| Refused::Again(String::from("That key went away.")))?;
-        keyring.enroll_key(enrollment, &mut **key)
+        (keyring.enroll_key(enrollment, &mut **key), key.model())
     };
+    setup.touches.set(0);
     match done {
         Ok(()) => {}
         Err(hatchling_vault::Error::MissingHmacSecret) => {
@@ -333,7 +372,14 @@ fn register(
         }
         Err(other) => return Err(Refused::Stop(ring::vault_error(other))),
     }
-    let label = name_of(setup).map_err(Refused::Stop)?;
+    let taken: Vec<String> = keyring
+        .wraps()
+        .iter()
+        .map(|wrap| wrap.label().to_owned())
+        .chain(enrollment.names())
+        .collect();
+    let suggested = unused_name(model.unwrap_or("Security key"), &taken);
+    let label = name_of(setup, &suggested).map_err(Refused::Stop)?;
     enrollment.name_last(&label);
     setup.say(&format!("Registered: {}.", label.as_str()));
     Ok(())
@@ -351,6 +397,12 @@ fn set_pin(setup: &mut Setup<'_>, index: usize, min: usize) -> Result<(), Refuse
             setup.say("Those didn't match. Try again.");
             continue;
         }
+        if !keyboard_only(&pin) {
+            setup.say(
+                "Use letters, numbers and symbols from a US keyboard: other characters can be typed differently on another computer, and the key wouldn't recognize them.",
+            );
+            continue;
+        }
         let set = {
             let mut keys = setup.devices.every_key();
             let key = keys
@@ -366,17 +418,31 @@ fn set_pin(setup: &mut Setup<'_>, index: usize, min: usize) -> Result<(), Refuse
     Err(Refused::Stop(ring::stopped()))
 }
 
-/// The name of a key just registered, from what it is: a name is what
-/// tells two alike apart later, and says which to remove if one is lost.
-fn name_of(setup: &mut Setup<'_>) -> Result<Label, Error> {
-    let answer = (setup.ask)(
-        "Which key was that? 1: YubiKey 5C Nano (stays in this computer). 2: YubiKey 5C NFC, or another keychain key. 3: something else. Type 1, 2 or 3, or a name of your own:",
-    )?;
-    let name = match answer.trim() {
-        "1" => String::from("Nano, in this computer"),
-        "2" => String::from("Keychain key"),
-        "3" | "" => return ring::asked_label(setup.ask),
-        own => own.to_owned(),
+/// Whether a PIN can be typed the same on any machine: a key compares
+/// bytes, and an accented letter isn't always the same ones.
+fn keyboard_only(pin: &str) -> bool {
+    pin.chars().all(|c| c.is_ascii_graphic())
+}
+
+/// `model`, or with a number if a key has that name: what tells two alike
+/// apart later, and says which to remove if one is lost.
+fn unused_name(model: &str, taken: &[String]) -> String {
+    std::iter::once(model.to_owned())
+        .chain((2..=taken.len() + 1).map(|number| format!("{model} {number}")))
+        .find(|name| !taken.contains(name))
+        .unwrap_or_else(|| model.to_owned())
+}
+
+/// The name of a key just registered: `suggested`, unless its owner has
+/// one of their own.
+fn name_of(setup: &mut Setup<'_>, suggested: &str) -> Result<Label, Error> {
+    let answer = (setup.ask)(&format!(
+        "Name this key, or press Enter to call it \"{suggested}\":"
+    ))?;
+    let name = if answer.trim().is_empty() {
+        suggested
+    } else {
+        answer.as_str()
     };
     match name.parse::<Label>() {
         Ok(label) => Ok(label),
@@ -480,10 +546,11 @@ fn add_second(
                 .position(|key| keyring.enrolled_on(&mut **key) != Some(true))
         };
         if let Some(index) = new {
-            let needs_pin = {
+            let (needs_pin, model) = {
                 let mut keys = setup.devices.every_key();
-                keys.get_mut(index)
-                    .map(|key| (key.pin_set(), key.min_pin_length()))
+                let key = keys.get_mut(index);
+                let model = key.as_ref().and_then(|key| key.model());
+                (key.map(|key| (key.pin_set(), key.min_pin_length())), model)
             };
             if let Some((Some(false), min)) = needs_pin {
                 set_pin(setup, index, min).map_err(|refused| match refused {
@@ -491,8 +558,16 @@ fn add_second(
                     Refused::Stop(error) => error,
                 })?;
             }
-            let label = name_of(setup)?;
+            let taken: Vec<String> = keyring
+                .wraps()
+                .iter()
+                .map(|wrap| wrap.label().to_owned())
+                .collect();
+            let suggested = unused_name(model.unwrap_or("Security key"), &taken);
+            let label = name_of(setup, &suggested)?;
             let check = setup.config.key_check();
+            setup.say(TWO_TOUCHES);
+            setup.touches.set(2);
             let mut keys = setup.devices.every_key();
             let key = keys.get_mut(index).ok_or_else(ring::stopped)?;
             let key: &mut dyn Authenticator = &mut **key;
@@ -500,6 +575,7 @@ fn add_second(
                 .add_hardware_key_checked(unlocked, key, &label, check)
                 .map_err(ring::vault_error)?;
             drop(keys);
+            setup.touches.set(0);
             setup.say(&format!("Registered: {}.", label.as_str()));
             return Ok(());
         }
@@ -590,11 +666,18 @@ pub fn run_setup(
     let mut asking =
         |prompt: &str| ring::terminal_answer(prompt, false).map(|answer| answer.to_string());
     let mut secret = |prompt: &str| ring::terminal_answer(prompt, true);
-    let mut devices = ring::platform_keys(Box::new(|| {
-        ring::terminal_answer(ring::PIN_PROMPT, true)
-            .ok()
-            .filter(|pin| !pin.is_empty())
-    }));
+    let touches = Rc::new(Cell::new(0));
+    let counted = Rc::clone(&touches);
+    let mut devices = ring::platform_keys_noticing(
+        Box::new(|| {
+            ring::terminal_answer(ring::PIN_PROMPT, true)
+                .ok()
+                .filter(|pin| !pin.is_empty())
+        }),
+        Box::new(move |touch| {
+            let _ = writeln!(std::io::stderr(), "{}", touch_line(touch, &counted));
+        }),
+    );
     let mut wait = || {
         std::thread::sleep(LOOK_EVERY);
         true
@@ -612,7 +695,15 @@ pub fn run_setup(
         out: &mut out,
         wait: &mut wait,
         wsl,
+        touches: &touches,
     });
+    // Let go of the keys: each stays locked while it's held, and the unlock
+    // below needs them.
+    drop(devices);
+    // A stopped keeper leaves its socket: gone now, it's only there again
+    // once the new one is really waiting.
+    let socket = crate::unlock_relay::socket_path(&broker.vault);
+    let _ = std::fs::remove_file(&socket);
     // Whatever happened, the service goes back: an interrupted setup left
     // the vault as it was, or it says so.
     let started = Command::new("systemctl")
@@ -626,7 +717,6 @@ pub fn run_setup(
     }
     // It's locked now, as after every restart: unlocking here shows the
     // key works, and shows how.
-    let socket = crate::unlock_relay::socket_path(&broker.vault);
     for _ in 0..40 {
         if socket.exists() {
             break;

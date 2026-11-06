@@ -9,23 +9,38 @@
 //! Opening a node needs permission: distributions grant it to the seated
 //! user through a udev rule (libfido2's `70-u2f.rules`). A key that cannot
 //! be opened is reported, not skipped.
+//!
+//! **USB only.** A PIN's hash goes to whatever answers as a key, sealed to
+//! that device. Something on Bluetooth that calls itself a security key,
+//! within radio range, could take it and guess the PIN at leisure, so
+//! nodes on any other bus aren't keys here.
+//!
+//! **One program at a time.** A key serves one conversation: a node is
+//! locked (`flock`, as libfido2 does) while a [`Device`] has it, so two
+//! programs don't interleave, and the second is told why it can't.
 
 use std::fs::File;
 use std::io::ErrorKind;
-use std::os::fd::AsFd;
+use std::os::fd::{AsFd, BorrowedFd};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rustix::event::{PollFd, PollFlags, poll};
+use rustix::fs::{FlockOperation, flock};
 
 use crate::Bus;
-use crate::ctaphid::{Hid, REPORT, TransportError};
+use crate::ctap2::Ctap2Error;
+use crate::ctaphid::{Hid, REPORT, TouchNotice, TransportError};
 use crate::device::{Device, PinPrompt};
 
 /// The CTAPHID usage page.
 const FIDO_USAGE_PAGE: u32 = 0xf1d0;
 /// The CTAPHID usage on that page.
 const CTAPHID_USAGE: u32 = 0x01;
+/// How many times a key that's in use is tried.
+const LOCK_TRIES: u32 = 20;
+/// How long between those tries.
+const LOCK_WAIT: Duration = Duration::from_millis(100);
 
 /// Whether a HID report descriptor declares a FIDO (CTAPHID) device.
 #[must_use]
@@ -73,6 +88,63 @@ pub fn is_fido(descriptor: &[u8]) -> bool {
     false
 }
 
+/// Whether a HID device's `uevent` says it's on USB.
+fn on_usb(uevent: &str) -> bool {
+    uevent.lines().any(|line| line.starts_with("HID_ID=0003:"))
+}
+
+/// A node locked for one session: released when this goes, as an open
+/// file shared with another process keeps a lock otherwise.
+pub struct Locked(File);
+
+impl Locked {
+    /// Locks `file`, node `node`, waiting a moment for another program.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if it's still in use, or can't be locked.
+    pub fn take(file: File, node: &str) -> Result<Self, String> {
+        for _ in 0..LOCK_TRIES {
+            match flock(&file, FlockOperation::NonBlockingLockExclusive) {
+                Ok(()) => return Ok(Self(file)),
+                Err(rustix::io::Errno::WOULDBLOCK) => std::thread::sleep(LOCK_WAIT),
+                Err(error) => return Err(format!("cannot lock {node}: {error}")),
+            }
+        }
+        Err(format!(
+            "another program is using the security key ({node}): close it, and try again"
+        ))
+    }
+}
+
+impl Drop for Locked {
+    fn drop(&mut self) {
+        let _ = flock(&self.0, FlockOperation::Unlock);
+    }
+}
+
+impl std::io::Read for Locked {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        self.0.read(bytes)
+    }
+}
+
+impl std::io::Write for Locked {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.write(bytes)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.flush()
+    }
+}
+
+impl AsFd for Locked {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.0.as_fd()
+    }
+}
+
 /// One open `hidraw` node, or anything that reads and writes reports
 /// like one.
 pub struct HidFile<T> {
@@ -100,30 +172,39 @@ impl<T: std::io::Read + std::io::Write + AsFd> Hid for HidFile<T> {
     }
 
     fn receive(&mut self, timeout: Duration) -> Result<Option<[u8; REPORT]>, TransportError> {
-        let millis = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
-        let ready = loop {
+        // A signal cuts a wait short, not the time the key is given.
+        let deadline = Instant::now() + timeout;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let millis = i32::try_from(left.as_millis()).unwrap_or(i32::MAX);
             let mut fds = [PollFd::new(&self.file, PollFlags::IN)];
             match poll(&mut fds, millis) {
-                Ok(ready) => break ready,
-                Err(rustix::io::Errno::INTR) => {}
+                Ok(0) => return Ok(None),
+                Ok(_) => {}
+                Err(rustix::io::Errno::INTR) => continue,
                 Err(error) => {
                     return Err(TransportError::Io(format!("{}: {error}", self.name)));
                 }
             }
-        };
-        if ready == 0 {
-            return Ok(None);
-        }
-        let mut report = [0u8; REPORT];
-        match self.file.read(&mut report) {
-            Ok(REPORT) => Ok(Some(report)),
-            Ok(0) => Err(TransportError::Io(format!(
-                "{}: the key was unplugged",
-                self.name
-            ))),
-            Ok(_) => Err(TransportError::Protocol("a short HID report")),
-            Err(error) if error.kind() == ErrorKind::Interrupted => Ok(None),
-            Err(error) => Err(TransportError::Io(format!("{}: {error}", self.name))),
+            let mut report = [0u8; REPORT];
+            match self.file.read(&mut report) {
+                Ok(REPORT) => return Ok(Some(report)),
+                Ok(0) => {
+                    return Err(TransportError::Io(format!(
+                        "{}: the key was unplugged",
+                        self.name
+                    )));
+                }
+                Ok(_) => return Err(TransportError::Protocol("a short HID report")),
+                Err(error) if error.kind() == ErrorKind::Interrupted => {
+                    if left.is_zero() {
+                        return Ok(None);
+                    }
+                }
+                Err(error) => {
+                    return Err(TransportError::Io(format!("{}: {error}", self.name)));
+                }
+            }
         }
     }
 }
@@ -135,6 +216,8 @@ pub struct Hidraw {
     pin: std::rc::Rc<std::cell::RefCell<PinPrompt>>,
     /// The keys opened already, by node: used in place of opening any.
     opened: Option<Vec<(String, File)>>,
+    /// Told of each touch, on any key.
+    touch: std::rc::Rc<std::cell::RefCell<Option<TouchNotice>>>,
 }
 
 impl Hidraw {
@@ -153,7 +236,15 @@ impl Hidraw {
             dev: dev.to_path_buf(),
             pin: std::rc::Rc::new(std::cell::RefCell::new(pin)),
             opened: None,
+            touch: std::rc::Rc::new(std::cell::RefCell::new(None)),
         }
+    }
+
+    /// Tells `notice` of each touch, on any of the keys.
+    #[must_use]
+    pub fn noticing(self, notice: TouchNotice) -> Self {
+        *self.touch.borrow_mut() = Some(notice);
+        self
     }
 
     /// The keys `opened` already, each by its node's name: what a launcher
@@ -182,8 +273,11 @@ impl Hidraw {
         let mut nodes: Vec<String> = entries
             .filter_map(Result::ok)
             .filter(|entry| {
-                std::fs::read(entry.path().join("device").join("report_descriptor"))
+                let device = entry.path().join("device");
+                std::fs::read(device.join("report_descriptor"))
                     .is_ok_and(|descriptor| is_fido(&descriptor))
+                    && std::fs::read_to_string(device.join("uevent"))
+                        .is_ok_and(|uevent| on_usb(&uevent))
             })
             .filter_map(|entry| entry.file_name().into_string().ok())
             .collect();
@@ -196,21 +290,16 @@ impl Hidraw {
         let shared = std::rc::Rc::clone(&self.pin);
         Box::new(move || (shared.borrow_mut())())
     }
-}
 
-impl Bus for Hidraw {
-    type Key = Device<HidFile<File>>;
-
-    fn keys(&mut self) -> Result<Vec<Self::Key>, String> {
+    /// Every key's node, open.
+    fn files(&self) -> Result<Vec<(String, File)>, String> {
         if let Some(opened) = &self.opened {
             return opened
                 .iter()
                 .map(|(node, file)| {
-                    let file = file
-                        .try_clone()
-                        .map_err(|error| format!("cannot reuse {node}: {error}"))?;
-                    Device::open(HidFile::new(file, node), Some(self.prompt()))
-                        .map_err(|error| format!("{node}: {error}"))
+                    file.try_clone()
+                        .map(|file| (node.clone(), file))
+                        .map_err(|error| format!("cannot reuse {node}: {error}"))
                 })
                 .collect();
         }
@@ -232,10 +321,54 @@ impl Bus for Hidraw {
                             format!("cannot open {}: {error}", path.display())
                         }
                     })?;
-                Device::open(HidFile::new(file, &node), Some(self.prompt()))
-                    .map_err(|error| format!("{}: {error}", path.display()))
+                Ok((node, file))
             })
             .collect()
+    }
+}
+
+/// The keys in `answers`, each node's. An older U2F-only key is passed
+/// over, so it doesn't stand in the way of a key that works, and said when
+/// it's all there is. Any other failure is said: nothing's silently left
+/// out.
+fn usable<K>(answers: Vec<(String, Result<K, Ctap2Error>)>) -> Result<Vec<K>, String> {
+    let mut keys = Vec::new();
+    let mut too_old = None;
+    for (node, answer) in answers {
+        match answer {
+            Ok(key) => keys.push(key),
+            Err(Ctap2Error::Transport(TransportError::NotCtap2)) => {
+                too_old = Some(format!("{node}: {}", TransportError::NotCtap2));
+            }
+            Err(error) => return Err(format!("{node}: {error}")),
+        }
+    }
+    match too_old {
+        Some(said) if keys.is_empty() => Err(said),
+        _ => Ok(keys),
+    }
+}
+
+impl Bus for Hidraw {
+    type Key = Device<HidFile<Locked>>;
+
+    fn keys(&mut self) -> Result<Vec<Self::Key>, String> {
+        let mut answers = Vec::new();
+        for (node, file) in self.files()? {
+            let locked = Locked::take(file, &node)?;
+            let answer = Device::open(HidFile::new(locked, &node), Some(self.prompt()));
+            let shared = std::rc::Rc::clone(&self.touch);
+            let answer = answer.map(|mut key| {
+                key.on_touch(Box::new(move |touch| {
+                    if let Some(notice) = shared.borrow_mut().as_mut() {
+                        notice(touch);
+                    }
+                }));
+                key
+            });
+            answers.push((node, answer));
+        }
+        usable(answers)
     }
 }
 
@@ -297,9 +430,188 @@ mod tests {
             let device = root.join(node).join("device");
             std::fs::create_dir_all(&device).unwrap();
             std::fs::write(device.join("report_descriptor"), descriptor).unwrap();
+            std::fs::write(
+                device.join("uevent"),
+                "DRIVER=hid-generic\nHID_ID=0003:00001050:00000407\nHID_NAME=Yubico YubiKey\n",
+            )
+            .unwrap();
         }
         std::fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    /// Over Bluetooth, or with no way to tell, a thing that calls itself
+    /// a key isn't given a PIN.
+    #[test]
+    fn only_a_key_on_usb_is_a_key() {
+        assert!(on_usb("DRIVER=x\nHID_ID=0003:00001050:00000407\n"));
+        assert!(!on_usb("HID_ID=0005:00001050:00000407\n"));
+        assert!(!on_usb("HID_NAME=HID_ID=0003:\n"));
+        assert!(!on_usb(""));
+        let root = sysfs(
+            "usb",
+            &[("hidraw1", &FIDO), ("hidraw2", &FIDO), ("hidraw3", &FIDO)],
+        );
+        std::fs::write(
+            root.join("hidraw2/device/uevent"),
+            "HID_ID=0005:00001050:00000407\n",
+        )
+        .unwrap();
+        std::fs::remove_file(root.join("hidraw3/device/uevent")).unwrap();
+        let bus = Hidraw::at(&root, Path::new("/nonexistent"), no_pin());
+        assert_eq!(bus.nodes().unwrap(), ["hidraw1"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn scratch_file(name: &str) -> (PathBuf, File) {
+        let path = std::env::temp_dir().join(format!(
+            "hatchling-fido2-lock-{name}-{}",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"").unwrap();
+        let file = File::options().read(true).write(true).open(&path).unwrap();
+        (path, file)
+    }
+
+    /// A key in use is said to be, and free again once it's let go.
+    #[test]
+    fn a_key_is_held_for_one_session_at_a_time() {
+        let (path, file) = scratch_file("held");
+        let locked = Locked::take(file, "hidraw3").unwrap();
+        let again = File::open(&path).unwrap();
+        let busy = Locked::take(again, "hidraw3").err().unwrap();
+        assert!(busy.contains("another program"), "{busy}");
+        assert!(busy.contains("hidraw3"), "{busy}");
+        // Let go, while another descriptor of the same file stays open, as
+        // one handed to another process does.
+        let kept = locked.0.try_clone().unwrap();
+        drop(locked);
+        let free = File::open(&path).unwrap();
+        assert!(Locked::take(free, "hidraw3").is_ok());
+        drop(kept);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Another program's moment with a key is waited out.
+    #[test]
+    fn a_key_let_go_in_a_moment_is_taken() {
+        let (path, file) = scratch_file("moment");
+        let held = Locked::take(file, "hidraw4").unwrap();
+        let letting_go = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            drop(held);
+        });
+        let again = File::open(&path).unwrap();
+        assert!(Locked::take(again, "hidraw4").is_ok());
+        letting_go.join().unwrap();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A locked node reads and writes as the node itself does.
+    #[test]
+    fn a_locked_node_is_still_the_node() {
+        use std::io::{Read as _, Write as _};
+        let (path, file) = scratch_file("io");
+        let mut locked = Locked::take(file, "hidraw5").unwrap();
+        assert_eq!(locked.write(b"abc").unwrap(), 3);
+        drop(locked);
+        assert_eq!(std::fs::read(&path).unwrap(), b"abc");
+        let mut locked = Locked::take(File::open(&path).unwrap(), "hidraw5").unwrap();
+        let mut bytes = [0u8; 8];
+        assert_eq!(locked.read(&mut bytes).unwrap(), 3);
+        assert_eq!(bytes.get(..3), Some(&b"abc"[..]));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A key may take its time: the wait is as long as it was given.
+    #[test]
+    fn a_slow_key_is_waited_for() {
+        let (ours, mut theirs) = UnixStream::pair().unwrap();
+        ours.set_nonblocking(true).unwrap();
+        let mut hid = HidFile::new(ours, "pair");
+        let answering = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            std::io::Write::write_all(&mut theirs, &[3u8; REPORT]).unwrap();
+            theirs
+        });
+        assert_eq!(
+            hid.receive(Duration::from_secs(5)).unwrap(),
+            Some([3u8; REPORT])
+        );
+        drop(answering.join().unwrap());
+    }
+
+    /// A node whose first read is interrupted, as by a signal.
+    struct Interrupted {
+        socket: UnixStream,
+        first: bool,
+    }
+
+    impl std::io::Read for Interrupted {
+        fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+            if std::mem::take(&mut self.first) {
+                return Err(std::io::Error::from(ErrorKind::Interrupted));
+            }
+            std::io::Read::read(&mut self.socket, bytes)
+        }
+    }
+
+    impl std::io::Write for Interrupted {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            std::io::Write::write(&mut self.socket, bytes)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl AsFd for Interrupted {
+        fn as_fd(&self) -> BorrowedFd<'_> {
+            self.socket.as_fd()
+        }
+    }
+
+    /// An interrupted read isn't the key's silence: the wait goes on.
+    #[test]
+    fn a_signal_doesnt_end_the_wait() {
+        let (ours, mut theirs) = UnixStream::pair().unwrap();
+        std::io::Write::write_all(&mut theirs, &[6u8; REPORT]).unwrap();
+        let node = Interrupted {
+            socket: ours,
+            first: true,
+        };
+        let mut hid = HidFile::new(node, "interrupted");
+        assert_eq!(
+            hid.receive(Duration::from_secs(5)).unwrap(),
+            Some([6u8; REPORT])
+        );
+    }
+
+    /// An old key is passed over for one that works, and said when alone.
+    #[test]
+    fn an_old_key_doesnt_stand_in_the_way() {
+        let old = || Err(Ctap2Error::Transport(TransportError::NotCtap2));
+        let keys = usable(vec![
+            (String::from("hidraw1"), old()),
+            (String::from("hidraw2"), Ok(7)),
+        ]);
+        assert_eq!(keys, Ok(vec![7]));
+        let alone = usable::<u8>(vec![(String::from("hidraw1"), old())]).unwrap_err();
+        assert!(
+            alone.contains("U2F") && alone.starts_with("hidraw1: "),
+            "{alone}"
+        );
+        assert_eq!(usable::<u8>(Vec::new()), Ok(Vec::new()));
+        // Anything else is said, whatever else works.
+        let broken = usable(vec![
+            (String::from("hidraw1"), Ok(7)),
+            (
+                String::from("hidraw2"),
+                Err(Ctap2Error::Transport(TransportError::Timeout)),
+            ),
+        ]);
+        assert!(broken.unwrap_err().starts_with("hidraw2: "));
     }
 
     #[test]
@@ -445,7 +757,7 @@ mod tests {
     }
 
     impl AsFd for Failing {
-        fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        fn as_fd(&self) -> BorrowedFd<'_> {
             self.socket.as_fd()
         }
     }
@@ -459,7 +771,7 @@ mod tests {
             let (ours, mut theirs) = UnixStream::pair().unwrap();
             std::io::Write::write_all(&mut theirs, &[1u8; REPORT]).unwrap();
             let mut hid = HidFile::new(Failing { socket: ours, kind }, "failing");
-            let got = hid.receive(Duration::from_secs(5));
+            let got = hid.receive(Duration::from_millis(50));
             if nothing_yet {
                 assert_eq!(got, Ok(None));
             } else {

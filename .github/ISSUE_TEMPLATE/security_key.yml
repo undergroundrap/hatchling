@@ -1,0 +1,40 @@
+name: Security key report
+description: A security key that worked, or didn't. Every report widens what's tested.
+labels: [security-key]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks: we can only test the keys we have. **Don't paste your PIN, backup codes or keys here.** If what you found is a security problem, don't file it here: use [private vulnerability reporting](../security/advisories/new).
+  - type: input
+    id: model
+    attributes:
+      label: Key
+      description: Make and model, such as "Feitian BioPass K26".
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: How did it go?
+      options:
+        - It worked
+        - Setup failed
+        - Unlock failed
+        - Something else
+    validations:
+      required: true
+  - type: textarea
+    id: info
+    attributes:
+      label: What the key says about itself
+      description: "`sudo fido2-token -L`, then `sudo fido2-token -I /dev/hidrawN` with the path it lists. It comes with the `fido2-tools` package. It shows the key's model and features, and no secrets."
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What Hatchling printed. Leave this empty if it worked.
+      render: text

@@ -47,6 +47,19 @@ fn invalid(path: &Path, reason: &str) -> Error {
     )
 }
 
+/// The controllers cells need that `parent` doesn't have. A cgroup that
+/// isn't there has no answer, and nothing is said to be missing.
+#[must_use]
+pub fn missing_controllers(parent: &Path) -> Vec<&'static str> {
+    let Ok(available) = fs::read_to_string(parent.join("cgroup.controllers")) else {
+        return Vec::new();
+    };
+    ["pids", "memory", "cpu"]
+        .into_iter()
+        .filter(|controller| !available.split_whitespace().any(|name| name == *controller))
+        .collect()
+}
+
 /// Checks an empty cgroup v2 parent and enables its required controllers.
 ///
 /// # Errors
@@ -254,6 +267,25 @@ fn half_memory(text: &str) -> Option<u64> {
 mod tests {
     use super::*;
     use std::io::Write as _;
+
+    /// What a cgroup lacks is named; one that isn't there lacks nothing
+    /// anyone can say.
+    #[test]
+    fn missing_controllers_are_named() {
+        let dir = std::env::temp_dir().join(format!(
+            "hatchling-missing-controllers-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        assert!(missing_controllers(&dir).is_empty());
+        fs::write(dir.join("cgroup.controllers"), "memory pids\n").unwrap();
+        assert_eq!(missing_controllers(&dir), ["cpu"]);
+        fs::write(dir.join("cgroup.controllers"), "cpuset cpu memory pids\n").unwrap();
+        assert!(missing_controllers(&dir).is_empty());
+        fs::write(dir.join("cgroup.controllers"), "cpuset\n").unwrap();
+        assert_eq!(missing_controllers(&dir), ["pids", "memory", "cpu"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn bounds_and_cpu_quota_preserve_configured_values() {

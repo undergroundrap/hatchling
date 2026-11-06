@@ -39,6 +39,8 @@ pub mod pin;
     reason = "the software key serves this crate's tests only"
 )]
 pub(crate) mod soft;
+#[cfg(test)]
+mod soup;
 
 pub use device::{Device, PinPrompt};
 

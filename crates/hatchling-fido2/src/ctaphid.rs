@@ -25,6 +25,30 @@ pub const MAX_MESSAGE: usize = 57 + 128 * 59;
 pub const INIT: u8 = 0x86;
 /// `CBOR`: one CTAP2 command.
 pub const CBOR: u8 = 0x90;
+/// What a keepalive says while the key waits for a touch.
+const UP_NEEDED: u8 = 2;
+
+/// Where a touch stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Touch {
+    /// The key is waiting for one: it's flashing now.
+    Waiting,
+    /// It was touched, and has answered.
+    Noticed,
+}
+
+/// Told of each [`Touch`], as it happens.
+pub type TouchNotice = Box<dyn FnMut(Touch)>;
+
+/// CTAPHID's `ERR_CHANNEL_BUSY`: another channel has the device.
+pub const CHANNEL_BUSY: u8 = 0x06;
+
+/// How long before asking a busy device again.
+const BUSY_WAIT: Duration = Duration::from_millis(100);
+
+/// The `INIT` capability that says a device speaks CTAP2.
+const CAPABILITY_CBOR: u8 = 0x04;
+
 /// `CANCEL`: stop the command in progress.
 pub const CANCEL: u8 = 0x91;
 /// `KEEPALIVE`: the device is still working, or waits for a touch.
@@ -65,6 +89,9 @@ pub enum TransportError {
     /// The device answered with a CTAPHID error code.
     #[error("the security key refused the message (CTAPHID error {0:#04x})")]
     Device(u8),
+    /// The device doesn't speak CTAP2: an older U2F-only key.
+    #[error("this key doesn't speak FIDO2 (CTAP2): it's an older U2F-only key")]
+    NotCtap2,
 }
 
 /// The reports that carry `payload` for `command` on `channel`.
@@ -133,12 +160,86 @@ pub fn exchange<H: Hid + ?Sized>(
         hid.send(&report)?;
     }
     let answer = receive(hid, channel, command, deadline);
-    if answer == Err(TransportError::Timeout) {
+    if matches!(
+        answer,
+        Err(TransportError::Timeout | TransportError::Protocol(_))
+    ) {
         if let Some(cancel) = packets(channel, CANCEL, &[]).first() {
             let _ = hid.send(cancel);
         }
     }
     answer
+}
+
+/// `INIT` on the broadcast channel with `nonce`: the channel id the
+/// device gives, once it has said it speaks CTAP2.
+fn init<H: Hid + ?Sized>(
+    hid: &mut H,
+    nonce: [u8; 8],
+    timeout: Duration,
+) -> Result<[u8; 4], TransportError> {
+    let deadline = Instant::now() + timeout;
+    for report in packets(BROADCAST, INIT, &nonce) {
+        hid.send(&report)?;
+    }
+    loop {
+        // Its own deadline: answers to other hosts' INITs must not keep it
+        // waiting past it.
+        if deadline.saturating_duration_since(Instant::now()).is_zero() {
+            return Err(TransportError::Timeout);
+        }
+        let answer = receive(hid, BROADCAST, INIT, deadline)?;
+        // An answer to another host's INIT on the broadcast channel
+        // carries its nonce, not ours: wait for ours.
+        if answer.get(..8) != Some(&nonce[..]) {
+            continue;
+        }
+        let id: [u8; 4] = answer
+            .get(8..12)
+            .and_then(|id| id.try_into().ok())
+            .ok_or(TransportError::Protocol("INIT answer too short"))?;
+        if id == BROADCAST || id == [0; 4] {
+            return Err(TransportError::Protocol("INIT gave a reserved channel"));
+        }
+        let capabilities = answer
+            .get(16)
+            .ok_or(TransportError::Protocol("INIT answer too short"))?;
+        if capabilities & CAPABILITY_CBOR == 0 {
+            return Err(TransportError::NotCtap2);
+        }
+        return Ok(id);
+    }
+}
+
+/// `hid`, watching `channel` for a key that starts waiting for a touch.
+struct Watching<'a, H: ?Sized> {
+    hid: &'a mut H,
+    channel: [u8; 4],
+    notice: Option<&'a mut TouchNotice>,
+    waited: bool,
+}
+
+impl<H: Hid + ?Sized> Hid for Watching<'_, H> {
+    fn send(&mut self, report: &[u8; REPORT]) -> Result<(), TransportError> {
+        self.hid.send(report)
+    }
+
+    fn receive(&mut self, timeout: Duration) -> Result<Option<[u8; REPORT]>, TransportError> {
+        let report = self.hid.receive(timeout)?;
+        if let Some(report) = &report {
+            // Channel, command, two bytes of length, then the status.
+            let wants_touch = report.get(..4) == Some(&self.channel[..])
+                && report.get(4) == Some(&KEEPALIVE)
+                && report.get(7) == Some(&UP_NEEDED);
+            if wants_touch && !self.waited {
+                self.waited = true;
+                if let Some(notice) = self.notice.as_mut() {
+                    notice(Touch::Waiting);
+                }
+            }
+        }
+        Ok(report)
+    }
 }
 
 /// Reads the device's answer to `command` on `channel`.
@@ -211,6 +312,12 @@ fn start(kind: u8, body: &[u8], command: u8) -> Result<Option<Incoming>, Transpo
 pub struct Channel<H: Hid> {
     hid: H,
     id: [u8; 4],
+    /// An exchange failed part way: the device may still answer it, so
+    /// the next request takes a channel of its own, and that late answer
+    /// goes unread on this one, never mistaken for its reply.
+    stale: bool,
+    /// Told when the key waits for a touch, and gets one.
+    notice: Option<TouchNotice>,
 }
 
 impl<H: Hid> Channel<H> {
@@ -222,31 +329,18 @@ impl<H: Hid> Channel<H> {
     /// Returns [`TransportError`] if the device does not answer, or
     /// answers with a malformed or reserved channel id.
     pub fn open(mut hid: H, nonce: [u8; 8], timeout: Duration) -> Result<Self, TransportError> {
-        let deadline = Instant::now() + timeout;
-        for report in packets(BROADCAST, INIT, &nonce) {
-            hid.send(&report)?;
-        }
-        loop {
-            // Its own deadline: answers to other hosts' INITs must not
-            // keep it waiting past it.
-            if deadline.saturating_duration_since(Instant::now()).is_zero() {
-                return Err(TransportError::Timeout);
-            }
-            let answer = receive(&mut hid, BROADCAST, INIT, deadline)?;
-            // An answer to another host's INIT on the broadcast channel
-            // carries its nonce, not ours: wait for ours.
-            if answer.get(..8) != Some(&nonce[..]) {
-                continue;
-            }
-            let id: [u8; 4] = answer
-                .get(8..12)
-                .and_then(|id| id.try_into().ok())
-                .ok_or(TransportError::Protocol("INIT answer too short"))?;
-            if id == BROADCAST || id == [0; 4] {
-                return Err(TransportError::Protocol("INIT gave a reserved channel"));
-            }
-            return Ok(Self { hid, id });
-        }
+        let id = init(&mut hid, nonce, timeout)?;
+        Ok(Self {
+            hid,
+            id,
+            stale: false,
+            notice: None,
+        })
+    }
+
+    /// Tells `notice` of each touch from now on.
+    pub fn on_touch(&mut self, notice: TouchNotice) {
+        self.notice = Some(notice);
     }
 
     /// This channel's id.
@@ -268,17 +362,46 @@ impl<H: Hid> Channel<H> {
         parameters: &[u8],
         timeout: Duration,
     ) -> Result<(u8, Vec<u8>), TransportError> {
+        if self.stale {
+            let nonce = crate::pin::random::<8>()
+                .map_err(|_| TransportError::Protocol("no randomness for a channel"))?;
+            self.id = init(&mut self.hid, nonce, timeout)?;
+            self.stale = false;
+        }
         let payload = [&[command][..], parameters].concat();
-        let answer = exchange(
-            &mut self.hid,
-            self.id,
-            CBOR,
-            &payload,
-            Instant::now() + timeout,
-        )?;
+        let deadline = Instant::now() + timeout;
+        let mut watching = Watching {
+            hid: &mut self.hid,
+            channel: self.id,
+            notice: self.notice.as_mut(),
+            waited: false,
+        };
+        let answer = loop {
+            match exchange(&mut watching, self.id, CBOR, &payload, deadline) {
+                // Another program is talking to the key: it's its turn,
+                // not a failure.
+                Err(TransportError::Device(CHANNEL_BUSY))
+                    if deadline.saturating_duration_since(Instant::now()) > BUSY_WAIT =>
+                {
+                    std::thread::sleep(BUSY_WAIT);
+                }
+                answer => break answer,
+            }
+        };
+        let waited = watching.waited;
+        self.stale = matches!(
+            answer,
+            Err(TransportError::Timeout | TransportError::Protocol(_))
+        );
+        let answer = answer?;
         let (&status, rest) = answer
             .split_first()
             .ok_or(TransportError::Protocol("an empty CBOR answer"))?;
+        if waited && status == 0 {
+            if let Some(notice) = self.notice.as_mut() {
+                notice(Touch::Noticed);
+            }
+        }
         Ok((status, rest.to_vec()))
     }
 }
@@ -477,6 +600,27 @@ pub(crate) mod tests {
             exchange(&mut hid, CID, CBOR, b"\x04", soon()),
             Err(TransportError::Io(_))
         ));
+    }
+
+    /// Only this channel's keepalive that asks for a touch counts: not
+    /// another channel's, nor another status, nor a reply that looks like
+    /// one.
+    #[test]
+    fn only_a_key_asking_on_this_channel_means_a_touch() {
+        let nonce = crate::pin::random::<8>().unwrap();
+        let mut answers = init_answer(nonce, CID);
+        answers.extend(packets([9; 4], KEEPALIVE, &[UP_NEEDED]));
+        answers.extend(packets(CID, KEEPALIVE, &[1]));
+        answers.extend(packets(CID, CBOR, &[UP_NEEDED]));
+        let mut channel = Channel::open(scripted(answers), nonce, Duration::from_secs(5)).unwrap();
+        let told = std::rc::Rc::new(std::cell::Cell::new(0));
+        let hearing = std::rc::Rc::clone(&told);
+        channel.on_touch(Box::new(move |_| hearing.set(hearing.get() + 1)));
+        assert_eq!(
+            channel.cbor(4, &[], Duration::from_secs(5)).unwrap().0,
+            UP_NEEDED
+        );
+        assert_eq!(told.get(), 0);
     }
 
     /// The device's answer to INIT with `nonce`, giving `channel`.

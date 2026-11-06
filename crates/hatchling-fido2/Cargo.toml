@@ -23,13 +23,13 @@ hatchling-vault.workspace = true
 ring = "0.17"
 # AES-256-CBC for the encrypted hmac-secret salt and output and the PIN
 # token: the block cipher and the mode, reviewed, never hand-rolled.
-aes = "0.8"
-cbc = { version = "0.1", features = ["alloc", "block-padding"] }
+aes = { version = "0.8", features = ["zeroize"] }
+cbc = { version = "0.1", features = ["alloc", "block-padding", "zeroize"] }
 # HKDF (protocol 2's keys), HMAC and SHA-256, as the vault uses them.
 hkdf = "0.12"
 hmac = "0.12"
 sha2 = "0.10"
-# poll(2) on the hidraw node, through rustix's safe wrapper.
-rustix = { version = "0.38", features = ["event"] }
+# poll(2) and flock(2) on the hidraw node, through rustix's safe wrapper.
+rustix = { version = "0.38", features = ["event", "fs"] }
 thiserror = "2"
 zeroize = "1"

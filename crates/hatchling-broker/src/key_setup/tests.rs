@@ -171,6 +171,7 @@ fn run_pins(
         out: &mut out,
         wait: &mut wait,
         wsl: false,
+        touches: &Cell::new(0),
     });
     Run { done, asked, said }
 }
@@ -192,9 +193,9 @@ fn names(config: &KeyringConfig) -> Vec<String> {
 fn two_keys_plugged_in_are_registered_together() {
     let (_scratch, vault, config) = vault("setup-both");
     let mut bench = Bench::new_keys(2, &[0, 1]);
-    let run = run_with(&vault, &config, &mut bench, &["1", "2", "<code>"], &[]);
+    let run = run_with(&vault, &config, &mut bench, &["", "", "<code>"], &[]);
     assert_eq!(run.done.unwrap(), Done::Protected);
-    assert_eq!(names(&config), ["Nano, in this computer", "Keychain key"]);
+    assert_eq!(names(&config), ["Test key", "Test key 2"]);
     assert!(
         !run.said.text().contains("unplug this one"),
         "{}",
@@ -218,7 +219,7 @@ fn with_one_port_the_second_key_is_noticed_arriving() {
         &vault,
         &config,
         &mut bench,
-        &["1", "yes", "2", "<code>"],
+        &["", "yes", "", "<code>"],
         &[&[], &[1]],
     );
     assert_eq!(run.done.unwrap(), Done::Protected);
@@ -239,7 +240,7 @@ fn the_same_key_again_is_told_apart() {
         &vault,
         &config,
         &mut bench,
-        &["1", "yes", "2", "<code>"],
+        &["", "yes", "", "<code>"],
         &[&[0], &[1]],
     );
     assert_eq!(run.done.unwrap(), Done::Protected);
@@ -253,7 +254,7 @@ fn one_key_takes_accepting_what_that_means() {
     let (_scratch, vault, config) = vault("setup-one");
     let mut bench = Bench::new_keys(1, &[0]);
     let before = std::fs::read(config.keyring.as_deref().unwrap()).unwrap();
-    let run = run_with(&vault, &config, &mut bench, &["1", "no", ""], &[]);
+    let run = run_with(&vault, &config, &mut bench, &["", "no", ""], &[]);
     assert!(matches!(run.done, Err(Error::Usage { .. })));
     assert_eq!(keyring_of(&config).tier(), Tier::File, "as it was");
     assert_ne!(
@@ -265,12 +266,29 @@ fn one_key_takes_accepting_what_that_means() {
         &vault,
         &config,
         &mut bench,
-        &["1", "no", "one key", "<code>"],
+        &["", "no", "one key", "<code>"],
         &[],
     );
     assert_eq!(run.done.unwrap(), Done::Protected);
     assert_eq!(names(&config).len(), 1);
     assert_eq!(keyring_of(&config).tier(), Tier::HardwareKey);
+}
+
+/// A key that isn't seen, after a while, gets a word on what to check, and
+/// only the once.
+#[test]
+fn a_key_not_seen_gets_a_hint_on_what_to_check() {
+    let (_scratch, vault, config) = vault("setup-hint");
+    let mut bench = Bench::new_keys(1, &[]);
+    let looks = usize::try_from(HINT_AFTER).unwrap();
+    let nothing: Vec<&[usize]> = vec![&[]; looks * 2];
+    let run = run_with(&vault, &config, &mut bench, &[], &nothing);
+    assert_eq!(run.said.text().matches(not_seen(false)).count(), 1);
+    let early: Vec<&[usize]> = vec![&[]; looks - 2];
+    let run = run_with(&vault, &config, &mut bench, &[], &early);
+    assert!(!run.said.text().contains(not_seen(false)));
+    assert!(not_seen(false).contains("another port"));
+    assert!(not_seen(true).contains("usbipd list"));
 }
 
 /// With no key in, it says what to do, sees one arrive, and with none it
@@ -287,7 +305,7 @@ fn it_waits_for_a_key_and_stops_with_nothing_changed() {
         &vault,
         &config,
         &mut bench,
-        &["1", "no", "one key", "<code>"],
+        &["", "no", "one key", "<code>"],
         &[&[0]],
     );
     assert_eq!(run.done.unwrap(), Done::Protected);
@@ -303,7 +321,7 @@ fn a_new_key_is_given_a_pin() {
         &vault,
         &config,
         &mut bench,
-        &["2", "no", "one key", "<code>"],
+        &["", "no", "one key", "<code>"],
         &[],
     );
     assert_eq!(run.done.unwrap(), Done::Protected);
@@ -332,7 +350,7 @@ fn a_key_too_old_is_refused_and_another_taken() {
         &vault,
         &config,
         &mut bench,
-        &["<plug 1>", "1", "no", "one key", "<code>"],
+        &["<plug 1>", "", "no", "one key", "<code>"],
         &[],
     );
     assert!(run.said.text().contains("doesn't support hmac-secret"));
@@ -346,6 +364,32 @@ fn a_key_too_old_is_refused_and_another_taken() {
     assert_eq!(keyring_of(&config).tier(), Tier::File);
 }
 
+/// A PIN only some keyboards can type isn't set.
+#[test]
+fn a_new_pin_is_what_any_keyboard_types() {
+    let (_scratch, vault, mut config) = vault("setup-pin-keyboard");
+    config.require_key_pin = true;
+    let mut bench = Bench::new_keys(1, &[0]);
+    let run = run_pins(
+        &vault,
+        &config,
+        &mut bench,
+        &["", "no", "one key", "<code>"],
+        &[],
+        &[
+            "gr\u{fc}n1234",
+            "gr\u{fc}n1234",
+            "two words",
+            "two words",
+            "Good-1234",
+            "Good-1234",
+        ],
+    );
+    assert_eq!(run.done.unwrap(), Done::Protected);
+    assert_eq!(run.said.text().matches("from a US keyboard").count(), 2);
+    assert_eq!(bench.keys.first().unwrap().pin_set(), Some(true));
+}
+
 /// A PIN typed two ways isn't set.
 #[test]
 fn a_new_pin_is_typed_twice_alike() {
@@ -356,7 +400,7 @@ fn a_new_pin_is_typed_twice_alike() {
         &vault,
         &config,
         &mut bench,
-        &["2", "no", "one key", "<code>"],
+        &["", "no", "one key", "<code>"],
         &[],
         &["111111", "222222", "246810", "246810"],
     );
@@ -371,7 +415,7 @@ fn codes_never_confirmed_are_replaced_on_the_next_run() {
     let (_scratch, vault, config) = vault("setup-codes");
     let path = config.keyring.clone().unwrap();
     let mut bench = Bench::new_keys(2, &[0, 1]);
-    let run = run_with(&vault, &config, &mut bench, &["1", "2", "x", "y", "z"], &[]);
+    let run = run_with(&vault, &config, &mut bench, &["", "", "x", "y", "z"], &[]);
     assert_eq!(run.done.unwrap(), Done::Protected);
     assert!(codes_unconfirmed(&path));
     assert!(run.said.text().contains("Not confirmed"));
@@ -397,7 +441,7 @@ fn a_crash_before_the_codes_are_shown_is_picked_up() {
     let (_scratch, vault, config) = vault("setup-crash");
     let path = config.keyring.clone().unwrap();
     let mut bench = Bench::new_keys(2, &[0, 1]);
-    run_with(&vault, &config, &mut bench, &["1", "2", "<code>"], &[])
+    run_with(&vault, &config, &mut bench, &["", "", "<code>"], &[])
         .done
         .unwrap();
     std::fs::write(codes_marker(&path), b"").unwrap();
@@ -453,7 +497,7 @@ fn a_vault_with_one_key_is_offered_a_second() {
         &vault,
         &config,
         &mut bench,
-        &["1", "no", "one key", "<code>"],
+        &["", "no", "one key", "<code>"],
         &[],
     )
     .done
@@ -466,7 +510,7 @@ fn a_vault_with_one_key_is_offered_a_second() {
         &[&[], &[1]],
     );
     assert_eq!(run.done.unwrap(), Done::Protected);
-    assert_eq!(names(&config), ["Nano, in this computer", "keychain"]);
+    assert_eq!(names(&config), ["Test key", "keychain"]);
     assert!(run.said.text().contains("Registered: keychain."));
     // Said no to: left as it is, and asked again next time.
     let (_other, vault, config) = self::vault("setup-second-no");
@@ -475,7 +519,7 @@ fn a_vault_with_one_key_is_offered_a_second() {
         &vault,
         &config,
         &mut bench,
-        &["1", "no", "one key", "<code>"],
+        &["", "no", "one key", "<code>"],
         &[],
     )
     .done
@@ -483,6 +527,39 @@ fn a_vault_with_one_key_is_offered_a_second() {
     let run = run_with(&vault, &config, &mut bench, &["no"], &[]);
     assert_eq!(run.done.unwrap(), Done::Protected);
     assert_eq!(names(&config).len(), 1);
+}
+
+/// A registering's touches are counted out, and then it's a touch like any.
+#[test]
+fn a_registering_counts_its_touches() {
+    let left = Cell::new(2);
+    assert!(touch_line(Touch::Waiting, &left).starts_with("Touch 1 of 2"));
+    assert_eq!(touch_line(Touch::Noticed, &left), "Got it.");
+    assert!(touch_line(Touch::Waiting, &left).starts_with("Touch 2 of 2"));
+    assert_eq!(left.get(), 0);
+    assert!(touch_line(Touch::Waiting, &left).starts_with("Touch your key now"));
+    assert_eq!(left.get(), 0);
+}
+
+/// Two of a model are told apart, and names already taken are passed over.
+#[test]
+fn a_name_already_taken_gets_a_number() {
+    let taken = |names: &[&str]| {
+        names
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(unused_name("YubiKey 5", &taken(&[])), "YubiKey 5");
+    assert_eq!(
+        unused_name("YubiKey 5", &taken(&["YubiKey 5"])),
+        "YubiKey 5 2"
+    );
+    assert_eq!(
+        unused_name("YubiKey 5", &taken(&["YubiKey 5", "YubiKey 5 2"])),
+        "YubiKey 5 3"
+    );
+    assert_eq!(unused_name("YubiKey 5", &taken(&["Other"])), "YubiKey 5");
 }
 
 /// A name of one's own is taken as it is, and one that isn't a name asked
@@ -495,7 +572,7 @@ fn a_key_can_be_named_anything_that_is_a_name() {
         &vault,
         &config,
         &mut bench,
-        &["blue key", "3", "red key", "<code>"],
+        &["blue key", "red key", "<code>"],
         &[],
     );
     assert_eq!(run.done.unwrap(), Done::Protected);

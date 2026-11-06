@@ -7,6 +7,14 @@ use zeroize::Zeroizing;
 
 use super::*;
 
+/// "Unlocked" is said only of a service still running.
+#[test]
+fn unlocked_is_said_only_of_a_running_service() {
+    assert!(unlocked_said(true).starts_with("Unlocked"));
+    assert!(!unlocked_said(false).starts_with("Unlocked"));
+    assert!(unlocked_said(false).contains("doctor"));
+}
+
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("hatchling-unlock-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

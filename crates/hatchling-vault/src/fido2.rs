@@ -160,6 +160,11 @@ pub trait Authenticator {
         4
     }
 
+    /// What to call this key, as far as it says (the default: nothing).
+    fn model(&self) -> Option<&'static str> {
+        None
+    }
+
     /// Sets `pin` on a key with none.
     ///
     /// # Errors
@@ -193,6 +198,15 @@ impl KeyEnrollment {
     /// can say, without a touch.
     pub fn holds(&self, device: &mut dyn Authenticator) -> bool {
         self.wraps.iter().any(|wrap| key_holds(device, wrap))
+    }
+
+    /// The names given so far.
+    #[must_use]
+    pub fn names(&self) -> Vec<String> {
+        self.wraps
+            .iter()
+            .map(|wrap| wrap.label().to_owned())
+            .collect()
     }
 
     /// Names the key registered last: after its touch, as that's what
@@ -453,9 +467,7 @@ impl Keyring {
         device: &mut dyn Authenticator,
         check: KeyCheck,
     ) -> Result<crate::Wrap, Error> {
-        let failed = |err: AuthenticatorError| Error::Authenticator {
-            reason: format!("{err:?}"),
-        };
+        let failed = |err: AuthenticatorError| Error::Authenticator { reason: err.said() };
         let credential = device
             .make_credential(RP_ID, self.vault_id().as_bytes())
             .map_err(failed)?;
@@ -621,6 +633,7 @@ mod tests {
         assert_eq!(key.holds("rp", b"id"), None);
         assert_eq!(key.pin_set(), None);
         assert_eq!(key.min_pin_length(), 4);
+        assert_eq!(key.model(), None);
         assert!(key.set_pin("2468").is_err());
     }
 
@@ -638,6 +651,8 @@ mod tests {
         keyring.enroll_key(&mut enrollment, &mut one).unwrap();
         keyring.enroll_key(&mut enrollment, &mut two).unwrap();
         assert_eq!(enrollment.keys(), 2);
+        enrollment.name_last(&"second".parse().unwrap());
+        assert_eq!(enrollment.names(), ["", "second"]);
     }
 
     /// A key that counts what it's asked, for the PIN tries a wrong PIN
@@ -1341,7 +1356,7 @@ mod tests {
             .enroll_hardware_keys_checked(&unlocked, &mut [&mut plain, &mut other], KeyCheck::Pin)
             .unwrap_err();
         assert!(
-            matches!(&err, Error::Authenticator { reason } if reason.contains("NoVerification")),
+            matches!(&err, Error::Authenticator { reason } if reason.contains("couldn't check its PIN")),
             "{err:?}"
         );
         assert_eq!(keyring.tier(), Tier::File);

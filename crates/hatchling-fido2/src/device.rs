@@ -32,9 +32,9 @@ use zeroize::Zeroizing;
 use crate::cbor::{Value, decode, encode};
 use crate::ctap2::{
     AuthData, CLIENT_PIN, Ctap2Error, GET_ASSERTION, GET_INFO, INVALID_CREDENTIAL, Info,
-    MAKE_CREDENTIAL, NO_CREDENTIALS, OK, PIN_AUTH_INVALID, PIN_INVALID, to_authenticator_error,
+    MAKE_CREDENTIAL, NO_CREDENTIALS, OK, PIN_INVALID, to_authenticator_error,
 };
-use crate::ctaphid::{Channel, Hid};
+use crate::ctaphid::{Channel, Hid, TouchNotice};
 use crate::pin::{Protocol, cose_point, encapsulate, random};
 
 /// How long an operation waits for a touch.
@@ -61,12 +61,19 @@ pub struct Device<H: Hid> {
     presence: Duration,
     /// The credentials made in this session, and their public keys.
     made: Vec<(Vec<u8>, [u8; 65])>,
-    /// The PIN token this session got, for its relying party and protocol:
-    /// used again, so the PIN is asked once a session, not once a step.
-    token: Option<(String, Protocol, Zeroizing<Vec<u8>>)>,
+    /// The PIN, once it's been right: a CTAP 2.1 key takes a token's
+    /// permissions back after each touch, so each step needs a new one,
+    /// and this asks the operator once a session rather than once a step.
+    /// Wiped with the session, a few seconds later.
+    held: Option<Zeroizing<String>>,
 }
 
 impl<H: Hid> Device<H> {
+    /// Tells `notice` of each touch from now on.
+    pub fn on_touch(&mut self, notice: TouchNotice) {
+        self.channel.on_touch(notice);
+    }
+
     /// Opens a channel to the key on `hid` and reads what it supports.
     ///
     /// # Errors
@@ -95,7 +102,7 @@ impl<H: Hid> Device<H> {
             pin,
             presence,
             made: Vec::new(),
-            token: None,
+            held: None,
         })
     }
 
@@ -138,7 +145,8 @@ impl<H: Hid> Device<H> {
             Some(false) => {}
         }
         let min = self.info.min_pin_length.unwrap_or(4);
-        if pin.chars().count() < min || pin.len() > 63 {
+        // A NUL would end the PIN early, as it's padded with them.
+        if pin.chars().count() < min || pin.len() > 63 || pin.contains('\0') {
             return Err(Ctap2Error::PinPolicy { min });
         }
         let protocol = self.info.protocol();
@@ -239,38 +247,38 @@ impl<H: Hid> Device<H> {
         .ok_or(Ctap2Error::Malformed("no PIN retries"))
     }
 
-    /// A PIN token for `rp_id` under `protocol`: the one this session has,
-    /// or a new one, kept.
+    /// A new PIN token for `rp_id`: from the PIN this session holds, or
+    /// the operator's, held once it's right. A wrong one says the tries
+    /// left, and isn't held.
     fn token(&mut self, protocol: Protocol, rp_id: &str) -> Result<Zeroizing<Vec<u8>>, Ctap2Error> {
-        if let Some((rp, kept, token)) = &self.token {
-            if rp == rp_id && *kept == protocol {
-                return Ok(token.clone());
-            }
-        }
-        let token = match self.pin_token(protocol, rp_id) {
-            Err(Ctap2Error::Status(PIN_INVALID)) => {
-                return Err(Ctap2Error::WrongPin(crate::ctap2::wrong_pin(
-                    self.pin_retries().ok(),
-                )));
-            }
-            other => other?,
+        let pin = match self.held.take() {
+            Some(pin) => pin,
+            None => self
+                .pin
+                .as_mut()
+                .and_then(|ask| ask())
+                .ok_or(Ctap2Error::NoPin)?,
         };
-        self.token = Some((rp_id.to_owned(), protocol, token.clone()));
-        Ok(token)
+        match self.pin_token(protocol, rp_id, &pin) {
+            Err(Ctap2Error::Status(PIN_INVALID)) => Err(Ctap2Error::WrongPin(
+                crate::ctap2::wrong_pin(self.pin_retries().ok()),
+            )),
+            Ok(token) => {
+                self.held = Some(pin);
+                Ok(token)
+            }
+            Err(other) => Err(other),
+        }
     }
 
-    /// A PIN token for `rp_id`: the operator's PIN, sent as the first 16
-    /// bytes of its `SHA-256`, encrypted.
+    /// A PIN token for `rp_id`: `pin`, sent as the first 16 bytes of its
+    /// `SHA-256`, encrypted.
     fn pin_token(
         &mut self,
         protocol: Protocol,
         rp_id: &str,
+        pin: &str,
     ) -> Result<Zeroizing<Vec<u8>>, Ctap2Error> {
-        let pin = self
-            .pin
-            .as_mut()
-            .and_then(|ask| ask())
-            .ok_or(Ctap2Error::NoPin)?;
         let peer = self.key_agreement(protocol)?;
         let (ours, shared) = encapsulate(protocol, &peer)?;
         let digest = Zeroizing::new(<[u8; 32]>::from(Sha256::digest(pin.as_bytes())));
@@ -307,20 +315,7 @@ impl<H: Hid> Device<H> {
         }
     }
 
-    /// A step that may use the session's PIN token: tried again once, with
-    /// a new token (the PIN asked again), if the key refuses the kept one.
     fn create(&mut self, rp_id: &str, user_id: &[u8]) -> Result<Credential, Ctap2Error> {
-        let kept = self.token.is_some();
-        match self.create_once(rp_id, user_id) {
-            Err(Ctap2Error::Status(PIN_AUTH_INVALID)) if kept => {
-                self.token = None;
-                self.create_once(rp_id, user_id)
-            }
-            other => other,
-        }
-    }
-
-    fn create_once(&mut self, rp_id: &str, user_id: &[u8]) -> Result<Credential, Ctap2Error> {
         let protocol = self.info.protocol();
         let token = if self.info.client_pin == Some(true) {
             Some(self.token(protocol, rp_id)?)
@@ -376,6 +371,15 @@ impl<H: Hid> Device<H> {
         let id = data
             .credential_id
             .ok_or(Ctap2Error::Malformed("no credential was created"))?;
+        if data
+            .credential_key
+            .as_ref()
+            .and_then(|key| key.at(3))
+            .and_then(Value::as_int)
+            != Some(ES256)
+        {
+            return Err(Ctap2Error::Malformed("a credential that isn't ES256"));
+        }
         let key = data
             .credential_key
             .as_ref()
@@ -393,23 +397,6 @@ impl<H: Hid> Device<H> {
     }
 
     fn derive(
-        &mut self,
-        rp_id: &str,
-        credential_id: &[u8],
-        salt: &[u8; 32],
-        verified: bool,
-    ) -> Result<[u8; 32], Ctap2Error> {
-        let kept = self.token.is_some();
-        match self.derive_once(rp_id, credential_id, salt, verified) {
-            Err(Ctap2Error::Status(PIN_AUTH_INVALID)) if kept && verified => {
-                self.token = None;
-                self.derive_once(rp_id, credential_id, salt, verified)
-            }
-            other => other,
-        }
-    }
-
-    fn derive_once(
         &mut self,
         rp_id: &str,
         credential_id: &[u8],
@@ -597,6 +584,10 @@ impl<H: Hid> Authenticator for Device<H> {
         self.info.min_pin_length.unwrap_or(4)
     }
 
+    fn model(&self) -> Option<&'static str> {
+        Some(self.info.model())
+    }
+
     fn set_pin(&mut self, pin: &str) -> Result<(), AuthenticatorError> {
         Self::set_pin(self, pin).map_err(|error| to_authenticator_error(&error))
     }
@@ -611,6 +602,7 @@ mod tests {
     use hmac::{Hmac, Mac as _};
 
     use super::*;
+    use crate::ctaphid::{Touch, TransportError};
     use crate::soft::{SoftKey, State, Tamper};
 
     const RP: &str = "hatchling.vault";
@@ -885,7 +877,7 @@ mod tests {
             assert_eq!(device.info().protocol(), protocol);
             let peer = device.key_agreement(protocol).unwrap();
             assert!(cose_point(&peer).is_ok());
-            let token = device.pin_token(protocol, RP).unwrap();
+            let token = device.pin_token(protocol, RP, "2468").unwrap();
             assert_eq!(token.len(), 32);
             let credential = device.create(RP, b"u").unwrap();
             let salt = random::<32>().unwrap();
@@ -1004,8 +996,9 @@ mod tests {
         assert_eq!(open(key, None).info().min_pin_length, None);
     }
 
-    /// The PIN is asked once a session: the token it gives serves every
-    /// step, and only a key that has forgotten it asks again.
+    /// The PIN is asked once a session, on a key that takes a token's
+    /// permissions back after each touch, as a CTAP 2.1 key does; each
+    /// step gets a new token. A new session asks again.
     #[test]
     fn the_pin_is_asked_once_a_session() {
         let key = SoftKey::new();
@@ -1013,19 +1006,128 @@ mod tests {
         state.borrow_mut().pin = Some(String::from("2468"));
         let (mut device, asked) = counted(key, "2468");
         let credential = device.make_credential(RP, b"u").unwrap();
+        assert_eq!(state.borrow().token, None, "the key took its token back");
         let salt = random::<32>().unwrap();
         let first = device
             .hmac_secret_verified(RP, &credential.id, &salt)
             .unwrap();
-        assert_eq!(asked.get(), 1, "made and checked with one PIN");
-        // The key forgets the token (it was unplugged, say): asked again,
-        // once, and the answer is the same.
-        state.borrow_mut().token = None;
         let again = device
             .hmac_secret_verified(RP, &credential.id, &salt)
             .unwrap();
         assert_eq!(first, again);
-        assert_eq!(asked.get(), 2);
+        assert_eq!(asked.get(), 1, "made and checked with one PIN");
+        let (mut next, asked) = counted(SoftKey::sharing(Rc::clone(&state)), "2468");
+        next.make_credential(RP, b"v").unwrap();
+        assert_eq!(asked.get(), 1);
+    }
+
+    /// A wrong PIN isn't held: the next step asks again, and a right one
+    /// is what goes on being used.
+    #[test]
+    fn only_a_right_pin_is_held() {
+        let key = SoftKey::new();
+        let state = key.handle();
+        state.borrow_mut().pin = Some(String::from("2468"));
+        let answers = Rc::new(RefCell::new(vec!["2468", "0000"]));
+        let told = Rc::clone(&answers);
+        let prompt: PinPrompt = Box::new(move || {
+            told.borrow_mut()
+                .pop()
+                .map(|pin| Zeroizing::new(pin.to_owned()))
+        });
+        let mut device = Device::open_with(key, Some(prompt), Duration::from_secs(1)).unwrap();
+        assert!(device.make_credential(RP, b"u").is_err());
+        assert!(device.make_credential(RP, b"u").is_ok());
+        assert!(device.make_credential(RP, b"v").is_ok(), "held now");
+        assert!(answers.borrow().is_empty());
+    }
+
+    /// A request that ran out of time is still answered, late. The next
+    /// one takes a channel of its own, so that answer isn't read as its
+    /// reply.
+    #[test]
+    fn a_late_answer_is_never_taken_for_the_next() {
+        let key = SoftKey::new();
+        let state = key.handle();
+        let mut device = open(key, None);
+        state.borrow_mut().tamper = Tamper::Silent;
+        assert!(device.make_credential(RP, b"u").is_err());
+        assert!(state.borrow().owes.is_none(), "cancelled, and answered");
+        state.borrow_mut().tamper = Tamper::Honest;
+        device.make_credential(RP, b"u").unwrap();
+        assert_eq!(state.borrow().inits, 2, "a second channel");
+        device.make_credential(RP, b"v").unwrap();
+        assert_eq!(state.borrow().inits, 2, "kept, while all's well");
+    }
+
+    /// Each touch is told as the key asks for it, and when it's had; a
+    /// step that needs none tells nothing, and a key not touched says it
+    /// waited and no more.
+    #[test]
+    fn a_touch_is_told_as_it_happens() {
+        let key = SoftKey::new();
+        let state = key.handle();
+        let told = Rc::new(RefCell::new(Vec::new()));
+        let mut device = open(key, None);
+        let hearing = Rc::clone(&told);
+        device.on_touch(Box::new(move |touch| hearing.borrow_mut().push(touch)));
+        let made = device.make_credential(RP, b"u").unwrap();
+        assert_eq!(*told.borrow(), [Touch::Waiting, Touch::Noticed]);
+        told.borrow_mut().clear();
+        assert_eq!(device.holds(RP, &made.id), Some(true));
+        assert!(told.borrow().is_empty(), "a pre-flight needs no touch");
+        state.borrow_mut().present = false;
+        assert!(device.make_credential(RP, b"v").is_err());
+        assert_eq!(*told.borrow(), [Touch::Waiting]);
+    }
+
+    /// Another program on the key is a wait, not a failure, for as long
+    /// as the request has.
+    #[test]
+    fn a_busy_key_is_waited_for() {
+        let key = SoftKey::new();
+        let state = key.handle();
+        let mut device = open(key, None);
+        state.borrow_mut().busy = 2;
+        device.make_credential(RP, b"u").unwrap();
+        assert_eq!(state.borrow().busy, 0);
+        state.borrow_mut().busy = u32::MAX;
+        let refused = device.make_credential(RP, b"v").unwrap_err();
+        assert!(
+            matches!(refused, AuthenticatorError::Device(ref said) if said.contains("another program")),
+            "{refused:?}"
+        );
+        assert!(state.borrow().busy > 0);
+    }
+
+    /// A key says what to call it.
+    #[test]
+    fn a_key_says_what_it_is() {
+        let device = open(SoftKey::new(), None);
+        assert_eq!(Authenticator::model(&device), Some("Security key"));
+    }
+
+    /// An older U2F-only key says so as it's opened.
+    #[test]
+    fn a_key_without_ctap2_is_said_to_be() {
+        let key = SoftKey::new();
+        key.handle().borrow_mut().capabilities = 0x01;
+        assert!(matches!(
+            Device::open_with(key, None, Duration::from_secs(1)),
+            Err(Ctap2Error::Transport(TransportError::NotCtap2))
+        ));
+    }
+
+    /// A credential is ES256, as asked: anything else proves nothing.
+    #[test]
+    fn a_credential_that_isnt_es256_is_refused() {
+        let key = SoftKey::new();
+        key.handle().borrow_mut().credential_alg = -8;
+        let refused = open(key, None).make_credential(RP, b"u").unwrap_err();
+        assert!(matches!(
+            refused,
+            AuthenticatorError::Device(ref said) if said.contains("ES256")
+        ));
     }
 
     /// Whether a key holds a credential is asked with no touch and no PIN,
@@ -1071,59 +1173,13 @@ mod tests {
         let key = SoftKey::new();
         let state = key.handle();
         let mut device = open(key, None);
+        assert!(matches!(
+            device.set_pin("12\x0034"),
+            Err(Ctap2Error::PinPolicy { .. })
+        ));
         let longest = "7".repeat(63);
         device.set_pin(&longest).unwrap();
         assert_eq!(state.borrow().pin.as_deref(), Some(longest.as_str()));
-    }
-
-    /// The kept token is its relying party's: another's asks the PIN again.
-    #[test]
-    fn a_token_is_kept_for_its_relying_party_alone() {
-        let key = SoftKey::new();
-        key.handle().borrow_mut().pin = Some(String::from("2468"));
-        let (mut device, asked) = counted(key, "2468");
-        device.make_credential(RP, b"u").unwrap();
-        device.make_credential("another.rp", b"u").unwrap();
-        assert_eq!(asked.get(), 2);
-        device.make_credential("another.rp", b"u").unwrap();
-        assert_eq!(asked.get(), 2, "kept for that one now");
-    }
-
-    /// A kept token the key has forgotten is asked again, once, to make a
-    /// credential too; a fresh one it refuses isn't tried again.
-    #[test]
-    fn only_a_kept_token_is_tried_again() {
-        let key = SoftKey::new();
-        let state = key.handle();
-        state.borrow_mut().pin = Some(String::from("2468"));
-        let (mut device, asked) = counted(key, "2468");
-        device.make_credential(RP, b"u").unwrap();
-        state.borrow_mut().token = None;
-        device.make_credential(RP, b"v").unwrap();
-        assert_eq!(asked.get(), 2, "forgotten: asked again, and made");
-        // A key that refuses even a fresh token: asked once, and refused.
-        for verified in [false, true] {
-            let key = SoftKey::new();
-            let state = key.handle();
-            state.borrow_mut().pin = Some(String::from("2468"));
-            let (mut maker, _) = counted(SoftKey::sharing(Rc::clone(&state)), "2468");
-            let credential = maker.make_credential(RP, b"u").unwrap();
-            state.borrow_mut().refuse_tokens = true;
-            let (mut fresh, asked) = counted(SoftKey::sharing(Rc::clone(&state)), "2468");
-            let refused = if verified {
-                fresh
-                    .hmac_secret_verified(RP, &credential.id, &random::<32>().unwrap())
-                    .is_err()
-            } else {
-                fresh.make_credential(RP, b"w").is_err()
-            };
-            assert!(refused, "{verified}");
-            assert_eq!(
-                asked.get(),
-                1,
-                "{verified}: a fresh token isn't tried again"
-            );
-        }
     }
 
     /// A wrong PIN says how many tries are left; three in a row want the
@@ -1210,7 +1266,7 @@ mod tests {
             .enroll_hardware_keys_checked(&unlocked, &mut [&mut a, &mut b], KeyCheck::Pin)
             .unwrap_err();
         let shown = format!("{err:?}");
-        assert!(shown.contains("NoVerification"), "{shown}");
+        assert!(shown.contains("couldn't check its PIN"), "{shown}");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&fresh_dir);
     }

@@ -94,11 +94,11 @@ impl Shared {
     pub fn derive(protocol: Protocol, z: &[u8]) -> Self {
         match protocol {
             Protocol::One => {
-                let key: [u8; 32] = Sha256::digest(z).into();
+                let hmac_key: Zeroizing<[u8; 32]> = Zeroizing::new(Sha256::digest(z).into());
                 Self {
                     protocol,
-                    hmac_key: Zeroizing::new(key),
-                    aes_key: Zeroizing::new(key),
+                    aes_key: hmac_key.clone(),
+                    hmac_key,
                 }
             }
             Protocol::Two => {

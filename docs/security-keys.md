@@ -11,6 +11,16 @@ You don't need a key: without one, nothing here applies, and Hatchling works as 
 - **A FIDO2 security key with `hmac-secret`:** any YubiKey 5, and most FIDO2 keys of the last several years. An older U2F-only key can't do this, and setup says so.
 - **Two keys, ideally.** Either one opens the vault, so losing one doesn't lock you out. One works too: backup codes are then your only way back if you lose it.
 - **One port is fine.** Setup registers one key, you swap, and it notices the next.
+- **USB, not Bluetooth.** Your PIN's hash goes to whatever answers as a key, so Hatchling only talks to keys on USB: nothing in radio range can pose as one.
+
+**Which keys have been tested.** Hatchling speaks FIDO2 itself, the open standard every key follows, so any key with `hmac-secret` should work. So far it has only been tried on these:
+
+| Key | Firmware | Status |
+| --- | --- | --- |
+| YubiKey 5C NFC | 5.7.4 | Tested: setup, unlock, losing a key |
+| YubiKey 5C Nano | 5.7.4 | Tested: setup, unlock, losing a key |
+
+Any other key is untested, not unsupported. Try it: setup changes nothing until your keys are ready. Whether it works or not, please [tell us how it went](https://github.com/undergroundrap/hatchling/issues/new?template=security_key.yml), or send a pull request adding your key to this table.
 
 ## Set it up
 
@@ -22,7 +32,7 @@ sudo hatchling-broker vault-keyring setup
 
 It looks at what's plugged in, and does the rest:
 
-1. **Registers your keys.** Two plugged in are both taken. With one, it asks if you have a second, and says when to swap. A new key has no PIN: it asks you to choose one. You touch each key when it flashes, and name it.
+1. **Registers your keys.** Two plugged in are both taken. With one, it asks if you have a second, and says when to swap. A new key has no PIN: it asks you to choose one. Each key takes two touches, and it says when. Press Enter to keep the name it suggests, or type your own.
 2. **Gives you your backup codes.** Save them now, on paper or in a password manager, away from this computer. To finish, it asks you to type part of one back.
 3. **Restarts the service and unlocks it,** so you see how it's done.
 
@@ -30,7 +40,9 @@ Nothing in the vault changes until your keys are ready. **If anything interrupts
 
 **Choosing a PIN.** 6 to 8 digits you'll remember, not one you use anywhere else. The key locks itself after 8 wrong tries, which is why a short PIN is safe, and why you shouldn't guess. Use the same one on both keys.
 
-**Which key goes where.** A key made to stay in a port, like a YubiKey 5C Nano, can live in the computer: the PIN protects it if the machine is stolen. Keep the other, such as a 5C NFC, on your keychain or in a drawer.
+**Which key goes where.** A key made to stay in a port, like a YubiKey 5C Nano, can live in the computer: the PIN protects it if the machine is stolen. Keep the other, such as a 5C NFC, on your keychain or in a drawer. Register the one that stays plugged in last: a Nano is hard to pull out.
+
+**How to touch it.** Touch the gold part, with the pad of your finger, while the key flashes. A touch before it flashes doesn't count. On a Nano the gold is on its sides, so in a port it can be hard to see: feel for it, and press for a second.
 
 ## In WSL
 
@@ -58,6 +70,16 @@ usbipd attach --wsl --busid <busid> --auto-attach
 
 After a restart of Windows or WSL, attach it again to unlock (`usbipd attach --wsl --busid <busid>`). While it's attached, Windows can't use the key, for Windows Hello or passkeys in your browser: `usbipd detach --busid <busid>` gives it back. The BUSID belongs to the port: in another port, `usbipd list` shows its new one.
 
+## If your key isn't seen
+
+It's rarely the key. Most keys flash when they get power, so:
+
+- **No flash:** push it in fully, or try another port. A hub or adapter can be the problem: try without one.
+- **It flashes, and isn't seen, on WSL:** it isn't attached. `usbipd list` should say `Attached` beside it. A new port has a new BUSID, so bind and attach that one.
+- **It flashes, and isn't seen, on Linux:** setup or `unlock` says if it's a permissions problem, and which rule to add. On a virtual machine, pass the key through to it first.
+
+**A key doesn't need a backup code just because it wasn't found.** A code is used up when you type it, so check the key first.
+
 ## After a restart
 
 The service waits, locked: the app can't connect, and `sudo hatchling-broker doctor` says so. Plug in a key (in WSL, attach it), and run:
@@ -66,7 +88,7 @@ The service waits, locked: the app can't connect, and `sudo hatchling-broker doc
 sudo hatchling-broker unlock
 ```
 
-Type the key's PIN, and touch it when it flashes. Any registered key will do, and it doesn't matter if both are plugged in. A wrong PIN says how many tries are left, and Hatchling keeps waiting: run it again. With no key at hand, it asks for a backup code.
+Type the key's PIN, and touch it when it flashes. Any registered key will do, and it doesn't matter if both are plugged in. A wrong PIN says how many tries are left, and Hatchling keeps waiting: run it again. With no key at hand, it asks for a backup code. If another program has the key, it waits a moment, then says so.
 
 ## Add a second key, or a replacement
 
