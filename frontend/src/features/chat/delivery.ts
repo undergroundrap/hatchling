@@ -108,6 +108,8 @@ export class ChatDelivery {
             return 'Reply in the connected messaging app.';
         if (chat.archived)
             return 'Restore this chat before sending a message.';
+        if (this.connection.kind === 'locked')
+            return 'Unlock Hatchling to send. You can keep writing your draft.';
         if (this.connection.kind === 'sign-in-required')
             return 'Reconnect your session to send. You can keep writing your draft.';
         if (this.history(chatId).phase !== 'ready')

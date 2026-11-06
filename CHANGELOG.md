@@ -8,6 +8,8 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Added
 
+- **Change a key's PIN.** `vault-keyring change-pin` sets a new PIN on the key plugged in, and what's registered keeps working.
+- **Setting up, in Settings.** General now shows how to pick where your model runs, protect your vault and check everything, each a command to copy.
 - **A panic button.** `hatchling-broker lock` takes the vault's key out of memory at once, until you unlock it.
 - **Back up, restore, start over.** `backup` makes one sealed file that opens with what opens your vault, `restore` brings it back after checking all of it, and `reset` clears the conversation, the agent, or everything, with a backup first. Clearing the agent leaves your keys alone: `docs/backup-and-reset.md`.
 - **Losing a key is one command.** `vault-keyring lost-key` lists your keys by number, asks if it's lost or stolen, and offers a replacement. Stolen also changes the vault's key and your backup codes. If it was your only key, a backup code gets you in and its replacement comes first.
@@ -55,6 +57,8 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Fixed
 
+- **The browser starts under a strict umask.** Its snapshot's permissions came from the umask, which could shut a cell out of it.
+- **A locked Hatchling says it's locked.** The app used to look broken after a restart. It now says the vault is locked, and how to unlock it.
 - **Settings tells the truth about your data.** On a real install, the Data section no longer shows the demo's reset and export: it shows the real commands for backing up, restoring and starting over, to copy into a terminal.
 - **Nothing secret shows as it's typed.** A key that's plugged in is used with no "press Enter" first, so a PIN can't land on a visible prompt, and a backup code no longer shows on screen. Backup, restore and reset ask for your key before they stop the service, so cancelling leaves it running.
 - **More security keys work.** Checked against how libfido2 copes with keys that aren't YubiKeys: a key's reply may use longer forms of its numbers, a key may say it wasn't touched in other ways, and registering sends the names older keys want. Each kind of key is simulated in the tests; only YubiKeys have been tried for real.

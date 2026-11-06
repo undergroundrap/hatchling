@@ -283,6 +283,7 @@ impl SoftKey {
                 Value::int(i64::from(self.state.borrow().retries)),
             )])),
             Some(3) => self.set_pin(protocol, parameters),
+            Some(4) => self.change_pin(protocol, parameters),
             Some(2) => {
                 let (private, public) = agreement_key().map_err(|_| 0x7fu8)?;
                 self.state.borrow_mut().agreement = Some(private);
@@ -321,6 +322,37 @@ impl SoftKey {
             }
             _ => Err(0x02),
         }
+    }
+
+    /// `changePIN`: a new PIN, proved by the hash of the old one.
+    fn change_pin(&self, protocol: Protocol, parameters: &Value) -> Result<Value, u8> {
+        let mut state = self.state.borrow_mut();
+        let private = state.agreement.take().ok_or(0x02u8)?;
+        let shared =
+            agree(protocol, private, parameters.at(3).ok_or(0x02u8)?).map_err(|_| 0x02u8)?;
+        let sealed = parameters.at(5).and_then(Value::as_bytes).ok_or(0x02u8)?;
+        let hash = parameters.at(6).and_then(Value::as_bytes).ok_or(0x02u8)?;
+        let auth = parameters.at(4).and_then(Value::as_bytes).ok_or(0x02u8)?;
+        if shared.authenticate(&[sealed, hash].concat()) != auth {
+            return Err(PIN_AUTH_INVALID);
+        }
+        let given = shared.decrypt(hash).map_err(|_| PIN_INVALID)?;
+        let pin = state.pin.clone().ok_or(0x35u8)?;
+        let expected = Sha256::digest(pin.as_bytes());
+        if given.as_slice() != expected.get(..16).unwrap_or(&[]) {
+            state.retries = state.retries.saturating_sub(1);
+            return Err(PIN_INVALID);
+        }
+        let padded = shared.decrypt(sealed).map_err(|_| PIN_AUTH_INVALID)?;
+        let end = padded.iter().position(|byte| *byte == 0).unwrap_or(64);
+        let new = String::from_utf8(padded.get(..end).unwrap_or(&[]).to_vec())
+            .map_err(|_| PIN_POLICY_VIOLATION)?;
+        if i64::try_from(new.chars().count()).unwrap_or(i64::MAX) < state.min_pin_length {
+            return Err(PIN_POLICY_VIOLATION);
+        }
+        state.pin = Some(new);
+        state.retries = 8;
+        Ok(Value::Map(Vec::new()))
     }
 
     /// `setPIN`: a new PIN on a key with none, checked as CTAP2 checks

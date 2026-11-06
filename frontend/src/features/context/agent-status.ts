@@ -11,7 +11,7 @@ export interface AgentStatus {
 /** Status is derived from active adapter work, never a cosmetic clock or random rotating phrase. */
 export function agentStatus(state: DeepReadonly<AppState>, connection?: ConnectionState, approvals: readonly TaskApproval[] = []): AgentStatus {
     if (connection && connection.kind !== 'ready') {
-        const labels = { offline: 'Offline', reconnecting: 'Reconnecting', restarting: 'Workspace restarting', unavailable: 'Service unavailable', 'sign-in-required': 'Session needs attention' };
+        const labels = { offline: 'Offline', reconnecting: 'Reconnecting', restarting: 'Workspace restarting', unavailable: 'Service unavailable', 'sign-in-required': 'Session needs attention', locked: 'Locked' };
         return { label: labels[connection.kind], detail: connection.detail, kind: 'waiting', icon: ['reconnecting', 'restarting'].includes(connection.kind) ? 'refresh' : 'warning', threadId: null };
     }
     const approval = approvals.find(request => request.status === 'pending');

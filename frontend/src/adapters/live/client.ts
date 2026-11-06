@@ -47,11 +47,33 @@ const UNREADABLE = 'Hatchling sent a message this version of the app cannot read
 const REPEATED = 'Hatchling repeated its handshake in the middle of the session, so the app disconnected.';
 const UNANSWERED = 'The connection closed before Hatchling answered. It may still have been received.';
 const NOT_CONNECTED = 'The app is not connected to Hatchling, so nothing was sent.';
+const LOCKED = 'In a terminal on this machine, run: sudo hatchling-broker unlock. Then, as yourself, run: hatchling-host url, and open the address it gives.';
+/** What Hatchling's host says of the vault: nothing, on a page it didn't serve. */
+export type HostState = 'locked' | 'unlocked' | 'no-host';
+/** The answer to `ask`. Anything but the host's own answer means no host. */
+export async function hostState(ask: () => Promise<{
+    json(): Promise<unknown>;
+}>): Promise<HostState> {
+    try {
+        const said = await (await ask()).json();
+        if (typeof said !== 'object' || said === null || !('locked' in said) || typeof said.locked !== 'boolean')
+            return 'no-host';
+        return said.locked ? 'locked' : 'unlocked';
+    }
+    catch {
+        return 'no-host';
+    }
+}
+/** Asks the host that served this page, if one did. */
+export function askTheHost(): Promise<HostState> {
+    return hostState(() => fetch('/hatchling-locked'));
+}
 export class LiveClient {
     readonly #transport: UiTransport;
     readonly #name: string;
     readonly #token: string | undefined;
     readonly #sink: (event: UiEvent) => string | undefined;
+    readonly #locked: () => Promise<boolean>;
     readonly #ledger = new EventLedger();
     readonly #listeners = new Set<() => void>();
     readonly #replies = new Map<string, Promise<Reply>>();
@@ -68,11 +90,12 @@ export class LiveClient {
      * allow). That ends the connection, and the event is not counted as
      * applied, so a reconnect does not skip past it.
      */
-    constructor(transport: UiTransport, name: string, sink: (event: UiEvent) => string | undefined, token?: string) {
+    constructor(transport: UiTransport, name: string, sink: (event: UiEvent) => string | undefined, token?: string, locked: () => Promise<boolean> = () => Promise.resolve(false)) {
         this.#transport = transport;
         this.#name = name;
         this.#sink = sink;
         this.#token = token;
+        this.#locked = locked;
     }
     connection(): ConnectionState {
         return this.#connection;
@@ -105,8 +128,14 @@ export class LiveClient {
                     this.#receive(text);
             },
             closed: detail => {
-                if (current())
-                    this.#lost({ kind: 'offline', detail: this.#phase === 'greeting' && opened ? NOT_LET_IN : detail }, 'idle');
+                if (!current())
+                    return;
+                this.#lost({ kind: 'offline', detail: this.#phase === 'greeting' && opened ? NOT_LET_IN : detail }, 'idle');
+                const lost = this.#generation;
+                void this.#locked().then((locked) => {
+                    if (locked && lost === this.#generation)
+                        this.#update({ kind: 'locked', detail: LOCKED });
+                });
             },
         });
     }

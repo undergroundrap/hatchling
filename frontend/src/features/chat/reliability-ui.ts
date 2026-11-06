@@ -6,14 +6,14 @@ import type { OutboxItem } from './delivery.js';
 import { h } from '../../components/dom.js';
 import { icon } from '../../components/icons.js';
 import { button, markdown } from '../../components/ui.js';
-const connectionLabels: Record<ConnectionKind, string> = { ready: 'Connected', offline: 'You’re offline', reconnecting: 'Reconnecting', restarting: 'Workspace is restarting', unavailable: 'Service is unavailable', 'sign-in-required': 'Your session needs attention' };
+const connectionLabels: Record<ConnectionKind, string> = { ready: 'Connected', offline: 'You’re offline', reconnecting: 'Reconnecting', restarting: 'Workspace is restarting', unavailable: 'Service is unavailable', 'sign-in-required': 'Your session needs attention', locked: 'Hatchling is locked' };
 export function connectionBanner(ctx: AppContext): HTMLElement | null {
     const connection = ctx.delivery.connection;
     if (connection.kind === 'ready')
         return null;
     const busy = connection.kind === 'reconnecting' || connection.kind === 'restarting';
-    const glyph: IconName = busy ? 'refresh' : connection.kind === 'sign-in-required' ? 'lock' : 'warning';
-    const action = ctx.delivery.port ? button(connection.kind === 'sign-in-required' ? 'Reconnect session' : busy ? 'Check connection' : 'Reconnect', () => { void ctx.delivery.reconnect(); }, { variant: 'ghost', className: 'reliability-action', disabled: connection.kind === 'reconnecting' || !navigator.onLine, id: 'reconnect-chat' }) : null;
+    const glyph: IconName = busy ? 'refresh' : connection.kind === 'sign-in-required' || connection.kind === 'locked' ? 'lock' : 'warning';
+    const action = ctx.delivery.port ? button(connection.kind === 'sign-in-required' ? 'Reconnect session' : connection.kind === 'locked' ? 'Check again' : busy ? 'Check connection' : 'Reconnect', () => { void ctx.delivery.reconnect(); }, { variant: 'ghost', className: 'reliability-action', disabled: connection.kind === 'reconnecting' || !navigator.onLine, id: 'reconnect-chat' }) : null;
     return h('section', { class: `connection-banner connection-${connection.kind}`, role: 'status', 'aria-live': 'polite' }, h('span', { class: busy ? 'status-glyph is-spinning' : 'status-glyph' }, icon(glyph, 18)), h('div', { class: 'connection-copy' }, h('strong', {}, connectionLabels[connection.kind]), h('p', {}, connection.detail || 'Your draft and visible messages stay here.')), action);
 }
 export function historyNotice(ctx: AppContext): HTMLElement | null {

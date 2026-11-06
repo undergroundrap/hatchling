@@ -155,7 +155,7 @@ impl Snapshot {
     /// A sentence for the operator: the copy couldn't be made, or its
     /// digest isn't the pinned one. Nothing is kept.
     pub fn take(source: &Path, pin: &str) -> Result<Self, String> {
-        use std::os::unix::fs::DirBuilderExt as _;
+        use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
         let random = crate::approval::random_hex("")
             .map_err(|error| format!("cannot name the browser's snapshot: {error}"))?;
         let staging = std::env::temp_dir().join(format!(
@@ -180,6 +180,12 @@ impl Snapshot {
             .mode(0o755)
             .create(&snapshot.bundle)
             .map_err(|error| format!("cannot make the browser's snapshot: {error}"))?;
+        // A mode to `create` is cut by the umask, and these bits are what
+        // let a cell in: set them whatever the umask is.
+        for (path, mode) in [(&snapshot.staging, 0o711), (&snapshot.bundle, 0o755)] {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+                .map_err(|error| format!("cannot make the browser's snapshot: {error}"))?;
+        }
         let digest = Manifest::of(source, Some(&snapshot.bundle))?.digest();
         if digest != pin {
             return Err(format!(

@@ -45,6 +45,9 @@ pub const SETUP_ACTION: &str = "setup";
 /// The `vault-keyring` action for a key that's gone.
 pub const LOST_ACTION: &str = "lost-key";
 
+/// The `vault-keyring` action that changes a key's PIN.
+pub const CHANGE_PIN_ACTION: &str = "change-pin";
+
 /// Whether `action` is one of the guided ones, run in the operator's
 /// terminal with the service stopped.
 #[must_use]
@@ -165,6 +168,90 @@ fn finish_interrupted(setup: &mut Setup<'_>, path: &Path) -> Result<(), Error> {
         recovery_kit(setup, path, &codes)?;
     }
     Ok(())
+}
+
+/// `vault-keyring change-pin`: a new PIN on the key plugged in. The vault
+/// doesn't change, and nor does what's registered: a PIN guards a key, and
+/// isn't part of what it computes.
+///
+/// # Errors
+///
+/// Why not; a wrong current PIN is said and asked for again.
+pub fn change_pin(setup: &mut Setup<'_>) -> Result<(), Error> {
+    let min = {
+        let mut keys = setup.devices.every_key();
+        let Some(key) = keys.first_mut() else {
+            drop(keys);
+            return Err(Error::Usage {
+                reason: format!(
+                    "plug in the key to change ({})",
+                    setup.devices.unreachable()
+                ),
+            });
+        };
+        key.min_pin_length()
+    };
+    setup.say("This changes the PIN on the key plugged in. To keep the same PIN on another key, run this again with that one.");
+    for _ in 0..TRIES {
+        let old = (setup.secret)("Current PIN:")?;
+        let new = (setup.secret)(&format!("New PIN, at least {min} characters:"))?;
+        let again = (setup.secret)("The same new PIN again:")?;
+        if new != again {
+            setup.say("Those didn't match. Try again.");
+            continue;
+        }
+        if !keyboard_only(&new) {
+            setup.say(KEYBOARD_ONLY);
+            continue;
+        }
+        let changed = {
+            let mut keys = setup.devices.every_key();
+            let Some(key) = keys.first_mut() else {
+                drop(keys);
+                return Err(ring::stopped());
+            };
+            key.change_pin(&old, &new)
+        };
+        match changed {
+            Ok(()) => {
+                setup.say("Done. Your new PIN opens this key, and nothing else has changed.");
+                return Ok(());
+            }
+            Err(refused) => setup.say(&refused.said()),
+        }
+    }
+    Err(ring::stopped())
+}
+
+/// [`change_pin`], at this terminal.
+///
+/// # Errors
+///
+/// As [`change_pin`].
+pub fn run_change_pin(
+    broker: &crate::Config,
+    config: &KeyringConfig,
+    stores: &[(Store, PathBuf)],
+) -> Result<(), Error> {
+    let mut asking =
+        |prompt: &str| ring::terminal_answer(prompt, false).map(|answer| answer.to_string());
+    let mut secret = |prompt: &str| ring::terminal_answer(prompt, true);
+    let mut devices = ring::platform_keys(Box::new(|| None));
+    let mut wait = || false;
+    let mut out = std::io::stderr();
+    let touches = Cell::new(0);
+    change_pin(&mut Setup {
+        vault: &broker.vault,
+        config,
+        stores,
+        ask: &mut asking,
+        secret: &mut secret,
+        devices: &mut devices,
+        out: &mut out,
+        wait: &mut wait,
+        wsl: false,
+        touches: &touches,
+    })
 }
 
 /// Whether a key that's gone might be in someone's hands.
@@ -482,9 +569,7 @@ fn set_pin(setup: &mut Setup<'_>, index: usize, min: usize) -> Result<(), Refuse
             continue;
         }
         if !keyboard_only(&pin) {
-            setup.say(
-                "Use letters, numbers and symbols from a US keyboard: other characters can be typed differently on another computer, and the key wouldn't recognize them.",
-            );
+            setup.say(KEYBOARD_ONLY);
             continue;
         }
         let set = {
@@ -501,6 +586,9 @@ fn set_pin(setup: &mut Setup<'_>, index: usize, min: usize) -> Result<(), Refuse
     }
     Err(Refused::Stop(ring::stopped()))
 }
+
+/// What's said of a PIN only some keyboards can type.
+const KEYBOARD_ONLY: &str = "Use letters, numbers and symbols from a US keyboard: other characters can be typed differently on another computer, and the key wouldn't recognize them.";
 
 /// Whether a PIN can be typed the same on any machine: a key compares
 /// bytes, and an accented letter isn't always the same ones.

@@ -12,7 +12,7 @@ import type { AppState, Command, CommandResult, DeepReadonly, ProtocolAdapter, S
 import { ActivityBook } from './activity.js';
 import { LiveApprovals } from './approvals.js';
 import { ChatBook, wireChat } from './chat.js';
-import { LiveClient } from './client.js';
+import { LiveClient, askTheHost } from './client.js';
 import type { UiTransport } from './client.js';
 import type { ActionRefusal, UiEvent } from './protocol/generated.js';
 import { LiveProfiles } from './profiles.js';
@@ -91,7 +91,7 @@ export class LiveAdapter implements ProtocolAdapter {
      * log; `token` is the UI token the page was given, when there is one.
      */
     constructor(transport: UiTransport, name = 'hatchling-frontend', token?: string) {
-        this.#client = new LiveClient(transport, name, event => this.#observe(event), token);
+        this.#client = new LiveClient(transport, name, event => this.#observe(event), token, () => askTheHost().then(state => state === 'locked'));
         this.#surfaces = new Surfaces(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.taskApprovals = new LiveApprovals(this.#client, () => `live-command-${++this.#serial}`);
         this.#sites = new LiveSites(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);

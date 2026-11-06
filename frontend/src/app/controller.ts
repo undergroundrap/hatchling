@@ -406,7 +406,8 @@ export class App implements AppContext {
     };
     private selectChat(requestedId: string): void {
         const id = resolveChatId(this.state.chats, requestedId) ?? requestedId;
-        if (id !== requestedId)
+        // Not connected, nothing's known of what's still there.
+        if (id !== requestedId && this.delivery.connection.kind === 'ready')
             this.toast('That conversation is no longer available. Opened Main chat.');
         this.ui.recentChatIds = [id, ...this.ui.recentChatIds.filter((other) => other !== id)].slice(0, 6);
         if (id === this.ui.chatId)

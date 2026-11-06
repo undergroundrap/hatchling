@@ -70,6 +70,14 @@ usbipd attach --wsl --busid <busid> --auto-attach
 
 After a restart of Windows or WSL, start WSL first (`wsl -d <your distro>`), run `usbipd list` for the BUSID, and attach it again to unlock (`usbipd attach --wsl --busid <busid>`). While it's attached, Windows can't use the key, for Windows Hello or passkeys in your browser: `usbipd detach --busid <busid>` gives it back. The BUSID can change, in another port or just after a restart of Windows: `usbipd list` always shows the current one.
 
+## See who unlocked it
+
+Every unlock, and every try that failed, is in the service's log:
+
+```bash
+sudo journalctl -u hatchling -g "unlock"
+```
+
 ## Lock it now
 
 If you're leaving a machine somewhere you don't trust, or something looks wrong:
@@ -92,7 +100,7 @@ It's rarely the key. Most keys flash when they get power, so:
 
 ## After a restart
 
-The service waits, locked: the app can't connect, and `sudo hatchling-broker doctor` says so. Plug in a key (in WSL, attach it), and run:
+The service waits, locked: the app says so, and so does `sudo hatchling-broker doctor`. Plug in a key (in WSL, attach it), and run:
 
 ```bash
 sudo hatchling-broker unlock
@@ -138,6 +146,14 @@ If you've lost them, or used some, or think someone saw them. The old set stops 
 ```bash
 sudo hatchling-broker vault-keyring backup-codes
 ```
+
+## Change a key's PIN
+
+```bash
+sudo hatchling-broker vault-keyring change-pin
+```
+
+It changes the PIN on the key plugged in. Your vault and your other keys don't change, and what's registered keeps working. To keep the same PIN on both keys, run it for each.
 
 ## A PIN that's blocked
 

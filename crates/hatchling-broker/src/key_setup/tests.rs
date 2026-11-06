@@ -676,6 +676,90 @@ fn a_lost_key_needs_a_clear_answer() {
     assert!(matches!(run.done, Err(Error::Usage { .. })));
 }
 
+/// [`change_pin`] on `bench`, the secrets answered with `pins` in turn.
+fn changing(name: &str, bench: &mut Bench, pins: &[&str]) -> (Result<(), Error>, Said) {
+    let (_scratch, vault, config) = vault(name);
+    let stores = secrets(&vault);
+    let mut pins: VecDeque<String> = pins.iter().map(|pin| (*pin).to_owned()).collect();
+    let mut ask = |_: &str| Ok(String::new());
+    let mut secret = |_: &str| Ok(Zeroizing::new(pins.pop_front().unwrap_or_default()));
+    let mut wait = || false;
+    let said = Said::default();
+    let mut out = said.clone();
+    let done = change_pin(&mut Setup {
+        vault: &vault,
+        config: &config,
+        stores: &stores,
+        ask: &mut ask,
+        secret: &mut secret,
+        devices: bench,
+        out: &mut out,
+        wait: &mut wait,
+        wsl: false,
+        touches: &Cell::new(0),
+    });
+    (done, said)
+}
+
+/// A PIN changes on the key plugged in, after whatever went wrong first.
+#[test]
+fn a_pin_is_changed_after_its_mistakes() {
+    let mut bench = Bench::of(vec![VirtualAuthenticator::with_pin("246810")], &[0]);
+    let (done, said) = changing(
+        "change-pin-mistakes",
+        &mut bench,
+        &[
+            "246810",
+            "135790",
+            "135791", // new PINs differ
+            "246810",
+            "gr\u{fc}n123",
+            "gr\u{fc}n123", // not on a keyboard
+            "246810",
+            "135790",
+            "135790",
+        ],
+    );
+    done.unwrap();
+    assert!(said.text().contains("Those didn't match."));
+    assert!(said.text().contains("US keyboard"));
+    assert!(said.text().contains("Your new PIN opens this key"));
+    assert!(
+        bench
+            .keys
+            .first_mut()
+            .unwrap()
+            .change_pin("135790", "x")
+            .is_ok()
+    );
+}
+
+/// A wrong current PIN is said, and three in a row stops.
+#[test]
+fn a_wrong_current_pin_stops_after_three() {
+    let mut bench = Bench::of(vec![VirtualAuthenticator::with_pin("246810")], &[0]);
+    let wrong: Vec<&str> = ["000000", "135790", "135790"].repeat(3);
+    let (done, said) = changing("change-pin-wrong", &mut bench, &wrong);
+    assert!(done.is_err());
+    assert_eq!(said.text().matches("the PIN is wrong").count(), 3);
+    assert!(
+        bench
+            .keys
+            .first_mut()
+            .unwrap()
+            .change_pin("246810", "x")
+            .is_ok()
+    );
+}
+
+/// With no key in, it says to plug one in.
+#[test]
+fn a_pin_needs_its_key() {
+    let mut bench = Bench::new_keys(1, &[]);
+    let (done, _) = changing("change-pin-none", &mut bench, &[]);
+    assert!(matches!(done, Err(Error::Usage { reason }) if reason.contains("plug in the key")));
+}
+
 /// The guided actions are these two.
 #[test]
 fn the_guided_actions_are_setup_and_lost_key() {
