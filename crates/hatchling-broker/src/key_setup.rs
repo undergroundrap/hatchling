@@ -182,11 +182,12 @@ fn might_be_stolen(setup: &mut Setup<'_>) -> Result<bool, Error> {
     Err(ring::stopped())
 }
 
-/// `vault-keyring lost-key`: a key that's gone, out of the vault, with
-/// nothing to look up. A key that might be in someone's hands also changes
-/// the vault's key, as removing it alone leaves an old copy of the keyring
-/// that it, its PIN and that copy could open. An only key's replacement
-/// comes first, as the vault never has none: a backup code gets in.
+/// `vault-keyring lost-key`: a key that's gone, out of the vault.
+///
+/// A key that might be in someone's hands also changes the vault's key, as
+/// removing it alone leaves an old copy of the keyring that it, its PIN and
+/// that copy could open. An only key's replacement comes first, as the
+/// vault never has none: a backup code gets in.
 ///
 /// # Errors
 ///

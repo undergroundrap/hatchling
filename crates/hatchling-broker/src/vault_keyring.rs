@@ -1019,10 +1019,11 @@ fn utc_date(seconds: u64) -> Option<String> {
     at.to_string().get(..10).map(str::to_owned)
 }
 
-/// The enrolled keys, one per line, for a prompt.
+/// The enrolled keys, numbered, one per line, for a prompt.
 fn key_list(keys: &[KeyInfo]) -> String {
     keys.iter()
-        .map(|key| format!("  {}", key_line(key)))
+        .enumerate()
+        .map(|(index, key)| format!("  {}. {}", index + 1, key_line(key)))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -1094,13 +1095,10 @@ pub(crate) fn chosen_key(keys: &[KeyInfo], what: &str, ask: Ask<'_>) -> Result<K
             reason: String::from("this vault has no security keys"),
         });
     }
-    let list = keys
-        .iter()
-        .enumerate()
-        .map(|(index, key)| format!("  {}. {}", index + 1, key_line(key)))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let prompt = format!("Enrolled security keys:\n{list}\nType the number of the key to {what}:");
+    let prompt = format!(
+        "Enrolled security keys:\n{}\nType the number of the key to {what}:",
+        key_list(keys)
+    );
     let answer = ask(&prompt)?;
     let answer = answer.trim();
     answer
@@ -2673,7 +2671,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             key_list(&[migrated.clone(), migrated]),
-            "  ab12  YubiKey  added before the keyring kept dates  touch\n  ab12  YubiKey  added before the keyring kept dates  touch"
+            "  1. ab12  YubiKey  added before the keyring kept dates  touch\n  2. ab12  YubiKey  added before the keyring kept dates  touch"
         );
     }
 
@@ -2883,7 +2881,7 @@ pub(crate) mod tests {
             "{own:?}"
         );
         assert_eq!(keys_of(&config).len(), 3);
-        let listed = format!("  {first}  (no label)");
+        let listed = format!("  1. {first}  (no label)");
         assert!(operator.asked.first().unwrap().contains(&listed));
         // Another key can.
         let mut operator =
