@@ -68,7 +68,7 @@ Before you run setup, leave this running in a PowerShell window. It keeps that p
 usbipd attach --wsl --busid <busid> --auto-attach
 ```
 
-After a restart of Windows or WSL, attach it again to unlock (`usbipd attach --wsl --busid <busid>`). While it's attached, Windows can't use the key, for Windows Hello or passkeys in your browser: `usbipd detach --busid <busid>` gives it back. The BUSID belongs to the port: in another port, `usbipd list` shows its new one.
+After a restart of Windows or WSL, start WSL first (`wsl -d <your distro>`), run `usbipd list` for the BUSID, and attach it again to unlock (`usbipd attach --wsl --busid <busid>`). While it's attached, Windows can't use the key, for Windows Hello or passkeys in your browser: `usbipd detach --busid <busid>` gives it back. The BUSID can change, in another port or just after a restart of Windows: `usbipd list` always shows the current one.
 
 ## If your key isn't seen
 
