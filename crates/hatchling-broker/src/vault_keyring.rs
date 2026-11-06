@@ -3431,7 +3431,9 @@ pub(crate) mod tests {
         );
         let usage = run("bogus", &[], &mut desk);
         assert!(matches!(usage, Err(Error::Usage { reason }) if reason == USAGE));
-        assert!(USAGE.ends_with("status | add-key | remove-key | label-key | reminders-off | reminders-on>"));
+        assert!(USAGE.ends_with(
+            "status | add-key | remove-key | label-key | reminders-off | reminders-on>"
+        ));
     }
 
     /// A software key in a tray slot: each scan of the tray sees the same
