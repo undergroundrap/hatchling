@@ -8,7 +8,7 @@ To try it by hand first, the [README's quickstart](../README.md#quickstart) runs
 
 ## What you need
 
-- **Linux with systemd**, kernel 5.11 or later (or WSL2 with systemd on), on x86_64 or aarch64, with glibc 2.34 or later. **Tested on Ubuntu:** 24.04 on Linux, and 26.04 under WSL2. Debian 12, Fedora and RHEL 9 and their successors meet these requirements, and should work, but haven't been tested.
+- **Linux with systemd**, kernel 5.11 or later (or WSL2 with systemd on), on x86_64 or aarch64, with glibc 2.34 or later. **Tested on Ubuntu** 24.04 and 26.04, and 26.04 under WSL2. Debian 12, Fedora and RHEL 9 and their successors meet these requirements, and should work, but haven't been tested.
 - **A model it can reach:** an OpenAI-compatible server on this machine, or a hosted one. [Ollama](https://ollama.com) is the simplest local one: install it, then `ollama pull qwen3.5:9b`. With no GPU, or no wish to run a model here, install with a hosted model instead (`--hosted openrouter`, an OpenRouter key; a free one works). The model must be good at calling tools; see [Choosing a model](#choosing-a-model) and [Using a hosted model](hosted-models.md).
 - **The GitHub CLI**, to download and verify the release (or download its files from the release page).
 
