@@ -48,6 +48,10 @@ if [ "$#" -eq 0 ]; then
     --file crates/hatchling-sys/src/sync_pipe.rs \
     --file crates/hatchling-broker/src/cell.rs
 fi
+# No debug info: on 49 broker mutants, it took 1115s to 603s, with the same
+# ones caught.
+CARGO_PROFILE_DEV_DEBUG=0 \
+CARGO_PROFILE_TEST_DEBUG=0 \
 TMPDIR="$HOME/mutants.scratch" \
 HATCHLING_AGENT_BIN="$PWD/target/debug/hatchling-agent" \
 cargo mutants \
