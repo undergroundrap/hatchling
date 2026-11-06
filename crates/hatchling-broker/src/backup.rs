@@ -772,7 +772,7 @@ mod tests {
     #[test]
     fn the_newest_backups_stay() {
         let scratch = Scratch::new("prune");
-        for seconds in 1..=(KEEP as u64 + 2) {
+        for seconds in 1..=7 {
             scratch.write(&backup_name(seconds), b"x");
         }
         scratch.write("my-notes.txt", b"mine");
@@ -781,6 +781,6 @@ mod tests {
         assert_eq!(scratch.read(&backup_name(2)), None);
         assert!(scratch.read(&backup_name(3)).is_some());
         assert!(scratch.read("my-notes.txt").is_some());
-        assert!(backup_name(9).len() == backup_name(10_000).len());
+        assert_eq!(backup_name(9).len(), backup_name(10_000).len());
     }
 }

@@ -164,7 +164,8 @@ fn valid_args(args: &[String]) -> bool {
     match values.as_slice() {
         []
         | [
-            "migrate-vault"
+            "backup"
+            | "migrate-vault"
             | "vault-audit"
             | "rekey-vault"
             | "clean"
@@ -172,11 +173,9 @@ fn valid_args(args: &[String]) -> bool {
             | crate::unlock_relay::UNLOCK_SUBCOMMAND,
         ]
         | ["clean", "--dry-run"]
-        | ["backup"]
-        | ["backup" | "restore", _]
         | ["reset", ..]
         | ["doctor", "--env", _]
-        | ["rekey-vault" | BROWSER_DIGEST_SUBCOMMAND, _]
+        | ["backup" | "restore" | "rekey-vault" | BROWSER_DIGEST_SUBCOMMAND, _]
         | [crate::model_window::MODEL_FIT_SUBCOMMAND, _, _]
         | [
             "vault-keyring",
@@ -232,12 +231,14 @@ fn run(args: &[String]) -> Result<(), Error> {
         Some("vault-keyring") => run_keyring(&config, args.get(1).map(String::as_str)),
         Some("clean") => crate::sweep::run_clean(&config, args.get(1..).unwrap_or_default()),
         Some("backup") => crate::backup::run_backup(&config, args.get(1).map(Path::new)),
-        Some("restore") => match args.get(1) {
-            Some(from) => crate::backup::run_restore(&config, Path::new(from)),
-            None => Err(Error::Usage {
-                reason: String::from("usage: hatchling-broker restore <file>"),
-            }),
-        },
+        Some("restore") => args.get(1).map_or_else(
+            || {
+                Err(Error::Usage {
+                    reason: String::from("usage: hatchling-broker restore <file>"),
+                })
+            },
+            |from| crate::backup::run_restore(&config, Path::new(from)),
+        ),
         Some("reset") => crate::backup::run_reset(&config, args.get(1..).unwrap_or_default()),
         Some(other) => run_operator(other, &config, args.iter().skip(1).cloned()),
         None => run_serve(&config),
