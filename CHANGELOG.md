@@ -10,6 +10,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 - **A first-run checklist in the app.** The chat offers three steps until you close them: choose your model, protect your vault, make a backup. It offers and never takes the page: you can chat straight away. Each gives the command to copy, for a terminal you opened yourself, and ticks itself when you come back: the app reads what's set up from the broker, as counts and a date, and never handles a PIN, a key or a code. It stays in Settings, under General.
   - **Breaking for `hatchling-core`:** `UiAction::ReadSetup`, `SetupState`, `VaultProtection` and `VaultTier` are new.
+- **Keep it running on Windows.** WSL stops a distro about 30 seconds after its last terminal closes, and Hatchling with it. `get-hatchling.sh` now says so on WSL and prints the one command that keeps it running, with no administrator rights and no window: [Keep it running on Windows](docs/install.md#keep-it-running-on-windows).
 - **A reminder to try your spare key.** With two keys, one that hasn't opened the vault in 90 days is mentioned by `unlock` and `vault-keyring status`, so a lost or broken spare is found while the other still works. `vault-keyring reminders-off` turns it off.
 - **What's next after a restart.** `backup`, `restore` and `reset` now say what to run next: the app's new address, or unlocking first.
 - **Change a key's PIN.** `vault-keyring change-pin` sets a new PIN on the key plugged in, and what's registered keeps working.

@@ -221,3 +221,17 @@ else
   echo "which asks for its key there:  sudo hatchling-broker use-hosted openrouter"
 fi
 echo "After that, switch between the two in the app, under Settings, General, Model."
+
+# WSL stops a distro soon after its last terminal closes, and Hatchling with
+# it. The fix is the owner's to make, on Windows, in their own PowerShell.
+case "${WSL_DISTRO_NAME:-}" in
+  ''|*[!A-Za-z0-9._-]*) ;;
+  *)
+    echo
+    echo "On Windows, WSL stops Hatchling about 30 seconds after your last terminal closes."
+    echo "To keep it running while you're logged in, run this once in PowerShell, not as administrator"
+    echo "(docs/install.md, \"Keep it running on Windows\"):"
+    echo
+    printf '%s\n' '  $p="$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Hatchling.lnk"; $s=(New-Object -ComObject WScript.Shell).CreateShortcut($p); $s.TargetPath="$env:WINDIR\System32\conhost.exe"; $s.Arguments="--headless wsl.exe -d '"$WSL_DISTRO_NAME"' --exec sleep infinity"; $s.Save(); Start-Process $p'
+    ;;
+esac
