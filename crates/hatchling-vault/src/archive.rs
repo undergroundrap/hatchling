@@ -600,7 +600,10 @@ mod tests {
             bytes.extend_from_slice(&u32::try_from(length).unwrap().to_be_bytes());
             bytes
         };
-        assert_eq!(refused(read(&key(), &at_most(MAX_KEYRING))), "it ends early");
+        assert_eq!(
+            refused(read(&key(), &at_most(MAX_KEYRING))),
+            "it ends early"
+        );
         assert_eq!(
             refused(read(&key(), &at_most(MAX_KEYRING + 1))),
             "its keyring is too big"
@@ -609,11 +612,13 @@ mod tests {
         let key = key();
         let header = written(&key, b"", &[]);
         let header = header.get(..8 + 4 + NONCE + SEALED_KEY).unwrap();
-        let chunk = |length: usize| {
-            [header, &u32::try_from(length).unwrap().to_be_bytes()].concat()
-        };
+        let chunk =
+            |length: usize| [header, &u32::try_from(length).unwrap().to_be_bytes()].concat();
         assert_eq!(refused(read(&key, &chunk(CHUNK + 16))), "it ends early");
-        assert_eq!(refused(read(&key, &chunk(CHUNK + 17))), "a chunk is too big");
+        assert_eq!(
+            refused(read(&key, &chunk(CHUNK + 17))),
+            "a chunk is too big"
+        );
 
         let longest = "a".repeat(MAX_PATH);
         let bytes = written(&key, b"", &[entry(&longest, b"x")]);
