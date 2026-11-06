@@ -15,6 +15,36 @@ Hatchling is Linux software: it needs Linux's kernel to keep your agent's work a
 
 Windows also adds an orange **hatchling-wsl** entry, because every WSL distro gets one. It opens a Linux terminal. You don't need it.
 
+## Using a security key
+
+A security key is optional, and it's the strongest way to protect your vault. Windows owns USB devices, so WSL needs one small tool, [usbipd](https://github.com/dorssel/usbipd-win), to see the key. Setting it up takes three steps, and only the first time.
+
+1. In PowerShell, install it:
+
+   ```powershell
+   winget install --exact dorssel.usbipd-win
+   ```
+
+2. Plug your key in, then list what's connected, and note the number beside it, such as `2-10`:
+
+   ```powershell
+   usbipd list
+   ```
+
+3. In PowerShell run as administrator, allow that key, once:
+
+   ```powershell
+   usbipd bind --busid <number>
+   ```
+
+Then each time you use the key, in PowerShell:
+
+```powershell
+usbipd attach --wsl --busid <number> --auto-attach
+```
+
+Leave that window open while you use **Protect your vault** or **Unlock**. Once Hatchling is unlocked, it doesn't need the key until the next restart, so you can close it. Making this automatic is the next thing on the list. More on keys, including what to do if you lose one: [Protecting the vault with a security key](security-keys.md).
+
 ## Why they're separate
 
 **Hatchling** is the app, which runs in your browser. Everything secret stays out of it. A browser is the most exposed thing on your computer: extensions, a bug in a page, or a leaked address can all reach it.
