@@ -357,6 +357,11 @@ fn service(action: &str) -> Result<(), Error> {
     if !Path::new(crate::doctor::SERVICE_SETTINGS).exists() {
         return Ok(());
     }
+    // Quick stops and starts count against systemd's limit, and a limit
+    // reached would leave the service down over nothing.
+    let _ = Command::new("systemctl")
+        .args(["reset-failed", "hatchling"])
+        .status();
     let done = Command::new("systemctl")
         .args([action, "hatchling"])
         .status()
@@ -437,8 +442,9 @@ pub fn run_backup(config: &Config, to: Option<&Path>) -> Result<(), Error> {
     service("stop")?;
     let (mut ask, mut devices) = ring::terminal_operator();
     let made = make_backup(config, &keyring, to, &mut ask, &mut devices);
-    service("start")?;
+    let started = service("start");
     let made = made?;
+    started?;
     let _ = writeln!(
         std::io::stdout().lock(),
         "Backed up to {}.\nIt opens with what opens your vault today. To bring it back: sudo hatchling-broker restore <file>",
@@ -479,8 +485,9 @@ pub fn run_restore(config: &Config, from: &Path) -> Result<(), Error> {
         let _ = fs::remove_dir_all(&staging);
         Ok::<usize, Error>(count)
     })();
-    service("start")?;
+    let started = service("start");
     let count = restored?;
+    started?;
     let _ = writeln!(
         std::io::stdout().lock(),
         "Restored {count} files from {}.",
@@ -568,8 +575,9 @@ pub fn run_reset(config: &Config, args: &[String]) -> Result<(), Error> {
         }
         Ok::<(), Error>(())
     })();
-    service("start")?;
+    let started = service("start");
     done?;
+    started?;
     let _ = writeln!(
         std::io::stdout().lock(),
         "Done. {}",
@@ -589,11 +597,12 @@ fn erase_keys(config: &Config, keyring: &KeyringConfig) -> Result<(), Error> {
     }
     let _ = fs::remove_file(keyring.kek_file(&config.vault));
     let _ = fs::remove_file(&config.vault.key_file);
-    let key = FileKey::new(config.vault.key_file.clone())
-        .load_or_create()
-        .map_err(ring::vault_error)?;
-    drop(key);
-    crate::vault_ops::run_migrate_vault(config)?;
+    // A new key, for stores with nothing in them to seal.
+    drop(
+        FileKey::new(config.vault.key_file.clone())
+            .load_or_create()
+            .map_err(ring::vault_error)?,
+    );
     if keyring.keyring.is_some() {
         ring::init(&config.vault, keyring)?;
     }
