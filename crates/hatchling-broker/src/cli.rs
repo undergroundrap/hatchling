@@ -173,9 +173,11 @@ fn valid_args(args: &[String]) -> bool {
             | crate::unlock_relay::UNLOCK_SUBCOMMAND,
         ]
         | ["clean", "--dry-run"]
-        | ["reset", ..]
         | ["doctor", "--env", _]
-        | ["backup" | "restore" | "rekey-vault" | BROWSER_DIGEST_SUBCOMMAND, _]
+        | [
+            "backup" | "restore" | "rekey-vault" | BROWSER_DIGEST_SUBCOMMAND,
+            _,
+        ]
         | [crate::model_window::MODEL_FIT_SUBCOMMAND, _, _]
         | [
             "vault-keyring",
@@ -188,7 +190,7 @@ fn valid_args(args: &[String]) -> bool {
         | ["vault-audit", "log"]
         | ["tools", "list"]
         | [
-            "schedule" | crate::model_switch::USE_HOSTED | crate::model_switch::USE_LOCAL,
+            "reset" | "schedule" | crate::model_switch::USE_HOSTED | crate::model_switch::USE_LOCAL,
             ..,
         ]
         | ["tools", "add" | "remove", _]
