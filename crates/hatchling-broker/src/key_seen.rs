@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use hatchling_vault::{KeyInfo, Keyring};
 
-use crate::vault_keyring::{utc_date, KeyringConfig};
+use crate::vault_keyring::{KeyringConfig, utc_date};
 
 /// How long a key may go without opening the vault before it's mentioned.
 const QUIET_AFTER: u64 = 90 * 24 * 60 * 60;
@@ -84,8 +84,18 @@ fn quiet(key: &KeyInfo, seen: &BTreeMap<String, u64>, now: u64) -> Option<String
     ))
 }
 
-/// A line for each key that's gone quiet, at `now`. A lone key opens the
-/// vault every time, so only with two or more is there a spare to forget.
+/// A line for each of `keys` that's gone quiet. A lone key opens the vault
+/// every time, so only with two or more is there a spare to forget.
+fn quiet_keys(keys: &[KeyInfo], seen: &BTreeMap<String, u64>, now: u64) -> Vec<String> {
+    if keys.len() < 2 {
+        return Vec::new();
+    }
+    keys.iter()
+        .filter_map(|key| quiet(key, seen, now))
+        .collect()
+}
+
+/// A line for each enrolled key that's gone quiet, at `now`.
 #[must_use]
 pub fn reminders(config: &KeyringConfig, now: u64) -> Vec<String> {
     let Some(path) = config.keyring.as_deref() else {
@@ -94,14 +104,7 @@ pub fn reminders(config: &KeyringConfig, now: u64) -> Vec<String> {
     let Ok(keyring) = Keyring::load(path) else {
         return Vec::new();
     };
-    let keys = keyring.hardware_keys();
-    if keys.len() < 2 {
-        return Vec::new();
-    }
-    let seen = read(path);
-    keys.iter()
-        .filter_map(|key| quiet(key, &seen, now))
-        .collect()
+    quiet_keys(&keyring.hardware_keys(), &read(path), now)
 }
 
 #[cfg(test)]
@@ -145,6 +148,14 @@ mod tests {
         // Nothing on record means nothing shows it works.
         let said = quiet(&key("", None), &none, NOW).unwrap();
         assert!(said.starts_with("Your key wrap-1 hasn't opened the vault lately."));
+    }
+
+    #[test]
+    fn a_lone_key_has_no_spare_to_forget() {
+        let old = key("Nano", None);
+        let none = BTreeMap::new();
+        assert!(quiet_keys(std::slice::from_ref(&old), &none, NOW).is_empty());
+        assert_eq!(quiet_keys(&[old.clone(), old], &none, NOW).len(), 2);
     }
 
     #[test]

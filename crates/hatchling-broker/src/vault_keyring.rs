@@ -2358,21 +2358,18 @@ pub(crate) mod tests {
     #[test]
     fn status_says_which_key_has_gone_quiet() {
         let (_scratch, _vault, config, _codes, _desk) = desk_vault("key-quiet", 2);
-        assert!(!report(&config).unwrap().contains("reminder:"), "both are new");
+        assert!(
+            !report(&config).unwrap().contains("reminder:"),
+            "both are new"
+        );
         let path = config.keyring.as_deref().unwrap();
         let long_ago = now() - 91 * 24 * 60 * 60;
-        crate::key_seen::note(path, &keys_of(&config)[0].id, long_ago).unwrap();
+        let keys = keys_of(&config);
+        crate::key_seen::note(path, &keys.first().unwrap().id, long_ago).unwrap();
         let shown = report(&config).unwrap();
         let line = format!("last opened the vault on {}", utc_date(long_ago).unwrap());
         assert_eq!(shown.matches("  reminder: Your key ").count(), 1, "{shown}");
         assert!(shown.contains(&line), "{shown}");
-    }
-
-    #[test]
-    fn a_lone_key_has_no_spare_to_forget() {
-        let (_scratch, _vault, config, _codes, _desk) = desk_vault("key-lone", 1);
-        let far_off = now() + 400 * 24 * 60 * 60;
-        assert!(crate::key_seen::reminders(&config, far_off).is_empty());
     }
 
     #[test]
@@ -2384,7 +2381,7 @@ pub(crate) mod tests {
         wanted.push(".seen");
         assert_eq!(seen.as_os_str(), wanted);
         let keys = keys_of(&config);
-        let (one, two) = (&keys[0].id, &keys[1].id);
+        let (one, two) = (&keys.first().unwrap().id, &keys.last().unwrap().id);
         crate::key_seen::note(path, one, 5).unwrap();
         crate::key_seen::note(path, two, 6).unwrap();
         crate::key_seen::note(path, one, 1).unwrap();
