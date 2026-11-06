@@ -3081,6 +3081,9 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             },
             "vault": {
                 "$ref": "#/$defs/VaultProtection"
+            },
+            "windows_setup": {
+                "type": "boolean"
             }
         },
         "required": [

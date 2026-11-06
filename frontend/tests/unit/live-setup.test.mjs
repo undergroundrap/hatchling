@@ -126,8 +126,8 @@ function live() {
 }
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 test('the broker\'s word, in the app\'s', () => {
-    assert.deepEqual(setupOf(wire), { tier: 'hardware_key', keys: 1, codes: 9, codesUnconfirmed: false, lastBackup: null });
-    assert.deepEqual(setupOf({ vault: { ...wire.vault, codes_unconfirmed: true }, last_backup: 7 }), { tier: 'hardware_key', keys: 1, codes: 9, codesUnconfirmed: true, lastBackup: 7 });
+    assert.deepEqual(setupOf(wire), { tier: 'hardware_key', keys: 1, codes: 9, codesUnconfirmed: false, lastBackup: null, windowsSetup: false });
+    assert.deepEqual(setupOf({ vault: { ...wire.vault, codes_unconfirmed: true }, last_backup: 7, windows_setup: true }), { tier: 'hardware_key', keys: 1, codes: 9, codesUnconfirmed: true, lastBackup: 7, windowsSetup: true });
 });
 test('it reads each time the connection opens, and only then', async () => {
     const { client, port, changes } = live();

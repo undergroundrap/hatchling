@@ -13,7 +13,7 @@ const MARKER: &str = "/etc/hatchling/windows-setup-version";
 
 /// What's said on a Linux shell, and what's said for it on Windows: the most
 /// particular first, as each replaces what the next would match.
-const SAID: [(&str, &str); 4] = [
+const SAID: [(&str, &str); 5] = [
     (
         "`sudo hatchling-broker unlock`",
         "Unlock (in the Start menu, under Hatchling Tools)",
@@ -23,8 +23,12 @@ const SAID: [(&str, &str); 4] = [
         "Unlock (in the Start menu, under Hatchling Tools)",
     ),
     (
-        "as yourself: hatchling-host url",
-        "open Hatchling from the Start menu",
+        "The app's address, as yourself: hatchling-host url",
+        "Open Hatchling from the Start menu.",
+    ),
+    (
+        "As yourself: hatchling-host url",
+        "Open Hatchling from the Start menu.",
     ),
     (
         "sudo hatchling-broker ",
@@ -51,10 +55,9 @@ fn said(text: &str, windows: bool) -> String {
     if !windows {
         return text.to_owned();
     }
-    SAID.iter()
-        .fold(text.to_owned(), |text, (linux, windows)| {
-            text.replace(linux, windows)
-        })
+    SAID.iter().fold(text.to_owned(), |text, (linux, windows)| {
+        text.replace(linux, windows)
+    })
 }
 
 #[cfg(test)]
@@ -78,8 +81,15 @@ mod tests {
             "Run Unlock (in the Start menu, under Hatchling Tools), and touch it"
         );
         assert_eq!(
-            said("Starting. The app's address, as yourself: hatchling-host url", true),
-            "Starting. The app's address, open Hatchling from the Start menu"
+            said(
+                "Starting. The app's address, as yourself: hatchling-host url",
+                true
+            ),
+            "Starting. Open Hatchling from the Start menu."
+        );
+        assert_eq!(
+            said("It needs its new address. As yourself: hatchling-host url", true),
+            "It needs its new address. Open Hatchling from the Start menu."
         );
         assert_eq!(
             said("See: sudo hatchling-broker doctor", true),

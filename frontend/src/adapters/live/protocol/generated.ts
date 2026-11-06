@@ -3654,6 +3654,11 @@ export type SetupState = {
      * Who can open the vault.
      */
     readonly vault: VaultProtection;
+    /**
+     * Whether the Windows setup made this install, so the checklist points
+     * to the Start menu rather than to a Linux shell.
+     */
+    readonly windows_setup?: boolean;
 };
 /**
  * An operation on the sign-ins the broker fills for a signed-in profile

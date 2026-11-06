@@ -131,8 +131,8 @@ pub mod usage;
 pub mod vault_access;
 pub mod vault_keyring;
 pub mod vault_ops;
-pub mod windows_setup;
 pub mod web_ops;
+pub mod windows_setup;
 
 pub use config::{
     ArtifactConfig, ChannelAccountSpec, Config, DEFAULT_MAX_CONNECTIONS, EgressAllowlist,
