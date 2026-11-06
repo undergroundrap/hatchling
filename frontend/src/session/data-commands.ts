@@ -6,6 +6,42 @@ export interface DataCommand {
     readonly note: string;
     readonly command: string;
 }
+/** Where the model runs. Both can be set up, and switched between in the app. */
+export const MODEL_COMMANDS: readonly DataCommand[] = [
+    {
+        title: 'A hosted model',
+        note: 'Fast to start, with no model on this machine. It asks for your key at its own prompt. Your words go to the host.',
+        command: 'sudo hatchling-broker use-hosted openrouter',
+    },
+    {
+        title: 'A model on this machine',
+        note: 'Private, and works offline. Needs a model running here, such as one from Ollama.',
+        command: 'sudo hatchling-broker use-local --model <name>',
+    },
+];
+/** Who can open the vault. */
+export const KEY_COMMANDS: readonly DataCommand[] = [
+    {
+        title: 'Protect it with a security key',
+        note: 'Guided, and safe to run again. Without a key, the vault\u2019s key sits in a file here, and it opens by itself after a restart.',
+        command: 'sudo hatchling-broker vault-keyring setup',
+    },
+    {
+        title: 'Lost a key, or had one stolen',
+        note: 'Removes it, and offers a replacement.',
+        command: 'sudo hatchling-broker vault-keyring lost-key',
+    },
+    {
+        title: 'Lock it now',
+        note: 'Takes the vault\u2019s key out of memory until you unlock it. It needs a security key.',
+        command: 'sudo hatchling-broker lock',
+    },
+    {
+        title: 'Check everything',
+        note: 'Says what stops Hatchling working here, and the fix.',
+        command: 'sudo hatchling-broker doctor',
+    },
+];
 /** Copying your data out, and bringing it back. */
 export const KEEP_COMMANDS: readonly DataCommand[] = [
     {

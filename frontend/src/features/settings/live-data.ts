@@ -3,7 +3,7 @@
 import type { AppContext } from '../../app/context.js';
 import { h } from '../../components/dom.js';
 import { button } from '../../components/ui.js';
-import { KEEP_COMMANDS, RESET_COMMANDS } from '../../session/data-commands.js';
+import { KEEP_COMMANDS, KEY_COMMANDS, MODEL_COMMANDS, RESET_COMMANDS } from '../../session/data-commands.js';
 import type { DataCommand } from '../../session/data-commands.js';
 function commandRow(ctx: AppContext, item: DataCommand): HTMLElement {
     const copy = (): void => {
@@ -13,6 +13,14 @@ function commandRow(ctx: AppContext, item: DataCommand): HTMLElement {
 }
 function commandGroup(ctx: AppContext, title: string, items: readonly DataCommand[]): HTMLElement {
     return h('section', {}, h('h3', { class: 'settings-section-title' }, title), h('div', { class: 'settings-group' }, ...items.map((item) => commandRow(ctx, item))));
+}
+/** Setting Hatchling up: where the model runs, and who can open the vault. */
+export function liveSetup(ctx: AppContext): HTMLElement[] {
+    return [
+        h('p', { class: 'settings-note' }, 'Run these in a terminal you opened yourself. Anything secret you type there goes to Hatchling, and to nothing else. Set up one model, or both: with both, you switch between them above.'),
+        commandGroup(ctx, 'Where your model runs', MODEL_COMMANDS),
+        commandGroup(ctx, 'Who can open your vault', KEY_COMMANDS),
+    ];
 }
 /** Back up, restore and start over. */
 export function liveData(ctx: AppContext): HTMLElement[] {
