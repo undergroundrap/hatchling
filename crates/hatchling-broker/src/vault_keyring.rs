@@ -2420,10 +2420,11 @@ pub(crate) mod tests {
 
     #[test]
     fn turning_reminders_on_says_why_it_could_not() {
-        let dir = Scratch::new("key-off-denied");
+        let (_scratch, vault) = scratch("key-off-denied");
+        std::fs::create_dir_all(&vault.root).unwrap();
         // A directory where the marker goes can't be removed as a file.
-        let keyring = dir.path().join("keyring");
-        std::fs::create_dir(dir.path().join("keyring.no-reminders")).unwrap();
+        let keyring = vault.root.join("keyring");
+        std::fs::create_dir(vault.root.join("keyring.no-reminders")).unwrap();
         assert!(crate::key_seen::set_reminders(&keyring, true).is_err());
         assert!(!crate::key_seen::reminders_on(&keyring));
         crate::key_seen::erase(&keyring);
