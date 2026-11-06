@@ -70,6 +70,14 @@ usbipd attach --wsl --busid <busid> --auto-attach
 
 After a restart of Windows or WSL, start WSL first (`wsl -d <your distro>`), run `usbipd list` for the BUSID, and attach it again to unlock (`usbipd attach --wsl --busid <busid>`). While it's attached, Windows can't use the key, for Windows Hello or passkeys in your browser: `usbipd detach --busid <busid>` gives it back. The BUSID can change, in another port or just after a restart of Windows: `usbipd list` always shows the current one.
 
+## See who unlocked it
+
+Every unlock, and every try that failed, is in the service's log:
+
+```bash
+sudo journalctl -u hatchling -g "unlock"
+```
+
 ## Lock it now
 
 If you're leaving a machine somewhere you don't trust, or something looks wrong:

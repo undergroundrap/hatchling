@@ -57,6 +57,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Fixed
 
+- **The browser starts under a strict umask.** Its snapshot's permissions came from the umask, which could shut a cell out of it.
 - **A locked Hatchling says it's locked.** The app used to look broken after a restart. It now says the vault is locked, and how to unlock it.
 - **Settings tells the truth about your data.** On a real install, the Data section no longer shows the demo's reset and export: it shows the real commands for backing up, restoring and starting over, to copy into a terminal.
 - **Nothing secret shows as it's typed.** A key that's plugged in is used with no "press Enter" first, so a PIN can't land on a visible prompt, and a backup code no longer shows on screen. Backup, restore and reset ask for your key before they stop the service, so cancelling leaves it running.
