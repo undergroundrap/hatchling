@@ -1,0 +1,9 @@
+Hatchling is free software, under the GNU Affero General Public License, version 3 or later. You don't need to accept anything to use it. The full license is installed with it, in LICENSE.txt.
+
+What this setup does:
+
+- Makes a WSL distro of its own, hatchling-wsl, and installs Hatchling there.
+- Adds Hatchling to your Start menu.
+- If you choose, keeps it running while you're logged in.
+
+It needs no administrator rights. Your PINs, keys and codes are only ever typed at Hatchling's own prompt, and this setup never sees them.
