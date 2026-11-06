@@ -1237,9 +1237,14 @@ mod tests {
             ));
         }
         assert_eq!(state.borrow().retries, 7, "none of those reached the key");
+        Device::change_pin(&mut device, "2468", "1234").unwrap();
+        assert_eq!(state.borrow().pin.as_deref(), Some("1234"), "the shortest");
         let longest = "7".repeat(63);
-        Device::change_pin(&mut device, "2468", &longest).unwrap();
+        Device::change_pin(&mut device, "1234", &longest).unwrap();
         assert_eq!(state.borrow().pin.as_deref(), Some(longest.as_str()));
+        // Through what the vault's side sees, a refusal is one.
+        assert!(Authenticator::change_pin(&mut device, "0000", "5678").is_err());
+        Authenticator::change_pin(&mut device, &longest, "5678").unwrap();
         let mut none = open(SoftKey::new(), None);
         assert!(matches!(
             Device::change_pin(&mut none, "2468", "135790"),
