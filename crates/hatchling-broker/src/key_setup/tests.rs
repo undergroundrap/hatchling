@@ -587,7 +587,7 @@ fn with_keys(name: &str, count: usize) -> (Scratch, VaultConfig, KeyringConfig, 
 #[test]
 fn a_lost_key_is_removed_and_a_replacement_offered() {
     let (_scratch, vault, config, mut bench, _) = with_keys("lost", 2);
-    let run = run_lost(&vault, &config, &mut bench, &["2", "lost", "", "no"], &[]);
+    let run = run_lost(&vault, &config, &mut bench, &["2", "lost", "no"], &[]);
     assert_eq!(run.done.unwrap(), Done::Protected);
     assert_eq!(names(&config), ["Test key"]);
     assert!(run.said.text().contains("Removed: Test key 2."));
@@ -599,7 +599,7 @@ fn a_lost_key_is_removed_and_a_replacement_offered() {
         &vault,
         &config,
         &mut bench,
-        &["2", "lost", "", "yes", ""],
+        &["2", "lost", "yes", ""],
         &[&[2]],
     );
     assert_eq!(run.done.unwrap(), Done::Protected);
@@ -616,7 +616,7 @@ fn a_stolen_key_also_changes_the_vaults_key() {
         &vault,
         &config,
         &mut bench,
-        &["2", "stolen", "", "", "", "<code>", "no"],
+        &["2", "stolen", "", "<code>", "no"],
         &[],
     );
     assert_eq!(run.done.unwrap(), Done::Protected);
@@ -655,7 +655,7 @@ fn an_only_key_lost_is_replaced_first() {
         &vault,
         &config,
         &mut bench,
-        &["1", "lost", code.as_str(), "", "", "no"],
+        &["1", "lost", code.as_str(), "", "no"],
         &[&[1]],
     );
     assert_eq!(run.done.unwrap(), Done::Protected);

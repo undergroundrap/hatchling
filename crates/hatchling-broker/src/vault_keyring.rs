@@ -918,9 +918,8 @@ fn no_key_to_add(why: &str) -> String {
     )
 }
 
-/// How a change to the keys is authorized when a key can be reached.
-
-/// How it is authorized when none can: a backup code.
+/// How a change to the keys is authorized when no key can be reached: a
+/// backup code.
 const AUTHORIZE_CODE_PROMPT: &str = "No security key can be reached. To authorize, plug one in and run this again, or type a backup code (it is used up, and nothing shows as you type), or nothing to stop:";
 
 /// What stops a guided flow without a change.
@@ -2695,7 +2694,6 @@ pub(crate) mod tests {
             &[
                 ("YubiKey 5C, desk", Some(0)),
                 ("yes", Some(0)),
-                ("", Some(0)),
                 ("", Some(2)),
             ],
         );
@@ -2998,26 +2996,6 @@ pub(crate) mod tests {
             ),
             (1, 2, 1)
         );
-        // A key in reach, but the last code typed: the vault refuses it
-        // before spending it.
-        let mut operator = Operator::new(
-            &desk,
-            &[
-                (second.as_str(), Some(0)),
-                ("one key", Some(0)),
-                ("yes", Some(0)),
-                (last, Some(0)),
-            ],
-        );
-        let typed = remove_key(
-            &config,
-            &mut |prompt| Ok(operator.answer(prompt)),
-            &mut desk,
-        );
-        assert!(
-            matches!(&typed, Err(Error::Vault { source: hatchling_vault::Error::KeyChange { reason } }) if reason.starts_with("your last backup code cannot authorize this")),
-            "{typed:?}"
-        );
         assert_eq!((keys_of(&config).len(), codes_left(&config)), (2, 1));
         // The asking and the key's unlock, on their own.
         let mut operator = Operator::new(&desk, &[("  a-code ", None), ("", None)]);
@@ -3193,7 +3171,6 @@ pub(crate) mod tests {
             &[
                 ("desk", Some(0)),
                 ("yes", Some(0)),
-                ("", Some(0)),
                 ("", Some(3)),
             ],
             &mut desk,
