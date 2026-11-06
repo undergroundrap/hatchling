@@ -26,6 +26,8 @@ use std::path::{Path, PathBuf};
 use crate::Error;
 
 /// Where the browser opens its channel to the broker.
+/// Where the app asks if the vault is locked.
+const LOCKED_PATH: &str = "/hatchling-locked";
 pub const UI_PATH: &str = "/ui";
 
 /// Where the Machine view's channel is opened.
@@ -76,6 +78,12 @@ impl Head {
             _ => return None,
         };
         self.websocket_key().map(|key| (channel, key))
+    }
+
+    /// Whether this asks if the vault is locked.
+    #[must_use]
+    pub fn asks_if_locked(&self) -> bool {
+        self.method == "GET" && self.target == LOCKED_PATH
     }
 
     /// Whether this request was addressed to the host on `port`: its
@@ -231,6 +239,20 @@ pub fn answer(writer: &mut impl Write, dir: &Path, head: &Head) -> Result<(), Er
     }
 }
 
+/// Answers whether the vault is locked.
+///
+/// # Errors
+///
+/// [`Error::Io`] when the answer can't be written.
+pub fn locked(writer: &mut impl Write, locked: bool) -> Result<(), Error> {
+    let body = if locked {
+        "{\"locked\":true}"
+    } else {
+        "{\"locked\":false}"
+    };
+    respond(writer, 200, "OK", "application/json", body.as_bytes())
+}
+
 /// Refuses a request not addressed to this host, or an upgrade not from
 /// its own pages, with a bare `403`.
 ///
@@ -281,6 +303,25 @@ fn respond(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn locked_is_a_plain_answer_to_one_question() {
+        let asked = head("GET /hatchling-locked HTTP/1.1\r\nHost: 127.0.0.1:7340\r\n\r\n").unwrap();
+        assert!(asked.asks_if_locked());
+        for other in [
+            "POST /hatchling-locked HTTP/1.1\r\nHost: 127.0.0.1:7340\r\n\r\n",
+            "GET /index.html HTTP/1.1\r\nHost: 127.0.0.1:7340\r\n\r\n",
+        ] {
+            assert!(!head(other).unwrap().asks_if_locked());
+        }
+        for (state, body) in [(true, "{\"locked\":true}"), (false, "{\"locked\":false}")] {
+            let mut out = Vec::new();
+            locked(&mut out, state).unwrap();
+            let out = String::from_utf8(out).unwrap();
+            assert!(out.starts_with("HTTP/1.1 200 OK"), "{out}");
+            assert!(out.ends_with(body), "{out}");
+        }
+    }
 
     fn head(text: &str) -> Result<Head, Error> {
         read_head(&mut text.as_bytes())

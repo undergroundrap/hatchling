@@ -23,6 +23,7 @@ Type=exec
 User=%i
 Environment=HATCHLING_UI_SOCKET=/var/lib/hatchling/ui.sock
 Environment=HATCHLING_OPERATOR_SOCKET=/var/lib/hatchling/operator.sock
+Environment=HATCHLING_UNLOCK_SOCKET=/var/lib/hatchling/vault.unlock/unlock.sock
 Environment=HATCHLING_HOST_UI=/usr/local/share/hatchling/ui
 ExecStart=/usr/local/bin/hatchling-host
 Restart=on-failure

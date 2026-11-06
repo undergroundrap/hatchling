@@ -172,6 +172,12 @@ fn listen(path: &Path) -> Result<UnixListener, Error> {
     let listener = UnixListener::bind(path).map_err(|e| failed(e.to_string()))?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
         .map_err(|e| failed(e.to_string()))?;
+    // Past this directory, not into it: the app's host may see that the
+    // socket is there, so the app can say it's locked. Only root may use it.
+    if let Some(dir) = path.parent() {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o711))
+            .map_err(|e| failed(e.to_string()))?;
+    }
     Ok(listener)
 }
 

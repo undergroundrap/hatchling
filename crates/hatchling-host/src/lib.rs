@@ -73,6 +73,8 @@ pub struct Settings {
     pub port: u16,
     /// The broker's operator socket, when the Machine view is served too.
     pub operator_socket: Option<PathBuf>,
+    /// Where the vault keeper waits while it's locked, when that's known.
+    pub unlock_socket: Option<PathBuf>,
 }
 
 impl Settings {
@@ -108,11 +110,15 @@ impl Settings {
         let operator_socket = get(environment::HATCHLING_OPERATOR_SOCKET.name)
             .map(|raw| absolute_path("HATCHLING_OPERATOR_SOCKET", &raw))
             .transpose()?;
+        let unlock_socket = get(environment::HATCHLING_UNLOCK_SOCKET.name)
+            .map(|raw| absolute_path("HATCHLING_UNLOCK_SOCKET", &raw))
+            .transpose()?;
         Ok(Self {
             ui_socket: absolute(environment::HATCHLING_UI_SOCKET.name)?,
             ui_dir: absolute(environment::HATCHLING_HOST_UI.name)?,
             port,
             operator_socket,
+            unlock_socket,
         })
     }
 }
@@ -198,8 +204,18 @@ pub fn handle(mut stream: TcpStream, settings: &Settings) -> Result<(), Error> {
             stream.set_read_timeout(None)?;
             bridge::bridge(stream, socket)
         }
+        None if head.asks_if_locked() => http::locked(&mut stream, locked(settings)),
         None => http::answer(&mut stream, &settings.ui_dir, &head),
     }
+}
+
+/// Whether the vault keeper is waiting to be unlocked: all the host knows
+/// of it, and all it says.
+fn locked(settings: &Settings) -> bool {
+    settings
+        .unlock_socket
+        .as_ref()
+        .is_some_and(|socket| std::fs::symlink_metadata(socket).is_ok())
 }
 
 /// Serves `listener` forever, each connection on its own thread, at most
@@ -350,6 +366,34 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The socket being there is what locked means, and nothing else is
+    /// looked at.
+    #[test]
+    fn locked_means_the_keepers_socket_is_there() {
+        let dir = std::env::temp_dir().join(format!("hatchling-host-lock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("unlock.sock");
+        let mut settings = parse(&[
+            ("HATCHLING_UI_SOCKET", "/run/ui.sock"),
+            ("HATCHLING_HOST_UI", "/srv/ui"),
+            ("HATCHLING_UNLOCK_SOCKET", socket.to_str().unwrap()),
+        ])
+        .unwrap();
+        assert_eq!(settings.unlock_socket.as_deref(), Some(socket.as_path()));
+        assert!(!locked(&settings));
+        std::fs::write(&socket, b"").unwrap();
+        assert!(locked(&settings));
+        settings.unlock_socket = None;
+        assert!(!locked(&settings));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(parse(&[
+            ("HATCHLING_UI_SOCKET", "/run/ui.sock"),
+            ("HATCHLING_HOST_UI", "/srv/ui"),
+            ("HATCHLING_UNLOCK_SOCKET", "relative"),
+        ])
+        .is_err());
+    }
+
     #[test]
     fn the_host_binds_loopback_only() {
         let listener = bind(0).unwrap();
@@ -427,6 +471,7 @@ mod tests {
             ui_dir: dir.clone(),
             port: 0,
             operator_socket: None,
+            unlock_socket: None,
         };
         let listener = bind(0).unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -471,6 +516,7 @@ mod tests {
             ui_dir: dir.clone(),
             port: 0,
             operator_socket: None,
+            unlock_socket: None,
         };
         let listener = bind(0).unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -518,6 +564,7 @@ mod tests {
             ui_dir: dir.clone(),
             port: 0,
             operator_socket: Some(dir.join("operator.sock")),
+            unlock_socket: None,
         };
         let listener = bind(0).unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -598,6 +645,7 @@ mod tests {
             ui_dir: dir.clone(),
             port: 0,
             operator_socket: None,
+            unlock_socket: None,
         };
         let listener = bind(0).unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -632,6 +680,7 @@ mod tests {
             ui_dir: dir.clone(),
             port: 0,
             operator_socket: Some(dir.join("operator.sock")),
+            unlock_socket: None,
         };
         let upgrade = |path: &str, host: &str, origin: Option<&str>| {
             let origin = origin.map_or(String::new(), |origin| format!("Origin: {origin}\r\n"));

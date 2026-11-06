@@ -47,11 +47,25 @@ const UNREADABLE = 'Hatchling sent a message this version of the app cannot read
 const REPEATED = 'Hatchling repeated its handshake in the middle of the session, so the app disconnected.';
 const UNANSWERED = 'The connection closed before Hatchling answered. It may still have been received.';
 const NOT_CONNECTED = 'The app is not connected to Hatchling, so nothing was sent.';
+const LOCKED = 'Hatchling is locked. In a terminal on this machine, run `sudo hatchling-broker unlock`. Then run `hatchling-host url` as yourself, and open the address it gives.';
+/** Whether the answer to `ask` says the vault is waiting for its owner. A host that can't say isn't taken to mean locked. */
+export async function lockedNow(ask: () => Promise<{
+    json(): Promise<unknown>;
+}>): Promise<boolean> {
+    try {
+        const said = await (await ask()).json();
+        return typeof said === 'object' && said !== null && 'locked' in said && said.locked === true;
+    }
+    catch {
+        return false;
+    }
+}
 export class LiveClient {
     readonly #transport: UiTransport;
     readonly #name: string;
     readonly #token: string | undefined;
     readonly #sink: (event: UiEvent) => string | undefined;
+    readonly #locked: () => Promise<boolean>;
     readonly #ledger = new EventLedger();
     readonly #listeners = new Set<() => void>();
     readonly #replies = new Map<string, Promise<Reply>>();
@@ -68,11 +82,12 @@ export class LiveClient {
      * allow). That ends the connection, and the event is not counted as
      * applied, so a reconnect does not skip past it.
      */
-    constructor(transport: UiTransport, name: string, sink: (event: UiEvent) => string | undefined, token?: string) {
+    constructor(transport: UiTransport, name: string, sink: (event: UiEvent) => string | undefined, token?: string, locked: () => Promise<boolean> = () => Promise.resolve(false)) {
         this.#transport = transport;
         this.#name = name;
         this.#sink = sink;
         this.#token = token;
+        this.#locked = locked;
     }
     connection(): ConnectionState {
         return this.#connection;
@@ -105,8 +120,14 @@ export class LiveClient {
                     this.#receive(text);
             },
             closed: detail => {
-                if (current())
-                    this.#lost({ kind: 'offline', detail: this.#phase === 'greeting' && opened ? NOT_LET_IN : detail }, 'idle');
+                if (!current())
+                    return;
+                this.#lost({ kind: 'offline', detail: this.#phase === 'greeting' && opened ? NOT_LET_IN : detail }, 'idle');
+                const lost = this.#generation;
+                void this.#locked().then((locked) => {
+                    if (locked && lost === this.#generation)
+                        this.#update({ kind: 'sign-in-required', detail: LOCKED });
+                });
             },
         });
     }

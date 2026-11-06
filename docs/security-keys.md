@@ -92,7 +92,7 @@ It's rarely the key. Most keys flash when they get power, so:
 
 ## After a restart
 
-The service waits, locked: the app can't connect, and `sudo hatchling-broker doctor` says so. Plug in a key (in WSL, attach it), and run:
+The service waits, locked: the app says so, and so does `sudo hatchling-broker doctor`. Plug in a key (in WSL, attach it), and run:
 
 ```bash
 sudo hatchling-broker unlock

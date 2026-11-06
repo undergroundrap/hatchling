@@ -55,6 +55,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Fixed
 
+- **A locked Hatchling says it's locked.** The app used to look broken after a restart. It now says the vault is locked, and how to unlock it.
 - **Settings tells the truth about your data.** On a real install, the Data section no longer shows the demo's reset and export: it shows the real commands for backing up, restoring and starting over, to copy into a terminal.
 - **Nothing secret shows as it's typed.** A key that's plugged in is used with no "press Enter" first, so a PIN can't land on a visible prompt, and a backup code no longer shows on screen. Backup, restore and reset ask for your key before they stop the service, so cancelling leaves it running.
 - **More security keys work.** Checked against how libfido2 copes with keys that aren't YubiKeys: a key's reply may use longer forms of its numbers, a key may say it wasn't touched in other ways, and registering sends the names older keys want. Each kind of key is simulated in the tests; only YubiKeys have been tried for real.
