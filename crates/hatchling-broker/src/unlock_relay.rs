@@ -397,7 +397,9 @@ pub fn unlock_main(program: &str, vault: &VaultConfig) -> ExitCode {
         );
         return ExitCode::FAILURE;
     }
-    let limits = std::env::var(env::HATCHLING_CELL_CGROUP.name).ok();
+    let limits = std::env::var(env::HATCHLING_CELL_CGROUP.name)
+        .ok()
+        .or_else(crate::doctor::service_cell_cgroup);
     if let Some(what) = crate::doctor::cell_limits_problem(limits.as_deref()) {
         let fix = crate::doctor::CELL_LIMITS_FIX;
         let _ = writeln!(
