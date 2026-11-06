@@ -13,6 +13,9 @@ name: release
 #     get-hatchling.sh, pinned to the tag, so a person installs with curl
 #     alone (scripts/release-installer.sh; CI's service job installs with
 #     them on every change);
+#   - a Windows setup holding x86_64's programs, the app and the installer,
+#     scanned with Microsoft Defender (installer/windows; it isn't compared
+#     twice like the rest, and what it holds is);
 #   - a build-provenance attestation for every file, so
 #     `gh attestation verify <file> --repo undergroundrap/hatchling` checks it
 #     was built here, by this workflow, from the tag;
@@ -37,6 +40,7 @@ on:
   pull_request:
     paths:
       - .github/workflows/release.yml
+      - installer/windows/**
       - scripts/release-*.sh
       - scripts/test_release_notes.py
       - scripts/publish-crates.sh
@@ -297,10 +301,89 @@ jobs:
       - name: Package and verify every published crate
         run: cargo publish --workspace --dry-run --locked
 
+  windows-setup:
+    name: Windows setup
+    # What it holds has already been compared, byte for byte. It compiles
+    # our own script over those files, with no token, and only the job that
+    # releases attests it.
+    needs: [reproducible]
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        # actions/checkout v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Download the first x86_64 build
+        # actions/download-artifact v8.0.2
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: build-x86_64-unknown-linux-gnu-a
+          path: downloads/build
+
+      - name: Download the app's first build
+        # actions/download-artifact v8.0.2
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: ui-a
+          path: downloads/ui
+
+      - name: Gather what the setup holds
+        shell: bash
+        env:
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || 'v0.0.0' }}
+        run: |
+          target=x86_64-unknown-linux-gnu
+          mkdir setup-files
+          for program in broker agent host browser; do
+            cp "downloads/build/hatchling-$program-$target" setup-files/
+          done
+          cp downloads/ui/hatchling-ui.tar.gz setup-files/
+          scripts/release-installer.sh setup-files "$TAG"
+          (cd setup-files && sha256sum --text -- * | sed 's/ \*/  /' > SHA256SUMS && cat SHA256SUMS)
+          [ "$(wc -l < setup-files/SHA256SUMS)" = 7 ] || { echo "expected 7 files"; exit 1; }
+
+      - name: Install Inno Setup
+        run: choco install innosetup --version=6.7.1 --no-progress -y
+
+      - name: Build the setup
+        shell: pwsh
+        env:
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || 'v0.0.0' }}
+        run: |
+          $version = $env:TAG.TrimStart('v')
+          New-Item -ItemType Directory -Force out | Out-Null
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Q "/DReleaseDir=$PWD\setup-files" "/DOutputDir=$PWD\out" "/DAppVersion=$version" installer\windows\hatchling.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-FileHash out\*.exe | Format-List
+
+      - name: Scan it with Microsoft Defender
+        # A guess from Defender's model has called a setup a trojan: a build
+        # it flags goes no further. A local scan isn't its cloud's verdict.
+        shell: pwsh
+        run: |
+          $scanner = Get-ChildItem "C:\ProgramData\Microsoft\Windows Defender\Platform\*\MpCmdRun.exe" -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $scanner) { $scanner = "$env:ProgramFiles\Windows Defender\MpCmdRun.exe" }
+          $file = (Get-ChildItem out\*.exe | Select-Object -First 1).FullName
+          & $scanner -SignatureUpdate | Out-Null
+          & $scanner -Scan -ScanType 3 -File $file -DisableRemediation
+          if ($LASTEXITCODE -ne 0) { Write-Host "Defender flagged $file"; exit 1 }
+
+      - name: Keep the setup
+        # actions/upload-artifact v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: windows-setup
+          path: out/*.exe
+          if-no-files-found: error
+
   release:
     name: GitHub release
     if: github.ref_type == 'tag'
-    needs: [notes, reproducible, sbom, crates]
+    needs: [notes, reproducible, sbom, crates, windows-setup]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -334,6 +417,13 @@ jobs:
           name: sbom
           path: downloads/sbom
 
+      - name: Download the Windows setup
+        # actions/download-artifact v8.0.2
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: windows-setup
+          path: downloads/windows
+
       - name: Download the notes
         # actions/download-artifact v8.0.2
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
@@ -346,12 +436,12 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           mkdir dist
-          cp downloads/build-*-a/* downloads/sbom/* downloads/ui/* dist/
+          cp downloads/build-*-a/* downloads/sbom/* downloads/ui/* downloads/windows/* dist/
           # The installer and get-hatchling.sh, pinned to this tag: what a
           # person installs with, with no clone.
           scripts/release-installer.sh dist "$TAG"
           (cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
-          [ "$(wc -l < dist/SHA256SUMS)" = 25 ] || { echo "expected 25 files: 10 programs, 10 SBOMs, 2 build infos, the app, the installer, get-hatchling.sh"; exit 1; }
+          [ "$(wc -l < dist/SHA256SUMS)" = 26 ] || { echo "expected 26 files: 10 programs, 10 SBOMs, 2 build infos, the app, the Windows setup, the installer, get-hatchling.sh"; exit 1; }
 
       - name: Attest every file's provenance
         # actions/attest-build-provenance v4.2.2
