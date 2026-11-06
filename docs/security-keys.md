@@ -13,6 +13,15 @@ You don't need a key: without one, nothing here applies, and Hatchling works as 
 - **One port is fine.** Setup registers one key, you swap, and it notices the next.
 - **USB, not Bluetooth.** Your PIN's hash goes to whatever answers as a key, so Hatchling only talks to keys on USB: nothing in radio range can pose as one.
 
+**Which keys have been tested.** Hatchling speaks FIDO2 itself, the open standard every key follows, so any key with `hmac-secret` should work. So far it has only been tried on these:
+
+| Key | Firmware | Status |
+| --- | --- | --- |
+| YubiKey 5C NFC | 5.7.4 | Tested: setup, unlock, losing a key |
+| YubiKey 5C Nano | 5.7.4 | Tested: setup, unlock, losing a key |
+
+Any other key is untested, not unsupported. Try it: setup changes nothing until your keys are ready. Whether it works or not, please [tell us how it went](https://github.com/undergroundrap/hatchling/issues/new?template=security_key.yml), or send a pull request adding your key to this table.
+
 ## Set it up
 
 In a terminal you opened yourself (your key's PIN is typed there, and goes only to the key):
