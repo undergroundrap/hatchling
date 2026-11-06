@@ -47,18 +47,26 @@ const UNREADABLE = 'Hatchling sent a message this version of the app cannot read
 const REPEATED = 'Hatchling repeated its handshake in the middle of the session, so the app disconnected.';
 const UNANSWERED = 'The connection closed before Hatchling answered. It may still have been received.';
 const NOT_CONNECTED = 'The app is not connected to Hatchling, so nothing was sent.';
-const LOCKED = 'Hatchling is locked. In a terminal on this machine, run `sudo hatchling-broker unlock`. Then run `hatchling-host url` as yourself, and open the address it gives.';
-/** Whether the answer to `ask` says the vault is waiting for its owner. A host that can't say isn't taken to mean locked. */
-export async function lockedNow(ask: () => Promise<{
+const LOCKED = 'In a terminal on this machine, run: sudo hatchling-broker unlock. Then, as yourself, run: hatchling-host url, and open the address it gives.';
+/** What Hatchling's host says of the vault: nothing, on a page it didn't serve. */
+export type HostState = 'locked' | 'unlocked' | 'no-host';
+/** The answer to `ask`. Anything but the host's own answer means no host. */
+export async function hostState(ask: () => Promise<{
     json(): Promise<unknown>;
-}>): Promise<boolean> {
+}>): Promise<HostState> {
     try {
         const said = await (await ask()).json();
-        return typeof said === 'object' && said !== null && 'locked' in said && said.locked === true;
+        if (typeof said !== 'object' || said === null || !('locked' in said) || typeof said.locked !== 'boolean')
+            return 'no-host';
+        return said.locked ? 'locked' : 'unlocked';
     }
     catch {
-        return false;
+        return 'no-host';
     }
+}
+/** Asks the host that served this page, if one did. */
+export function askTheHost(): Promise<HostState> {
+    return hostState(() => fetch('/hatchling-locked'));
 }
 export class LiveClient {
     readonly #transport: UiTransport;
@@ -126,7 +134,7 @@ export class LiveClient {
                 const lost = this.#generation;
                 void this.#locked().then((locked) => {
                     if (locked && lost === this.#generation)
-                        this.#update({ kind: 'sign-in-required', detail: LOCKED });
+                        this.#update({ kind: 'locked', detail: LOCKED });
                 });
             },
         });

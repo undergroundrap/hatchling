@@ -5,7 +5,7 @@ import type { Command } from '../protocol/models.js';
 export type ChatSendCommand = Extract<Command, {
     type: 'chat.send' | 'chat.attach';
 }>;
-export type ConnectionKind = 'ready' | 'offline' | 'reconnecting' | 'restarting' | 'unavailable' | 'sign-in-required';
+export type ConnectionKind = 'ready' | 'offline' | 'reconnecting' | 'restarting' | 'unavailable' | 'sign-in-required' | 'locked';
 export interface ConnectionState {
     readonly kind: ConnectionKind;
     readonly detail: string;

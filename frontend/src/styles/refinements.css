@@ -210,3 +210,17 @@ body.has-artifact-dock .page { width: 100%; margin-inline: auto; }
 .data-command code {
     overflow-wrap: anywhere;
 }
+
+.address-notice {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+    max-width: 560px;
+    margin: 20vh auto 0;
+    padding: 0 24px;
+}
+
+.address-notice code {
+    overflow-wrap: anywhere;
+}
