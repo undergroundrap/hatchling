@@ -126,6 +126,30 @@ fn run_pins(
     swaps: &[&[usize]],
     pins: &[&str],
 ) -> Run {
+    run_doing(run, vault, config, bench, answers, swaps, pins)
+}
+
+/// [`run_with`], for a key that's gone.
+fn run_lost(
+    vault: &VaultConfig,
+    config: &KeyringConfig,
+    bench: &mut Bench,
+    answers: &[&str],
+    swaps: &[&[usize]],
+) -> Run {
+    run_doing(lost_key, vault, config, bench, answers, swaps, &[])
+}
+
+/// [`run_pins`], running `guide`.
+fn run_doing(
+    guide: fn(&mut Setup<'_>) -> Result<Done, Error>,
+    vault: &VaultConfig,
+    config: &KeyringConfig,
+    bench: &mut Bench,
+    answers: &[&str],
+    swaps: &[&[usize]],
+    pins: &[&str],
+) -> Run {
     let said = Said::default();
     let stores = secrets(vault);
     let mut answers: VecDeque<String> = answers.iter().map(|answer| (*answer).to_owned()).collect();
@@ -161,7 +185,7 @@ fn run_pins(
         })
     };
     let mut out = said.clone();
-    let done = run(&mut Setup {
+    let done = guide(&mut Setup {
         vault,
         config,
         stores: &stores,
@@ -539,6 +563,126 @@ fn a_registering_counts_its_touches() {
     assert_eq!(left.get(), 0);
     assert!(touch_line(Touch::Waiting, &left).starts_with("Touch your key now"));
     assert_eq!(left.get(), 0);
+}
+
+/// A vault with `count` keys, the first plugged in alone, ready for one to
+/// go missing.
+fn with_keys(name: &str, count: usize) -> (Scratch, VaultConfig, KeyringConfig, Bench, Run) {
+    let (scratch, vault, config) = vault(name);
+    let plugged: Vec<usize> = (0..count).collect();
+    let mut bench = Bench::new_keys(count + 1, &plugged);
+    let answers: &[&str] = if count == 1 {
+        &["", "no", "one key", "<code>"]
+    } else {
+        &["", "", "<code>"]
+    };
+    let run = run_with(&vault, &config, &mut bench, answers, &[]);
+    assert_eq!(run.done.as_ref().ok(), Some(&Done::Protected));
+    *bench.plugged.borrow_mut() = vec![0];
+    (scratch, vault, config, bench, run)
+}
+
+/// A lost key goes, by its number, and another is offered. What's left
+/// still opens the vault.
+#[test]
+fn a_lost_key_is_removed_and_a_replacement_offered() {
+    let (_scratch, vault, config, mut bench, _) = with_keys("lost", 2);
+    let run = run_lost(&vault, &config, &mut bench, &["2", "lost", "", "no"], &[]);
+    assert_eq!(run.done.unwrap(), Done::Protected);
+    assert_eq!(names(&config), ["Test key"]);
+    assert!(run.said.text().contains("Removed: Test key 2."));
+    assert!(!run.said.text().contains("Changing the vault's key"));
+    assert!(run.asked.iter().any(|asked| asked.contains("  2. ")));
+    // A replacement, in the same go.
+    let (_other, vault, config, mut bench, _) = with_keys("lost-new", 2);
+    let run = run_lost(
+        &vault,
+        &config,
+        &mut bench,
+        &["2", "lost", "", "yes", ""],
+        &[&[2]],
+    );
+    assert_eq!(run.done.unwrap(), Done::Protected);
+    assert_eq!(names(&config).len(), 2);
+}
+
+/// A stolen key also changes the vault's key: the stores are sealed anew,
+/// and there are new codes, confirmed like any.
+#[test]
+fn a_stolen_key_also_changes_the_vaults_key() {
+    let (_scratch, vault, config, mut bench, _) = with_keys("stolen", 2);
+    let before: Vec<Vec<u8>> = sealed_files(&vault);
+    let run = run_lost(
+        &vault,
+        &config,
+        &mut bench,
+        &["2", "stolen", "", "", "", "<code>", "no"],
+        &[],
+    );
+    assert_eq!(run.done.unwrap(), Done::Protected);
+    assert_eq!(names(&config), ["Test key"]);
+    assert!(run.said.text().contains("Changing the vault's key"));
+    assert!(run.said.text().contains("Your recovery kit"));
+    assert_ne!(sealed_files(&vault), before, "sealed anew");
+    assert!(!keyring_of(&config).rotation_pending());
+}
+
+/// Every sealed file in the vault's stores.
+fn sealed_files(vault: &VaultConfig) -> Vec<Vec<u8>> {
+    let mut files = Vec::new();
+    for (_, dir) in secrets(vault) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            files.push(std::fs::read(entry.unwrap().path()).unwrap());
+        }
+    }
+    files
+}
+
+/// An only key that's gone: a backup code gets in, its replacement comes
+/// first, and the vault is never without a key.
+#[test]
+fn an_only_key_lost_is_replaced_first() {
+    let (_scratch, vault, config, mut bench, first) = with_keys("lost-only", 1);
+    let code = first.said.text();
+    let code = code
+        .lines()
+        .rfind(|line| line.trim_start().starts_with("10."))
+        .and_then(|line| line.split_whitespace().last())
+        .unwrap()
+        .to_owned();
+    *bench.plugged.borrow_mut() = Vec::new();
+    let run = run_lost(
+        &vault,
+        &config,
+        &mut bench,
+        &["1", "lost", code.as_str(), "", "", "no"],
+        &[&[1]],
+    );
+    assert_eq!(run.done.unwrap(), Done::Protected);
+    assert!(run.said.text().contains("its replacement comes first"));
+    assert_eq!(names(&config), ["Test key 2"]);
+}
+
+/// Nothing's removed on an answer that's neither, or for no key at all.
+#[test]
+fn a_lost_key_needs_a_clear_answer() {
+    let (_scratch, vault, config, mut bench, _) = with_keys("lost-unclear", 2);
+    let run = run_lost(&vault, &config, &mut bench, &["2", "x", "y", "z"], &[]);
+    assert!(run.done.is_err());
+    assert_eq!(names(&config).len(), 2);
+    let (_other, vault, config) = self::vault("lost-none");
+    let mut bench = Bench::new_keys(1, &[0]);
+    let run = run_lost(&vault, &config, &mut bench, &["1"], &[]);
+    assert!(matches!(run.done, Err(Error::Usage { .. })));
+}
+
+/// The guided actions are these two.
+#[test]
+fn the_guided_actions_are_setup_and_lost_key() {
+    assert!(guided(Some("setup")));
+    assert!(guided(Some("lost-key")));
+    assert!(!guided(Some("status")));
+    assert!(!guided(None));
 }
 
 /// Two of a model are told apart, and names already taken are passed over.

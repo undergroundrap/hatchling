@@ -104,13 +104,20 @@ sudo hatchling-broker vault-keyring add-key
 
 ## Lost a key
 
-Your other key still opens the vault, or a backup code does. Remove the lost one, so a finder can't use it with a guessed PIN, and add a replacement as above:
+Your other key still opens the vault, or a backup code does. One command takes it from there:
 
 ```bash
-sudo hatchling-broker vault-keyring remove-key
+sudo hatchling-broker vault-keyring lost-key
 ```
 
-`vault-keyring status` lists your keys by name.
+Pick the key from the list, and say whether it's **lost** or **stolen**:
+
+- **Lost:** it's removed, so a finder can't use it with a guessed PIN.
+- **Stolen:** the vault's key changes too, and you get new backup codes, so an old copy of your files is no use with the key. It takes a few more seconds, and your other key stays registered.
+
+Then it offers to add a replacement. If it was your only key, the replacement comes first, and a backup code gets you in.
+
+To remove a key you still have, say an old one you've retired: `vault-keyring remove-key`.
 
 **Both keys lost, and no backup codes:** the vault can't be opened, by anyone. That's what protects it. You'd start fresh: your API keys, conversation, memory and schedules are sealed under it, and are gone.
 

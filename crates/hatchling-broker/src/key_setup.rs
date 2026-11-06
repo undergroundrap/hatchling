@@ -42,6 +42,15 @@ use crate::vault_keyring::{self as ring, Ask, Devices, KeyringConfig};
 
 /// The action.
 pub const SETUP_ACTION: &str = "setup";
+/// The `vault-keyring` action for a key that's gone.
+pub const LOST_ACTION: &str = "lost-key";
+
+/// Whether `action` is one of the guided ones, run in the operator's
+/// terminal with the service stopped.
+#[must_use]
+pub fn guided(action: Option<&str>) -> bool {
+    matches!(action, Some(SETUP_ACTION | LOST_ACTION))
+}
 
 /// How often it looks for a key.
 const LOOK_EVERY: Duration = Duration::from_millis(500);
@@ -127,9 +136,88 @@ pub fn run(setup: &mut Setup<'_>) -> Result<Done, Error> {
     if !path.exists() {
         ring::init(setup.vault, setup.config)?;
     }
+    finish_interrupted(setup, &path)?;
     let keyring = Keyring::load(&path).map_err(ring::vault_error)?;
-    if keyring.rotation_pending() {
-        setup.say("A change to the vault's key was interrupted. Finishing it now.");
+    if keyring.tier() == Tier::HardwareKey {
+        carry_on(setup, keyring, &path)
+    } else {
+        protect(setup, keyring, &path)
+    }
+}
+
+/// Finishes a change to the vault's key that was cut off, if one was.
+fn finish_interrupted(setup: &mut Setup<'_>, path: &Path) -> Result<(), Error> {
+    if !Keyring::load(path)
+        .map_err(ring::vault_error)?
+        .rotation_pending()
+    {
+        return Ok(());
+    }
+    setup.say("A change to the vault's key was interrupted. Finishing it now.");
+    let (_, codes) = ring::rekey(
+        setup.vault,
+        setup.config,
+        setup.stores,
+        setup.ask,
+        setup.devices,
+    )?;
+    if let Some(codes) = codes {
+        recovery_kit(setup, path, &codes)?;
+    }
+    Ok(())
+}
+
+/// Whether a key that's gone might be in someone's hands.
+fn might_be_stolen(setup: &mut Setup<'_>) -> Result<bool, Error> {
+    for _ in 0..TRIES {
+        let answer = (setup.ask)(
+            "Is it lost, or could someone have it? Type lost or stolen. Stolen also changes the vault's key and your backup codes, so an old copy of your files is no use with it:",
+        )?;
+        match answer.trim().to_ascii_lowercase().as_str() {
+            "lost" => return Ok(false),
+            "stolen" => return Ok(true),
+            _ => {}
+        }
+    }
+    Err(ring::stopped())
+}
+
+/// `vault-keyring lost-key`: a key that's gone, out of the vault.
+///
+/// A key that might be in someone's hands also changes the vault's key, as
+/// removing it alone leaves an old copy of the keyring that it, its PIN and
+/// that copy could open. An only key's replacement comes first, as the
+/// vault never has none: a backup code gets in.
+///
+/// # Errors
+///
+/// Why it stopped: nothing is removed until it's been authorized.
+pub fn lost_key(setup: &mut Setup<'_>) -> Result<Done, Error> {
+    let path = setup.config.keyring_path()?.to_path_buf();
+    finish_interrupted(setup, &path)?;
+    let mut keyring = Keyring::load(&path).map_err(ring::vault_error)?;
+    let keys = keyring.hardware_keys();
+    if keys.is_empty() {
+        return Err(Error::Usage {
+            reason: String::from("this vault has no security keys, so there's none to lose"),
+        });
+    }
+    let lost = ring::chosen_key(&keys, "remove", setup.ask)?;
+    let stolen = might_be_stolen(setup)?;
+    if keys.len() == 1 {
+        setup.say("That's your only key, so its replacement comes first.");
+        let unlocked = ring::opening(&mut keyring, setup.ask, setup.devices)?;
+        add_second(setup, &mut keyring, &unlocked)?;
+    }
+    // The key is gone either way: one left is what's left, not a choice.
+    let risk = (keyring.hardware_keys().len() == 2).then(SingleKeyRisk::accepted);
+    ring::remove_authorized(&mut keyring, &lost, risk, setup.ask, setup.devices)?;
+    setup.say(&format!(
+        "Removed: {}. It can't open the vault now.",
+        lost.label
+    ));
+    if stolen {
+        setup.say("Changing the vault's key, so nothing the stolen key could open still works.");
         let (_, codes) = ring::rekey(
             setup.vault,
             setup.config,
@@ -142,11 +230,7 @@ pub fn run(setup: &mut Setup<'_>) -> Result<Done, Error> {
         }
     }
     let keyring = Keyring::load(&path).map_err(ring::vault_error)?;
-    if keyring.tier() == Tier::HardwareKey {
-        carry_on(setup, keyring, &path)
-    } else {
-        protect(setup, keyring, &path)
-    }
+    carry_on(setup, keyring, &path)
 }
 
 /// Moves a vault below the hardware-key tier to its keys.
@@ -509,8 +593,12 @@ fn carry_on(setup: &mut Setup<'_>, mut keyring: Keyring, path: &Path) -> Result<
         ));
         return Ok(Done::AlreadySetUp);
     }
+    let another = one_key && wants_to_add_a_key(setup)?;
+    if !another && !codes {
+        return Ok(Done::Protected);
+    }
     let unlocked = ring::opening(&mut keyring, setup.ask, setup.devices)?;
-    if one_key && wants_to_add_a_key(setup)? {
+    if another {
         add_second(setup, &mut keyring, &unlocked)?;
     }
     if codes {
@@ -662,6 +750,7 @@ pub fn run_setup(
     broker: &crate::Config,
     config: &KeyringConfig,
     stores: &[(Store, PathBuf)],
+    action: Option<&str>,
 ) -> Result<(), Error> {
     let mut asking =
         |prompt: &str| ring::terminal_answer(prompt, false).map(|answer| answer.to_string());
@@ -685,7 +774,12 @@ pub fn run_setup(
     let mut out = std::io::stderr();
     let wsl = std::fs::read_to_string("/proc/sys/kernel/osrelease")
         .is_ok_and(|release| release.to_ascii_lowercase().contains("microsoft"));
-    let done = run(&mut Setup {
+    let guide = if action == Some(LOST_ACTION) {
+        lost_key
+    } else {
+        run
+    };
+    let done = guide(&mut Setup {
         vault: &broker.vault,
         config,
         stores,
