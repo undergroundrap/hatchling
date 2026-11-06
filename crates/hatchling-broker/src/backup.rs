@@ -613,6 +613,43 @@ fn erase_keys(config: &Config, keyring: &KeyringConfig) -> Result<(), Error> {
     Ok(())
 }
 
+/// Whether a restart leaves a vault at `tier` locked: only one that needs
+/// its owner does. One opened by its key file comes straight back.
+const fn locks_at(tier: hatchling_vault::Tier) -> bool {
+    !matches!(tier, hatchling_vault::Tier::File)
+}
+
+/// `lock`: the vault's key out of memory, now. For a machine left somewhere
+/// it shouldn't be: a restart forgets the key, and it waits for its owner.
+///
+/// # Errors
+///
+/// Why not. A vault its key file opens is refused, not pretended locked.
+pub fn run_lock() -> Result<(), Error> {
+    must_be_root()?;
+    let keyring = KeyringConfig::from_env()?;
+    let tier = keyring
+        .keyring
+        .as_deref()
+        .map(Keyring::load)
+        .transpose()
+        .map_err(ring::vault_error)?
+        .map(|keyring| keyring.tier());
+    if !tier.is_some_and(locks_at) {
+        return Err(Error::Usage {
+            reason: String::from(
+                "this vault opens with its key file, so it would come straight back: a security key is what makes it lockable (docs/security-keys.md)",
+            ),
+        });
+    }
+    service("restart")?;
+    let _ = writeln!(
+        std::io::stdout().lock(),
+        "Locked. The agent and its schedules are stopped until you unlock it: sudo hatchling-broker unlock"
+    );
+    Ok(())
+}
+
 /// How `reset` is used.
 pub const USAGE: &str =
     "usage: hatchling-broker reset <conversation | agent | everything> [--yes] [--no-backup]";
@@ -689,6 +726,14 @@ mod tests {
         clear_level(&places, Level::Everything).unwrap();
         assert_eq!(scratch.read("secrets/token"), None);
         assert_eq!(scratch.read("conversation/.key"), None);
+    }
+
+    #[test]
+    fn only_a_vault_that_needs_its_owner_can_lock() {
+        use hatchling_vault::Tier;
+        assert!(locks_at(Tier::HardwareKey));
+        assert!(locks_at(Tier::Totp));
+        assert!(!locks_at(Tier::File));
     }
 
     #[test]

@@ -198,3 +198,15 @@ body.has-artifact-dock .page { width: 100%; margin-inline: auto; }
     .system-page > .page-header { margin-bottom: 27px; }
     .system-table td { height: 49px; }
 }
+
+.data-command {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 12px 16px;
+}
+
+.data-command code {
+    overflow-wrap: anywhere;
+}

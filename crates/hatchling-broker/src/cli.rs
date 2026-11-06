@@ -153,7 +153,7 @@ pub fn help(program: &str) -> String {
     render_help(
         program,
         "[subcommand] | --help | -h",
-        "Serve agents with no subcommand. Operator subcommands:\n  doctor [--env <file>]   (what stops it working here, and the fix)\n  migrate-vault\n  rekey-vault [<new-key-file>]   (no file with a keyring)\n  vault-keyring <action>\n    setup   (security keys, guided; run again, it carries on)\n    lost-key   (a key that's lost or stolen, guided)\n    init, enroll-totp, enroll-keys, use-file-tier, backup-codes,\n    status, add-key, remove-key, label-key\n  unlock   (a vault with a security key or codes waits, locked, after a\n    start as a service: open it here, with the key or a code)\n  redactions list | stats | categories\n  redactions show <id> | raw <id> | override <id> [--any-scope]\n  vault-audit [log [count]]\n  tools list | add <path> | remove <path>   (what a CLI cell may run)\n  secret add <name> | --for <host:port> [--replace | --if-missing]   (a key, shown as *)\n  use-hosted openrouter | --endpoint <url> [--model <id>] [--window <tokens>] [--thinking off|on]\n  use-local --model <name> [--endpoint <url>] [--window <tokens>] [--thinking off|on]\n    (switch the model, its server and its egress together, and restart)\n  clean [--dry-run]   (a dead broker's leftovers; never your data)\n  backup [<file>]   (one sealed file)\n  restore <file>\n  reset conversation | agent | everything [--yes] [--no-backup]\n  schedule list | add <task> <when> | remove <id>   (as yourself, not sudo)\n  browser-digest <browser>   (the digest HATCHLING_BROWSER_SHA256 pins)\n\nThe broker builds and supervises the agent's cell. Internal spawner\ncommands skill-cell <spec-file>, agent-run <spec-file>, browser-cell <spec-file>,\nharness-tree, vault-keeper, egress-authority and spawner are broker-owned.",
+        "Serve agents with no subcommand. Operator subcommands:\n  doctor [--env <file>]   (what stops it working here, and the fix)\n  migrate-vault\n  rekey-vault [<new-key-file>]   (no file with a keyring)\n  vault-keyring <action>\n    setup   (security keys, guided; run again, it carries on)\n    lost-key   (a key that's lost or stolen, guided)\n    init, enroll-totp, enroll-keys, use-file-tier, backup-codes,\n    status, add-key, remove-key, label-key\n  unlock   (a vault with a security key or codes waits, locked, after a\n    start as a service: open it here, with the key or a code)\n  redactions list | stats | categories\n  redactions show <id> | raw <id> | override <id> [--any-scope]\n  vault-audit [log [count]]\n  tools list | add <path> | remove <path>   (what a CLI cell may run)\n  secret add <name> | --for <host:port> [--replace | --if-missing]   (a key, shown as *)\n  use-hosted openrouter | --endpoint <url> [--model <id>] [--window <tokens>] [--thinking off|on]\n  use-local --model <name> [--endpoint <url>] [--window <tokens>] [--thinking off|on]\n    (switch the model, its server and its egress together, and restart)\n  clean [--dry-run]   (a dead broker's leftovers; never your data)\n  lock   (the vault's key out of memory, now, until it's unlocked)\n  backup [<file>]   (one sealed file)\n  restore <file>\n  reset conversation | agent | everything [--yes] [--no-backup]\n  schedule list | add <task> <when> | remove <id>   (as yourself, not sudo)\n  browser-digest <browser>   (the digest HATCHLING_BROWSER_SHA256 pins)\n\nThe broker builds and supervises the agent's cell. Internal spawner\ncommands skill-cell <spec-file>, agent-run <spec-file>, browser-cell <spec-file>,\nharness-tree, vault-keeper, egress-authority and spawner are broker-owned.",
         crate::environment::ENVIRONMENT,
     )
 }
@@ -165,6 +165,7 @@ fn valid_args(args: &[String]) -> bool {
         []
         | [
             "backup"
+            | "lock"
             | "migrate-vault"
             | "vault-audit"
             | "rekey-vault"
@@ -233,6 +234,7 @@ fn run(args: &[String]) -> Result<(), Error> {
         Some("vault-keyring") => run_keyring(&config, args.get(1).map(String::as_str)),
         Some("clean") => crate::sweep::run_clean(&config, args.get(1..).unwrap_or_default()),
         Some("backup") => crate::backup::run_backup(&config, args.get(1).map(Path::new)),
+        Some("lock") => crate::backup::run_lock(),
         Some("restore") => args.get(1).map_or_else(
             || {
                 Err(Error::Usage {
