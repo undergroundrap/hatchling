@@ -88,7 +88,10 @@ mod tests {
             "Starting. Open Hatchling from the Start menu."
         );
         assert_eq!(
-            said("It needs its new address. As yourself: hatchling-host url", true),
+            said(
+                "It needs its new address. As yourself: hatchling-host url",
+                true
+            ),
             "It needs its new address. Open Hatchling from the Start menu."
         );
         assert_eq!(
