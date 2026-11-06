@@ -34,7 +34,8 @@ How a Hatchling version is cut and published, and how a new crate gets onto crat
      - the released programs (`hatchling-broker`, `hatchling-agent`, `hatchling-host`, `hatchling-browser` and `hatchling`) for `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`, with [`scripts/release-artifacts.sh`](../scripts/release-artifacts.sh): the pinned toolchain, `--locked`, and `cargo auditable`;
      - each target twice, on separate runners, from different checkout paths and `CARGO_HOME`s; the release goes out only if the two builds are byte-identical.
    - **It builds the app** (`scripts/release-artifacts.sh ui`) twice, from different paths, into `hatchling-ui.tar.gz`, and refuses to release unless the two are byte-identical.
-   - **It builds the Windows setup** from the first x86_64 build and the app, and scans it with Microsoft Defender: a build it flags goes no further. **It describes them:** a CycloneDX SBOM per program and target, `SHA256SUMS` of every file, and a build-provenance attestation of each file, SBOMs and `SHA256SUMS` included.
+   - **It builds the Windows setup** from the first x86_64 build and the app, and scans it with Microsoft Defender: a build it flags goes no further.
+   - **It describes them:** a CycloneDX SBOM per program and target, `SHA256SUMS` of every file, and a build-provenance attestation of each file, SBOMs and `SHA256SUMS` included.
    - **It publishes:**
      - the GitHub release, with those files and the version's changelog section as its notes;
      - every crate on crates.io: each is packaged and built from its package in a job with no token, then a short-lived token through trusted publishing, and [`scripts/publish-crates.sh --existing-only --no-verify`](../scripts/publish-crates.sh), which publishes each crate in dependency order without building it, and skips any already there at this version.
