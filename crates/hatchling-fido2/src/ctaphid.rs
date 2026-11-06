@@ -607,7 +607,7 @@ pub(crate) mod tests {
     /// one.
     #[test]
     fn only_a_key_asking_on_this_channel_means_a_touch() {
-        let nonce = [3u8; 8];
+        let nonce = crate::pin::random::<8>().unwrap();
         let mut answers = init_answer(nonce, CID);
         answers.extend(packets([9; 4], KEEPALIVE, &[UP_NEEDED]));
         answers.extend(packets(CID, KEEPALIVE, &[1]));
