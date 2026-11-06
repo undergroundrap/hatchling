@@ -366,6 +366,44 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The app's question gets its answer, over a real connection, and
+    /// not a file by that name.
+    #[test]
+    fn the_app_can_ask_if_its_locked() {
+        use std::io::{Read as _, Write as _};
+        let dir = std::env::temp_dir().join(format!("hatchling-host-ask-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("unlock.sock");
+        std::fs::write(&socket, b"").unwrap();
+        let settings = Settings {
+            ui_socket: dir.join("ui.sock"),
+            ui_dir: dir.clone(),
+            port: 0,
+            operator_socket: None,
+            unlock_socket: Some(socket),
+        };
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let serving = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            handle(stream, &settings)
+        });
+        let mut client = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        write!(
+            client,
+            "GET /hatchling-locked HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"
+        )
+        .unwrap();
+        let mut answer = String::new();
+        client.read_to_string(&mut answer).unwrap();
+        serving.join().unwrap().unwrap();
+        assert!(answer.ends_with("{\"locked\":true}"), "{answer}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The socket being there is what locked means, and nothing else is
     /// looked at.
     #[test]
