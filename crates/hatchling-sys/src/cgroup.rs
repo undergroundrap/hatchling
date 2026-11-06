@@ -51,7 +51,7 @@ fn invalid(path: &Path, reason: &str) -> Error {
 /// isn't there has no answer, and nothing is said to be missing.
 #[must_use]
 pub fn missing_controllers(parent: &Path) -> Vec<&'static str> {
-    let Ok(available) = std::fs::read_to_string(parent.join("cgroup.controllers")) else {
+    let Ok(available) = fs::read_to_string(parent.join("cgroup.controllers")) else {
         return Vec::new();
     };
     ["pids", "memory", "cpu"]

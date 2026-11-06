@@ -51,6 +51,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::Error;
+use crate::environment as env;
 use crate::config::VaultConfig;
 use crate::vault_keyring::{Devices, KeyringConfig, SecurityKeys};
 
@@ -396,8 +397,7 @@ pub fn unlock_main(program: &str, vault: &VaultConfig) -> ExitCode {
         );
         return ExitCode::FAILURE;
     }
-    let get = |key: &str| std::env::var(key).ok();
-    let limits = get(crate::environment::HATCHLING_CELL_CGROUP.name);
+    let limits = std::env::var(env::HATCHLING_CELL_CGROUP.name).ok();
     if let Some(what) = crate::doctor::cell_limits_problem(limits.as_deref()) {
         let fix = crate::doctor::CELL_LIMITS_FIX;
         let _ = writeln!(
