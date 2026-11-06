@@ -51,8 +51,8 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::Error;
-use crate::environment as env;
 use crate::config::VaultConfig;
+use crate::environment as env;
 use crate::vault_keyring::{Devices, KeyringConfig, SecurityKeys};
 
 /// The subcommand that unlocks a waiting vault.

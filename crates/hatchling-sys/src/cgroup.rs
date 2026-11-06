@@ -276,15 +276,15 @@ mod tests {
             "hatchling-missing-controllers-{}",
             std::process::id()
         ));
-        std::fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(&dir).unwrap();
         assert!(missing_controllers(&dir).is_empty());
-        std::fs::write(dir.join("cgroup.controllers"), "memory pids\n").unwrap();
+        fs::write(dir.join("cgroup.controllers"), "memory pids\n").unwrap();
         assert_eq!(missing_controllers(&dir), ["cpu"]);
-        std::fs::write(dir.join("cgroup.controllers"), "cpuset cpu memory pids\n").unwrap();
+        fs::write(dir.join("cgroup.controllers"), "cpuset cpu memory pids\n").unwrap();
         assert!(missing_controllers(&dir).is_empty());
-        std::fs::write(dir.join("cgroup.controllers"), "cpuset\n").unwrap();
+        fs::write(dir.join("cgroup.controllers"), "cpuset\n").unwrap();
         assert_eq!(missing_controllers(&dir), ["pids", "memory", "cpu"]);
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
