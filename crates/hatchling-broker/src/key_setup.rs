@@ -23,11 +23,14 @@
 //! The PIN of a key is typed here, in the operator's own terminal, and
 //! goes only to the key.
 
+use std::cell::Cell;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::rc::Rc;
 use std::time::Duration;
 
+use hatchling_fido2::ctaphid::Touch;
 use hatchling_vault::{
     Authenticator, BackupCodes, Keyring, Label, SingleKeyRisk, Store, Tier, Unlocked,
 };
@@ -74,6 +77,8 @@ pub struct Setup<'a> {
     pub wait: &'a mut dyn FnMut() -> bool,
     /// Whether this is WSL, where a key has to be attached to be seen.
     pub wsl: bool,
+    /// How many touches a key has left to give in this registering.
+    pub touches: &'a Cell<u32>,
 }
 
 impl Setup<'_> {
@@ -289,6 +294,23 @@ fn register_next(
     }
 }
 
+/// What registering a key asks of its owner.
+const TWO_TOUCHES: &str = "Registering a key takes its PIN, then two touches.";
+
+/// What to say of `touch`, with `left` of a registering's touches to come.
+fn touch_line(touch: Touch, left: &Cell<u32>) -> String {
+    match (touch, left.get()) {
+        (Touch::Waiting, 0) | (Touch::Noticed, _) => ring::touch_said(touch).to_owned(),
+        (Touch::Waiting, count) => {
+            left.set(count - 1);
+            format!(
+                "Touch {} of 2: touch your key now, while it flashes...",
+                3u32.saturating_sub(count)
+            )
+        }
+    }
+}
+
 /// What to check when a key that's plugged in isn't seen.
 const fn not_seen(wsl: bool) -> &'static str {
     if wsl {
@@ -327,7 +349,8 @@ fn register(
         (None, _) => return Err(Refused::Again(String::from(TOO_OLD))),
         (Some(false), min) => set_pin(setup, index, min)?,
     }
-    setup.say("Registering a key takes its PIN, then two touches. Touch it as it flashes.");
+    setup.say(TWO_TOUCHES);
+    setup.touches.set(2);
     let (done, model) = {
         let mut keys = setup.devices.every_key();
         let key = keys
@@ -335,6 +358,7 @@ fn register(
             .ok_or_else(|| Refused::Again(String::from("That key went away.")))?;
         (keyring.enroll_key(enrollment, &mut **key), key.model())
     };
+    setup.touches.set(0);
     match done {
         Ok(()) => {}
         Err(hatchling_vault::Error::MissingHmacSecret) => {
@@ -542,6 +566,8 @@ fn add_second(
             let suggested = unused_name(model.unwrap_or("Security key"), &taken);
             let label = name_of(setup, &suggested)?;
             let check = setup.config.key_check();
+            setup.say(TWO_TOUCHES);
+            setup.touches.set(2);
             let mut keys = setup.devices.every_key();
             let key = keys.get_mut(index).ok_or_else(ring::stopped)?;
             let key: &mut dyn Authenticator = &mut **key;
@@ -549,6 +575,7 @@ fn add_second(
                 .add_hardware_key_checked(unlocked, key, &label, check)
                 .map_err(ring::vault_error)?;
             drop(keys);
+            setup.touches.set(0);
             setup.say(&format!("Registered: {}.", label.as_str()));
             return Ok(());
         }
@@ -639,11 +666,18 @@ pub fn run_setup(
     let mut asking =
         |prompt: &str| ring::terminal_answer(prompt, false).map(|answer| answer.to_string());
     let mut secret = |prompt: &str| ring::terminal_answer(prompt, true);
-    let mut devices = ring::platform_keys(Box::new(|| {
-        ring::terminal_answer(ring::PIN_PROMPT, true)
-            .ok()
-            .filter(|pin| !pin.is_empty())
-    }));
+    let touches = Rc::new(Cell::new(0));
+    let counted = Rc::clone(&touches);
+    let mut devices = ring::platform_keys_noticing(
+        Box::new(|| {
+            ring::terminal_answer(ring::PIN_PROMPT, true)
+                .ok()
+                .filter(|pin| !pin.is_empty())
+        }),
+        Box::new(move |touch| {
+            let _ = writeln!(std::io::stderr(), "{}", touch_line(touch, &counted));
+        }),
+    );
     let mut wait = || {
         std::thread::sleep(LOOK_EVERY);
         true
@@ -661,10 +695,15 @@ pub fn run_setup(
         out: &mut out,
         wait: &mut wait,
         wsl,
+        touches: &touches,
     });
     // Let go of the keys: each stays locked while it's held, and the unlock
     // below needs them.
     drop(devices);
+    // A stopped keeper leaves its socket: gone now, it's only there again
+    // once the new one is really waiting.
+    let socket = crate::unlock_relay::socket_path(&broker.vault);
+    let _ = std::fs::remove_file(&socket);
     // Whatever happened, the service goes back: an interrupted setup left
     // the vault as it was, or it says so.
     let started = Command::new("systemctl")
@@ -678,7 +717,6 @@ pub fn run_setup(
     }
     // It's locked now, as after every restart: unlocking here shows the
     // key works, and shows how.
-    let socket = crate::unlock_relay::socket_path(&broker.vault);
     for _ in 0..40 {
         if socket.exists() {
             break;

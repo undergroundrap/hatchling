@@ -131,6 +131,10 @@ pub fn doctor_main(args: &[String]) -> ExitCode {
             check_program(lookup(env::HATCHLING_AGENT_BIN.name).as_deref()),
         ),
         ("cells", check_cells(&lookup)),
+        (
+            "cell limits",
+            check_cell_limits(lookup(env::HATCHLING_CELL_CGROUP.name).as_deref()),
+        ),
         ("model", {
             let endpoint = lookup(env::HATCHLING_SCHEDULER_MODEL_ENDPOINT.name);
             let name = lookup(env::HATCHLING_SCHEDULER_MODEL_NAME.name);
@@ -250,6 +254,34 @@ impl Machine {
             wsl: std::fs::read_to_string("/proc/sys/kernel/osrelease")
                 .is_ok_and(|release| release.to_ascii_lowercase().contains("microsoft")),
         }
+    }
+}
+
+/// What's wrong with the delegated cgroup at `parent`, if anything: a
+/// broker that can't bound its cells stops at once, so this is worth
+/// saying before anyone unlocks it.
+pub(crate) fn cell_limits_problem(parent: Option<&str>) -> Option<String> {
+    let missing = hatchling_sys::cgroup::missing_controllers(Path::new(parent?));
+    (!missing.is_empty()).then(|| {
+        format!(
+            "the service's cgroup has no {} controller, and cells won't run without one",
+            missing.join(", ")
+        )
+    })
+}
+
+/// How to get the controllers back: a reload has systemd apply them again.
+pub(crate) const CELL_LIMITS_FIX: &str =
+    "Run `sudo systemctl daemon-reload`, then `sudo systemctl restart hatchling`.";
+
+/// Whether cells can be bounded as the settings say.
+fn check_cell_limits(parent: Option<&str>) -> Finding {
+    match (parent, cell_limits_problem(parent)) {
+        (_, Some(what)) => Finding::problem(what, CELL_LIMITS_FIX),
+        (Some(_), None) => Finding::Fine(String::from("each cell has its own cgroup")),
+        (None, None) => Finding::Fine(String::from(
+            "cells use process limits: HATCHLING_CELL_CGROUP isn't set",
+        )),
     }
 }
 
@@ -1003,6 +1035,29 @@ mod tests {
 
     /// How the vault opens, in each case: by itself, or after each restart
     /// with the owner; and, waiting now, what to do.
+    /// A cgroup short of a controller is found before anyone unlocks.
+    #[test]
+    fn a_cgroup_without_its_controllers_is_a_problem() {
+        let dir = scratch("cell-limits");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("cgroup.controllers"), "memory pids\n").unwrap();
+        let parent = dir.to_str().unwrap();
+        let (what, fix) = problem(check_cell_limits(Some(parent)));
+        assert!(what.contains("no cpu controller"), "{what}");
+        assert!(fix.contains("daemon-reload"), "{fix}");
+        std::fs::write(dir.join("cgroup.controllers"), "cpu memory pids\n").unwrap();
+        assert_eq!(cell_limits_problem(Some(parent)), None);
+        assert!(matches!(
+            check_cell_limits(Some(parent)),
+            Finding::Fine(said) if said.contains("own cgroup")
+        ));
+        assert!(matches!(
+            check_cell_limits(None),
+            Finding::Fine(said) if said.contains("isn't set")
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn the_vault_says_how_it_opens_after_a_restart() {
         use hatchling_vault::Tier;

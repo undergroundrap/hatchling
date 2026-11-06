@@ -396,6 +396,16 @@ pub fn unlock_main(program: &str, vault: &VaultConfig) -> ExitCode {
         );
         return ExitCode::FAILURE;
     }
+    let get = |key: &str| std::env::var(key).ok();
+    let limits = get(crate::environment::HATCHLING_CELL_CGROUP.name);
+    if let Some(what) = crate::doctor::cell_limits_problem(limits.as_deref()) {
+        let fix = crate::doctor::CELL_LIMITS_FIX;
+        let _ = writeln!(
+            stderr,
+            "{program} unlock: not asking for your key yet: {what}. {fix}"
+        );
+        return ExitCode::FAILURE;
+    }
     let path = socket_path(vault);
     let Ok(stream) = UnixStream::connect(&path) else {
         let _ = writeln!(
@@ -418,14 +428,18 @@ pub fn unlock_main(program: &str, vault: &VaultConfig) -> ExitCode {
         }
     );
     drop(stderr);
+    let service = service_running();
     match operate(&stream, &keys, &mut terminal_answer) {
         Ok(()) => {
-            let _ = writeln!(
-                std::io::stderr().lock(),
-                "Unlocked: Hatchling is starting. The app's address, as yourself: hatchling-host url"
-            );
+            std::thread::sleep(SETTLE);
+            let stayed = !service || service_running();
+            let _ = writeln!(std::io::stderr().lock(), "{}", unlocked_said(stayed));
             remind();
-            ExitCode::SUCCESS
+            if stayed {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
         }
         Err(reason) => {
             let _ = writeln!(
@@ -457,6 +471,27 @@ fn remind() {
 /// An answer to `prompt` in this terminal; a secret one isn't shown.
 fn terminal_answer(prompt: &str, secret: bool) -> Result<Zeroizing<String>, String> {
     crate::vault_keyring::terminal_answer(prompt, secret).map_err(|e| e.to_string())
+}
+
+/// How long to watch a service that's just been unlocked: one that can't
+/// run stops within this.
+const SETTLE: Duration = Duration::from_secs(2);
+
+/// Whether the service is running now.
+fn service_running() -> bool {
+    std::process::Command::new("systemctl")
+        .args(["is-active", "--quiet", "hatchling"])
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// What to say once the vault's open: only what's true of the service.
+const fn unlocked_said(stayed: bool) -> &'static str {
+    if stayed {
+        "Unlocked: Hatchling is starting. The app's address, as yourself: hatchling-host url"
+    } else {
+        "The vault opened, but Hatchling stopped straight after, and it's locked again. See: sudo hatchling-broker doctor, and journalctl -u hatchling"
+    }
 }
 
 /// How the operator answers a question: the prompt, and whether it's a

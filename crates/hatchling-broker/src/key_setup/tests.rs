@@ -171,6 +171,7 @@ fn run_pins(
         out: &mut out,
         wait: &mut wait,
         wsl: false,
+        touches: &Cell::new(0),
     });
     Run { done, asked, said }
 }
@@ -526,6 +527,18 @@ fn a_vault_with_one_key_is_offered_a_second() {
     let run = run_with(&vault, &config, &mut bench, &["no"], &[]);
     assert_eq!(run.done.unwrap(), Done::Protected);
     assert_eq!(names(&config).len(), 1);
+}
+
+/// A registering's touches are counted out, and then it's a touch like any.
+#[test]
+fn a_registering_counts_its_touches() {
+    let left = Cell::new(2);
+    assert!(touch_line(Touch::Waiting, &left).starts_with("Touch 1 of 2"));
+    assert_eq!(touch_line(Touch::Noticed, &left), "Got it.");
+    assert!(touch_line(Touch::Waiting, &left).starts_with("Touch 2 of 2"));
+    assert_eq!(left.get(), 0);
+    assert!(touch_line(Touch::Waiting, &left).starts_with("Touch your key now"));
+    assert_eq!(left.get(), 0);
 }
 
 /// Two of a model are told apart, and names already taken are passed over.

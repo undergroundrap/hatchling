@@ -773,6 +773,19 @@ impl<B: Bus> Devices for SecurityKeys<B> {
 /// only), asking for a key's PIN with `pin` when one needs it.
 #[must_use]
 pub fn platform_keys(pin: PinPrompt) -> SecurityKeys<hatchling_fido2::linux::Hidraw> {
+    platform_keys_noticing(
+        pin,
+        Box::new(|touch| {
+            let _ = writeln!(std::io::stderr(), "{}", touch_said(touch));
+        }),
+    )
+}
+
+/// [`platform_keys`], `notice` told of each touch.
+pub(crate) fn platform_keys_noticing(
+    pin: PinPrompt,
+    notice: hatchling_fido2::ctaphid::TouchNotice,
+) -> SecurityKeys<hatchling_fido2::linux::Hidraw> {
     // The vault keeper's user may not open them: as root, the broker
     // opened them for it (WO-017).
     let bus = match std::env::var(crate::keeper::KEEPER_KEYS) {
@@ -781,9 +794,7 @@ pub fn platform_keys(pin: PinPrompt) -> SecurityKeys<hatchling_fido2::linux::Hid
         }
         Err(_) => hatchling_fido2::linux::Hidraw::new(pin),
     };
-    SecurityKeys::new(bus.noticing(Box::new(|touch| {
-        let _ = writeln!(std::io::stderr(), "{}", touch_said(touch));
-    })))
+    SecurityKeys::new(bus.noticing(notice))
 }
 
 /// What to say of a touch, as it happens.
