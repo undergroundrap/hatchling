@@ -379,6 +379,15 @@ impl SoftKey {
             Some(Value::Text(id)) => id.clone(),
             _ => return Err(0x02),
         };
+        // As an older key may: wanting the names CTAP2 calls optional.
+        let names = parameters.at(2).and_then(|rp| rp.field("name")).is_some()
+            && parameters
+                .at(3)
+                .and_then(|user| user.field("displayName"))
+                .is_some();
+        if !names {
+            return Err(0x14);
+        }
         self.pin_checked(parameters, client_data_hash)?;
         if !self.state.borrow().present {
             return Err(USER_ACTION_TIMEOUT);

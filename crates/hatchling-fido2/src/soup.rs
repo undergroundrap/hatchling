@@ -106,8 +106,8 @@ fn auth_data() -> Vec<u8> {
     .concat()
 }
 
-/// Whatever `decode` takes is canonical but for order: it writes back
-/// byte for byte, so no two messages read the same.
+/// Whatever `decode` takes survives being written and read again, as the
+/// same thing.
 #[test]
 fn the_decoder_takes_anything_and_means_only_what_it_was_sent() {
     let mut noise = Noise(0x9e37_79b9_7f4a_7c15);
@@ -126,7 +126,7 @@ fn the_decoder_takes_anything_and_means_only_what_it_was_sent() {
             noise.spoiled(sample)
         };
         if let Ok(value) = decode(&bytes) {
-            assert_eq!(encode(&value), bytes);
+            assert_eq!(decode(&encode(&value)).as_ref(), Ok(&value), "{bytes:02x?}");
             let _ = Info::parse(&value);
             taken += 1;
         }

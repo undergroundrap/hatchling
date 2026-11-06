@@ -5,9 +5,8 @@
 //! - **Only CTAP2's types:** unsigned and negative integers, byte and text
 //!   strings, arrays, maps, `false`, `true` and `null`. No tags, no floats,
 //!   no other simple values, no indefinite lengths.
-//! - **Canonical form only:** every length and integer in its shortest
-//!   encoding, as CTAP2 requires; a map holds no key twice, and its keys
-//!   are integers or text.
+//! - **One meaning:** a map holds no key twice, and its keys are integers
+//!   or text.
 //! - **Bounded:** nesting stops at [`MAX_DEPTH`]; every length is checked
 //!   against the bytes left before anything is allocated, so a short reply
 //!   cannot claim a huge array.
@@ -16,9 +15,11 @@
 //! CTAP2's canonical order (lower major type first, then shorter, then
 //! bytewise).
 //!
-//! The decoder doesn't insist on that order. A reply means the same in any
-//! order, as no key can appear twice, and some keys write theirs otherwise:
-//! refusing them would stop no attack, and only stop those keys working.
+//! The decoder doesn't insist on that order, or on the shortest form of a
+//! length or integer, which CTAP2 asks of keys too. A reply means the same
+//! either way, as no key can appear twice however it's written, and not
+//! every key keeps to them: refusing those would stop no attack, and only
+//! stop them working. libfido2 takes them too.
 
 /// How deep arrays and maps may nest. CTAP2's replies need four.
 pub const MAX_DEPTH: usize = 8;
@@ -44,7 +45,7 @@ pub enum Value {
     Null,
 }
 
-/// Why bytes are not one canonical CTAP2 CBOR item.
+/// Why bytes are not one CTAP2 CBOR item.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CborError {
     /// The bytes ended inside an item.
@@ -56,9 +57,6 @@ pub enum CborError {
     /// A type, length form or simple value CTAP2 does not use.
     #[error("CBOR outside CTAP2's subset: {0}")]
     Unsupported(&'static str),
-    /// A length or integer not in its shortest form.
-    #[error("CBOR not in canonical form")]
-    NotCanonical,
     /// Arrays and maps nested deeper than [`MAX_DEPTH`].
     #[error("CBOR nested too deep")]
     TooDeep,
@@ -260,7 +258,7 @@ fn head(major: u8, n: u64, out: &mut Vec<u8>) {
 ///
 /// # Errors
 ///
-/// Returns [`CborError`] for anything but exactly one canonical item.
+/// Returns [`CborError`] for anything but exactly one item.
 pub fn decode(bytes: &[u8]) -> Result<Value, CborError> {
     let (value, rest) = decode_prefix(bytes)?;
     if rest.is_empty() {
@@ -274,7 +272,7 @@ pub fn decode(bytes: &[u8]) -> Result<Value, CborError> {
 ///
 /// # Errors
 ///
-/// Returns [`CborError`] if no canonical item starts there.
+/// Returns [`CborError`] if no item starts there.
 pub fn decode_prefix(bytes: &[u8]) -> Result<(Value, &[u8]), CborError> {
     read(bytes, 0)
 }
@@ -290,31 +288,17 @@ fn take(bytes: &[u8], n: u64) -> Result<(&[u8], &[u8]), CborError> {
 fn read_head(bytes: &[u8]) -> Result<(u8, u64, &[u8]), CborError> {
     let (&first, rest) = bytes.split_first().ok_or(CborError::Truncated)?;
     let (major, info) = (first >> 5, first & 0x1f);
-    let (n, rest, least) = match info {
+    let width = match info {
         0..=23 => return Ok((major, u64::from(info), rest)),
-        24 => {
-            let (arg, rest) = take(rest, 1)?;
-            (be(arg), rest, 24)
-        }
-        25 => {
-            let (arg, rest) = take(rest, 2)?;
-            (be(arg), rest, 0x100)
-        }
-        26 => {
-            let (arg, rest) = take(rest, 4)?;
-            (be(arg), rest, 0x1_0000)
-        }
-        27 => {
-            let (arg, rest) = take(rest, 8)?;
-            (be(arg), rest, 0x1_0000_0000)
-        }
+        24 => 1,
+        25 => 2,
+        26 => 4,
+        27 => 8,
         31 => return Err(CborError::Unsupported("indefinite length")),
         _ => return Err(CborError::Unsupported("reserved length form")),
     };
-    if n < least {
-        return Err(CborError::NotCanonical);
-    }
-    Ok((major, n, rest))
+    let (arg, rest) = take(rest, width)?;
+    Ok((major, be(arg), rest))
 }
 
 /// A big-endian unsigned integer of up to eight bytes.
@@ -396,6 +380,21 @@ fn read_container(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A number written longer than it needs reads the same, and a key
+    /// written two ways is still one key.
+    #[test]
+    fn a_longer_form_means_the_same() {
+        for wire in ["1817", "190017", "1a00000017", "1b0000000000000017"] {
+            assert_eq!(decode(&hex(wire)), Ok(Value::int(23)), "{wire}");
+        }
+        assert_eq!(
+            decode(&hex("5a0000000107")),
+            Ok(Value::Bytes(vec![7])),
+            "a length"
+        );
+        assert_eq!(decode(&hex("a20100180100")), Err(CborError::DuplicateKey));
+    }
 
     /// Keys are integers or text; byte strings, arrays, maps, booleans and
     /// null aren't.
@@ -561,7 +560,7 @@ mod tests {
     }
 
     #[test]
-    fn anything_outside_the_canonical_subset_is_refused() {
+    fn anything_outside_the_subset_is_refused() {
         for (wire, error) in [
             ("", CborError::Truncated),
             ("18", CborError::Truncated),
@@ -572,10 +571,6 @@ mod tests {
             ("6449", CborError::Truncated),
             ("8301", CborError::Truncated),
             ("a101", CborError::Truncated),
-            ("1817", CborError::NotCanonical),
-            ("1900ff", CborError::NotCanonical),
-            ("1a0000ffff", CborError::NotCanonical),
-            ("1b00000000ffffffff", CborError::NotCanonical),
             ("5f", CborError::Unsupported("indefinite length")),
             ("9f", CborError::Unsupported("indefinite length")),
             ("1c", CborError::Unsupported("reserved length form")),
