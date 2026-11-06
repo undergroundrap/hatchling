@@ -2409,7 +2409,10 @@ pub(crate) mod tests {
         assert!(run("reminders-off").contains("key reminders are off"));
         let shown = report(&config).unwrap();
         assert!(!shown.contains("reminder: Your key"), "{shown}");
-        assert!(shown.contains("to turn them on: vault-keyring reminders-on"), "{shown}");
+        assert!(
+            shown.contains("to turn them on: vault-keyring reminders-on"),
+            "{shown}"
+        );
         assert!(run("reminders-off").contains("are off"), "off twice is off");
         assert!(run("reminders-on").contains("key reminders are on"));
         assert!(run("reminders-on").contains("are on"), "on twice is on");
@@ -3428,7 +3431,7 @@ pub(crate) mod tests {
         );
         let usage = run("bogus", &[], &mut desk);
         assert!(matches!(usage, Err(Error::Usage { reason }) if reason == USAGE));
-        assert!(USAGE.ends_with("status | add-key | remove-key | label-key>"));
+        assert!(USAGE.ends_with("status | add-key | remove-key | label-key | reminders-off | reminders-on>"));
     }
 
     /// A software key in a tray slot: each scan of the tray sees the same
