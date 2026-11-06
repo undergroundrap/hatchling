@@ -677,8 +677,8 @@ fn a_lost_key_needs_a_clear_answer() {
 }
 
 /// [`change_pin`] on `bench`, the secrets answered with `pins` in turn.
-fn changing(bench: &mut Bench, pins: &[&str]) -> (Result<(), Error>, Said) {
-    let (_scratch, vault, config) = vault("change-pin");
+fn changing(name: &str, bench: &mut Bench, pins: &[&str]) -> (Result<(), Error>, Said) {
+    let (_scratch, vault, config) = vault(name);
     let stores = secrets(&vault);
     let mut pins: VecDeque<String> = pins.iter().map(|pin| (*pin).to_owned()).collect();
     let mut ask = |_: &str| Ok(String::new());
@@ -706,6 +706,7 @@ fn changing(bench: &mut Bench, pins: &[&str]) -> (Result<(), Error>, Said) {
 fn a_pin_is_changed_after_its_mistakes() {
     let mut bench = Bench::of(vec![VirtualAuthenticator::with_pin("246810")], &[0]);
     let (done, said) = changing(
+        "change-pin-mistakes",
         &mut bench,
         &[
             "246810",
@@ -738,7 +739,7 @@ fn a_pin_is_changed_after_its_mistakes() {
 fn a_wrong_current_pin_stops_after_three() {
     let mut bench = Bench::of(vec![VirtualAuthenticator::with_pin("246810")], &[0]);
     let wrong: Vec<&str> = ["000000", "135790", "135790"].repeat(3);
-    let (done, said) = changing(&mut bench, &wrong);
+    let (done, said) = changing("change-pin-wrong", &mut bench, &wrong);
     assert!(done.is_err());
     assert_eq!(said.text().matches("the PIN is wrong").count(), 3);
     assert!(
@@ -755,7 +756,7 @@ fn a_wrong_current_pin_stops_after_three() {
 #[test]
 fn a_pin_needs_its_key() {
     let mut bench = Bench::new_keys(1, &[]);
-    let (done, _) = changing(&mut bench, &[]);
+    let (done, _) = changing("change-pin-none", &mut bench, &[]);
     assert!(matches!(done, Err(Error::Usage { reason }) if reason.contains("plug in the key")));
 }
 
