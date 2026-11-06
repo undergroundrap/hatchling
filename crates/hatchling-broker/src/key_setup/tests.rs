@@ -708,16 +708,29 @@ fn a_pin_is_changed_after_its_mistakes() {
     let (done, said) = changing(
         &mut bench,
         &[
-            "246810", "135790", "135791", // new PINs differ
-            "246810", "gr\u{fc}n123", "gr\u{fc}n123", // not on a keyboard
-            "246810", "135790", "135790",
+            "246810",
+            "135790",
+            "135791", // new PINs differ
+            "246810",
+            "gr\u{fc}n123",
+            "gr\u{fc}n123", // not on a keyboard
+            "246810",
+            "135790",
+            "135790",
         ],
     );
     done.unwrap();
     assert!(said.text().contains("Those didn't match."));
     assert!(said.text().contains("US keyboard"));
     assert!(said.text().contains("Your new PIN opens this key"));
-    assert!(bench.keys.first_mut().unwrap().change_pin("135790", "x").is_ok());
+    assert!(
+        bench
+            .keys
+            .first_mut()
+            .unwrap()
+            .change_pin("135790", "x")
+            .is_ok()
+    );
 }
 
 /// A wrong current PIN is said, and three in a row stops.
@@ -728,7 +741,14 @@ fn a_wrong_current_pin_stops_after_three() {
     let (done, said) = changing(&mut bench, &wrong);
     assert!(done.is_err());
     assert_eq!(said.text().matches("the PIN is wrong").count(), 3);
-    assert!(bench.keys.first_mut().unwrap().change_pin("246810", "x").is_ok());
+    assert!(
+        bench
+            .keys
+            .first_mut()
+            .unwrap()
+            .change_pin("246810", "x")
+            .is_ok()
+    );
 }
 
 /// With no key in, it says to plug one in.

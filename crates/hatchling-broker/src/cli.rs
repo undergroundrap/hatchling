@@ -183,8 +183,7 @@ fn valid_args(args: &[String]) -> bool {
         | [
             "vault-keyring",
             "setup" | "lost-key" | "change-pin" | "init" | "enroll-totp" | "enroll-keys"
-            | "use-file-tier"
-            | "backup-codes" | "status" | "add-key" | "remove-key" | "label-key",
+            | "use-file-tier" | "backup-codes" | "status" | "add-key" | "remove-key" | "label-key",
         ]
         | ["redactions", "list" | "stats" | "categories"]
         | ["redactions", "show" | "raw" | "override", _]

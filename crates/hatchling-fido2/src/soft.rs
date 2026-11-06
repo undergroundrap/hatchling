@@ -347,7 +347,7 @@ impl SoftKey {
         let end = padded.iter().position(|byte| *byte == 0).unwrap_or(64);
         let new = String::from_utf8(padded.get(..end).unwrap_or(&[]).to_vec())
             .map_err(|_| PIN_POLICY_VIOLATION)?;
-        if new.chars().count() < state.min_pin_length {
+        if i64::try_from(new.chars().count()).unwrap_or(i64::MAX) < state.min_pin_length {
             return Err(PIN_POLICY_VIOLATION);
         }
         state.pin = Some(new);
