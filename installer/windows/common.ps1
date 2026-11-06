@@ -48,5 +48,7 @@ function Wait-Broker([string] $Distro) {
 # One idle process in WSL, with no window: without one, WSL stops the distro
 # about 30 seconds after the last terminal closes, and Hatchling with it.
 function Start-KeepRunning([string] $Distro) {
+    $held = @(Get-CimInstance Win32_Process -Filter "name='wsl.exe'" | Where-Object { $_.CommandLine -match "-d $([regex]::Escape($Distro)) --exec sleep infinity" })
+    if ($held.Count -gt 0) { return }
     Start-Process -FilePath "$env:WINDIR\System32\conhost.exe" -ArgumentList "--headless wsl.exe -d $Distro --exec sleep infinity"
 }

@@ -4,6 +4,7 @@
 #   sudo scripts/install.sh --from <dir> --model-endpoint <url> --model <name>
 #                           [--ollama-context <tokens>] [--force]
 #   sudo scripts/install.sh --from <dir> --hosted openrouter [--model <id>] [--force]
+#   sudo scripts/install.sh --from <dir> --keep-model
 #
 # Run it as root, with sudo, from a clone of the version you install: the
 # user who ran sudo is the owner, the one the app answers.
@@ -20,6 +21,9 @@
 # once the vault is sealed, and asks for its key at its own prompt, here (a
 # key typed or piped, never an argument). A key not given stops the
 # install before anything starts. docs/hosted-models.md has the rest.
+#
+# --keep-model updates an install, leaving its model and its server as they
+# are: it needs the configuration of the install it updates.
 #
 # When that's Ollama, running as its systemd service, it sizes the model's
 # window to this machine: 65,536 tokens when the model fits on the GPU with
@@ -48,12 +52,13 @@ set -eu
 usage() {
   echo "usage: sudo scripts/install.sh --from <dir> --model-endpoint <url> --model <name> [--ollama-context <tokens>] [--force]" >&2
   echo "       sudo scripts/install.sh --from <dir> --hosted openrouter [--model <id>] [--force]" >&2
+  echo "       sudo scripts/install.sh --from <dir> --keep-model" >&2
   exit 64
 }
 fail() { echo "install.sh: $*" >&2; exit 1; }
 say() { echo "== $*"; }
 
-FROM= ENDPOINT= MODEL= FORCE= OLLAMA_CONTEXT= HOSTED=
+FROM= ENDPOINT= MODEL= FORCE= OLLAMA_CONTEXT= HOSTED= KEEP_MODEL=
 while [ $# -gt 0 ]; do
   case "$1" in
     --from) FROM=${2:-}; shift 2 || usage ;;
@@ -62,11 +67,16 @@ while [ $# -gt 0 ]; do
     --model) MODEL=${2:-}; shift 2 || usage ;;
     --ollama-context) OLLAMA_CONTEXT=${2:-}; shift 2 || usage ;;
     --force) FORCE=1; shift ;;
+    --keep-model) KEEP_MODEL=1; shift ;;
     *) usage ;;
   esac
 done
 [ -n "$FROM" ] || usage
-if [ -n "$HOSTED" ]; then
+if [ -n "$KEEP_MODEL" ]; then
+  [ -z "$HOSTED$ENDPOINT$MODEL$OLLAMA_CONTEXT$FORCE" ] \
+    || fail "--keep-model updates an install as it is: it takes no model, and no --force"
+  [ -f /etc/hatchling/hatchling.env ] || fail "--keep-model updates an install, and there's none here"
+elif [ -n "$HOSTED" ]; then
   # A provider use-hosted knows by name: it has the endpoint, model and
   # window.
   case "$HOSTED" in
@@ -93,7 +103,7 @@ PACKAGING=$HERE/packaging
 # The model: an http endpoint on this machine, as host:port, unless it's
 # hosted.
 HOSTPORT=
-if [ -z "$HOSTED" ]; then
+if [ -z "$HOSTED$KEEP_MODEL" ]; then
   case "$ENDPOINT" in
     http://localhost:*|http://127.0.0.1:*) ;;
     *) fail "--model-endpoint must be http://localhost:<port>/...: for a hosted model, --hosted openrouter (docs/hosted-models.md)" ;;
@@ -325,12 +335,12 @@ ollama_room() {
   done
   say "gave Ollama a 32768-token window ($DROP_IN, which removing undoes): $MODEL runs partly on the CPU even so, or Ollama doesn't say how it fits"
 }
-[ -n "$HOSTED" ] || ollama_room
+[ -n "$HOSTED$KEEP_MODEL" ] || ollama_room
 
 # The model, loaded once now: doctor sees how it fits on this machine, and
 # the first answer doesn't wait for it. Only Ollama loads a model this
 # way; another server's refusal is said, and doctor checks it anyway.
-if [ -z "$HOSTED" ] && command -v curl > /dev/null; then
+if [ -z "$HOSTED$KEEP_MODEL" ] && command -v curl > /dev/null; then
   say "loading $MODEL, so doctor can see how it fits"
   load_model || say "the model's server didn't load $MODEL (not Ollama, or not ready yet): doctor checks it"
 fi

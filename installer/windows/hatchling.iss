@@ -71,9 +71,10 @@ Name: "{userstartup}\Hatchling"; Filename: "{sys}\conhost.exe"; Parameters: "--h
 
 [Tasks]
 Name: "keeprunning"; Description: "Keep Hatchling running while I'm logged in (recommended)"
+Name: "backupfirst"; Description: "Make a backup before updating (recommended). With a security key, it asks for your PIN and a touch"; Check: Updating
 
 [Run]
-Filename: "{#Script}"; Parameters: "{#Run} ""{app}\setup.ps1"" -Distro {#Distro} {code:ModelArgument}"; StatusMsg: "Setting Hatchling up in WSL. Follow the console window."; Flags: waituntilterminated
+Filename: "{#Script}"; Parameters: "{#Run} ""{app}\setup.ps1"" -Distro {#Distro} -Version {#AppVersion} {code:SetupArguments}"; StatusMsg: "Setting Hatchling up in WSL. Follow the console window."; Flags: waituntilterminated
 
 [UninstallRun]
 Filename: "wsl.exe"; Parameters: "--terminate {#Distro}"; Flags: runhidden; RunOnceId: "StopDistro"
@@ -81,6 +82,14 @@ Filename: "wsl.exe"; Parameters: "--terminate {#Distro}"; Flags: runhidden; RunO
 [Code]
 var
   ModelPage: TInputOptionWizardPage;
+  WasInstalled: Boolean;
+
+// Asked once, before anything is copied: afterwards, the files are always there.
+function InitializeSetup: Boolean;
+begin
+  WasInstalled := FileExists(ExpandConstant('{autopf}\Hatchling\setup.ps1'));
+  Result := True;
+end;
 
 procedure InitializeWizard;
 begin
@@ -92,9 +101,23 @@ begin
   ModelPage.Values[0] := True;
 end;
 
-function ModelArgument(Param: String): String;
+function Updating: Boolean;
 begin
-  if ModelPage.Values[1] then Result := '-Hosted' else Result := '';
+  Result := WasInstalled;
+end;
+
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  Result := Updating and (PageID = ModelPage.ID);
+end;
+
+function SetupArguments(Param: String): String;
+begin
+  if Updating then begin
+    if WizardIsTaskSelected('backupfirst') then Result := '-Backup' else Result := '';
+  end
+  else if ModelPage.Values[1] then Result := '-Hosted'
+  else Result := '';
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

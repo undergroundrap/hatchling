@@ -445,7 +445,7 @@ jobs:
           if sudo grep -qE '^HATCHLING_(GOALS|MEMORY)_|(goals|memory):' /etc/hatchling/hatchling.env; then
             echo "the kept stores weren't all taken out"; exit 1
           fi
-          sudo scripts/install.sh --from "$RUNNER_TEMP/files" --model-endpoint http://localhost:18089/v1 --model stand-in > "$RUNNER_TEMP/install-keep-up.log"
+          sudo scripts/install.sh --from "$RUNNER_TEMP/files" --keep-model > "$RUNNER_TEMP/install-keep-up.log"
           grep -q 'added what this version keeps for you' "$RUNNER_TEMP/install-keep-up.log"
           python3 scripts/upgrade_state.py verify /var/lib/hatchling/api.sock "$RUNNER_TEMP/state.json"
           timeout 180 python3 docs/examples/first-run.py /var/lib/hatchling/api.sock

@@ -1,12 +1,19 @@
 # Sets Hatchling up in a WSL distro of its own, from the release files beside
 # this script. Run by the installer in a console the owner can see, or by hand:
 #
-#   setup.ps1 [-Distro hatchling-wsl] [-Release <dir>] [-Hosted | -ModelEndpoint <url> -ModelName <name>]
+#   setup.ps1 [-Distro hatchling-wsl] [-Release <dir>] [-Version <x.y.z>] [-Backup]
+#             [-Hosted | -ModelEndpoint <url> -ModelName <name>]
 #
 # With neither, the model runs on this machine, with Ollama: one already running
 # that has the model is used, and otherwise it asks before installing it. -Hosted uses OpenRouter, and the broker asks for its key
 # at its own prompt in this console. -ModelEndpoint is a model server already
 # running, at an address WSL can reach as localhost.
+#
+# On a distro that has Hatchling already, it updates it: settings, model and
+# data stay, and none of the model options apply. -Backup makes a backup first,
+# and a backup that fails stops the update before anything changes. A setup
+# older than what's installed stops too, as what's installed may have moved
+# Hatchling's data on.
 #
 # The owner's account in the distro has no password and no sudo: only Windows'
 # `wsl -u root` runs the commands that need root, so the app's host, which
@@ -14,6 +21,8 @@
 param(
     [string] $Distro = 'hatchling-wsl',
     [string] $Release = (Join-Path $PSScriptRoot 'release'),
+    [string] $Version = '',
+    [switch] $Backup,
     [switch] $Hosted,
     [string] $ModelEndpoint = '',
     [string] $ModelName = 'qwen3.5:9b'
@@ -43,6 +52,19 @@ if ((Get-FromWsl $Distro @('cat', '/proc/1/comm')) -ne 'systemd') {
     Stop-Setup "$Distro isn't running systemd, which Hatchling's service needs. Update WSL with: wsl --update"
 }
 
+$updating = (Get-FromWsl $Distro @('sh', '-c', 'test -f /etc/hatchling/hatchling.env && echo yes')) -eq 'yes'
+if ($updating -and $Version) {
+    $had = Get-FromWsl $Distro @('sh', '-c', 'cat /etc/hatchling/windows-setup-version 2>/dev/null')
+    if ($had -and ([version] $had -gt [version] $Version)) {
+        Stop-Setup "Hatchling $had is installed, which is newer than this setup ($Version). Nothing was changed."
+    }
+}
+if ($updating -and $Backup -and (Get-FromWsl $Distro @('systemctl', 'is-active', 'hatchling')) -eq 'active') {
+    Say 'Making a backup first. A vault protected by a security key asks for your PIN and a touch'
+    & wsl.exe -d $Distro -u root --exec hatchling-broker backup
+    if ($LASTEXITCODE -ne 0) { Stop-Setup 'The backup didn''t finish, so nothing was updated. The lines above say why.' }
+}
+
 & wsl.exe -d $Distro -u root --exec sh -c "id -u $Owner > /dev/null 2>&1 || useradd -m -s /bin/bash $Owner"
 if ($LASTEXITCODE -ne 0) { Stop-Setup "Couldn't make the account '$Owner' in $Distro." }
 $ownerUid = Get-FromWsl $Distro @('id', '-u', $Owner)
@@ -56,7 +78,11 @@ $unpack = 'set -e; sha256sum --check --ignore-missing --quiet SHA256SUMS; grep -
 if ($LASTEXITCODE -ne 0) { Stop-Setup 'A file differs from the release''s SHA256SUMS: nothing was installed.' }
 
 $model = @()
-if ($Hosted) {
+if ($updating) {
+    Say 'Updating Hatchling. Your settings, model and data stay as they are'
+    $model = @('--keep-model')
+}
+elseif ($Hosted) {
     Say 'Using a hosted model, from OpenRouter. The next step asks for its key, here'
     $model = @('--hosted', 'openrouter')
 }
@@ -85,23 +111,29 @@ else {
     $model = @('--model-endpoint', 'http://localhost:11434/v1', '--model', $ModelName)
 }
 
-Say 'Installing Hatchling'
+if (-not $updating) { Say 'Installing Hatchling' }
 $install = @('-d', $Distro, '-u', 'root', '--exec', 'env', "SUDO_UID=$ownerUid", 'sh', '/root/hatchling-installer/scripts/install.sh', '--from', $from) + $model
-if ($Hosted) {
+if ($Hosted -and -not $updating) {
     # Left alone: it asks for a key, at a prompt that needs this console.
     & wsl.exe @install
 }
 else {
     # The app's address is a key, and the Start menu fetches it: it stays off
     # the screen, with what's only useful in a Linux shell.
-    $linuxOnly = 'hatchling-ui=|^Open the app in a browser|^Each start of the broker|^\s*hatchling-host url|^A hosted model too|^which asks for its key|^After that, switch'
+    $linuxOnly = 'hatchling-ui=|^Open the app in a browser|^Each start of the broker|^\s*hatchling-host url|^A hosted model too|^which asks for its key|^After that, switch|^Hatchling is up to date, and locked|^\s*sudo hatchling-broker unlock'
     & wsl.exe @install | ForEach-Object { if ($_ -notmatch $linuxOnly) { $_ } }
 }
 if ($LASTEXITCODE -ne 0) { Stop-Setup 'Hatchling didn''t install. The lines above say why, and running this again carries on.' }
 
+if ($Version) {
+    & wsl.exe -d $Distro -u root --exec sh -c "echo $Version > /etc/hatchling/windows-setup-version"
+}
 Say 'Keeping it running after this window closes'
 Start-KeepRunning $Distro
 Write-Host ''
 Write-Host 'Done. Open Hatchling from the Start menu.' -ForegroundColor Green
+if ((Get-FromWsl $Distro @('sh', '-c', 'hatchling-broker vault-keyring status 2>/dev/null | grep -c "tier hardware key"')) -ne '0') {
+    Write-Host 'It restarted, so it''s locked: Hatchling asks for your key when you open it.'
+}
 Write-Host ''
 Read-Host 'Press Enter to close'
