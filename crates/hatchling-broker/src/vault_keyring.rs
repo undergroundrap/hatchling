@@ -1484,6 +1484,12 @@ pub fn command(
                 key_line(&key)
             );
         }
+        Some(action @ ("reminders-on" | "reminders-off")) => {
+            let on = action == "reminders-on";
+            crate::key_seen::set_reminders(config.keyring_path()?, on).map_err(io_error)?;
+            let now_are = if on { "on" } else { "off" };
+            let _ = writeln!(out, "vault-keyring: key reminders are {now_are}");
+        }
         Some("label-key") => {
             let key = label_key(config, ask, devices)?;
             let _ = writeln!(
@@ -1515,7 +1521,7 @@ pub fn new_codes(out: &mut dyn Write, codes: Option<&BackupCodes>) {
 }
 
 /// The actions `vault-keyring` takes.
-pub const USAGE: &str = "usage: hatchling-broker vault-keyring <setup | lost-key | change-pin | init | enroll-totp | enroll-keys | use-file-tier | backup-codes | status | add-key | remove-key | label-key>";
+pub const USAGE: &str = "usage: hatchling-broker vault-keyring <setup | lost-key | change-pin | init | enroll-totp | enroll-keys | use-file-tier | backup-codes | status | add-key | remove-key | label-key | reminders-off | reminders-on>";
 
 /// Runs `hatchling-broker vault-keyring <action>`: the keyring settings
 /// from the environment, answers from stdin with the prompts on stderr,
@@ -1631,6 +1637,11 @@ pub fn report(config: &KeyringConfig) -> Result<String, Error> {
             .iter()
             .map(|reminder| format!("  reminder: {reminder}")),
     );
+    if !crate::key_seen::reminders_on(config.keyring_path()?) {
+        lines.push(String::from(
+            "  key reminders are off; to turn them on: vault-keyring reminders-on",
+        ));
+    }
     Ok(lines.join("\n"))
 }
 
@@ -2370,6 +2381,52 @@ pub(crate) mod tests {
         let line = format!("last opened the vault on {}", utc_date(long_ago).unwrap());
         assert_eq!(shown.matches("  reminder: Your key ").count(), 1, "{shown}");
         assert!(shown.contains(&line), "{shown}");
+    }
+
+    #[test]
+    fn key_reminders_turn_off_and_on_and_keys_are_still_noted() {
+        let (_scratch, vault, config, _codes, mut desk) = desk_vault("key-off", 2);
+        let path = config.keyring.as_deref().unwrap();
+        let keys = keys_of(&config);
+        let long_ago = now() - 91 * 24 * 60 * 60;
+        crate::key_seen::note(path, &keys.first().unwrap().id, long_ago).unwrap();
+        let mut run = |action: &str| {
+            let mut out = Vec::new();
+            let mut no_answer = |_: &str| Ok(String::new());
+            let stores = secrets(&vault);
+            let done = command(
+                &vault,
+                &config,
+                &stores,
+                Some(action),
+                &mut no_answer,
+                &mut desk,
+                &mut out,
+            );
+            done.unwrap();
+            String::from_utf8(out).unwrap()
+        };
+        assert!(run("reminders-off").contains("key reminders are off"));
+        let shown = report(&config).unwrap();
+        assert!(!shown.contains("reminder: Your key"), "{shown}");
+        assert!(shown.contains("to turn them on: vault-keyring reminders-on"), "{shown}");
+        assert!(run("reminders-off").contains("are off"), "off twice is off");
+        assert!(run("reminders-on").contains("key reminders are on"));
+        assert!(run("reminders-on").contains("are on"), "on twice is on");
+        let shown = report(&config).unwrap();
+        assert!(shown.contains("reminder: Your key"), "{shown}");
+        assert!(!shown.contains("to turn them on"), "{shown}");
+    }
+
+    #[test]
+    fn turning_reminders_on_says_why_it_could_not() {
+        let dir = Scratch::new("key-off-denied");
+        // A directory where the marker goes can't be removed as a file.
+        let keyring = dir.path().join("keyring");
+        std::fs::create_dir(dir.path().join("keyring.no-reminders")).unwrap();
+        assert!(crate::key_seen::set_reminders(&keyring, true).is_err());
+        assert!(!crate::key_seen::reminders_on(&keyring));
+        crate::key_seen::erase(&keyring);
     }
 
     #[test]

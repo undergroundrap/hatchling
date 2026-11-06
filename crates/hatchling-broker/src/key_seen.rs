@@ -27,6 +27,42 @@ pub fn record(keyring: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// The marker that says reminders are off. Its absence says they're on.
+fn off_marker(keyring: &Path) -> PathBuf {
+    let mut name = keyring.as_os_str().to_owned();
+    name.push(".no-reminders");
+    PathBuf::from(name)
+}
+
+/// Whether reminders are on for the keyring at `keyring`.
+#[must_use]
+pub fn reminders_on(keyring: &Path) -> bool {
+    !off_marker(keyring).exists()
+}
+
+/// Turns reminders on or off. Keys go on being noted either way, so turning
+/// them back on tells the truth at once.
+///
+/// # Errors
+///
+/// Why the marker couldn't be written or removed.
+pub fn set_reminders(keyring: &Path, on: bool) -> std::io::Result<()> {
+    let marker = off_marker(keyring);
+    if !on {
+        return std::fs::write(marker, b"");
+    }
+    match std::fs::remove_file(marker) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
+    }
+}
+
+/// Forgets everything kept for the keyring at `keyring`.
+pub fn erase(keyring: &Path) {
+    let _ = std::fs::remove_file(record(keyring));
+    let _ = std::fs::remove_file(off_marker(keyring));
+}
+
 /// When each key was last seen, by its wrap id. A line that can't be read
 /// is a key not seen.
 fn read(keyring: &Path) -> BTreeMap<String, u64> {
@@ -80,7 +116,7 @@ fn quiet(key: &KeyInfo, seen: &BTreeMap<String, u64>, now: u64) -> Option<String
         (None, None) => String::from("hasn't opened the vault lately"),
     };
     Some(format!(
-        "Your {name} {when}. Use it for your next unlock, so you know it still works."
+        "Your {name} {when}. Use it for your next unlock, so you know it still works. (To stop these reminders: sudo hatchling-broker vault-keyring reminders-off)"
     ))
 }
 
@@ -101,6 +137,9 @@ pub fn reminders(config: &KeyringConfig, now: u64) -> Vec<String> {
     let Some(path) = config.keyring.as_deref() else {
         return Vec::new();
     };
+    if !reminders_on(path) {
+        return Vec::new();
+    }
     let Ok(keyring) = Keyring::load(path) else {
         return Vec::new();
     };
@@ -136,7 +175,8 @@ mod tests {
         let past_it = seen_at(NOW - 90 * DAY - 1);
         let said = quiet(&spare, &past_it, NOW).unwrap();
         assert!(said.starts_with("Your key \"Nano\" last opened the vault on "));
-        assert!(said.ends_with("Use it for your next unlock, so you know it still works."));
+        assert!(said.contains("Use it for your next unlock, so you know it still works."));
+        assert!(said.ends_with("vault-keyring reminders-off)"));
     }
 
     #[test]
