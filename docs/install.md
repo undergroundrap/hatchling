@@ -32,6 +32,26 @@ It doesn't pipe anything into a shell, and it's in the release's `SHA256SUMS` an
 
 Either way, the other kind is one command after (`use-hosted` or `use-local`, [below](#switching-models)), and then a switch in the app.
 
+## Keep it running on Windows
+
+WSL stops a distro about 30 seconds after the last terminal into it closes, and Hatchling stops with it: the app goes offline, and nothing scheduled runs. Turning on systemd or `loginctl enable-linger` doesn't change this.
+
+To keep it running while you're logged in, run this once, in PowerShell, **not** as administrator. Put your distro's name in place of `Ubuntu` (`wsl -l -v` lists them); `get-hatchling.sh` prints this with the name filled in:
+
+```powershell
+$p="$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Hatchling.lnk"; $s=(New-Object -ComObject WScript.Shell).CreateShortcut($p); $s.TargetPath="$env:WINDIR\System32\conhost.exe"; $s.Arguments="--headless wsl.exe -d Ubuntu --exec sleep infinity"; $s.Save(); Start-Process $p
+```
+
+It adds a shortcut to your own Startup folder, which holds one idle process in WSL, with no window, from each time you log in. It needs no administrator rights, and nothing shows on screen. To stop it, delete the shortcut (below) and run `wsl --terminate Ubuntu`:
+
+```powershell
+Remove-Item "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Hatchling.lnk"
+```
+
+Nothing runs while you're logged out or the computer is off. If a security key protects your vault, a restart of Windows leaves it locked until you run `sudo hatchling-broker unlock`.
+
+**Run Hatchling in one WSL distro at a time.** Distros share their control groups and their network, so a second one fails to start with `Failed to spawn executor: Device or resource busy`, and they'd want the same port. If `unlock` says the service has no cpu controller, its own fix (`sudo systemctl daemon-reload`, then `sudo systemctl restart hatchling`) clears it.
+
 ## Install
 
 From a clone of the version you install, download its release into `release/` and install from it. `scripts/install.sh` checks every file against the release's `SHA256SUMS` before installing anything.

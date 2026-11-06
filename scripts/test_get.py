@@ -207,6 +207,18 @@ class GetTest(unittest.TestCase):
         self.assertNotEqual(done.returncode, 0)
         self.assertIn("run it as yourself, not as root", done.stderr)
 
+    def test_on_wsl_it_says_how_to_keep_hatchling_running(self) -> None:
+        endpoint = ("--model-endpoint", "http://localhost:18089/v1")
+        held = "--headless wsl.exe -d Ubuntu-24.04 --exec sleep infinity"
+        done = self.run_get(*endpoint, env={"WSL_DISTRO_NAME": "Ubuntu-24.04"})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn(held, done.stdout)
+        self.assertIn(r"$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Hatchling.lnk", done.stdout)
+        self.assertIn("not as administrator", done.stdout)
+        self.assertNotIn("sleep infinity", self.run_get(*endpoint).stdout, "not on Linux")
+        odd = self.run_get(*endpoint, env={"WSL_DISTRO_NAME": "a'; bad"})
+        self.assertNotIn("sleep infinity", odd.stdout, "a name that isn't one isn't printed to paste")
+
     def test_without_ollama_it_says_how_to_get_it_and_installs_nothing(self) -> None:
         done = self.run_get()
         self.assertNotEqual(done.returncode, 0)
