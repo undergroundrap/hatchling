@@ -344,9 +344,22 @@ pub(crate) fn terminal_operator() -> (impl FnMut(&str) -> Result<String, Error>,
     let console = Console::terminal();
     let devices = platform_keys(pin_prompt(&console));
     (
-        move |prompt: &str| console.borrow_mut().ask(prompt),
+        move |prompt: &str| {
+            if asks_for_a_code(prompt) {
+                let answer = console.borrow_mut().ask_secret(prompt)?;
+                Ok(answer.to_string())
+            } else {
+                console.borrow_mut().ask(prompt)
+            }
+        },
         devices,
     )
+}
+
+/// Whether `prompt` asks for a backup code, or anything else secret that
+/// someone might type at it: none of those show as they're typed.
+pub(crate) fn asks_for_a_code(prompt: &str) -> bool {
+    prompt.contains("type a backup code")
 }
 
 /// [`unlock`], asking with `ask` for what the vault's tier needs: a
@@ -905,11 +918,9 @@ fn no_key_to_add(why: &str) -> String {
     )
 }
 
-/// How a change to the keys is authorized when a key can be reached.
-const AUTHORIZE_PROMPT: &str = "To authorize, plug in a security key that is already enrolled and press Enter, or type a backup code (it is used up):";
-
-/// How it is authorized when none can: a backup code.
-const AUTHORIZE_CODE_PROMPT: &str = "No security key can be reached. To authorize, type a backup code (it is used up), or nothing to stop:";
+/// How a change to the keys is authorized when no key can be reached: a
+/// backup code.
+const AUTHORIZE_CODE_PROMPT: &str = "No security key can be reached. To authorize, plug one in and run this again, or type a backup code (it is used up, and nothing shows as you type), or nothing to stop:";
 
 /// What stops a guided flow without a change.
 pub(crate) fn stopped() -> Error {
@@ -936,7 +947,7 @@ fn authorize(
 const OPEN_NO_KEY: &str = "No security key found. If yours is plugged in, seat it again or try another port (in WSL, attach it), and run this again. Or type a backup code (it is used up), or nothing to stop:";
 
 /// What it says when the keys plugged in aren't registered here.
-const OPEN_NOT_REGISTERED: &str = "That security key isn't registered with this vault. Plug in one that is and run this again, or type a backup code (it is used up), or nothing to stop:";
+const OPEN_NOT_REGISTERED: &str = "That security key isn't registered with this vault. Plug in one that is and run this again, or type a backup code (it is used up, and nothing shows as you type), or nothing to stop:";
 
 /// Opens a hardware-key vault at a start: with the first key plugged in
 /// that's registered here, with nothing asked but what the key itself asks
@@ -965,7 +976,7 @@ pub(crate) fn opening(
     } else {
         // A key that's there and can't be reached is said as it is.
         ask(&format!(
-            "{why}. Run this again when that's fixed, or type a backup code (it is used up), or nothing to stop:"
+            "{why}. Run this again when that's fixed, or type a backup code (it is used up, and nothing shows as you type), or nothing to stop:"
         ))?
     };
     match code.trim() {
@@ -978,12 +989,12 @@ pub(crate) fn opening(
 /// backup code (`Some`, not yet checked or spent), or `None` for the
 /// security key plugged in.
 fn authorization(ask: Ask<'_>, devices: &mut dyn Devices) -> Result<Option<String>, Error> {
-    let reachable = devices.plugged_in().is_some();
-    let answer = ask(if reachable {
-        AUTHORIZE_PROMPT
-    } else {
-        AUTHORIZE_CODE_PROMPT
-    })?;
+    // A key that's there is the answer: nothing to ask, so a PIN typed
+    // early has no prompt to land on.
+    if devices.plugged_in().is_some() {
+        return Ok(None);
+    }
+    let answer = ask(AUTHORIZE_CODE_PROMPT)?;
     let code = answer.trim();
     Ok((!code.is_empty()).then(|| code.to_owned()))
 }
@@ -2683,7 +2694,6 @@ pub(crate) mod tests {
             &[
                 ("YubiKey 5C, desk", Some(0)),
                 ("yes", Some(0)),
-                ("", Some(0)),
                 ("", Some(2)),
             ],
         );
@@ -2703,7 +2713,7 @@ pub(crate) mod tests {
             10,
             "an enrolled key authorized it: no code spent"
         );
-        assert_eq!(operator.asked.len(), 4);
+        assert_eq!(operator.asked.len(), 3);
         assert!(
             operator
                 .asked
@@ -2717,10 +2727,6 @@ pub(crate) mod tests {
                 .get(1)
                 .unwrap()
                 .contains("named \"YubiKey 5C, desk\"")
-        );
-        assert_eq!(
-            operator.asked.get(2).map(String::as_str),
-            Some(AUTHORIZE_PROMPT)
         );
         assert!(
             operator
@@ -2746,8 +2752,8 @@ pub(crate) mod tests {
             &desk,
             &[
                 ("spare", Some(0)),
-                ("yes", Some(0)),
-                (code, Some(0)),
+                ("yes", None),
+                (code, None),
                 ("", Some(3)),
             ],
         );
@@ -2961,7 +2967,6 @@ pub(crate) mod tests {
         for code in codes.iter().take(9) {
             keyring.recover(code).unwrap();
         }
-        let last = codes.last().unwrap().as_str();
         let ids: Vec<String> = keys_of(&config).into_iter().map(|key| key.id).collect();
         let [first, second] = ids.as_slice() else {
             unreachable!("two keys");
@@ -2990,42 +2995,21 @@ pub(crate) mod tests {
             ),
             (1, 2, 1)
         );
-        // A key in reach, but the last code typed: the vault refuses it
-        // before spending it.
-        let mut operator = Operator::new(
-            &desk,
-            &[
-                (second.as_str(), Some(0)),
-                ("one key", Some(0)),
-                ("yes", Some(0)),
-                (last, Some(0)),
-            ],
-        );
-        let typed = remove_key(
-            &config,
-            &mut |prompt| Ok(operator.answer(prompt)),
-            &mut desk,
-        );
-        assert!(
-            matches!(&typed, Err(Error::Vault { source: hatchling_vault::Error::KeyChange { reason } }) if reason.starts_with("your last backup code cannot authorize this")),
-            "{typed:?}"
-        );
-        assert_eq!(
-            operator.asked.last().map(String::as_str),
-            Some(AUTHORIZE_PROMPT)
-        );
         assert_eq!((keys_of(&config).len(), codes_left(&config)), (2, 1));
         // The asking and the key's unlock, on their own.
-        let mut operator = Operator::new(&desk, &[("  a-code ", Some(0)), ("", None)]);
+        let mut operator = Operator::new(&desk, &[("  a-code ", None), ("", None)]);
         let mut answer = |prompt: &str| -> Result<String, Error> { Ok(operator.answer(prompt)) };
+        // A key that's there is the answer: nothing's asked.
+        desk.plugged.set(Some(0));
+        assert_eq!(authorization(&mut answer, &mut desk).unwrap(), None);
         assert_eq!(
-            authorization(&mut answer, &mut desk).unwrap().as_deref(),
+            authorization(&mut answer, &mut NoKeys).unwrap().as_deref(),
             Some("a-code")
         );
         assert_eq!(authorization(&mut answer, &mut NoKeys).unwrap(), None);
         assert_eq!(
             operator.asked,
-            [AUTHORIZE_PROMPT, AUTHORIZE_CODE_PROMPT].map(String::from)
+            [AUTHORIZE_CODE_PROMPT, AUTHORIZE_CODE_PROMPT].map(String::from)
         );
         let keyring = Keyring::load(config.keyring.as_deref().unwrap()).unwrap();
         assert!(refused_unlock(&by_key(&keyring, &mut NoKeys)));
@@ -3184,12 +3168,7 @@ pub(crate) mod tests {
         };
         let added = run(
             "add-key",
-            &[
-                ("desk", Some(0)),
-                ("yes", Some(0)),
-                ("", Some(0)),
-                ("", Some(3)),
-            ],
+            &[("desk", Some(0)), ("yes", Some(0)), ("", Some(3))],
             &mut desk,
         )
         .unwrap();
@@ -3340,6 +3319,15 @@ pub(crate) mod tests {
             "{said}"
         );
         assert!(!said.contains("No security key found"), "{said}");
+    }
+
+    /// Every prompt a backup code is typed at is hidden, and only those.
+    #[test]
+    fn a_backup_code_never_shows() {
+        for prompt in [AUTHORIZE_CODE_PROMPT, OPEN_NO_KEY, OPEN_NOT_REGISTERED] {
+            assert!(asks_for_a_code(prompt), "{prompt}");
+        }
+        assert!(!asks_for_a_code("Add a second now? Type yes or no:"));
     }
 
     #[test]

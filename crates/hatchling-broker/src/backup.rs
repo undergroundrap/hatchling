@@ -407,12 +407,9 @@ fn opened(
 /// A new backup: at `to`, or among the ones Hatchling keeps.
 fn make_backup(
     config: &Config,
-    keyring: &KeyringConfig,
+    (key, ring_bytes): &(MasterKey, Vec<u8>),
     to: Option<&Path>,
-    ask: Ask<'_>,
-    devices: &mut dyn Devices,
 ) -> Result<PathBuf, Error> {
-    let (key, ring_bytes) = opened(config, keyring, ask, devices)?;
     let seconds = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| since.as_secs());
@@ -424,7 +421,7 @@ fn make_backup(
         fs::create_dir_all(BACKUPS).map_err(ring::io_error)?;
         fs::set_permissions(BACKUPS, fs::Permissions::from_mode(0o700)).map_err(ring::io_error)?;
     }
-    write_backup(&places(config)?, &key, &ring_bytes, &path)?;
+    write_backup(&places(config)?, key, ring_bytes, &path)?;
     if to.is_none() {
         prune(Path::new(BACKUPS))?;
     }
@@ -439,9 +436,11 @@ fn make_backup(
 pub fn run_backup(config: &Config, to: Option<&Path>) -> Result<(), Error> {
     must_be_root()?;
     let keyring = KeyringConfig::from_env()?;
-    service("stop")?;
+    // The key before the service: stopped at the prompt, nothing's down.
     let (mut ask, mut devices) = ring::terminal_operator();
-    let made = make_backup(config, &keyring, to, &mut ask, &mut devices);
+    let key = opened(config, &keyring, &mut ask, &mut devices)?;
+    service("stop")?;
+    let made = make_backup(config, &key, to);
     let started = service("start");
     let made = made?;
     started?;
@@ -468,11 +467,11 @@ pub fn run_restore(config: &Config, from: &Path) -> Result<(), Error> {
         .iter()
         .map(|place| (place.name.as_str(), place))
         .collect();
-    service("stop")?;
     let (mut ask, mut devices) = ring::terminal_operator();
+    let (key, staged_ring) =
+        open_for_restore(config, &keyring_config, &ring_bytes, &mut ask, &mut devices)?;
+    service("stop")?;
     let restored = (|| {
-        let (key, staged_ring) =
-            open_for_restore(config, &keyring_config, &ring_bytes, &mut ask, &mut devices)?;
         let staging = config.vault.root.with_extension("restoring");
         let _ = fs::remove_dir_all(&staging);
         fs::create_dir_all(&staging).map_err(ring::io_error)?;
@@ -559,10 +558,15 @@ pub fn run_reset(config: &Config, args: &[String]) -> Result<(), Error> {
             return Err(ring::stopped());
         }
     }
+    let key = if has("--no-backup") {
+        None
+    } else {
+        Some(opened(config, &keyring, &mut ask, &mut devices)?)
+    };
     service("stop")?;
     let done = (|| {
-        if !has("--no-backup") {
-            let made = make_backup(config, &keyring, None, &mut ask, &mut devices)?;
+        if let Some(key) = &key {
+            let made = make_backup(config, key, None)?;
             let _ = writeln!(
                 std::io::stdout().lock(),
                 "Backed up first, to {}.",

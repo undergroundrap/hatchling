@@ -268,7 +268,14 @@ pub(crate) fn unlock_relayed(
     keyring: &KeyringConfig,
     devices: &mut dyn Devices,
 ) -> Result<MasterKey, Error> {
-    let mut ask = |prompt: &str| relay(stream, prompt, false).map(|answer| answer.to_string());
+    let mut ask = |prompt: &str| {
+        relay(
+            stream,
+            prompt,
+            crate::vault_keyring::asks_for_a_code(prompt),
+        )
+        .map(|answer| answer.to_string())
+    };
     crate::vault_keyring::unlock_asking(vault, keyring, &mut ask, devices)
 }
 
