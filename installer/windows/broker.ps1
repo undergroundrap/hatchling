@@ -2,7 +2,7 @@
 # what's secret is typed at its own prompt here, and never passes through this
 # script.
 param(
-    [string] $Distro = 'Hatchling',
+    [string] $Distro = 'hatchling-wsl',
     [ValidateSet('protect', 'backup', 'unlock')] [string] $Do
 )
 # Not 'Stop': in Windows PowerShell, a native program's stderr is an error, and

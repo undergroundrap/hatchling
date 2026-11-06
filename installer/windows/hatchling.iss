@@ -17,7 +17,7 @@
   #define OutputDir "."
 #endif
 #ifndef Distro
-  #define Distro "Hatchling"
+  #define Distro "hatchling-wsl"
 #endif
 #define Script "powershell.exe"
 ; RemoteSigned, not Bypass: enough for scripts installed here, and with Bypass and the
@@ -34,6 +34,9 @@ AppPublisherURL=https://github.com/undergroundrap/hatchling
 DefaultDirName={autopf}\Hatchling
 DefaultGroupName=Hatchling
 DisableProgramGroupPage=yes
+SetupIconFile=..\..\frontend\public\favicon.ico
+WizardSmallImageFile=wizard-small.bmp
+UninstallDisplayIcon={app}\hatchling.ico
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -43,7 +46,7 @@ Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayName=Hatchling
-LicenseFile=..\..\LICENSE
+InfoBeforeFile=notice.txt
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -53,13 +56,15 @@ Source: "common.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "setup.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "open.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "broker.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\frontend\public\favicon.ico"; DestDir: "{app}"; DestName: "hatchling.ico"; Flags: ignoreversion
+Source: "..\..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 Source: "{#ReleaseDir}\*"; DestDir: "{app}\release"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\Hatchling\Open Hatchling"; Filename: "{#Script}"; Parameters: "{#Run} ""{app}\open.ps1"" -Distro {#Distro}"
-Name: "{autoprograms}\Hatchling\Protect your vault"; Filename: "{#Script}"; Parameters: "{#Run} ""{app}\broker.ps1"" -Distro {#Distro} -Do protect"
-Name: "{autoprograms}\Hatchling\Make a backup"; Filename: "{#Script}"; Parameters: "{#Run} ""{app}\broker.ps1"" -Distro {#Distro} -Do backup"
-Name: "{autoprograms}\Hatchling\Unlock"; Filename: "{#Script}"; Parameters: "{#Run} ""{app}\broker.ps1"" -Distro {#Distro} -Do unlock"
+Name: "{autoprograms}\Hatchling"; Filename: "{#Script}"; Parameters: "{#Run} ""{app}\open.ps1"" -Distro {#Distro}"; IconFilename: "{app}\hatchling.ico"; Comment: "Open Hatchling"
+Name: "{autoprograms}\Hatchling Tools\Protect your vault"; Filename: "{#Script}"; Parameters: "{#Run} ""{app}\broker.ps1"" -Distro {#Distro} -Do protect"; IconFilename: "{app}\hatchling.ico"
+Name: "{autoprograms}\Hatchling Tools\Make a backup"; Filename: "{#Script}"; Parameters: "{#Run} ""{app}\broker.ps1"" -Distro {#Distro} -Do backup"; IconFilename: "{app}\hatchling.ico"
+Name: "{autoprograms}\Hatchling Tools\Unlock"; Filename: "{#Script}"; Parameters: "{#Run} ""{app}\broker.ps1"" -Distro {#Distro} -Do unlock"; IconFilename: "{app}\hatchling.ico"
 ; WSL stops a distro soon after its last terminal closes: this keeps it running
 ; while the owner is logged in, with no window.
 Name: "{userstartup}\Hatchling"; Filename: "{sys}\conhost.exe"; Parameters: "--headless wsl.exe -d {#Distro} --exec sleep infinity"; Tasks: keeprunning

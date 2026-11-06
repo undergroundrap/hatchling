@@ -2,7 +2,7 @@
 # one, so a saved link stops working on purpose. This asks for it each time.
 # A vault that a security key protects is unlocked here first, at the broker's
 # own prompt.
-param([string] $Distro = 'Hatchling')
+param([string] $Distro = 'hatchling-wsl')
 # Not 'Stop': in Windows PowerShell, a native program's stderr is an error, and
 # each step here checks wsl.exe's exit code instead.
 $ErrorActionPreference = 'Continue'

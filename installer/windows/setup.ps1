@@ -1,7 +1,7 @@
 # Sets Hatchling up in a WSL distro of its own, from the release files beside
 # this script. Run by the installer in a console the owner can see, or by hand:
 #
-#   setup.ps1 [-Distro Hatchling] [-Release <dir>] [-Hosted | -ModelEndpoint <url> -ModelName <name>]
+#   setup.ps1 [-Distro hatchling-wsl] [-Release <dir>] [-Hosted | -ModelEndpoint <url> -ModelName <name>]
 #
 # With neither, the model runs on this machine, with Ollama: one already running
 # that has the model is used, and otherwise it asks before installing it. -Hosted uses OpenRouter, and the broker asks for its key
@@ -12,7 +12,7 @@
 # `wsl -u root` runs the commands that need root, so the app's host, which
 # runs as that account, gets no way to root.
 param(
-    [string] $Distro = 'Hatchling',
+    [string] $Distro = 'hatchling-wsl',
     [string] $Release = (Join-Path $PSScriptRoot 'release'),
     [switch] $Hosted,
     [string] $ModelEndpoint = '',
@@ -86,12 +86,22 @@ else {
 }
 
 Say 'Installing Hatchling'
-& wsl.exe -d $Distro -u root --exec env "SUDO_UID=$ownerUid" sh /root/hatchling-installer/scripts/install.sh --from $from @model
+$install = @('-d', $Distro, '-u', 'root', '--exec', 'env', "SUDO_UID=$ownerUid", 'sh', '/root/hatchling-installer/scripts/install.sh', '--from', $from) + $model
+if ($Hosted) {
+    # Left alone: it asks for a key, at a prompt that needs this console.
+    & wsl.exe @install
+}
+else {
+    # The app's address is a key, and the Start menu fetches it: it stays off
+    # the screen, with what's only useful in a Linux shell.
+    $linuxOnly = 'hatchling-ui=|^Open the app in a browser|^Each start of the broker|^\s*hatchling-host url|^A hosted model too|^which asks for its key|^After that, switch'
+    & wsl.exe @install | ForEach-Object { if ($_ -notmatch $linuxOnly) { $_ } }
+}
 if ($LASTEXITCODE -ne 0) { Stop-Setup 'Hatchling didn''t install. The lines above say why, and running this again carries on.' }
 
 Say 'Keeping it running after this window closes'
 Start-KeepRunning $Distro
 Write-Host ''
-Write-Host 'Done. Open Hatchling from the Start menu. Each time, that gets the app''s current address for you.' -ForegroundColor Green
+Write-Host 'Done. Open Hatchling from the Start menu.' -ForegroundColor Green
 Write-Host ''
 Read-Host 'Press Enter to close'
