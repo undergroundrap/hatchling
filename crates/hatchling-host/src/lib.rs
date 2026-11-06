@@ -386,12 +386,14 @@ mod tests {
         settings.unlock_socket = None;
         assert!(!locked(&settings));
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(parse(&[
-            ("HATCHLING_UI_SOCKET", "/run/ui.sock"),
-            ("HATCHLING_HOST_UI", "/srv/ui"),
-            ("HATCHLING_UNLOCK_SOCKET", "relative"),
-        ])
-        .is_err());
+        assert!(
+            parse(&[
+                ("HATCHLING_UI_SOCKET", "/run/ui.sock"),
+                ("HATCHLING_HOST_UI", "/srv/ui"),
+                ("HATCHLING_UNLOCK_SOCKET", "relative"),
+            ])
+            .is_err()
+        );
     }
 
     #[test]

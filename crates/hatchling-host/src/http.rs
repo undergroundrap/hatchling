@@ -26,9 +26,9 @@ use std::path::{Path, PathBuf};
 use crate::Error;
 
 /// Where the browser opens its channel to the broker.
+pub const UI_PATH: &str = "/ui";
 /// Where the app asks if the vault is locked.
 const LOCKED_PATH: &str = "/hatchling-locked";
-pub const UI_PATH: &str = "/ui";
 
 /// Where the Machine view's channel is opened.
 pub const OPERATOR_PATH: &str = "/operator";

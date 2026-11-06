@@ -96,7 +96,7 @@ fn a_try_that_fails_is_told_why_and_the_next_one_unlocks() {
 }
 
 #[test]
-fn a_socket_left_by_an_earlier_start_is_replaced_and_its_directory_made_private() {
+fn a_socket_left_by_an_earlier_start_is_replaced_and_only_its_being_there_shows() {
     let dir = scratch("stale");
     let path = dir.join("fresh").join("unlock.sock");
     let first = listen(&path).unwrap();
@@ -108,7 +108,7 @@ fn a_socket_left_by_an_earlier_start_is_replaced_and_its_directory_made_private(
         .permissions()
         .mode()
         & 0o777;
-    assert_eq!(mode, 0o700);
+    assert_eq!(mode, 0o711);
     drop(again);
     let _ = std::fs::remove_dir_all(&dir);
 }
