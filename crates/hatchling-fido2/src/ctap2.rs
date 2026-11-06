@@ -6,7 +6,7 @@
 //! [`crate::device`] before it is believed.
 
 use crate::cbor::{CborError, Value};
-use crate::ctaphid::{CHANNEL_BUSY, TransportError};
+use crate::ctaphid::{CHANNEL_BUSY, HID_TIMEOUT, TransportError};
 use crate::pin::{CryptoError, Protocol};
 
 /// `authenticatorMakeCredential`.
@@ -30,6 +30,8 @@ pub const KEEPALIVE_CANCEL: u8 = 0x2d;
 pub const NO_CREDENTIALS: u8 = 0x2e;
 /// `CTAP2_ERR_USER_ACTION_TIMEOUT`.
 pub const USER_ACTION_TIMEOUT: u8 = 0x2f;
+/// `CTAP2_ERR_ACTION_TIMEOUT`: CTAP 2.1's name for no touch in time.
+pub const ACTION_TIMEOUT: u8 = 0x3a;
 /// `CTAP2_ERR_PIN_INVALID`.
 pub const PIN_INVALID: u8 = 0x31;
 /// `CTAP2_ERR_PIN_BLOCKED`.
@@ -208,7 +210,8 @@ impl Info {
                 .at(3)
                 .and_then(Value::as_bytes)
                 .and_then(|aaguid| aaguid.try_into().ok()),
-            transports: texts(9)?,
+            // Only for a name to suggest: not worth losing a key over.
+            transports: texts(9).unwrap_or_default(),
         })
     }
 
@@ -335,8 +338,12 @@ pub fn to_authenticator_error(error: &Ctap2Error) -> hatchling_vault::Authentica
         Ctap2Error::Status(NO_CREDENTIALS | INVALID_CREDENTIAL) => {
             AuthenticatorError::UnknownCredential
         }
-        Ctap2Error::Status(OPERATION_DENIED | USER_ACTION_TIMEOUT | KEEPALIVE_CANCEL)
-        | Ctap2Error::Transport(TransportError::Timeout) => AuthenticatorError::NoUserPresence,
+        Ctap2Error::Status(
+            OPERATION_DENIED | USER_ACTION_TIMEOUT | ACTION_TIMEOUT | KEEPALIVE_CANCEL,
+        )
+        | Ctap2Error::Transport(TransportError::Timeout | TransportError::Device(HID_TIMEOUT)) => {
+            AuthenticatorError::NoUserPresence
+        }
         Ctap2Error::Transport(TransportError::Device(CHANNEL_BUSY)) => AuthenticatorError::Device(
             String::from("another program is using the security key: close it, and try again"),
         ),
@@ -391,6 +398,35 @@ pub(crate) mod tests {
             (Value::int(4), Value::map(options)),
             (Value::int(6), Value::Array(protocols)),
         ])
+    }
+
+    /// However a key says it wasn't touched, it's said the same way.
+    #[test]
+    fn every_way_of_saying_no_touch_is_one() {
+        use hatchling_vault::AuthenticatorError;
+        for error in [
+            Ctap2Error::Status(USER_ACTION_TIMEOUT),
+            Ctap2Error::Status(ACTION_TIMEOUT),
+            Ctap2Error::Transport(TransportError::Device(HID_TIMEOUT)),
+            Ctap2Error::Transport(TransportError::Timeout),
+        ] {
+            assert!(matches!(
+                to_authenticator_error(&error),
+                AuthenticatorError::NoUserPresence
+            ));
+        }
+    }
+
+    /// A list that's for a suggested name can be wrong and the key still
+    /// works.
+    #[test]
+    fn a_key_with_odd_transports_still_works() {
+        let info = Info::parse(&Value::map(vec![
+            (Value::int(1), Value::Array(vec![Value::text("FIDO_2_0")])),
+            (Value::int(9), Value::int(1)),
+        ]))
+        .unwrap();
+        assert!(info.transports.is_empty());
     }
 
     /// A key is called what it is, as far as it says, and only a key that

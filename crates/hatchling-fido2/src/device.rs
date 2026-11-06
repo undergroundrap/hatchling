@@ -41,6 +41,8 @@ use crate::pin::{Protocol, cose_point, encapsulate, random};
 pub const PRESENCE_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long a step that needs no touch may take.
 pub const STEP_TIMEOUT: Duration = Duration::from_secs(5);
+/// The relying party's name, on the key.
+const RP_NAME: &str = "Hatchling";
 /// The name the vault's credentials carry on the key.
 pub const USER_NAME: &str = "hatchling vault";
 
@@ -327,13 +329,18 @@ impl<H: Hid> Device<H> {
             (Value::int(1), Value::Bytes(client_data_hash.to_vec())),
             (
                 Value::int(2),
-                Value::map(vec![(Value::text("id"), Value::text(rp_id))]),
+                // Names CTAP2 leaves optional, which an older key may want.
+                Value::map(vec![
+                    (Value::text("id"), Value::text(rp_id)),
+                    (Value::text("name"), Value::text(RP_NAME)),
+                ]),
             ),
             (
                 Value::int(3),
                 Value::map(vec![
                     (Value::text("id"), Value::Bytes(user_id.to_vec())),
                     (Value::text("name"), Value::text(USER_NAME)),
+                    (Value::text("displayName"), Value::text(USER_NAME)),
                 ]),
             ),
             (
@@ -1098,6 +1105,36 @@ mod tests {
             "{refused:?}"
         );
         assert!(state.borrow().busy > 0);
+    }
+
+    /// The kinds of key out there all register and answer: both PIN
+    /// protocols or either, or none stated (CTAP 2.0's default); PIN tokens
+    /// with permissions or without; no shortest PIN stated.
+    #[test]
+    fn every_kind_of_key_registers_and_answers() {
+        for protocols in [vec![2, 1], vec![1, 2], vec![2], vec![1], Vec::new()] {
+            for permissions in [true, false] {
+                for min_pin_length in [0, 4, 8] {
+                    let key = SoftKey::new();
+                    let state = key.handle();
+                    {
+                        let mut state = state.borrow_mut();
+                        state.pin = Some(String::from("24681012"));
+                        state.protocols.clone_from(&protocols);
+                        state.permissions = permissions;
+                        state.min_pin_length = min_pin_length;
+                    }
+                    let (mut device, asked) = counted(key, "24681012");
+                    let made = device.make_credential(RP, b"u").unwrap();
+                    let salt = random::<32>().unwrap();
+                    let first = device.hmac_secret_verified(RP, &made.id, &salt).unwrap();
+                    let (mut next, _) = counted(SoftKey::sharing(state), "24681012");
+                    let again = next.hmac_secret_verified(RP, &made.id, &salt).unwrap();
+                    assert_eq!(first, again, "{protocols:?} {permissions}");
+                    assert_eq!(asked.get(), 1, "{protocols:?} {permissions}");
+                }
+            }
+        }
     }
 
     /// A key says what to call it.

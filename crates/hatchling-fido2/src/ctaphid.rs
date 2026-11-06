@@ -25,6 +25,9 @@ pub const MAX_MESSAGE: usize = 57 + 128 * 59;
 pub const INIT: u8 = 0x86;
 /// `CBOR`: one CTAP2 command.
 pub const CBOR: u8 = 0x90;
+/// CTAPHID's `ERR_MSG_TIMEOUT`, which some keys answer with for no touch.
+pub const HID_TIMEOUT: u8 = 0x05;
+
 /// What a keepalive says while the key waits for a touch.
 const UP_NEEDED: u8 = 2;
 
