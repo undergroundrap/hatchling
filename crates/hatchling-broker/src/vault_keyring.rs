@@ -3168,11 +3168,7 @@ pub(crate) mod tests {
         };
         let added = run(
             "add-key",
-            &[
-                ("desk", Some(0)),
-                ("yes", Some(0)),
-                ("", Some(3)),
-            ],
+            &[("desk", Some(0)), ("yes", Some(0)), ("", Some(3))],
             &mut desk,
         )
         .unwrap();
