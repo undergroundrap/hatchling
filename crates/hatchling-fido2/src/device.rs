@@ -189,6 +189,62 @@ impl<H: Hid> Device<H> {
         Ok(())
     }
 
+    /// Changes the key's PIN from `old` to `new`. What's registered on the
+    /// key keeps working: a PIN guards a key, it isn't part of what it
+    /// computes.
+    ///
+    /// # Errors
+    ///
+    /// [`Ctap2Error::NoPinSet`] for a key with none, [`Ctap2Error::PinPolicy`]
+    /// for a `new` it won't take, [`Ctap2Error::WrongPin`] for a wrong `old`,
+    /// or whatever else it answered.
+    pub fn change_pin(&mut self, old: &str, new: &str) -> Result<(), Ctap2Error> {
+        if self.info.client_pin != Some(true) {
+            return Err(Ctap2Error::NoPinSet);
+        }
+        let min = self.info.min_pin_length.unwrap_or(4);
+        if new.chars().count() < min || new.len() > 63 || new.contains('\0') {
+            return Err(Ctap2Error::PinPolicy { min });
+        }
+        let protocol = self.info.protocol();
+        let peer = self.key_agreement(protocol)?;
+        let (ours, shared) = encapsulate(protocol, &peer)?;
+        let mut padded = Zeroizing::new([0u8; 64]);
+        for (slot, byte) in padded.iter_mut().zip(new.bytes()) {
+            *slot = byte;
+        }
+        let new_pin = shared.encrypt(padded.as_slice())?;
+        let digest = Zeroizing::new(<[u8; 32]>::from(Sha256::digest(old.as_bytes())));
+        let pin_hash = shared.encrypt(digest.get(..16).unwrap_or(&[]))?;
+        let auth = shared.authenticate(&[&new_pin[..], &pin_hash].concat());
+        let parameters = Value::map(vec![
+            (Value::int(1), Value::int(protocol.number())),
+            (Value::int(2), Value::int(4)),
+            (Value::int(3), ours),
+            (Value::int(4), Value::Bytes(auth)),
+            (Value::int(5), Value::Bytes(new_pin)),
+            (Value::int(6), Value::Bytes(pin_hash)),
+        ]);
+        match command(
+            &mut self.channel,
+            CLIENT_PIN,
+            Some(&parameters),
+            STEP_TIMEOUT,
+        ) {
+            Ok(_) => {
+                self.held = None;
+                Ok(())
+            }
+            Err(Ctap2Error::Status(PIN_INVALID)) => Err(Ctap2Error::WrongPin(
+                crate::ctap2::wrong_pin(self.pin_retries().ok()),
+            )),
+            Err(Ctap2Error::Status(crate::ctap2::PIN_POLICY_VIOLATION)) => {
+                Err(Ctap2Error::PinPolicy { min })
+            }
+            Err(other) => Err(other),
+        }
+    }
+
     /// Whether the key holds `credential_id`: CTAP2's pre-flight, an
     /// assertion asked for without a touch, or the PIN.
     ///
@@ -597,6 +653,10 @@ impl<H: Hid> Authenticator for Device<H> {
 
     fn set_pin(&mut self, pin: &str) -> Result<(), AuthenticatorError> {
         Self::set_pin(self, pin).map_err(|error| to_authenticator_error(&error))
+    }
+
+    fn change_pin(&mut self, old: &str, new: &str) -> Result<(), AuthenticatorError> {
+        Self::change_pin(self, old, new).map_err(|error| to_authenticator_error(&error))
     }
 }
 
@@ -1135,6 +1195,71 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A new PIN opens what the old one did, and the old one stops.
+    #[test]
+    fn a_changed_pin_keeps_what_the_key_holds() {
+        let key = SoftKey::new();
+        let state = key.handle();
+        state.borrow_mut().pin = Some(String::from("2468"));
+        let mut device = open(key, Some("2468"));
+        let made = device.make_credential(RP, b"u").unwrap();
+        let salt = random::<32>().unwrap();
+        let before = device.hmac_secret_verified(RP, &made.id, &salt).unwrap();
+        Device::change_pin(&mut device, "2468", "135790").unwrap();
+        assert_eq!(state.borrow().pin.as_deref(), Some("135790"));
+        assert!(device.held.is_none(), "the old PIN isn't kept");
+        let mut next = open(SoftKey::sharing(Rc::clone(&state)), Some("135790"));
+        assert_eq!(
+            next.hmac_secret_verified(RP, &made.id, &salt).unwrap(),
+            before
+        );
+    }
+
+    /// A wrong current PIN says the tries left and changes nothing; a new
+    /// one the key won't take isn't sent; a key with no PIN has none to
+    /// change.
+    #[test]
+    fn a_pin_changes_only_from_the_right_one() {
+        let key = SoftKey::new();
+        let state = key.handle();
+        state.borrow_mut().pin = Some(String::from("2468"));
+        let mut device = open(key, None);
+        let wrong = Device::change_pin(&mut device, "0000", "135790").unwrap_err();
+        assert!(matches!(wrong, Ctap2Error::WrongPin(ref said) if said.contains('7')));
+        assert_eq!(state.borrow().pin.as_deref(), Some("2468"));
+        assert_eq!(state.borrow().retries, 7);
+        for bad in ["12", "12\x0034", &"7".repeat(64)] {
+            assert!(matches!(
+                Device::change_pin(&mut device, "2468", bad),
+                Err(Ctap2Error::PinPolicy { min: 4 })
+            ));
+        }
+        assert_eq!(state.borrow().retries, 7, "none of those reached the key");
+        let longest = "7".repeat(63);
+        Device::change_pin(&mut device, "2468", &longest).unwrap();
+        assert_eq!(state.borrow().pin.as_deref(), Some(longest.as_str()));
+        let mut none = open(SoftKey::new(), None);
+        assert!(matches!(
+            Device::change_pin(&mut none, "2468", "135790"),
+            Err(Ctap2Error::NoPinSet)
+        ));
+    }
+
+    /// A key that refuses the new PIN itself says so.
+    #[test]
+    fn a_new_pin_the_key_refuses_is_said() {
+        let key = SoftKey::new();
+        let state = key.handle();
+        state.borrow_mut().pin = Some(String::from("2468"));
+        let mut device = open(key, None);
+        state.borrow_mut().min_pin_length = 8;
+        assert!(matches!(
+            Device::change_pin(&mut device, "2468", "123456"),
+            Err(Ctap2Error::PinPolicy { .. })
+        ));
+        assert_eq!(state.borrow().pin.as_deref(), Some("2468"));
     }
 
     /// A key says what to call it.

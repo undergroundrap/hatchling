@@ -1502,7 +1502,7 @@ pub fn new_codes(out: &mut dyn Write, codes: Option<&BackupCodes>) {
 }
 
 /// The actions `vault-keyring` takes.
-pub const USAGE: &str = "usage: hatchling-broker vault-keyring <setup | lost-key | init | enroll-totp | enroll-keys | use-file-tier | backup-codes | status | add-key | remove-key | label-key>";
+pub const USAGE: &str = "usage: hatchling-broker vault-keyring <setup | lost-key | change-pin | init | enroll-totp | enroll-keys | use-file-tier | backup-codes | status | add-key | remove-key | label-key>";
 
 /// Runs `hatchling-broker vault-keyring <action>`: the keyring settings
 /// from the environment, answers from stdin with the prompts on stderr,
@@ -1516,6 +1516,9 @@ pub fn run_keyring(broker: &crate::Config, action: Option<&str>) -> Result<(), E
     let stores = crate::sealed_stores(broker, crate::vault_ops::redaction_config(broker)?.as_ref());
     if crate::key_setup::guided(action) {
         return crate::key_setup::run_setup(broker, &config, &stores, action);
+    }
+    if action == Some(crate::key_setup::CHANGE_PIN_ACTION) {
+        return crate::key_setup::run_change_pin(broker, &config, &stores);
     }
     let (mut asking, mut devices) = terminal_operator();
     command(

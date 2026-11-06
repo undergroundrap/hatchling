@@ -139,6 +139,14 @@ If you've lost them, or used some, or think someone saw them. The old set stops 
 sudo hatchling-broker vault-keyring backup-codes
 ```
 
+## Change a key's PIN
+
+```bash
+sudo hatchling-broker vault-keyring change-pin
+```
+
+It changes the PIN on the key plugged in. Your vault and your other keys don't change, and what's registered keeps working. To keep the same PIN on both keys, run it for each.
+
 ## A PIN that's blocked
 
 Three wrong PINs in a row: unplug the key and plug it back in, and try again. Eight in all, and the key locks itself: only resetting it frees it, and a reset wipes everything on it, your other accounts' passkeys included. Unlock with your other key or a backup code, remove the blocked key, reset it, and add it again.

@@ -174,6 +174,16 @@ pub trait Authenticator {
         let _ = pin;
         Err(AuthenticatorError::NoVerification)
     }
+
+    /// Changes the key's PIN from `old` to `new`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthenticatorError`] if the key doesn't take it.
+    fn change_pin(&mut self, old: &str, new: &str) -> Result<(), AuthenticatorError> {
+        let _ = (old, new);
+        Err(AuthenticatorError::NoVerification)
+    }
 }
 
 /// A move to the hardware-key tier, key by key.
@@ -607,7 +617,8 @@ mod tests {
             .is_ok_and(|secret| secret.as_bytes() == b"kept")
     }
 
-    /// A key that answers only what every [`Authenticator`] must.
+    /// A key that answers only what every [`Authenticator`] must, here to
+    /// say it can't change a PIN.
     struct Bare;
 
     impl Authenticator for Bare {
@@ -635,6 +646,7 @@ mod tests {
         assert_eq!(key.min_pin_length(), 4);
         assert_eq!(key.model(), None);
         assert!(key.set_pin("2468").is_err());
+        assert!(key.change_pin("2468", "1357").is_err());
     }
 
     /// An enrollment counts the keys in it.

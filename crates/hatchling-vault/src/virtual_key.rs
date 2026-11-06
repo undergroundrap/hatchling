@@ -186,6 +186,15 @@ impl Authenticator for VirtualAuthenticator {
         self.typed = Some(pin.to_owned());
         Ok(())
     }
+
+    fn change_pin(&mut self, old: &str, new: &str) -> Result<(), AuthenticatorError> {
+        if self.pin.as_deref() != Some(old) {
+            return Err(AuthenticatorError::Device(String::from("the PIN is wrong")));
+        }
+        self.pin = Some(new.to_owned());
+        self.typed = Some(new.to_owned());
+        Ok(())
+    }
 }
 
 impl VirtualAuthenticator {
@@ -243,6 +252,10 @@ mod tests {
         key.set_pin("2468").unwrap();
         assert_eq!(key.pin_set(), Some(true));
         assert!(key.set_pin("1357").is_err());
+        assert!(key.change_pin("0000", "1357").is_err());
+        assert_eq!(key.pin_set(), Some(true));
+        key.change_pin("2468", "1357").unwrap();
+        assert!(key.change_pin("2468", "1111").is_err());
     }
 
     #[test]
