@@ -635,7 +635,7 @@ mod tests {
         assert!(wipe_file_of(&file, &me).unwrap());
         assert!(!file.exists());
         let mut after = Vec::new();
-        std::io::Read::read_to_end(&mut seen, &mut after).unwrap();
+        Read::read_to_end(&mut seen, &mut after).unwrap();
         assert_eq!(after, vec![0u8; held.len()], "zeros where it was");
 
         let named = dir.join("named");

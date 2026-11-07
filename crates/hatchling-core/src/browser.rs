@@ -617,7 +617,7 @@ mod tests {
         let label = format!("{other} {tail}");
         let pad = MAX_LABEL_CHARS - label.chars().count();
         let title = format!("{}{label}", "x".repeat(pad));
-        let mut secrets = vec![crate::ui::Concealed::new(other.to_owned())];
+        let mut secrets = vec![Concealed::new(other.to_owned())];
         secrets.extend(the_value());
         let snapshot = PageSnapshot {
             title,
