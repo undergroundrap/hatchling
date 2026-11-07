@@ -50,6 +50,9 @@
 //!   complete.
 //! - **Errors.** Up to [`STDERR_KEEP`] bytes of stderr are kept for the
 //!   failure report.
+//! - **Held secrets.** A run whose agent tried to send one out is over
+//!   ([`crate::held_check::HeldHit`]): the next look at it kills what's left
+//!   of its cell and it ends [`RunEnd::Stopped`], whatever it wrote.
 
 use std::io::Read as _;
 use std::os::fd::{AsFd as _, OwnedFd};
@@ -69,6 +72,7 @@ use hatchling_scheduler::{Dispatcher, Launcher, Run, RunRequest, Timestamp};
 use hatchling_vault::OpensStores;
 
 use crate::cell::{Process, ScheduledRun};
+use crate::held_check::HeldHit;
 use crate::{
     AgentCell, ArtifactConfig, CellConfig, Config, Error, FollowupScope, GoalsAction, MemoryAction,
     MemoryGrant, SchedulerConfig, SkillConfig, SpaceConfig, VaultGrant, dispatch_once,
@@ -470,6 +474,8 @@ pub struct CellRun<'scope> {
     ending: Option<hatchling_scheduler::Ending>,
     /// Its listing for the operator, until it ends.
     running: Option<crate::machine::Running>,
+    /// What ends it, a hit in its session or its tree's.
+    hit: HeldHit,
 }
 
 impl std::fmt::Debug for CellRun<'_> {
@@ -486,9 +492,12 @@ impl<'scope> Launcher for CellLauncher<'scope, '_> {
 
     fn launch(&self, request: RunRequest) -> Result<CellRun<'scope>, String> {
         let run = scheduled_run(self.config, &request);
-        self.launch_cell(&request.schedule_id, run, |token, socket| {
-            scoped_config(self.config, &request, token, socket)
-        })
+        self.launch_cell(
+            &request.schedule_id,
+            run,
+            HeldHit::default(),
+            |token, socket| scoped_config(self.config, &request, token, socket),
+        )
     }
 }
 
@@ -497,11 +506,12 @@ impl<'scope> CellLauncher<'scope, '_> {
     /// its session under the configuration `scoped` makes from the run's
     /// token and the broker's socket path (which no run binds). Shared by
     /// scheduled runs and subagents, so every run cell is the same proven
-    /// one.
+    /// one. `hit` is what ends it: its own, or its parent's, for a child.
     pub(crate) fn launch_cell(
         &self,
         label: &str,
         run: ScheduledRun,
+        hit: HeldHit,
         scoped: impl FnOnce(&str, SocketPath) -> Config,
     ) -> Result<CellRun<'scope>, String> {
         let token = run_token()?;
@@ -548,8 +558,16 @@ impl<'scope> CellLauncher<'scope, '_> {
         let key = self.key;
         let stop = Arc::new(AtomicBool::new(false));
         let session_stop = Arc::clone(&stop);
+        let session_hit = hit.clone();
         let session = self.scope.spawn(move || {
-            serve_run_session(&handoff, cell_id, &run_config, key, &session_stop);
+            serve_run_session(
+                &handoff,
+                cell_id,
+                &run_config,
+                key,
+                &session_stop,
+                &session_hit,
+            );
         });
         let started = Instant::now();
         let spawned = start_helper(&self.env.spawner, &spec, &run_dir, helper_end);
@@ -578,6 +596,7 @@ impl<'scope> CellLauncher<'scope, '_> {
             done: false,
             ending: None,
             running,
+            hit,
         })
     }
 }
@@ -600,6 +619,10 @@ impl Run for CellRun<'_> {
             RunEnd::TimedOut => {
                 self.ending = Some(hatchling_scheduler::Ending::TimedOut);
                 Err(format!("the run timed out after {timeout} s"))
+            }
+            RunEnd::Stopped(to) => {
+                self.ending = Some(hatchling_scheduler::Ending::Stopped(to));
+                Err(String::from(crate::chat_run::stopped_told(to)))
             }
             RunEnd::Failed(reason) => Err(reason),
         })
@@ -629,6 +652,9 @@ pub(crate) enum RunEnd {
     },
     /// It ran past its time bound and was killed.
     TimedOut,
+    /// Its agent tried to send a secret here, or one in its tree did, and
+    /// it's over, whatever it wrote.
+    Stopped(hatchling_scheduler::SentTo),
     /// It could not be waited on.
     Failed(String),
 }
@@ -641,7 +667,7 @@ impl CellRun<'_> {
 
     /// How the run ended, once it has; `None` while it runs, and after
     /// its end was taken. Past its timeout it is killed and ends
-    /// [`RunEnd::TimedOut`].
+    /// [`RunEnd::TimedOut`]; after a hit, [`RunEnd::Stopped`].
     pub(crate) fn poll_end(&mut self) -> Option<RunEnd> {
         if self.done {
             return None;
@@ -649,7 +675,18 @@ impl CellRun<'_> {
         // Expired once the elapsed time reaches the timeout: `checked_sub`
         // is `Some` exactly then.
         let expired = self.started.elapsed().checked_sub(self.timeout).is_some();
-        match self.child.try_wait() {
+        let waited = self.child.try_wait();
+        // Asked after the wait: a hit before the cell's exit is always seen,
+        // so a run that ends at once is never taken for one that finished.
+        if let Some(to) = self.hit.seen() {
+            if !matches!(waited, Ok(Some(_))) {
+                let _ = self.child.terminate();
+                let _ = self.child.wait_deadline(REAP_AFTER_KILL);
+            }
+            let _ = self.teardown();
+            return Some(RunEnd::Stopped(to));
+        }
+        match waited {
             Ok(Some(exit)) => {
                 let (output, errors) = self.teardown();
                 Some(RunEnd::Exited {
@@ -869,13 +906,15 @@ const ACCEPT_POLL: Duration = Duration::from_millis(50);
 /// Serves the one session a run gets, on the connection its helper sends
 /// on `handoff`, as the run's cell `cell_id`. Returns once `stop` is set
 /// without a connection, or the helper goes without sending one: a run
-/// that never connects must not pin its session thread.
+/// that never connects must not pin its session thread. A hit in the
+/// session is left in `hit`, for what watches the run.
 fn serve_run_session(
     handoff: &UnixStream,
     cell_id: CellId,
     config: &Config,
     key: &dyn OpensStores,
     stop: &AtomicBool,
+    hit: &HeldHit,
 ) {
     if let Err(error) = handoff.set_read_timeout(Some(ACCEPT_POLL)) {
         tracing::warn!(%error, "scheduled run handoff setup failed");
@@ -904,9 +943,15 @@ fn serve_run_session(
         cell_id,
         pid: 0,
     };
-    if let Err(error) =
-        serve_cell_connection(&cell, config, key, &crate::Skills::default(), None, None)
-    {
+    if let Err(error) = serve_cell_connection(
+        &cell,
+        config,
+        key,
+        &crate::Skills::default(),
+        None,
+        None,
+        hit,
+    ) {
         tracing::debug!(%error, "scheduled run session ended");
     }
 }
@@ -1700,6 +1745,7 @@ mod tests {
             done: false,
             ending: None,
             running: None,
+            hit: HeldHit::default(),
         }
     }
 
@@ -1746,9 +1792,12 @@ mod tests {
             };
             let launcher = CellLauncher::new(scope, &config, &key, env.clone());
             let error = launcher
-                .launch_cell("missing", run.clone(), |token, socket| {
-                    scoped_config(&config, &request, token, socket)
-                })
+                .launch_cell(
+                    "missing",
+                    run.clone(),
+                    HeldHit::default(),
+                    |token, socket| scoped_config(&config, &request, token, socket),
+                )
                 .unwrap_err();
             assert!(error.contains("cannot start"), "{error}");
             assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
@@ -1762,7 +1811,7 @@ mod tests {
                 },
             );
             let mut started = launcher
-                .launch_cell("direct", run, |token, socket| {
+                .launch_cell("direct", run, HeldHit::default(), |token, socket| {
                     scoped_config(&config, &request, token, socket)
                 })
                 .unwrap();
@@ -1840,6 +1889,57 @@ mod tests {
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut run = helper_run(&script, &dir, Duration::ZERO);
         assert_eq!(run.poll_end(), Some(RunEnd::TimedOut));
+        assert!(!dir.exists());
+    }
+
+    /// A hit ends a run the moment it's next looked at, however long it
+    /// has left: killed, its directory gone, and told as a stop.
+    #[test]
+    fn a_run_with_a_hit_is_killed_and_ends_stopped() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        use hatchling_scheduler::SentTo;
+        let dir = helper_dir("hit");
+        let script = dir.join("linger");
+        std::fs::write(&script, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut run = helper_run(&script, &dir, Duration::from_secs(30));
+        assert_eq!(run.poll(), None, "no hit: it runs on");
+        run.hit.record(SentTo::Website);
+        let started = Instant::now();
+        assert_eq!(
+            run.poll(),
+            Some(Err(String::from(crate::chat_run::stopped_told(
+                SentTo::Website
+            ))))
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "killed, not waited for"
+        );
+        assert_eq!(
+            run.ending(),
+            Some(hatchling_scheduler::Ending::Stopped(SentTo::Website))
+        );
+        assert!(!dir.exists());
+    }
+
+    /// A run that ended before it was looked at, however it ended, is
+    /// stopped too: what it wrote after the hit is never delivered.
+    #[test]
+    fn a_run_that_exited_after_a_hit_is_stopped_and_its_output_dropped() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        use hatchling_scheduler::SentTo;
+        let dir = helper_dir("hit-exit");
+        let script = dir.join("answers");
+        std::fs::write(&script, "#!/bin/sh\necho the answer\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut run = helper_run(&script, &dir, Duration::from_secs(30));
+        run.child.wait_deadline(Duration::from_secs(10)).unwrap();
+        run.hit.record(SentTo::Page);
+        assert_eq!(run.poll_end(), Some(RunEnd::Stopped(SentTo::Page)));
+        assert_eq!(run.poll_end(), None, "an end is taken once");
         assert!(!dir.exists());
     }
 
@@ -1999,7 +2099,14 @@ mod tests {
         let (ended, done) = mpsc::channel();
         std::thread::scope(|scope| {
             scope.spawn(|| {
-                serve_run_session(&handoff, "run-1".parse().unwrap(), &config, &key, &stop);
+                serve_run_session(
+                    &handoff,
+                    "run-1".parse().unwrap(),
+                    &config,
+                    &key,
+                    &stop,
+                    &HeldHit::default(),
+                );
                 let _ = ended.send(());
             });
             let returned = done.recv_timeout(Duration::from_secs(2));
@@ -2028,7 +2135,14 @@ mod tests {
             let stop = AtomicBool::new(false);
             std::thread::scope(|scope| {
                 let session = scope.spawn(|| {
-                    serve_run_session(&handoff, "run-1".parse().unwrap(), &config, &key, &stop);
+                    serve_run_session(
+                        &handoff,
+                        "run-1".parse().unwrap(),
+                        &config,
+                        &key,
+                        &stop,
+                        &HeldHit::default(),
+                    );
                 });
                 if late {
                     std::thread::sleep(ACCEPT_POLL * 4);

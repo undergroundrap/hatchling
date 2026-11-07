@@ -15,7 +15,9 @@
 //! to answer, and the broker starts no chat.
 //!
 //! What the person sees when a run fails is a fixed sentence; why it
-//! failed stays in the broker's log.
+//! failed stays in the broker's log. So is what they see of a run stopped
+//! for trying to send a secret out ([`stopped_told`]): what kind of thing
+//! it tried, once, and never which secret.
 //!
 //! The chat keeps the conversation (WO-026), and gives each run its last
 //! exchanges ([`hatchling_core::conversation`]): the message it started
@@ -56,6 +58,30 @@ pub const CHAT_POLL: Duration = Duration::from_millis(200);
 /// nothing more is known.
 pub const CHAT_FAILED: &str = "Something went wrong and the agent couldn't answer. Try again; if it keeps happening, `sudo hatchling-broker doctor` checks the install.";
 
+/// What the person is told of a run Hatchling stopped, its agent having
+/// tried to send a secret to `to` ([`crate::held_check::HeldHit`]).
+///
+/// Which secret isn't said, here or anywhere: the words are fixed, so they
+/// can't carry one.
+#[must_use]
+pub const fn stopped_told(to: hatchling_scheduler::SentTo) -> &'static str {
+    use hatchling_scheduler::SentTo;
+    match to {
+        SentTo::Website => {
+            "Hatchling stopped this run: it tried to send a saved secret to a website."
+        }
+        SentTo::Search => {
+            "Hatchling stopped this run: it tried to send a saved secret to a search service."
+        }
+        SentTo::Page => {
+            "Hatchling stopped this run: it tried to type a saved secret into a web page."
+        }
+        SentTo::Harness => {
+            "Hatchling stopped this run: it tried to give a saved secret to a coding tool."
+        }
+    }
+}
+
 /// What the person is told when a chat run failed as `ending` says.
 ///
 /// In plain words, and what they can do about it, naming `model`, the
@@ -69,6 +95,7 @@ pub fn chat_failed(ending: Option<hatchling_scheduler::Ending>, model: Option<&s
         Some(hatchling_scheduler::Ending::TimedOut) => String::from(
             "The agent took too long to answer, so Hatchling stopped it. A model that is still loading can do this: try again in a moment.",
         ),
+        Some(hatchling_scheduler::Ending::Stopped(to)) => String::from(stopped_told(to)),
         Some(hatchling_scheduler::Ending::Exited(code)) => match RunFailure::from_code(code) {
             Some(RunFailure::ModelUnavailable) => format!(
                 "Hatchling couldn't get an answer from its model{named}. Check that it is running and reachable; `sudo hatchling-broker doctor` tests it."
@@ -1086,6 +1113,7 @@ mod tests {
     fn a_failed_run_is_explained_in_plain_words() {
         use hatchling_core::run_failure::RunFailure;
         use hatchling_scheduler::Ending;
+        use hatchling_scheduler::SentTo;
         let exited = |failure: RunFailure| Some(Ending::Exited(failure.code().into()));
         let model = chat_failed(exited(RunFailure::ModelUnavailable), Some("qwen3.5:9b"));
         assert!(
@@ -1125,6 +1153,23 @@ mod tests {
         for other in [Some(Ending::Exited(1)), Some(Ending::Exited(64)), None] {
             assert_eq!(chat_failed(other, Some("m")), CHAT_FAILED, "{other:?}");
         }
+        let stopped = |to| chat_failed(Some(Ending::Stopped(to)), Some("m"));
+        assert_eq!(
+            stopped(SentTo::Website),
+            "Hatchling stopped this run: it tried to send a saved secret to a website."
+        );
+        assert_eq!(
+            stopped(SentTo::Search),
+            "Hatchling stopped this run: it tried to send a saved secret to a search service."
+        );
+        assert_eq!(
+            stopped(SentTo::Page),
+            "Hatchling stopped this run: it tried to type a saved secret into a web page."
+        );
+        assert_eq!(
+            stopped(SentTo::Harness),
+            "Hatchling stopped this run: it tried to give a saved secret to a coding tool."
+        );
         let said: BTreeSet<String> = [
             model,
             incapable,

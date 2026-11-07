@@ -1000,7 +1000,7 @@ fn answer(
         BrowserOp::Read {} => browser.command(&BrowserCommand::Snapshot),
         BrowserOp::Act { element, action } => {
             if let PageAction::Type { text } = action {
-                if let Some(refusal) = typed_secret(config, keys, text) {
+                if let Some(refusal) = typed_secret(config, keys, web, text) {
                     return refusal;
                 }
             }
@@ -1207,7 +1207,7 @@ fn open(
     if config.web.refuses(url.origin().host()) {
         return refused("the operator refuses this site");
     }
-    if let Some(reason) = crate::web_ops::held_secret_in_address(config, keys, &url) {
+    if let Some(reason) = crate::web_ops::held_secret_in_address(config, keys, web, &url) {
         return refused(&reason);
     }
     let destination = url.origin().destination();
@@ -1449,17 +1449,26 @@ fn cell_id() -> Result<String, String> {
 
 /// What the agent is told when typing `text` is refused: it holds a secret
 /// Hatchling keeps, a cell having had it or not ([`crate::held_check`]), or
-/// nothing can say it doesn't.
+/// nothing can say it doesn't. Text holding one ends `web`'s run
+/// ([`crate::held_check::HeldHit`]).
 ///
 /// One check for each act of typing, whatever its length. A sign-in and a
 /// code are filled by their own commands and don't come here, and neither
 /// does the owner's own typing under Take control, which goes to the
 /// browser from the board; nor is any frame checked.
-fn typed_secret(config: &Config, keys: &dyn OpensStores, text: &str) -> Option<BrowserResult> {
+fn typed_secret(
+    config: &Config,
+    keys: &dyn OpensStores,
+    web: &WebSession,
+    text: &str,
+) -> Option<BrowserResult> {
     match crate::held_check::check(crate::keeper::keeper(), config, keys, text.as_bytes()) {
-        Ok(true) => Some(refused(
-            "the text holds a secret the broker keeps: it isn't typed",
-        )),
+        Ok(true) => {
+            web.ended_by(hatchling_scheduler::SentTo::Page);
+            Some(refused(
+                "the text holds a secret the broker keeps: it isn't typed",
+            ))
+        }
         Ok(false) => None,
         Err(error) => {
             tracing::error!(%error, "the check for held secrets failed: typing refused");
@@ -4433,12 +4442,12 @@ mod tests {
         assert!(fake.log.lock().unwrap().commands.is_empty());
         // The check itself: a secret anywhere in the text, or none.
         assert_eq!(
-            typed_secret(&config, &keys, "hunter2-sesame"),
+            typed_secret(&config, &keys, &web, "hunter2-sesame"),
             Some(refused(
                 "the text holds a secret the broker keeps: it isn't typed"
             ))
         );
-        assert_eq!(typed_secret(&config, &keys, "hunter2"), None);
+        assert_eq!(typed_secret(&config, &keys, &web, "hunter2"), None);
         std::fs::remove_dir_all(&root).unwrap();
     }
 

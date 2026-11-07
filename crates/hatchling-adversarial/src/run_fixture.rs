@@ -40,6 +40,7 @@
 //! - `model-reasoning`: report the thinking-mode setting in the cell environment.
 //! - `builders`: report the builders the run was told (WO-032).
 //! - `idea`: capture an idea through the session.
+//! - `fetch:<url>`: ask to read the page at `url`.
 //! - `hang`: spin forever (the cell's seccomp profile has no `nanosleep`).
 //!
 //! Two tasks replace the report entirely:
@@ -60,7 +61,7 @@ use hatchling_core::framing::{read_frame, write_frame};
 use hatchling_core::{
     AgentMessage, ArtifactOp, ChannelOp, ChildEnvelope, ChildVerdict, HookOp, HookSource,
     PROTOCOL_VERSION, ScheduleGrant, ScheduleOp, ScheduleSpec, SecretB64, SessionRequest,
-    SessionResponse, SpaceOp, SpaceResult, SubagentOp, VaultOp, VaultResult,
+    SessionResponse, SpaceOp, SpaceResult, SubagentOp, VaultOp, VaultResult, WebOp,
 };
 
 /// What `vault-store:` stores: a secret the run holds because it was told
@@ -286,31 +287,8 @@ fn run_probe(session: Result<&UnixStream, &String>, probe: &str) -> String {
                 },
             ],
         })
-    } else if probe == "subagent" {
-        SessionRequest::Subagent(SubagentOp::Spawn {
-            task: String::from("a grandchild"),
-            budget: 1,
-            capabilities: Vec::new(),
-        })
-    } else if probe == "idea" {
-        SessionRequest::Artifact(ArtifactOp::CaptureIdea {
-            text: String::from("A zine"),
-            from: None,
-        })
-    } else if probe == "space-create" {
-        SessionRequest::Space(SpaceOp::Create {
-            name: String::from("escape"),
-            grants: Vec::new(),
-        })
-    } else if probe == "hook" {
-        SessionRequest::Hook(HookOp::Create {
-            source: HookSource::ChannelMessage {
-                channel: String::from("local"),
-            },
-            task: String::from("escalate"),
-            grants: vec![local_send()],
-            channel: String::from("local"),
-        })
+    } else if let Some(request) = plain_request(probe) {
+        request
     } else {
         return String::from("unknown-probe");
     };
@@ -318,6 +296,40 @@ fn run_probe(session: Result<&UnixStream, &String>, probe: &str) -> String {
         return String::from("no-session");
     };
     ask(stream, &request).unwrap_or_else(|err| format!("error: {err}"))
+}
+
+/// The request of a probe that takes nothing, or only its text.
+fn plain_request(probe: &str) -> Option<SessionRequest> {
+    if let Some(url) = probe.strip_prefix("fetch:") {
+        return Some(SessionRequest::Web(WebOp::Fetch {
+            url: url.to_owned(),
+            reason: String::from("to read it"),
+        }));
+    }
+    match probe {
+        "subagent" => Some(SessionRequest::Subagent(SubagentOp::Spawn {
+            task: String::from("a grandchild"),
+            budget: 1,
+            capabilities: Vec::new(),
+        })),
+        "idea" => Some(SessionRequest::Artifact(ArtifactOp::CaptureIdea {
+            text: String::from("A zine"),
+            from: None,
+        })),
+        "space-create" => Some(SessionRequest::Space(SpaceOp::Create {
+            name: String::from("escape"),
+            grants: Vec::new(),
+        })),
+        "hook" => Some(SessionRequest::Hook(HookOp::Create {
+            source: HookSource::ChannelMessage {
+                channel: String::from("local"),
+            },
+            task: String::from("escalate"),
+            grants: vec![local_send()],
+            channel: String::from("local"),
+        })),
+        _ => None,
+    }
 }
 
 fn local_send() -> ScheduleGrant {

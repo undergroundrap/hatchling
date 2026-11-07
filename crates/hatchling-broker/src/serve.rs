@@ -30,6 +30,7 @@ use zeroize::Zeroizing;
 use crate::cell::cgroup_parent;
 use crate::egress_path::{EgressPath, Refusal, RefusalKind};
 use crate::environment as env;
+use crate::held_check::HeldHit;
 use crate::secrets::{Secrets, handle_vault_op};
 use crate::{
     CellConfig, Config, EgressConfig, Error, SkillRuntime, Skills, VaultConfig, bind_listener,
@@ -603,7 +604,17 @@ pub fn serve_connection_with_runs(
         cell_id = %cell_id,
         "agent session established"
     );
-    serve_session(stream, config, key, skills, &cell_id, creds, hub, runs)
+    serve_session(
+        stream,
+        config,
+        key,
+        skills,
+        &cell_id,
+        creds,
+        hub,
+        runs,
+        &HeldHit::default(),
+    )
 }
 
 /// Serves the agent session on `cell`'s own connection.
@@ -615,6 +626,7 @@ pub fn serve_connection_with_runs(
 /// (the cell's broker uid is worked out for it, see
 /// `hatchling_isolation::linux::spawns_as`). The hello must name the
 /// cell's own id: a session never runs, or is recorded, under another.
+/// `hit` ends it, and is what a hit in it is left in ([`HeldHit`]).
 ///
 /// # Errors
 ///
@@ -627,6 +639,7 @@ pub fn serve_cell_connection(
     skills: &Skills,
     hub: Option<&LocalHub>,
     runs: Option<crate::RunEnv>,
+    hit: &HeldHit,
 ) -> Result<(), Error> {
     let stream = &cell.connection;
     let cell_id = handshake(stream, Some(&cell.cell_id))?;
@@ -637,7 +650,7 @@ pub fn serve_cell_connection(
         cell_id = %cell_id,
         "agent session established"
     );
-    serve_session(stream, config, key, skills, &cell_id, creds, hub, runs)
+    serve_session(stream, config, key, skills, &cell_id, creds, hub, runs, hit)
 }
 
 /// Serves `cell`'s session on this thread, then waits forever: the
@@ -656,6 +669,7 @@ fn serve_cell_then_wait(
         skills,
         hub,
         crate::RunEnv::from_process(config),
+        &HeldHit::default(),
     ) {
         Ok(()) => {}
         Err(error) => tracing::warn!(?error, cell_id = %cell.cell_id, "agent session failed"),
@@ -766,6 +780,13 @@ fn read_hello(stream: &UnixStream, timeout: Duration) -> Result<Vec<u8>, Error> 
 /// its own endpoints — and its own account handles and loaded secrets,
 /// dropped (and zeroized) when the session ends.
 ///
+/// A hit ends it ([`HeldHit`]): once the agent's own text was found to hold
+/// a held secret, here or anywhere in its run's tree, the op that found it
+/// is answered and nothing more is served, whatever the cell sends. That's
+/// the broker's decision: the connection is closed on it. Its children go
+/// with it. A session with the local channel tells the owner itself. A
+/// run's has none: what watches the run tells them, from how it ended.
+///
 /// # Errors
 ///
 /// Returns [`Error::SessionIo`] on transport failure,
@@ -786,6 +807,7 @@ fn serve_session(
     creds: PeerCredentials,
     hub: Option<&LocalHub>,
     runs: Option<crate::RunEnv>,
+    hit: &HeldHit,
 ) -> Result<(), Error> {
     // The session's egress, opened once per session, with a surrogate key
     // fresh for it: surrogates do not survive reconnects. It goes through
@@ -838,7 +860,7 @@ fn serve_session(
     } else {
         None
     };
-    let mut web = crate::web_ops::WebSession::new(config, &gate_scope, web_tls);
+    let mut web = crate::web_ops::WebSession::new(config, &gate_scope, web_tls).in_run(hit.clone());
     // The session's browser (WO-029): started on its first page, closed
     // when the session ends.
     let mut browser = crate::browser_ops::BrowserSession::new(crate::browser_ops::configured())
@@ -863,19 +885,24 @@ fn serve_session(
     // The session's children live in the session's own scope:
     // when the session ends, however it ends, they are killed and the
     // scope joins their sessions.
-    std::thread::scope(|scope| {
+    let ended = std::thread::scope(|scope| {
         let mut subagents = crate::subagent_ops::Subagents::new(
             scope,
             config,
             key,
             runs,
             session_id.as_str().to_owned(),
-        );
+        )
+        .in_run(hit.clone());
         loop {
             let Some(frame) = read_frame_or_eof(stream).map_err(session_error)? else {
                 tracing::info!(cell_id = %cell_id, "agent session closed");
                 return Ok(());
             };
+            // A hit elsewhere in the run's tree: this is refused unread.
+            if hit.seen().is_some() {
+                return Ok(());
+            }
             let request = request_of(&Zeroizing::new(frame))?;
             let used = crate::run_trail::tool_of(&request);
             let response = match request {
@@ -910,7 +937,7 @@ fn serve_session(
                     )?)
                 }
                 SessionRequest::Skill(op) => {
-                    let keys = crate::harness::vault_keys(config, key);
+                    let keys = crate::harness::vault_keys(config, key).in_run(hit);
                     SessionResponse::Skill(crate::skill_ops::handle_skill_op(
                         skills, &op, cell_id, &keys,
                     ))
@@ -983,8 +1010,38 @@ fn serve_session(
             trail.note(used, &response);
             let payload = encode_reply(&response, MAX_FRAME_BYTES)?;
             write_frame(stream, &payload).map_err(session_error)?;
+            // This op's hit: it's answered, and it's the last.
+            if hit.seen().is_some() {
+                return Ok(());
+            }
         }
-    })
+    });
+    if let Some(to) = hit.seen() {
+        stopped(stream, cell_id, hub, to);
+    }
+    ended
+}
+
+/// Ends the session on `stream`, its run stopped for sending a held secret
+/// to `to`: closed to the cell, whatever the cell does, and the owner told
+/// if the session has the local channel.
+fn stopped(
+    stream: &UnixStream,
+    cell_id: &CellId,
+    hub: Option<&LocalHub>,
+    to: hatchling_scheduler::SentTo,
+) {
+    tracing::warn!(cell_id = %cell_id, ?to, "a run tried to send a held secret: stopped");
+    if let Err(error) = stream.shutdown(std::net::Shutdown::Both) {
+        tracing::debug!(%error, "a stopped session's connection was already gone");
+    }
+    if hub.is_some() {
+        let told = crate::chat_run::stopped_told(to);
+        let local = crate::schedule_ops::HubDelivery::new(hub);
+        if let Err(error) = hatchling_scheduler::Delivery::deliver_notice(&local, "local", told) {
+            tracing::warn!(%error, "the owner wasn't told of a stopped run");
+        }
+    }
 }
 
 /// The session request in `frame`. A request can carry a secret to store,
@@ -2278,6 +2335,7 @@ mod gate_scope_tests {
                     creds,
                     Some(&hub),
                     None,
+                    &HeldHit::default(),
                 )
             });
             let _ = hub.inject(user("hello"));

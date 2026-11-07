@@ -185,6 +185,7 @@ fn the_real_spawner_starts_the_brokers_agent_cell_and_hands_back_its_connection(
         &hatchling_broker::Skills::default(),
         None,
         None,
+        &hatchling_broker::held_check::HeldHit::default(),
     )
     .map_err(|e| format!("serve the cell's session: {e}"))?;
     let exit = process
@@ -260,6 +261,7 @@ fn the_real_spawner_hands_an_agent_cells_vault_channel_to_the_keeper() -> Result
         &hatchling_broker::Skills::default(),
         None,
         None,
+        &hatchling_broker::held_check::HeldHit::default(),
     )
     .map_err(|e| format!("serve the cell's session: {e}"))?;
     let exit = process
