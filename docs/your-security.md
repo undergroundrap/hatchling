@@ -2,6 +2,14 @@
 
 Hatchling runs an AI agent on your own computer. This page says who does what, in plain words, and what none of them can do. [The scorecard](scorecard.md) and the [known limitations](arch/trust-boundary.md#known-limitations) have the detail.
 
+**In short:**
+
+- With a security key set up, only your key or a backup code opens your vault. Until then, a stolen disk opens it.
+- The agent works in locked rooms the operating system's kernel enforces, and uses your API keys without seeing them.
+- What it puts in a web address, a search, a page or a coding tool's task is checked for your secrets first, and a run caught with one ends.
+- With the web and the browser on, some acts on a site stop for your yes. Many don't, and the wall below says which.
+- The biggest limits: malware running as you, a browser that's been taken over, and what isn't sealed on disk.
+
 ## Who does what
 
 ### You
