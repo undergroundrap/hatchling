@@ -241,6 +241,11 @@ pub struct Schedule {
     /// recorded, which may be a cell's.
     #[serde(default)]
     pub task_shown: bool,
+    /// For a follow-up, the run that asked for it, by its token: if that
+    /// run is stopped for trying to send a secret, the follow-up is held
+    /// for the owner. Broker-set; never on the wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked_by: Option<String>,
     /// Its claimed fire, until that fire is resolved (WO-025). Broker-set;
     /// never on the wire.
     #[serde(default)]
@@ -321,6 +326,17 @@ pub enum OccurrenceState {
         /// Whether its run had been started.
         started: bool,
     },
+    /// Held because a run was stopped for trying to send a secret Hatchling
+    /// keeps: this fire's own run, its result kept for the owner, or, for a
+    /// follow-up not yet run, the run that asked for it. A schedule fires
+    /// again on its own, and each fire is another run of tries, so it's
+    /// never run again on its own: as with [`Self::Unknown`], it holds its
+    /// schedule until the owner marks it resolved or retries it.
+    Stopped {
+        /// Whether it was this fire's own run that was stopped: `false` for
+        /// a follow-up held before it ran, for the run that asked for it.
+        started: bool,
+    },
 }
 
 /// What a fire's run came to.
@@ -394,6 +410,7 @@ pub fn validate(
         feed: None,
         creator: Creator::Owner,
         task_shown: false,
+        asked_by: None,
         ledger: Ledger::default(),
     })
 }

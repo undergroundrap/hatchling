@@ -4050,7 +4050,7 @@
       ]
     },
     "HeldFire": {
-      "description": "A schedule's fire of unknown outcome: claimed or running when a broker\nstopped (WO-025). It holds the schedule until the owner resolves or\nretries it.",
+      "description": "A schedule's fire held for the owner, until they resolve or retry it.\n\nIt's of unknown outcome, claimed or running when a broker stopped\n(WO-025), or held because a run was stopped for trying to send a secret\nHatchling keeps.",
       "properties": {
         "due": {
           "description": "When it was due, in Unix seconds.",
@@ -4059,6 +4059,10 @@
         },
         "started": {
           "description": "Whether its run had been started.",
+          "type": "boolean"
+        },
+        "stopped": {
+          "description": "Whether it's held because a run was stopped for a secret: its own,\nor, for a follow-up that never started, the run that asked for it.\n`false` for a fire of unknown outcome.",
           "type": "boolean"
         }
       },
@@ -6172,7 +6176,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Mark a schedule's fire of unknown outcome resolved: the owner's\nword, after looking at what it did (WO-025). The schedule resumes\nits cadence; a one-shot is done. The owner's alone.",
+          "description": "Mark a schedule's held fire resolved: the owner's word, after\nlooking at what it did. One of unknown outcome (WO-025), or one held\nbecause a run was stopped for a secret. The schedule resumes its\ncadence; a one-shot is done. Given a hook's id, a hook held because\nits run was stopped fires on its events again. The owner's alone.",
           "properties": {
             "id": {
               "description": "The schedule id.",
@@ -6191,7 +6195,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Run a schedule's fire of unknown outcome again, as a new attempt:\nit is due now, and runs as any fire does, under the grants the\ncreator holds then (WO-025). The owner's alone.",
+          "description": "Run a schedule's held fire again, as a new attempt: it is due now,\nand runs as any fire does, under the grants the creator holds then\n(WO-025). The owner's alone.",
           "properties": {
             "id": {
               "description": "The schedule id.",
@@ -6469,7 +6473,7 @@
           "type": "object"
         },
         {
-          "description": "The schedule's fire of unknown outcome is marked resolved.",
+          "description": "The schedule's held fire is marked resolved, or the held hook\nreleased.",
           "properties": {
             "result": {
               "const": "resolved",
@@ -6482,7 +6486,7 @@
           "type": "object"
         },
         {
-          "description": "The schedule's fire of unknown outcome is due again, as a new\nattempt.",
+          "description": "The schedule's held fire is due again, as a new attempt.",
           "properties": {
             "result": {
               "const": "retried",
@@ -6649,7 +6653,7 @@
               "type": "null"
             }
           ],
-          "description": "Its fire of unknown outcome, when it has one: the schedule is held\nuntil the owner resolves or retries it (WO-025)."
+          "description": "Its fire held for the owner, when it has one: of unknown outcome\n(WO-025), or held for a run stopped for a secret. The schedule is\nheld until the owner resolves or retries it."
         },
         "id": {
           "description": "The id, for `Cancel`.",
@@ -7602,7 +7606,7 @@
               "type": "object"
             },
             {
-              "description": "Mark a schedule's fire of unknown outcome resolved: the owner's\nword, after looking at what it did (WO-025). The schedule resumes\nits cadence; a one-shot is done. The owner's alone.",
+              "description": "Mark a schedule's held fire resolved: the owner's word, after\nlooking at what it did. One of unknown outcome (WO-025), or one held\nbecause a run was stopped for a secret. The schedule resumes its\ncadence; a one-shot is done. Given a hook's id, a hook held because\nits run was stopped fires on its events again. The owner's alone.",
               "properties": {
                 "id": {
                   "description": "The schedule id.",
@@ -7620,7 +7624,7 @@
               "type": "object"
             },
             {
-              "description": "Run a schedule's fire of unknown outcome again, as a new attempt:\nit is due now, and runs as any fire does, under the grants the\ncreator holds then (WO-025). The owner's alone.",
+              "description": "Run a schedule's held fire again, as a new attempt: it is due now,\nand runs as any fire does, under the grants the creator holds then\n(WO-025). The owner's alone.",
               "properties": {
                 "id": {
                   "description": "The schedule id.",

@@ -1650,9 +1650,11 @@ export type HarnessNetworkUse = {
  */
 export type HarnessOutcome = 'done' | 'needs_clarification' | 'failed' | 'timed_out' | 'refused';
 /**
- * A schedule's fire of unknown outcome: claimed or running when a broker
- * stopped (WO-025). It holds the schedule until the owner resolves or
- * retries it.
+ * A schedule's fire held for the owner, until they resolve or retry it.
+ *
+ * It's of unknown outcome, claimed or running when a broker stopped
+ * (WO-025), or held because a run was stopped for trying to send a secret
+ * Hatchling keeps.
  */
 export type HeldFire = {
     /**
@@ -1663,6 +1665,12 @@ export type HeldFire = {
      * Whether its run had been started.
      */
     readonly started: boolean;
+    /**
+     * Whether it's held because a run was stopped for a secret: its own,
+     * or, for a follow-up that never started, the run that asked for it.
+     * `false` for a fire of unknown outcome.
+     */
+    readonly stopped?: boolean;
 };
 /**
  * The broker's reply to one [`HookOp`].
@@ -2672,8 +2680,9 @@ export type ScheduleSummary = {
      */
     readonly grants: readonly (ScheduleGrant)[];
     /**
-     * Its fire of unknown outcome, when it has one: the schedule is held
-     * until the owner resolves or retries it (WO-025).
+     * Its fire held for the owner, when it has one: of unknown outcome
+     * (WO-025), or held for a run stopped for a secret. The schedule is
+     * held until the owner resolves or retries it.
      */
     readonly held?: HeldFire | null;
     /**

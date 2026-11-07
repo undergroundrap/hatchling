@@ -478,6 +478,12 @@ pub struct CellRun<'scope> {
     running: Option<crate::machine::Running>,
     /// What ends it, a hit in its session or its tree's.
     hit: HeldHit,
+    /// Where the follow-ups it asked for are kept, and the key to that
+    /// store, for a run that may ask for one: they're held if it's stopped.
+    followups: Option<(PathBuf, &'scope dyn OpensStores)>,
+    /// How it ended, while what it asked for can't be held yet: it isn't
+    /// over until that's done.
+    unheld: Option<RunEnd>,
 }
 
 impl std::fmt::Debug for CellRun<'_> {
@@ -494,12 +500,17 @@ impl<'scope> Launcher for CellLauncher<'scope, '_> {
 
     fn launch(&self, request: RunRequest) -> Result<CellRun<'scope>, String> {
         let run = scheduled_run(self.config, &request);
-        self.launch_cell(
+        let mut started = self.launch_cell(
             &request.schedule_id,
             run,
             HeldHit::default(),
             |token, socket| scoped_config(self.config, &request, token, socket),
-        )
+        )?;
+        // Its session may ask for a follow-up, kept in the broker's store.
+        if self.config.scheduler.enabled() {
+            started.followups = Some((self.config.scheduler.root.clone(), self.key));
+        }
+        Ok(started)
     }
 }
 
@@ -602,6 +613,8 @@ impl<'scope> CellLauncher<'scope, '_> {
             ending: None,
             running,
             hit,
+            followups: None,
+            unheld: None,
         })
     }
 }
@@ -609,7 +622,16 @@ impl<'scope> CellLauncher<'scope, '_> {
 impl Run for CellRun<'_> {
     fn poll(&mut self) -> Option<Result<String, String>> {
         let timeout = self.timeout.as_secs();
-        let end = self.poll_end()?;
+        let end = match self.unheld.take() {
+            Some(end) => end,
+            None => self.poll_end()?,
+        };
+        if matches!(end, RunEnd::Stopped(_)) && !self.hold_followups() {
+            // Not over until they're held: a follow-up left free would run
+            // on its own, another run of tries with nobody asked.
+            self.unheld = Some(end);
+            return None;
+        }
         Some(match end {
             RunEnd::Exited {
                 code: 0, output, ..
@@ -665,6 +687,27 @@ pub(crate) enum RunEnd {
 }
 
 impl CellRun<'_> {
+    /// Holds, for the owner, each follow-up this run asked for that hasn't
+    /// run: it was stopped for a secret. Whether they're all held: `false`
+    /// while the store can't, to try again.
+    fn hold_followups(&self) -> bool {
+        let Some((root, key)) = &self.followups else {
+            return true;
+        };
+        match crate::SealedScheduleStore::new(root, *key).hold_asked_by(&self.token) {
+            Ok(held) => {
+                for followup in held {
+                    tracing::warn!(run = %self.token, %followup, "a stopped run's follow-up is held for the owner");
+                }
+                true
+            }
+            Err(error) => {
+                tracing::error!(run = %self.token, %error, "a stopped run's follow-ups not held yet: tried again");
+                false
+            }
+        }
+    }
+
     /// The run's token: its cell id and directory name.
     pub(crate) fn token(&self) -> &str {
         &self.token
@@ -1759,6 +1802,8 @@ mod tests {
             ending: None,
             running: None,
             hit: HeldHit::default(),
+            followups: None,
+            unheld: None,
         }
     }
 
@@ -1935,6 +1980,77 @@ mod tests {
             Some(hatchling_scheduler::Ending::Stopped(SentTo::Website))
         );
         assert!(!dir.exists());
+    }
+
+    /// A stopped run is over only once each follow-up it asked for that
+    /// hasn't run is held for the owner: while the store can't hold them,
+    /// it's looked at again, and no end is given. Another run's follow-up
+    /// is left alone.
+    #[test]
+    fn a_stopped_run_is_over_only_once_its_followups_are_held() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        use hatchling_scheduler::{FollowupParent, OccurrenceState, SentTo, Store as _};
+        let dir = helper_dir("hit-followups");
+        let script = dir.join("linger");
+        std::fs::write(&script, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let key = MasterKey::generate().unwrap();
+        let root = dir.with_extension("schedules");
+        let _ = std::fs::remove_dir_all(&root);
+        let store = crate::SealedScheduleStore::new(&root, &key);
+        let grants = vec![ScheduleGrant::ChannelSend {
+            channel: String::from("local"),
+        }];
+        let parent = FollowupParent {
+            grants: &grants,
+            channel: "local",
+            depth: 0,
+        };
+        for (id, run) in [("sch-mine", "helper-test"), ("sch-other", "another-run")] {
+            let mut followup = hatchling_scheduler::validate_followup(
+                id.to_owned(),
+                &parent,
+                String::from("again"),
+                600,
+                grants.clone(),
+                Timestamp::now(),
+            )
+            .unwrap();
+            followup.asked_by = Some(run.to_owned());
+            assert!(store.insert(&followup).unwrap());
+        }
+        let broken = dir.with_extension("not-a-store");
+        std::fs::write(&broken, "a file where the store should be").unwrap();
+        let mut run = helper_run(&script, &dir, Duration::from_secs(30));
+        run.followups = Some((broken.clone(), &key));
+        run.hit.record(SentTo::Website);
+        assert_eq!(run.poll(), None, "over with its follow-ups free");
+        assert_eq!(run.poll(), None, "over with its follow-ups free");
+        assert_eq!(run.ending(), None);
+        run.followups = Some((root.clone(), &key));
+        assert_eq!(
+            run.poll(),
+            Some(Err(String::from(crate::chat_run::stopped_told(
+                SentTo::Website
+            ))))
+        );
+        let state = |id: &str| {
+            store
+                .load()
+                .unwrap()
+                .into_iter()
+                .find(|schedule| schedule.id == id)
+                .and_then(|schedule| schedule.ledger.occurrence)
+                .map(|fire| fire.state)
+        };
+        assert_eq!(
+            state("sch-mine"),
+            Some(OccurrenceState::Stopped { started: false })
+        );
+        assert_eq!(state("sch-other"), None, "another run's follow-up held");
+        let _ = std::fs::remove_file(&broken);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A run that ended before it was looked at, however it ended, is

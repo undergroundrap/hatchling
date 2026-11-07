@@ -14,9 +14,9 @@ use std::rc::Rc;
 
 use hatchling_core::{HookSource, ScheduleGrant, ScheduleSpec};
 use hatchling_scheduler::{
-    Claim, Delivery, Dispatcher, FollowupParent, Hook, Launcher, MAX_FOLLOWUP_DEPTH,
-    MISSED_GRACE_SECS, Occurrence, OccurrenceState, Parked, Run, RunRequest, Schedule, Services,
-    Store, TickReport, Timestamp, validate, validate_followup, validate_space_task,
+    Claim, Delivery, Dispatcher, Ending, FollowupParent, Hook, Launcher, MAX_FOLLOWUP_DEPTH,
+    MISSED_GRACE_SECS, Occurrence, OccurrenceState, Parked, Run, RunRequest, Schedule, SentTo,
+    Services, Store, TickReport, Timestamp, validate, validate_followup, validate_space_task,
 };
 
 /// An in-memory store.
@@ -186,7 +186,9 @@ impl Store for MemStore {
                 let started = match fire.state {
                     OccurrenceState::Claimed => false,
                     OccurrenceState::Running => true,
-                    OccurrenceState::Finished { .. } | OccurrenceState::Unknown { .. } => continue,
+                    OccurrenceState::Finished { .. }
+                    | OccurrenceState::Unknown { .. }
+                    | OccurrenceState::Stopped { .. } => continue,
                 };
                 fire.state = OccurrenceState::Unknown { started };
                 stored.ledger.revision += 1;
@@ -194,6 +196,18 @@ impl Store for MemStore {
             }
         }
         Ok(held)
+    }
+
+    fn hold_hook(&self, id: &str) -> Result<bool, String> {
+        if self.fails("hook") {
+            return Err(String::from("the disk is full"));
+        }
+        let mut hooks = self.hooks.borrow_mut();
+        let Some(hook) = hooks.iter_mut().find(|hook| hook.id == id) else {
+            return Ok(false);
+        };
+        hook.held = true;
+        Ok(true)
     }
 
     fn remove(&self, id: &str) -> Result<bool, String> {
@@ -213,19 +227,32 @@ impl Store for MemStore {
     }
 }
 
-/// A run whose outcome the test sets.
+/// A run whose outcome the test sets, and how it ended when it failed.
 #[derive(Clone, Default)]
-struct FakeRun(Rc<RefCell<Option<Result<String, String>>>>);
+struct FakeRun {
+    outcome: Rc<RefCell<Option<Result<String, String>>>>,
+    ending: Rc<RefCell<Option<Ending>>>,
+}
 
 impl FakeRun {
     fn finish(&self, outcome: Result<&str, &str>) {
-        *self.0.borrow_mut() = Some(outcome.map(str::to_owned).map_err(str::to_owned));
+        *self.outcome.borrow_mut() = Some(outcome.map(str::to_owned).map_err(str::to_owned));
+    }
+
+    /// Ends it as a run stopped for trying to send a secret to a website.
+    fn stop(&self) {
+        *self.ending.borrow_mut() = Some(Ending::Stopped(SentTo::Website));
+        self.finish(Err("Hatchling stopped this run"));
     }
 }
 
 impl Run for FakeRun {
     fn poll(&mut self) -> Option<Result<String, String>> {
-        self.0.borrow_mut().take()
+        self.outcome.borrow_mut().take()
+    }
+
+    fn ending(&self) -> Option<Ending> {
+        *self.ending.borrow()
     }
 }
 
@@ -378,6 +405,7 @@ impl World {
             task: format!("task of {id}"),
             grants,
             channel: String::from("local"),
+            held: false,
         });
     }
 
@@ -1323,4 +1351,166 @@ fn a_landed_claim_whose_schedule_is_cancelled_launches_nothing() {
     let report = world.tick("2026-09-21T13:00:30Z");
     assert!(report.launched.is_empty());
     assert_eq!(world.requests().len(), 0);
+}
+
+/// A run stopped for trying to send a secret: its result is kept and its
+/// schedule held, so the next fire, another run of tries, doesn't happen
+/// until the owner looks. A run that failed any other way doesn't hold its
+/// schedule. Once the owner resolves the held fire, the cadence goes on.
+#[test]
+fn a_stopped_run_holds_its_schedule_until_the_owner_resolves_it() {
+    let mut world = World::new();
+    for id in ["stopped", "failed"] {
+        schedule(
+            &world.store,
+            id,
+            cron("0 * * * *", "UTC"),
+            "2026-09-21T12:00:00Z",
+        );
+    }
+    assert_eq!(world.tick("2026-09-21T13:00:00Z").launched.len(), 2);
+    let index = |id: &str| {
+        world
+            .requests()
+            .iter()
+            .position(|request| request.schedule_id == id)
+            .unwrap()
+    };
+    world.launcher.run(index("stopped")).stop();
+    world
+        .launcher
+        .run(index("failed"))
+        .finish(Err("the model was down"));
+    let report = world.tick("2026-09-21T13:01:00Z");
+    assert_eq!(report.parked, ["failed", "stopped"], "both kept");
+    assert_eq!(report.held, ["stopped"], "only the stopped run is held");
+    assert_eq!(
+        fire_of(&world, "stopped").map(|fire| fire.state),
+        Some(OccurrenceState::Stopped { started: true })
+    );
+    assert_eq!(fire_of(&world, "failed"), None, "a failure resolves");
+    let kept = world.store.parked.borrow().clone();
+    assert!(
+        kept.iter().any(|parked| parked.schedule_id == "stopped"),
+        "a stopped run's result is kept for the owner"
+    );
+    // The next hour: the failed one fires again, the stopped one doesn't,
+    // and not the hour after either.
+    for hour in ["14", "15"] {
+        let report = world.tick(&format!("2026-09-21T{hour}:00:00Z"));
+        assert_eq!(report.held, ["stopped"], "fired at {hour}:00");
+        assert!(
+            report.launched.iter().all(|(id, _)| id != "stopped"),
+            "a stopped run's schedule fired on its own"
+        );
+        if let Some(run) = world.launcher.runs.borrow().last() {
+            run.finish(Ok("done"));
+        }
+        world.tick(&format!("2026-09-21T{hour}:01:00Z"));
+    }
+    let stopped_runs = world
+        .requests()
+        .iter()
+        .filter(|request| request.schedule_id == "stopped")
+        .count();
+    assert_eq!(stopped_runs, 1, "never run again on its own");
+    // The owner resolves it, as the broker's resolve does: the fire goes,
+    // and the schedule goes on.
+    if let Some(stored) = world.store.schedules.borrow_mut().get_mut("stopped") {
+        stored.ledger.occurrence = None;
+    }
+    let report = world.tick("2026-09-21T16:00:00Z");
+    assert!(
+        report.launched.contains(&(String::from("stopped"), false)),
+        "resolved, it fires again"
+    );
+}
+
+/// A one-shot, a follow-up among them, whose run was stopped isn't removed
+/// with its fire: it stays, held, for the owner to see, run again or
+/// resolve. Another one-shot's failure is resolved and removed.
+#[test]
+fn a_stopped_one_shot_stays_held_rather_than_removed() {
+    let mut world = World::new();
+    let grants = vec![send("local")];
+    let parent = FollowupParent {
+        grants: &grants,
+        channel: "local",
+        depth: 0,
+    };
+    let now = ts("2026-09-21T12:00:00Z");
+    let followup = validate_followup(
+        String::from("sch-f"),
+        &parent,
+        String::from("again"),
+        60,
+        grants.clone(),
+        now,
+    )
+    .unwrap();
+    world
+        .store
+        .schedules
+        .borrow_mut()
+        .insert(followup.id.clone(), followup.clone());
+    let due = Timestamp::from_second(followup.next_due)
+        .unwrap()
+        .to_string();
+    assert_eq!(world.tick(&due).launched, [(String::from("sch-f"), false)]);
+    world.launcher.run(0).stop();
+    let report = world.tick("2026-09-21T12:02:00Z");
+    assert_eq!(report.held, ["sch-f"], "a stopped one-shot isn't held");
+    assert!(report.removed.is_empty(), "removed with its fire");
+    assert_eq!(
+        fire_of(&world, "sch-f").map(|fire| fire.state),
+        Some(OccurrenceState::Stopped { started: true })
+    );
+    assert!(world.tick("2026-09-21T13:00:00Z").launched.is_empty());
+}
+
+/// A hook whose run was stopped for a secret is held: its event fires it no
+/// more, and that's said. It's held before it's told, and while the store
+/// can't hold it, it stays in memory, so it doesn't fire either.
+#[test]
+fn a_stopped_hook_run_holds_its_hook() {
+    let mut world = World::new();
+    world.hook("hk-1", message("local"), vec![send("local")]);
+    world.hook("hk-2", message("local"), vec![send("local")]);
+    let report = world.tick_with("2026-09-21T12:00:00Z", &[message("local")]);
+    assert_eq!(report.launched.len(), 2);
+    world.launcher.run(0).stop();
+    world.launcher.run(1).finish(Err("the model was down"));
+    // The store can't hold it this tick: nothing's told, and it's kept.
+    *world.store.fail_next.borrow_mut() = Some("hook");
+    let report = world.tick_with("2026-09-21T12:01:00Z", &[message("local")]);
+    let stopped = world.requests().first().unwrap().schedule_id.clone();
+    let other = world.requests().get(1).unwrap().schedule_id.clone();
+    assert!(!report.parked.contains(&stopped), "told before it was held");
+    let only = std::slice::from_ref(&stopped);
+    assert_eq!(report.skipped, only, "fired while unheld");
+    assert_eq!(report.launched, [(other, false)]);
+    let report = world.tick("2026-09-21T12:02:00Z");
+    assert_eq!(report.held, only, "held once the store can");
+    assert_eq!(report.parked, only, "told once it's held");
+    assert!(
+        world
+            .store
+            .hooks
+            .borrow()
+            .iter()
+            .any(|hook| hook.id == stopped && hook.held),
+        "not held in the store"
+    );
+    let report = world.tick_with("2026-09-21T12:03:00Z", &[message("local")]);
+    assert!(
+        report.launched.iter().all(|(id, _)| *id != stopped),
+        "a held hook fired"
+    );
+    assert_eq!(report.held, only, "a held hook isn't said held");
+    let runs = world
+        .requests()
+        .iter()
+        .filter(|request| request.schedule_id == stopped)
+        .count();
+    assert_eq!(runs, 1, "a held hook ran again");
 }

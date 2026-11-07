@@ -49,6 +49,14 @@
 //!    resuming its cadence. A one-shot is removed once its fire is
 //!    resolved. A follow-up is a one-shot like any other, so a chain runs
 //!    one link at a time.
+//!
+//!    - **A stopped run holds what fired it.** A run stopped for trying to
+//!      send a secret Hatchling keeps ([`Ending::Stopped`]) has its result
+//!      kept for the owner, and its fire stays, held
+//!      ([`OccurrenceState::Stopped`]): its schedule, a follow-up's
+//!      one-shot too, doesn't fire again until the owner resolves or
+//!      retries it, as for a fire of unknown outcome. Each fire is another
+//!      run of tries at a secret, with nobody asked.
 //! 3. **Events fire hooks.** An event is a [`HookSource`] the
 //!    broker asserts:
 //!    - **From outside the dispatcher,** only a channel message that
@@ -61,7 +69,9 @@
 //!
 //!    Each hook on the event fires through the same path as a schedule:
 //!    at most one run per hook (a fire while it runs is skipped), and
-//!    the hook's grants the creator still holds.
+//!    the hook's grants the creator still holds. A hook whose run was
+//!    stopped for a secret is held, and fires on no event until the owner
+//!    resolves it.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -224,6 +234,14 @@ pub trait Store {
     ///
     /// Returns the backend's error.
     fn hold_in_flight(&self) -> Result<Vec<String>, Self::Error>;
+
+    /// Holds the hook `id` for the owner, as [`Hook::held`] says: a run it
+    /// fired was stopped for a secret. Returns whether it exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns the backend's error: then it isn't held yet.
+    fn hold_hook(&self, id: &str) -> Result<bool, Self::Error>;
 
     /// Removes a schedule. Returns whether it existed.
     ///
@@ -401,8 +419,10 @@ pub struct TickReport {
     pub refused_events: Vec<HookSource>,
     /// Claims refused: the schedule's last result still waits (WO-025).
     pub refused: Vec<String>,
-    /// Fires held: the schedule's last fire is of unknown outcome, until
-    /// the owner resolves or retries it (WO-025).
+    /// Fires held until the owner resolves or retries them: the schedule's
+    /// last fire is of unknown outcome (WO-025), or its run was stopped for
+    /// a secret, as was a hook's. A schedule or hook held as its stopped
+    /// run ends is here too.
     pub held: Vec<String>,
 }
 
@@ -545,6 +565,11 @@ impl<R: Run> Dispatcher<R> {
             let hooks = services.store.hooks()?;
             for event in &events {
                 for hook in hooks.iter().filter(|hook| hook.source == *event) {
+                    if hook.held {
+                        tracing::warn!(hook = %hook.id, "a run it fired was stopped for a secret: held until the owner resolves it");
+                        report.held.push(hook.id.clone());
+                        continue;
+                    }
                     self.start(
                         &Start {
                             id: &hook.id,
@@ -631,6 +656,15 @@ impl<R: Run> Dispatcher<R> {
                 continue;
             };
             if active.kind == Kind::Hook {
+                // Held before it's told, and kept in memory until it is: a
+                // hook not held yet would fire on its next event.
+                if stopped(&outcome) {
+                    if let Err(error) = services.store.hold_hook(&id) {
+                        tracing::error!(hook = %id, %error, "a stopped run's hook not held yet: kept, and tried again");
+                        continue;
+                    }
+                    report.held.push(id.clone());
+                }
                 if let Some(active) = self.active.remove(&id) {
                     deliver_now(&id, &active, &outcome, services, report);
                 }
@@ -682,15 +716,15 @@ impl<R: Run> Dispatcher<R> {
         // A one-shot has no fire after its own, and is exhausted.
         let next = timing.next_after(now).map(Timestamp::as_second);
         let revision = schedule.ledger.revision;
-        let unknown = matches!(
+        let held = matches!(
             schedule.ledger.occurrence,
             Some(Occurrence {
-                state: OccurrenceState::Unknown { .. },
+                state: OccurrenceState::Unknown { .. } | OccurrenceState::Stopped { .. },
                 ..
             })
         );
-        if unknown {
-            tracing::warn!(schedule = %id, "its last fire's outcome is unknown: this fire is held until the owner resolves or retries it");
+        if held {
+            tracing::warn!(schedule = %id, "its last fire's outcome is unknown, or its run was stopped for a secret: this fire is held until the owner resolves or retries it");
             if let Err(error) = services
                 .store
                 .skip_due(&id, revision, due.as_second(), next)
@@ -901,6 +935,20 @@ fn deliver_stored<S: Store, L, D: Delivery>(
         };
         let task = schedule.task_shown.then_some(schedule.task.as_str());
         let undelivered = undelivered(id, outcome, &schedule.channel, task, services, &parked);
+        if stopped(outcome) {
+            match hold_stopped(services.store, id, *due, undelivered.as_ref()) {
+                Ok(true) => {
+                    tracing::warn!(schedule = %id, "its run was stopped for a secret: kept, and held until the owner resolves or retries it");
+                    report.parked.push(id.clone());
+                    report.held.push(id.clone());
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::error!(schedule = %id, %error, "a stopped run's result not kept and held yet: it stays stored");
+                }
+            }
+            continue;
+        }
         match services.store.resolve(id, *due, undelivered.as_ref()) {
             Ok(true) => {
                 match undelivered {
@@ -921,6 +969,34 @@ fn deliver_stored<S: Store, L, D: Delivery>(
         }
     }
     Ok(())
+}
+
+/// Whether `outcome` is a run stopped for trying to send a secret.
+const fn stopped(outcome: &Outcome) -> bool {
+    matches!(
+        outcome,
+        Outcome::Failed {
+            ending: Some(Ending::Stopped(_)),
+            ..
+        }
+    )
+}
+
+/// Keeps a stopped run's result, `parked`, for the owner, then holds its
+/// fire of `id` due at `due` ([`OccurrenceState::Stopped`]): only the owner
+/// resolves it, so its schedule doesn't fire again, and a one-shot stays
+/// until they do. Kept first: a crash between keeps it twice, never loses
+/// it. Returns whether that fire was still the schedule's.
+fn hold_stopped<S: Store>(
+    store: &S,
+    id: &str,
+    due: i64,
+    parked: Option<&Parked>,
+) -> Result<bool, S::Error> {
+    if let Some(parked) = parked {
+        store.park(parked)?;
+    }
+    store.record(id, due, OccurrenceState::Stopped { started: true })
 }
 
 /// What becomes of `outcome`: `None` once delivered on `channel`, or the
@@ -1082,6 +1158,10 @@ mod tests {
 
         fn hold_in_flight(&self) -> Result<Vec<String>, String> {
             Ok(Vec::new())
+        }
+
+        fn hold_hook(&self, _id: &str) -> Result<bool, String> {
+            Ok(false)
         }
 
         fn remove(&self, _id: &str) -> Result<bool, String> {
@@ -1350,12 +1430,18 @@ mod tests {
             let started = match fire.state {
                 OccurrenceState::Claimed => false,
                 OccurrenceState::Running => true,
-                OccurrenceState::Finished { .. } | OccurrenceState::Unknown { .. } => {
+                OccurrenceState::Finished { .. }
+                | OccurrenceState::Unknown { .. }
+                | OccurrenceState::Stopped { .. } => {
                     return Ok(Vec::new());
                 }
             };
             fire.state = OccurrenceState::Unknown { started };
             Ok(vec![stored.id.clone()])
+        }
+
+        fn hold_hook(&self, _id: &str) -> Result<bool, String> {
+            Ok(false)
         }
 
         fn remove(&self, _id: &str) -> Result<bool, String> {
