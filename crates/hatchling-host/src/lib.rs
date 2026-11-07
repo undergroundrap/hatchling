@@ -235,7 +235,7 @@ pub fn serve(listener: &TcpListener, settings: &Settings) -> ! {
             let open = &open;
             scope.spawn(move || {
                 if let Err(error) = handle(stream, settings) {
-                    tracing::debug!(%error, "connection ended");
+                    tracing::debug!(?error, "connection ended");
                 }
                 open.fetch_sub(1, Ordering::SeqCst);
             });

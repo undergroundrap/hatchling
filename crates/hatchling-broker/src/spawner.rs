@@ -1354,7 +1354,7 @@ fn serve_helper(
     let config = match checked {
         Ok(config) => config,
         Err(why) => {
-            tracing::warn!(?helper, %why, "refused a cell spec");
+            log_refused_spec(helper, &why);
             return refuse(format!("the spawner refused the spec: {why}"));
         }
     };
@@ -1451,6 +1451,12 @@ fn serve_helper(
 /// The spawner's end of its channel with the vault keeper, shared by its
 /// connections' threads.
 type Keeper = Arc<Mutex<UnixStream>>;
+
+/// Logs a spec refused for `why`. Escaped: a reason can quote a path the
+/// spec named, and the spawner doesn't take the broker's word for anything.
+fn log_refused_spec(helper: HelperKind, why: &str) {
+    tracing::warn!(?helper, ?why, "refused a cell spec");
+}
 
 /// How `config`'s vault channel is named to the keeper, when it has one:
 /// with its cell, its uid, and its grants, or the profile a browser cell
@@ -2289,6 +2295,15 @@ sleep 30 </dev/null >/dev/null 2>&1 &
                 .to_string()
                 .contains("lost")
         );
+    }
+
+    /// A refused spec's reason can quote a path it named: a newline in one
+    /// forges no line in the log.
+    #[test]
+    fn a_refused_spec_cannot_forge_a_line_in_the_log() {
+        let why = "/a\nFORGED spec allowed isn't a path";
+        let logged = crate::test_log::captured(|| log_refused_spec(HelperKind::AgentRun, why));
+        crate::test_log::assert_no_forged_line(&logged, "FORGED spec allowed");
     }
 
     /// A helper's stdio is three streams: a directory, as the place to

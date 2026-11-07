@@ -529,8 +529,9 @@ fn handle_connection(
                 "rejected unauthorized peer"
             );
         }
+        // Escaped: a protocol error can quote what the peer sent.
         Err(error) => {
-            tracing::warn!(%error, "connection failed");
+            tracing::warn!(?error, "connection failed");
         }
     }
 }
@@ -1623,6 +1624,26 @@ mod tests {
         write_frame(&agent, br#"{"t":"x\nFORGED cell admitted"}"#).unwrap();
         let logged = crate::test_log::captured(|| {
             assert!(handshake(&broker, None).is_err());
+        });
+        crate::test_log::assert_no_forged_line(&logged, "FORGED cell admitted");
+    }
+
+    /// A frame after the hello is the cell's too: serde echoes the name it
+    /// chose, and the connection's failure is logged with it, escaped.
+    #[test]
+    fn a_frame_after_the_hello_cannot_forge_a_line_in_the_brokers_log() {
+        let mut config = crate::api_auth::tests::owner_config(None);
+        config.agent_uid = hatchling_core::PeerUid::from_kernel(rustix::process::getuid().as_raw());
+        let key = MasterKey::generate().unwrap();
+        let (agent, broker) = UnixStream::pair().unwrap();
+        let hello = AgentMessage::Hello {
+            v: PROTOCOL_VERSION,
+            cell_id: String::from("cell-forger"),
+        };
+        write_frame(&agent, &serde_json::to_vec(&hello).unwrap()).unwrap();
+        write_frame(&agent, br#"{"kind":"x\nFORGED cell admitted"}"#).unwrap();
+        let logged = crate::test_log::captured(|| {
+            handle_connection(&broker, &config, &key, &Skills::default(), None);
         });
         crate::test_log::assert_no_forged_line(&logged, "FORGED cell admitted");
     }

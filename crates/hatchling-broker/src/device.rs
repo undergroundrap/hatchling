@@ -88,14 +88,18 @@ impl DeviceEndpoint {
     pub fn serve(&self, config: &Config, key: &dyn OpensStores) -> ! {
         loop {
             match self.listener.accept() {
-                Ok((stream, _)) => {
-                    if let Err(error) = serve_device(&stream, config, key, self.peer_uid) {
-                        tracing::warn!(%error, "device connection failed");
-                    }
-                }
+                Ok((stream, _)) => log_failure(serve_device(&stream, config, key, self.peer_uid)),
                 Err(source) => tracing::error!(%source, "device accept failed"),
             }
         }
+    }
+}
+
+/// Logs how a device's connection failed, if it did. Escaped: a protocol
+/// error can quote what the device sent.
+fn log_failure(served: Result<(), Error>) {
+    if let Err(error) = served {
+        tracing::warn!(?error, "device connection failed");
     }
 }
 
@@ -382,5 +386,20 @@ mod tests {
             .set_read_timeout(Some(std::time::Duration::from_secs(5)))
             .unwrap();
         assert!(read_frame_or_eof(&device).unwrap().is_none());
+    }
+
+    /// A device chooses what a protocol error quotes: logged escaped, so a
+    /// newline in a frame forges no line.
+    #[test]
+    fn a_devices_frame_cannot_forge_a_line_in_the_brokers_log() {
+        let config = crate::api_auth::tests::owner_config(None);
+        let key = MasterKey::generate().unwrap();
+        let (device, broker) = UnixStream::pair().unwrap();
+        write_frame(&device, br#"{"op":"x\nFORGED device paired"}"#).unwrap();
+        let creds = peer_credentials(&broker).unwrap();
+        let logged = crate::test_log::captured(|| {
+            log_failure(serve_ops(&broker, &config, &key, creds, String::from("d")));
+        });
+        crate::test_log::assert_no_forged_line(&logged, "FORGED device paired");
     }
 }

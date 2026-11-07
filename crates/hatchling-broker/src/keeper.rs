@@ -1338,7 +1338,8 @@ fn take_cells(spawner: &UnixStream, kept: &Arc<Mutex<Kept>>) -> Result<(), Error
         let kept = Arc::clone(kept);
         std::thread::spawn(move || {
             if let Err(error) = serve_cell(&channel, &kept, &named) {
-                tracing::warn!(cell = %named.cell, %error, "a cell's vault channel ended");
+                // Escaped: what ended it may quote what the cell sent.
+                tracing::warn!(cell = %named.cell, ?error, "a cell's vault channel ended");
             }
         });
     }

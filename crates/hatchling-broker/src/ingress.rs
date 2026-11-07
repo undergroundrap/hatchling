@@ -91,9 +91,7 @@ impl Ingress {
     /// logged and the next one accepted.
     pub fn serve(&self) -> ! {
         loop {
-            if let Err(error) = self.serve_one() {
-                tracing::warn!(%error, "channel ingress connection failed");
-            }
+            log_failure(self.serve_one());
         }
     }
 
@@ -161,6 +159,14 @@ impl Ingress {
 }
 
 /// Writes one event frame to the client.
+/// Logs how a client's connection failed, if it did. Escaped: a protocol
+/// error can quote what the client sent.
+fn log_failure(served: Result<(), Error>) {
+    if let Err(error) = served {
+        tracing::warn!(?error, "channel ingress connection failed");
+    }
+}
+
 fn send_event(writer: &Mutex<UnixStream>, event: &IngressEvent) -> Result<(), Error> {
     let payload = serde_json::to_vec(event).map_err(|e| Error::SessionProtocol {
         reason: format!("ingress event encode failed: {e}"),
@@ -236,6 +242,18 @@ mod tests {
     }
 
     fn client(socket: &SocketPath) -> UnixStream {
+    /// A message has no field serde quotes as it came, so a failure here
+    /// can't carry a raw newline today. The line is escaped all the same: a
+    /// protocol error's words aren't this file's to promise.
+    #[test]
+    fn a_failure_cannot_forge_a_line_in_the_brokers_log() {
+        let failed = Err(Error::SessionProtocol {
+            reason: String::from("x\nFORGED client admitted"),
+        });
+        let logged = crate::test_log::captured(|| log_failure(failed));
+        crate::test_log::assert_no_forged_line(&logged, "FORGED client admitted");
+    }
+
         let stream = UnixStream::connect(socket.as_path()).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))

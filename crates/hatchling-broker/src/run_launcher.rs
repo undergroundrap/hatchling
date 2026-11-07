@@ -1956,6 +1956,74 @@ mod tests {
         assert!(!dir.exists());
     }
 
+    /// A cell can exit with its last frame still in the keeper's check, so
+    /// it's seen gone before the hit lands. Here that's certain: the session
+    /// records the hit only when the teardown stops it, which is after
+    /// every look at the hit before it. The run is stopped however it
+    /// seemed to end, and what it wrote is dropped.
+    #[test]
+    fn a_hit_that_lands_as_the_session_is_joined_stops_the_run() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        use hatchling_scheduler::SentTo;
+        let seemed = [
+            ("exits", "echo the answer", Duration::from_secs(30)),
+            ("times-out", "exec sleep 30", Duration::ZERO),
+            ("fails", "exit 3", Duration::from_secs(30)),
+        ];
+        for (name, script, timeout) in seemed {
+            let dir = helper_dir(&format!("join-{name}"));
+            let path = dir.join("cell");
+            std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::thread::scope(|scope| {
+                let mut run = helper_run(&path, &dir, timeout);
+                let (stop, hit) = (Arc::clone(&run.stop), run.hit.clone());
+                run.session = Some(scope.spawn(move || {
+                    while !stop.load(Ordering::Acquire) {
+                        std::thread::yield_now();
+                    }
+                    hit.record(SentTo::Website);
+                }));
+                let started = Instant::now();
+                let end = loop {
+                    if let Some(end) = run.poll_end() {
+                        break end;
+                    }
+                    assert!(started.elapsed() < Duration::from_secs(20), "{name}");
+                    std::thread::sleep(Duration::from_millis(5));
+                };
+                assert_eq!(end, RunEnd::Stopped(SentTo::Website), "{name}");
+            });
+            assert!(!dir.exists(), "{name}");
+        }
+    }
+
+    /// A run's cell chooses what a session error quotes: its log line is
+    /// escaped, so a newline in a frame forges nothing.
+    #[test]
+    fn a_runs_frame_cannot_forge_a_line_in_the_brokers_log() {
+        use hatchling_core::framing::write_frame;
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let (agent, broker) = UnixStream::pair().unwrap();
+        hatchling_sys::net::send_fd(theirs.as_fd(), broker.as_fd()).unwrap();
+        drop(broker);
+        let cell_id: CellId = "run-forger".parse().unwrap();
+        let hello = hatchling_core::AgentMessage::Hello {
+            v: hatchling_core::PROTOCOL_VERSION,
+            cell_id: cell_id.to_string(),
+        };
+        write_frame(&agent, &serde_json::to_vec(&hello).unwrap()).unwrap();
+        write_frame(&agent, br#"{"kind":"x\nFORGED run admitted"}"#).unwrap();
+        let config = crate::api_auth::tests::owner_config(None);
+        let key = MasterKey::generate().unwrap();
+        let logged = crate::test_log::captured(|| {
+            let (stop, hit) = (AtomicBool::new(false), HeldHit::default());
+            serve_run_session(&ours, cell_id, &config, &key, &stop, &hit);
+        });
+        crate::test_log::assert_no_forged_line(&logged, "FORGED run admitted");
+    }
+
     #[test]
     fn a_helper_that_cannot_start_is_reported() {
         let dir = helper_dir("unstarted");
