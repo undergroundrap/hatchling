@@ -364,7 +364,17 @@ fi
 say "starting the broker"
 systemctl daemon-reload
 systemctl enable hatchling.service > /dev/null
-systemctl restart hatchling.service
+# Straight after a stop, its control group can still be going, which fails the
+# start. systemd tries again by itself, so give that time before saying so.
+if ! systemctl restart hatchling.service; then
+  tries=0
+  until systemctl is-active --quiet hatchling.service; do
+    tries=$((tries + 1))
+    [ "$tries" -lt 30 ] || fail "the broker didn't start: journalctl -u hatchling.service says why"
+    sleep 1
+  done
+  say "the broker started on its second try"
+fi
 
 say "starting the app's host as $OWNER_NAME"
 # Before 0.8.0 the host was the owner's own user service. It goes, so the
