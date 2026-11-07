@@ -624,7 +624,7 @@ impl<R: Run> Dispatcher<R> {
             });
             // A run stopped for a secret didn't finish: what waits on its
             // finishing waits with it, held, for the owner.
-            if active.kind == Kind::Schedule && !stopped(&outcome) {
+            if active.kind == Kind::Schedule && !active.ended.as_ref().is_some_and(stopped) {
                 events.push(HookSource::ScheduleRunFinished {
                     schedule_id: id.clone(),
                 });
