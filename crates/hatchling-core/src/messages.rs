@@ -560,17 +560,19 @@ pub enum ScheduleOp {
         /// The capabilities it may use: a subset of this run's.
         grants: Vec<ScheduleGrant>,
     },
-    /// Mark a schedule's fire of unknown outcome resolved: the owner's
-    /// word, after looking at what it did (WO-025). The schedule resumes
-    /// its cadence; a one-shot is done. The owner's alone.
+    /// Mark a schedule's held fire resolved: the owner's word, after
+    /// looking at what it did. One of unknown outcome (WO-025), or one held
+    /// because a run was stopped for a secret. The schedule resumes its
+    /// cadence; a one-shot is done. Given a hook's id, a hook held because
+    /// its run was stopped fires on its events again. The owner's alone.
     #[serde(rename = "resolve")]
     Resolve {
         /// The schedule id.
         id: String,
     },
-    /// Run a schedule's fire of unknown outcome again, as a new attempt:
-    /// it is due now, and runs as any fire does, under the grants the
-    /// creator holds then (WO-025). The owner's alone.
+    /// Run a schedule's held fire again, as a new attempt: it is due now,
+    /// and runs as any fire does, under the grants the creator holds then
+    /// (WO-025). The owner's alone.
     #[serde(rename = "retry")]
     Retry {
         /// The schedule id.
@@ -885,11 +887,11 @@ pub enum ScheduleResult {
     /// The store backend failed. Deliberately opaque.
     #[serde(rename = "schedule-error")]
     ScheduleError,
-    /// The schedule's fire of unknown outcome is marked resolved.
+    /// The schedule's held fire is marked resolved, or the held hook
+    /// released.
     #[serde(rename = "resolved")]
     Resolved,
-    /// The schedule's fire of unknown outcome is due again, as a new
-    /// attempt.
+    /// The schedule's held fire is due again, as a new attempt.
     #[serde(rename = "retried")]
     Retried,
     /// One page of the parked results.
@@ -938,9 +940,11 @@ pub struct ParkedSummary {
     pub text: String,
 }
 
-/// A schedule's fire of unknown outcome: claimed or running when a broker
-/// stopped (WO-025). It holds the schedule until the owner resolves or
-/// retries it.
+/// A schedule's fire held for the owner, until they resolve or retry it.
+///
+/// It's of unknown outcome, claimed or running when a broker stopped
+/// (WO-025), or held because a run was stopped for trying to send a secret
+/// Hatchling keeps.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct HeldFire {
@@ -948,6 +952,11 @@ pub struct HeldFire {
     pub due: i64,
     /// Whether its run had been started.
     pub started: bool,
+    /// Whether it's held because a run was stopped for a secret: its own,
+    /// or, for a follow-up that never started, the run that asked for it.
+    /// `false` for a fire of unknown outcome.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stopped: bool,
 }
 
 /// What a schedule list shows of one schedule: enough to inspect
@@ -971,8 +980,9 @@ pub struct ScheduleSummary {
     pub grants: Vec<ScheduleGrant>,
     /// The next fire, in Unix seconds, broker clock.
     pub next_due: i64,
-    /// Its fire of unknown outcome, when it has one: the schedule is held
-    /// until the owner resolves or retries it (WO-025).
+    /// Its fire held for the owner, when it has one: of unknown outcome
+    /// (WO-025), or held for a run stopped for a secret. The schedule is
+    /// held until the owner resolves or retries it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held: Option<HeldFire>,
     /// The task text, for a schedule the owner created; `None` for any

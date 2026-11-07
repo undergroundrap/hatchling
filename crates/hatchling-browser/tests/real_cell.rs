@@ -117,6 +117,11 @@ Object.defineProperty(HTMLAnchorElement.prototype, 'protocol', { get() { return 
 <svg width="80" height="20"><a href="/next" aria-label="Drawn"><text y="15">Drawn</text></a></svg>
 <span role="link">Span says link</span>"#;
 
+/// A page whose title is longer than a label may be: the controller's
+/// script clips it, and says so.
+const LONG: &str = "<!doctype html><title>A title far longer than any label may be, and longer again, \
+and longer still, until it runs past the bound a snapshot keeps, and far past it</title><p>Long</p>";
+
 /// Whether `name`'s requirement makes a missing prerequisite a failure.
 fn required(name: &str) -> bool {
     std::env::var(name).is_ok_and(|value| value == "1")
@@ -298,6 +303,7 @@ fn answer(mut stream: std::net::TcpStream, seen: &Mutex<Vec<String>>) {
         (HOST, "/framed-elsewhere") => ("200 OK", FRAMED_ELSEWHERE),
         (HOST, "/moves") => ("200 OK", MOVES),
         (HOST, "/links") => ("200 OK", LINKS),
+        (HOST, "/long") => ("200 OK", LONG),
         (HOST, "/hop") => ("302 Found", ""),
         _ => ("404 Not Found", "not here"),
     };
@@ -806,6 +812,25 @@ fn links_told_from_the_element(connection: &UnixStream) {
             shown.elements
         );
     }
+    assert!(!shown.truncated, "a page with nothing cut said it was cut");
+}
+
+/// A label the controller's script clips sets `truncated`, so a cut is
+/// carried past a pass that hides a value and shortens the label.
+fn a_clipped_label_is_said(connection: &UnixStream) {
+    let long = page(send(
+        connection,
+        &BrowserCommand::Open {
+            url: format!("http://{HOST}/long"),
+        },
+    ));
+    assert_eq!(
+        long.title.chars().count(),
+        hatchling_core::browser::MAX_LABEL_CHARS,
+        "the title wasn't clipped: {}",
+        long.title
+    );
+    assert!(long.truncated, "a clipped title wasn't said to be cut");
 }
 
 fn element(snapshot: &PageSnapshot, role: &str, name: &str) -> u32 {
@@ -979,6 +1004,7 @@ fn the_controller_drives_a_real_browser_in_a_cell_through_the_relay_alone() {
     cookies_kept(&connection);
     webrtc_loads(&connection);
     links_told_from_the_element(&connection);
+    a_clipped_label_is_said(&connection);
     sign_in_filled(&connection);
     filled_hidden_from_refused_sites(&connection);
     kept_sign_in_filled(&connection, &vault);

@@ -1789,6 +1789,9 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             },
             "started": {
                 "type": "boolean"
+            },
+            "stopped": {
+                "type": "boolean"
             }
         },
         "required": [

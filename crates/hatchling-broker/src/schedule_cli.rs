@@ -336,11 +336,13 @@ pub fn report(command: &Command, outcome: ScheduleResult) -> Result<Vec<String>,
                 let tz = match &schedule.when {
                     ScheduleSpec::Cron { tz, .. } | ScheduleSpec::Once { tz, .. } => tz,
                 };
-                let next = if schedule.held.is_some() {
-                    String::from("held: a run was cut short when Hatchling stopped")
-                } else {
-                    hatchling_scheduler::local_time(schedule.next_due, tz)
-                        .map_or_else(|| String::from("not scheduled"), |at| format!("next {at}"))
+                let next = match schedule.held {
+                    Some(held) if held.stopped => String::from(
+                        "held: Hatchling stopped a run that tried to send a saved secret",
+                    ),
+                    Some(_) => String::from("held: a run was cut short when Hatchling stopped"),
+                    None => hatchling_scheduler::local_time(schedule.next_due, tz)
+                        .map_or_else(|| String::from("not scheduled"), |at| format!("next {at}")),
                 };
                 let task = schedule
                     .task
@@ -576,6 +578,12 @@ mod tests {
     }
 
     fn summary(task: Option<&str>, held: bool) -> hatchling_core::ScheduleSummary {
+        held_for(task, held.then_some(false))
+    }
+
+    /// A summary held, when `stopped` is given, for a run stopped for a
+    /// secret if it's `true`.
+    fn held_for(task: Option<&str>, stopped: Option<bool>) -> hatchling_core::ScheduleSummary {
         hatchling_core::ScheduleSummary {
             id: String::from("sch-1"),
             kind: hatchling_core::ScheduleKind::Task,
@@ -583,15 +591,20 @@ mod tests {
             channel: String::from("local"),
             grants: Vec::new(),
             next_due: 1_790_000_000,
-            held: held.then_some(hatchling_core::HeldFire {
+            held: stopped.map(|stopped| hatchling_core::HeldFire {
                 due: 1,
                 started: true,
+                stopped,
             }),
             task: task.map(str::to_owned),
         }
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "every command's answers, one table: each line is a case"
+    )]
     fn each_answer_is_a_line_or_a_reason() {
         let add = Command::Add {
             task: String::from("t"),
@@ -641,6 +654,13 @@ mod tests {
                 .first()
                 .is_some_and(|line| line.contains("held:") && line.contains("isn't shown")),
             "{hidden:?}"
+        );
+        let stopped = report(&Command::List, listed(vec![held_for(None, Some(true))])).unwrap();
+        assert!(
+            stopped
+                .first()
+                .is_some_and(|line| line.contains("held: Hatchling stopped a run")),
+            "a stopped run's hold isn't said: {stopped:?}"
         );
         for reason in [
             ScheduleRefusal::ExceedsGrants,

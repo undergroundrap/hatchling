@@ -25,6 +25,9 @@
 //!   ([`BrowserResult::OwnerDriving`]). Handed back, the agent's next op
 //!   looks at the page afresh instead, and is answered with it
 //!   ([`BrowserResult::HandedBack`]): the page may have changed under it.
+//!   From then on, until the browser closes, every op's answer has the
+//!   browser's cookies read and hidden from it, kept profile or not: a
+//!   site can set or rotate one the owner's session gave it at any time.
 //! - **Bounded:** one browser per session, at most [`MAX_BROWSERS`] in
 //!   all, each for at most its lifetime; it ends with the session.
 
@@ -328,6 +331,10 @@ pub struct BrowserSession {
     /// name, and the text. It's put to the owner with any act in a
     /// signed-in browser that could send it.
     typed: Vec<(String, String, String)>,
+    /// The owner has driven the running browser and handed it back: its
+    /// cookies are theirs, and a site can set or rotate one at any time,
+    /// so every op's answer has them read and hidden, kept profile or not.
+    owner_drove: bool,
 }
 
 /// A page's elements, by id.
@@ -428,6 +435,7 @@ impl BrowserSession {
             allowed_profiles: BTreeSet::new(),
             page: None,
             typed: Vec::new(),
+            owner_drove: false,
         }
     }
 
@@ -467,8 +475,10 @@ impl BrowserSession {
     /// After `op`, a signed-in browser's session is kept, so it outlives
     /// however the session ends (a page may sign in further, or set a
     /// cookie of its own), and every cookie value in it is hidden from
-    /// `result`, which the agent is given (WO-030). A page is withheld when
-    /// the cookies can't be read: it could show one nothing knows to hide.
+    /// `result`, which the agent is given (WO-030). A browser with no kept
+    /// profile that the owner has driven has its cookies read and hidden
+    /// the same way, and none kept. A page is withheld when the cookies
+    /// can't be read: it could show one nothing knows to hide.
     fn kept(
         &mut self,
         config: &Config,
@@ -476,15 +486,17 @@ impl BrowserSession {
         op: &BrowserOp,
         result: BrowserResult,
     ) -> BrowserResult {
-        if matches!(op, BrowserOp::Close {}) || self.profile.is_none() || !self.is_open() {
+        if matches!(op, BrowserOp::Close {}) || !self.is_open() {
             return result;
         }
-        if !self.keep_jar(config, keys)
-            && matches!(
-                result,
-                BrowserResult::Page { .. } | BrowserResult::HandedBack { .. }
-            )
-        {
+        if self.profile.is_none() {
+            return if self.owner_drove {
+                self.jar_hidden_from(result)
+            } else {
+                result
+            };
+        }
+        if !self.keep_jar(config, keys) && shows_a_page(&result) {
             return BrowserResult::Failed {
                 failure: BrowserFailure::NoPage,
             };
@@ -544,8 +556,9 @@ impl BrowserSession {
     }
 
     /// The browser's cookies as they are now, hidden from `result`: what
-    /// the owner's hands left, in a browser with no profile to keep them. A
-    /// jar that can't be read gives the agent nothing of the page.
+    /// the owner's hands left, and what a site set since, in a browser with
+    /// no profile to keep them. Nothing is kept. A jar that can't be read
+    /// gives the agent nothing of the page.
     fn jar_hidden_from(&mut self, result: BrowserResult) -> BrowserResult {
         let Some(driven) = self.browser.clone() else {
             return result;
@@ -557,11 +570,15 @@ impl BrowserSession {
                 }
                 self.hiding_from(result)
             }
-            Err(error) => {
+            Err(error) if shows_a_page(&result) => {
                 tracing::warn!(%error, "the cookies left by the owner can't be read");
                 BrowserResult::Failed {
                     failure: BrowserFailure::NoPage,
                 }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "the cookies left by the owner can't be read");
+                result
             }
         }
     }
@@ -569,8 +586,12 @@ impl BrowserSession {
     /// The owner handed the browser back: the agent looks at the page
     /// afresh, takes a frame of it, and drives again. The page as it is
     /// now, with what the owner's session set hidden from it: they may have
-    /// signed in.
+    /// signed in. From now on, every op's answer has the cookies hidden
+    /// ([`Self::kept`]).
     fn resume(&mut self, config: &Config, keys: &dyn OpensStores) -> BrowserResult {
+        // The browser they drove: one that closed under them is gone, and
+        // the next starts with nothing of theirs.
+        self.owner_drove = self.is_open();
         let looked = self.command(&BrowserCommand::Snapshot);
         let looked = if !matches!(looked, BrowserResult::Page { .. }) {
             looked
@@ -842,6 +863,7 @@ impl BrowserSession {
         }
         self.shown = None;
         self.profile = None;
+        self.owner_drove = false;
         self.hidden.clear();
     }
 
@@ -1091,6 +1113,15 @@ impl Drop for BrowserSession {
     fn drop(&mut self) {
         self.close();
     }
+}
+
+/// Whether `result` shows the agent a page: what's withheld when what to
+/// hide from it can't be read.
+const fn shows_a_page(result: &BrowserResult) -> bool {
+    matches!(
+        result,
+        BrowserResult::Page { .. } | BrowserResult::HandedBack { .. }
+    )
 }
 
 /// Answers `op` for the session's browser `browser`, under `config`, with
@@ -4296,6 +4327,83 @@ mod tests {
                 failure: BrowserFailure::NoPage
             }
         );
+    }
+
+    /// After the owner hands back a browser with no kept sign-in, a cookie a
+    /// site sets or rotates later is hidden from every op's page, not only
+    /// the first look's, and nothing is kept for a profile. A jar that can't
+    /// be read then withholds the page, and only the page. Before they've
+    /// driven it, and once it's closed, no jar is read for an op.
+    #[test]
+    fn cookies_a_site_sets_after_a_hand_back_are_hidden_from_every_op() {
+        let config = web_config("browser-rotated");
+        let keys = MasterKey::generate().unwrap();
+        let fake = Fake::default();
+        let (mut web, mut browser) = session("t", &fake);
+        browser.browser = Some(driven(fake.clone()));
+        let read = |web: &mut WebSession, browser: &mut BrowserSession| {
+            handle_browser_op(&config, &keys, web, browser, &BrowserOp::Read {})
+        };
+        let jar_reads = |fake: &Fake| {
+            fake.log
+                .lock()
+                .unwrap()
+                .commands
+                .iter()
+                .filter(|command| matches!(command, BrowserCommand::Cookies { .. }))
+                .count()
+        };
+        showing(&fake, "https://a.example/", "Plain page");
+        assert!(matches!(
+            read(&mut web, &mut browser),
+            BrowserResult::Page { .. }
+        ));
+        assert_eq!(jar_reads(&fake), 0, "a jar read before the owner drove");
+        fake.jar.lock().unwrap().push(cookie("a.example", "owners"));
+        showing(&fake, "https://a.example/", "Yours is owners-value");
+        let back = format!("{:?}", browser.resume(&config, &keys));
+        assert!(!back.contains("owners-value"), "the owner's cookie shown");
+        // The site rotates its cookie: the next op's page shows the new one.
+        fake.jar
+            .lock()
+            .unwrap()
+            .push(cookie("a.example", "rotated"));
+        showing(&fake, "https://a.example/", "Now it's rotated-value");
+        let answer = read(&mut web, &mut browser);
+        let told = format!("{answer:?}");
+        assert!(
+            matches!(answer, BrowserResult::Page { .. }),
+            "the page wasn't given"
+        );
+        assert!(!told.contains("rotated-value"), "a rotated cookie shown");
+        assert!(told.contains("Now it's [hidden]"), "the page wasn't shown");
+        assert!(browser.profile.is_none(), "a profile was taken up");
+        // A jar that can't be read: the page is withheld, and anything else
+        // goes on.
+        browser.browser = Some(driven_by(BrowserReply::Page {
+            snapshot: PageSnapshot {
+                text: String::from("unread-value"),
+                ..PageSnapshot::default()
+            },
+        }));
+        assert_eq!(
+            read(&mut web, &mut browser),
+            BrowserResult::Failed {
+                failure: BrowserFailure::NoPage
+            }
+        );
+        assert_eq!(
+            browser.kept(
+                &config,
+                &keys,
+                &BrowserOp::Read {},
+                BrowserResult::CodeDeclined
+            ),
+            BrowserResult::CodeDeclined
+        );
+        // Closed, the next browser starts with nothing of the owner's.
+        browser.close();
+        assert!(!browser.owner_drove, "still marked as the owner's");
     }
 
     /// A page can ask for a site named with what it read: `<password>.evil`.

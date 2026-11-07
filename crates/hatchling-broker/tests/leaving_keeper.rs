@@ -58,9 +58,9 @@ use hatchling_broker::spawner::Spawner;
 use hatchling_broker::vault_access::{Access, CHECK_ACTION, Caller, Outcome, read_log};
 use hatchling_broker::web_ops::{Fetcher, Searcher, WebSession, handle_web_op};
 use hatchling_broker::{
-    AgentCell, CellConfig, CellLauncher, Config, Harnesses, RunEnv, SkillRuntime, Skills,
-    VaultConfig, dispatch_once, serve_cell_connection, serve_connection_with_ingress,
-    spawn_agent_cell,
+    AgentCell, CellConfig, CellLauncher, Config, Harnesses, RunEnv, SealedScheduleStore,
+    SkillRuntime, Skills, VaultConfig, dispatch_once, serve_cell_connection,
+    serve_connection_with_ingress, spawn_agent_cell,
 };
 use hatchling_channel::{ChannelId, Cleared, LocalHub, Message, OutputGate, SenderId};
 use hatchling_core::browser::{BrowserFailure, PageAction};
@@ -75,7 +75,8 @@ use hatchling_core::{
 };
 use hatchling_egress::web::FetchError;
 use hatchling_scheduler::{
-    Creator, Dispatcher, Ending, Launcher as _, Run as _, RunRequest, SentTo, Timestamp,
+    Creator, Dispatcher, Ending, Launcher as _, OccurrenceState, Run as _, RunRequest, SentTo,
+    Store as _, Timestamp,
 };
 use hatchling_skill::CodeHash;
 use hatchling_vault::StoreKeys;
@@ -361,6 +362,22 @@ fn request(task: String) -> RunRequest {
         history: Vec::new(),
         earlier: Vec::new(),
     }
+}
+
+/// Whether each follow-up kept in `config`'s store is held for the owner,
+/// as one asked for by a stopped run, before it ran.
+fn followups_held(config: &Config, keys: &StoreKeys) -> Result<Vec<bool>, String> {
+    let kept = SealedScheduleStore::new(&config.scheduler.root, keys)
+        .load()
+        .map_err(|e| e.to_string())?;
+    Ok(kept
+        .iter()
+        .filter(|schedule| schedule.asked_by.is_some())
+        .map(|schedule| {
+            schedule.ledger.occurrence.as_ref().map(|fire| &fire.state)
+                == Some(&OccurrenceState::Stopped { started: false })
+        })
+        .collect())
 }
 
 /// A task: ask on the vault channel once, to prove it answers, send `key`
@@ -1059,6 +1076,8 @@ fn a_chat_run_that_sends_a_key_is_stopped_and_the_owner_told_once() -> Result<()
     let mut config = install.config.clone();
     config.agent_uid = PeerUid::from_kernel(mapped_agent_uid());
     config.scheduler.root = install.dir.join("schedules");
+    // The install is shared in turn: what an earlier test scheduled goes.
+    let _ = std::fs::remove_dir_all(&config.scheduler.root);
     let runs = RunEnv {
         spawner: common::spawner(),
         agent_bin: run_fixture_binary()?,
@@ -1070,7 +1089,9 @@ fn a_chat_run_that_sends_a_key_is_stopped_and_the_owner_told_once() -> Result<()
     let send = ScheduleGrant::ChannelSend {
         channel: String::from("local"),
     };
-    let task = format!("fetch:https://a.example/?k={API_KEY} hang");
+    // It asks for a follow-up first: a run of its own, later, with no one
+    // asking, unless it's held.
+    let task = format!("followup:3600 fetch:https://a.example/?k={API_KEY} hang");
     let started = Instant::now();
     std::thread::scope(|scope| {
         let launcher = CellLauncher::new(scope, &config, &install.keys, runs.clone());
@@ -1102,6 +1123,11 @@ fn a_chat_run_that_sends_a_key_is_stopped_and_the_owner_told_once() -> Result<()
     let told = shown.lock().map_err(|e| e.to_string())?.clone();
     assert_eq!(told, [stopped_told(SentTo::Website)]);
     says_nothing_held(&told);
+    assert_eq!(
+        followups_held(&config, &install.keys)?,
+        [true],
+        "the stopped chat run's follow-up wasn't held for the owner"
+    );
     let left = std::fs::read_dir(&runs.run_root)
         .map_err(|e| e.to_string())?
         .count();
@@ -1135,9 +1161,11 @@ fn a_hit_kills_the_cell_at_once_and_its_vault_channel_with_it() -> Result<(), St
     })
 }
 
-/// A schedule's run, through the real dispatcher: its program sends a key
-/// and goes on, its cell is dead before the next look at it, and that look
-/// parks it and tells the owner once, in words that hold no secret.
+/// A schedule's run, through the real dispatcher: its program asks for a
+/// follow-up, sends a key and goes on, its cell is dead before the next
+/// look at it, and that look parks it and tells the owner once, in words
+/// that hold no secret. Its schedule and its follow-up are held: neither
+/// runs again on its own, until the owner resolves or retries it.
 #[test]
 fn a_scheduled_run_that_sends_a_key_is_stopped_and_told_once() -> Result<(), String> {
     if !guard_cell_available()? {
@@ -1145,6 +1173,8 @@ fn a_scheduled_run_that_sends_a_key_is_stopped_and_told_once() -> Result<(), Str
     }
     let install = install()?;
     let (config, runs) = install.for_runs(Duration::from_secs(120))?;
+    // The install is shared in turn: what an earlier test scheduled goes.
+    let _ = std::fs::remove_dir_all(&config.scheduler.root);
     let asks = "asked-by-a-schedule";
     let created = handle_schedule_op(
         &config,
@@ -1154,7 +1184,7 @@ fn a_scheduled_run_that_sends_a_key_is_stopped_and_told_once() -> Result<(), Str
                 expr: String::from("* * * * *"),
                 tz: String::from("UTC"),
             },
-            task: hits_then_goes_on(asks, API_KEY),
+            task: format!("followup:3600 {}", hits_then_goes_on(asks, API_KEY)),
             grants: vec![ScheduleGrant::ChannelSend {
                 channel: String::from("local"),
             }],
@@ -1186,23 +1216,54 @@ fn a_scheduled_run_that_sends_a_key_is_stopped_and_told_once() -> Result<(), Str
             let report = tick()?;
             if !report.parked.is_empty() {
                 assert_eq!(report.parked, std::slice::from_ref(&id));
-                return Ok::<(), String>(());
+                assert_eq!(
+                    report.held,
+                    std::slice::from_ref(&id),
+                    "a stopped run's schedule isn't held"
+                );
+                break;
             }
             if started.elapsed() > Duration::from_secs(60) {
                 return Err(String::from("the run was never ended"));
             }
             std::thread::sleep(Duration::from_millis(20));
         }
+        // A minute on, it's due again, and held: no run starts.
+        let later = Timestamp::from_second(1_790_000_160).map_err(|e| e.to_string())?;
+        let report = dispatch_once(&mut dispatcher, &config, keys, Some(&hub), &launcher, later)
+            .map_err(|e| e.to_string())?;
+        assert!(report.launched.is_empty(), "a stopped run's schedule fired");
+        assert_eq!(report.held, std::slice::from_ref(&id));
+        Ok::<(), String>(())
     })?;
     let told = shown.lock().map_err(|e| e.to_string())?.clone();
     assert_eq!(
         told,
         [format!(
-            "Scheduled work didn't finish. {} It's kept for you to review.",
+            "Scheduled work didn't finish. {} It won't run again until you look: it's held, and kept for you to review.",
             stopped_told(SentTo::Website)
         )]
     );
     says_nothing_held(&told);
+    assert_eq!(
+        followups_held(&config, &install.keys)?,
+        [true],
+        "the stopped scheduled run's follow-up wasn't held for the owner"
+    );
+    let owner = |op: ScheduleOp| {
+        handle_schedule_op(
+            &config,
+            &install.keys,
+            &op,
+            Timestamp::now(),
+            Creator::Owner,
+        )
+    };
+    assert_eq!(
+        owner(ScheduleOp::Resolve { id }),
+        ScheduleResult::Resolved,
+        "the owner can't release it"
+    );
     let left = std::fs::read_dir(&runs.run_root)
         .map_err(|e| e.to_string())?
         .count();

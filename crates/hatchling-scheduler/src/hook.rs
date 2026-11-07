@@ -32,6 +32,11 @@ pub struct Hook {
     pub grants: Vec<ScheduleGrant>,
     /// Where a run's output goes.
     pub channel: String,
+    /// Held for the owner: a run it fired was stopped for trying to send a
+    /// secret Hatchling keeps. It fires on no event until the owner marks
+    /// it resolved. Broker-set; never on the wire.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub held: bool,
 }
 
 /// The event sources the broker can authenticate for a creator.
@@ -87,6 +92,7 @@ pub fn validate_hook(
         task,
         grants,
         channel,
+        held: false,
     })
 }
 
@@ -152,6 +158,7 @@ mod tests {
                 task: String::from("triage"),
                 grants: vec![send("local")],
                 channel: String::from("local"),
+                held: false,
             }
         );
         assert!(create(finished("sch-1"), "report", vec![send("local")]).is_ok());
