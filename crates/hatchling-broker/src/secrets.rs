@@ -126,6 +126,7 @@ impl<'k> Secrets<'k> {
 /// opaque `VaultError` reply: the session survives them, and the agent
 /// learns that the op failed, not why. Only malformed request bytes
 /// (undecodable base64) end the session — those are protocol violations.
+/// Either way the op is in the access log, as failed.
 ///
 /// # Errors
 ///
@@ -161,16 +162,35 @@ pub(crate) fn vault_op_through(
         tracing::warn!(cell_id = %cell_id, "a vault op sent to the broker: denied, it is the keeper's");
         return Ok(VaultResult::Denied);
     }
-    let result = vault_op_result(vault_config, key, op, cell_id)?;
+    recorded_vault_op(vault_config, key, op, cell_id, uid, &mut |_| true)
+}
+
+/// Does a cell's vault op and records it, whatever came of it: an op that
+/// fails, however it fails, leaves a line. `release` is told the name a
+/// granted store is about to write, and says whether it may
+/// ([`vault_op_result`]): the keeper's record of what cells have had.
+///
+/// # Errors
+///
+/// As [`handle_vault_op`], once the op is in the log.
+pub(crate) fn recorded_vault_op(
+    vault_config: &VaultConfig,
+    key: &dyn OpensStores,
+    op: &VaultOp,
+    cell_id: &CellId,
+    uid: u32,
+    release: &mut dyn FnMut(&SecretName) -> bool,
+) -> Result<VaultResult, Error> {
+    let done = vault_op_result(vault_config, key, op, cell_id, release);
     // Every access is recorded. One that went ahead but cannot be
     // recorded fails closed: no secret leaves unlogged.
-    let outcome = match result {
-        VaultResult::Fetched { .. } | VaultResult::Stored | VaultResult::Removed => {
+    let outcome = match &done {
+        Ok(VaultResult::Fetched { .. } | VaultResult::Stored | VaultResult::Removed) => {
             Outcome::Allowed
         }
-        VaultResult::NotFound => Outcome::NotFound,
-        VaultResult::Denied => Outcome::Denied,
-        VaultResult::VaultError => Outcome::Failed,
+        Ok(VaultResult::NotFound) => Outcome::NotFound,
+        Ok(VaultResult::Denied) => Outcome::Denied,
+        Ok(VaultResult::VaultError) | Err(_) => Outcome::Failed,
     };
     let name = op.name().parse::<SecretName>().map_or_else(
         |_| String::from("(not a secret name)"),
@@ -180,31 +200,37 @@ pub(crate) fn vault_op_through(
         uid,
         cell: cell_id.to_string(),
     };
-    match crate::vault_access::record(
+    let recorded = crate::vault_access::record(
         &vault_config.root,
         caller,
         &op.action().to_string(),
         vec![name],
         outcome,
-    ) {
-        Ok(()) => Ok(result),
-        Err(error) if outcome == Outcome::Allowed => {
-            tracing::error!(%error, "vault op not recorded: answered as failed");
-            Ok(VaultResult::VaultError)
-        }
-        Err(error) => {
-            tracing::error!(%error, "vault op not recorded");
-            Ok(result)
-        }
+    );
+    if let Err(error) = &recorded {
+        tracing::error!(%error, "vault op not recorded");
     }
+    let result = done?;
+    if recorded.is_err() && outcome == Outcome::Allowed {
+        tracing::error!("a vault op that went ahead wasn't recorded: answered as failed");
+        return Ok(VaultResult::VaultError);
+    }
+    Ok(result)
 }
 
 /// The vault op's result, before it is recorded.
+///
+/// `release` is asked, once a granted store's value has been read and the
+/// vault is open, just before it's written: `false` fails the store. It's
+/// here and not before the op, so a store that can't go ahead says nothing
+/// was released. It's before the write, so a crash between the two leaves
+/// a name scanned for, never a value a cell stored that no scan looks for.
 pub(crate) fn vault_op_result(
     vault_config: &VaultConfig,
     key: &dyn OpensStores,
     op: &VaultOp,
     cell_id: &CellId,
+    release: &mut dyn FnMut(&SecretName) -> bool,
 ) -> Result<VaultResult, Error> {
     // Defense in depth: the agent's bytes are untrusted even though the
     // agent validates names client-side. A name that fails parsing can
@@ -257,6 +283,9 @@ pub(crate) fn vault_op_result(
             let Ok(secret) = Secret::new(bytes) else {
                 return Ok(VaultResult::VaultError);
             };
+            if !release(&name) {
+                return Ok(VaultResult::VaultError);
+            }
             match vault.store(&name, &secret) {
                 Ok(()) => {
                     tracing::info!(

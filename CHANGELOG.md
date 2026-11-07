@@ -78,6 +78,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Fixed
 
+- **A vault store that fails is on the record, and releases nothing.** A cell holding a store grant that sent a malformed value, or asked while the vault couldn't be opened, left no line in the access log, and the keeper still recorded the name as released, so the old value, which no cell had, went into the gates' scans. Now the name is recorded only once the store is about to be written, and every op that reaches the keeper leaves a line, as failed if that's how it went.
 - **A stopped run's cells die at once.** When a run is caught with a saved secret, every cell of it is killed there and then, its subagents' too, and each cell's own channel to the vault keeper goes with it. Before, that could wait for the scheduler's next tick, up to a minute, and the broker's long-lived agent cell lived on.
 - **A secret a coding tool hands back ends the run.** A brief could ask a harness to put a saved secret together, pass every check, and read the answer from what was withheld. Now a secret in a patch, a message, a question or a file's name ends an agent's run, and you're told a coding tool handed one back. A harness you run yourself still only withholds it.
 - **A run that exits as it's caught is still stopped.** A cell that sent one last request and exited at once could be taken for one that finished, its output delivered and you never told.

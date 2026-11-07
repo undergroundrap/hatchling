@@ -70,7 +70,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::browser_credentials::{Credentials, SignInAnswer, SignInRequest};
-use crate::secrets::{Secrets, handle_vault_op};
+use crate::secrets::{Secrets, recorded_vault_op};
 use crate::vault_access::{Caller, Outcome};
 use crate::vault_keyring::KeyringConfig;
 use crate::{Config, Error, RedactionConfig, VaultConfig, VaultGrant};
@@ -1164,25 +1164,31 @@ fn read_released(config: &Config, keys: &StoreKeys) -> Result<BTreeSet<String>, 
     }
 }
 
-/// Records `name` as released, and keeps the record, before the cell
-/// stores it. A record that can't be kept releases nothing.
-fn record_release(kept: &mut Kept, name: &str) -> Result<(), Error> {
-    if kept.released.contains(name) {
+/// Records `name` as released, in `released` and in the store under
+/// `config` opened with `keys`, before the cell stores it. A record that
+/// can't be kept releases nothing.
+fn record_release(
+    config: &Config,
+    keys: &StoreKeys,
+    released: &mut BTreeSet<String>,
+    name: &str,
+) -> Result<(), Error> {
+    if released.contains(name) {
         return Ok(());
     }
-    let mut released = kept.released.clone();
-    released.insert(name.to_owned());
-    let record = serde_json::to_vec(&released).map_err(|e| Error::Keeper {
+    let mut now = released.clone();
+    now.insert(name.to_owned());
+    let record = serde_json::to_vec(&now).map_err(|e| Error::Keeper {
         reason: format!("cannot write the released record: {e}"),
     })?;
     let secret = Secret::new(record).map_err(|source| Error::Vault { source })?;
     let record_name: SecretName = RELEASED_RECORD.parse().map_err(|_| Error::Keeper {
         reason: String::from("the released record's name doesn't parse"),
     })?;
-    hatchling_vault::SealedVault::open(&kept.config.vault.root, &kept.keys)
+    hatchling_vault::SealedVault::open(&config.vault.root, keys)
         .and_then(|vault| vault.store(&record_name, &secret))
         .map_err(|source| Error::Vault { source })?;
-    kept.released = released;
+    *released = now;
     Ok(())
 }
 
@@ -1201,21 +1207,6 @@ fn held_by(vault: &VaultConfig, held: &[String]) -> VaultConfig {
         .grants
         .retain(|grant| held.contains(&grant_word(grant)));
     vault
-}
-
-/// The name a cell's op would release, when `vault` grants it: a store's.
-/// A fetch is refused and a removal releases nothing.
-fn releases_to_cell(vault: &VaultConfig, op: &VaultOp) -> Option<String> {
-    let action = op.action();
-    if !matches!(op, VaultOp::Store { .. }) {
-        return None;
-    }
-    let name = op.name();
-    vault
-        .grants
-        .iter()
-        .any(|grant| grant.action == action && grant.name.as_str() == name)
-        .then(|| name.to_owned())
 }
 
 /// Answers `role` on `stream` until it goes. The egress authority only
@@ -1267,8 +1258,11 @@ fn serve(stream: &UnixStream, kept: &Mutex<Kept>, role: Role) -> Result<(), Erro
 
 /// A cell's vault op, answered under the grants its session holds where
 /// the keeper's configuration makes them too, and recorded as that
-/// cell's. A store is recorded as released first: one that can't be
-/// recorded fails, and so does a vault that can't be used.
+/// cell's. A store is recorded as released just before it's written, once
+/// it's granted, its value reads and the vault opens: one whose release
+/// can't be recorded fails. Nothing else releases a name, so a malformed
+/// store doesn't put a value no cell had into the gates' scan, and every
+/// op leaves a line, as failed if that's how it went.
 ///
 /// # Errors
 ///
@@ -1280,17 +1274,34 @@ fn cell_op_result(
     uid: u32,
     grants: &[String],
 ) -> Result<VaultResult, String> {
-    let cell: CellId = cell
-        .parse()
-        .map_err(|_| String::from("a cell id that doesn't parse"))?;
     let vault = held_by(&kept.config.vault, grants);
-    if let Some(name) = releases_to_cell(&vault, op) {
-        if let Err(error) = record_release(kept, &name) {
-            tracing::error!(%error, "a release not recorded: the op is refused");
-            return Ok(VaultResult::VaultError);
+    let Ok(cell) = cell.parse::<CellId>() else {
+        let caller = Caller::Session {
+            uid,
+            cell: String::from("(not a cell id)"),
+        };
+        let action = op.action().to_string();
+        if let Err(error) =
+            crate::vault_access::record(&vault.root, caller, &action, Vec::new(), Outcome::Failed)
+        {
+            tracing::error!(%error, "a vault op from a bad cell id not recorded");
         }
-    }
-    match handle_vault_op(&vault, &kept.keys, op, &cell, uid) {
+        return Err(String::from("a cell id that doesn't parse"));
+    };
+    let Kept {
+        config,
+        keys,
+        released,
+        ..
+    } = kept;
+    let mut release = |name: &SecretName| {
+        let recorded = record_release(config, keys, released, name.as_str());
+        if let Err(error) = &recorded {
+            tracing::error!(%error, "a release not recorded: the op is refused");
+        }
+        recorded.is_ok()
+    };
+    match recorded_vault_op(&vault, keys, op, &cell, uid, &mut release) {
         Ok(result) => Ok(result),
         Err(Error::SessionProtocol { reason }) => Err(reason),
         Err(error) => {
@@ -2457,7 +2468,6 @@ mod tests {
         let fetch = VaultOp::Fetch {
             name: String::from("token"),
         };
-        assert_eq!(releases_to_cell(&config.vault, &fetch), None);
         let keys = StoreKeys::unwrap(&master, &[(Store::SECRETS, &config.vault.root)]).unwrap();
         let kept = Mutex::new(Kept {
             releases: Releases::of(&config, BTreeSet::new()),
@@ -3093,20 +3103,9 @@ mod tests {
             name: name.to_owned(),
             secret_b64: hatchling_core::SecretB64::encode(b"t"),
         };
-        assert_eq!(
-            releases_to_cell(&config.vault, &store("token")).as_deref(),
-            Some("token")
-        );
-        assert_eq!(releases_to_cell(&config.vault, &store("other")), None);
         let remove = VaultOp::Remove {
             name: String::from("old"),
         };
-        assert_eq!(releases_to_cell(&config.vault, &remove), None);
-        // A session that doesn't hold the grant releases nothing.
-        assert_eq!(
-            releases_to_cell(&held_by(&config.vault, &[]), &store("token")),
-            None
-        );
         let keys = StoreKeys::unwrap(&master, &[(Store::SECRETS, &config.vault.root)]).unwrap();
         assert!(read_released(&config, &keys).unwrap().is_empty());
         let releases = Releases::of(&config, BTreeSet::new());
@@ -3126,8 +3125,27 @@ mod tests {
             read_frame(&theirs).unwrap(),
             br#"{"reply":"scan","count":0}"#
         );
-        record_release(&mut kept, "token").unwrap();
-        record_release(&mut kept, "token").unwrap();
+        // Only a store this session holds the grant for releases anything:
+        // not one of another name, not a removal, and not one it wasn't
+        // granted.
+        let both = [String::from("store:token"), String::from("remove:old")];
+        for (op, held) in [
+            (store("other"), both.as_slice()),
+            (remove, both.as_slice()),
+            (store("token"), &[]),
+        ] {
+            assert!(cell_op_result(&mut kept, &op, "run-1", 7, held).is_ok());
+            assert!(kept.released.is_empty(), "released by {}", op.action());
+        }
+        let stored = cell_op_result(&mut kept, &store("token"), "run-1", 7, &both);
+        assert!(matches!(stored, Ok(VaultResult::Stored)));
+        let Kept {
+            config,
+            keys,
+            released,
+            ..
+        } = &mut kept;
+        record_release(config, keys, released, "token").unwrap();
         assert_eq!(
             read_released(&kept.config, &kept.keys).unwrap(),
             BTreeSet::from([String::from("token")])

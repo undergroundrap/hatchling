@@ -2175,7 +2175,7 @@ mod tests {
             VaultResult::Denied
         );
         assert_eq!(
-            vault_op_result(&vault, &key, &store, &cell).unwrap(),
+            vault_op_result(&vault, &key, &store, &cell, &mut |_| true).unwrap(),
             VaultResult::Stored
         );
         let _ = std::fs::remove_dir_all(&dir);
