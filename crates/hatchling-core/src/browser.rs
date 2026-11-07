@@ -630,9 +630,15 @@ mod tests {
             ..PageSnapshot::default()
         }
         .hiding(&secrets);
-        assert!(snapshot.title.ends_with(HIDDEN), "the second value's start shows");
+        assert!(
+            snapshot.title.ends_with(HIDDEN),
+            "the second value's start shows"
+        );
         assert!(!snapshot.title.contains(other), "the first value shows");
-        let role = snapshot.elements.first().map(|element| element.role.clone());
+        let role = snapshot
+            .elements
+            .first()
+            .map(|element| element.role.clone());
         assert_eq!(role.as_deref(), Some(HIDDEN), "a role shows a value");
     }
 

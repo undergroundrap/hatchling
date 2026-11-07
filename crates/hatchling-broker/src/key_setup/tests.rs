@@ -499,7 +499,10 @@ fn a_key_file_left_inside_the_first_step_goes_as_the_vault_is_protected() {
     let mut bench = Bench::new_keys(2, &[0, 1]);
     let run = run_with(&vault, &config, &mut bench, &["", "", "<code>"], &[]);
     assert_eq!(run.done.unwrap(), Done::Protected);
-    assert!(!vault.key_file.exists(), "it stays beside a protected vault");
+    assert!(
+        !vault.key_file.exists(),
+        "it stays beside a protected vault"
+    );
 }
 
 /// A power cut mid-way: the keys committed, the stores not yet moved. The
