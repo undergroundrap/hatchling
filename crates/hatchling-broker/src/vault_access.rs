@@ -495,7 +495,7 @@ mod tests {
         let mut config = owner_config(None);
         config.vault.root = dir.0.join("vault");
         config.vault.grants = vec![crate::VaultGrant {
-            action: VaultAction::Fetch,
+            action: VaultAction::Store,
             name: "token".parse().unwrap(),
         }];
         config.channel_accounts = vec![crate::ChannelAccountSpec {
@@ -517,7 +517,7 @@ mod tests {
         record(
             &config.vault.root,
             session(),
-            "fetch",
+            "store",
             vec![String::from("token")],
             Outcome::Allowed,
         )
@@ -532,12 +532,12 @@ mod tests {
             "{shown}"
         );
         assert!(
-            shown.contains("token (stored)\n  agent sessions may fetch it"),
+            shown.contains("token (stored)\n  agent sessions may store it"),
             "{shown}"
         );
         assert!(shown.contains("  last access: "), "{shown}");
         assert!(
-            shown.contains("session uid 1000 (cell-a) fetch allowed"),
+            shown.contains("session uid 1000 (cell-a) store allowed"),
             "{shown}"
         );
         assert!(
@@ -560,7 +560,7 @@ mod tests {
             !log.contains("warning"),
             "a clean log brings no warning: {log}"
         );
-        assert!(log.ends_with("fetch allowed: token"), "{log}");
+        assert!(log.ends_with("store allowed: token"), "{log}");
         assert_eq!(
             command(&config, &["log", "0"]).unwrap(),
             "no vault accesses recorded"

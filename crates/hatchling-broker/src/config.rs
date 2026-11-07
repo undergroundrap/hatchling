@@ -389,8 +389,8 @@ impl VaultConfig {
 /// One explicit grant: the agent may perform `action` on `name`.
 ///
 /// Grants are deny-by-default and name-exact: there are no wildcards, no
-/// prefixes, and no list grant. A grant for `fetch:app-token` says
-/// nothing about `store:app-token` or any other name.
+/// prefixes, and no list grant. A grant for `store:app-token` says
+/// nothing about `remove:app-token` or any other name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VaultGrant {
     /// The permitted action.
@@ -405,7 +405,7 @@ pub struct VaultGrant {
 ///
 /// The secret is custody-only: the broker loads it when it builds a
 /// session's channels, and config parsing refuses any vault grant that
-/// names it, so the cell can neither fetch nor overwrite it.
+/// names it, so the cell can neither overwrite nor remove it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelAccountSpec {
     /// The channel id.
@@ -1617,8 +1617,8 @@ const MAX_ACCOUNT_LABEL: usize = 32;
 /// Fail-closed: the channel must be configured, the label must be
 /// 1–[`MAX_ACCOUNT_LABEL`] of `a-z0-9-`, a (channel, label) pair may
 /// appear once, and the secret must be named by no vault grant — a
-/// granted name would let the cell fetch, store over, or remove the
-/// credential the broker holds in custody.
+/// granted name would let the cell store over or remove the credential
+/// the broker holds in custody.
 fn parse_channel_accounts(
     raw: Option<&str>,
     channels: &[String],
@@ -1943,9 +1943,8 @@ fn parse_socket_mode(raw: &str) -> Result<u32, Error> {
 /// The broker reads an egress destination's credential from the vault
 /// secret [`destination_to_secret_name`](crate::serve::destination_to_secret_name)
 /// gives for it. A vault grant naming that secret would let the cell
-/// fetch it (disclosure), store over it (replacement), or remove it
-/// (destruction) through the vault ops, so any grant action on it fails
-/// startup — as refuses it for channel accounts.
+/// store over it (replacement) or remove it (destruction) through the
+/// vault ops, so any grant action on it fails startup — as refuses it for channel accounts.
 ///
 /// Protected are the secrets of every destination the operator named:
 /// each egress grant and each allowlist entry. The broker only reads a
@@ -2439,7 +2438,7 @@ mod tests {
             ("HATCHLING_VAULT_DIR", "/tmp/hatchling-test/vault"),
             (
                 "HATCHLING_VAULT_GRANTS",
-                "fetch:app-token,store:app-token,remove:old-key",
+                "store:app-token,store:notes,remove:old-key",
             ),
         ])
     }
@@ -2992,7 +2991,7 @@ mod tests {
         let parsed = accounts(
             " mail:work=mail-work , mail:personal-2=mail-home,,chat:bot=chat-bot ",
             &["local", "mail", "chat"],
-            "fetch:app-token",
+            "store:app-token",
         )
         .unwrap();
         let triples: Vec<(&str, &str, &str)> = parsed
@@ -3024,16 +3023,34 @@ mod tests {
 
     #[test]
     fn a_channel_account_secret_no_grant_may_name() {
-        // Every grant action on the custody secret fails startup: fetch
-        // would hand the cell the key, store and remove would let it
-        // replace or destroy it.
-        for grant in ["fetch:mail-work", "store:mail-work", "remove:mail-work"] {
+        // Every grant action on the custody secret fails startup: store
+        // and remove would let the cell replace or destroy it.
+        for grant in ["store:mail-work", "remove:mail-work"] {
             let reason = account_error("mail:work=mail-work", &["mail"], grant);
             assert!(
                 refused_for(reason.as_deref(), "vault grant"),
                 "{grant}: {reason:?}"
             );
         }
+        // Parsing refuses a fetch grant first; one that got past it is
+        // refused here too.
+        let fetch = VaultGrant {
+            action: VaultAction::Fetch,
+            name: "mail-work".parse().unwrap(),
+        };
+        let refused = parse_channel_accounts(
+            Some("mail:work=mail-work"),
+            &[String::from("mail")],
+            &[fetch],
+        );
+        assert!(
+            matches!(
+                &refused,
+                Err(Error::InvalidConfig { key: "HATCHLING_CHANNEL_ACCOUNTS", reason })
+                    if reason.contains("vault grant")
+            ),
+            "{refused:?}"
+        );
     }
 
     #[test]
@@ -3072,7 +3089,7 @@ mod tests {
         vars.insert("HATCHLING_CHANNEL_ACCOUNTS", "mail:work=mail-work");
         let config = Config::parse(lookup(&vars)).unwrap();
         assert_eq!(config.channel_accounts.len(), 1);
-        vars.insert("HATCHLING_VAULT_GRANTS", "fetch:mail-work");
+        vars.insert("HATCHLING_VAULT_GRANTS", "store:mail-work");
         let err = Config::parse(lookup(&vars)).unwrap_err();
         assert!(
             matches!(
@@ -3112,12 +3129,24 @@ mod tests {
 
     #[test]
     fn a_fetch_grant_on_an_egress_credential_is_refused() {
-        // Fetch would disclose the credential to the cell.
-        let reason = egress_overlap(
-            "fetch:egress-api-example-com-443",
-            "api.example.com:443",
+        // Parsing refuses a fetch grant first; one that got past it still
+        // can't name a credential the broker holds.
+        let grant = VaultGrant {
+            action: VaultAction::Fetch,
+            name: "egress-api-example-com-443".parse().unwrap(),
+        };
+        let refused = refuse_egress_secret_grants(
+            &[grant],
+            &[String::from("api.example.com:443")],
             "api.example.com:443",
         );
+        let reason = match refused {
+            Err(Error::InvalidConfig {
+                key: "HATCHLING_VAULT_GRANTS",
+                reason,
+            }) => Some(reason),
+            Ok(()) | Err(_) => None,
+        };
         assert!(
             refuses(reason.as_deref(), "fetch:egress-api-example-com-443"),
             "{reason:?}"
@@ -3157,11 +3186,11 @@ mod tests {
         // `local:localhost:11434` is looked up as `egress-localhost-11434`;
         // mapping it with its prefix would protect a name nothing reads.
         assert!(
-            egress_overlap("fetch:egress-localhost-11434", "", "local:localhost:11434").is_some()
+            egress_overlap("store:egress-localhost-11434", "", "local:localhost:11434").is_some()
         );
         assert!(
             egress_overlap(
-                "fetch:egress-api-example-com-443",
+                "store:egress-api-example-com-443",
                 "",
                 "public:api.example.com:443"
             )
@@ -3169,7 +3198,7 @@ mod tests {
         );
         assert!(
             egress_overlap(
-                "fetch:egress-localhost-11434",
+                "store:egress-localhost-11434",
                 "",
                 "local-keyless:localhost:11434"
             )
@@ -3292,13 +3321,13 @@ mod tests {
 
     #[test]
     fn refuse_egress_secret_conflicts_runs_both_checks() {
-        let fetch = |name: &str| VaultGrant {
-            action: VaultAction::Fetch,
+        let store = |name: &str| VaultGrant {
+            action: VaultAction::Store,
             name: name.parse().unwrap(),
         };
         assert!(refuse_egress_secret_conflicts(&[], &[], "a.example:443").is_ok());
         assert!(
-            refuse_egress_secret_conflicts(&[fetch("egress-a-example-443")], &[], "a.example:443")
+            refuse_egress_secret_conflicts(&[store("egress-a-example-443")], &[], "a.example:443")
                 .is_err()
         );
         assert!(refuse_egress_secret_conflicts(&[], &[], "a.example:443, a-example:443").is_err());
@@ -3312,18 +3341,18 @@ mod tests {
         // A destination named only as an egress grant, or only on the
         // allowlist, is protected either way.
         assert!(refused(
-            "fetch:egress-api-example-com-443",
+            "store:egress-api-example-com-443",
             "api.example.com:443",
             ""
         ));
         assert!(refused(
-            "fetch:egress-api-example-com-443",
+            "store:egress-api-example-com-443",
             "",
             "other.example.com:80, api.example.com:443"
         ));
         // Later entries are checked too, not only the first.
         assert!(refused(
-            "fetch:app-token,remove:egress-b-example-com-80",
+            "store:app-token,remove:egress-b-example-com-80",
             "a.example.com:443,b.example.com:80",
             ""
         ));
@@ -3334,12 +3363,12 @@ mod tests {
             crate::serve::destination_to_secret_name("api.example:443")
         );
         assert!(refused(
-            "fetch:egress-api-example-443",
+            "store:egress-api-example-443",
             "api-example:443",
             ""
         ));
         assert!(refused(
-            "fetch:egress-api-example-443",
+            "store:egress-api-example-443",
             "api.example:443",
             ""
         ));
@@ -3352,7 +3381,7 @@ mod tests {
         let mut vars = valid_vars();
         vars.insert(
             "HATCHLING_VAULT_GRANTS",
-            "fetch:app-token,store:egress-note,fetch:egress-other-example-com-443",
+            "store:app-token,store:egress-note,store:egress-other-example-com-443",
         );
         vars.insert("HATCHLING_EGRESS_GRANTS", "api.example.com:443");
         vars.insert("HATCHLING_EGRESS_ALLOWLIST", "api.example.com:443");
@@ -3964,17 +3993,17 @@ mod tests {
             name: name.parse().unwrap(),
         };
         assert_eq!(refuse_harness_secret_grants(Vec::new()).unwrap(), []);
-        let others = vec![grant(VaultAction::Fetch, "harness-claude")];
+        let others = vec![grant(VaultAction::Store, "harness-claude")];
         assert_eq!(
             refuse_harness_secret_grants(others.clone()).unwrap(),
             others
         );
         for (action, name, harness) in [
-            (VaultAction::Fetch, "harness-claude-code", "claude-code"),
-            (VaultAction::Store, "harness-codex-cli", "codex-cli"),
+            (VaultAction::Store, "harness-claude-code", "claude-code"),
+            (VaultAction::Remove, "harness-codex-cli", "codex-cli"),
         ] {
             let refused = refuse_harness_secret_grants(vec![
-                grant(VaultAction::Fetch, "app-token"),
+                grant(VaultAction::Store, "app-token"),
                 grant(action, name),
             ]);
             assert!(
@@ -3990,7 +4019,7 @@ mod tests {
             );
         }
         let record = refuse_harness_secret_grants(vec![grant(
-            VaultAction::Fetch,
+            VaultAction::Store,
             crate::keeper::RELEASED_RECORD,
         )]);
         assert!(matches!(
@@ -4003,17 +4032,17 @@ mod tests {
     #[test]
     fn grants_parse_action_and_name_exactly() {
         // Grants are exact (action, name) pairs: no wildcards, no
-        // prefixes. A fetch grant says nothing about store.
+        // prefixes. A store grant says nothing about remove.
         let vars = valid_vars();
         let config = Config::parse(lookup(&vars)).unwrap();
         let grants = &config.vault.grants;
         assert!(grants.contains(&VaultGrant {
-            action: VaultAction::Fetch,
+            action: VaultAction::Store,
             name: "app-token".parse().unwrap(),
         }));
         assert!(grants.contains(&VaultGrant {
-            action: VaultAction::Store,
-            name: "app-token".parse().unwrap(),
+            action: VaultAction::Remove,
+            name: "old-key".parse().unwrap(),
         }));
         assert!(!grants.contains(&VaultGrant {
             action: VaultAction::Remove,
@@ -4021,18 +4050,38 @@ mod tests {
         }));
     }
 
+    /// No cell reads a secret, so a fetch grant stops startup, wherever it
+    /// stands in the list, and the refusal says where a key goes instead.
+    #[test]
+    fn a_fetch_grant_stops_startup_and_points_to_the_egress_grants() {
+        for raw in ["fetch:x", "store:app-token,fetch:x"] {
+            let mut vars = valid_vars();
+            vars.insert("HATCHLING_VAULT_GRANTS", raw);
+            let refused = Config::parse(lookup(&vars)).map(|config| config.vault.grants);
+            assert!(
+                matches!(
+                    &refused,
+                    Err(Error::InvalidConfig { key: "HATCHLING_VAULT_GRANTS", reason })
+                        if reason.contains("a cell can no longer read a secret")
+                            && reason.contains("HATCHLING_EGRESS_GRANTS")
+                ),
+                "{raw}: {refused:?}"
+            );
+        }
+    }
+
     #[test]
     fn malformed_grants_fail_closed() {
         // A typo'd grant must fail startup, never silently become a
         // missing (or extra) grant.
         for raw in [
-            "fetch",            // no colon
+            "store",            // no colon
             "list:app-token",   // unknown action
-            "fetch:../escape",  // invalid name
-            "fetch:",           // empty name
+            "store:../escape",  // invalid name
+            "store:",           // empty name
             ":app-token",       // empty action
-            "fetch:app-token,", // trailing comma
-            "fetch:app:token",  // name with colon
+            "store:app-token,", // trailing comma
+            "store:app:token",  // name with colon
         ] {
             let mut vars = valid_vars();
             vars.insert("HATCHLING_VAULT_GRANTS", raw);
@@ -4542,7 +4591,7 @@ mod web_config_tests {
             })
         ));
         let grant = super::VaultGrant {
-            action: hatchling_core::VaultAction::Fetch,
+            action: hatchling_core::VaultAction::Store,
             name: crate::web_ops::SEARCH_KEY.parse().unwrap(),
         };
         let refused = super::refuse_harness_secret_grants(vec![grant]);

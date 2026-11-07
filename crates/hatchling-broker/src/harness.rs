@@ -4300,7 +4300,7 @@ mod tests {
         );
         // A vault grant naming its key refuses the start.
         config.vault.grants = vec![crate::VaultGrant {
-            action: hatchling_core::VaultAction::Fetch,
+            action: hatchling_core::VaultAction::Store,
             name: "harness-opencode".parse().unwrap(),
         }];
         assert_eq!(
@@ -4308,13 +4308,13 @@ mod tests {
             (
                 "HATCHLING_VAULT_GRANTS",
                 String::from(
-                    "grant fetch:harness-opencode names the vendor key the broker holds for the \
+                    "grant store:harness-opencode names the vendor key the broker holds for the \
                      opencode harness"
                 )
             )
         );
         config.vault.grants = vec![crate::VaultGrant {
-            action: hatchling_core::VaultAction::Fetch,
+            action: hatchling_core::VaultAction::Store,
             name: "harness-other".parse().unwrap(),
         }];
         assert!(parsed(&config, &vars).is_ok());

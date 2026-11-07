@@ -223,7 +223,7 @@ fn holding(name: &str, key: &MasterKey) -> (Scratch, Config) {
             key_file: VaultConfig::default_key_file(&root),
             root,
             grants: vec![VaultGrant {
-                action: VaultAction::Fetch,
+                action: VaultAction::Store,
                 name: "app-token".parse().unwrap(),
             }],
         },

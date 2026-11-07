@@ -1053,8 +1053,8 @@ fn read_released(config: &Config, keys: &StoreKeys) -> Result<BTreeSet<String>, 
     }
 }
 
-/// Records `name` as released, and keeps the record, before the cell is
-/// given it or stores it. A record that can't be kept releases nothing.
+/// Records `name` as released, and keeps the record, before the cell
+/// stores it. A record that can't be kept releases nothing.
 fn record_release(kept: &mut Kept, name: &str) -> Result<(), Error> {
     if kept.released.contains(name) {
         return Ok(());
@@ -1145,8 +1145,8 @@ fn serve(stream: &UnixStream, kept: &Mutex<Kept>, role: Role) -> Result<(), Erro
 
 /// A cell's vault op, answered under the grants its session holds where
 /// the keeper's configuration makes them too, and recorded as that
-/// cell's. A fetch or a store is recorded as released first: one that
-/// can't be recorded fails, and so does a vault that can't be used.
+/// cell's. A store is recorded as released first: one that can't be
+/// recorded fails, and so does a vault that can't be used.
 ///
 /// # Errors
 ///
@@ -1542,17 +1542,17 @@ mod tests {
         );
         let mut vault = crate::api_auth::tests::owner_config(None).vault;
         vault.grants = vec![
-            grant(VaultAction::Fetch, "token"),
             grant(VaultAction::Store, "token"),
+            grant(VaultAction::Remove, "token"),
         ];
         let held = |words: &[&str]| {
             let words: Vec<String> = words.iter().map(|word| (*word).to_owned()).collect();
             held_by(&vault, &words).grants
         };
         assert_eq!(held(&["store:token"]), [grant(VaultAction::Store, "token")]);
-        assert_eq!(held(&["fetch:token", "store:token"]), vault.grants);
+        assert_eq!(held(&["store:token", "remove:token"]), vault.grants);
         assert!(held(&[]).is_empty());
-        assert!(held(&["fetch:other", "remove:token"]).is_empty());
+        assert!(held(&["store:other", "fetch:token"]).is_empty());
     }
 
     /// Security keys cross to the keeper as `node=descriptor` pairs, and
@@ -1780,7 +1780,7 @@ mod tests {
         let mut config = crate::api_auth::tests::owner_config(None);
         config.egress.grants = vec![String::from("api.example.com:443")];
         config.vault.grants = vec![VaultGrant {
-            action: hatchling_core::VaultAction::Fetch,
+            action: hatchling_core::VaultAction::Store,
             name: "token".parse().unwrap(),
         }];
         config.channel_accounts = vec![crate::ChannelAccountSpec {
@@ -1984,7 +1984,7 @@ mod tests {
         config.vault.root = dir.0.join("vault");
         config.web.search = true;
         config.vault.grants = vec![VaultGrant {
-            action: hatchling_core::VaultAction::Fetch,
+            action: hatchling_core::VaultAction::Store,
             name: "token".parse().unwrap(),
         }];
         let master = MasterKey::generate().unwrap();
@@ -2050,6 +2050,16 @@ mod tests {
         );
     }
 
+    /// What the vault at `root` holds for `token`, as the tests' own read.
+    fn held_token(root: &Path, master: &MasterKey) -> Vec<u8> {
+        hatchling_vault::SealedVault::open(root, master)
+            .unwrap()
+            .fetch(&"token".parse().unwrap())
+            .unwrap()
+            .as_bytes()
+            .to_vec()
+    }
+
     /// A cell's own channel, handed over by the spawner and named with
     /// its cell, uid and grants, is answered vault ops alone, under those
     /// grants: a channel named with none is refused, and anything but a
@@ -2060,8 +2070,9 @@ mod tests {
         let mut config = crate::api_auth::tests::owner_config(None);
         let dir = crate::api_auth::tests::scratch("keeper-cell-channels");
         config.vault.root = dir.0.join("vault");
+        let root = config.vault.root.clone();
         config.vault.grants = vec![VaultGrant {
-            action: hatchling_core::VaultAction::Fetch,
+            action: hatchling_core::VaultAction::Store,
             name: "token".parse().unwrap(),
         }];
         let master = MasterKey::generate().unwrap();
@@ -2080,8 +2091,9 @@ mod tests {
             released: BTreeSet::new(),
             browsers: BTreeMap::new(),
         }));
-        let fetch = SessionRequest::Vault(VaultOp::Fetch {
+        let store = SessionRequest::Vault(VaultOp::Store {
             name: String::from("token"),
+            secret_b64: hatchling_core::SecretB64::encode(b"t2"),
         });
         let (spawners, keepers) = UnixStream::pair().unwrap();
         let taking = std::thread::spawn({
@@ -2103,26 +2115,27 @@ mod tests {
                 .unwrap()
                 .map(|reply| serde_json::from_slice::<SessionResponse>(&reply).unwrap())
         };
-        let fetching = serde_json::to_vec(&fetch).unwrap();
-        let granted = hand(&["fetch:token"]);
-        let Some(SessionResponse::Vault(VaultResult::Fetched { secret_b64 })) =
-            ask(&granted, &fetching)
-        else {
-            unreachable!("the granted fetch wasn't answered with the secret");
-        };
-        assert_eq!(secret_b64.decode().unwrap().as_slice(), b"t");
+        let storing = serde_json::to_vec(&store).unwrap();
         let ungranted = hand(&[]);
         assert!(matches!(
-            ask(&ungranted, &fetching),
+            ask(&ungranted, &storing),
             Some(SessionResponse::Vault(VaultResult::Denied))
         ));
+        assert_eq!(held_token(&root, &master), b"t", "a denied store wrote");
+        let granted = hand(&["store:token"]);
+        assert!(matches!(
+            ask(&granted, &storing),
+            Some(SessionResponse::Vault(VaultResult::Stored))
+        ));
+        assert_eq!(held_token(&root, &master), b"t2", "the store didn't land");
         assert!(
             ask(&ungranted, b"{}").is_none(),
             "a request that isn't a vault op"
         );
         // Read strictly (WO-027), even in a field the op doesn't use.
-        let strict = hand(&["fetch:token"]);
-        let loose = br#"{"kind":"vault","op":"fetch","name":"token","note":1.5}"#;
+        let strict = hand(&["store:token"]);
+        let loose =
+            br#"{"kind":"vault","op":"store","name":"token","secret_b64":"dA==","note":1.5}"#;
         assert!(ask(&strict, loose).is_none(), "an inexact number, answered");
         // A cell that leaves ends its channel quietly.
         let (gone, left) = UnixStream::pair().unwrap();
@@ -2135,7 +2148,7 @@ mod tests {
         };
         assert!(serve_cell(&left, &kept, &named).is_ok());
         let mut guard = kept.lock().unwrap();
-        let op = VaultOp::Fetch {
+        let op = VaultOp::Remove {
             name: String::from("token"),
         };
         assert!(cell_op_result(&mut guard, &op, "", 7, &[]).is_err());
@@ -2147,8 +2160,8 @@ mod tests {
         );
         // The granted channel is still answered after the spawner's ended.
         assert!(matches!(
-            ask(&granted, &fetching),
-            Some(SessionResponse::Vault(VaultResult::Fetched { .. }))
+            ask(&granted, &storing),
+            Some(SessionResponse::Vault(VaultResult::Stored))
         ));
     }
 
@@ -2162,7 +2175,7 @@ mod tests {
         let dir = crate::api_auth::tests::scratch("keeper-session-denied");
         config.vault.root = dir.0.join("vault");
         config.vault.grants = vec![VaultGrant {
-            action: hatchling_core::VaultAction::Fetch,
+            action: hatchling_core::VaultAction::Store,
             name: "token".parse().unwrap(),
         }];
         let master = MasterKey::generate().unwrap();
@@ -2175,15 +2188,85 @@ mod tests {
             .unwrap();
         let (ours, _theirs) = UnixStream::pair().unwrap();
         let keeper = Keeper::over(ours).unwrap();
-        let op = VaultOp::Fetch {
+        let op = VaultOp::Store {
             name: String::from("token"),
+            secret_b64: hatchling_core::SecretB64::encode(b"t2"),
         };
         let cell: CellId = "run-1".parse().unwrap();
         let through = |keeper: Option<&Keeper>| {
             crate::secrets::vault_op_through(keeper, &config.vault, &master, &op, &cell, 7).unwrap()
         };
+        let held = || held_token(&config.vault.root, &master);
         assert_eq!(through(Some(&keeper)), VaultResult::Denied);
-        assert!(matches!(through(None), VaultResult::Fetched { .. }));
+        assert_eq!(held(), b"t", "the broker answered the keeper's op");
+        assert_eq!(through(None), VaultResult::Stored);
+        assert_eq!(held(), b"t2");
+    }
+
+    /// A config parses with no fetch grant, but the keeper holds if one
+    /// ever gets through: a fetch a hand-built config and the cell's
+    /// channel both grant, for a stored secret, is denied, the secret
+    /// doesn't come back, and nothing is recorded as released.
+    #[test]
+    fn a_granted_fetch_is_denied_on_the_keepers_path() {
+        let mut config = crate::api_auth::tests::owner_config(None);
+        let dir = crate::api_auth::tests::scratch("keeper-no-fetch");
+        config.vault.root = dir.0.join("vault");
+        config.vault.grants = vec![VaultGrant {
+            action: hatchling_core::VaultAction::Fetch,
+            name: "token".parse().unwrap(),
+        }];
+        let master = MasterKey::generate().unwrap();
+        hatchling_vault::SealedVault::open(&config.vault.root, &master)
+            .unwrap()
+            .store(
+                &"token".parse().unwrap(),
+                &Secret::new(b"s3cret-value".to_vec()).unwrap(),
+            )
+            .unwrap();
+        let fetch = VaultOp::Fetch {
+            name: String::from("token"),
+        };
+        assert_eq!(releases_to_cell(&config.vault, &fetch), None);
+        let keys = StoreKeys::unwrap(&master, &[(Store::SECRETS, &config.vault.root)]).unwrap();
+        let kept = Mutex::new(Kept {
+            releases: Releases::of(&config, BTreeSet::new()),
+            config,
+            keys,
+            released: BTreeSet::new(),
+            browsers: BTreeMap::new(),
+        });
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        ours.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let named = CellChannel {
+            cell: String::from("run-1"),
+            uid: 7,
+            grants: vec![String::from("fetch:token")],
+            profile: None,
+        };
+        let request = serde_json::to_vec(&SessionRequest::Vault(fetch)).unwrap();
+        let served = std::thread::scope(|scope| {
+            let serving = scope.spawn(|| serve_cell(&theirs, &kept, &named));
+            write_frame(&ours, &request).unwrap();
+            let reply = read_frame_or_eof(&ours).unwrap().unwrap();
+            let encoded = hatchling_core::SecretB64::encode(b"s3cret-value");
+            let shown = String::from_utf8(reply.clone()).unwrap();
+            assert!(
+                !shown.contains(encoded.as_str()) && !shown.contains("s3cret-value"),
+                "{shown}"
+            );
+            assert_eq!(
+                serde_json::from_slice::<SessionResponse>(&reply).unwrap(),
+                SessionResponse::Vault(VaultResult::Denied)
+            );
+            drop(ours);
+            serving.join().unwrap()
+        });
+        assert!(served.is_ok(), "ends when the cell goes");
+        let kept = kept.into_inner().unwrap();
+        assert!(kept.released.is_empty(), "a refused fetch released a name");
+        assert!(read_released(&kept.config, &kept.keys).unwrap().is_empty());
     }
 
     /// On the broker's channel, the keeper answers the broker as before:
@@ -2633,8 +2716,8 @@ mod tests {
 
     /// A release is recorded, sealed in the secrets store, before the cell
     /// has it, once; the record reads back; a scan answers with the scan
-    /// set's values, for a gate alone; only a granted fetch or store
-    /// releases anything.
+    /// set's values, for a gate alone; only a granted store releases
+    /// anything.
     #[test]
     fn a_release_is_recorded_and_a_gate_scans_for_it() {
         let mut config = crate::api_auth::tests::owner_config(None);
@@ -2642,7 +2725,7 @@ mod tests {
         config.vault.root = dir.0.join("vault");
         config.vault.grants = vec![
             VaultGrant {
-                action: hatchling_core::VaultAction::Fetch,
+                action: hatchling_core::VaultAction::Store,
                 name: "token".parse().unwrap(),
             },
             VaultGrant {
@@ -2658,21 +2741,22 @@ mod tests {
                 &Secret::new(b"t".to_vec()).unwrap(),
             )
             .unwrap();
-        let fetch = |name: &str| VaultOp::Fetch {
+        let store = |name: &str| VaultOp::Store {
             name: name.to_owned(),
+            secret_b64: hatchling_core::SecretB64::encode(b"t"),
         };
         assert_eq!(
-            releases_to_cell(&config.vault, &fetch("token")).as_deref(),
+            releases_to_cell(&config.vault, &store("token")).as_deref(),
             Some("token")
         );
-        assert_eq!(releases_to_cell(&config.vault, &fetch("other")), None);
+        assert_eq!(releases_to_cell(&config.vault, &store("other")), None);
         let remove = VaultOp::Remove {
             name: String::from("old"),
         };
         assert_eq!(releases_to_cell(&config.vault, &remove), None);
         // A session that doesn't hold the grant releases nothing.
         assert_eq!(
-            releases_to_cell(&held_by(&config.vault, &[]), &fetch("token")),
+            releases_to_cell(&held_by(&config.vault, &[]), &store("token")),
             None
         );
         let keys = StoreKeys::unwrap(&master, &[(Store::SECRETS, &config.vault.root)]).unwrap();

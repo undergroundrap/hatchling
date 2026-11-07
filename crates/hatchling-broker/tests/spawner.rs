@@ -222,7 +222,7 @@ fn the_real_spawner_hands_an_agent_cells_vault_channel_to_the_keeper() -> Result
     let config = common::broker_config(&socket, uid)?;
     let mut cell = common::cell_config(&socket, uid)?;
     cell.connected = true;
-    cell.vault_grants = Some(vec![String::from("fetch:token")]);
+    cell.vault_grants = Some(vec![String::from("store:token")]);
     let (process, connection) = spawner.agent_cell(&cell)?;
     connection
         .set_read_timeout(Some(Duration::from_secs(10)))
@@ -234,7 +234,7 @@ fn the_real_spawner_hands_an_agent_cells_vault_channel_to_the_keeper() -> Result
     let expected = serde_json::json!({
         "cell": cell.cell_id,
         "uid": cell.uid_base,
-        "grants": ["fetch:token"],
+        "grants": ["store:token"],
     });
     if naming != expected {
         return Err(format!("named {naming}, not {expected}"));

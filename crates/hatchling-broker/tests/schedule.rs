@@ -72,7 +72,7 @@ fn config(name: &str, scheduler: bool) -> Config {
             key_file: VaultConfig::default_key_file(&vault_root),
             root: vault_root,
             grants: vec![VaultGrant {
-                action: VaultAction::Fetch,
+                action: VaultAction::Store,
                 name: "app-token".parse().unwrap(),
             }],
         },
@@ -337,7 +337,7 @@ fn the_creator_holds_exactly_the_broker_s_grants() {
         held_grants(&config),
         BTreeSet::from([
             ScheduleGrant::Vault {
-                action: String::from("fetch"),
+                action: String::from("store"),
                 name: String::from("app-token"),
             },
             egress(),

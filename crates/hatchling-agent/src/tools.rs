@@ -1806,6 +1806,35 @@ mod tests {
         UnixStream::pair().expect("test socket pair")
     }
 
+    /// A broker stand-in: answers one request with `reply`.
+    fn answer_once(reply: hatchling_core::SkillResult) -> UnixStream {
+        use hatchling_core::framing::{read_frame, write_frame};
+        let (agent, broker) = socket_pair();
+        // Bounded both ways: a broken client (one that never sends, or
+        // waits for a reply that never comes) fails instead of hanging.
+        bounded(&agent);
+        bounded(&broker);
+        std::thread::spawn(move || {
+            if read_frame(&broker).is_ok() {
+                let response = hatchling_core::SessionResponse::Skill(reply);
+                if let Ok(bytes) = serde_json::to_vec(&response) {
+                    let _ = write_frame(&broker, &bytes);
+                }
+            }
+        });
+        agent
+    }
+
+    fn bounded(stream: &UnixStream) {
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .expect("read timeout");
+    }
+
+    fn skill_args(capability: &str) -> Value {
+        json!({ "skill": "web@1.0.0", "capability": capability, "input": "in" })
+    }
+
     #[test]
     fn skill_invoke_tool_metadata_is_stable() {
         let (a, _b) = socket_pair();
@@ -2058,7 +2087,7 @@ mod tests {
 
     #[test]
     fn a_spawn_spends_from_the_runs_own_ledger_and_hands_the_child_its_model() {
-        let (agent, broker) = scripted(vec![spawned(3, &["vault:fetch:k", "egress:m:443"])]);
+        let (agent, broker) = scripted(vec![spawned(3, &["vault:store:k", "egress:m:443"])]);
         let ledger = Arc::new(StepLedger::new(10));
         let children = Children::default();
         let tool = SpawnSubagentTool::new(
@@ -2068,13 +2097,13 @@ mod tests {
             Some(grant("egress:m:443")),
         );
         let output = tool
-            .execute(json!({"task": "summarize", "budget": 3, "capabilities": ["vault:fetch:k"]}))
+            .execute(json!({"task": "summarize", "budget": 3, "capabilities": ["vault:store:k"]}))
             .unwrap();
         assert!(
             matches!(&output, ToolOutput::Ok(value) if *value == json!({
                 "child": "run-1",
                 "budget": 3,
-                "capabilities": ["vault:fetch:k", "egress:m:443"],
+                "capabilities": ["vault:store:k", "egress:m:443"],
                 "brief_hash": "h",
             })),
             "{output:?}"
@@ -2084,7 +2113,7 @@ mod tests {
         drop(agent);
         assert_eq!(
             broker.join().unwrap(),
-            [spawn_request(3, &["vault:fetch:k", "egress:m:443"])]
+            [spawn_request(3, &["vault:store:k", "egress:m:443"])]
         );
         // The model grant is not added twice.
         let (agent, broker) = scripted(vec![spawned(1, &["egress:m:443"])]);

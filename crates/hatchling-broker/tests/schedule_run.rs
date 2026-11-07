@@ -45,7 +45,7 @@ use hatchling_core::{
 };
 use hatchling_scheduler::{Dispatcher, Launcher, Run, RunRequest, Store, TickReport, Timestamp};
 use hatchling_space::{PeerPin, Principal, SessionPin};
-use hatchling_vault::MasterKey;
+use hatchling_vault::{MasterKey, SealedVault, Secret};
 
 /// How long a test waits for a real run to finish.
 const RUN_DEADLINE: Duration = Duration::from_secs(60);
@@ -80,7 +80,7 @@ fn config(base: &Path, vault_grants: &[&str]) -> Config {
             grants: vault_grants
                 .iter()
                 .map(|name| VaultGrant {
-                    action: VaultAction::Fetch,
+                    action: VaultAction::Store,
                     name: name.parse().unwrap(),
                 })
                 .collect(),
@@ -119,7 +119,7 @@ fn ts(rfc3339: &str) -> Timestamp {
 
 fn vault(name: &str) -> ScheduleGrant {
     ScheduleGrant::Vault {
-        action: String::from("fetch"),
+        action: String::from("store"),
         name: name.to_owned(),
     }
 }
@@ -221,7 +221,7 @@ fn a_scheduled_run_executes_in_its_own_cell_with_exactly_its_grants() {
     let id = every_minute(
         &created_under,
         &key,
-        "vault:app-token vault:old-token channel:local schedule model-reasoning",
+        "vault-store:app-token vault-store:old-token channel:local schedule model-reasoning",
         vec![vault("app-token"), vault("old-token"), send()],
         "2026-09-21T12:00:30Z",
     );
@@ -260,8 +260,8 @@ fn a_scheduled_run_executes_in_its_own_cell_with_exactly_its_grants() {
         "fds=0,1,2,c",
         "sock=absent",
         "stdin=not-socket",
-        "vault:app-token=Vault(NotFound)",
-        "vault:old-token=Vault(Denied)",
+        "vault-store:app-token=Vault(Stored)",
+        "vault-store:old-token=Vault(Denied)",
         "channel:local=Channel(NoMessage)",
         "schedule=Schedule(Denied)",
         "model-reasoning=disabled",
@@ -274,6 +274,69 @@ fn a_scheduled_run_executes_in_its_own_cell_with_exactly_its_grants() {
     assert!(
         run_dirs(&fire_under.scheduler.run_root()).is_empty(),
         "the run dir is gone"
+    );
+}
+
+/// A schedule stored while a fetch could be granted still names one. A
+/// config parses with no fetch grant, so this one is made by hand, and
+/// the grant reaches the run: nothing revokes it. The run asks for the
+/// stored secret and is denied, and nothing of it comes back.
+#[test]
+fn a_stored_schedule_naming_a_fetch_is_denied_at_run_time() {
+    if !guard_cell_available().unwrap() {
+        return;
+    }
+    let base = base("fetch-denied");
+    let name = "app-token";
+    let mut config = config(&base, &[]);
+    config.vault.grants = vec![VaultGrant {
+        action: VaultAction::Fetch,
+        name: name.parse().unwrap(),
+    }];
+    let key = MasterKey::generate().unwrap();
+    let secret = "s3cret-the-run-never-sees";
+    SealedVault::open(&config.vault.root, &key)
+        .unwrap()
+        .store(
+            &name.parse().unwrap(),
+            &Secret::new(secret.as_bytes().to_vec()).unwrap(),
+        )
+        .unwrap();
+    let fetch = ScheduleGrant::Vault {
+        action: String::from("fetch"),
+        name: name.to_owned(),
+    };
+    let id = every_minute(
+        &config,
+        &key,
+        "vault:app-token",
+        vec![fetch, send()],
+        "2026-09-21T12:00:30Z",
+    );
+    let (hub, received) = hub_with_client();
+    std::thread::scope(|scope| {
+        let launcher = CellLauncher::new(scope, &config, &key, env(&config, RUN_DEADLINE));
+        let mut dispatcher = Dispatcher::default();
+        let now = ts("2026-09-21T12:01:01Z");
+        let all = tick_until(
+            || dispatch_once(&mut dispatcher, &config, &key, Some(&hub), &launcher, now).unwrap(),
+            |all| !all.delivered.is_empty() || !all.parked.is_empty(),
+        );
+        assert!(all.revoked.is_empty(), "{all:?}");
+        assert_eq!(all.delivered, std::slice::from_ref(&id), "{all:?}");
+    });
+    let received = received.lock().unwrap().clone();
+    let report = &received.first().unwrap().text;
+    assert!(
+        report
+            .lines()
+            .any(|seen| seen == "vault:app-token=Vault(Denied)"),
+        "{report}"
+    );
+    let encoded = hatchling_core::SecretB64::encode(secret.as_bytes());
+    assert!(
+        !report.contains(secret) && !report.contains(encoded.as_str()),
+        "{report}"
     );
 }
 
@@ -867,7 +930,7 @@ fn a_space_tasks_run_uses_its_own_space_and_nothing_outside_it() {
     };
     let mine = space_with("water at six");
     let theirs = space_with("not for this run");
-    let task = format!("space:{mine}:plan space:{theirs}:plan space-create vault:app-token");
+    let task = format!("space:{mine}:plan space:{theirs}:plan space-create vault-store:app-token");
     let request = |space: Option<String>| RunRequest {
         schedule_id: String::from("sch-space"),
         task: task.clone(),
@@ -901,7 +964,7 @@ fn a_space_tasks_run_uses_its_own_space_and_nothing_outside_it() {
             format!(r#"space:{mine}:plan=Space(Value {{ value: "water at six" }})"#),
             format!("space:{theirs}:plan=Space(Refused {{ reason: NoSuchSpace }})"),
             String::from("space-create=Space(Refused { reason: NotAllowed })"),
-            String::from("vault:app-token=Vault(Denied)"),
+            String::from("vault-store:app-token=Vault(Denied)"),
         ] {
             assert!(
                 bound.lines().any(|line| line == expected),

@@ -899,6 +899,32 @@ pub(crate) mod tests {
         );
     }
 
+    /// `HATCHLING_VAULT_GRANTS` refuses a fetch, so no owner holds one, and
+    /// an API caller gets no more than the owner: naming it stops startup.
+    #[test]
+    fn a_vault_fetch_grant_stops_startup() {
+        let mut config = owner_config(Some("/srv/hatchling/schedules"));
+        config.vault.grants = vec![crate::VaultGrant {
+            action: hatchling_core::VaultAction::Store,
+            name: "x".parse().unwrap(),
+        }];
+        let held = parse(&config, &[("HATCHLING_API_GRANTS", "vault:store:x")]).unwrap();
+        assert_eq!(
+            held.grants,
+            BTreeSet::from([ScheduleGrant::Vault {
+                action: String::from("store"),
+                name: String::from("x"),
+            }])
+        );
+        assert!(
+            reason(
+                parse(&config, &[("HATCHLING_API_GRANTS", "vault:fetch:x")]),
+                "HATCHLING_API_GRANTS"
+            )
+            .contains("not a grant the owner holds")
+        );
+    }
+
     #[test]
     fn a_network_listener_is_never_the_default_and_never_starts_in_this_build() {
         let config = owner_config(Some("/srv/hatchling/schedules"));
