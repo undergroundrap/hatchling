@@ -21,7 +21,7 @@ use hatchling_core::{
     AgentMessage, BrokerMessage, LogLevel, PeerUid, SessionRequest, SessionResponse, SocketPath,
     VaultAction, VaultOp, VaultResult, encode_secret,
 };
-use hatchling_vault::MasterKey;
+use hatchling_vault::{MasterKey, SealedVault};
 
 fn real_uid() -> u32 {
     rustix::process::getuid().as_raw()
@@ -51,6 +51,19 @@ fn spawn_session(
     name: &str,
     agent_uid: u32,
     grants: Vec<VaultGrant>,
+) -> io::Result<(UnixStream, PathBuf)> {
+    // The broker's single master key, borrowed by the session thread
+    // for every sealed-vault open.
+    let key = MasterKey::generate().map_err(io::Error::other)?;
+    spawn_session_keyed(name, agent_uid, grants, key)
+}
+
+/// As [`spawn_session`], with the master key the broker is given.
+fn spawn_session_keyed(
+    name: &str,
+    agent_uid: u32,
+    grants: Vec<VaultGrant>,
+    key: MasterKey,
 ) -> io::Result<(UnixStream, PathBuf)> {
     let vault_root = std::env::temp_dir().join(format!(
         "hatchling-test-vault-session-{}-{name}",
@@ -89,9 +102,6 @@ fn spawn_session(
         web: hatchling_broker::WebConfig::off(),
         goals: hatchling_broker::GoalsConfig::disabled(),
     };
-    // The broker's single master key, borrowed by the session thread
-    // for every sealed-vault open.
-    let key = MasterKey::generate().map_err(io::Error::other)?;
     let (client, server) = UnixStream::pair()?;
     client.set_read_timeout(Some(Duration::from_secs(5)))?;
     std::thread::spawn(move || {
@@ -178,10 +188,9 @@ fn cleanup(root: &PathBuf) {
 }
 
 #[test]
-fn granted_store_fetch_remove_roundtrip() {
+fn granted_store_remove_roundtrip() {
     let grants = vec![
         grant(VaultAction::Store, "app-token").unwrap(),
-        grant(VaultAction::Fetch, "app-token").unwrap(),
         grant(VaultAction::Remove, "app-token").unwrap(),
     ];
     let (client, root) = spawn_session("roundtrip", real_uid(), grants).unwrap();
@@ -191,19 +200,6 @@ fn granted_store_fetch_remove_roundtrip() {
     assert_eq!(read_result(&client).unwrap(), VaultResult::Stored);
     // The broker really wrote through to the store.
     assert!(root.join("app-token").is_file());
-
-    send_op(
-        &client,
-        &VaultOp::Fetch {
-            name: String::from("app-token"),
-        },
-    )
-    .unwrap();
-    let result = read_result(&client).unwrap();
-    assert!(
-        matches!(result, VaultResult::Fetched { ref secret_b64 } if secret_b64.as_str() == encode_secret(b"super-secret")),
-        "unexpected result: {result:?}"
-    );
 
     send_op(
         &client,
@@ -217,7 +213,7 @@ fn granted_store_fetch_remove_roundtrip() {
 
     send_op(
         &client,
-        &VaultOp::Fetch {
+        &VaultOp::Remove {
             name: String::from("app-token"),
         },
     )
@@ -229,15 +225,20 @@ fn granted_store_fetch_remove_roundtrip() {
 }
 
 #[test]
-fn stored_secret_is_sealed_on_disk_and_fetch_decrypts() {
+fn stored_secret_is_sealed_on_disk_and_the_vault_decrypts_it() {
     // the broker's vault path writes sealed envelopes, never
     // plaintext. Store through the real session pipeline, inspect the
-    // raw file bytes, then prove the broker still decrypts on fetch.
-    let grants = vec![
-        grant(VaultAction::Store, "app-token").unwrap(),
-        grant(VaultAction::Fetch, "app-token").unwrap(),
-    ];
-    let (client, root) = spawn_session("sealed", real_uid(), grants).unwrap();
+    // raw file bytes, then prove the vault still decrypts them.
+    let grants = vec![grant(VaultAction::Store, "app-token").unwrap()];
+    let mut random = Vec::new();
+    std::fs::File::open("/dev/urandom")
+        .unwrap()
+        .take(32)
+        .read_to_end(&mut random)
+        .unwrap();
+    let master: [u8; 32] = random.try_into().unwrap();
+    let key = MasterKey::from_bytes(master);
+    let (client, root) = spawn_session_keyed("sealed", real_uid(), grants, key).unwrap();
     handshake(&client).unwrap();
 
     let secret = b"super-secret-value";
@@ -255,8 +256,32 @@ fn stored_secret_is_sealed_on_disk_and_fetch_decrypts() {
         "plaintext secret bytes on disk"
     );
 
-    // The broker decrypts transparently: the agent's fetch is
-    // unchanged by the at-rest sealing.
+    // A reader with the store's key decrypts it: the at-rest sealing
+    // loses nothing. No cell is such a reader.
+    let reader = MasterKey::from_bytes(master);
+    let vault = SealedVault::open(&root, &reader).unwrap();
+    let read = vault.fetch(&"app-token".parse().unwrap()).unwrap();
+    assert_eq!(read.as_bytes(), secret);
+
+    drop(client);
+    cleanup(&root);
+}
+
+#[test]
+fn a_granted_fetch_of_a_stored_secret_is_denied_and_returns_nothing() {
+    // A config parses with no fetch grant, so this one is made by hand:
+    // the session must hold if one ever gets through.
+    let grants = vec![
+        grant(VaultAction::Store, "app-token").unwrap(),
+        grant(VaultAction::Fetch, "app-token").unwrap(),
+    ];
+    let (client, root) = spawn_session("no-fetch", real_uid(), grants).unwrap();
+    handshake(&client).unwrap();
+
+    let secret = b"super-secret-value";
+    send_op(&client, &store_op("app-token", secret)).unwrap();
+    assert_eq!(read_result(&client).unwrap(), VaultResult::Stored);
+
     send_op(
         &client,
         &VaultOp::Fetch {
@@ -264,11 +289,42 @@ fn stored_secret_is_sealed_on_disk_and_fetch_decrypts() {
         },
     )
     .unwrap();
-    let result = read_result(&client).unwrap();
+    let frame = read_frame(&client).unwrap();
+    let shown = String::from_utf8_lossy(&frame);
     assert!(
-        matches!(result, VaultResult::Fetched { ref secret_b64 } if secret_b64.as_str() == encode_secret(secret)),
-        "unexpected result: {result:?}"
+        !shown.contains("super-secret-value") && !shown.contains(&encode_secret(secret)),
+        "{shown}"
     );
+    assert_eq!(
+        serde_json::from_slice::<SessionResponse>(&frame).unwrap(),
+        SessionResponse::Vault(VaultResult::Denied)
+    );
+
+    // The session survives the denial: a granted op still works.
+    send_op(&client, &store_op("app-token", b"next")).unwrap();
+    assert_eq!(read_result(&client).unwrap(), VaultResult::Stored);
+
+    drop(client);
+    cleanup(&root);
+}
+
+#[test]
+fn a_granted_fetch_is_denied_before_touching_the_vault() {
+    // Refused for what it is, before any grant is read: the vault isn't
+    // opened for it, so its root isn't even created.
+    let grants = vec![grant(VaultAction::Fetch, "app-token").unwrap()];
+    let (client, root) = spawn_session("no-fetch-open", real_uid(), grants).unwrap();
+    handshake(&client).unwrap();
+
+    send_op(
+        &client,
+        &VaultOp::Fetch {
+            name: String::from("app-token"),
+        },
+    )
+    .unwrap();
+    assert_eq!(read_result(&client).unwrap(), VaultResult::Denied);
+    assert!(!root.exists(), "a refused fetch opened the vault");
 
     drop(client);
     cleanup(&root);
@@ -276,9 +332,9 @@ fn stored_secret_is_sealed_on_disk_and_fetch_decrypts() {
 
 #[test]
 fn ungranted_op_is_denied_before_touching_the_vault() {
-    // Only fetch is granted: the store must be denied, and the denial
+    // Only remove is granted: the store must be denied, and the denial
     // must happen before any filesystem touch — no file may appear.
-    let grants = vec![grant(VaultAction::Fetch, "app-token").unwrap()];
+    let grants = vec![grant(VaultAction::Remove, "app-token").unwrap()];
     let (client, root) = spawn_session("denied", real_uid(), grants).unwrap();
     handshake(&client).unwrap();
 
@@ -296,7 +352,7 @@ fn ungranted_op_is_denied_before_touching_the_vault() {
     // check distinguishes "no permission" from "no such secret".
     send_op(
         &client,
-        &VaultOp::Fetch {
+        &VaultOp::Remove {
             name: String::from("app-token"),
         },
     )
@@ -307,7 +363,7 @@ fn ungranted_op_is_denied_before_touching_the_vault() {
     send_op(
         &client,
         &VaultOp::Remove {
-            name: String::from("app-token"),
+            name: String::from("other-token"),
         },
     )
     .unwrap();
@@ -321,7 +377,7 @@ fn ungranted_op_is_denied_before_touching_the_vault() {
 fn invalid_name_is_denied_and_session_survives() {
     let grants = vec![
         grant(VaultAction::Store, "app-token").unwrap(),
-        grant(VaultAction::Fetch, "app-token").unwrap(),
+        grant(VaultAction::Remove, "app-token").unwrap(),
     ];
     let (client, root) = spawn_session("bad-name", real_uid(), grants).unwrap();
     handshake(&client).unwrap();
@@ -330,7 +386,7 @@ fn invalid_name_is_denied_and_session_survives() {
     // error, and the session stays up.
     send_op(
         &client,
-        &VaultOp::Fetch {
+        &VaultOp::Remove {
             name: String::from("../escape"),
         },
     )
@@ -347,7 +403,7 @@ fn invalid_name_is_denied_and_session_survives() {
 
 #[test]
 fn unknown_op_tag_closes_session() {
-    let grants = vec![grant(VaultAction::Fetch, "app-token").unwrap()];
+    let grants = vec![grant(VaultAction::Store, "app-token").unwrap()];
     let (mut client, root) = spawn_session("unknown-op", real_uid(), grants).unwrap();
     handshake(&client).unwrap();
 
@@ -381,10 +437,7 @@ fn malformed_base64_store_closes_session() {
 
 #[test]
 fn oversize_secret_gets_opaque_error_and_session_survives() {
-    let grants = vec![
-        grant(VaultAction::Store, "app-token").unwrap(),
-        grant(VaultAction::Fetch, "app-token").unwrap(),
-    ];
+    let grants = vec![grant(VaultAction::Store, "app-token").unwrap()];
     let (client, root) = spawn_session("oversize", real_uid(), grants).unwrap();
     handshake(&client).unwrap();
 

@@ -4354,7 +4354,7 @@ mod tests {
         let mut config = web_config("browser-secret");
         config.vault.root = root.clone();
         config.vault.grants = vec![crate::VaultGrant {
-            action: VaultAction::Fetch,
+            action: VaultAction::Store,
             name: "token".parse().unwrap(),
         }];
         let keys = MasterKey::generate().unwrap();

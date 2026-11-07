@@ -26,6 +26,8 @@ What Hatchling really does on a fresh install, one row at a time.
 | Make a backup | ✅ | |
 | Restore a backup | ⬜ | |
 | Distro sealed from Windows | ⬜ | Tested by setup run, not yet by a person |
+| A stranger's fresh install, end to end | ⬜ | Due before 0.8.0 |
+| The full vault flow: unlock, add a key and a site password, the agent uses both, lock, unlock, both still work | ❌ | Needs a way to add them and the browser on |
 
 ## Talking to it
 
@@ -88,6 +90,13 @@ What Hatchling really does on a fresh install, one row at a time.
 | Paired devices | 🚧 | In the broker, with no client |
 | Notifications | ❌ | |
 | Wallet and payments | ❌ | Waits for a confirmation rail in the browser |
+
+## Open findings
+
+| Finding | Status |
+|---|---|
+| The harness relay sends requests to the AI vendor with no scan for held secrets | Open, due before 0.8.0 |
+| The Keep sign-in form takes a password in the web app, which should never touch a secret | Open. Only shown once the browser is set up |
 
 ## Private threat models
 

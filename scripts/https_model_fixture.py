@@ -12,38 +12,13 @@ import time
 
 
 def canary_seen(request, body, canary):
-    """What a model request shows of the canary, once the agent fetched it:
-    redacted after a fetch that succeeded, plain if it leaked, or neither."""
+    """What a model request shows of a secret in the vault: a tool to read
+    it with, the secret itself, or neither."""
     if canary.encode('ascii') in body:
         return 'plain'
-    shown = ' '.join(str(message.get('content') or '') for message in request.get('messages', []))
-    fetched = 'tool="vault_fetch" status="ok"' in shown
-    return 'fetched-redacted' if fetched and '[redacted secret]' in shown else 'not-fetched'
-
-
-def canary_turn(request, body, args, canary, handler):
-    """The agent's turn, steered to fetch the canary once: answered here
-    with the tool call, then, once its result came back, recorded and left
-    to the stand-in's answer. Whether this turn was answered here."""
-    if request.get('tool_choice') == 'required':
-        return False
-    shown = ' '.join(str(message.get('content') or '') for message in request.get('messages', []))
-    if 'tool="vault_fetch"' in shown:
-        args.canary_seen.write_text(canary_seen(request, body, canary))
-        return False
-    if not any(tool.get('function', {}).get('name') == 'vault_fetch' for tool in request.get('tools') or []):
-        return False
-    message = {'role': 'assistant', 'content': None, 'tool_calls': [{
-        'id': 'call-canary', 'type': 'function',
-        'function': {'name': 'vault_fetch', 'arguments': json.dumps({'name': args.vault_canary})},
-    }]}
-    reply = json.dumps({'choices': [{'index': 0, 'message': message, 'finish_reason': 'tool_calls'}]}).encode()
-    handler.send_response(200)
-    handler.send_header('Content-Type', 'application/json')
-    handler.send_header('Content-Length', str(len(reply)))
-    handler.end_headers()
-    handler.wfile.write(reply)
-    return True
+    if any(tool.get('function', {}).get('name') == 'vault_fetch' for tool in request.get('tools') or []):
+        return 'offered'
+    return 'absent'
 
 
 def main():
@@ -53,7 +28,6 @@ def main():
     parser.add_argument('--port', type=int, required=True)
     # A vault secret the agent is asked to fetch once (WO-031), and where
     # what the model was then shown of it is recorded.
-    parser.add_argument('--vault-canary')
     parser.add_argument('--canary-file', type=Path)
     parser.add_argument('--canary-seen', type=Path)
     args = parser.parse_args()
@@ -98,8 +72,10 @@ def main():
             if 'response_format' in json.loads(body):
                 self.send_error(400, 'Unexpected response_format')
                 return
-            if args.vault_canary and canary_turn(json.loads(body), body, args, canary, self):
-                return
+            if canary:
+                seen = canary_seen(json.loads(body), body, canary)
+                if seen != 'absent' or not args.canary_seen.exists():
+                    args.canary_seen.write_text(seen)
             self.rfile = io.BytesIO(body)
             super().do_POST()
 

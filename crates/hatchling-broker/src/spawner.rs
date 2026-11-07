@@ -1996,7 +1996,7 @@ sleep 30 </dev/null >/dev/null 2>&1 &
         let named = crate::keeper::CellChannel {
             cell: String::from("run-1"),
             uid: 7,
-            grants: vec![String::from("fetch:token")],
+            grants: vec![String::from("store:token")],
             profile: None,
         };
         let (connection, cells_connection) = UnixStream::pair().unwrap();
@@ -2063,12 +2063,12 @@ sleep 30 </dev/null >/dev/null 2>&1 &
         assert!(spawner.hands_vaults());
         let mut granted = vault;
         granted.grants = vec![crate::VaultGrant {
-            action: hatchling_core::VaultAction::Fetch,
+            action: hatchling_core::VaultAction::Store,
             name: "token".parse().unwrap(),
         }];
         assert_eq!(
             spawner.vault_grants(&granted),
-            Some(vec![String::from("fetch:token")])
+            Some(vec![String::from("store:token")])
         );
     }
 
@@ -2078,7 +2078,7 @@ sleep 30 </dev/null >/dev/null 2>&1 &
     #[test]
     fn a_vault_channel_is_named_with_its_grants_or_its_profile() {
         let mut cell = CellConfig::skill("named").unwrap();
-        cell.vault_grants = Some(vec![String::from("fetch:token")]);
+        cell.vault_grants = Some(vec![String::from("store:token")]);
         assert_eq!(vault_named(&cell), None, "not connected");
         cell.connected = true;
         let named = |grants: &[&str], profile: Option<&str>| crate::keeper::CellChannel {
@@ -2087,7 +2087,7 @@ sleep 30 </dev/null >/dev/null 2>&1 &
             grants: grants.iter().map(|grant| (*grant).to_owned()).collect(),
             profile: profile.map(String::from),
         };
-        assert_eq!(vault_named(&cell), Some(named(&["fetch:token"], None)));
+        assert_eq!(vault_named(&cell), Some(named(&["store:token"], None)));
         cell.vault_grants = None;
         assert_eq!(vault_named(&cell), None, "neither grants nor a profile");
         cell.sign_ins_for = Some(String::from("profile-1"));

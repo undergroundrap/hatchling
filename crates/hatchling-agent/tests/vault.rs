@@ -4,7 +4,7 @@
 //! broker pipeline ([`serve_connection`](hatchling_broker::serve_connection)):
 //! kernel peer gate, grant mediation, and the session loop. These tests
 //! drive it through the agent's public API only — [`Cell<Ready>`]'s
-//! `vault_store` / `vault_fetch` / `vault_remove` — proving the two
+//! `vault_store` / `vault_remove` — proving the two
 //! halves compose into the mediated credential store the task is
 //! about. The [`Canned`](common::BrokerBehavior::Canned),
 //! [`Raw`](common::BrokerBehavior::Raw), and
@@ -64,7 +64,6 @@ fn vault_roundtrip_through_real_broker() {
         "vault-roundtrip",
         BrokerBehavior::Vault(vec![
             grant(VaultAction::Store, "api-key").unwrap(),
-            grant(VaultAction::Fetch, "api-key").unwrap(),
             grant(VaultAction::Remove, "api-key").unwrap(),
         ]),
     )
@@ -79,20 +78,20 @@ fn vault_roundtrip_through_real_broker() {
             .is_some_and(|root| root.join("api-key").is_file()),
         "expected the secret file on disk"
     );
-    assert_eq!(
-        cell.vault_fetch("api-key").unwrap(),
-        Some(b"super-secret".to_vec())
-    );
-
     cell.vault_remove("api-key").unwrap();
-    assert_eq!(cell.vault_fetch("api-key").unwrap(), None);
+    assert!(
+        broker
+            .vault_root()
+            .is_some_and(|root| !root.join("api-key").exists()),
+        "expected the secret file gone"
+    );
 }
 
 #[test]
 fn vault_store_denied_without_grant() {
     let broker = FixtureBroker::spawn(
         "vault-denied",
-        BrokerBehavior::Vault(vec![grant(VaultAction::Fetch, "api-key").unwrap()]),
+        BrokerBehavior::Vault(vec![grant(VaultAction::Remove, "api-key").unwrap()]),
     )
     .unwrap();
     let cell = ready_cell(&broker).unwrap();
@@ -113,18 +112,6 @@ fn vault_store_denied_without_grant() {
             .is_some_and(|root| !root.join("api-key").exists()),
         "denied store must not create a secret file"
     );
-}
-
-#[test]
-fn vault_fetch_missing_returns_none() {
-    let broker = FixtureBroker::spawn(
-        "vault-fetch-missing",
-        BrokerBehavior::Vault(vec![grant(VaultAction::Fetch, "api-key").unwrap()]),
-    )
-    .unwrap();
-    let cell = ready_cell(&broker).unwrap();
-
-    assert_eq!(cell.vault_fetch("api-key").unwrap(), None);
 }
 
 #[test]
@@ -239,7 +226,7 @@ fn vault_garbage_reply_is_protocol_violation() {
     .unwrap();
     let cell = ready_cell(&broker).unwrap();
 
-    let err = cell.vault_fetch("api-key").unwrap_err();
+    let err = cell.vault_store("api-key", b"x").unwrap_err();
     assert!(
         matches!(err, Error::VaultProtocol { .. }),
         "expected VaultProtocol, got {err:?}"
@@ -251,7 +238,7 @@ fn vault_mid_request_hangup_is_io_error() {
     let broker = FixtureBroker::spawn("vault-hangup", BrokerBehavior::Hangup).unwrap();
     let cell = ready_cell(&broker).unwrap();
 
-    let err = cell.vault_fetch("api-key").unwrap_err();
+    let err = cell.vault_store("api-key", b"x").unwrap_err();
     assert!(
         matches!(err, Error::VaultIo { .. }),
         "expected VaultIo, got {err:?}"

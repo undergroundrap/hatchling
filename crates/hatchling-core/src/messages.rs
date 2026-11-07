@@ -83,7 +83,8 @@ pub enum VaultOp {
         #[cfg_attr(feature = "schema", schemars(with = "String"))]
         secret_b64: crate::SecretB64,
     },
-    /// Fetches the secret stored under `name`.
+    /// Asks for the secret stored under `name`. The broker refuses it
+    /// whatever a grant says: no cell reads a secret.
     #[serde(rename = "fetch")]
     Fetch {
         /// Validated [`SecretName`](crate::SecretName), as a string.
@@ -120,11 +121,10 @@ impl VaultOp {
 
 /// The broker's reply to one [`VaultOp`].
 ///
-/// Replies are per-operation and carry no more than the op asked for: a
-/// fetch returns one secret, never the store. Failures that would leak
-/// internals (filesystem errors, oversize values) collapse to the opaque
-/// [`VaultError`](VaultResult::VaultError): the agent learns that the op
-/// failed, not why.
+/// Replies are per-operation and carry no more than the op asked for.
+/// Failures that would leak internals (filesystem errors, oversize
+/// values) collapse to the opaque [`VaultError`](VaultResult::VaultError):
+/// the agent learns that the op failed, not why.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "r")]
@@ -132,7 +132,8 @@ pub enum VaultResult {
     /// The secret was stored.
     #[serde(rename = "stored")]
     Stored,
-    /// The requested secret, base64-encoded. Exactly one secret.
+    /// The requested secret, base64-encoded. Exactly one secret. The
+    /// broker no longer sends this: it stays so a peer can name it.
     #[serde(rename = "fetched")]
     Fetched {
         /// Base64-encoded secret bytes.
@@ -1052,7 +1053,8 @@ pub enum ScheduleRefusal {
 pub enum VaultAction {
     /// Store (create or replace) a secret.
     Store,
-    /// Fetch one named secret.
+    /// Fetch one named secret. Refused at startup and at run time: no
+    /// cell reads a secret.
     Fetch,
     /// Remove one named secret.
     Remove,

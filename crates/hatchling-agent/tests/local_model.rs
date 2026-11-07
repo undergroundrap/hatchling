@@ -160,22 +160,12 @@ fn text_reply(text: &str) -> String {
     json!({"choices": [{"message": {"role": "assistant", "content": text}}]}).to_string()
 }
 
-/// The fetch's result as the model must see it: the fetch succeeded,
-/// and the secret is redacted.
-fn redacted_fetch() -> String {
-    hatchling_prompt::wrap_tool_result(
-        "vault_fetch",
-        true,
-        &json!({"name": "api-key", "secret": hatchling_model::REDACTED}),
-    )
-}
-
 fn probe_reply() -> String {
     tool_call_reply(PROBE_TOOL, &json!({"ready": true}))
 }
 
 /// The real broker, with the local endpoint at `port` allowlisted as
-/// keyless and granted, and `api-key` storable and fetchable.
+/// keyless and granted, and `api-key` storable.
 fn local_broker(name: &str, port: u16) -> FixtureBroker {
     let grant = |action, name: &str| hatchling_broker::VaultGrant {
         action,
@@ -186,10 +176,7 @@ fn local_broker(name: &str, port: u16) -> FixtureBroker {
         BrokerBehavior::EgressWithVault {
             allowlist: format!("local-keyless:localhost:{port}"),
             grants: vec![format!("localhost:{port}")],
-            vault: vec![
-                grant(VaultAction::Store, "api-key"),
-                grant(VaultAction::Fetch, "api-key"),
-            ],
+            vault: vec![grant(VaultAction::Store, "api-key")],
         },
     )
     .unwrap()
@@ -295,8 +282,11 @@ fn a_512_kib_request_and_answer_cross_the_session_whole() {
 fn a_task_runs_end_to_end_against_a_local_endpoint() {
     let server = LocalServer::start(vec![
         probe_reply(),
-        tool_call_reply("vault_fetch", &json!({"name": "api-key"})),
-        text_reply("fetched it"),
+        tool_call_reply(
+            "egress_request",
+            &json!({"surrogate": "bogus", "method": "GET", "destination": "evil.example:443", "path": "/"}),
+        ),
+        text_reply("refused"),
     ]);
     let broker = local_broker("local-e2e", server.port);
     let cell = ready_cell(&broker);
@@ -305,12 +295,12 @@ fn a_task_runs_end_to_end_against_a_local_endpoint() {
     let result = cell
         .run_task(
             hatchling_agent::PromptKind::Worker,
-            String::from("fetch the api key"),
+            String::from("call out"),
             local_provider(server.port),
             5,
         )
         .unwrap();
-    assert_eq!(result.answer, "fetched it");
+    assert_eq!(result.answer, "refused");
     assert_eq!(result.steps, 2);
 
     let seen = server.seen();
@@ -333,8 +323,8 @@ fn a_task_runs_end_to_end_against_a_local_endpoint() {
         // Local is not trusted: the secret never reaches the server.
         assert!(!request.body.to_string().contains("super-secret"));
     }
-    // The second turn carried the tool definitions and the fetch's
-    // result, redacted.
+    // The second turn carried the tool definitions and the broker's
+    // refusal.
     let turn_two = seen.get(2).unwrap();
     let tool_message = turn_two
         .body
@@ -346,9 +336,10 @@ fn a_task_runs_end_to_end_against_a_local_endpoint() {
                 .find(|message| message.get("role") == Some(&json!("tool")))
         })
         .unwrap();
-    assert_eq!(
-        tool_message.get("content").and_then(Value::as_str).unwrap(),
-        redacted_fetch()
+    let refusal = tool_message.get("content").and_then(Value::as_str).unwrap();
+    assert!(
+        refusal.starts_with("<tool_result tool=\"egress_request\" status=\"error\">"),
+        "{refusal}"
     );
     let tools = seen
         .get(1)
@@ -360,12 +351,18 @@ fn a_task_runs_end_to_end_against_a_local_endpoint() {
         .iter()
         .filter_map(|tool| tool.pointer("/function/name").and_then(Value::as_str))
         .collect::<Vec<_>>();
-    assert!(tools.contains(&"vault_fetch"), "{tools:?}");
+    assert!(tools.contains(&"egress_request"), "{tools:?}");
+    assert!(!tools.contains(&"vault_fetch"), "{tools:?}");
 }
 
 #[test]
 fn the_budget_holds_against_a_local_endpoint() {
-    let fetch = || tool_call_reply("vault_fetch", &json!({"name": "api-key"}));
+    let fetch = || {
+        tool_call_reply(
+            "egress_request",
+            &json!({"surrogate": "bogus", "method": "GET", "destination": "evil.example:443", "path": "/"}),
+        )
+    };
     let server = LocalServer::start(vec![probe_reply(), fetch(), fetch(), fetch(), fetch()]);
     let broker = local_broker("local-budget", server.port);
     let cell = ready_cell(&broker);

@@ -74,57 +74,38 @@ fn tool_results(messages: &[Message], index: usize) -> Option<&Vec<ToolOutput>> 
 }
 
 #[test]
-fn loop_vault_fetch_success_and_denial_feed_back() {
+fn a_model_has_no_tool_that_reads_a_secret() {
     let broker = FixtureBroker::spawn(
-        "loop-vault",
-        BrokerBehavior::Vault(vec![
-            grant(VaultAction::Store, "api-key").unwrap(),
-            grant(VaultAction::Fetch, "api-key").unwrap(),
-        ]),
+        "loop-no-fetch",
+        BrokerBehavior::Vault(vec![grant(VaultAction::Store, "api-key").unwrap()]),
     )
     .unwrap();
     let cell = ready_cell(&broker).unwrap();
     cell.vault_store("api-key", b"super-secret").unwrap();
-
-    let model = FakeModel::new(vec![
-        ModelAction::ToolCalls(vec![ToolCall {
-            name: String::from("vault_fetch"),
-            arguments: json!({ "name": "api-key" }),
-        }]),
-        ModelAction::ToolCalls(vec![ToolCall {
-            name: String::from("vault_fetch"),
-            arguments: json!({ "name": "other-key" }),
-        }]),
-        ModelAction::Text(String::from("one worked, one denied")),
-    ]);
-    let result = cell
+    let model = FakeModel::new(
+        (0..=hatchling_loop::CONTRACT_SLIPS)
+            .map(|_| {
+                ModelAction::ToolCalls(vec![ToolCall {
+                    name: String::from("vault_fetch"),
+                    arguments: json!({ "name": "api-key" }),
+                }])
+            })
+            .collect(),
+    );
+    let err = cell
         .run_loop(
             hatchling_agent::PromptKind::Chat,
             &model,
-            String::from("fetch two secrets"),
+            String::from("read the api key"),
             LoopBudget { max_steps: 10 },
         )
-        .unwrap();
-    assert_eq!(result.answer, "one worked, one denied");
-    assert_eq!(result.steps, 3);
-
-    // Turn 2's history: the granted fetch succeeded.
-    let seen = model.seen_histories();
-    assert_eq!(seen.len(), 3);
-    let turn2 = seen.get(1).expect("model should have a second turn");
-    let results2 = tool_results(turn2, 2).expect("expected ToolUse at index 2");
+        .expect_err("there is no such tool");
     assert!(
-        matches!(results2.first(), Some(ToolOutput::Ok(_))),
-        "granted fetch must succeed, got {results2:?}"
+        matches!(err, hatchling_loop::Error::UnknownTool(_)),
+        "expected UnknownTool, got {err:?}"
     );
-    // Turn 3's history: the denied fetch fed back as a tool error, not
-    // a loop crash.
-    let turn3 = seen.get(2).expect("model should have a third turn");
-    let results3 = tool_results(turn3, 3).expect("expected ToolUse at index 3");
-    assert!(
-        matches!(results3.first(), Some(ToolOutput::Err(_))),
-        "denied fetch must feed back as an error, got {results3:?}"
-    );
+    let seen = format!("{:?}", model.seen_histories());
+    assert!(!seen.contains("super-secret"), "{seen}");
 }
 
 #[test]
@@ -180,7 +161,7 @@ fn loop_unknown_tool_from_model_stops_fail_closed() {
     // even when the registry is the agent's real built-in set.
     let broker = FixtureBroker::spawn(
         "loop-unknown-tool",
-        BrokerBehavior::Vault(vec![grant(VaultAction::Fetch, "api-key").unwrap()]),
+        BrokerBehavior::Vault(vec![grant(VaultAction::Store, "api-key").unwrap()]),
     )
     .unwrap();
     let cell = ready_cell(&broker).unwrap();
