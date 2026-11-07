@@ -2,14 +2,21 @@
 // page shows, and the elements it can be acted on through. The elements
 // are kept in this world's own global, which the page's scripts can't
 // see, for the actions that follow. Bounded here, and again by the
-// controller. A password field's value is never read.
+// controller. A password field's value is never read. Anything cut, a
+// label too, sets `truncated`: hiding a value shortens a field, so a later
+// pass can't tell a label was cut from its length alone.
 (() => {
   const MAX_TEXT = 12288;
   const MAX_ELEMENTS = 150;
   const MAX_LABEL = 120;
+  let cut = false;
   const clip = (value, max) => {
     const text = String(value || "").replace(/\s+/g, " ").trim();
-    return text.length > max ? text.slice(0, max) : text;
+    if (text.length > max) {
+      cut = true;
+      return text.slice(0, max);
+    }
+    return text;
   };
   const visible = (element) => {
     if (element.getClientRects().length === 0) {
@@ -92,14 +99,17 @@
   const kept = found.slice(0, MAX_ELEMENTS);
   globalThis.__hatchling = kept;
   const text = document.body ? document.body.innerText : "";
+  const url = clip(location.href, MAX_LABEL);
+  const title = clip(document.title, MAX_LABEL);
+  const elements = kept.map((element, id) => {
+    const role = roleOf(element);
+    return { id, role, name: nameOf(element, role), link: realLink(element) };
+  });
   return {
-    url: clip(location.href, MAX_LABEL),
-    title: clip(document.title, MAX_LABEL),
+    url,
+    title,
     text: text.length > MAX_TEXT ? text.slice(0, MAX_TEXT) : text,
-    elements: kept.map((element, id) => {
-      const role = roleOf(element);
-      return { id, role, name: nameOf(element, role), link: realLink(element) };
-    }),
-    truncated: found.length > MAX_ELEMENTS || text.length > MAX_TEXT,
+    elements,
+    truncated: cut || found.length > MAX_ELEMENTS || text.length > MAX_TEXT,
   };
 })()

@@ -2276,7 +2276,7 @@ export type PageSnapshot = {
      */
     readonly title: string;
     /**
-     * Whether the text or the elements were cut to fit.
+     * Whether anything was cut to fit: the text, the elements, or a label.
      */
     readonly truncated: boolean;
     /**

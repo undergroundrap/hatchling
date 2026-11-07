@@ -110,7 +110,7 @@ What Hatchling really does on a fresh install, one row at a time.
 | A session waiting for the owner when a hit lands elsewhere in its tree waits on, and an approved read can still go | Open: its text was already checked clean, and the wait is at most two minutes |
 | A click on a real link can do more than follow it, by the page's script or something laid over it | Open: only a real link goes unasked in a signed-in browser, but a page can still act when one is clicked |
 | A page could steer a fill: between the origin check and the typing, a script can move the focus | Open: confirmed for another field of the page, not confirmed for a frame of another origin. Designed out with broker-mediated fill in the browser phase |
-| Hiding what a page read is an exact match | Open: a value a page changes first isn't caught, part of one a clip cut through can show, and what you type under Take control isn't hidden |
+| Hiding what a page read is an exact match | Open: a value a page changes first isn't caught, up to 3 characters of one a clip cut through can show, and what you type under Take control isn't hidden |
 | The Keep sign-in form took a password in the web app | Fixed in 0.8.0: the form is gone, and sign-ins are added at the terminal |
 | Signing in by Take control sends what you type through the app as keystrokes | Open, for the keeper's own window |
 | Memory, goals, feed posts, decisions, ideas, run specs, harness temp files, and the usage and activity logs aren't sealed at rest | Open. Continuity doesn't ship onto these |
