@@ -54,7 +54,7 @@ What Hatchling really does on a fresh install, one row at a time.
 | What | Status | Notes |
 |---|---|---|
 | Subagents | ⬜ | |
-| A computer of its own | ❌ | Next: 0.9 |
+| A computer of its own | ❌ | Next: 0.9. v1 has no network or installs, and workspace programs don't execute |
 | Read files you attach | ❌ | Next: 0.9 |
 | Give you files, in chat and the Library | ❌ | Next: 0.9 |
 | Documents: markdown and plain HTML | 🚧 | Builders aren't installed, and no file reaches you |
@@ -68,6 +68,18 @@ What Hatchling really does on a fresh install, one row at a time.
 | Web artifacts | ❌ | |
 | Images, video, audio | ❌ | |
 
+## Proof and trust
+
+| What | Status | Notes |
+|---|---|---|
+| Where each memory came from (provenance) | ❌ | Memory items hold no source yet |
+| Taught-it-yesterday: three facts survive to a fresh session | ⬜ | |
+| Receipts for every action | ⬜ | Coverage not yet measured |
+| Scheduled runs all accounted for | ⬜ | |
+| Per-model conformance, published | ❌ | |
+| Backup and restore drill | ⬜ | |
+| Export and import drill | ❌ | Import memory isn't there |
+
 ## Your accounts
 
 | What | Status | Notes |
@@ -76,3 +88,12 @@ What Hatchling really does on a fresh install, one row at a time.
 | Paired devices | 🚧 | In the broker, with no client |
 | Notifications | ❌ | |
 | Wallet and payments | ❌ | Waits for a confirmation rail in the browser |
+
+## Private threat models
+
+Some threat models stay private while they describe open gaps, and each is published, sanitised, with the release that closes them. They're counted here so none is forgotten.
+
+| Model | Open questions |
+|---|---|
+| The agent's computer | 1 |
+| Memory | Not yet written |
