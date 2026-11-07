@@ -96,6 +96,6 @@ export function messageActions(ctx: AppContext, message: DeepReadonly<Message>):
         })();
     });
     const meta = messageMetaMenu(formatMessageTimestamp(message.time, ctx.state.mode === 'live'));
-    root.append(picker, reply, copy, meta);
+    root.append(...(ctx.state.mode === 'live' ? [] : [picker]), reply, copy, meta);
     return root;
 }

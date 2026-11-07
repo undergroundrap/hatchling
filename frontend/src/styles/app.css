@@ -173,6 +173,7 @@ hr { border: 0; border-top: 1px solid var(--border); }
 .composer > .menu, .composer > .icon-button { align-self: center; }
 .composer textarea { background: none; border: 0; padding: 6px 0; resize: none; flex: 1; min-height: 34px; max-height: 150px; border-radius: 0; font-size: calc(15px * var(--ui-scale, 1)); line-height: calc(23px * var(--ui-scale, 1)); }
 .composer textarea:focus { outline: 0; }
+.composer > textarea:first-child { padding-left: 10px; }
 .composer:focus-within { outline: 1px solid var(--border-strong); }
 .composer .icon-button { width: 30px; height: 32px; color: var(--muted-on-card); }
 .composer .menu-popover { top: auto; bottom: 48px; left: 0; right: auto; }
