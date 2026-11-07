@@ -79,6 +79,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 ### Fixed
 
 - **A stopped run's cells die at once.** When a run is caught with a saved secret, every cell of it is killed there and then, its subagents' too, and each cell's own channel to the vault keeper goes with it. Before, that could wait for the scheduler's next tick, up to a minute, and the broker's long-lived agent cell lived on.
+- **A secret a coding tool hands back ends the run.** A brief could ask a harness to put a saved secret together, pass every check, and read the answer from what was withheld. Now a secret in a patch, a message, a question or a file's name ends an agent's run, and you're told a coding tool handed one back. A harness you run yourself still only withholds it.
 - **A run that exits as it's caught is still stopped.** A cell that sent one last request and exited at once could be taken for one that finished, its output delivered and you never told.
 - **The browser starts under a strict umask.** Its snapshot's permissions came from the umask, which could shut a cell out of it.
 - **A locked Hatchling says it's locked.** The app used to look broken after a restart. It now says the vault is locked, and how to unlock it.

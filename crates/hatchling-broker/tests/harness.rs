@@ -340,13 +340,15 @@ fn a_harness_doesnt_start_when_the_secrets_cant_be_read() -> Result<(), String> 
 struct Goes {
     left: std::cell::Cell<u32>,
     checked: std::cell::Cell<u32>,
+    hit: hatchling_broker::held_check::HeldHit,
 }
 
 impl Goes {
-    const fn after(left: u32) -> Self {
+    fn after(left: u32) -> Self {
         Self {
             left: std::cell::Cell::new(left),
             checked: std::cell::Cell::new(0),
+            hit: hatchling_broker::held_check::HeldHit::default(),
         }
     }
 }
@@ -365,12 +367,17 @@ impl hatchling_broker::harness::HarnessVault for Goes {
         self.left.set(left - 1);
         Ok(false)
     }
+
+    fn held_hit(&self) -> Option<&hatchling_broker::held_check::HeldHit> {
+        Some(&self.hit)
+    }
 }
 
 /// The vault that goes while a run is under way: the run started, so its
 /// work tree is lost to the owner, but what it wrote isn't delivered
 /// unchecked: not its patch, and not its report. Three checks let it start:
-/// the task, the file's name, the file. The fourth is the patch's.
+/// the task, the file's name, the file. The fourth is the patch's. A check
+/// that can't be answered found nothing, so it ends no agent's run.
 #[test]
 fn what_a_run_wrote_goes_nowhere_when_the_vault_goes_during_it() -> Result<(), String> {
     if !guard_cell_available()? {
@@ -383,6 +390,7 @@ fn what_a_run_wrote_goes_nowhere_when_the_vault_goes_during_it() -> Result<(), S
     let refused = invoke_with(&skills, "claude-code@1", &input, &goes);
     assert_eq!(refused, Err(format!("{:?}", SkillResult::SkillError)));
     assert!(goes.checked.get() > 3, "it never got to the patch");
+    assert_eq!(goes.hit.seen(), None, "nothing was found");
     assert!(
         std::fs::read_dir(deployment.dir.join("workspace"))
             .map_err(|e| e.to_string())?

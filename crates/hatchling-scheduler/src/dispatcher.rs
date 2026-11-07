@@ -279,8 +279,8 @@ pub enum Ending {
     Stopped(SentTo),
 }
 
-/// Where a run tried to send a secret Hatchling keeps: all the person is
-/// told of it, never which secret.
+/// Where a run's secret was caught going: all the person is told of it,
+/// never which secret.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SentTo {
@@ -292,6 +292,9 @@ pub enum SentTo {
     Page,
     /// A coding harness, in its brief.
     Harness,
+    /// Back from a coding harness: not sent to anyone yet, but the run put
+    /// it together, and would have read it.
+    HarnessReturn,
 }
 
 /// Starts scheduled runs: the bounded agent runs the broker spawns.

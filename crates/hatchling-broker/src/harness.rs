@@ -61,9 +61,12 @@
 //!   whether or not a cell has had it. With a keeper running, the keeper
 //!   answers, and the broker never sees one ([`crate::held_check`]). A
 //!   check that can't be answered stops the run, or the delivery. A secret
-//!   in the brief is the agent's own text, so it ends the agent's run too
-//!   ([`HarnessVault::brief_held`]); one in a project's file is a mistake
-//!   in the project, and is only refused.
+//!   in the brief is the agent's own text, and a brief can ask the harness
+//!   to put one together, so one in the brief or in anything handed back
+//!   ends an agent's run ([`HarnessVault::held_hit`]): the files it was
+//!   given were checked clean, so what comes back is the run's own doing.
+//!   One in a project's file is a mistake in the project, and is only
+//!   refused. An owner invoking a harness themselves is only refused too.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -1494,6 +1497,9 @@ impl Harnesses {
                         );
                         report.patch_withheld = true;
                     }
+                    if held == Ok(true) {
+                        end_run(keys, SentTo::HarnessReturn);
+                    }
                 }
             }
             Err(reason) => {
@@ -2750,13 +2756,25 @@ impl Report {
             if keys.contains(text.as_bytes())? {
                 WITHHELD.clone_into(text);
             }
+    /// A secret found here ends an agent's run, as soon as it's found, so a
+    /// later text that can't be checked doesn't lose it. A refused report's
+    /// reason can only be quoting the brief, no cell having run, so that
+    /// one is what the agent tried to give the harness, not what it handed
+    /// back.
+    ///
             Ok::<(), String>(())
         };
         withheld(&mut self.harness_said.message)?;
         self.harness_said
+        let from = if self.outcome == HarnessOutcome::Refused {
+            SentTo::Harness
+        } else {
+            SentTo::HarnessReturn
+        };
             .question
             .iter_mut()
             .try_for_each(withheld)?;
+                end_run(keys, from);
         self.reason.iter_mut().try_for_each(withheld)?;
         for names in [
             &mut self.files_changed,
@@ -5239,6 +5257,10 @@ mod tests {
         }
 
         fn contains(&self, text: &[u8]) -> Result<bool, String> {
+        assert!(
+            !told.contains("hidden"),
+            "the report still holds what was withheld"
+        );
             if text == self.0.as_bytes() {
                 Err(String::from("the keeper went"))
             } else {

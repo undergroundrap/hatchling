@@ -38,12 +38,15 @@ vault keeper reads a cell's vault channel the same way.
 
 **A held secret ends the session.** When the agent's own text is found to
 hold a secret the broker keeps (a page's address, a search, text typed into
-a page, a harness's brief), that op is answered with its usual refusal, and
-the broker closes the connection: no client has to obey anything, and no
-new op or result is involved. The next op finds the session gone. A hit in a
-subagent's session ends its parent's and its siblings' at their next op, and
-the owner is told by the broker, once. A check that can't be answered is
-refused and ends nothing, and so does a project's file holding a secret.
+a page, a harness's brief), or a harness it started hands one back (in its
+patch, its message, its question or a file's name), the broker kills every
+cell of the run's tree, its session's and its children's, and each cell's
+vault channel goes with it. That op is answered with its usual refusal, if
+its cell is still there to read it, and the broker closes the connection: no
+client has to obey anything, and no new op or result is involved. The next op
+finds the session gone. The owner is told by the broker, once. A check that
+can't be answered is refused and ends nothing, and so does a project's file
+holding a secret. An owner invoking a harness themselves is only refused.
 
 ## Op families
 
