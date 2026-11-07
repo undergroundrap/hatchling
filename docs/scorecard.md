@@ -2,6 +2,8 @@
 
 What Hatchling really does on a fresh install, one row at a time.
 
+**Parity means the core agent:** talk, remember, schedule, tools, its own computer, files, skills, the browser with its rail, and the vault. Surfaces and catalogue breadth, such as phone apps, messaging platforms, a large connector library, media and payments, aren't parity criteria unless a phase lists them. Breadth is a roadmap, not a debt.
+
 **The rule:** a row is ✅ only when a person did it on a fresh install. Code, protocol names and passing tests don't count, however complete they look. This page is updated for every release, and a release that changes a row has to prove it again.
 
 | Mark | Means |
