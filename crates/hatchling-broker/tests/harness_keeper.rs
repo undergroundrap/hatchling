@@ -35,13 +35,14 @@ use base64::Engine as _;
 use common::{TestDir, broker_config, guard_cell_available, harness_fixture_binary, test_dir};
 use hatchling_broker::browser_credentials::{SignIn, SignInAnswer, SignInRequest};
 use hatchling_broker::harness::{HARNESS_CAPABILITY, vault_keys_through};
-use hatchling_broker::held_check::{CHECK_PURPOSE, MAX_CHECK_BYTES, MIN_SCAN_BYTES};
+use hatchling_broker::held_check::{CHECK_PURPOSE, HeldHit, MAX_CHECK_BYTES, MIN_SCAN_BYTES};
 use hatchling_broker::keeper::Keeper;
 use hatchling_broker::vault_access::{Access, CHECK_ACTION, Caller, Outcome, read_log};
 use hatchling_broker::{Config, Harnesses, SkillRuntime, Skills, handle_skill_op};
 use hatchling_core::framing::{read_frame, read_frame_or_eof, write_frame};
 use hatchling_core::ui::Concealed;
 use hatchling_core::{CellId, MAX_FRAME_BYTES, SkillOp, SkillResult};
+use hatchling_scheduler::SentTo;
 use hatchling_skill::CodeHash;
 use hatchling_vault::StoreKeys;
 use serde_json::{Value, json};
@@ -403,6 +404,69 @@ fn a_secret_in_the_task_is_found_as_it_would_be_sent() -> Result<(), String> {
     install.log_is_clean()
 }
 
+/// A brief is the agent's own text, so a secret in any of it is a guess
+/// that ends the agent's run, and the refusal says the same as ever. A
+/// project's file holding one is a mistake in the project: refused, and
+/// the run goes on. So is a brief with nothing held, which fails only where
+/// its cell would start, and a run that isn't an agent's: the owner, in the
+/// app, ends nothing.
+#[test]
+fn only_the_agents_own_text_ends_its_run() -> Result<(), String> {
+    let install = Install::new("hk-hit")?;
+    let skills = install.no_cell()?;
+    let cell: CellId = "test".parse().map_err(|_| "cell id")?;
+    let run = |input: &Value, hit: Option<&HeldHit>| -> Result<Value, String> {
+        let op = SkillOp::Invoke {
+            skill: String::from("claude-code@1"),
+            capability: "code".parse().map_err(|_| "capability")?,
+            input: input.to_string(),
+        };
+        let keys = vault_keys_through(Some(&install.keeper), &install.config, &install.keys);
+        let keys = match hit {
+            Some(hit) => keys.in_run(hit),
+            None => keys,
+        };
+        match handle_skill_op(&skills, &op, &cell, &keys) {
+            SkillResult::Output { output } => {
+                serde_json::from_str(&output).map_err(|e| e.to_string())
+            }
+            refused @ (SkillResult::UnknownSkill
+            | SkillResult::CapabilityDenied
+            | SkillResult::SkillError) => Err(format!("{refused:?}")),
+        }
+    };
+    let brief = |task: &str| json!({ "task": task, "root": "project", "paths": ["src/lib.rs"] });
+
+    install.file("settings.env", &format!("KEY={EGRESS_KEY}\n"))?;
+    let hit = HeldHit::default();
+    let holding_file = json!({ "task": "Go.", "root": "project", "paths": ["settings.env"] });
+    let report = run(&holding_file, Some(&hit))?;
+    refused_before_its_cell(&report, "settings.env", EGRESS_KEY);
+    assert_eq!(hit.seen(), None, "a project's file is no guess");
+
+    let report = run(&brief("Tidy up."), Some(&hit))?;
+    assert_eq!(report["outcome"], "failed", "{report}");
+    assert_eq!(hit.seen(), None, "a clean brief ends nothing");
+
+    let report = run(&brief(&format!("Use {VENDOR_KEY}.")), None)?;
+    refused_before_its_cell(&report, "the task holds a secret", VENDOR_KEY);
+
+    let briefs = [
+        brief(&format!("Use {EGRESS_KEY}.")),
+        json!({ "task": "Go.", "root": "project", "paths": ["src/lib.rs"], "answer": SHORT_KEY }),
+        json!({ "task": "Go.", "root": "project", "paths": [ACCOUNT_KEY] }),
+    ];
+    for input in briefs {
+        let hit = HeldHit::default();
+        let report = run(&input, Some(&hit))?;
+        refused_before_its_cell(&report, "the task holds a secret", SHORT_KEY);
+        assert_eq!(hit.seen(), Some(SentTo::Harness), "{input}");
+    }
+    let found = install.checks()?;
+    assert!(found.iter().any(|check| check.found == Some(true)));
+    install.log_is_clean()
+}
+
 /// What a real run hands back goes through the real keeper too: a patch
 /// and a message holding a key no cell was given are withheld, and with
 /// nothing held both come through.
@@ -685,6 +749,17 @@ fn a_keeper_that_cannot_answer_stops_the_run() -> Result<(), String> {
         matches!(stopped, Err(SkillResult::SkillError)),
         "{stopped:?}"
     );
+    // No answer isn't a hit: nothing says the brief held one.
+    let hit = HeldHit::default();
+    let op = SkillOp::Invoke {
+        skill: String::from("claude-code@1"),
+        capability: "code".parse().map_err(|_| "capability")?,
+        input: input.to_string(),
+    };
+    let cell: CellId = "test".parse().map_err(|_| "cell id")?;
+    let keys = vault_keys_through(Some(&keeper), &install.config, &install.keys).in_run(&hit);
+    let _ = handle_skill_op(&skills, &op, &cell, &keys);
+    assert_eq!(hit.seen(), None);
     let again = format!("{:?}", keeper.contains(b"a clean text"));
     assert!(again.contains("lost"), "{again}");
     Ok(())

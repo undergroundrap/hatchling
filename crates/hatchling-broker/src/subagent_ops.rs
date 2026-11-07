@@ -27,6 +27,9 @@
 //!   when there is one. When the parent's session ends, every child
 //!   still running is killed and recorded the same way: no child
 //!   outlives its parent.
+//! - **A held secret ends the tree.** Parent and children share one
+//!   [`HeldHit`]: an agent in any of them caught sending a secret out ends
+//!   them all, each refused at its next op.
 
 use std::collections::BTreeMap;
 use std::io::Write as _;
@@ -50,6 +53,7 @@ use hatchling_scheduler::{RunRequest, Timestamp};
 use hatchling_vault::OpensStores;
 
 use crate::cell::ScheduledRun;
+use crate::held_check::HeldHit;
 use crate::run_launcher::{CellRun, RunEnd, captured};
 use crate::{CellLauncher, Config, RunEnv, SchedulerConfig, held_grants, scoped_config};
 
@@ -245,6 +249,13 @@ pub(crate) fn outcome_of(end: RunEnd, budget: u32, secrets: &SecretSet) -> (u32,
             budget,
             failed(ChildFailure::Timeout, "the child ran past its time bound"),
         ),
+        RunEnd::Stopped(_) => (
+            budget,
+            failed(
+                ChildFailure::CellFailed,
+                "the run was stopped: an agent in it tried to send a held secret",
+            ),
+        ),
         RunEnd::Failed(_) => (
             budget,
             failed(
@@ -332,6 +343,8 @@ pub struct Subagents<'scope, 'env> {
     ledger: Ledger,
     children: BTreeMap<String, Child<'scope>>,
     activity: Activity,
+    /// What ends the parent's run, which its children share.
+    hit: HeldHit,
 }
 
 impl std::fmt::Debug for Subagents<'_, '_> {
@@ -371,7 +384,15 @@ impl<'scope, 'env> Subagents<'scope, 'env> {
                 run_id,
                 sequence: 0,
             },
+            hit: HeldHit::default(),
         }
+    }
+
+    /// These children, in the run `hit` ends.
+    #[must_use]
+    pub fn in_run(mut self, hit: HeldHit) -> Self {
+        self.hit = hit;
+        self
     }
 
     /// The ledger, as it stands.
@@ -436,7 +457,7 @@ impl<'scope, 'env> Subagents<'scope, 'env> {
             tools: Some(crate::run_launcher::run_tools(self.config, capabilities)),
         };
         let config = self.config;
-        let started = launcher.launch_cell("subagent", run, |token, socket| {
+        let started = launcher.launch_cell("subagent", run, self.hit.clone(), |token, socket| {
             child_config(config, capabilities, token, socket)
         });
         let run = match started {
@@ -837,6 +858,18 @@ mod tests {
                 ChildOutcome::Failed {
                     failure: ChildFailure::Timeout,
                     detail: String::from("the child ran past its time bound"),
+                }
+            )
+        );
+        assert_eq!(
+            failure(RunEnd::Stopped(hatchling_scheduler::SentTo::Website)),
+            (
+                6,
+                ChildOutcome::Failed {
+                    failure: ChildFailure::CellFailed,
+                    detail: String::from(
+                        "the run was stopped: an agent in it tried to send a held secret"
+                    ),
                 }
             )
         );

@@ -27,12 +27,24 @@
 //! **An address is checked as a site reads it** ([`as_read`]): percent
 //! escapes hide a value from a plain look, and the site undoes them. So
 //! the text is the address as written and as decoded once, in one check.
+//!
+//! **A hit ends the run** ([`HeldHit`]). A refusal tells the agent that what
+//! it sent matched, so a tricked agent could find a weak password by trying
+//! it, one refusal at a time. So when the agent's own text is found to hold
+//! one, its run is over: the broker answers that one op, ends the session
+//! and refuses everything after it, however the cell behaves, and the owner
+//! is told once, in Hatchling's own words: what kind of thing was stopped,
+//! never which secret. Each check is in the vault's access log, a hit as
+//! found. A project file holding a secret isn't the agent's guess: a
+//! harness refuses that, and the run goes on.
 
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::sync::{Arc, OnceLock};
 
 use hatchling_artifact::SecretSet;
 use hatchling_core::SecretName;
+use hatchling_scheduler::SentTo;
 use hatchling_vault::{OpensStores, SealedVault};
 use zeroize::Zeroizing;
 
@@ -56,6 +68,26 @@ const _: () = assert!(4 * MAX_WORK_BYTES < MAX_CHECK_BYTES);
 
 /// What a check is recorded as being for.
 pub const CHECK_PURPOSE: &str = "harness-check";
+
+/// Whether a run's tree has ended on a hit, and on what: one flag, shared
+/// by a run's session, its children's sessions and what watches them. The
+/// first hit stays.
+#[derive(Debug, Clone, Default)]
+pub struct HeldHit(Arc<OnceLock<SentTo>>);
+
+impl HeldHit {
+    /// Ends the run: the agent's own text, on its way to `to`, held a
+    /// secret.
+    pub fn record(&self, to: SentTo) {
+        let _ = self.0.set(to);
+    }
+
+    /// Where the hit was on its way to, once there's been one.
+    #[must_use]
+    pub fn seen(&self) -> Option<SentTo> {
+        self.0.get().copied()
+    }
+}
 
 /// Every secret held under `config`: each one in the vault, whoever it's
 /// for, and each sign-in's password. A username isn't one. `keys` must
@@ -243,6 +275,23 @@ mod tests {
         list.iter()
             .map(|value| Zeroizing::new(value.to_vec()))
             .collect()
+    }
+
+    /// A hit stays, the first one, and every clone in a run's tree sees it.
+    #[test]
+    #[allow(
+        clippy::redundant_clone,
+        reason = "clippy 1.85 takes the clone for unused: both ends are, here"
+    )]
+    fn a_hit_is_seen_across_a_tree_and_the_first_stays() {
+        let hit = HeldHit::default();
+        let child = hit.clone();
+        assert_eq!(hit.seen(), None);
+        child.record(SentTo::Search);
+        hit.record(SentTo::Page);
+        assert_eq!(hit.seen(), Some(SentTo::Search));
+        assert_eq!(child.seen(), Some(SentTo::Search));
+        assert_eq!(HeldHit::default().seen(), None, "another run's is its own");
     }
 
     /// An address is the text written, then what a site reads from it. A

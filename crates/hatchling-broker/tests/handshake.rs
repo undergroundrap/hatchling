@@ -296,7 +296,15 @@ fn a_cells_own_connection_serves_that_cell_alone() -> Result<(), String> {
         };
         let served = std::thread::scope(|scope| {
             let served = scope.spawn(|| {
-                hatchling_broker::serve_cell_connection(&cell, &config, &key, &skills, None, None)
+                hatchling_broker::serve_cell_connection(
+                    &cell,
+                    &config,
+                    &key,
+                    &skills,
+                    None,
+                    None,
+                    &hatchling_broker::held_check::HeldHit::default(),
+                )
             });
             send_hello(&agent_end, PROTOCOL_VERSION, named)?;
             let reply = read_broker_message(&agent_end)?;

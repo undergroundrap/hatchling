@@ -36,6 +36,15 @@ A request that names a field its op doesn't have ends the session the same
 way, at any depth: an op, a build input, a schedule's time or a grant. The
 vault keeper reads a cell's vault channel the same way.
 
+**A held secret ends the session.** When the agent's own text is found to
+hold a secret the broker keeps (a page's address, a search, text typed into
+a page, a harness's brief), that op is answered with its usual refusal, and
+the broker closes the connection: no client has to obey anything, and no
+new op or result is involved. The next op finds the session gone. A hit in a
+subagent's session ends its parent's and its siblings' at their next op, and
+the owner is told by the broker, once. A check that can't be answered is
+refused and ends nothing, and so does a project's file holding a secret.
+
 ## Op families
 
 | Family | Request | Response | Since |

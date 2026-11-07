@@ -60,7 +60,10 @@
 //!   after: [`HarnessVault::contains`], which covers every secret held,
 //!   whether or not a cell has had it. With a keeper running, the keeper
 //!   answers, and the broker never sees one ([`crate::held_check`]). A
-//!   check that can't be answered stops the run, or the delivery.
+//!   check that can't be answered stops the run, or the delivery. A secret
+//!   in the brief is the agent's own text, so it ends the agent's run too
+//!   ([`HarnessVault::brief_held`]); one in a project's file is a mistake
+//!   in the project, and is only refused.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -215,6 +218,11 @@ pub trait HarnessVault {
     /// Why that couldn't be told, which is treated as holding one: the run
     /// doesn't start, and nothing it wrote is delivered.
     fn contains(&self, text: &[u8]) -> Result<bool, String>;
+
+    /// The brief, the agent's own text, held a secret
+    /// ([`crate::held_check::HeldHit`]). Nothing to end when it wasn't an
+    /// agent's: the owner invoking a harness themselves is only refused.
+    fn brief_held(&self) {}
 }
 
 /// A vault for a run that can't hold anything: a key lookup alone.
@@ -1359,6 +1367,9 @@ impl Harnesses {
         // come in with what it's given, and what it's given goes to its
         // vendor. Refused here: the relay runs where only one key is held.
         if let Err(stopped) = brief.free_of_secrets(keys) {
+            if matches!(stopped, Stopped::Holds(_)) {
+                keys.brief_held();
+            }
             return report.stopped(stopped);
         }
         let code = match binary.verified() {
@@ -1911,6 +1922,7 @@ pub const fn vault_keys_through<'a>(
         config,
         key,
         keeper,
+        run: None,
     }
 }
 
@@ -1919,6 +1931,18 @@ pub struct VaultKeys<'a> {
     config: &'a Config,
     key: &'a dyn OpensStores,
     keeper: Option<&'a crate::keeper::Keeper>,
+    run: Option<&'a crate::held_check::HeldHit>,
+}
+
+impl<'a> VaultKeys<'a> {
+    /// These keys, for an agent's run, which `hit` ends.
+    #[must_use]
+    pub const fn in_run(self, hit: &'a crate::held_check::HeldHit) -> Self {
+        Self {
+            run: Some(hit),
+            ..self
+        }
+    }
 }
 
 impl HarnessVault for VaultKeys<'_> {
@@ -1928,6 +1952,12 @@ impl HarnessVault for VaultKeys<'_> {
 
     fn contains(&self, text: &[u8]) -> Result<bool, String> {
         crate::held_check::check(self.keeper, self.config, self.key, text)
+    }
+
+    fn brief_held(&self) {
+        if let Some(hit) = self.run {
+            hit.record(hatchling_scheduler::SentTo::Harness);
+        }
     }
 }
 

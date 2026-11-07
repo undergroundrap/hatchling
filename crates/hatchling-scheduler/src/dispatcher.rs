@@ -274,6 +274,24 @@ pub enum Ending {
     Exited(i32),
     /// It ran past its time and was stopped.
     TimedOut,
+    /// Hatchling ended it: it tried to send a secret Hatchling keeps, to
+    /// this.
+    Stopped(SentTo),
+}
+
+/// Where a run tried to send a secret Hatchling keeps: all the person is
+/// told of it, never which secret.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SentTo {
+    /// A site: a page's address.
+    Website,
+    /// The search provider.
+    Search,
+    /// A web page, typed in.
+    Page,
+    /// A coding harness, in its brief.
+    Harness,
 }
 
 /// Starts scheduled runs: the bounded agent runs the broker spawns.
@@ -918,7 +936,9 @@ fn undelivered<S, L, D: Delivery>(
         channel: channel.to_owned(),
     };
     let tell = |started: bool, ending: Option<Ending>| {
-        if !services.held.contains(&send) {
+        // A run stopped for a secret is told of whatever it could post: it
+        // isn't the run's words, and the owner has to hear of it.
+        if !services.held.contains(&send) && !matches!(ending, Some(Ending::Stopped(_))) {
             return;
         }
         let notice = FailureNotice {
@@ -1520,6 +1540,44 @@ mod tests {
         assert_eq!(told.0.borrow().len(), 2);
         // A path with no words of its own tells no one, and keeps it.
         assert!(Plain.notify_failure("local", &first).is_err());
+    }
+
+    /// A run stopped for a secret is told even with no way to post left:
+    /// the owner has to hear of that, and it's the delivery's words, not
+    /// the run's.
+    #[test]
+    fn a_stopped_run_is_told_whatever_it_could_send_on() {
+        let held = BTreeSet::new();
+        let authenticated = BTreeSet::new();
+        let store = One::default();
+        let told = Told::default();
+        let telling = Services {
+            store: &store,
+            launcher: &Quick,
+            delivery: &told,
+            held: &held,
+            events: &[],
+            authenticated: &authenticated,
+        };
+        let park = |text: &str, reason: String| Parked {
+            schedule_id: String::from("sch-1"),
+            channel: String::from("local"),
+            text: text.to_owned(),
+            due: 0,
+            reason,
+        };
+        let stopped = Outcome::Failed {
+            reason: String::from("stopped"),
+            ending: Some(Ending::Stopped(SentTo::Harness)),
+        };
+        assert!(undelivered("sch-1", &stopped, "local", None, &telling, &park).is_some());
+        assert_eq!(told.0.borrow().len(), 1, "told, with no send held");
+        let failed = Outcome::Failed {
+            reason: String::from("it broke"),
+            ending: Some(Ending::TimedOut),
+        };
+        assert!(undelivered("sch-1", &failed, "local", None, &telling, &park).is_some());
+        assert_eq!(told.0.borrow().len(), 1, "anything else isn't");
     }
 
     #[test]

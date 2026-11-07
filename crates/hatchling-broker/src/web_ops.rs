@@ -41,12 +41,13 @@ use hatchling_core::{WebHit, WebOp, WebResult};
 use hatchling_egress::TlsClient;
 use hatchling_egress::search::Hit;
 use hatchling_egress::web::{FetchError, Fetched, Origin, WebUrl};
-use hatchling_scheduler::Timestamp;
+use hatchling_scheduler::{SentTo, Timestamp};
 use hatchling_vault::OpensStores;
 
 use crate::Config;
 use crate::approval_board::{Board, SiteAsk, board, refused_as, site_action};
 use crate::approvals::{Refusal, State};
+use crate::held_check::HeldHit;
 
 /// The longest a session with a person there waits for the owner to decide
 /// on a site.
@@ -103,6 +104,8 @@ pub struct WebSession {
     /// The approval board its requests wait on: those it would act on are
     /// withdrawn when it ends.
     board: Option<Arc<Board>>,
+    /// What ends its run when what it sends holds a secret.
+    hit: HeldHit,
 }
 
 impl Drop for WebSession {
@@ -140,6 +143,11 @@ impl WebSession {
         &self.task
     }
 
+    /// Ends the session's run: what it sent to `to` held a secret.
+    pub(crate) fn ended_by(&self, to: SentTo) {
+        self.hit.record(to);
+    }
+
     /// How long the session waits for the owner's decision: a person is
     /// there in a chat, and nobody is in a scheduled run.
     pub(crate) const fn wait(&self) -> Duration {
@@ -174,6 +182,7 @@ impl WebSession {
             searcher,
             found: VecDeque::new(),
             board: Some(board(config)),
+            hit: HeldHit::default(),
         }
     }
 
@@ -190,6 +199,7 @@ impl WebSession {
             searcher: None,
             found: VecDeque::new(),
             board: None,
+            hit: HeldHit::default(),
         }
     }
 
@@ -197,6 +207,13 @@ impl WebSession {
     #[must_use]
     pub fn searching(mut self, searcher: Searcher) -> Self {
         self.searcher = Some(searcher);
+        self
+    }
+
+    /// This session, in the run `hit` ends.
+    #[must_use]
+    pub fn in_run(mut self, hit: HeldHit) -> Self {
+        self.hit = hit;
         self
     }
 
@@ -252,7 +269,14 @@ fn search(config: &Config, keys: &dyn OpensStores, web: &mut WebSession, query: 
     let Some(searcher) = web.searcher.clone() else {
         return WebResult::Off;
     };
-    if let Some(reason) = held_secret_in(config, keys, query.as_bytes(), "search") {
+    if let Some(reason) = held_secret_in(
+        config,
+        keys,
+        web,
+        query.as_bytes(),
+        "search",
+        SentTo::Search,
+    ) {
         return refused(reason);
     }
     let chars = query.chars().count();
@@ -302,24 +326,31 @@ fn bounded_search(
 /// Why `text`, which would leave the machine (a page's address, or a
 /// search), is refused: it holds a secret Hatchling keeps, a cell having
 /// had it or not ([`crate::held_check`]), or nothing can say it doesn't.
-/// `None` when it holds none.
+/// `None` when it holds none. It's `what` the owner would call it, on its
+/// way to `to`.
 ///
 /// A held secret the model has seen, shown on a page or echoed by a
 /// service, or simply guessed, would otherwise leave in an address or a
 /// search: to the site, in its log, or to the search provider. Typed text
-/// is checked the same way (`browser_ops`).
+/// is checked the same way (`browser_ops`). One that holds a secret ends
+/// `web`'s run ([`HeldHit`]); one that can't be checked is only refused.
 ///
 /// One check for each thing sent. Each is a line in the vault's access log.
 pub(crate) fn held_secret_in(
     config: &Config,
     keys: &dyn OpensStores,
+    web: &WebSession,
     text: &[u8],
     what: &str,
+    to: SentTo,
 ) -> Option<String> {
     match crate::held_check::check(crate::keeper::keeper(), config, keys, text) {
-        Ok(true) => Some(format!(
-            "the {what} holds a secret the broker keeps: it isn't sent"
-        )),
+        Ok(true) => {
+            web.ended_by(to);
+            Some(format!(
+                "the {what} holds a secret the broker keeps: it isn't sent"
+            ))
+        }
         Ok(false) => None,
         Err(error) => {
             tracing::error!(%error, what, "the check for held secrets failed: refused");
@@ -334,10 +365,11 @@ pub(crate) fn held_secret_in(
 pub(crate) fn held_secret_in_address(
     config: &Config,
     keys: &dyn OpensStores,
+    web: &WebSession,
     url: &WebUrl,
 ) -> Option<String> {
     let text = crate::held_check::as_read(&url.to_string());
-    held_secret_in(config, keys, &text, "page's address")
+    held_secret_in(config, keys, web, &text, "page's address", SentTo::Website)
 }
 
 /// Reads the page at `url`, which the agent wants for `reason`.
@@ -363,7 +395,7 @@ fn fetch(
     if config.web.refuses(url.origin().host()) {
         return refused(String::from("the operator refuses this site"));
     }
-    if let Some(reason) = held_secret_in_address(config, keys, &url) {
+    if let Some(reason) = held_secret_in_address(config, keys, web, &url) {
         return refused(reason);
     }
     if let Err(answer) = allow(config, keys, web, &url, reason, false) {

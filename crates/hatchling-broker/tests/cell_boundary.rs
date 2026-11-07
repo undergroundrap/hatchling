@@ -287,6 +287,7 @@ fn a_connected_cells_agent_handshakes_over_its_own_connection() -> Result<(), St
         &hatchling_broker::Skills::default(),
         None,
         None,
+        &hatchling_broker::held_check::HeldHit::default(),
     )
     .map_err(|e| format!("serve the cell's session: {e}"))?;
     if socket_path.exists() {
