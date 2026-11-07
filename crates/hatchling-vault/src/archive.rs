@@ -20,7 +20,7 @@
 use std::io::{Read, Write};
 
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
-use chacha20poly1305::{XChaCha20Poly1305, XNonce};
+use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
 use zeroize::Zeroizing;
 
 use crate::error::Error;
@@ -39,15 +39,27 @@ const MAX_KEYRING: usize = 1 << 22;
 /// The longest path taken.
 const MAX_PATH: usize = 4096;
 
-/// One file in a backup.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One file in a backup. Much of what's backed up isn't sealed where it
+/// lives, so its bytes are wiped when dropped, and its `Debug` shows only
+/// how many there are.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Entry {
     /// Where it goes, relative: `<store>/<path>`.
     pub path: String,
     /// Its permission bits.
     pub mode: u32,
     /// Its bytes.
-    pub bytes: Vec<u8>,
+    pub bytes: Zeroizing<Vec<u8>>,
+}
+
+impl std::fmt::Debug for Entry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Entry")
+            .field("path", &self.path)
+            .field("mode", &self.mode)
+            .field("bytes", &self.bytes.len())
+            .finish()
+    }
 }
 
 const fn broken(reason: &'static str) -> Error {
@@ -130,7 +142,8 @@ impl<W: Write> ArchiveWriter<W> {
         }
         Ok(Self {
             out,
-            cipher: XChaCha20Poly1305::new(&(*own).into()),
+            // Borrowed, so the only copy made is the cipher's, which it wipes.
+            cipher: XChaCha20Poly1305::new(Key::from_slice(own.as_slice())),
             index: 0,
             pending: Zeroizing::new(Vec::with_capacity(CHUNK)),
         })
@@ -263,14 +276,13 @@ impl<R: Read> ArchiveReader<R> {
                 )
                 .map_err(|_| broken("this key doesn't open it, or it was changed"))?,
         );
-        let own: [u8; 32] = own
-            .as_slice()
-            .try_into()
-            .map_err(|_| broken("its key is the wrong length"))?;
-        let own = Zeroizing::new(own);
+        if own.len() != 32 {
+            return Err(broken("its key is the wrong length"));
+        }
         Ok(Self {
             input,
-            cipher: XChaCha20Poly1305::new(&(*own).into()),
+            // Borrowed, so the only copy made is the cipher's, which it wipes.
+            cipher: XChaCha20Poly1305::new(Key::from_slice(own.as_slice())),
             index: 0,
             open: Zeroizing::new(Vec::new()),
             at: 0,
@@ -378,15 +390,15 @@ impl<R: Read> ArchiveReader<R> {
         self.must_fill(&mut size)?;
         let size =
             usize::try_from(u64::from_be_bytes(size)).map_err(|_| broken("a file is too big"))?;
-        let mut bytes = Vec::new();
+        let mut bytes = Zeroizing::new(Vec::new());
         let mut left = size;
         // A piece at a time: a size that lies runs out of chunks, rather
         // than asking for the memory.
         while left > 0 {
-            let mut piece = vec![0u8; left.min(CHUNK)];
+            let mut piece = Zeroizing::new(vec![0u8; left.min(CHUNK)]);
             self.must_fill(&mut piece)?;
             left -= piece.len();
-            bytes.extend_from_slice(&piece);
+            bytes = grown(bytes, &piece);
         }
         Ok(Some(Entry {
             path,
@@ -402,6 +414,22 @@ impl<R: Read> ArchiveReader<R> {
             Err(broken("it stops inside a file"))
         }
     }
+}
+
+/// `bytes` with `piece` after them. Growing a buffer in place would leave
+/// the old one, unwiped, for the allocator: a new one is made here, room for
+/// the next pieces in it, and the old one is wiped as it's dropped.
+fn grown(bytes: Zeroizing<Vec<u8>>, piece: &[u8]) -> Zeroizing<Vec<u8>> {
+    let needed = bytes.len().saturating_add(piece.len());
+    let mut bytes = if needed > bytes.capacity() {
+        let mut bigger = Zeroizing::new(Vec::with_capacity(needed.saturating_mul(2)));
+        bigger.extend_from_slice(&bytes);
+        bigger
+    } else {
+        bytes
+    };
+    bytes.extend_from_slice(piece);
+    bytes
 }
 
 /// Whether `path` stays where it's put: relative, with no way up.
@@ -426,8 +454,29 @@ mod tests {
         Entry {
             path: path.to_owned(),
             mode: 0o600,
-            bytes: bytes.to_vec(),
+            bytes: Zeroizing::new(bytes.to_vec()),
         }
+    }
+
+    /// What a file holds never shows in its `Debug`, and its size does.
+    #[test]
+    fn an_entrys_debug_shows_its_size_and_not_its_bytes() {
+        let shown = format!("{:?}", entry("memory/note", b"what the owner said"));
+        assert!(!shown.contains("115, 97, 105, 100"), "the bytes showed");
+        assert!(shown.contains("memory/note") && shown.contains("19"));
+    }
+
+    /// A file put together a piece at a time is the file: across a chunk's
+    /// end and past a buffer's room, each byte in its place.
+    #[test]
+    fn a_big_entry_comes_back_whole() {
+        let key = key();
+        let big: Vec<u8> = (0..CHUNK * 3 + 17)
+            .map(|at| u8::try_from(at % 251).unwrap())
+            .collect();
+        let entries = [entry("a", &big), entry("b", b"after it")];
+        let bytes = written(&key, b"", &entries);
+        assert_eq!(read(&key, &bytes).unwrap().1, entries);
     }
 
     fn written(key: &MasterKey, keyring: &[u8], entries: &[Entry]) -> Vec<u8> {
@@ -467,7 +516,7 @@ mod tests {
             Entry {
                 path: String::from("artifacts/big"),
                 mode: 0o640,
-                bytes: vec![7; CHUNK * 2 + 100],
+                bytes: Zeroizing::new(vec![7; CHUNK * 2 + 100]),
             },
         ];
         let bytes = written(&key, b"the keyring", &entries);
@@ -524,7 +573,7 @@ mod tests {
         let entries = [Entry {
             path: String::from("a"),
             mode: 0o600,
-            bytes: vec![1; CHUNK + 10],
+            bytes: Zeroizing::new(vec![1; CHUNK + 10]),
         }];
         let bytes = written(&key, b"", &entries);
         let edge = 8 + 4 + NONCE + SEALED_KEY + 4 + 1 + NONCE + CHUNK + 16;
@@ -547,7 +596,7 @@ mod tests {
         let entries = [Entry {
             path: String::from("a"),
             mode: 0o600,
-            bytes: vec![1; CHUNK * 3],
+            bytes: Zeroizing::new(vec![1; CHUNK * 3]),
         }];
         let bytes = written(&key, b"", &entries);
         let start = 8 + 4 + NONCE + SEALED_KEY;

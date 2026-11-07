@@ -354,6 +354,22 @@ impl Skills {
     /// Returns [`SkillRunError::Unavailable`] without a runtime or for an
     /// id that `set` does not hold, and every error of [`run_skill`].
     pub fn run(&self, set: &SkillSet, id: &SkillId, input: &str) -> Result<String, SkillRunError> {
+        self.run_in(set, id, input, None)
+    }
+
+    /// [`Self::run`], for an agent's run: `tree` kills the skill's cell on
+    /// a hit, as it does the rest of the run's.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::run`].
+    pub(crate) fn run_in(
+        &self,
+        set: &SkillSet,
+        id: &SkillId,
+        input: &str,
+        tree: Option<&crate::held_check::HeldHit>,
+    ) -> Result<String, SkillRunError> {
         let runtime = self
             .runtime
             .as_ref()
@@ -366,7 +382,7 @@ impl Skills {
             .packages
             .get(id)
             .ok_or(SkillRunError::Unavailable("no package for the skill"))?;
-        run_skill(runtime, skill, package, input)
+        run_skill(&runtime.clone().in_tree(tree), skill, package, input)
     }
 
     /// One poll of the trust-roots file: the state machine in

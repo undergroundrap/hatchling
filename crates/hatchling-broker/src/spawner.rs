@@ -575,6 +575,17 @@ pub fn start(keeper: UnixStream) -> Result<(), Error> {
     })?;
     let spawner = Spawner::start_with(Command::new(program), Some(&keeper))?;
     drop(keeper);
+    install(spawner)
+}
+
+/// Makes `spawner` the one this broker starts its cells through: once, as
+/// [`start`] does, and for a test's own process, which has no broker binary
+/// to start.
+///
+/// # Errors
+///
+/// [`Error::Spawner`] when a spawner is already running.
+pub fn install(spawner: Spawner) -> Result<(), Error> {
     SPAWNER.set(spawner).map_err(|_| Error::Spawner {
         reason: String::from("a spawner is already running"),
     })
@@ -944,6 +955,10 @@ impl Supervised for SpawnedProcess {
     }
 
     fn terminate(&self) -> Result<(), IsolationError> {
+        // Ended: nothing to kill, and the spawner has left this connection.
+        if matches!(self.outcome(), Ok(Some(_))) {
+            return Ok(());
+        }
         let stream = self
             .stream
             .lock()
@@ -1339,7 +1354,7 @@ fn serve_helper(
     let config = match checked {
         Ok(config) => config,
         Err(why) => {
-            tracing::warn!(?helper, %why, "refused a cell spec");
+            log_refused_spec(helper, &why);
             return refuse(format!("the spawner refused the spec: {why}"));
         }
     };
@@ -1436,6 +1451,12 @@ fn serve_helper(
 /// The spawner's end of its channel with the vault keeper, shared by its
 /// connections' threads.
 type Keeper = Arc<Mutex<UnixStream>>;
+
+/// Logs a spec refused for `why`. Escaped: a reason can quote a path the
+/// spec named, and the spawner doesn't take the broker's word for anything.
+fn log_refused_spec(helper: HelperKind, why: &str) {
+    tracing::warn!(?helper, ?why, "refused a cell spec");
+}
 
 /// How `config`'s vault channel is named to the keeper, when it has one:
 /// with its cell, its uid, and its grants, or the profile a browser cell
@@ -2274,6 +2295,15 @@ sleep 30 </dev/null >/dev/null 2>&1 &
                 .to_string()
                 .contains("lost")
         );
+    }
+
+    /// A refused spec's reason can quote a path it named: a newline in one
+    /// forges no line in the log.
+    #[test]
+    fn a_refused_spec_cannot_forge_a_line_in_the_log() {
+        let why = "/a\nFORGED spec allowed isn't a path";
+        let logged = crate::test_log::captured(|| log_refused_spec(HelperKind::AgentRun, why));
+        crate::test_log::assert_no_forged_line(&logged, "FORGED spec allowed");
     }
 
     /// A helper's stdio is three streams: a directory, as the place to

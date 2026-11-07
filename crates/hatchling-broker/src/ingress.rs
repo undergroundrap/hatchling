@@ -15,8 +15,9 @@
 //! - **Mode `0600`** ([`INGRESS_SOCKET_MODE`]), set at bind under the
 //!   listen socket's stale-socket rule ([`bind_owner_socket`]). Never `0666`.
 //! - **A kernel peer gate:** a connection is served only if its
-//!   `SO_PEERCRED` uid is the socket's owner, the broker's own uid, and
-//!   is closed before a byte is read otherwise.
+//!   `SO_PEERCRED` uid is the socket's owner, the broker's owner
+//!   ([`crate::owner::owner`]), and is closed before a byte is read
+//!   otherwise.
 //!   [`open_ingress`] refuses to start the ingress when that uid is the
 //!   agent's, since the gate would then admit the cell.
 //! - **Out of the cell's sight:** config parsing refuses an ingress
@@ -55,9 +56,9 @@ pub struct Ingress {
 
 impl Ingress {
     /// Binds the ingress socket at `socket`, mode
-    /// [`INGRESS_SOCKET_MODE`], and records its owner — the broker's own
-    /// uid — as the only peer it will serve. Every reply its hub delivers
-    /// passes `gate`.
+    /// [`INGRESS_SOCKET_MODE`], and records its owner, the broker's owner,
+    /// as the only peer it will serve. Every reply its hub delivers passes
+    /// `gate`.
     ///
     /// # Errors
     ///
@@ -91,9 +92,7 @@ impl Ingress {
     /// logged and the next one accepted.
     pub fn serve(&self) -> ! {
         loop {
-            if let Err(error) = self.serve_one() {
-                tracing::warn!(%error, "channel ingress connection failed");
-            }
+            log_failure(self.serve_one());
         }
     }
 
@@ -160,6 +159,14 @@ impl Ingress {
     }
 }
 
+/// Logs how a client's connection failed, if it did. Escaped: a protocol
+/// error can quote what the client sent.
+fn log_failure(served: Result<(), Error>) {
+    if let Err(error) = served {
+        tracing::warn!(?error, "channel ingress connection failed");
+    }
+}
+
 /// Writes one event frame to the client.
 fn send_event(writer: &Mutex<UnixStream>, event: &IngressEvent) -> Result<(), Error> {
     let payload = serde_json::to_vec(event).map_err(|e| Error::SessionProtocol {
@@ -187,7 +194,7 @@ pub fn open_ingress(config: &Config, gate: OutputGate) -> Result<Option<Ingress>
         return Err(Error::InvalidConfig {
             key: "HATCHLING_CHANNEL_INGRESS",
             reason: format!(
-                "the ingress serves uid {}, the broker's own, which is also the agent's: \
+                "the ingress serves uid {}, the broker's owner, which is also the agent's: \
                  the cell could inject its own messages; {}",
                 config.agent_uid,
                 crate::cell::OWN_UID_HINT
@@ -233,6 +240,18 @@ mod tests {
             Ingress::bind(&socket, OutputGate::disabled()).unwrap(),
             socket,
         )
+    }
+
+    /// A message has no field serde quotes as it came, so a failure here
+    /// can't carry a raw newline today. The line is escaped all the same: a
+    /// protocol error's words aren't this file's to promise.
+    #[test]
+    fn a_failure_cannot_forge_a_line_in_the_brokers_log() {
+        let failed = Err(Error::SessionProtocol {
+            reason: String::from("x\nFORGED client admitted"),
+        });
+        let logged = crate::test_log::captured(|| log_failure(failed));
+        crate::test_log::assert_no_forged_line(&logged, "FORGED client admitted");
     }
 
     fn client(socket: &SocketPath) -> UnixStream {

@@ -37,8 +37,15 @@ pub const TOKEN_PREFIX: &str = "rail-v1-";
 const TOKEN_BYTES: usize = 32;
 
 /// A broker-minted approval, as handed to whoever approved the message.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// It's what spends the approval, so its `Debug` doesn't show it.
+#[derive(Clone, PartialEq, Eq)]
 pub struct ApprovalToken(String);
+
+impl std::fmt::Debug for ApprovalToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ApprovalToken([redacted])")
+    }
+}
 
 impl ApprovalToken {
     /// The token as the cell will present it.
@@ -197,6 +204,14 @@ mod tests {
     use super::*;
 
     const NOW: u64 = 1_000;
+
+    /// A token spends an approval, so its `Debug` doesn't show it.
+    #[test]
+    fn a_tokens_debug_does_not_show_it() {
+        let token = ApprovalToken(String::from("appr-not-to-be-shown"));
+        let shown = format!("{token:?}");
+        assert_eq!(shown, "ApprovalToken([redacted])");
+    }
 
     #[test]
     fn a_minted_token_approves_exactly_its_message_once() {

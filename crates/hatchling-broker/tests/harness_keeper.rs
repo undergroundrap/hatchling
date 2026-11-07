@@ -246,6 +246,25 @@ impl Install {
         }
     }
 
+    /// `input` run by `skills` for an agent, whose run `hit` ends: the report.
+    fn run_in(&self, skills: &Skills, input: &Value, hit: &HeldHit) -> Result<Value, String> {
+        let op = SkillOp::Invoke {
+            skill: String::from("claude-code@1"),
+            capability: "code".parse().map_err(|_| "capability")?,
+            input: input.to_string(),
+        };
+        let cell: CellId = "test".parse().map_err(|_| "cell id")?;
+        let keys = vault_keys_through(Some(&self.keeper), &self.config, &self.keys).in_run(hit);
+        match handle_skill_op(skills, &op, &cell, &keys) {
+            SkillResult::Output { output } => {
+                serde_json::from_str(&output).map_err(|e| e.to_string())
+            }
+            refused @ (SkillResult::UnknownSkill
+            | SkillResult::CapabilityDenied
+            | SkillResult::SkillError) => Err(format!("{refused:?}")),
+        }
+    }
+
     fn run(&self, skills: &Skills, task: &str, paths: &[&str]) -> Result<Value, String> {
         let input = json!({ "task": task, "root": "project", "paths": paths });
         self.run_with(skills, &self.keeper, &input)?
@@ -510,6 +529,60 @@ fn what_a_run_hands_back_is_checked_by_the_keeper() -> Result<(), String> {
             .is_some_and(|message| message.contains("You are working on a task")),
         "{report}"
     );
+    Ok(())
+}
+
+/// What a run hands back is the run's own doing: the files it was given
+/// were checked clean. So a secret in the patch or in any text of the report
+/// ends an agent's run, in the words that say what happened, whichever it
+/// was found in. An owner's run is only withheld from, as above, and a run
+/// with nothing held goes on.
+#[test]
+fn a_secret_handed_back_ends_an_agents_run() -> Result<(), String> {
+    if !guard_cell_available()? {
+        return Ok(());
+    }
+    let task = "Add a helper.\nSTUB edit src/lib.rs";
+    for (tag, name, value) in [
+        ("hk-end-patch", "patch-text", "edited by the stub harness"),
+        ("hk-end-told", "message-text", "You are working on a task"),
+    ] {
+        let install = Install::holding(tag, &[(name, value)])?;
+        let skills = install.skills(common::spawner())?;
+        let input = json!({ "task": task, "root": "project", "paths": ["src/lib.rs"] });
+        let hit = HeldHit::default();
+        let report = install.run_in(&skills, &input, &hit)?;
+        assert_eq!(report["outcome"], "done", "{name}");
+        assert_eq!(hit.seen(), Some(SentTo::HarnessReturn), "{name}");
+    }
+    let clear = Install::holding("hk-end-clear", &[("unrelated", "held-but-not-in-this-run")])?;
+    let skills = clear.skills(common::spawner())?;
+    let input = json!({ "task": task, "root": "project", "paths": ["src/lib.rs"] });
+    let hit = HeldHit::default();
+    let report = clear.run_in(&skills, &input, &hit)?;
+    assert!(report["patch"].is_string(), "the patch was withheld");
+    assert_eq!(hit.seen(), None, "nothing held, nothing ended");
+    Ok(())
+}
+
+/// A brief that asks for something unconfigured is quoted back, and a brief
+/// holding a key would be quoted with it. Nothing ran: that's the agent's
+/// own text, not a harness's hand-back, and the words must say so.
+#[test]
+fn a_key_quoted_back_from_a_refused_brief_is_the_briefs() -> Result<(), String> {
+    let install = Install::new("hk-quoted")?;
+    let skills = install.no_cell()?;
+    let input = json!({ "task": "Go.", "root": EGRESS_KEY, "paths": ["src/lib.rs"] });
+    let hit = HeldHit::default();
+    let report = install.run_in(&skills, &input, &hit)?;
+    assert_eq!(report["outcome"], "refused", "the brief's refusal");
+    assert!(
+        report["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.starts_with("[withheld")),
+        "what was quoted is withheld"
+    );
+    assert_eq!(hit.seen(), Some(SentTo::Harness));
     Ok(())
 }
 

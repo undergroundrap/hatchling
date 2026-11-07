@@ -293,18 +293,11 @@ fn a_cells_own_connection_serves_that_cell_alone() -> Result<(), String> {
             connection: broker_end,
             cell_id: "cell-01".parse().map_err(|e| format!("cell id: {e}"))?,
             pid: 42,
+            hit: hatchling_broker::held_check::HeldHit::default(),
         };
         let served = std::thread::scope(|scope| {
             let served = scope.spawn(|| {
-                hatchling_broker::serve_cell_connection(
-                    &cell,
-                    &config,
-                    &key,
-                    &skills,
-                    None,
-                    None,
-                    &hatchling_broker::held_check::HeldHit::default(),
-                )
+                hatchling_broker::serve_cell_connection(&cell, &config, &key, &skills, None, None)
             });
             send_hello(&agent_end, PROTOCOL_VERSION, named)?;
             let reply = read_broker_message(&agent_end)?;

@@ -10,11 +10,15 @@
 //! anything got past the gate.
 //!
 //! A hit ends the agent's run ([`HeldHit`]), so that's proved here too: each
-//! way out in turn, the session on a socket pair, and a chat run in a real
-//! cell whose program goes on as if nothing happened.
+//! way out in turn, the session on a socket pair, then a chat run, a
+//! scheduled run, a subagent tree and the broker's own long-lived cell, each
+//! real, through the real spawner, each with a program that goes on as if
+//! nothing happened. So nothing stands in for what a hit has to kill, or for
+//! the cell's own channel to the keeper.
 //!
-//! The keeper a broker asks is one for the whole process, so this is a test
-//! binary of its own, with one install that its tests take in turn.
+//! The keeper and the spawner a broker uses are one each for the whole
+//! process, so this is a test binary of its own, with one install that its
+//! tests take in turn.
 #![allow(
     clippy::significant_drop_tightening,
     reason = "the install's guard is held for the whole test: that's what keeps them in turn"
@@ -44,27 +48,35 @@ use common::{
 use hatchling_broker::browser_credentials::{SignIn, SignInAnswer, SignInRequest};
 use hatchling_broker::browser_ops::{Browser, BrowserSession, Browsers, handle_browser_op};
 use hatchling_broker::browser_proxy::Sites;
+use hatchling_broker::cell::ScheduledRun;
 use hatchling_broker::chat_run::{Chat, Step, stopped_told};
 use hatchling_broker::harness::HARNESS_CAPABILITY;
 use hatchling_broker::held_check::{CHECK_PURPOSE, HeldHit, MAX_CHECK_BYTES};
 use hatchling_broker::keeper::{self, Keeper};
-use hatchling_broker::schedule_ops::HubDelivery;
+use hatchling_broker::schedule_ops::{HubDelivery, handle_schedule_op};
+use hatchling_broker::spawner::Spawner;
 use hatchling_broker::vault_access::{Access, CHECK_ACTION, Caller, Outcome, read_log};
 use hatchling_broker::web_ops::{Fetcher, Searcher, WebSession, handle_web_op};
 use hatchling_broker::{
-    AgentCell, CellLauncher, Config, Harnesses, RunEnv, SkillRuntime, Skills, VaultConfig,
-    serve_cell_connection, serve_connection_with_ingress,
+    AgentCell, CellConfig, CellLauncher, Config, Harnesses, RunEnv, SkillRuntime, Skills,
+    VaultConfig, dispatch_once, serve_cell_connection, serve_connection_with_ingress,
+    spawn_agent_cell,
 };
 use hatchling_channel::{ChannelId, Cleared, LocalHub, Message, OutputGate, SenderId};
 use hatchling_core::browser::{BrowserFailure, PageAction};
 use hatchling_core::framing::{read_frame, read_frame_or_eof, write_frame};
 use hatchling_core::ui::Concealed;
+use hatchling_core::ui::operator::CellKind;
 use hatchling_core::{
-    AgentMessage, BrokerMessage, BrowserOp, BrowserResult, CellId, PROTOCOL_VERSION, PeerUid,
-    ScheduleGrant, SessionRequest, SessionResponse, SkillOp, SkillResult, WebOp, WebResult,
+    AgentMessage, BrokerMessage, BrowserOp, BrowserResult, CellId, ModelReasoning,
+    PROTOCOL_VERSION, PeerUid, ScheduleGrant, ScheduleOp, ScheduleResult, ScheduleSpec,
+    SessionRequest, SessionResponse, SkillOp, SkillResult, SubagentOp, SubagentResult, WebOp,
+    WebResult,
 };
 use hatchling_egress::web::FetchError;
-use hatchling_scheduler::{SentTo, Timestamp};
+use hatchling_scheduler::{
+    Creator, Dispatcher, Ending, Launcher as _, Run as _, RunRequest, SentTo, Timestamp,
+};
 use hatchling_skill::CodeHash;
 use hatchling_vault::StoreKeys;
 use serde_json::{Value, json};
@@ -77,9 +89,16 @@ const ACCOUNT_KEY: &str = "mail-account-no-cell-has-had-1234";
 const PASSWORD: &str = "correct horse sign-in password";
 /// A key shorter than anything looked for inside a text.
 const SHORT_KEY: &str = "pw-1234";
+/// What the stub harness writes into a file: a saved secret here, so a
+/// brief that passes the check gets a key back, one no one ever sent it.
+const STUB_WRITES: &str = "edited by the stub harness";
 
 /// A sign-in's username, which isn't a secret.
 const USERNAME: &str = "zoe-the-username";
+
+/// How long a test gives a real cell to die, unlooked at: far under the
+/// minute a scheduled cell waits for the dispatcher's next tick.
+const KILL_BOUND: Duration = Duration::from_secs(5);
 
 /// What the agent's told when an address holds one.
 const ADDRESS_HOLDS: &str = "the page's address holds a secret the broker keeps: it isn't sent";
@@ -91,8 +110,8 @@ struct Install {
     dir: TestDir,
     config: Config,
     keys: StoreKeys,
-    /// The keeper's other channels, open as on an install.
-    _channels: (UnixStream, UnixStream),
+    /// The egress authority's channel to the keeper, open as on an install.
+    _authority: UnixStream,
 }
 
 /// The keeper's environment under `dir`.
@@ -107,6 +126,7 @@ fn environment(dir: &TestDir) -> Vec<(&'static str, String)> {
         ),
         ("HATCHLING_LOG_LEVEL", String::from("error")),
         ("HATCHLING_VAULT_DIR", path("vault")),
+        ("HATCHLING_SCHEDULER_DIR", path("schedules")),
         ("HATCHLING_EGRESS_GRANTS", String::from("localhost:18089")),
         ("HATCHLING_ARTIFACT_DIR", path("artifacts")),
         ("HATCHLING_BROWSER_PROFILES_DIR", path("profiles")),
@@ -124,6 +144,7 @@ fn seal(dir: &TestDir) -> Result<(), String> {
         ("egress-localhost-18089", API_KEY),
         ("mail-work", ACCOUNT_KEY),
         ("short", SHORT_KEY),
+        ("stub-writes", STUB_WRITES),
     ];
     for (name, value) in stored {
         std::fs::write(vault.join(name), value).map_err(|e| e.to_string())?;
@@ -158,7 +179,7 @@ impl Install {
             .envs(environment(&dir))
             .stdin(Stdio::null())
             .stdout(Stdio::null());
-        let (keeper, keys, authority, spawner) =
+        let (keeper, keys, authority, spawners) =
             Keeper::start_with(program).map_err(|e| e.to_string())?;
         let kept = keeper
             .sign_ins(SignInRequest::Keep {
@@ -180,6 +201,19 @@ impl Install {
             return Err(String::from("a cell has had one of these"));
         }
         keeper::install(keeper).map_err(|e| e.to_string())?;
+        // The real spawner, as the broker starts it: it alone gives a cell
+        // its own channel to this keeper.
+        let mut program = Command::new(env!("CARGO_BIN_EXE_hatchling-broker"));
+        program
+            .envs(environment(&dir))
+            .env("HATCHLING_AGENT_UID", mapped_agent_uid().to_string())
+            .env("HATCHLING_AGENT_BIN", run_fixture_binary()?)
+            .env("TMPDIR", std::env::temp_dir())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null());
+        let spawner = Spawner::start_with(program, Some(&spawners)).map_err(|e| e.to_string())?;
+        drop(spawners);
+        hatchling_broker::spawner::install(spawner).map_err(|e| e.to_string())?;
         let uid = rustix::process::getuid().as_raw();
         let mut config = broker_config(&dir.join("sock/broker.sock"), uid.wrapping_add(1))?;
         config.vault.root = dir.join("vault");
@@ -190,8 +224,51 @@ impl Install {
             dir,
             config,
             keys,
-            _channels: (authority, spawner),
+            _authority: authority,
         })
+    }
+
+    /// A broker's configuration for runs in real cells, and how they start.
+    fn for_runs(&self, timeout: Duration) -> Result<(Config, RunEnv), String> {
+        let mut config = self.config.clone();
+        config.agent_uid = PeerUid::from_kernel(mapped_agent_uid());
+        config.scheduler.root = self.dir.join("schedules");
+        config.channels = vec![String::from("local")];
+        let runs = RunEnv {
+            spawner: common::spawner(),
+            agent_bin: run_fixture_binary()?,
+            run_root: config.scheduler.run_root(),
+            timeout,
+        };
+        Ok((config, runs))
+    }
+
+    /// How many checks have found a secret so far.
+    fn hits(&self) -> Result<usize, String> {
+        let hits = self.checks()?;
+        Ok(hits.iter().filter(|c| c.found == Some(true)).count())
+    }
+
+    /// How many times a cell has asked for `name` on its vault channel, as
+    /// the keeper recorded it.
+    fn asked_on_its_channel(&self, name: &str) -> Result<usize, String> {
+        let (accesses, _) = read_log(&self.dir.join("vault")).map_err(|e| e.to_string())?;
+        Ok(accesses
+            .iter()
+            .filter(|access| access.names == [name] && access.outcome == Outcome::Denied)
+            .count())
+    }
+
+    /// Waits until a check past `before` has found a secret.
+    fn until_a_hit_past(&self, before: usize) -> Result<(), String> {
+        let started = Instant::now();
+        while self.hits()? <= before {
+            if started.elapsed() > Duration::from_secs(60) {
+                return Err(String::from("the cell never tried"));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        Ok(())
     }
 
     /// The checks in the access log.
@@ -230,6 +307,76 @@ fn install() -> Result<MutexGuard<'static, Install>, String> {
         .as_ref()
         .map_err(String::clone)?;
     Ok(install.lock().unwrap_or_else(PoisonError::into_inner))
+}
+
+/// Whether a process started with `word` in its arguments is alive, as this
+/// process sees it, its own pid namespace above the cell's. A process whose
+/// arguments are gone has died, and is waiting only to be reaped.
+fn cell_alive(word: &str) -> bool {
+    let word = word.as_bytes();
+    std::fs::read_dir("/proc").is_ok_and(|mut processes| {
+        processes.any(|process| {
+            process
+                .ok()
+                .and_then(|process| std::fs::read(process.path().join("cmdline")).ok())
+                .is_some_and(|line| line.windows(word.len()).any(|at| at == word))
+        })
+    })
+}
+
+/// That the cell started with `word` in its arguments is running, then that
+/// it dies within [`KILL_BOUND`], with nothing looking at its run.
+fn dies_unlooked_at(word: &str) -> Result<(), String> {
+    let started = Instant::now();
+    while cell_alive(word) {
+        if started.elapsed() > KILL_BOUND {
+            return Err(format!("the cell lived on past a hit: {word}"));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    Ok(())
+}
+
+/// A scheduled run of `task`, at no schedule, as the dispatcher asks for it.
+fn request(task: String) -> RunRequest {
+    RunRequest {
+        schedule_id: String::from("sch-run"),
+        task,
+        grants: Vec::new(),
+        due: Timestamp::now(),
+        missed: false,
+        channel: String::from("local"),
+        depth: 0,
+        event: None,
+        space: None,
+        feed: None,
+        chat: false,
+        history: Vec::new(),
+        earlier: Vec::new(),
+    }
+}
+
+/// A task: ask on the vault channel once, to prove it answers, send `key`
+/// in an address, then ask on that channel for as long as it answers.
+fn hits_then_goes_on(asks: &str, key: &str) -> String {
+    format!("vault-channel:{asks} fetch:https://a.example/?k={key} vault-spin:{asks}")
+}
+
+/// That the keeper answered the cell on its vault channel, and, with the
+/// cell gone and no one having looked at its run, doesn't any more. The kill
+/// goes through the spawner, so a few asks can slip in as it lands.
+fn the_channel_is_dead(install: &Install, asks: &str) -> Result<(), String> {
+    dies_unlooked_at(&format!("vault-spin:{asks}"))?;
+    std::thread::sleep(Duration::from_millis(100));
+    let asked = install.asked_on_its_channel(asks)?;
+    assert!(asked > 0, "the keeper was never asked on the channel");
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(
+        install.asked_on_its_channel(asks)?,
+        asked,
+        "the channel still answers"
+    );
+    Ok(())
 }
 
 /// Every byte of `text` as a percent escape.
@@ -728,11 +875,50 @@ fn a_hit_ends_the_session_and_the_owner_is_told_once() -> Result<(), String> {
 #[test]
 fn a_brief_holding_a_key_ends_the_session() -> Result<(), String> {
     let install = install()?;
-    let dir: PathBuf = install.dir.join("harness");
+    let (config, skills) = harnessed(&install, "/nonexistent/hatchling-spawner".into(), "brief")?;
+    let task = format!("Log in with {API_KEY}.");
+    let (report, told) = ask_a_harness(&config, &skills, &install, &task)?;
+    assert_eq!(report.get("outcome"), Some(&json!("refused")), "{report}");
+    assert_eq!(told, [stopped_told(SentTo::Harness)]);
+    says_nothing_held(&told);
+    Ok(())
+}
+
+/// A brief that passes every check can still ask for a saved secret to be
+/// put together, and read it in what comes back. Nothing stands in here: the
+/// real keeper finds it in what a real harness cell wrote, through the real
+/// spawner and a real session. The session ends as for any other hit, and
+/// the owner's told what happened, which isn't that the agent sent it.
+#[test]
+fn a_harness_that_hands_back_a_key_ends_the_session() -> Result<(), String> {
+    if !guard_cell_available()? {
+        return Ok(());
+    }
+    let install = install()?;
+    let (config, skills) = harnessed(&install, common::spawner(), "back")?;
+    let task = "Add a helper.\nSTUB edit src/lib.rs";
+    let (report, told) = ask_a_harness(&config, &skills, &install, task)?;
+    assert_eq!(report.get("outcome"), Some(&json!("done")), "{report}");
+    assert_eq!(report.get("patch_withheld"), Some(&json!(true)), "{report}");
+    assert_eq!(told, [stopped_told(SentTo::HarnessReturn)]);
+    says_nothing_held(&told);
+    assert!(
+        !told.iter().any(|said| said.contains(STUB_WRITES)),
+        "the owner was shown the secret"
+    );
+    Ok(())
+}
+
+/// A broker's configuration for a harness run, and the skills to start one
+/// through `spawner`, under `name` in the install.
+fn harnessed(install: &Install, spawner: PathBuf, name: &str) -> Result<(Config, Skills), String> {
+    let dir: PathBuf = install.dir.join("harness").join(name);
     std::fs::create_dir_all(dir.join("project/src")).map_err(|e| e.to_string())?;
     std::fs::write(dir.join("project/src/lib.rs"), "pub fn a() {}\n").map_err(|e| e.to_string())?;
     let binary = dir.join("harness");
     std::fs::copy(harness_fixture_binary()?, &binary).map_err(|e| e.to_string())?;
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| e.to_string())?;
     let sha256 = CodeHash::of(&std::fs::read(&binary).map_err(|e| e.to_string())?).to_string();
     let mut config = install.config.clone();
     config.agent_uid = PeerUid::from_kernel(rustix::process::getuid().as_raw());
@@ -754,25 +940,29 @@ fn a_brief_holding_a_key_ends_the_session() -> Result<(), String> {
     let harnesses =
         Harnesses::parse(&config, |key| vars.get(key).cloned()).map_err(|e| e.to_string())?;
     let skills = Skills::default()
-        .with_runtime(SkillRuntime::new(PathBuf::from(
-            "/nonexistent/hatchling-spawner",
-        )))
+        .with_runtime(SkillRuntime::new(spawner))
         .with_harnesses(harnesses);
+    Ok((config, skills))
+}
+
+/// A session's harness run on `task`, which must end the session: its
+/// report, then what the owner was told.
+fn ask_a_harness(
+    config: &Config,
+    skills: &Skills,
+    install: &Install,
+    task: &str,
+) -> Result<(Value, Vec<String>), String> {
     let (hub, shown) = owners_chat();
     let (agent, broker) = UnixStream::pair().map_err(|e| e.to_string())?;
     let request = SessionRequest::Skill(SkillOp::Invoke {
         skill: String::from("claude-code@1"),
         capability: "code".parse().map_err(|_| "capability")?,
-        input: json!({
-            "task": format!("Log in with {API_KEY}."),
-            "root": "project",
-            "paths": ["src/lib.rs"],
-        })
-        .to_string(),
+        input: json!({ "task": task, "root": "project", "paths": ["src/lib.rs"] }).to_string(),
     });
-    std::thread::scope(|scope| {
+    let report = std::thread::scope(|scope| {
         let _hangs = Hangs(&agent);
-        let (config, keys, hub, broker, skills) = (&config, &install.keys, &hub, &broker, &skills);
+        let (keys, hub, broker) = (&install.keys, &hub, &broker);
         let served = scope.spawn(move || {
             serve_connection_with_ingress(broker, config, keys, skills, Some(hub))
                 .map_err(|e| e.to_string())
@@ -783,17 +973,15 @@ fn a_brief_holding_a_key_ends_the_session() -> Result<(), String> {
             return Err(format!("no report: {reply:?}"));
         };
         let report: Value = serde_json::from_str(&output).map_err(|e| e.to_string())?;
-        assert_eq!(report.get("outcome"), Some(&json!("refused")), "{report}");
         session_closed(&agent)?;
         session_is_over(&agent)?;
         served
             .join()
-            .map_err(|_| String::from("the session panicked"))?
+            .map_err(|_| String::from("the session panicked"))??;
+        Ok::<Value, String>(report)
     })?;
     let told = shown.lock().map_err(|e| e.to_string())?.clone();
-    assert_eq!(told, [stopped_told(SentTo::Harness)]);
-    says_nothing_held(&told);
-    Ok(())
+    Ok((report, told))
 }
 
 /// A hit elsewhere in a run's tree stops a session that did nothing wrong:
@@ -804,17 +992,18 @@ fn a_hit_elsewhere_in_the_tree_refuses_the_next_op() -> Result<(), String> {
     let install = install()?;
     let cell_id: CellId = "cell-sibling".parse().map_err(|_| "cell id")?;
     let (agent, connection) = UnixStream::pair().map_err(|e| e.to_string())?;
+    let hit = HeldHit::default();
     let cell = AgentCell {
         connection,
         cell_id,
         pid: 0,
+        hit: hit.clone(),
     };
-    let hit = HeldHit::default();
     std::thread::scope(|scope| {
         let _hangs = Hangs(&agent);
-        let (hit, cell, config, keys) = (&hit, &cell, &install.config, &install.keys);
+        let (cell, config, keys) = (&cell, &install.config, &install.keys);
         let served = scope.spawn(move || {
-            serve_cell_connection(cell, config, keys, &Skills::default(), None, None, hit)
+            serve_cell_connection(cell, config, keys, &Skills::default(), None, None)
                 .map_err(|e| e.to_string())
         });
         say_hello(&agent, "cell-sibling")?;
@@ -891,4 +1080,336 @@ fn a_chat_run_that_sends_a_key_is_stopped_and_the_owner_told_once() -> Result<()
         .count();
     assert_eq!(left, 0, "the run's directory went with it");
     Ok(())
+}
+
+/// A cell holds a channel to the keeper that no session stands in front of,
+/// and a scheduled run may not be looked at for a minute. So a hit kills it
+/// where it's recorded: with nothing looking at the run the cell dies, and
+/// the keeper, which answered it on that channel before the hit, is never
+/// asked again, by a program that would go on asking.
+#[test]
+fn a_hit_kills_the_cell_at_once_and_its_vault_channel_with_it() -> Result<(), String> {
+    if !guard_cell_available()? {
+        return Ok(());
+    }
+    let install = install()?;
+    let (config, runs) = install.for_runs(Duration::from_secs(120))?;
+    let asks = "asked-by-a-run";
+    let hits = install.hits()?;
+    std::thread::scope(|scope| {
+        let launcher = CellLauncher::new(scope, &config, &install.keys, runs.clone());
+        let mut run = launcher.launch(request(hits_then_goes_on(asks, API_KEY)))?;
+        install.until_a_hit_past(hits)?;
+        the_channel_is_dead(&install, asks)?;
+        let told = run.poll().ok_or("the run is over")?;
+        assert_eq!(told, Err(String::from(stopped_told(SentTo::Website))));
+        assert_eq!(run.ending(), Some(Ending::Stopped(SentTo::Website)));
+        Ok::<(), String>(())
+    })
+}
+
+/// A schedule's run, through the real dispatcher: its program sends a key
+/// and goes on, its cell is dead before the next look at it, and that look
+/// parks it and tells the owner once, in words that hold no secret.
+#[test]
+fn a_scheduled_run_that_sends_a_key_is_stopped_and_told_once() -> Result<(), String> {
+    if !guard_cell_available()? {
+        return Ok(());
+    }
+    let install = install()?;
+    let (config, runs) = install.for_runs(Duration::from_secs(120))?;
+    let asks = "asked-by-a-schedule";
+    let created = handle_schedule_op(
+        &config,
+        &install.keys,
+        &ScheduleOp::Create {
+            when: ScheduleSpec::Cron {
+                expr: String::from("* * * * *"),
+                tz: String::from("UTC"),
+            },
+            task: hits_then_goes_on(asks, API_KEY),
+            grants: vec![ScheduleGrant::ChannelSend {
+                channel: String::from("local"),
+            }],
+            channel: String::from("local"),
+        },
+        Timestamp::from_second(1_790_000_000).map_err(|e| e.to_string())?,
+        Creator::Agent,
+    );
+    let ScheduleResult::Created { id } = created else {
+        return Err(format!("not created: {created:?}"));
+    };
+    let (hub, shown) = owners_chat();
+    let hits = install.hits()?;
+    let now = Timestamp::from_second(1_790_000_070).map_err(|e| e.to_string())?;
+    std::thread::scope(|scope| {
+        let launcher = CellLauncher::new(scope, &config, &install.keys, runs.clone());
+        let mut dispatcher = Dispatcher::default();
+        let keys = &install.keys;
+        let mut tick = || {
+            dispatch_once(&mut dispatcher, &config, keys, Some(&hub), &launcher, now)
+                .map_err(|e| e.to_string())
+        };
+        let first = tick()?;
+        assert_eq!(first.launched.len(), 1, "{first:?}");
+        install.until_a_hit_past(hits)?;
+        the_channel_is_dead(&install, asks)?;
+        let started = Instant::now();
+        loop {
+            let report = tick()?;
+            if !report.parked.is_empty() {
+                assert_eq!(report.parked, std::slice::from_ref(&id));
+                return Ok::<(), String>(());
+            }
+            if started.elapsed() > Duration::from_secs(60) {
+                return Err(String::from("the run was never ended"));
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    })?;
+    let told = shown.lock().map_err(|e| e.to_string())?.clone();
+    assert_eq!(
+        told,
+        [format!(
+            "Scheduled work didn't finish. {} It's kept for you to review.",
+            stopped_told(SentTo::Website)
+        )]
+    );
+    says_nothing_held(&told);
+    let left = std::fs::read_dir(&runs.run_root)
+        .map_err(|e| e.to_string())?
+        .count();
+    assert_eq!(left, 0, "the run's directory went with it");
+    Ok(())
+}
+
+/// A subagent tree: one child sends a key. Every cell of the tree dies at
+/// once, its busy sibling too, with no one looking at either, and its
+/// parent's session is over.
+#[test]
+fn a_child_that_sends_a_key_ends_the_whole_tree_at_once() -> Result<(), String> {
+    if !guard_cell_available()? {
+        return Ok(());
+    }
+    let install = install()?;
+    let (mut config, runs) = install.for_runs(Duration::from_secs(120))?;
+    config.scheduler.root = install.dir.join("schedules");
+    let (agent, connection) = UnixStream::pair().map_err(|e| e.to_string())?;
+    let cell_id: CellId = "cell-parent".parse().map_err(|_| "cell id")?;
+    let hit = HeldHit::default();
+    let cell = AgentCell {
+        connection,
+        cell_id,
+        pid: 0,
+        hit: hit.clone(),
+    };
+    let asks = "asked-by-a-child";
+    let sibling = "vault-spin:asked-by-a-sibling";
+    let spawn = |task: String| {
+        SessionRequest::Subagent(SubagentOp::Spawn {
+            task,
+            budget: 1,
+            capabilities: Vec::new(),
+        })
+    };
+    let hits = install.hits()?;
+    std::thread::scope(|scope| {
+        let _hangs = Hangs(&agent);
+        let (cell, config, keys) = (&cell, &config, &install.keys);
+        let runs = Some(runs.clone());
+        let served = scope.spawn(move || {
+            let skills = Skills::default();
+            serve_cell_connection(cell, config, keys, &skills, None, runs)
+                .map_err(|e| e.to_string())
+        });
+        say_hello(&agent, "cell-parent")?;
+        for task in [String::from(sibling), hits_then_goes_on(asks, API_KEY)] {
+            let spawned = answer(&agent, &spawn(task))?;
+            assert!(
+                matches!(
+                    spawned,
+                    SessionResponse::Subagent(SubagentResult::Spawned { .. })
+                ),
+                "a child wasn't started"
+            );
+        }
+        install.until_a_hit_past(hits)?;
+        the_channel_is_dead(&install, asks)?;
+        dies_unlooked_at(sibling)?;
+        assert_eq!(hit.seen(), Some(SentTo::Website));
+        session_is_over(&agent)?;
+        served
+            .join()
+            .map_err(|_| String::from("the session panicked"))?
+    })?;
+    let left = std::fs::read_dir(&runs.run_root)
+        .map_err(|e| e.to_string())?
+        .count();
+    assert_eq!(left, 0, "no child outlives the tree");
+    Ok(())
+}
+
+/// A session that's in a harness's run when a hit lands elsewhere in its
+/// tree doesn't wait the run out: the harness's cell dies with the rest,
+/// though the session that asked for it can't yet be told.
+#[test]
+fn a_hit_elsewhere_kills_a_harness_cell_as_it_runs() -> Result<(), String> {
+    if !guard_cell_available()? {
+        return Ok(());
+    }
+    let install = install()?;
+    let (config, skills) = harnessed(&install, common::spawner(), "running")?;
+    let spin = "STUB hang";
+    let request = SessionRequest::Skill(SkillOp::Invoke {
+        skill: String::from("claude-code@1"),
+        capability: "code".parse().map_err(|_| "capability")?,
+        input: json!({ "task": spin, "root": "project", "paths": ["src/lib.rs"] }).to_string(),
+    });
+    in_a_tree(
+        &install,
+        &config,
+        &skills,
+        &request,
+        || cell_alive(spin),
+        || dies_unlooked_at(spin),
+    )
+}
+
+/// So does a skill's cell.
+#[test]
+fn a_hit_elsewhere_kills_a_skill_cell_as_it_runs() -> Result<(), String> {
+    if !guard_cell_available()? {
+        return Ok(());
+    }
+    let install = install()?;
+    let dir = install.dir.join("skills");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let skills = common::fixture_skills(&dir, Duration::from_secs(120))?;
+    let request = SessionRequest::Skill(SkillOp::Invoke {
+        skill: String::from("fixture@1.0.0"),
+        capability: common::FIXTURE_CAPABILITY
+            .parse()
+            .map_err(|_| "capability")?,
+        input: String::from("hang"),
+    });
+    let running = || {
+        hatchling_broker::machine::cells()
+            .iter()
+            .any(|cell| cell.kind == CellKind::Skill)
+    };
+    let started = Instant::now();
+    let (config, _) = install.for_runs(Duration::from_secs(120))?;
+    in_a_tree(&install, &config, &skills, &request, running, || {
+        let bound = started + Duration::from_secs(60);
+        while running() {
+            if Instant::now() > bound {
+                return Err(String::from("the skill's cell lived on past a hit"));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        Ok(())
+    })
+}
+
+/// A session of a tree, in `request`, a cell that runs until it's killed: a
+/// hit is recorded elsewhere in the tree once `running` says the cell has
+/// started, and `dead` says what became of it. The session then ends.
+fn in_a_tree(
+    install: &Install,
+    config: &Config,
+    skills: &Skills,
+    request: &SessionRequest,
+    running: impl Fn() -> bool,
+    dead: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    let (agent, connection) = UnixStream::pair().map_err(|e| e.to_string())?;
+    let hit = HeldHit::default();
+    let cell = AgentCell {
+        connection,
+        cell_id: "cell-in-a-tree".parse().map_err(|_| "cell id")?,
+        pid: 0,
+        hit: hit.clone(),
+    };
+    std::thread::scope(|scope| {
+        let _hangs = Hangs(&agent);
+        let (cell, keys) = (&cell, &install.keys);
+        let served = scope.spawn(move || {
+            serve_cell_connection(cell, config, keys, skills, None, None).map_err(|e| e.to_string())
+        });
+        say_hello(&agent, "cell-in-a-tree")?;
+        send(&agent, request);
+        let started = Instant::now();
+        while !running() {
+            if started.elapsed() > Duration::from_secs(30) {
+                return Err(String::from("the cell never started"));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        hit.record(SentTo::Search);
+        dead()?;
+        let _answered = answer_or_gone(&agent);
+        session_is_over(&agent)?;
+        served
+            .join()
+            .map_err(|_| String::from("the session panicked"))?
+    })
+}
+
+/// The reply to what's in flight, if the session gave one.
+fn answer_or_gone(agent: &UnixStream) -> Option<Vec<u8>> {
+    read_frame_or_eof(agent).ok().flatten()
+}
+
+/// The broker's own agent cell has a session that a hit ends, and no run
+/// watching it. So it dies on a hit like any other, and its vault channel
+/// with it.
+#[test]
+fn a_hit_kills_the_brokers_long_lived_cell_and_its_vault_channel() -> Result<(), String> {
+    if !guard_cell_available()? {
+        return Ok(());
+    }
+    let install = install()?;
+    let (config, runs) = install.for_runs(Duration::from_secs(120))?;
+    let asks = "asked-by-the-long-lived-cell";
+    let run = ScheduledRun {
+        task: hits_then_goes_on(asks, API_KEY),
+        missed: false,
+        due: 1,
+        model_endpoint: None,
+        model_name: None,
+        model_reasoning: ModelReasoning::ProviderDefault,
+        model_context_window: None,
+        depth: 0,
+        event: None,
+        max_steps: None,
+        subagent: false,
+        chat: false,
+        history: Vec::new(),
+        earlier: Vec::new(),
+        builders: std::collections::BTreeMap::new(),
+        tools: None,
+    };
+    let cell = CellConfig::for_run(
+        &runs.agent_bin,
+        "cell-long-lived",
+        &config.socket,
+        mapped_agent_uid(),
+        run,
+    )
+    .map_err(|e| e.to_string())?;
+    let agent = spawn_agent_cell(&config, cell).map_err(|e| e.to_string())?;
+    let hits = install.hits()?;
+    std::thread::scope(|scope| {
+        let (agent, config, keys) = (&agent, &config, &install.keys);
+        let served = scope.spawn(move || {
+            serve_cell_connection(agent, config, keys, &Skills::default(), None, None)
+        });
+        install.until_a_hit_past(hits)?;
+        the_channel_is_dead(&install, asks)?;
+        assert_eq!(agent.hit.seen(), Some(SentTo::Website));
+        let _ended = served
+            .join()
+            .map_err(|_| String::from("the session panicked"))?;
+        Ok(())
+    })
 }

@@ -41,7 +41,8 @@ use hatchling_core::PeerUid;
 use hatchling_core::framing::{read_frame_or_eof, write_frame};
 use hatchling_core::ui::operator::SessionSocket;
 use hatchling_core::ui::{
-    ActionRefusal, ApiOutcome, ApiRequest, UiActionResult, UiRequest, UiResponse, negotiate,
+    ActionRefusal, ApiOutcome, ApiRequest, SignInOp, UiAction, UiActionResult, UiRequest,
+    UiResponse, negotiate,
 };
 use hatchling_vault::OpensStores;
 use zeroize::Zeroizing;
@@ -106,9 +107,9 @@ impl std::fmt::Debug for Api {
 
 /// The broker's API, bound, when one is configured.
 ///
-/// The sockets' owner (the broker's own uid) is its one local caller,
-/// with the configured grants; on the UI socket, it must also present
-/// the UI token, minted here.
+/// The broker's owner ([`crate::owner::owner`]), for whom the sockets are
+/// made, is its one local caller, with the configured grants; on the UI
+/// socket, it must also present the UI token, minted here.
 ///
 /// # Errors
 ///
@@ -382,7 +383,8 @@ impl Api {
         let ended = AtomicBool::new(false);
         let (bus, out, done) = (self.bus.as_ref(), &writer, &ended);
         std::thread::scope(|scope| {
-            let served = requests(stream, ops, audit, &caller, out, |after| {
+            let door = door.1;
+            let served = requests(stream, ops, audit, &caller, door, out, |after| {
                 scope.spawn(move || follow(bus, out, done, after));
             });
             ended.store(true, Ordering::Relaxed);
@@ -391,13 +393,27 @@ impl Api {
     }
 }
 
-/// The caller's requests after the handshake; `subscribe` starts the
-/// stream, once.
+/// Whether `action` is one a caller on `socket` may never ask. The web app
+/// never takes a secret, so a password to keep comes only on the API
+/// socket, from `hatchling-broker sign-in add` in the owner's own terminal.
+fn closed_to(socket: SessionSocket, action: &UiAction) -> bool {
+    socket == SessionSocket::Ui
+        && matches!(
+            action,
+            UiAction::ManageSignIns {
+                op: SignInOp::Store { .. }
+            }
+        )
+}
+
+/// The caller's requests after the handshake, on `socket`; `subscribe`
+/// starts the stream, once.
 fn requests(
     stream: &UnixStream,
     ops: &Ops<'_>,
     audit: &mut Audit,
     caller: &Caller,
+    socket: SessionSocket,
     writer: &Mutex<UnixStream>,
     mut subscribe: impl FnMut(Option<u64>),
 ) -> Result<(), Error> {
@@ -422,7 +438,12 @@ fn requests(
                 }
             }
             UiRequest::Action { request_id, action } => {
-                let (result, outcome) = ops.handle(caller, &action, &mut replies);
+                let (result, outcome) = if closed_to(socket, &action) {
+                    let reason = ActionRefusal::Unavailable;
+                    (UiActionResult::Refused { reason }, ApiOutcome::Refused)
+                } else {
+                    ops.handle(caller, &action, &mut replies)
+                };
                 audit.record(Some(caller), ApiRequest::of_action(&action), outcome);
                 send(writer, &UiResponse::ActionResult { request_id, result })?;
             }
@@ -1145,6 +1166,81 @@ mod tests {
         drop(dir);
     }
 
+    /// The web app never takes a secret. A sign-in's password sent on the
+    /// real UI socket, by a caller who may do everything else, is refused
+    /// and reaches no store; the same request on the API socket, where
+    /// `sign-in add` sends it, is answered as ever. Listing them still
+    /// works on both.
+    #[test]
+    fn the_ui_socket_refuses_a_password_and_the_api_socket_does_not() {
+        use hatchling_core::ui::{Concealed, SignInResult};
+        let dir = scratch("ui-sign-in");
+        let config: &'static Config = Box::leak(Box::new(config_in(&dir)));
+        let key: &'static MasterKey = Box::leak(Box::new(MasterKey::generate().unwrap()));
+        let skills: &'static Skills =
+            Box::leak(Box::new(Skills::load(&SkillConfig::disabled()).unwrap()));
+        let (api_socket, ui_socket) = (socket_path("ui-pw-api"), socket_path("ui-pw-ui"));
+        let mut guards = Vec::new();
+        for socket in [&api_socket, &ui_socket] {
+            let _ = std::fs::remove_file(socket.as_path());
+            guards.push(TestSocket::new(socket.as_path().to_string_lossy()));
+        }
+        let token_path = ui_token_path(&ui_socket);
+        guards.push(TestSocket::new(token_path.to_string_lossy()));
+        let settings = ApiConfig {
+            socket: Some(api_socket.clone()),
+            ui_socket: Some(ui_socket.clone()),
+            grants: crate::schedule_ops::held_grants(config),
+        };
+        let api: &'static Api = Box::leak(Box::new(open_api(config, &settings).unwrap().unwrap()));
+        let token = std::fs::read_to_string(&token_path).unwrap();
+        std::thread::spawn(move || api.serve(config, key, skills, None));
+        let opened = |socket: &SocketPath, token: Option<&str>| {
+            let client = UnixStream::connect(socket.as_path()).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            write(&client, &hello(token));
+            assert!(matches!(read(&client), UiResponse::Welcome { .. }));
+            client
+        };
+        let asked = |client: &UnixStream, op: SignInOp| {
+            write(
+                client,
+                &UiRequest::Action {
+                    request_id: String::from("asked"),
+                    action: UiAction::ManageSignIns { op },
+                },
+            );
+            let UiResponse::ActionResult { result, .. } = read(client) else {
+                unreachable!("not an answer to the action");
+            };
+            result
+        };
+        let store = || SignInOp::Store {
+            profile_id: String::from("profile-1"),
+            origin: String::from("https://a.example"),
+            label: String::from("Work"),
+            username: Concealed::new(String::from("zoe")),
+            password: Concealed::new(String::from("typed in the app")),
+        };
+        let ui = opened(&ui_socket, Some(&token));
+        assert_eq!(
+            asked(&ui, store()),
+            UiActionResult::Refused {
+                reason: ActionRefusal::Unavailable
+            }
+        );
+        let off = UiActionResult::SignIns {
+            outcome: SignInResult::Off,
+        };
+        assert_eq!(asked(&ui, SignInOp::List), off, "the rest still answers");
+        let terminal = opened(&api_socket, None);
+        assert_eq!(asked(&terminal, store()), off, "the API socket goes on");
+        drop(guards);
+        drop(dir);
+    }
+
     /// A proposed activation reaches the owner's app through the UI socket
     /// as a confirmation of the broker's fields, the agent's words last and
     /// marked as theirs; the owner's decision, sent back on that socket,
@@ -1412,9 +1508,17 @@ mod tests {
         let mut starts = Vec::new();
         std::thread::scope(|scope| {
             let worker = scope.spawn(|| {
-                requests(&server, &ops, &mut audit, &caller, &writer, |after| {
-                    starts.push(after);
-                })
+                requests(
+                    &server,
+                    &ops,
+                    &mut audit,
+                    &caller,
+                    SessionSocket::Api,
+                    &writer,
+                    |after| {
+                        starts.push(after);
+                    },
+                )
             });
             write(&client, &UiRequest::Subscribe { after_seq: Some(4) });
             write(&client, &UiRequest::Subscribe { after_seq: None });

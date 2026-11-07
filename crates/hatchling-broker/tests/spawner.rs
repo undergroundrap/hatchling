@@ -175,6 +175,7 @@ fn the_real_spawner_starts_the_brokers_agent_cell_and_hands_back_its_connection(
         connection,
         cell_id,
         pid: 0,
+        hit: hatchling_broker::held_check::HeldHit::default(),
     };
     let key = hatchling_vault::MasterKey::generate().map_err(|e| format!("key: {e}"))?;
     // The agent exits after its handshake; the session then ends at EOF.
@@ -185,7 +186,6 @@ fn the_real_spawner_starts_the_brokers_agent_cell_and_hands_back_its_connection(
         &hatchling_broker::Skills::default(),
         None,
         None,
-        &hatchling_broker::held_check::HeldHit::default(),
     )
     .map_err(|e| format!("serve the cell's session: {e}"))?;
     let exit = process
@@ -252,6 +252,7 @@ fn the_real_spawner_hands_an_agent_cells_vault_channel_to_the_keeper() -> Result
         connection,
         cell_id,
         pid: 0,
+        hit: hatchling_broker::held_check::HeldHit::default(),
     };
     let key = hatchling_vault::MasterKey::generate().map_err(|e| format!("key: {e}"))?;
     hatchling_broker::serve_cell_connection(
@@ -261,7 +262,6 @@ fn the_real_spawner_hands_an_agent_cells_vault_channel_to_the_keeper() -> Result
         &hatchling_broker::Skills::default(),
         None,
         None,
-        &hatchling_broker::held_check::HeldHit::default(),
     )
     .map_err(|e| format!("serve the cell's session: {e}"))?;
     let exit = process

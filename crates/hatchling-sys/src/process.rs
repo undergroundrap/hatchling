@@ -11,11 +11,11 @@
 //! identities (`0` and `-1` have group/all meanings to `kill(2)`), so
 //! they cannot name a signal target here.
 
-use std::cell::Cell;
 use std::ffi::CString;
 use std::io;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use rustix::process::{Pid, PidfdFlags, Signal, WaitId, WaitidOptions, WaitidStatus};
@@ -206,7 +206,9 @@ pub struct Child {
     /// its process is reaped, so without this flag a second
     /// `wait_deadline` would see "readable" → `waitid` → `ECHILD` →
     /// `None` and misreport the already-reaped child as timed out.
-    reaped: Cell<bool>,
+    /// Atomic so a `Child` can be shared: one thread may kill it while
+    /// another waits on it.
+    reaped: AtomicBool,
 }
 
 impl AsFd for Child {
@@ -254,7 +256,7 @@ impl Child {
         Ok(Self {
             pid,
             pidfd,
-            reaped: Cell::new(false),
+            reaped: AtomicBool::new(false),
         })
     }
 
@@ -308,7 +310,7 @@ impl Child {
     pub fn terminate_group(&self) -> Result<(), Error> {
         // Once the leader is reaped, every member may be gone and its id
         // free to name another group: never signal it then (WO-024).
-        if self.reaped.get() {
+        if self.reaped.load(Ordering::SeqCst) {
             return Err(Error::Process {
                 operation: "kill_process_group",
                 source: io::Error::new(
@@ -372,7 +374,7 @@ impl Child {
                 // earlier wait — nothing to report either way.
                 Ok(None) | Err(rustix::io::Errno::CHILD) => return Ok(None),
                 Ok(Some(status)) => {
-                    self.reaped.set(true);
+                    self.reaped.store(true, Ordering::SeqCst);
                     return Ok(Some(raw_status(&status)));
                 }
                 Err(rustix::io::Errno::INTR) => {}
@@ -403,7 +405,7 @@ impl Child {
     /// was already reaped by an earlier wait (a second wait has no
     /// status to report; it must not be misread as a timeout).
     pub fn wait_deadline(&self, timeout: Duration) -> Result<i32, Error> {
-        if self.reaped.get() {
+        if self.reaped.load(Ordering::SeqCst) {
             return Err(Error::Process {
                 operation: "wait on reaped child",
                 source: io::Error::new(io::ErrorKind::InvalidInput, "child was already reaped"),
@@ -436,7 +438,7 @@ impl Child {
     ///
     /// As [`wait_deadline`](Self::wait_deadline).
     pub fn wait_deadline_group(&self, timeout: Duration) -> Result<i32, Error> {
-        if self.reaped.get() {
+        if self.reaped.load(Ordering::SeqCst) {
             return Err(Error::Process {
                 operation: "wait on reaped child",
                 source: io::Error::new(io::ErrorKind::InvalidInput, "child was already reaped"),
@@ -1014,7 +1016,7 @@ pub fn reap_as_init(program: &Child) -> i32 {
         match rustix::process::wait(rustix::process::WaitOptions::empty()) {
             Ok(Some((pid, status))) => {
                 if pid.as_raw_nonzero().get() == program.pid.get() {
-                    program.reaped.set(true);
+                    program.reaped.store(true, Ordering::SeqCst);
                     return child_exit_code(i32::try_from(status.as_raw()).unwrap_or(1));
                 }
             }
@@ -1634,7 +1636,7 @@ mod tests {
                 exit_child(if answered { 0 } else { 2 });
             }
         }
-        let ran = Cell::new(false);
+        let ran = std::cell::Cell::new(false);
         // Only a busy program is tried again: a missing one fails at once.
         let started = Instant::now();
         let missing = exec(
@@ -2026,7 +2028,7 @@ mod tests {
     fn a_process_reaped_between_the_probe_and_its_stat_is_gone() {
         let unread = || Err(std::io::Error::from(std::io::ErrorKind::NotFound));
         // Signalable, then reaped before `/proc/<pid>/stat` was read.
-        let probes = Cell::new(0);
+        let probes = std::cell::Cell::new(0);
         let reaped = || {
             probes.set(probes.get() + 1);
             probes.get() == 1

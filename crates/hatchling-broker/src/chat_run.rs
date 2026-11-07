@@ -58,8 +58,8 @@ pub const CHAT_POLL: Duration = Duration::from_millis(200);
 /// nothing more is known.
 pub const CHAT_FAILED: &str = "Something went wrong and the agent couldn't answer. Try again; if it keeps happening, `sudo hatchling-broker doctor` checks the install.";
 
-/// What the person is told of a run Hatchling stopped, its agent having
-/// tried to send a secret to `to` ([`crate::held_check::HeldHit`]).
+/// What the person is told of a run Hatchling stopped, a secret having been
+/// caught going to `to` ([`crate::held_check::HeldHit`]).
 ///
 /// Which secret isn't said, here or anywhere: the words are fixed, so they
 /// can't carry one.
@@ -78,6 +78,9 @@ pub const fn stopped_told(to: hatchling_scheduler::SentTo) -> &'static str {
         }
         SentTo::Harness => {
             "Hatchling stopped this run: it tried to give a saved secret to a coding tool."
+        }
+        SentTo::HarnessReturn => {
+            "Hatchling stopped this run: a coding tool it started handed back a saved secret."
         }
     }
 }
@@ -1169,6 +1172,10 @@ mod tests {
         assert_eq!(
             stopped(SentTo::Harness),
             "Hatchling stopped this run: it tried to give a saved secret to a coding tool."
+        );
+        assert_eq!(
+            stopped(SentTo::HarnessReturn),
+            "Hatchling stopped this run: a coding tool it started handed back a saved secret."
         );
         let said: BTreeSet<String> = [
             model,

@@ -31,19 +31,28 @@
 //! **A hit ends the run** ([`HeldHit`]). A refusal tells the agent that what
 //! it sent matched, so a tricked agent could find a weak password by trying
 //! it, one refusal at a time. So when the agent's own text is found to hold
-//! one, its run is over: the broker answers that one op, ends the session
-//! and refuses everything after it, however the cell behaves, and the owner
-//! is told once, in Hatchling's own words: what kind of thing was stopped,
-//! never which secret. Each check is in the vault's access log, a hit as
-//! found. A project file holding a secret isn't the agent's guess: a
-//! harness refuses that, and the run goes on.
+//! one, its run is over: every cell in its tree is killed there and then,
+//! which takes each cell's channel to the keeper with it, the broker ends
+//! the session and refuses everything after it, however the cell behaves,
+//! and the owner is told once, in Hatchling's own words: what kind of thing
+//! was stopped, never which secret. Each check is in the vault's access log,
+//! a hit as found.
+//!
+//! What a harness hands back counts too. The files it's given are checked
+//! clean first, so a secret in its patch, its message, or a file's name is
+//! one the run put together, and a brief like "join these two parts" would
+//! otherwise be a guess the agent reads the answer to. A project file
+//! holding a secret isn't the agent's guess: a harness refuses that, and
+//! the run goes on. Neither is a check that couldn't be answered: nothing
+//! is delivered, and nothing was found.
 
 use std::collections::BTreeSet;
 use std::path::Path;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use hatchling_artifact::SecretSet;
 use hatchling_core::SecretName;
+use hatchling_isolation::Supervised;
 use hatchling_scheduler::SentTo;
 use hatchling_vault::{OpensStores, SealedVault};
 use zeroize::Zeroizing;
@@ -69,23 +78,86 @@ const _: () = assert!(4 * MAX_WORK_BYTES < MAX_CHECK_BYTES);
 /// What a check is recorded as being for.
 pub const CHECK_PURPOSE: &str = "harness-check";
 
-/// Whether a run's tree has ended on a hit, and on what: one flag, shared
-/// by a run's session, its children's sessions and what watches them. The
-/// first hit stays.
+/// Whether a run's tree has ended on a hit, on what, and what a hit kills:
+/// one state, shared by a run's session, its children's sessions and what
+/// watches them. The first hit stays.
+///
+/// A hit kills every cell the tree holds there and then, from whatever
+/// thread found it: a run's cell can hold a channel to the keeper that no
+/// session stands in front of, so ending the session isn't enough, and the
+/// next look at the run may be a minute off. A cell held after the hit dies
+/// as it's held, so one that started in the same moment can't slip through.
+///
+/// A kill can't reach anything but that cell. Only a [`Weak`] is kept, so
+/// nothing is killed once its run lets go of its helper; and what's killed
+/// is that helper through its own pidfd, or through the spawner, which
+/// holds one on the same connection, so a pid reused since can't be named.
+/// The cell goes with its helper: it's bound to it by a parent-death
+/// signal, and everything else in it dies with its pid namespace's init.
 #[derive(Debug, Clone, Default)]
-pub struct HeldHit(Arc<OnceLock<SentTo>>);
+pub struct HeldHit(Arc<Mutex<Tree>>);
+
+/// A cell in a tree: its helper, as its run shares it.
+type Held = Weak<dyn Supervised + Send + Sync>;
+
+/// A [`HeldHit`]'s state.
+#[derive(Debug, Default)]
+struct Tree {
+    /// Where the first hit was on its way to.
+    to: Option<SentTo>,
+    /// The tree's cells, while their runs last and until a hit.
+    cells: Vec<Held>,
+}
+
+/// Kills `cell`, if its run still has it.
+fn kill(cell: &Held) {
+    if let Some(cell) = cell.upgrade() {
+        if let Err(error) = cell.terminate() {
+            // The next look at the run kills it again, and a helper whose
+            // spawner has gone is ended by its own watch on it.
+            tracing::error!(?error, "a stopped run's cell couldn't be killed");
+        }
+    }
+}
 
 impl HeldHit {
+    /// This state, whatever a thread that panicked left: a flag and a list
+    /// are whole at every step.
+    fn tree(&self) -> MutexGuard<'_, Tree> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// Ends the run: the agent's own text, on its way to `to`, held a
-    /// secret.
+    /// secret. Every cell held is killed before this returns.
     pub fn record(&self, to: SentTo) {
-        let _ = self.0.set(to);
+        let cells = {
+            let mut tree = self.tree();
+            tree.to.get_or_insert(to);
+            std::mem::take(&mut tree.cells)
+        };
+        cells.iter().for_each(kill);
     }
 
     /// Where the hit was on its way to, once there's been one.
     #[must_use]
     pub fn seen(&self) -> Option<SentTo> {
-        self.0.get().copied()
+        self.tree().to
+    }
+
+    /// Holds `cell`, a cell of this tree, for a hit to kill: at once if
+    /// there's been one.
+    pub(crate) fn hold<P: Supervised + Send + Sync + 'static>(&self, cell: &Arc<P>) {
+        let weak = Arc::downgrade(cell);
+        let cell: Held = weak;
+        let mut tree = self.tree();
+        if tree.to.is_none() {
+            // A tree's runs come and go: what's left is what's alive.
+            tree.cells.retain(|held| held.strong_count() > 0);
+            tree.cells.push(cell);
+        } else {
+            drop(tree);
+            kill(&cell);
+        }
     }
 }
 
@@ -270,6 +342,7 @@ mod tests {
 
     use super::*;
     use crate::browser_credentials::{SignIn, SignInAnswer, SignInRequest};
+    use crate::cell::Process;
 
     fn values(list: &[&[u8]]) -> Vec<Zeroizing<Vec<u8>>> {
         list.iter()
@@ -292,6 +365,88 @@ mod tests {
         assert_eq!(hit.seen(), Some(SentTo::Search));
         assert_eq!(child.seen(), Some(SentTo::Search));
         assert_eq!(HeldHit::default().seen(), None, "another run's is its own");
+    }
+
+    /// `/bin/sh -c script`, supervised as a helper is.
+    fn helper(script: &str) -> Arc<Process> {
+        let mut started = std::process::Command::new("/bin/sh")
+            .args(["-c", script])
+            .spawn()
+            .unwrap();
+        let process = hatchling_isolation::IsolationBackend::supervise(
+            &hatchling_isolation::platform(),
+            &mut started,
+        )
+        .unwrap();
+        Arc::new(Process::Local(process))
+    }
+
+    /// A helper that lives until it's killed, as a cell's does.
+    fn lingering() -> Arc<Process> {
+        helper("exec sleep 60")
+    }
+
+    /// Dead within five seconds, and reaped here. It can only die of a
+    /// kill: nothing else ends it for a minute.
+    fn dies(cell: &Process) -> bool {
+        let started = std::time::Instant::now();
+        while started.elapsed() < std::time::Duration::from_secs(5) {
+            if cell.try_wait().unwrap().is_some() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        false
+    }
+
+    /// A hit kills every cell of the tree there and then, with nothing
+    /// looking at the runs, and only that tree's.
+    #[test]
+    fn a_hit_kills_each_cell_it_holds_at_once() {
+        let (hit, other) = (HeldHit::default(), HeldHit::default());
+        let (parent, child, elsewhere) = (lingering(), lingering(), lingering());
+        hit.hold(&parent);
+        hit.hold(&child);
+        other.hold(&elsewhere);
+        assert_eq!(parent.try_wait().unwrap(), None, "no hit: it runs on");
+        hit.record(SentTo::Search);
+        assert!(dies(&parent), "the cell that was running");
+        assert!(dies(&child), "the rest of its tree");
+        assert_eq!(elsewhere.try_wait().unwrap(), None, "another run's");
+    }
+
+    /// A cell started as the hit lands can't slip through: held after it,
+    /// it dies as it's held.
+    #[test]
+    fn a_cell_held_after_a_hit_dies_as_it_is_held() {
+        let hit = HeldHit::default();
+        hit.record(SentTo::Page);
+        let late = lingering();
+        hit.hold(&late);
+        assert!(dies(&late));
+    }
+
+    /// A kill reaches only what its run still has: a run that let go of its
+    /// cell leaves nothing for a hit to find, and a cell already reaped is
+    /// answered by the kernel through its pidfd, whatever its pid names
+    /// now. Neither stops the cells after it.
+    #[test]
+    fn a_hit_reaches_nothing_that_has_ended() {
+        let hit = HeldHit::default();
+        let gone = lingering();
+        hit.hold(&gone);
+        drop(gone);
+        let reaped = helper("exit 0");
+        reaped
+            .wait_deadline(std::time::Duration::from_secs(5))
+            .unwrap();
+        hit.hold(&reaped);
+        let last = lingering();
+        hit.hold(&last);
+        assert_eq!(hit.tree().cells.len(), 2, "what has gone isn't kept");
+        hit.record(SentTo::Website);
+        assert!(reaped.terminate().is_ok(), "a reaped cell is no error");
+        assert!(dies(&last));
     }
 
     /// An address is the text written, then what a site reads from it. A

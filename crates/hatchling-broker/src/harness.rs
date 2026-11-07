@@ -61,9 +61,12 @@
 //!   whether or not a cell has had it. With a keeper running, the keeper
 //!   answers, and the broker never sees one ([`crate::held_check`]). A
 //!   check that can't be answered stops the run, or the delivery. A secret
-//!   in the brief is the agent's own text, so it ends the agent's run too
-//!   ([`HarnessVault::brief_held`]); one in a project's file is a mistake
-//!   in the project, and is only refused.
+//!   in the brief is the agent's own text, and a brief can ask the harness
+//!   to put one together, so one in the brief or in anything handed back
+//!   ends an agent's run ([`HarnessVault::held_hit`]): the files it was
+//!   given were checked clean, so what comes back is the run's own doing.
+//!   One in a project's file is a mistake in the project, and is only
+//!   refused. An owner invoking a harness themselves is only refused too.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -83,7 +86,7 @@ use zeroize::Zeroizing;
 use hatchling_core::subagent::{ActivityEvent, HarnessOutcome, SubagentEvent};
 use hatchling_core::ui::operator::CellKind;
 use hatchling_core::{CapabilityName, SkillOp, SkillResult};
-use hatchling_scheduler::Timestamp;
+use hatchling_scheduler::{SentTo, Timestamp};
 use hatchling_skill::CodeHash;
 use serde::{Deserialize, Serialize};
 
@@ -219,10 +222,12 @@ pub trait HarnessVault {
     /// doesn't start, and nothing it wrote is delivered.
     fn contains(&self, text: &[u8]) -> Result<bool, String>;
 
-    /// The brief, the agent's own text, held a secret
-    /// ([`crate::held_check::HeldHit`]). Nothing to end when it wasn't an
-    /// agent's: the owner invoking a harness themselves is only refused.
-    fn brief_held(&self) {}
+    /// What a held secret in this run's brief or its hand-back ends: the
+    /// agent's run it's part of. Nothing to end when it wasn't an agent's:
+    /// the owner invoking a harness themselves is only refused.
+    fn held_hit(&self) -> Option<&crate::held_check::HeldHit> {
+        None
+    }
 }
 
 /// A vault for a run that can't hold anything: a key lookup alone.
@@ -249,6 +254,13 @@ enum Stopped {
     Holds(String),
     /// The check couldn't be answered: the detail is in the broker's log.
     Unchecked,
+}
+
+/// Ends the agent's run, if it is one: a secret was caught going to `to`.
+fn end_run(keys: HarnessKeys<'_>, to: SentTo) {
+    if let Some(hit) = keys.held_hit() {
+        hit.record(to);
+    }
 }
 
 /// Whether `text` holds a secret; one that can't be told stops the run.
@@ -899,7 +911,8 @@ impl ToolCopy {
             .mode(0o555)
             .open(&path)?;
         file.write_all(bytes)?;
-        set_mode(&path, 0o555)
+        // On the file just made, whatever the umask took off.
+        file.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o555))
     }
 
     /// Gives the program at `first` in the copy the name `name` too.
@@ -941,10 +954,9 @@ impl Drop for ToolCopy {
     }
 }
 
-/// Sets `path`'s mode, whatever the umask.
+/// Sets the directory `path`'s mode, whatever the umask.
 fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+    hatchling_sys::chmod_dir(path, mode).map_err(std::io::Error::other)
 }
 
 /// The program at `path`, through its links (`/bin/sh` is one on most
@@ -1368,7 +1380,7 @@ impl Harnesses {
         // vendor. Refused here: the relay runs where only one key is held.
         if let Err(stopped) = brief.free_of_secrets(keys) {
             if matches!(stopped, Stopped::Holds(_)) {
-                keys.brief_held();
+                end_run(keys, SentTo::Harness);
             }
             return report.stopped(stopped);
         }
@@ -1431,7 +1443,10 @@ impl Harnesses {
         }
         let relay = relaying.map(|relaying| relaying.start(self.timeout + RELAY_GRACE));
         let ran = run_cell(
-            &runtime.clone().with_timeout(self.timeout),
+            &runtime
+                .clone()
+                .with_timeout(self.timeout)
+                .in_tree(keys.held_hit()),
             &cell,
             CellKind::Harness,
             &[],
@@ -1472,7 +1487,8 @@ impl Harnesses {
                 report.record_changes(&found);
                 if !found.is_empty() {
                     let patch = patch(&found);
-                    if holding(keys, patch.as_bytes()) == Ok(false) {
+                    let held = holding(keys, patch.as_bytes());
+                    if held == Ok(false) {
                         report.patch = self.deliver_patch(&patch);
                     } else {
                         tracing::warn!(
@@ -1480,6 +1496,9 @@ impl Harnesses {
                             "a harness patch held a secret, or couldn't be checked: not delivered"
                         );
                         report.patch_withheld = true;
+                    }
+                    if held == Ok(true) {
+                        end_run(keys, SentTo::HarnessReturn);
                     }
                 }
             }
@@ -1954,10 +1973,8 @@ impl HarnessVault for VaultKeys<'_> {
         crate::held_check::check(self.keeper, self.config, self.key, text)
     }
 
-    fn brief_held(&self) {
-        if let Some(hit) = self.run {
-            hit.record(hatchling_scheduler::SentTo::Harness);
-        }
+    fn held_hit(&self) -> Option<&crate::held_check::HeldHit> {
+        self.run
     }
 }
 
@@ -2065,8 +2082,12 @@ struct Brief {
 impl Brief {
     /// The brief `input` carries, checked.
     fn parse(input: &str) -> Result<Self, String> {
-        let brief: Self = serde_json::from_str(input)
-            .map_err(|err| format!("the brief is not a harness brief: {err}"))?;
+        let brief: Self = serde_json::from_str(input).map_err(|error| {
+            // The parser's words name this type and quote the brief: they
+            // stay in the log, escaped.
+            tracing::warn!(?error, "a harness brief that doesn't parse");
+            String::from("the brief is not a harness brief")
+        })?;
         if brief.task.trim().is_empty() || brief.task.len() > MAX_TASK_BYTES {
             return Err(format!("the task must be 1 to {MAX_TASK_BYTES} bytes"));
         }
@@ -2161,7 +2182,8 @@ struct RunDirs {
 }
 
 impl RunDirs {
-    /// Fresh, owner-only directories under the temp dir.
+    /// Fresh directories under the temp dir: the base searchable by all,
+    /// each tree in it owner-only.
     fn create() -> Result<Self, String> {
         // A name no one can guess, made exclusively below: another local
         // user can't pre-create it to block the run.
@@ -2195,7 +2217,14 @@ impl RunDirs {
 
 impl Drop for RunDirs {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.base);
+        // Through `remove_tree`: a cell wrote in here, and nothing outside
+        // the run's directory goes. Every tree in it is the broker's by now,
+        // which is the one user it enters: the run took them back. Anything
+        // left says a take-back failed, and the sweep doesn't own it.
+        match hatchling_sys::remove_dir_tree(&self.base) {
+            Ok(hatchling_sys::Removed::Whole) => {}
+            left => tracing::warn!(?left, base = ?self.base, "a harness run's directory stays"),
+        }
     }
 }
 
@@ -2292,10 +2321,11 @@ fn harness_cell(
 /// Through the spawner when one runs (WO-017): on the cell's own ids it
 /// gives them and takes them back by chown, held to its policy, so a
 /// broker that isn't root reads what the cell left. Without one, a root
-/// broker gives them by chown ([`hand_over`]) and needs nothing back: it
-/// reads anything. On the owner's subordinate ids both go through the
-/// tree helper ([`change_trees`]), since the broker can neither give a
-/// file away nor read, or remove, what the cell left.
+/// broker does the same itself ([`hand_over`]): it could read them anyway,
+/// but what it removes after the run must be its own ([`RunDirs`]). On the
+/// owner's subordinate ids both go through the tree helper
+/// ([`change_trees`]), since the broker can neither give a file away nor
+/// read, or remove, what the cell left.
 ///
 /// # Errors
 ///
@@ -2312,28 +2342,23 @@ fn trees(
     }
     match (cell.ids, op) {
         (CellIds::Own, TreeOp::Give) => hand_over(dirs, cell.uid_base),
-        (CellIds::Own, TreeOp::Reclaim) => Ok(()),
+        (CellIds::Own, TreeOp::Reclaim) => hand_over(dirs, hatchling_sys::euid()),
         (CellIds::Subordinate, _) => change_trees(runtime.spawner(), op, &changed, cell.identity()),
     }
 }
 
-/// Gives the work tree and scratch directory to `uid`, the cell's map
-/// base. A root broker's cell runs as an unprivileged uid, which must own
-/// them to write; an unprivileged broker's cell runs as the broker's own
-/// uid, so handing them over changes nothing. The group is left alone:
-/// the owner bits are the only ones set.
+/// Gives the work tree and scratch directory to `uid`: the cell's map base
+/// before a run, the broker's own after it. A root broker's cell runs as an
+/// unprivileged uid, which must own them to write; an unprivileged broker's
+/// cell runs as the broker's own uid, so handing them over changes nothing.
+/// The group stays the broker's: the owner bits are the only ones set.
+///
+/// Through [`hatchling_sys::chown_tree`]: a cell has written here, so each
+/// directory is changed through a handle, and nothing is followed.
 fn hand_over(dirs: &RunDirs, uid: u32) -> Result<(), String> {
     for top in [&dirs.work, &dirs.scratch] {
-        let mut pending = vec![top.clone()];
-        while let Some(path) = pending.pop() {
-            std::os::unix::fs::lchown(&path, Some(uid), None)
-                .map_err(|err| format!("cannot hand {} to the cell: {err}", path.display()))?;
-            if std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_dir()) {
-                let entries = std::fs::read_dir(&path)
-                    .map_err(|err| format!("cannot read {}: {err}", path.display()))?;
-                pending.extend(entries.filter_map(Result::ok).map(|entry| entry.path()));
-            }
-        }
+        hatchling_sys::chown_tree(top, uid, hatchling_sys::egid())
+            .map_err(|err| format!("cannot hand {} over: {err}", top.display()))?;
     }
     Ok(())
 }
@@ -2731,13 +2756,25 @@ impl Report {
     /// This report, with nothing the run wrote that holds a secret. A
     /// file's name or a message can carry one as well as a patch can.
     ///
+    /// A secret found here ends an agent's run, as soon as it's found, so a
+    /// later text that can't be checked doesn't lose it. A refused report's
+    /// reason can only be quoting the brief, no cell having run, so that
+    /// one is what the agent tried to give the harness, not what it handed
+    /// back.
+    ///
     /// # Errors
     ///
     /// Why a text couldn't be checked: none of it can be delivered.
     fn screened(mut self, keys: HarnessKeys<'_>) -> Result<Self, String> {
+        let from = if self.outcome == HarnessOutcome::Refused {
+            SentTo::Harness
+        } else {
+            SentTo::HarnessReturn
+        };
         let withheld = |text: &mut String| {
             if keys.contains(text.as_bytes())? {
                 WITHHELD.clone_into(text);
+                end_run(keys, from);
             }
             Ok::<(), String>(())
         };
@@ -4624,15 +4661,12 @@ mod tests {
             }
         );
         assert!(
-            Brief::parse("[]")
-                .unwrap_err()
-                .starts_with("the brief is not a harness brief: ")
+            Brief::parse("[]").unwrap_err() == "the brief is not a harness brief",
+            "fixed words: serde's would name a Rust type"
         );
         let extra = parse(json!({ "task": "t", "root": "r", "paths": ["a"], "run": "x" }));
         assert!(
-            extra
-                .unwrap_err()
-                .starts_with("the brief is not a harness brief: "),
+            extra.unwrap_err() == "the brief is not a harness brief",
             "unknown fields are refused"
         );
         let task = |task: &str| parse(json!({ "task": task, "root": "r", "paths": ["a"] }));
@@ -4889,6 +4923,35 @@ mod tests {
             let refused = hand_over(&dirs, 0).unwrap_err();
             assert!(refused.starts_with("cannot hand "), "{refused}");
         }
+    }
+
+    /// A run's directories go through the guarded walk, which keeps what's
+    /// past its depth: a plain recursive delete wouldn't. A cell's link out
+    /// of the tree is removed, never followed.
+    #[test]
+    fn a_runs_directories_go_through_the_guarded_walk() {
+        let outside = Scratch::new("run-dirs-outside");
+        outside.write("kept", b"kept");
+        let dirs = RunDirs::create().unwrap();
+        let base = dirs.base.clone();
+        std::os::unix::fs::symlink(outside.join("kept"), dirs.work.join("link")).unwrap();
+        std::os::unix::fs::symlink(&outside.0, dirs.scratch.join("link")).unwrap();
+        let deep: PathBuf =
+            (0..=hatchling_sys::MAX_DEPTH).fold(dirs.work.join("deep"), |path, _| path.join("d"));
+        std::fs::create_dir_all(&deep).unwrap();
+        drop(dirs);
+        let left = base.exists();
+        let linked = base.join("work/link").exists();
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(left, "the walk keeps what's too deep, and what's above it");
+        assert!(!linked, "a link went with the rest");
+        assert_eq!(std::fs::read(outside.join("kept")).unwrap(), b"kept");
+
+        let dirs = RunDirs::create().unwrap();
+        let base = dirs.base.clone();
+        write_new(&dirs.work.join("src/a"), b"a").unwrap();
+        drop(dirs);
+        assert!(!base.exists(), "with nothing kept, it all goes");
     }
 
     #[test]
@@ -5194,6 +5257,10 @@ mod tests {
         let told = serde_json::to_string(&screened).unwrap();
         assert!(!told.contains("hidden"), "{told}");
         assert_eq!(screened.unpatchable.get(1).unwrap(), "fine.bin");
+        assert!(
+            !told.contains("hidden"),
+            "the report still holds what was withheld"
+        );
     }
 
     /// A report whose text can't be checked isn't one to deliver, whichever

@@ -58,9 +58,9 @@ Real egress and channel credentials must never enter a cell. It's a vulnerabilit
 
 - obtain a real credential, the vault's contents or its key material;
 - forge, replay or redirect a surrogate token, or use it after it expires or for another destination;
-- obtain a secret through a `vault:fetch` grant other than the one named.
+- read a secret from a cell: no cell can, whatever a grant says.
 
-It's also in scope if the vault at rest can be read or tampered with undetected without its unlock factors, or if a fetched secret reaches the model or a log unredacted.
+It's also in scope if the vault at rest can be read or tampered with undetected without its unlock factors, or if a secret reaches the model or a log unredacted.
 
 ### The broker and the local API
 

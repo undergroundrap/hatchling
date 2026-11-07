@@ -1,6 +1,6 @@
 # Hatchling session protocol
 
-**Status:** v13 (current). This doc is the human-readable reference
+**Status:** v20 (current). This doc is the human-readable reference
 for the broker session wire protocol. The Rust types live in
 `crates/hatchling-core/src/messages.rs` (op families). The
 authoritative version history is the doc comment on
@@ -38,12 +38,15 @@ vault keeper reads a cell's vault channel the same way.
 
 **A held secret ends the session.** When the agent's own text is found to
 hold a secret the broker keeps (a page's address, a search, text typed into
-a page, a harness's brief), that op is answered with its usual refusal, and
-the broker closes the connection: no client has to obey anything, and no
-new op or result is involved. The next op finds the session gone. A hit in a
-subagent's session ends its parent's and its siblings' at their next op, and
-the owner is told by the broker, once. A check that can't be answered is
-refused and ends nothing, and so does a project's file holding a secret.
+a page, a harness's brief), or a harness it started hands one back (in its
+patch, its message, its question or a file's name), the broker kills every
+cell of the run's tree, its session's and its children's, and each cell's
+vault channel goes with it. That op is answered with its usual refusal, if
+its cell is still there to read it, and the broker closes the connection: no
+client has to obey anything, and no new op or result is involved. The next op
+finds the session gone. The owner is told by the broker, once. A check that
+can't be answered is refused and ends nothing, and so does a project's file
+holding a secret. An owner invoking a harness themselves is only refused.
 
 ## Op families
 
@@ -234,7 +237,8 @@ session holds.
   the page with a sign-in the owner keeps for its site, naming the fields
   by their ids from the last snapshot. Only in a browser running a
   signed-in profile, and only on the exact origin the sign-in was kept for.
-  The broker types it; the agent learns only the page after, which shows
+  The vault keeper sends it to the browser's controller, which types it,
+  and the broker never holds it; the agent learns only the page after, which shows
   none of it, or why it wasn't done: no sign-in for this site, which one
   (by `label`) when there are several, or `Failed { failure: OtherOrigin }`
   when the page isn't on the sign-in's origin. A username goes only into a

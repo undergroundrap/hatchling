@@ -25,6 +25,10 @@
 //!   session, printing the broker's reply.
 //! - `vault-leak`: print [`HELD`], as a run handing back a secret it
 //!   holds would.
+//! - `vault-channel:<name>`: ask for `name` on the cell's own vault
+//!   channel, which no session stands in front of, printing the reply.
+//! - `vault-spin:<name>`: ask for `name` on that channel again and again,
+//!   for as long as it answers, then spin, as a compromised run would.
 //! - `channel:<id>`: receive on `id`.
 //! - `schedule`: try to create a schedule.
 //! - `followup:<secs>`: ask for this run's follow-up, within its grants.
@@ -56,6 +60,7 @@ use std::io::Write as _;
 use std::os::fd::AsFd as _;
 use std::os::unix::net::UnixStream;
 use std::process::ExitCode;
+use std::sync::OnceLock;
 
 use hatchling_core::framing::{read_frame, write_frame};
 use hatchling_core::{
@@ -86,6 +91,43 @@ fn history(out: &mut impl std::io::Write) -> ExitCode {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(2)
+    }
+}
+
+/// The cell's own channel to the keeper, when it was given one.
+fn vault_channel() -> Option<&'static UnixStream> {
+    static CHANNEL: OnceLock<Option<UnixStream>> = OnceLock::new();
+    CHANNEL
+        .get_or_init(|| {
+            let fd = std::env::var("HATCHLING_VAULT_FD").ok()?.parse().ok()?;
+            hatchling_sys::net::inherited_unix_stream(fd).ok()
+        })
+        .as_ref()
+}
+
+/// Asks for `name` on the cell's vault channel: the reply, or why none.
+fn ask_vault_channel(name: &str) -> String {
+    let Some(channel) = vault_channel() else {
+        return String::from("no-channel");
+    };
+    let request = SessionRequest::Vault(VaultOp::Fetch {
+        name: name.to_owned(),
+    });
+    let Ok(bytes) = serde_json::to_vec(&request) else {
+        return String::from("unencoded");
+    };
+    match write_frame(channel, &bytes).and_then(|()| read_frame(channel)) {
+        Ok(reply) => String::from_utf8_lossy(&reply).into_owned(),
+        Err(error) => format!("gone: {error}"),
+    }
+}
+
+/// Asks for `name` on the vault channel for as long as it answers, then
+/// spins.
+fn spin_on_vault_channel(name: &str) -> ! {
+    while !ask_vault_channel(name).starts_with("gone") {}
+    loop {
+        std::hint::spin_loop();
     }
 }
 
@@ -178,6 +220,9 @@ fn main() -> ExitCode {
                 std::hint::spin_loop();
             }
         }
+        if let Some(name) = probe.strip_prefix("vault-spin:") {
+            spin_on_vault_channel(name);
+        }
         lines.push(format!("{probe}={}", run_probe(session.as_ref(), probe)));
     }
     if writeln!(out, "{}", lines.join("\n"))
@@ -227,6 +272,9 @@ fn run_probe(session: Result<&UnixStream, &String>, probe: &str) -> String {
     }
     if probe == "vault-leak" {
         return String::from(HELD);
+    }
+    if let Some(name) = probe.strip_prefix("vault-channel:") {
+        return ask_vault_channel(name);
     }
     if let Some(path) = probe.strip_prefix("connect:") {
         return match UnixStream::connect(path) {

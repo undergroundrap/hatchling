@@ -609,7 +609,14 @@ fn bounded(fetcher: &Fetcher, url: &WebUrl, until: Instant) -> Result<Fetched, S
                 FETCH_DEADLINE.as_secs()
             ))
         },
-        |answer| answer.map_err(|error| error.to_string()),
+        |answer| {
+            answer.map_err(|error| {
+                // Escaped: it can hold what a site said. What the agent is
+                // told is the error's fixed words.
+                tracing::info!(?error, "a page wasn't read");
+                error.to_string()
+            })
+        },
     )
 }
 
@@ -1357,7 +1364,7 @@ pub(crate) mod tests {
     /// owner: it holds no place in the queue after it's gone.
     #[test]
     fn a_session_that_ends_takes_back_what_it_had_waiting() {
-        let config = web_config("ends");
+        let config = web_config("session-ends");
         let mut web = WebSession::new(&config, "ends-t", None);
         let master = MasterKey::generate().unwrap();
         let answer = handle_web_op(&config, &master, &mut web, &fetch("https://a.example/x"));

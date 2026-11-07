@@ -59,7 +59,7 @@ pub fn handle_skill_op(
     // set, whatever a concurrent trust-root reload swaps in.
     let set = skills.snapshot();
     match check_skill_call(set.registry(), &id, capability) {
-        Ok(()) => match skills.run(&set, &id, input) {
+        Ok(()) => match skills.run_in(&set, &id, input, keys.held_hit()) {
             Ok(output) => {
                 tracing::info!(
                     cell_id = %cell_id,
