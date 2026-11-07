@@ -21,6 +21,8 @@ You'll see `sudo` elsewhere in these docs. That's for people who installed Hatch
 | **Hatchling Tools → Make a backup** | Saves one sealed file with everything Hatchling knows | Your key's PIN, if you use one |
 | **Hatchling Tools → Unlock** | Opens a vault a security key protects, after a restart | Your key's PIN, then you touch it |
 
+Windows search finds these by name, not by their folder: open the Start menu and type **Unlock**, say.
+
 Windows also adds an orange **hatchling-wsl** entry, because every WSL distro gets one. It opens a Linux terminal. You don't need it.
 
 ## Using a security key

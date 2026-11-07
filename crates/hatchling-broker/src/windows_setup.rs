@@ -16,11 +16,11 @@ const MARKER: &str = "/etc/hatchling/windows-setup-version";
 const SAID: [(&str, &str); 5] = [
     (
         "`sudo hatchling-broker unlock`",
-        "Unlock (in the Start menu, under Hatchling Tools)",
+        "Unlock (type it in the Start menu)",
     ),
     (
         "sudo hatchling-broker unlock",
-        "Unlock (in the Start menu, under Hatchling Tools)",
+        "Unlock (type it in the Start menu)",
     ),
     (
         "The app's address, as yourself: hatchling-host url",
@@ -74,11 +74,11 @@ mod tests {
     fn windows_is_told_where_to_click_or_what_to_type() {
         assert_eq!(
             said("the same: sudo hatchling-broker unlock", true),
-            "the same: Unlock (in the Start menu, under Hatchling Tools)"
+            "the same: Unlock (type it in the Start menu)"
         );
         assert_eq!(
             said("Run `sudo hatchling-broker unlock`, and touch it", true),
-            "Run Unlock (in the Start menu, under Hatchling Tools), and touch it"
+            "Run Unlock (type it in the Start menu), and touch it"
         );
         assert_eq!(
             said(

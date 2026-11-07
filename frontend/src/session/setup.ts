@@ -99,8 +99,8 @@ function backupStep(setup: SetupView, now: number): SetupStep {
 }
 /** Where each step is on a Windows install: the Start menu, with no command to type. */
 const START_MENU: Readonly<Partial<Record<SetupStep['id'], string>>> = {
-    vault: 'Open the Start menu, then Hatchling Tools, then Protect your vault.',
-    backup: 'Open the Start menu, then Hatchling Tools, then Make a backup.',
+    vault: 'Open the Start menu and type Protect your vault.',
+    backup: 'Open the Start menu and type Make a backup.',
 };
 function onWindowsStep(step: SetupStep): SetupStep {
     const place = START_MENU[step.id];

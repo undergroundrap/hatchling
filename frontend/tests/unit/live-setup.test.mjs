@@ -78,9 +78,9 @@ test('a Windows install points to the Start menu, and types what it must in Powe
     const vault = steps.find(found => found.id === 'vault');
     const backup = steps.find(found => found.id === 'backup');
     assert.deepEqual(vault.commands, [], 'no sudo: its account has none');
-    assert.match(vault.said, /Open the Start menu, then Hatchling Tools, then Protect your vault\.$/);
+    assert.match(vault.said, /Open the Start menu and type Protect your vault\.$/);
     assert.deepEqual(backup.commands, []);
-    assert.match(backup.said, /then Make a backup\.$/);
+    assert.match(backup.said, /and type Make a backup\.$/);
     const unset = { ...model, endpoint: null };
     const first = setupSteps(unset, { ...bare, windowsSetup: true }, false, NOW)[0];
     assert.ok(first.commands.length > 0);

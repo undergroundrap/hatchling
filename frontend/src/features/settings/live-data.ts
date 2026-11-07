@@ -41,7 +41,7 @@ export function liveSetup(ctx: AppContext): HTMLElement[] {
     const checklist = (): void => { ctx.dialogs.closeAll(); ctx.navigate('setup'); };
     return [
         h('div', { class: 'settings-group' }, h('div', { class: 'data-row' }, h('div', {}, h('strong', {}, 'Setup checklist'), h('p', { class: 'data-description' }, 'What’s done, and what’s left.')), button('Open', checklist, { variant: 'ghost' }))),
-        h('p', { class: 'settings-note' }, `${onWindowsSetup(ctx) ? 'You don’t need these for everyday use: Protect your vault and Make a backup are in the Start menu, under Hatchling Tools. If you want one of these, open PowerShell from the Start menu yourself, paste it there and press Enter. You don’t need Linux or sudo.' : 'Run these in a terminal you opened yourself.'} Anything secret you type there goes to Hatchling, and to nothing else. Set up one model, or both: with both, you switch between them above.`),
+        h('p', { class: 'settings-note' }, `${onWindowsSetup(ctx) ? 'You don’t need these for everyday use. To protect your vault or make a backup, open the Start menu and type its name. If you want one of these, open PowerShell from the Start menu yourself, paste it there and press Enter. You don’t need Linux or sudo.' : 'Run these in a terminal you opened yourself.'} Anything secret you type there goes to Hatchling, and to nothing else. Set up one model, or both: with both, you switch between them above.`),
         commandGroup(ctx, 'Where your model runs', MODEL_COMMANDS),
         commandGroup(ctx, 'Who can open your vault', KEY_COMMANDS),
     ];
