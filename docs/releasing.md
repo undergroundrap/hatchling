@@ -17,6 +17,7 @@ How a Hatchling version is cut and published, and how a new crate gets onto crat
    - name the new version in [Install](install.md#install)'s clone and download commands, and the supported release in `SECURITY.md` (`git grep -n 'vA.B.C'` for the old version finds them), so the guide on `main` installs the release this pull request makes;
    - all required checks green, including "crates.io dry run", and the `release` workflow's dry run (it runs on a pull request that changes `Cargo.toml` or `Cargo.lock`): both builds of each target the same, the SBOMs made, and the notes taken from the version's section;
    - the [release security checklist](release-security-checklist.md) run, each item's result recorded in the pull request's description.
+   - [the scorecard](scorecard.md) updated: every row this release changes done again on a fresh install, with ✅ only for what a person did.
 2. **Merge it**, and wait for `main`'s CI to pass.
 3. **Tag the merge commit and push the tag.** That's the release. Only an admin can create, move or delete a `v*` tag (the "Protect release tags" rule set), and only a `v*` tag's run may use the `release` environment, the one crates.io trusts:
 

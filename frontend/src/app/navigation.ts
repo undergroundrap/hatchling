@@ -51,7 +51,7 @@ export function renderRail(ctx: AppContext): HTMLElement {
     actions[0]?.setAttribute('aria-label', 'Keyboard shortcuts');
     actions[3]?.append(h('kbd', {}, 'Ctrl+,'));
     actions[3]?.setAttribute('aria-label', 'Settings');
-    nav.append(h('div', { class: 'rail-bottom' }, iconButton('download', 'Downloads', () => ctx.navigate('library', 'documents')), more));
+    nav.append(h('div', { class: 'rail-bottom' }, ctx.state.mode === 'live' ? null : iconButton('download', 'Downloads', () => ctx.navigate('library', 'documents')), more));
     ctx.ui.lastMotionRoute = ctx.ui.route;
     return nav;
 }
