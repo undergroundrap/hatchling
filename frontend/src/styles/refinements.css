@@ -199,6 +199,92 @@ body.has-artifact-dock .page { width: 100%; margin-inline: auto; }
     .system-table td { height: 49px; }
 }
 
+.model-group {
+    padding: 16px;
+}
+
+.model-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.settings-group .model-head .row-title {
+    font-size: calc(14px * var(--ui-scale, 1));
+    font-weight: 500;
+}
+
+.model-head .muted {
+    min-width: 0;
+    font-size: calc(12px * var(--ui-scale, 1));
+    overflow-wrap: anywhere;
+    text-align: right;
+}
+
+.model-facts {
+    margin-top: 4px;
+    font-size: calc(12px * var(--ui-scale, 1));
+    line-height: calc(17px * var(--ui-scale, 1));
+    color: var(--muted-on-card);
+}
+
+.model-choice {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+    gap: 10px;
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border-strong);
+}
+
+.model-choice .form-field {
+    min-width: 0;
+}
+
+.settings-group .model-choice select,
+.settings-group .model-choice input {
+    width: 100%;
+    min-height: 34px;
+}
+
+.settings-group .model-choice .button {
+    min-height: 34px;
+}
+
+.model-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin-top: 10px;
+}
+
+.model-hint {
+    min-width: 0;
+    font-size: calc(12px * var(--ui-scale, 1));
+    line-height: calc(17px * var(--ui-scale, 1));
+    color: var(--muted-on-card);
+}
+
+.model-group .model-switch {
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border-strong);
+}
+
+.model-foot .feed-prompt-actions {
+    flex: none;
+    margin: 0;
+}
+
+@media (max-width: 520px) {
+    .model-choice {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
 .data-row {
     display: flex;
     align-items: center;

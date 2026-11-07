@@ -68,9 +68,9 @@ function chooser(ctx: AppContext, port: ModelPort, model: ModelView, refresh: ()
     const current = inUse(model) ?? '';
     const options = (model.available ?? []).map(id => ({ value: id, label: id }));
     const input = model.available !== null && options.length > 0
-        ? selectField('Model', 'model', options.some(option => option.value === current) ? options : [{ value: current, label: `${current} (not on the server)` }, ...options], current)
-        : field('Model', 'model', current, { placeholder: 'The model’s id on its server' });
-    const form = h('form', { class: 'stack model-choice', 'aria-label': 'Choose the model' }, input, h('div', { class: 'feed-prompt-actions' }, h('button', { class: 'button primary', type: 'submit' }, 'Use this model')));
+        ? selectField('Change the model', 'model', options.some(option => option.value === current) ? options : [{ value: current, label: `${current} (not on the server)` }, ...options], current)
+        : field('Change the model', 'model', current, { placeholder: 'The model’s id on its server' });
+    const form = h('form', { class: 'model-choice', 'aria-label': 'Choose the model' }, input, h('button', { class: 'button primary', type: 'submit' }, 'Use this model'));
     form.addEventListener('submit', (event) => {
         event.preventDefault();
         const name = valueOf(form, 'model').trim();
@@ -96,9 +96,10 @@ export function liveModel(ctx: AppContext, refresh: () => void): HTMLElement {
         group.append(h('p', {}, `Hatchling couldn’t read the model: ${state.detail}`));
     else {
         const model = state.model;
-        group.append(h('div', { class: 'split-row' }, h('span', { class: 'row-title' }, inUse(model) ?? 'No model is set'), h('span', { class: 'muted' }, model.endpoint ?? '')), h('p', {}, sourceLine(model)), h('p', {}, whereLine(model)), h('p', {}, fitLine(model)), chooser(ctx, port, model, refresh), h('p', { class: 'muted text-small' }, model.available === null
+        group.append(h('div', { class: 'model-head' }, h('span', { class: 'row-title' }, inUse(model) ?? 'No model is set'), h('span', { class: 'muted' }, model.endpoint ?? '')), h('p', { class: 'model-facts' }, `${sourceLine(model)} ${whereLine(model)} ${fitLine(model)}`), chooser(ctx, port, model, refresh));
+        const hint = h('p', { class: 'model-hint' }, model.available === null
             ? 'Its server doesn’t list its models here: type the id it gives the model.'
-            : 'These are the models on its server. To add one, fetch it there (for Ollama, ollama pull), then refresh.'));
+            : 'These are the models on its server. To add one, fetch it there (for Ollama, ollama pull), then refresh.');
         const actions = h('div', { class: 'feed-prompt-actions' }, button('Refresh', () => { void port.refresh().then(refresh); }));
         if (model.chosen !== null && model.configured !== null)
             actions.append(button(`Back to ${model.configured}`, () => {
@@ -107,7 +108,7 @@ export function liveModel(ctx: AppContext, refresh: () => void): HTMLElement {
                     refresh();
                 });
             }, { variant: 'link' }));
-        group.append(actions);
+        group.append(h('div', { class: 'model-foot' }, hint, actions));
         if (model.other !== null)
             group.append(otherServer(ctx, port, model.other, model.switched, refresh));
     }

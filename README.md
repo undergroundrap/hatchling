@@ -6,6 +6,8 @@
 
 <p align="center"><strong>Personal AI agents you actually own.</strong></p>
 
+<p align="center">By Ocean Bennett</p>
+
 <p align="center">
   <a href="LICENSE"><img alt="License: AGPL-3.0-or-later" src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg"></a>
   <a href="https://github.com/undergroundrap/hatchling/actions/workflows/ci.yml"><img alt="Gate" src="https://img.shields.io/github/actions/workflow/status/undergroundrap/hatchling/ci.yml?branch=main&amp;label=gate"></a>
