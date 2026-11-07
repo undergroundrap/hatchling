@@ -1,7 +1,8 @@
 // The sign-ins the broker fills for the owner's signed-in sites (WO-030), as
 // the broker lists them: by label and origin, never a username or password.
 // Loaded when the connection opens and after each change. The app can list
-// and delete them. It can't add one: a secret is never typed in the app.
+// and delete them. It can't add one: a sign-in to keep is typed at the owner's
+// own terminal, and the UI socket refuses one.
 import type { CommandResult } from '../../protocol/models.js';
 import type { LiveClient, Reply } from './client.js';
 import type { SignInOp, SignInResult, SiteSignIn } from './protocol/generated.js';
