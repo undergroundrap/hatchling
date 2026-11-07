@@ -71,6 +71,7 @@ What Hatchling really does on a fresh install, one row at a time.
 | Signed skills | 🚧 | None ship |
 | Coding harnesses | 🚧 | Not reachable from chat |
 | Deep research | 🚧 | Nothing in the app starts it |
+| From chat, the agent launches a coding harness in a cell and returns a patch for review | 🚧 | An option, unsized and uncommitted |
 | Web artifacts | ❌ | |
 | Images, video, audio | ❌ | |
 
