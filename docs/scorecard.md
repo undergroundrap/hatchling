@@ -102,7 +102,7 @@ What Hatchling really does on a fresh install, one row at a time.
 
 | Finding | Status |
 |---|---|
-| A held secret in a file given to a harness could reach its AI vendor | Fixed in 0.8.0 at intake |
+| A held secret in a file given to a harness could reach its AI vendor | Open, due before 0.8.0. The intake scan works, but with a keeper running it only knows secrets a cell has had, so API keys and sign-ins aren't checked |
 | The Keep sign-in form took a password in the web app | Fixed in 0.8.0: the form is gone, and sign-ins are added at the terminal |
 | Signing in by Take control sends what you type through the app as keystrokes | Open, for the keeper's own window |
 | Memory, goals, feed posts, decisions, ideas, run specs and harness temp files aren't sealed at rest | Open. Continuity doesn't ship onto these |
