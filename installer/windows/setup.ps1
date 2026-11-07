@@ -18,6 +18,10 @@
 # The owner's account in the distro has no password and no sudo: only Windows'
 # `wsl -u root` runs the commands that need root, so the app's host, which
 # runs as that account, gets no way to root.
+#
+# The distro is sealed from Windows: no drives mounted, and no starting Windows
+# programs, so an account in it that isn't root can't reach this PC. Windows can
+# still reach in, and that's how the release files get there.
 param(
     [string] $Distro = 'hatchling-wsl',
     [string] $Release = (Join-Path $PSScriptRoot 'release'),
@@ -72,12 +76,30 @@ if ($updating -and $Backup -and (Get-FromWsl $Distro @('systemctl', 'is-active',
 if ($LASTEXITCODE -ne 0) { Stop-Setup "Couldn't make the account '$Owner' in $Distro." }
 $ownerUid = Get-FromWsl $Distro @('id', '-u', $Owner)
 
+# Applied by restarting the distro, so it's in place before the broker first
+# starts. An update comes after its backup, which needs the broker running.
+$seal = 'grep -q ^.automount /etc/wsl.conf 2>/dev/null || printf ''\n[automount]\nenabled=false\n\n[interop]\nenabled=false\nappendWindowsPath=false\n'' >> /etc/wsl.conf'
+if ((Get-FromWsl $Distro @('sh', '-c', 'test -e /mnt/c/Windows && echo open')) -eq 'open') {
+    Say 'Sealing the distro off from Windows'
+    & wsl.exe -d $Distro -u root --exec sh -c $seal
+    if ($LASTEXITCODE -ne 0) { Stop-Setup "Couldn't seal $Distro off from Windows, so nothing was installed." }
+    & wsl.exe --terminate $Distro
+    if ((Get-FromWsl $Distro @('sh', '-c', 'test -e /mnt/c/Windows && echo open')) -eq 'open') {
+        Stop-Setup "$Distro can still reach Windows' files, so nothing was installed."
+    }
+}
+
 Say 'Checking every file against the release''s SHA256SUMS'
-$from = Get-FromWsl $Distro @('wslpath', '-a', $Release)
-# No double quotes in this: Windows PowerShell mangles them on the way to a
-# program, and --cd takes a path with spaces in it, such as a user's name.
+$from = '/root/hatchling-release'
+& wsl.exe -d $Distro -u root --exec sh -c "rm -rf $from; mkdir -m 700 $from"
+try {
+    Copy-Item -Path (Join-Path $Release '*') -Destination "\\wsl.localhost\$Distro$($from -replace '/', '\')" -ErrorAction Stop
+}
+catch {
+    Stop-Setup "Couldn't copy the release files into ${Distro}: $_"
+}
 $unpack = 'set -e; sha256sum --check --ignore-missing --quiet SHA256SUMS; grep -q hatchling-installer.tar.gz SHA256SUMS; rm -rf /root/hatchling-installer; mkdir -m 700 /root/hatchling-installer; tar -xzf hatchling-installer.tar.gz -C /root/hatchling-installer --no-same-owner --no-same-permissions'
-& wsl.exe -d $Distro -u root --cd $Release --exec sh -c $unpack
+& wsl.exe -d $Distro -u root --cd $from --exec sh -c $unpack
 if ($LASTEXITCODE -ne 0) { Stop-Setup 'A file differs from the release''s SHA256SUMS: nothing was installed.' }
 
 $model = @()
@@ -132,6 +154,7 @@ else {
     & wsl.exe @install | ForEach-Object { if ($_ -notmatch $linuxOnly) { $_ } }
 }
 if ($LASTEXITCODE -ne 0) { Stop-Setup 'Hatchling didn''t install. The lines above say why, and running this again carries on.' }
+& wsl.exe -d $Distro -u root --exec rm -rf $from
 
 Say 'Keeping it running after this window closes'
 Start-KeepRunning $Distro

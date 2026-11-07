@@ -53,6 +53,23 @@ usbipd attach --wsl --busid <number> --auto-attach
 
 Leave that window open while you use **Protect your vault** or **Unlock**. Once Hatchling is unlocked, it doesn't need the key until the next restart, so you can close it. Making this automatic is the next thing on the list. More on keys, including what to do if you lose one: [Protecting the vault with a security key](security-keys.md).
 
+## What keeps it apart from Windows
+
+The setup seals its distro off from your PC: Windows' drives aren't mounted in it, and it can't start Windows programs. Hatchling's agent already runs inside a sandbox in that distro, so this is a second wall. If something ever got out of the sandbox, it would land in an account that can't reach your files.
+
+It doesn't stop everything: root in the distro could mount a drive again, so it holds below root. Windows can still reach in, which is how updates arrive.
+
+If you installed Hatchling in a WSL distro of your own instead, it has neither wall by default. To add them, put this in that distro's `/etc/wsl.conf`, then run `wsl --terminate <distro>`:
+
+```ini
+[automount]
+enabled=false
+
+[interop]
+enabled=false
+appendWindowsPath=false
+```
+
 ## Why they're separate
 
 **Hatchling** is the app, which runs in your browser. Everything secret stays out of it. A browser is the most exposed thing on your computer: extensions, a bug in a page, or a leaked address can all reach it.
