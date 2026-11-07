@@ -3049,7 +3049,7 @@ mod tests {
                 Err(Error::InvalidConfig { key: "HATCHLING_CHANNEL_ACCOUNTS", reason })
                     if reason.contains("vault grant")
             ),
-            "{refused:?}"
+            "a vault grant on a channel's secret must be refused"
         );
     }
 
