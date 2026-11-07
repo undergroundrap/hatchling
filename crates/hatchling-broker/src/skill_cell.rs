@@ -139,9 +139,8 @@ impl VerifiedCode {
         // unprivileged uid, which must traverse the copy and read the
         // code whatever umask the broker runs under.
         let set_mode = |target: &Path, mode: u32| {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(target, std::fs::Permissions::from_mode(mode))
-                .map_err(|err| fail("set the mode of", target, err))
+            hatchling_sys::chmod_dir(target, mode)
+                .map_err(|err| fail("set the mode of", target, std::io::Error::other(err)))
         };
         let mut current = copy.dir.clone();
         set_mode(&current, 0o755)?;
@@ -153,7 +152,9 @@ impl VerifiedCode {
             current.push(component);
             set_mode(&current, 0o755)?;
         }
-        set_mode(&path, 0o555)?;
+        // On the file just made: its name is never looked up again.
+        file.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o555))
+            .map_err(|err| fail("set the mode of", &path, err))?;
         Ok(copy)
     }
 

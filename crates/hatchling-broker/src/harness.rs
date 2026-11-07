@@ -911,7 +911,8 @@ impl ToolCopy {
             .mode(0o555)
             .open(&path)?;
         file.write_all(bytes)?;
-        set_mode(&path, 0o555)
+        // On the file just made, whatever the umask took off.
+        file.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o555))
     }
 
     /// Gives the program at `first` in the copy the name `name` too.
@@ -955,8 +956,7 @@ impl Drop for ToolCopy {
 
 /// Sets the directory `path`'s mode, whatever the umask.
 fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+    hatchling_sys::chmod_dir(path, mode).map_err(std::io::Error::other)
 }
 
 /// The program at `path`, through its links (`/bin/sh` is one on most
@@ -2216,7 +2216,14 @@ impl RunDirs {
 
 impl Drop for RunDirs {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.base);
+        // Through `remove_tree`: a cell wrote in here, and nothing outside
+        // the run's directory goes. Every tree in it is the broker's by now,
+        // which is the one user it enters: the run took them back. Anything
+        // left says a take-back failed, and the sweep doesn't own it.
+        match hatchling_sys::remove_dir_tree(&self.base) {
+            Ok(hatchling_sys::Removed::Whole) => {}
+            left => tracing::warn!(?left, base = ?self.base, "a harness run's directory stays"),
+        }
     }
 }
 
@@ -2313,10 +2320,11 @@ fn harness_cell(
 /// Through the spawner when one runs (WO-017): on the cell's own ids it
 /// gives them and takes them back by chown, held to its policy, so a
 /// broker that isn't root reads what the cell left. Without one, a root
-/// broker gives them by chown ([`hand_over`]) and needs nothing back: it
-/// reads anything. On the owner's subordinate ids both go through the
-/// tree helper ([`change_trees`]), since the broker can neither give a
-/// file away nor read, or remove, what the cell left.
+/// broker does the same itself ([`hand_over`]): it could read them anyway,
+/// but what it removes after the run must be its own ([`RunDirs`]). On the
+/// owner's subordinate ids both go through the tree helper
+/// ([`change_trees`]), since the broker can neither give a file away nor
+/// read, or remove, what the cell left.
 ///
 /// # Errors
 ///
@@ -2333,28 +2341,23 @@ fn trees(
     }
     match (cell.ids, op) {
         (CellIds::Own, TreeOp::Give) => hand_over(dirs, cell.uid_base),
-        (CellIds::Own, TreeOp::Reclaim) => Ok(()),
+        (CellIds::Own, TreeOp::Reclaim) => hand_over(dirs, hatchling_sys::euid()),
         (CellIds::Subordinate, _) => change_trees(runtime.spawner(), op, &changed, cell.identity()),
     }
 }
 
-/// Gives the work tree and scratch directory to `uid`, the cell's map
-/// base. A root broker's cell runs as an unprivileged uid, which must own
-/// them to write; an unprivileged broker's cell runs as the broker's own
-/// uid, so handing them over changes nothing. The group is left alone:
-/// the owner bits are the only ones set.
+/// Gives the work tree and scratch directory to `uid`: the cell's map base
+/// before a run, the broker's own after it. A root broker's cell runs as an
+/// unprivileged uid, which must own them to write; an unprivileged broker's
+/// cell runs as the broker's own uid, so handing them over changes nothing.
+/// The group stays the broker's: the owner bits are the only ones set.
+///
+/// Through [`hatchling_sys::chown_tree`]: a cell has written here, so each
+/// directory is changed through a handle, and nothing is followed.
 fn hand_over(dirs: &RunDirs, uid: u32) -> Result<(), String> {
     for top in [&dirs.work, &dirs.scratch] {
-        let mut pending = vec![top.clone()];
-        while let Some(path) = pending.pop() {
-            std::os::unix::fs::lchown(&path, Some(uid), None)
-                .map_err(|err| format!("cannot hand {} to the cell: {err}", path.display()))?;
-            if std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_dir()) {
-                let entries = std::fs::read_dir(&path)
-                    .map_err(|err| format!("cannot read {}: {err}", path.display()))?;
-                pending.extend(entries.filter_map(Result::ok).map(|entry| entry.path()));
-            }
-        }
+        hatchling_sys::chown_tree(top, uid, hatchling_sys::egid())
+            .map_err(|err| format!("cannot hand {} over: {err}", top.display()))?;
     }
     Ok(())
 }
@@ -4922,6 +4925,35 @@ mod tests {
     }
 
     #[test]
+    /// A run's directories go through the guarded walk, which keeps what's
+    /// past its depth: a plain recursive delete wouldn't. A cell's link out
+    /// of the tree is removed, never followed.
+    #[test]
+    fn a_runs_directories_go_through_the_guarded_walk() {
+        let outside = Scratch::new("run-dirs-outside");
+        outside.write("kept", b"kept");
+        let dirs = RunDirs::create().unwrap();
+        let base = dirs.base.clone();
+        std::os::unix::fs::symlink(outside.join("kept"), dirs.work.join("link")).unwrap();
+        std::os::unix::fs::symlink(&outside.0, dirs.scratch.join("link")).unwrap();
+        let deep: PathBuf =
+            (0..=hatchling_sys::MAX_DEPTH).fold(dirs.work.join("deep"), |path, _| path.join("d"));
+        std::fs::create_dir_all(&deep).unwrap();
+        drop(dirs);
+        let left = base.exists();
+        let linked = base.join("work/link").exists();
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(left, "the walk keeps what's too deep, and what's above it");
+        assert!(!linked, "a link went with the rest");
+        assert_eq!(std::fs::read(outside.join("kept")).unwrap(), b"kept");
+
+        let dirs = RunDirs::create().unwrap();
+        let base = dirs.base.clone();
+        write_new(&dirs.work.join("src/a"), b"a").unwrap();
+        drop(dirs);
+        assert!(!base.exists(), "with nothing kept, it all goes");
+    }
+
     fn what_the_harness_said_is_its_result_or_its_words_cut_to_size() {
         assert_eq!(
             final_message(br#"{"type":"result","result":"All done."}"#),
