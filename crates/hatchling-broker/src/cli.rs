@@ -195,7 +195,10 @@ fn valid_args(args: &[String]) -> bool {
         | ["vault-audit", "log"]
         | ["tools", "list"]
         | [
-            "reset" | "schedule" | "sign-in" | crate::model_switch::USE_HOSTED
+            "reset"
+            | "schedule"
+            | "sign-in"
+            | crate::model_switch::USE_HOSTED
             | crate::model_switch::USE_LOCAL,
             ..,
         ]

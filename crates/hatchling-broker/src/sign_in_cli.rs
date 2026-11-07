@@ -352,7 +352,13 @@ mod tests {
                 id: String::from("sign-1")
             })
         );
-        for refused in ["", "list x", "add https://a.example", "show sign-1", "reveal sign-1"] {
+        for refused in [
+            "",
+            "list x",
+            "add https://a.example",
+            "show sign-1",
+            "reveal sign-1",
+        ] {
             assert!(parse(&words(refused)).is_err(), "{refused:?}");
         }
     }
@@ -367,7 +373,12 @@ mod tests {
             site_of("https://a.example:8443").as_deref(),
             Some("a.example:8443")
         );
-        for refused in ["http://a.example", "https://", "https://a.example/login", "a.example"] {
+        for refused in [
+            "http://a.example",
+            "https://",
+            "https://a.example/login",
+            "a.example",
+        ] {
             assert_eq!(site_of(refused), None, "{refused:?}");
         }
     }
@@ -393,9 +404,10 @@ mod tests {
             }),
             Ok(vec![String::from("No sign-ins are kept.")])
         );
-        assert!(report(SignInResult::Stored { sign_in }).is_ok_and(|said| said
-            .concat()
-            .contains("never sees the password")));
+        assert!(
+            report(SignInResult::Stored { sign_in })
+                .is_ok_and(|said| said.concat().contains("never sees the password"))
+        );
         assert_eq!(
             report(SignInResult::Deleted),
             Ok(vec![String::from("Removed.")])
