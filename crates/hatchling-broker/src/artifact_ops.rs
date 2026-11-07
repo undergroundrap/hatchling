@@ -15,7 +15,7 @@
 //! **A delivery** goes through [`hatchling_artifact::deliver`], the one
 //! delivery function, whatever the target: the local channel or the
 //! operator's workspace. The gate there judges the final bytes against
-//! every secret the broker holds ([`held_secrets`]) and the configured
+//! the secrets a gate looks for ([`held_secrets`]) and the configured
 //! review policy, and fails closed. The inspector's report plays no part
 //! in it: it is surfaced with the delivery, never consulted by it. Each
 //! attempt, delivered or refused, is kept in the build's record with its
@@ -294,11 +294,16 @@ fn write_json<T: serde::Serialize>(
         .map_err(|source| Error::Vault { source })
 }
 
-/// Every secret the broker holds for the session, as the gate looks for
-/// them: the vault secrets its grants name, the channel accounts'
-/// secrets, and each granted egress destination's credential.
+/// The secrets a gate looks for, as it looks for them.
 ///
-/// The vault has no list op, by design, so this is the union of every
+/// With a keeper, that's what the keeper's scan gives: what a cell has
+/// stored, and the channel accounts' credentials
+/// ([`crate::keeper::Keeper::scan`]). With none, it's the broker's own read
+/// of every secret `config` names: the vault secrets its grants name, the
+/// channel accounts' secrets, and each granted egress destination's
+/// credential.
+///
+/// The vault has no list op, by design, so that read is the union of every
 /// secret the configuration names. A name with nothing stored under it
 /// holds nothing. Any other failure is an error, and the gate blocks on
 /// it.

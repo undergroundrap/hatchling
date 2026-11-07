@@ -394,8 +394,9 @@ impl Api {
 }
 
 /// Whether `action` is one a caller on `socket` may never ask. The web app
-/// never takes a secret, so a password to keep comes only on the API
-/// socket, from `hatchling-broker sign-in add` in the owner's own terminal.
+/// takes no sign-in password or key, so a password to keep comes only on the
+/// API socket, from `hatchling-broker sign-in add` in the owner's own
+/// terminal.
 fn closed_to(socket: SessionSocket, action: &UiAction) -> bool {
     socket == SessionSocket::Ui
         && matches!(
@@ -1166,8 +1167,8 @@ mod tests {
         drop(dir);
     }
 
-    /// The web app never takes a secret. A sign-in's password sent on the
-    /// real UI socket, by a caller who may do everything else, is refused
+    /// The web app takes no sign-in password or key. A sign-in's password sent
+    /// on the real UI socket, by a caller who may do everything else, is refused
     /// and reaches no store; the same request on the API socket, where
     /// `sign-in add` sends it, is answered as ever. Listing them still
     /// works on both.

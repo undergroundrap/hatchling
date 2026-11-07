@@ -2235,13 +2235,18 @@ export type PageElement = {
      */
     readonly id: number;
     /**
+     * Whether it's really a link: an `<a>` with an `http` or `https`
+     * address, as the controller found the element, whatever `role` says.
+     */
+    readonly link?: boolean;
+    /**
      * What it says, at most [`MAX_LABEL_CHARS`]. A password field's
      * value is never here.
      */
     readonly name: string;
     /**
-     * What it is: `link`, `button`, `textbox`, `password`, `checkbox`,
-     * `list` and so on.
+     * What it says it is: `link`, `button`, `textbox`, `password`,
+     * `checkbox`, `list` and so on, or whatever a page's `role` says.
      */
     readonly role: string;
 };

@@ -37,7 +37,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use hatchling_core::ui::Decision;
-use hatchling_core::{WebHit, WebOp, WebResult};
+use hatchling_core::{CellId, WebHit, WebOp, WebResult};
 use hatchling_egress::TlsClient;
 use hatchling_egress::search::Hit;
 use hatchling_egress::web::{FetchError, Fetched, Origin, WebUrl};
@@ -47,7 +47,7 @@ use hatchling_vault::OpensStores;
 use crate::Config;
 use crate::approval_board::{Board, SiteAsk, board, refused_as, site_action};
 use crate::approvals::{Refusal, State};
-use crate::held_check::HeldHit;
+use crate::held_check::{CheckFor, HeldHit};
 
 /// The longest a session with a person there waits for the owner to decide
 /// on a site.
@@ -106,6 +106,9 @@ pub struct WebSession {
     board: Option<Arc<Board>>,
     /// What ends its run when what it sends holds a secret.
     hit: HeldHit,
+    /// Its cell, when the broker knows it: what its checks are on the
+    /// record as.
+    cell: Option<CellId>,
 }
 
 impl Drop for WebSession {
@@ -141,6 +144,11 @@ impl WebSession {
     /// whose.
     pub(crate) fn task(&self) -> &str {
         &self.task
+    }
+
+    /// Its cell, as its checks are recorded.
+    pub(crate) const fn cell(&self) -> Option<&CellId> {
+        self.cell.as_ref()
     }
 
     /// Ends the session's run: what it sent to `to` held a secret.
@@ -183,6 +191,7 @@ impl WebSession {
             found: VecDeque::new(),
             board: Some(board(config)),
             hit: HeldHit::default(),
+            cell: None,
         }
     }
 
@@ -200,6 +209,7 @@ impl WebSession {
             found: VecDeque::new(),
             board: None,
             hit: HeldHit::default(),
+            cell: None,
         }
     }
 
@@ -214,6 +224,13 @@ impl WebSession {
     #[must_use]
     pub fn in_run(mut self, hit: HeldHit) -> Self {
         self.hit = hit;
+        self
+    }
+
+    /// This session, the run of `cell`, when the broker knows it.
+    #[must_use]
+    pub fn of_cell(mut self, cell: Option<&CellId>) -> Self {
+        self.cell = cell.cloned();
         self
     }
 
@@ -274,8 +291,8 @@ fn search(config: &Config, keys: &dyn OpensStores, web: &mut WebSession, query: 
         keys,
         web,
         query.as_bytes(),
-        "search",
-        SentTo::Search,
+        CheckFor::Search,
+        ("search", SentTo::Search),
     ) {
         return refused(reason);
     }
@@ -326,8 +343,8 @@ fn bounded_search(
 /// Why `text`, which would leave the machine (a page's address, or a
 /// search), is refused: it holds a secret Hatchling keeps, a cell having
 /// had it or not ([`crate::held_check`]), or nothing can say it doesn't.
-/// `None` when it holds none. It's `what` the owner would call it, on its
-/// way to `to`.
+/// `None` when it holds none. It's checked for `check`, and it's `what` the
+/// owner would call it, on its way to `to`.
 ///
 /// A held secret the model has seen, shown on a page or echoed by a
 /// service, or simply guessed, would otherwise leave in an address or a
@@ -341,10 +358,11 @@ pub(crate) fn held_secret_in(
     keys: &dyn OpensStores,
     web: &WebSession,
     text: &[u8],
-    what: &str,
-    to: SentTo,
+    check: CheckFor,
+    (what, to): (&str, SentTo),
 ) -> Option<String> {
-    match crate::held_check::check(crate::keeper::keeper(), config, keys, text) {
+    let keeper = crate::keeper::keeper();
+    match crate::held_check::check(keeper, config, keys, check, web.cell(), text) {
         Ok(true) => {
             web.ended_by(to);
             Some(format!(
@@ -369,7 +387,14 @@ pub(crate) fn held_secret_in_address(
     url: &WebUrl,
 ) -> Option<String> {
     let text = crate::held_check::as_read(&url.to_string());
-    held_secret_in(config, keys, web, &text, "page's address", SentTo::Website)
+    held_secret_in(
+        config,
+        keys,
+        web,
+        &text,
+        CheckFor::Web,
+        ("page's address", SentTo::Website),
+    )
 }
 
 /// Reads the page at `url`, which the agent wants for `reason`.

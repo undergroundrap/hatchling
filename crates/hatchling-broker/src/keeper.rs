@@ -11,10 +11,13 @@
 //! broker's own stores: every one but the secrets and the sign-ins. Then
 //! it drops the master key and answers the broker until the broker goes:
 //!
-//! - **a read for one of the broker's purposes**, when every name is one
-//!   the configuration gives that purpose (an egress destination's
-//!   credential, a configured harness vendor's key, a channel account's
-//!   credential, the gates' held secrets);
+//! - **a read for a purpose the asker's channel may read**, when every name
+//!   is one the configuration gives that purpose: for the broker, a channel
+//!   account's credential; for the egress authority, on its own channel, an
+//!   egress destination's credential, search's key or a configured harness
+//!   vendor's key;
+//! - **a gate's scan**, for the broker: the values the keeper chooses
+//!   (`Releases::scan_set`);
 //! - **a cell's vault op**, checked against the configuration's grants;
 //! - **the sign-ins** ([`crate::browser_credentials`]): the owner's keep,
 //!   list and delete, and a fill;
@@ -22,8 +25,11 @@
 //!   secret the keeper holds ([`crate::held_check`]), for the broker alone.
 //!
 //! A read, a cell's op, a fill and a check are each recorded in the
-//! vault's access log before the keeper answers, and one that can't be
-//! recorded is answered with nothing ([`crate::secrets`]). A read the
+//! vault's access log before the keeper answers. One that released or
+//! changed something and can't be recorded is answered with nothing, or as
+//! failed; one that did neither, a denial or a failure, still gets its
+//! answer, and that it wasn't recorded goes to the keeper's log
+//! ([`crate::secrets`]). A read the
 //! configuration doesn't give its purpose is refused and recorded as
 //! denied. Keeping, listing and deleting a sign-in release no secret, and
 //! aren't recorded there.
@@ -35,9 +41,12 @@
 //! values only, a short value only against a whole text
 //! ([`crate::held_check`]), never which secret or where. A check can't be
 //! prevented without giving the broker the secrets, so it's made visible:
-//! each is one line, who, when, how many bytes and what came of it, and
-//! repeated slightly different submissions stand out there
-//! (`hatchling-broker vault-audit log`). No line holds a value or a name.
+//! each is one line, who, what for, in which cell's run, when, how many
+//! bytes and what came of it, and repeated slightly different submissions
+//! stand out there (`hatchling-broker vault-audit log`). No line holds a
+//! value or a name. What it was for is one of a fixed set
+//! ([`crate::held_check::CheckFor`]), and a cell's id is held to what a
+//! [`CellId`] may be: nothing else the channel carries reaches a line.
 //!
 //! **What it holds against.** The broker never has the master key or the
 //! secrets store's key: a broker that is compromised can't read the
@@ -70,7 +79,8 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::browser_credentials::{Credentials, SignInAnswer, SignInRequest};
-use crate::secrets::{Secrets, handle_vault_op};
+use crate::held_check::CheckFor;
+use crate::secrets::{Secrets, recorded_vault_op};
 use crate::vault_access::{Caller, Outcome};
 use crate::vault_keyring::KeyringConfig;
 use crate::{Config, Error, RedactionConfig, VaultConfig, VaultGrant};
@@ -160,7 +170,13 @@ enum Request {
     /// or [`Reply::Refused`] before any of it is sent. After `Ready`, it
     /// follows raw, in frames of its own, however many that takes: the
     /// keeper reads it whole, so a secret across two frames is one text.
-    Contains { bytes: u64 },
+    /// It's for `check`, and if it's a run's, for that run's `cell`.
+    Contains {
+        bytes: u64,
+        check: CheckFor,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cell: Option<String>,
+    },
 }
 
 /// What the keeper answers.
@@ -744,16 +760,24 @@ impl Keeper {
     /// Whether `text` holds a secret the keeper holds: any of them, a cell
     /// having had it or not ([`crate::held_check`]). The keeper reads every
     /// value itself and the answer is this one boolean: the broker learns
-    /// no value, no name and no position. Recorded by the keeper.
+    /// no value, no name and no position. Recorded by the keeper, as for
+    /// `check`, in the run of `cell` if it's a run's.
     ///
     /// # Errors
     ///
     /// Returns [`Error::Keeper`] when the keeper refuses the check, can't
     /// make it, or can't be reached: nothing is known, and a caller treats
     /// that as holding one.
-    pub fn contains(&self, text: &[u8]) -> Result<bool, Error> {
+    pub fn contains(
+        &self,
+        check: CheckFor,
+        cell: Option<&CellId>,
+        text: &[u8],
+    ) -> Result<bool, Error> {
         let request = Request::Contains {
             bytes: u64::try_from(text.len()).unwrap_or(u64::MAX),
+            check,
+            cell: cell.map(|cell| cell.as_str().to_owned()),
         };
         let reply = self.exchange(|stream| match ask(stream, &request)? {
             Reply::Ready => {
@@ -1164,25 +1188,31 @@ fn read_released(config: &Config, keys: &StoreKeys) -> Result<BTreeSet<String>, 
     }
 }
 
-/// Records `name` as released, and keeps the record, before the cell
-/// stores it. A record that can't be kept releases nothing.
-fn record_release(kept: &mut Kept, name: &str) -> Result<(), Error> {
-    if kept.released.contains(name) {
+/// Records `name` as released, in `released` and in the store under
+/// `config` opened with `keys`, before the cell stores it. A record that
+/// can't be kept releases nothing.
+fn record_release(
+    config: &Config,
+    keys: &StoreKeys,
+    released: &mut BTreeSet<String>,
+    name: &str,
+) -> Result<(), Error> {
+    if released.contains(name) {
         return Ok(());
     }
-    let mut released = kept.released.clone();
-    released.insert(name.to_owned());
-    let record = serde_json::to_vec(&released).map_err(|e| Error::Keeper {
+    let mut now = released.clone();
+    now.insert(name.to_owned());
+    let record = serde_json::to_vec(&now).map_err(|e| Error::Keeper {
         reason: format!("cannot write the released record: {e}"),
     })?;
     let secret = Secret::new(record).map_err(|source| Error::Vault { source })?;
     let record_name: SecretName = RELEASED_RECORD.parse().map_err(|_| Error::Keeper {
         reason: String::from("the released record's name doesn't parse"),
     })?;
-    hatchling_vault::SealedVault::open(&kept.config.vault.root, &kept.keys)
+    hatchling_vault::SealedVault::open(&config.vault.root, keys)
         .and_then(|vault| vault.store(&record_name, &secret))
         .map_err(|source| Error::Vault { source })?;
-    kept.released = released;
+    *released = now;
     Ok(())
 }
 
@@ -1203,21 +1233,6 @@ fn held_by(vault: &VaultConfig, held: &[String]) -> VaultConfig {
     vault
 }
 
-/// The name a cell's op would release, when `vault` grants it: a store's.
-/// A fetch is refused and a removal releases nothing.
-fn releases_to_cell(vault: &VaultConfig, op: &VaultOp) -> Option<String> {
-    let action = op.action();
-    if !matches!(op, VaultOp::Store { .. }) {
-        return None;
-    }
-    let name = op.name();
-    vault
-        .grants
-        .iter()
-        .any(|grant| grant.action == action && grant.name.as_str() == name)
-        .then(|| name.to_owned())
-}
-
 /// Answers `role` on `stream` until it goes. The egress authority only
 /// reads: its scans and cells' ops are refused.
 fn serve(stream: &UnixStream, kept: &Mutex<Kept>, role: Role) -> Result<(), Error> {
@@ -1228,8 +1243,8 @@ fn serve(stream: &UnixStream, kept: &Mutex<Kept>, role: Role) -> Result<(), Erro
         })?;
         if role == Role::Authority && !matches!(request, Request::Read { .. }) {
             tracing::warn!("refused the egress authority a request that isn't a read");
-            if let Request::Contains { bytes } = request {
-                refuse_on_record(kept, role, bytes)?;
+            if let Request::Contains { bytes, check, .. } = request {
+                refuse_on_record(kept, role, check, bytes)?;
             }
             send(
                 stream,
@@ -1241,8 +1256,8 @@ fn serve(stream: &UnixStream, kept: &Mutex<Kept>, role: Role) -> Result<(), Erro
         }
         // Before the lock: reading a text takes as long as the broker takes
         // to send it, and looking through it as long as it's long.
-        if let Request::Contains { bytes } = request {
-            answer_contains(stream, kept, role, bytes)?;
+        if let Request::Contains { bytes, check, cell } = request {
+            answer_contains(stream, kept, role, (bytes, check), cell.as_deref())?;
             continue;
         }
         let mut guard = kept.lock().map_err(|_| Error::Keeper {
@@ -1267,8 +1282,11 @@ fn serve(stream: &UnixStream, kept: &Mutex<Kept>, role: Role) -> Result<(), Erro
 
 /// A cell's vault op, answered under the grants its session holds where
 /// the keeper's configuration makes them too, and recorded as that
-/// cell's. A store is recorded as released first: one that can't be
-/// recorded fails, and so does a vault that can't be used.
+/// cell's. A store is recorded as released just before it's written, once
+/// it's granted, its value reads and the vault opens: one whose release
+/// can't be recorded fails. Nothing else releases a name, so a malformed
+/// store doesn't put a value no cell had into the gates' scan, and every
+/// op leaves a line, as failed if that's how it went.
 ///
 /// # Errors
 ///
@@ -1280,17 +1298,34 @@ fn cell_op_result(
     uid: u32,
     grants: &[String],
 ) -> Result<VaultResult, String> {
-    let cell: CellId = cell
-        .parse()
-        .map_err(|_| String::from("a cell id that doesn't parse"))?;
     let vault = held_by(&kept.config.vault, grants);
-    if let Some(name) = releases_to_cell(&vault, op) {
-        if let Err(error) = record_release(kept, &name) {
-            tracing::error!(%error, "a release not recorded: the op is refused");
-            return Ok(VaultResult::VaultError);
+    let Ok(cell) = cell.parse::<CellId>() else {
+        let caller = Caller::Session {
+            uid,
+            cell: String::from("(not a cell id)"),
+        };
+        let action = op.action().to_string();
+        if let Err(error) =
+            crate::vault_access::record(&vault.root, caller, &action, Vec::new(), Outcome::Failed)
+        {
+            tracing::error!(%error, "a vault op from a bad cell id not recorded");
         }
-    }
-    match handle_vault_op(&vault, &kept.keys, op, &cell, uid) {
+        return Err(String::from("a cell id that doesn't parse"));
+    };
+    let Kept {
+        config,
+        keys,
+        released,
+        ..
+    } = kept;
+    let mut release = |name: &SecretName| {
+        let recorded = record_release(config, keys, released, name.as_str());
+        if let Err(error) = &recorded {
+            tracing::error!(%error, "a release not recorded: the op is refused");
+        }
+        recorded.is_ok()
+    };
+    match recorded_vault_op(&vault, keys, op, &cell, uid, &mut release) {
         Ok(result) => Ok(result),
         Err(Error::SessionProtocol { reason }) => Err(reason),
         Err(error) => {
@@ -1512,12 +1547,18 @@ fn answer_scan(stream: &UnixStream, kept: &Kept, purpose: &str) -> Result<(), Er
     }
 }
 
-/// Records a check `role` wasn't given, of the `bytes` it said it had.
-fn refuse_on_record(kept: &Mutex<Kept>, role: Role, bytes: u64) -> Result<(), Error> {
+/// Records a check for `check` that `role` wasn't given, of the `bytes` it
+/// said it had. No cell: one a refused asker named isn't on the record.
+fn refuse_on_record(
+    kept: &Mutex<Kept>,
+    role: Role,
+    check: CheckFor,
+    bytes: u64,
+) -> Result<(), Error> {
     let root = vault_root(kept)?;
-    let caller = role.caller(crate::held_check::CHECK_PURPOSE);
+    let caller = role.caller(check.purpose());
     if let Err(error) =
-        crate::vault_access::record_check(&root, caller, bytes, None, Outcome::Denied)
+        crate::vault_access::record_check(&root, caller, None, bytes, None, Outcome::Denied)
     {
         tracing::error!(%error, "a refused check not recorded");
     }
@@ -1562,20 +1603,31 @@ fn read_text(stream: &UnixStream, bytes: usize) -> Result<Zeroizing<Vec<u8>>, Er
     Ok(text)
 }
 
-/// Answers one check: reads the text, looks for every secret held in it,
+/// Answers one check of a text of `bytes` bytes for `check`, in `cell`'s run
+/// if it's a run's: reads the text, looks for every secret held in it,
 /// records the check, and says yes or no. The values are read here and
-/// dropped here. One that's too long is refused before a byte of it comes,
-/// and one that can't be made or recorded isn't answered: the broker
-/// treats that as holding a secret.
+/// dropped here. One that's too long, or names what can't be a cell, is
+/// refused before a byte of it comes, and one that can't be made or
+/// recorded isn't answered: the broker treats that as holding a secret.
 fn answer_contains(
     stream: &UnixStream,
     kept: &Mutex<Kept>,
     role: Role,
-    bytes: u64,
+    (bytes, check): (u64, CheckFor),
+    cell: Option<&str>,
 ) -> Result<(), Error> {
-    use crate::held_check::{CHECK_PURPOSE, held_values, holds, on_record};
+    use crate::held_check::{held_values, holds, on_record};
+    let Ok(cell) = cell.map(str::parse::<CellId>).transpose() else {
+        refuse_on_record(kept, role, check, bytes)?;
+        return send(
+            stream,
+            &Reply::Refused {
+                reason: String::from("the check names what can't be a cell"),
+            },
+        );
+    };
     let Some(size) = within_bound(bytes) else {
-        refuse_on_record(kept, role, bytes)?;
+        refuse_on_record(kept, role, check, bytes)?;
         return send(
             stream,
             &Reply::Refused {
@@ -1592,7 +1644,13 @@ fn answer_contains(
     let root = guard.config.vault.root.clone();
     drop(guard);
     let answer = held.map(|values| holds(&values, &text));
-    match on_record(&root, role.caller(CHECK_PURPOSE), bytes, answer) {
+    match on_record(
+        &root,
+        role.caller(check.purpose()),
+        cell.as_ref(),
+        bytes,
+        answer,
+    ) {
         Ok(found) => send(stream, &Reply::Contains { found }),
         Err(reason) => {
             tracing::error!(%reason, "a check wasn't made or recorded: it isn't answered");
@@ -2096,10 +2154,14 @@ mod tests {
         );
         let gone = unexpected(&Reply::Scan { count: 0 });
         assert!(gone.to_string().contains("(scan)"), "{gone}");
-        let contains = r#"{"request":"contains","bytes":3}"#;
+        let contains = r#"{"request":"contains","bytes":3,"check":"web"}"#;
         assert!(matches!(
             serde_json::from_str::<Request>(contains),
-            Ok(Request::Contains { bytes: 3 })
+            Ok(Request::Contains {
+                bytes: 3,
+                check: CheckFor::Web,
+                cell: None
+            })
         ));
         // A check's answer has no room for anything but its one boolean.
         for refused in [
@@ -2457,7 +2519,6 @@ mod tests {
         let fetch = VaultOp::Fetch {
             name: String::from("token"),
         };
-        assert_eq!(releases_to_cell(&config.vault, &fetch), None);
         let keys = StoreKeys::unwrap(&master, &[(Store::SECRETS, &config.vault.root)]).unwrap();
         let kept = Mutex::new(Kept {
             releases: Releases::of(&config, BTreeSet::new()),
@@ -2962,11 +3023,19 @@ mod tests {
             (request, text)
         });
         let text = vec![b'.'; MAX_FRAME_BYTES + 1];
-        assert!(keeper.contains(&text).unwrap());
+        let cell: CellId = "run-1".parse().unwrap();
+        assert!(
+            keeper
+                .contains(CheckFor::Typed, Some(&cell), &text)
+                .unwrap()
+        );
         let (request, sent) = stand_in.join().unwrap();
         assert_eq!(
             String::from_utf8(request).unwrap(),
-            format!(r#"{{"request":"contains","bytes":{}}}"#, text.len())
+            format!(
+                r#"{{"request":"contains","bytes":{},"check":"typed","cell":"run-1"}}"#,
+                text.len()
+            )
         );
         assert_eq!(sent.as_slice(), text.as_slice());
         assert_eq!(
@@ -2997,7 +3066,7 @@ mod tests {
                     let _ = read_frame(&theirs);
                 }
             });
-            let answered = keeper.contains(b"text");
+            let answered = keeper.contains(CheckFor::Web, None, b"text");
             assert!(answered.is_err(), "{replies:?}: {answered:?}");
             drop(keeper);
             stand_in.join().unwrap();
@@ -3026,11 +3095,87 @@ mod tests {
             std::thread::sleep(Duration::from_secs(2));
         });
         // Past anything a socket buffers.
-        let answered = keeper.contains(&vec![b'.'; 8 * 1024 * 1024]);
+        let answered = keeper.contains(CheckFor::Harness, None, &vec![b'.'; 8 * 1024 * 1024]);
         let told = format!("{answered:?}");
         assert!(told.contains("cannot be reached"), "{told}");
         assert!(keeper.exchange(|_| Ok(())).is_err(), "not lost");
         stand_in.join().unwrap();
+    }
+
+    /// What the channel can put in a check's line is a word of a fixed set
+    /// and a cell's id, each held to what it may be. A cell that can't be
+    /// one is refused and recorded with none, a word outside the set is a
+    /// request that doesn't parse, and the check's line says what's true.
+    #[test]
+    fn a_checks_line_holds_only_what_it_may() {
+        let mut config = crate::api_auth::tests::owner_config(None);
+        let dir = crate::api_auth::tests::scratch("keeper-check-line");
+        config.vault.root = dir.0.join("vault");
+        let root = config.vault.root.clone();
+        let master = MasterKey::generate().unwrap();
+        hatchling_vault::SealedVault::open(&root, &master)
+            .unwrap()
+            .store(
+                &"token".parse().unwrap(),
+                &Secret::new(b"t0ken-value".to_vec()).unwrap(),
+            )
+            .unwrap();
+        let keys = StoreKeys::unwrap(&master, &[(Store::SECRETS, &root)]).unwrap();
+        let kept = Mutex::new(Kept {
+            releases: Releases::of(&config, BTreeSet::new()),
+            config,
+            keys,
+            released: BTreeSet::new(),
+            browsers: BTreeMap::new(),
+        });
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        ours.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        // A test that fails mid-way isn't left waiting on the keeper's read.
+        theirs
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let told = std::thread::scope(|scope| {
+            let serving = scope.spawn(|| serve(&theirs, &kept, Role::Broker));
+            let ask = |request: &str| {
+                write_frame(&ours, request.as_bytes()).unwrap();
+                String::from_utf8(read_frame(&ours).unwrap()).unwrap()
+            };
+            let forged = "run\n1970-01-01T00:00:00Z broker (egress) read allowed";
+            let refused = ask(&serde_json::json!({
+                "request": "contains", "bytes": 1, "check": "web", "cell": forged,
+            })
+            .to_string());
+            assert!(refused.contains("refused"), "a cell that can't be one");
+            let ready = ask(r#"{"request":"contains","bytes":1,"check":"search","cell":"run-1"}"#);
+            write_frame(&ours, b"x").unwrap();
+            let answer = String::from_utf8(read_frame(&ours).unwrap()).unwrap();
+            // Past the set, the channel ends: the broker doesn't speak so.
+            let unknown = r#"{"request":"contains","bytes":1,"check":"anything"}"#;
+            write_frame(&ours, unknown.as_bytes()).unwrap();
+            assert!(serving.join().unwrap().is_err(), "a word outside the set");
+            (ready, answer)
+        });
+        assert_eq!(told.0, r#"{"reply":"ready"}"#);
+        assert_eq!(told.1, r#"{"reply":"contains","found":false}"#);
+        let (lines, unreadable) = crate::vault_access::read_log(&root).unwrap();
+        assert_eq!(unreadable, 0);
+        let [refused, made] = lines.as_slice() else {
+            unreachable!("two checks, {} lines", lines.len());
+        };
+        let broker = |purpose: &str| Caller::Broker {
+            purpose: purpose.to_owned(),
+        };
+        assert_eq!(refused.caller, broker("web-check"));
+        assert_eq!(
+            (refused.outcome, refused.run.as_deref()),
+            (Outcome::Denied, None)
+        );
+        assert_eq!(made.caller, broker("search-check"));
+        assert_eq!(
+            (made.outcome, made.found, made.run.as_deref()),
+            (Outcome::Allowed, Some(false), Some("run-1"))
+        );
     }
 
     /// A check's size is one the keeper will take, up to the bound exactly.
@@ -3093,20 +3238,9 @@ mod tests {
             name: name.to_owned(),
             secret_b64: hatchling_core::SecretB64::encode(b"t"),
         };
-        assert_eq!(
-            releases_to_cell(&config.vault, &store("token")).as_deref(),
-            Some("token")
-        );
-        assert_eq!(releases_to_cell(&config.vault, &store("other")), None);
         let remove = VaultOp::Remove {
             name: String::from("old"),
         };
-        assert_eq!(releases_to_cell(&config.vault, &remove), None);
-        // A session that doesn't hold the grant releases nothing.
-        assert_eq!(
-            releases_to_cell(&held_by(&config.vault, &[]), &store("token")),
-            None
-        );
         let keys = StoreKeys::unwrap(&master, &[(Store::SECRETS, &config.vault.root)]).unwrap();
         assert!(read_released(&config, &keys).unwrap().is_empty());
         let releases = Releases::of(&config, BTreeSet::new());
@@ -3126,8 +3260,27 @@ mod tests {
             read_frame(&theirs).unwrap(),
             br#"{"reply":"scan","count":0}"#
         );
-        record_release(&mut kept, "token").unwrap();
-        record_release(&mut kept, "token").unwrap();
+        // Only a store this session holds the grant for releases anything:
+        // not one of another name, not a removal, and not one it wasn't
+        // granted.
+        let both = [String::from("store:token"), String::from("remove:old")];
+        for (op, held) in [
+            (store("other"), both.as_slice()),
+            (remove, both.as_slice()),
+            (store("token"), &[]),
+        ] {
+            assert!(cell_op_result(&mut kept, &op, "run-1", 7, held).is_ok());
+            assert!(kept.released.is_empty(), "released by {}", op.action());
+        }
+        let stored = cell_op_result(&mut kept, &store("token"), "run-1", 7, &both);
+        assert!(matches!(stored, Ok(VaultResult::Stored)));
+        let Kept {
+            config,
+            keys,
+            released,
+            ..
+        } = &mut kept;
+        record_release(config, keys, released, "token").unwrap();
         assert_eq!(
             read_released(&kept.config, &kept.keys).unwrap(),
             BTreeSet::from([String::from("token")])

@@ -39,9 +39,11 @@ vault keeper reads a cell's vault channel the same way.
 **A held secret ends the session.** When the agent's own text is found to
 hold a secret the broker keeps (a page's address, a search, text typed into
 a page, a harness's brief), or a harness it started hands one back (in its
-patch, its message, its question or a file's name), the broker kills every
-cell of the run's tree, its session's and its children's, and each cell's
-vault channel goes with it. That op is answered with its usual refusal, if
+patch, its message, its question or a file's name), the broker kills the
+run's cells, its session's and its children's, with any harness or skill cell
+they started, and each cell's vault channel goes with it. A browser cell
+ends with its session, and a builder skill's cell ends with its op, to its
+own time bound. That op is answered with its usual refusal, if
 its cell is still there to read it, and the broker closes the connection: no
 client has to obey anything, and no new op or result is involved. The next op
 finds the session gone. The owner is told by the broker, once. A check that
@@ -52,7 +54,7 @@ holding a secret. An owner invoking a harness themselves is only refused.
 
 | Family | Request | Response | Since |
 |---|---|---|---|
-| Vault | `VaultOp` | `VaultResult` | v2 |
+| Vault | `VaultOp` | `VaultResult` | v2; denied here wherever a vault keeper runs, as on every install: a cell's vault ops go on its own vault channel |
 | Egress | `EgressOp` | `EgressResult` | v3 |
 | Channel | `ChannelOp` | `ChannelResult` | v4 |
 | Memory | `MemoryOp` | `MemoryResult` | v1; `Propose` v18 |

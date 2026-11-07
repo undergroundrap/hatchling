@@ -4,10 +4,11 @@
 //! agent sends off the machine: a web read's address, a search, a page's
 //! address, and text typed into a page.
 //!
-//! All of that goes to someone else, so the check covers every secret held,
-//! whether or not a cell has ever had it: API keys, vendor keys, the search
-//! key, channel accounts and sign-in passwords. The broker never holds most
-//! of those, so with a keeper running the keeper answers
+//! All of that goes to someone else, so the check covers everything in the
+//! vault and every sign-in's password, whether or not a cell has ever had
+//! it: API keys, vendor keys, the search key, channel accounts and sign-in
+//! passwords. A kept browser session's cookies aren't looked for. The broker
+//! never holds most of those, so with a keeper running the keeper answers
 //! ([`crate::keeper::Keeper::contains`]): the text goes in, one boolean
 //! comes out, and no value, name or position ever leaves it. A broker with
 //! no keeper reads them itself ([`check_here`]), as it reads everything.
@@ -31,12 +32,15 @@
 //! **A hit ends the run** ([`HeldHit`]). A refusal tells the agent that what
 //! it sent matched, so a tricked agent could find a weak password by trying
 //! it, one refusal at a time. So when the agent's own text is found to hold
-//! one, its run is over: every cell in its tree is killed there and then,
+//! one, its run is over: every cell its tree holds is killed there and then,
 //! which takes each cell's channel to the keeper with it, the broker ends
 //! the session and refuses everything after it, however the cell behaves,
 //! and the owner is told once, in Hatchling's own words: what kind of thing
 //! was stopped, never which secret. Each check is in the vault's access log,
-//! a hit as found.
+//! a hit as found, with what it was for ([`CheckFor`]) and the cell whose run
+//! it was. The log is what answers the oracle, so a run of guesses has to be
+//! tied to a run: both come from the broker's own code at the place it asks,
+//! and neither from anything a cell sends.
 //!
 //! What a harness hands back counts too. The files it's given are checked
 //! clean first, so a secret in its patch, its message, or a file's name is
@@ -51,10 +55,11 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use hatchling_artifact::SecretSet;
-use hatchling_core::SecretName;
+use hatchling_core::{CellId, SecretName};
 use hatchling_isolation::Supervised;
 use hatchling_scheduler::SentTo;
 use hatchling_vault::{OpensStores, SealedVault};
+use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::Config;
@@ -75,8 +80,34 @@ pub const MAX_CHECK_BYTES: u64 = 40 * 1024 * 1024;
 /// A check too long to be a run's fails, and so stops what asked it.
 const _: () = assert!(4 * MAX_WORK_BYTES < MAX_CHECK_BYTES);
 
-/// What a check is recorded as being for.
-pub const CHECK_PURPOSE: &str = "harness-check";
+/// What a check is for, as the access log says it: a fixed set, one word
+/// named by the code at each place that asks, so nothing a cell or a page
+/// chose can reach a log line through it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CheckFor {
+    /// What a harness is given, or hands back.
+    Harness,
+    /// A page's address: a web read's, or the browser's.
+    Web,
+    /// A search.
+    Search,
+    /// Text the agent types into a page.
+    Typed,
+}
+
+impl CheckFor {
+    /// What the access log calls it.
+    #[must_use]
+    pub const fn purpose(self) -> &'static str {
+        match self {
+            Self::Harness => "harness-check",
+            Self::Web => "web-check",
+            Self::Search => "search-check",
+            Self::Typed => "typed-check",
+        }
+    }
+}
 
 /// Whether a run's tree has ended on a hit, on what, and what a hit kills:
 /// one state, shared by a run's session, its children's sessions and what
@@ -161,8 +192,9 @@ impl HeldHit {
     }
 }
 
-/// Every secret held under `config`: each one in the vault, whoever it's
-/// for, and each sign-in's password. A username isn't one. `keys` must
+/// What a check looks for under `config`: each secret in the vault, whoever
+/// it's for, and each sign-in's password. A username isn't one, and nor is a
+/// kept browser session's cookie. `keys` must
 /// open the secrets and the sign-ins: the keeper's own, or those of a
 /// broker with no keeper.
 ///
@@ -222,9 +254,9 @@ pub(crate) fn holds(values: &[Zeroizing<Vec<u8>>], text: &[u8]) -> bool {
     whole || SecretSet::new(long).exposed_in(text)
 }
 
-/// Records one check by `caller` of a text of `size` bytes, then gives its
-/// answer. One that can't be recorded isn't given: as with a read, nothing
-/// is answered off the record.
+/// Records one check by `caller`, for the run of `cell` if it was one, of a
+/// text of `size` bytes, then gives its answer. One that can't be recorded
+/// isn't given: as with a read, nothing is answered off the record.
 ///
 /// # Errors
 ///
@@ -232,6 +264,7 @@ pub(crate) fn holds(values: &[Zeroizing<Vec<u8>>], text: &[u8]) -> bool {
 pub(crate) fn on_record(
     root: &Path,
     caller: Caller,
+    cell: Option<&CellId>,
     size: u64,
     answer: Result<bool, String>,
 ) -> Result<bool, String> {
@@ -240,20 +273,28 @@ pub(crate) fn on_record(
     } else {
         Outcome::Failed
     };
-    record_check(root, caller, size, answer.as_ref().ok().copied(), outcome)
-        .map_err(|error| error.to_string())?;
+    record_check(
+        root,
+        caller,
+        cell,
+        size,
+        answer.as_ref().ok().copied(),
+        outcome,
+    )
+    .map_err(|error| error.to_string())?;
     answer
 }
 
-/// Who a check is recorded as, when the broker asks it.
-pub(crate) fn broker() -> Caller {
+/// Who a check for `check` is recorded as, when the broker asks it.
+pub(crate) fn broker(check: CheckFor) -> Caller {
     Caller::Broker {
-        purpose: CHECK_PURPOSE.to_owned(),
+        purpose: check.purpose().to_owned(),
     }
 }
 
 /// Whether `text` holds a secret: asked of `keeper`, or with none, of the
-/// broker itself ([`check_here`]).
+/// broker itself ([`check_here`]), for `check`, in the run of `cell` if it's
+/// a run's.
 ///
 /// # Errors
 ///
@@ -263,11 +304,17 @@ pub(crate) fn check(
     keeper: Option<&Keeper>,
     config: &Config,
     keys: &dyn OpensStores,
+    check: CheckFor,
+    cell: Option<&CellId>,
     text: &[u8],
 ) -> Result<bool, String> {
     keeper.map_or_else(
-        || check_here(config, keys, text),
-        |keeper| keeper.contains(text).map_err(|error| error.to_string()),
+        || check_here(config, keys, check, cell, text),
+        |keeper| {
+            keeper
+                .contains(check, cell, text)
+                .map_err(|error| error.to_string())
+        },
     )
 }
 
@@ -322,12 +369,15 @@ fn decoded(text: &[u8], plus: bool) -> Vec<u8> {
 pub(crate) fn check_here(
     config: &Config,
     keys: &dyn OpensStores,
+    check: CheckFor,
+    cell: Option<&CellId>,
     text: &[u8],
 ) -> Result<bool, String> {
     let answer = held_values(config, keys).map(|values| holds(&values, text));
     on_record(
         &config.vault.root,
-        broker(),
+        broker(check),
+        cell,
         u64::try_from(text.len()).unwrap_or(u64::MAX),
         answer,
     )
@@ -619,14 +669,14 @@ mod tests {
         for (what, value) in held {
             let text = format!("a {value} b");
             assert_eq!(
-                check_here(&config, &key, text.as_bytes()),
+                check_here(&config, &key, CheckFor::Web, None, text.as_bytes()),
                 Ok(true),
                 "{what}"
             );
         }
         for free in ["zoe-the-user", r#"["a-released-name"]"#, "nothing"] {
             assert_eq!(
-                check_here(&config, &key, free.as_bytes()),
+                check_here(&config, &key, CheckFor::Web, None, free.as_bytes()),
                 Ok(false),
                 "{free}"
             );
@@ -635,7 +685,7 @@ mod tests {
         assert_eq!(unreadable, 0);
         assert_eq!(accesses.len(), 6);
         let first = accesses.first().unwrap();
-        assert_eq!(first.caller, broker());
+        assert_eq!(first.caller, broker(CheckFor::Web));
         assert_eq!(first.action, crate::vault_access::CHECK_ACTION);
         assert!(first.names.is_empty(), "{first:?}");
         assert_eq!(first.size, Some(21));
@@ -654,7 +704,9 @@ mod tests {
         config.vault.root = dir.0.join("vault");
         config.web.credentials = std::path::PathBuf::new();
         let key = MasterKey::generate().unwrap();
-        assert_eq!(check_here(&config, &key, b"x"), Ok(false));
+        let here =
+            |keys: &dyn OpensStores| check_here(&config, keys, CheckFor::Harness, None, b"x");
+        assert_eq!(here(&key), Ok(false));
         SealedVault::open(&config.vault.root, &key)
             .unwrap()
             .store(
@@ -663,7 +715,7 @@ mod tests {
             )
             .unwrap();
         let wrong = MasterKey::generate().unwrap();
-        let failed = check_here(&config, &wrong, b"x").unwrap_err();
+        let failed = here(&wrong).unwrap_err();
         assert!(!failed.contains("a-held-value"), "the error shows a value");
         let (accesses, _) = crate::vault_access::read_log(&config.vault.root).unwrap();
         let [only] = accesses.as_slice() else {
@@ -678,9 +730,10 @@ mod tests {
                 .join(crate::vault_access::ACCESS_LOG),
         )
         .unwrap();
-        assert!(on_record(&dir.0.join("vault-log"), broker(), 1, Ok(true)).is_err());
+        let asked = broker(CheckFor::Harness);
+        assert!(on_record(&dir.0.join("vault-log"), asked.clone(), None, 1, Ok(true)).is_err());
         assert_eq!(
-            on_record(&dir.0.join("vault"), broker(), 1, Ok(true)),
+            on_record(&dir.0.join("vault"), asked, None, 1, Ok(true)),
             Ok(true)
         );
     }

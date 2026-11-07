@@ -1,6 +1,6 @@
 //! `hatchling-broker sign-in`: the owner's site sign-ins, from a terminal.
 //!
-//! The app never takes a secret, so a sign-in is typed here. A client of
+//! The app takes no sign-in password or key, so a sign-in is typed here. A client of
 //! the local API, as `schedule` is: run as the owner, without `sudo`, and
 //! the broker decides everything. It adds, lists and removes. Nothing here
 //! shows a stored username or password, to anyone.

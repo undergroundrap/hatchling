@@ -35,7 +35,7 @@ use base64::Engine as _;
 use common::{TestDir, broker_config, guard_cell_available, harness_fixture_binary, test_dir};
 use hatchling_broker::browser_credentials::{SignIn, SignInAnswer, SignInRequest};
 use hatchling_broker::harness::{HARNESS_CAPABILITY, vault_keys_through};
-use hatchling_broker::held_check::{CHECK_PURPOSE, HeldHit, MAX_CHECK_BYTES, MIN_SCAN_BYTES};
+use hatchling_broker::held_check::{CheckFor, HeldHit, MAX_CHECK_BYTES, MIN_SCAN_BYTES};
 use hatchling_broker::keeper::Keeper;
 use hatchling_broker::vault_access::{Access, CHECK_ACTION, Caller, Outcome, read_log};
 use hatchling_broker::{Config, Harnesses, SkillRuntime, Skills, handle_skill_op};
@@ -311,7 +311,7 @@ fn hex(bytes: &[u8]) -> String {
 
 fn broker() -> Caller {
     Caller::Broker {
-        purpose: CHECK_PURPOSE.to_owned(),
+        purpose: CheckFor::Harness.purpose().to_owned(),
     }
 }
 
@@ -603,7 +603,12 @@ fn the_keeper_finds_whole_values_across_frames_in_every_form() -> Result<(), Str
             ("minimum", at_minimum),
         ],
     )?;
-    let check = |text: &[u8]| install.keeper.contains(text).map_err(|e| e.to_string());
+    let check = |text: &[u8]| {
+        install
+            .keeper
+            .contains(CheckFor::Harness, None, text)
+            .map_err(|e| e.to_string())
+    };
 
     // The minimum length.
     assert!(check(SHORT_KEY.as_bytes())?, "the whole text");
@@ -684,10 +689,13 @@ fn the_keeper_finds_whole_values_across_frames_in_every_form() -> Result<(), Str
 fn a_text_past_the_bound_is_refused_and_recorded() -> Result<(), String> {
     let install = Install::new("hk-long")?;
     let long = vec![b'.'; usize::try_from(MAX_CHECK_BYTES + 1).map_err(|e| e.to_string())?];
-    let refused = install.keeper.contains(&long).map_or_else(
-        |error| error.to_string(),
-        |found| format!("answered {found}"),
-    );
+    let refused = install
+        .keeper
+        .contains(CheckFor::Harness, None, &long)
+        .map_or_else(
+            |error| error.to_string(),
+            |found| format!("answered {found}"),
+        );
     assert!(refused.contains("too long"), "{refused}");
     let checks = install.checks()?;
     let [only] = checks.as_slice() else {
@@ -699,8 +707,74 @@ fn a_text_past_the_bound_is_refused_and_recorded() -> Result<(), String> {
         Some(u64::try_from(long.len()).unwrap_or(u64::MAX))
     );
     assert_eq!(only.found, None);
-    assert_eq!(install.keeper.contains(b"a clean text").ok(), Some(false));
+    let clean = install
+        .keeper
+        .contains(CheckFor::Harness, None, b"a clean text");
+    assert_eq!(clean.ok(), Some(false));
     Ok(())
+}
+
+/// The log is the only answer to the oracle, so each line says what the
+/// check was for and whose run it was, from what the broker said and nothing
+/// a text holds. Each purpose goes through the real keeper, and a harness's
+/// run names the cell the broker gave its keys, on every check of the run.
+#[test]
+fn a_checks_line_says_what_it_was_for_and_whose_run_it_was() -> Result<(), String> {
+    let install = Install::new("hk-purpose")?;
+    let cell: CellId = "cell-guessing".parse().map_err(|_| "cell id")?;
+    for (check, purpose) in [
+        (CheckFor::Harness, "harness-check"),
+        (CheckFor::Web, "web-check"),
+        (CheckFor::Search, "search-check"),
+        (CheckFor::Typed, "typed-check"),
+    ] {
+        for (asked, found) in [(EGRESS_KEY, true), ("a clean text", false)] {
+            let answer = install
+                .keeper
+                .contains(check, Some(&cell), asked.as_bytes())
+                .map_err(|e| e.to_string())?;
+            assert_eq!(answer, found, "the answer for {purpose}");
+            let checks = install.checks()?;
+            let last = checks.last().ok_or("no check on record")?;
+            assert_eq!(
+                last.caller,
+                Caller::Broker {
+                    purpose: purpose.to_owned()
+                }
+            );
+            assert_eq!(last.run.as_deref(), Some("cell-guessing"));
+            assert_eq!((last.found, last.outcome), (Some(found), Outcome::Allowed));
+        }
+    }
+    let unnamed = install.keeper.contains(CheckFor::Web, None, b"clean");
+    assert_eq!(unnamed.ok(), Some(false));
+    let checks = install.checks()?;
+    assert_eq!(checks.last().and_then(|last| last.run.clone()), None);
+
+    let before = checks.len();
+    install.file("clean.txt", "fn main() {}\n")?;
+    let skills = install.no_cell()?;
+    let op = SkillOp::Invoke {
+        skill: String::from("claude-code@1"),
+        capability: "code".parse().map_err(|_| "capability")?,
+        input: json!({ "task": "Tidy it.", "root": "project", "paths": ["clean.txt"] }).to_string(),
+    };
+    let keys = vault_keys_through(Some(&install.keeper), &install.config, &install.keys)
+        .of_cell(Some(&cell));
+    let _ = handle_skill_op(&skills, &op, &cell, &keys);
+    let checks = install.checks()?;
+    let run = checks.get(before..).ok_or("the log shrank")?;
+    assert!(!run.is_empty(), "the run made no check");
+    for line in run {
+        assert_eq!(line.run.as_deref(), Some("cell-guessing"));
+        assert_eq!(
+            line.caller,
+            Caller::Broker {
+                purpose: String::from("harness-check")
+            }
+        );
+    }
+    install.log_is_clean()
 }
 
 /// The egress authority asks and is refused, on its own channel, before
@@ -711,7 +785,8 @@ fn the_egress_authority_is_refused_a_check() -> Result<(), String> {
     let mut install = Install::new("hk-authority")?;
     let authority = install.authority.take().ok_or("no authority's channel")?;
     let authority = Keeper::over(authority).map_err(|e| e.to_string())?;
-    let refused = authority.contains(EGRESS_KEY.as_bytes());
+    let cell: CellId = "cell-asks".parse().map_err(|_| "cell id")?;
+    let refused = authority.contains(CheckFor::Harness, Some(&cell), EGRESS_KEY.as_bytes());
     let told = format!("{refused:?}");
     assert!(told.contains("only reads"), "{told}");
     let checks = install.checks()?;
@@ -721,10 +796,11 @@ fn the_egress_authority_is_refused_a_check() -> Result<(), String> {
     assert_eq!(
         only.caller,
         Caller::Authority {
-            purpose: CHECK_PURPOSE.to_owned()
+            purpose: CheckFor::Harness.purpose().to_owned()
         }
     );
     assert_eq!((only.outcome, only.found), (Outcome::Denied, None));
+    assert_eq!(only.run, None, "the cell a refused asker named");
     let name = "egress-localhost-18089"
         .parse()
         .map_err(|_| "a secret's name")?;
@@ -813,7 +889,8 @@ fn a_keeper_that_cannot_answer_stops_the_run() -> Result<(), String> {
     let install = Install::new("hk-gone")?;
     let skills = install.no_cell()?;
     let (mut child, keeper, _keys) = keeper_to_stop(&install.dir)?;
-    assert_eq!(keeper.contains(b"a clean text").ok(), Some(false));
+    let clean = keeper.contains(CheckFor::Harness, None, b"a clean text");
+    assert_eq!(clean.ok(), Some(false));
     let input = json!({ "task": "Go.", "root": "project", "paths": ["src/lib.rs"] });
     child.kill().map_err(|e| e.to_string())?;
     child.wait().map_err(|e| e.to_string())?;
@@ -833,7 +910,10 @@ fn a_keeper_that_cannot_answer_stops_the_run() -> Result<(), String> {
     let keys = vault_keys_through(Some(&keeper), &install.config, &install.keys).in_run(&hit);
     let _ = handle_skill_op(&skills, &op, &cell, &keys);
     assert_eq!(hit.seen(), None);
-    let again = format!("{:?}", keeper.contains(b"a clean text"));
+    let again = format!(
+        "{:?}",
+        keeper.contains(CheckFor::Harness, None, b"a clean text")
+    );
     assert!(again.contains("lost"), "{again}");
     Ok(())
 }

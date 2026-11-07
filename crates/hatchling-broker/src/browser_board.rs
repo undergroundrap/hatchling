@@ -686,6 +686,7 @@ impl BrowserBoard {
             Some(
                 Ok(
                     BrowserReply::Page { .. }
+                    | BrowserReply::Hidden { .. }
                     | BrowserReply::Closed
                     | BrowserReply::Cookies { .. }
                     | BrowserReply::CookiesSet,

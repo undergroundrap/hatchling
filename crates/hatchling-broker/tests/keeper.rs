@@ -503,6 +503,116 @@ fn a_cells_vault_channel_is_answered_under_its_own_grants_alone() {
     drop(keeper);
 }
 
+/// A store that doesn't go ahead releases nothing and still leaves a line.
+/// A cell holding `store:kept` and sending bad base64, or a value past the
+/// bound, or asking while the vault can't be opened, stored nothing: it
+/// mustn't put the name on the keeper's record, or the old value, which no
+/// cell had, would be handed to the broker in every gate's scan. The real
+/// keeper, on a cell's channel as the spawner hands it.
+#[test]
+fn a_store_that_fails_releases_nothing_and_leaves_a_line() {
+    use hatchling_broker::keeper::Keeper;
+    use hatchling_broker::vault_access::{Caller, Outcome, read_log};
+    use hatchling_core::SecretB64;
+    use hatchling_core::framing::read_frame_or_eof;
+    use hatchling_core::messages::{SessionRequest, SessionResponse, VaultOp, VaultResult};
+    let dir = scratch("failed-stores").unwrap();
+    let vault = sealed_vault(&dir, &[("kept", "the-old-value")]).unwrap();
+    let (keeper, _, _, spawner) =
+        Keeper::start_with(program(&dir, &[("HATCHLING_VAULT_GRANTS", "store:kept")])).unwrap();
+    let hand = |cell: &str| {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        ours.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let named = serde_json::json!({ "cell": cell, "uid": 7, "grants": ["store:kept"] });
+        write_frame(&spawner, named.to_string().as_bytes()).unwrap();
+        hatchling_sys::net::send_fd(spawner.as_fd(), theirs.as_fd()).unwrap();
+        ours
+    };
+    let ask = |channel: &UnixStream, op: VaultOp| {
+        let request = serde_json::to_vec(&SessionRequest::Vault(op)).unwrap();
+        write_frame(channel, &request).unwrap();
+        let SessionResponse::Vault(result) =
+            serde_json::from_slice(&read_frame(channel).unwrap()).unwrap()
+        else {
+            unreachable!("not a vault answer");
+        };
+        result
+    };
+    // That the last line is this cell's store of `kept`, gone as `outcome`.
+    let lined = |cell: &str, outcome: Outcome| {
+        let (accesses, _) = read_log(&vault).unwrap();
+        let last = accesses.last().unwrap();
+        assert_eq!(
+            last.caller,
+            Caller::Session {
+                uid: 7,
+                cell: cell.to_owned()
+            }
+        );
+        assert_eq!(
+            (last.action.as_str(), last.names.as_slice()),
+            ("store", [String::from("kept")].as_slice())
+        );
+        assert_eq!(last.outcome, outcome, "how {cell}'s store went");
+    };
+    let scanned = || {
+        keeper
+            .scan("output-gate")
+            .unwrap()
+            .iter()
+            .map(|secret| secret.as_bytes().to_vec())
+            .collect::<Vec<_>>()
+    };
+    let nothing_released = |after: &str| {
+        assert!(scanned().is_empty(), "{after} put a value in the scan");
+        assert!(
+            !vault.join("keeper-released").exists(),
+            "{after} put the name on the record"
+        );
+    };
+
+    let malformed = hand("run-malformed");
+    let bad = br#"{"kind":"vault","op":"store","name":"kept","secret_b64":"not base64!"}"#;
+    write_frame(&malformed, bad).unwrap();
+    assert!(
+        matches!(read_frame_or_eof(&malformed), Ok(None)),
+        "a malformed store ends its channel"
+    );
+    lined("run-malformed", Outcome::Failed);
+    nothing_released("bad base64");
+
+    let large = hand("run-large");
+    let value = vec![b'x'; hatchling_vault::MAX_SECRET_BYTES + 1];
+    let too_long = VaultOp::Store {
+        name: String::from("kept"),
+        secret_b64: SecretB64::encode(&value),
+    };
+    assert!(matches!(ask(&large, too_long), VaultResult::VaultError));
+    lined("run-large", Outcome::Failed);
+    nothing_released("a value past the bound");
+
+    // A vault open to others doesn't open, and the log beside it still takes
+    // the line.
+    let shut = hand("run-shut");
+    let store = || VaultOp::Store {
+        name: String::from("kept"),
+        secret_b64: SecretB64::encode(b"st0red-value"),
+    };
+    std::fs::set_permissions(&vault, std::fs::Permissions::from_mode(0o750)).unwrap();
+    assert!(matches!(ask(&shut, store()), VaultResult::VaultError));
+    std::fs::set_permissions(&vault, std::fs::Permissions::from_mode(0o700)).unwrap();
+    lined("run-shut", Outcome::Failed);
+    nothing_released("a vault that can't be opened");
+
+    // A store that goes ahead does release: what's above isn't luck.
+    assert!(matches!(ask(&shut, store()), VaultResult::Stored));
+    lined("run-shut", Outcome::Allowed);
+    assert_eq!(scanned(), [b"st0red-value".to_vec()]);
+    assert!(vault.join("keeper-released").exists());
+    drop(keeper);
+}
+
 /// The sign-ins are the keeper's (WO-031): the real keeper hands the
 /// broker the profiles' key and not theirs, and keeps one the broker asks
 /// it to. It fills it into a profile's browser on the channel the spawner

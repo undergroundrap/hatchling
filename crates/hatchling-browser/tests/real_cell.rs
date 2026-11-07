@@ -102,6 +102,21 @@ const FRAMED_ELSEWHERE: &str = r#"<!doctype html><title>Framed elsewhere</title>
 const MOVES: &str = r"<!doctype html><title>Moving</title>
 <script>location.replace('http://hatchling.test.other.test/signin');</script>";
 
+/// A page that says what it likes of its elements, and whose own script
+/// says what it likes of links too.
+const LINKS: &str = r#"<!doctype html><title>Links</title>
+<script>
+Object.defineProperty(HTMLAnchorElement.prototype, 'protocol', { get() { return 'https:'; } });
+</script>
+<a href="/next">Plain</a>
+<a href="/next" role="button">Says button</a>
+<a href="javascript:void(0)">Script</a>
+<a href="javascript:void(0)" role="link">Script says link</a>
+<a role="link">No address</a>
+<form action="/next"><button type="submit" role="link">Submit says link</button></form>
+<svg width="80" height="20"><a href="/next" aria-label="Drawn"><text y="15">Drawn</text></a></svg>
+<span role="link">Span says link</span>"#;
+
 /// Whether `name`'s requirement makes a missing prerequisite a failure.
 fn required(name: &str) -> bool {
     std::env::var(name).is_ok_and(|value| value == "1")
@@ -282,6 +297,7 @@ fn answer(mut stream: std::net::TcpStream, seen: &Mutex<Vec<String>>) {
         (HOST, "/framed") => ("200 OK", FRAMED),
         (HOST, "/framed-elsewhere") => ("200 OK", FRAMED_ELSEWHERE),
         (HOST, "/moves") => ("200 OK", MOVES),
+        (HOST, "/links") => ("200 OK", LINKS),
         (HOST, "/hop") => ("302 Found", ""),
         _ => ("404 Not Found", "not here"),
     };
@@ -310,6 +326,7 @@ fn page(reply: BrowserReply) -> PageSnapshot {
     match reply {
         BrowserReply::Page { snapshot } => snapshot,
         other @ (BrowserReply::Failed { .. }
+        | BrowserReply::Hidden { .. }
         | BrowserReply::Closed
         | BrowserReply::Frame { .. }
         | BrowserReply::Cookies { .. }
@@ -336,6 +353,7 @@ fn is_picture(frame: &BrowserReply) {
     let jpeg = match frame {
         BrowserReply::Frame { jpeg } => jpeg.clone(),
         other @ (BrowserReply::Page { .. }
+        | BrowserReply::Hidden { .. }
         | BrowserReply::Failed { .. }
         | BrowserReply::Closed
         | BrowserReply::Cookies { .. }
@@ -545,6 +563,31 @@ fn sign_in_filled(connection: &UnixStream) {
     assert!(!typed.text.contains("comment: h"), "{}", typed.text);
 }
 
+/// What [`sign_in_filled`] filled, hidden from the sites a page was refused.
+/// A page can name one with what it was given, and the broker asks the
+/// controller, which alone holds it, to hide that too.
+fn filled_hidden_from_refused_sites(connection: &UnixStream) {
+    let shown = send(
+        connection,
+        &BrowserCommand::Hide {
+            names: vec![
+                String::from("481516.ada@hatchling.test.evil.test:443"),
+                String::from("clean.test:443"),
+            ],
+        },
+    );
+    assert_eq!(
+        shown,
+        BrowserReply::Hidden {
+            names: vec![
+                String::from("[hidden].[hidden].evil.test:443"),
+                String::from("clean.test:443"),
+            ],
+        },
+        "what was filled is hidden from the refused sites"
+    );
+}
+
 /// A sign-in the vault keeper sends on the cell's vault channel, `vault`
 /// (WO-031), played here: typed when the broker names its fill, on the
 /// origin the keeper sent, and hidden; one sent for another origin types
@@ -735,6 +778,36 @@ fn kept_sign_in_follows_the_page(connection: &UnixStream, vault: &UnixStream) {
 }
 
 /// The id of the element `role` named `name`.
+/// The real controller reports what's a real link from the element, in its
+/// own world: nothing the page says, in a role or by a script of its own,
+/// makes a link of what isn't, or unmakes one that is.
+fn links_told_from_the_element(connection: &UnixStream) {
+    let shown = page(send(
+        connection,
+        &BrowserCommand::Open {
+            url: format!("http://{HOST}/links"),
+        },
+    ));
+    for (name, role, link) in [
+        ("Plain", "link", true),
+        ("Says button", "button", true),
+        ("Script", "link", false),
+        ("Script says link", "link", false),
+        ("No address", "link", false),
+        ("Submit says link", "link", false),
+        ("Drawn", "link", false),
+        ("Span says link", "link", false),
+    ] {
+        let found = shown.elements.iter().find(|element| element.name == name);
+        assert_eq!(
+            found.map(|element| (element.role.as_str(), element.link)),
+            Some((role, link)),
+            "{name} in {:?}",
+            shown.elements
+        );
+    }
+}
+
 fn element(snapshot: &PageSnapshot, role: &str, name: &str) -> u32 {
     let found = snapshot
         .elements
@@ -905,7 +978,9 @@ fn the_controller_drives_a_real_browser_in_a_cell_through_the_relay_alone() {
     owner_drives(&connection);
     cookies_kept(&connection);
     webrtc_loads(&connection);
+    links_told_from_the_element(&connection);
     sign_in_filled(&connection);
+    filled_hidden_from_refused_sites(&connection);
     kept_sign_in_filled(&connection, &vault);
     framed_never_filled(&connection);
     kept_sign_in_follows_the_page(&connection, &vault);

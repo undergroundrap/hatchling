@@ -49,7 +49,7 @@ The release security checklist's [item 7](../release-security-checklist.md#7-egr
 | --- | --- | --- |
 | The broker's log | stderr: the journal, under systemd | What the broker does and refuses. Untrusted text is escaped, and no secret value is written. |
 | The activity log | `<scheduler dir>.activity` | Every call to the local API, by connection; subagent activity |
-| The vault's access log | `.access.log` in the vault directory; read it with `hatchling-broker vault-audit log` | Every read of a secret, allowed or denied, by purpose and requester |
+| The vault's access log | `.access.log` in the vault directory; read it with `hatchling-broker vault-audit log` | Every read of a secret, allowed or denied, by purpose and requester, and every check of a text for one, with what it was for and the run it was in |
 | The output gate's audit log | `audit.log` in the redaction directory; review it with `hatchling-broker redactions list` | Each message redacted before it reached a person, and why |
 | Egress decisions | The operator socket's `egress` (the last 200) | Each request out: the cell, the destination and the verdict; never a body or a header |
 
@@ -70,7 +70,7 @@ The release security checklist's [item 7](../release-security-checklist.md#7-egr
    - each provider key and site credential in the vault, replaced at its source;
    - the master key, with `hatchling-broker rekey-vault`.
 3. **Review what was read:**
-   - `hatchling-broker vault-audit log` lists every secret read and every refusal;
+   - `hatchling-broker vault-audit log` lists every secret read, every check of a text and every refusal;
    - the activity log and the operator socket's `egress` show what the agent did and where it reached.
 4. **Revoke access:**
    - sign out or delete the browser's signed-in profiles, and revoke the sites the owner allowed always, both in the app's Settings;
