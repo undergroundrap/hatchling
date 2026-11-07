@@ -8,6 +8,8 @@ git diff --stat vPREVIOUS..HEAD -- crates
 
 An item that finds something new either shows it holds to the rule below, with the test that proves it, or the release waits for a fix. When an item can be checked by a program, it moves into `hatchling-dev` and this list says so.
 
+**The standing rule.** A security claim is only as verified as the realest component it was tested against. Tests against a stand-in prove the logic, not the protection. Any claim that something can never happen names what it was tested against: real keeper, real cell, real install. A claim tested only against a stand-in is recorded as unverified.
+
 ## 1. Every listener has a gate
 
 Each place the broker accepts a connection, who may connect, and what proves it. A new bind in non-test code that isn't in this table fails this item.
