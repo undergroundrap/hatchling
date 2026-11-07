@@ -124,15 +124,40 @@ impl Deployment {
     }
 }
 
+/// A vault holding `held`, or unable to say what it holds.
+struct Holding(Result<&'static str, &'static str>);
+
+impl hatchling_broker::harness::HarnessVault for Holding {
+    fn key(&self, _secret: &str) -> Option<zeroize::Zeroizing<String>> {
+        None
+    }
+
+    fn held(&self) -> Result<hatchling_artifact::SecretSet, String> {
+        self.0
+            .map(|held| hatchling_artifact::SecretSet::new([held.as_bytes().to_vec()]))
+            .map_err(str::to_owned)
+    }
+}
+
 /// Invokes `skill` with `brief`; the report, or why there is none.
 fn invoke(skills: &Skills, skill: &str, brief: &Value) -> Result<Value, String> {
+    invoke_with(skills, skill, brief, &no_keys)
+}
+
+/// [`invoke`], reading `vault`.
+fn invoke_with(
+    skills: &Skills,
+    skill: &str,
+    brief: &Value,
+    vault: hatchling_broker::harness::HarnessKeys<'_>,
+) -> Result<Value, String> {
     let op = SkillOp::Invoke {
         skill: skill.to_owned(),
         capability: "code".parse().map_err(|_| "capability")?,
         input: brief.to_string(),
     };
     let cell: CellId = "test".parse().map_err(|_| "cell id")?;
-    match handle_skill_op(skills, &op, &cell, &no_keys) {
+    match handle_skill_op(skills, &op, &cell, vault) {
         SkillResult::Output { output } => serde_json::from_str(&output).map_err(|e| e.to_string()),
         refused @ (SkillResult::UnknownSkill
         | SkillResult::CapabilityDenied
@@ -204,6 +229,53 @@ fn claude_code_edits_its_slice_and_returns_a_patch_for_review() -> Result<(), St
         Some("old notes")
     );
     assert!(deployment.file("project/src/helper.rs").is_none());
+    Ok(())
+}
+
+#[test]
+fn a_secret_a_harness_saw_stays_out_of_what_it_hands_back() -> Result<(), String> {
+    if !guard_cell_available()? {
+        return Ok(());
+    }
+    let deployment = Deployment::new("harness-secret")?;
+    let skills = deployment.skills("20")?;
+    let input = brief("Add a helper.\nSTUB edit src/lib.rs", &["src/lib.rs"]);
+
+    // The file it edited holds the secret: no patch reaches the owner.
+    let held = Holding(Ok("pub fn a() {}"));
+    let report = invoke_with(&skills, "claude-code@1", &input, &held)?;
+    assert_eq!(field(&report, "/outcome"), "done", "{report}");
+    assert_eq!(field(&report, "/patch"), Value::Null, "{report}");
+    assert_eq!(field(&report, "/patch_withheld"), true, "{report}");
+    assert_eq!(field(&report, "/files_changed"), json!(["src/lib.rs"]));
+
+    // Its message holds it: the message is withheld, and the patch is clean.
+    let held = Holding(Ok("Add a helper"));
+    let report = invoke_with(&skills, "claude-code@1", &input, &held)?;
+    assert!(said(&report).starts_with("[withheld"), "{report}");
+    assert!(!report.to_string().contains("Add a helper"), "{report}");
+    assert!(field(&report, "/patch").is_string(), "{report}");
+    assert_eq!(field(&report, "/patch_withheld"), Value::Null, "{report}");
+
+    // A name holds it.
+    let held = Holding(Ok("lib.rs"));
+    let report = invoke_with(&skills, "claude-code@1", &input, &held)?;
+    assert!(!report.to_string().contains("lib.rs"), "{report}");
+    assert_eq!(field(&report, "/patch"), Value::Null, "{report}");
+    Ok(())
+}
+
+#[test]
+fn a_harness_doesnt_start_when_the_secrets_cant_be_read() -> Result<(), String> {
+    if !guard_cell_available()? {
+        return Ok(());
+    }
+    let deployment = Deployment::new("harness-unread")?;
+    let skills = deployment.skills("20")?;
+    let input = brief("STUB edit src/lib.rs", &["src/lib.rs"]);
+    let refused = invoke_with(&skills, "claude-code@1", &input, &Holding(Err("locked")));
+    assert_eq!(refused, Err(format!("{:?}", SkillResult::SkillError)));
+    assert!(deployment.activity().is_empty(), "it never ran");
     Ok(())
 }
 
