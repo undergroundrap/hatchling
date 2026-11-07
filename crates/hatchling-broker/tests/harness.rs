@@ -284,7 +284,12 @@ fn a_harness_is_never_given_a_secret() -> Result<(), String> {
 
     // In any file of the brief.
     let held = Holding(Ok("old notes"));
-    let report = invoke_with(&skills, "claude-code@1", &brief("Tidy.", &["notes.txt"]), &held)?;
+    let report = invoke_with(
+        &skills,
+        "claude-code@1",
+        &brief("Tidy.", &["notes.txt"]),
+        &held,
+    )?;
     refused(&report, "old notes", "notes.txt");
 
     // In the task itself.

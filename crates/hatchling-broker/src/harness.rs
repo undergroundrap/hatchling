@@ -2152,11 +2152,7 @@ fn stage(root: &Path, paths: &[String], dirs: &RunDirs) -> Result<(), String> {
 /// and never what it holds.
 fn free_of_secrets(root: &Path, held: &SecretSet) -> Result<(), String> {
     let tree = read_tree(root)?;
-    match tree
-        .files
-        .iter()
-        .find(|(_, bytes)| held.exposed_in(bytes))
-    {
+    match tree.files.iter().find(|(_, bytes)| held.exposed_in(bytes)) {
         Some((path, _)) => Err(format!(
             "{path:?} holds a secret Hatchling keeps, so the harness wasn't started"
         )),
