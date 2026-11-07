@@ -24,7 +24,9 @@ What Hatchling really does on a fresh install, one row at a time.
 | Update with the Windows setup | ⬜ | Fresh run due before 0.8.0 |
 | Uninstall, keeping or deleting data | ✅ | |
 | Protect the vault with a security key | ✅ | Needs usbipd by hand |
-| Unlock after a restart | ✅ | |
+| Unlock after a restart | ✅ | Number of steps measured at the 0.8.0 run |
+| Secure store: see what's kept, by name | ❌ | From a names-only listing by the keeper |
+| Add a key or a password from the app's Add | ❌ | Terminal commands for now: an interim, not a pass |
 | Make a backup | ✅ | |
 | Restore a backup | ⬜ | |
 | Distro sealed from Windows | ⬜ | Tested by setup run, not yet by a person |
@@ -98,7 +100,12 @@ What Hatchling really does on a fresh install, one row at a time.
 | Finding | Status |
 |---|---|
 | A held secret in a file given to a harness could reach its AI vendor | Fixed in 0.8.0 at intake |
-| The Keep sign-in form takes a password in the web app, which should never touch a secret | Open. Only shown once the browser is set up |
+| The Keep sign-in form took a password in the web app | Fixed in 0.8.0: the form is gone, and sign-ins are added at the terminal |
+| Signing in by Take control sends what you type through the app as keystrokes | Open, for the keeper's own window |
+| Memory, goals, feed posts, decisions, ideas, run specs and harness temp files aren't sealed at rest | Open. Continuity doesn't ship onto these |
+| A default install's vault opens from a key file on the same disk | Open, for the front-door release |
+| Authenticator codes don't protect a stolen disk, and there's no passphrase option | Open, for the front-door release |
+| A saved sign-in password enters the browser's cell at fill time, for the origin the cell reports | Accepted for now, with a design-out question in Phase 4 |
 
 ## Private threat models
 
