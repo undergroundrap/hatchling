@@ -2,7 +2,6 @@ import { writeRouteHash } from './route-location.js';
 import { ContentLoading } from './content-loading.js';
 import { ApprovalReview } from '../features/approvals/review.js';
 import type { TaskApprovalPort } from '../session/task-approvals.js';
-import type { SignInPort } from '../session/sign-ins.js';
 import type { CodePort } from '../session/codes.js';
 import type { AttentionPort } from '../session/attention.js';
 import type { ConversationPort } from '../session/conversations.js';
@@ -58,9 +57,6 @@ export class App implements AppContext {
     readonly contentLoading: ContentLoading;
     readonly approvals: ApprovalReview;
     readonly dialogs: DialogManager;
-    get signIns(): SignInPort | undefined {
-        return this.adapter.signIns;
-    }
     get codes(): CodePort | undefined {
         return this.adapter.codes;
     }
@@ -106,7 +102,6 @@ export class App implements AppContext {
     constructor(readonly adapter: ProtocolAdapter & {
         readonly chatSession?: ChatSessionPort;
         readonly taskApprovals?: TaskApprovalPort;
-        readonly signIns?: SignInPort;
         readonly codes?: CodePort;
         readonly conversations?: ConversationPort;
         readonly usage?: UsagePort;

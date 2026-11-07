@@ -126,7 +126,7 @@ fn add(
 
 /// The secret: at a prompt that doesn't show it, when stdin is a
 /// terminal; else all of stdin.
-fn read_secret(prompt: &str) -> Result<Secret, Error> {
+pub(crate) fn read_secret(prompt: &str) -> Result<Secret, Error> {
     let stdin = std::io::stdin();
     let terminal = stdin.is_terminal();
     let mut input = stdin.lock();

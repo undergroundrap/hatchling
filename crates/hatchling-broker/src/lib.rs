@@ -102,6 +102,7 @@ pub mod schedule_cli;
 pub mod schedule_ops;
 pub mod schedule_proposals;
 pub mod secrets;
+pub mod sign_in_cli;
 pub use schedule_ops::{
     HubDelivery, SealedScheduleStore, authenticated_channels, dispatch_once, handle_hook_op,
     handle_schedule_op, held_grants,
