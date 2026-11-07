@@ -1,6 +1,6 @@
 # Hatchling session protocol
 
-**Status:** v13 (current). This doc is the human-readable reference
+**Status:** v20 (current). This doc is the human-readable reference
 for the broker session wire protocol. The Rust types live in
 `crates/hatchling-core/src/messages.rs` (op families). The
 authoritative version history is the doc comment on
@@ -237,7 +237,8 @@ session holds.
   the page with a sign-in the owner keeps for its site, naming the fields
   by their ids from the last snapshot. Only in a browser running a
   signed-in profile, and only on the exact origin the sign-in was kept for.
-  The broker types it; the agent learns only the page after, which shows
+  The vault keeper sends it to the browser's controller, which types it,
+  and the broker never holds it; the agent learns only the page after, which shows
   none of it, or why it wasn't done: no sign-in for this site, which one
   (by `label`) when there are several, or `Failed { failure: OtherOrigin }`
   when the page isn't on the sign-in's origin. A username goes only into a

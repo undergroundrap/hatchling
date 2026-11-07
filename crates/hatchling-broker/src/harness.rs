@@ -256,9 +256,6 @@ enum Stopped {
     Unchecked,
 }
 
-/// Whether `text` holds a secret; one that can't be told stops the run.
-fn holding(keys: HarnessKeys<'_>, text: &[u8]) -> Result<bool, Stopped> {
-    keys.contains(text).map_err(|reason| {
 /// Ends the agent's run, if it is one: a secret was caught going to `to`.
 fn end_run(keys: HarnessKeys<'_>, to: SentTo) {
     if let Some(hit) = keys.held_hit() {
@@ -266,6 +263,9 @@ fn end_run(keys: HarnessKeys<'_>, to: SentTo) {
     }
 }
 
+/// Whether `text` holds a secret; one that can't be told stops the run.
+fn holding(keys: HarnessKeys<'_>, text: &[u8]) -> Result<bool, Stopped> {
+    keys.contains(text).map_err(|reason| {
         tracing::error!(%reason, "a harness run stopped: its secrets check wasn't answered");
         Stopped::Unchecked
     })
@@ -2182,7 +2182,8 @@ struct RunDirs {
 }
 
 impl RunDirs {
-    /// Fresh, owner-only directories under the temp dir.
+    /// Fresh directories under the temp dir: the base searchable by all,
+    /// each tree in it owner-only.
     fn create() -> Result<Self, String> {
         // A name no one can guess, made exclusively below: another local
         // user can't pre-create it to block the run.
@@ -2755,33 +2756,33 @@ impl Report {
     /// This report, with nothing the run wrote that holds a secret. A
     /// file's name or a message can carry one as well as a patch can.
     ///
-    /// # Errors
-    ///
-    /// Why a text couldn't be checked: none of it can be delivered.
-    fn screened(mut self, keys: HarnessKeys<'_>) -> Result<Self, String> {
-        let withheld = |text: &mut String| {
-            if keys.contains(text.as_bytes())? {
-                WITHHELD.clone_into(text);
-            }
     /// A secret found here ends an agent's run, as soon as it's found, so a
     /// later text that can't be checked doesn't lose it. A refused report's
     /// reason can only be quoting the brief, no cell having run, so that
     /// one is what the agent tried to give the harness, not what it handed
     /// back.
     ///
-            Ok::<(), String>(())
-        };
-        withheld(&mut self.harness_said.message)?;
-        self.harness_said
+    /// # Errors
+    ///
+    /// Why a text couldn't be checked: none of it can be delivered.
+    fn screened(mut self, keys: HarnessKeys<'_>) -> Result<Self, String> {
         let from = if self.outcome == HarnessOutcome::Refused {
             SentTo::Harness
         } else {
             SentTo::HarnessReturn
         };
+        let withheld = |text: &mut String| {
+            if keys.contains(text.as_bytes())? {
+                WITHHELD.clone_into(text);
+                end_run(keys, from);
+            }
+            Ok::<(), String>(())
+        };
+        withheld(&mut self.harness_said.message)?;
+        self.harness_said
             .question
             .iter_mut()
             .try_for_each(withheld)?;
-                end_run(keys, from);
         self.reason.iter_mut().try_for_each(withheld)?;
         for names in [
             &mut self.files_changed,
@@ -4924,7 +4925,6 @@ mod tests {
         }
     }
 
-    #[test]
     /// A run's directories go through the guarded walk, which keeps what's
     /// past its depth: a plain recursive delete wouldn't. A cell's link out
     /// of the tree is removed, never followed.
@@ -4954,6 +4954,7 @@ mod tests {
         assert!(!base.exists(), "with nothing kept, it all goes");
     }
 
+    #[test]
     fn what_the_harness_said_is_its_result_or_its_words_cut_to_size() {
         assert_eq!(
             final_message(br#"{"type":"result","result":"All done."}"#),
@@ -5256,6 +5257,10 @@ mod tests {
         let told = serde_json::to_string(&screened).unwrap();
         assert!(!told.contains("hidden"), "{told}");
         assert_eq!(screened.unpatchable.get(1).unwrap(), "fine.bin");
+        assert!(
+            !told.contains("hidden"),
+            "the report still holds what was withheld"
+        );
     }
 
     /// A report whose text can't be checked isn't one to deliver, whichever
@@ -5290,10 +5295,6 @@ mod tests {
         }
 
         fn contains(&self, text: &[u8]) -> Result<bool, String> {
-        assert!(
-            !told.contains("hidden"),
-            "the report still holds what was withheld"
-        );
             if text == self.0.as_bytes() {
                 Err(String::from("the keeper went"))
             } else {

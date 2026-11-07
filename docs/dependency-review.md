@@ -21,7 +21,8 @@ loopback, and the `SCM_RIGHTS` handoff of its fd to the broker;
 is typed (`EchoOff`); its test opens a pseudo-terminal (`pty`, a
 dev-dependency only). `hatchling-vault` uses `process` (the owner
 checks' uid) and `fs`, for the keyring's edit lock: a no-follow open and
-`flock` (WO-011). `hatchling-browser`, the browser cell's controller, uses `pipe` (the DevTools pipe it hands Chromium), `fs` (made non-blocking) and `event` (polled with a deadline, so no wait on the browser is unbounded).
+`flock` (WO-011). `hatchling-fido2` uses `event` and `fs`: `poll` and
+`flock` on a key's `hidraw` node. `hatchling-browser`, the browser cell's controller, uses `pipe` (the DevTools pipe it hands Chromium), `fs` (made non-blocking) and `event` (polled with a deadline, so no wait on the browser is unbounded).
 
 ## hatchling-core
 
@@ -214,14 +215,17 @@ the tree, not two.
 The AES block cipher (RustCrypto). Used only by `hatchling-fido2`: CTAP2 encrypts the `hmac-secret` salt and output, and the PIN
 token, with AES-256-CBC under the key agreement, and the protocol fixes
 the mode. Pure Rust, constant-time software AES (or the CPU's AES
-instructions when present); MIT/Apache-2.0.
+instructions when present); MIT/Apache-2.0. Its `zeroize` feature wipes
+the key schedule when dropped, which adds an edge to `zeroize`, a crate
+already in the tree.
 
 ## cbc
 
 The CBC block mode (RustCrypto), over `aes`. Used only by
 `hatchling-fido2`, for CTAP2's AES-256-CBC: whole blocks, no
 padding, as the protocol defines it. A reviewed mode rather than a
-hand-rolled one; MIT/Apache-2.0.
+hand-rolled one; MIT/Apache-2.0. Its `zeroize` feature wipes the mode's
+state, as `aes`'s does the key's.
 
 ## hmac
 

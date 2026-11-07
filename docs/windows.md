@@ -98,7 +98,7 @@ It's honest to say what's left:
 
 ## Why they're separate
 
-**Hatchling** is the app, which runs in your browser. Everything secret stays out of it. A browser is the most exposed thing on your computer: extensions, a bug in a page, or a leaked address can all reach it.
+**Hatchling** is the app, which runs in your browser. Your keys, PIN and saved passwords stay out of it. A one-time code a site asks you for does go through the app, and so does what you type under Take control. A browser is the most exposed thing on your computer: extensions, a bug in a page, or a leaked address can all reach it.
 
 So **Hatchling Tools** opens a real console window instead, and your PIN goes straight from there to your key. Hatchling's setup never sees it, and neither does the app or the agent. It's why the app can't change your vault, even if someone got hold of its address.
 

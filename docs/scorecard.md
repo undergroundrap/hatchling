@@ -102,12 +102,13 @@ What Hatchling really does on a fresh install, one row at a time.
 
 | Finding | Status |
 |---|---|
-| A held secret in a file given to a harness could reach its AI vendor | Fixed in 0.8.0: the keeper checks it, tested against a real keeper |
-| A refused check tells the agent a guess matched, so a weak password could be guessed | Fixed in 0.8.0: a hit ends the run and tells the owner, tested against a real keeper in a real cell |
+| A held secret in a file given to a harness could reach its AI vendor | Fixed in 0.8.0: the keeper checks it, tested with a real keeper and a real harness cell, before and after the run |
+| A secret a harness put together could be read back from what was withheld | Fixed in 0.8.0: a secret in what comes back ends an agent's run, tested with a real keeper, the real spawner, a real harness cell and a real session |
+| A refused check tells the agent a guess matched, so a weak password could be guessed | Fixed in 0.8.0: a hit ends the run, kills every cell of its tree where it's recorded, and tells the owner. A chat run, a scheduled run, a subagent tree and the broker's own cell were tested with a real keeper, the real spawner and real cells, each caught on a web read with no site behind it. A search, a page's address, typed text and a harness's brief were tested on a real session with a real keeper, the searcher and the browser standing in. None of it has run on an install |
 | Wrong guesses at a held secret aren't rate-limited, and a site feeding an agent guesses could work out a hit from the one it never receives | Open: once a run, and the owner is told |
 | The Keep sign-in form took a password in the web app | Fixed in 0.8.0: the form is gone, and sign-ins are added at the terminal |
 | Signing in by Take control sends what you type through the app as keystrokes | Open, for the keeper's own window |
-| Memory, goals, feed posts, decisions, ideas, run specs and harness temp files aren't sealed at rest | Open. Continuity doesn't ship onto these |
+| Memory, goals, feed posts, decisions, ideas, run specs, harness temp files, and the usage and activity logs aren't sealed at rest | Open. Continuity doesn't ship onto these |
 | A default install's vault opens from a key file on the same disk | Open, for the front-door release |
 | Authenticator codes don't protect a stolen disk, and there's no passphrase option | Open, for the front-door release |
 | A saved sign-in password enters the browser's cell at fill time, for the origin the cell reports | Accepted for now, with a design-out question in Phase 4 |

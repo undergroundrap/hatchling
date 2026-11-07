@@ -107,9 +107,9 @@ impl std::fmt::Debug for Api {
 
 /// The broker's API, bound, when one is configured.
 ///
-/// The sockets' owner (the broker's own uid) is its one local caller,
-/// with the configured grants; on the UI socket, it must also present
-/// the UI token, minted here.
+/// The broker's owner ([`crate::owner::owner`]), for whom the sockets are
+/// made, is its one local caller, with the configured grants; on the UI
+/// socket, it must also present the UI token, minted here.
 ///
 /// # Errors
 ///

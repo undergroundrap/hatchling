@@ -87,7 +87,7 @@ The first output is a schedule acknowledgment. Success is the later `agent:`
 answer. The cell asks the broker for a destination-bound surrogate; the broker
 checks the grant, replaces it with the vault credential, and supplies the
 Authorization header over verified TLS. The agent receives no provider key.
-No vault-fetch grant is needed for model access.
+The egress grant is all it needs: no cell can read a vault secret.
 
 **From Windows, with Hatchling in WSL2**, let the command take the key from the clipboard, so you type nothing and nothing shows. Open PowerShell yourself (not a terminal an AI agent opens for you: see [testing with an agent](testing-with-an-agent.md)), paste this command and **don't press Enter yet**. Copy the key from your provider's page, then press Enter:
 
