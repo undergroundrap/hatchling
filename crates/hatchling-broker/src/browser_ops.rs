@@ -441,6 +441,9 @@ impl BrowserSession {
         let (Some(profile), Some(driven)) = (self.profile.clone(), self.browser.clone()) else {
             return true;
         };
+        let Some(profiles) = crate::browser_profiles::Profiles::of(config, keys) else {
+            return true;
+        };
         let jar = match read_jar(&driven) {
             Ok(jar) => jar,
             Err(error) => {
@@ -453,9 +456,6 @@ impl BrowserSession {
         for cookie in &jar {
             self.hide(&cookie.value);
         }
-        let Some(profiles) = crate::browser_profiles::Profiles::of(config, keys) else {
-            return true;
-        };
         let now = hatchling_scheduler::Timestamp::now().as_second();
         match profiles.keep_jar(&profile, jar, now, self.signed_out) {
             Ok(dropped) => tracing::info!(%profile, dropped, "a signed-in session is kept"),
