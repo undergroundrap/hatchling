@@ -12,6 +12,12 @@ A few advanced commands, such as switching to a hosted model, are in Settings fo
 
 You'll see `sudo` elsewhere in these docs. That's for people who installed Hatchling from a Linux or WSL terminal, which is a different way to install it. [If you'd rather use a terminal](#if-youd-rather-use-a-terminal) shows the same commands for this setup.
 
+## Why it needs no administrator rights
+
+A setup with administrator rights can change anything on your PC. This one can't, because it never asks for them. It works only in your own account: your apps folder, your Start menu, your Startup folder, and its own WSL distro. That also means no admin prompt to trust, and it works on a PC where you aren't an administrator.
+
+There are two exceptions, each once, and each from Windows itself. If WSL isn't on your PC, installing it needs an administrator. So does allowing a security key with usbipd.
+
 ## What's in the Start menu
 
 | Item | What it does | What you'll type |
