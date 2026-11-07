@@ -57,7 +57,15 @@ Then each time you use the key, in PowerShell:
 usbipd attach --wsl --busid <number> --auto-attach
 ```
 
-Leave that window open while you use **Protect your vault** or **Unlock**. Once Hatchling is unlocked, it doesn't need the key until the next restart, so you can close it. Making this automatic is the next thing on the list. More on keys, including what to do if you lose one: [Protecting the vault with a security key](security-keys.md).
+Leave that window open while you use **Protect your vault** or **Unlock**: it's what lets Hatchling see the key.
+
+Then give the key back. While a key is attached to WSL, Windows can't use it, so a website or app on your PC that asks for your key won't find it. Once Hatchling is unlocked, it doesn't need the key until the next restart. Press Ctrl+C in that window, then:
+
+```powershell
+usbipd detach --busid <number>
+```
+
+Now Windows sees your key again, and it's only shared for as long as it's needed. Making all of this automatic is the next thing on the list. More on keys, including what to do if you lose one: [Protecting the vault with a security key](security-keys.md).
 
 ## What keeps it apart from Windows
 
