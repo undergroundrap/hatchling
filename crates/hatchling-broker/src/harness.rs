@@ -1858,29 +1858,38 @@ pub(crate) fn parse_tools(raw: Option<&str>, networked: bool) -> Result<Vec<Tool
 /// broker's own keys and logged as the broker's read before it is used
 /// ([`crate::secrets::Secrets::broker_read`]). No vault grant may
 /// name it.
-pub const fn vault_keys<'a>(config: &'a crate::Config, key: &'a dyn OpensStores) -> VaultKeys<'a> {
+pub const fn vault_keys<'a>(config: &'a Config, key: &'a dyn OpensStores) -> VaultKeys<'a> {
     VaultKeys { config, key }
 }
 
 /// The broker's own vault, as a harness run reads it.
 pub struct VaultKeys<'a> {
-    config: &'a crate::Config,
+    config: &'a Config,
     key: &'a dyn OpensStores,
 }
 
 impl HarnessVault for VaultKeys<'_> {
     fn key(&self, secret: &str) -> Option<Zeroizing<String>> {
-        let name = secret.parse::<hatchling_core::SecretName>().ok()?;
-        let secret = crate::secrets::Secrets::new(&self.config.vault.root, self.key)
-            .broker_read("harness", std::slice::from_ref(&name))
-            .ok()?
-            .pop()??;
-        key_text(&secret)
+        vendor_key(&self.config.vault.root, self.key, secret)
     }
 
     fn held(&self) -> Result<SecretSet, String> {
         crate::artifact_ops::held_secrets(self.config, self.key)
     }
+}
+
+/// The vendor key `secret`, as the broker's own logged vault read.
+fn vendor_key(
+    vault_root: &Path,
+    key: &dyn OpensStores,
+    secret: &str,
+) -> Option<Zeroizing<String>> {
+    let name = secret.parse::<hatchling_core::SecretName>().ok()?;
+    let secret = crate::secrets::Secrets::new(vault_root, key)
+        .broker_read("harness", std::slice::from_ref(&name))
+        .ok()?
+        .pop()??;
+    key_text(&secret)
 }
 
 /// A vendor key as its relay sends it: the secret's text, trimmed, or
@@ -2540,6 +2549,7 @@ impl Report {
             files_removed: Vec::new(),
             unpatchable: Vec::new(),
             patch: None,
+            patch_withheld: false,
             omitted: 0,
             network: None,
             harness_said: HarnessSaid::default(),
@@ -3681,7 +3691,7 @@ mod tests {
                 &hatchling_vault::Secret::new(b" sk-ant-real \n".to_vec()).unwrap(),
             )
             .unwrap();
-        let keys = vault_keys(&root, &key);
+        let keys = |secret: &str| vendor_key(&root, &key, secret);
         assert_eq!(
             keys("harness-claude-code").as_deref().map(String::as_str),
             Some("sk-ant-real")
@@ -3696,7 +3706,7 @@ mod tests {
         assert!(keys("harness-codex-cli").is_none(), "a blank key is none");
         let other = MasterKey::generate().unwrap();
         assert!(
-            vault_keys(&root, &other)("harness-claude-code").is_none(),
+            vendor_key(&root, &other, "harness-claude-code").is_none(),
             "another key reads nothing"
         );
         let (log, unparsed) = read_log(&root).unwrap();
