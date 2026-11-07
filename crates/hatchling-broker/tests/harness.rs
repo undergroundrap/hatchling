@@ -241,8 +241,8 @@ fn a_secret_a_harness_saw_stays_out_of_what_it_hands_back() -> Result<(), String
     let skills = deployment.skills("20")?;
     let input = brief("Add a helper.\nSTUB edit src/lib.rs", &["src/lib.rs"]);
 
-    // The file it edited holds the secret: no patch reaches the owner.
-    let held = Holding(Ok("pub fn a() {}"));
+    // What it wrote holds the secret: no patch reaches the owner.
+    let held = Holding(Ok("edited by the stub harness"));
     let report = invoke_with(&skills, "claude-code@1", &input, &held)?;
     assert_eq!(field(&report, "/outcome"), "done", "{report}");
     assert_eq!(field(&report, "/patch"), Value::Null, "{report}");
@@ -250,18 +250,48 @@ fn a_secret_a_harness_saw_stays_out_of_what_it_hands_back() -> Result<(), String
     assert_eq!(field(&report, "/files_changed"), json!(["src/lib.rs"]));
 
     // Its message holds it: the message is withheld, and the patch is clean.
-    let held = Holding(Ok("Add a helper"));
+    let held = Holding(Ok("You are working on a task"));
     let report = invoke_with(&skills, "claude-code@1", &input, &held)?;
     assert!(said(&report).starts_with("[withheld"), "{report}");
-    assert!(!report.to_string().contains("Add a helper"), "{report}");
     assert!(field(&report, "/patch").is_string(), "{report}");
     assert_eq!(field(&report, "/patch_withheld"), Value::Null, "{report}");
+    Ok(())
+}
 
-    // A name holds it.
-    let held = Holding(Ok("lib.rs"));
+/// What a harness is given goes to its vendor, so a held secret stops at
+/// the door: the cell never starts, and the relay never sees it.
+#[test]
+fn a_harness_is_never_given_a_secret() -> Result<(), String> {
+    if !guard_cell_available()? {
+        return Ok(());
+    }
+    let deployment = Deployment::new("harness-given")?;
+    let skills = deployment.skills("20")?;
+    let refused = |report: &Value, secret: &str, why: &str| {
+        assert_eq!(field(report, "/outcome"), "refused", "{report}");
+        assert!(said(report).is_empty(), "the harness ran: {report}");
+        assert_eq!(field(report, "/patch"), Value::Null, "{report}");
+        let reason = field(report, "/reason").to_string();
+        assert!(reason.contains(why), "{report}");
+        assert!(!report.to_string().contains(secret), "{report}");
+    };
+
+    // In a file it was given: named, and not shown.
+    let input = brief("STUB edit src/lib.rs", &["src/lib.rs"]);
+    let held = Holding(Ok("pub fn a() {}"));
     let report = invoke_with(&skills, "claude-code@1", &input, &held)?;
-    assert!(!report.to_string().contains("lib.rs"), "{report}");
-    assert_eq!(field(&report, "/patch"), Value::Null, "{report}");
+    refused(&report, "pub fn a() {}", "src/lib.rs");
+
+    // In any file of the brief.
+    let held = Holding(Ok("old notes"));
+    let report = invoke_with(&skills, "claude-code@1", &brief("Tidy.", &["notes.txt"]), &held)?;
+    refused(&report, "old notes", "notes.txt");
+
+    // In the task itself.
+    let input = brief("Use the key sk-held-value.", &["src/lib.rs"]);
+    let held = Holding(Ok("sk-held-value"));
+    let report = invoke_with(&skills, "claude-code@1", &input, &held)?;
+    refused(&report, "sk-held-value", "the task holds a secret");
     Ok(())
 }
 

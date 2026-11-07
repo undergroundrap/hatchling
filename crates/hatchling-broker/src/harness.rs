@@ -1332,6 +1332,14 @@ impl Harnesses {
         let Some(root) = self.roots.get(&brief.root) else {
             return report.refused(format!("{:?} is not a configured project root", brief.root));
         };
+        // A harness cell holds a stand-in key, so a held secret can only
+        // come in with what it's given, and what it's given goes to its
+        // vendor. Refused here: the relay runs where only one key is held.
+        if held.exposed_in(input.as_bytes()) {
+            return report.refused(String::from(
+                "the task holds a secret Hatchling keeps, so the harness wasn't started",
+            ));
+        }
         let code = match binary.verified() {
             Ok(code) => code,
             Err(reason) => return report.refused_for(BINARY_REFUSED, &reason),
@@ -1341,6 +1349,9 @@ impl Harnesses {
             Err(reason) => return report.failed(&reason),
         };
         if let Err(reason) = stage(root, &brief.paths, &scratch) {
+            return report.refused(reason);
+        }
+        if let Err(reason) = free_of_secrets(&scratch.pristine, held) {
             return report.refused(reason);
         }
         let verified = match VerifiedCode::write("harness", "harness", &code) {
@@ -2135,6 +2146,22 @@ fn stage(root: &Path, paths: &[String], dirs: &RunDirs) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// That no file under `root` holds one of `held`: why not, naming the file
+/// and never what it holds.
+fn free_of_secrets(root: &Path, held: &SecretSet) -> Result<(), String> {
+    let tree = read_tree(root)?;
+    match tree
+        .files
+        .iter()
+        .find(|(_, bytes)| held.exposed_in(bytes))
+    {
+        Some((path, _)) => Err(format!(
+            "{path:?} holds a secret Hatchling keeps, so the harness wasn't started"
+        )),
+        None => Ok(()),
+    }
 }
 
 /// Writes `bytes` at `path`, creating owner-only parent directories.
@@ -5051,6 +5078,37 @@ mod tests {
             sha256: "ab".repeat(32),
         };
         Report::new(&CODEX, &binary, "{\"brief\":1}")
+    }
+
+    #[test]
+    fn a_name_or_a_reason_holding_a_secret_is_withheld() {
+        let held = SecretSet::new([b"hidden".to_vec()]);
+        let mut report = sample_report();
+        report.reason = Some(String::from("failed on hidden"));
+        report.record_changes(&Changes {
+            changed: vec![(String::from("hidden.rs"), String::new(), String::new())],
+            added: vec![(String::from("hidden-too"), String::new())],
+            removed: vec![(String::from("hidden.txt"), String::new())],
+            unpatchable: vec![String::from("hidden.bin"), String::from("fine.bin")],
+        });
+        let screened = report.screened(&held);
+        let told = serde_json::to_string(&screened).unwrap();
+        assert!(!told.contains("hidden"), "{told}");
+        assert_eq!(screened.unpatchable.get(1).unwrap(), "fine.bin");
+    }
+
+    #[test]
+    fn a_tree_with_a_secret_names_the_file_and_not_the_secret() {
+        let scratch = Scratch::new("free-of-secrets");
+        scratch.write("tree/clean.txt", b"nothing here");
+        scratch.write("tree/sub/config.txt", b"token=hidden");
+        let root = scratch.join("tree");
+        let held = SecretSet::new([b"hidden".to_vec()]);
+        let refused = free_of_secrets(&root, &held).unwrap_err();
+        assert!(refused.contains("sub/config.txt"), "{refused}");
+        assert!(!refused.contains("hidden"), "{refused}");
+        let other = SecretSet::new([b"absent".to_vec()]);
+        assert_eq!(free_of_secrets(&root, &other), Ok(()));
     }
 
     #[test]

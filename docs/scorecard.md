@@ -95,7 +95,7 @@ What Hatchling really does on a fresh install, one row at a time.
 
 | Finding | Status |
 |---|---|
-| The harness relay sends requests to the AI vendor with no scan for held secrets | Open, due before 0.8.0 |
+| A held secret in a file given to a harness could reach its AI vendor | Fixed in 0.8.0 at intake |
 | The Keep sign-in form takes a password in the web app, which should never touch a secret | Open. Only shown once the browser is set up |
 
 ## Private threat models
