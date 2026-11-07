@@ -31,5 +31,5 @@ export function agentStatus(state: DeepReadonly<AppState>, connection?: Connecti
         return { label: browser.controller === 'user' ? 'Waiting for you' : browser.state === 'parked' ? 'Waiting for confirmation' : browser.statusTitle, detail: browser.step, kind: browser.controller === 'user' || browser.state === 'parked' ? 'waiting' : 'working', icon: 'browser', threadId: null };
     if (state.turn === 'working')
         return { label: 'Working on it', detail: 'Waiting for the first concrete activity update.', kind: 'working', icon: 'run', threadId: null };
-    return { label: 'Connected', detail: state.mode === 'scripted' ? 'Connected to the local scripted adapter. No live agent.' : 'Adapter ready. No task is running; network health is not exposed by this contract.', kind: 'connected', icon: 'connected', threadId: null };
+    return { label: 'Connected', detail: state.mode === 'scripted' ? 'Connected to the local scripted adapter. No live agent.' : 'Ready. Nothing is running.', kind: 'connected', icon: 'connected', threadId: null };
 }

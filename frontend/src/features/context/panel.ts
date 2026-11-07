@@ -53,7 +53,7 @@ export function renderContextPanel(ctx: AppContext): HTMLElement {
     const status = agentStatus(ctx.state, ctx.delivery.connection, ctx.approvals.pending());
     const close = iconButton('close', 'Hide agent status', () => setContextOpen(ctx, false));
     close.removeAttribute('data-tooltip');
-    const aside = h('aside', { class: 'context-panel', 'aria-label': 'Agent status and activity' }, h('div', { class: 'context-close' }, close), h('header', { class: 'agent-profile' }, h('div', { class: 'agent-portrait' }, h('img', { src: avatarSource(ctx), alt: `${ctx.state.settings.name} avatar`, width: 94, height: 94 }), avatarMenu(ctx)), h('h2', { class: 'agent-name', title: ctx.state.settings.name }, ctx.state.settings.name), h('p', { class: `agent-status ${status.kind}`, role: 'status', title: status.detail, 'aria-live': 'polite' }, icon(status.icon, 16), h('span', { class: 'agent-status-label' }, status.label))));
+    const aside = h('aside', { class: 'context-panel', 'aria-label': 'Agent status and activity' }, h('div', { class: 'context-close' }, close), h('header', { class: 'agent-profile' }, h('div', { class: 'agent-portrait' }, h('img', { src: avatarSource(ctx), alt: `${ctx.state.settings.name} avatar`, width: 94, height: 94 }), ctx.state.mode === 'live' ? null : avatarMenu(ctx)), h('h2', { class: 'agent-name', title: ctx.state.settings.name }, ctx.state.settings.name), h('p', { class: `agent-status ${status.kind}`, role: 'status', title: status.detail, 'aria-live': 'polite' }, icon(status.icon, 16), h('span', { class: 'agent-status-label' }, status.label))));
     const profile = aside.querySelector<HTMLElement>('.agent-profile');
     if (profile)
         profile.replaceWith(profileMounted(ctx, profile, status.label, status.kind));

@@ -21,7 +21,7 @@ export function generalTab(ctx: AppContext, refresh: () => void): HTMLElement {
     }, { variant: 'link', className: 'upgrade-link' })));
     // Connected to Hatchling, what the model really used, as the broker counted
     // it: never a sample quota shown as though it were the owner's.
-    root.append(account, ...(ctx.state.mode === 'live' ? [liveModel(ctx, refresh), ...liveSetup(ctx), liveUsage(ctx, refresh)] : [sampleUsage()]));
+    root.append(...(ctx.state.mode === 'live' ? [liveModel(ctx, refresh), ...liveSetup(ctx), liveUsage(ctx, refresh)] : [account, sampleUsage()]));
     const language = h('button', { class: 'settings-group general-language', type: 'button' }, h('span', {}, 'Language'), icon('chevron', 15));
     language.addEventListener('click', () => {
         const choices = selectField('Language', 'language', [{ value: 'English', label: 'English' }], 'English');
@@ -29,7 +29,8 @@ export function generalTab(ctx: AppContext, refresh: () => void): HTMLElement {
         const ref = ctx.dialogs.open('Language', body, 'confirm-dialog');
         body.append(button('Done', () => { void ctx.run({ type: 'settings.language', value: 'English' }, true).then(() => { ref.close(); refresh(); }); }, { variant: 'primary' }));
     });
-    root.append(language);
+    if (!(ctx.state.mode === 'live'))
+        root.append(language);
     const modes: readonly {
         id: Theme;
         label: string;

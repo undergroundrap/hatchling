@@ -110,7 +110,7 @@ test('a switch to the other server is answered with the model as it stands, and 
 test('a switch refused says why, and changes nothing', async () => {
     const { live, changes } = surface([refused('bad_request'), refused('unavailable'), refused('not_granted'), refused('not_connected'), { kind: 'failed', detail: 'Not connected.' }, { kind: 'answered', result: { result: 'usage', usage: {} } }]);
     assert.match((await live.switchServer(true)).message, /no other model set up/);
-    assert.match((await live.switchServer(true)).message, /doctor says which/);
+    assert.match((await live.switchServer(true)).message, /doctor`, run as root, says which/);
     assert.equal((await live.switchServer(true)).message, 'This connection may not switch the model.');
     assert.equal((await live.switchServer(true)).message, 'Not connected.');
     assert.deepEqual(await live.switchServer(true), { ok: false, message: 'Not connected.' });

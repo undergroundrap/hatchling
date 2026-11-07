@@ -199,16 +199,206 @@ body.has-artifact-dock .page { width: 100%; margin-inline: auto; }
     .system-table td { height: 49px; }
 }
 
-.data-command {
+.model-group {
+    padding: 16px;
+}
+
+.model-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px 16px;
+}
+
+.settings-group .model-head .row-title {
+    font-size: calc(14px * var(--ui-scale, 1));
+    font-weight: 500;
+}
+
+.model-endpoint {
+    min-width: 0;
+    padding: 4px 10px;
+    border-radius: 8px;
+    background: var(--bg);
+    color: var(--muted-on-card);
+    font-size: calc(12px * var(--ui-scale, 1));
+    line-height: calc(16px * var(--ui-scale, 1));
+    overflow-wrap: anywhere;
+}
+
+.model-facts {
+    margin-top: 4px;
+    font-size: calc(12px * var(--ui-scale, 1));
+    line-height: calc(17px * var(--ui-scale, 1));
+    color: var(--muted-on-card);
+}
+
+.model-choice {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+    gap: 10px;
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border-strong);
+}
+
+.model-choice .form-field {
+    min-width: 0;
+}
+
+.settings-group .model-choice select,
+.settings-group .model-choice input {
+    width: 100%;
+    max-width: none;
+    min-height: 36px;
+    padding: 7px 12px;
+    border-radius: 10px;
+    background-color: var(--bg);
+    font-size: calc(13px * var(--ui-scale, 1));
+}
+
+.settings-group .model-choice select {
+    padding-right: 38px;
+    appearance: none;
+    background-image: linear-gradient(45deg, transparent 50%, var(--muted-on-card) 50%), linear-gradient(135deg, var(--muted-on-card) 50%, transparent 50%);
+    background-position: right 20px center, right 15px center;
+    background-repeat: no-repeat;
+    background-size: 5px 5px;
+    cursor: pointer;
+}
+
+.model-choice option {
+    background: var(--surface-raised);
+    color: var(--text);
+}
+
+/* Where a browser lets a select's list be drawn, it matches the app's menus. */
+@supports (appearance: base-select) {
+    .settings-group .model-choice select,
+    .settings-group .model-choice select::picker(select) {
+        appearance: base-select;
+    }
+
+    .settings-group .model-choice select::picker-icon {
+        display: none;
+    }
+
+    .settings-group .model-choice select::picker(select) {
+        margin-top: 6px;
+        padding: 4px;
+        border: 1px solid var(--border-strong);
+        border-radius: 12px;
+        background: var(--surface-raised);
+    }
+
+    .model-choice option {
+        padding: 8px 10px;
+        border-radius: 8px;
+    }
+
+    .model-choice option::checkmark {
+        display: none;
+    }
+
+    .model-choice option:hover,
+    .model-choice option:checked {
+        background: var(--surface-control);
+    }
+}
+
+.settings-group .model-choice .button {
+    min-height: 36px;
+}
+
+.model-foot {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 16px;
-    padding: 12px 16px;
+    margin-top: 10px;
 }
 
-.data-command code {
+.model-hint {
+    min-width: 0;
+    font-size: calc(12px * var(--ui-scale, 1));
+    line-height: calc(17px * var(--ui-scale, 1));
+    color: var(--muted-on-card);
+}
+
+.model-group .model-switch {
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border-strong);
+}
+
+.model-foot .feed-prompt-actions {
+    flex: none;
+    margin: 0;
+}
+
+@media (max-width: 520px) {
+    .model-choice {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
+.data-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 10px 0;
+}
+
+.data-command {
+    display: flex;
+    flex-direction: column;
+    padding: 14px 0;
+}
+
+.data-command + .data-command {
+    border-top: 1px solid var(--border-strong);
+}
+
+.data-command strong,
+.data-row strong {
+    font-size: calc(14px * var(--ui-scale, 1));
+    line-height: calc(20px * var(--ui-scale, 1));
+    font-weight: 500;
+}
+
+.data-command .data-description,
+.data-row .data-description {
+    padding: 2px 0 0;
+    font-size: calc(12px * var(--ui-scale, 1));
+    line-height: calc(17px * var(--ui-scale, 1));
+    color: var(--muted-on-card);
+}
+
+.command-well {
+    display: flex;
+    align-items: center;
+    align-self: stretch;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 10px;
+    padding: 5px 5px 5px 14px;
+    border-radius: 10px;
+    background: var(--bg);
+}
+
+.command-well code {
+    flex: 1;
+    min-width: 0;
+    font-size: calc(12px * var(--ui-scale, 1));
+    line-height: calc(18px * var(--ui-scale, 1));
     overflow-wrap: anywhere;
+}
+
+.command-well .button {
+    flex: none;
 }
 
 .setup-page {

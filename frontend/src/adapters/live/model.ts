@@ -17,8 +17,8 @@ const NOT_SET: Readonly<Record<ActionRefusal, string>> = {
 };
 /** Why a switch didn't happen, by the broker's refusal. */
 const NOT_SWITCHED: Readonly<Record<ActionRefusal, string>> = {
-    bad_request: 'There’s no other model set up to switch to: sudo hatchling-broker use-hosted, or use-local, sets one up.',
-    unavailable: 'Hatchling couldn’t switch: its settings don’t let it reach that server, or scheduling is off. sudo hatchling-broker doctor says which.',
+    bad_request: 'There’s no other model set up to switch to. Settings, under General, shows how to add one.',
+    unavailable: 'Hatchling couldn’t switch: its settings don’t let it reach that server, or scheduling is off. `hatchling-broker doctor`, run as root, says which.',
     not_granted: 'This connection may not switch the model.',
     not_connected: 'Not connected.',
 };

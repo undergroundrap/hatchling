@@ -87,7 +87,7 @@ export function browserFrame(task: Task, thumbnail = false, scripted = true): HT
     if (frame?.image)
         view.append(h('img', { class: 'recorded-browser-frame', src: frame.image, alt: scripted ? 'Synthetic site-challenge example; no live website is connected' : `Browser page: ${frame.title || task.site}`, draggable: false }));
     else if (!scripted) {
-        view.append(h('p', { class: 'sample-page-caption', role: 'status' }, 'Waiting for the adapter’s browser preview. No page state is inferred.'));
+        view.append(h('p', { class: 'sample-page-caption', role: 'status' }, 'Waiting for the browser’s first view.'));
     }
     else {
         view.append(h('div', { class: 'sample-tabbar' }, icon('globe', 12), task.site, h('span', {}, '×')), h('div', { class: 'sample-address' }, icon('arrow', 12), icon('refresh', 12), h('span', {}, icon('lock', 10), task.site)), h('div', { class: 'sample-search-page' }, h('div', { class: 'sample-search-logo' }, frame?.page === 'results' ? 'Search results' : 'Sample search'), h('div', { class: 'sample-searchbox' }, icon('search', 18), h('span', {}, frame?.page === 'home' ? '' : frame?.query ?? ''), h('i', { class: 'sample-caret' })), frame?.page === 'results' ? h('div', { class: 'sample-result' }, h('strong', {}, 'Local browser demonstration'), h('p', {}, 'The search, permission handoff and return-control flow completed. This is an illustrative result, not a web search.')) : h('span', { class: 'sample-page-caption' }, 'Local sample page · no external request')));
@@ -131,7 +131,9 @@ export function openBrowserSession(ctx: AppContext, id: string): void {
         const status = h('div', { class: 'browser-session-title' }, h('h2', { id: 'artifact-dock-title' }, 'Browser session'), h('p', { role: 'status' }, `${browserLabel(task)} · ${task.site}`));
         const actions = h('div', { class: 'browser-session-actions' });
         if (!stopped) {
-            if (task.state === 'queued' || task.state === 'assigned')
+            if (ctx.state.mode === 'live' && (task.state === 'queued' || task.state === 'assigned'))
+                actions.append(h('span', { class: 'muted text-small' }, 'Waiting to start'));
+            else if (task.state === 'queued' || task.state === 'assigned')
                 actions.append(button('Start sample task', () => { void ctx.run({ type: 'browser.start', id }, true); }, { variant: 'primary' }));
             else {
                 actions.append(button('Stop', () => { void ctx.run({ type: 'browser.cancel', id }, true); }, { icon: 'stop', className: 'browser-stop', variant: 'ghost' }), task.controller === 'switching' ? switchingControl() : task.controller === 'agent' ? button('Take control of the browser', () => { void ctx.run({ type: 'browser.takeover', id }, true); }, { variant: 'primary' }) : button('Return control to agent', () => { void ctx.run({ type: 'browser.resume', id }, true); }, { variant: 'primary', disabled: task.challenge === 'waiting' || task.challenge === 'persistent' }));
@@ -146,7 +148,7 @@ export function openBrowserSession(ctx: AppContext, id: string): void {
         actions.append(close);
         if (header)
             replacePreservingFocus(header, status, actions);
-        const tabs = h('div', { class: 'browser-session-tabs' }, h('span', {}, icon('globe', 14), task.site), h('small', {}, ctx.state.mode === 'scripted' ? 'Scripted preview' : 'Adapter preview'));
+        const tabs = h('div', { class: 'browser-session-tabs' }, h('span', {}, icon('globe', 14), task.site), h('small', {}, ctx.state.mode === 'scripted' ? 'Scripted preview' : 'Live view'));
         const viewport = h('div', { class: 'browser-session-stage', tabindex: 0, 'aria-label': 'Browser preview screen' }, browserFrame(task, false, ctx.state.mode === 'scripted'));
         if (!stopped && task.controller === 'user' && ctx.state.mode === 'scripted') {
             const tools = h('form', { class: 'local-takeover-controls', 'aria-label': 'Local takeover controls' }, h('strong', {}, 'You have control · local demo'));

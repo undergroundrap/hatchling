@@ -186,8 +186,10 @@ function renderComposer(ctx: AppContext, readOnly: boolean): HTMLElement {
     const attach = menu('Add attachments or voice', [
         { label: 'Add a photo', icon: 'image', action: () => chooseFile(ctx, true) },
         { label: 'Attach a file', icon: 'paperclip', action: () => chooseFile(ctx, false) },
-        { label: 'Voice note preview', icon: 'audio', action: () => openVoice(ctx, 'note') },
-        { label: 'Live voice call preview', icon: 'phone', action: () => openVoice(ctx, 'call') },
+        ...(ctx.state.mode === 'live' ? [] : [
+            { label: 'Voice note preview', icon: 'audio' as const, action: () => openVoice(ctx, 'note') },
+            { label: 'Live voice call preview', icon: 'phone' as const, action: () => openVoice(ctx, 'call') },
+        ]),
     ]);
     const summary = attach.querySelector('summary');
     summary?.replaceChildren(icon('plus', 22));
@@ -201,7 +203,7 @@ function renderComposer(ctx: AppContext, readOnly: boolean): HTMLElement {
         sendButton.title = ctx.delivery.blockedReason(ctx.ui.chatId) || (ctx.delivery.connection.kind !== 'ready' ? 'Queue message until the connection returns' : 'Send message');
         microphone.hidden = false;
     };
-    form.append(attach, input, microphone, sendButton);
+    form.append(attach, input, ...(ctx.state.mode === 'live' ? [] : [microphone]), sendButton);
     updateComposer();
     requestAnimationFrame(() => {
         if (input.isConnected && input.value) {
@@ -227,7 +229,7 @@ function renderComposer(ctx: AppContext, readOnly: boolean): HTMLElement {
     }
     if (ctx.state.turn !== 'idle') {
         const stateLabel = ctx.state.turn === 'working' ? 'Working on it' : ctx.state.turn === 'awaiting' ? 'Waiting for your confirmation' : ctx.state.turn === 'interrupted' ? 'Interrupted — context saved' : 'Stalled — waiting on a source';
-        area.append(h('div', { class: 'turn-state', role: 'status' }, icon(ctx.state.turn === 'working' ? 'run' : 'pause', 14), stateLabel, ctx.state.turn === 'working' ? button('Stop', () => { void ctx.run({ type: 'turn.interrupt' }); }, { variant: 'link' }) : ctx.state.turn === 'interrupted' ? button('Resume', () => { void ctx.run({ type: 'turn.resume' }); }, { variant: 'link' }) : null));
+        area.append(h('div', { class: 'turn-state', role: 'status' }, icon(ctx.state.turn === 'working' ? 'run' : 'pause', 14), stateLabel, ctx.state.mode === 'live' ? null : ctx.state.turn === 'working' ? button('Stop', () => { void ctx.run({ type: 'turn.interrupt' }); }, { variant: 'link' }) : ctx.state.turn === 'interrupted' ? button('Resume', () => { void ctx.run({ type: 'turn.resume' }); }, { variant: 'link' }) : null));
     }
     if (ctx.ui.attachmentNames.length)
         area.append(h('div', { class: 'attached-files' }, ...ctx.ui.attachmentNames.map((id) => h('span', { class: 'attachment-chip' }, icon('file', 14), ctx.state.artifacts.find((item) => item.id === id)?.title ?? 'Local file', iconButton('close', 'Remove attachment', () => { ctx.ui.attachmentNames = ctx.ui.attachmentNames.filter((item) => item !== id); ctx.render(); })))));
@@ -286,7 +288,7 @@ async function importLocalFile(ctx: AppContext, id: string): Promise<void> {
     const file = item.file;
     try {
         if (file.size > 2000000)
-            throw new Error('Use a file under 2 MB in this local demo.');
+            throw new Error('Use a file under 2 MB.');
         const isImage = ['image/png', 'image/jpeg', 'image/webp'].includes(file.type);
         const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
         if (file.type.startsWith('image/') && !isImage)

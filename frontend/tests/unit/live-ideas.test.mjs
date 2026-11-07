@@ -117,7 +117,7 @@ test('a read that fails says why, and a later one recovers', async () => {
         assert.equal(live.current().kind, 'failed');
         said.push(live.current().detail);
     }
-    assert.deepEqual(said, ['Not connected.', 'This connection may not read the Ideas page.', 'Hatchling answered with something else.', 'Hatchling keeps no Ideas page here: scheduled work is off.', 'Hatchling couldn’t read or change the Ideas page. `sudo hatchling-broker doctor` checks the install.', 'Hatchling answered with something else.']);
+    assert.deepEqual(said, ['Not connected.', 'This connection may not read the Ideas page.', 'Hatchling answered with something else.', 'Hatchling keeps no Ideas page here: scheduled work is off.', 'Hatchling couldn’t read or change the Ideas page. `hatchling-broker doctor`, run as root, checks the install.', 'Hatchling answered with something else.']);
     await live.refresh();
     assert.equal(live.current().kind, 'read');
 });

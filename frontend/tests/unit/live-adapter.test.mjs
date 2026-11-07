@@ -1074,11 +1074,20 @@ test('the snapshot is honest: only what the broker said, display preferences kep
     adapter.subscribe(() => other++)();
     const revision = adapter.getSnapshot().revision;
     for (const [command, field, value] of [[{ type: 'settings.theme', value: 'dark' }, 'theme', 'dark'], [{ type: 'settings.accent', value: 'blue' }, 'accent', 'blue'], [{ type: 'settings.interface-size', value: 'large' }, 'interfaceSize', 'large'], [{ type: 'settings.chat-panel', value: false }, 'keepChatPanelVisible', false]]) {
-        assert.deepEqual(await adapter.execute(command), { ok: true, message: 'Saved.' });
+        assert.deepEqual(await adapter.execute(command), { ok: true, message: 'Changed for now: this browser isn’t keeping it.' });
         assert.equal(adapter.getSnapshot().settings[field], value);
     }
-    assert.equal(heard, 4);
-    assert.equal(adapter.getSnapshot().revision, revision + 4);
+    const kept = new Map();
+    globalThis.window = { localStorage: { setItem: (key, text) => kept.set(key, text) } };
+    try {
+        assert.deepEqual(await adapter.execute({ type: 'settings.theme', value: 'light' }), { ok: true, message: 'Saved.' });
+    }
+    finally {
+        delete globalThis.window;
+    }
+    assert.equal(JSON.parse(kept.get('hatchling-preferences')).theme, 'light');
+    assert.equal(heard, 5);
+    assert.equal(adapter.getSnapshot().revision, revision + 5);
     assert.equal(sentActions(transport).length, 0, 'preferences never reach the broker');
     // Events no view shows yet still move the clock, and nothing else.
     replay(transport, SAMPLE_EVENTS.slice(14));

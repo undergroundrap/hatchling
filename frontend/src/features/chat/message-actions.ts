@@ -24,9 +24,9 @@ function content(message: DeepReadonly<Message>, ctx: AppContext): string {
         return ctx.state.browserTasks.find(item => item.id === message.taskId)?.title ?? 'Browser session';
     return message.kind === 'purchase' ? 'Purchase review' : message.service;
 }
-function formatMessageTimestamp(time: string): string {
+function formatMessageTimestamp(time: string, live: boolean): string {
     const normalized = time.replace(/\b(am|pm)\b/i, (match) => match.toUpperCase());
-    return `Today at ${normalized}`;
+    return live ? normalized : `Today at ${normalized}`;
 }
 function messageMetaMenu(label: string): HTMLElement {
     const details = h('details', { class: 'menu message-meta-menu' });
@@ -95,7 +95,7 @@ export function messageActions(ctx: AppContext, message: DeepReadonly<Message>):
             }
         })();
     });
-    const meta = messageMetaMenu(formatMessageTimestamp(message.time));
+    const meta = messageMetaMenu(formatMessageTimestamp(message.time, ctx.state.mode === 'live'));
     root.append(picker, reply, copy, meta);
     return root;
 }

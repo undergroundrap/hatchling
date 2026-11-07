@@ -4,7 +4,7 @@
 
 # A part of Hatchling
 
-This crate is one part of **[Hatchling](https://github.com/undergroundrap/hatchling)**: personal AI agents you actually own, in kernel-isolated cells that never hold your keys.
+This crate is one part of **[Hatchling](https://github.com/undergroundrap/hatchling)**: secure infrastructure for always-on AI agents you own, in kernel-isolated cells that never hold your keys.
 
 You probably want **[hatchling-runtime](https://crates.io/crates/hatchling-runtime)**, which installs the whole runtime as one `hatchling` command:
 

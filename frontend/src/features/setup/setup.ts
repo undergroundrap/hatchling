@@ -13,7 +13,7 @@ import { setupFinished, setupProgress, setupReminder, setupSteps, STEP_STATUS } 
 import type { SetupStep } from '../../session/setup.js';
 const INTRO = 'Run each command in a terminal you opened yourself. Anything secret you type goes there, and never through this app.';
 const RESTARTS = 'Each one restarts Hatchling, so this page goes offline for a moment. The command says what to run next, and the address it gives brings you back, with that step ticked.';
-const INTRO_WINDOWS = 'Each step is in the Start menu, and ticks itself here when it’s done. Anything secret is typed in the window it opens, and never through this app.';
+const INTRO_WINDOWS = 'Each step ticks itself here when it’s done. Anything secret is typed in the window it opens, and never through this app.';
 const RESTARTS_WINDOWS = 'Each one restarts Hatchling, so this page goes offline for a moment. Open Hatchling from the Start menu to come back.';
 function nowSeconds(): number {
     return Math.floor(Date.now() / 1000);
@@ -22,9 +22,11 @@ function stepCard(ctx: AppContext, step: SetupStep, number: number): HTMLElement
     const mark = step.status === 'done' ? icon('check', 16) : h('span', {}, step.status === 'skipped' ? '–' : String(number));
     const card = h('section', { class: `setup-step is-${step.status}`, 'aria-label': step.title }, h('span', { class: 'setup-mark', 'aria-label': STEP_STATUS[step.status] }, mark), h('div', { class: 'setup-step-body' }, h('h2', {}, step.title), h('p', {}, step.said)));
     const body = card.querySelector('.setup-step-body');
-    const row = step.commands.length > 1 ? commandRow : commandLine;
-    if (step.commands.length > 0)
-        body?.append(h('div', { class: 'settings-group' }, ...step.commands.map(command => row(ctx, command))));
+    const [only] = step.commands;
+    if (step.commands.length > 1)
+        body?.append(h('div', { class: 'settings-group' }, ...step.commands.map(command => commandRow(ctx, command))));
+    else if (only !== undefined)
+        body?.append(commandLine(ctx, only));
     if (step.optional && step.status === 'next' && step.id === 'vault')
         body?.append(button('I don’t have a key', () => { ctx.setup?.remember('no-key'); ctx.render(); }, { variant: 'ghost' }));
     return card;

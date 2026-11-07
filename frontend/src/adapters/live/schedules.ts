@@ -13,7 +13,7 @@ const CREATED = 'Scheduled. Its results arrive in this chat.';
 const CANCELLED = 'Removed. It won’t run again.';
 const GONE = 'This schedule was already gone.';
 const OFF = 'Hatchling has no scheduler: the operator has not turned scheduled work on.';
-const FAILED = "Hatchling couldn't change its schedules, so nothing changed. `sudo hatchling-broker doctor` checks the install.";
+const FAILED = "Hatchling couldn't change its schedules, so nothing changed. `hatchling-broker doctor`, run as root, checks the install.";
 const UNCONFIRMED = 'Hatchling answered with something else, so the change is not confirmed. Check the list again.';
 const HIDDEN_TASK = 'Scheduled work (its task isn’t shown: you didn’t write it here)';
 const DAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const;
@@ -198,7 +198,7 @@ function parkedDetail(parked: ParkedSummary): {
     if (parked.reason === 'the run failed')
         return { detail: 'It didn’t finish. The chat said why when it happened.', result: null };
     if (parked.reason === 'the run did not start')
-        return { detail: 'It didn’t start. `sudo hatchling-broker doctor` checks the install.', result: null };
+        return { detail: 'It didn’t start. `hatchling-broker doctor`, run as root, checks the install.', result: null };
     if (parked.reason.startsWith('delivery failed'))
         return { detail: 'Its result couldn’t be delivered when it finished. Here it is.', result: parked.text };
     return { detail: `Kept: ${parked.reason}.`, result: null };

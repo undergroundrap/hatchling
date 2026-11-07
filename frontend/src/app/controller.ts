@@ -221,7 +221,7 @@ export class App implements AppContext {
                 break;
             case 'published': {
                 const publication = this.state.publications.find((item) => item.id === this.ui.publicationId);
-                main.append(publication ? h('div', { class: 'page published-page reading-wide' }, h('div', { class: 'notice' }, 'Approved static snapshot · local preview, not a public hosted link'), h('header', { class: 'page-header' }, h('h1', {}, publication.title)), h('p', { class: 'muted text-small' }, `Approved version ${publication.version}. Later edits do not change this snapshot.`), markdown(publication.content), button('Back to library', () => this.navigate('library'))) : emptyState('file', 'This snapshot is not in this local workspace.', 'Shared demo links only work in the browser that approved them.'));
+                main.append(publication ? h('div', { class: 'page published-page reading-wide' }, h('div', { class: 'notice' }, 'Approved static snapshot · local preview, not a public hosted link'), h('header', { class: 'page-header' }, h('h1', {}, publication.title)), h('p', { class: 'muted text-small' }, `Approved version ${publication.version}. Later edits do not change this snapshot.`), markdown(publication.content), button('Back to library', () => this.navigate('library'))) : emptyState('file', this.state.mode === 'live' ? 'This snapshot isn’t here.' : 'This snapshot is not in this local workspace.', this.state.mode === 'live' ? '' : 'Shared demo links only work in the browser that approved them.'));
                 break;
             }
         }
@@ -539,8 +539,10 @@ export class App implements AppContext {
                     openShortcuts(this);
             }
             else {
-                this.dialogs.closeAll();
-                this.openScenarios();
+                if (this.state.mode !== 'live') {
+                    this.dialogs.closeAll();
+                    this.openScenarios();
+                }
             }
             return;
         }
