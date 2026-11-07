@@ -25,9 +25,9 @@ function matches(item: DeepReadonly<Artifact>, filter: LibraryFilter): boolean {
     }
 }
 export function renderLibrary(ctx: AppContext): HTMLElement {
-    if (ctx.ui.libraryFilter === 'system')
+    if (ctx.ui.libraryFilter === 'system' && !(ctx.state.mode === 'live'))
         return renderSystem(ctx);
-    const filter = ctx.ui.libraryFilter;
+    const filter = ctx.ui.libraryFilter === 'system' ? 'all' : ctx.ui.libraryFilter;
     const items = ctx.state.artifacts.filter((item) => matches(item, filter) && item.title.toLowerCase().includes(ctx.ui.navSearch.toLowerCase())).toSorted((a, b) => Number(b.pinned) - Number(a.pinned) || (ctx.ui.librarySort === 'title' ? a.title.localeCompare(b.title) : b[ctx.ui.librarySort].localeCompare(a[ctx.ui.librarySort])));
     const sortOptions = [
         { value: 'opened' as const, label: 'Last opened' },
@@ -56,7 +56,7 @@ export function renderLibrary(ctx: AppContext): HTMLElement {
         }
     });
     sort.append(sortSummary, sortPopover);
-    const page = h('div', { class: 'page wide-page library-page' }, h('header', { class: 'page-header' }, h('h1', {}, libraryNames[filter]), h('div', { class: 'page-actions' }, sort, ctx.state.mode === 'live' ? null : button(ctx.ui.selectionMode ? 'Done' : 'Select', () => { ctx.ui.selectionMode = !ctx.ui.selectionMode; ctx.ui.selectedArtifacts.clear(); ctx.render(); }), iconButton(ctx.ui.libraryLayout === 'grid' ? 'list' : 'grid', ctx.ui.libraryLayout === 'grid' ? 'Switch to list view' : 'Switch to grid view', () => { ctx.ui.libraryLayout = ctx.ui.libraryLayout === 'grid' ? 'list' : 'grid'; ctx.render(); }), button('Create an artifact', () => ctx.createArtifact(), { icon: 'plus', variant: 'primary' }))));
+    const page = h('div', { class: 'page wide-page library-page' }, h('header', { class: 'page-header' }, h('h1', {}, libraryNames[filter]), h('div', { class: 'page-actions' }, sort, ctx.state.mode === 'live' ? null : button(ctx.ui.selectionMode ? 'Done' : 'Select', () => { ctx.ui.selectionMode = !ctx.ui.selectionMode; ctx.ui.selectedArtifacts.clear(); ctx.render(); }), iconButton(ctx.ui.libraryLayout === 'grid' ? 'list' : 'grid', ctx.ui.libraryLayout === 'grid' ? 'Switch to list view' : 'Switch to grid view', () => { ctx.ui.libraryLayout = ctx.ui.libraryLayout === 'grid' ? 'list' : 'grid'; ctx.render(); }), ctx.state.mode === 'live' ? null : button('Create an artifact', () => ctx.createArtifact(), { icon: 'plus', variant: 'primary' }))));
     if (appendContentState(ctx, page, 'library'))
         return page;
     if (ctx.ui.selectionMode)

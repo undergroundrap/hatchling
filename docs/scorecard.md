@@ -14,21 +14,24 @@ What Hatchling really does on a fresh install, one row at a time.
 | 🚧 | Built, but off by default, or part of it is missing |
 | ❌ | Not there |
 
-**Last checked:** Windows setup, 2026-11-06, ahead of 0.8.0. Linux installs are covered by CI, which isn't a person, so their rows wait for someone to do them.
+**Last checked:** Windows setup, 2026-11-07, ahead of 0.8.0. Linux installs are covered by CI, which isn't a person, so their rows wait for someone to do them.
 
 ## Install and vault
 
 | What | Status | Notes |
 |---|---|---|
 | Install with the Windows setup | ✅ | |
-| Update with the Windows setup | ⬜ | Fresh run due before 0.8.0 |
+| Update with the Windows setup | ✅ | On a key-protected install, with a backup first |
 | Uninstall, keeping or deleting data | ✅ | |
 | Protect the vault with a security key | ✅ | Needs usbipd by hand |
-| Unlock after a restart | ✅ | |
+| Unlock after a restart | ✅ | 6 steps on Windows today: the target is one gesture |
+| Secure store: see what's kept, by name | ❌ | From a names-only listing by the keeper |
+| Add a key or a password from the app's Add | ❌ | Terminal commands for now: an interim, not a pass |
 | Make a backup | ✅ | |
 | Restore a backup | ⬜ | |
 | Distro sealed from Windows | ⬜ | Tested by setup run, not yet by a person |
-| A stranger's fresh install, end to end | ⬜ | Due before 0.8.0 |
+| The author's fresh install, end to end | ✅ | Install, protect, update, unlock, chat |
+| A stranger's fresh install, end to end | ⬜ | Someone other than the author |
 | The full vault flow: unlock, add a key and a site password, the agent uses both, lock, unlock, both still work | ❌ | Needs a way to add them and the browser on |
 
 ## Talking to it
@@ -45,7 +48,7 @@ What Hatchling really does on a fresh install, one row at a time.
 
 | What | Status | Notes |
 |---|---|---|
-| Memory, with your approval | ⬜ | No daily notes or import |
+| Memory, with your approval | 🔵 | Kept, then recalled in a new conversation. No daily notes or import |
 | Forget a memory | ⬜ | |
 | Goals: add, edit, close | ⬜ | No progress log, briefings or subgoals |
 | Scheduled work, with your approval | ⬜ | No pause, edit or run now |
@@ -69,6 +72,7 @@ What Hatchling really does on a fresh install, one row at a time.
 | Signed skills | 🚧 | None ship |
 | Coding harnesses | 🚧 | Not reachable from chat |
 | Deep research | 🚧 | Nothing in the app starts it |
+| From chat, the agent launches a coding harness in a cell and returns a patch for review | 🚧 | An option, unsized and uncommitted |
 | Web artifacts | ❌ | |
 | Images, video, audio | ❌ | |
 
@@ -81,6 +85,7 @@ What Hatchling really does on a fresh install, one row at a time.
 | Receipts for every action | ⬜ | Coverage not yet measured |
 | Scheduled runs all accounted for | ⬜ | |
 | Per-model conformance, published | ❌ | |
+| Benchmark: the same tasks and model on Hatchling's loop and an external harness, failures included | ❌ | Includes a non-coding multi-step job. Cited only with conformance: a harness multiplies a model, it doesn't replace one |
 | Backup and restore drill | ⬜ | |
 | Export and import drill | ❌ | Import memory isn't there |
 
@@ -97,8 +102,13 @@ What Hatchling really does on a fresh install, one row at a time.
 
 | Finding | Status |
 |---|---|
-| A held secret in a file given to a harness could reach its AI vendor | Fixed in 0.8.0 at intake, against every secret the vault keeper holds |
-| The Keep sign-in form takes a password in the web app, which should never touch a secret | Open. Only shown once the browser is set up |
+| A held secret in a file given to a harness could reach its AI vendor | Open, due before 0.8.0. The intake scan works, but with a keeper running it only knows secrets a cell has had, so API keys and sign-ins aren't checked |
+| The Keep sign-in form took a password in the web app | Fixed in 0.8.0: the form is gone, and sign-ins are added at the terminal |
+| Signing in by Take control sends what you type through the app as keystrokes | Open, for the keeper's own window |
+| Memory, goals, feed posts, decisions, ideas, run specs and harness temp files aren't sealed at rest | Open. Continuity doesn't ship onto these |
+| A default install's vault opens from a key file on the same disk | Open, for the front-door release |
+| Authenticator codes don't protect a stolen disk, and there's no passphrase option | Open, for the front-door release |
+| A saved sign-in password enters the browser's cell at fill time, for the origin the cell reports | Accepted for now, with a design-out question in Phase 4 |
 
 ## Private threat models
 

@@ -56,7 +56,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Messages]
 WelcomeLabel1=Hatchling {#AppVersion}
-WelcomeLabel2=Secure infrastructure for always-on AI agents you own.%n%nCreated by Ocean Bennett.%nCopyright (c) 2026 Ocean Bennett.%n%nClick Next to continue.
+WelcomeLabel2=Secure infrastructure for always-on AI agents you own.%n%nCreated by Ocean Bennett.%nCopyright (c) 2026 Ocean Bennett.
 
 [Files]
 Source: "common.ps1"; DestDir: "{app}"; Flags: ignoreversion
