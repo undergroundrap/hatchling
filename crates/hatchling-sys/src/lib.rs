@@ -59,9 +59,9 @@ pub use lock::{HeldLock, claim_dir, hold_dir, in_use, try_lock};
 pub use mounts::{BindMount, MountPlan};
 pub use namespaces::{unshare_ipc, unshare_mount, unshare_net, unshare_pid, unshare_user};
 pub use ownership::{
-    DirShare, chmod_dir, chmod_socket, create_private_dir, dir_share, ensure_private_dir,
-    give_dir_to, give_to, hand_file_to, hand_over_socket, owner_traverses, replace_file,
-    share_dir_with_cell, write_file, write_new_file_for,
+    DirShare, FileKind, chmod_dir, chmod_socket, create_private_dir, dir_share, ensure_private_dir,
+    give_dir_to, give_to, hand_file_to, hand_over_socket, owner_traverses, remove_file_of,
+    replace_file, share_dir_with_cell, write_file, write_new_file_for,
 };
 pub use peercred::{RawPeerCred, socket_peercred};
 pub use process::{
@@ -74,6 +74,7 @@ pub use seccomp::{SeccompProfile, SockFilter};
 pub use sync_pipe::{ChildToParent, ParentToChild, handshake_pipes};
 pub use terminal::{EchoOff, KeyByKey};
 pub use tree::{
-    DirId, MAX_CHOWN_ENTRIES, Removed, chown_tree, chown_tree_beneath, remove_dir_tree, remove_tree,
+    DirId, MAX_CHOWN_ENTRIES, MAX_DEPTH, Removed, chown_tree, chown_tree_beneath, remove_dir_tree,
+    remove_dir_tree_of, remove_tree,
 };
 pub use umask::{current_umask, with_umask};
