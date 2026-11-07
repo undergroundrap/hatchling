@@ -514,10 +514,7 @@ pub(crate) fn finish(
     kek_file: &Path,
 ) -> Result<Vec<(&'static str, RekeyReport)>, Error> {
     if kek_file_may_go(keyring) {
-        match std::fs::remove_file(kek_file) {
-            Err(err) if err.kind() != std::io::ErrorKind::NotFound => return Err(io_error(err)),
-            _ => {}
-        }
+        remove_key_file(kek_file)?;
     }
     let reports = crate::reseal_stores(stores, rotation.old(), rotation.new_key())?;
     keyring.finish_rotation(rotation).map_err(vault_error)?;
@@ -623,7 +620,20 @@ pub fn init(vault: &VaultConfig, config: &KeyringConfig) -> Result<(), Error> {
         .and_then(|keyring| keyring.unlock_file(&kek))
         .map_err(vault_error)?;
     mark_keyring(vault, path)?;
-    std::fs::remove_file(&vault.key_file).map_err(io_error)
+    remove_key_file(&vault.key_file)
+}
+
+/// Removes the key file at `path`, and only that: a regular file of one of
+/// Hatchling's own users. Nothing there is fine, as a step that's repeated
+/// finds it.
+fn remove_key_file(path: &Path) -> Result<(), Error> {
+    hatchling_sys::remove_file_of(
+        path,
+        hatchling_sys::FileKind::Regular,
+        &crate::broker_user::own_users(),
+    )
+    .map(|_| ())
+    .map_err(|error| io_error(std::io::Error::other(error)))
 }
 
 /// How many codes `enroll-totp` takes before it gives up.

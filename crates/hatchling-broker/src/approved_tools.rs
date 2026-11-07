@@ -313,10 +313,12 @@ pub(crate) fn write(dir: &Path, approved: &Approved) -> Result<(), Error> {
         .map_err(|error| refused(format!("cannot write {}: {error}", path.display())))?;
     text.push('\n');
     // One a failed write left is this user's: the directory is.
-    match std::fs::remove_file(&next) {
-        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(failed(error)),
-        _ => {}
-    }
+    hatchling_sys::remove_file_of(
+        &next,
+        hatchling_sys::FileKind::Regular,
+        &[hatchling_sys::euid()],
+    )
+    .map_err(|error| failed(std::io::Error::other(error)))?;
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)

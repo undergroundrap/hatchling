@@ -195,7 +195,9 @@ fn prune(dir: &Path, at: i64) {
             continue;
         };
         if is_date(day) && day < oldest.as_str() {
-            if let Err(error) = std::fs::remove_file(entry.path()) {
+            let owners = [hatchling_sys::euid()];
+            let kind = hatchling_sys::FileKind::Regular;
+            if let Err(error) = hatchling_sys::remove_file_of(&entry.path(), kind, &owners) {
                 tracing::warn!(day, error = %error, "an old day's usage couldn't be removed");
             }
         }
