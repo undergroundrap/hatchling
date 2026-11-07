@@ -373,6 +373,9 @@ fn protect(setup: &mut Setup<'_>, mut keyring: Keyring, path: &Path) -> Result<D
         setup.stores,
         &setup.config.kek_file(setup.vault),
     )?;
+    // The vault's key just changed, so a plain key file a setup that died
+    // inside `init` left opens nothing current: it goes now, not later.
+    ring::remove_key_file(&setup.vault.key_file)?;
     if let Some(codes) = &rotated.codes {
         recovery_kit(setup, path, codes)?;
     }

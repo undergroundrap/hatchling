@@ -489,6 +489,19 @@ fn a_key_file_a_crash_left_goes_on_the_next_run() {
     assert!(!vault.key_file.exists(), "it stays on the disk");
 }
 
+/// Lost inside the first step: the keyring made, the plain key file not yet
+/// gone. The next run protects the vault and takes the file away with it.
+#[test]
+fn a_key_file_left_inside_the_first_step_goes_as_the_vault_is_protected() {
+    let (_scratch, vault, config) = vault("setup-left-early");
+    std::fs::write(&vault.key_file, [7u8; 32]).unwrap();
+    assert_eq!(keyring_of(&config).tier(), Tier::File);
+    let mut bench = Bench::new_keys(2, &[0, 1]);
+    let run = run_with(&vault, &config, &mut bench, &["", "", "<code>"], &[]);
+    assert_eq!(run.done.unwrap(), Done::Protected);
+    assert!(!vault.key_file.exists(), "it stays beside a protected vault");
+}
+
 /// A power cut mid-way: the keys committed, the stores not yet moved. The
 /// vault won't serve like that; the next run finishes it, and makes the
 /// codes nobody saw.

@@ -484,6 +484,7 @@ pub fn wipe_file_of(path: &Path, owners: &[u32]) -> Result<bool, Error> {
     const FLAGS: OFlags = OFlags::WRONLY
         .union(OFlags::NOFOLLOW)
         .union(OFlags::NONBLOCK)
+        .union(OFlags::NOCTTY)
         .union(OFlags::CLOEXEC);
     let wrote = |source| Error::Ownership {
         operation: "overwrite the file",
@@ -497,6 +498,14 @@ pub fn wipe_file_of(path: &Path, owners: &[u32]) -> Result<bool, Error> {
         Err(Errno::NOENT) => return Ok(false),
         Err(error) => return Err(failed("open the directory")(error)),
     };
+    // Looked at before it's opened, so opening a device has no effect, and
+    // again once it's open, so what's written is what was looked at.
+    match rustix::fs::statat(&handle, name, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(seen) if FileType::from_raw_mode(seen.st_mode) == FileType::RegularFile => {}
+        Ok(_) => return Err(refused("wipe a file", "it isn't a regular file")),
+        Err(Errno::NOENT) => return Ok(false),
+        Err(error) => return Err(failed("look at the file")(error)),
+    }
     let file = match rustix::fs::openat(&handle, name, FLAGS, Mode::empty()) {
         Ok(file) => file,
         Err(Errno::NOENT) => return Ok(false),
@@ -508,6 +517,10 @@ pub fn wipe_file_of(path: &Path, owners: &[u32]) -> Result<bool, Error> {
     }
     if !owners.contains(&stat.st_uid) {
         return Err(refused("wipe a file", "it isn't one of ours"));
+    }
+    // Zeros reach every name a file has: one with another is left alone.
+    if stat.st_nlink != 1 {
+        return Err(refused("wipe a file", "it has another name"));
     }
     let zeros = [0u8; 4096];
     let mut left = u64::try_from(stat.st_size).unwrap_or(0);
@@ -606,21 +619,31 @@ mod tests {
         dir
     }
 
-    /// A file wiped is zeros on the disk before it goes: a hard link to it,
-    /// which outlives the name, shows what was written. Anything else stays
+    /// A file wiped is zeros on the disk before it goes: a handle opened
+    /// before, which outlives the name, shows what was written. One with
+    /// another name is left as it is. Anything else stays
     /// exactly as it was: a link and what it points at, another owner's
     /// file, a directory. Nothing there is fine, and so is an empty file.
     #[test]
     fn a_wipe_zeros_the_file_it_removes_and_touches_nothing_else() {
         let dir = scratch("wipe");
         let me = [crate::euid()];
-        let (file, kept) = (dir.join("key"), dir.join("seen"));
+        let file = dir.join("key");
         let held = vec![7u8; 10_000];
         std::fs::write(&file, &held).unwrap();
-        std::fs::hard_link(&file, &kept).unwrap();
+        let mut seen = std::fs::File::open(&file).unwrap();
         assert!(wipe_file_of(&file, &me).unwrap());
         assert!(!file.exists());
-        assert_eq!(std::fs::read(&kept).unwrap(), vec![0u8; held.len()]);
+        let mut after = Vec::new();
+        std::io::Read::read_to_end(&mut seen, &mut after).unwrap();
+        assert_eq!(after, vec![0u8; held.len()], "zeros where it was");
+
+        let named = dir.join("named");
+        std::fs::write(&named, b"kept").unwrap();
+        std::fs::hard_link(&named, dir.join("other")).unwrap();
+        assert!(wipe_file_of(&named, &me).is_err(), "another name");
+        assert_eq!(std::fs::read(dir.join("other")).unwrap(), b"kept");
+        assert!(named.exists());
         assert!(!wipe_file_of(&file, &me).unwrap(), "nothing there");
         assert!(!wipe_file_of(&dir.join("none/key"), &me).unwrap());
 

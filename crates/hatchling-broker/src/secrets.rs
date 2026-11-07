@@ -127,7 +127,9 @@ impl<'k> Secrets<'k> {
 /// opaque `VaultError` reply: the session survives them, and the agent
 /// learns that the op failed, not why. Only malformed request bytes
 /// (undecodable base64) end the session — those are protocol violations.
-/// Either way the op is in the access log, as failed.
+/// Either way the op is in the access log, as failed, when the vault is
+/// served here. With a keeper running, an op that comes this way is
+/// refused, and the refusal is in the broker's log, not the access log.
 ///
 /// # Errors
 ///
