@@ -51,8 +51,9 @@
 //! - **Errors.** Up to [`STDERR_KEEP`] bytes of stderr are kept for the
 //!   failure report.
 //! - **Held secrets.** A run whose agent tried to send one out is over
-//!   ([`crate::held_check::HeldHit`]): the next look at it kills what's left
-//!   of its cell and it ends [`RunEnd::Stopped`], whatever it wrote.
+//!   ([`crate::held_check::HeldHit`]): its helper is killed where the hit
+//!   is recorded, and its cell with it, and the next look at it ends it
+//!   [`RunEnd::Stopped`], whatever it wrote.
 
 use std::io::Read as _;
 use std::os::fd::{AsFd as _, OwnedFd};
@@ -457,7 +458,8 @@ impl<'scope, 'env> CellLauncher<'scope, 'env> {
 
 /// One run in flight.
 pub struct CellRun<'scope> {
-    child: Process,
+    /// Its helper: the hit it ends on holds it too, to kill it at once.
+    child: Arc<Process>,
     cgroup: Option<hatchling_sys::cgroup::CellCgroup>,
     started: Instant,
     timeout: Duration,
@@ -579,6 +581,9 @@ impl<'scope> CellLauncher<'scope, '_> {
                 return Err(cleanup(error));
             }
         };
+        // Held once it exists: a hit that landed first kills it here.
+        let child = Arc::new(child);
+        hit.hold(&child);
         tracing::info!(label = %label, run = %token, "run cell started");
         let running = Some(crate::machine::Running::start(&token, kind, &cell.limits));
         Ok(CellRun {
@@ -676,8 +681,8 @@ impl CellRun<'_> {
         // is `Some` exactly then.
         let expired = self.started.elapsed().checked_sub(self.timeout).is_some();
         let waited = self.child.try_wait();
-        // Asked after the wait: a hit before the cell's exit is always seen,
-        // so a run that ends at once is never taken for one that finished.
+        // Asked after the wait, so a hit before the cell's exit is seen here
+        // and its cell is reaped. It's not the last word: see `ended`.
         if let Some(to) = self.hit.seen() {
             if !matches!(waited, Ok(Some(_))) {
                 let _ = self.child.terminate();
@@ -686,27 +691,39 @@ impl CellRun<'_> {
             let _ = self.teardown();
             return Some(RunEnd::Stopped(to));
         }
-        match waited {
+        let end = match waited {
             Ok(Some(exit)) => {
                 let (output, errors) = self.teardown();
-                Some(RunEnd::Exited {
+                RunEnd::Exited {
                     code: exit.code,
                     output,
                     errors,
-                })
+                }
             }
-            Ok(None) if !expired => None,
+            Ok(None) if !expired => return None,
             Ok(None) => {
                 let _ = self.child.terminate();
                 let _ = self.child.wait_deadline(REAP_AFTER_KILL);
                 let _ = self.teardown();
-                Some(RunEnd::TimedOut)
+                RunEnd::TimedOut
             }
             Err(err) => {
                 let _ = self.teardown();
-                Some(RunEnd::Failed(format!("cannot wait on the run: {err}")))
+                RunEnd::Failed(format!("cannot wait on the run: {err}"))
             }
-        }
+        };
+        Some(self.ended(end))
+    }
+
+    /// How a run ends that seemed to end as `end` says, its teardown done.
+    ///
+    /// A hit is only certain now. A cell can send its last frame and exit
+    /// at once, so it's seen gone with that frame still in the keeper's
+    /// check, and the hit lands only as the session finishes. The teardown
+    /// joins the session, so by here nothing is left to land one, and what
+    /// the run wrote isn't delivered.
+    fn ended(&self, end: RunEnd) -> RunEnd {
+        self.hit.seen().map_or(end, RunEnd::Stopped)
     }
 
     /// Kills the run now, and returns what it had written to stdout.
@@ -942,17 +959,13 @@ fn serve_run_session(
         connection,
         cell_id,
         pid: 0,
+        hit: hit.clone(),
     };
-    if let Err(error) = serve_cell_connection(
-        &cell,
-        config,
-        key,
-        &crate::Skills::default(),
-        None,
-        None,
-        hit,
-    ) {
-        tracing::debug!(%error, "scheduled run session ended");
+    if let Err(error) =
+        serve_cell_connection(&cell, config, key, &crate::Skills::default(), None, None)
+    {
+        // Escaped: a protocol error can quote what the cell sent.
+        tracing::debug!(?error, "scheduled run session ended");
     }
 }
 
@@ -1727,11 +1740,11 @@ mod tests {
 
     /// A run around a helper `start_helper` started, as `launch` builds
     /// it, but with no session.
-    fn helper_run(spawner: &Path, dir: &Path, timeout: Duration) -> CellRun<'static> {
+    fn helper_run<'scope>(spawner: &Path, dir: &Path, timeout: Duration) -> CellRun<'scope> {
         let (_handoff, helper_end) = UnixStream::pair().unwrap();
         let (child, output, errors) = start_helper(spawner, "{}", dir, helper_end).unwrap();
         CellRun {
-            child,
+            child: Arc::new(child),
             cgroup: None,
             started: Instant::now(),
             timeout,

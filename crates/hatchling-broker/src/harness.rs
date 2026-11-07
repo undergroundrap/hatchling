@@ -83,7 +83,7 @@ use zeroize::Zeroizing;
 use hatchling_core::subagent::{ActivityEvent, HarnessOutcome, SubagentEvent};
 use hatchling_core::ui::operator::CellKind;
 use hatchling_core::{CapabilityName, SkillOp, SkillResult};
-use hatchling_scheduler::Timestamp;
+use hatchling_scheduler::{SentTo, Timestamp};
 use hatchling_skill::CodeHash;
 use serde::{Deserialize, Serialize};
 
@@ -219,10 +219,12 @@ pub trait HarnessVault {
     /// doesn't start, and nothing it wrote is delivered.
     fn contains(&self, text: &[u8]) -> Result<bool, String>;
 
-    /// The brief, the agent's own text, held a secret
-    /// ([`crate::held_check::HeldHit`]). Nothing to end when it wasn't an
-    /// agent's: the owner invoking a harness themselves is only refused.
-    fn brief_held(&self) {}
+    /// What a held secret in this run's brief or its hand-back ends: the
+    /// agent's run it's part of. Nothing to end when it wasn't an agent's:
+    /// the owner invoking a harness themselves is only refused.
+    fn held_hit(&self) -> Option<&crate::held_check::HeldHit> {
+        None
+    }
 }
 
 /// A vault for a run that can't hold anything: a key lookup alone.
@@ -254,6 +256,13 @@ enum Stopped {
 /// Whether `text` holds a secret; one that can't be told stops the run.
 fn holding(keys: HarnessKeys<'_>, text: &[u8]) -> Result<bool, Stopped> {
     keys.contains(text).map_err(|reason| {
+/// Ends the agent's run, if it is one: a secret was caught going to `to`.
+fn end_run(keys: HarnessKeys<'_>, to: SentTo) {
+    if let Some(hit) = keys.held_hit() {
+        hit.record(to);
+    }
+}
+
         tracing::error!(%reason, "a harness run stopped: its secrets check wasn't answered");
         Stopped::Unchecked
     })
@@ -941,7 +950,7 @@ impl Drop for ToolCopy {
     }
 }
 
-/// Sets `path`'s mode, whatever the umask.
+/// Sets the directory `path`'s mode, whatever the umask.
 fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
@@ -1368,7 +1377,7 @@ impl Harnesses {
         // vendor. Refused here: the relay runs where only one key is held.
         if let Err(stopped) = brief.free_of_secrets(keys) {
             if matches!(stopped, Stopped::Holds(_)) {
-                keys.brief_held();
+                end_run(keys, SentTo::Harness);
             }
             return report.stopped(stopped);
         }
@@ -1431,7 +1440,10 @@ impl Harnesses {
         }
         let relay = relaying.map(|relaying| relaying.start(self.timeout + RELAY_GRACE));
         let ran = run_cell(
-            &runtime.clone().with_timeout(self.timeout),
+            &runtime
+                .clone()
+                .with_timeout(self.timeout)
+                .in_tree(keys.held_hit()),
             &cell,
             CellKind::Harness,
             &[],
@@ -1472,7 +1484,8 @@ impl Harnesses {
                 report.record_changes(&found);
                 if !found.is_empty() {
                     let patch = patch(&found);
-                    if holding(keys, patch.as_bytes()) == Ok(false) {
+                    let held = holding(keys, patch.as_bytes());
+                    if held == Ok(false) {
                         report.patch = self.deliver_patch(&patch);
                     } else {
                         tracing::warn!(
@@ -1954,10 +1967,8 @@ impl HarnessVault for VaultKeys<'_> {
         crate::held_check::check(self.keeper, self.config, self.key, text)
     }
 
-    fn brief_held(&self) {
-        if let Some(hit) = self.run {
-            hit.record(hatchling_scheduler::SentTo::Harness);
-        }
+    fn held_hit(&self) -> Option<&crate::held_check::HeldHit> {
+        self.run
     }
 }
 

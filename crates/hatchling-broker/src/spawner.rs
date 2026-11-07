@@ -575,6 +575,17 @@ pub fn start(keeper: UnixStream) -> Result<(), Error> {
     })?;
     let spawner = Spawner::start_with(Command::new(program), Some(&keeper))?;
     drop(keeper);
+    install(spawner)
+}
+
+/// Makes `spawner` the one this broker starts its cells through: once, as
+/// [`start`] does, and for a test's own process, which has no broker binary
+/// to start.
+///
+/// # Errors
+///
+/// [`Error::Spawner`] when a spawner is already running.
+pub fn install(spawner: Spawner) -> Result<(), Error> {
     SPAWNER.set(spawner).map_err(|_| Error::Spawner {
         reason: String::from("a spawner is already running"),
     })
@@ -944,6 +955,10 @@ impl Supervised for SpawnedProcess {
     }
 
     fn terminate(&self) -> Result<(), IsolationError> {
+        // Ended: nothing to kill, and the spawner has left this connection.
+        if matches!(self.outcome(), Ok(Some(_))) {
+            return Ok(());
+        }
         let stream = self
             .stream
             .lock()

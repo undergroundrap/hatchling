@@ -29,7 +29,7 @@
 //!   outlives its parent.
 //! - **A held secret ends the tree.** Parent and children share one
 //!   [`HeldHit`]: an agent in any of them caught sending a secret out ends
-//!   them all, each refused at its next op.
+//!   them all, each cell killed as the hit is recorded.
 
 use std::collections::BTreeMap;
 use std::io::Write as _;

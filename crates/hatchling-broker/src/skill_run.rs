@@ -59,7 +59,7 @@
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use hatchling_core::ui::operator::CellKind;
@@ -126,6 +126,8 @@ pub(crate) fn retry_while_busy<T>(
 pub struct SkillRuntime {
     spawner: PathBuf,
     timeout: Duration,
+    /// The run's tree its cells belong to, when an agent asked for them.
+    tree: Option<crate::held_check::HeldHit>,
 }
 
 impl SkillRuntime {
@@ -136,6 +138,7 @@ impl SkillRuntime {
         Self {
             spawner,
             timeout: DEFAULT_SKILL_TIMEOUT,
+            tree: None,
         }
     }
 
@@ -149,6 +152,14 @@ impl SkillRuntime {
     #[must_use]
     pub const fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    /// The same runtime, its cells held by `hit`, the tree they're run for:
+    /// a hit kills them as it does the tree's run cells.
+    #[must_use]
+    pub(crate) fn in_tree(mut self, hit: Option<&crate::held_check::HeldHit>) -> Self {
+        self.tree = hit.cloned();
         self
     }
 }
@@ -294,7 +305,10 @@ fn supervise(
     )
     .map_err(SkillRunError::Spawn)?;
     // `child` owns supervision (bounded waits, kill-on-drop).
-    let child = started.process;
+    let child = Arc::new(started.process);
+    if let Some(hit) = &runtime.tree {
+        hit.hold(&child);
+    }
     let stdin = started.stdin;
     let stdout = started.stdout;
     let stderr = Some(started.stderr);

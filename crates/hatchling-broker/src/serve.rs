@@ -252,6 +252,8 @@ pub fn spawn_agent_cell(config: &Config, mut cell_config: CellConfig) -> Result<
         cell_config.vault_grants = spawner.vault_grants(&config.vault);
         return spawn_through(spawner, &cell_config, cell_id);
     }
+    // Started here, with no spawner, a cell has no vault channel, and its
+    // wait owns it: a hit ends its session, which is all it has.
     let mut handle = spawn_cell(&cell_config, config.log_level)?;
     let connection = handle.connection().ok_or_else(|| Error::CellSpawn {
         reason: String::from("the agent cell came without its connection"),
@@ -280,6 +282,7 @@ pub fn spawn_agent_cell(config: &Config, mut cell_config: CellConfig) -> Result<
         connection,
         cell_id,
         pid: u32::try_from(pid).unwrap_or_default(),
+        hit: HeldHit::default(),
     })
 }
 
@@ -301,6 +304,11 @@ fn spawn_through(
     let (process, connection) = spawner
         .agent_cell(&cell)
         .map_err(|reason| Error::CellSpawn { reason })?;
+    // A hit in its session kills its helper, and the cell with it: it holds
+    // a vault channel no session stands in front of.
+    let process = std::sync::Arc::new(process);
+    let hit = HeldHit::default();
+    hit.hold(&process);
     let running = crate::machine::Running::start(&cell.cell_id, CellKind::Agent, &cell.limits);
     tracing::info!(
         cell_id = %cell_id,
@@ -321,6 +329,7 @@ fn spawn_through(
         connection,
         cell_id,
         pid: 0,
+        hit,
     })
 }
 
@@ -335,6 +344,9 @@ pub struct AgentCell {
     pub cell_id: CellId,
     /// The cell's pid, for the audit trail only.
     pub pid: u32,
+    /// What ends its session, and is left a hit in it: its run's tree's,
+    /// holding the cell itself when the spawner made it.
+    pub hit: HeldHit,
 }
 
 /// Where agent sessions come from.
@@ -626,7 +638,7 @@ pub fn serve_connection_with_runs(
 /// (the cell's broker uid is worked out for it, see
 /// `hatchling_isolation::linux::spawns_as`). The hello must name the
 /// cell's own id: a session never runs, or is recorded, under another.
-/// `hit` ends it, and is what a hit in it is left in ([`HeldHit`]).
+/// Its [`AgentCell::hit`] ends it, and is what a hit in it is left in.
 ///
 /// # Errors
 ///
@@ -639,7 +651,6 @@ pub fn serve_cell_connection(
     skills: &Skills,
     hub: Option<&LocalHub>,
     runs: Option<crate::RunEnv>,
-    hit: &HeldHit,
 ) -> Result<(), Error> {
     let stream = &cell.connection;
     let cell_id = handshake(stream, Some(&cell.cell_id))?;
@@ -650,7 +661,9 @@ pub fn serve_cell_connection(
         cell_id = %cell_id,
         "agent session established"
     );
-    serve_session(stream, config, key, skills, &cell_id, creds, hub, runs, hit)
+    serve_session(
+        stream, config, key, skills, &cell_id, creds, hub, runs, &cell.hit,
+    )
 }
 
 /// Serves `cell`'s session on this thread, then waits forever: the
@@ -669,7 +682,6 @@ fn serve_cell_then_wait(
         skills,
         hub,
         crate::RunEnv::from_process(config),
-        &HeldHit::default(),
     ) {
         Ok(()) => {}
         Err(error) => tracing::warn!(?error, cell_id = %cell.cell_id, "agent session failed"),
@@ -781,11 +793,13 @@ fn read_hello(stream: &UnixStream, timeout: Duration) -> Result<Vec<u8>, Error> 
 /// dropped (and zeroized) when the session ends.
 ///
 /// A hit ends it ([`HeldHit`]): once the agent's own text was found to hold
-/// a held secret, here or anywhere in its run's tree, the op that found it
-/// is answered and nothing more is served, whatever the cell sends. That's
-/// the broker's decision: the connection is closed on it. Its children go
-/// with it. A session with the local channel tells the owner itself. A
-/// run's has none: what watches the run tells them, from how it ended.
+/// a held secret, here or anywhere in its run's tree, every cell the tree
+/// holds is killed, the op that found it is answered if its cell is still
+/// there to hear, and nothing more is served, whatever the cell sends.
+/// That's the broker's decision: the connection is closed on it. Its
+/// children go with it. A session with the local channel tells the owner
+/// itself. A run's has none: what watches the run tells them, from how it
+/// ended.
 ///
 /// # Errors
 ///
