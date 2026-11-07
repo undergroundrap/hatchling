@@ -84,6 +84,7 @@ What Hatchling really does on a fresh install, one row at a time.
 | Receipts for every action | ⬜ | Coverage not yet measured |
 | Scheduled runs all accounted for | ⬜ | |
 | Per-model conformance, published | ❌ | |
+| Benchmark: the same tasks and model on Hatchling's loop and an external harness, failures included | ❌ | Includes a non-coding multi-step job. Cited only with conformance: a harness multiplies a model, it doesn't replace one |
 | Backup and restore drill | ⬜ | |
 | Export and import drill | ❌ | Import memory isn't there |
 
