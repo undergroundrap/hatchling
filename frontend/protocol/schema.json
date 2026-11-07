@@ -6712,7 +6712,7 @@
               "type": "object"
             },
             {
-              "description": "Fetches the secret stored under `name`.",
+              "description": "Asks for the secret stored under `name`. The broker refuses it\nwhatever a grant says: no cell reads a secret.",
               "properties": {
                 "name": {
                   "description": "Validated [`SecretName`](crate::SecretName), as a string.",
@@ -12747,7 +12747,7 @@
       "type": "object"
     },
     "VaultResult": {
-      "description": "The broker's reply to one [`VaultOp`].\n\nReplies are per-operation and carry no more than the op asked for: a\nfetch returns one secret, never the store. Failures that would leak\ninternals (filesystem errors, oversize values) collapse to the opaque\n[`VaultError`](VaultResult::VaultError): the agent learns that the op\nfailed, not why.",
+      "description": "The broker's reply to one [`VaultOp`].\n\nReplies are per-operation and carry no more than the op asked for.\nFailures that would leak internals (filesystem errors, oversize\nvalues) collapse to the opaque [`VaultError`](VaultResult::VaultError):\nthe agent learns that the op failed, not why.",
       "oneOf": [
         {
           "description": "The secret was stored.",
@@ -12763,7 +12763,7 @@
           "type": "object"
         },
         {
-          "description": "The requested secret, base64-encoded. Exactly one secret.",
+          "description": "The requested secret, base64-encoded. Exactly one secret. The\nbroker no longer sends this: it stays so a peer can name it.",
           "properties": {
             "r": {
               "const": "fetched",
