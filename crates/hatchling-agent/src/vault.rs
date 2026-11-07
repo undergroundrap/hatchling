@@ -11,7 +11,7 @@ use std::os::unix::net::UnixStream;
 use hatchling_core::MAX_SECRET_BYTES;
 use hatchling_core::framing::{read_frame, write_frame};
 use hatchling_core::{
-    SecretB64, SecretName, SessionRequest, SessionResponse, VaultOp, VaultResult, decode_secret,
+    SecretB64, SecretName, SessionRequest, SessionResponse, VaultOp, VaultResult,
 };
 
 use crate::Error;

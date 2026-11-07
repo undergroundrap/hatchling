@@ -89,6 +89,12 @@ What Hatchling really does on a fresh install, one row at a time.
 | Notifications | ❌ | |
 | Wallet and payments | ❌ | Waits for a confirmation rail in the browser |
 
+## Open findings
+
+| Finding | Status |
+|---|---|
+| The harness relay sends requests to the AI vendor with no scan for held secrets | Open, due before 0.8.0 |
+
 ## Private threat models
 
 Some threat models stay private while they describe open gaps, and each is published, sanitised, with the release that closes them. They're counted here so none is forgotten.
