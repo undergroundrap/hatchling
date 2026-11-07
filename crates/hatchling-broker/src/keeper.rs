@@ -17,12 +17,25 @@
 //!   credential, the gates' held secrets);
 //! - **a cell's vault op**, checked against the configuration's grants;
 //! - **the sign-ins** ([`crate::browser_credentials`]): the owner's keep,
-//!   list and delete, and a fill's read, recorded.
+//!   list and delete, and a fill's read, recorded;
+//! - **a check of a text** ([`Keeper::contains`]): whether it holds any
+//!   secret the keeper holds ([`crate::held_check`]), for the broker alone.
 //!
 //! Each is recorded in the vault's access log before the keeper answers,
 //! and one that can't be recorded is answered with nothing
 //! ([`crate::secrets`]). A read the configuration doesn't give its
 //! purpose is refused and recorded as denied.
+//!
+//! **The check is an oracle, and the access log is what answers that.**
+//! Whoever can make the broker ask (an agent naming a harness's task, a
+//! compromised broker) can try a guess at a secret and read the boolean.
+//! So it says as little as it can: one answer for the whole text, whole
+//! values only, a short value only against a whole text
+//! ([`crate::held_check`]), never which secret or where. A check can't be
+//! prevented without giving the broker the secrets, so it's made visible:
+//! each is one line, who, when, how many bytes and what came of it, and
+//! repeated slightly different submissions stand out there
+//! (`hatchling-broker vault-audit log`). No line holds a value or a name.
 //!
 //! **What it holds against.** The broker never has the master key or the
 //! secrets store's key: a broker that is compromised can't read the
@@ -140,6 +153,11 @@ enum Request {
     },
     /// Who can open the vault: how, and how many, for the app's checklist.
     Protection,
+    /// Does a text of `bytes` bytes hold a secret? Answered [`Reply::Ready`]
+    /// or [`Reply::Refused`] before any of it is sent. After `Ready`, it
+    /// follows raw, in frames of its own, however many that takes: the
+    /// keeper reads it whole, so a secret across two frames is one text.
+    Contains { bytes: u64 },
 }
 
 /// What the keeper answers.
@@ -162,6 +180,11 @@ enum Reply {
     Filling { nonce: String },
     /// Who can open the vault. It holds nothing that opens it.
     Protection { protection: VaultProtection },
+    /// Send the text.
+    Ready,
+    /// Whether the text held a secret, and nothing else: not which, how
+    /// many, or where.
+    Contains { found: bool },
 }
 
 /// The broker's end of the keeper: one request at a time.
@@ -182,6 +205,11 @@ pub struct Keeper {
 /// has started. Answers are local and quick; one this late means a keeper
 /// that is stuck, and every request after it fails rather than waits.
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long the broker waits for a check's answer once it has sent the
+/// text: the keeper looks through all of it, for every form of every
+/// secret. A check as long as a run can ask takes seconds, not this.
+const CHECK_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The broker's keeper, once started.
 static KEEPER: OnceLock<Keeper> = OnceLock::new();
@@ -552,8 +580,15 @@ impl Keeper {
     ///
     /// Returns [`Error::Keeper`] when its answers can't be bounded.
     pub fn over(stream: UnixStream) -> Result<Self, Error> {
+        Self::bounded(stream, ANSWER_TIMEOUT)
+    }
+
+    /// [`Self::over`], each read and write bounded by `bound`: a keeper
+    /// that stops reading a text mustn't hold the broker either.
+    fn bounded(stream: UnixStream, bound: Duration) -> Result<Self, Error> {
         stream
-            .set_read_timeout(Some(ANSWER_TIMEOUT))
+            .set_read_timeout(Some(bound))
+            .and_then(|()| stream.set_write_timeout(Some(bound)))
             .map_err(|e| Error::Keeper {
                 reason: format!("cannot bound its answers: {e}"),
             })?;
@@ -595,9 +630,9 @@ impl Keeper {
             other @ (Reply::Scan { .. }
             | Reply::SignIn { .. }
             | Reply::Filling { .. }
-            | Reply::Protection { .. }) => {
-                return Err(unexpected(&other));
-            }
+            | Reply::Protection { .. }
+            | Reply::Ready
+            | Reply::Contains { .. }) => return Err(unexpected(&other)),
         };
         let mut frames = frames.into_iter();
         found
@@ -647,7 +682,9 @@ impl Keeper {
             other @ (Reply::Read { .. }
             | Reply::SignIn { .. }
             | Reply::Filling { .. }
-            | Reply::Protection { .. }) => Err(unexpected(&other)),
+            | Reply::Protection { .. }
+            | Reply::Ready
+            | Reply::Contains { .. }) => Err(unexpected(&other)),
         }
     }
 
@@ -666,7 +703,9 @@ impl Keeper {
             other @ (Reply::Read { .. }
             | Reply::Scan { .. }
             | Reply::Filling { .. }
-            | Reply::Protection { .. }) => Err(unexpected(&other)),
+            | Reply::Protection { .. }
+            | Reply::Ready
+            | Reply::Contains { .. }) => Err(unexpected(&other)),
         }
     }
 
@@ -683,7 +722,55 @@ impl Keeper {
             other @ (Reply::Read { .. }
             | Reply::Scan { .. }
             | Reply::SignIn { .. }
-            | Reply::Filling { .. }) => Err(unexpected(&other)),
+            | Reply::Filling { .. }
+            | Reply::Ready
+            | Reply::Contains { .. }) => Err(unexpected(&other)),
+        }
+    }
+
+    /// Whether `text` holds a secret the keeper holds: any of them, a cell
+    /// having had it or not ([`crate::held_check`]). The keeper reads every
+    /// value itself and the answer is this one boolean: the broker learns
+    /// no value, no name and no position. Recorded by the keeper.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Keeper`] when the keeper refuses the check, can't
+    /// make it, or can't be reached: nothing is known, and a caller treats
+    /// that as holding one.
+    pub fn contains(&self, text: &[u8]) -> Result<bool, Error> {
+        let request = Request::Contains {
+            bytes: u64::try_from(text.len()).unwrap_or(u64::MAX),
+        };
+        let reply = self.exchange(|stream| match ask(stream, &request)? {
+            Reply::Ready => {
+                for frame in text.chunks(MAX_FRAME_BYTES) {
+                    write_frame(stream, frame).map_err(keeper_gone)?;
+                }
+                let bound =
+                    |timeout: Duration| stream.set_read_timeout(Some(timeout)).map_err(keeper_gone);
+                bound(CHECK_TIMEOUT)?;
+                let reply = receive(stream)?;
+                bound(ANSWER_TIMEOUT)?;
+                Ok(reply)
+            }
+            refused @ Reply::Refused { .. } => Ok(refused),
+            other @ (Reply::Read { .. }
+            | Reply::Scan { .. }
+            | Reply::SignIn { .. }
+            | Reply::Filling { .. }
+            | Reply::Protection { .. }
+            | Reply::Contains { .. }) => Err(unexpected(&other)),
+        })?;
+        match reply {
+            Reply::Contains { found } => Ok(found),
+            Reply::Refused { reason } => Err(Error::Keeper { reason }),
+            other @ (Reply::Read { .. }
+            | Reply::Scan { .. }
+            | Reply::SignIn { .. }
+            | Reply::Filling { .. }
+            | Reply::Protection { .. }
+            | Reply::Ready) => Err(unexpected(&other)),
         }
     }
 
@@ -709,7 +796,9 @@ impl Keeper {
             other @ (Reply::Read { .. }
             | Reply::Scan { .. }
             | Reply::SignIn { .. }
-            | Reply::Protection { .. }) => Err(unexpected(&other)),
+            | Reply::Protection { .. }
+            | Reply::Ready
+            | Reply::Contains { .. }) => Err(unexpected(&other)),
         }
     }
 
@@ -739,6 +828,11 @@ fn ask(stream: &UnixStream, request: &Request) -> Result<Reply, Error> {
         reason: format!("cannot write a request: {e}"),
     })?);
     write_frame(stream, &bytes).map_err(keeper_gone)?;
+    receive(stream)
+}
+
+/// Reads a reply.
+fn receive(stream: &UnixStream) -> Result<Reply, Error> {
     let reply = Zeroizing::new(read_frame(stream).map_err(keeper_gone)?);
     serde_json::from_slice(&reply).map_err(|e| Error::Keeper {
         reason: format!("an answer that doesn't parse: {e}"),
@@ -815,6 +909,8 @@ fn unexpected(reply: &Reply) -> Error {
         Reply::SignIn { .. } => "sign-in",
         Reply::Filling { .. } => "filling",
         Reply::Protection { .. } => "protection",
+        Reply::Ready => "ready",
+        Reply::Contains { .. } => "contains",
     };
     Error::Keeper {
         reason: format!("an answer that doesn't answer the request ({kind})"),
@@ -1117,12 +1213,21 @@ fn serve(stream: &UnixStream, kept: &Mutex<Kept>, role: Role) -> Result<(), Erro
         })?;
         if role == Role::Authority && !matches!(request, Request::Read { .. }) {
             tracing::warn!("refused the egress authority a request that isn't a read");
+            if let Request::Contains { bytes } = request {
+                refuse_on_record(kept, role, bytes)?;
+            }
             send(
                 stream,
                 &Reply::Refused {
                     reason: String::from("the egress authority only reads"),
                 },
             )?;
+            continue;
+        }
+        // Before the lock: reading a text takes as long as the broker takes
+        // to send it, and looking through it as long as it's long.
+        if let Request::Contains { bytes } = request {
+            answer_contains(stream, kept, role, bytes)?;
             continue;
         }
         let mut guard = kept.lock().map_err(|_| Error::Keeper {
@@ -1137,6 +1242,8 @@ fn serve(stream: &UnixStream, kept: &Mutex<Kept>, role: Role) -> Result<(), Erro
             Request::SignIn { op } => answer_sign_in(stream, kept, op)?,
             Request::Fill { id, cell, origin } => answer_fill(stream, kept, &id, &cell, &origin)?,
             Request::Protection => answer_protection(stream)?,
+            // Answered above.
+            Request::Contains { .. } => {}
         }
         drop(guard);
     }
@@ -1386,6 +1493,100 @@ fn answer_scan(stream: &UnixStream, kept: &Kept, purpose: &str) -> Result<(), Er
                 reason: error.to_string(),
             },
         ),
+    }
+}
+
+/// Records a check `role` wasn't given, of the `bytes` it said it had.
+fn refuse_on_record(kept: &Mutex<Kept>, role: Role, bytes: u64) -> Result<(), Error> {
+    let root = vault_root(kept)?;
+    let caller = role.caller(crate::held_check::CHECK_PURPOSE);
+    if let Err(error) =
+        crate::vault_access::record_check(&root, caller, bytes, None, Outcome::Denied)
+    {
+        tracing::error!(%error, "a refused check not recorded");
+    }
+    Ok(())
+}
+
+/// The vault's root.
+fn vault_root(kept: &Mutex<Kept>) -> Result<PathBuf, Error> {
+    let guard = kept.lock().map_err(|_| Error::Keeper {
+        reason: String::from("an earlier answer panicked"),
+    })?;
+    Ok(guard.config.vault.root.clone())
+}
+
+/// A text's size in memory, if it's one the keeper will read.
+fn within_bound(bytes: u64) -> Option<usize> {
+    if bytes > crate::held_check::MAX_CHECK_BYTES {
+        return None;
+    }
+    usize::try_from(bytes).ok()
+}
+
+/// Reads a text of `bytes` bytes, in frames that add up to exactly that.
+/// Wiped when dropped, and made at its full size, so no copy is left in a
+/// freed buffer.
+///
+/// # Errors
+///
+/// [`Error::Keeper`] when a frame doesn't fit, which ends the channel, or
+/// the broker goes.
+fn read_text(stream: &UnixStream, bytes: usize) -> Result<Zeroizing<Vec<u8>>, Error> {
+    let mut text = Zeroizing::new(Vec::with_capacity(bytes));
+    while text.len() < bytes {
+        let frame = Zeroizing::new(read_frame(stream).map_err(keeper_gone)?);
+        if frame.is_empty() || frame.len() > bytes - text.len() {
+            return Err(Error::Keeper {
+                reason: String::from("a check's text isn't the size it said"),
+            });
+        }
+        text.extend_from_slice(&frame);
+    }
+    Ok(text)
+}
+
+/// Answers one check: reads the text, looks for every secret held in it,
+/// records the check, and says yes or no. The values are read here and
+/// dropped here. One that's too long is refused before a byte of it comes,
+/// and one that can't be made or recorded isn't answered: the broker
+/// treats that as holding a secret.
+fn answer_contains(
+    stream: &UnixStream,
+    kept: &Mutex<Kept>,
+    role: Role,
+    bytes: u64,
+) -> Result<(), Error> {
+    use crate::held_check::{CHECK_PURPOSE, held_values, holds, on_record};
+    let Some(size) = within_bound(bytes) else {
+        refuse_on_record(kept, role, bytes)?;
+        return send(
+            stream,
+            &Reply::Refused {
+                reason: String::from("the text is too long to check"),
+            },
+        );
+    };
+    send(stream, &Reply::Ready)?;
+    let text = read_text(stream, size)?;
+    let guard = kept.lock().map_err(|_| Error::Keeper {
+        reason: String::from("an earlier answer panicked"),
+    })?;
+    let held = held_values(&guard.config, &guard.keys);
+    let root = guard.config.vault.root.clone();
+    drop(guard);
+    let answer = held.map(|values| holds(&values, &text));
+    match on_record(&root, role.caller(CHECK_PURPOSE), bytes, answer) {
+        Ok(found) => send(stream, &Reply::Contains { found }),
+        Err(reason) => {
+            tracing::error!(%reason, "a check wasn't made or recorded: it isn't answered");
+            send(
+                stream,
+                &Reply::Refused {
+                    reason: String::from("the check couldn't be made"),
+                },
+            )
+        }
     }
 }
 
@@ -1879,6 +2080,19 @@ mod tests {
         );
         let gone = unexpected(&Reply::Scan { count: 0 });
         assert!(gone.to_string().contains("(scan)"), "{gone}");
+        let contains = r#"{"request":"contains","bytes":3}"#;
+        assert!(matches!(
+            serde_json::from_str::<Request>(contains),
+            Ok(Request::Contains { bytes: 3 })
+        ));
+        // A check's answer has no room for anything but its one boolean.
+        for refused in [
+            r#"{"reply":"contains","found":true,"count":1}"#,
+            r#"{"reply":"contains","found":true,"name":"token"}"#,
+            r#"{"reply":"contains","found":true,"at":3}"#,
+        ] {
+            assert!(serde_json::from_str::<Reply>(refused).is_err(), "{refused}");
+        }
     }
 
     /// No keeper runs in a process that didn't start one; one the broker
@@ -2712,6 +2926,124 @@ mod tests {
             after.is_none(),
             "a request was sent after the keeper was lost"
         );
+    }
+
+    /// A check goes out as its size and then its text, in whole frames, and
+    /// what comes back is one boolean. The wait for it, longer than the
+    /// usual, doesn't outlast it.
+    #[test]
+    fn a_check_sends_its_text_and_takes_one_boolean() {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        theirs
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let keeper = Keeper::over(ours).unwrap();
+        let stand_in = std::thread::spawn(move || {
+            let request = read_frame(&theirs).unwrap();
+            write_frame(&theirs, br#"{"reply":"ready"}"#).unwrap();
+            let text = read_text(&theirs, MAX_FRAME_BYTES + 1).unwrap();
+            write_frame(&theirs, br#"{"reply":"contains","found":true}"#).unwrap();
+            (request, text)
+        });
+        let text = vec![b'.'; MAX_FRAME_BYTES + 1];
+        assert!(keeper.contains(&text).unwrap());
+        let (request, sent) = stand_in.join().unwrap();
+        assert_eq!(
+            String::from_utf8(request).unwrap(),
+            format!(r#"{{"request":"contains","bytes":{}}}"#, text.len())
+        );
+        assert_eq!(sent.as_slice(), text.as_slice());
+        assert_eq!(
+            keeper.stream.lock().unwrap().read_timeout().unwrap(),
+            Some(ANSWER_TIMEOUT)
+        );
+    }
+
+    /// A check answered out of turn, at either step, isn't an answer.
+    #[test]
+    fn a_check_answered_out_of_turn_is_no_answer() {
+        for replies in [
+            &[r#"{"reply":"scan","count":0}"#][..],
+            &[r#"{"reply":"ready"}"#, r#"{"reply":"scan","count":0}"#][..],
+            &[r#"{"reply":"ready"}"#, r#"{"reply":"ready"}"#][..],
+            &[r#"{"reply":"contains","found":false}"#][..],
+        ] {
+            let (ours, theirs) = UnixStream::pair().unwrap();
+            theirs
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let keeper = Keeper::over(ours).unwrap();
+            let owned: Vec<String> = replies.iter().map(|reply| (*reply).to_owned()).collect();
+            let stand_in = std::thread::spawn(move || {
+                read_frame(&theirs).unwrap();
+                for reply in owned {
+                    write_frame(&theirs, reply.as_bytes()).unwrap();
+                    let _ = read_frame(&theirs);
+                }
+            });
+            let answered = keeper.contains(b"text");
+            assert!(answered.is_err(), "{replies:?}: {answered:?}");
+            drop(keeper);
+            stand_in.join().unwrap();
+        }
+    }
+
+    /// A keeper that stops reading a text is lost, in time: the broker
+    /// isn't held on a write the kernel can't take.
+    #[test]
+    fn a_keeper_that_stops_reading_does_not_hold_the_broker() {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        theirs
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let keeper = Keeper::bounded(ours, Duration::from_millis(100)).unwrap();
+        let stand_in = std::thread::spawn(move || {
+            read_frame(&theirs).unwrap();
+            write_frame(&theirs, br#"{"reply":"ready"}"#).unwrap();
+            // Reads nothing more, until the broker gives up.
+            let mut held = [0_u8; 1];
+            let _ = rustix::net::recv(
+                &theirs,
+                &mut held,
+                rustix::net::RecvFlags::PEEK | rustix::net::RecvFlags::TRUNC,
+            );
+            std::thread::sleep(Duration::from_secs(2));
+        });
+        // Past anything a socket buffers.
+        let answered = keeper.contains(&vec![b'.'; 8 * 1024 * 1024]);
+        let told = format!("{answered:?}");
+        assert!(told.contains("cannot be reached"), "{told}");
+        assert!(keeper.exchange(|_| Ok(())).is_err(), "not lost");
+        stand_in.join().unwrap();
+    }
+
+    /// A check's size is one the keeper will take, up to the bound exactly.
+    #[test]
+    fn a_text_is_read_up_to_its_bound_and_no_further() {
+        let bound = crate::held_check::MAX_CHECK_BYTES;
+        assert_eq!(within_bound(0), Some(0));
+        assert_eq!(within_bound(bound), usize::try_from(bound).ok());
+        assert_eq!(within_bound(bound + 1), None);
+        assert_eq!(within_bound(u64::MAX), None);
+    }
+
+    /// A text is exactly the frames its size says, read to the end: a frame
+    /// past it, or an empty one, ends the channel, and an empty text reads
+    /// nothing.
+    #[test]
+    fn a_text_that_is_not_the_size_it_said_ends_the_channel() {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        ours.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        write_frame(&theirs, b"abc").unwrap();
+        write_frame(&theirs, b"de").unwrap();
+        write_frame(&theirs, b"after").unwrap();
+        assert_eq!(read_text(&ours, 5).unwrap().as_slice(), b"abcde");
+        assert!(read_text(&ours, 0).unwrap().is_empty(), "it read a frame");
+        assert!(read_text(&ours, 4).is_err(), "a frame past its size");
+        write_frame(&theirs, b"").unwrap();
+        assert!(read_text(&ours, 2).is_err(), "an empty frame");
+        drop(theirs);
+        assert!(read_text(&ours, 2).is_err(), "the broker went");
     }
 
     /// A release is recorded, sealed in the secrets store, before the cell

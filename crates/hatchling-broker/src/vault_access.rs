@@ -9,6 +9,10 @@
 //! leading dot keeps the log out of the store: no secret name can collide
 //! with it, and migration and rekeying skip it.
 //!
+//! A check of a text ([`crate::held_check`]) touches every secret and names
+//! none: its line says who asked, when, how many bytes, and what came of it
+//! ([`record_check`]). It's what shows repeated guesses at a secret.
+//!
 //! The log never creates the vault root. A denial before the vault exists
 //! is traced instead, so a denied op still touches no file.
 //!
@@ -18,6 +22,7 @@
 //! from each other's secrets, never the owner from theirs.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::io::Write as _;
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::Path;
@@ -48,8 +53,9 @@ pub enum Caller {
     /// The broker itself, reading for its own purpose.
     Broker {
         /// What for: `egress`, `channel-account`, `artifact-gate`,
-        /// `output-gate` or `browser-fill`, a sign-in's secrets for the
-        /// browser to fill (WO-031).
+        /// `output-gate`, `browser-fill`, a sign-in's secrets for the
+        /// browser to fill (WO-031), or `harness-check`, whether a text
+        /// holds a secret ([`crate::held_check`]).
         purpose: String,
     },
     /// The egress authority (WO-017), reading for the request it makes.
@@ -81,13 +87,23 @@ pub struct Access {
     /// Who.
     #[serde(flatten)]
     pub caller: Caller,
-    /// `fetch`, `store`, `remove`, or `read` for the broker's own reads.
+    /// `fetch`, `store`, `remove`, `read` for the broker's own reads, or
+    /// [`CHECK_ACTION`].
     pub action: String,
     /// The secret names touched.
     pub names: Vec<String>,
     /// What came of it.
     pub outcome: Outcome,
+    /// A check's size: how many bytes it was asked about.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    /// A check's answer: whether the text held a secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub found: Option<bool>,
 }
+
+/// The action a check of a text is recorded as.
+pub const CHECK_ACTION: &str = "check";
 
 /// Unix seconds now.
 fn now() -> u64 {
@@ -110,13 +126,51 @@ pub fn record(
     names: Vec<String>,
     outcome: Outcome,
 ) -> Result<(), Error> {
-    let access = Access {
-        at: now(),
-        caller,
-        action: action.to_owned(),
-        names,
-        outcome,
-    };
+    write(
+        root,
+        &Access {
+            at: now(),
+            caller,
+            action: action.to_owned(),
+            names,
+            outcome,
+            size: None,
+            found: None,
+        },
+    )
+}
+
+/// Records one check of a text of `size` bytes in the log under `root`:
+/// who asked, and what came of it. It names no secret, and `found` says
+/// nothing of which.
+///
+/// # Errors
+///
+/// As [`record`].
+pub fn record_check(
+    root: &Path,
+    caller: Caller,
+    size: u64,
+    found: Option<bool>,
+    outcome: Outcome,
+) -> Result<(), Error> {
+    write(
+        root,
+        &Access {
+            at: now(),
+            caller,
+            action: CHECK_ACTION.to_owned(),
+            names: Vec::new(),
+            outcome,
+            size: Some(size),
+            found,
+        },
+    )
+}
+
+/// Appends `access` to the log under `root`, as one write: another
+/// thread's line can't land inside it.
+fn write(root: &Path, access: &Access) -> Result<(), Error> {
     if !root.is_dir() {
         tracing::warn!(
             ?access,
@@ -124,16 +178,17 @@ pub fn record(
         );
         return Ok(());
     }
-    let line = serde_json::to_string(&access).map_err(|e| Error::VaultAccessLog {
+    let mut line = serde_json::to_string(access).map_err(|e| Error::VaultAccessLog {
         reason: format!("cannot encode an access record: {e}"),
     })?;
+    line.push('\n');
     let path = root.join(ACCESS_LOG);
     std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .mode(0o600)
         .open(&path)
-        .and_then(|mut file| writeln!(file, "{line}"))
+        .and_then(|mut file| file.write_all(line.as_bytes()))
         .map_err(|e| Error::VaultAccessLog {
             reason: format!("{}: {e}", path.display()),
         })
@@ -251,7 +306,18 @@ fn describe(access: &Access) -> String {
         Outcome::NotFound => "not found",
         Outcome::Failed => "failed",
     };
-    format!("{} {who} {} {outcome}", when(access.at), access.action)
+    let mut said = format!("{} {who} {} {outcome}", when(access.at), access.action);
+    if let Some(size) = access.size {
+        let _ = write!(said, ", {size} bytes");
+    }
+    if let Some(found) = access.found {
+        said.push_str(if found {
+            ", held a secret"
+        } else {
+            ", held none"
+        });
+    }
+    said
 }
 
 /// A time as a UTC timestamp.
@@ -584,6 +650,34 @@ mod tests {
         );
     }
 
+    /// A check's line says who asked, how long the text was and what came
+    /// of it, reads back, names nothing, and a line without those fields,
+    /// from before checks, still reads.
+    #[test]
+    fn a_check_is_one_line_with_its_size_and_answer() {
+        let dir = scratch("access-check");
+        let broker = Caller::Broker {
+            purpose: String::from("harness-check"),
+        };
+        record_check(&dir.0, broker.clone(), 7, Some(true), Outcome::Allowed).unwrap();
+        record(&dir.0, broker, "read", Vec::new(), Outcome::Allowed).unwrap();
+        let (accesses, unreadable) = read_log(&dir.0).unwrap();
+        assert_eq!(unreadable, 0);
+        let [check, read] = accesses.as_slice() else {
+            unreachable!("{accesses:?}");
+        };
+        assert_eq!(check.action, CHECK_ACTION);
+        assert_eq!((check.size, check.found), (Some(7), Some(true)));
+        assert!(check.names.is_empty());
+        assert_eq!((read.size, read.found), (None, None));
+        let text = std::fs::read_to_string(dir.0.join(ACCESS_LOG)).unwrap();
+        let (first, second) = text.split_once('\n').unwrap();
+        assert!(first.contains(r#""size":7"#), "{text}");
+        assert!(first.contains(r#""found":true"#), "{text}");
+        assert!(!second.contains("size"), "{text}");
+        assert!(text.ends_with('\n'), "{text}");
+    }
+
     #[test]
     fn each_part_of_the_view_says_one_thing() {
         assert_eq!(when(0), "1970-01-01T00:00:00Z");
@@ -596,6 +690,8 @@ mod tests {
             action: String::from("read"),
             names: vec![name.to_owned()],
             outcome,
+            size: None,
+            found: None,
         };
         let accesses = [
             access("a", Outcome::Denied),
@@ -627,6 +723,22 @@ mod tests {
             describe(&by_authority),
             "1970-01-01T00:00:00Z egress authority (search) read allowed"
         );
+        let check = |found| Access {
+            caller: Caller::Broker {
+                purpose: String::from("harness-check"),
+            },
+            action: String::from(CHECK_ACTION),
+            names: Vec::new(),
+            size: Some(12),
+            found,
+            ..access("", Outcome::Allowed)
+        };
+        assert_eq!(
+            describe(&check(Some(true))),
+            "1970-01-01T00:00:00Z broker (harness-check) check allowed, 12 bytes, held a secret"
+        );
+        assert!(describe(&check(Some(false))).ends_with(", 12 bytes, held none"));
+        assert!(describe(&check(None)).ends_with("check allowed, 12 bytes"));
         let mut config = owner_config(None);
         config.vault.grants = vec![crate::VaultGrant {
             action: VaultAction::Store,

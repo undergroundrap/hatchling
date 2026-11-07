@@ -53,6 +53,14 @@
 //!   every such run, each tool is checked: one whose file changed is
 //!   hashed again, and if it's another program the run is refused, saying
 //!   which tool.
+//! - **Held secrets are checked both ways.** What a harness is given goes
+//!   to its vendor. So the task, the answer, the names and every byte of
+//!   each file are checked before a cell starts, as parsed text, not the
+//!   JSON they arrived in, and the patch and everything in the report
+//!   after: [`HarnessVault::contains`], which covers every secret held,
+//!   whether or not a cell has had it. With a keeper running, the keeper
+//!   answers, and the broker never sees one ([`crate::held_check`]). A
+//!   check that can't be answered stops the run, or the delivery.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -64,7 +72,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use hatchling_artifact::SecretSet;
 use hatchling_core::subagent::HarnessNetworkUse;
 use hatchling_egress::{Allowlist, TlsClient};
 use hatchling_vault::OpensStores;
@@ -200,12 +207,14 @@ pub trait HarnessVault {
     /// authority reads it.
     fn key(&self, secret: &str) -> Option<Zeroizing<String>>;
 
-    /// Every secret the broker holds, to keep out of what a run hands back.
+    /// Whether `text` holds any secret Hatchling keeps, by the rules of
+    /// [`crate::held_check`]: what a run may be given, or may hand back.
     ///
     /// # Errors
     ///
-    /// Why they couldn't all be read: the run doesn't start.
-    fn held(&self) -> Result<SecretSet, String>;
+    /// Why that couldn't be told, which is treated as holding one: the run
+    /// doesn't start, and nothing it wrote is delivered.
+    fn contains(&self, text: &[u8]) -> Result<bool, String>;
 }
 
 /// A vault for a run that can't hold anything: a key lookup alone.
@@ -214,8 +223,8 @@ impl<F: Fn(&str) -> Option<Zeroizing<String>>> HarnessVault for F {
         self(secret)
     }
 
-    fn held(&self) -> Result<SecretSet, String> {
-        Ok(SecretSet::new(Vec::<Vec<u8>>::new()))
+    fn contains(&self, _text: &[u8]) -> Result<bool, String> {
+        Ok(false)
     }
 }
 
@@ -224,6 +233,23 @@ pub type HarnessKeys<'a> = &'a dyn HarnessVault;
 
 /// What stands in for anything a run wrote that holds a secret.
 const WITHHELD: &str = "[withheld: this would expose a secret Hatchling holds]";
+
+/// Why a check stops a run before it starts.
+#[derive(Debug, PartialEq, Eq)]
+enum Stopped {
+    /// What it was given holds a secret: what the report says.
+    Holds(String),
+    /// The check couldn't be answered: the detail is in the broker's log.
+    Unchecked,
+}
+
+/// Whether `text` holds a secret; one that can't be told stops the run.
+fn holding(keys: HarnessKeys<'_>, text: &[u8]) -> Result<bool, Stopped> {
+    keys.contains(text).map_err(|reason| {
+        tracing::error!(%reason, "a harness run stopped: its secrets check wasn't answered");
+        Stopped::Unchecked
+    })
+}
 
 /// The activity thread every harness run is recorded on.
 pub const HARNESS_RUN_ID: &str = "harness";
@@ -1288,19 +1314,17 @@ impl Harnesses {
             tracing::error!(skill = %skill, "harness run impossible: the broker has no skill runtime");
             return Some(SkillResult::SkillError);
         };
-        // Before the run, not after: without these, nothing it wrote could
-        // be checked on the way out, so it doesn't start.
-        let held = match keys.held() {
-            Ok(held) => held,
+        let report = self.run(harness, binary, input, runtime, keys);
+        self.record(harness, &report);
+        // What it wrote can't be told apart from a secret if the check
+        // can't be answered, so none of it goes.
+        let report = match report.screened(keys) {
+            Ok(report) => report,
             Err(reason) => {
-                tracing::error!(%reason, skill = %skill, "harness run refused: the held secrets could not be gathered");
+                tracing::error!(%reason, skill = %skill, "a harness report wasn't delivered: its secrets check wasn't answered");
                 return Some(SkillResult::SkillError);
             }
         };
-        let report = self
-            .run(harness, binary, input, runtime, keys, &held)
-            .screened(&held);
-        self.record(harness, &report);
         match serde_json::to_string(&report.fitted()) {
             Ok(output) => Some(SkillResult::Output { output }),
             Err(error) => {
@@ -1322,7 +1346,6 @@ impl Harnesses {
         input: &str,
         runtime: &SkillRuntime,
         keys: HarnessKeys<'_>,
-        held: &SecretSet,
     ) -> Report {
         let mut report = Report::new(harness, binary, input);
         let brief = match Brief::parse(input) {
@@ -1335,10 +1358,8 @@ impl Harnesses {
         // A harness cell holds a stand-in key, so a held secret can only
         // come in with what it's given, and what it's given goes to its
         // vendor. Refused here: the relay runs where only one key is held.
-        if held.exposed_in(input.as_bytes()) {
-            return report.refused(String::from(
-                "the task holds a secret Hatchling keeps, so the harness wasn't started",
-            ));
+        if let Err(stopped) = brief.free_of_secrets(keys) {
+            return report.stopped(stopped);
         }
         let code = match binary.verified() {
             Ok(code) => code,
@@ -1351,8 +1372,8 @@ impl Harnesses {
         if let Err(reason) = stage(root, &brief.paths, &scratch) {
             return report.refused(reason);
         }
-        if let Err(reason) = free_of_secrets(&scratch.pristine, held) {
-            return report.refused(reason);
+        if let Err(stopped) = free_of_secrets(&scratch.pristine, keys) {
+            return report.stopped(stopped);
         }
         let verified = match VerifiedCode::write("harness", "harness", &code) {
             Ok(verified) => verified,
@@ -1440,14 +1461,14 @@ impl Harnesses {
                 report.record_changes(&found);
                 if !found.is_empty() {
                     let patch = patch(&found);
-                    if held.exposed_in(patch.as_bytes()) {
+                    if holding(keys, patch.as_bytes()) == Ok(false) {
+                        report.patch = self.deliver_patch(&patch);
+                    } else {
                         tracing::warn!(
                             harness = harness.name(),
-                            "a harness patch held a secret: not delivered"
+                            "a harness patch held a secret, or couldn't be checked: not delivered"
                         );
                         report.patch_withheld = true;
-                    } else {
-                        report.patch = self.deliver_patch(&patch);
                     }
                 }
             }
@@ -1866,20 +1887,38 @@ pub(crate) fn parse_tools(raw: Option<&str>, networked: bool) -> Result<Vec<Tool
 }
 
 /// The vendor keys the broker reads for its harness relays, served
-/// in-process, with no egress authority running.
+/// in-process, with no egress authority running, and the secrets check,
+/// by this broker's keeper when it started one.
 ///
-/// Each is the vault secret [`secret_name`] names, read with the
+/// Each key is the vault secret [`secret_name`] names, read with the
 /// broker's own keys and logged as the broker's read before it is used
 /// ([`crate::secrets::Secrets::broker_read`]). No vault grant may
 /// name it.
-pub const fn vault_keys<'a>(config: &'a Config, key: &'a dyn OpensStores) -> VaultKeys<'a> {
-    VaultKeys { config, key }
+#[must_use]
+pub fn vault_keys<'a>(config: &'a Config, key: &'a dyn OpensStores) -> VaultKeys<'a> {
+    vault_keys_through(crate::keeper::keeper(), config, key)
+}
+
+/// [`vault_keys`], the check asked of `keeper`; with none, made here with
+/// `key`, as a broker with no keeper makes it.
+#[must_use]
+pub const fn vault_keys_through<'a>(
+    keeper: Option<&'a crate::keeper::Keeper>,
+    config: &'a Config,
+    key: &'a dyn OpensStores,
+) -> VaultKeys<'a> {
+    VaultKeys {
+        config,
+        key,
+        keeper,
+    }
 }
 
 /// The broker's own vault, as a harness run reads it.
 pub struct VaultKeys<'a> {
     config: &'a Config,
     key: &'a dyn OpensStores,
+    keeper: Option<&'a crate::keeper::Keeper>,
 }
 
 impl HarnessVault for VaultKeys<'_> {
@@ -1887,8 +1926,11 @@ impl HarnessVault for VaultKeys<'_> {
         vendor_key(&self.config.vault.root, self.key, secret)
     }
 
-    fn held(&self) -> Result<SecretSet, String> {
-        crate::artifact_ops::held_secrets(self.config, self.key)
+    fn contains(&self, text: &[u8]) -> Result<bool, String> {
+        self.keeper.map_or_else(
+            || crate::held_check::check_here(self.config, self.key, text),
+            |keeper| keeper.contains(text).map_err(|error| error.to_string()),
+        )
     }
 }
 
@@ -2030,6 +2072,24 @@ impl Brief {
         Ok(brief)
     }
 
+    /// That nothing this brief tells the harness holds a secret: the task,
+    /// the answer and each file's name, each as the text [`Self::prompt`]
+    /// sends, not as the JSON it came in, where a quote or a backslash in
+    /// one would hide it.
+    fn free_of_secrets(&self, keys: HarnessKeys<'_>) -> Result<(), Stopped> {
+        let texts = std::iter::once(&self.task)
+            .chain(&self.answer)
+            .chain(&self.paths);
+        for text in texts {
+            if holding(keys, text.as_bytes())? {
+                return Err(Stopped::Holds(String::from(
+                    "the task holds a secret Hatchling keeps, so the harness wasn't started",
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// What the harness is told: the task, the answer if any, the files,
     /// and how to ask a question.
     fn prompt(&self) -> String {
@@ -2148,16 +2208,18 @@ fn stage(root: &Path, paths: &[String], dirs: &RunDirs) -> Result<(), String> {
     Ok(())
 }
 
-/// That no file under `root` holds one of `held`: why not, naming the file
-/// and never what it holds.
-fn free_of_secrets(root: &Path, held: &SecretSet) -> Result<(), String> {
-    let tree = read_tree(root)?;
-    match tree.files.iter().find(|(_, bytes)| held.exposed_in(bytes)) {
-        Some((path, _)) => Err(format!(
-            "{path:?} holds a secret Hatchling keeps, so the harness wasn't started"
-        )),
-        None => Ok(()),
+/// That no file under `root` holds a secret, each its own check: why not,
+/// naming the file and never what it holds.
+fn free_of_secrets(root: &Path, keys: HarnessKeys<'_>) -> Result<(), Stopped> {
+    let tree = read_tree(root).map_err(Stopped::Holds)?;
+    for (path, bytes) in &tree.files {
+        if holding(keys, bytes)? {
+            return Err(Stopped::Holds(format!(
+                "{path:?} holds a secret Hatchling keeps, so the harness wasn't started"
+            )));
+        }
     }
+    Ok(())
 }
 
 /// Writes `bytes` at `path`, creating owner-only parent directories.
@@ -2592,6 +2654,14 @@ impl Report {
         self.refused(String::from(told))
     }
 
+    /// Stopped by a check, before its cell started.
+    fn stopped(self, stopped: Stopped) -> Self {
+        match stopped {
+            Stopped::Holds(reason) => self.refused(reason),
+            Stopped::Unchecked => self.failed("its secrets check wasn't answered"),
+        }
+    }
+
     fn failed(mut self, reason: &str) -> Self {
         tracing::error!(%reason, "harness run failed before the harness started");
         self.outcome = HarnessOutcome::Failed;
@@ -2631,26 +2701,34 @@ impl Report {
         self.unpatchable.clone_from(&changes.unpatchable);
     }
 
-    /// This report, with nothing the run wrote that exposes one of `held`.
-    /// A file's name or a message can carry one as well as a patch can.
-    fn screened(mut self, held: &SecretSet) -> Self {
+    /// This report, with nothing the run wrote that holds a secret. A
+    /// file's name or a message can carry one as well as a patch can.
+    ///
+    /// # Errors
+    ///
+    /// Why a text couldn't be checked: none of it can be delivered.
+    fn screened(mut self, keys: HarnessKeys<'_>) -> Result<Self, String> {
         let withheld = |text: &mut String| {
-            if held.exposed_in(text.as_bytes()) {
+            if keys.contains(text.as_bytes())? {
                 WITHHELD.clone_into(text);
             }
+            Ok::<(), String>(())
         };
-        withheld(&mut self.harness_said.message);
-        self.harness_said.question.iter_mut().for_each(withheld);
-        self.reason.iter_mut().for_each(withheld);
+        withheld(&mut self.harness_said.message)?;
+        self.harness_said
+            .question
+            .iter_mut()
+            .try_for_each(withheld)?;
+        self.reason.iter_mut().try_for_each(withheld)?;
         for names in [
             &mut self.files_changed,
             &mut self.files_added,
             &mut self.files_removed,
             &mut self.unpatchable,
         ] {
-            names.iter_mut().for_each(withheld);
+            names.iter_mut().try_for_each(withheld)?;
         }
-        self
+        Ok(self)
     }
 
     /// Files the run changed, added, removed, or changed beyond a patch.
@@ -4492,8 +4570,7 @@ mod tests {
         let harnesses = parsed(&config, &vars).unwrap();
         let runtime = SkillRuntime::new(PathBuf::from("/nonexistent/hatchling-spawner"));
         let input = r#"{"task":"Go.","root":"project","paths":["a"]}"#;
-        let held = SecretSet::new(Vec::<Vec<u8>>::new());
-        let report = harnesses.run(&CLAUDE, &binary, input, &runtime, &no_keys, &held);
+        let report = harnesses.run(&CLAUDE, &binary, input, &runtime, &no_keys);
         assert_eq!(report.outcome, HarnessOutcome::Failed);
         assert_eq!(report.reason.as_deref(), Some("the harness could not run"));
         assert_eq!((report.change_count(), report.patch.as_ref()), (0, None));
@@ -5078,7 +5155,6 @@ mod tests {
 
     #[test]
     fn a_name_or_a_reason_holding_a_secret_is_withheld() {
-        let held = SecretSet::new([b"hidden".to_vec()]);
         let mut report = sample_report();
         report.reason = Some(String::from("failed on hidden"));
         report.record_changes(&Changes {
@@ -5087,10 +5163,94 @@ mod tests {
             removed: vec![(String::from("hidden.txt"), String::new())],
             unpatchable: vec![String::from("hidden.bin"), String::from("fine.bin")],
         });
-        let screened = report.screened(&held);
+        let screened = report.screened(&Holding("hidden")).unwrap();
         let told = serde_json::to_string(&screened).unwrap();
         assert!(!told.contains("hidden"), "{told}");
         assert_eq!(screened.unpatchable.get(1).unwrap(), "fine.bin");
+    }
+
+    /// A report whose text can't be checked isn't one to deliver, whichever
+    /// text it was.
+    #[test]
+    fn a_report_that_cannot_be_checked_is_not_delivered() {
+        let mut report = sample_report();
+        report.harness_said.message = String::from("said");
+        report.harness_said.question = Some(String::from("asked"));
+        report.reason = Some(String::from("why"));
+        report.files_changed = vec![String::from("changed")];
+        report.files_added = vec![String::from("added")];
+        report.files_removed = vec![String::from("removed")];
+        report.unpatchable = vec![String::from("beyond")];
+        assert!(report.clone().screened(&Holding("absent")).is_ok());
+        for text in [
+            "said", "asked", "why", "changed", "added", "removed", "beyond",
+        ] {
+            assert!(
+                report.clone().screened(&Unanswered(text)).is_err(),
+                "{text} went unchecked"
+            );
+        }
+    }
+
+    /// A check that can't be answered for a text.
+    struct Unanswered(&'static str);
+
+    impl HarnessVault for Unanswered {
+        fn key(&self, _secret: &str) -> Option<Zeroizing<String>> {
+            None
+        }
+
+        fn contains(&self, text: &[u8]) -> Result<bool, String> {
+            if text == self.0.as_bytes() {
+                Err(String::from("the keeper went"))
+            } else {
+                Ok(false)
+            }
+        }
+    }
+
+    /// A vault holding one secret, found anywhere in a text.
+    struct Holding(&'static str);
+
+    impl HarnessVault for Holding {
+        fn key(&self, _secret: &str) -> Option<Zeroizing<String>> {
+            None
+        }
+
+        fn contains(&self, text: &[u8]) -> Result<bool, String> {
+            Ok(text
+                .windows(self.0.len())
+                .any(|window| window == self.0.as_bytes()))
+        }
+    }
+
+    /// Each thing a brief tells a harness is checked, as its own text:
+    /// parsed, so what JSON escapes isn't hidden, and a whole text can be
+    /// a short secret.
+    #[test]
+    fn a_brief_is_checked_as_the_text_it_sends() {
+        let brief = |json: &str| Brief::parse(json).unwrap();
+        let plain = brief(r#"{"task":"Go.","root":"p","paths":["a"]}"#);
+        assert_eq!(plain.free_of_secrets(&Holding("absent")), Ok(()));
+        let escaped = brief(r#"{"task":"use s3cr\"et\\v","root":"p","paths":["a"]}"#);
+        assert!(matches!(
+            escaped.free_of_secrets(&Holding("s3cr\"et\\v")),
+            Err(Stopped::Holds(_))
+        ));
+        let answered = brief(r#"{"task":"Go.","root":"p","paths":["a"],"answer":"hidden"}"#);
+        assert!(matches!(
+            answered.free_of_secrets(&Holding("hidden")),
+            Err(Stopped::Holds(_))
+        ));
+        let named = brief(r#"{"task":"Go.","root":"p","paths":["a","hidden"]}"#);
+        assert!(matches!(
+            named.free_of_secrets(&Holding("hidden")),
+            Err(Stopped::Holds(_))
+        ));
+        assert_eq!(
+            plain.free_of_secrets(&Unanswered("Go.")),
+            Err(Stopped::Unchecked)
+        );
     }
 
     #[test]
@@ -5099,12 +5259,16 @@ mod tests {
         scratch.write("tree/clean.txt", b"nothing here");
         scratch.write("tree/sub/config.txt", b"token=hidden");
         let root = scratch.join("tree");
-        let held = SecretSet::new([b"hidden".to_vec()]);
-        let refused = free_of_secrets(&root, &held).unwrap_err();
+        let Err(Stopped::Holds(refused)) = free_of_secrets(&root, &Holding("hidden")) else {
+            unreachable!("the file's secret wasn't found");
+        };
         assert!(refused.contains("sub/config.txt"), "{refused}");
         assert!(!refused.contains("hidden"), "{refused}");
-        let other = SecretSet::new([b"absent".to_vec()]);
-        assert_eq!(free_of_secrets(&root, &other), Ok(()));
+        assert_eq!(free_of_secrets(&root, &Holding("absent")), Ok(()));
+        assert_eq!(
+            free_of_secrets(&root, &Unanswered("nothing here")),
+            Err(Stopped::Unchecked)
+        );
     }
 
     #[test]

@@ -97,7 +97,7 @@ What Hatchling really does on a fresh install, one row at a time.
 
 | Finding | Status |
 |---|---|
-| A held secret in a file given to a harness could reach its AI vendor | Fixed in 0.8.0 at intake |
+| A held secret in a file given to a harness could reach its AI vendor | Fixed in 0.8.0 at intake, against every secret the vault keeper holds |
 | The Keep sign-in form takes a password in the web app, which should never touch a secret | Open. Only shown once the browser is set up |
 
 ## Private threat models

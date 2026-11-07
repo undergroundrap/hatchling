@@ -66,6 +66,7 @@ Check each `%` field, the shorthand `%name` too, for a value a cell or a client 
 
 - Types holding a secret, key or token redact their `Debug`, and no log line prints one.
 - Every new secret-bearing type is zeroized where it's dropped.
+- **What a harness is given or hands back is checked by the keeper**, against every secret it holds, a cell having had them or not (`held_check.rs`, `Keeper::contains`). The broker gets one boolean for a whole text, and never a value. A check is an oracle, so each is a line in the vault's access log; a new way to ask one is a change to this item. Proof, against the real keeper: `crates/hatchling-broker/tests/harness_keeper.rs`.
 - Credentials never enter an agent's or a harness's cell: the egress swap and the harness relay attach them at the boundary. The one cell given one is a browser started for a signed-in profile: its cookies are restored over its connection, and the vault keeper fills a sign-in on its vault channel (WO-030, WO-031). The agent driving it never sees either: snapshots hide what was filled, and the agent names fields by id.
 
 ## 6. The cell's surface is what was reviewed

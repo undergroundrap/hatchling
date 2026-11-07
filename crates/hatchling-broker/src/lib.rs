@@ -73,6 +73,7 @@ pub mod harness;
 pub mod harness_manifest;
 pub mod harness_relay;
 pub mod harness_tree;
+pub mod held_check;
 pub use harness::{Harness, HarnessKind, Harnesses};
 pub mod ingress;
 pub use ingress::{Ingress, open_ingress};
