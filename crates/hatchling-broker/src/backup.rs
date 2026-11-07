@@ -337,6 +337,18 @@ fn clear_tree(path: &Path, owner: u32, owners: &[u32]) -> Result<(), Error> {
     }
 }
 
+/// Clears what `level` clears of `config`'s stores, for the users `config`
+/// clears for ([`owners`]).
+fn clear_for(config: &Config, level: Level) -> Result<(), Error> {
+    clear_level(&places(config)?, level, &owners(config))
+}
+
+/// Swaps what's staged at `staging` in for `places`, of `config`'s users
+/// ([`owners`]).
+fn swap_in_for(config: &Config, places: &[Place], staging: &Path) -> Result<(), Error> {
+    swap_in(places, staging, &owners(config))
+}
+
 /// Clears what `level` clears of `places`, of what `owners` own.
 fn clear_level(places: &[Place], level: Level, owners: &[u32]) -> Result<(), Error> {
     places
@@ -638,7 +650,7 @@ pub fn run_restore(config: &Config, from: &Path) -> Result<(), Error> {
         fresh_staging(&staging)?;
         let mut reader = ArchiveReader::new(file, &key, &ring_bytes).map_err(ring::vault_error)?;
         let count = stage(&mut reader, &by_name, &staging)?;
-        swap_in(&places, &staging, &owners(config))?;
+        swap_in_for(config, &places, &staging)?;
         if let (Some(path), false) = (keyring_config.keyring.as_deref(), ring_bytes.is_empty()) {
             fs::rename(&staged_ring, path).map_err(ring::io_error)?;
         }
@@ -753,7 +765,7 @@ pub fn run_reset(config: &Config, args: &[String]) -> Result<(), Error> {
                 made.display()
             );
         }
-        clear_level(&places(config)?, level, &owners(config))?;
+        clear_for(config, level)?;
         if level == Level::Everything {
             erase_keys(config, &keyring)?;
         }
@@ -1302,6 +1314,33 @@ mod tests {
         let owners = owners(&config);
         assert!(owners.contains(&agent), "{owners:?}");
         assert!(owners.contains(&hatchling_sys::euid()), "{owners:?}");
+    }
+
+    /// What `reset` and `restore` call clears for the users [`owners`] says,
+    /// not for no one: with none of them it would refuse every store, and an
+    /// install couldn't be cleared. A store of this process's user's goes, as
+    /// it's one of Hatchling's own. The root check and the service stand
+    /// before these, and are for a real install to drill.
+    #[test]
+    fn a_reset_and_a_restore_clear_for_hatchlings_own() {
+        let scratch = Scratch::new("clear-for");
+        let mut config = crate::api_auth::tests::owner_config(None);
+        config.memory.root = scratch.0.join("memory");
+        config.agent_uid =
+            hatchling_core::PeerUid::from_kernel(hatchling_sys::euid().wrapping_add(7));
+        scratch.write("memory/note", b"kept by the agent");
+        clear_for(&config, Level::Agent).unwrap();
+        assert_eq!(scratch.read("memory/note"), None, "a reset clears it");
+
+        scratch.write("memory/note", b"before the restore");
+        scratch.write("staged/memory/note", b"from the backup");
+        let places = [scratch.place("memory", Part::Mind)];
+        swap_in_for(&config, &places, &scratch.0.join("staged")).unwrap();
+        assert_eq!(
+            scratch.read("memory/note").as_deref(),
+            Some(&b"from the backup"[..]),
+            "a restore replaces it"
+        );
     }
 
     /// What a tree too deep to clear whole leaves is said, not passed over.
