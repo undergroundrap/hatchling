@@ -18,6 +18,8 @@ use hatchling_core::ui::{
     UI_SCHEMA_VERSION, UiAction, UiActionResult, UiRequest, UiResponse,
 };
 
+use crate::schedule_cli::socket;
+
 /// How long the broker has to answer.
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -159,12 +161,13 @@ fn ask(stream: &UnixStream, action: UiAction) -> Result<UiActionResult, String> 
 
 /// The result of `op`.
 fn sign_ins(stream: &UnixStream, op: SignInOp) -> Result<SignInResult, String> {
-    match ask(stream, UiAction::ManageSignIns { op })? {
-        UiActionResult::SignIns { outcome } => Ok(outcome),
-        UiActionResult::Refused { .. } => {
-            Err(String::from("this connection may not change the sign-ins"))
-        }
-        _ => Err(String::from("the broker answered with something else")),
+    let result = ask(stream, UiAction::ManageSignIns { op })?;
+    if let UiActionResult::SignIns { outcome } = result {
+        Ok(outcome)
+    } else if let UiActionResult::Refused { .. } = result {
+        Err(String::from("this connection may not change the sign-ins"))
+    } else {
+        Err(String::from("the broker answered with something else"))
     }
 }
 
@@ -309,7 +312,7 @@ pub fn sign_in_main(program: &str, args: &[String]) -> ExitCode {
             return ExitCode::from(EX_USAGE);
         }
     };
-    let path = crate::schedule_cli::socket(|key| std::env::var(key).ok());
+    let path = socket(|key| std::env::var(key).ok());
     match run(&command, &path) {
         Ok(lines) => {
             let mut out = std::io::stdout().lock();
