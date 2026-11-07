@@ -458,9 +458,10 @@ pub fn remove_file_of(path: &Path, kind: FileKind, owners: &[u32]) -> Result<boo
     Ok(true)
 }
 
-/// Overwrites the regular file at `path` with zeros, in place and to the
-/// disk, then removes it: for a key that's being retired, so the bytes it
-/// held aren't left in a free block for whoever has the disk next.
+/// Overwrites the regular file at `path` with zeros, then removes it.
+///
+/// In place and to the disk: for a key that's being retired, so the bytes
+/// it held aren't left in a free block for whoever has the disk next.
 ///
 /// Stands behind the same guards as [`remove_file_of`], and they're asked of
 /// what's opened as well as what's looked at, so a file swapped in between
