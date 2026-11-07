@@ -822,7 +822,7 @@ test('signed-in sites: the broker\'s list, loaded on connecting; signed out of a
     adapter.dispose();
     assert.equal((await adapter.execute({ type: 'profile.delete', id: 'profile-1' })).ok, false);
 });
-test('sign-ins: listed by label on each signed-in site, kept straight to the broker, deleted by the owner', async () => {
+test('sign-ins: listed by label on each signed-in site, deleted by the owner, and never added here', async () => {
     const { transport, adapter } = connected();
     const listing = action => transport.sent.find(frame => frame.type === 'action' && frame.action.action === action);
     const profile = { profile_id: 'profile-1', sites: ['a.example:443'], signed_in: true, created_at: '2026-10-22T08:00:00Z', last_used: '2026-10-22T09:00:00Z' };
@@ -833,35 +833,20 @@ test('sign-ins: listed by label on each signed-in site, kept straight to the bro
     answer(transport, listing('manage_sign_ins').request_id, { result: 'sign_ins', outcome: { result: 'listed', sign_ins: [work, theirs] } });
     await flush();
     assert.deepEqual(adapter.getSnapshot().signedInSites[0].signIns, [{ id: 'cred-1', label: 'Work', origin: 'https://a.example' }], 'its own, by label');
-    // Kept: sent once, as its own request, then listed again. Never in the state.
-    const entry = { profileId: 'profile-1', origin: 'https://a.example', label: 'Home', username: 'zoe-user', password: 'hunter2-secret' };
-    const keeping = adapter.signIns.store(entry);
-    await flush();
-    const kept = transport.last();
-    assert.deepEqual(kept.action, { action: 'manage_sign_ins', op: { op: 'store', profile_id: 'profile-1', origin: 'https://a.example', label: 'Home', username: 'zoe-user', password: 'hunter2-secret' } });
-    answer(transport, kept.request_id, { result: 'sign_ins', outcome: { result: 'stored', sign_in: { ...work, sign_in_id: 'cred-3', label: 'Home' } } });
-    await flush();
-    const relisting = transport.last();
-    assert.deepEqual(relisting.action, { action: 'manage_sign_ins', op: { op: 'list' } });
-    answer(transport, relisting.request_id, { result: 'sign_ins', outcome: { result: 'listed', sign_ins: [work, { ...work, sign_in_id: 'cred-3', label: 'Home' }] } });
-    assert.deepEqual(await keeping, { ok: true, message: 'Kept. The agent can sign in with it on this site; it never sees the password.' });
-    const state = JSON.stringify(adapter.getSnapshot());
-    assert.ok(!state.includes('hunter2') && !state.includes('zoe-user'), 'the secrets are in no state');
-    assert.deepEqual(adapter.getSnapshot().signedInSites[0].signIns.map(item => item.label), ['Work', 'Home']);
+    assert.equal(adapter.signIns.store, undefined, 'a secret is never typed in the app');
     // Deleted, by the owner's command.
-    const deleting = adapter.execute({ type: 'sign-in.delete', id: 'cred-3' });
+    const deleting = adapter.execute({ type: 'sign-in.delete', id: 'cred-1' });
     await flush();
     const deletion = transport.last();
-    assert.deepEqual(deletion.action, { action: 'manage_sign_ins', op: { op: 'delete', sign_in_id: 'cred-3' } });
+    assert.deepEqual(deletion.action, { action: 'manage_sign_ins', op: { op: 'delete', sign_in_id: 'cred-1' } });
     answer(transport, deletion.request_id, { result: 'sign_ins', outcome: { result: 'deleted' } });
     await flush();
     answer(transport, transport.last().request_id, { result: 'sign_ins', outcome: { result: 'listed', sign_ins: [work] } });
     assert.deepEqual(await deleting, { ok: true, message: 'Deleted. The agent can no longer sign in with it.' });
     // Every other answer is told as what it is; only not found lists again.
-    const refusals = { no_profile: /site is gone/, bad_origin: /site’s own addresses/, not_the_profiles: /not one of the signed-in site’s/, bad_label: /Give the sign-in a name/, no_password: /Type the password/, too_long: /too long/, full: /Delete one first/ };
     const others = [
-        ...Object.entries(refusals).map(([reason, words]) => [{ result: 'sign_ins', outcome: { result: 'refused', reason } }, words, false]),
-        [{ result: 'sign_ins', outcome: { result: 'deleted' } }, /not confirmed/, false],
+        [{ result: 'sign_ins', outcome: { result: 'refused', reason: 'no_profile' } }, /nothing changed/, false],
+        [{ result: 'sign_ins', outcome: { result: 'stored', sign_in: work } }, /not confirmed/, false],
         [{ result: 'sign_ins', outcome: { result: 'not_found' } }, /already gone/, true],
         [{ result: 'sign_ins', outcome: { result: 'off' } }, /keeps no sign-ins/, false],
         [{ result: 'sign_ins', outcome: { result: 'failed' } }, /nothing changed/, false],
@@ -870,7 +855,7 @@ test('sign-ins: listed by label on each signed-in site, kept straight to the bro
         [{ result: 'profiles', outcome: { result: 'deleted' } }, /not confirmed/, false],
     ];
     for (const [outcome, words, relists] of others) {
-        const pending = adapter.signIns.store(entry);
+        const pending = adapter.execute({ type: 'sign-in.delete', id: 'cred-1' });
         await flush();
         answer(transport, transport.last().request_id, outcome);
         await flush();
@@ -884,7 +869,7 @@ test('sign-ins: listed by label on each signed-in site, kept straight to the bro
     }
     assert.deepEqual(adapter.getSnapshot().signedInSites[0].signIns.map(item => item.label), ['Work'], 'a list the broker did not give leaves the last');
     adapter.dispose();
-    assert.equal((await adapter.signIns.store(entry)).ok, false, 'offline: nothing sent');
+    assert.equal((await adapter.execute({ type: 'sign-in.delete', id: 'cred-1' })).ok, false, 'offline: nothing sent');
 });
 test('a decision is re-validated at dispatch, against the broker\'s latest state, not the card that was drawn', async () => {
     const { transport, adapter } = connected();

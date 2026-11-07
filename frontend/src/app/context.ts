@@ -1,5 +1,4 @@
 import type { ContentLoading } from './content-loading.js';
-import type { SignInPort } from '../session/sign-ins.js';
 import type { CodePort } from '../session/codes.js';
 import type { AttentionPort } from '../session/attention.js';
 import type { ConversationPort } from '../session/conversations.js';
@@ -63,8 +62,6 @@ export interface UiState {
 }
 export interface AppContext {
     readonly adapter: ProtocolAdapter;
-    /** Where a sign-in to keep goes, when the app is connected to Hatchling (WO-030). */
-    readonly signIns: SignInPort | undefined;
     /** Where a one-time code goes, when the app is connected to Hatchling (WO-030). */
     readonly codes: CodePort | undefined;
     /** Where a new conversation is started, when the app is connected to Hatchling (WO-026). */
