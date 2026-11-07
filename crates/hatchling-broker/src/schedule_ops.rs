@@ -1552,7 +1552,6 @@ pub fn dispatch_once<L: Launcher>(
     )
 }
 
-
 /// Whether a fire in `state` is held for the owner: of unknown outcome, or
 /// its run stopped for a secret.
 const fn held_state(state: OccurrenceState) -> bool {
@@ -2560,7 +2559,11 @@ mod tests {
         };
         let due = fire(&held).map(|fire| fire.due).unwrap();
         assert!(!store.record(&held, due, OccurrenceState::Claimed).unwrap());
-        assert!(!store.record("sch-a", 1_790_002_800, OccurrenceState::Running).unwrap());
+        assert!(
+            !store
+                .record("sch-a", 1_790_002_800, OccurrenceState::Running)
+                .unwrap()
+        );
         assert!(matches!(
             fire(&held).map(|fire| fire.state),
             Some(OccurrenceState::Stopped { started: false })
