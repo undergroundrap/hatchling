@@ -18,7 +18,8 @@ export function openViewer(ctx: AppContext, id: string, onClose?: () => void): v
     if (initial.format === 'markdown') {
         const editor = createMarkdownEditor(ctx, { key: `artifact:${id}`, content: () => ctx.state.artifacts.find((item) => item.id === id)?.content ?? initial.content, save: async (content) => (await ctx.run({ type: 'artifact.save', id, content }, true)).ok });
         root.append(h('div', { class: 'viewer-toolbar' }, pill('Markdown'), h('span', { class: 'toolbar-spacer' }), button('Share', () => openShare(ctx, id), { icon: 'share' }), button('Download', () => { void ctx.run({ type: 'artifact.download', id }); }, { icon: 'download' })), editor.root);
-        ref.element.querySelector('.dock-header-actions')?.before(editor.toolbar);
+        if (!(ctx.state.mode === 'live'))
+            ref.element.querySelector('.dock-header-actions')?.before(editor.toolbar);
         return;
     }
     let slideIndex = 0;

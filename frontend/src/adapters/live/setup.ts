@@ -4,7 +4,7 @@
 import type { LiveClient } from './client.js';
 import type { SetupState as WireSetup } from './protocol/generated.js';
 import type { SetupChoice, SetupPort, SetupState, SetupView } from '../../session/setup.js';
-const REFUSED = 'Hatchling couldn’t say what’s set up. sudo hatchling-broker doctor checks everything.';
+const REFUSED = 'Hatchling couldn’t say what’s set up. `hatchling-broker doctor`, run as root, checks everything.';
 const UNEXPECTED = 'Hatchling answered with something else.';
 function storageKey(choice: SetupChoice): string {
     return `hatchling.setup.${choice}`;

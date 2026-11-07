@@ -13,8 +13,11 @@ import { permissionsTab } from './permissions.js';
 import type { SettingsNavigation } from './settings-navigation.js';
 import { iconButton } from '../../components/ui.js';
 import { openShortcuts, openDownloads, openIssueReport } from '../../app/support.js';
-const sections = [{ id: 'general', title: 'General' }, { id: 'connectors', title: 'Connectors' }, { id: 'wallet', title: 'Wallet' }, { id: 'secure', title: 'Secure store' }, { id: 'permissions', title: 'Permissions' }, { id: 'channels', title: 'Messaging channels' }, { id: 'devices', title: 'Devices' }, { id: 'data', title: 'Data controls' }, { id: 'help', title: 'Help & support' }, { id: 'legal', title: 'Legal info' }];
+const allSections = [{ id: 'general', title: 'General' }, { id: 'connectors', title: 'Connectors' }, { id: 'wallet', title: 'Wallet' }, { id: 'secure', title: 'Secure store' }, { id: 'permissions', title: 'Permissions' }, { id: 'channels', title: 'Messaging channels' }, { id: 'devices', title: 'Devices' }, { id: 'data', title: 'Data controls' }, { id: 'help', title: 'Help & support' }, { id: 'legal', title: 'Legal info' }];
+/** What a real install has no use for yet, so it isn't offered. */
+const NOT_LIVE = new Set(['secure', 'channels', 'devices']);
 export function openSettings(ctx: AppContext, initial = 'general'): void {
+    const sections = allSections.filter(section => !(ctx.state.mode === 'live' && NOT_LIVE.has(section.id)));
     let active = sections.some((section) => section.id === initial) ? initial : 'general';
     let detail = '';
     let detailId = '';
@@ -101,7 +104,7 @@ export function openSettings(ctx: AppContext, initial = 'general'): void {
                 pane.append(dataTab(ctx, () => refresh()));
                 break;
             case 'help':
-                pane.append(helpTab(ctx));
+                pane.append(ctx.state.mode === 'live' ? liveHelpTab(ctx) : helpTab(ctx));
                 break;
             case 'legal':
                 pane.append(ctx.state.mode === 'live' ? liveLegalTab() : legalTab());
@@ -161,8 +164,13 @@ function dataTab(ctx: AppContext, refresh: () => void): HTMLElement {
         return control;
     };
     if (ctx.state.mode === 'live')
-        return h('div', { class: 'settings-stack data-controls-stack' }, ...liveData(ctx), h('div', { class: 'settings-group data-links-card' }, row('Import memory', importMemory), row('Memory & preferences', () => { ctx.dialogs.closeAll(); ctx.navigate('memory'); })));
+        return h('div', { class: 'settings-stack data-controls-stack' }, ...liveData(ctx), h('div', { class: 'settings-group data-links-card' }, row('Memory & preferences', () => { ctx.dialogs.closeAll(); ctx.navigate('memory'); })));
     return h('div', { class: 'settings-stack data-controls-stack' }, privacy, h('section', {}, h('div', { class: 'settings-group data-toggle-card' }, toggle('Help improve our AI models', ctx.state.settings.telemetry, (value) => { void ctx.run({ type: 'settings.telemetry', value }).then(refresh); })), h('p', { class: 'data-description' }, 'Preference preview only. This frontend does not send interactions or train models.')), h('div', { class: 'settings-group data-links-card' }, row('Import memory', importMemory), row('Download your agent data', () => { void ctx.run({ type: 'data.export' }); })), h('section', {}, h('div', { class: 'settings-group data-reset-card' }, button('Reset hatchling', () => resetDemo(ctx), { variant: 'danger' })), h('p', { class: 'data-description' }, 'Removes local demo edits, chat history and saved tasks, then restores the original examples.')), h('details', { class: 'data-advanced' }, h('summary', {}, 'More data options'), row('Memory & preferences', () => { ctx.dialogs.closeAll(); ctx.navigate('memory'); }), row('Recover deleted artifacts', () => { ctx.dialogs.closeAll(); ctx.navigate('library', 'trash'); })));
+}
+function liveHelpTab(ctx: AppContext): HTMLElement {
+    const setup = ctx.setup?.current();
+    const windows = setup?.kind === 'read' && setup.setup.windowsSetup;
+    return h('div', { class: 'settings-stack' }, h('div', { class: 'settings-group support-links' }, button('Keyboard shortcuts', () => openShortcuts(ctx), { icon: 'keyboard', variant: 'ghost' }), button('New versions', () => openDownloads(ctx), { icon: 'download', variant: 'ghost' }), button('Report an issue', () => openIssueReport(ctx), { icon: 'bug', variant: 'ghost' })), h('div', { class: 'settings-group support-links' }, ...(['browser', 'memory', 'schedule'] as const).map(route => button(route === 'schedule' ? 'Scheduled work' : route[0]?.toUpperCase() + route.slice(1), () => { ctx.dialogs.closeAll(); ctx.navigate(route); }, { variant: 'ghost' }))), markdown(`## Keyboard\n\n- Control or Command + K opens Search.\n- Alt + 1 through 6 switches the main areas.\n- Enter sends a chat message; Shift + Enter adds a line.\n- Escape closes a window or open menu.\n\n## More help\n\n${windows ? '[Hatchling on Windows](https://github.com/undergroundrap/hatchling/blob/main/docs/windows.md) explains what the setup added. ' : ''}[The documentation](https://github.com/undergroundrap/hatchling/tree/main/docs) covers the rest.`));
 }
 function helpTab(ctx: AppContext): HTMLElement {
     return h('div', { class: 'settings-stack' }, h('div', { class: 'settings-group support-links' }, button('Keyboard shortcuts', () => openShortcuts(ctx), { icon: 'keyboard', variant: 'ghost' }), button('Download apps', () => openDownloads(ctx), { icon: 'download', variant: 'ghost' }), button('Report an issue', () => openIssueReport(ctx), { icon: 'bug', variant: 'ghost' })), h('div', { class: 'settings-group support-links' }, ...(['browser', 'memory', 'schedule', 'notifications'] as const).map(route => button(route === 'schedule' ? 'Scheduled work' : route[0]?.toUpperCase() + route.slice(1), () => { ctx.dialogs.closeAll(); ctx.navigate(route); }, { variant: 'ghost' }))), markdown('## A small guide\n\nUse the left rail to move between Chat, Feed, Ideas, Goals, and Library. Help & support links to Browser, Memory, Scheduled work, and Notifications.\n\nUse Control/Command + Shift + D, or Open demo scenarios below, to try every acceptance scenario. Nothing leaves your browser.\n\n## Keyboard\n\n- Control or Command + K opens Search.\n- Alt + 1 through 6 switches the main areas.\n- Enter sends a chat message; Shift + Enter adds a line.\n- Escape closes a modal or open menu.\n- Tab reaches every control, including card menus.\n\n## Iterating the code\n\nThe source includes AGENTS.md, an adapter contract, deterministic fixtures, an AST linter, strict compiler checks, unit tests, and browser tests. Feature modules do not import the scripted adapter.'), button('Open demo scenarios', () => { ctx.dialogs.closeAll(); ctx.openScenarios(); }, { icon: 'play', variant: 'primary' }), button('Agent control', () => openAgentControls(ctx), { icon: 'code' }), button('Export a reproducible state', () => { void ctx.run({ type: 'data.export' }); }, { icon: 'download' }));

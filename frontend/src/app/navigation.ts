@@ -37,7 +37,7 @@ export function renderRail(ctx: AppContext): HTMLElement {
     }
     const more = menu('More', [
         { label: 'Keyboard shortcuts', icon: 'keyboard', action: () => openShortcuts(ctx) },
-        { label: 'Download apps', icon: 'download', action: () => openDownloads(ctx) },
+        { label: ctx.state.mode === 'live' ? 'New versions' : 'Download apps', icon: 'download', action: () => openDownloads(ctx) },
         { label: 'Report an issue', icon: 'bug', action: () => openIssueReport(ctx) },
         { label: 'Settings', icon: 'settings', separatorBefore: true, action: () => ctx.openSettings() },
     ]);
@@ -75,7 +75,7 @@ export function renderSidebar(ctx: AppContext): HTMLElement {
         for (const group of groups)
             sidebar.append(h('div', { class: 'sidebar-group' }, h('h2', {}, group.title), ...group.items.map((item) => button(item.name, () => ctx.navigate('library', item.id), { icon: item.icon, variant: 'ghost', className: `nav-item ${ctx.ui.libraryFilter === item.id ? 'active' : ''}` }))));
         const files = button('System files', () => ctx.navigate('library', 'system'), { icon: 'folder', variant: 'ghost', className: `nav-item system-nav ${ctx.ui.libraryFilter === 'system' ? 'active' : ''}` });
-        sidebar.append(h('div', { class: 'library-nav-bottom' }, files, menu('Library options', [{ label: 'Trash', icon: 'trash', action: () => ctx.navigate('library', 'trash') }, { label: 'Hide navigation', icon: 'panel', action: () => { ctx.ui.navOpen = false; ctx.render(); } }])));
+        sidebar.append(h('div', { class: 'library-nav-bottom' }, ctx.state.mode === 'live' ? null : files, menu('Library options', [{ label: 'Trash', icon: 'trash', action: () => ctx.navigate('library', 'trash') }, { label: 'Hide navigation', icon: 'panel', action: () => { ctx.ui.navOpen = false; ctx.render(); } }])));
     }
     else {
         const search = h('button', { id: 'chat-search', class: 'nav-search-trigger', type: 'button', 'aria-label': 'Search chats', 'aria-keyshortcuts': 'Control+k Meta+k' }, icon('search', 16), h('span', {}, 'Search'));
@@ -106,7 +106,11 @@ export function renderSidebar(ctx: AppContext): HTMLElement {
         accordion.inert = !ctx.ui.sideChatsOpen;
         if (!chats.length)
             list.append(h('p', { class: 'sidebar-empty' }, ctx.ui.showArchived ? 'No archived side chats.' : 'Start a side chat to keep a topic separate.'));
-        sidebar.append(accordion, connectorChats(ctx));
+        // A real install has no side chats or connected apps to offer yet.
+        if (ctx.state.mode === 'live' && !chats.length)
+            sidebar.querySelector('.side-chat-heading')?.remove();
+        else
+            sidebar.append(accordion, ...(ctx.state.mode === 'live' ? [] : [connectorChats(ctx)]));
     }
     if (ctx.ui.route === 'chat') {
         const main = sidebar.querySelector('.main-chat-link');
@@ -146,7 +150,7 @@ function chatForm(ctx: AppContext, id?: string): void {
 function sideChatOptions(ctx: AppContext): HTMLElement {
     const options = menu('Side chat options', [
         { label: 'Keep chat panel visible', icon: 'check', action: () => { void ctx.run({ type: 'settings.chat-panel', value: !ctx.state.settings.keepChatPanelVisible }, true); } },
-        { label: 'Show archived chats', icon: 'folder', separatorBefore: true, action: () => { ctx.ui.showArchived = !ctx.ui.showArchived; ctx.render(); } },
+        ...(ctx.state.mode === 'live' ? [] : [{ label: 'Show archived chats', icon: 'folder' as const, separatorBefore: true, action: () => { ctx.ui.showArchived = !ctx.ui.showArchived; ctx.render(); } }]),
     ]);
     options.classList.add('side-chat-options');
     options.querySelector('summary')?.setAttribute('data-tooltip', 'Side chat options');

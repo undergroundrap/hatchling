@@ -4,6 +4,14 @@ The Windows setup installs Hatchling for you, with no administrator rights and n
 
 Hatchling is Linux software: it needs Linux's kernel to keep your agent's work apart from your machine. So it runs in WSL, Windows' own Linux, in a distro of its own called `hatchling-wsl`. You don't need to know any Linux to use it.
 
+## Do I need a terminal, or sudo?
+
+**No.** If you used this setup, you never need `sudo`, and you don't need to know any Linux. The Start menu covers everyday use.
+
+A few advanced commands, such as switching to a hosted model, are in Settings for you to copy. They go in PowerShell, which is on every Windows PC: open the Start menu, type `PowerShell`, press Enter, then paste the command and press Enter again.
+
+You'll see `sudo` elsewhere in these docs. That's for people who installed Hatchling from a Linux or WSL terminal, which is a different way to install it. [If you'd rather use a terminal](#if-youd-rather-use-a-terminal) shows the same commands for this setup.
+
 ## What's in the Start menu
 
 | Item | What it does | What you'll type |

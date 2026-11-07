@@ -167,7 +167,7 @@ export function installAgentControl(ctx: AppContext): () => void {
             toggle.setAttribute('aria-pressed', String(enabled));
             status.textContent = enabled ? 'Enabled for this tab' : 'Disabled';
         });
-        body.append(toggle, status, h('p', { class: 'muted text-small' }, 'Driver instructions and the full action catalog are included in docs/AGENT-CONTROL.md. Never enable remote debugging on your everyday browser profile.'));
+        body.append(toggle, status, h('p', { class: 'muted text-small' }, 'Never enable remote debugging on your everyday browser profile.'));
         ctx.dialogs.open('Agent control', body, 'agent-control-dialog');
     };
     const dispose = (): void => { disable(); controllers.delete(ctx); Reflect.deleteProperty(window, 'hatchlingFrontend'); };

@@ -9,6 +9,7 @@
 // it last reported, never inferred. Display preferences (theme, accent, size,
 // panel) stay in the app.
 import type { AppState, Command, CommandResult, DeepReadonly, ProtocolAdapter, Settings } from '../../protocol/models.js';
+import { keepPreferences, rememberedPreferences } from './preferences.js';
 import { ActivityBook } from './activity.js';
 import { LiveApprovals } from './approvals.js';
 import { ChatBook, wireChat } from './chat.js';
@@ -85,7 +86,7 @@ export class LiveAdapter implements ProtocolAdapter {
     /** Scheduled work that needs the owner: straight to the broker, never as a Command. */
     readonly attention: AttentionPort;
     readonly #listeners = new Set<() => void>();
-    #settings: Settings = SETTINGS;
+    #settings: Settings = { ...SETTINGS, ...rememberedPreferences() };
     #clock = '';
     #revision = 0;
     #serial = 0;
@@ -260,8 +261,10 @@ export class LiveAdapter implements ProtocolAdapter {
     }
     #prefer(change: Partial<Pick<Settings, 'theme' | 'accent' | 'interfaceSize' | 'keepChatPanelVisible'>>): CommandResult {
         this.#settings = { ...this.#settings, ...change };
+        const { theme, accent, interfaceSize, keepChatPanelVisible } = this.#settings;
+        const kept = keepPreferences({ theme, accent, interfaceSize, keepChatPanelVisible });
         this.#publish();
-        return { ok: true, message: 'Saved.' };
+        return { ok: true, message: kept ? 'Saved.' : 'Changed for now: this browser isn’t keeping it.' };
     }
     /** Apply one event. Returns a sentence, having changed nothing, when it breaks the protocol's rules. */
     #observe(event: UiEvent): string | undefined {

@@ -4,5 +4,5 @@ import { h } from '../components/dom.js';
 /** The notice for a host that says the vault is locked, or isn't. */
 export function addressNotice(locked: boolean): HTMLElement {
     const steps = locked ? ['sudo hatchling-broker unlock', 'hatchling-host url'] : ['hatchling-host url'];
-    return h('main', { class: 'address-notice' }, h('h1', {}, locked ? 'Hatchling is locked' : 'This address needs its key'), h('p', {}, 'In a terminal on this machine, run this, then open the address it gives:'), ...steps.map((step) => h('code', {}, step)));
+    return h('main', { class: 'address-notice' }, h('h1', {}, locked ? 'Hatchling is locked' : 'This address needs its key'), h('p', {}, 'In a terminal on this machine, run this, then open the address it gives:'), ...steps.map((step) => h('code', {}, step)), h('p', {}, locked ? 'On Windows, run Unlock (in the Start menu, under Hatchling Tools), then open Hatchling from the Start menu.' : 'On Windows, open Hatchling from the Start menu.'));
 }

@@ -21,7 +21,7 @@ const SIGNAL = 'Suggested by Hatchling, from what it could read about you. These
 const REFUSED = 'This connection may not read the Ideas page.';
 const UNEXPECTED = 'Hatchling answered with something else.';
 const OFF = 'Hatchling keeps no Ideas page here: scheduled work is off.';
-const FAILED = 'Hatchling couldn’t read or change the Ideas page. `sudo hatchling-broker doctor` checks the install.';
+const FAILED = 'Hatchling couldn’t read or change the Ideas page. `hatchling-broker doctor`, run as root, checks the install.';
 const GONE = 'This idea is gone.';
 const SUGGESTING = 'Thinking of ideas for you. They appear here when they’re ready, in a minute or two.';
 /** Each area: the page's section, and its picture; in the page's order. */

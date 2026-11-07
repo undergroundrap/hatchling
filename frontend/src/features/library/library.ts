@@ -56,7 +56,7 @@ export function renderLibrary(ctx: AppContext): HTMLElement {
         }
     });
     sort.append(sortSummary, sortPopover);
-    const page = h('div', { class: 'page wide-page library-page' }, h('header', { class: 'page-header' }, h('h1', {}, libraryNames[filter]), h('div', { class: 'page-actions' }, sort, button(ctx.ui.selectionMode ? 'Done' : 'Select', () => { ctx.ui.selectionMode = !ctx.ui.selectionMode; ctx.ui.selectedArtifacts.clear(); ctx.render(); }), iconButton(ctx.ui.libraryLayout === 'grid' ? 'list' : 'grid', ctx.ui.libraryLayout === 'grid' ? 'Switch to list view' : 'Switch to grid view', () => { ctx.ui.libraryLayout = ctx.ui.libraryLayout === 'grid' ? 'list' : 'grid'; ctx.render(); }), button('Create an artifact', () => ctx.createArtifact(), { icon: 'plus', variant: 'primary' }))));
+    const page = h('div', { class: 'page wide-page library-page' }, h('header', { class: 'page-header' }, h('h1', {}, libraryNames[filter]), h('div', { class: 'page-actions' }, sort, ctx.state.mode === 'live' ? null : button(ctx.ui.selectionMode ? 'Done' : 'Select', () => { ctx.ui.selectionMode = !ctx.ui.selectionMode; ctx.ui.selectedArtifacts.clear(); ctx.render(); }), iconButton(ctx.ui.libraryLayout === 'grid' ? 'list' : 'grid', ctx.ui.libraryLayout === 'grid' ? 'Switch to list view' : 'Switch to grid view', () => { ctx.ui.libraryLayout = ctx.ui.libraryLayout === 'grid' ? 'list' : 'grid'; ctx.render(); }), button('Create an artifact', () => ctx.createArtifact(), { icon: 'plus', variant: 'primary' }))));
     if (appendContentState(ctx, page, 'library'))
         return page;
     if (ctx.ui.selectionMode)
@@ -73,7 +73,7 @@ export function renderLibrary(ctx: AppContext): HTMLElement {
         }, { variant: filter === 'trash' ? 'primary' : 'danger', disabled: ctx.ui.selectedArtifacts.size === 0 })));
     page.append(h('div', { class: 'section-heading library-section-label' }, h('h2', {}, filter === 'trash' ? 'Recoverable for 30 days' : libraryNames[filter]), h('span', { class: 'muted tiny' }, `${items.length} ${items.length === 1 ? 'item' : 'items'}${ctx.state.mode === 'live' ? '' : ' · sample workspace'}`)));
     if (!items.length)
-        page.append(emptyState(filter === 'trash' ? 'trash' : 'library', 'Nothing here yet.', 'Create an artifact using the button above.'));
+        page.append(emptyState(filter === 'trash' ? 'trash' : 'library', 'Nothing here yet.', ctx.state.mode === 'live' ? 'Files Hatchling makes for you appear here.' : 'Create an artifact using the button above.'));
     else
         page.append(h('div', { class: ctx.ui.libraryLayout === 'grid' ? 'artifact-grid' : 'artifact-list' }, ...items.map((item) => artifactCard(ctx, item))));
     return page;
@@ -110,7 +110,7 @@ function artifactCard(ctx: AppContext, item: DeepReadonly<Artifact>): HTMLElemen
     card.append(preview, meta, menu(`Actions for ${item.title}`, item.trashUntil ? [
         { label: 'Restore', icon: 'refresh', action: () => { void ctx.run({ type: 'artifact.restore', id: item.id }); } },
     ] : [
-        { label: item.pinned ? 'Unpin' : 'Pin', icon: 'pin', action: () => { void ctx.run({ type: 'artifact.pin', id: item.id }); } },
+        ...(ctx.state.mode === 'live' ? [] : [{ label: item.pinned ? 'Unpin' : 'Pin', icon: 'pin' as const, action: () => { void ctx.run({ type: 'artifact.pin', id: item.id }); } }]),
         { label: 'Share', icon: 'share', action: () => openShare(ctx, item.id) },
         { label: item.kind === 'page' || item.kind === 'app' ? 'Open live artifact' : 'Download', icon: item.kind === 'page' || item.kind === 'app' ? 'globe' : 'download', action: () => {
                 if (item.kind === 'page' || item.kind === 'app')
@@ -118,7 +118,7 @@ function artifactCard(ctx: AppContext, item: DeepReadonly<Artifact>): HTMLElemen
                 else
                     void ctx.run({ type: 'artifact.download', id: item.id });
             } },
-        { label: 'Move to Trash', icon: 'trash', danger: true, action: () => ctx.dialogs.confirm('Move to Trash?', 'You can restore this artifact for 30 days. Published snapshots stay unchanged.', () => { void ctx.run({ type: 'artifact.trash', id: item.id }); }, { label: 'Move to Trash', danger: true }) },
+        ...(ctx.state.mode === 'live' ? [] : [{ label: 'Move to Trash', icon: 'trash' as const, danger: true, action: () => ctx.dialogs.confirm('Move to Trash?', 'You can restore this artifact for 30 days. Published snapshots stay unchanged.', () => { void ctx.run({ type: 'artifact.trash', id: item.id }); }, { label: 'Move to Trash', danger: true }) }]),
     ]));
     if (ctx.ui.selectionMode)
         card.append(h('span', { class: 'selection-mark', 'aria-label': ctx.ui.selectedArtifacts.has(item.id) ? 'Selected' : 'Not selected' }, ctx.ui.selectedArtifacts.has(item.id) ? icon('check', 14) : null));
@@ -129,17 +129,19 @@ export function openShare(ctx: AppContext, id: string): void {
     if (!item)
         return;
     if (item.kind === 'media') {
-        ctx.dialogs.open('Share a media copy', h('div', { class: 'stack' }, h('p', {}, 'Download this media to share a local copy. Public media hosting is not provided by the scripted adapter.'), button('Download media', () => { void ctx.run({ type: 'artifact.download', id: item.id }); }, { icon: 'download', variant: 'primary' })));
+        ctx.dialogs.open('Share a media copy', h('div', { class: 'stack' }, h('p', {}, ctx.state.mode === 'live' ? 'Download this media to share a copy.' : 'Download this media to share a local copy. Public media hosting is not provided by the scripted adapter.'), button('Download media', () => { void ctx.run({ type: 'artifact.download', id: item.id }); }, { icon: 'download', variant: 'primary' })));
         return;
     }
     if (!canPublish(item.kind)) {
         ctx.dialogs.open('This app stays private', h('div', { class: 'stack' }, icon('lock', 32), h('p', {}, 'Interactive apps cannot be published. Their application data never leaves their host-side workspace.'), h('p', { class: 'muted' }, 'Chat artifact links are not share links.')));
         return;
     }
-    const content = h('div', { class: 'stack' }, h('div', { class: 'share-artifact' }, icon(artifactIcon(item.format), 28), h('strong', {}, item.title), pill(`Version ${item.version}`)), h('p', {}, item.publishedVersion ? 'An existing snapshot is unchanged. Updating it needs a fresh approval for this exact version.' : 'Publishing makes a static copy visible to anyone with its public link. Review the content before approving.'), h('div', { class: 'notice' }, icon('shield', 18), 'This frontend only creates a local preview link. No content is publicly hosted or uploaded.'));
+    const content = h('div', { class: 'stack' }, h('div', { class: 'share-artifact' }, icon(artifactIcon(item.format), 28), h('strong', {}, item.title), pill(`Version ${item.version}`)), h('p', {}, item.publishedVersion ? 'An existing snapshot is unchanged. Updating it needs a fresh approval for this exact version.' : ctx.state.mode === 'live' ? 'Sharing needs your approval of this exact version, so review it first. Later edits don’t change what’s shared.' : 'Publishing makes a static copy visible to anyone with its public link. Review the content before approving.'), ctx.state.mode === 'live' ? null : h('div', { class: 'notice' }, icon('shield', 18), 'This frontend only creates a local preview link. No content is publicly hosted or uploaded.'));
     const ref = ctx.dialogs.open('Share an approved snapshot', content);
     const approve = button(item.publishedVersion ? 'Approve updated snapshot' : 'Approve snapshot', () => {
         void ctx.run({ type: 'artifact.publish', id: item.id, approvedVersion: item.version }).then((result) => {
+            if (result.ok && ctx.state.mode === 'live')
+                ref.close();
             if (!result.ok || !result.id)
                 return;
             const link = `${location.href.split('#')[0] ?? ''}#published/${result.id}`;
