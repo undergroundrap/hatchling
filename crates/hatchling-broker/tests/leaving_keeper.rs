@@ -51,7 +51,7 @@ use hatchling_broker::browser_proxy::Sites;
 use hatchling_broker::cell::ScheduledRun;
 use hatchling_broker::chat_run::{Chat, Step, stopped_told};
 use hatchling_broker::harness::HARNESS_CAPABILITY;
-use hatchling_broker::held_check::{CHECK_PURPOSE, HeldHit, MAX_CHECK_BYTES};
+use hatchling_broker::held_check::{CheckFor, HeldHit, MAX_CHECK_BYTES};
 use hatchling_broker::keeper::{self, Keeper};
 use hatchling_broker::schedule_ops::{HubDelivery, handle_schedule_op};
 use hatchling_broker::spawner::Spawner;
@@ -280,15 +280,22 @@ impl Install {
         Ok(accesses)
     }
 
-    /// That the last check is the broker's, and found what's said: the
-    /// keeper's record of what it was asked.
-    fn last_check_found(&self, found: bool) -> Result<(), String> {
+    /// The cell the last check is on the record as asked for.
+    fn last_check_cell(&self) -> Result<Option<String>, String> {
+        let checks = self.checks()?;
+        let last = checks.last().ok_or("no check on record")?;
+        Ok(last.run.clone())
+    }
+
+    /// That the last check is the broker's, for `check`, and found what's
+    /// said: the keeper's record of what it was asked.
+    fn last_check_found(&self, check: CheckFor, found: bool) -> Result<(), String> {
         let checks = self.checks()?;
         let last = checks.last().ok_or("no check on record")?;
         assert_eq!(
             last.caller,
             Caller::Broker {
-                purpose: CHECK_PURPOSE.to_owned()
+                purpose: check.purpose().to_owned()
             }
         );
         assert_eq!(last.found, Some(found));
@@ -576,14 +583,14 @@ fn a_key_no_cell_has_had_never_leaves_in_a_web_fetch() -> Result<(), String> {
             },
             "{url}"
         );
-        install.last_check_found(true)?;
+        install.last_check_found(CheckFor::Web, true)?;
     }
     let clean = fetch(&mut web, "https://a.example/?k=nothing-held");
     assert!(
         matches!(clean, WebResult::Waiting { .. }),
         "a clean address goes on to the owner"
     );
-    install.last_check_found(false)?;
+    install.last_check_found(CheckFor::Web, false)?;
     assert_eq!(
         reads.load(Ordering::Relaxed),
         0,
@@ -685,7 +692,7 @@ fn a_key_no_cell_has_had_is_never_typed() -> Result<(), String> {
         SHORT_KEY.to_owned(),
     ] {
         assert_eq!(act(&typing(&text)), refused, "{text}");
-        install.last_check_found(true)?;
+        install.last_check_found(CheckFor::Typed, true)?;
     }
     let before = install.checks()?.len();
     for clean in ["hello", USERNAME, "pw-123", "sk-egress-no-cell-has-had"] {
@@ -696,7 +703,7 @@ fn a_key_no_cell_has_had_is_never_typed() -> Result<(), String> {
             },
             "{clean}"
         );
-        install.last_check_found(false)?;
+        install.last_check_found(CheckFor::Typed, false)?;
     }
     assert_eq!(
         install.checks()?.len(),
@@ -728,14 +735,14 @@ fn a_key_no_cell_has_had_is_never_gone_to() -> Result<(), String> {
             },
             "{url}"
         );
-        install.last_check_found(true)?;
+        install.last_check_found(CheckFor::Web, true)?;
     }
     let clean = open("https://a.example/?k=nothing-held");
     assert!(
         !matches!(&clean, BrowserResult::Refused { reason } if reason.contains("secret")),
         "a clean text is not refused for a secret"
     );
-    install.last_check_found(false)?;
+    install.last_check_found(CheckFor::Web, false)?;
     Ok(())
 }
 
@@ -746,19 +753,21 @@ fn a_key_no_cell_has_had_is_never_gone_to() -> Result<(), String> {
 fn a_hit_ends_the_run_each_way_out_and_nothing_else_does() -> Result<(), String> {
     let install = install()?;
     let searcher: Searcher = Arc::new(|_| Ok(Vec::new()));
-    let ways: [(WaySent, SentTo); 4] = [
+    let ways: [(WaySent, SentTo, CheckFor); 4] = [
         (
             WaySent::Web(WebOp::Fetch {
                 url: format!("https://a.example/?k={API_KEY}"),
                 reason: String::from("to read it"),
             }),
             SentTo::Website,
+            CheckFor::Web,
         ),
         (
             WaySent::Web(WebOp::Search {
                 query: format!("what is {ACCOUNT_KEY}"),
             }),
             SentTo::Search,
+            CheckFor::Search,
         ),
         (
             WaySent::Browser(BrowserOp::Open {
@@ -766,17 +775,22 @@ fn a_hit_ends_the_run_each_way_out_and_nothing_else_does() -> Result<(), String>
                 reason: String::from("to read it"),
             }),
             SentTo::Website,
+            CheckFor::Web,
         ),
-        (WaySent::Browser(typing(SHORT_KEY)), SentTo::Page),
+        (
+            WaySent::Browser(typing(SHORT_KEY)),
+            SentTo::Page,
+            CheckFor::Typed,
+        ),
     ];
-    for (way, to) in ways {
+    for (way, to, check) in ways {
         let hit = HeldHit::default();
         let (web, _) = counting("each-way");
         let mut web = web.searching(Arc::clone(&searcher)).in_run(hit.clone());
         let mut browser = browsing();
         way.go(&install, &mut web, &mut browser);
         assert_eq!(hit.seen(), Some(to), "{way:?}");
-        install.last_check_found(true)?;
+        install.last_check_found(check, true)?;
     }
 
     let hit = HeldHit::default();
@@ -845,7 +859,9 @@ fn a_hit_ends_the_session_and_the_owner_is_told_once() -> Result<(), String> {
             matches!(clean, SessionResponse::Web(WebResult::Waiting { .. })),
             "a clean text is not refused for a secret"
         );
-        install.last_check_found(false)?;
+        install.last_check_found(CheckFor::Web, false)?;
+        // A session on the socket names itself: that's not on the record.
+        assert_eq!(install.last_check_cell()?, None);
         let guess = format!("https://a.example/?k={API_KEY}");
         assert_eq!(
             ask(&agent, &reading(&guess))?,
@@ -853,7 +869,8 @@ fn a_hit_ends_the_session_and_the_owner_is_told_once() -> Result<(), String> {
                 reason: String::from(ADDRESS_HOLDS)
             })
         );
-        install.last_check_found(true)?;
+        install.last_check_found(CheckFor::Web, true)?;
+        assert_eq!(install.last_check_cell()?, None);
         let checks = install.checks()?.len();
         session_closed(&agent)?;
         session_is_over(&agent)?;
@@ -1012,6 +1029,12 @@ fn a_hit_elsewhere_in_the_tree_refuses_the_next_op() -> Result<(), String> {
             matches!(clean, SessionResponse::Web(WebResult::Waiting { .. })),
             "a clean text is not refused for a secret"
         );
+        // A connection made for its cell: the broker's word for whose it is.
+        assert_eq!(
+            install.last_check_cell()?.as_deref(),
+            Some("cell-sibling"),
+            "the check is on the record as this cell's run"
+        );
         hit.record(SentTo::Search);
         let checks = install.checks()?.len();
         session_is_over(&agent)?;
@@ -1071,7 +1094,11 @@ fn a_chat_run_that_sends_a_key_is_stopped_and_the_owner_told_once() -> Result<()
             std::thread::sleep(Duration::from_millis(50));
         }
     })?;
-    install.last_check_found(true)?;
+    install.last_check_found(CheckFor::Web, true)?;
+    assert!(
+        install.last_check_cell()?.is_some(),
+        "a run's check names its cell"
+    );
     let told = shown.lock().map_err(|e| e.to_string())?.clone();
     assert_eq!(told, [stopped_told(SentTo::Website)]);
     says_nothing_held(&told);
@@ -1271,7 +1298,15 @@ fn a_hit_elsewhere_kills_a_harness_cell_as_it_runs() -> Result<(), String> {
         &skills,
         &request,
         || cell_alive(spin),
-        || dies_unlooked_at(spin),
+        || {
+            // The run's checks are on the record as its session's cell's.
+            assert_eq!(
+                install.last_check_cell()?.as_deref(),
+                Some("cell-in-a-tree"),
+                "a harness's check names the run it was for"
+            );
+            dies_unlooked_at(spin)
+        },
     )
 }
 

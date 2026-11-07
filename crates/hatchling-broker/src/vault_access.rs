@@ -10,8 +10,9 @@
 //! with it, and migration and rekeying skip it.
 //!
 //! A check of a text ([`crate::held_check`]) touches every secret and names
-//! none: its line says who asked, when, how many bytes, and what came of it
-//! ([`record_check`]). It's what shows repeated guesses at a secret.
+//! none: its line says who asked, what for, in which cell's run when there
+//! was one, when, how many bytes, and what came of it ([`record_check`]).
+//! It's what shows repeated guesses at a secret, and whose they were.
 //!
 //! The log never creates the vault root. A denial before the vault exists
 //! is traced instead, so a denied op still touches no file.
@@ -54,8 +55,9 @@ pub enum Caller {
     Broker {
         /// What for: `egress`, `channel-account`, `artifact-gate`,
         /// `output-gate`, `browser-fill`, a sign-in's secrets for the
-        /// browser to fill (WO-031), or `harness-check`, whether a text
-        /// holds a secret ([`crate::held_check`]).
+        /// browser to fill (WO-031), or a check of whether a text holds a
+        /// secret ([`crate::held_check::CheckFor::purpose`]). Lines from
+        /// before those purposes say `harness-check` for every check.
         purpose: String,
     },
     /// The egress authority (WO-017), reading for the request it makes.
@@ -100,6 +102,11 @@ pub struct Access {
     /// A check's answer: whether the text held a secret.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub found: Option<bool>,
+    /// A check's run: the cell the broker started it for, by the broker's
+    /// word and never the cell's. A session on the agent socket names
+    /// itself, so it has none here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<String>,
 }
 
 /// The action a check of a text is recorded as.
@@ -136,13 +143,14 @@ pub fn record(
             outcome,
             size: None,
             found: None,
+            run: None,
         },
     )
 }
 
 /// Records one check of a text of `size` bytes in the log under `root`:
-/// who asked, and what came of it. It names no secret, and `found` says
-/// nothing of which.
+/// who asked, what for, in `cell`'s run if it was one, and what came of it.
+/// It names no secret, and `found` says nothing of which.
 ///
 /// # Errors
 ///
@@ -150,6 +158,7 @@ pub fn record(
 pub fn record_check(
     root: &Path,
     caller: Caller,
+    cell: Option<&hatchling_core::CellId>,
     size: u64,
     found: Option<bool>,
     outcome: Outcome,
@@ -164,6 +173,7 @@ pub fn record_check(
             outcome,
             size: Some(size),
             found,
+            run: cell.map(|cell| cell.as_str().to_owned()),
         },
     )
 }
@@ -316,6 +326,9 @@ fn describe(access: &Access) -> String {
         } else {
             ", held none"
         });
+    }
+    if let Some(run) = &access.run {
+        let _ = write!(said, ", run of {run}");
     }
     said
 }
@@ -659,7 +672,16 @@ mod tests {
         let broker = Caller::Broker {
             purpose: String::from("harness-check"),
         };
-        record_check(&dir.0, broker.clone(), 7, Some(true), Outcome::Allowed).unwrap();
+        let cell: hatchling_core::CellId = "run-1".parse().unwrap();
+        record_check(
+            &dir.0,
+            broker.clone(),
+            Some(&cell),
+            7,
+            Some(true),
+            Outcome::Allowed,
+        )
+        .unwrap();
         record(&dir.0, broker, "read", Vec::new(), Outcome::Allowed).unwrap();
         let (accesses, unreadable) = read_log(&dir.0).unwrap();
         assert_eq!(unreadable, 0);
@@ -668,6 +690,7 @@ mod tests {
         };
         assert_eq!(check.action, CHECK_ACTION);
         assert_eq!((check.size, check.found), (Some(7), Some(true)));
+        assert_eq!(check.run.as_deref(), Some("run-1"));
         assert!(check.names.is_empty());
         assert_eq!((read.size, read.found), (None, None));
         let text = std::fs::read_to_string(dir.0.join(ACCESS_LOG)).unwrap();
@@ -675,6 +698,7 @@ mod tests {
         assert!(first.contains(r#""size":7"#), "{text}");
         assert!(first.contains(r#""found":true"#), "{text}");
         assert!(!second.contains("size"), "{text}");
+        assert!(!second.contains("run"), "{text}");
         assert!(text.ends_with('\n'), "{text}");
     }
 
@@ -692,6 +716,7 @@ mod tests {
             outcome,
             size: None,
             found: None,
+            run: None,
         };
         let accesses = [
             access("a", Outcome::Denied),
@@ -739,6 +764,17 @@ mod tests {
         );
         assert!(describe(&check(Some(false))).ends_with(", 12 bytes, held none"));
         assert!(describe(&check(None)).ends_with("check allowed, 12 bytes"));
+        let in_a_run = Access {
+            caller: Caller::Broker {
+                purpose: String::from("typed-check"),
+            },
+            run: Some(String::from("run-1")),
+            ..check(Some(false))
+        };
+        assert_eq!(
+            describe(&in_a_run),
+            "1970-01-01T00:00:00Z broker (typed-check) check allowed, 12 bytes, held none, run of run-1"
+        );
         let mut config = owner_config(None);
         config.vault.grants = vec![crate::VaultGrant {
             action: VaultAction::Store,

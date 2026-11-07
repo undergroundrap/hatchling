@@ -1462,7 +1462,14 @@ fn typed_secret(
     web: &WebSession,
     text: &str,
 ) -> Option<BrowserResult> {
-    match crate::held_check::check(crate::keeper::keeper(), config, keys, text.as_bytes()) {
+    match crate::held_check::check(
+        crate::keeper::keeper(),
+        config,
+        keys,
+        crate::held_check::CheckFor::Typed,
+        web.cell(),
+        text.as_bytes(),
+    ) {
         Ok(true) => {
             web.ended_by(hatchling_scheduler::SentTo::Page);
             Some(refused(

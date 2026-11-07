@@ -1942,6 +1942,7 @@ pub const fn vault_keys_through<'a>(
         key,
         keeper,
         run: None,
+        cell: None,
     }
 }
 
@@ -1951,6 +1952,7 @@ pub struct VaultKeys<'a> {
     key: &'a dyn OpensStores,
     keeper: Option<&'a crate::keeper::Keeper>,
     run: Option<&'a crate::held_check::HeldHit>,
+    cell: Option<&'a hatchling_core::CellId>,
 }
 
 impl<'a> VaultKeys<'a> {
@@ -1962,6 +1964,13 @@ impl<'a> VaultKeys<'a> {
             ..self
         }
     }
+
+    /// These keys, for the run of `cell`, when the broker knows it: what
+    /// each check is on the record as.
+    #[must_use]
+    pub const fn of_cell(self, cell: Option<&'a hatchling_core::CellId>) -> Self {
+        Self { cell, ..self }
+    }
 }
 
 impl HarnessVault for VaultKeys<'_> {
@@ -1970,7 +1979,14 @@ impl HarnessVault for VaultKeys<'_> {
     }
 
     fn contains(&self, text: &[u8]) -> Result<bool, String> {
-        crate::held_check::check(self.keeper, self.config, self.key, text)
+        crate::held_check::check(
+            self.keeper,
+            self.config,
+            self.key,
+            crate::held_check::CheckFor::Harness,
+            self.cell,
+            text,
+        )
     }
 
     fn held_hit(&self) -> Option<&crate::held_check::HeldHit> {

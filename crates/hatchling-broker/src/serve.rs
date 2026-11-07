@@ -623,6 +623,7 @@ pub fn serve_connection_with_runs(
         key,
         skills,
         &cell_id,
+        false,
         creds,
         hub,
         runs,
@@ -663,7 +664,7 @@ pub fn serve_cell_connection(
         "agent session established"
     );
     serve_session(
-        stream, config, key, skills, &cell_id, creds, hub, runs, &cell.hit,
+        stream, config, key, skills, &cell_id, true, creds, hub, runs, &cell.hit,
     )
 }
 
@@ -802,6 +803,10 @@ fn read_hello(stream: &UnixStream, timeout: Duration) -> Result<Vec<u8>, Error> 
 /// itself. A run's has none: what watches the run tells them, from how it
 /// ended.
 ///
+/// `known` says the broker made this connection for the cell: only then is
+/// `cell_id` its own word, and not what the peer called itself, and only
+/// then is a check of the session's text recorded as that cell's run.
+///
 /// # Errors
 ///
 /// Returns [`Error::SessionIo`] on transport failure,
@@ -819,11 +824,13 @@ fn serve_session(
     key: &dyn OpensStores,
     skills: &Skills,
     cell_id: &CellId,
+    known: bool,
     creds: PeerCredentials,
     hub: Option<&LocalHub>,
     runs: Option<crate::RunEnv>,
     hit: &HeldHit,
 ) -> Result<(), Error> {
+    let run_cell = known.then_some(cell_id);
     // The session's egress, opened once per session, with a surrogate key
     // fresh for it: surrogates do not survive reconnects. It goes through
     // the egress authority, which holds the key and reads each credential
@@ -875,7 +882,9 @@ fn serve_session(
     } else {
         None
     };
-    let mut web = crate::web_ops::WebSession::new(config, &gate_scope, web_tls).in_run(hit.clone());
+    let mut web = crate::web_ops::WebSession::new(config, &gate_scope, web_tls)
+        .in_run(hit.clone())
+        .of_cell(run_cell);
     // The session's browser (WO-029): started on its first page, closed
     // when the session ends.
     let mut browser = crate::browser_ops::BrowserSession::new(crate::browser_ops::configured())
@@ -952,7 +961,9 @@ fn serve_session(
                     )?)
                 }
                 SessionRequest::Skill(op) => {
-                    let keys = crate::harness::vault_keys(config, key).in_run(hit);
+                    let keys = crate::harness::vault_keys(config, key)
+                        .in_run(hit)
+                        .of_cell(run_cell);
                     SessionResponse::Skill(crate::skill_ops::handle_skill_op(
                         skills, &op, cell_id, &keys,
                     ))
@@ -2367,6 +2378,7 @@ mod gate_scope_tests {
                     &key,
                     &skills,
                     &cell_id,
+                    false,
                     creds,
                     Some(&hub),
                     None,
