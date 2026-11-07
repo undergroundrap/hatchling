@@ -96,7 +96,7 @@ export function liveModel(ctx: AppContext, refresh: () => void): HTMLElement {
         group.append(h('p', {}, `Hatchling couldn’t read the model: ${state.detail}`));
     else {
         const model = state.model;
-        group.append(h('div', { class: 'model-head' }, h('span', { class: 'row-title' }, inUse(model) ?? 'No model is set'), h('span', { class: 'muted' }, model.endpoint ?? '')), h('p', { class: 'model-facts' }, `${sourceLine(model)} ${whereLine(model)} ${fitLine(model)}`), chooser(ctx, port, model, refresh));
+        group.append(h('div', { class: 'model-head' }, h('span', { class: 'row-title' }, inUse(model) ?? 'No model is set'), ...(model.endpoint === null ? [] : [h('code', { class: 'model-endpoint' }, model.endpoint)])), h('p', { class: 'model-facts' }, `${sourceLine(model)} ${whereLine(model)} ${fitLine(model)}`), chooser(ctx, port, model, refresh));
         const hint = h('p', { class: 'model-hint' }, model.available === null
             ? 'Its server doesn’t list its models here: type the id it gives the model.'
             : 'These are the models on its server. To add one, fetch it there (for Ollama, ollama pull), then refresh.');

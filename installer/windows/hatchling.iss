@@ -35,6 +35,7 @@ AppPublisherURL=https://github.com/undergroundrap/hatchling
 DefaultDirName={autopf}\Hatchling
 DefaultGroupName=Hatchling
 DisableProgramGroupPage=yes
+DisableWelcomePage=no
 SetupIconFile=..\..\frontend\public\favicon.ico
 WizardSmallImageFile=wizard-small.bmp
 WizardImageFile=wizard-large.bmp
@@ -52,6 +53,10 @@ InfoBeforeFile=notice.txt
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
+
+[Messages]
+WelcomeLabel1=Hatchling {#AppVersion}
+WelcomeLabel2=Personal AI agents you actually own.%n%nCreated by Ocean Bennett.%nCopyright (c) 2026 Ocean Bennett.%n%nClick Next to continue.
 
 [Files]
 Source: "common.ps1"; DestDir: "{app}"; Flags: ignoreversion

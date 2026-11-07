@@ -205,9 +205,10 @@ body.has-artifact-dock .page { width: 100%; margin-inline: auto; }
 
 .model-head {
     display: flex;
-    align-items: baseline;
+    flex-wrap: wrap;
+    align-items: center;
     justify-content: space-between;
-    gap: 16px;
+    gap: 6px 16px;
 }
 
 .settings-group .model-head .row-title {
@@ -215,11 +216,15 @@ body.has-artifact-dock .page { width: 100%; margin-inline: auto; }
     font-weight: 500;
 }
 
-.model-head .muted {
+.model-endpoint {
     min-width: 0;
+    padding: 4px 10px;
+    border-radius: 8px;
+    background: var(--bg);
+    color: var(--muted-on-card);
     font-size: calc(12px * var(--ui-scale, 1));
+    line-height: calc(16px * var(--ui-scale, 1));
     overflow-wrap: anywhere;
-    text-align: right;
 }
 
 .model-facts {
@@ -246,11 +251,65 @@ body.has-artifact-dock .page { width: 100%; margin-inline: auto; }
 .settings-group .model-choice select,
 .settings-group .model-choice input {
     width: 100%;
-    min-height: 34px;
+    max-width: none;
+    min-height: 36px;
+    padding: 7px 12px;
+    border-radius: 10px;
+    background-color: var(--bg);
+    font-size: calc(13px * var(--ui-scale, 1));
+}
+
+.settings-group .model-choice select {
+    padding-right: 38px;
+    appearance: none;
+    background-image: linear-gradient(45deg, transparent 50%, var(--muted-on-card) 50%), linear-gradient(135deg, var(--muted-on-card) 50%, transparent 50%);
+    background-position: right 20px center, right 15px center;
+    background-repeat: no-repeat;
+    background-size: 5px 5px;
+    cursor: pointer;
+}
+
+.model-choice option {
+    background: var(--surface-raised);
+    color: var(--text);
+}
+
+/* Where a browser lets a select's list be drawn, it matches the app's menus. */
+@supports (appearance: base-select) {
+    .settings-group .model-choice select,
+    .settings-group .model-choice select::picker(select) {
+        appearance: base-select;
+    }
+
+    .settings-group .model-choice select::picker-icon {
+        display: none;
+    }
+
+    .settings-group .model-choice select::picker(select) {
+        margin-top: 6px;
+        padding: 4px;
+        border: 1px solid var(--border-strong);
+        border-radius: 12px;
+        background: var(--surface-raised);
+    }
+
+    .model-choice option {
+        padding: 8px 10px;
+        border-radius: 8px;
+    }
+
+    .model-choice option::checkmark {
+        display: none;
+    }
+
+    .model-choice option:hover,
+    .model-choice option:checked {
+        background: var(--surface-control);
+    }
 }
 
 .settings-group .model-choice .button {
-    min-height: 34px;
+    min-height: 36px;
 }
 
 .model-foot {
